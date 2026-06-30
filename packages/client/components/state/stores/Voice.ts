@@ -36,6 +36,9 @@ export interface TypeVoice {
   noiseSupression: NoiseSuppresionState;
   autoGainControl: boolean;
 
+  pushToTalk: boolean;
+  pushToTalkKey: string;
+
   screenShareQuality: ScreenShareQualityName;
   screenShareQualityAsk: boolean;
   screenShareAudio: boolean;
@@ -79,6 +82,8 @@ export class Voice extends AbstractStore<"voice", TypeVoice> {
       echoCancellation: true,
       noiseSupression: "browser",
       autoGainControl: true,
+      pushToTalk: false,
+      pushToTalkKey: "Space",
       screenShareQuality: "low",
       screenShareQualityAsk: true,
       screenShareAudio: true,
@@ -129,6 +134,14 @@ export class Voice extends AbstractStore<"voice", TypeVoice> {
 
     if (typeof input.autoGainControl === "boolean") {
       data.autoGainControl = input.autoGainControl;
+    }
+
+    if (typeof input.pushToTalk === "boolean") {
+      data.pushToTalk = input.pushToTalk;
+    }
+
+    if (typeof input.pushToTalkKey === "string") {
+      data.pushToTalkKey = input.pushToTalkKey;
     }
 
     if (
@@ -313,6 +326,14 @@ export class Voice extends AbstractStore<"voice", TypeVoice> {
     this.set("autoGainControl", value);
   }
 
+  set pushToTalk(value: boolean) {
+    this.set("pushToTalk", value);
+  }
+
+  set pushToTalkKey(value: string) {
+    this.set("pushToTalkKey", value);
+  }
+
   /**
    * Set screen share quality
    */
@@ -402,6 +423,14 @@ export class Voice extends AbstractStore<"voice", TypeVoice> {
    */
   get autoGainControl(): boolean | undefined {
     return this.get().autoGainControl;
+  }
+
+  get pushToTalk(): boolean {
+    return this.get().pushToTalk;
+  }
+
+  get pushToTalkKey(): string {
+    return this.get().pushToTalkKey;
   }
 
   /**

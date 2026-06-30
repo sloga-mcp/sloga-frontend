@@ -68,7 +68,7 @@ export const HomeSidebar = (props: Props) => {
   });
 
   return (
-    <SidebarBase class="channel_bar home">
+    <SidebarBase class="channel_bar home" style={{"--md-sys-color-primary-container": "#FF6B00", "--md-sys-color-on-primary-container": "#ffffff"}}>
       <div ref={scrollTargetElement} use:invisibleScrollable>
         <List>
           <SidebarTitle>

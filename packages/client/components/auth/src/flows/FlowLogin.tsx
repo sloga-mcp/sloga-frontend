@@ -65,9 +65,10 @@ export default function FlowLogin() {
             <FlowTitle subtitle={<Trans>Sign into Acutest</Trans>} emoji="wave">
               <Trans>Welcome!</Trans>
             </FlowTitle>
+            <div style={{"--md-sys-color-primary": "#FF6B00", "--mdui-color-primary": "255, 107, 0", "display": "contents"}}>
             <Form onSubmit={performLogin}>
               <Fields fields={["email", "password"]} />
-              <div style={{"--md-sys-color-primary": "#FF6B00", "display": "flex", "flex-direction": "column", "gap": "inherit", "width": "100%"}}>
+              <div style={{"display": "flex", "flex-direction": "column", "gap": "inherit", "width": "100%"}}>
                 <Column gap="xl" align>
                   <a href="/login/reset">
                     <Button variant="text">
@@ -92,6 +93,7 @@ export default function FlowLogin() {
                 </Row>
               </div>
             </Form>
+            </div>
           </>
         }
       >

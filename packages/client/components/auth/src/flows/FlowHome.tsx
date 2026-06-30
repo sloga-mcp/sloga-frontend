@@ -77,9 +77,11 @@ export default function FlowHome() {
               </a>
               <a href="/login/create">
                 <Column>
-                  <Button variant="tonal" bg="#8B00FF">
-                    <Trans>Sign Up</Trans>
-                  </Button>
+                  <div style={{"--md-sys-color-on-secondary-container":"#ffffff", "width": "100%", "display": "flex", "flex-direction": "column"}}>
+                    <Button variant="tonal" bg="#8B00FF">
+                      <b><Trans>Sign Up</Trans></b>
+                    </Button>
+                  </div>
                 </Column>
               </a>
             </Column>
@@ -98,6 +100,7 @@ export default function FlowHome() {
 
         <Button
           variant="filled"
+          bg="#FF6B00"
           onPress={() =>
             lifecycle.transition({
               type: TransitionType.Dismiss,

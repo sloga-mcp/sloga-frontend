@@ -88,6 +88,8 @@ class Voice {
   private getClient;
   private screenShareTracks: Set<string>;
   private disposeTrackRoot: (() => void) | undefined;
+  #pttKeydown: ((e: KeyboardEvent) => void) | undefined;
+  #pttKeyup: ((e: KeyboardEvent) => void) | undefined;
 
   constructor(
     voiceSettings: VoiceSettings,
@@ -181,6 +183,7 @@ class Voice {
 
     room.addListener("connected", () => {
       this.#setState("CONNECTED");
+      this.#startPushToTalk(room);
       const isAfk = channel.name?.toLowerCase() === "afk";
       if (this.speakingPermission)
         room.localParticipant
@@ -267,6 +270,7 @@ class Voice {
       this.screenShareTracks = new Set();
       this.disposeTrackRoot?.();
       this.disposeTrackRoot = undefined;
+      this.#stopPushToTalk();
 
       this.sound.playSound("userLeaveVoice");
     } catch (e) {
@@ -608,6 +612,35 @@ class Voice {
 
   get speakingPermission() {
     return !!this.channel()?.havePermission("Speak");
+  }
+
+  #startPushToTalk(room: Room) {
+    this.#stopPushToTalk();
+
+    this.#pttKeydown = (e: KeyboardEvent) => {
+      if (!this.#settings.pushToTalk) return;
+      if (e.code !== this.#settings.pushToTalkKey) return;
+      if (e.repeat) return;
+      if (room.localParticipant.isMicrophoneEnabled) return;
+      room.localParticipant.setMicrophoneEnabled(true);
+    };
+
+    this.#pttKeyup = (e: KeyboardEvent) => {
+      if (!this.#settings.pushToTalk) return;
+      if (e.code !== this.#settings.pushToTalkKey) return;
+      if (!room.localParticipant.isMicrophoneEnabled) return;
+      room.localParticipant.setMicrophoneEnabled(false);
+    };
+
+    window.addEventListener("keydown", this.#pttKeydown);
+    window.addEventListener("keyup", this.#pttKeyup);
+  }
+
+  #stopPushToTalk() {
+    if (this.#pttKeydown) window.removeEventListener("keydown", this.#pttKeydown);
+    if (this.#pttKeyup) window.removeEventListener("keyup", this.#pttKeyup);
+    this.#pttKeydown = undefined;
+    this.#pttKeyup = undefined;
   }
 
   private onErr(e: unknown) {
