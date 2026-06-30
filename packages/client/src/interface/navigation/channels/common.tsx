@@ -18,6 +18,7 @@ export const SidebarBase = styled("div", {
     fill: "var(--md-sys-color-on-surface)",
     color: "var(--md-sys-color-on-surface)",
     background: "var(--md-sys-color-surface-container-low)",
+    borderRight: "1px solid var(--md-sys-color-outline-variant)",
 
     "& a": {
       textDecoration: "none",

@@ -3,7 +3,7 @@ import { createSignal, Show } from "solid-js";
 import { Trans } from "@lingui-solid/solid/macro";
 
 import { useState } from "@revolt/state";
-import { CategoryButton, Checkbox, Column, Text } from "@revolt/ui";
+import { CategoryButton, Checkbox, Column, Slider, Text } from "@revolt/ui";
 
 /**
  * Voice processing options
@@ -68,6 +68,48 @@ export function VoiceProcessingOptions() {
         >
           <Trans>Automatic Gain Control</Trans>
         </CategoryButton>
+      </CategoryButton.Group>
+
+      <Text class="title">
+        <Trans>Microphone Mode</Trans>
+      </Text>
+      <CategoryButton.Group>
+        <CategoryButton
+          icon="blank"
+          action={<Checkbox checked={voice.openMic} />}
+          onClick={() => (voice.openMic = !voice.openMic)}
+          description={<Trans>Microphone stays on automatically when in a voice channel.</Trans>}
+        >
+          <Trans>Open Microphone</Trans>
+        </CategoryButton>
+        <CategoryButton
+          icon="blank"
+          action={<Checkbox checked={voice.vadEnabled} />}
+          onClick={() => (voice.vadEnabled = !voice.vadEnabled)}
+          description={<Trans>Mic only activates when your volume exceeds the threshold below.</Trans>}
+        >
+          <Trans>Voice Activity Detection</Trans>
+        </CategoryButton>
+        <Show when={voice.vadEnabled}>
+          <CategoryButton
+            icon="blank"
+            description={
+              <Column gap="sm">
+                <Text class="label"><Trans>Sensitivity threshold: {voice.vadThreshold}%</Trans></Text>
+                <Slider
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={voice.vadThreshold}
+                  onInput={(e) => (voice.vadThreshold = Number(e.currentTarget.value))}
+                  labelFormatter={(v) => `${v}%`}
+                />
+              </Column>
+            }
+          >
+            <Trans>VAD Threshold</Trans>
+          </CategoryButton>
+        </Show>
       </CategoryButton.Group>
 
       <Text class="title">

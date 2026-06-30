@@ -109,6 +109,20 @@ export function Friends() {
           <Symbol>group</Symbol>
         </HeaderIcon>
         <Trans>Friends</Trans>
+        <Show when={!window.opener}>
+          <IconButton
+            onPress={() =>
+              window.open(
+                "/friends-popout",
+                "friends-popout",
+                "width=420,height=650,resizable=yes,popup=yes",
+              )
+            }
+            use:floating={{ tooltip: { placement: "bottom", content: t`Pop out friends list` } }}
+          >
+            <Symbol>open_in_new</Symbol>
+          </IconButton>
+        </Show>
       </Header>
 
       <main class={main()}>

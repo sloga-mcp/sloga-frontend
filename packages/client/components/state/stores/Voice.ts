@@ -16,7 +16,7 @@ const NoiseSuppresionStates: NoiseSuppresionState[] = [
 /**
  * Possible screen share qualities. Low is 720p@30fps, high 1080p@30fps and text is source@5fps.
  */
-export type ScreenShareQualityName = "low" | "high" | "text";
+export type ScreenShareQualityName = "low" | "high" | "text" | "fhd" | "qhd" | "uhd";
 
 /**
  * Array of available screen share quality names.
@@ -25,6 +25,9 @@ export const ScreenShareQualityNames: ScreenShareQualityName[] = [
   "low",
   "high",
   "text",
+  "fhd",
+  "qhd",
+  "uhd",
 ];
 
 export interface TypeVoice {
@@ -36,6 +39,9 @@ export interface TypeVoice {
   noiseSupression: NoiseSuppresionState;
   autoGainControl: boolean;
 
+  openMic: boolean;
+  vadEnabled: boolean;
+  vadThreshold: number;
   pushToTalk: boolean;
   pushToTalkKey: string;
 
@@ -82,6 +88,9 @@ export class Voice extends AbstractStore<"voice", TypeVoice> {
       echoCancellation: true,
       noiseSupression: "browser",
       autoGainControl: true,
+      openMic: true,
+      vadEnabled: false,
+      vadThreshold: 20,
       pushToTalk: false,
       pushToTalkKey: "Space",
       screenShareQuality: "low",
@@ -134,6 +143,18 @@ export class Voice extends AbstractStore<"voice", TypeVoice> {
 
     if (typeof input.autoGainControl === "boolean") {
       data.autoGainControl = input.autoGainControl;
+    }
+
+    if (typeof input.openMic === "boolean") {
+      data.openMic = input.openMic;
+    }
+
+    if (typeof input.vadEnabled === "boolean") {
+      data.vadEnabled = input.vadEnabled;
+    }
+
+    if (typeof input.vadThreshold === "number") {
+      data.vadThreshold = Math.max(0, Math.min(100, input.vadThreshold));
     }
 
     if (typeof input.pushToTalk === "boolean") {
@@ -326,6 +347,18 @@ export class Voice extends AbstractStore<"voice", TypeVoice> {
     this.set("autoGainControl", value);
   }
 
+  set openMic(value: boolean) {
+    this.set("openMic", value);
+  }
+
+  set vadEnabled(value: boolean) {
+    this.set("vadEnabled", value);
+  }
+
+  set vadThreshold(value: number) {
+    this.set("vadThreshold", value);
+  }
+
   set pushToTalk(value: boolean) {
     this.set("pushToTalk", value);
   }
@@ -423,6 +456,18 @@ export class Voice extends AbstractStore<"voice", TypeVoice> {
    */
   get autoGainControl(): boolean | undefined {
     return this.get().autoGainControl;
+  }
+
+  get openMic(): boolean {
+    return this.get().openMic;
+  }
+
+  get vadEnabled(): boolean {
+    return this.get().vadEnabled;
+  }
+
+  get vadThreshold(): number {
+    return this.get().vadThreshold;
   }
 
   get pushToTalk(): boolean {

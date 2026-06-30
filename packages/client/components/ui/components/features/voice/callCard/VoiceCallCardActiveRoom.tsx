@@ -64,6 +64,8 @@ function Participants() {
   let callRef: HTMLDivElement | undefined;
 
   const tileWidth = () => {
+    if (!voice.focusId()) return TILE_MIN_WIDTH;
+
     const vidWidth = Math.round(
       100 / (voice.vidTracks().length + testTrackCount),
     );
@@ -231,10 +233,13 @@ const Call = styled("div", {
 const Grid = styled("div", {
   base: {
     display: "flex",
-    flexWrap: "wrap",
-    justifyContent: "safe center",
-    alignContent: "safe center",
-    minHeight: "100%",
+    flexDirection: "column",
+    flexWrap: "nowrap",
+    justifyContent: "flex-start",
+    alignItems: "flex-start",
+    alignSelf: "flex-start",
+    minHeight: "auto",
+    width: "fit-content",
     gap: "var(--gap-md)",
   },
 
@@ -242,6 +247,9 @@ const Grid = styled("div", {
     focus: {
       true: {
         flexDirection: "column",
+        flexWrap: "nowrap",
+        alignSelf: "stretch",
+        width: "auto",
         height: `max(20%, ${TILE_MIN_FOCUS_HEIGHT})`,
         minHeight: 0,
         transition: "height .3s ease",

@@ -259,6 +259,22 @@ export function MessageComposition(props: Props) {
     stopTyping();
     props.onMessageSend?.();
 
+    // Schedule disappearing message deletion
+    const timer = disappearOption().seconds;
+    if (timer !== null) {
+      const channelId = props.channel.id;
+      const userId = client()!.user!.id;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const onMsg = (message: any) => {
+        if (message.channelId === channelId && message.authorId === userId) {
+          client().removeListener("messageCreate", onMsg);
+          setTimeout(() => { try { message.delete(); } catch {} }, timer * 1000);
+        }
+      };
+      client().on("messageCreate", onMsg);
+      setTimeout(() => client().removeListener("messageCreate", onMsg), 15000);
+    }
+
     if (typeof useContent === "string") {
       const currentDraft = draft();
       if (
@@ -377,6 +393,34 @@ export function MessageComposition(props: Props) {
 
   const searchSpace = useSearchSpace(() => props.channel, client);
 
+  // Disappearing messages
+  const DISAPPEAR_OPTIONS: { label: string; seconds: number | null }[] = [
+    { label: "Off", seconds: null },
+    { label: "5s", seconds: 5 },
+    { label: "30s", seconds: 30 },
+    { label: "1m", seconds: 60 },
+    { label: "5m", seconds: 300 },
+    { label: "1h", seconds: 3600 },
+  ];
+  const [disappearIdx, setDisappearIdx] = createSignal(0);
+  const disappearOption = () => DISAPPEAR_OPTIONS[disappearIdx()];
+  const [showDisappearMenu, setShowDisappearMenu] = createSignal(false);
+
+  function toggleDisappearMenu() {
+    setShowDisappearMenu((v) => !v);
+  }
+
+  function selectDisappear(idx: number) {
+    setDisappearIdx(idx);
+    setShowDisappearMenu(false);
+  }
+
+  function disappearTooltipText() {
+    return disappearOption().seconds === null
+      ? t`Disappearing messages: Off`
+      : t`Messages disappear after ${disappearOption().label}`;
+  }
+
   return (
     <>
       <Show when={props.channel.slowmode}>
@@ -471,6 +515,85 @@ export function MessageComposition(props: Props) {
               </MessageBox.FloatingAction>
             </Show>
             <MessageBox.ActionContainer>
+              <MessageBox.InlineIcon>
+                <div style={{ position: "relative" }}>
+                  <Tooltip
+                    content={disappearTooltipText()}
+                    placement="top"
+                  >
+                    <div style={{ display: "flex", "flex-direction": "column", "align-items": "center" }}>
+                      <IconButton
+                        onPress={toggleDisappearMenu}
+                        style={disappearOption().seconds !== null ? { color: "#FF6B00" } : {}}
+                      >
+                        <Symbol>
+                          {disappearOption().seconds === null ? "timer_off" : "timer"}
+                        </Symbol>
+                      </IconButton>
+                      <Show when={disappearOption().seconds !== null}>
+                        <span style={{ "font-size": "0.6em", "line-height": "1", "margin-top": "-4px", color: "#FF6B00", "font-weight": "600", "pointer-events": "none" }}>
+                          {disappearOption().label}
+                        </span>
+                      </Show>
+                    </div>
+                  </Tooltip>
+                  <Show when={showDisappearMenu()}>
+                    <div
+                      style={{
+                        position: "fixed",
+                        inset: "0",
+                        "z-index": "999",
+                      }}
+                      onClick={() => setShowDisappearMenu(false)}
+                    />
+                    <div
+                      style={{
+                        position: "absolute",
+                        bottom: "calc(100% + 8px)",
+                        right: "0",
+                        "z-index": "1000",
+                        background: "var(--md-sys-color-surface-container-high)",
+                        "border-radius": "12px",
+                        padding: "8px 0",
+                        "min-width": "160px",
+                        "box-shadow": "0 4px 20px rgba(0,0,0,0.4)",
+                        border: "1px solid var(--md-sys-color-outline-variant)",
+                      }}
+                    >
+                      <div style={{ padding: "4px 12px 8px", "font-size": "0.75em", opacity: "0.6", "font-weight": "600", "letter-spacing": "0.05em", "text-transform": "uppercase" }}>
+                        Disappear after
+                      </div>
+                      <For each={DISAPPEAR_OPTIONS}>
+                        {(opt, i) => (
+                          <div
+                            onClick={() => selectDisappear(i())}
+                            style={{
+                              display: "flex",
+                              "align-items": "center",
+                              gap: "10px",
+                              padding: "8px 16px",
+                              cursor: "pointer",
+                              background: disappearIdx() === i() ? "var(--md-sys-color-primary-container)" : "transparent",
+                              color: disappearIdx() === i() ? "var(--md-sys-color-on-primary-container)" : "inherit",
+                              "font-size": "0.9em",
+                            }}
+                          >
+                            <div style={{
+                              width: "16px",
+                              height: "16px",
+                              "border-radius": "50%",
+                              border: `2px solid ${disappearIdx() === i() ? "#FF6B00" : "var(--md-sys-color-outline)"}`,
+                              background: disappearIdx() === i() ? "#FF6B00" : "transparent",
+                              "flex-shrink": "0",
+                            }} />
+                            {opt.label}
+                          </div>
+                        )}
+                      </For>
+                    </div>
+                  </Show>
+                </div>
+              </MessageBox.InlineIcon>
               <CompositionMediaPicker
                 onMessage={sendMessage}
                 onTextReplacement={(text) => setNodeReplacement([text])}
@@ -526,7 +649,17 @@ export function MessageComposition(props: Props) {
               isDisabled={!canSend()}
               onPress={sendMessage}
             >
-              <Symbol fill={true}>send</Symbol>
+              <span
+                style={{
+                  display: "inline-block",
+                  transform: "rotate(90deg)",
+                  "font-weight": "700",
+                  "font-size": "1.1em",
+                  "line-height": "1",
+                }}
+              >
+                A
+              </span>
             </IconButton>
           </Show>
         }

@@ -170,6 +170,76 @@ export function TextChannel(props: ChannelPageProps) {
         />
       </Header>
       <Content>
+        <Show
+          when={
+            sidebarState().state !== "default" ||
+            (state.layout.getSectionState(
+              LAYOUT_SECTIONS.MEMBER_SIDEBAR,
+              true,
+            ) &&
+              canIHasSidebar(props.channel) &&
+              props.channel.type !== "TextChannel")
+          }
+        >
+          <div
+            ref={sidebarScrollTargetElement}
+            use:scrollable={{
+              direction: "y",
+              showOnHover: true,
+              class: sidebar(),
+            }}
+            style={{
+              width: sidebarState().state !== "default" ? "360px" : "",
+            }}
+          >
+            <Switch
+              fallback={
+                <Show when={props.channel.type !== "TextChannel"}>
+                  <MemberSidebar
+                    channel={props.channel}
+                    scrollTargetElement={sidebarScrollTargetElement}
+                  />
+                </Show>
+              }
+            >
+              <Match when={sidebarState().state === "search"}>
+                <WideSidebarContainer>
+                  <SidebarTitle>
+                    <Text class="label" size="large">
+                      Search Results
+                    </Text>
+                  </SidebarTitle>
+                  <TextSearchSidebar
+                    channel={props.channel}
+                    query={{
+                      query: (sidebarState() as { query: string }).query,
+                    }}
+                  />
+                </WideSidebarContainer>
+              </Match>
+              <Match when={sidebarState().state === "pins"}>
+                <WideSidebarContainer>
+                  <SidebarTitle>
+                    <Text class="label" size="large">
+                      Pinned Messages
+                    </Text>
+                  </SidebarTitle>
+                  <TextSearchSidebar
+                    channel={props.channel}
+                    query={{ pinned: true, sort: "Latest" }}
+                  />
+                </WideSidebarContainer>
+              </Match>
+            </Switch>
+
+            <Show when={sidebarState().state !== "default"}>
+              <Keybind
+                keybind={KeybindAction.CLOSE_SIDEBAR}
+                onPressed={() => setSidebarState({ state: "default" })}
+              />
+            </Show>
+          </div>
+        </Show>
         <main class={main()}>
           <Show
             when={canConnect()}
@@ -215,73 +285,6 @@ export function TextChannel(props: ChannelPageProps) {
             onMessageSend={() => jumpToBottomRef?.()}
           />
         </main>
-        <Show
-          when={
-            (state.layout.getSectionState(
-              LAYOUT_SECTIONS.MEMBER_SIDEBAR,
-              true,
-            ) &&
-              canIHasSidebar(props.channel)) ||
-            sidebarState().state !== "default"
-          }
-        >
-          <div
-            ref={sidebarScrollTargetElement}
-            use:scrollable={{
-              direction: "y",
-              showOnHover: true,
-              class: sidebar(),
-            }}
-            style={{
-              width: sidebarState().state !== "default" ? "360px" : "",
-            }}
-          >
-            <Switch
-              fallback={
-                <MemberSidebar
-                  channel={props.channel}
-                  scrollTargetElement={sidebarScrollTargetElement}
-                />
-              }
-            >
-              <Match when={sidebarState().state === "search"}>
-                <WideSidebarContainer>
-                  <SidebarTitle>
-                    <Text class="label" size="large">
-                      Search Results
-                    </Text>
-                  </SidebarTitle>
-                  <TextSearchSidebar
-                    channel={props.channel}
-                    query={{
-                      query: (sidebarState() as { query: string }).query,
-                    }}
-                  />
-                </WideSidebarContainer>
-              </Match>
-              <Match when={sidebarState().state === "pins"}>
-                <WideSidebarContainer>
-                  <SidebarTitle>
-                    <Text class="label" size="large">
-                      Pinned Messages
-                    </Text>
-                  </SidebarTitle>
-                  <TextSearchSidebar
-                    channel={props.channel}
-                    query={{ pinned: true, sort: "Latest" }}
-                  />
-                </WideSidebarContainer>
-              </Match>
-            </Switch>
-
-            <Show when={sidebarState().state !== "default"}>
-              <Keybind
-                keybind={KeybindAction.CLOSE_SIDEBAR}
-                onPressed={() => setSidebarState({ state: "default" })}
-              />
-            </Show>
-          </div>
-        </Show>
       </Content>
     </>
   );
@@ -309,6 +312,7 @@ const sidebar = cva({
     width: "var(--layout-width-channel-sidebar)",
     // margin: "var(--gap-md)",
     borderRadius: "var(--borderRadius-lg)",
+    borderRight: "1px solid var(--md-sys-color-outline-variant)",
     // color: "var(--colours-sidebar-channels-foreground)",
     // background: "var(--colours-sidebar-channels-background)",
   },

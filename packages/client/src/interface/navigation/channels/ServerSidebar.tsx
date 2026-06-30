@@ -13,6 +13,7 @@ import { useLingui } from "@lingui-solid/solid/macro";
 import type { API, Channel, Server, ServerFlags } from "stoat.js";
 import { styled } from "styled-system/jsx";
 
+import { useClient } from "@revolt/client";
 import { useDevice } from "@revolt/common";
 import { KeybindAction, createKeybind } from "@revolt/keybinds";
 import { TextWithEmoji } from "@revolt/markdown";
@@ -20,6 +21,7 @@ import { useModals } from "@revolt/modal";
 import { useNavigate } from "@revolt/routing";
 import { useVoice } from "@revolt/rtc";
 import { useState } from "@revolt/state";
+import { LAYOUT_SECTIONS } from "@revolt/state/stores/Layout";
 import {
   Column,
   Draggable,
@@ -39,6 +41,8 @@ import { Symbol } from "@revolt/ui/components/utils/Symbol";
 
 import MdChevronRight from "@material-design-icons/svg/filled/chevron_right.svg?component-solid";
 import MdSettings from "@material-symbols/svg-400/outlined/settings-fill.svg?component-solid";
+
+import { ServerMemberSidebar } from "../../channels/text/MemberSidebar";
 
 import { SidebarBase } from "./common";
 
@@ -92,6 +96,14 @@ type OrderingEvent =
 export const ServerSidebar = (props: Props) => {
   const navigate = useNavigate();
   const { isMobile } = useDevice();
+  const client = useClient();
+  const state = useState();
+
+  let memberScrollTarget: HTMLDivElement | undefined;
+
+  const selectedChannel = createMemo(() =>
+    props.channelId ? client().channels.get(props.channelId) : undefined,
+  );
 
   // Users can manage certain parts of the server individually, regardless of their ManageServer Permission
   const canManageServer = () =>
@@ -252,6 +264,28 @@ export const ServerSidebar = (props: Props) => {
           )}
         </Draggable>
       </div>
+      <Show
+        when={
+          selectedChannel()?.type === "TextChannel" &&
+          state.layout.getSectionState(LAYOUT_SECTIONS.MEMBER_SIDEBAR, true)
+        }
+      >
+        <div
+          ref={memberScrollTarget}
+          use:invisibleScrollable
+          style={{
+            "flex-shrink": 0,
+            "max-height": "40%",
+            "border-top": "1px solid var(--md-sys-color-outline-variant)",
+            overflow: "auto",
+          }}
+        >
+          <ServerMemberSidebar
+            channel={selectedChannel()!}
+            scrollTargetElement={memberScrollTarget!}
+          />
+        </div>
+      </Show>
     </SidebarBase>
   );
 };

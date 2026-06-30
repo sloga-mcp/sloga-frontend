@@ -191,7 +191,7 @@ const Config: SettingsConfiguration<{ server: Server }> = {
         },
         {
           title: <Trans>Subscriptions</Trans>,
-          hidden: import.meta.env.PROD,
+          hidden: true,
           entries: [
             {
               id: "subscribe",

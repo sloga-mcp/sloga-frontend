@@ -90,6 +90,10 @@ class Voice {
   private disposeTrackRoot: (() => void) | undefined;
   #pttKeydown: ((e: KeyboardEvent) => void) | undefined;
   #pttKeyup: ((e: KeyboardEvent) => void) | undefined;
+  #vadStream: MediaStream | undefined;
+  #vadCtx: AudioContext | undefined;
+  #vadFrame: number | undefined;
+  #vadSilenceTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(
     voiceSettings: VoiceSettings,
@@ -184,10 +188,11 @@ class Voice {
     room.addListener("connected", () => {
       this.#setState("CONNECTED");
       this.#startPushToTalk(room);
+      this.#startVAD(room);
       const isAfk = channel.name?.toLowerCase() === "afk";
       if (this.speakingPermission)
         room.localParticipant
-          .setMicrophoneEnabled(isAfk ? false : this.#settings.micOn)
+          .setMicrophoneEnabled(isAfk ? false : (this.#settings.openMic || this.#settings.micOn))
           .then((track) => {
             this.#settings.micOn = track != null;
             if (!isAfk && this.#settings.noiseSupression === "enhanced") {
@@ -271,6 +276,7 @@ class Voice {
       this.disposeTrackRoot?.();
       this.disposeTrackRoot = undefined;
       this.#stopPushToTalk();
+      this.#stopVAD();
 
       this.sound.playSound("userLeaveVoice");
     } catch (e) {
@@ -411,6 +417,27 @@ class Voice {
         }
       }
     }
+
+    // Always offer higher quality options
+    qualities.fhd = {
+      name: "fhd",
+      resolution: { width: 1920, height: 1080, frameRate: 60 },
+      fullName: `1080p 60FPS`,
+      contentHint: "motion",
+    };
+    qualities.qhd = {
+      name: "qhd",
+      resolution: { width: 2560, height: 1440, frameRate: 30 },
+      fullName: `1440p 30FPS`,
+      contentHint: "motion",
+    };
+    qualities.uhd = {
+      name: "uhd",
+      resolution: { width: 3840, height: 2160, frameRate: 30 },
+      fullName: `4K 30FPS`,
+      contentHint: "motion",
+    };
+
     return qualities;
   }
 
@@ -607,11 +634,18 @@ class Voice {
   }
 
   get listenPermission() {
-    return !!this.channel()?.havePermission("Listen");
+    const channel = this.channel();
+    if (!channel) return false;
+    if (channel.type === "DirectMessage" || channel.type === "Group") return true;
+    return !!channel.havePermission("Listen");
   }
 
   get speakingPermission() {
-    return !!this.channel()?.havePermission("Speak");
+    const channel = this.channel();
+    if (!channel) return false;
+    // DMs and group DMs don't have server permissions — always allow speaking
+    if (channel.type === "DirectMessage" || channel.type === "Group") return true;
+    return !!channel.havePermission("Speak");
   }
 
   #startPushToTalk(room: Room) {
@@ -641,6 +675,56 @@ class Voice {
     if (this.#pttKeyup) window.removeEventListener("keyup", this.#pttKeyup);
     this.#pttKeydown = undefined;
     this.#pttKeyup = undefined;
+  }
+
+  async #startVAD(room: Room) {
+    this.#stopVAD();
+    if (!this.#settings.vadEnabled) return;
+
+    try {
+      this.#vadStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      this.#vadCtx = new AudioContext();
+      const analyser = this.#vadCtx.createAnalyser();
+      analyser.fftSize = 512;
+      this.#vadCtx.createMediaStreamSource(this.#vadStream).connect(analyser);
+      const buf = new Uint8Array(analyser.frequencyBinCount);
+
+      const tick = () => {
+        analyser.getByteFrequencyData(buf);
+        const avg = buf.reduce((a, b) => a + b, 0) / buf.length;
+        const level = Math.min(100, avg * 2.5);
+        const threshold = this.#settings.vadThreshold;
+
+        if (level > threshold) {
+          clearTimeout(this.#vadSilenceTimer);
+          this.#vadSilenceTimer = undefined;
+          if (!room.localParticipant.isMicrophoneEnabled) {
+            room.localParticipant.setMicrophoneEnabled(true);
+          }
+        } else if (room.localParticipant.isMicrophoneEnabled && !this.#vadSilenceTimer) {
+          this.#vadSilenceTimer = setTimeout(() => {
+            room.localParticipant.setMicrophoneEnabled(false);
+            this.#vadSilenceTimer = undefined;
+          }, 600);
+        }
+
+        this.#vadFrame = requestAnimationFrame(tick);
+      };
+      tick();
+    } catch {
+      // mic access denied — VAD won't run
+    }
+  }
+
+  #stopVAD() {
+    if (this.#vadFrame !== undefined) cancelAnimationFrame(this.#vadFrame);
+    clearTimeout(this.#vadSilenceTimer);
+    this.#vadStream?.getTracks().forEach((t) => t.stop());
+    this.#vadCtx?.close();
+    this.#vadFrame = undefined;
+    this.#vadStream = undefined;
+    this.#vadCtx = undefined;
+    this.#vadSilenceTimer = undefined;
   }
 
   private onErr(e: unknown) {

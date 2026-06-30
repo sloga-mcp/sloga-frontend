@@ -46,6 +46,7 @@ import "./index.css";
 import { DevelopmentPage } from "./interface/Development";
 import { Discover } from "./interface/Discover";
 import { Friends } from "./interface/Friends";
+import { FriendsPopout } from "./interface/FriendsPopout";
 import { HomePage } from "./interface/Home";
 import { ServerHome } from "./interface/ServerHome";
 import { ChannelPage } from "./interface/channels/ChannelPage";
@@ -170,6 +171,7 @@ render(
             <Route path="/reset/:token" component={FlowConfirmReset} />
             <Route path="/*" component={FlowHome} />
           </Route>
+          <Route path="/friends-popout" component={FriendsPopout} />
           <Route path="/" component={Interface as never}>
             <Route path="/pwa" component={PWARedirect} />
             <Route path="/dev" component={DevelopmentPage} />

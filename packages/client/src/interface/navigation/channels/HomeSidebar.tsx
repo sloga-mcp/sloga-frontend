@@ -71,20 +71,22 @@ export const HomeSidebar = (props: Props) => {
     <SidebarBase class="channel_bar home" style={{"--md-sys-color-primary-container": "#FF6B00", "--md-sys-color-on-primary-container": "#ffffff"}}>
       <div ref={scrollTargetElement} use:invisibleScrollable>
         <List>
-          <SidebarTitle>
-            <Trans>Conversations</Trans>
-          </SidebarTitle>
-
-          <MenuButton
+          <SidebarTitle
             href="/app"
-            size="normal"
-            icon={<Symbol>home</Symbol>}
-            attention={location.pathname === "/app" ? "selected" : "normal"}
+            class={
+              location.pathname === "/app" ? "selected" : undefined
+            }
           >
-            <ButtonTitle>
-              <Trans>Home</Trans>
-            </ButtonTitle>
-          </MenuButton>
+            <Symbol>home</Symbol>
+            <span
+              style={{
+                color:
+                  location.pathname === "/app" ? "#ffffff" : "#FF6B00",
+              }}
+            >
+              Acutest
+            </span>
+          </SidebarTitle>
 
           <div style={{ height: "5px" }} />
 
@@ -195,10 +197,24 @@ export const HomeSidebar = (props: Props) => {
 /**
  * Sidebar title
  */
-const SidebarTitle = styled("p", {
+const SidebarTitle = styled("a", {
   base: {
+    display: "flex",
+    alignItems: "center",
+    gap: "var(--gap-md)",
     paddingBlock: "calc(var(--gap-md) + 15px)",
     paddingInline: "var(--gap-md)",
+    cursor: "pointer",
+    borderRadius: "var(--borderRadius-md)",
+    transition: "var(--transitions-fast) background",
+
+    "&:hover": {
+      background: "var(--md-sys-color-surface-container-high)",
+    },
+
+    "&.selected": {
+      background: "var(--md-sys-color-primary-container)",
+    },
 
     ...typography.raw({ class: "title" }),
   },
