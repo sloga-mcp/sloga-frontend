@@ -87,7 +87,7 @@ export function AppearanceMenu() {
             groupActive={state.theme.preset === "stoat"}
             onPress={() => state.theme.setPreset("stoat")}
           >
-            <Trans>Stoat</Trans>
+            <Trans>Acutest</Trans>
           </Button>
           <Button
             group="connected-end"

@@ -4,6 +4,7 @@ import {
   BiSolidGroup,
   BiSolidHappyBeaming,
   BiSolidInfoCircle,
+  BiSolidSticker,
   BiSolidTrash,
   BiSolidUserX,
 } from "solid-icons/bi";
@@ -21,6 +22,7 @@ import { ChannelPermissionsEditor } from "./channel/permissions/ChannelPermissio
 import Overview from "./server/Overview";
 import { ListServerBans } from "./server/bans/ListBans";
 import { EmojiList } from "./server/emojis/EmojiList";
+import { StickerList } from "./server/stickers/StickerList";
 import { ListServerInvites } from "./server/invites/ListServerInvites";
 import { ServerRoleEditor } from "./server/roles/ServerRoleEditor";
 import { ServerRoleOverview } from "./server/roles/ServerRoleOverview";
@@ -73,6 +75,8 @@ const Config: SettingsConfiguration<Server> = {
         return <Overview server={server} />;
       case "emojis":
         return <EmojiList server={server} />;
+      case "stickers":
+        return <StickerList server={server} />;
       case "roles":
         return <ServerRoleOverview context={server} />;
       case "invites":
@@ -116,6 +120,11 @@ const Config: SettingsConfiguration<Server> = {
               id: "emojis",
               icon: <BiSolidHappyBeaming size={20} />,
               title: <Trans>Emojis</Trans>,
+            },
+            {
+              id: "stickers",
+              icon: <BiSolidSticker size={20} />,
+              title: <Trans>Stickers</Trans>,
             },
           ],
         },

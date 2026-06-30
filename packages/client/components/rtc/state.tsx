@@ -2,6 +2,7 @@ import {
   Accessor,
   batch,
   createContext,
+  createRoot,
   createSignal,
   JSX,
   Setter,
@@ -86,6 +87,7 @@ class Voice {
   private openModal;
   private getClient;
   private screenShareTracks: Set<string>;
+  private disposeTrackRoot: (() => void) | undefined;
 
   constructor(
     voiceSettings: VoiceSettings,
@@ -157,13 +159,17 @@ class Voice {
       },
     });
 
-    this.vidTracks = useTracks(
-      [
-        { source: Track.Source.Camera, withPlaceholder: true },
-        { source: Track.Source.ScreenShare, withPlaceholder: false },
-      ],
-      { room, onlySubscribed: false },
-    );
+    this.disposeTrackRoot?.();
+    this.disposeTrackRoot = createRoot((dispose) => {
+      this.vidTracks = useTracks(
+        [
+          { source: Track.Source.Camera, withPlaceholder: true },
+          { source: Track.Source.ScreenShare, withPlaceholder: false },
+        ],
+        { room, onlySubscribed: false },
+      );
+      return dispose;
+    });
 
     batch(() => {
       this.#setRoom(room);
@@ -175,12 +181,13 @@ class Voice {
 
     room.addListener("connected", () => {
       this.#setState("CONNECTED");
+      const isAfk = channel.name?.toLowerCase() === "afk";
       if (this.speakingPermission)
         room.localParticipant
-          .setMicrophoneEnabled(this.#settings.micOn)
+          .setMicrophoneEnabled(isAfk ? false : this.#settings.micOn)
           .then((track) => {
             this.#settings.micOn = track != null;
-            if (this.#settings.noiseSupression === "enhanced") {
+            if (!isAfk && this.#settings.noiseSupression === "enhanced") {
               track?.audioTrack?.setProcessor(
                 new DenoiseTrackProcessor({
                   workletCDNURL: CONFIGURATION.RNNOISE_WORKLET_CDN_URL,
@@ -188,6 +195,7 @@ class Voice {
               );
             }
           });
+      if (isAfk) room.localParticipant.setCameraEnabled(false);
       for (const p of room.remoteParticipants.values()) {
         const screenShareTrack = p.getTrackPublication(
           Track.Source.ScreenShare,
@@ -257,6 +265,8 @@ class Voice {
       });
 
       this.screenShareTracks = new Set();
+      this.disposeTrackRoot?.();
+      this.disposeTrackRoot = undefined;
 
       this.sound.playSound("userLeaveVoice");
     } catch (e) {

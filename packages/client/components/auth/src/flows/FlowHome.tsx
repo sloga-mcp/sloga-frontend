@@ -9,7 +9,6 @@ import { Navigate } from "@revolt/routing";
 import { Button, Column } from "@revolt/ui";
 
 import { useState } from "@revolt/state";
-import Wordmark from "../../../../public/assets/web/wordmark.svg?component-solid";
 
 /**
  * Flow for logging into an account
@@ -27,13 +26,17 @@ export default function FlowHome() {
           </Show>
 
           <Column gap="xl">
-            <Wordmark
+            <span
               class={css({
-                width: "60%",
-                margin: "auto",
-                fill: "var(--md-sys-color-on-surface)",
+                fontSize: "48px",
+                fontWeight: "700",
+                letterSpacing: "-1px",
+                textAlign: "center",
+                color: "var(--md-sys-color-on-surface)",
               })}
-            />
+            >
+              Acutest
+            </span>
 
             <Column>
               <b
@@ -47,19 +50,19 @@ export default function FlowHome() {
                 }}
               >
                 <span>
-                  <Trans>
-                    Find your com
-                    <wbr />
-                    munity,
-                    <br />
-                    connect with the world.
-                  </Trans>
+                  <Trans>Low latency</Trans>
+                  <br />
+                  <Trans>High quality voice chat</Trans>
+                  <br />
+                  <Trans>4k streaming</Trans>
+                  <br />
+                  <Trans>Free</Trans>
                 </span>
               </b>
               <span style={{ "text-align": "center", opacity: "0.5" }}>
                 <Trans>
-                  Stoat is one of the best ways to stay connected with your
-                  friends and community, anywhere, anytime.
+                  Acutest has the highest standard of voice quality, streaming
+                  and latency. Create a community that never stops.
                 </Trans>
               </span>
             </Column>
@@ -67,14 +70,14 @@ export default function FlowHome() {
             <Column>
               <a href="/login/auth">
                 <Column>
-                  <Button>
+                  <Button bg="#FF6B00">
                     <Trans>Log In</Trans>
                   </Button>
                 </Column>
               </a>
               <a href="/login/create">
                 <Column>
-                  <Button variant="tonal">
+                  <Button variant="tonal" bg="#8B00FF">
                     <Trans>Sign Up</Trans>
                   </Button>
                 </Column>

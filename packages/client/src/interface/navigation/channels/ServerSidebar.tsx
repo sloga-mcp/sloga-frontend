@@ -500,12 +500,12 @@ function Entry(
         attention={attentionState()}
         icon={
           <>
-            <Switch fallback={<Symbol>grid_3x3</Symbol>}>
+            <Switch fallback={<Symbol>edit</Symbol>}>
               <Match when={props.channel.isVoice}>
                 <Symbol
                   color={inCall() ? "var(--md-sys-color-primary)" : undefined}
                 >
-                  headset_mic
+                  {props.channel.name?.toLowerCase() === "afk" ? "mic_off" : "mic"}
                 </Symbol>
               </Match>
             </Switch>

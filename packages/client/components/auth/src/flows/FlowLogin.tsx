@@ -62,33 +62,35 @@ export default function FlowLogin() {
       <Switch
         fallback={
           <>
-            <FlowTitle subtitle={<Trans>Sign into Stoat</Trans>} emoji="wave">
+            <FlowTitle subtitle={<Trans>Sign into Acutest</Trans>} emoji="wave">
               <Trans>Welcome!</Trans>
             </FlowTitle>
             <Form onSubmit={performLogin}>
               <Fields fields={["email", "password"]} />
-              <Column gap="xl" align>
-                <a href="/login/reset">
-                  <Button variant="text">
-                    <Trans>Reset password</Trans>
+              <div style={{"--md-sys-color-primary": "#FF6B00", "display": "flex", "flex-direction": "column", "gap": "inherit", "width": "100%"}}>
+                <Column gap="xl" align>
+                  <a href="/login/reset">
+                    <Button variant="text">
+                      <Trans>Reset password</Trans>
+                    </Button>
+                  </a>
+                  <a href="/login/resend">
+                    <Button variant="text">
+                      <Trans>Resend verification</Trans>
+                    </Button>
+                  </a>
+                </Column>
+                <Row align justify>
+                  <a href="..">
+                    <Button variant="text">
+                      <MdArrowBack {...iconSize("1.2em")} /> <Trans>Back</Trans>
+                    </Button>
+                  </a>
+                  <Button type="submit" bg="#FF6B00">
+                    <Trans>Login</Trans>
                   </Button>
-                </a>
-                <a href="/login/resend">
-                  <Button variant="text">
-                    <Trans>Resend verification</Trans>
-                  </Button>
-                </a>
-              </Column>
-              <Row align justify>
-                <a href="..">
-                  <Button variant="text">
-                    <MdArrowBack {...iconSize("1.2em")} /> <Trans>Back</Trans>
-                  </Button>
-                </a>
-                <Button type="submit">
-                  <Trans>Login</Trans>
-                </Button>
-              </Row>
+                </Row>
+              </div>
             </Form>
           </>
         }

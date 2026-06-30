@@ -37,19 +37,19 @@ self.addEventListener("push", (event) => {
   if (!notification.title) {
     if (notification.channel) {
       if (notification.channel.channel_type === "DirectMessage") {
-        notification.title = notification.author || "Stoat";
+        notification.title = notification.author || "Acutest";
       } else {
         notification.title = `${notification.author} in ${notification.channel.name}`;
       }
     } else {
-      notification.title = "Stoat";
+      notification.title = "Acutest";
     }
   }
 
   notification.url ||= self.registration.scope;
 
   event.waitUntil(
-    self.registration.showNotification(notification.title || "Stoat", {
+    self.registration.showNotification(notification.title || "Acutest", {
       icon: notification.icon,
       body: notification.body,
       data: notification.url,

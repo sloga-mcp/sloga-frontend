@@ -21,7 +21,7 @@ export function useNotifications() {
     settings.resetNotificationsState("denied");
     if (showModal) {
       showError(
-        t`Failed to enable notifications. Stoat does not have notification permission.`,
+        t`Failed to enable notifications. Acutest does not have notification permission.`,
       );
     }
     await killServiceWorkerSubscription(getClient());

@@ -26,8 +26,6 @@ import MdPayments from "@material-design-icons/svg/filled/payments.svg?component
 import MdRateReview from "@material-design-icons/svg/filled/rate_review.svg?component-solid";
 import MdSettings from "@material-design-icons/svg/filled/settings.svg?component-solid";
 
-import Wordmark from "../../public/assets/web/wordmark.svg?component-solid";
-
 import { HeaderIcon } from "./common/CommonHeader";
 
 /**
@@ -112,12 +110,16 @@ export function HomePage() {
       </Header>
       <div use:scrollable={{ class: content() }}>
         <Column>
-          <Wordmark
+          <span
             class={css({
-              width: "160px",
-              fill: "var(--md-sys-color-on-surface)",
+              fontSize: "48px",
+              fontWeight: "700",
+              letterSpacing: "-1px",
+              color: "var(--md-sys-color-on-surface)",
             })}
-          />
+          >
+            Acutest
+          </span>
         </Column>
         <Buttons>
           <SeparatedColumn>
@@ -150,7 +152,7 @@ export function HomePage() {
                   }
                   icon={<MdGroups3 />}
                 >
-                  <Trans>Go to the Stoat Lounge</Trans>
+                  <Trans>Go to the Acutest Lounge</Trans>
                 </CategoryButton>
               </Match>
               <Match when={showLoungeButton && !isInLounge}>
@@ -171,7 +173,7 @@ export function HomePage() {
                   }
                   icon={<MdGroups3 />}
                 >
-                  <Trans>Join the Stoat Lounge</Trans>
+                  <Trans>Join the Acutest Lounge</Trans>
                 </CategoryButton>
               </Match>
             </Switch>
@@ -183,7 +185,7 @@ export function HomePage() {
               }
               icon={<MdPayments />}
             >
-              <Trans>Donate to Stoat</Trans>
+              <Trans>Donate to Acutest</Trans>
             </CategoryButton>
           </SeparatedColumn>
           <SeparatedColumn>
@@ -197,7 +199,7 @@ export function HomePage() {
                 }
                 icon={<MdExplore />}
               >
-                <Trans>Discover Stoat</Trans>
+                <Trans>Discover Acutest</Trans>
               </CategoryButton>
             </Show>
             <CategoryButton
@@ -215,7 +217,7 @@ export function HomePage() {
               }
               icon={<MdRateReview {...iconSize(22)} />}
             >
-              <Trans>Give feedback on Stoat</Trans>
+              <Trans>Give feedback on Acutest</Trans>
             </CategoryButton>
             <CategoryButton
               onClick={() => openModal({ type: "settings", config: "user" })}

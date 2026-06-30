@@ -15,6 +15,12 @@ const base = process.env.BASE_PATH ?? "/";
 
 export default defineConfig({
   base,
+  server: {
+    watch: {
+      usePolling: true,
+      interval: 1000,
+    },
+  },
   plugins: [
     Inspect(),
     devtools(),
@@ -37,8 +43,8 @@ export default defineConfig({
         enabled: true,
       },
       manifest: {
-        name: "Stoat",
-        short_name: "Stoat",
+        name: "Acutest",
+        short_name: "Acutest",
         description: "User-first open source chat platform.",
         categories: ["communication", "chat", "messaging"],
         start_url: base,

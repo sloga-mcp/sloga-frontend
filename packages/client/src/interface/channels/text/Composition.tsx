@@ -489,6 +489,11 @@ export function MessageComposition(props: Props) {
                         <Symbol>emoticon</Symbol>
                       </IconButton>
                     </MessageBox.InlineIcon>
+                    <MessageBox.InlineIcon>
+                      <IconButton onPress={triggerProps.onClickSticker}>
+                        <Symbol>note_stack</Symbol>
+                      </IconButton>
+                    </MessageBox.InlineIcon>
                     <div ref={triggerProps.ref} />
                   </>
                 )}
