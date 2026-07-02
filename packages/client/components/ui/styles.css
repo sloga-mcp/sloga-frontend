@@ -12,7 +12,7 @@
 
 body {
   margin: 0;
-  background: #191919;
+  background: #05090F;
   font-family: var(--fonts-primary);
 }
 
@@ -22,7 +22,7 @@ body {
   left: env(safe-area-inset-left);
   right: env(safe-area-inset-right);
   bottom: env(safe-area-inset-bottom);
-  background: #191919;
+  background: #05090F;
 }
 
 /* HighlightJs */

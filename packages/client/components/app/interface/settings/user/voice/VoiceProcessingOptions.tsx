@@ -36,6 +36,30 @@ export function VoiceProcessingOptions() {
   return (
     <Column>
       <Text class="title">
+        <Trans>Microphone Gain</Trans>
+      </Text>
+      <CategoryButton.Group>
+        <CategoryButton
+          icon="blank"
+          description={
+            <Column gap="sm">
+              <Text class="label"><Trans>Gain: {voice.microphoneGain}%</Trans></Text>
+              <Slider
+                min={0}
+                max={200}
+                step={1}
+                value={voice.microphoneGain}
+                onInput={(e) => (voice.microphoneGain = Number(e.currentTarget.value))}
+                labelFormatter={(v) => `${v}%`}
+              />
+            </Column>
+          }
+        >
+          <Trans>Input Gain</Trans>
+        </CategoryButton>
+      </CategoryButton.Group>
+
+      <Text class="title">
         <Trans>Voice Processing</Trans>
       </Text>
       <CategoryButton.Group>

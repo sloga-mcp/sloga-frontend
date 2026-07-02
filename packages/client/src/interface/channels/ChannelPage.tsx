@@ -6,7 +6,9 @@ import { styled } from "styled-system/jsx";
 import { useClient } from "@revolt/client";
 import { Navigate, useParams } from "@revolt/routing";
 
+import { parseChannelPassword } from "../../lib/channelPassword";
 import { AgeGate } from "./AgeGate";
+import { PasswordGate } from "./PasswordGate";
 import { TextChannel } from "./text/TextChannel";
 
 /**
@@ -54,7 +56,13 @@ export const ChannelPage: Component = () => {
             contentName={"#" + channel().name}
             contentType="channel"
           >
-            <TextChannel channel={channel()} />
+            <PasswordGate
+              passwordHash={parseChannelPassword(channel().description).passwordHash}
+              channelId={channel().id}
+              channelName={channel().name!}
+            >
+              <TextChannel channel={channel()} />
+            </PasswordGate>
           </AgeGate>
         </Match>
         {/* <Match when={channel()!.type === "VoiceChannel"}>

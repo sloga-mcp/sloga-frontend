@@ -41,6 +41,20 @@ export function LoadTheme() {
       ...createMaterialColourVariables(activeTheme, "--md-sys-color-"),
       // mount --mdui-color triplet variables
       ...createMduiColourTriplets(activeTheme, "--mdui-color-"),
+      // Acutest brand overrides
+      "--md-sys-color-surface": "#05090F",
+      "--md-sys-color-surface-dim": "#05090F",
+      "--md-sys-color-surface-bright": "#0d1825",
+      "--md-sys-color-surface-container-lowest": "#030608",
+      "--md-sys-color-surface-container-low": "#070d15",
+      "--md-sys-color-surface-container": "#090f1a",
+      "--md-sys-color-surface-container-high": "#0d1825",
+      "--md-sys-color-surface-container-highest": "#111e2e",
+      "--md-sys-color-primary": "#00B2FF",
+      "--md-sys-color-primary-container": "#00B2FF",
+      "--md-sys-color-on-primary": "#ffffff",
+      "--md-sys-color-on-primary-container": "#ffffff",
+      "--acutest-highlight": "#FF8A00",
     })) {
       document.body.style.setProperty(key, value);
     }

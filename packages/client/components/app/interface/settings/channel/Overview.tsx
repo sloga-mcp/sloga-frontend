@@ -1,8 +1,14 @@
 import { createFormControl, createFormGroup } from "solid-forms";
-import { Match, Show, Switch } from "solid-js";
+import { Match, Show, Switch, createSignal } from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
 import type { API } from "stoat.js";
+
+import {
+  buildDescriptionWithHash,
+  hashPassword,
+  parseChannelPassword,
+} from "../../../../../src/lib/channelPassword";
 
 import { useClient } from "@revolt/client";
 import { CONFIGURATION } from "@revolt/common";
@@ -27,11 +33,32 @@ export default function ChannelOverview(props: ChannelSettingsProps) {
   const client = useClient();
   const { openModal } = useModals();
 
+  const { cleanDescription, passwordHash: existingHash } =
+    parseChannelPassword(props.channel.description);
+
+  const [pwInput, setPwInput] = createSignal("");
+  const [pwSaving, setPwSaving] = createSignal(false);
+  const [pwStatus, setPwStatus] = createSignal<"idle" | "saved" | "removed">("idle");
+
+  async function setChannelPassword() {
+    const pw = pwInput().trim();
+    setPwSaving(true);
+    const hash = pw ? await hashPassword(pw) : null;
+    const newDesc = hash
+      ? buildDescriptionWithHash(cleanDescription, hash)
+      : cleanDescription;
+    await props.channel.edit({ description: newDesc || undefined, remove: newDesc ? [] : ["Description"] });
+    setPwInput("");
+    setPwStatus(pw ? "saved" : "removed");
+    setPwSaving(false);
+    setTimeout(() => setPwStatus("idle"), 2500);
+  }
+
   /* eslint-disable solid/reactivity */
   // we want to take the initial value only
   const editGroup = createFormGroup({
     name: createFormControl(props.channel.name),
-    description: createFormControl(props.channel.description || ""),
+    description: createFormControl(cleanDescription),
     icon: createFormControl<string | File[] | null>(
       props.channel.animatedIconURL,
     ),
@@ -61,9 +88,14 @@ export default function ChannelOverview(props: ChannelSettingsProps) {
 
     if (editGroup.controls.description.isDirty) {
       const description = editGroup.controls.description.value.trim();
+      const { passwordHash: currentHash } = parseChannelPassword(
+        props.channel.description,
+      );
 
-      if (description) {
-        changes.description = description;
+      if (description || currentHash) {
+        changes.description = currentHash
+          ? buildDescriptionWithHash(description, currentHash)
+          : description;
       } else {
         changes.remove!.push("Description");
       }
@@ -178,6 +210,55 @@ export default function ChannelOverview(props: ChannelSettingsProps) {
           </Row>
         </Column>
       </form>
+      <Column>
+        <Text class="label">
+          <Trans>Channel Password</Trans>
+        </Text>
+        <Text>
+          <Show when={existingHash} fallback={
+            <Trans>Set a password that users must enter before viewing this channel.</Trans>
+          }>
+            <Trans>This channel is currently password protected.</Trans>
+          </Show>
+        </Text>
+        <div style={{ display: "flex", gap: "8px", "align-items": "center", "flex-wrap": "wrap" }}>
+          <input
+            type="password"
+            placeholder={existingHash ? "New password (leave blank to remove)" : "Set password..."}
+            value={pwInput()}
+            onInput={(e) => setPwInput(e.currentTarget.value)}
+            style={{
+              padding: "8px 12px",
+              "border-radius": "8px",
+              border: "1.5px solid var(--md-sys-color-outline)",
+              background: "var(--md-sys-color-surface-container)",
+              color: "var(--md-sys-color-on-surface)",
+              "font-size": "0.9rem",
+              width: "220px",
+              outline: "none",
+            }}
+          />
+          <Button
+            onPress={setChannelPassword}
+            isDisabled={pwSaving() || (!pwInput().trim() && !existingHash)}
+          >
+            <Switch fallback={<Trans>{existingHash ? "Update Password" : "Set Password"}</Trans>}>
+              <Match when={pwSaving()}><Trans>Saving...</Trans></Match>
+              <Match when={pwStatus() === "saved"}><Trans>Password set!</Trans></Match>
+              <Match when={pwStatus() === "removed"}><Trans>Password removed!</Trans></Match>
+            </Switch>
+          </Button>
+          <Show when={existingHash}>
+            <Button
+              onPress={() => { setPwInput(""); setChannelPassword(); }}
+              isDisabled={pwSaving()}
+            >
+              <Trans>Remove Password</Trans>
+            </Button>
+          </Show>
+        </div>
+      </Column>
+
       <Column>
         <Text class="label">
           <Trans>Mark as Mature</Trans>

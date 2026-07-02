@@ -65,7 +65,7 @@ export default function FlowLogin() {
             <FlowTitle subtitle={<Trans>Sign into Acutest</Trans>} emoji="wave">
               <Trans>Welcome!</Trans>
             </FlowTitle>
-            <div style={{"--md-sys-color-primary": "#FF6B00", "--mdui-color-primary": "255, 107, 0", "display": "contents"}}>
+            <div style={{"--md-sys-color-primary": "#FF8A00", "--mdui-color-primary": "255, 138, 0", "display": "contents"}}>
             <Form onSubmit={performLogin}>
               <Fields fields={["email", "password"]} />
               <div style={{"display": "flex", "flex-direction": "column", "gap": "inherit", "width": "100%"}}>
@@ -87,7 +87,7 @@ export default function FlowLogin() {
                       <MdArrowBack {...iconSize("1.2em")} /> <Trans>Back</Trans>
                     </Button>
                   </a>
-                  <Button type="submit" bg="#FF6B00">
+                  <Button type="submit" bg="#FF8A00">
                     <Trans>Login</Trans>
                   </Button>
                 </Row>

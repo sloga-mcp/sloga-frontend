@@ -524,14 +524,14 @@ export function MessageComposition(props: Props) {
                     <div style={{ display: "flex", "flex-direction": "column", "align-items": "center" }}>
                       <IconButton
                         onPress={toggleDisappearMenu}
-                        style={disappearOption().seconds !== null ? { color: "#FF6B00" } : {}}
+                        style={disappearOption().seconds !== null ? { color: "#FF8A00" } : {}}
                       >
                         <Symbol>
                           {disappearOption().seconds === null ? "timer_off" : "timer"}
                         </Symbol>
                       </IconButton>
                       <Show when={disappearOption().seconds !== null}>
-                        <span style={{ "font-size": "0.6em", "line-height": "1", "margin-top": "-4px", color: "#FF6B00", "font-weight": "600", "pointer-events": "none" }}>
+                        <span style={{ "font-size": "0.6em", "line-height": "1", "margin-top": "-4px", color: "#FF8A00", "font-weight": "600", "pointer-events": "none" }}>
                           {disappearOption().label}
                         </span>
                       </Show>
@@ -582,8 +582,8 @@ export function MessageComposition(props: Props) {
                               width: "16px",
                               height: "16px",
                               "border-radius": "50%",
-                              border: `2px solid ${disappearIdx() === i() ? "#FF6B00" : "var(--md-sys-color-outline)"}`,
-                              background: disappearIdx() === i() ? "#FF6B00" : "transparent",
+                              border: `2px solid ${disappearIdx() === i() ? "#FF8A00" : "var(--md-sys-color-outline)"}`,
+                              background: disappearIdx() === i() ? "#FF8A00" : "transparent",
                               "flex-shrink": "0",
                             }} />
                             {opt.label}
@@ -649,17 +649,20 @@ export function MessageComposition(props: Props) {
               isDisabled={!canSend()}
               onPress={sendMessage}
             >
-              <span
-                style={{
-                  display: "inline-block",
-                  transform: "rotate(90deg)",
-                  "font-weight": "700",
-                  "font-size": "1.1em",
-                  "line-height": "1",
-                }}
-              >
-                A
-              </span>
+              <svg width="20" height="20" viewBox="0 0 480 480" xmlns="http://www.w3.org/2000/svg">
+                <defs>
+                  <marker id="sbL" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="3" markerHeight="3" orient="auto-start-reverse">
+                    <path d="M0 0L10 5L0 10L3 5Z" fill="currentColor"/>
+                  </marker>
+                  <marker id="sbR" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="3" markerHeight="3" orient="auto">
+                    <path d="M0 0L10 5L0 10L3 5Z" fill="currentColor"/>
+                  </marker>
+                </defs>
+                <g transform="rotate(90, 240, 240)">
+                  <path d="M80 420 L240 60 L400 420" stroke="currentColor" stroke-width="40" stroke-linecap="round" stroke-linejoin="round" fill="none" marker-start="url(#sbL)" marker-end="url(#sbR)"/>
+                  <path d="M176 200 Q240 230 304 200" stroke="currentColor" stroke-width="40" stroke-linecap="round" fill="none"/>
+                </g>
+              </svg>
             </IconButton>
           </Show>
         }

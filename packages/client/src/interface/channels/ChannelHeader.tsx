@@ -1,4 +1,4 @@
-import { Accessor, Match, Setter, Show, Switch } from "solid-js";
+import { Accessor, Match, Setter, Show, Switch, createMemo } from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
 import { Channel } from "stoat.js";
@@ -22,6 +22,8 @@ import {
   UserStatus,
 } from "@revolt/ui";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
+
+import { parseChannelPassword } from "../../lib/channelPassword";
 
 import MdGroup from "@material-design-icons/svg/outlined/group.svg?component-solid";
 import MdPersonAdd from "@material-design-icons/svg/outlined/person_add.svg?component-solid";
@@ -56,6 +58,9 @@ export function ChannelHeader(props: Props) {
   const { openModal } = useModals();
   const client = useClient();
   const { t } = useLingui();
+  const cleanDescription = createMemo(
+    () => parseChannelPassword(props.channel.description).cleanDescription,
+  );
   const state = useState();
   const voice = useVoice();
   const { layout } = useDevice();
@@ -95,7 +100,7 @@ export function ChannelHeader(props: Props) {
           >
             <TextWithEmoji content={props.channel.name!} />
           </NonBreakingText>
-          <Show when={layout() !== "phone" && props.channel.description}>
+          <Show when={layout() !== "phone" && cleanDescription()}>
             <Divider />
             <a
               class={descriptionLink}
@@ -116,7 +121,7 @@ export function ChannelHeader(props: Props) {
                 class={typography({ class: "title", size: "small" })}
               >
                 <TextWithEmoji
-                  content={props.channel.description?.split("\n").shift()}
+                  content={cleanDescription().split("\n").shift()}
                 />
               </OverflowingText>
             </a>

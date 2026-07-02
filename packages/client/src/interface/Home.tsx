@@ -123,7 +123,7 @@ export function HomePage() {
         </Column>
         <Buttons>
           <SeparatedColumn>
-            <div style={{"--md-sys-color-primary": "#8B00FF", "--md-sys-color-on-primary": "#ffffff"}}>
+            <div style={{"--md-sys-color-primary": "#00B2FF", "--md-sys-color-on-primary": "#ffffff"}}>
             <CategoryButton
               variant="filled"
               onClick={() =>
@@ -180,7 +180,7 @@ export function HomePage() {
                 </CategoryButton>
               </Match>
             </Switch>
-            <div style={{"--md-sys-color-primary": "#FF6B00", "--md-sys-color-on-primary": "#ffffff"}}>
+            <div style={{"--md-sys-color-primary": "#FF8A00", "--md-sys-color-on-primary": "#ffffff"}}>
             <CategoryButton
               variant="filled"
               onClick={() => window.open("https://ko-fi.com/stoatchat")}
@@ -207,7 +207,7 @@ export function HomePage() {
                 <Trans>Discover Acutest</Trans>
               </CategoryButton>
             </Show>
-            <div style={{"--md-sys-color-primary": "#8B00FF", "--md-sys-color-on-primary": "#ffffff"}}>
+            <div style={{"--md-sys-color-primary": "#00B2FF", "--md-sys-color-on-primary": "#ffffff"}}>
             <CategoryButton
               variant="filled"
               onClick={() =>
@@ -227,7 +227,7 @@ export function HomePage() {
               <Trans>Give feedback on Acutest</Trans>
             </CategoryButton>
             </div>
-            <div style={{"--md-sys-color-primary": "#8B00FF", "--md-sys-color-on-primary": "#ffffff"}}>
+            <div style={{"--md-sys-color-primary": "#00B2FF", "--md-sys-color-on-primary": "#ffffff"}}>
             <CategoryButton
               variant="filled"
               onClick={() => openModal({ type: "settings", config: "user" })}
@@ -244,7 +244,7 @@ export function HomePage() {
           </SeparatedColumn>
         </Buttons>
         <Show when={IS_DEV}>
-          <Button bg="#FF6B00" onPress={() => navigate("/dev")}>
+          <Button bg="#FF8A00" onPress={() => navigate("/dev")}>
             Open Development Page
           </Button>
         </Show>

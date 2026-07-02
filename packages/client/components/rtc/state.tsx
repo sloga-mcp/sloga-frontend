@@ -21,6 +21,34 @@ import {
   VideoResolution,
 } from "livekit-client";
 import { DenoiseTrackProcessor } from "livekit-rnnoise-processor";
+
+class GainTrackProcessor {
+  name = "gain-processor";
+  processedTrack: MediaStreamTrack | undefined;
+  #gainNode: GainNode | undefined;
+  #gainValue: number;
+  #ctx: AudioContext | undefined;
+
+  constructor(gain: number) {
+    this.#gainValue = gain;
+  }
+
+  async init(opts: { track: MediaStreamTrack; audioContext: AudioContext; sourceNode: AudioNode }) {
+    this.#ctx = opts.audioContext;
+    this.#gainNode = opts.audioContext.createGain();
+    this.#gainNode.gain.value = this.#gainValue / 100;
+    const dest = opts.audioContext.createMediaStreamDestination();
+    opts.sourceNode.connect(this.#gainNode);
+    this.#gainNode.connect(dest);
+    this.processedTrack = dest.stream.getAudioTracks()[0];
+  }
+
+  async destroy() {
+    this.#gainNode?.disconnect();
+    this.#gainNode = undefined;
+    this.processedTrack = undefined;
+  }
+}
 import { Channel } from "stoat.js";
 
 import { SoundController, useClient, useSound } from "@revolt/client";
@@ -195,12 +223,17 @@ class Voice {
           .setMicrophoneEnabled(isAfk ? false : (this.#settings.openMic || this.#settings.micOn))
           .then((track) => {
             this.#settings.micOn = track != null;
-            if (!isAfk && this.#settings.noiseSupression === "enhanced") {
-              track?.audioTrack?.setProcessor(
-                new DenoiseTrackProcessor({
-                  workletCDNURL: CONFIGURATION.RNNOISE_WORKLET_CDN_URL,
-                }),
-              );
+            if (!isAfk && track?.audioTrack) {
+              const gain = this.#settings.microphoneGain ?? 100;
+              if (this.#settings.noiseSupression === "enhanced") {
+                track.audioTrack.setProcessor(
+                  new DenoiseTrackProcessor({
+                    workletCDNURL: CONFIGURATION.RNNOISE_WORKLET_CDN_URL,
+                  }),
+                );
+              } else if (gain !== 100) {
+                track.audioTrack.setProcessor(new GainTrackProcessor(gain));
+              }
             }
           });
       if (isAfk) room.localParticipant.setCameraEnabled(false);

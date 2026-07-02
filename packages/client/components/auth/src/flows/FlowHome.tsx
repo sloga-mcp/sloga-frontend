@@ -70,7 +70,7 @@ export default function FlowHome() {
             <Column>
               <a href="/login/auth">
                 <Column>
-                  <Button bg="#FF6B00">
+                  <Button bg="#FF8A00">
                     <Trans>Log In</Trans>
                   </Button>
                 </Column>
@@ -100,7 +100,7 @@ export default function FlowHome() {
 
         <Button
           variant="filled"
-          bg="#FF6B00"
+          bg="#FF8A00"
           onPress={() =>
             lifecycle.transition({
               type: TransitionType.Dismiss,
