@@ -49,6 +49,54 @@ class GainTrackProcessor {
     this.processedTrack = undefined;
   }
 }
+class BrightnessVideoProcessor {
+  name = "brightness-processor";
+  processedTrack: MediaStreamTrack | undefined;
+  #brightness: number;
+  #canvas: HTMLCanvasElement | undefined;
+  #ctx2d: CanvasRenderingContext2D | undefined;
+  #video: HTMLVideoElement | undefined;
+  #rafId: number | undefined;
+  #stopped = false;
+
+  constructor(brightness: number) {
+    this.#brightness = brightness;
+  }
+
+  async init(opts: { track: MediaStreamTrack }) {
+    this.#canvas = document.createElement("canvas");
+    this.#video = document.createElement("video");
+    this.#video.srcObject = new MediaStream([opts.track]);
+    this.#video.muted = true;
+    await this.#video.play();
+    this.#canvas.width = this.#video.videoWidth || 640;
+    this.#canvas.height = this.#video.videoHeight || 480;
+    this.#ctx2d = this.#canvas.getContext("2d")!;
+    this.#stopped = false;
+    const draw = () => {
+      if (this.#stopped) return;
+      if (this.#video && this.#ctx2d && this.#canvas) {
+        this.#ctx2d.filter = `brightness(${this.#brightness}%)`;
+        this.#ctx2d.drawImage(this.#video, 0, 0, this.#canvas.width, this.#canvas.height);
+      }
+      this.#rafId = requestAnimationFrame(draw);
+    };
+    this.#rafId = requestAnimationFrame(draw);
+    const stream = this.#canvas.captureStream(30);
+    this.processedTrack = stream.getVideoTracks()[0];
+  }
+
+  async destroy() {
+    this.#stopped = true;
+    if (this.#rafId !== undefined) cancelAnimationFrame(this.#rafId);
+    this.#video?.pause();
+    this.#video = undefined;
+    this.#canvas = undefined;
+    this.#ctx2d = undefined;
+    this.processedTrack = undefined;
+  }
+}
+
 import { Channel } from "stoat.js";
 
 import { SoundController, useClient, useSound } from "@revolt/client";
@@ -368,9 +416,14 @@ class Voice {
     try {
       const room = this.room();
       if (!room) throw "invalid state";
-      await room.localParticipant.setCameraEnabled(
+      const pub = await room.localParticipant.setCameraEnabled(
         !room.localParticipant.isCameraEnabled,
       );
+
+      const brightness = this.#settings.cameraBrightness ?? 100;
+      if (pub?.videoTrack && brightness !== 100) {
+        await pub.videoTrack.setProcessor(new BrightnessVideoProcessor(brightness));
+      }
 
       this.#setVideo(room.localParticipant.isCameraEnabled);
     } catch (e) {

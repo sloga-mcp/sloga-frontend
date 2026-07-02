@@ -6,7 +6,9 @@ import { styled } from "styled-system/jsx";
 
 import { UserContextMenu } from "@revolt/app";
 import { useModals } from "@revolt/modal";
+import { useVoice } from "@revolt/rtc";
 
+import MdCall from "@material-design-icons/svg/filled/call.svg?component-solid";
 import MdCancel from "@material-design-icons/svg/filled/cancel.svg?component-solid";
 import MdEdit from "@material-design-icons/svg/filled/edit.svg?component-solid";
 import MdMoreVert from "@material-design-icons/svg/filled/more_vert.svg?component-solid";
@@ -26,12 +28,24 @@ export function ProfileActions(props: {
 }) {
   const navigate = useNavigate();
   const { openModal } = useModals();
+  const voice = useVoice();
 
   /**
    * Open direct message channel
    */
   function openDm() {
     props.user.openDM().then((channel) => navigate(channel.url));
+    props.onClose();
+  }
+
+  /**
+   * Start a voice call in the DM channel
+   */
+  function startVoiceCall() {
+    props.user.openDM().then((channel) => {
+      navigate(channel.path);
+      return voice.connect(channel);
+    }).catch(console.error);
     props.onClose();
   }
 
@@ -67,6 +81,9 @@ export function ProfileActions(props: {
       </Show>
       <Show when={props.user.relationship === "Friend"}>
         <Button onPress={openDm}>Message</Button>
+        <IconButton onPress={startVoiceCall} use:floating={{ tooltip: { placement: "top", content: "Voice Call" } }}>
+          <MdCall {...iconSize(16)} />
+        </IconButton>
       </Show>
 
       <Show

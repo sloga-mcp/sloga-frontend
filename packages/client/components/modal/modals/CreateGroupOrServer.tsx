@@ -17,10 +17,10 @@ export function CreateGroupOrServer(
     <Dialog
       show={props.show}
       onClose={props.onClose}
-      title="Create a group or server"
+      title="Start a Chat Room or Server"
       actions={[
         {
-          text: "Group",
+          text: "Chat Room",
           onClick: () => {
             openModal({
               type: "create_group",
@@ -39,7 +39,7 @@ export function CreateGroupOrServer(
         },
       ]}
     >
-      <Trans>Would you like to create a new group or server?</Trans>
+      <Trans>Which would you like to Start?</Trans>
     </Dialog>
   );
 }

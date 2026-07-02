@@ -23,6 +23,7 @@ import MdExplore from "@material-design-icons/svg/filled/explore.svg?component-s
 import MdGroups3 from "@material-design-icons/svg/filled/groups_3.svg?component-solid";
 import MdHome from "@material-design-icons/svg/filled/home.svg?component-solid";
 import MdPayments from "@material-design-icons/svg/filled/payments.svg?component-solid";
+import MdPersonAdd from "@material-design-icons/svg/filled/person_add.svg?component-solid";
 import MdRateReview from "@material-design-icons/svg/filled/rate_review.svg?component-solid";
 import MdSettings from "@material-design-icons/svg/filled/settings.svg?component-solid";
 
@@ -140,7 +141,7 @@ export function HomePage() {
               }
               icon={<MdAddCircle />}
             >
-              <Trans>Create a group or server</Trans>
+              <Trans>Start a Chat Room/Server</Trans>
             </CategoryButton>
             </div>
             <Switch fallback={null}>
@@ -194,6 +195,16 @@ export function HomePage() {
             </div>
           </SeparatedColumn>
           <SeparatedColumn>
+            <div style={{"--md-sys-color-primary": "#00B2FF", "--md-sys-color-on-primary": "#ffffff"}}>
+            <CategoryButton
+              variant="filled"
+              onClick={() => openModal({ type: "add_friend", client: client()! })}
+              description={<Trans>Connect with someone by adding them as a friend.</Trans>}
+              icon={<MdPersonAdd />}
+            >
+              <Trans>Add a Friend</Trans>
+            </CategoryButton>
+            </div>
             <Show when={CONFIGURATION.IS_STOAT}>
               <CategoryButton
                 onClick={() => navigate("/discover")}
@@ -210,26 +221,6 @@ export function HomePage() {
             <div style={{"--md-sys-color-primary": "#00B2FF", "--md-sys-color-on-primary": "#ffffff"}}>
             <CategoryButton
               variant="filled"
-              onClick={() =>
-                openModal({
-                  type: "settings",
-                  config: "user",
-                  context: { page: "feedback" },
-                })
-              }
-              description={
-                <Trans>
-                  Let us know how we can improve our app by giving us feedback.
-                </Trans>
-              }
-              icon={<MdRateReview {...iconSize(22)} />}
-            >
-              <Trans>Give feedback on Acutest</Trans>
-            </CategoryButton>
-            </div>
-            <div style={{"--md-sys-color-primary": "#00B2FF", "--md-sys-color-on-primary": "#ffffff"}}>
-            <CategoryButton
-              variant="filled"
               onClick={() => openModal({ type: "settings", config: "user" })}
               description={
                 <Trans>
@@ -243,11 +234,6 @@ export function HomePage() {
             </div>
           </SeparatedColumn>
         </Buttons>
-        <Show when={IS_DEV}>
-          <Button bg="#FF8A00" onPress={() => navigate("/dev")}>
-            Open Development Page
-          </Button>
-        </Show>
       </div>
     </Base>
   );

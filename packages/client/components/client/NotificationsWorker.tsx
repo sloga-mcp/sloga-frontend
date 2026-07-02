@@ -2,12 +2,15 @@ import { createEffect, onCleanup, onMount } from "solid-js";
 
 import { useLingui } from "@lingui-solid/solid/macro";
 import {
+  Channel,
   ChannelEditSystemMessage,
   ChannelOwnershipChangeSystemMessage,
   ChannelRenamedSystemMessage,
+  HydratedUser,
   Message,
   MessagePinnedSystemMessage,
   TextSystemMessage,
+  User,
   UserModeratedSystemMessage,
   UserSystemMessage,
 } from "stoat.js";
@@ -220,25 +223,116 @@ export function NotificationsWorker() {
     });
   }
 
+  /**
+   * Handle incoming voice call (someone joins a DM/Group voice call)
+   */
+  function onVoiceChannelJoin(channel: Channel, userId: string) {
+    const us = client().user!;
+
+    // Only care about DM and Group channels (not server voice channels)
+    if (channel.type !== "DirectMessage" && channel.type !== "Group") return;
+
+    // Ignore if we're the one joining
+    if (userId === us.id) return;
+
+    const callerUser = client().users.get(userId);
+    const callerName = callerUser?.displayName ?? callerUser?.username ?? "Someone";
+    const channelName = channel.type === "Group" ? channel.name : callerName;
+
+    // Play incoming ringtone (respects user sound preference)
+    sound.playSound("ringtoneIncoming");
+
+    // Show desktop notification if permitted
+    if (
+      Notification.permission === "granted" &&
+      state.settings.desktopNotificationsState === "allowed"
+    ) {
+      const notification = new Notification(t`Incoming Call`, {
+        body: t`${callerName} is calling in ${channelName}`,
+        icon: callerUser?.avatarURL,
+        tag: `call-${channel.id}`,
+        silent: true,
+      });
+
+      notification.addEventListener("click", () => {
+        window.focus();
+        navigate(channel.path);
+      });
+    }
+  }
+
+  /**
+   * Handle friend requests — fires when a user's relationship changes to Incoming
+   */
+  function onUserUpdate(user: User, previousUser: HydratedUser) {
+    if (user.relationship !== "Incoming") return;
+    if (previousUser.relationship === "Incoming") return;
+
+    // Play message sound as alert
+    sound.playSound("message");
+
+    if (
+      Notification.permission === "granted" &&
+      state.settings.desktopNotificationsState === "allowed"
+    ) {
+      const notification = new Notification(t`Friend Request`, {
+        body: t`${user.displayName ?? user.username} sent you a friend request`,
+        icon: user.animatedAvatarURL ?? user.avatarURL,
+        tag: `friend-request-${user.id}`,
+        silent: true,
+      });
+
+      notification.addEventListener("click", () => {
+        window.focus();
+        navigate("/friends");
+      });
+    }
+  }
+
   createEffect(() => {
     client().addListener("messageCreate", onMessage);
-    onCleanup(() => client().removeListener("messageCreate", onMessage));
+    client().addListener("voiceChannelJoin", onVoiceChannelJoin);
+    client().addListener("userUpdate", onUserUpdate);
+    onCleanup(() => {
+      client().removeListener("messageCreate", onMessage);
+      client().removeListener("voiceChannelJoin", onVoiceChannelJoin);
+      client().removeListener("userUpdate", onUserUpdate);
+    });
   });
+
+  /**
+   * Reconnect WebSocket when the window regains focus in case the connection
+   * went stale while the app was minimized or backgrounded.
+   */
+  function onVisibilityChange() {
+    if (document.visibilityState !== "visible") return;
+    const c = client();
+    if (!c) return;
+    const wsState = c.events.state();
+    // ConnectionState: 0=Idle, 1=Connecting, 2=Connected, 3=Disconnected
+    if (wsState === 3 || wsState === 0) {
+      console.info("[notifications] Window focused — reconnecting WebSocket");
+      c.connect();
+    }
+  }
 
   /**
    * Handle page click to request notifications
    */
   function tryRequest() {
     document.removeEventListener("click", tryRequest);
-
     initNotifications();
   }
 
   onMount(() => {
     document.addEventListener("click", tryRequest);
+    document.addEventListener("visibilitychange", onVisibilityChange);
   });
 
-  onCleanup(() => document.removeEventListener("click", tryRequest));
+  onCleanup(() => {
+    document.removeEventListener("click", tryRequest);
+    document.removeEventListener("visibilitychange", onVisibilityChange);
+  });
 
   return null;
 }

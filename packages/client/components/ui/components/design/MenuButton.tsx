@@ -199,7 +199,7 @@ const base = cva({
         },
       },
       active: {
-        "--color": "var(--md-sys-color-on-surface)",
+        "--color": "#FF8A00",
         background: "transparent",
       },
       selected: {

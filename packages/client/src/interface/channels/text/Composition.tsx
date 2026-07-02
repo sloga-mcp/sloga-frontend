@@ -16,7 +16,7 @@ import { Channel } from "stoat.js";
 
 import { styled } from "styled-system/jsx";
 
-import { useClient } from "@revolt/client";
+import { useClient, useSound } from "@revolt/client";
 import { CONFIGURATION, debounce } from "@revolt/common";
 import { Keybind, KeybindAction, createKeybind } from "@revolt/keybinds";
 import { useModals } from "@revolt/modal";
@@ -55,6 +55,7 @@ export function MessageComposition(props: Props) {
   const state = useState();
   const { t } = useLingui();
   const client = useClient();
+  const sound = useSound();
   const { openModal } = useModals();
 
   const currentSlowmode = (): UserSlowmodes | undefined => {
@@ -257,6 +258,7 @@ export function MessageComposition(props: Props) {
       return;
     }
     stopTyping();
+    sound.playSound("messageSent");
     props.onMessageSend?.();
 
     // Schedule disappearing message deletion

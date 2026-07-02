@@ -121,7 +121,12 @@ class Lifecycle {
 
   private dispose() {
     if (this.client) {
-      this.client.logout();
+      // Remove listeners before teardown so stale async events from the old
+      // client don't fire transitions on the new one.
+      this.client.events.off("state", this.onState);
+      this.client.off("ready", this.onReady);
+      this.client.off("policyChanges", this.onPolicyChanges);
+      this.client.on("error", () => {}); // suppress stale unhandled errors
     }
 
     this.client = new Client({
@@ -217,9 +222,11 @@ class Lifecycle {
             type: TransitionType.DeviceOffline,
           });
         } else {
-          const retryIn =
+          const retryIn = Math.min(
+            15,
             (Math.pow(2, this.#connectionFailures) - 1) *
-            (0.8 + Math.random() * 0.4);
+              (0.8 + Math.random() * 0.4),
+          );
 
           console.info(
             "Will try to reconnect in",

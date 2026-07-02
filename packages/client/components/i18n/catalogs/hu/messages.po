@@ -300,6 +300,10 @@ msgstr ""
 msgid "30 seconds"
 msgstr ""
 
+#: components/auth/src/flows/FlowHome.tsx
+msgid "4k streaming"
+msgstr ""
+
 #: components/app/interface/settings/channel/Overview.tsx
 msgid "5 minutes"
 msgstr ""
@@ -344,6 +348,30 @@ msgstr "Barátkérelem elfogadása"
 
 #: components/modal/modals/PolicyChange.tsx
 msgid "Acknowledge"
+msgstr ""
+
+#: components/ui/components/features/profiles/ProfileBadges.tsx
+msgid "Acutest Developer"
+msgstr ""
+
+#: components/app/interface/settings/user/Native.tsx
+msgid "Acutest for Desktop"
+msgstr ""
+
+#: components/ui/components/features/profiles/ProfileBadges.tsx
+msgid "Acutest Founder"
+msgstr ""
+
+#: components/auth/src/flows/FlowHome.tsx
+msgid "Acutest has the highest standard of voice quality, streaming and latency. Create a community that never stops."
+msgstr ""
+
+#: components/app/interface/settings/user/Native.tsx
+msgid "Acutest will start in the system tray."
+msgstr ""
+
+#: src/AndroidNag.tsx
+msgid "Acutest works best as an app"
 msgstr ""
 
 #: components/modal/modals/AddMembersToGroup.tsx
@@ -491,6 +519,7 @@ msgstr "Profilkép"
 #: components/auth/src/flows/FlowLogin.tsx
 #: components/auth/src/flows/FlowCreate.tsx
 #: components/auth/src/flows/FlowCheck.tsx
+#: components/app/interface/settings/user/_AccountCard.tsx
 msgid "Back"
 msgstr ""
 
@@ -738,6 +767,14 @@ msgstr "Törlés"
 msgid "Click on the items below to learn more about different changes!"
 msgstr ""
 
+#: components/app/interface/settings/user/voice/MicrophoneTest.tsx
+msgid "Click Record, speak for up to 5 seconds, then hear yourself played back."
+msgstr ""
+
+#: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
+msgid "Click to change the push to talk keybind."
+msgstr ""
+
 #: components/ui/components/features/profiles/ProfileBanner.tsx
 msgid "Click to copy username"
 msgstr ""
@@ -748,6 +785,14 @@ msgstr ""
 
 #: components/ui/components/utils/Spoiler.tsx
 msgid "Click to show spoiler"
+msgstr ""
+
+#: components/app/interface/settings/user/voice/MicrophoneLevelMeter.tsx
+msgid "Click to stop"
+msgstr ""
+
+#: components/app/interface/settings/user/voice/MicrophoneLevelMeter.tsx
+msgid "Click to test your microphone input level."
 msgstr ""
 
 #: components/app/interface/settings/UserSettings.tsx
@@ -842,6 +887,10 @@ msgstr "Törvénysértő tartalom"
 msgid "Continue"
 msgstr "Folytatás"
 
+#: src/AndroidNag.tsx
+msgid "Continue in browser"
+msgstr ""
+
 #: components/auth/src/flows/FlowVerify.tsx
 msgid "Continue to app"
 msgstr ""
@@ -851,8 +900,8 @@ msgid "Contribute a language"
 msgstr ""
 
 #: src/interface/navigation/channels/HomeSidebar.tsx
-msgid "Conversations"
-msgstr "Beszélgetések"
+#~ msgid "Conversations"
+#~ msgstr "Beszélgetések"
 
 #: components/ui/components/features/profiles/ProfileBanner.tsx
 msgid "Copied!"
@@ -866,6 +915,10 @@ msgstr ""
 msgid "Copy channel ID"
 msgstr "Csatorna ID másolása"
 
+#: components/app/menus/MessageContextMenu.tsx
+msgid "Copy file link"
+msgstr ""
+
 #: components/app/interface/settings/user/bots/ViewBot.tsx
 msgid "Copy ID"
 msgstr "ID másolása"
@@ -874,7 +927,6 @@ msgstr "ID másolása"
 msgid "Copy Invite URL"
 msgstr ""
 
-#: components/app/menus/MessageContextMenu.tsx
 #: components/app/menus/MessageContextMenu.tsx
 #: components/app/menus/ChannelContextMenu.tsx
 msgid "Copy link"
@@ -887,6 +939,10 @@ msgstr ""
 #: components/app/menus/MessageContextMenu.tsx
 msgid "Copy message ID"
 msgstr "Üzenet ID másolása"
+
+#: components/app/menus/MessageContextMenu.tsx
+msgid "Copy message link"
+msgstr ""
 
 #: components/app/interface/settings/server/roles/ServerRoleEditor.tsx
 msgid "Copy role ID"
@@ -1061,6 +1117,7 @@ msgstr ""
 msgid "Date format"
 msgstr ""
 
+#: components/ui/components/features/voice/callCard/VoiceCallCardActions.tsx
 #: components/app/interface/settings/user/notifications/Sounds.tsx
 msgid "Deafen"
 msgstr ""
@@ -1086,8 +1143,8 @@ msgid "Default Permissions"
 msgstr ""
 
 #: components/ui/components/features/voice/callCard/VoiceCallCardActions.tsx
-msgid "Defean"
-msgstr ""
+#~ msgid "Defean"
+#~ msgstr ""
 
 #: components/modal/modals/EmojiPreview.tsx
 #: components/modal/modals/DeleteServer.tsx
@@ -1158,6 +1215,10 @@ msgstr "Titulus törlése"
 msgid "Delete Server"
 msgstr ""
 
+#: components/app/interface/settings/server/stickers/StickerList.tsx
+msgid "Description (optional)"
+msgstr ""
+
 #. placeholder {0}: props.invite.username
 #: components/modal/modals/AddBot.tsx
 msgid "Description provided by {0}"
@@ -1187,6 +1248,10 @@ msgstr ""
 msgid "Disabled"
 msgstr ""
 
+#: src/interface/channels/text/Composition.tsx
+msgid "Disappearing messages: Off"
+msgstr ""
+
 #: components/ui/components/features/voice/callCard/VoiceCallCardStatus.tsx
 msgid "Disconnected"
 msgstr ""
@@ -1196,8 +1261,12 @@ msgid "Discord RPC"
 msgstr ""
 
 #: src/interface/Home.tsx
-msgid "Discover Stoat"
+msgid "Discover Acutest"
 msgstr ""
+
+#: src/interface/Home.tsx
+#~ msgid "Discover Stoat"
+#~ msgstr ""
 
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Display & Text"
@@ -1231,17 +1300,29 @@ msgstr ""
 msgid "Don't notify others that you've left"
 msgstr ""
 
+#: src/AndroidNag.tsx
+msgid "Don't show this again"
+msgstr ""
+
 #: components/app/interface/settings/UserSettings.tsx
 msgid "Donate"
 msgstr ""
 
 #: src/interface/Home.tsx
-msgid "Donate to Stoat"
+msgid "Donate to Acutest"
+msgstr ""
+
+#: src/interface/Home.tsx
+#~ msgid "Donate to Stoat"
+#~ msgstr ""
+
+#: components/ui/components/features/profiles/ProfileBadges.tsx
+msgid "Donated to Acutest"
 msgstr ""
 
 #: components/ui/components/features/profiles/ProfileBadges.tsx
-msgid "Donated to Stoat"
-msgstr ""
+#~ msgid "Donated to Stoat"
+#~ msgstr ""
 
 #: components/modal/modals/MFARecovery.tsx
 msgid "Done"
@@ -1344,6 +1425,10 @@ msgstr "Asztali értesítések engedélyezése"
 msgid "Enable Push Notifications"
 msgstr ""
 
+#: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
+msgid "Enable Push to Talk"
+msgstr ""
+
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Enable transparency glass/blur effects (slow on older machines)"
 msgstr ""
@@ -1408,8 +1493,12 @@ msgid "Extreme violence, gore or animal cruelty"
 msgstr ""
 
 #: components/client/NotificationsController.ts
-msgid "Failed to enable notifications. Stoat does not have notification permission."
+msgid "Failed to enable notifications. Acutest does not have notification permission."
 msgstr ""
+
+#: components/client/NotificationsController.ts
+#~ msgid "Failed to enable notifications. Stoat does not have notification permission."
+#~ msgstr ""
 
 #: components/client/NotificationsController.ts
 msgid "Failed to enable push notifications. Please try again later."
@@ -1437,8 +1526,8 @@ msgid "Find a community based on your hobbies or interests."
 msgstr "Találj rá a hobbiddal, érdeklődéseiddel egyező közösségekre."
 
 #: components/auth/src/flows/FlowHome.tsx
-msgid "Find your com<0/>munity,<1/>connect with the world."
-msgstr ""
+#~ msgid "Find your com<0/>munity,<1/>connect with the world."
+#~ msgstr ""
 
 #: src/interface/navigation/servers/UserMenu.tsx
 #: src/interface/navigation/channels/HomeSidebar.tsx
@@ -1472,6 +1561,10 @@ msgstr ""
 msgid "For 8 hours"
 msgstr ""
 
+#: components/auth/src/flows/FlowHome.tsx
+msgid "Free"
+msgstr ""
+
 #: src/interface/Friends.tsx
 #: src/interface/navigation/channels/HomeSidebar.tsx
 msgid "Friends"
@@ -1501,9 +1594,17 @@ msgstr ""
 msgid "Get active recovery codes"
 msgstr ""
 
-#: src/interface/Home.tsx
-msgid "Give feedback on Stoat"
+#: src/AndroidNag.tsx
+msgid "Get it on Google Play"
 msgstr ""
+
+#: src/interface/Home.tsx
+msgid "Give feedback on Acutest"
+msgstr ""
+
+#: src/interface/Home.tsx
+#~ msgid "Give feedback on Stoat"
+#~ msgstr ""
 
 #: components/modal/modals/ReportContent.tsx
 msgid "Give us some detail"
@@ -1528,8 +1629,13 @@ msgstr ""
 
 #: src/interface/Home.tsx
 #: components/app/interface/settings/user/Feedback.tsx
-msgid "Go to the Stoat Lounge"
+msgid "Go to the Acutest Lounge"
 msgstr ""
+
+#: src/interface/Home.tsx
+#: components/app/interface/settings/user/Feedback.tsx
+#~ msgid "Go to the Stoat Lounge"
+#~ msgstr ""
 
 #: src/interface/Home.tsx
 #: src/interface/Home.tsx
@@ -1572,8 +1678,12 @@ msgid "Help contribute to an existing or new language"
 msgstr ""
 
 #: components/ui/components/features/profiles/ProfileBadges.tsx
-msgid "Helped translate Stoat"
+msgid "Helped translate Acutest"
 msgstr ""
+
+#: components/ui/components/features/profiles/ProfileBadges.tsx
+#~ msgid "Helped translate Stoat"
+#~ msgstr ""
 
 #. placeholder {0}: link()
 #: components/modal/modals/CreateInvite.tsx
@@ -1588,8 +1698,15 @@ msgstr ""
 msgid "High Contrast"
 msgstr ""
 
+#: components/auth/src/flows/FlowHome.tsx
+msgid "High quality voice chat"
+msgstr ""
+
+#: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
+msgid "Hold a key to unmute while in a voice channel."
+msgstr ""
+
 #: src/interface/Home.tsx
-#: src/interface/navigation/channels/HomeSidebar.tsx
 msgid "Home"
 msgstr "Kezdőhely"
 
@@ -1617,16 +1734,28 @@ msgid "Illegal hacking or cracking"
 msgstr ""
 
 #: components/auth/src/AuthPage.tsx
-msgid "Image by @fakurian"
-msgstr ""
+#~ msgid "Image by @fakurian"
+#~ msgstr ""
 
 #: components/modal/modals/ReportContent.tsx
 msgid "Impersonation"
 msgstr ""
 
-#: components/app/interface/settings/user/Native.tsx
-msgid "Instead of closing, Stoat will hide in your tray."
+#: src/AndroidNag.tsx
+msgid "In the meantime, install Acutest from Google Play for a faster, smoother experience designed for Android."
 msgstr ""
+
+#: components/app/interface/settings/user/voice/MicrophoneLevelMeter.tsx
+msgid "Input Level"
+msgstr ""
+
+#: components/app/interface/settings/user/Native.tsx
+msgid "Instead of closing, Acutest will hide in your tray."
+msgstr ""
+
+#: components/app/interface/settings/user/Native.tsx
+#~ msgid "Instead of closing, Stoat will hide in your tray."
+#~ msgstr ""
 
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Interface Font"
@@ -1692,8 +1821,13 @@ msgstr ""
 
 #: src/interface/Home.tsx
 #: components/app/interface/settings/user/Feedback.tsx
-msgid "Join the Stoat Lounge"
+msgid "Join the Acutest Lounge"
 msgstr ""
+
+#: src/interface/Home.tsx
+#: components/app/interface/settings/user/Feedback.tsx
+#~ msgid "Join the Stoat Lounge"
+#~ msgstr ""
 
 #: src/interface/channels/ChannelHeader.tsx
 #: components/ui/components/features/voice/callCard/VoiceCallCardPreview.tsx
@@ -1751,12 +1885,20 @@ msgid "Latest"
 msgstr "Újak"
 
 #: components/app/interface/settings/user/Native.tsx
-msgid "Launch Stoat when you log into your computer."
+msgid "Launch Acutest when you log into your computer."
+msgstr ""
+
+#: components/app/interface/settings/user/Native.tsx
+#~ msgid "Launch Stoat when you log into your computer."
+#~ msgstr ""
+
+#: components/app/interface/settings/user/bots/MyBots.tsx
+msgid "Learn more about how to create bots on Acutest."
 msgstr ""
 
 #: components/app/interface/settings/user/bots/MyBots.tsx
-msgid "Learn more about how to create bots on Stoat."
-msgstr ""
+#~ msgid "Learn more about how to create bots on Stoat."
+#~ msgstr ""
 
 #: components/modal/modals/LeaveServer.tsx
 #: components/modal/modals/DeleteChannel.tsx
@@ -1779,8 +1921,12 @@ msgid "Leave server"
 msgstr "Szerver elhagyása"
 
 #: components/app/interface/settings/user/Native.tsx
-msgid "Let Stoat use its own custom titlebar."
+msgid "Let Acutest use its own custom titlebar."
 msgstr ""
+
+#: components/app/interface/settings/user/Native.tsx
+#~ msgid "Let Stoat use its own custom titlebar."
+#~ msgstr ""
 
 #: src/interface/Home.tsx
 msgid "Let us know how we can improve our app by giving us feedback."
@@ -1790,7 +1936,6 @@ msgstr "Írd meg miként fejleszthetnénk tovább a Revoltot."
 msgid "Light"
 msgstr ""
 
-#: components/ui/components/features/voice/callCard/VoiceCallCardActions.tsx
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "Listen"
 msgstr ""
@@ -1823,6 +1968,10 @@ msgstr "Bejelentkezés"
 
 #: components/app/interface/settings/user/Sessions.tsx
 msgid "Logs you out of all sessions except this device."
+msgstr ""
+
+#: components/auth/src/flows/FlowHome.tsx
+msgid "Low latency"
 msgstr ""
 
 #: components/modal/modals/ReportContent.tsx
@@ -1963,9 +2112,34 @@ msgstr ""
 msgid "Message was sent on another platform"
 msgstr "Az üzenetet másik platformon keresztül küldték el"
 
+#. placeholder {0}: disappearOption().label
+#: src/interface/channels/text/Composition.tsx
+msgid "Messages disappear after {0}"
+msgstr ""
+
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "Messaging"
 msgstr "Üzenetváltás"
+
+#: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
+msgid "Mic only activates when your volume exceeds the threshold below."
+msgstr ""
+
+#: components/app/interface/settings/user/voice/MicrophoneLevelMeter.tsx
+msgid "Microphone access denied."
+msgstr ""
+
+#: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
+msgid "Microphone Mode"
+msgstr ""
+
+#: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
+msgid "Microphone stays on automatically when in a voice channel."
+msgstr ""
+
+#: components/app/interface/settings/user/voice/MicrophoneTest.tsx
+msgid "Microphone Test"
+msgstr ""
 
 #: components/app/interface/settings/user/Native.tsx
 msgid "Minimise to Tray"
@@ -2078,8 +2252,12 @@ msgid "New Password"
 msgstr "Új jelszó"
 
 #: components/app/interface/channels/text/Message.tsx
-msgid "New to Stoat"
+msgid "New to Acutest"
 msgstr ""
+
+#: components/app/interface/channels/text/Message.tsx
+#~ msgid "New to Stoat"
+#~ msgstr ""
 
 #: components/app/interface/channels/text/Message.tsx
 msgid "New to the server"
@@ -2091,6 +2269,10 @@ msgstr "Becenév"
 
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsOverview.tsx
 msgid "No permissions set yet"
+msgstr ""
+
+#: components/app/interface/settings/server/stickers/StickerList.tsx
+msgid "No stickers yet. Upload one above!"
 msgstr ""
 
 #: src/interface/Friends.tsx
@@ -2191,6 +2373,10 @@ msgstr ""
 msgid "Open file"
 msgstr ""
 
+#: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
+msgid "Open Microphone"
+msgstr ""
+
 #: components/app/menus/ServerContextMenu.tsx
 msgid "Open server settings"
 msgstr ""
@@ -2251,6 +2437,11 @@ msgstr ""
 msgid "Play sound"
 msgstr ""
 
+#: components/app/interface/settings/user/voice/MicrophoneTest.tsx
+#: components/app/interface/settings/user/voice/MicrophoneTest.tsx
+msgid "Playing back…"
+msgstr ""
+
 #: components/modal/modals/MFAFlow.tsx
 msgid "Please confirm this action using the selected method."
 msgstr "A választott móddal hagyd jóvá a választásod."
@@ -2279,8 +2470,16 @@ msgstr "Válaszd ki a kérés hitelesítéséhez való módot."
 msgid "Please select a reason"
 msgstr ""
 
+#: src/interface/Friends.tsx
+msgid "Pop out friends list"
+msgstr ""
+
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
 msgid "Powered by RNNoise"
+msgstr ""
+
+#: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
+msgid "Press any key..."
 msgstr ""
 
 #: components/auth/src/AuthPage.tsx
@@ -2308,10 +2507,19 @@ msgstr ""
 msgid "Provided email or password is wrong."
 msgstr ""
 
+#: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
+msgid "Push to Talk"
+msgstr ""
+
+#: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
+msgid "Push to Talk Key"
+msgstr ""
+
 #: components/modal/modals/ReportContent.tsx
 msgid "Raid or spam attack"
 msgstr ""
 
+#: components/app/menus/MessageContextMenu.tsx
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "React"
 msgstr ""
@@ -2334,6 +2542,10 @@ msgstr ""
 
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "Read past messages sent in channels"
+msgstr ""
+
+#: components/app/interface/settings/server/stickers/StickerList.tsx
+msgid "Ready to upload"
 msgstr ""
 
 #: components/modal/modals/BanNonMember.tsx
@@ -2360,6 +2572,14 @@ msgstr ""
 
 #: components/ui/components/features/voice/callCard/VoiceCallCardStatus.tsx
 msgid "Reconnecting"
+msgstr ""
+
+#: components/app/interface/settings/user/voice/MicrophoneTest.tsx
+msgid "Record"
+msgstr ""
+
+#: components/app/interface/settings/user/voice/MicrophoneTest.tsx
+msgid "Recording… (max 5s)"
 msgstr ""
 
 #: components/modal/modals/MFAFlow.tsx
@@ -2441,8 +2661,12 @@ msgid "Rename Session"
 msgstr ""
 
 #: components/app/interface/settings/user/Native.tsx
-msgid "Rep Stoat using Discord rich presence."
+msgid "Rep Acutest using Discord rich presence."
 msgstr ""
+
+#: components/app/interface/settings/user/Native.tsx
+#~ msgid "Rep Stoat using Discord rich presence."
+#~ msgstr ""
 
 #: components/app/menus/MessageContextMenu.tsx
 msgid "Reply"
@@ -2580,6 +2804,10 @@ msgstr ""
 msgid "Screen Share Volume"
 msgstr ""
 
+#: src/interface/channels/ChannelHeader.tsx
+msgid "Search"
+msgstr ""
+
 #: components/modal/modals/AddBot.tsx
 msgid "Search for groups..."
 msgstr ""
@@ -2656,6 +2884,11 @@ msgstr ""
 
 #: components/app/interface/channels/text/DraftMessage.tsx
 msgid "Sending..."
+msgstr ""
+
+#. placeholder {0}: voice.vadThreshold
+#: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
+msgid "Sensitivity threshold: {0}%"
 msgstr ""
 
 #: components/ui/components/features/messaging/elements/Container.tsx
@@ -2761,8 +2994,12 @@ msgid "Show send message button"
 msgstr ""
 
 #: components/auth/src/flows/FlowLogin.tsx
-msgid "Sign into Stoat"
+msgid "Sign into Acutest"
 msgstr ""
+
+#: components/auth/src/flows/FlowLogin.tsx
+#~ msgid "Sign into Stoat"
+#~ msgstr ""
 
 #: components/auth/src/flows/FlowHome.tsx
 msgid "Sign Up"
@@ -2845,28 +3082,40 @@ msgstr ""
 msgid "Status"
 msgstr ""
 
+#: components/app/interface/settings/server/stickers/StickerList.tsx
+msgid "Sticker Name"
+msgstr ""
+
+#: components/app/interface/settings/ServerSettings.tsx
+msgid "Stickers"
+msgstr ""
+
 #: components/app/interface/settings/user/Native.tsx
 #~ msgid "Stoat Desktop"
 #~ msgstr ""
 
 #: components/ui/components/features/profiles/ProfileBadges.tsx
-msgid "Stoat Developer"
-msgstr ""
+#~ msgid "Stoat Developer"
+#~ msgstr ""
 
 #: components/app/interface/settings/user/Native.tsx
-msgid "Stoat for Desktop"
-msgstr ""
+#~ msgid "Stoat for Desktop"
+#~ msgstr ""
 
 #: components/ui/components/features/profiles/ProfileBadges.tsx
-msgid "Stoat Founder"
-msgstr ""
+#~ msgid "Stoat Founder"
+#~ msgstr ""
 
 #: components/auth/src/flows/FlowHome.tsx
-msgid "Stoat is one of the best ways to stay connected with your friends and community, anywhere, anytime."
-msgstr ""
+#~ msgid "Stoat is one of the best ways to stay connected with your friends and community, anywhere, anytime."
+#~ msgstr ""
 
 #: components/app/interface/settings/user/Native.tsx
-msgid "Stoat will start in the system tray."
+#~ msgid "Stoat will start in the system tray."
+#~ msgstr ""
+
+#: components/app/interface/settings/user/voice/MicrophoneTest.tsx
+msgid "Stop"
 msgstr ""
 
 #: components/ui/components/features/voice/callCard/VoiceCallCardActions.tsx
@@ -2902,8 +3151,12 @@ msgid "Subscriptions"
 msgstr ""
 
 #: components/app/interface/settings/user/Feedback.tsx
-msgid "Suggest new Stoat features on GitHub discussions."
+msgid "Suggest new Acutest features on GitHub discussions."
 msgstr ""
+
+#: components/app/interface/settings/user/Feedback.tsx
+#~ msgid "Suggest new Stoat features on GitHub discussions."
+#~ msgstr ""
 
 #: src/interface/Home.tsx
 msgid "Support the project by donating - thank you!"
@@ -2952,6 +3205,14 @@ msgstr ""
 #: components/auth/src/AuthPage.tsx
 msgid "Terms of Service"
 msgstr "Szolgáltatási feltételek"
+
+#: components/app/interface/settings/user/voice/MicrophoneLevelMeter.tsx
+msgid "Test Input Level"
+msgstr ""
+
+#: components/app/interface/settings/user/voice/MicrophoneTest.tsx
+msgid "Test Microphone"
+msgstr ""
 
 #: components/modal/modals/CreateChannel.tsx
 msgid "Text Channel"
@@ -3096,6 +3357,7 @@ msgstr "Felhasználó visszaengedése"
 msgid "Uncaught Stoat error: {0}"
 msgstr ""
 
+#: components/ui/components/features/voice/callCard/VoiceCallCardActions.tsx
 #: components/app/interface/settings/user/notifications/Sounds.tsx
 msgid "Undeafen"
 msgstr ""
@@ -3149,6 +3411,10 @@ msgstr ""
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "Upload Files"
 msgstr "Feltölthetnek fájlokat"
+
+#: components/app/interface/settings/server/stickers/StickerList.tsx
+msgid "Upload Sticker"
+msgstr ""
 
 #: components/modal/modals/JoinServer.tsx
 msgid "Use a code or invite link"
@@ -3236,6 +3502,10 @@ msgstr ""
 #~ msgid "Using default speaker"
 #~ msgstr ""
 
+#: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
+msgid "VAD Threshold"
+msgstr ""
+
 #: src/interface/navigation/channels/ServerSidebar.tsx
 msgid "Verified"
 msgstr ""
@@ -3290,6 +3560,10 @@ msgstr ""
 msgid "Voice & Video"
 msgstr ""
 
+#: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
+msgid "Voice Activity Detection"
+msgstr ""
+
 #: components/modal/modals/CreateChannel.tsx
 msgid "Voice Channel"
 msgstr "Beszédcsatorna"
@@ -3304,6 +3578,10 @@ msgstr ""
 
 #: components/app/interface/settings/user/profile/UserProfileEditor.tsx
 msgid "Want to change username?"
+msgstr ""
+
+#: src/AndroidNag.tsx
+msgid "We are working hard on optimising our web app for mobile."
 msgstr ""
 
 #: components/auth/src/flows/FlowCheck.tsx
@@ -3499,8 +3777,12 @@ msgid "You've been invited to join this server.<0/>Would you like to join?"
 msgstr ""
 
 #: components/modal/modals/SignedOut.tsx
-msgid "You've been signed out of Stoat!"
+msgid "You've been signed out of Acutest!"
 msgstr ""
+
+#: components/modal/modals/SignedOut.tsx
+#~ msgid "You've been signed out of Stoat!"
+#~ msgstr ""
 
 #: components/i18n/errors.ts
 msgid "You've reached your personal bot limit."

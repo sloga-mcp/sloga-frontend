@@ -50,6 +50,7 @@ export interface TypeVoice {
   screenShareAudio: boolean;
 
   microphoneGain: number;
+  cameraBrightness: number;
   inputVolume: number;
   outputVolume: number;
   deafen: boolean;
@@ -98,6 +99,7 @@ export class Voice extends AbstractStore<"voice", TypeVoice> {
       screenShareQualityAsk: true,
       screenShareAudio: true,
       microphoneGain: 100,
+      cameraBrightness: 100,
       inputVolume: 1.0,
       outputVolume: 1.0,
       deafen: false,
@@ -184,6 +186,10 @@ export class Voice extends AbstractStore<"voice", TypeVoice> {
 
     if (typeof input.microphoneGain === "number") {
       data.microphoneGain = Math.max(0, Math.min(200, input.microphoneGain));
+    }
+
+    if (typeof input.cameraBrightness === "number") {
+      data.cameraBrightness = Math.max(0, Math.min(200, input.cameraBrightness));
     }
 
     if (typeof input.inputVolume === "number") {
@@ -396,6 +402,14 @@ export class Voice extends AbstractStore<"voice", TypeVoice> {
 
   set microphoneGain(value: number) {
     this.set("microphoneGain", value);
+  }
+
+  get cameraBrightness(): number {
+    return this.get().cameraBrightness ?? 100;
+  }
+
+  set cameraBrightness(value: number) {
+    this.set("cameraBrightness", value);
   }
 
   /**

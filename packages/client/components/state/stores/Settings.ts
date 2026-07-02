@@ -80,6 +80,21 @@ interface SettingsDefinition {
    * Whether to include admin panel links in context menus
    */
   "advanced:admin_panel": boolean;
+
+  /**
+   * Which message received sound variant to use (1–5)
+   */
+  "sounds:message_variant": number;
+
+  /**
+   * Which ringtone variant to use (1–10)
+   */
+  "sounds:ringtone_variant": number;
+
+  /**
+   * Which disconnect sound variant to use (1–5)
+   */
+  "sounds:disconnect_variant": number;
 }
 
 /**
@@ -108,6 +123,9 @@ const EXPECTED_TYPES: { [K in keyof SettingsDefinition]: ValueType<K> } = {
   "appearance:compact_mode": "boolean",
   "advanced:copy_id": "boolean",
   "advanced:admin_panel": "boolean",
+  "sounds:message_variant": "number",
+  "sounds:ringtone_variant": "number",
+  "sounds:disconnect_variant": "number",
 };
 
 /**
@@ -118,7 +136,11 @@ export type TypeSettings = Partial<SettingsDefinition>;
 /**
  * Default values for settings, if applicable.
  */
-const DEFAULT_VALUES: TypeSettings = {};
+const DEFAULT_VALUES: TypeSettings = {
+  "sounds:message_variant": 4,
+  "sounds:ringtone_variant": 8,
+  "sounds:disconnect_variant": 3,
+};
 
 /**
  * Settings store
@@ -151,6 +173,9 @@ export class Settings extends AbstractStore<"settings", TypeSettings> {
       "appearance:compact_mode": false,
       "advanced:copy_id": false,
       "advanced:admin_panel": false,
+      "sounds:message_variant": 4,
+      "sounds:ringtone_variant": 8,
+      "sounds:disconnect_variant": 3,
     };
   }
 

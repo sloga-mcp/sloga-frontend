@@ -98,7 +98,7 @@ export function MicrophoneTest() {
           icon={<Symbol>{state() === "recording" ? "stop" : "mic"}</Symbol>}
           action={
             state() === "idle" ? (
-              <Button variant="filled" bg="#FF6B00" onPress={startRecording}>
+              <Button variant="filled" bg="#FF8A00" onPress={startRecording}>
                 <Trans>Record</Trans>
               </Button>
             ) : state() === "recording" ? (
@@ -124,7 +124,7 @@ export function MicrophoneTest() {
                   <div style={{
                     height: "100%",
                     width: `${level()}%`,
-                    background: "#FF6B00",
+                    background: "#FF8A00",
                     "border-radius": "3px",
                     transition: "width 0.05s",
                   }} />

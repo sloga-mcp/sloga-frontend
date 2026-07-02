@@ -98,6 +98,10 @@ export type Modals =
       channel: Channel;
     }
   | {
+      type: "invite_to_server";
+      server: Server;
+    }
+  | {
       type: "create_server";
       client: Client;
     }

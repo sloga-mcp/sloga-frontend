@@ -8,6 +8,7 @@ import {
   CategorySelectOption,
   Checkbox,
   Column,
+  Slider,
   Text,
 } from "@revolt/ui";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
@@ -20,6 +21,32 @@ export function ScreenShareOptions() {
 
   return (
     <Column>
+      <Text class="title">
+        <Trans>Camera Settings</Trans>
+      </Text>
+      <CategoryButton.Group>
+        <CategoryButton
+          icon={<Symbol>brightness_6</Symbol>}
+          description={
+            <Column gap="sm">
+              <Text class="label">
+                <Trans>Brightness: {voice.cameraBrightness}%</Trans>
+              </Text>
+              <Slider
+                min={0}
+                max={200}
+                step={1}
+                value={voice.cameraBrightness}
+                onInput={(e) => (voice.cameraBrightness = Number(e.currentTarget.value))}
+                labelFormatter={(v) => `${v}%`}
+              />
+            </Column>
+          }
+        >
+          <Trans>Camera Brightness</Trans>
+        </CategoryButton>
+      </CategoryButton.Group>
+
       <Text class="title">
         <Trans>Screen Share Settings</Trans>
       </Text>

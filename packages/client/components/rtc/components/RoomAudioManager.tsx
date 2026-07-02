@@ -25,6 +25,18 @@ export function RoomAudioManager() {
     },
   );
 
+  // Subscribe to remote video tracks (camera + screen share) so they are received
+  const videoTracks = useTracks(
+    [
+      Track.Source.Camera,
+      Track.Source.ScreenShare,
+    ],
+    {
+      updateOnlyOn: [],
+      onlySubscribed: false,
+    },
+  );
+
   const filteredTracks = createMemo(() =>
     tracks().filter(
       (track) =>
@@ -33,12 +45,23 @@ export function RoomAudioManager() {
     ),
   );
 
+  const filteredVideoTracks = createMemo(() =>
+    videoTracks().filter((track) => !isLocal(track.participant)),
+  );
+
   createEffect(() => {
     const tracks = filteredTracks();
     console.info("[rtc] filtered tracks", filteredTracks());
     for (const track of tracks) {
       (track.publication as RemoteTrackPublication).setSubscribed(true);
       console.info(track.publication);
+    }
+  });
+
+  // Subscribe to remote video tracks so screen share and camera are received
+  createEffect(() => {
+    for (const track of filteredVideoTracks()) {
+      (track.publication as RemoteTrackPublication).setSubscribed(true);
     }
   });
 

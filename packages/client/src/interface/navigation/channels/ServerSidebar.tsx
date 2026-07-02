@@ -44,6 +44,8 @@ import MdSettings from "@material-symbols/svg-400/outlined/settings-fill.svg?com
 
 import { ServerMemberSidebar } from "../../channels/text/MemberSidebar";
 
+import { parseChannelPassword } from "../../../lib/channelPassword";
+
 import { SidebarBase } from "./common";
 
 interface Props {
@@ -298,12 +300,22 @@ function ServerInfo(
     canManageServer: boolean;
   },
 ) {
+  const navigate = useNavigate();
   return (
     <Row align grow minWidth={0}>
       <ServerBadge flags={props.server.flags} />
       <ServerName onClick={props.openServerInfo}>
         <TextWithEmoji content={props.server.name} />
       </ServerName>
+      <IconButton
+        size="xs"
+        width="narrow"
+        variant={props.server.banner ? "_header" : "standard"}
+        onPress={() => navigate(`/server/${props.server.id}/events`)}
+        use:floating={{ tooltip: { placement: "bottom", content: "Server Events" } }}
+      >
+        <Symbol>calendar_month</Symbol>
+      </IconButton>
       <Show when={props.canManageServer}>
         <IconButton
           size="xs"
@@ -548,6 +560,9 @@ function Entry(
                 src={props.channel.iconURL}
                 css={{ marginEnd: "0.2em" }}
               />
+            </Show>
+            <Show when={parseChannelPassword(props.channel.description).passwordHash}>
+              <Symbol size={14} style={{ opacity: "0.6" }}>lock</Symbol>
             </Show>
           </>
         }

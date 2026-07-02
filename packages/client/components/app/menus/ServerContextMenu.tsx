@@ -16,6 +16,7 @@ import MdLogout from "@material-design-icons/svg/outlined/logout.svg?component-s
 import MdMarkChatRead from "@material-design-icons/svg/outlined/mark_chat_read.svg?component-solid";
 import MdNotificationsActive from "@material-design-icons/svg/outlined/notifications_active.svg?component-solid";
 import MdNotificationsOff from "@material-design-icons/svg/outlined/notifications_off.svg?component-solid";
+import MdGroupAdd from "@material-design-icons/svg/outlined/group_add.svg?component-solid";
 import MdPersonAdd from "@material-design-icons/svg/outlined/person_add.svg?component-solid";
 import MdReport from "@material-design-icons/svg/outlined/report.svg?component-solid";
 import MdSettings from "@material-design-icons/svg/outlined/settings.svg?component-solid";
@@ -47,6 +48,16 @@ export function ServerContextMenu(props: { server: Server }) {
    */
   function markAsRead() {
     props.server.ack();
+  }
+
+  /**
+   * Invite friends directly by sending them an invite link via DM
+   */
+  function inviteFriend() {
+    openModal({
+      type: "invite_to_server",
+      server: props.server,
+    });
   }
 
   /**
@@ -134,6 +145,12 @@ export function ServerContextMenu(props: { server: Server }) {
     props.server.channels.find((channel) =>
       channel.havePermission("InviteOthers"),
     );
+
+  /**
+   * Whether the user has any friends to invite
+   */
+  const hasFriends = () =>
+    client().users.find((user) => user.relationship === "Friend");
 
   /**
    * Determine whether we can edit our identity
@@ -273,6 +290,11 @@ export function ServerContextMenu(props: { server: Server }) {
       </ContextMenuSubMenu>
       <ContextMenuDivider />
 
+      <Show when={permissionInviteOthers() && hasFriends()}>
+        <ContextMenuButton icon={MdGroupAdd} onClick={inviteFriend}>
+          <Trans>Invite a friend</Trans>
+        </ContextMenuButton>
+      </Show>
       <Show when={permissionInviteOthers()}>
         <ContextMenuButton icon={MdPersonAdd} onClick={createInvite}>
           <Trans>Create invite</Trans>

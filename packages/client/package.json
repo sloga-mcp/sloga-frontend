@@ -3,7 +3,9 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "prepare": "panda codegen"
+    "prepare": "panda codegen",
+    "build:android": "vite build && cap sync android",
+    "open:android": "cap open android"
   },
   "devDependencies": {
     "@chromatic-com/storybook": "^2.0.2",
@@ -38,6 +40,9 @@
     "vite-plugin-solid-svg": "^0.8.1"
   },
   "dependencies": {
+    "@capacitor/android": "^8.4.1",
+    "@capacitor/cli": "^8.4.1",
+    "@capacitor/core": "^8.4.1",
     "@codemirror/autocomplete": "^6.19.0",
     "@codemirror/commands": "^6.8.1",
     "@codemirror/lang-markdown": "^6.3.4",

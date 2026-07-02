@@ -1,4 +1,4 @@
-import { createSignal, Show } from "solid-js";
+import { createSignal, onCleanup, Show } from "solid-js";
 import {
   TrackReference,
   useEnsureParticipant,
@@ -8,7 +8,7 @@ import {
   VideoTrack,
 } from "solid-livekit-components";
 
-import { Track } from "livekit-client";
+import { ConnectionQuality, ParticipantEvent, Track } from "livekit-client";
 import { cva } from "styled-system/css";
 import { styled } from "styled-system/jsx";
 
@@ -72,6 +72,36 @@ export function ParticipantTile(props: TileProps) {
   const isVideo = () => !isVideoMuted();
   const isScreenShare = () => track.source === Track.Source.ScreenShare;
   const isSpeaking = useIsSpeaking(participant);
+
+  const [quality, setQuality] = createSignal<ConnectionQuality>(
+    participant.connectionQuality,
+  );
+
+  const onQualityChange = (q: ConnectionQuality) => setQuality(q);
+  participant.on(ParticipantEvent.ConnectionQualityChanged, onQualityChange);
+  onCleanup(() =>
+    participant.off(ParticipantEvent.ConnectionQualityChanged, onQualityChange),
+  );
+
+  const qualityColor = () => {
+    switch (quality()) {
+      case ConnectionQuality.Excellent: return "#4caf50";
+      case ConnectionQuality.Good:     return "#cddc39";
+      case ConnectionQuality.Poor:     return "#ff9800";
+      case ConnectionQuality.Lost:     return "#f44336";
+      default:                         return "#9e9e9e";
+    }
+  };
+
+  const qualityMs = () => {
+    switch (quality()) {
+      case ConnectionQuality.Excellent: return "<50ms";
+      case ConnectionQuality.Good:     return "~150ms";
+      case ConnectionQuality.Poor:     return "~400ms";
+      case ConnectionQuality.Lost:     return "lost";
+      default:                         return "—";
+    }
+  };
 
   const getHeight = () => {
     if (!props.focus || videoDims().height == 0) return {};
@@ -170,6 +200,10 @@ export function ParticipantTile(props: TileProps) {
               )}
             </Row>
           </OverlayInner>
+          <PingBadge style={{ color: qualityColor() }}>
+            <PingDot style={{ background: qualityColor() }} />
+            {qualityMs()}
+          </PingBadge>
         </Overlay>
       </div>
     </Show>
@@ -288,6 +322,7 @@ const Overlay = styled("div", {
 const OverlayInner = styled("div", {
   base: {
     minWidth: 0,
+    flexGrow: 1,
 
     display: "flex",
     alignItems: "center",
@@ -297,5 +332,30 @@ const OverlayInner = styled("div", {
     _first: {
       flexGrow: 1,
     },
+  },
+});
+
+const PingBadge = styled("div", {
+  base: {
+    display: "flex",
+    alignItems: "center",
+    gap: "4px",
+    fontSize: "10px",
+    fontWeight: 600,
+    padding: "2px 5px",
+    borderRadius: "4px",
+    background: "rgba(0,0,0,0.45)",
+    flexShrink: 0,
+    alignSelf: "flex-end",
+    marginLeft: "var(--gap-sm)",
+  },
+});
+
+const PingDot = styled("div", {
+  base: {
+    width: "6px",
+    height: "6px",
+    borderRadius: "50%",
+    flexShrink: 0,
   },
 });

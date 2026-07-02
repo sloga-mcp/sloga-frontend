@@ -122,7 +122,7 @@ export function UserMenu(props: Props) {
           >
             <ContextMenu>
               <ContextMenuItem
-                onClick={() => openModal({ type: "settings", config: "user" })}
+                onClick={() => navigator.clipboard.writeText(`${user()?.username}#${user()?.discriminator}`)}
                 action
               >
                 <Row align>

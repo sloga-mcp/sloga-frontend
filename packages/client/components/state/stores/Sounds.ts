@@ -9,9 +9,14 @@ export type TypeSounds = {
   deafen: boolean;
 
   /**
-   * Play a sound on message/notification
+   * Play a sound on message received/notification
    */
   message: boolean;
+
+  /**
+   * Play a sound when you send a message
+   */
+  messageSent: boolean;
 
   /**
    * Play sound on mute
@@ -85,6 +90,7 @@ export class Sounds extends AbstractStore<"sounds", TypeSounds> {
     return {
       deafen: true,
       message: true,
+      messageSent: true,
       mute: true,
       ringtoneIncoming: true,
       ringtoneOutgoing: true,
@@ -104,6 +110,7 @@ export class Sounds extends AbstractStore<"sounds", TypeSounds> {
     return {
       deafen: typeof input.deafen === "boolean" ? input.deafen : true,
       message: typeof input.message === "boolean" ? input.message : true,
+      messageSent: typeof input.messageSent === "boolean" ? input.messageSent : true,
       mute: typeof input.mute === "boolean" ? input.mute : true,
       ringtoneIncoming:
         typeof input.ringtoneIncoming === "boolean"

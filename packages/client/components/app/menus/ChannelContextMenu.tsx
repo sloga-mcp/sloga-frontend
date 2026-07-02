@@ -10,6 +10,7 @@ import MdBadge from "@material-design-icons/svg/outlined/badge.svg?component-sol
 import MdDelete from "@material-design-icons/svg/outlined/delete.svg?component-solid";
 import MdGroupAdd from "@material-design-icons/svg/outlined/group_add.svg?component-solid";
 import MdLibraryAdd from "@material-design-icons/svg/outlined/library_add.svg?component-solid";
+import MdLock from "@material-design-icons/svg/outlined/lock.svg?component-solid";
 import MdLogout from "@material-design-icons/svg/outlined/logout.svg?component-solid";
 import MdMarkChatRead from "@material-design-icons/svg/outlined/mark_chat_read.svg?component-solid";
 import MdSettings from "@material-design-icons/svg/outlined/settings.svg?component-solid";
@@ -61,6 +62,17 @@ export function ChannelContextMenu(props: { channel: Channel }) {
    * Edit channel
    */
   function editChannel() {
+    openModal({
+      type: "settings",
+      config: "channel",
+      context: props.channel,
+    });
+  }
+
+  /**
+   * Open channel settings to the password section
+   */
+  function setPassword() {
     openModal({
       type: "settings",
       config: "channel",
@@ -139,6 +151,11 @@ export function ChannelContextMenu(props: { channel: Channel }) {
         <ContextMenuButton icon={MdSettings} onClick={editChannel}>
           <Trans>Open channel settings</Trans>
         </ContextMenuButton>
+        <Show when={props.channel.type === "TextChannel"}>
+          <ContextMenuButton icon={MdLock} onClick={setPassword}>
+            <Trans>Set channel password</Trans>
+          </ContextMenuButton>
+        </Show>
         <ContextMenuButton
           icon={props.channel.type === "Group" ? MdLogout : MdDelete}
           onClick={deleteChannel}

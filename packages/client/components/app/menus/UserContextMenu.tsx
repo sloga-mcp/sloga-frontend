@@ -6,6 +6,7 @@ import type { Channel, Message, ServerMember, User } from "stoat.js";
 import { useClient } from "@revolt/client";
 import { useModals } from "@revolt/modal";
 import { useSmartParams } from "@revolt/routing";
+import { useVoice } from "@revolt/rtc";
 import { useState } from "@revolt/state";
 import { Slider, Text } from "@revolt/ui";
 
@@ -17,6 +18,7 @@ import MdAssignmentInd from "@material-design-icons/svg/outlined/assignment_ind.
 import MdBadge from "@material-design-icons/svg/outlined/badge.svg?component-solid";
 import MdBlock from "@material-design-icons/svg/outlined/block.svg?component-solid";
 import MdCancel from "@material-design-icons/svg/outlined/cancel.svg?component-solid";
+import MdCall from "@material-design-icons/svg/outlined/call.svg?component-solid";
 import MdChat from "@material-design-icons/svg/outlined/chat.svg?component-solid";
 import MdClose from "@material-design-icons/svg/outlined/close.svg?component-solid";
 import MdDoNotDisturbOn from "@material-design-icons/svg/outlined/do_not_disturb_on.svg?component-solid";
@@ -53,6 +55,7 @@ export function UserContextMenu(props: {
   const client = useClient();
   const navigate = useNavigate();
   const { openModal, modals } = useModals();
+  const voice = useVoice();
 
   // server context
   const params = useSmartParams();
@@ -62,6 +65,17 @@ export function UserContextMenu(props: {
    */
   function openDm() {
     props.user.openDM().then((channel) => navigate(channel.url));
+    props.onClose?.();
+  }
+
+  /**
+   * Start a voice call in the DM channel
+   */
+  function startVoiceCall() {
+    props.user.openDM().then((channel) => {
+      navigate(channel.path);
+      return voice.connect(channel);
+    }).catch(console.error);
     props.onClose?.();
   }
 
@@ -390,6 +404,9 @@ export function UserContextMenu(props: {
       <Show when={props.user.relationship === "Friend"}>
         <ContextMenuButton icon={MdChat} onClick={openDm}>
           <Trans>Message</Trans>
+        </ContextMenuButton>
+        <ContextMenuButton icon={MdCall} onClick={startVoiceCall}>
+          <Trans>Call</Trans>
         </ContextMenuButton>
       </Show>
       <Show when={props.channel?.type === "TextChannel"}>

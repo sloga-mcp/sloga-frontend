@@ -45,7 +45,7 @@ function UnreadsGraphic(props: Props) {
         </foreignObject>
       </Match>
       <Match when={props.unread}>
-        <circle cx="27" cy="5" r="5" fill="var(--md-sys-color-on-surface)" />
+        <circle cx="27" cy="5" r="5" fill="#FF8A00" />
       </Match>
     </Switch>
   );

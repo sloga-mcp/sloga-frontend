@@ -33,31 +33,6 @@ export function ClientContext(props: { state: State; children: JSXElement }) {
   const controller = new ClientController(props.state);
   onCleanup(() => controller.dispose());
 
-  let fetchedChangelog = false;
-  createEffect(
-    on(
-      () => controller.isLoggedIn(),
-      (loggedIn) => {
-        if (!loggedIn || fetchedChangelog) return;
-        fetchedChangelog = true;
-
-        fetchLatestChangelog().then((changelog) => {
-          if (!changelog) return;
-          if (props.state["release-notes"].lastSeenId === changelog.id) return;
-
-          props.state["release-notes"].markSeen(
-            changelog.id,
-            changelog.published_at,
-          );
-
-          openModal({
-            type: "changelog",
-            changelog,
-          });
-        });
-      },
-    ),
-  );
 
   createEffect(
     on(
