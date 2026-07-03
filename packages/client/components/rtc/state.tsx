@@ -63,6 +63,10 @@ class BrightnessVideoProcessor {
     this.#brightness = brightness;
   }
 
+  setBrightness(brightness: number) {
+    this.#brightness = brightness;
+  }
+
   async init(opts: { track: MediaStreamTrack }) {
     this.#canvas = document.createElement("canvas");
     this.#video = document.createElement("video");
@@ -97,7 +101,23 @@ class BrightnessVideoProcessor {
   }
 }
 
+import { Capacitor, registerPlugin } from "@capacitor/core";
 import { Channel } from "stoat.js";
+
+/** Native Android foreground service keeping calls alive in the background */
+const VoiceCallServiceNative = Capacitor.isNativePlatform()
+  ? registerPlugin<{ start(): Promise<void>; stop(): Promise<void> }>(
+      "VoiceCallService",
+    )
+  : undefined;
+
+function nativeCallServiceStart() {
+  VoiceCallServiceNative?.start().catch(() => {});
+}
+
+function nativeCallServiceStop() {
+  VoiceCallServiceNative?.stop().catch(() => {});
+}
 
 import { SoundController, useClient, useSound } from "@revolt/client";
 import { CONFIGURATION } from "@revolt/common";
@@ -128,6 +148,7 @@ type ScreenShareQuality = {
 
 class Voice {
   #settings: VoiceSettings;
+  #brightnessProcessor: BrightnessVideoProcessor | undefined;
 
   channel: Accessor<Channel | undefined>;
   #setChannel: Setter<Channel | undefined>;
@@ -263,6 +284,7 @@ class Voice {
 
     room.addListener("connected", () => {
       this.#setState("CONNECTED");
+      nativeCallServiceStart();
       this.#startPushToTalk(room);
       this.#startVAD(room);
       const isAfk = channel.name?.toLowerCase() === "afk";
@@ -296,7 +318,10 @@ class Voice {
       this.sound.playSound("userJoinVoice");
     });
 
-    room.addListener("disconnected", () => this.#setState("DISCONNECTED"));
+    room.addListener("disconnected", () => {
+      this.#setState("DISCONNECTED");
+      nativeCallServiceStop();
+    });
 
     room.addListener("participantConnected", () => {
       this.sound.playSound("userJoinVoice");
@@ -339,6 +364,8 @@ class Voice {
 
   disconnect() {
     try {
+      nativeCallServiceStop();
+
       const room = this.room();
       if (!room) return;
 
@@ -421,11 +448,40 @@ class Voice {
       );
 
       const brightness = this.#settings.cameraBrightness ?? 100;
+      this.#brightnessProcessor = undefined;
       if (pub?.videoTrack && brightness !== 100) {
-        await pub.videoTrack.setProcessor(new BrightnessVideoProcessor(brightness));
+        this.#brightnessProcessor = new BrightnessVideoProcessor(brightness);
+        await pub.videoTrack.setProcessor(this.#brightnessProcessor);
       }
 
       this.#setVideo(room.localParticipant.isCameraEnabled);
+    } catch (e) {
+      this.onErr(e);
+    }
+  }
+
+  /**
+   * Apply a new camera brightness value to the live camera track, if any.
+   * Attaches the brightness processor on demand when the camera is already on.
+   */
+  async setCameraBrightness(brightness: number) {
+    this.#settings.cameraBrightness = brightness;
+
+    if (this.#brightnessProcessor) {
+      this.#brightnessProcessor.setBrightness(brightness);
+      return;
+    }
+
+    try {
+      const room = this.room();
+      if (!room?.localParticipant.isCameraEnabled) return;
+      const pub = room.localParticipant.getTrackPublication(
+        Track.Source.Camera,
+      );
+      if (pub?.videoTrack && brightness !== 100) {
+        this.#brightnessProcessor = new BrightnessVideoProcessor(brightness);
+        await pub.videoTrack.setProcessor(this.#brightnessProcessor);
+      }
     } catch (e) {
       this.onErr(e);
     }

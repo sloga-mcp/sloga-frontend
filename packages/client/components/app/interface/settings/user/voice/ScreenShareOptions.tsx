@@ -37,7 +37,11 @@ export function ScreenShareOptions() {
                 max={200}
                 step={1}
                 value={voice.cameraBrightness}
-                onInput={(e) => (voice.cameraBrightness = Number(e.currentTarget.value))}
+                onInput={(e) =>
+                  voiceContext.setCameraBrightness(
+                    Number(e.currentTarget.value),
+                  )
+                }
                 labelFormatter={(v) => `${v}%`}
               />
             </Column>

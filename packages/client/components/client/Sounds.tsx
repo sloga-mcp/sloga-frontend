@@ -266,6 +266,7 @@ export class SoundController {
   readonly settingsState: Settings;
 
   node?: HTMLAudioElement;
+  #audioCtx?: AudioContext;
   #ringtoneCtx?: AudioContext;
 
   lastPlayedSound?: keyof TypeSounds;
@@ -277,6 +278,15 @@ export class SoundController {
     this.isPlaying = this.isPlaying.bind(this);
     this.canPlay = this.canPlay.bind(this);
     this.playSound = this.playSound.bind(this);
+
+    // Unlock AudioContext on first user gesture so event-triggered sounds work
+    const unlock = () => {
+      this.#getCtx();
+      window.removeEventListener("click", unlock);
+      window.removeEventListener("keydown", unlock);
+    };
+    window.addEventListener("click", unlock, { once: true });
+    window.addEventListener("keydown", unlock, { once: true });
   }
 
   /**
@@ -311,11 +321,24 @@ export class SoundController {
   }
 
   /**
+   * Get or create the shared AudioContext, resuming it if suspended
+   */
+  #getCtx(): AudioContext {
+    if (!this.#audioCtx || this.#audioCtx.state === "closed") {
+      this.#audioCtx = new AudioContext();
+    }
+    if (this.#audioCtx.state === "suspended") {
+      this.#audioCtx.resume();
+    }
+    return this.#audioCtx;
+  }
+
+  /**
    * Play a short synthesized tone via Web Audio API
    */
   #playTone(notes: ToneNote[], volume = 0.25): void {
     try {
-      const ctx = new AudioContext();
+      const ctx = this.#getCtx();
       for (const { freq, startTime, duration, type } of notes) {
         const osc = ctx.createOscillator();
         const gain = ctx.createGain();

@@ -47,13 +47,18 @@ msgstr ""
 msgid "{0, plural, one {# blocked message} other {# blocked messages}}"
 msgstr ""
 
-#: src/interface/navigation/channels/HomeSidebar.tsx
-#~ msgid "{0, plural, one {# Member} other {# Members}}"
-#~ msgstr ""
-
 #. placeholder {0}: items().length
 #: components/ui/components/utils/files/FileDropAnywhereCollector.tsx
 msgid "{0, plural, one {Drop a file} other {Drop # files}}"
+msgstr ""
+
+#. placeholder {0}: preset.label
+#. placeholder {0}: existingHash ? "Update Password" : "Set Password"
+#: components/app/interface/settings/user/notifications/Sounds.tsx
+#: components/app/interface/settings/user/notifications/Sounds.tsx
+#: components/app/interface/settings/user/notifications/Sounds.tsx
+#: components/app/interface/settings/channel/Overview.tsx
+msgid "{0}"
 msgstr ""
 
 #. placeholder {0}: users() .slice(0, -1) .map((user) => user!.username) .join(", ")
@@ -113,6 +118,11 @@ msgstr ""
 msgid "{0} renamed the channel"
 msgstr ""
 
+#. placeholder {0}: user.displayName ?? user.username
+#: components/client/NotificationsWorker.tsx
+msgid "{0} sent you a friend request"
+msgstr ""
+
 #. placeholder {0}: (message.systemMessage as MessagePinnedSystemMessage).by?.username
 #: components/client/NotificationsWorker.tsx
 msgid "{0} unpinned a message"
@@ -150,6 +160,10 @@ msgstr ""
 #. placeholder {0}: props.member.displayName
 #: components/modal/modals/UserProfileRoles.tsx
 msgid "{0}'s roles"
+msgstr ""
+
+#: components/client/NotificationsWorker.tsx
+msgid "{callerName} is calling in {channelName}"
 msgstr ""
 
 #: src/interface/channels/text/Composition.tsx
@@ -334,10 +348,6 @@ msgstr ""
 msgid "Able to speak in voice call"
 msgstr ""
 
-#: components/auth/src/AuthPage.tsx
-msgid "About"
-msgstr ""
-
 #: components/modal/modals/SignOutSessions.tsx
 msgid "Accept"
 msgstr ""
@@ -377,6 +387,10 @@ msgstr ""
 #: components/modal/modals/AddMembersToGroup.tsx
 #: components/modal/modals/AddBot.tsx
 msgid "Add"
+msgstr ""
+
+#: src/interface/Home.tsx
+msgid "Add a Friend"
 msgstr ""
 
 #: src/interface/Friends.tsx
@@ -477,10 +491,6 @@ msgstr ""
 msgid "Are you sure you want to go to "
 msgstr ""
 
-#: components/modal/modals/LinkWarning.tsx
-#~ msgid "Are you sure you want to go to <0>{0}</0>?"
-#~ msgstr ""
-
 #. placeholder {0}: props.user?.displayName ?? props.user.username
 #. placeholder {1}: props.group.name
 #: components/modal/modals/RemoveMember.tsx
@@ -513,6 +523,7 @@ msgstr ""
 msgid "Avatar"
 msgstr ""
 
+#: src/interface/channels/PasswordGate.tsx
 #: src/interface/channels/AgeGate.tsx
 #: src/interface/channels/AgeGate.tsx
 #: components/modal/modals/MFAFlow.tsx
@@ -584,6 +595,11 @@ msgstr "User nga Gibabagan"
 msgid "Bot"
 msgstr "bot"
 
+#. placeholder {0}: voice.cameraBrightness
+#: components/app/interface/settings/user/voice/ScreenShareOptions.tsx
+msgid "Brightness: {0}%"
+msgstr ""
+
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
 msgid "Browser"
 msgstr ""
@@ -591,10 +607,6 @@ msgstr ""
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
 msgid "Browser Echo Cancellation"
 msgstr ""
-
-#: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
-#~ msgid "Browser Noise Supression"
-#~ msgstr ""
 
 #: components/app/interface/settings/user/Feedback.tsx
 msgid "Bug Tracker"
@@ -623,6 +635,19 @@ msgstr ""
 msgid "Bypasses slowmode in channels"
 msgstr ""
 
+#: components/app/menus/UserContextMenu.tsx
+msgid "Call"
+msgstr ""
+
+#: components/app/interface/settings/user/voice/ScreenShareOptions.tsx
+msgid "Camera Brightness"
+msgstr ""
+
+#: components/app/interface/settings/user/voice/ScreenShareOptions.tsx
+msgid "Camera Settings"
+msgstr ""
+
+#: src/interface/ServerEvents.tsx
 #: components/modal/modals/SignOutSessions.tsx
 #: components/modal/modals/ServerIdentity.tsx
 #: components/modal/modals/ScreenShareSettings.tsx
@@ -637,6 +662,7 @@ msgstr ""
 #: components/modal/modals/MFAEnableTOTP.tsx
 #: components/modal/modals/LeaveServer.tsx
 #: components/modal/modals/KickMember.tsx
+#: components/modal/modals/InviteToServer.tsx
 #: components/modal/modals/Invite.tsx
 #: components/modal/modals/EditCategory.tsx
 #: components/modal/modals/DeleteServer.tsx
@@ -714,10 +740,6 @@ msgstr ""
 msgid "Change your profile per-server"
 msgstr ""
 
-#: components/modal/modals/Changelog.tsx
-#~ msgid "Changelog"
-#~ msgstr ""
-
 #: components/app/interface/settings/channel/Overview.tsx
 msgid "Channel Description"
 msgstr ""
@@ -729,6 +751,10 @@ msgstr ""
 #: components/modal/modals/CreateChannel.tsx
 #: components/app/interface/settings/channel/Overview.tsx
 msgid "Channel Name"
+msgstr ""
+
+#: components/app/interface/settings/channel/Overview.tsx
+msgid "Channel Password"
 msgstr ""
 
 #: src/interface/channels/ChannelHeader.tsx
@@ -870,6 +896,10 @@ msgstr "Sumpaysumpaya"
 msgid "Connect to voice channel"
 msgstr ""
 
+#: src/interface/Home.tsx
+msgid "Connect with someone by adding them as a friend."
+msgstr ""
+
 #: components/ui/components/features/voice/callCard/VoiceCallCardStatus.tsx
 msgid "Connected"
 msgstr ""
@@ -898,10 +928,6 @@ msgstr ""
 #: components/app/interface/settings/user/Language.tsx
 msgid "Contribute a language"
 msgstr ""
-
-#: src/interface/navigation/channels/HomeSidebar.tsx
-#~ msgid "Conversations"
-#~ msgstr "Mga Panag-istoryahanay"
 
 #: components/ui/components/features/profiles/ProfileBanner.tsx
 msgid "Copied!"
@@ -974,6 +1000,7 @@ msgstr ""
 msgid "Could not find what you requested."
 msgstr ""
 
+#: src/interface/ServerEvents.tsx
 #: components/modal/modals/CreateWebhook.tsx
 #: components/modal/modals/CreateServer.tsx
 #: components/modal/modals/CreateRole.tsx
@@ -987,14 +1014,6 @@ msgstr ""
 
 #: components/app/interface/settings/server/invites/ListServerInvites.tsx
 msgid "Create a channel before inviting others!"
-msgstr ""
-
-#: src/interface/Home.tsx
-#~ msgid "Create a group"
-#~ msgstr "Paghimo og grupo"
-
-#: src/interface/Home.tsx
-msgid "Create a group or server"
 msgstr ""
 
 #: components/modal/modals/CreateBot.tsx
@@ -1012,6 +1031,10 @@ msgstr ""
 
 #: components/app/interface/settings/server/roles/ServerRoleOverview.tsx
 msgid "Create a new role"
+msgstr ""
+
+#: src/interface/ServerEvents.tsx
+msgid "Create a text channel named <0>events</0> in this server to enable the calendar."
 msgstr ""
 
 #: components/modal/modals/CreateWebhook.tsx
@@ -1045,6 +1068,10 @@ msgstr ""
 #: components/app/menus/ServerSidebarContextMenu.tsx
 #: components/app/menus/ChannelContextMenu.tsx
 msgid "Create channel"
+msgstr ""
+
+#: src/interface/ServerEvents.tsx
+msgid "Create Event"
 msgstr ""
 
 #: components/app/menus/ServerContextMenu.tsx
@@ -1141,10 +1168,6 @@ msgstr ""
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsOverview.tsx
 msgid "Default Permissions"
 msgstr ""
-
-#: components/ui/components/features/voice/callCard/VoiceCallCardActions.tsx
-#~ msgid "Defean"
-#~ msgstr ""
 
 #: components/modal/modals/EmojiPreview.tsx
 #: components/modal/modals/DeleteServer.tsx
@@ -1252,6 +1275,10 @@ msgstr ""
 msgid "Disappearing messages: Off"
 msgstr ""
 
+#: components/app/interface/settings/user/notifications/Sounds.tsx
+msgid "Disconnect Sound Style"
+msgstr ""
+
 #: components/ui/components/features/voice/callCard/VoiceCallCardStatus.tsx
 msgid "Disconnected"
 msgstr ""
@@ -1263,10 +1290,6 @@ msgstr ""
 #: src/interface/Home.tsx
 msgid "Discover Acutest"
 msgstr ""
-
-#: src/interface/Home.tsx
-#~ msgid "Discover Stoat"
-#~ msgstr ""
 
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Display & Text"
@@ -1288,10 +1311,6 @@ msgstr ""
 msgid "Don't ask me again for "
 msgstr ""
 
-#: components/modal/modals/LinkWarning.tsx
-#~ msgid "Don't ask me again for <0>{0}</0>"
-#~ msgstr ""
-
 #: components/modal/modals/BanMember.tsx
 msgid "Don't delete messages"
 msgstr ""
@@ -1304,25 +1323,13 @@ msgstr ""
 msgid "Don't show this again"
 msgstr ""
 
-#: components/app/interface/settings/UserSettings.tsx
-msgid "Donate"
-msgstr ""
-
 #: src/interface/Home.tsx
 msgid "Donate to Acutest"
 msgstr ""
 
-#: src/interface/Home.tsx
-#~ msgid "Donate to Stoat"
-#~ msgstr ""
-
 #: components/ui/components/features/profiles/ProfileBadges.tsx
 msgid "Donated to Acutest"
 msgstr ""
-
-#: components/ui/components/features/profiles/ProfileBadges.tsx
-#~ msgid "Donated to Stoat"
-#~ msgstr ""
 
 #: components/modal/modals/MFARecovery.tsx
 msgid "Done"
@@ -1454,6 +1461,7 @@ msgstr ""
 msgid "Enter a new password."
 msgstr "Pagbutang og bag-ong password."
 
+#: src/interface/channels/PasswordGate.tsx
 #: src/interface/channels/AgeGate.tsx
 msgid "Enter Channel"
 msgstr "Sudlan Ning Channel"
@@ -1497,10 +1505,6 @@ msgid "Failed to enable notifications. Acutest does not have notification permis
 msgstr ""
 
 #: components/client/NotificationsController.ts
-#~ msgid "Failed to enable notifications. Stoat does not have notification permission."
-#~ msgstr ""
-
-#: components/client/NotificationsController.ts
 msgid "Failed to enable push notifications. Please try again later."
 msgstr ""
 
@@ -1524,10 +1528,6 @@ msgstr ""
 #: src/interface/Home.tsx
 msgid "Find a community based on your hobbies or interests."
 msgstr "Pagpangita og komunidad sa imong kalingawan o interes."
-
-#: components/auth/src/flows/FlowHome.tsx
-#~ msgid "Find your com<0/>munity,<1/>connect with the world."
-#~ msgstr ""
 
 #: src/interface/navigation/servers/UserMenu.tsx
 #: src/interface/navigation/channels/HomeSidebar.tsx
@@ -1565,6 +1565,10 @@ msgstr ""
 msgid "Free"
 msgstr ""
 
+#: components/client/NotificationsWorker.tsx
+msgid "Friend Request"
+msgstr ""
+
 #: src/interface/Friends.tsx
 #: src/interface/navigation/channels/HomeSidebar.tsx
 msgid "Friends"
@@ -1572,6 +1576,11 @@ msgstr "Mga Higala"
 
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Fruit Salad"
+msgstr ""
+
+#. placeholder {0}: voice.microphoneGain
+#: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
+msgid "Gain: {0}%"
 msgstr ""
 
 #: components/app/interface/settings/user/bots/ViewBot.tsx
@@ -1598,14 +1607,6 @@ msgstr ""
 msgid "Get it on Google Play"
 msgstr ""
 
-#: src/interface/Home.tsx
-msgid "Give feedback on Acutest"
-msgstr ""
-
-#: src/interface/Home.tsx
-#~ msgid "Give feedback on Stoat"
-#~ msgstr ""
-
 #: components/modal/modals/ReportContent.tsx
 msgid "Give us some detail"
 msgstr ""
@@ -1631,16 +1632,6 @@ msgstr ""
 #: components/app/interface/settings/user/Feedback.tsx
 msgid "Go to the Acutest Lounge"
 msgstr ""
-
-#: src/interface/Home.tsx
-#: components/app/interface/settings/user/Feedback.tsx
-#~ msgid "Go to the Stoat Lounge"
-#~ msgstr ""
-
-#: src/interface/Home.tsx
-#: src/interface/Home.tsx
-#~ msgid "Go to the testers server"
-#~ msgstr "Pangadto sa server sa mga mosulay"
 
 #: components/modal/modals/Onboarding.tsx
 msgid "Good"
@@ -1680,10 +1671,6 @@ msgstr ""
 #: components/ui/components/features/profiles/ProfileBadges.tsx
 msgid "Helped translate Acutest"
 msgstr ""
-
-#: components/ui/components/features/profiles/ProfileBadges.tsx
-#~ msgid "Helped translate Stoat"
-#~ msgstr ""
 
 #. placeholder {0}: link()
 #: components/modal/modals/CreateInvite.tsx
@@ -1733,16 +1720,28 @@ msgstr "Nagpahulay"
 msgid "Illegal hacking or cracking"
 msgstr ""
 
-#: components/auth/src/AuthPage.tsx
-#~ msgid "Image by @fakurian"
-#~ msgstr ""
-
 #: components/modal/modals/ReportContent.tsx
 msgid "Impersonation"
 msgstr ""
 
 #: src/AndroidNag.tsx
 msgid "In the meantime, install Acutest from Google Play for a faster, smoother experience designed for Android."
+msgstr ""
+
+#: components/client/NotificationsWorker.tsx
+msgid "Incoming Call"
+msgstr ""
+
+#: components/app/interface/settings/user/notifications/Sounds.tsx
+msgid "Incoming Call Ringtone"
+msgstr ""
+
+#: src/interface/channels/PasswordGate.tsx
+msgid "Incorrect password."
+msgstr ""
+
+#: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
+msgid "Input Gain"
 msgstr ""
 
 #: components/app/interface/settings/user/voice/MicrophoneLevelMeter.tsx
@@ -1753,10 +1752,6 @@ msgstr ""
 msgid "Instead of closing, Acutest will hide in your tray."
 msgstr ""
 
-#: components/app/interface/settings/user/Native.tsx
-#~ msgid "Instead of closing, Stoat will hide in your tray."
-#~ msgstr ""
-
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Interface Font"
 msgstr ""
@@ -1764,6 +1759,10 @@ msgstr ""
 #: src/interface/navigation/servers/UserMenu.tsx
 msgid "Invisible"
 msgstr "Dili Makit-an"
+
+#: components/app/menus/ServerContextMenu.tsx
+msgid "Invite a friend"
+msgstr ""
 
 #: src/interface/Home.tsx
 msgid "Invite all of your friends, some cool bots, and throw a big party."
@@ -1776,6 +1775,11 @@ msgstr ""
 #: components/auth/src/flows/Form.tsx
 #: components/app/interface/settings/server/invites/ListServerInvites.tsx
 msgid "Invite Code"
+msgstr ""
+
+#. placeholder {0}: props.server.name
+#: components/modal/modals/InviteToServer.tsx
+msgid "Invite Friends to {0}"
 msgstr ""
 
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
@@ -1815,19 +1819,10 @@ msgstr ""
 msgid "Join a server"
 msgstr ""
 
-#: src/interface/channels/ChannelHeader.tsx
-#~ msgid "Join call"
-#~ msgstr ""
-
 #: src/interface/Home.tsx
 #: components/app/interface/settings/user/Feedback.tsx
 msgid "Join the Acutest Lounge"
 msgstr ""
-
-#: src/interface/Home.tsx
-#: components/app/interface/settings/user/Feedback.tsx
-#~ msgid "Join the Stoat Lounge"
-#~ msgstr ""
 
 #: src/interface/channels/ChannelHeader.tsx
 #: components/ui/components/features/voice/callCard/VoiceCallCardPreview.tsx
@@ -1888,17 +1883,9 @@ msgstr "Pinakabag-o"
 msgid "Launch Acutest when you log into your computer."
 msgstr ""
 
-#: components/app/interface/settings/user/Native.tsx
-#~ msgid "Launch Stoat when you log into your computer."
-#~ msgstr ""
-
 #: components/app/interface/settings/user/bots/MyBots.tsx
 msgid "Learn more about how to create bots on Acutest."
 msgstr ""
-
-#: components/app/interface/settings/user/bots/MyBots.tsx
-#~ msgid "Learn more about how to create bots on Stoat."
-#~ msgstr ""
 
 #: components/modal/modals/LeaveServer.tsx
 #: components/modal/modals/DeleteChannel.tsx
@@ -1924,14 +1911,6 @@ msgstr ""
 msgid "Let Acutest use its own custom titlebar."
 msgstr ""
 
-#: components/app/interface/settings/user/Native.tsx
-#~ msgid "Let Stoat use its own custom titlebar."
-#~ msgstr ""
-
-#: src/interface/Home.tsx
-msgid "Let us know how we can improve our app by giving us feedback."
-msgstr "Ipahibalo sa amo kung unsaon namo aron mapanindot ning app pinaagi sa paghatag sa amo og feedback."
-
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Light"
 msgstr ""
@@ -1943,6 +1922,10 @@ msgstr ""
 #. placeholder {0}: humanFileSize(props.file.size ?? 0)
 #: components/ui/components/features/messaging/elements/TextFile.tsx
 msgid "Load file ({0})"
+msgstr ""
+
+#: src/interface/ServerEvents.tsx
+msgid "Loading events…"
 msgstr ""
 
 #: components/auth/src/flows/FlowHome.tsx
@@ -2101,11 +2084,16 @@ msgid "Message Received"
 msgstr ""
 
 #: components/app/interface/settings/user/notifications/Sounds.tsx
+#: components/app/interface/settings/user/notifications/Sounds.tsx
 msgid "Message Sent"
 msgstr ""
 
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Message Size"
+msgstr ""
+
+#: components/app/interface/settings/user/notifications/Sounds.tsx
+msgid "Message Sound Style"
 msgstr ""
 
 #: components/app/interface/channels/text/Message.tsx
@@ -2127,6 +2115,10 @@ msgstr ""
 
 #: components/app/interface/settings/user/voice/MicrophoneLevelMeter.tsx
 msgid "Microphone access denied."
+msgstr ""
+
+#: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
+msgid "Microphone Gain"
 msgstr ""
 
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
@@ -2241,6 +2233,10 @@ msgstr ""
 msgid "NEW"
 msgstr ""
 
+#: src/interface/ServerEvents.tsx
+msgid "New Event"
+msgstr ""
+
 #. placeholder {0}: dayjs(decodeTime(props.lastId()!)).fromNow()
 #: components/ui/components/features/messaging/bars/NewMessages.tsx
 msgid "New messages since {0}"
@@ -2256,15 +2252,23 @@ msgid "New to Acutest"
 msgstr ""
 
 #: components/app/interface/channels/text/Message.tsx
-#~ msgid "New to Stoat"
-#~ msgstr ""
-
-#: components/app/interface/channels/text/Message.tsx
 msgid "New to the server"
 msgstr ""
 
 #: components/modal/modals/ServerIdentity.tsx
 msgid "Nickname"
+msgstr ""
+
+#: components/modal/modals/InviteToServer.tsx
+msgid "No channels available to create an invite for."
+msgstr ""
+
+#: src/interface/ServerEvents.tsx
+msgid "No Events Channel Found"
+msgstr ""
+
+#: src/interface/ServerEvents.tsx
+msgid "No events on this day."
 msgstr ""
 
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsOverview.tsx
@@ -2389,6 +2393,10 @@ msgstr "Abriha ang mga setting"
 msgid "Other"
 msgstr ""
 
+#: components/app/interface/settings/user/notifications/Sounds.tsx
+msgid "Outgoing Call Ringtone"
+msgstr ""
+
 #: components/app/interface/settings/user/voice/VoiceInputOptions.tsx
 msgid "Output Volume"
 msgstr ""
@@ -2408,6 +2416,14 @@ msgstr ""
 #: components/app/interface/settings/user/Account.tsx
 msgid "Password"
 msgstr "Password"
+
+#: components/app/interface/settings/channel/Overview.tsx
+msgid "Password removed!"
+msgstr ""
+
+#: components/app/interface/settings/channel/Overview.tsx
+msgid "Password set!"
+msgstr ""
 
 #: src/interface/Friends.tsx
 msgid "Pending"
@@ -2482,9 +2498,11 @@ msgstr ""
 msgid "Press any key..."
 msgstr ""
 
-#: components/auth/src/AuthPage.tsx
-msgid "Privacy Policy"
-msgstr "Palisiya sa Pagkapribado"
+#: components/app/interface/settings/user/notifications/Sounds.tsx
+#: components/app/interface/settings/user/notifications/Sounds.tsx
+#: components/app/interface/settings/user/notifications/Sounds.tsx
+msgid "Preview"
+msgstr ""
 
 #: components/markdown/plugins/anchors.tsx
 msgid "Private Channel"
@@ -2531,10 +2549,6 @@ msgstr ""
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "Read Message History"
 msgstr ""
-
-#: components/modal/modals/Changelog.tsx
-#~ msgid "Read More"
-#~ msgstr ""
 
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "Read past messages sent in channel"
@@ -2640,6 +2654,10 @@ msgstr ""
 msgid "Remove other members' avatars"
 msgstr ""
 
+#: components/app/interface/settings/channel/Overview.tsx
+msgid "Remove Password"
+msgstr ""
+
 #: components/app/menus/MessageContextMenu.tsx
 msgid "Remove reaction"
 msgstr ""
@@ -2663,10 +2681,6 @@ msgstr ""
 #: components/app/interface/settings/user/Native.tsx
 msgid "Rep Acutest using Discord rich presence."
 msgstr ""
-
-#: components/app/interface/settings/user/Native.tsx
-#~ msgid "Rep Stoat using Discord rich presence."
-#~ msgstr ""
 
 #: components/app/menus/MessageContextMenu.tsx
 msgid "Reply"
@@ -2749,9 +2763,9 @@ msgstr ""
 msgid "Review policy changes"
 msgstr ""
 
-#: components/app/interface/settings/user/Feedback.tsx
-#~ msgid "Roadmap"
-#~ msgstr ""
+#: components/app/interface/settings/user/notifications/Sounds.tsx
+msgid "Ringtone Style"
+msgstr ""
 
 #: components/app/interface/settings/server/roles/ServerRoleEditor.tsx
 msgid "Role Icon"
@@ -2791,6 +2805,14 @@ msgstr "I-save sa imong mga note"
 msgid "Saved Notes"
 msgstr "Mga Na-save nga Note"
 
+#: components/app/interface/settings/channel/Overview.tsx
+msgid "Saving..."
+msgstr ""
+
+#: src/interface/ServerEvents.tsx
+msgid "Saving…"
+msgstr ""
+
 #: components/modal/modals/ReportContent.tsx
 msgid "Scams or fraud"
 msgstr ""
@@ -2817,9 +2839,9 @@ msgstr ""
 msgid "Search for users..."
 msgstr ""
 
-#: components/app/interface/settings/user/Feedback.tsx
-#~ msgid "See what we're currently working on."
-#~ msgstr ""
+#: components/modal/modals/InviteToServer.tsx
+msgid "Search friends..."
+msgstr ""
 
 #: components/app/interface/settings/user/voice/VoiceInputOptions.tsx
 msgid "Select audio input"
@@ -2864,6 +2886,10 @@ msgstr ""
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "Send Embeds"
 msgstr "Ipadala ang mga Embed"
+
+#: components/modal/modals/InviteToServer.tsx
+msgid "Send Invites"
+msgstr ""
 
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "Send Messages"
@@ -2926,6 +2952,10 @@ msgstr ""
 msgid "Server Description"
 msgstr "Deskripsyon sa Server"
 
+#: src/interface/ServerEvents.tsx
+msgid "Server Events"
+msgstr ""
+
 #: components/app/interface/settings/server/Overview.tsx
 msgid "Server Icon"
 msgstr ""
@@ -2946,6 +2976,14 @@ msgstr ""
 #: components/app/interface/settings/UserSettings.tsx
 msgid "Sessions"
 msgstr "Mga Sesyon"
+
+#: components/app/interface/settings/channel/Overview.tsx
+msgid "Set a password that users must enter before viewing this channel."
+msgstr ""
+
+#: components/app/menus/ChannelContextMenu.tsx
+msgid "Set channel password"
+msgstr ""
 
 #: components/modal/modals/CustomStatus.tsx
 msgid "Set your status"
@@ -2997,10 +3035,6 @@ msgstr ""
 msgid "Sign into Acutest"
 msgstr ""
 
-#: components/auth/src/flows/FlowLogin.tsx
-#~ msgid "Sign into Stoat"
-#~ msgstr ""
-
 #: components/auth/src/flows/FlowHome.tsx
 msgid "Sign Up"
 msgstr ""
@@ -3038,16 +3072,8 @@ msgstr ""
 msgid "Something went wrong! {error}"
 msgstr ""
 
-#: components/i18n/errors.ts
-#~ msgid "Something went wrong! Try again later."
-#~ msgstr ""
-
 #: components/app/interface/settings/user/notifications/Sounds.tsx
 msgid "Sounds"
-msgstr ""
-
-#: components/app/interface/settings/UserSettings.tsx
-msgid "Source Code"
 msgstr ""
 
 #: components/modal/modals/ReportContent.tsx
@@ -3060,6 +3086,10 @@ msgstr ""
 
 #: components/app/interface/settings/user/Native.tsx
 msgid "Spellchecker"
+msgstr ""
+
+#: src/interface/Home.tsx
+msgid "Start a Chat Room/Server"
 msgstr ""
 
 #: components/ui/components/features/voice/callCard/VoiceCallCardActions.tsx
@@ -3089,30 +3119,6 @@ msgstr ""
 #: components/app/interface/settings/ServerSettings.tsx
 msgid "Stickers"
 msgstr ""
-
-#: components/app/interface/settings/user/Native.tsx
-#~ msgid "Stoat Desktop"
-#~ msgstr ""
-
-#: components/ui/components/features/profiles/ProfileBadges.tsx
-#~ msgid "Stoat Developer"
-#~ msgstr ""
-
-#: components/app/interface/settings/user/Native.tsx
-#~ msgid "Stoat for Desktop"
-#~ msgstr ""
-
-#: components/ui/components/features/profiles/ProfileBadges.tsx
-#~ msgid "Stoat Founder"
-#~ msgstr ""
-
-#: components/auth/src/flows/FlowHome.tsx
-#~ msgid "Stoat is one of the best ways to stay connected with your friends and community, anywhere, anytime."
-#~ msgstr ""
-
-#: components/app/interface/settings/user/Native.tsx
-#~ msgid "Stoat will start in the system tray."
-#~ msgstr ""
 
 #: components/app/interface/settings/user/voice/MicrophoneTest.tsx
 msgid "Stop"
@@ -3153,10 +3159,6 @@ msgstr ""
 #: components/app/interface/settings/user/Feedback.tsx
 msgid "Suggest new Acutest features on GitHub discussions."
 msgstr ""
-
-#: components/app/interface/settings/user/Feedback.tsx
-#~ msgid "Suggest new Stoat features on GitHub discussions."
-#~ msgstr ""
 
 #: src/interface/Home.tsx
 msgid "Support the project by donating - thank you!"
@@ -3202,10 +3204,6 @@ msgstr ""
 msgid "Temporarily prevent lower-ranking members from interacting"
 msgstr ""
 
-#: components/auth/src/AuthPage.tsx
-msgid "Terms of Service"
-msgstr "Mga Termino sa Serbisyo"
-
 #: components/app/interface/settings/user/voice/MicrophoneLevelMeter.tsx
 msgid "Test Input Level"
 msgstr ""
@@ -3247,12 +3245,20 @@ msgstr ""
 msgid "This channel is about..."
 msgstr ""
 
+#: components/app/interface/settings/channel/Overview.tsx
+msgid "This channel is currently password protected."
+msgstr ""
+
 #: src/interface/channels/AgeGate.tsx
 msgid "This channel is marked as mature."
 msgstr ""
 
 #: src/interface/channels/AgeGate.tsx
 msgid "This channel is not available in your region while we review options on legal compliance."
+msgstr ""
+
+#: src/interface/channels/PasswordGate.tsx
+msgid "This channel is password protected."
 msgstr ""
 
 #: src/interface/channels/AgeGate.tsx
@@ -3408,6 +3414,10 @@ msgstr ""
 msgid "Until I turn it back on"
 msgstr ""
 
+#: src/interface/ServerEvents.tsx
+msgid "Upcoming"
+msgstr ""
+
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "Upload Files"
 msgstr "Pag-upload sa mga File."
@@ -3494,14 +3504,6 @@ msgstr ""
 msgid "Users will no longer be asked to confirm their age before joining this channel.<0/> Please ensure the content is appropriate for all ages."
 msgstr ""
 
-#: components/app/interface/settings/user/voice/VoiceInputOptions.tsx
-#~ msgid "Using default microphone"
-#~ msgstr ""
-
-#: components/app/interface/settings/user/voice/VoiceInputOptions.tsx
-#~ msgid "Using default speaker"
-#~ msgstr ""
-
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
 msgid "VAD Threshold"
 msgstr ""
@@ -3534,10 +3536,6 @@ msgstr ""
 #: src/interface/channels/ChannelHeader.tsx
 msgid "View members"
 msgstr ""
-
-#: components/modal/modals/Changelog.tsx
-#~ msgid "View older updates"
-#~ msgstr ""
 
 #: src/interface/channels/ChannelHeader.tsx
 msgid "View pinned messages"
@@ -3605,11 +3603,6 @@ msgstr ""
 msgid "Webhooks"
 msgstr ""
 
-#: src/interface/Home.tsx
-#: components/auth/src/flows/FlowLogin.tsx
-#~ msgid "Welcome to"
-#~ msgstr ""
-
 #: components/auth/src/flows/FlowLogin.tsx
 msgid "Welcome!"
 msgstr "Kumusta!"
@@ -3618,21 +3611,17 @@ msgstr "Kumusta!"
 msgid "What's new"
 msgstr ""
 
-#: components/app/interface/settings/UserSettings.tsx
-msgid "What's New"
-msgstr ""
-
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "Whether other users can edit these settings"
+msgstr ""
+
+#: components/modal/modals/CreateGroupOrServer.tsx
+msgid "Which would you like to Start?"
 msgstr ""
 
 #. placeholder {0}: names.join(", ")
 #: components/ui/components/features/voice/callCard/VoiceCallCardPreview.tsx
 msgid "With {0}"
-msgstr ""
-
-#: components/modal/modals/CreateGroupOrServer.tsx
-msgid "Would you like to create a new group or server?"
 msgstr ""
 
 #: components/modal/modals/CreateOrJoinServer.tsx
@@ -3662,10 +3651,6 @@ msgstr ""
 #: src/interface/Home.tsx
 msgid "You can also click the gear icon in the bottom left."
 msgstr ""
-
-#: src/interface/Home.tsx
-#~ msgid "You can also right-click the user icon in the top left, or left click it if you're already home."
-#~ msgstr "Pwede pud nimo i-right-click ang icon sa user sa ibabaw sa tuo, o i-left click kung naa na ka sa panid sa pagsugod."
 
 #: components/modal/modals/DeleteChannel.tsx
 msgid "You can re-open it later, but it will disappear on both sides."
@@ -3779,10 +3764,6 @@ msgstr ""
 #: components/modal/modals/SignedOut.tsx
 msgid "You've been signed out of Acutest!"
 msgstr ""
-
-#: components/modal/modals/SignedOut.tsx
-#~ msgid "You've been signed out of Stoat!"
-#~ msgstr ""
 
 #: components/i18n/errors.ts
 msgid "You've reached your personal bot limit."
