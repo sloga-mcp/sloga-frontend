@@ -360,6 +360,10 @@ msgstr "Accept friend request"
 msgid "Acknowledge"
 msgstr "Acknowledge"
 
+#: components/ui/components/features/profiles/ProfileStatus.tsx
+msgid "Activity"
+msgstr "Activity"
+
 #: components/ui/components/features/profiles/ProfileBadges.tsx
 msgid "Acutest Developer"
 msgstr "Acutest Developer"
@@ -1846,6 +1850,10 @@ msgstr "Jump to the beginning"
 msgid "Keep as is"
 msgstr "Keep as is"
 
+#: components/auth/src/flows/FlowLogin.tsx
+msgid "Keep me logged in"
+msgstr "Keep me logged in"
+
 #: components/modal/modals/KickMember.tsx
 msgid "Kick"
 msgstr "Kick"
@@ -2453,6 +2461,20 @@ msgstr "Platform Moderator"
 msgid "Play sound"
 msgstr "Play sound"
 
+#. placeholder {0}: activity.name
+#. placeholder {0}: props.user.activity!.name
+#: src/interface/navigation/channels/HomeSidebar.tsx
+#: src/interface/channels/text/MemberSidebar.tsx
+#: components/ui/components/features/profiles/ProfileStatus.tsx
+msgid "Playing {0}"
+msgstr "Playing {0}"
+
+#. placeholder {0}: props.user.activity!.name
+#. placeholder {1}: playingFor()
+#: components/ui/components/features/profiles/ProfileStatus.tsx
+msgid "Playing {0} for {1}"
+msgstr "Playing {0} for {1}"
+
 #: components/app/interface/settings/user/voice/MicrophoneTest.tsx
 #: components/app/interface/settings/user/voice/MicrophoneTest.tsx
 msgid "Playing back…"
@@ -3015,6 +3037,10 @@ msgstr "Share audio"
 msgid "Share camera or screen in voice call"
 msgstr "Share camera or screen in voice call"
 
+#: components/app/interface/settings/user/profile/EditProfile.tsx
+msgid "Share Game Activity"
+msgstr "Share Game Activity"
+
 #: components/ui/components/features/voice/callCard/VoiceCallCardActions.tsx
 msgid "Share screen"
 msgstr "Share screen"
@@ -3022,6 +3048,10 @@ msgstr "Share screen"
 #: components/app/interface/settings/user/Native.tsx
 msgid "Show corrections and suggestions as you type."
 msgstr "Show corrections and suggestions as you type."
+
+#: components/app/interface/settings/user/profile/EditProfile.tsx
+msgid "Show friends what game you are playing (desktop app only)."
+msgstr "Show friends what game you are playing (desktop app only)."
 
 #: components/ui/components/features/voice/callCard/VoiceCallCardActiveRoom.tsx
 msgid "Show Others"

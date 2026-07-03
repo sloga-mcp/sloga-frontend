@@ -1,4 +1,4 @@
-import { Match, Switch } from "solid-js";
+import { Match, Switch, createSignal } from "solid-js";
 
 import { Trans } from "@lingui-solid/solid/macro";
 
@@ -8,6 +8,7 @@ import { useModals } from "@revolt/modal";
 import { Navigate } from "@revolt/routing";
 import {
   Button,
+  Checkbox,
   CircularProgress,
   Column,
   Row,
@@ -29,6 +30,8 @@ export default function FlowLogin() {
   const modals = useModals();
   const { lifecycle, isLoggedIn, login, selectUsername } = useClientLifecycle();
 
+  const [keepLoggedIn, setKeepLoggedIn] = createSignal(true);
+
   /**
    * Log into account
    * @param data Form Data
@@ -38,6 +41,8 @@ export default function FlowLogin() {
     const password = data.get("password") as string;
 
     if (!email || !password) return;
+
+    state.auth.setRemember(keepLoggedIn());
 
     await login(
       {
@@ -68,6 +73,14 @@ export default function FlowLogin() {
             <div style={{"--md-sys-color-primary": "#FF8A00", "--mdui-color-primary": "255, 138, 0", "display": "contents"}}>
             <Form onSubmit={performLogin}>
               <Fields fields={["email", "password"]} />
+              <Checkbox
+                checked={keepLoggedIn()}
+                onChange={(event) =>
+                  setKeepLoggedIn(event.currentTarget.checked)
+                }
+              >
+                <Trans>Keep me logged in</Trans>
+              </Checkbox>
               <div style={{"display": "flex", "flex-direction": "column", "gap": "inherit", "width": "100%"}}>
                 <Column gap="xl" align>
                   <a href="/login/reset">

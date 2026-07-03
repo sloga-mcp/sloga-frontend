@@ -360,6 +360,10 @@ msgstr "Accepter demande d'ami"
 msgid "Acknowledge"
 msgstr ""
 
+#: components/ui/components/features/profiles/ProfileStatus.tsx
+msgid "Activity"
+msgstr ""
+
 #: components/ui/components/features/profiles/ProfileBadges.tsx
 msgid "Acutest Developer"
 msgstr ""
@@ -1846,6 +1850,10 @@ msgstr "Aller au début"
 msgid "Keep as is"
 msgstr ""
 
+#: components/auth/src/flows/FlowLogin.tsx
+msgid "Keep me logged in"
+msgstr ""
+
 #: components/modal/modals/KickMember.tsx
 msgid "Kick"
 msgstr "Expulser"
@@ -2453,6 +2461,20 @@ msgstr ""
 msgid "Play sound"
 msgstr ""
 
+#. placeholder {0}: activity.name
+#. placeholder {0}: props.user.activity!.name
+#: src/interface/navigation/channels/HomeSidebar.tsx
+#: src/interface/channels/text/MemberSidebar.tsx
+#: components/ui/components/features/profiles/ProfileStatus.tsx
+msgid "Playing {0}"
+msgstr ""
+
+#. placeholder {0}: props.user.activity!.name
+#. placeholder {1}: playingFor()
+#: components/ui/components/features/profiles/ProfileStatus.tsx
+msgid "Playing {0} for {1}"
+msgstr ""
+
 #: components/app/interface/settings/user/voice/MicrophoneTest.tsx
 #: components/app/interface/settings/user/voice/MicrophoneTest.tsx
 msgid "Playing back…"
@@ -3015,12 +3037,20 @@ msgstr ""
 msgid "Share camera or screen in voice call"
 msgstr ""
 
+#: components/app/interface/settings/user/profile/EditProfile.tsx
+msgid "Share Game Activity"
+msgstr ""
+
 #: components/ui/components/features/voice/callCard/VoiceCallCardActions.tsx
 msgid "Share screen"
 msgstr ""
 
 #: components/app/interface/settings/user/Native.tsx
 msgid "Show corrections and suggestions as you type."
+msgstr ""
+
+#: components/app/interface/settings/user/profile/EditProfile.tsx
+msgid "Show friends what game you are playing (desktop app only)."
 msgstr ""
 
 #: components/ui/components/features/voice/callCard/VoiceCallCardActiveRoom.tsx

@@ -285,8 +285,10 @@ function Entry(
   /**
    * Determine user status if present
    */
-  const status = () =>
-    local.channel.recipient?.statusMessage((s) =>
+  const status = () => {
+    const activity = local.channel.recipient?.activity;
+    if (activity) return t`Playing ${activity.name}`;
+    return local.channel.recipient?.statusMessage((s) =>
       s === "Online"
         ? t`Online`
         : s === "Busy"
@@ -297,6 +299,7 @@ function Entry(
               ? t`Idle`
               : t`Offline`,
     );
+  };
 
   return (
     <MenuButton

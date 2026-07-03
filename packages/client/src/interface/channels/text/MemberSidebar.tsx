@@ -421,8 +421,11 @@ function Member(props: {
   /**
    * Get user status
    */
-  const status = () =>
-    (props.user ?? props.member?.user)?.statusMessage((s) =>
+  const status = () => {
+    const target = props.user ?? props.member?.user;
+    const activity = target?.activity;
+    if (activity) return t`Playing ${activity.name}`;
+    return target?.statusMessage((s) =>
       s === "Online"
         ? t`Online`
         : s === "Busy"
@@ -433,6 +436,7 @@ function Member(props: {
               ? t`Idle`
               : t`Offline`,
     );
+  };
 
   return (
     <div

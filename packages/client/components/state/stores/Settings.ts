@@ -95,6 +95,11 @@ interface SettingsDefinition {
    * Which disconnect sound variant to use (1–5)
    */
   "sounds:disconnect_variant": number;
+
+  /**
+   * Whether to share detected game activity with others (desktop app)
+   */
+  "activity:share": boolean;
 }
 
 /**
@@ -126,6 +131,7 @@ const EXPECTED_TYPES: { [K in keyof SettingsDefinition]: ValueType<K> } = {
   "sounds:message_variant": "number",
   "sounds:ringtone_variant": "number",
   "sounds:disconnect_variant": "number",
+  "activity:share": "boolean",
 };
 
 /**
@@ -140,6 +146,7 @@ const DEFAULT_VALUES: TypeSettings = {
   "sounds:message_variant": 4,
   "sounds:ringtone_variant": 8,
   "sounds:disconnect_variant": 3,
+  "activity:share": true,
 };
 
 /**
