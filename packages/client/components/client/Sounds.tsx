@@ -267,7 +267,7 @@ export class SoundController {
 
   node?: HTMLAudioElement;
   #audioCtx?: AudioContext;
-  #ringtoneCtx?: AudioContext;
+  #ringtoneGain?: GainNode;
 
   lastPlayedSound?: keyof TypeSounds;
 
@@ -390,20 +390,24 @@ export class SoundController {
    * Stop any currently looping ringtone
    */
   stopRingtone() {
-    if (this.#ringtoneCtx) {
-      try { this.#ringtoneCtx.close(); } catch { /* ignore */ }
-      this.#ringtoneCtx = undefined;
+    if (this.#ringtoneGain) {
+      try { this.#ringtoneGain.disconnect(); } catch { /* ignore */ }
+      this.#ringtoneGain = undefined;
     }
   }
 
   /**
-   * Play a looping synthesized ringtone via Web Audio API
+   * Play a looping synthesized ringtone via Web Audio API.
+   * Uses the shared (gesture-unlocked) AudioContext — a fresh context would
+   * start suspended under autoplay policy and ring silently.
    */
   #playRingtone(notes: ToneNote[], interval: number, volume = 0.3): void {
     this.stopRingtone();
     try {
-      const ctx = new AudioContext();
-      this.#ringtoneCtx = ctx;
+      const ctx = this.#getCtx();
+      const master = ctx.createGain();
+      master.connect(ctx.destination);
+      this.#ringtoneGain = master;
       const maxRings = 30;
       for (let ring = 0; ring < maxRings; ring++) {
         const offset = ring * interval;
@@ -411,7 +415,7 @@ export class SoundController {
           const osc = ctx.createOscillator();
           const gain = ctx.createGain();
           osc.connect(gain);
-          gain.connect(ctx.destination);
+          gain.connect(master);
           osc.type = type ?? "sine";
           osc.frequency.setValueAtTime(freq, ctx.currentTime + offset + startTime);
           gain.gain.setValueAtTime(volume, ctx.currentTime + offset + startTime);

@@ -232,8 +232,14 @@ export function NotificationsWorker() {
     // Only care about DM and Group channels (not server voice channels)
     if (channel.type !== "DirectMessage" && channel.type !== "Group") return;
 
-    // Ignore if we're the one joining
-    if (userId === us.id) return;
+    // We answered (or started) the call — stop any ringing
+    if (userId === us.id) {
+      sound.stopRingtone();
+      return;
+    }
+
+    // Never ring if we're already in this call (e.g. the other side answering)
+    if (channel.voiceParticipants.has(us.id)) return;
 
     const callerUser = client().users.get(userId);
     const callerName = callerUser?.displayName ?? callerUser?.username ?? "Someone";
@@ -258,6 +264,16 @@ export function NotificationsWorker() {
         window.focus();
         navigate(channel.path);
       });
+    }
+  }
+
+  /**
+   * Stop ringing when the caller gives up (leaves the call before we answer)
+   */
+  function onVoiceChannelLeave(channel: Channel, _userId: string) {
+    if (channel.type !== "DirectMessage" && channel.type !== "Group") return;
+    if (channel.voiceParticipants.size === 0) {
+      sound.stopRingtone();
     }
   }
 
@@ -292,10 +308,12 @@ export function NotificationsWorker() {
   createEffect(() => {
     client().addListener("messageCreate", onMessage);
     client().addListener("voiceChannelJoin", onVoiceChannelJoin);
+    client().addListener("voiceChannelLeave", onVoiceChannelLeave);
     client().addListener("userUpdate", onUserUpdate);
     onCleanup(() => {
       client().removeListener("messageCreate", onMessage);
       client().removeListener("voiceChannelJoin", onVoiceChannelJoin);
+      client().removeListener("voiceChannelLeave", onVoiceChannelLeave);
       client().removeListener("userUpdate", onUserUpdate);
     });
   });
