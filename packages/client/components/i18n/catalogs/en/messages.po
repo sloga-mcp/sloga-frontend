@@ -2433,6 +2433,10 @@ msgstr "Password removed!"
 msgid "Password set!"
 msgstr "Password set!"
 
+#: components/modal/modals/Changelog.tsx
+msgid "Patch Notes"
+msgstr "Patch Notes"
+
 #: src/interface/Friends.tsx
 msgid "Pending"
 msgstr "Pending"
@@ -3636,10 +3640,6 @@ msgstr "Webhooks"
 #: components/auth/src/flows/FlowLogin.tsx
 msgid "Welcome!"
 msgstr "Welcome!"
-
-#: components/modal/modals/Changelog.tsx
-msgid "What's new"
-msgstr "What's new"
 
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "Whether other users can edit these settings"
