@@ -8,6 +8,7 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(VoiceCallServicePlugin.class);
+        registerPlugin(PushTokenPlugin.class);
         super.onCreate(savedInstanceState);
     }
 }

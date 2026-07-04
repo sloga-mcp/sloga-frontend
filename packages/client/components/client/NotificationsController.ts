@@ -1,5 +1,6 @@
 import { useLingui } from "@lingui-solid/solid/macro";
 
+import { Capacitor, registerPlugin } from "@capacitor/core";
 import { Client } from "stoat.js";
 
 import { useModals } from "@revolt/modal";
@@ -103,7 +104,7 @@ export function useNotifications() {
 
   const togglePushPermission = async (modalOnDeny?: boolean) => {
     if (settings.pushNotificationsState !== "allowed") {
-      if (supportsNotification) {
+      if (supportsNotification && !Capacitor.isNativePlatform()) {
         if ((await Notification.requestPermission()) === "granted") {
           await enablePushSubscription();
         } else {
@@ -126,7 +127,24 @@ export function useNotifications() {
   };
 }
 
+/** Native bridge to fetch the FCM device token (Android app only) */
+const PushTokenNative = Capacitor.isNativePlatform()
+  ? registerPlugin<{ getToken(): Promise<{ token: string }> }>("PushToken")
+  : undefined;
+
 async function setUpServiceWorkerSubscription(client: Client) {
+  // Native Android app: web push is unavailable in the WebView — register
+  // the FCM device token as the push subscription instead.
+  if (PushTokenNative) {
+    const { token } = await PushTokenNative.getToken();
+    await client.api.post("/push/subscribe", {
+      endpoint: "fcm",
+      p256dh: "",
+      auth: token,
+    });
+    return;
+  }
+
   if (!client.configured() || !client.configuration) {
     throw "Client not configured";
   }
@@ -185,6 +203,11 @@ export async function killServiceWorkerSubscription(
   client: Client,
   loggingOut?: boolean,
 ) {
+  if (PushTokenNative) {
+    if (!loggingOut) await client.api.post("/push/unsubscribe");
+    return;
+  }
+
   const registration = await navigator.serviceWorker.getRegistration(
     import.meta.env.BASE_URL ?? undefined,
   );
