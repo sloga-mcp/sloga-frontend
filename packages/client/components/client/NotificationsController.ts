@@ -6,7 +6,7 @@ import { useModals } from "@revolt/modal";
 import { useState } from "@revolt/state";
 import { useSnackbar } from "@revolt/ui";
 
-import { IS_DEV, useClient } from ".";
+import { useClient } from ".";
 
 export function useNotifications() {
   const { settings } = useState();
@@ -127,30 +127,36 @@ export function useNotifications() {
 }
 
 async function setUpServiceWorkerSubscription(client: Client) {
-  if (IS_DEV) {
-    console.log("Skipping push worker in dev.");
-    return;
-  }
-
   if (!client.configured() || !client.configuration) {
     throw "Client not configured";
   }
 
-  const registration = await navigator.serviceWorker.getRegistration(
+  let registration = await navigator.serviceWorker.getRegistration(
     import.meta.env.BASE_URL ?? undefined,
   );
   if (!registration) {
-    throw "Failed to get service worker";
+    // Register explicitly — the automatic vite-plugin-pwa registration relies
+    // on an HMR event that doesn't always fire (e.g. through a tunnel).
+    const swUrl = import.meta.env.DEV ? "/dev-sw.js?dev-sw" : "/serviceWorker.js";
+    registration = await navigator.serviceWorker.register(swUrl, {
+      scope: import.meta.env.BASE_URL ?? "/",
+      type: "module",
+    });
+    await navigator.serviceWorker.ready;
   }
 
   const subscription =
     (await registration.pushManager.getSubscription()) ||
     (await registration.pushManager.subscribe({
       userVisibleOnly: true,
-      applicationServerKey: client.configuration!.vapid,
+      // Chrome requires base64url without padding; server keys may include it
+      applicationServerKey: client.configuration!.vapid
+        .replace(/\+/g, "-")
+        .replace(/\//g, "_")
+        .replace(/=+$/, ""),
     }));
 
-  client.api.post("/push/subscribe", {
+  await client.api.post("/push/subscribe", {
     endpoint: subscription.endpoint,
     p256dh: arrayBufferToBase64URL(
       subscription.getKey("p256dh") || new ArrayBuffer(),
@@ -179,11 +185,6 @@ export async function killServiceWorkerSubscription(
   client: Client,
   loggingOut?: boolean,
 ) {
-  if (IS_DEV) {
-    console.log("Skipping killing push worker in dev.");
-    return;
-  }
-
   const registration = await navigator.serviceWorker.getRegistration(
     import.meta.env.BASE_URL ?? undefined,
   );
