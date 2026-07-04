@@ -1,5 +1,7 @@
 import { createEffect, onCleanup, onMount } from "solid-js";
 
+import { Capacitor, registerPlugin } from "@capacitor/core";
+
 import { useLingui } from "@lingui-solid/solid/macro";
 import {
   Channel,
@@ -304,6 +306,37 @@ export function NotificationsWorker() {
       });
     }
   }
+
+  // Native app: notification taps (open message / answer call) navigate here
+  onMount(() => {
+    if (!Capacitor.isNativePlatform()) return;
+
+    const handleAction = (path?: string | null) => {
+      if (path) navigate(path);
+    };
+
+    // Cold start: consume the action stored before the web app was ready
+    registerPlugin<{
+      consumeLaunchAction(): Promise<{ path?: string | null; answer: boolean }>;
+    }>("PushToken")
+      .consumeLaunchAction()
+      .then(({ path }) => handleAction(path))
+      .catch(() => {});
+
+    // Warm app: actions arrive as window events
+    const onAction = (event: Event) => {
+      try {
+        const data = JSON.parse((event as CustomEvent).detail ?? "{}");
+        handleAction(data.path);
+      } catch {
+        /* ignore malformed payloads */
+      }
+    };
+    window.addEventListener("acutestNotificationAction", onAction);
+    onCleanup(() =>
+      window.removeEventListener("acutestNotificationAction", onAction),
+    );
+  });
 
   createEffect(() => {
     client().addListener("messageCreate", onMessage);

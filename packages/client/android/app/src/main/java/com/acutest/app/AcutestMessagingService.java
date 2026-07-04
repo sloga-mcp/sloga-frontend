@@ -25,9 +25,11 @@ import java.util.Map;
  */
 public class AcutestMessagingService extends FirebaseMessagingService {
     private static final String TAG = "AcutestFCM";
-    private static final String CHANNEL_MESSAGES = "messages";
-    private static final String CHANNEL_CALLS = "incoming_calls";
-    private static final String CHANNEL_SOCIAL = "social";
+    // Channel settings are immutable after creation — bump the suffix to
+    // apply new defaults on existing installs.
+    private static final String CHANNEL_MESSAGES = "messages_v2";
+    private static final String CHANNEL_CALLS = "incoming_calls_v2";
+    private static final String CHANNEL_SOCIAL = "social_v2";
 
     @Override
     public void onNewToken(String token) {
@@ -61,18 +63,12 @@ public class AcutestMessagingService extends FirebaseMessagingService {
             case "push.dm.call": {
                 boolean ended = Boolean.parseBoolean(data.get("ended"));
                 String channelId = data.get("channel_id");
+                int notificationId = channelId != null ? channelId.hashCode() : 2;
                 if (ended) {
                     // Remove the incoming call notification
-                    NotificationManagerCompat.from(this)
-                            .cancel(channelId != null ? channelId.hashCode() : 2);
+                    NotificationManagerCompat.from(this).cancel(notificationId);
                 } else {
-                    notifyTapToOpen(
-                            CHANNEL_CALLS,
-                            channelId != null ? channelId.hashCode() : 2,
-                            "Incoming Call",
-                            "Someone is calling you",
-                            null,
-                            channelId != null ? "/channel/" + channelId : null);
+                    notifyIncomingCall(notificationId, channelId);
                 }
                 break;
             }
@@ -97,6 +93,45 @@ public class AcutestMessagingService extends FirebaseMessagingService {
                         data.get("image"), null);
                 break;
             }
+        }
+    }
+
+    /** Ringing notification with Answer / Decline actions */
+    private void notifyIncomingCall(int notificationId, String channelId) {
+        String path = channelId != null ? "/channel/" + channelId : null;
+
+        Intent answer = new Intent(this, MainActivity.class);
+        answer.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        if (path != null) answer.putExtra("acutest_path", path);
+        answer.putExtra("acutest_answer_call", true);
+        PendingIntent answerIntent = PendingIntent.getActivity(
+                this, notificationId + 100000, answer,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+
+        Intent decline = new Intent(this, NotificationDismissReceiver.class);
+        decline.putExtra("notification_id", notificationId);
+        PendingIntent declineIntent = PendingIntent.getBroadcast(
+                this, notificationId + 200000, decline,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+
+        NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_CALLS)
+                .setSmallIcon(R.mipmap.ic_launcher)
+                .setContentTitle("Incoming Call")
+                .setContentText("Someone is calling you on Acutest")
+                .setCategory(NotificationCompat.CATEGORY_CALL)
+                .setPriority(NotificationCompat.PRIORITY_MAX)
+                .setOngoing(true)
+                .setAutoCancel(true)
+                .setFullScreenIntent(answerIntent, true)
+                .setContentIntent(answerIntent)
+                .addAction(0, "Answer", answerIntent)
+                .addAction(0, "Decline", declineIntent)
+                .setTimeoutAfter(45_000);
+
+        try {
+            NotificationManagerCompat.from(this).notify(notificationId, builder.build());
+        } catch (SecurityException e) {
+            Log.w(TAG, "Notification permission not granted");
         }
     }
 
@@ -146,14 +181,31 @@ public class AcutestMessagingService extends FirebaseMessagingService {
     private void createChannels() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationManager manager = getSystemService(NotificationManager.class);
-            manager.createNotificationChannel(new NotificationChannel(
-                    CHANNEL_MESSAGES, "Messages", NotificationManager.IMPORTANCE_HIGH));
+            android.media.AudioAttributes attrs = new android.media.AudioAttributes.Builder()
+                    .setUsage(android.media.AudioAttributes.USAGE_NOTIFICATION)
+                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build();
+            android.net.Uri sound = android.media.RingtoneManager
+                    .getDefaultUri(android.media.RingtoneManager.TYPE_NOTIFICATION);
+
+            NotificationChannel messages = new NotificationChannel(
+                    CHANNEL_MESSAGES, "Messages", NotificationManager.IMPORTANCE_HIGH);
+            messages.setSound(sound, attrs);
+            messages.enableVibration(true);
+            manager.createNotificationChannel(messages);
+
             NotificationChannel calls = new NotificationChannel(
                     CHANNEL_CALLS, "Incoming calls", NotificationManager.IMPORTANCE_HIGH);
             calls.setDescription("Ringing for incoming voice calls");
+            calls.setSound(android.media.RingtoneManager
+                    .getDefaultUri(android.media.RingtoneManager.TYPE_RINGTONE), attrs);
+            calls.enableVibration(true);
             manager.createNotificationChannel(calls);
-            manager.createNotificationChannel(new NotificationChannel(
-                    CHANNEL_SOCIAL, "Friend requests", NotificationManager.IMPORTANCE_DEFAULT));
+
+            NotificationChannel social = new NotificationChannel(
+                    CHANNEL_SOCIAL, "Friend requests", NotificationManager.IMPORTANCE_DEFAULT);
+            social.setSound(sound, attrs);
+            manager.createNotificationChannel(social);
         }
     }
 }

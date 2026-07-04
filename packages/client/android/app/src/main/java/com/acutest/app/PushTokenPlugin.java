@@ -20,6 +20,24 @@ import com.google.firebase.messaging.FirebaseMessaging;
                 strings = { "android.permission.POST_NOTIFICATIONS" },
                 alias = "notifications"))
 public class PushTokenPlugin extends Plugin {
+    private static String pendingPath;
+    private static boolean pendingAnswer;
+
+    static void setPendingAction(String path, boolean answer) {
+        pendingPath = path;
+        pendingAnswer = answer;
+    }
+
+    /** Returns and clears the navigation requested by a tapped notification */
+    @PluginMethod
+    public void consumeLaunchAction(PluginCall call) {
+        JSObject result = new JSObject();
+        result.put("path", pendingPath);
+        result.put("answer", pendingAnswer);
+        pendingPath = null;
+        pendingAnswer = false;
+        call.resolve(result);
+    }
 
     @PluginMethod
     public void getToken(PluginCall call) {
