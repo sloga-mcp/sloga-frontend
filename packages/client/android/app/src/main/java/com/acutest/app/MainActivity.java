@@ -29,6 +29,14 @@ public class MainActivity extends BridgeActivity {
         boolean answer = intent.getBooleanExtra("acutest_answer_call", false);
         intent.removeExtra("acutest_path");
 
+        // Action-button taps don't auto-dismiss notifications — clear the
+        // call notification once we're handling the answer.
+        if (answer) {
+            String channelId = path.substring(path.lastIndexOf('/') + 1);
+            androidx.core.app.NotificationManagerCompat.from(this)
+                    .cancel(channelId.hashCode());
+        }
+
         PushTokenPlugin.setPendingAction(path, answer);
         if (bridge != null) {
             bridge.triggerWindowJSEvent(

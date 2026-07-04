@@ -364,30 +364,6 @@ msgstr ""
 msgid "Activity"
 msgstr ""
 
-#: components/ui/components/features/profiles/ProfileBadges.tsx
-msgid "Acutest Developer"
-msgstr ""
-
-#: components/app/interface/settings/user/Native.tsx
-msgid "Acutest for Desktop"
-msgstr ""
-
-#: components/ui/components/features/profiles/ProfileBadges.tsx
-msgid "Acutest Founder"
-msgstr ""
-
-#: components/auth/src/flows/FlowHome.tsx
-msgid "Acutest has the highest standard of voice quality, streaming and latency. Create a community that never stops."
-msgstr ""
-
-#: components/app/interface/settings/user/Native.tsx
-msgid "Acutest will start in the system tray."
-msgstr ""
-
-#: src/AndroidNag.tsx
-msgid "Acutest works best as an app"
-msgstr ""
-
 #: components/modal/modals/AddMembersToGroup.tsx
 #: components/modal/modals/AddBot.tsx
 msgid "Add"
@@ -1292,7 +1268,7 @@ msgid "Discord RPC"
 msgstr ""
 
 #: src/interface/Home.tsx
-msgid "Discover Acutest"
+msgid "Discover Sloga"
 msgstr ""
 
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
@@ -1327,12 +1303,16 @@ msgstr ""
 msgid "Don't show this again"
 msgstr ""
 
+#: components/modal/modals/Changelog.tsx
+msgid "Don't show this again until the next update"
+msgstr ""
+
 #: src/interface/Home.tsx
-msgid "Donate to Acutest"
+msgid "Donate to Sloga"
 msgstr ""
 
 #: components/ui/components/features/profiles/ProfileBadges.tsx
-msgid "Donated to Acutest"
+msgid "Donated to Sloga"
 msgstr ""
 
 #: components/modal/modals/MFARecovery.tsx
@@ -1505,7 +1485,7 @@ msgid "Extreme violence, gore or animal cruelty"
 msgstr ""
 
 #: components/client/NotificationsController.ts
-msgid "Failed to enable notifications. Acutest does not have notification permission."
+msgid "Failed to enable notifications. Sloga does not have notification permission."
 msgstr ""
 
 #: components/client/NotificationsController.ts
@@ -1634,7 +1614,7 @@ msgstr ""
 
 #: src/interface/Home.tsx
 #: components/app/interface/settings/user/Feedback.tsx
-msgid "Go to the Acutest Lounge"
+msgid "Go to the Sloga Lounge"
 msgstr ""
 
 #: components/modal/modals/Onboarding.tsx
@@ -1673,7 +1653,7 @@ msgid "Help contribute to an existing or new language"
 msgstr ""
 
 #: components/ui/components/features/profiles/ProfileBadges.tsx
-msgid "Helped translate Acutest"
+msgid "Helped translate Sloga"
 msgstr ""
 
 #. placeholder {0}: link()
@@ -1729,7 +1709,7 @@ msgid "Impersonation"
 msgstr ""
 
 #: src/AndroidNag.tsx
-msgid "In the meantime, install Acutest from Google Play for a faster, smoother experience designed for Android."
+msgid "In the meantime, install Sloga from Google Play for a faster, smoother experience designed for Android."
 msgstr ""
 
 #: components/client/NotificationsWorker.tsx
@@ -1753,7 +1733,7 @@ msgid "Input Level"
 msgstr ""
 
 #: components/app/interface/settings/user/Native.tsx
-msgid "Instead of closing, Acutest will hide in your tray."
+msgid "Instead of closing, Sloga will hide in your tray."
 msgstr ""
 
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
@@ -1825,7 +1805,7 @@ msgstr ""
 
 #: src/interface/Home.tsx
 #: components/app/interface/settings/user/Feedback.tsx
-msgid "Join the Acutest Lounge"
+msgid "Join the Sloga Lounge"
 msgstr ""
 
 #: src/interface/channels/ChannelHeader.tsx
@@ -1888,11 +1868,11 @@ msgid "Latest"
 msgstr "Viimane"
 
 #: components/app/interface/settings/user/Native.tsx
-msgid "Launch Acutest when you log into your computer."
+msgid "Launch Sloga when you log into your computer."
 msgstr ""
 
 #: components/app/interface/settings/user/bots/MyBots.tsx
-msgid "Learn more about how to create bots on Acutest."
+msgid "Learn more about how to create bots on Sloga."
 msgstr ""
 
 #: components/modal/modals/LeaveServer.tsx
@@ -1916,7 +1896,7 @@ msgid "Leave server"
 msgstr "Lahku serverist"
 
 #: components/app/interface/settings/user/Native.tsx
-msgid "Let Acutest use its own custom titlebar."
+msgid "Let Sloga use its own custom titlebar."
 msgstr ""
 
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
@@ -2256,7 +2236,7 @@ msgid "New Password"
 msgstr "Uus parool"
 
 #: components/app/interface/channels/text/Message.tsx
-msgid "New to Acutest"
+msgid "New to Sloga"
 msgstr ""
 
 #: components/app/interface/channels/text/Message.tsx
@@ -2706,7 +2686,7 @@ msgid "Rename Session"
 msgstr ""
 
 #: components/app/interface/settings/user/Native.tsx
-msgid "Rep Acutest using Discord rich presence."
+msgid "Rep Sloga using Discord rich presence."
 msgstr ""
 
 #: components/app/menus/MessageContextMenu.tsx
@@ -3067,7 +3047,7 @@ msgid "Show send message button"
 msgstr ""
 
 #: components/auth/src/flows/FlowLogin.tsx
-msgid "Sign into Acutest"
+msgid "Sign into Sloga"
 msgstr ""
 
 #: components/auth/src/flows/FlowHome.tsx
@@ -3076,6 +3056,30 @@ msgstr ""
 
 #: components/app/interface/channels/text/Message.tsx
 msgid "Silent"
+msgstr ""
+
+#: components/ui/components/features/profiles/ProfileBadges.tsx
+msgid "Sloga Developer"
+msgstr ""
+
+#: components/app/interface/settings/user/Native.tsx
+msgid "Sloga for Desktop"
+msgstr ""
+
+#: components/ui/components/features/profiles/ProfileBadges.tsx
+msgid "Sloga Founder"
+msgstr ""
+
+#: components/auth/src/flows/FlowHome.tsx
+msgid "Sloga has the highest standard of voice quality, streaming and latency. Create a community that never stops."
+msgstr ""
+
+#: components/app/interface/settings/user/Native.tsx
+msgid "Sloga will start in the system tray."
+msgstr ""
+
+#: src/AndroidNag.tsx
+msgid "Sloga works best as an app"
 msgstr ""
 
 #: src/interface/channels/text/Composition.tsx
@@ -3196,7 +3200,7 @@ msgid "Subscriptions"
 msgstr ""
 
 #: components/app/interface/settings/user/Feedback.tsx
-msgid "Suggest new Acutest features on GitHub discussions."
+msgid "Suggest new Sloga features on GitHub discussions."
 msgstr ""
 
 #: src/interface/Home.tsx
@@ -3797,7 +3801,7 @@ msgid "You've been invited to join this server.<0/>Would you like to join?"
 msgstr ""
 
 #: components/modal/modals/SignedOut.tsx
-msgid "You've been signed out of Acutest!"
+msgid "You've been signed out of Sloga!"
 msgstr ""
 
 #: components/i18n/errors.ts

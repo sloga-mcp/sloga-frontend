@@ -119,7 +119,7 @@ export function HomePage() {
               color: "var(--md-sys-color-on-surface)",
             })}
           >
-            Acutest
+            Sloga
           </span>
         </Column>
         <Buttons>
@@ -156,7 +156,7 @@ export function HomePage() {
                   }
                   icon={<MdGroups3 />}
                 >
-                  <Trans>Go to the Acutest Lounge</Trans>
+                  <Trans>Go to the Sloga Lounge</Trans>
                 </CategoryButton>
               </Match>
               <Match when={showLoungeButton && !isInLounge}>
@@ -177,7 +177,7 @@ export function HomePage() {
                   }
                   icon={<MdGroups3 />}
                 >
-                  <Trans>Join the Acutest Lounge</Trans>
+                  <Trans>Join the Sloga Lounge</Trans>
                 </CategoryButton>
               </Match>
             </Switch>
@@ -190,7 +190,7 @@ export function HomePage() {
               }
               icon={<MdPayments />}
             >
-              <Trans>Donate to Acutest</Trans>
+              <Trans>Donate to Sloga</Trans>
             </CategoryButton>
             </div>
           </SeparatedColumn>
@@ -215,7 +215,7 @@ export function HomePage() {
                 }
                 icon={<MdExplore />}
               >
-                <Trans>Discover Acutest</Trans>
+                <Trans>Discover Sloga</Trans>
               </CategoryButton>
             </Show>
             <div style={{"--md-sys-color-primary": "#00B2FF", "--md-sys-color-on-primary": "#ffffff"}}>

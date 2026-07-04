@@ -67,7 +67,7 @@ export default function FlowLogin() {
       <Switch
         fallback={
           <>
-            <FlowTitle subtitle={<Trans>Sign into Acutest</Trans>} emoji="wave">
+            <FlowTitle subtitle={<Trans>Sign into Sloga</Trans>} emoji="wave">
               <Trans>Welcome!</Trans>
             </FlowTitle>
             <div style={{"--md-sys-color-primary": "#FF8A00", "--mdui-color-primary": "255, 138, 0", "display": "contents"}}>

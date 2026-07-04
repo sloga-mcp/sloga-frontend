@@ -2,7 +2,7 @@ import type { CapacitorConfig } from "@capacitor/cli";
 
 const config: CapacitorConfig = {
   appId: "com.acutest.app",
-  appName: "Acutest",
+  appName: "Sloga",
   webDir: "dist",
   android: {
     allowMixedContent: true,

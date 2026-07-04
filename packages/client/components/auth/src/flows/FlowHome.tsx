@@ -35,7 +35,7 @@ export default function FlowHome() {
                 color: "var(--md-sys-color-on-surface)",
               })}
             >
-              Acutest
+              Sloga
             </span>
 
             <Column>
@@ -61,7 +61,7 @@ export default function FlowHome() {
               </b>
               <span style={{ "text-align": "center", opacity: "0.5" }}>
                 <Trans>
-                  Acutest has the highest standard of voice quality, streaming
+                  Sloga has the highest standard of voice quality, streaming
                   and latency. Create a community that never stops.
                 </Trans>
               </span>

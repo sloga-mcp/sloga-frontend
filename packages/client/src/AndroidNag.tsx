@@ -54,11 +54,11 @@ export function AndroidNag() {
     <Show when={show()}>
       <Base>
         <Hero>
-          <img src={AndroidPromo} alt="Acutest on Android" />
+          <img src={AndroidPromo} alt="Sloga on Android" />
 
           <Heading>
             <Text class="headline" size="large">
-              <Trans>Acutest works best as an app</Trans>
+              <Trans>Sloga works best as an app</Trans>
             </Text>
           </Heading>
 
@@ -71,7 +71,7 @@ export function AndroidNag() {
 
             <Text class="body" size="large">
               <Trans>
-                In the meantime, install Acutest from Google Play for a faster,
+                In the meantime, install Sloga from Google Play for a faster,
                 smoother experience designed for Android.
               </Trans>
             </Text>

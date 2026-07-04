@@ -46,8 +46,8 @@ export default defineConfig({
         enabled: true,
       },
       manifest: {
-        name: "Acutest",
-        short_name: "Acutest",
+        name: "Sloga",
+        short_name: "Sloga",
         description: "User-first open source chat platform.",
         categories: ["communication", "chat", "messaging"],
         start_url: base,

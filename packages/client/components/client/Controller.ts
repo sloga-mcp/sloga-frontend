@@ -527,9 +527,9 @@ export default class ClientController {
         os = "iPadOS";
       }
 
-      friendly_name = `Acutest for Web (${name} on ${os})`;
+      friendly_name = `Sloga for Web (${name} on ${os})`;
     } else {
-      friendly_name = "Acutest for Web (Unknown Device)";
+      friendly_name = "Sloga for Web (Unknown Device)";
     }
 
     // Try to login with given credentials

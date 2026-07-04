@@ -364,30 +364,6 @@ msgstr "Acknowledge"
 msgid "Activity"
 msgstr "Activity"
 
-#: components/ui/components/features/profiles/ProfileBadges.tsx
-msgid "Acutest Developer"
-msgstr "Acutest Developer"
-
-#: components/app/interface/settings/user/Native.tsx
-msgid "Acutest for Desktop"
-msgstr "Acutest for Desktop"
-
-#: components/ui/components/features/profiles/ProfileBadges.tsx
-msgid "Acutest Founder"
-msgstr "Acutest Founder"
-
-#: components/auth/src/flows/FlowHome.tsx
-msgid "Acutest has the highest standard of voice quality, streaming and latency. Create a community that never stops."
-msgstr "Acutest has the highest standard of voice quality, streaming and latency. Create a community that never stops."
-
-#: components/app/interface/settings/user/Native.tsx
-msgid "Acutest will start in the system tray."
-msgstr "Acutest will start in the system tray."
-
-#: src/AndroidNag.tsx
-msgid "Acutest works best as an app"
-msgstr "Acutest works best as an app"
-
 #: components/modal/modals/AddMembersToGroup.tsx
 #: components/modal/modals/AddBot.tsx
 msgid "Add"
@@ -1292,8 +1268,8 @@ msgid "Discord RPC"
 msgstr "Discord RPC"
 
 #: src/interface/Home.tsx
-msgid "Discover Acutest"
-msgstr "Discover Acutest"
+msgid "Discover Sloga"
+msgstr "Discover Sloga"
 
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Display & Text"
@@ -1327,13 +1303,17 @@ msgstr "Don't notify others that you've left"
 msgid "Don't show this again"
 msgstr "Don't show this again"
 
+#: components/modal/modals/Changelog.tsx
+msgid "Don't show this again until the next update"
+msgstr "Don't show this again until the next update"
+
 #: src/interface/Home.tsx
-msgid "Donate to Acutest"
-msgstr "Donate to Acutest"
+msgid "Donate to Sloga"
+msgstr "Donate to Sloga"
 
 #: components/ui/components/features/profiles/ProfileBadges.tsx
-msgid "Donated to Acutest"
-msgstr "Donated to Acutest"
+msgid "Donated to Sloga"
+msgstr "Donated to Sloga"
 
 #: components/modal/modals/MFARecovery.tsx
 msgid "Done"
@@ -1505,8 +1485,8 @@ msgid "Extreme violence, gore or animal cruelty"
 msgstr "Extreme violence, gore or animal cruelty"
 
 #: components/client/NotificationsController.ts
-msgid "Failed to enable notifications. Acutest does not have notification permission."
-msgstr "Failed to enable notifications. Acutest does not have notification permission."
+msgid "Failed to enable notifications. Sloga does not have notification permission."
+msgstr "Failed to enable notifications. Sloga does not have notification permission."
 
 #: components/client/NotificationsController.ts
 msgid "Failed to enable push notifications. Please try again later."
@@ -1634,8 +1614,8 @@ msgstr "Go to account settings to edit your username"
 
 #: src/interface/Home.tsx
 #: components/app/interface/settings/user/Feedback.tsx
-msgid "Go to the Acutest Lounge"
-msgstr "Go to the Acutest Lounge"
+msgid "Go to the Sloga Lounge"
+msgstr "Go to the Sloga Lounge"
 
 #: components/modal/modals/Onboarding.tsx
 msgid "Good"
@@ -1673,8 +1653,8 @@ msgid "Help contribute to an existing or new language"
 msgstr "Help contribute to an existing or new language"
 
 #: components/ui/components/features/profiles/ProfileBadges.tsx
-msgid "Helped translate Acutest"
-msgstr "Helped translate Acutest"
+msgid "Helped translate Sloga"
+msgstr "Helped translate Sloga"
 
 #. placeholder {0}: link()
 #: components/modal/modals/CreateInvite.tsx
@@ -1729,8 +1709,8 @@ msgid "Impersonation"
 msgstr "Impersonation"
 
 #: src/AndroidNag.tsx
-msgid "In the meantime, install Acutest from Google Play for a faster, smoother experience designed for Android."
-msgstr "In the meantime, install Acutest from Google Play for a faster, smoother experience designed for Android."
+msgid "In the meantime, install Sloga from Google Play for a faster, smoother experience designed for Android."
+msgstr "In the meantime, install Sloga from Google Play for a faster, smoother experience designed for Android."
 
 #: components/client/NotificationsWorker.tsx
 msgid "Incoming Call"
@@ -1753,8 +1733,8 @@ msgid "Input Level"
 msgstr "Input Level"
 
 #: components/app/interface/settings/user/Native.tsx
-msgid "Instead of closing, Acutest will hide in your tray."
-msgstr "Instead of closing, Acutest will hide in your tray."
+msgid "Instead of closing, Sloga will hide in your tray."
+msgstr "Instead of closing, Sloga will hide in your tray."
 
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Interface Font"
@@ -1825,8 +1805,8 @@ msgstr "Join a server"
 
 #: src/interface/Home.tsx
 #: components/app/interface/settings/user/Feedback.tsx
-msgid "Join the Acutest Lounge"
-msgstr "Join the Acutest Lounge"
+msgid "Join the Sloga Lounge"
+msgstr "Join the Sloga Lounge"
 
 #: src/interface/channels/ChannelHeader.tsx
 #: components/ui/components/features/voice/callCard/VoiceCallCardPreview.tsx
@@ -1888,12 +1868,12 @@ msgid "Latest"
 msgstr "Latest"
 
 #: components/app/interface/settings/user/Native.tsx
-msgid "Launch Acutest when you log into your computer."
-msgstr "Launch Acutest when you log into your computer."
+msgid "Launch Sloga when you log into your computer."
+msgstr "Launch Sloga when you log into your computer."
 
 #: components/app/interface/settings/user/bots/MyBots.tsx
-msgid "Learn more about how to create bots on Acutest."
-msgstr "Learn more about how to create bots on Acutest."
+msgid "Learn more about how to create bots on Sloga."
+msgstr "Learn more about how to create bots on Sloga."
 
 #: components/modal/modals/LeaveServer.tsx
 #: components/modal/modals/DeleteChannel.tsx
@@ -1916,8 +1896,8 @@ msgid "Leave server"
 msgstr "Leave server"
 
 #: components/app/interface/settings/user/Native.tsx
-msgid "Let Acutest use its own custom titlebar."
-msgstr "Let Acutest use its own custom titlebar."
+msgid "Let Sloga use its own custom titlebar."
+msgstr "Let Sloga use its own custom titlebar."
 
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Light"
@@ -2256,8 +2236,8 @@ msgid "New Password"
 msgstr "New Password"
 
 #: components/app/interface/channels/text/Message.tsx
-msgid "New to Acutest"
-msgstr "New to Acutest"
+msgid "New to Sloga"
+msgstr "New to Sloga"
 
 #: components/app/interface/channels/text/Message.tsx
 msgid "New to the server"
@@ -2706,8 +2686,8 @@ msgid "Rename Session"
 msgstr "Rename Session"
 
 #: components/app/interface/settings/user/Native.tsx
-msgid "Rep Acutest using Discord rich presence."
-msgstr "Rep Acutest using Discord rich presence."
+msgid "Rep Sloga using Discord rich presence."
+msgstr "Rep Sloga using Discord rich presence."
 
 #: components/app/menus/MessageContextMenu.tsx
 msgid "Reply"
@@ -3067,8 +3047,8 @@ msgid "Show send message button"
 msgstr "Show send message button"
 
 #: components/auth/src/flows/FlowLogin.tsx
-msgid "Sign into Acutest"
-msgstr "Sign into Acutest"
+msgid "Sign into Sloga"
+msgstr "Sign into Sloga"
 
 #: components/auth/src/flows/FlowHome.tsx
 msgid "Sign Up"
@@ -3077,6 +3057,30 @@ msgstr "Sign Up"
 #: components/app/interface/channels/text/Message.tsx
 msgid "Silent"
 msgstr "Silent"
+
+#: components/ui/components/features/profiles/ProfileBadges.tsx
+msgid "Sloga Developer"
+msgstr "Sloga Developer"
+
+#: components/app/interface/settings/user/Native.tsx
+msgid "Sloga for Desktop"
+msgstr "Sloga for Desktop"
+
+#: components/ui/components/features/profiles/ProfileBadges.tsx
+msgid "Sloga Founder"
+msgstr "Sloga Founder"
+
+#: components/auth/src/flows/FlowHome.tsx
+msgid "Sloga has the highest standard of voice quality, streaming and latency. Create a community that never stops."
+msgstr "Sloga has the highest standard of voice quality, streaming and latency. Create a community that never stops."
+
+#: components/app/interface/settings/user/Native.tsx
+msgid "Sloga will start in the system tray."
+msgstr "Sloga will start in the system tray."
+
+#: src/AndroidNag.tsx
+msgid "Sloga works best as an app"
+msgstr "Sloga works best as an app"
 
 #: src/interface/channels/text/Composition.tsx
 msgid "Slowmode Immune"
@@ -3196,8 +3200,8 @@ msgid "Subscriptions"
 msgstr "Subscriptions"
 
 #: components/app/interface/settings/user/Feedback.tsx
-msgid "Suggest new Acutest features on GitHub discussions."
-msgstr "Suggest new Acutest features on GitHub discussions."
+msgid "Suggest new Sloga features on GitHub discussions."
+msgstr "Suggest new Sloga features on GitHub discussions."
 
 #: src/interface/Home.tsx
 msgid "Support the project by donating - thank you!"
@@ -3797,8 +3801,8 @@ msgid "You've been invited to join this server.<0/>Would you like to join?"
 msgstr "You've been invited to join this server.<0/>Would you like to join?"
 
 #: components/modal/modals/SignedOut.tsx
-msgid "You've been signed out of Acutest!"
-msgstr "You've been signed out of Acutest!"
+msgid "You've been signed out of Sloga!"
+msgstr "You've been signed out of Sloga!"
 
 #: components/i18n/errors.ts
 msgid "You've reached your personal bot limit."

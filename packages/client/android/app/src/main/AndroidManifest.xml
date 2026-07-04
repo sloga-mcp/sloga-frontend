@@ -30,7 +30,7 @@
             android:foregroundServiceType="microphone" />
 
         <service
-            android:name=".AcutestMessagingService"
+            android:name=".SlogaMessagingService"
             android:exported="false">
             <intent-filter>
                 <action android:name="com.google.firebase.MESSAGING_EVENT" />

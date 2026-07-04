@@ -52,7 +52,7 @@ export function Feedback() {
             icon={<MdStar {...iconSize(22)} />}
             onClick={() => void 0}
             description={
-              <Trans>Suggest new Acutest features on GitHub discussions.</Trans>
+              <Trans>Suggest new Sloga features on GitHub discussions.</Trans>
             }
           >
             <Trans>Submit feature suggestion</Trans>
@@ -99,7 +99,7 @@ export function Feedback() {
               }
               icon={<MdGroups3 />}
             >
-              <Trans>Go to the Acutest Lounge</Trans>
+              <Trans>Go to the Sloga Lounge</Trans>
             </CategoryButton>
           </Match>
           <Match when={showLoungeButton && !isInLounge}>
@@ -118,7 +118,7 @@ export function Feedback() {
               }
               icon={<MdGroups3 />}
             >
-              <Trans>Join the Acutest Lounge</Trans>
+              <Trans>Join the Sloga Lounge</Trans>
             </CategoryButton>
           </Match>
         </Switch>

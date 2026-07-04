@@ -41,7 +41,7 @@ export function LoadTheme() {
       ...createMaterialColourVariables(activeTheme, "--md-sys-color-"),
       // mount --mdui-color triplet variables
       ...createMduiColourTriplets(activeTheme, "--mdui-color-"),
-      // Acutest brand overrides
+      // Sloga brand overrides
       "--md-sys-color-surface": "#05090F",
       "--md-sys-color-surface-dim": "#05090F",
       "--md-sys-color-surface-bright": "#0d1825",

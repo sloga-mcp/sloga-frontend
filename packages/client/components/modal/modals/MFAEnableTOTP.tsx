@@ -49,7 +49,7 @@ export function MFAEnableTOTPModal(
    * Generate OTP URI
    */
   const uri = () =>
-    `otpauth://totp/Acutest:${props.identifier}?secret=${props.secret}&issuer=Acutest`;
+    `otpauth://totp/Sloga:${props.identifier}?secret=${props.secret}&issuer=Sloga`;
 
   async function onSubmit() {
     try {

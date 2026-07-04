@@ -18,6 +18,7 @@ import {
 } from "stoat.js";
 
 import { useNavigate, useSmartParams } from "@revolt/routing";
+import { useVoice } from "@revolt/rtc";
 import { useState } from "@revolt/state";
 
 import { useClient, useNotifications, useSound } from ".";
@@ -30,6 +31,7 @@ export function NotificationsWorker() {
   const { t } = useLingui();
   const client = useClient();
   const navigate = useNavigate();
+  const voice = useVoice();
   const params = useSmartParams();
   const sound = useSound();
 
@@ -199,6 +201,7 @@ export function NotificationsWorker() {
 
     // Don't continue if we don't have notification permissions
     if (
+      !("Notification" in window) ||
       Notification.permission !== "granted" ||
       state.settings.desktopNotificationsState !== "allowed"
     )
@@ -252,6 +255,7 @@ export function NotificationsWorker() {
 
     // Show desktop notification if permitted
     if (
+      "Notification" in window &&
       Notification.permission === "granted" &&
       state.settings.desktopNotificationsState === "allowed"
     ) {
@@ -290,6 +294,7 @@ export function NotificationsWorker() {
     sound.playSound("message");
 
     if (
+      "Notification" in window &&
       Notification.permission === "granted" &&
       state.settings.desktopNotificationsState === "allowed"
     ) {
@@ -311,8 +316,26 @@ export function NotificationsWorker() {
   onMount(() => {
     if (!Capacitor.isNativePlatform()) return;
 
-    const handleAction = (path?: string | null) => {
-      if (path) navigate(path);
+    const handleAction = (path?: string | null, answer?: boolean) => {
+      if (!path) return;
+      navigate(path);
+
+      // "Answer" on an incoming call notification: join the call directly
+      if (answer) {
+        const channelId = path.split("/").pop();
+        const joinCall = (attempt: number) => {
+          const channel = channelId
+            ? client().channels.get(channelId)
+            : undefined;
+          if (channel) {
+            voice.connect(channel).catch(console.error);
+          } else if (attempt < 20) {
+            // Cold start: wait for the client to connect and hydrate
+            setTimeout(() => joinCall(attempt + 1), 500);
+          }
+        };
+        joinCall(0);
+      }
     };
 
     // Cold start: consume the action stored before the web app was ready
@@ -320,14 +343,14 @@ export function NotificationsWorker() {
       consumeLaunchAction(): Promise<{ path?: string | null; answer: boolean }>;
     }>("PushToken")
       .consumeLaunchAction()
-      .then(({ path }) => handleAction(path))
+      .then(({ path, answer }) => handleAction(path, answer))
       .catch(() => {});
 
     // Warm app: actions arrive as window events
     const onAction = (event: Event) => {
       try {
         const data = JSON.parse((event as CustomEvent).detail ?? "{}");
-        handleAction(data.path);
+        handleAction(data.path, data.answer);
       } catch {
         /* ignore malformed payloads */
       }

@@ -134,7 +134,7 @@ const Config: SettingsConfiguration<{ server: Server }> = {
           </Text>
           <Show when={window.native}>
             <Text class="label">
-              Acutest for Desktop {window.native.versions.desktop()}
+              Sloga for Desktop {window.native.versions.desktop()}
             </Text>
             <Text class="label">
               <span
@@ -175,7 +175,7 @@ const Config: SettingsConfiguration<{ server: Server }> = {
           ],
         },
         {
-          title: "Acutest",
+          title: "Sloga",
           entries: [
             {
               id: "bots",

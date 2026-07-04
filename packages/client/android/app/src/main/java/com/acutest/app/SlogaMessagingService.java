@@ -20,11 +20,11 @@ import java.net.URL;
 import java.util.Map;
 
 /**
- * Receives data-only FCM messages from the Acutest backend (pushd) and posts
+ * Receives data-only FCM messages from the Sloga backend (pushd) and posts
  * them to the notification bar. Runs even when the app is killed.
  */
-public class AcutestMessagingService extends FirebaseMessagingService {
-    private static final String TAG = "AcutestFCM";
+public class SlogaMessagingService extends FirebaseMessagingService {
+    private static final String TAG = "SlogaFCM";
     // Channel settings are immutable after creation — bump the suffix to
     // apply new defaults on existing installs.
     private static final String CHANNEL_MESSAGES = "messages_v2";
@@ -88,7 +88,7 @@ public class AcutestMessagingService extends FirebaseMessagingService {
             }
             case "push.generic": {
                 notifyTapToOpen(CHANNEL_MESSAGES, 5,
-                        data.getOrDefault("title", "Acutest"),
+                        data.getOrDefault("title", "Sloga"),
                         data.getOrDefault("body", ""),
                         data.get("image"), null);
                 break;
@@ -117,15 +117,15 @@ public class AcutestMessagingService extends FirebaseMessagingService {
         NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_CALLS)
                 .setSmallIcon(R.mipmap.ic_launcher)
                 .setContentTitle("Incoming Call")
-                .setContentText("Someone is calling you on Acutest")
+                .setContentText("Someone is calling you on Sloga")
                 .setCategory(NotificationCompat.CATEGORY_CALL)
                 .setPriority(NotificationCompat.PRIORITY_MAX)
                 .setOngoing(true)
                 .setAutoCancel(true)
                 .setFullScreenIntent(answerIntent, true)
                 .setContentIntent(answerIntent)
-                .addAction(0, "Answer", answerIntent)
                 .addAction(0, "Decline", declineIntent)
+                .addAction(0, "Answer", answerIntent)
                 .setTimeoutAfter(45_000);
 
         try {

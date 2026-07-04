@@ -1,9 +1,12 @@
+import { createSignal } from "solid-js";
+
 import { Trans } from "@lingui-solid/solid/macro";
 import { styled } from "styled-system/jsx";
 
 import { useTime } from "@revolt/i18n";
 import { renderChangelogMarkdown } from "@revolt/markdown";
-import { Column, Dialog, DialogProps } from "@revolt/ui";
+import { useState } from "@revolt/state";
+import { Checkbox, Column, Dialog, DialogProps } from "@revolt/ui";
 import type { DialogAction } from "@revolt/ui/components/design/Dialog";
 
 import { Modals } from "../types";
@@ -30,18 +33,37 @@ export function ChangelogModal(
   props: DialogProps & Modals & { type: "changelog" },
 ) {
   const dayjs = useTime();
+  const state = useState();
+  const [dontShowAgain, setDontShowAgain] = createSignal(false);
+
+  function onClose() {
+    if (dontShowAgain()) {
+      state["release-notes"].markSeen(
+        props.changelog.id,
+        props.changelog.published_at,
+      );
+    }
+    props.onClose();
+  }
+
   const actions: DialogAction[] = [{ text: <Trans>Close</Trans> }];
 
   return (
     <Dialog
       show={props.show}
-      onClose={props.onClose}
+      onClose={onClose}
       title={<Trans>Patch Notes</Trans>}
       actions={actions}
     >
       <Column>
         <Subtitle>{dayjs(props.changelog.published_at).format("LL")}</Subtitle>
         <div>{renderChangelogMarkdown(props.changelog.markdown_content)}</div>
+        <Checkbox
+          checked={dontShowAgain()}
+          onChange={(event) => setDontShowAgain(event.currentTarget.checked)}
+        >
+          <Trans>Don't show this again until the next update</Trans>
+        </Checkbox>
       </Column>
     </Dialog>
   );

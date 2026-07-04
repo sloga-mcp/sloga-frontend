@@ -84,7 +84,7 @@ export const HomeSidebar = (props: Props) => {
                   location.pathname === "/app" ? "#ffffff" : "#FF8A00",
               }}
             >
-              Acutest
+              Sloga
             </span>
           </SidebarTitle>
 

@@ -33,6 +33,28 @@ export function ClientContext(props: { state: State; children: JSXElement }) {
   const controller = new ClientController(props.state);
   onCleanup(() => controller.dispose());
 
+  // Show patch notes on launch until the user checks "don't show again"
+  // (which suppresses them until the next changelog entry).
+  let shownChangelog = false;
+  createEffect(
+    on(
+      () => controller.isLoggedIn(),
+      (loggedIn) => {
+        if (!loggedIn || shownChangelog) return;
+        shownChangelog = true;
+        fetchLatestChangelog().then((changelog) => {
+          if (
+            changelog &&
+            props.state["release-notes"].lastSeenId !== changelog.id
+          ) {
+            // Delay past the initial post-login navigation, which dismisses
+            // modals opened during the transition (seen on mobile).
+            setTimeout(() => openModal({ type: "changelog", changelog }), 2000);
+          }
+        });
+      },
+    ),
+  );
 
   createEffect(
     on(

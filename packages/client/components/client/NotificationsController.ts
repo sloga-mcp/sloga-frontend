@@ -22,7 +22,7 @@ export function useNotifications() {
     settings.resetNotificationsState("denied");
     if (showModal) {
       showError(
-        t`Failed to enable notifications. Acutest does not have notification permission.`,
+        t`Failed to enable notifications. Sloga does not have notification permission.`,
       );
     }
     await killServiceWorkerSubscription(getClient());
