@@ -187,6 +187,17 @@ const Config: SettingsConfiguration<{ server: Server }> = {
               icon: <MdRateReview {...iconSize(20)} />,
               title: <Trans>Feedback</Trans>,
             },
+            {
+              id: "changelog",
+              icon: <MdCampaign {...iconSize(20)} />,
+              title: <Trans>Patch Notes</Trans>,
+              async onClick() {
+                const changelog = await fetchLatestChangelog();
+                if (changelog) {
+                  openModal({ type: "changelog", changelog });
+                }
+              },
+            },
           ],
         },
         {

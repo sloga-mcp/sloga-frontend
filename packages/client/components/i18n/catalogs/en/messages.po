@@ -2434,6 +2434,7 @@ msgid "Password set!"
 msgstr "Password set!"
 
 #: components/modal/modals/Changelog.tsx
+#: components/app/interface/settings/UserSettings.tsx
 msgid "Patch Notes"
 msgstr "Patch Notes"
 
@@ -3125,6 +3126,10 @@ msgstr "Spellchecker"
 #: src/interface/Home.tsx
 msgid "Start a Chat Room/Server"
 msgstr "Start a Chat Room/Server"
+
+#: src/interface/channels/ChannelHeader.tsx
+msgid "Start a video call"
+msgstr "Start a video call"
 
 #: components/ui/components/features/voice/callCard/VoiceCallCardActions.tsx
 msgid "Start camera"

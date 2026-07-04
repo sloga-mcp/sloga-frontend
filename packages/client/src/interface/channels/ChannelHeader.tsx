@@ -158,6 +158,20 @@ export function ChannelHeader(props: Props) {
         >
           <Symbol>call</Symbol>
         </IconButton>
+        <IconButton
+          onPress={async () => {
+            await voice.connect(props.channel);
+            await voice.toggleCamera();
+          }}
+          use:floating={{
+            tooltip: {
+              placement: "bottom",
+              content: t`Start a video call`,
+            },
+          }}
+        >
+          <Symbol>videocam</Symbol>
+        </IconButton>
       </Show>
 
       <Show
