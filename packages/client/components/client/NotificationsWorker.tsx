@@ -22,6 +22,10 @@ import { useVoice } from "@revolt/rtc";
 import { useState } from "@revolt/state";
 
 import { useClient, useNotifications, useSound } from ".";
+import {
+  notificationPermissionGranted,
+  showNotification,
+} from "./nativeNotifications";
 
 /**
  * Process and display desktop notifications
@@ -201,8 +205,7 @@ export function NotificationsWorker() {
 
     // Don't continue if we don't have notification permissions
     if (
-      !("Notification" in window) ||
-      Notification.permission !== "granted" ||
+      !notificationPermissionGranted() ||
       state.settings.desktopNotificationsState !== "allowed"
     )
       return;
@@ -211,20 +214,17 @@ export function NotificationsWorker() {
 
     console.info(`[notification] ${title} ${icon} ${body}`);
 
-    const notification = new Notification(title!, {
+    showNotification({
+      title: title!,
       icon,
-      // @ts-expect-error this does exist on some platforms
       image,
       body,
       timestamp: message.createdAt,
       tag: message.channelId,
-      badge: "/assets/web/android-chrome-512x512.png",
-      silent: true,
-    });
-
-    notification.addEventListener("click", () => {
-      window.focus();
-      navigate(message.path);
+      onClick: () => {
+        window.focus();
+        navigate(message.path);
+      },
     });
   }
 
@@ -255,20 +255,18 @@ export function NotificationsWorker() {
 
     // Show desktop notification if permitted
     if (
-      "Notification" in window &&
-      Notification.permission === "granted" &&
+      notificationPermissionGranted() &&
       state.settings.desktopNotificationsState === "allowed"
     ) {
-      const notification = new Notification(t`Incoming Call`, {
+      showNotification({
+        title: t`Incoming Call`,
         body: t`${callerName} is calling in ${channelName}`,
         icon: callerUser?.avatarURL,
         tag: `call-${channel.id}`,
-        silent: true,
-      });
-
-      notification.addEventListener("click", () => {
-        window.focus();
-        navigate(channel.path);
+        onClick: () => {
+          window.focus();
+          navigate(channel.path);
+        },
       });
     }
   }
@@ -294,20 +292,18 @@ export function NotificationsWorker() {
     sound.playSound("message");
 
     if (
-      "Notification" in window &&
-      Notification.permission === "granted" &&
+      notificationPermissionGranted() &&
       state.settings.desktopNotificationsState === "allowed"
     ) {
-      const notification = new Notification(t`Friend Request`, {
+      showNotification({
+        title: t`Friend Request`,
         body: t`${user.displayName ?? user.username} sent you a friend request`,
         icon: user.animatedAvatarURL ?? user.avatarURL,
         tag: `friend-request-${user.id}`,
-        silent: true,
-      });
-
-      notification.addEventListener("click", () => {
-        window.focus();
-        navigate("/friends");
+        onClick: () => {
+          window.focus();
+          navigate("/friends");
+        },
       });
     }
   }

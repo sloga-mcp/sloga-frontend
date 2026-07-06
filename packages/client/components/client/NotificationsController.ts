@@ -8,6 +8,12 @@ import { useState } from "@revolt/state";
 import { useSnackbar } from "@revolt/ui";
 
 import { useClient } from ".";
+import {
+  notificationPermissionGranted,
+  notificationsSupported,
+  requestNotificationPermission,
+  tauriNotification,
+} from "./nativeNotifications";
 
 export function useNotifications() {
   const { settings } = useState();
@@ -16,7 +22,7 @@ export function useNotifications() {
   const snackbar = useSnackbar();
   const { showError } = useModals();
 
-  const supportsNotification = "Notification" in window;
+  const supportsNotification = notificationsSupported();
 
   const onDeny = async (showModal?: boolean) => {
     settings.resetNotificationsState("denied");
@@ -33,10 +39,10 @@ export function useNotifications() {
       settings.desktopNotificationsState === "allowed" ||
       settings.pushNotificationsState === "allowed";
 
-    const notificationPermissionGranted =
-      !supportsNotification || Notification.permission === "granted";
+    const permissionGranted =
+      !supportsNotification || notificationPermissionGranted();
 
-    return areNotificationsAllowed && !notificationPermissionGranted;
+    return areNotificationsAllowed && !permissionGranted;
   };
 
   const initNotifications = async () => {
@@ -44,6 +50,13 @@ export function useNotifications() {
       settings.desktopNotificationsState === "default" ||
       notificationStateMismatch()
     ) {
+      // Sloga Desktop: OS permission is implicit for installed apps; no test
+      // notification and no web push (updates arrive over the WebSocket)
+      if (tauriNotification()) {
+        settings.desktopNotificationsState = "allowed";
+        return;
+      }
+
       // We do this before permission checking because the constructor will still work fine if we don't have permission.
       if (supportsNotification) {
         try {
@@ -65,7 +78,7 @@ export function useNotifications() {
       }
 
       if (supportsNotification) {
-        if ((await Notification.requestPermission()) === "granted") {
+        if (await requestNotificationPermission()) {
           settings.desktopNotificationsState = "allowed";
           await enablePushSubscription();
         } else {
@@ -79,7 +92,7 @@ export function useNotifications() {
 
   const toggleNotificationPermission = async (modalOnDeny?: boolean) => {
     if (settings.desktopNotificationsState !== "allowed") {
-      if ((await Notification.requestPermission()) === "granted") {
+      if (await requestNotificationPermission()) {
         settings.desktopNotificationsState = "allowed";
       } else {
         await onDeny(modalOnDeny);
