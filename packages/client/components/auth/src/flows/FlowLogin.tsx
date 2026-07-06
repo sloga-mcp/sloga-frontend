@@ -1,4 +1,4 @@
-import { Match, Switch, createSignal } from "solid-js";
+import { Match, Show, Switch, createResource, createSignal } from "solid-js";
 
 import { Trans } from "@lingui-solid/solid/macro";
 
@@ -18,9 +18,33 @@ import {
 
 import MdArrowBack from "@material-design-icons/svg/filled/arrow_back.svg?component-solid";
 
+import { CONFIGURATION } from "@revolt/common";
 import { useState } from "@revolt/state";
 import { FlowTitle } from "./Flow";
 import { Fields, Form } from "./Form";
+
+/**
+ * Whether the server offers Google OAuth login.
+ *
+ * Hidden inside the Tauri/Capacitor webviews: Google rejects OAuth from
+ * embedded webviews (disallowed_useragent), so the button is web-only
+ * until a deep-link flow exists.
+ */
+async function fetchOauthGoogleEnabled() {
+  const win = window as {
+    __TAURI__?: unknown;
+    Capacitor?: { isNativePlatform?: () => boolean };
+  };
+  if (win.__TAURI__ || win.Capacitor?.isNativePlatform?.()) return false;
+
+  try {
+    const response = await fetch(`${CONFIGURATION.DEFAULT_API_URL}/`);
+    const config = await response.json();
+    return Boolean(config?.features?.oauth_google);
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Flow for logging into an account
@@ -31,6 +55,7 @@ export default function FlowLogin() {
   const { lifecycle, isLoggedIn, login, selectUsername } = useClientLifecycle();
 
   const [keepLoggedIn, setKeepLoggedIn] = createSignal(true);
+  const [oauthGoogle] = createResource(fetchOauthGoogleEnabled);
 
   /**
    * Log into account
@@ -104,6 +129,23 @@ export default function FlowLogin() {
                     <Trans>Login</Trans>
                   </Button>
                 </Row>
+                <Show when={oauthGoogle()}>
+                  <Row align justify>
+                    <Button
+                      variant="outlined"
+                      onPress={() => {
+                        state.auth.setRemember(keepLoggedIn());
+                        // Full-page navigation — the SPA router would
+                        // otherwise swallow this same-origin URL
+                        window.location.assign(
+                          `${CONFIGURATION.DEFAULT_API_URL}/auth/oauth/google`,
+                        );
+                      }}
+                    >
+                      <Trans>Continue with Google</Trans>
+                    </Button>
+                  </Row>
+                </Show>
               </div>
             </Form>
             </div>

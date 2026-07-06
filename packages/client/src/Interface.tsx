@@ -16,6 +16,7 @@ import { Titlebar } from "@revolt/app/interface/desktop/Titlebar";
 import { useClient, useClientLifecycle } from "@revolt/client";
 import { State } from "@revolt/client/Controller";
 import { ActivityWorker } from "@revolt/client/ActivityWorker";
+import { ApkUpdateWorker } from "@revolt/client/ApkUpdateWorker";
 import { NotificationsWorker } from "@revolt/client/NotificationsWorker";
 import { useModals } from "@revolt/modal";
 import { Navigate, useBeforeLeave, useLocation } from "@revolt/routing";
@@ -136,6 +137,7 @@ const Interface = (props: { children: JSX.Element }) => {
 
         <NotificationsWorker />
         <ActivityWorker />
+        <ApkUpdateWorker />
       </AppRoot>
     </MessageCache>
   );

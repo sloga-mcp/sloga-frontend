@@ -9,6 +9,29 @@ import type { ChangelogResponse } from "./Changelog";
  */
 export const CHANGELOGS: ChangelogResponse[] = [
   {
+    id: "sloga-2026-07-06",
+    title: "Patch Notes",
+    published_at: "2026-07-06T02:00:00.000Z",
+    markdown_content: `## v0.6.0 — Sloga has a home: sloga.gg 🌐
+
+Sloga now lives at a permanent address: **app.sloga.gg**. No more moving links — bookmark it, share it, it's here to stay.
+
+### 🔑 Sign in with Google
+- **One-click login** — hit *Continue with Google* on the login screen. No password needed.
+- Already have an account? Signing in with Google using the same email links straight to it.
+- Two-factor authentication is still respected — Google sign-in never skips your 2FA.
+
+### 🔄 Automatic updates
+- **Desktop**: the app now updates itself — when a new version ships, you'll get a prompt to install and restart. This is the last version you'll ever install by hand.
+- **Android**: the app checks for new versions on launch and installs them in-app — no more sideloading every update.
+
+### 🖥️ Desktop
+- Fresh installer with the new Sloga look.
+- The app now connects through sloga.gg, so it works from anywhere.
+
+*Sloga — Hop in.*`,
+  },
+  {
     id: "sloga-2026-07-04",
     title: "Patch Notes",
     published_at: "2026-07-04T20:00:00.000Z",

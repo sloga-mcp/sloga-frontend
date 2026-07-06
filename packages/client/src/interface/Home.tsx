@@ -30,6 +30,56 @@ import MdSettings from "@material-design-icons/svg/filled/settings.svg?component
 import { HeaderIcon } from "./common/CommonHeader";
 
 /**
+ * Sloga wordmark: the O is a circle of people around the online dot
+ */
+export function SlogaWordmark(props: { height: number }) {
+  const dots = [...Array(8)].map((_, i) => {
+    const angle = ((i * 45 - 90) * Math.PI) / 180;
+    return {
+      x: 37 + 29 * Math.cos(angle),
+      y: 37 + 29 * Math.sin(angle),
+      fill: i % 2 === 0 ? "#FF8A00" : "#00B2FF",
+    };
+  });
+
+  return (
+    <svg
+      viewBox="0 0 258 96"
+      height={props.height}
+      role="img"
+      aria-label="Sloga"
+    >
+      <text
+        x="0"
+        y="72"
+        font-size="82"
+        font-weight="800"
+        fill="var(--md-sys-color-on-surface)"
+        font-family="inherit"
+      >
+        Sl
+      </text>
+      <g transform="translate(78,18)">
+        {dots.map((d) => (
+          <circle cx={d.x} cy={d.y} r="8" fill={d.fill} />
+        ))}
+        <circle cx="37" cy="37" r="10" fill="#3ABF7E" />
+      </g>
+      <text
+        x="158"
+        y="72"
+        font-size="82"
+        font-weight="800"
+        fill="var(--md-sys-color-on-surface)"
+        font-family="inherit"
+      >
+        ga
+      </text>
+    </svg>
+  );
+}
+
+/**
  * Base layout of the home page (i.e. the header/background)
  */
 const Base = styled("div", {
@@ -111,16 +161,7 @@ export function HomePage() {
       </Header>
       <div use:scrollable={{ class: content() }}>
         <Column>
-          <span
-            class={css({
-              fontSize: "48px",
-              fontWeight: "700",
-              letterSpacing: "-1px",
-              color: "var(--md-sys-color-on-surface)",
-            })}
-          >
-            Sloga
-          </span>
+          <SlogaWordmark height={64} />
         </Column>
         <Buttons>
           <SeparatedColumn>

@@ -470,6 +470,7 @@ export default class ClientController {
     this.lifecycle = new Lifecycle(this);
 
     this.login = this.login.bind(this);
+    this.completeOauth = this.completeOauth.bind(this);
     this.logout = this.logout.bind(this);
     this.selectUsername = this.selectUsername.bind(this);
     this.isLoggedIn = this.isLoggedIn.bind(this);
@@ -533,11 +534,48 @@ export default class ClientController {
     }
 
     // Try to login with given credentials
-    let session = await this.api.post("/auth/session/login", {
+    const session = await this.api.post("/auth/session/login", {
       ...credentials,
       friendly_name,
     });
 
+    await this.completeLoginResponse(session, modals, friendly_name);
+  }
+
+  /**
+   * Complete an OAuth login using the one-time handoff code from the
+   * OAuth redirect (e.g. /login/oauth?code=...)
+   * @param code One-time handoff code
+   */
+  async completeOauth(code: string, modals: ModalControllerExtended) {
+    // Plain fetch: stoat-api drops the body for routes missing from its
+    // generated OpenAPI schema (they arrive as `{}` and Rocket 422s)
+    const response = await fetch(
+      `${CONFIGURATION.DEFAULT_API_URL}/auth/oauth/google/complete`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code }),
+      },
+    );
+
+    if (!response.ok) {
+      throw new Error(`OAuth completion failed (${response.status})`);
+    }
+
+    const session = (await response.json()) as API.ResponseLogin;
+    await this.completeLoginResponse(session, modals);
+  }
+
+  /**
+   * Handle a login response: walk the MFA flow if required, then store
+   * the session and transition into the logged-in lifecycle.
+   */
+  private async completeLoginResponse(
+    session: API.ResponseLogin,
+    modals: ModalControllerExtended,
+    friendly_name?: string,
+  ) {
     // Prompt for MFA verification if necessary
     if (session.result === "MFA") {
       const { allowed_methods } = session;
