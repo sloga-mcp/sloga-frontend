@@ -183,6 +183,45 @@ export function UserContextMenu(props: {
   }
 
   /**
+   * Suspend the user from the platform (privileged only)
+   */
+  function suspendUser() {
+    openModal({
+      type: "suspend_user",
+      user: props.user,
+      client: client(),
+    });
+  }
+
+  /**
+   * Lift the user's platform suspension (privileged only)
+   */
+  function unsuspendUser() {
+    client()
+      .api.delete(`/safety/users/${props.user.id}/suspend` as never)
+      .catch(console.error);
+  }
+
+  /**
+   * Whether the current account can platform-suspend this user
+   */
+  function canSuspend() {
+    return (
+      client().user?.privileged &&
+      !props.user.self &&
+      !props.user.privileged &&
+      !props.user.bot
+    );
+  }
+
+  /**
+   * Whether this user is currently suspended (UserFlags::SuspendedUntil)
+   */
+  function isSuspended() {
+    return (props.user.flags & 1) === 1;
+  }
+
+  /**
    * Add friend
    */
   function addFriend() {
@@ -520,6 +559,28 @@ export function UserContextMenu(props: {
         >
           <Trans>Ban user</Trans>
         </ContextMenuButton>
+      </Show>
+
+      {/* Platform moderation (privileged accounts only) */}
+      <Show when={canSuspend()}>
+        <ContextMenuDivider />
+        <Show when={!isSuspended()}>
+          <ContextMenuButton
+            icon={MdAdminPanelSettings}
+            onClick={suspendUser}
+            destructive
+          >
+            <Trans>Suspend from platform</Trans>
+          </ContextMenuButton>
+        </Show>
+        <Show when={isSuspended()}>
+          <ContextMenuButton
+            icon={MdAdminPanelSettings}
+            onClick={unsuspendUser}
+          >
+            <Trans>Lift platform suspension</Trans>
+          </ContextMenuButton>
+        </Show>
       </Show>
 
       {/* Safety: remove friend, block, report */}

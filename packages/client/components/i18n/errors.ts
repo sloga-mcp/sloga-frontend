@@ -38,6 +38,8 @@ export function useError() {
           >;
 
       switch (err.type) {
+        case "AccountDisabled":
+          return t`This account has been suspended. Contact a moderator if you believe this is a mistake.`;
         case "AlreadyFriends":
           return t`Already friends with this user.`;
         case "AlreadyInGroup":

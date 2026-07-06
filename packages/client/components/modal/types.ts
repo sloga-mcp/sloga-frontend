@@ -51,6 +51,11 @@ export type Modals =
       server: Server;
     }
   | {
+      type: "suspend_user";
+      user: User;
+      client: Client;
+    }
+  | {
       type: "changelog";
       changelog: ChangelogResponse;
     }

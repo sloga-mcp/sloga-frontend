@@ -57,6 +57,7 @@ import { ServerInfoModal } from "./modals/ServerInfo";
 import { SettingsModal } from "./modals/Settings";
 import { SignOutSessionsModal } from "./modals/SignOutSessions";
 import { SignedOutModal } from "./modals/SignedOut";
+import { SuspendUserModal } from "./modals/SuspendUser";
 import { UserProfileModal } from "./modals/UserProfile";
 import { UserProfileMutualFriendsModal } from "./modals/UserProfileMutualFriends";
 import { UserProfileMutualGroupsModal } from "./modals/UserProfileMutualGroups";
@@ -87,6 +88,8 @@ export function RenderModal(props: ActiveModal & { onClose: () => void }) {
       return <BanMemberModal {...modalProps} />;
     case "ban_non_member":
       return <BanNonMemberModal {...modalProps} />;
+    case "suspend_user":
+      return <SuspendUserModal {...modalProps} />;
     case "changelog":
       return <ChangelogModal {...modalProps} />;
     case "add_members_to_group":

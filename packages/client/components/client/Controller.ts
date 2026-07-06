@@ -281,8 +281,10 @@ class Lifecycle {
             this.#enter(State.Onboarding);
             break;
           case TransitionType.PermanentFailure:
+            this.#permanentError = transition.error;
+            this.#enter(State.Error);
+            break;
           case TransitionType.TemporaryFailure:
-            // TODO: relay error
             this.#enter(State.Error);
             break;
         }
@@ -353,7 +355,7 @@ class Lifecycle {
             this.#enter(State.Disconnected);
             break;
           case TransitionType.PermanentFailure:
-            // TODO: relay error
+            this.#permanentError = transition.error;
             this.#enter(State.Error);
             break;
           case TransitionType.Logout:
@@ -611,9 +613,13 @@ export default class ClientController {
     }
 
     if (session.result === "Disabled") {
-      // TODO
-      alert("Account is disabled, run special logic here.");
-      return;
+      // Surface as a form error; the login form renders a live
+      // countdown when the suspension is timed (suspended_until set)
+      throw {
+        type: "AccountDisabled",
+        suspended_until: (session as { suspended_until?: string })
+          .suspended_until,
+      };
     }
 
     const createdSession = {
