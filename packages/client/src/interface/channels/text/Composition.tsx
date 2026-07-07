@@ -69,15 +69,43 @@ export function MessageComposition(props: Props) {
       ? props.channel.recipient?.id
       : undefined,
   );
+  /** Whether E2EE is enabled + published on THIS device */
+  const selfE2EEEnabled = createMemo(() => {
+    const s = e2ee?.status.get("state");
+    return !!s?.enabled && !!s?.published;
+  });
+
+  /**
+   * Composer indicator state (DMs only):
+   * - "encrypt"     → both sides established encryption → green lock
+   * - "unencrypted" → THIS device has E2EE on but the conversation is
+   *                   plaintext (the other person isn't set up) → red open
+   *                   lock, so the mismatch is obvious
+   * - "blocked"     → peer identity change pending acceptance → amber warning
+   * - undefined     → neither side is using E2EE (or non-DM) → no indicator
+   */
   const e2eeMode = createMemo(() => {
     const peer = peerUserId();
-    const mode = peer ? e2ee?.sendModes.get(peer) : undefined;
-    // Only "encrypt" / "blocked" drive the indicator. "plaintext" (and
-    // absence) must render NOTHING — a lock on an unencrypted conversation
-    // would be a fail-open appearance (the composer `<Show>`/icon fallback
-    // would otherwise show a bare lock for the "plaintext" string).
-    return mode === "encrypt" || mode === "blocked" ? mode : undefined;
+    if (!peer) return undefined;
+    const mode = e2ee?.sendModes.get(peer);
+    if (mode === "encrypt" || mode === "blocked") return mode;
+    // A plaintext conversation only warrants a warning when THIS device is
+    // opted in — otherwise the user isn't using encryption and needs no nag.
+    if (mode === "plaintext" && selfE2EEEnabled()) return "unencrypted";
+    return undefined;
   });
+
+  /** Material symbol for the current indicator state */
+  const e2eeIcon = () => {
+    switch (e2eeMode()) {
+      case "blocked":
+        return "gpp_maybe";
+      case "unencrypted":
+        return "lock_open";
+      default:
+        return "lock";
+    }
+  };
 
   // Prime the send-mode cache when the conversation opens so the indicator
   // is correct before the first send
@@ -525,13 +553,14 @@ export function MessageComposition(props: Props) {
             }
           }}
         >
-          <Symbol style={{ "font-size": "1rem" }}>
-            {e2eeMode() === "blocked" ? "gpp_maybe" : "lock"}
-          </Symbol>
+          <Symbol style={{ "font-size": "1rem" }}>{e2eeIcon()}</Symbol>
           <span>
             <Switch>
               <Match when={e2eeMode() === "encrypt"}>
                 {t`Messages to this conversation are end-to-end encrypted.`}
+              </Match>
+              <Match when={e2eeMode() === "unencrypted"}>
+                {t`Not encrypted — the other person hasn't turned on encryption.`}
               </Match>
               <Match when={e2eeMode() === "blocked"}>
                 {t`This contact's security identity changed — review before sending.`}
@@ -807,7 +836,13 @@ const E2EEIndicator = styled("div", {
     padding: "4px 12px",
     fontSize: "0.75rem",
     fontWeight: "600",
-    color: "var(--md-sys-color-primary)",
+    // encrypted (default): green
+    color: "#3BA55D",
+    // this device is opted in but the conversation is plaintext: red
+    "&[data-mode='unencrypted']": {
+      color: "var(--md-sys-color-error)",
+    },
+    // peer identity change pending acceptance: amber, clickable
     "&[data-mode='blocked']": {
       color: "#FF8A00",
       cursor: "pointer",
