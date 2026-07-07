@@ -175,6 +175,9 @@ export type Modals =
       type: "e2ee_enable";
     }
   | {
+      type: "e2ee_disable";
+    }
+  | {
       type: "image_viewer";
       embed?: ImageEmbed;
       gif?: VideoEmbed;

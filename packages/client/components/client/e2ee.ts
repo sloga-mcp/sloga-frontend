@@ -1179,6 +1179,56 @@ export class E2EEBridge implements E2EEAdapter {
     this.#advertiseOptIn();
   }
 
+  /**
+   * Turn OFF E2EE on this device. Destroys ALL local encrypted state and
+   * takes the device out of the server's key directory so peers stop
+   * encrypting to it.
+   *
+   * Order matters for safe cancellation:
+   *  1. Native `e2ee_wipe` runs FIRST — it shows a blocking OS confirmation
+   *     (design §9a; a compromised webview cannot destroy data without a
+   *     physical click). Declining it throws here and NOTHING else changed,
+   *     so the toggle simply snaps back on.
+   *  2. Only after the wipe succeeds do we clear the opt-in hint and revoke
+   *     the device server-side (MFA-gated). Those are best-effort: if the
+   *     revoke fails the device is already gone locally and cannot decrypt
+   *     anything, so a lingering registry entry is harmless and its queued
+   *     envelopes expire by TTL.
+   */
+  async disable(mfaTicketToken: string): Promise<void> {
+    // Capture the device id before the wipe removes it from local state
+    const deviceId = this.status.get("state")?.device_id;
+
+    // (1) Local wipe with the native OS confirmation — throws on decline
+    await this.#invoke("e2ee_wipe");
+
+    // (2) Post-wipe cleanup. Failures here never resurrect local state.
+    try {
+      const user = this.#client.user;
+      if (user?.e2eeEnabled) {
+        await user.edit({ e2ee_enabled: false } as unknown as Parameters<
+          typeof user.edit
+        >[0]);
+      }
+    } catch (error) {
+      console.error("[e2ee] clearing opt-in flag failed", error);
+    }
+
+    if (deviceId) {
+      try {
+        await this.#api("DELETE", `/e2ee/keys/${deviceId}`, undefined, {
+          "X-MFA-Ticket": mfaTicketToken,
+        });
+      } catch (error) {
+        // Lingering server-side device is harmless (wiped device can't
+        // decrypt; its envelopes TTL out). Logged, not surfaced.
+        console.error("[e2ee] server-side device revoke failed", error);
+      }
+    }
+
+    await this.refreshStatus();
+  }
+
   /** Native conversation state (per-device status + binding_verified) */
   conversationState(peerUserId: string): Promise<{
     peer_user_id: string;

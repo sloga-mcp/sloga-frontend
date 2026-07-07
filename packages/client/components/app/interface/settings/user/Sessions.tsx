@@ -23,6 +23,7 @@ import { useClient, useE2EE } from "@revolt/client";
 import { useModals } from "@revolt/modal";
 import {
   CategoryButton,
+  Checkbox,
   CircularProgress,
   Column,
   Time,
@@ -78,14 +79,22 @@ function EncryptionCard() {
   return (
     <CategoryButton.Group>
       <CategoryButton
-        action={enabled() ? undefined : "chevron"}
+        // A checkbox as a pure indicator (clicks pass through to the row via
+        // pointer-events:none), so it always reflects the real native status
+        // and never desyncs on a cancelled flow. The row toggles: checked →
+        // disable flow, unchecked → enable flow.
+        action={
+          <span style={{ "pointer-events": "none", display: "flex" }}>
+            <Checkbox checked={enabled()} />
+          </span>
+        }
         icon={<MdLock {...iconSize(24)} />}
         description={
           enabled() ? (
             <Trans>
               Direct messages with contacts who also have encryption on are
               end-to-end encrypted on this device. Encrypted history is stored
-              only here.
+              only here — uncheck to turn encryption off on this device.
             </Trans>
           ) : (
             <Trans>
@@ -93,8 +102,8 @@ function EncryptionCard() {
             </Trans>
           )
         }
-        onClick={
-          enabled() ? undefined : () => openModal({ type: "e2ee_enable" })
+        onClick={() =>
+          openModal({ type: enabled() ? "e2ee_disable" : "e2ee_enable" })
         }
       >
         <Switch>
