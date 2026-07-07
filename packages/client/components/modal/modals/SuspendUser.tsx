@@ -34,15 +34,28 @@ export function SuspendUserModal(
       const durationDays = Number(group.controls.durationDays.value);
       const reason = group.controls.reason.value.trim();
 
-      // Route is not part of the upstream API typings yet
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      await (props.client.api.post as any)(
-        `/safety/users/${props.user.id}/suspend`,
+      // stoat-api's typed client silently drops the body of requests to
+      // routes missing from its generated route tables, so go through
+      // fetch instead — otherwise duration and reason never reach the
+      // server and every suspension becomes indefinite.
+      const api = props.client.api as unknown as {
+        baseURL: string;
+        auth: Record<string, string>;
+      };
+
+      const response = await fetch(
+        `${api.baseURL}/safety/users/${props.user.id}/suspend`,
         {
-          duration_days: durationDays > 0 ? durationDays : undefined,
-          reason: reason ? [reason] : undefined,
+          method: "POST",
+          headers: { ...api.auth, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            duration_days: durationDays > 0 ? durationDays : undefined,
+            reason: reason ? [reason] : undefined,
+          }),
         },
       );
+
+      if (!response.ok) throw await response.text();
 
       props.onClose();
     } catch (error) {
