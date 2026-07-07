@@ -4,7 +4,11 @@ import { Trans } from "@lingui-solid/solid/macro";
 import { Server } from "stoat.js";
 import { css } from "styled-system/css";
 
-import { useClient, useClientLifecycle } from "@revolt/client";
+import {
+  nativeE2EEAvailable,
+  useClient,
+  useClientLifecycle,
+} from "@revolt/client";
 import { CONFIGURATION } from "@revolt/common";
 import { useUser } from "@revolt/markdown/users";
 import { useModals } from "@revolt/modal";
@@ -23,6 +27,7 @@ import MdNotifications from "@material-design-icons/svg/outlined/notifications.s
 import MdPalette from "@material-design-icons/svg/outlined/palette.svg?component-solid";
 import MdRateReview from "@material-design-icons/svg/outlined/rate_review.svg?component-solid";
 import MdScience from "@material-design-icons/svg/outlined/science.svg?component-solid";
+import MdSecurity from "@material-design-icons/svg/outlined/security.svg?component-solid";
 import MdSmartToy from "@material-design-icons/svg/outlined/smart_toy.svg?component-solid";
 import MdVerifiedUser from "@material-design-icons/svg/outlined/verified_user.svg?component-solid";
 import MdWorkspacePremium from "@material-design-icons/svg/outlined/workspace_premium.svg?component-solid";
@@ -40,6 +45,7 @@ import { LanguageSettings } from "./user/Language";
 import Native from "./user/Native";
 import Notifications from "./user/notifications/Notifications";
 import { EditProfile } from "./user/profile";
+import { SecurityAndPrivacy } from "./user/SecurityAndPrivacy";
 import { Sessions } from "./user/Sessions";
 import { EditSubscription } from "./user/subscriptions";
 import { VoiceSettings } from "./user/voice/VoiceSettings";
@@ -86,6 +92,8 @@ const Config: SettingsConfiguration<{ server: Server }> = {
         return <EditProfile />;
       case "sessions":
         return <Sessions />;
+      case "security":
+        return <SecurityAndPrivacy />;
       case "bots":
         return <MyBots />;
       case "language":
@@ -171,6 +179,14 @@ const Config: SettingsConfiguration<{ server: Server }> = {
               id: "sessions",
               icon: <MdVerifiedUser {...iconSize(20)} />,
               title: <Trans>Sessions</Trans>,
+            },
+            {
+              id: "security",
+              icon: <MdSecurity {...iconSize(20)} />,
+              title: <Trans>Security & Privacy</Trans>,
+              // Only meaningful where the native E2EE layer exists (desktop);
+              // the web build has no key material.
+              hidden: !nativeE2EEAvailable(),
             },
           ],
         },
