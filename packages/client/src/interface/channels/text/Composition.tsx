@@ -71,7 +71,12 @@ export function MessageComposition(props: Props) {
   );
   const e2eeMode = createMemo(() => {
     const peer = peerUserId();
-    return peer ? e2ee?.sendModes.get(peer) : undefined;
+    const mode = peer ? e2ee?.sendModes.get(peer) : undefined;
+    // Only "encrypt" / "blocked" drive the indicator. "plaintext" (and
+    // absence) must render NOTHING — a lock on an unencrypted conversation
+    // would be a fail-open appearance (the composer `<Show>`/icon fallback
+    // would otherwise show a bare lock for the "plaintext" string).
+    return mode === "encrypt" || mode === "blocked" ? mode : undefined;
   });
 
   // Prime the send-mode cache when the conversation opens so the indicator
