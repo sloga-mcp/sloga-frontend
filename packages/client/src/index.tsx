@@ -1,6 +1,7 @@
 /**
  * Configure contexts and render App
  */
+import "./polyfills";
 import "./sentry";
 
 import { JSX, onMount } from "solid-js";

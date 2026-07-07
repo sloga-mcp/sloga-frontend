@@ -33,9 +33,22 @@ export default function FlowHome() {
                 letterSpacing: "-1px",
                 textAlign: "center",
                 color: "var(--md-sys-color-on-surface)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: "2px",
               })}
             >
-              Sloga
+              Sl
+              <img
+                src="/assets/web/sloga-icon.png"
+                alt="o"
+                class={css({
+                  height: "40px",
+                  width: "40px",
+                })}
+              />
+              ga
             </span>
 
             <Column>
