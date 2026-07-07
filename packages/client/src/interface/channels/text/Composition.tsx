@@ -75,12 +75,22 @@ export function MessageComposition(props: Props) {
     return !!s?.enabled && !!s?.published;
   });
 
+  /** Whether the DM peer advertises E2EE opt-in (server discovery hint) */
+  const peerE2EEEnabled = createMemo(
+    () => !!props.channel.recipient?.e2eeEnabled,
+  );
+
   /**
-   * Composer indicator state (DMs only):
-   * - "encrypt"     → both sides established encryption → green lock
-   * - "unencrypted" → THIS device has E2EE on but the conversation is
-   *                   plaintext (the other person isn't set up) → red open
-   *                   lock, so the mismatch is obvious
+   * Composer indicator state (DMs only). "encrypt" is the ONLY state derived
+   * from real local truth (pinned keys + sticky marker) — it stays green
+   * whether the peer is online or offline, and never downgrades. The others
+   * are honest hints about a not-yet-encrypted conversation:
+   * - "encrypt"     → encryption established → green closed lock
+   * - "pending"     → both sides opted in but no session yet; it starts on
+   *                   the first message → neutral lock-clock (NOT green,
+   *                   because a server could lie about the peer's opt-in)
+   * - "unencrypted" → THIS device is on but the peer has NOT opted in →
+   *                   red open lock (a genuine mismatch)
    * - "blocked"     → peer identity change pending acceptance → amber warning
    * - undefined     → neither side is using E2EE (or non-DM) → no indicator
    */
@@ -89,9 +99,13 @@ export function MessageComposition(props: Props) {
     if (!peer) return undefined;
     const mode = e2ee?.sendModes.get(peer);
     if (mode === "encrypt" || mode === "blocked") return mode;
-    // A plaintext conversation only warrants a warning when THIS device is
-    // opted in — otherwise the user isn't using encryption and needs no nag.
-    if (mode === "plaintext" && selfE2EEEnabled()) return "unencrypted";
+    // A plaintext conversation only warrants an indicator when THIS device
+    // is opted in — otherwise the user isn't using encryption and needs no
+    // nag. Distinguish "peer is set up, just not established yet" from "peer
+    // hasn't turned encryption on at all".
+    if (mode === "plaintext" && selfE2EEEnabled()) {
+      return peerE2EEEnabled() ? "pending" : "unencrypted";
+    }
     return undefined;
   });
 
@@ -100,6 +114,8 @@ export function MessageComposition(props: Props) {
     switch (e2eeMode()) {
       case "blocked":
         return "gpp_maybe";
+      case "pending":
+        return "lock_clock";
       case "unencrypted":
         return "lock_open";
       default:
@@ -559,6 +575,9 @@ export function MessageComposition(props: Props) {
               <Match when={e2eeMode() === "encrypt"}>
                 {t`Messages to this conversation are end-to-end encrypted.`}
               </Match>
+              <Match when={e2eeMode() === "pending"}>
+                {t`Encryption will start once a message is sent.`}
+              </Match>
               <Match when={e2eeMode() === "unencrypted"}>
                 {t`Not encrypted — the other person hasn't turned on encryption.`}
               </Match>
@@ -838,7 +857,11 @@ const E2EEIndicator = styled("div", {
     fontWeight: "600",
     // encrypted (default): green
     color: "#3BA55D",
-    // this device is opted in but the conversation is plaintext: red
+    // both opted in, encryption not yet established: neutral (informational)
+    "&[data-mode='pending']": {
+      color: "var(--md-sys-color-primary)",
+    },
+    // this device is opted in but the peer is not: red
     "&[data-mode='unencrypted']": {
       color: "var(--md-sys-color-error)",
     },
