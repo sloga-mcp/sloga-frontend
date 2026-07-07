@@ -168,6 +168,13 @@ export type Modals =
       error: any;
     }
   | {
+      type: "e2ee_identity_change";
+      peerUserId: string;
+    }
+  | {
+      type: "e2ee_enable";
+    }
+  | {
       type: "image_viewer";
       embed?: ImageEmbed;
       gif?: VideoEmbed;

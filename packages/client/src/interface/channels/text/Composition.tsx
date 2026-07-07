@@ -16,7 +16,7 @@ import { Channel } from "stoat.js";
 
 import { styled } from "styled-system/jsx";
 
-import { useClient, useSound } from "@revolt/client";
+import { E2EESendError, useClient, useE2EE, useSound } from "@revolt/client";
 import { CONFIGURATION, debounce } from "@revolt/common";
 import { Keybind, KeybindAction, createKeybind } from "@revolt/keybinds";
 import { useModals } from "@revolt/modal";
@@ -55,8 +55,32 @@ export function MessageComposition(props: Props) {
   const state = useState();
   const { t } = useLingui();
   const client = useClient();
+  const e2ee = useE2EE();
   const sound = useSound();
   const { openModal } = useModals();
+
+  /**
+   * E2EE send mode for this conversation (DMs only). Reflects the native
+   * layer's local-truth decision — "encrypted", "blocked" (identity change
+   * pending acceptance), or undefined for plaintext/non-DM/web.
+   */
+  const peerUserId = createMemo(() =>
+    props.channel.type === "DirectMessage"
+      ? props.channel.recipient?.id
+      : undefined,
+  );
+  const e2eeMode = createMemo(() => {
+    const peer = peerUserId();
+    return peer ? e2ee?.sendModes.get(peer) : undefined;
+  });
+
+  // Prime the send-mode cache when the conversation opens so the indicator
+  // is correct before the first send
+  createEffect(
+    on(peerUserId, (peer) => {
+      if (peer && e2ee) void e2ee.primeSendMode(peer);
+    }),
+  );
 
   const currentSlowmode = (): UserSlowmodes | undefined => {
     return client().userSlowmodes.get(props.channel.id);
@@ -257,6 +281,46 @@ export function MessageComposition(props: Props) {
     } else if (currentSlowmode()) {
       return;
     }
+
+    // E2EE pre-send guards (fail closed BEFORE the draft path, which
+    // uploads attachments to the plaintext Autumn store before sending):
+    // - blocked: a peer identity change must be accepted first
+    // - attachments: encrypted attachments land in slice 3.5; until then
+    //   they are blocked in E2EE conversations, never sent in plaintext
+    // The mode is read from the NATIVE layer authoritatively (an awaited
+    // round-trip, not the cached indicator) precisely because the next step
+    // may upload plaintext file bytes that a stale cache could leak.
+    const peer = peerUserId();
+    if (peer && e2ee) {
+      let mode: "encrypt" | "blocked" | "plaintext";
+      try {
+        mode = await e2ee.sendModeNow(peer);
+      } catch {
+        // Native layer unreachable: fail closed rather than risk a
+        // plaintext attachment upload
+        openModal({
+          type: "error2",
+          error: t`Encryption status could not be verified. Nothing was sent.`,
+        });
+        return;
+      }
+
+      if (mode === "blocked") {
+        openModal({
+          type: "e2ee_identity_change",
+          peerUserId: peer,
+        });
+        return;
+      }
+      if (mode === "encrypt" && (draft()?.files?.length ?? 0) > 0) {
+        openModal({
+          type: "error2",
+          error: t`Attachments are not yet supported in encrypted conversations.`,
+        });
+        return;
+      }
+    }
+
     stopTyping();
     sound.playSound("messageSent");
     props.onMessageSend?.();
@@ -277,23 +341,34 @@ export function MessageComposition(props: Props) {
       setTimeout(() => client().removeListener("messageCreate", onMsg), 15000);
     }
 
-    if (typeof useContent === "string") {
-      const currentDraft = draft();
-      if (
-        currentDraft?.replies?.length &&
-        !currentDraft.content &&
-        !currentDraft.files?.length
-      ) {
-        state.draft.setDraft(props.channel.id, {
-          ...currentDraft,
-          content: useContent,
-        });
-        return state.draft.sendDraft(client(), props.channel);
+    try {
+      if (typeof useContent === "string") {
+        const currentDraft = draft();
+        if (
+          currentDraft?.replies?.length &&
+          !currentDraft.content &&
+          !currentDraft.files?.length
+        ) {
+          state.draft.setDraft(props.channel.id, {
+            ...currentDraft,
+            content: useContent,
+          });
+          return await state.draft.sendDraft(client(), props.channel);
+        }
+        return await props.channel.sendMessage(useContent);
       }
-      return props.channel.sendMessage(useContent);
-    }
 
-    state.draft.sendDraft(client(), props.channel);
+      await state.draft.sendDraft(client(), props.channel);
+    } catch (error) {
+      // An encrypt-mode send that could not be delivered is a HARD error —
+      // the message was NOT sent in plaintext. Surface it and restore the
+      // draft so the user does not lose their text.
+      if (error instanceof E2EESendError) {
+        openModal({ type: "error2", error: error.message });
+        return;
+      }
+      throw error;
+    }
   }
 
   /**
@@ -442,6 +517,33 @@ export function MessageComposition(props: Props) {
             </SlowmodeRow>
           </Tooltip>
         </SlowmodeContainer>
+      </Show>
+      <Show when={e2eeMode()}>
+        <E2EEIndicator
+          data-mode={e2eeMode()}
+          onClick={() => {
+            if (e2eeMode() === "blocked" && peerUserId()) {
+              openModal({
+                type: "e2ee_identity_change",
+                peerUserId: peerUserId()!,
+              });
+            }
+          }}
+        >
+          <Symbol style={{ "font-size": "1rem" }}>
+            {e2eeMode() === "blocked" ? "gpp_maybe" : "lock"}
+          </Symbol>
+          <span>
+            <Switch>
+              <Match when={e2eeMode() === "encrypt"}>
+                {t`Messages to this conversation are end-to-end encrypted.`}
+              </Match>
+              <Match when={e2eeMode() === "blocked"}>
+                {t`This contact's security identity changed — review before sending.`}
+              </Match>
+            </Switch>
+          </span>
+        </E2EEIndicator>
       </Show>
       <Show when={state.draft.hasAdditionalElements(props.channel.id)}>
         <Keybind
@@ -695,5 +797,25 @@ const SlowmodeText = styled("span", {
   base: {
     fontSize: "0.75rem",
     fontWeight: "600",
+  },
+});
+
+/**
+ * Composer encryption indicator. Green lock for an encrypted conversation;
+ * amber warning (clickable) when a peer identity change is blocking sends.
+ */
+const E2EEIndicator = styled("div", {
+  base: {
+    display: "flex",
+    alignItems: "center",
+    gap: "var(--gap-sm)",
+    padding: "4px 12px",
+    fontSize: "0.75rem",
+    fontWeight: "600",
+    color: "var(--md-sys-color-primary)",
+    "&[data-mode='blocked']": {
+      color: "#FF8A00",
+      cursor: "pointer",
+    },
   },
 });

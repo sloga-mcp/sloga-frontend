@@ -20,6 +20,15 @@ export type { default as ClientController } from "./Controller";
 
 export { useNotifications } from "./NotificationsController";
 export { SoundContext, SoundController, useSound } from "./Sounds";
+export { E2EEBridge, E2EESendError, nativeE2EEAvailable } from "./e2ee";
+
+/**
+ * The native E2EE bridge for the current client, if this platform has one
+ * (Tauri desktop). Undefined on web.
+ */
+export function useE2EE(): import("./e2ee").E2EEBridge | undefined {
+  return useClient()().e2ee as import("./e2ee").E2EEBridge | undefined;
+}
 
 const clientContext = createContext(null! as ClientController);
 

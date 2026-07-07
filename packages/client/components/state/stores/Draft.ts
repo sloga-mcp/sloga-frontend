@@ -294,6 +294,13 @@ export class Draft extends AbstractStore<"draft", TypeDraft> {
     // Check if this is something we can even send
     if (!draft.content && !draft.files?.length) return;
 
+    // Fail-closed E2EE gate at the shared chokepoint: block an encrypted /
+    // identity-changed DM (and any attachment on an encrypted DM) BEFORE the
+    // outbox entry or any plaintext Autumn upload. This covers the composer,
+    // retrySend, and any future caller — throwing E2EESendError, never a
+    // silent plaintext fallback. No-op for plaintext / non-DM channels.
+    await client.e2ee?.guardSend(channel, !!draft.files?.length);
+
     // Add message to the outbox
     const idempotencyKey = ulid();
     this.set("outbox", channel.id, [
@@ -394,7 +401,7 @@ export class Draft extends AbstractStore<"draft", TypeDraft> {
           (entry) => entry.idempotencyKey !== idempotencyKey,
         ),
       );
-    } catch {
+    } catch (error) {
       this.set(
         "outbox",
         channel.id,
@@ -407,6 +414,15 @@ export class Draft extends AbstractStore<"draft", TypeDraft> {
             : entry,
         ),
       );
+
+      // A fail-closed E2EE send (peer identity change, no usable device,
+      // delivery failure) must surface loudly — the message was NOT sent in
+      // plaintext. Re-throw so the composer shows the explicit hard error
+      // instead of a silent "failed" outbox entry. (Name check avoids a
+      // dependency cycle into @revolt/client.)
+      if ((error as { name?: string })?.name === "E2EESendError") {
+        throw error;
+      }
     }
   }
 
@@ -445,7 +461,12 @@ export class Draft extends AbstractStore<"draft", TypeDraft> {
       // TODO: validation?
 
       this.cancelSend(channel, idempotencyKey);
-      this.sendDraft(client, channel, draft!);
+      // sendDraft's shared E2EE gate can reject a retry (e.g. the
+      // conversation became encrypted since the original send, so a
+      // plaintext attachment retry must be refused). Swallow so it doesn't
+      // surface as an unhandled rejection — the fail-closed refusal already
+      // prevented any plaintext upload, which is the security requirement.
+      this.sendDraft(client, channel, draft!).catch(() => {});
     });
   }
 

@@ -9,6 +9,7 @@ import { ModalControllerExtended } from "@revolt/modal";
 import type { State as ApplicationState } from "@revolt/state";
 import type { Session } from "@revolt/state/stores/Auth";
 import { killServiceWorkerSubscription } from "./NotificationsController";
+import { E2EEBridge, nativeE2EEAvailable } from "./e2ee";
 
 export enum State {
   Ready = "Ready",
@@ -166,6 +167,15 @@ class Lifecycle {
       vapid: String(),
       ws: CONFIGURATION.DEFAULT_WS_URL,
     };
+
+    // Native E2EE layer (Tauri desktop shell): every DM send and E2EE
+    // event is routed through the bridge — see e2ee.ts for the
+    // downgrade-refusal contract. Web builds have no native layer and the
+    // server additionally refuses E2EE routes for their sessions
+    // (design §8: web-token refusal).
+    if (nativeE2EEAvailable()) {
+      this.client.e2ee = new E2EEBridge(this.client);
+    }
 
     this.client.events.on("state", this.onState);
     this.client.on("ready", this.onReady);

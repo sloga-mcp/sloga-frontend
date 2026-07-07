@@ -52,14 +52,25 @@ const USER_REPORT_REASONS: API.UserReportReason[] = [
 const SNAPSHOT_CONTEXT_RADIUS = 5;
 
 /**
- * Copy of a message as seen on the reporter's device
+ * Copy of a message as seen on the reporter's device.
+ *
+ * For an end-to-end encrypted message the `content` is the decrypted
+ * plaintext the reporter's device holds locally — the server relayed only
+ * ciphertext and cannot produce it. `encrypted: true` tells the safety team
+ * the plaintext was attached BY THE REPORTER (provenance matters: it was
+ * never server-visible), satisfying slice 3's reporter-side plaintext
+ * attach requirement. Encrypted-ness comes from the native bridge's trusted
+ * record, NEVER a message flag (which the server could forge to mislabel a
+ * plaintext message as encrypted).
  */
-function snapshotOf(message: MessageI) {
+function snapshotOf(client: Client, message: MessageI) {
+  const encrypted = client.e2ee?.isEncryptedMessage(message.id) ?? false;
   return {
     id: message.id,
     channel: message.channelId,
     author: message.authorId ?? "",
     content: message.content,
+    ...(encrypted ? { encrypted: true } : {}),
   };
 }
 
@@ -67,7 +78,8 @@ function snapshotOf(message: MessageI) {
  * Build the reporter-side snapshot of a message and its surrounding context
  * from the local message cache. The report carries the content as seen by
  * the reporter, so reporting keeps working for conversations the server
- * cannot read (end-to-end encrypted DMs).
+ * cannot read (end-to-end encrypted DMs) — the decrypted plaintext is
+ * attached from the reporter's local store, never from the server.
  */
 function buildMessageSnapshot(client: Client, message: MessageI) {
   const nearby = client.messages
@@ -87,8 +99,8 @@ function buildMessageSnapshot(client: Client, message: MessageI) {
     .slice(0, SNAPSHOT_CONTEXT_RADIUS);
 
   return {
-    message: snapshotOf(message),
-    context: [...before, ...after].map(snapshotOf),
+    message: snapshotOf(client, message),
+    context: [...before, ...after].map((entry) => snapshotOf(client, entry)),
   };
 }
 
