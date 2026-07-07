@@ -49,6 +49,7 @@ import { PolicyChangeModal } from "./modals/PolicyChange";
 import { RemoveMemberModal } from "./modals/RemoveMember";
 import { RenameSessionModal } from "./modals/RenameSession";
 import { ReportContentModal } from "./modals/ReportContent";
+import { ReportQueueModal } from "./modals/ReportQueue";
 import { ResetBotTokenModal } from "./modals/ResetBotToken";
 import { ScreenSharePickerModal } from "./modals/ScreenSharePicker";
 import { ScreenShareSettingsModal } from "./modals/ScreenShareSettings";
@@ -170,6 +171,8 @@ export function RenderModal(props: ActiveModal & { onClose: () => void }) {
       return <RenameSessionModal {...modalProps} />;
     case "report_content":
       return <ReportContentModal {...modalProps} />;
+    case "report_queue":
+      return <ReportQueueModal {...modalProps} />;
     case "server_identity":
       return <ServerIdentityModal {...modalProps} />;
     case "server_info":

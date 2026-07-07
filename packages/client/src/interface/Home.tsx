@@ -25,6 +25,7 @@ import MdHome from "@material-design-icons/svg/filled/home.svg?component-solid";
 import MdPayments from "@material-design-icons/svg/filled/payments.svg?component-solid";
 import MdPersonAdd from "@material-design-icons/svg/filled/person_add.svg?component-solid";
 import MdRateReview from "@material-design-icons/svg/filled/rate_review.svg?component-solid";
+import MdReport from "@material-design-icons/svg/filled/report.svg?component-solid";
 import MdSettings from "@material-design-icons/svg/filled/settings.svg?component-solid";
 
 import { HeaderIcon } from "./common/CommonHeader";
@@ -257,6 +258,19 @@ export function HomePage() {
                 icon={<MdExplore />}
               >
                 <Trans>Discover Sloga</Trans>
+              </CategoryButton>
+            </Show>
+            <Show when={client()!.user?.privileged}>
+              <CategoryButton
+                onClick={() =>
+                  openModal({ type: "report_queue", client: client()! })
+                }
+                description={
+                  <Trans>Review and resolve open content reports.</Trans>
+                }
+                icon={<MdReport />}
+              >
+                <Trans>Report queue</Trans>
               </CategoryButton>
             </Show>
             <div style={{"--md-sys-color-primary": "#00B2FF", "--md-sys-color-on-primary": "#ffffff"}}>

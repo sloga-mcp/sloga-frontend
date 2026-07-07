@@ -2,7 +2,7 @@ import { createFormControl, createFormGroup } from "solid-forms";
 import { For, Match, Switch } from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
-import { API, Message as MessageI, Server, User } from "stoat.js";
+import { API, Client, Message as MessageI, Server, User } from "stoat.js";
 import { cva } from "styled-system/css";
 
 import { Message } from "@revolt/app";
@@ -45,6 +45,52 @@ const USER_REPORT_REASONS: API.UserReportReason[] = [
   "Underage",
   "NoneSpecified",
 ];
+
+/**
+ * Number of cached messages included either side of the reported message
+ */
+const SNAPSHOT_CONTEXT_RADIUS = 5;
+
+/**
+ * Copy of a message as seen on the reporter's device
+ */
+function snapshotOf(message: MessageI) {
+  return {
+    id: message.id,
+    channel: message.channelId,
+    author: message.authorId ?? "",
+    content: message.content,
+  };
+}
+
+/**
+ * Build the reporter-side snapshot of a message and its surrounding context
+ * from the local message cache. The report carries the content as seen by
+ * the reporter, so reporting keeps working for conversations the server
+ * cannot read (end-to-end encrypted DMs).
+ */
+function buildMessageSnapshot(client: Client, message: MessageI) {
+  const nearby = client.messages
+    .filter(
+      (entry) =>
+        entry.channelId === message.channelId &&
+        entry.id !== message.id &&
+        !entry.systemMessage,
+    )
+    .sort((a, b) => a.id.localeCompare(b.id));
+
+  const before = nearby
+    .filter((entry) => entry.id < message.id)
+    .slice(-SNAPSHOT_CONTEXT_RADIUS);
+  const after = nearby
+    .filter((entry) => entry.id > message.id)
+    .slice(0, SNAPSHOT_CONTEXT_RADIUS);
+
+  return {
+    message: snapshotOf(message),
+    context: [...before, ...after].map(snapshotOf),
+  };
+}
 
 /**
  * Modal to report content
@@ -98,7 +144,18 @@ export function ReportContentModal(
         throw new Error("NoReasonProvided");
       }
 
-      await props.client.api.post("/safety/report", {
+      // Reporter-side snapshot: attach the reported message (or the
+      // supporting context message for user reports) as seen locally
+      const snapshotTarget =
+        props.target instanceof MessageI
+          ? props.target
+          : props.target instanceof User
+            ? props.contextMessage
+            : undefined;
+
+      // `message_snapshot` is not part of the upstream API typings
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (props.client.api.post as any)("/safety/report", {
         content:
           props.target instanceof User
             ? {
@@ -119,6 +176,9 @@ export function ReportContentModal(
                   report_reason: category as API.ContentReportReason,
                 },
         additional_context: detail,
+        message_snapshot: snapshotTarget
+          ? buildMessageSnapshot(props.client, snapshotTarget)
+          : undefined,
       });
       props.onClose();
     } catch (error) {

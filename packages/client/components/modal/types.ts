@@ -226,6 +226,10 @@ export type Modals =
       contextMessage?: Message;
     }
   | {
+      type: "report_queue";
+      client: Client;
+    }
+  | {
       type: "server_identity";
       member: ServerMember;
     }
