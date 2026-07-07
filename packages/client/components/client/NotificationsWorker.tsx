@@ -357,16 +357,40 @@ export function NotificationsWorker() {
     );
   });
 
+  /**
+   * Handle a new moderation report landing. Only privileged (moderator)
+   * sessions receive this event from the server, so no extra gating is
+   * needed here — its arrival means a report needs attention.
+   * @param report Minimal report metadata (no message content)
+   */
+  function onReport(report: {
+    id: string;
+    contentType: "Message" | "Server" | "User";
+    reason: string;
+  }) {
+    if (!notificationPermissionGranted()) return;
+
+    showNotification({
+      title: t`New report`,
+      body: t`${report.contentType} reported (${report.reason})`,
+      tag: `report-${report.id}`,
+    });
+
+    sound.playSound("message");
+  }
+
   createEffect(() => {
     client().addListener("messageCreate", onMessage);
     client().addListener("voiceChannelJoin", onVoiceChannelJoin);
     client().addListener("voiceChannelLeave", onVoiceChannelLeave);
     client().addListener("userUpdate", onUserUpdate);
+    client().addListener("reportCreate", onReport);
     onCleanup(() => {
       client().removeListener("messageCreate", onMessage);
       client().removeListener("voiceChannelJoin", onVoiceChannelJoin);
       client().removeListener("voiceChannelLeave", onVoiceChannelLeave);
       client().removeListener("userUpdate", onUserUpdate);
+      client().removeListener("reportCreate", onReport);
     });
   });
 
