@@ -294,12 +294,26 @@ export class Draft extends AbstractStore<"draft", TypeDraft> {
     // Check if this is something we can even send
     if (!draft.content && !draft.files?.length) return;
 
-    // Fail-closed E2EE gate at the shared chokepoint: block an encrypted /
-    // identity-changed DM (and any attachment on an encrypted DM) BEFORE the
-    // outbox entry or any plaintext Autumn upload. This covers the composer,
-    // retrySend, and any future caller — throwing E2EESendError, never a
-    // silent plaintext fallback. No-op for plaintext / non-DM channels.
-    await client.e2ee?.guardSend(channel, !!draft.files?.length);
+    // Fail-closed E2EE gate at the shared chokepoint (composer, retrySend,
+    // any future caller), BEFORE the outbox entry and BEFORE any plaintext
+    // byte reaches the ordinary Autumn store. The adapter decides from
+    // native local truth: null ⇒ plaintext path (legacy upload below);
+    // string[] ⇒ the files were encrypted natively and uploaded as opaque
+    // ciphertext blobs (refs travel inside the envelope); blocked /
+    // unverifiable ⇒ throws E2EESendError — never a plaintext fallback.
+    const e2eeAttachments = client.e2ee
+      ? await client.e2ee.prepareDraftAttachments(
+          channel,
+          (draft.files ?? []).map((fileId) => {
+            const entry = this.getFile(fileId);
+            return {
+              file: entry.file,
+              onProgress: (fraction: number) =>
+                entry.uploadProgress[1](fraction),
+            };
+          }),
+        )
+      : null;
 
     // Add message to the outbox
     const idempotencyKey = ulid();
@@ -317,14 +331,19 @@ export class Draft extends AbstractStore<"draft", TypeDraft> {
 
     // Construct message object
     const attachments: string[] = [];
-    const data: API.DataMessageSend = {
+    const data: API.DataMessageSend & { e2eeAttachments?: string[] } = {
       content,
       replies,
       attachments,
     };
 
-    // Add any files if attached
-    if (files?.length) {
+    if (e2eeAttachments?.length) {
+      data.e2eeAttachments = e2eeAttachments;
+    }
+
+    // Add any files if attached (plaintext path only — for an encrypted
+    // conversation they were already uploaded as ciphertext blobs above)
+    if (files?.length && !e2eeAttachments) {
       // TODO: keep track of % upload progress
       // we could visually show this in chat like
       // on Discord mobile and allow individual
@@ -461,11 +480,12 @@ export class Draft extends AbstractStore<"draft", TypeDraft> {
       // TODO: validation?
 
       this.cancelSend(channel, idempotencyKey);
-      // sendDraft's shared E2EE gate can reject a retry (e.g. the
-      // conversation became encrypted since the original send, so a
-      // plaintext attachment retry must be refused). Swallow so it doesn't
-      // surface as an unhandled rejection — the fail-closed refusal already
-      // prevented any plaintext upload, which is the security requirement.
+      // sendDraft's shared E2EE gate re-runs on retry: a conversation that
+      // became encrypted since the original send re-routes the files down
+      // the encrypted path (never a plaintext upload), and a blocked /
+      // unverifiable state rejects the retry outright. Swallow the
+      // rejection so it doesn't surface as an unhandled one — the
+      // fail-closed refusal already prevented any plaintext upload.
       this.sendDraft(client, channel, draft!).catch(() => {});
     });
   }

@@ -21,6 +21,7 @@ export type { default as ClientController } from "./Controller";
 export { useNotifications } from "./NotificationsController";
 export { SoundContext, SoundController, useSound } from "./Sounds";
 export { E2EEBridge, E2EESendError, nativeE2EEAvailable } from "./e2ee";
+export type { E2EEAttachmentMeta } from "./e2ee";
 
 /**
  * The native E2EE bridge for the current client, if this platform has one

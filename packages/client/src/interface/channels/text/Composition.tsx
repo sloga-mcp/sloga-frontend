@@ -282,22 +282,19 @@ export function MessageComposition(props: Props) {
       return;
     }
 
-    // E2EE pre-send guards (fail closed BEFORE the draft path, which
-    // uploads attachments to the plaintext Autumn store before sending):
-    // - blocked: a peer identity change must be accepted first
-    // - attachments: encrypted attachments land in slice 3.5; until then
-    //   they are blocked in E2EE conversations, never sent in plaintext
-    // The mode is read from the NATIVE layer authoritatively (an awaited
-    // round-trip, not the cached indicator) precisely because the next step
-    // may upload plaintext file bytes that a stale cache could leak.
+    // E2EE pre-send guard: a blocked conversation (peer identity change
+    // pending acceptance) routes to the identity modal instead of a raw
+    // error. The mode is read from the NATIVE layer authoritatively (an
+    // awaited round-trip, not the cached indicator). This is UX only —
+    // the fail-closed security gate is `prepareDraftAttachments` inside
+    // sendDraft (attachments now ride the encrypted path, slice 3.5).
     const peer = peerUserId();
     if (peer && e2ee) {
       let mode: "encrypt" | "blocked" | "plaintext";
       try {
         mode = await e2ee.sendModeNow(peer);
       } catch {
-        // Native layer unreachable: fail closed rather than risk a
-        // plaintext attachment upload
+        // Native layer unreachable: fail closed
         openModal({
           type: "error2",
           error: t`Encryption status could not be verified. Nothing was sent.`,
@@ -309,13 +306,6 @@ export function MessageComposition(props: Props) {
         openModal({
           type: "e2ee_identity_change",
           peerUserId: peer,
-        });
-        return;
-      }
-      if (mode === "encrypt" && (draft()?.files?.length ?? 0) > 0) {
-        openModal({
-          type: "error2",
-          error: t`Attachments are not yet supported in encrypted conversations.`,
         });
         return;
       }

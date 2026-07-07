@@ -21,7 +21,7 @@ import { cva } from "styled-system/css";
 import { styled } from "styled-system/jsx";
 import { decodeTime } from "ulid";
 
-import { useClient } from "@revolt/client";
+import { useClient, useE2EE } from "@revolt/client";
 import { useTime } from "@revolt/i18n";
 import { Markdown } from "@revolt/markdown";
 import { useState } from "@revolt/state";
@@ -49,6 +49,7 @@ import {
 import { startsWithPackPUA } from "@revolt/markdown/emoji/UnicodeEmoji";
 import { MediaPickerProps } from "@revolt/ui/components/features/messaging/composition/picker/CompositionMediaPicker";
 import { EditMessage } from "./EditMessage";
+import { EncryptedAttachment } from "./EncryptedAttachment";
 
 /**
  * Regex for matching URLs
@@ -121,6 +122,7 @@ export function Message(props: Props) {
   const state = useState();
   const { t } = useLingui();
   const client = useClient();
+  const e2ee = useE2EE();
 
   const [isHovering, setIsHovering] = createSignal(false);
   const [reactPicker, setReactPicker] = createSignal<MediaPickerProps>();
@@ -381,6 +383,15 @@ export function Message(props: Props) {
         <For each={props.message.attachments}>
           {(attachment) => (
             <Attachment message={props.message} file={attachment} />
+          )}
+        </For>
+        <For each={e2ee?.attachmentsFor(props.message.id) ?? []}>
+          {(meta) => (
+            <EncryptedAttachment
+              meta={meta}
+              messageId={props.message.id}
+              e2ee={e2ee!}
+            />
           )}
         </For>
         <For each={props.message.embeds}>

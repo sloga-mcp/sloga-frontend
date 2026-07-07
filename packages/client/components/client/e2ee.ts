@@ -14,6 +14,17 @@
  * broken server surfaces as a hard error, never as a silent plaintext send.
  * This is the webview half of the contract whose native half is gated by
  * `e2ee-core/tests/hostile_server.rs`.
+ *
+ * Sender-initiated upgrade (slice-3 gate LOW #4): a plaintext-verdict
+ * conversation whose peer advertises opt-in (`User.e2eeEnabled`) gets an
+ * encryption attempt on the next text send. The advertisement is an
+ * UPGRADE trigger only — strictly one-directional server input. A server
+ * lying "not opted in" merely preserves today's honest plaintext (no lock
+ * shown); lying "opted in" leads to a bundle fetch whose contents are
+ * signature-verified and TOFU-pinned natively, the same trust step the
+ * receive path already performs on a first inbound message (safety-number
+ * verification hardens TOFU in slice 5). If no verified keys come back,
+ * nothing is pinned and the conversation stays plaintext.
  */
 import { ReactiveMap } from "@solid-primitives/map";
 
@@ -21,6 +32,8 @@ import type {
   Channel,
   Client,
   E2EEAdapter,
+  E2EEDataMessageSend,
+  E2EEDraftFile,
   E2EEServerEvent,
   Message,
 } from "stoat.js";
@@ -31,7 +44,15 @@ const SYSTEM_AUTHOR = "00000000000000000000000000";
 /** Tauri IPC surface (global, `withGlobalTauri`) */
 type TauriGlobal = {
   core: {
-    invoke<T>(command: string, args?: Record<string, unknown>): Promise<T>;
+    /**
+     * JSON args by default; a `Uint8Array` payload uses Tauri's raw-body
+     * IPC (efficient byte transfer) with metadata in `options.headers`.
+     */
+    invoke<T>(
+      command: string,
+      args?: Record<string, unknown> | Uint8Array,
+      options?: { headers?: Record<string, string> },
+    ): Promise<T>;
   };
 };
 
@@ -54,6 +75,18 @@ type SendModeVerdict =
   | { mode: "blocked"; device_ids: string[] }
   | { mode: "plaintext" };
 
+/** IPC-safe attachment metadata (mirrors native `AttachmentMeta` — no keys) */
+export type E2EEAttachmentMeta = {
+  local_id: string;
+  idx: number | null;
+  name: string;
+  mime: string;
+  /** Plaintext size in bytes */
+  size: number;
+  state: "pending" | "ready" | "failed" | "expired";
+  blob_id: string | null;
+};
+
 type HistoryRow = {
   id: string;
   conversation: string;
@@ -64,6 +97,7 @@ type HistoryRow = {
   sequence: number | null;
   detail: { missing?: number } | null;
   created_at: number;
+  attachments?: E2EEAttachmentMeta[];
 };
 
 type DecryptOutcome =
@@ -139,6 +173,17 @@ export class E2EEBridge implements E2EEAdapter {
     "encrypt" | "blocked" | "plaintext"
   >();
 
+  /**
+   * Reactive attachment metadata per message id (no key material — see
+   * native `AttachmentMeta`). The renderer reads THIS, never message
+   * flags or server-provided file objects, so a hostile server cannot
+   * shape what renders inside an encrypted conversation.
+   */
+  readonly attachmentMeta = new ReactiveMap<string, E2EEAttachmentMeta[]>();
+
+  /** Attachment fetches currently in flight (dedupe across syncs) */
+  #fetchingAttachments = new Set<string>();
+
   /** Reactive native status (drives the settings consent flow) */
   readonly status = new ReactiveMap<
     "state",
@@ -156,8 +201,12 @@ export class E2EEBridge implements E2EEAdapter {
   // IPC + raw HTTP plumbing
   // ================================================================
 
-  #invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
-    return this.#tauri.core.invoke<T>(command, args);
+  #invoke<T>(
+    command: string,
+    args?: Record<string, unknown> | Uint8Array,
+    options?: { headers?: Record<string, string> },
+  ): Promise<T> {
+    return this.#tauri.core.invoke<T>(command, args, options);
   }
 
   /**
@@ -213,10 +262,38 @@ export class E2EEBridge implements E2EEAdapter {
           type: "E2EERequestChallenge",
           device_id: status.device_id,
         });
+
+        // Self-heal the advertised opt-in flag: peers' sender-initiated
+        // upgrade discovers us through it, and the PATCH in enable() is
+        // allowed to fail (the flag is a hint, never the consent gate —
+        // that is the MFA-gated key publish, which native status proves
+        // already happened here).
+        this.#advertiseOptIn();
       }
     } catch (error) {
       console.error("[e2ee] startup failed", error);
     }
+  }
+
+  /**
+   * Ensure our profile advertises E2EE opt-in (`e2ee_enabled`, UI/discovery
+   * hint only — invariant 2). Idempotent, deliberately fire-and-forget:
+   * failure never blocks enable() or startup, and every connect retries.
+   */
+  #advertiseOptIn(): void {
+    const user = this.#client.user;
+    if (!user || user.e2eeEnabled) return;
+
+    user
+      .edit({ e2ee_enabled: true } as unknown as Parameters<
+        typeof user.edit
+      >[0])
+      .catch((error) =>
+        console.error(
+          "[e2ee] opt-in advertisement failed (will retry next connect)",
+          error,
+        ),
+      );
   }
 
   onEvent(event: E2EEServerEvent): void {
@@ -381,10 +458,19 @@ export class E2EEBridge implements E2EEAdapter {
 
   async handleDirectMessageSend(
     channel: Channel,
-    data: { content?: string | null; attachments?: string[] | null },
+    data: E2EEDataMessageSend,
   ): Promise<Message | null> {
     const peerId = this.#peerOf(channel);
-    if (!peerId) return null;
+    if (!peerId) {
+      if (data.e2eeAttachments?.length) {
+        // Prepared encrypted attachments can never ride a plaintext send
+        throw new E2EESendError(
+          "Encrypted attachments could not be matched to a conversation. Nothing was sent.",
+          "native",
+        );
+      }
+      return null;
+    }
 
     // The NATIVE layer is the SOLE authority for plaintext-vs-encrypt — the
     // webview never caches or second-guesses it (a stale cache is the
@@ -404,7 +490,29 @@ export class E2EEBridge implements E2EEAdapter {
     }
     this.sendModes.set(peerId, verdict.mode);
 
-    if (verdict.mode === "plaintext") return null;
+    // Sender-initiated upgrade (slice-3 gate LOW #4): a never-encrypted
+    // conversation whose peer ADVERTISES opt-in gets an encryption attempt
+    // on this send, instead of staying plaintext until the peer messages
+    // first. The advertisement (`User.e2eeEnabled`) is an upgrade trigger
+    // ONLY — it can never flip an encrypted conversation back (the native
+    // verdict above always wins), and a peer without verified keys leaves
+    // the conversation plaintext exactly as before (no pins created, no
+    // lock shown). One-time keys are only consumed here, at a real send —
+    // never eagerly on DM-open.
+    let opportunistic = false;
+    if (verdict.mode === "plaintext") {
+      if (data.e2eeAttachments?.length) {
+        // Prepared-encrypted ids with a plaintext verdict means local
+        // E2EE state vanished between prepare and send (e.g. a wipe).
+        // Never fall through to the plaintext route, never drop silently.
+        throw new E2EESendError(
+          "The encryption state changed while sending. Nothing was sent.",
+          "native",
+        );
+      }
+      if (!(await this.#shouldInitiate(peerId, data))) return null;
+      opportunistic = true;
+    }
 
     if (verdict.mode === "blocked") {
       throw new E2EESendError(
@@ -416,14 +524,28 @@ export class E2EEBridge implements E2EEAdapter {
     // ---- encrypt mode: from here on every failure is a hard error ----
 
     if (data.attachments?.length) {
+      // Plaintext-Autumn ids in an encrypt-mode send: the mode flipped
+      // after a legacy upload (or a stale caller). The prepared-encrypted
+      // path is `e2eeAttachments`; these must not leak into an envelope.
       throw new E2EESendError(
-        "Attachments are not yet supported in encrypted conversations.",
+        "Attachments must be re-added to this now-encrypted conversation.",
         "attachments_unsupported",
       );
     }
 
     const content = data.content ?? "";
-    const result = await this.#encryptWithBundles(peerId, content);
+    const result = await this.#encryptWithBundles(
+      peerId,
+      content,
+      opportunistic,
+      data.e2eeAttachments ?? [],
+    );
+    if (!result) {
+      // Opportunistic establishment found no usable peer keys (stale or
+      // spoofed advertisement) — nothing was pinned, the conversation is
+      // genuinely still plaintext. Fall through to the ordinary path.
+      return null;
+    }
 
     let receipts: unknown[];
     try {
@@ -442,11 +564,16 @@ export class E2EEBridge implements E2EEAdapter {
     const revoked = await this.#invoke<string[]>("e2ee_handle_receipts", {
       receipts,
     });
-    if (revoked.length) {
+    if (revoked.length || opportunistic) {
+      // opportunistic: the conversation just became sticky-encrypted —
+      // flip the composer indicator to the lock
       await this.#refreshMode(peerId);
     }
 
-    // Local echo with the native store's canonical message id
+    // Local echo with the native store's canonical message id. Attachment
+    // metadata arrives with the #syncRecent below (the rows were bound in
+    // the native encrypt transaction) — the renderer reads the reactive
+    // attachment map, so the echo picks them up without re-injection.
     const message = this.#inject(
       channel.id,
       {
@@ -468,14 +595,54 @@ export class E2EEBridge implements E2EEAdapter {
   }
 
   /**
+   * Preconditions for a sender-initiated upgrade of a plaintext-verdict
+   * conversation. All of these are UPGRADE triggers only — a false negative
+   * just keeps today's honest plaintext state, and no condition here can
+   * ever push an encrypted conversation toward plaintext (the native
+   * verdict is checked first and always wins).
+   */
+  async #shouldInitiate(
+    peerId: string,
+    data: { attachments?: string[] | null },
+  ): Promise<boolean> {
+    // Attachments would already have been uploaded to plaintext Autumn by
+    // the draft path (guardSend saw a plaintext verdict) — upgrading now
+    // would hard-error on attachments and orphan the upload. Text-only
+    // sends upgrade; attachment sends keep the plaintext status quo.
+    if (data.attachments?.length) return false;
+
+    // The peer must advertise opt-in (UI/discovery hint — see User docs)
+    if (!this.#client.users.get(peerId)?.e2eeEnabled) return false;
+
+    // ... and this device must actually be able to encrypt. Native status,
+    // not the webview cache: a failure here just skips the upgrade.
+    try {
+      const status = await this.refreshStatus();
+      return status.enabled && status.published && !!status.device_id;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Encrypt, fetching verified-later bundles only when the native layer
    * demands them (`needs_bundle` — sessionless devices only, which also
    * avoids needless one-time-key consumption).
+   *
+   * `opportunistic` (sender-initiated upgrade of a plaintext-verdict
+   * conversation) returns `null` instead of throwing for exactly the
+   * failures that occur BEFORE any peer state is pinned — a peer bundle
+   * that cannot be fetched or contains no devices. Those leave the
+   * conversation genuinely plaintext (the advertisement was stale or the
+   * server withheld keys; the composer showed no lock either way). Every
+   * failure after pinning is a hard error in both modes.
    */
   async #encryptWithBundles(
     peerId: string,
     content: string,
-  ): Promise<EncryptResult> {
+    opportunistic = false,
+    attachments: string[] = [],
+  ): Promise<EncryptResult | null> {
     const selfId = this.#client.user!.id;
     let peerBundle: unknown = null;
     let selfBundle: unknown = null;
@@ -488,15 +655,26 @@ export class E2EEBridge implements E2EEAdapter {
           peerBundle,
           selfBundle,
           content,
+          attachments,
         });
       } catch (error) {
         const native = error as NativeError;
 
         if (native.type === "needs_bundle" && attempt < 2) {
-          const bundle = await this.#api<unknown>(
-            "GET",
-            `/e2ee/keys/${native.user_id}`,
-          );
+          let bundle: unknown;
+          try {
+            bundle = await this.#api<unknown>(
+              "GET",
+              `/e2ee/keys/${native.user_id}`,
+            );
+          } catch (fetchError) {
+            if (opportunistic && native.user_id === peerId) {
+              // Peer bundle unavailable before anything was pinned —
+              // the conversation stays honestly plaintext
+              return null;
+            }
+            throw fetchError;
+          }
           if (native.user_id === peerId) peerBundle = bundle;
           else selfBundle = bundle;
           continue;
@@ -514,6 +692,12 @@ export class E2EEBridge implements E2EEAdapter {
           native.type === "no_usable_devices" ||
           native.type === "peer_has_no_devices"
         ) {
+          if (opportunistic && native.user_id === peerId) {
+            // Advertised peer has no registered devices (empty bundle —
+            // stale flag or revoked keys). Nothing was pinned; plaintext
+            // status quo.
+            return null;
+          }
           throw new E2EESendError(
             "No trusted device of the recipient can currently receive encrypted messages. The message was NOT sent unencrypted.",
             "no_devices",
@@ -668,6 +852,10 @@ export class E2EEBridge implements E2EEAdapter {
     // too, so they count.
     this.#encryptedIds.add(row.id);
 
+    // Attachment metadata (reactive) + kick off pending ciphertext
+    // fetches — also resumes fetches interrupted by a restart
+    this.#trackAttachments(row);
+
     const shape = {
       _id: row.id,
       channel: channelId,
@@ -695,17 +883,25 @@ export class E2EEBridge implements E2EEAdapter {
   }
 
   /**
-   * Fail-closed send gate at the shared upload chokepoint (`sendDraft`), so
-   * the composer, `retrySend`, and any future caller are all covered by ONE
-   * authoritative native check — plaintext file bytes can never reach Autumn
-   * for an encrypt/blocked conversation. Throws on encrypt+attachments,
-   * blocked, or native error; returns for plaintext / non-DM / no-peer.
+   * Fail-closed gate at the shared upload chokepoint (`sendDraft`), so the
+   * composer, `retrySend`, and any future caller are all covered by ONE
+   * authoritative native check — plaintext file bytes can never reach the
+   * ordinary Autumn store for an encrypt/blocked conversation (slice 3.5).
+   *
+   * plaintext verdict ⇒ null (caller runs the legacy upload path);
+   * encrypt ⇒ every file is natively encrypted under its own random key,
+   * the CIPHERTEXT is uploaded to the opaque-blob route, and the prepared
+   * local ids are returned for `e2eeAttachments`; blocked / unverifiable ⇒
+   * throws (even for text-only drafts — preserves the early gate).
    */
-  async guardSend(channel: Channel, hasAttachments: boolean): Promise<void> {
-    if (channel.type !== "DirectMessage") return;
+  async prepareDraftAttachments(
+    channel: Channel,
+    items: E2EEDraftFile[],
+  ): Promise<string[] | null> {
+    if (channel.type !== "DirectMessage") return null;
 
     const peerId = this.#peerOf(channel);
-    if (!peerId) return;
+    if (!peerId) return null;
 
     let mode: "encrypt" | "blocked" | "plaintext";
     try {
@@ -723,11 +919,195 @@ export class E2EEBridge implements E2EEAdapter {
         "blocked",
       );
     }
-    if (mode === "encrypt" && hasAttachments) {
+    if (mode === "plaintext" || !items.length) return null;
+
+    // ---- encrypt mode: plaintext bytes never leave the device ----
+
+    // Recipient devices declared on the blob (active pins of the peer +
+    // our own other devices — mirrors the envelope fan-out)
+    const recipients = await this.#invoke<
+      { user_id: string; device_id: string }[]
+    >("e2ee_attachment_recipients", {
+      peerUserId: peerId,
+      selfUserId: this.#client.user!.id,
+    });
+
+    if (!recipients.length) {
       throw new E2EESendError(
-        "Attachments are not yet supported in encrypted conversations.",
-        "attachments_unsupported",
+        "No trusted device of the recipient can currently receive encrypted attachments. Nothing was sent unencrypted.",
+        "no_devices",
       );
+    }
+
+    const localIds: string[] = [];
+    for (const { file, onProgress } of items) {
+      const plaintext = new Uint8Array(await file.arrayBuffer());
+
+      const prepared = await this.#invoke<{
+        local_id: string;
+        digest: string;
+        ciphertext_size: number;
+      }>("e2ee_attachment_prepare", plaintext, {
+        headers: {
+          "x-peer-user-id": peerId,
+          "x-name": encodeURIComponent(file.name || "attachment"),
+          "x-mime": encodeURIComponent(
+            file.type || "application/octet-stream",
+          ),
+        },
+      });
+
+      const ciphertext = await this.#invoke<ArrayBuffer>(
+        "e2ee_attachment_ciphertext",
+        { localId: prepared.local_id },
+      );
+
+      const blobId = await this.#uploadBlob(ciphertext, recipients, onProgress);
+      await this.#invoke("e2ee_attachment_attach_blob", {
+        localId: prepared.local_id,
+        blobId,
+      });
+
+      localIds.push(prepared.local_id);
+    }
+
+    return localIds;
+  }
+
+  /** Upload one ciphertext blob to Autumn's opaque-blob route */
+  #uploadBlob(
+    ciphertext: ArrayBuffer,
+    recipients: { user_id: string; device_id: string }[],
+    onProgress?: (fraction: number) => void,
+  ): Promise<string> {
+    const body = new FormData();
+    body.set("file", new Blob([ciphertext]));
+    body.set("recipients", JSON.stringify(recipients));
+
+    const [authHeader, authValue] = this.#client.authenticationHeader;
+
+    // XHR for upload progress (fetch duplex needs HTTP/2)
+    return new Promise<string>((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+
+      xhr.upload.addEventListener("progress", (event) => {
+        if (event.lengthComputable) onProgress?.(event.loaded / event.total);
+      });
+
+      xhr.addEventListener("loadend", () => {
+        onProgress?.(1);
+        if (xhr.readyState === 4 && xhr.status === 200 && xhr.response?.id) {
+          resolve(xhr.response.id as string);
+        } else {
+          reject(
+            new E2EESendError(
+              "The encrypted attachment could not be uploaded. Nothing was sent unencrypted.",
+              "delivery_failed",
+            ),
+          );
+        }
+      });
+
+      xhr.open(
+        "POST",
+        `${this.#client.configuration!.features.autumn.url}/e2ee`,
+        true,
+      );
+      xhr.setRequestHeader(authHeader, authValue);
+      xhr.responseType = "json";
+      xhr.send(body);
+    });
+  }
+
+  /**
+   * Webview URL a decrypted attachment renders from — the desktop shell's
+   * `e2ee-att` protocol, which decrypts natively per request (key material
+   * never crosses to the webview). Windows serving origin; both path
+   * segments are ULIDs / integers, so no encoding is needed.
+   */
+  attachmentUrl(messageId: string, idx: number): string {
+    return `https://e2ee-att.localhost/${messageId}/${idx}`;
+  }
+
+  /** Reactive attachment metadata of a message (empty when none) */
+  attachmentsFor(messageId: string): E2EEAttachmentMeta[] {
+    return this.attachmentMeta.get(messageId) ?? [];
+  }
+
+  /**
+   * Record a message's attachment metadata and start fetching any pending
+   * ciphertext. Idempotent per sync; also runs on history loads, so
+   * fetches interrupted by a restart resume.
+   */
+  #trackAttachments(row: HistoryRow): void {
+    if (!row.attachments?.length) return;
+
+    this.attachmentMeta.set(row.id, row.attachments);
+
+    for (const meta of row.attachments) {
+      if (meta.state === "pending" && meta.blob_id) {
+        void this.#fetchAttachment(row.id, meta);
+      }
+    }
+  }
+
+  /**
+   * Fetch + verify one pending attachment: download the ciphertext blob,
+   * hand it to the native layer (digest verification MANDATORY there —
+   * swapped/corrupt bytes mark it failed), and update the reactive state.
+   * A 404/410 means the blob expired before this device fetched it.
+   */
+  async #fetchAttachment(
+    messageId: string,
+    meta: E2EEAttachmentMeta,
+  ): Promise<void> {
+    if (this.#fetchingAttachments.has(meta.local_id)) return;
+    this.#fetchingAttachments.add(meta.local_id);
+
+    try {
+      const [authHeader, authValue] = this.#client.authenticationHeader;
+      const response = await fetch(
+        `${this.#client.configuration!.features.autumn.url}/e2ee/${meta.blob_id}`,
+        { headers: { [authHeader]: authValue } },
+      );
+
+      let state: E2EEAttachmentMeta["state"];
+      if (response.ok) {
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        try {
+          await this.#invoke("e2ee_attachment_store", bytes, {
+            headers: { "x-local-id": meta.local_id },
+          });
+          state = "ready";
+        } catch {
+          // Digest mismatch / undecryptable — native marked it failed
+          state = "failed";
+        }
+      } else if (response.status === 404 || response.status === 410) {
+        await this.#invoke("e2ee_attachment_mark_unavailable", {
+          localId: meta.local_id,
+          expired: true,
+        });
+        state = "expired";
+      } else {
+        // Transient (ratelimit, 5xx, offline): stay pending; the next
+        // sync retries
+        return;
+      }
+
+      const current = this.attachmentMeta.get(messageId);
+      if (current) {
+        this.attachmentMeta.set(
+          messageId,
+          current.map((entry) =>
+            entry.local_id === meta.local_id ? { ...entry, state } : entry,
+          ),
+        );
+      }
+    } catch {
+      // Network failure: stay pending, retried on the next sync
+    } finally {
+      this.#fetchingAttachments.delete(meta.local_id);
     }
   }
 
@@ -792,13 +1172,11 @@ export class E2EEBridge implements E2EEAdapter {
       });
     }
 
-    // Advertise opt-in to peers (UI hint only — invariant 2)
-    const user = this.#client.user;
-    if (user) {
-      await user.edit({ e2ee_enabled: true } as unknown as Parameters<
-        typeof user.edit
-      >[0]);
-    }
+    // Advertise opt-in to peers (UI/discovery hint only — invariant 2).
+    // Deliberately NOT awaited into the enable() result: the keys are
+    // already published, so enable() has succeeded; a failed PATCH here
+    // is self-healed by #onReady on every subsequent connect.
+    this.#advertiseOptIn();
   }
 
   /** Native conversation state (per-device status + binding_verified) */
