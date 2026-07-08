@@ -1,4 +1,4 @@
-import { Match, Switch, createSignal } from "solid-js";
+import { Match, Show, Switch, createSignal } from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
 
@@ -10,13 +10,25 @@ import { Modals } from "../types";
 
 /**
  * Opt in to end-to-end encryption on THIS device (implementation plan
- * slice 3, item 1).
+ * slice 3, item 1) — now also the restore-vs-start-fresh gate for a returning
+ * user on a new device (slice 5.5, design §6.1).
  *
  * The consent gate is the MFA-gated key publish inside the native layer —
  * NOT the `e2ee_enabled` profile flag (a pure UI hint, invariant 2). The
- * flow: generate the device identity natively → MFA ticket → publish keys
- * under that ticket → mark published → claim the device on the live
- * connection.
+ * start-fresh flow: generate the device identity natively → MFA ticket →
+ * publish keys under that ticket → mark published → claim the device.
+ *
+ * The RESTORE flow (design §6.1) is offered as an explicit choice BEFORE
+ * minting a fresh identity, because the two branches are mutually exclusive:
+ * restore recovers the old device's identity + history from a server backup
+ * and must run as the FIRST E2EE op on this fresh install, whereas start-fresh
+ * provisions a new identity (after which restore would refuse,
+ * `StoreAlreadyProvisioned`). Each branch takes exactly one MFA prompt (the
+ * choice is presented up front rather than probing `GET /e2ee/backup` first,
+ * which would burn a single-use ticket for users who just want to start
+ * fresh). The recovery CODE is entered only on the native surface (the
+ * bundled recovery window on desktop / an AlertDialog on Android) — it never
+ * reaches this webview; `restoreFromBackup` only couriers opaque ciphertext.
  */
 export function E2EEEnableModal(
   props: DialogProps & Modals & { type: "e2ee_enable" },
@@ -28,6 +40,16 @@ export function E2EEEnableModal(
 
   const [busy, setBusy] = createSignal(false);
   const [done, setDone] = createSignal(false);
+  // Restore was attempted but the account had no backup for this device — let
+  // the user fall back to starting fresh instead of surfacing a hard error.
+  const [noBackup, setNoBackup] = createSignal(false);
+
+  /** Prove account ownership; returns the MFA ticket token or undefined. */
+  async function reauth(): Promise<string | undefined> {
+    const mfa = await client().account.mfa();
+    const ticket = await mfaFlow(mfa);
+    return ticket?.token;
+  }
 
   async function enable() {
     if (!e2ee) return;
@@ -35,14 +57,16 @@ export function E2EEEnableModal(
     try {
       // MFA ticket gates the server-side key publication (the real consent
       // gate). The user proves account ownership before any device binds.
-      const mfa = await client().account.mfa();
-      const ticket = await mfaFlow(mfa);
-      if (!ticket) {
+      const token = await reauth();
+      if (!token) {
         setBusy(false);
         return;
       }
 
-      await e2ee.enable(ticket.token);
+      await e2ee.enable(token);
+      // Provisioned now — clear the returning-device prompt signal so the
+      // shell never re-offers restore for this (now non-fresh) install.
+      e2ee.restoreAvailable.delete("state");
       setDone(true);
     } catch (error) {
       showError(error);
@@ -51,15 +75,72 @@ export function E2EEEnableModal(
     }
   }
 
+  async function restore() {
+    if (!e2ee) return;
+    setBusy(true);
+    setNoBackup(false);
+    try {
+      // One MFA ticket gates `GET /e2ee/backup` (the restoring device has no
+      // keys yet, so it cannot be device-bound — design §5). The native
+      // surface then drives code entry + the atomic store rebuild.
+      const token = await reauth();
+      if (!token) {
+        setBusy(false);
+        return;
+      }
+
+      const count = await e2ee.restoreFromBackup(token);
+      if (count === 0) {
+        // No blob for this account (or the native surface was dismissed).
+        // Keep the dialog open so the user can start fresh instead.
+        setNoBackup(true);
+        setBusy(false);
+        return;
+      }
+
+      // Desktop: the recovery WINDOW is now open and drives code entry +
+      // republish asynchronously (the completion courier lives in the bridge).
+      // Android: the native dialog already restored before resolving. Either
+      // way this device is on its way to provisioned — close the prompt.
+      e2ee.restoreAvailable.delete("state");
+      props.onClose();
+    } catch (error) {
+      showError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const leadRestore = () => !!props.offerRestore;
+
   return (
     <Dialog
       show={props.show}
       onClose={props.onClose}
-      title={<Trans>Turn on encrypted direct messages</Trans>}
+      title={
+        leadRestore() && !done() ? (
+          <Trans>Restore your encrypted messages</Trans>
+        ) : (
+          <Trans>Turn on encrypted direct messages</Trans>
+        )
+      }
       isDisabled={busy()}
       actions={
         done()
-          ? [{ text: <Trans>Done</Trans>, onClick: () => props.onClose() }]
+          ? [
+              {
+                text: <Trans>Create recovery code</Trans>,
+                onClick: () => {
+                  // Opens the native recovery window (desktop). A no-op on a
+                  // shell without one; the nag in settings keeps prompting.
+                  void e2ee?.createRecoveryCode().catch((error) =>
+                    showError(error),
+                  );
+                  props.onClose();
+                },
+              },
+              { text: <Trans>Skip for now</Trans>, onClick: () => props.onClose() },
+            ]
           : [
               {
                 text: <Trans>Cancel</Trans>,
@@ -69,7 +150,19 @@ export function E2EEEnableModal(
                 },
               },
               {
-                text: <Trans>Turn on</Trans>,
+                text: <Trans>Restore from a recovery code</Trans>,
+                onClick: () => {
+                  void restore();
+                  return false;
+                },
+                isDisabled: busy(),
+              },
+              {
+                text: leadRestore() ? (
+                  <Trans>Start fresh</Trans>
+                ) : (
+                  <Trans>Turn on</Trans>
+                ),
                 onClick: () => {
                   void enable();
                   return false;
@@ -90,8 +183,33 @@ export function E2EEEnableModal(
                 web session.
               </Trans>
             </Text>
+            <Text>
+              <Trans>
+                Create a recovery code so you can restore your identity and
+                message history if you lose this device. Without one, encrypted
+                history is gone for good if the device is lost. You can also do
+                this later from Security &amp; Privacy settings.
+              </Trans>
+            </Text>
           </Match>
-          <Match when={!done()}>
+          <Match when={leadRestore()}>
+            <Text>
+              <Trans>
+                You have encryption set up on your account. If you saved a
+                recovery code, restore it here to bring back your identity and
+                message history on this device — your contacts will not see a
+                security warning.
+              </Trans>
+            </Text>
+            <Text>
+              <Trans>
+                Or start fresh to set this up as a new device. You keep sending
+                and receiving encrypted messages, but earlier history that lived
+                only on your old device stays there.
+              </Trans>
+            </Text>
+          </Match>
+          <Match when={!leadRestore()}>
             <Text>
               <Trans>
                 New direct messages with contacts who also have encryption on
@@ -101,13 +219,24 @@ export function E2EEEnableModal(
             </Text>
             <Text>
               <Trans>
-                Encrypted history lives on THIS device only. If you log out and
-                choose to erase it, or lose the device, those messages cannot
-                be recovered. You will confirm your identity to continue.
+                Already have a recovery code from another device? Choose
+                "Restore from a recovery code" to bring back your history.
+                Otherwise, encrypted history lives on THIS device only and
+                cannot be recovered if the device is lost. You will confirm your
+                identity to continue.
               </Trans>
             </Text>
           </Match>
         </Switch>
+
+        <Show when={noBackup()}>
+          <Text>
+            <Trans>
+              No recovery backup was found for your account, or the recovery
+              window was closed. You can start fresh instead.
+            </Trans>
+          </Text>
+        </Show>
       </Column>
     </Dialog>
   );

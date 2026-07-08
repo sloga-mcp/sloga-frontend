@@ -25,6 +25,23 @@ allprojects {
         google()
         mavenCentral()
     }
+
+    // Espresso / androidx-test (and some Capacitor transitives) drag the legacy
+    // split kotlin-stdlib-jdk7 / -jdk8 shims at 1.6.21, whose classes are now
+    // merged into kotlin-stdlib. Left alone they duplicate classes against the
+    // Kotlin 2.0.x stdlib and break the androidTest dex merge (surfaced when the
+    // first Kotlin instrumented test landed for slice 5.5). Pin the whole stdlib
+    // trio to the plugin's 2.0.21 across every subproject — at 2.0.x the jdk7/8
+    // artifacts are empty forwarders, so the merged stdlib provides the classes
+    // exactly once. App runtime already built clean; this only removes the
+    // duplicate on the test classpath.
+    configurations.configureEach {
+        resolutionStrategy {
+            force 'org.jetbrains.kotlin:kotlin-stdlib:2.0.21'
+            force 'org.jetbrains.kotlin:kotlin-stdlib-jdk7:2.0.21'
+            force 'org.jetbrains.kotlin:kotlin-stdlib-jdk8:2.0.21'
+        }
+    }
 }
 
 task clean(type: Delete) {

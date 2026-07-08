@@ -1,7 +1,19 @@
 package com.acutest.app.e2ee
 
 import android.app.AlertDialog
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.graphics.Typeface
+import android.os.Build
+import android.os.PersistableBundle
+import android.text.InputType
 import android.util.Base64
+import android.view.View
+import android.view.WindowManager
+import android.widget.EditText
+import android.widget.LinearLayout
+import android.widget.TextView
 import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
@@ -107,6 +119,15 @@ class E2eePlugin : Plugin() {
             val engine = engine()
             when (name) {
                 "e2ee_status" -> resolveJson(call, engine.status())
+                // Pure filesystem check — does NOT open/provision the engine
+                // (mirrors desktop `e2ee_is_provisioned`). The webview calls
+                // this on connect before any status query so a fresh install
+                // is not provisioned before key-backup RESTORE can run (design
+                // §6.1). `engine()` only returns the lazy handle; the store is
+                // opened by the FIRST engine op, and this is deliberately not
+                // one of them.
+                "e2ee_is_provisioned" ->
+                    resolveJson(call, if (engine.isProvisioned()) "true" else "false")
                 "e2ee_enable" -> resolveJson(call, engine.enable())
                 "e2ee_mark_published" -> {
                     engine.markPublished()
@@ -307,6 +328,29 @@ class E2eePlugin : Plugin() {
                             requireString(call, "selfUserId"),
                         ),
                     )
+                // ---- Key backup & recovery (slice 5.5) ----
+                // Ciphertext-only / no-code commands go through the generic
+                // allowlist, exactly like the desktop main-window commands. The
+                // code-BEARING flows (create / rotate / restore) are NOT here —
+                // they are dedicated native-dialog methods below (wipe parity),
+                // so the recovery code never reaches the generic `call()` path
+                // and never crosses back to the webview.
+                "e2ee_backup_status" -> resolveJson(call, engine.backupStatus())
+                "e2ee_backup_refresh_if_due" ->
+                    resolveJson(call, engine.backupRefreshIfDue(requireString(call, "userId")))
+                "e2ee_backup_mark_uploaded" -> {
+                    val generation =
+                        call.getInt("generation")
+                            ?: throw E2eeException.Failure(
+                                "{\"type\":\"invalid_argument\",\"field\":\"generation\"}",
+                            )
+                    engine.backupMarkUploaded(generation.toLong())
+                    resolveJson(call, "null")
+                }
+                "e2ee_backup_forget_local" -> {
+                    engine.backupForgetLocal()
+                    resolveJson(call, "null")
+                }
                 // NOT here by design: e2ee_wipe + e2ee_downgrade +
                 // e2ee_confirm_peer_downgrade-ACCEPT (native dialog methods;
                 // the generic `confirm_peer_downgrade` arm above only handles
@@ -314,7 +358,10 @@ class E2eePlugin : Plugin() {
                 // dedicated dialog methods below);
                 // e2ee_attachment_ciphertext / e2ee_attachment_store (bytes
                 // stay native — see attachmentUpload / attachmentFetch),
-                // open_attachment_for_render (WebView interceptor only).
+                // open_attachment_for_render (WebView interceptor only);
+                // backupCreate / backupRotate / backupRestore (the recovery
+                // CODE is displayed/entered in a native dialog — dedicated
+                // methods below, wipe parity; never routed through call()).
                 else ->
                     call.reject("{\"type\":\"invalid_argument\",\"field\":\"name\"}")
             }
@@ -430,6 +477,341 @@ class E2eePlugin : Plugin() {
                     }
                 }
                 .show()
+        }
+    }
+
+    // ================================================================
+    // Key backup & recovery (slice 5.5)
+    //
+    // The recovery CODE is the one secret that must reach a UI surface. On
+    // Android there is NO webview in this path (design §7.2): the code is
+    // minted/entered in a BLOCKING NATIVE `AlertDialog` owned by this plugin —
+    // exactly the wipe/downgrade trust pattern. The engine returns the code to
+    // THIS native code (Rust ↔ Kotlin, both installer-bundled and signed —
+    // same trust class); the plugin displays it and forwards ONLY the opaque
+    // ciphertext bundle (create/rotate) or the post-restore republish payload
+    // (restore) to the webview courier, which PUT/GETs it like any envelope.
+    // The webview can REQUEST these flows and nothing else — it never sees the
+    // code in either direction.
+    // ================================================================
+
+    /**
+     * Copy the recovery code to the OS clipboard at the user's explicit
+     * request. Flagged sensitive (`IS_SENSITIVE`, honored on Android 13+) so
+     * the system suppresses the clipboard-content toast/preview; the same
+     * exposure Signal accepts and documents (design §7.2). Older platforms
+     * ignore the extra harmlessly.
+     *
+     * The clipboard is shared with the remote (`app.sloga.gg`) WebView, but
+     * Android WebView denies JS clipboard-READ by default and the app installs
+     * NO `WebChromeClient.onPermissionRequest` override that grants it — so a
+     * compromised remote page cannot `navigator.clipboard.readText()` the code
+     * back to the server. Keeping clipboard-read denied is a REQUIRED control
+     * for this affordance (gate LOW).
+     */
+    private fun copyCodeToClipboard(code: String) {
+        val clipboard =
+            activity.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val clip = ClipData.newPlainText("Sloga recovery code", code)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            clip.description.extras =
+                PersistableBundle().apply {
+                    putBoolean("android.content.extra.IS_SENSITIVE", true)
+                }
+        }
+        clipboard.setPrimaryClip(clip)
+    }
+
+    /**
+     * CREATE a recovery code + first backup. Mirrors desktop
+     * `e2ee_recovery_create`: the code is minted natively (a multi-second
+     * Argon2id runs off the UI thread), shown once in a native dialog with a
+     * copy affordance, and on acknowledgement ONLY the opaque ciphertext
+     * bundle is returned to the webview for `PUT /e2ee/backup`.
+     */
+    @PluginMethod
+    fun backupCreate(call: PluginCall) {
+        val userId = call.getString("userId") ?: run {
+            call.reject("{\"type\":\"invalid_argument\",\"field\":\"userId\"}")
+            return
+        }
+        mintAndShowCode(call, userId, rotate = false)
+    }
+
+    /**
+     * ROTATE the recovery code (mint a new one; the generation counter
+     * continues, never resets). Re-auth is enforced in the UI, like the wipe
+     * flow. Same native-display path as [backupCreate].
+     */
+    @PluginMethod
+    fun backupRotate(call: PluginCall) {
+        val userId = call.getString("userId") ?: run {
+            call.reject("{\"type\":\"invalid_argument\",\"field\":\"userId\"}")
+            return
+        }
+        mintAndShowCode(call, userId, rotate = true)
+    }
+
+    private fun mintAndShowCode(call: PluginCall, userId: String, rotate: Boolean) {
+        // Argon2id (64 MiB) runs on the executor, never the UI thread.
+        executor.execute {
+            try {
+                val json =
+                    if (rotate) engine().backupRotate(userId) else engine().backupCreate(userId)
+                val creation = org.json.JSONObject(json)
+                val code = creation.getString("code")
+                val bundle = creation.getJSONObject("bundle")
+                val truncated = bundle.optBoolean("truncated", false)
+                // The code is displayed natively; only `bundle` (opaque
+                // ciphertext) is ever handed back to the webview. A fresh
+                // CREATE that the user cancels rolls the just-minted local
+                // state back (see rollbackOnCancel) so the settings card never
+                // shows a phantom "backed up" state for a code the user never
+                // saved. ROTATE cannot cleanly roll back (the prior key is gone
+                // once a new one is minted) and matches desktop's window-close
+                // semantics — an accepted §4.5/§8 durability residual.
+                activity.runOnUiThread {
+                    showRecoveryCodeDialog(
+                        call,
+                        code,
+                        bundle.toString(),
+                        truncated,
+                        rollbackOnCancel = !rotate,
+                    )
+                }
+            } catch (error: Throwable) {
+                rejectScrubbed(call, error)
+            }
+        }
+    }
+
+    private fun dpToPx(dp: Int): Int =
+        (dp * activity.resources.displayMetrics.density).toInt()
+
+    /** Exclude the window's surface from screenshots / screen recording / the
+     *  recents (app-switcher) snapshot — the recovery code must never be
+     *  cached to disk or captured off-screen (gate MEDIUM; design §7.1's
+     *  "never persisted on device" property).
+     *
+     *  Must be re-asserted from `setOnShowListener` (not only before `show()`):
+     *  on-device (Retroid, Android 13) a pre-attach `setFlags` did NOT propagate
+     *  to the live window — dumpsys showed no FLAG_SECURE and `screencap` still
+     *  captured the code. Applying it once the window is attached makes it stick.
+     *  Called in BOTH spots (belt-and-suspenders) so OEMs where the early call
+     *  works have no unprotected first frame. Idempotent. */
+    private fun secureWindow(dialog: AlertDialog) {
+        dialog.window?.setFlags(
+            WindowManager.LayoutParams.FLAG_SECURE,
+            WindowManager.LayoutParams.FLAG_SECURE,
+        )
+    }
+
+    private fun showRecoveryCodeDialog(
+        call: PluginCall,
+        code: String,
+        bundleJson: String,
+        truncated: Boolean,
+        rollbackOnCancel: Boolean,
+    ) {
+        val pad = dpToPx(24)
+        val layout =
+            LinearLayout(activity).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(pad, pad, pad, dpToPx(8))
+            }
+        val warning =
+            TextView(activity).apply {
+                text =
+                    "Save this recovery code somewhere safe. It is shown only once. " +
+                        "Anyone with this code and access to your account can read your " +
+                        "message history — and Sloga cannot recover it for you." +
+                        if (truncated) {
+                            "\n\nYour history is large, so the oldest messages will not be " +
+                                "included in this backup."
+                        } else {
+                            ""
+                        }
+                setPadding(0, 0, 0, dpToPx(16))
+            }
+        val codeView =
+            TextView(activity).apply {
+                text = code
+                typeface = Typeface.MONOSPACE
+                textSize = 18f
+                // Deliberately NOT selectable: text selection exposes a
+                // "Share" action-mode that would route the code to an
+                // arbitrary app, bypassing the sanctioned Copy path (gate
+                // MEDIUM). Copy is the only export affordance.
+            }
+        layout.addView(warning)
+        layout.addView(codeView)
+
+        val cancel: () -> Unit = {
+            if (rollbackOnCancel) {
+                // Undo the just-minted local backup_state (there was no prior
+                // backup on the create path — the card only offers Create when
+                // none exists), so a cancel leaves NO phantom backup.
+                executor.execute {
+                    try {
+                        engine().backupForgetLocal()
+                    } catch (error: Throwable) {
+                        // Best-effort; a lingering local row only over-nags.
+                    }
+                    call.reject("{\"type\":\"declined\"}")
+                }
+            } else {
+                call.reject("{\"type\":\"declined\"}")
+            }
+        }
+
+        val dialog =
+            AlertDialog.Builder(activity)
+                .setTitle("Your recovery code")
+                .setView(layout)
+                .setCancelable(false)
+                // Neutral "Copy" must NOT dismiss the dialog — overridden below.
+                .setNeutralButton("Copy", null)
+                .setPositiveButton("I've saved it") { _, _ ->
+                    resolveJson(call, bundleJson)
+                }
+                .setNegativeButton("Cancel") { _, _ -> cancel() }
+                .create()
+        secureWindow(dialog)
+        dialog.setOnShowListener {
+            // Re-assert once the window is attached — the pre-show call does not
+            // stick on all OEMs (see secureWindow).
+            secureWindow(dialog)
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+                copyCodeToClipboard(code)
+            }
+        }
+        dialog.show()
+    }
+
+    /**
+     * RESTORE from the account's backup blobs using the code the user types
+     * into a native dialog. Mirrors desktop `e2ee_recovery_restore`: the
+     * webview has already fetched the opaque blobs (MFA-ticketed) and passes
+     * them down as JSON; the code is entered natively and never leaves this
+     * process. On success the store is rebuilt atomically under a fresh
+     * Keystore-wrapped master and the post-restore republish payload (fresh
+     * OTKs) is returned for the webview to `PUT /e2ee/keys`
+     * (`replace_one_time_keys`). A wrong code keeps the dialog open to retry.
+     */
+    @PluginMethod
+    fun backupRestore(call: PluginCall) {
+        val userId = call.getString("userId") ?: run {
+            call.reject("{\"type\":\"invalid_argument\",\"field\":\"userId\"}")
+            return
+        }
+        val blobsJson = call.getString("blobsJson") ?: run {
+            call.reject("{\"type\":\"invalid_argument\",\"field\":\"blobs\"}")
+            return
+        }
+        activity.runOnUiThread { showRestoreDialog(call, userId, blobsJson) }
+    }
+
+    private fun showRestoreDialog(call: PluginCall, userId: String, blobsJson: String) {
+        val pad = dpToPx(24)
+        val layout =
+            LinearLayout(activity).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(pad, pad, pad, dpToPx(8))
+            }
+        val prompt =
+            TextView(activity).apply {
+                text =
+                    "Enter your recovery code to restore your encrypted message history " +
+                        "on this device."
+                setPadding(0, 0, 0, dpToPx(16))
+            }
+        val input =
+            EditText(activity).apply {
+                hint = "XXXXX-XXXXX-…"
+                // Visible-password variation: shows the code so the user can
+                // verify it while typing, but keeps it out of the IME's
+                // learned dictionary / autofill / keystroke history (gate
+                // MEDIUM), and upper-cased single-line for a Crockford code.
+                inputType =
+                    InputType.TYPE_CLASS_TEXT or
+                        InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD or
+                        InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
+                setSingleLine(true)
+            }
+        val errorView =
+            TextView(activity).apply {
+                visibility = View.GONE
+                setPadding(0, dpToPx(8), 0, 0)
+            }
+        layout.addView(prompt)
+        layout.addView(input)
+        layout.addView(errorView)
+
+        val dialog =
+            AlertDialog.Builder(activity)
+                .setTitle("Restore from recovery code")
+                .setView(layout)
+                .setCancelable(false)
+                // Positive action overridden so a wrong code does NOT dismiss.
+                .setPositiveButton("Restore", null)
+                .setNegativeButton("Cancel") { _, _ -> call.reject("{\"type\":\"declined\"}") }
+                .create()
+        secureWindow(dialog)
+        dialog.setOnShowListener {
+            // Re-assert once the window is attached — the pre-show call does not
+            // stick on all OEMs (see secureWindow).
+            secureWindow(dialog)
+            val restoreButton = dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+            restoreButton.setOnClickListener {
+                val code = input.text.toString()
+                if (code.isBlank()) {
+                    errorView.text = "Enter your recovery code."
+                    errorView.visibility = View.VISIBLE
+                    return@setOnClickListener
+                }
+                restoreButton.isEnabled = false
+                errorView.visibility = View.GONE
+                // Restore runs Argon2id per blob — off the UI thread.
+                executor.execute {
+                    try {
+                        // Rebuild the store (also re-wraps a fresh master via
+                        // the Keystore protector) and open the engine on it.
+                        engine().restore(userId, blobsJson, code)
+                        // Mint fresh OTKs + fallback for the webview to publish.
+                        val republishJson = engine().postRestoreRekey()
+                        activity.runOnUiThread { dialog.dismiss() }
+                        resolveJson(call, republishJson)
+                    } catch (error: E2eeException) {
+                        val type = errorType(error.message)
+                        if (type == "backup_code_mismatch") {
+                            // The one "try again" signal — keep the dialog open.
+                            activity.runOnUiThread {
+                                errorView.text =
+                                    "That code didn't match. Check it and try again."
+                                errorView.visibility = View.VISIBLE
+                                restoreButton.isEnabled = true
+                            }
+                        } else {
+                            activity.runOnUiThread { dialog.dismiss() }
+                            rejectScrubbed(call, error)
+                        }
+                    } catch (error: Throwable) {
+                        activity.runOnUiThread { dialog.dismiss() }
+                        rejectScrubbed(call, error)
+                    }
+                }
+            }
+        }
+        dialog.show()
+    }
+
+    /** Parse the `type` tag out of a core error's scrubbed JSON message. */
+    private fun errorType(message: String?): String {
+        if (message == null || !message.startsWith("{")) return ""
+        return try {
+            org.json.JSONObject(message).optString("type", "")
+        } catch (error: Exception) {
+            ""
         }
     }
 

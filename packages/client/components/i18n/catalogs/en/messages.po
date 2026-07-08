@@ -198,6 +198,10 @@ msgstr "{usernames} and {unknown} others reacted"
 msgid "{usernames} reacted"
 msgstr "{usernames} reacted"
 
+#: components/app/interface/settings/user/voice/CameraOptions.tsx
+msgid "{v} Mbps"
+msgstr "{v} Mbps"
+
 #: components/ui/components/features/messaging/elements/SystemMessage.tsx
 msgid "<0/> has been added by <1/>"
 msgstr "<0/> has been added by <1/>"
@@ -454,7 +458,11 @@ msgstr "Allow others to add your bot to their servers from Discover"
 msgid "Already friends with this user."
 msgstr "Already friends with this user."
 
-#: components/app/interface/settings/user/voice/ScreenShareOptions.tsx
+#: components/modal/modals/E2EEEnable.tsx
+msgid "Already have a recovery code from another device? Choose \"Restore from a recovery code\" to bring back your history. Otherwise, encrypted history lives on THIS device only and cannot be recovered if the device is lost. You will confirm your identity to continue."
+msgstr "Already have a recovery code from another device? Choose \"Restore from a recovery code\" to bring back your history. Otherwise, encrypted history lives on THIS device only and cannot be recovered if the device is lost. You will confirm your identity to continue."
+
+#: components/app/interface/settings/user/voice/CameraOptions.tsx
 msgid "Always Ask for Screen Share Quality"
 msgstr "Always Ask for Screen Share Quality"
 
@@ -512,6 +520,11 @@ msgstr "Audio disabled by browser"
 msgid "Authenticator App"
 msgstr "Authenticator App"
 
+#: components/app/interface/settings/user/voice/CameraOptions.tsx
+#: components/app/interface/settings/user/voice/CameraOptions.tsx
+msgid "Auto"
+msgstr "Auto"
+
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
 msgid "Automatic Gain Control"
 msgstr "Automatic Gain Control"
@@ -535,6 +548,19 @@ msgstr "Back"
 #: components/auth/src/flows/FlowOAuthCallback.tsx
 msgid "Back to login"
 msgstr "Back to login"
+
+#: components/modal/modals/CameraSettings.tsx
+msgid "Background"
+msgstr "Background"
+
+#: components/app/interface/settings/user/voice/CameraOptions.tsx
+msgid "Background effect"
+msgstr "Background effect"
+
+#: components/modal/modals/CameraSettings.tsx
+#: components/app/interface/settings/user/voice/CameraOptions.tsx
+msgid "Background effects aren't supported on this device."
+msgstr "Background effects aren't supported on this device."
 
 #: components/ui/components/features/profiles/ProfileBadges.tsx
 msgid "Badges"
@@ -593,12 +619,32 @@ msgstr "Blocked"
 msgid "Blocked User"
 msgstr "Blocked User"
 
+#: components/modal/modals/CameraSettings.tsx
+#: components/app/interface/settings/user/voice/CameraOptions.tsx
+msgid "Blur"
+msgstr "Blur"
+
+#: components/app/interface/settings/user/voice/CameraOptions.tsx
+msgid "Blur strength"
+msgstr "Blur strength"
+
+#. placeholder {0}: voice.cameraBlurRadius
+#: components/modal/modals/CameraSettings.tsx
+#: components/app/interface/settings/user/voice/CameraOptions.tsx
+msgid "Blur strength: {0}"
+msgstr "Blur strength: {0}"
+
 #: components/app/interface/channels/text/Message.tsx
 msgid "Bot"
 msgstr "Bot"
 
+#: components/app/interface/settings/user/voice/CameraOptions.tsx
+msgid "Brightness is unavailable on this camera while a background effect is active."
+msgstr "Brightness is unavailable on this camera while a background effect is active."
+
 #. placeholder {0}: voice.cameraBrightness
-#: components/app/interface/settings/user/voice/ScreenShareOptions.tsx
+#: components/modal/modals/CameraSettings.tsx
+#: components/app/interface/settings/user/voice/CameraOptions.tsx
 msgid "Brightness: {0}%"
 msgstr "Brightness: {0}%"
 
@@ -641,13 +687,38 @@ msgstr "Bypasses slowmode in channels"
 msgid "Call"
 msgstr "Call"
 
-#: components/app/interface/settings/user/voice/ScreenShareOptions.tsx
+#: components/modal/modals/CameraSettings.tsx
+msgid "Camera"
+msgstr "Camera"
+
+#: components/app/interface/settings/user/voice/CameraOptions.tsx
 msgid "Camera Brightness"
 msgstr "Camera Brightness"
 
-#: components/app/interface/settings/user/voice/ScreenShareOptions.tsx
+#: components/app/interface/settings/user/voice/CameraPreview.tsx
+#: components/app/interface/settings/user/voice/CameraPreview.tsx
+msgid "Camera Preview"
+msgstr "Camera Preview"
+
+#: components/app/interface/settings/user/voice/CameraOptions.tsx
+msgid "Camera quality"
+msgstr "Camera quality"
+
+#: components/app/interface/settings/user/voice/CameraOptions.tsx
+msgid "Camera Quality"
+msgstr "Camera Quality"
+
+#: components/ui/components/features/voice/callCard/VoiceCallCardActions.tsx
+msgid "Camera settings"
+msgstr "Camera settings"
+
+#: components/app/interface/settings/user/voice/CameraOptions.tsx
 msgid "Camera Settings"
 msgstr "Camera Settings"
+
+#: components/app/interface/settings/user/voice/CameraPreview.tsx
+msgid "Camera unavailable — check permissions and that no other app is using it."
+msgstr "Camera unavailable — check permissions and that no other app is using it."
 
 #: src/interface/ServerEvents.tsx
 #: components/modal/modals/SuspendUser.tsx
@@ -668,6 +739,7 @@ msgstr "Camera Settings"
 #: components/modal/modals/InviteToServer.tsx
 #: components/modal/modals/Invite.tsx
 #: components/modal/modals/EditCategory.tsx
+#: components/modal/modals/E2EEEnableGroup.tsx
 #: components/modal/modals/E2EEEnable.tsx
 #: components/modal/modals/E2EEDisable.tsx
 #: components/modal/modals/DeleteServer.tsx
@@ -738,6 +810,10 @@ msgstr "Change own avatar"
 msgid "Change own nickname"
 msgstr "Change own nickname"
 
+#: components/app/interface/settings/user/SecurityAndPrivacy.tsx
+msgid "Change recovery code"
+msgstr "Change recovery code"
+
 #: components/modal/modals/EditUsername.tsx
 msgid "Change username"
 msgstr "Change username"
@@ -782,6 +858,10 @@ msgstr "Chat Input"
 #: components/auth/src/flows/FlowCheck.tsx
 msgid "Check your mail!"
 msgstr "Check your mail!"
+
+#: components/modal/modals/CameraSettings.tsx
+msgid "Choose a background image in Settings → Voice."
+msgstr "Choose a background image in Settings → Voice."
 
 #: components/auth/src/flows/FlowOAuthCallback.tsx
 #: components/auth/src/flows/FlowLogin.tsx
@@ -844,6 +924,7 @@ msgstr "Client Settings"
 #: components/modal/modals/EditUsername.tsx
 #: components/modal/modals/EditPassword.tsx
 #: components/modal/modals/EditEmail.tsx
+#: components/modal/modals/E2EEVerify.tsx
 #: components/modal/modals/E2EEIdentityChange.tsx
 #: components/modal/modals/DeleteChannel.tsx
 #: components/modal/modals/CustomStatus.tsx
@@ -879,6 +960,11 @@ msgstr "Code"
 msgid "Coming soon! 👀"
 msgstr "Coming soon! 👀"
 
+#. placeholder {0}: peer()?.username ?? t`your contact`
+#: components/modal/modals/E2EEVerify.tsx
+msgid "Compare these numbers with {0} in person or over a call you trust. If they match on both devices, your messages are private to the two of you."
+msgstr "Compare these numbers with {0} in person or over a call you trust. If they match on both devices, your messages are private to the two of you."
+
 #: components/app/interface/settings/user/Account.tsx
 msgid "Configure a way to get back into your account in case your 2FA is lost"
 msgstr "Configure a way to get back into your account in case your 2FA is lost"
@@ -896,6 +982,10 @@ msgstr "Confirm"
 #: components/modal/modals/MFAFlow.tsx
 msgid "Confirm action"
 msgstr "Confirm action"
+
+#: components/modal/modals/E2EEReenroll.tsx
+msgid "Confirm identity"
+msgstr "Confirm identity"
 
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "Connect"
@@ -1047,6 +1137,14 @@ msgstr "Create a new group"
 msgid "Create a new role"
 msgstr "Create a new role"
 
+#: components/app/interface/settings/user/SecurityAndPrivacy.tsx
+msgid "Create a recovery code"
+msgstr "Create a recovery code"
+
+#: components/modal/modals/E2EEEnable.tsx
+msgid "Create a recovery code so you can restore your identity and message history if you lose this device. Without one, encrypted history is gone for good if the device is lost. You can also do this later from Security & Privacy settings."
+msgstr "Create a recovery code so you can restore your identity and message history if you lose this device. Without one, encrypted history is gone for good if the device is lost. You can also do this later from Security & Privacy settings."
+
 #: src/interface/ServerEvents.tsx
 msgid "Create a text channel named <0>events</0> in this server to enable the calendar."
 msgstr "Create a text channel named <0>events</0> in this server to enable the calendar."
@@ -1101,6 +1199,10 @@ msgstr "Create Invite"
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "Create invites for others to use"
 msgstr "Create invites for others to use"
+
+#: components/modal/modals/E2EEEnable.tsx
+msgid "Create recovery code"
+msgstr "Create recovery code"
 
 #: components/modal/modals/CreateRole.tsx
 #: components/app/interface/settings/server/roles/ServerRoleOverview.tsx
@@ -1212,6 +1314,10 @@ msgstr "Delete Account"
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "Delete and pin messages sent by other members"
 msgstr "Delete and pin messages sent by other members"
+
+#: components/app/interface/settings/user/SecurityAndPrivacy.tsx
+msgid "Delete backup"
+msgstr "Delete backup"
 
 #: components/app/interface/settings/user/bots/ViewBot.tsx
 msgid "Delete Bot"
@@ -1354,8 +1460,8 @@ msgid "Donated to Sloga"
 msgstr "Donated to Sloga"
 
 #: components/modal/modals/MFARecovery.tsx
-#: components/modal/modals/E2EEEnable.tsx
 #: components/modal/modals/E2EEDisable.tsx
+#: components/modal/modals/CameraSettings.tsx
 msgid "Done"
 msgstr "Done"
 
@@ -1468,6 +1574,10 @@ msgstr "Enable Push to Talk"
 msgid "Enable transparency glass/blur effects (slow on older machines)"
 msgstr "Enable transparency glass/blur effects (slow on older machines)"
 
+#: components/modal/modals/E2EEEnableGroup.tsx
+msgid "Encrypt this group"
+msgstr "Encrypt this group"
+
 #: components/app/interface/settings/user/SecurityAndPrivacy.tsx
 msgid "Encrypted direct messages"
 msgstr "Encrypted direct messages"
@@ -1477,8 +1587,8 @@ msgid "Encrypted direct messages are on for this device. Messages you send in an
 msgstr "Encrypted direct messages are on for this device. Messages you send in an encrypted conversation are stored only on the devices that receive them — not on the server, and not in your web session."
 
 #: components/modal/modals/E2EEEnable.tsx
-msgid "Encrypted history lives on THIS device only. If you log out and choose to erase it, or lose the device, those messages cannot be recovered. You will confirm your identity to continue."
-msgstr "Encrypted history lives on THIS device only. If you log out and choose to erase it, or lose the device, those messages cannot be recovered. You will confirm your identity to continue."
+#~ msgid "Encrypted history lives on THIS device only. If you log out and choose to erase it, or lose the device, those messages cannot be recovered. You will confirm your identity to continue."
+#~ msgstr "Encrypted history lives on THIS device only. If you log out and choose to erase it, or lose the device, those messages cannot be recovered. You will confirm your identity to continue."
 
 #: components/app/interface/settings/user/SecurityAndPrivacy.tsx
 msgid "Encrypted messaging is on"
@@ -1544,6 +1654,10 @@ msgstr "Enter your invite code."
 msgid "Enter your preferred username."
 msgstr "Enter your preferred username."
 
+#: components/modal/modals/E2EEEnableGroup.tsx
+msgid "Everyone must have encryption set up, or this will not turn on. Encrypted history will live only on each person's own devices, and the server will no longer be able to read new messages."
+msgstr "Everyone must have encryption set up, or this will not turn on. Encrypted history will live only on each person's own devices, and the server will no longer be able to read new messages."
+
 #: components/modal/modals/LinkWarning.tsx
 msgid "External links can be dangerous!"
 msgstr "External links can be dangerous!"
@@ -1588,6 +1702,10 @@ msgstr "Fetching encrypted attachment…"
 #: src/interface/Home.tsx
 msgid "Find a community based on your hobbies or interests."
 msgstr "Find a community based on your hobbies or interests."
+
+#: components/modal/modals/E2EEReenroll.tsx
+msgid "Finish restoring on this device"
+msgstr "Finish restoring on this device"
 
 #: src/interface/navigation/servers/UserMenu.tsx
 #: src/interface/navigation/channels/HomeSidebar.tsx
@@ -1642,6 +1760,10 @@ msgstr "Fruit Salad"
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
 msgid "Gain: {0}%"
 msgstr "Gain: {0}%"
+
+#: components/modal/modals/E2EEEnableGroup.tsx
+msgid "Gathering keys for every member…"
+msgstr "Gathering keys for every member…"
 
 #: components/app/interface/settings/user/bots/ViewBot.tsx
 msgid "Generate a new token if it gets lost or compromised"
@@ -1779,6 +1901,11 @@ msgstr "Idle"
 #: components/modal/modals/ReportContent.tsx
 msgid "Illegal hacking or cracking"
 msgstr "Illegal hacking or cracking"
+
+#: components/modal/modals/CameraSettings.tsx
+#: components/app/interface/settings/user/voice/CameraOptions.tsx
+msgid "Image"
+msgstr "Image"
 
 #: components/modal/modals/ReportContent.tsx
 msgid "Impersonation"
@@ -1991,6 +2118,10 @@ msgstr "Light"
 msgid "Listen"
 msgstr "Listen"
 
+#: components/app/interface/settings/user/voice/CameraPreview.tsx
+msgid "Live"
+msgstr "Live"
+
 #. placeholder {0}: humanFileSize(props.file.size ?? 0)
 #: components/ui/components/features/messaging/elements/TextFile.tsx
 msgid "Load file ({0})"
@@ -2092,6 +2223,10 @@ msgstr "Mark as read"
 msgid "Mark as unread"
 msgstr "Mark as unread"
 
+#: components/modal/modals/E2EEVerify.tsx
+msgid "Mark as verified"
+msgstr "Mark as verified"
+
 #: components/modal/modals/ChannelToggleMature.tsx
 msgid "Mark this channel as mature?"
 msgstr "Mark this channel as mature?"
@@ -2099,6 +2234,15 @@ msgstr "Mark this channel as mature?"
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "Masquerade"
 msgstr "Masquerade"
+
+#. placeholder {0}: (voice.cameraMaxBitrateKbps / 1000).toFixed(1)
+#: components/app/interface/settings/user/voice/CameraOptions.tsx
+msgid "Max bitrate: {0} Mbps"
+msgstr "Max bitrate: {0} Mbps"
+
+#: components/app/interface/settings/user/voice/CameraOptions.tsx
+msgid "Max bitrate: Auto"
+msgstr "Max bitrate: Auto"
 
 #: components/app/interface/settings/ServerSettings.tsx
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
@@ -2383,17 +2527,27 @@ msgstr "No pending identity changes remain."
 msgid "No permissions set yet"
 msgstr "No permissions set yet"
 
+#: components/modal/modals/E2EEEnable.tsx
+msgid "No recovery backup was found for your account, or the recovery window was closed. You can start fresh instead."
+msgstr "No recovery backup was found for your account, or the recovery window was closed. You can start fresh instead."
+
 #: components/app/interface/settings/server/stickers/StickerList.tsx
 msgid "No stickers yet. Upload one above!"
 msgstr "No stickers yet. Upload one above!"
+
+#: components/modal/modals/E2EEVerify.tsx
+msgid "No verifiable devices yet — send or receive an encrypted message first, then reopen this screen."
+msgstr "No verifiable devices yet — send or receive an encrypted message first, then reopen this screen."
 
 #: src/interface/Friends.tsx
 msgid "Nobody here right now!"
 msgstr "Nobody here right now!"
 
+#: components/modal/modals/CameraSettings.tsx
 #: components/app/menus/ServerContextMenu.tsx
 #: components/app/menus/shared/NotificationContextMenu.tsx
 #: components/app/menus/shared/NotificationContextMenu.tsx
+#: components/app/interface/settings/user/voice/CameraOptions.tsx
 msgid "None"
 msgstr "None"
 
@@ -2404,6 +2558,10 @@ msgstr "Normal"
 #: src/interface/channels/text/Composition.tsx
 msgid "Not encrypted — the other person hasn't turned on encryption."
 msgstr "Not encrypted — the other person hasn't turned on encryption."
+
+#: components/modal/modals/E2EEReenroll.tsx
+msgid "Not now"
+msgstr "Not now"
 
 #: components/modal/modals/ReportContent.tsx
 msgid "Not of minimum age to use the platform"
@@ -2504,6 +2662,10 @@ msgstr "Open server settings"
 #: src/interface/Home.tsx
 msgid "Open settings"
 msgstr "Open settings"
+
+#: components/modal/modals/E2EEEnable.tsx
+msgid "Or start fresh to set this up as a new device. You keep sending and receiving encrypted messages, but earlier history that lived only on your old device stays there."
+msgstr "Or start fresh to set this up as a new device. You keep sending and receiving encrypted messages, but earlier history that lived only on your old device stays there."
 
 #: components/modal/modals/ReportContent.tsx
 msgid "Other"
@@ -2669,6 +2831,10 @@ msgstr "Push to Talk"
 msgid "Push to Talk Key"
 msgstr "Push to Talk Key"
 
+#: components/app/interface/settings/user/voice/CameraOptions.tsx
+msgid "Quality and bitrate changes apply the next time you turn on your camera."
+msgstr "Quality and bitrate changes apply the next time you turn on your camera."
+
 #: components/modal/modals/ReportContent.tsx
 msgid "Raid or spam attack"
 msgstr "Raid or spam attack"
@@ -2768,6 +2934,7 @@ msgid "Relevance"
 msgstr "Relevance"
 
 #: components/modal/modals/RemoveMember.tsx
+#: components/app/interface/settings/user/voice/CameraOptions.tsx
 msgid "Remove"
 msgstr "Remove"
 
@@ -2803,6 +2970,10 @@ msgstr "Remove Password"
 #: components/app/menus/MessageContextMenu.tsx
 msgid "Remove reaction"
 msgstr "Remove reaction"
+
+#: components/app/interface/settings/user/SecurityAndPrivacy.tsx
+msgid "Remove the backup stored on the server. Your encrypted history on this device is unaffected."
+msgstr "Remove the backup stored on the server. Your encrypted history on this device is unaffected."
 
 #: components/modal/modals/RenameSession.tsx
 #: components/modal/modals/EditCategory.tsx
@@ -2911,6 +3082,14 @@ msgstr "Resolve"
 msgid "Responsibly disclosed security issues"
 msgstr "Responsibly disclosed security issues"
 
+#: components/modal/modals/E2EEEnable.tsx
+msgid "Restore from a recovery code"
+msgstr "Restore from a recovery code"
+
+#: components/modal/modals/E2EEEnable.tsx
+msgid "Restore your encrypted messages"
+msgstr "Restore your encrypted messages"
+
 #: components/app/menus/DraftMessageContextMenu.tsx
 msgid "Retry sending"
 msgstr "Retry sending"
@@ -2990,7 +3169,7 @@ msgid "Scams or fraud"
 msgstr "Scams or fraud"
 
 #: components/modal/modals/ScreenShareSettings.tsx
-#: components/app/interface/settings/user/voice/ScreenShareOptions.tsx
+#: components/app/interface/settings/user/voice/CameraOptions.tsx
 msgid "Screen Share Settings"
 msgstr "Screen Share Settings"
 
@@ -3039,7 +3218,7 @@ msgstr "Select members to add"
 msgid "Select noise suppression"
 msgstr "Select noise suppression"
 
-#: components/app/interface/settings/user/voice/ScreenShareOptions.tsx
+#: components/app/interface/settings/user/voice/CameraOptions.tsx
 msgid "Select screen share quality"
 msgstr "Select screen share quality"
 
@@ -3243,6 +3422,10 @@ msgstr "Signing you in…"
 msgid "Silent"
 msgstr "Silent"
 
+#: components/modal/modals/E2EEEnable.tsx
+msgid "Skip for now"
+msgstr "Skip for now"
+
 #: components/ui/components/features/profiles/ProfileBadges.tsx
 msgid "Sloga Developer"
 msgstr "Sloga Developer"
@@ -3328,6 +3511,10 @@ msgstr "Start a video call"
 msgid "Start camera"
 msgstr "Start camera"
 
+#: components/modal/modals/E2EEEnable.tsx
+msgid "Start fresh"
+msgstr "Start fresh"
+
 #: components/app/interface/settings/user/Native.tsx
 msgid "Start Minimised to Tray"
 msgstr "Start Minimised to Tray"
@@ -3353,6 +3540,7 @@ msgid "Stickers"
 msgstr "Stickers"
 
 #: components/app/interface/settings/user/voice/MicrophoneTest.tsx
+#: components/app/interface/settings/user/voice/CameraPreview.tsx
 msgid "Stop"
 msgstr "Stop"
 
@@ -3452,6 +3640,10 @@ msgstr "Tell us what's wrong with this user"
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "Temporarily prevent lower-ranking members from interacting"
 msgstr "Temporarily prevent lower-ranking members from interacting"
+
+#: components/app/interface/settings/user/voice/CameraPreview.tsx
+msgid "Test camera"
+msgstr "Test camera"
 
 #: components/app/interface/settings/user/voice/MicrophoneLevelMeter.tsx
 msgid "Test Input Level"
@@ -3653,6 +3845,10 @@ msgstr "Turn off"
 msgid "Turn off encrypted direct messages"
 msgstr "Turn off encrypted direct messages"
 
+#: components/modal/modals/E2EEVerify.tsx
+msgid "Turn off encryption for this conversation"
+msgstr "Turn off encryption for this conversation"
+
 #: components/modal/modals/E2EEEnable.tsx
 msgid "Turn on"
 msgstr "Turn on"
@@ -3661,9 +3857,21 @@ msgstr "Turn on"
 msgid "Turn on encrypted direct messages"
 msgstr "Turn on encrypted direct messages"
 
+#: components/modal/modals/E2EEEnableGroup.tsx
+msgid "Turn on encryption"
+msgstr "Turn on encryption"
+
 #: components/app/interface/settings/user/SecurityAndPrivacy.tsx
 msgid "Turn on end-to-end encrypted direct messages for this device."
 msgstr "Turn on end-to-end encrypted direct messages for this device."
+
+#: src/interface/channels/text/Composition.tsx
+msgid "Turn on end-to-end encryption for this group."
+msgstr "Turn on end-to-end encryption for this group."
+
+#: components/app/interface/settings/user/voice/CameraPreview.tsx
+msgid "Turn on your camera to check it works and preview brightness and background effects."
+msgstr "Turn on your camera to check it works and preview brightness and background effects."
 
 #: components/app/menus/UserContextMenu.tsx
 msgid "Unblock user"
@@ -3825,12 +4033,21 @@ msgid "VAD Threshold"
 msgstr "VAD Threshold"
 
 #: src/interface/navigation/channels/ServerSidebar.tsx
+#: components/modal/modals/E2EEVerify.tsx
 msgid "Verified"
 msgstr "Verified"
+
+#: components/modal/modals/E2EEVerify.tsx
+msgid "Verify security"
+msgstr "Verify security"
 
 #: components/modal/modals/E2EEIdentityChange.tsx
 msgid "Verify the change with them through another channel before you continue. Accepting trusts the new identity and resumes sending; past encrypted messages are unaffected."
 msgstr "Verify the change with them through another channel before you continue. Accepting trusts the new identity and resumes sending; past encrypted messages are unaffected."
+
+#: components/modal/modals/E2EEVerify.tsx
+msgid "Verifying protects against someone swapping this contact's keys. In group chats, remember that who is in the group is managed by the server — watch the member list."
+msgstr "Verifying protects against someone swapping this contact's keys. In group chats, remember that who is in the group is managed by the server — watch the member list."
 
 #: components/auth/src/flows/FlowVerify.tsx
 msgid "Verifying your account…"
@@ -3868,6 +4085,10 @@ msgstr "View Recovery Codes"
 #: components/ui/components/features/messaging/bars/JumpToBottom.tsx
 msgid "Viewing older messages"
 msgstr "Viewing older messages"
+
+#: components/app/interface/settings/user/voice/CameraOptions.tsx
+msgid "Virtual background"
+msgstr "Virtual background"
 
 #: components/app/interface/settings/UserSettings.tsx
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
@@ -3940,6 +4161,10 @@ msgstr "Which would you like to Start?"
 msgid "With {0}"
 msgstr "With {0}"
 
+#: components/app/interface/settings/user/SecurityAndPrivacy.tsx
+msgid "Without a recovery code, your encrypted messages cannot be restored if you lose this device. Create one and store it somewhere safe."
+msgstr "Without a recovery code, your encrypted messages cannot be restored if you lose this device. Create one and store it somewhere safe."
+
 #: components/modal/modals/CreateOrJoinServer.tsx
 msgid "Would you like to create a new server or join an existing one?"
 msgstr "Would you like to create a new server or join an existing one?"
@@ -3968,6 +4193,11 @@ msgstr "You are about to suspend {0} from the entire platform. Their account wil
 #: components/i18n/errors.ts
 msgid "You are banned from this server."
 msgstr "You are banned from this server."
+
+#. placeholder {0}: members().length
+#: components/modal/modals/E2EEEnableGroup.tsx
+msgid "You are turning on end-to-end encryption for exactly these {0} people. Check this list against who you expect to be in the group — anyone here will be able to read new messages."
+msgstr "You are turning on end-to-end encryption for exactly these {0} people. Check this list against who you expect to be in the group — anyone here will be able to read new messages."
 
 #: src/interface/Home.tsx
 msgid "You can also click the gear icon in the bottom left."
@@ -4036,9 +4266,17 @@ msgstr "You do not have permission to do this."
 msgid "You don't have permission to send messages in this channel."
 msgstr "You don't have permission to send messages in this channel."
 
+#: components/app/interface/settings/user/SecurityAndPrivacy.tsx
+msgid "You have a recovery code. Anyone with this code and access to your account can read your message history — Sloga cannot recover it for you. Choose \"Change recovery code\" to replace it."
+msgstr "You have a recovery code. Anyone with this code and access to your account can read your message history — Sloga cannot recover it for you. Choose \"Change recovery code\" to replace it."
+
 #: components/i18n/errors.ts
 msgid "You have been locked out for entering a wrong password multiple times. Please wait a couple minutes and try again."
 msgstr "You have been locked out for entering a wrong password multiple times. Please wait a couple minutes and try again."
+
+#: components/modal/modals/E2EEEnable.tsx
+msgid "You have encryption set up on your account. If you saved a recovery code, restore it here to bring back your identity and message history on this device — your contacts will not see a security warning."
+msgstr "You have encryption set up on your account. If you saved a recovery code, restore it here to bring back your identity and message history on this device — your contacts will not see a security warning."
 
 #: components/i18n/errors.ts
 msgid "You have this user blocked."
@@ -4103,9 +4341,21 @@ msgstr "Your account and all of your data (including your messages and friends l
 msgid "Your account has been verified!"
 msgstr "Your account has been verified!"
 
+#: components/modal/modals/E2EEVerify.tsx
+msgid "your contact"
+msgstr "your contact"
+
+#: components/modal/modals/E2EEReenroll.tsx
+msgid "Your contacts will see this device come back — with no security warning, because its keys are unchanged."
+msgstr "Your contacts will see this device come back — with no security warning, because its keys are unchanged."
+
 #: components/i18n/errors.ts
 msgid "Your discriminator change has been ratelimited, please try again later."
 msgstr "Your discriminator change has been ratelimited, please try again later."
+
+#: components/modal/modals/E2EEReenroll.tsx
+msgid "Your encrypted history was restored, but this device had been logged out remotely, so it needs to be re-registered before it can send and receive again. Confirm your identity to finish."
+msgstr "Your encrypted history was restored, but this device had been logged out remotely, so it needs to be re-registered before it can send and receive again. Confirm your identity to finish."
 
 #: components/auth/src/flows/FlowOAuthCallback.tsx
 msgid "Your Google account's email address is not verified."

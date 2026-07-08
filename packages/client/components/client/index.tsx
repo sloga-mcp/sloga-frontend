@@ -21,7 +21,7 @@ export type { default as ClientController } from "./Controller";
 export { useNotifications } from "./NotificationsController";
 export { SoundContext, SoundController, useSound } from "./Sounds";
 export { E2EEBridge, E2EESendError, nativeE2EEAvailable } from "./e2ee";
-export type { E2EEAttachmentMeta, SafetyNumber } from "./e2ee";
+export type { BackupStatusView, E2EEAttachmentMeta, SafetyNumber } from "./e2ee";
 
 /**
  * The native E2EE bridge for the current client, if this platform has one
@@ -82,6 +82,53 @@ export function ClientContext(props: { state: State; children: JSXElement }) {
       },
     ),
   );
+
+  // Slice 5.5: a returning user on a NEW device — unprovisioned, but the
+  // account opted into E2EE on another device — is offered restore-vs-start-
+  // fresh BEFORE anything provisions the local store (design §6.1). The native
+  // bridge's `#onReady` sets the reactive `restoreAvailable` flag (it never
+  // opens the engine on a fresh install); open the opt-in modal in
+  // restore-first mode, once per session. A plain effect (no `on`) so it fires
+  // whether the flag is already set on first run or set later after ready.
+  let offeredRestore = false;
+  createEffect(() => {
+    if (!controller.isLoggedIn()) {
+      offeredRestore = false;
+      return;
+    }
+    const e2ee = controller.getCurrentClient()?.e2ee as
+      | import("./e2ee").E2EEBridge
+      | undefined;
+    if (!e2ee) return;
+    if (e2ee.restoreAvailable.get("state") && !offeredRestore) {
+      offeredRestore = true;
+      openModal({ type: "e2ee_enable", offerRestore: true });
+    }
+  });
+
+  // Slice 5.5 §6.4: a device restored its history but its server-side identity
+  // row had been revoked while it was dead, so the post-restore claim was
+  // rejected and the bridge raised `reenrollNeeded`. Prompt the second re-auth
+  // that re-publishes the restored keys as a first publication. Opened once per
+  // episode (the guard resets when the flag clears on success).
+  let offeredReenroll = false;
+  createEffect(() => {
+    if (!controller.isLoggedIn()) {
+      offeredReenroll = false;
+      return;
+    }
+    const e2ee = controller.getCurrentClient()?.e2ee as
+      | import("./e2ee").E2EEBridge
+      | undefined;
+    if (!e2ee) return;
+    const needed = !!e2ee.reenrollNeeded.get("state");
+    if (needed && !offeredReenroll) {
+      offeredReenroll = true;
+      openModal({ type: "e2ee_reenroll" });
+    } else if (!needed) {
+      offeredReenroll = false;
+    }
+  });
 
   return (
     <clientContext.Provider value={controller}>

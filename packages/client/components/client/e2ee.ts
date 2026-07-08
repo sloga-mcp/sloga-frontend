@@ -55,6 +55,13 @@ type TauriGlobal = {
       options?: { headers?: Record<string, string> },
     ): Promise<T>;
   };
+  /** Event bus (core:event) — used by the key-backup recovery courier */
+  event?: {
+    listen<T>(
+      event: string,
+      handler: (event: { payload: T }) => void,
+    ): Promise<() => void>;
+  };
 };
 
 /** Scrubbed, typed error crossing the IPC (see e2ee-core `Error`) */
@@ -99,6 +106,36 @@ export type SafetyNumber = {
 };
 
 type KeyBundle = { user_id: string; devices: unknown[] };
+
+/** A key-backup upload bundle produced natively (opaque ciphertext) */
+type BackupBundle = {
+  header: string;
+  ciphertext: string;
+  generation: number;
+  truncated: boolean;
+};
+
+/** One device's backup blob returned by the restore fetch */
+type BackupBlob = {
+  header: string;
+  ciphertext: string;
+  generation: number;
+};
+
+/** Local + server backup status for the Security & Privacy card */
+export type BackupStatusView = {
+  /** A recovery code has been created locally */
+  exists: boolean;
+  /** Last generation built locally */
+  generation: number;
+  /** Last generation the server confirmed (optimistic — design §4.5) */
+  uploadedGeneration: number;
+  /** Whether a blob is present on the server for this device (honest-server
+   *  signal only; a compromised webview can fake this — design §4.5 H3) */
+  serverHasBackup: boolean;
+  createdAt: number;
+  refreshedAt: number;
+};
 
 /** IPC-safe attachment metadata (mirrors native `AttachmentMeta` — no keys) */
 export type E2EEAttachmentMeta = {
@@ -233,6 +270,27 @@ interface NativeTransport {
     authHeader: string,
     authValue: string,
   ): Promise<"ready" | "expired" | "failed" | "pending">;
+  /**
+   * Present when the recovery-code surface is a native DIALOG rather than a
+   * separate webview window (Android). The desktop shell instead opens the
+   * bundled `e2ee-recovery` window and couriers the result over the
+   * `e2ee:recovery-complete` event, so these are absent there.
+   *
+   * The recovery CODE lives entirely inside the native dialog; these return
+   * only the opaque ciphertext the webview must courier to the server.
+   */
+  backupCreateDialog?(userId: string): Promise<BackupBundle>;
+  backupRotateDialog?(userId: string): Promise<BackupBundle>;
+  /**
+   * Enter the code natively and restore. `blobs` are the opaque
+   * `{header, ciphertext, server_generation}` triples fetched (MFA-ticketed)
+   * from the server. Returns the post-restore republish payload (fresh OTKs)
+   * for the caller to `PUT /e2ee/keys` with `replace_one_time_keys`.
+   */
+  backupRestoreDialog?(
+    userId: string,
+    blobs: { header: string; ciphertext: string; server_generation: number }[],
+  ): Promise<Record<string, unknown> | null>;
 }
 
 class TauriTransport implements NativeTransport {
@@ -269,6 +327,12 @@ type E2eeCapacitorPlugin = {
   ): Promise<{ json: string }>;
   attachmentUpload(options: Record<string, unknown>): Promise<{ json: string }>;
   attachmentFetch(options: Record<string, unknown>): Promise<{ json: string }>;
+  /** Native-dialog CREATE: mints + displays the code, returns the bundle */
+  backupCreate(options: Record<string, unknown>): Promise<{ json: string }>;
+  /** Native-dialog ROTATE: as create, continuing the generation counter */
+  backupRotate(options: Record<string, unknown>): Promise<{ json: string }>;
+  /** Native-dialog RESTORE: enters the code, returns the republish payload */
+  backupRestore(options: Record<string, unknown>): Promise<{ json: string }>;
 };
 
 class CapacitorTransport implements NativeTransport {
@@ -400,6 +464,39 @@ class CapacitorTransport implements NativeTransport {
       this.#rethrow(error);
     }
   }
+
+  async backupCreateDialog(userId: string): Promise<BackupBundle> {
+    try {
+      const { json } = await this.#plugin.backupCreate({ userId });
+      return JSON.parse(json) as BackupBundle;
+    } catch (error) {
+      this.#rethrow(error);
+    }
+  }
+
+  async backupRotateDialog(userId: string): Promise<BackupBundle> {
+    try {
+      const { json } = await this.#plugin.backupRotate({ userId });
+      return JSON.parse(json) as BackupBundle;
+    } catch (error) {
+      this.#rethrow(error);
+    }
+  }
+
+  async backupRestoreDialog(
+    userId: string,
+    blobs: { header: string; ciphertext: string; server_generation: number }[],
+  ): Promise<Record<string, unknown> | null> {
+    try {
+      const { json } = await this.#plugin.backupRestore({
+        userId,
+        blobsJson: JSON.stringify(blobs),
+      });
+      return JSON.parse(json) as Record<string, unknown> | null;
+    } catch (error) {
+      this.#rethrow(error);
+    }
+  }
 }
 
 /** Chunk-safe base64 of a byte array (bridge-friendly) */
@@ -465,6 +562,32 @@ export class E2EEBridge implements E2EEAdapter {
     NativeStatus & { claimed: boolean }
   >();
 
+  /**
+   * Reactive fresh-install signal. Set true by `#onReady` when this device is
+   * NOT provisioned yet the ACCOUNT previously opted into E2EE
+   * (`user.e2eeEnabled`) — i.e. a returning user on a new device who may hold
+   * a server-side key backup to restore. The app shell observes this to offer
+   * "Restore from a recovery code" vs "Start fresh" BEFORE anything opens the
+   * engine (design §6.1). Deliberately NEVER set for a brand-new opt-in
+   * (nothing to restore) or an already-provisioned device, so it never nags a
+   * user who hasn't chosen encryption.
+   */
+  readonly restoreAvailable = new ReactiveMap<"state", boolean>();
+
+  /**
+   * Reactive revoked-device re-enroll signal (design §6.4). Set true when a
+   * post-restore device claim is REJECTED because this device's server-side
+   * identity row was revoked while the install was dead (remote logout ⇒
+   * `revoke_devices_for_session` deleted the row). The restore itself
+   * succeeded locally and `#pendingRestoreRepublish` still holds the fresh key
+   * bundle; coming back requires re-publishing it as a FIRST publication under
+   * a SECOND MFA ticket (`finishReenroll`) — the server re-inserts the same
+   * device_id + identity keys and peers see the loud same-keys `device_readded`
+   * (no identity-change warning). The app shell observes this to prompt that
+   * re-auth. Cleared once the re-enroll publishes.
+   */
+  readonly reenrollNeeded = new ReactiveMap<"state", boolean>();
+
   constructor(client: Client) {
     this.#client = client;
     this.#transport = createNativeTransport();
@@ -527,8 +650,36 @@ export class E2EEBridge implements E2EEAdapter {
   // Lifecycle: connect → claim device → drain → replenish
   // ================================================================
 
+  /**
+   * Filesystem-level provisioning check that never opens (and never
+   * provisions) the engine — the thin `is_provisioned` shell command
+   * (desktop `e2ee_is_provisioned` / Android uniffi `is_provisioned`), which
+   * calls the audited core's marker-aware check without touching crypto.
+   */
+  #isProvisioned(): Promise<boolean> {
+    return this.#invoke<boolean>("e2ee_is_provisioned");
+  }
+
   async #onReady(): Promise<void> {
     try {
+      // A fresh/unprovisioned device must NOT open the engine on connect:
+      // `refreshStatus` → `e2ee_status` → `E2ee::open` writes master.key +
+      // store.db, and a provisioned store makes key-backup RESTORE unreachable
+      // (it refuses `StoreAlreadyProvisioned`). Restore has to be the FIRST
+      // E2EE op on a fresh install (design §6.1, KEY CAVEAT). So gate the
+      // status query on the side-effect-free provisioning check first.
+      const provisioned = await this.#isProvisioned();
+      if (!provisioned) {
+        // Returning user on a new device (account opted in on another device)
+        // ⇒ surface the restore-vs-start-fresh choice; the engine stays
+        // unopened until the user picks. A brand-new user (never opted in) is
+        // left alone — E2EE is opt-in and there is nothing to restore.
+        if (this.#client.user?.e2eeEnabled) {
+          this.restoreAvailable.set("state", true);
+        }
+        return;
+      }
+
       const status = await this.refreshStatus();
       if (status.enabled && status.published && status.device_id) {
         // Claiming grants queue drain/ack rights AND rebinds this session
@@ -658,11 +809,64 @@ export class E2EEBridge implements E2EEAdapter {
     if (state) this.status.set("state", { ...state, claimed: accepted });
 
     if (!accepted) {
+      // §6.4 revoked-device restore. A rejected claim WITH a stashed
+      // post-restore republish CAN mean the restored device's identity row was
+      // revoked while this install was dead (the claim had nothing to bind to)
+      // — but a claim also rejects transiently (a fetch error, a superseding
+      // challenge nonce) or can be rejected by a hostile server. Only a MISSING
+      // server row is the §6.4 case; escalating the others to an MFA'd first
+      // publish would hit `assert_bound_session` and 401-loop, so corroborate
+      // against the server directory before prompting re-enroll.
+      if (this.#pendingRestoreRepublish) {
+        const revoked = await this.#ownDeviceMissing().catch(() => false);
+        if (revoked) {
+          console.warn(
+            "[e2ee] post-restore claim rejected — device row revoked; " +
+              "re-enroll required (design §6.4)",
+          );
+          this.reenrollNeeded.set("state", true);
+          return;
+        }
+        // Row still present ⇒ not §6.4. Re-bind via ONE fresh claim so the
+        // stashed republish drains on the normal §6.3 device-bound path; never
+        // loop (a superseding nonce or a hostile server must not spin us).
+        if (!this.#restoreReclaimTried) {
+          this.#restoreReclaimTried = true;
+          console.warn(
+            "[e2ee] post-restore claim rejected but device row present; re-claiming once",
+          );
+          const retry = this.status.get("state");
+          if (retry?.device_id) {
+            this.#client.events.send({
+              type: "E2EERequestChallenge",
+              device_id: retry.device_id,
+            });
+          }
+          return;
+        }
+        console.error(
+          "[e2ee] post-restore claim keeps failing with the device row present; " +
+            "giving up (republish retained for the next connect)",
+        );
+        return;
+      }
       console.error(
         "[e2ee] device claim REJECTED — this session cannot drain envelopes",
       );
       return;
     }
+
+    // A successful claim ends any pending §6.4 re-enroll / restore-reclaim
+    // episode: clear the flag so a stale signal cannot nag or burn a needless
+    // MFA, and reset the one-shot reclaim guard.
+    this.reenrollNeeded.delete("state");
+    this.#restoreReclaimTried = false;
+
+    // A RESTORE stashes a fresh-OTK republish that must EVICT the stale
+    // server-side keys (design §6.3). It is deferred to here — the restored
+    // device_id already exists server-side, so the republish PUT needs THIS
+    // session device-bound, which is true only now that the claim is accepted.
+    await this.#publishRestoreRepublish();
 
     // Post-claim housekeeping: reconcile our own device list (loud on
     // change) and replenish one-time keys below the watermark
@@ -692,6 +896,24 @@ export class E2EEBridge implements E2EEAdapter {
       await this.#api("PUT", "/e2ee/keys", payload);
       await this.#invoke("e2ee_mark_published");
     }
+  }
+
+  /**
+   * True when this device's identity row is ABSENT from the server directory —
+   * i.e. it was revoked/deleted (design §6.4). Used to tell a genuine
+   * revocation apart from a transient/forced claim rejection before escalating
+   * to an MFA'd first-publish re-enroll. A GET failure is treated as "not known
+   * missing" (conservative — avoids a spurious re-enroll prompt on a blip).
+   */
+  async #ownDeviceMissing(): Promise<boolean> {
+    const deviceId = this.status.get("state")?.device_id;
+    const userId = this.#client.user?.id;
+    if (!deviceId || !userId) return false;
+    const devices = await this.#api<{ device_id: string }[]>(
+      "GET",
+      `/e2ee/devices/${userId}`,
+    );
+    return !devices.some((d) => d.device_id === deviceId);
   }
 
   /** Fetch a signed device listing and reconcile pins natively */
@@ -1325,6 +1547,17 @@ export class E2EEBridge implements E2EEAdapter {
 
     // The peer must advertise opt-in (UI/discovery hint — see User docs)
     if (!this.#client.users.get(peerId)?.e2eeEnabled) return false;
+
+    // Never opportunistically PROVISION an unprovisioned device here: the
+    // status query below would open the engine and write the store, pre-empting
+    // a pending restore (design §6.1, KEY CAVEAT). A never-provisioned device
+    // cannot be enabled anyway, so returning false is behaviour-preserving —
+    // it only drops the empty-store side effect.
+    try {
+      if (!(await this.#isProvisioned())) return false;
+    } catch {
+      return false;
+    }
 
     // ... and this device must actually be able to encrypt. Native status,
     // not the webview cache: a failure here just skips the upgrade.
@@ -2046,6 +2279,361 @@ export class E2EEBridge implements E2EEAdapter {
     }
 
     await this.refreshStatus();
+  }
+
+  // ================================================================
+  // Key backup & recovery (slice 5.5)
+  // ================================================================
+  //
+  // The webview COURIERS opaque ciphertext between native and the server; the
+  // recovery CODE never touches this layer — it lives entirely in the native
+  // recovery window (desktop) / AlertDialog (Android). Server routes go
+  // through `#api` (raw fetch) per the stoat-api body-drop rule.
+
+  #backupCourierReady = false;
+
+  /**
+   * Post-restore fresh-OTK republish payload, held between a RESTORE and its
+   * device claim. A restore recovers the OLD device_id, so on the server the
+   * republish takes the `existing.assert_bound_session` path — it is accepted
+   * only on a session that has already proven the device (the claim). So the
+   * republish (design §6.3 — evicts the stale server OTKs whose private halves
+   * died with the old install) is deferred here and drained by
+   * `#onClaimResult` once the claim is accepted; running it before the claim,
+   * like `enable()`'s FIRST publish, would 401 and silently skip eviction.
+   * Null except in the window between a restore and its claim; retained on a
+   * failed republish so the next claim retries.
+   */
+  #pendingRestoreRepublish: Record<string, unknown> | null = null;
+
+  /**
+   * One-shot guard: a post-restore claim was rejected while the device row was
+   * still PRESENT (a transient/forced reject, not §6.4), so we re-claimed once.
+   * Stops a superseding-nonce or hostile-server rejection from spinning us.
+   * Reset by an accepted claim.
+   */
+  #restoreReclaimTried = false;
+
+  /**
+   * Publish the deferred post-restore republish (design §6.3), after the
+   * device claim. No-op unless a restore stashed a payload. On failure the
+   * payload is kept so the next accepted claim retries rather than silently
+   * dropping OTK eviction.
+   */
+  async #publishRestoreRepublish(): Promise<void> {
+    const payload = this.#pendingRestoreRepublish;
+    if (!payload) return;
+    this.#pendingRestoreRepublish = null;
+    try {
+      await this.#api("PUT", "/e2ee/keys", {
+        ...payload,
+        replace_one_time_keys: true,
+      });
+      await this.#invoke("e2ee_mark_published");
+    } catch (error) {
+      console.error(
+        "[e2ee] post-restore OTK republish failed; will retry on next claim",
+        error,
+      );
+      this.#pendingRestoreRepublish = payload;
+    }
+  }
+
+  /**
+   * §6.4 revoked-device restore. Called after `reenrollNeeded` is raised —
+   * which `#onClaimResult` sets ONLY once it has corroborated (via
+   * `#ownDeviceMissing`) that the server row is actually absent, so this is a
+   * genuine first publication, not a transient reject. That corroboration is
+   * what makes the retry-on-failure below safe (the PUT lands on the server's
+   * `existing is None` path, never the immutable-identity/`assert_bound` path).
+   * Re-publishes the stashed fresh key bundle as a FIRST publication — the
+   * server's `existing is None` path is MFA-gated, re-inserts the identity, and
+   * broadcasts the loud same-keys `device_readded` to peers — then re-claims so
+   * this connection's drain and the device-bound route gates recognise the
+   * session again. Needs a SECOND MFA ticket (the first gated `GET /e2ee/backup`
+   * during restore); design §6.4 permits up to two prompts in this path.
+   *
+   * The MFA'd PUT is the irreversible boundary: once it succeeds the row
+   * exists, so the pending payload is cleared immediately (a retry must never
+   * re-first-publish — that would hit the immutable-identity/`assert_bound`
+   * path and fail). A PUT failure throws with the payload + flag retained so
+   * the shell can surface the error and let the user retry.
+   */
+  async finishReenroll(mfaTicketToken: string): Promise<void> {
+    const payload = this.#pendingRestoreRepublish;
+    if (!payload) {
+      this.reenrollNeeded.delete("state");
+      return;
+    }
+
+    // FIRST publication of the restored identity: MFA-gated, and WITHOUT
+    // `replace_one_time_keys` (there is no prior server row to replace against;
+    // the flag is only honoured on the device-bound republish path anyway).
+    await this.#api("PUT", "/e2ee/keys", payload, {
+      "X-MFA-Ticket": mfaTicketToken,
+    });
+    // Row now exists — never re-first-publish this bundle.
+    this.#pendingRestoreRepublish = null;
+    this.reenrollNeeded.delete("state");
+    try {
+      await this.#invoke("e2ee_mark_published");
+    } catch (error) {
+      // Best-effort local bookkeeping; the keys are already published.
+      console.error("[e2ee] e2ee_mark_published after re-enroll failed", error);
+    }
+    await this.refreshStatus();
+
+    // Re-claim on the live connection now that the identity row exists again;
+    // the accepted claim drains envelopes and runs post-claim housekeeping
+    // (#pendingRestoreRepublish is now null, so its republish is a no-op).
+    const status = this.status.get("state");
+    if (status?.device_id) {
+      this.#client.events.send({
+        type: "E2EERequestChallenge",
+        device_id: status.device_id,
+      });
+    }
+  }
+
+  /**
+   * Listen once for the native recovery window's completion signal and
+   * courier whatever ciphertext it produced to the server. The event carries
+   * only a mode string — never a secret. Desktop (Tauri) only; on Android the
+   * plugin drives the flow natively.
+   */
+  async #ensureBackupCourier(): Promise<void> {
+    if (this.#backupCourierReady) return;
+    const tauri = (window as { __TAURI__?: TauriGlobal }).__TAURI__;
+    if (!tauri?.event) return;
+    this.#backupCourierReady = true;
+    await tauri.event.listen<string>("e2ee:recovery-complete", (event) => {
+      this.#courierRecovery(event.payload).catch((error) =>
+        console.error("[e2ee] backup courier failed", error),
+      );
+    });
+  }
+
+  async #courierRecovery(mode: string): Promise<void> {
+    if (mode === "create" || mode === "rotate") {
+      // Upload the freshly-minted backup blob.
+      const bundle = await this.#invoke<BackupBundle | null>(
+        "e2ee_backup_take_pending_upload",
+      );
+      if (!bundle) return;
+      await this.#putBackup(bundle);
+    } else if (mode === "restore") {
+      // The store was rebuilt natively. The fresh-OTK republish (design §6.3)
+      // must run on a DEVICE-BOUND session — i.e. AFTER the claim, not before
+      // (the restored device_id already exists server-side, so the PUT takes
+      // the server's `assert_bound_session` republish path). Stash it and let
+      // the claim result (#onClaimResult) publish it.
+      this.#pendingRestoreRepublish = await this.#invoke<Record<
+        string,
+        unknown
+      > | null>("e2ee_backup_take_pending_republish");
+      await this.refreshStatus();
+      // Claim the device on the live connection so route gates + drain
+      // recognise the restored identity; the claim result drains the stashed
+      // republish.
+      const status = this.status.get("state");
+      if (status?.device_id) {
+        this.#client.events.send({
+          type: "E2EERequestChallenge",
+          device_id: status.device_id,
+        });
+      }
+    }
+    // mode "cancel" (or unknown): nothing to courier.
+  }
+
+  /** PUT a backup blob for the current device, then record the upload. */
+  async #putBackup(bundle: BackupBundle): Promise<void> {
+    const deviceId = this.status.get("state")?.device_id;
+    if (!deviceId) return;
+    await this.#api("PUT", "/e2ee/backup", {
+      device_id: deviceId,
+      header: bundle.header,
+      ciphertext: bundle.ciphertext,
+      generation: bundle.generation,
+    });
+    await this.#invoke("e2ee_backup_mark_uploaded", {
+      generation: bundle.generation,
+    });
+  }
+
+  /**
+   * Backup status for the Security & Privacy card: local bookkeeping merged
+   * with the honest-server signal (`GET /e2ee/backup/status`). The server
+   * signal is webview-couriered so a hostile webview can fake it — it drives
+   * the nag against an honest server only (design §4.5 H3).
+   */
+  async backupStatus(): Promise<BackupStatusView> {
+    const local = await this.#invoke<{
+      exists: boolean;
+      generation: number;
+      uploaded_generation: number;
+      created_at: number;
+      refreshed_at: number;
+    }>("e2ee_backup_status");
+
+    let serverHasBackup = false;
+    try {
+      const deviceId = this.status.get("state")?.device_id;
+      const res = await this.#api<{
+        backups: { device_id: string; generation: number }[];
+      }>("GET", "/e2ee/backup/status");
+      serverHasBackup = res.backups.some((b) => b.device_id === deviceId);
+    } catch (error) {
+      console.error("[e2ee] backup status fetch failed", error);
+    }
+
+    return {
+      exists: local.exists,
+      generation: local.generation,
+      uploadedGeneration: local.uploaded_generation,
+      serverHasBackup,
+      createdAt: local.created_at,
+      refreshedAt: local.refreshed_at,
+    };
+  }
+
+  /**
+   * Refresh the backup if native says one is due (timer / message delta), and
+   * upload the resulting blob. Called opportunistically on connect. No-op when
+   * no backup exists or none is due.
+   */
+  async refreshBackupIfDue(): Promise<void> {
+    const selfId = this.#client.user?.id;
+    if (!selfId) return;
+    const bundle = await this.#invoke<BackupBundle | null>(
+      "e2ee_backup_refresh_if_due",
+      { userId: selfId },
+    );
+    if (bundle) await this.#putBackup(bundle);
+  }
+
+  /**
+   * CREATE a recovery code (opt-in step / settings card). The code is shown
+   * only on the native surface — a bundled recovery window on desktop, a
+   * native `AlertDialog` on Android — and the opaque ciphertext bundle is
+   * uploaded on completion. This layer never sees the code.
+   */
+  async createRecoveryCode(): Promise<void> {
+    const selfId = this.#client.user?.id;
+    if (!selfId) throw new Error("not signed in");
+    if (this.#transport.backupCreateDialog) {
+      // Android: the dialog mints + displays the code and hands back only the
+      // ciphertext bundle, which we courier to the server (design §7.2). A
+      // dialog cancel rejects `declined` — swallow it so a user who backs out
+      // sees no error (matching the desktop window's silent close).
+      try {
+        const bundle = await this.#transport.backupCreateDialog(selfId);
+        await this.#putBackup(bundle);
+      } catch (error) {
+        if ((error as { type?: string })?.type !== "declined") throw error;
+      }
+      return;
+    }
+    await this.#ensureBackupCourier();
+    await this.#invoke("e2ee_backup_open_recovery", {
+      mode: "create",
+      userId: selfId,
+    });
+  }
+
+  /** Rotate the recovery code (re-auth-gated in the UI). */
+  async rotateRecoveryCode(): Promise<void> {
+    const selfId = this.#client.user?.id;
+    if (!selfId) throw new Error("not signed in");
+    if (this.#transport.backupRotateDialog) {
+      try {
+        const bundle = await this.#transport.backupRotateDialog(selfId);
+        await this.#putBackup(bundle);
+      } catch (error) {
+        if ((error as { type?: string })?.type !== "declined") throw error;
+      }
+      return;
+    }
+    await this.#ensureBackupCourier();
+    await this.#invoke("e2ee_backup_open_recovery", {
+      mode: "rotate",
+      userId: selfId,
+    });
+  }
+
+  /**
+   * Fetch this account's backup blobs (MFA-ticketed) and drive the native
+   * recovery surface to enter the code and restore. Returns the number of
+   * blobs offered (0 ⇒ nothing to restore).
+   */
+  async restoreFromBackup(mfaTicketToken: string): Promise<number> {
+    const selfId = this.#client.user?.id;
+    if (!selfId) throw new Error("not signed in");
+
+    const res = await this.#api<{ backups: BackupBlob[] }>(
+      "GET",
+      "/e2ee/backup",
+      undefined,
+      { "X-MFA-Ticket": mfaTicketToken },
+    );
+    if (res.backups.length === 0) return 0;
+
+    // Pass the server-claimed generation so native can cross-check it against
+    // the AEAD-authenticated header (design §6.2 M2).
+    const blobs = res.backups.map((b) => ({
+      header: b.header,
+      ciphertext: b.ciphertext,
+      server_generation: b.generation,
+    }));
+
+    if (this.#transport.backupRestoreDialog) {
+      // Android: the dialog enters the code and restores natively, returning
+      // the fresh-OTK republish payload. A dialog cancel rejects `declined`:
+      // report 0 restored (the user backed out) rather than surfacing an error.
+      let republish: Record<string, unknown> | null;
+      try {
+        republish = await this.#transport.backupRestoreDialog(selfId, blobs);
+      } catch (error) {
+        if ((error as { type?: string })?.type === "declined") return 0;
+        throw error;
+      }
+      // Defer the fresh-OTK republish until AFTER the claim (design §6.3): the
+      // restored device_id already exists server-side, so the republish PUT
+      // needs a device-bound session, which only the accepted claim provides.
+      // #onClaimResult drains it.
+      this.#pendingRestoreRepublish = republish;
+      await this.refreshStatus();
+      const status = this.status.get("state");
+      if (status?.device_id) {
+        this.#client.events.send({
+          type: "E2EERequestChallenge",
+          device_id: status.device_id,
+        });
+      }
+      return res.backups.length;
+    }
+
+    await this.#ensureBackupCourier();
+    await this.#invoke("e2ee_backup_open_recovery", {
+      mode: "restore",
+      userId: selfId,
+      blobs,
+    });
+    return res.backups.length;
+  }
+
+  /**
+   * Delete this device's server-side backup (MFA-gated) and forget the local
+   * bookkeeping. Re-auth-gated in the UI, like the wipe flow.
+   */
+  async deleteBackup(mfaTicketToken: string): Promise<void> {
+    const deviceId = this.status.get("state")?.device_id;
+    if (deviceId) {
+      await this.#api("DELETE", `/e2ee/backup/${deviceId}`, undefined, {
+        "X-MFA-Ticket": mfaTicketToken,
+      });
+    }
+    await this.#invoke("e2ee_backup_forget_local");
   }
 
   /** Native conversation state (per-device status + binding_verified) */

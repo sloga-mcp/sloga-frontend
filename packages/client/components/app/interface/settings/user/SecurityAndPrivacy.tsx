@@ -1,11 +1,13 @@
-import { Match, Switch } from "solid-js";
+import { Match, Show, Switch, createSignal, onMount } from "solid-js";
 
 import { Trans } from "@lingui-solid/solid/macro";
 
-import { useE2EE } from "@revolt/client";
+import { useClient, useE2EE } from "@revolt/client";
+import type { BackupStatusView } from "@revolt/client";
 import { useModals } from "@revolt/modal";
 import { CategoryButton, Checkbox, Column, iconSize } from "@revolt/ui";
 
+import MdKey from "@material-design-icons/svg/outlined/key.svg?component-solid";
 import MdLock from "@material-design-icons/svg/outlined/lock.svg?component-solid";
 
 /**
@@ -20,6 +22,7 @@ export function SecurityAndPrivacy() {
   return (
     <Column gap="lg">
       <EncryptionCard />
+      <RecoveryBackupCard />
     </Column>
   );
 }
@@ -76,5 +79,144 @@ function EncryptionCard() {
         </Switch>
       </CategoryButton>
     </CategoryButton.Group>
+  );
+}
+
+/**
+ * Recovery-code key backup (implementation plan slice 5.5). Lives directly
+ * beneath the encryption toggle because a backup is only meaningful once
+ * encryption is on. The recovery CODE is shown/entered only in the native
+ * recovery window — never here. Rotate and delete are re-auth-gated (MFA),
+ * matching the wipe flow; create needs no MFA (the upload is device-bound).
+ */
+function RecoveryBackupCard() {
+  const e2ee = useE2EE();
+  const client = useClient();
+  const { mfaFlow, showError } = useModals();
+
+  if (!e2ee) return null;
+
+  const enabled = () => {
+    const state = e2ee.status.get("state");
+    return !!state?.enabled && !!state?.published;
+  };
+
+  const [status, setStatus] = createSignal<BackupStatusView | undefined>();
+  const [busy, setBusy] = createSignal(false);
+
+  async function reload() {
+    if (!e2ee || !enabled()) return;
+    try {
+      setStatus(await e2ee.backupStatus());
+    } catch (error) {
+      console.error("[e2ee] backup status failed", error);
+    }
+  }
+
+  onMount(reload);
+
+  /** Prove account ownership; returns the MFA ticket token or undefined. */
+  async function reauth(): Promise<string | undefined> {
+    const mfa = await client().account.mfa();
+    const ticket = await mfaFlow(mfa);
+    return ticket?.token;
+  }
+
+  async function create() {
+    if (!e2ee) return;
+    setBusy(true);
+    try {
+      await e2ee.createRecoveryCode();
+    } catch (error) {
+      showError(error);
+    } finally {
+      setBusy(false);
+      // The native window couriers the upload asynchronously; refresh soon.
+      setTimeout(reload, 500);
+    }
+  }
+
+  async function rotate() {
+    if (!e2ee) return;
+    setBusy(true);
+    try {
+      const token = await reauth();
+      if (!token) return;
+      await e2ee.rotateRecoveryCode();
+    } catch (error) {
+      showError(error);
+    } finally {
+      setBusy(false);
+      setTimeout(reload, 500);
+    }
+  }
+
+  async function remove() {
+    if (!e2ee) return;
+    setBusy(true);
+    try {
+      const token = await reauth();
+      if (!token) return;
+      await e2ee.deleteBackup(token);
+    } catch (error) {
+      showError(error);
+    } finally {
+      setBusy(false);
+      void reload();
+    }
+  }
+
+  const hasBackup = () => !!status()?.exists;
+
+  return (
+    <Show when={enabled()}>
+      <CategoryButton.Group>
+        <CategoryButton
+          icon={<MdKey {...iconSize(24)} />}
+          disabled={busy()}
+          description={
+            hasBackup() ? (
+              <Trans>
+                You have a recovery code. Anyone with this code and access to
+                your account can read your message history — Sloga cannot
+                recover it for you. Choose "Change recovery code" to replace it.
+              </Trans>
+            ) : (
+              <Trans>
+                Without a recovery code, your encrypted messages cannot be
+                restored if you lose this device. Create one and store it
+                somewhere safe.
+              </Trans>
+            )
+          }
+          onClick={() => (hasBackup() ? void rotate() : void create())}
+        >
+          <Switch>
+            <Match when={hasBackup()}>
+              <Trans>Change recovery code</Trans>
+            </Match>
+            <Match when={!hasBackup()}>
+              <Trans>Create a recovery code</Trans>
+            </Match>
+          </Switch>
+        </CategoryButton>
+
+        <Show when={hasBackup()}>
+          <CategoryButton
+            icon={<MdKey {...iconSize(24)} />}
+            disabled={busy()}
+            description={
+              <Trans>
+                Remove the backup stored on the server. Your encrypted history
+                on this device is unaffected.
+              </Trans>
+            }
+            onClick={() => void remove()}
+          >
+            <Trans>Delete backup</Trans>
+          </CategoryButton>
+        </Show>
+      </CategoryButton.Group>
+    </Show>
   );
 }

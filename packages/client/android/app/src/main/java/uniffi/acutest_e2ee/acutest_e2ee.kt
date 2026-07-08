@@ -792,6 +792,52 @@ internal open class UniffiVTableCallbackInterfaceKeyProtector(
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -809,6 +855,8 @@ internal interface IntegrityCheckingUniffiLib : Library {
     // Integrity check functions only
     fun uniffi_acutest_e2ee_checksum_method_e2eeengine_accept_identity_change(
 ): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_add_group_member(
+): Short
 fun uniffi_acutest_e2ee_checksum_method_e2eeengine_attachment_attach_blob(
 ): Short
 fun uniffi_acutest_e2ee_checksum_method_e2eeengine_attachment_ciphertext(
@@ -819,7 +867,23 @@ fun uniffi_acutest_e2ee_checksum_method_e2eeengine_attachment_prepare(
 ): Short
 fun uniffi_acutest_e2ee_checksum_method_e2eeengine_attachment_recipients(
 ): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_attachment_recipients_group(
+): Short
 fun uniffi_acutest_e2ee_checksum_method_e2eeengine_attachment_store(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_backup_create(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_backup_forget_local(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_backup_mark_uploaded(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_backup_refresh_if_due(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_backup_rotate(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_backup_status(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_confirm_peer_downgrade(
 ): Short
 fun uniffi_acutest_e2ee_checksum_method_e2eeengine_conversation_state(
 ): Short
@@ -827,23 +891,51 @@ fun uniffi_acutest_e2ee_checksum_method_e2eeengine_decrypt(
 ): Short
 fun uniffi_acutest_e2ee_checksum_method_e2eeengine_device_removed(
 ): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_downgrade(
+): Short
 fun uniffi_acutest_e2ee_checksum_method_e2eeengine_enable(
 ): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_enable_group(
+): Short
 fun uniffi_acutest_e2ee_checksum_method_e2eeengine_encrypt(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_encrypt_group(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_group_reconcile(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_group_state(
 ): Short
 fun uniffi_acutest_e2ee_checksum_method_e2eeengine_handle_receipts(
 ): Short
 fun uniffi_acutest_e2ee_checksum_method_e2eeengine_history(
 ): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_is_provisioned(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_mark_downgrade_delivered(
+): Short
 fun uniffi_acutest_e2ee_checksum_method_e2eeengine_mark_published(
 ): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_mark_verified(
+): Short
 fun uniffi_acutest_e2ee_checksum_method_e2eeengine_open_attachment_for_render(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_pending_downgrades(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_post_restore_rekey(
 ): Short
 fun uniffi_acutest_e2ee_checksum_method_e2eeengine_reconcile_devices(
 ): Short
 fun uniffi_acutest_e2ee_checksum_method_e2eeengine_replenish(
 ): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_resend_downgrade(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_restore(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_safety_number(
+): Short
 fun uniffi_acutest_e2ee_checksum_method_e2eeengine_send_mode(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_send_mode_group(
 ): Short
 fun uniffi_acutest_e2ee_checksum_method_e2eeengine_sign_claim(
 ): Short
@@ -915,6 +1007,8 @@ fun uniffi_acutest_e2ee_fn_constructor_e2eeengine_new(`dir`: RustBuffer.ByValue,
 ): Pointer
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_accept_identity_change(`ptr`: Pointer,`peerUserId`: RustBuffer.ByValue,`deviceId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_add_group_member(`ptr`: Pointer,`conversationId`: RustBuffer.ByValue,`userId`: RustBuffer.ByValue,`selfUserId`: RustBuffer.ByValue,`bundlesJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_attachment_attach_blob(`ptr`: Pointer,`localId`: RustBuffer.ByValue,`blobId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_attachment_ciphertext(`ptr`: Pointer,`localId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -925,7 +1019,23 @@ fun uniffi_acutest_e2ee_fn_method_e2eeengine_attachment_prepare(`ptr`: Pointer,`
 ): RustBuffer.ByValue
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_attachment_recipients(`ptr`: Pointer,`peerUserId`: RustBuffer.ByValue,`selfUserId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_attachment_recipients_group(`ptr`: Pointer,`conversationId`: RustBuffer.ByValue,`selfUserId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_attachment_store(`ptr`: Pointer,`localId`: RustBuffer.ByValue,`bytes`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_backup_create(`ptr`: Pointer,`userId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_backup_forget_local(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_backup_mark_uploaded(`ptr`: Pointer,`generation`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_backup_refresh_if_due(`ptr`: Pointer,`userId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_backup_rotate(`ptr`: Pointer,`userId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_backup_status(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_confirm_peer_downgrade(`ptr`: Pointer,`conversationId`: RustBuffer.ByValue,`accept`: Byte,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_conversation_state(`ptr`: Pointer,`peerUserId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
@@ -933,23 +1043,51 @@ fun uniffi_acutest_e2ee_fn_method_e2eeengine_decrypt(`ptr`: Pointer,`envelopeJso
 ): RustBuffer.ByValue
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_device_removed(`ptr`: Pointer,`userId`: RustBuffer.ByValue,`deviceId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_downgrade(`ptr`: Pointer,`conversationId`: RustBuffer.ByValue,`selfUserId`: RustBuffer.ByValue,`bundlesJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_enable(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_enable_group(`ptr`: Pointer,`conversationId`: RustBuffer.ByValue,`roster`: RustBuffer.ByValue,`selfUserId`: RustBuffer.ByValue,`bundlesJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_encrypt(`ptr`: Pointer,`peerUserId`: RustBuffer.ByValue,`selfUserId`: RustBuffer.ByValue,`peerBundleJson`: RustBuffer.ByValue,`selfBundleJson`: RustBuffer.ByValue,`content`: RustBuffer.ByValue,`attachments`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_encrypt_group(`ptr`: Pointer,`conversationId`: RustBuffer.ByValue,`selfUserId`: RustBuffer.ByValue,`bundlesJson`: RustBuffer.ByValue,`content`: RustBuffer.ByValue,`attachments`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_group_reconcile(`ptr`: Pointer,`conversationId`: RustBuffer.ByValue,`displayed`: RustBuffer.ByValue,`selfUserId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_group_state(`ptr`: Pointer,`conversationId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_handle_receipts(`ptr`: Pointer,`receiptsJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_history(`ptr`: Pointer,`peerUserId`: RustBuffer.ByValue,`before`: RustBuffer.ByValue,`limit`: Int,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_is_provisioned(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): Byte
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_mark_downgrade_delivered(`ptr`: Pointer,`conversationId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_mark_published(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_mark_verified(`ptr`: Pointer,`peerUserId`: RustBuffer.ByValue,`deviceId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_open_attachment_for_render(`ptr`: Pointer,`messageId`: RustBuffer.ByValue,`idx`: Int,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_pending_downgrades(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_post_restore_rekey(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_reconcile_devices(`ptr`: Pointer,`userId`: RustBuffer.ByValue,`devicesJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_replenish(`ptr`: Pointer,`serverRemaining`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_resend_downgrade(`ptr`: Pointer,`conversationId`: RustBuffer.ByValue,`selfUserId`: RustBuffer.ByValue,`bundlesJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_restore(`ptr`: Pointer,`userId`: RustBuffer.ByValue,`blobsJson`: RustBuffer.ByValue,`code`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_safety_number(`ptr`: Pointer,`selfUserId`: RustBuffer.ByValue,`peerUserId`: RustBuffer.ByValue,`deviceId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_send_mode(`ptr`: Pointer,`peerUserId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_send_mode_group(`ptr`: Pointer,`conversationId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_sign_claim(`ptr`: Pointer,`sessionId`: RustBuffer.ByValue,`nonce`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
@@ -1096,6 +1234,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_accept_identity_change() != 60024.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_add_group_member() != 3315.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_attachment_attach_blob() != 5852.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1111,7 +1252,31 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_attachment_recipients() != 4919.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_attachment_recipients_group() != 30177.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_attachment_store() != 26517.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_backup_create() != 28215.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_backup_forget_local() != 44110.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_backup_mark_uploaded() != 3563.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_backup_refresh_if_due() != 51565.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_backup_rotate() != 30349.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_backup_status() != 8434.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_confirm_peer_downgrade() != 40636.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_conversation_state() != 54856.toShort()) {
@@ -1123,10 +1288,25 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_device_removed() != 54135.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_downgrade() != 48428.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_enable() != 42257.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_enable_group() != 30312.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_encrypt() != 913.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_encrypt_group() != 31947.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_group_reconcile() != 29133.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_group_state() != 36195.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_handle_receipts() != 39596.toShort()) {
@@ -1135,10 +1315,25 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_history() != 16857.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_is_provisioned() != 23814.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_mark_downgrade_delivered() != 10072.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_mark_published() != 9981.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_open_attachment_for_render() != 30683.toShort()) {
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_mark_verified() != 15851.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_open_attachment_for_render() != 17452.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_pending_downgrades() != 48108.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_post_restore_rekey() != 44810.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_reconcile_devices() != 19649.toShort()) {
@@ -1147,7 +1342,19 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_replenish() != 25166.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_resend_downgrade() != 49394.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_restore() != 19265.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_safety_number() != 35238.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_send_mode() != 25123.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_send_mode_group() != 32275.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_sign_claim() != 48068.toShort()) {
@@ -1391,6 +1598,29 @@ public object FfiConverterULong: FfiConverter<ULong, Long> {
 /**
  * @suppress
  */
+public object FfiConverterLong: FfiConverter<Long, Long> {
+    override fun lift(value: Long): Long {
+        return value
+    }
+
+    override fun read(buf: ByteBuffer): Long {
+        return buf.getLong()
+    }
+
+    override fun lower(value: Long): Long {
+        return value
+    }
+
+    override fun allocationSize(value: Long) = 8UL
+
+    override fun write(value: Long, buf: ByteBuffer) {
+        buf.putLong(value)
+    }
+}
+
+/**
+ * @suppress
+ */
 public object FfiConverterBoolean: FfiConverter<Boolean, Byte> {
     override fun lift(value: Byte): Boolean {
         return value.toInt() != 0
@@ -1601,6 +1831,11 @@ public interface E2eeEngineInterface {
     fun `acceptIdentityChange`(`peerUserId`: kotlin.String, `deviceId`: kotlin.String)
     
     /**
+     * Add a member to an encrypted group's audience (design §2.3).
+     */
+    fun `addGroupMember`(`conversationId`: kotlin.String, `userId`: kotlin.String, `selfUserId`: kotlin.String, `bundlesJson`: kotlin.String?): kotlin.String
+    
+    /**
      * Record the Autumn blob id after a successful upload.
      */
     fun `attachmentAttachBlob`(`localId`: kotlin.String, `blobId`: kotlin.String)
@@ -1630,11 +1865,61 @@ public interface E2eeEngineInterface {
     fun `attachmentRecipients`(`peerUserId`: kotlin.String, `selfUserId`: kotlin.String): kotlin.String
     
     /**
+     * JSON array of recipient devices for a GROUP blob upload.
+     */
+    fun `attachmentRecipientsGroup`(`conversationId`: kotlin.String, `selfUserId`: kotlin.String): kotlin.String
+    
+    /**
      * Store fetched ciphertext for a pending inbound attachment. Digest
      * verification (against the digest authenticated inside the envelope)
      * is MANDATORY in the core before anything is persisted.
      */
     fun `attachmentStore`(`localId`: kotlin.String, `bytes`: kotlin.ByteArray)
+    
+    /**
+     * Mint a NEW recovery code + first backup bundle (design §3–4). Returns
+     * the `BackupCreation` JSON — `{code, bundle}`. The CODE is for the
+     * native AlertDialog ONLY; the Kotlin caller must display it and forward
+     * only `bundle` (opaque ciphertext) to the webview courier.
+     */
+    fun `backupCreate`(`userId`: kotlin.String): kotlin.String
+    
+    /**
+     * Forget the LOCAL backup bookkeeping (server-side delete is the
+     * separate MFA-gated route the webview calls). Idempotent.
+     */
+    fun `backupForgetLocal`()
+    
+    /**
+     * Record that the server confirmed storing `generation` (optimistic —
+     * design §4.5 H3; a hostile webview can fake this).
+     */
+    fun `backupMarkUploaded`(`generation`: kotlin.Long)
+    
+    /**
+     * JSON `Option<BackupBundle>` — the opaque ciphertext bundle to
+     * `PUT /e2ee/backup` when a refresh is due (timer / message delta),
+     * or JSON `null`. Ciphertext only, safe over the JS bridge.
+     */
+    fun `backupRefreshIfDue`(`userId`: kotlin.String): kotlin.String
+    
+    /**
+     * Rotate the recovery code (mint a new one; the generation counter
+     * continues, never resets). Same shape as `backup_create`.
+     */
+    fun `backupRotate`(`userId`: kotlin.String): kotlin.String
+    
+    /**
+     * JSON `BackupStatus` for the Security & Privacy card / nag (no key
+     * material — local bookkeeping only).
+     */
+    fun `backupStatus`(): kotlin.String
+    
+    /**
+     * Resolve a peer's downgrade prompt (design §5.2 [G2: 1]) — the local
+     * user action that gates the plaintext direction on the receiver.
+     */
+    fun `confirmPeerDowngrade`(`conversationId`: kotlin.String, `accept`: kotlin.Boolean)
     
     /**
      * JSON `ConversationState`.
@@ -1654,11 +1939,25 @@ public interface E2eeEngineInterface {
     fun `deviceRemoved`(`userId`: kotlin.String, `deviceId`: kotlin.String)
     
     /**
+     * Downgrade a conversation to plaintext (design §5.2). The BLOCKING
+     * native confirmation is shown by the Kotlin plugin BEFORE this call
+     * (wipe parity) — this binding never shows UI, so it must be wired
+     * only to the post-confirm path.
+     */
+    fun `downgrade`(`conversationId`: kotlin.String, `selfUserId`: kotlin.String, `bundlesJson`: kotlin.String?): kotlin.String
+    
+    /**
      * Generate identity + initial key batch. Returns the JSON
      * `PUT /e2ee/keys` body (public material only) for the webview to
      * publish under an MFA ticket, then `mark_published`.
      */
     fun `enable`(): kotlin.String
+    
+    /**
+     * Enable encryption for a group (design §2.5). The Kotlin side has
+     * shown the asserted-roster checklist + confirm.
+     */
+    fun `enableGroup`(`conversationId`: kotlin.String, `roster`: List<kotlin.String>, `selfUserId`: kotlin.String, `bundlesJson`: kotlin.String?): kotlin.String
     
     /**
      * JSON `EncryptResult`. Bundles are the JSON `GET /e2ee/keys/{user}`
@@ -1667,6 +1966,22 @@ public interface E2eeEngineInterface {
      * contract: there is NO plaintext fallback path through this command.
      */
     fun `encrypt`(`peerUserId`: kotlin.String, `selfUserId`: kotlin.String, `peerBundleJson`: kotlin.String?, `selfBundleJson`: kotlin.String?, `content`: kotlin.String, `attachments`: List<kotlin.String>): kotlin.String
+    
+    /**
+     * JSON `EncryptResult` for a group message (audience = pinned roster).
+     */
+    fun `encryptGroup`(`conversationId`: kotlin.String, `selfUserId`: kotlin.String, `bundlesJson`: kotlin.String?, `content`: kotlin.String, `attachments`: List<kotlin.String>): kotlin.String
+    
+    /**
+     * Reconcile a group's displayed member list against the pinned roster;
+     * returns the JSON `GroupReconcileReport`.
+     */
+    fun `groupReconcile`(`conversationId`: kotlin.String, `displayed`: List<kotlin.String>, `selfUserId`: kotlin.String): kotlin.String
+    
+    /**
+     * JSON `GroupState`.
+     */
+    fun `groupState`(`conversationId`: kotlin.String): kotlin.String
     
     /**
      * Apply JSON `POST /e2ee/messages` receipts; returns the JSON array of
@@ -1679,20 +1994,57 @@ public interface E2eeEngineInterface {
      */
     fun `history`(`peerUserId`: kotlin.String, `before`: kotlin.String?, `limit`: kotlin.UInt): kotlin.String
     
+    /**
+     * Whether E2EE has been provisioned on this device — a pure filesystem
+     * check that does NOT open (and therefore does NOT provision) the
+     * engine. The webview calls this on connect BEFORE any status query so a
+     * fresh install is NOT eagerly provisioned: `E2ee::open` writes the store
+     * and master key, and provisioning an empty store pre-empts key-backup
+     * RESTORE, which refuses to run over an already-provisioned store (design
+     * §6.1/§6.2 — restore must be the first E2EE op on a fresh install).
+     * Mirrors the desktop `e2ee_is_provisioned` command 1:1 and reuses the
+     * SAME marker-aware core check the `send_mode` fast path uses (filenames
+     * live in the core, never hand-copied), so a half-restored directory
+     * reads as provisioned (fail closed), never Plaintext. Approach 1b: the
+     * audited core is called, not changed.
+     */
+    fun `isProvisioned`(): kotlin.Boolean
+    
+    /**
+     * Clear the initiator-side pending-downgrade flag after receipts [G2: 5].
+     */
+    fun `markDowngradeDelivered`(`conversationId`: kotlin.String)
+    
     fun `markPublished`()
     
     /**
-     * Decrypt an attachment for rendering — the WebView-interceptor path,
-     * mirroring the desktop `serve_attachment` handler EXACTLY: the same
-     * path-segment validation, and the same mime whitelist (only image,
-     * video and audio mime types are served as themselves; scriptable
-     * subtypes like SVG and everything else degraded to
-     * `application/octet-stream` so no sender-controlled mime can create
-     * a scriptable context inside the WebView). The core re-verifies the
-     * envelope-authenticated digest and per-chunk STREAM tags on every
-     * open, so a tampered at-rest file cannot render either.
+     * Mark a peer device user-verified after an in-person comparison.
+     */
+    fun `markVerified`(`peerUserId`: kotlin.String, `deviceId`: kotlin.String)
+    
+    /**
+     * Decrypt an attachment for rendering — the WebView-interceptor path.
+     * The id validation, digest-verified decrypt and mime whitelist all
+     * live in the core's shared `serve_attachment_for_render` (slice 5:
+     * the ONE copy both shells call — carried-risk #2 resolution; the two
+     * shells previously duplicated this logic byte-for-byte). The core
+     * re-verifies the envelope-authenticated digest and per-chunk STREAM
+     * tags on every open, so a tampered at-rest file cannot render.
      */
     fun `openAttachmentForRender`(`messageId`: kotlin.String, `idx`: kotlin.UInt): AttachmentContent
+    
+    /**
+     * JSON array of conversation ids with an unresolved pending downgrade.
+     */
+    fun `pendingDowngrades`(): kotlin.String
+    
+    /**
+     * After a restore, mint a FRESH one-time-key batch + rotate the fallback
+     * key; returns the JSON `PUT /e2ee/keys` publish payload. The webview
+     * publishes it with `replace_one_time_keys: true` so the server drops the
+     * stale OTKs whose private halves died with the old install (design §6.3).
+     */
+    fun `postRestoreRekey`(): kotlin.String
     
     /**
      * Reconcile a JSON `GET /e2ee/devices/{user}` listing; returns the
@@ -1706,6 +2058,32 @@ public interface E2eeEngineInterface {
     fun `replenish`(`serverRemaining`: kotlin.ULong): kotlin.String
     
     /**
+     * Re-emit a downgrade notice whose original fan-out never confirmed its
+     * receipts (no dialog — the user already confirmed the original) [G2: 5].
+     */
+    fun `resendDowngrade`(`conversationId`: kotlin.String, `selfUserId`: kotlin.String, `bundlesJson`: kotlin.String?): kotlin.String
+    
+    /**
+     * Restore from the account's backup blobs using the CODE the user typed
+     * into the native dialog (design §6). `blobs_json` is the JSON array of
+     * `{header, ciphertext, server_generation}` the webview fetched
+     * (MFA-ticketed) and couriered down. Rebuilds the local store atomically
+     * under a FRESH master minted through the Keystore protector (the old
+     * Keystore key did not survive the reinstall — a fresh master is
+     * correct), opens the engine on it, and returns the `RestoreReport` JSON.
+     *
+     * The CODE crosses only this FFI (Rust ↔ Kotlin) and is never returned to
+     * any caller. Refuses to run over a cleanly-provisioned store
+     * (`StoreAlreadyProvisioned`) — wiping live state is the wipe flow's job.
+     */
+    fun `restore`(`userId`: kotlin.String, `blobsJson`: kotlin.String, `code`: kotlin.String): kotlin.String
+    
+    /**
+     * JSON `SafetyNumber` for a pinned peer device (digits + flags only).
+     */
+    fun `safetyNumber`(`selfUserId`: kotlin.String, `peerUserId`: kotlin.String, `deviceId`: kotlin.String): kotlin.String
+    
+    /**
      * JSON `SendMode` — the SOLE authority for plaintext-vs-encrypt,
      * decided from local truth only. Mirrors the desktop fast path: when
      * E2EE was never provisioned on this device the answer is `Plaintext`
@@ -1714,6 +2092,13 @@ public interface E2eeEngineInterface {
      * engine error propagates so the caller fails closed.
      */
     fun `sendMode`(`peerUserId`: kotlin.String): kotlin.String
+    
+    /**
+     * JSON `SendMode` for a GROUP conversation — the group analog of
+     * `send_mode`, from the pinned roster + sticky state only. Same
+     * never-provisioned fast path.
+     */
+    fun `sendModeGroup`(`conversationId`: kotlin.String): kotlin.String
     
     /**
      * Signature (base64) over the bonfire device-claim challenge.
@@ -1857,6 +2242,22 @@ open class E2eeEngine: Disposable, AutoCloseable, E2eeEngineInterface
 
     
     /**
+     * Add a member to an encrypted group's audience (design §2.3).
+     */
+    @Throws(E2eeException::class)override fun `addGroupMember`(`conversationId`: kotlin.String, `userId`: kotlin.String, `selfUserId`: kotlin.String, `bundlesJson`: kotlin.String?): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_add_group_member(
+        it, FfiConverterString.lower(`conversationId`),FfiConverterString.lower(`userId`),FfiConverterString.lower(`selfUserId`),FfiConverterOptionalString.lower(`bundlesJson`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
      * Record the Autumn blob id after a successful upload.
      */
     @Throws(E2eeException::class)override fun `attachmentAttachBlob`(`localId`: kotlin.String, `blobId`: kotlin.String)
@@ -1939,6 +2340,22 @@ open class E2eeEngine: Disposable, AutoCloseable, E2eeEngineInterface
 
     
     /**
+     * JSON array of recipient devices for a GROUP blob upload.
+     */
+    @Throws(E2eeException::class)override fun `attachmentRecipientsGroup`(`conversationId`: kotlin.String, `selfUserId`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_attachment_recipients_group(
+        it, FfiConverterString.lower(`conversationId`),FfiConverterString.lower(`selfUserId`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
      * Store fetched ciphertext for a pending inbound attachment. Digest
      * verification (against the digest authenticated inside the envelope)
      * is MANDATORY in the core before anything is persisted.
@@ -1949,6 +2366,125 @@ open class E2eeEngine: Disposable, AutoCloseable, E2eeEngineInterface
     uniffiRustCallWithError(E2eeException) { _status ->
     UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_attachment_store(
         it, FfiConverterString.lower(`localId`),FfiConverterByteArray.lower(`bytes`),_status)
+}
+    }
+    
+    
+
+    
+    /**
+     * Mint a NEW recovery code + first backup bundle (design §3–4). Returns
+     * the `BackupCreation` JSON — `{code, bundle}`. The CODE is for the
+     * native AlertDialog ONLY; the Kotlin caller must display it and forward
+     * only `bundle` (opaque ciphertext) to the webview courier.
+     */
+    @Throws(E2eeException::class)override fun `backupCreate`(`userId`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_backup_create(
+        it, FfiConverterString.lower(`userId`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Forget the LOCAL backup bookkeeping (server-side delete is the
+     * separate MFA-gated route the webview calls). Idempotent.
+     */
+    @Throws(E2eeException::class)override fun `backupForgetLocal`()
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_backup_forget_local(
+        it, _status)
+}
+    }
+    
+    
+
+    
+    /**
+     * Record that the server confirmed storing `generation` (optimistic —
+     * design §4.5 H3; a hostile webview can fake this).
+     */
+    @Throws(E2eeException::class)override fun `backupMarkUploaded`(`generation`: kotlin.Long)
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_backup_mark_uploaded(
+        it, FfiConverterLong.lower(`generation`),_status)
+}
+    }
+    
+    
+
+    
+    /**
+     * JSON `Option<BackupBundle>` — the opaque ciphertext bundle to
+     * `PUT /e2ee/backup` when a refresh is due (timer / message delta),
+     * or JSON `null`. Ciphertext only, safe over the JS bridge.
+     */
+    @Throws(E2eeException::class)override fun `backupRefreshIfDue`(`userId`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_backup_refresh_if_due(
+        it, FfiConverterString.lower(`userId`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Rotate the recovery code (mint a new one; the generation counter
+     * continues, never resets). Same shape as `backup_create`.
+     */
+    @Throws(E2eeException::class)override fun `backupRotate`(`userId`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_backup_rotate(
+        it, FfiConverterString.lower(`userId`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * JSON `BackupStatus` for the Security & Privacy card / nag (no key
+     * material — local bookkeeping only).
+     */
+    @Throws(E2eeException::class)override fun `backupStatus`(): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_backup_status(
+        it, _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Resolve a peer's downgrade prompt (design §5.2 [G2: 1]) — the local
+     * user action that gates the plaintext direction on the receiver.
+     */
+    @Throws(E2eeException::class)override fun `confirmPeerDowngrade`(`conversationId`: kotlin.String, `accept`: kotlin.Boolean)
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_confirm_peer_downgrade(
+        it, FfiConverterString.lower(`conversationId`),FfiConverterBoolean.lower(`accept`),_status)
 }
     }
     
@@ -2005,6 +2541,25 @@ open class E2eeEngine: Disposable, AutoCloseable, E2eeEngineInterface
 
     
     /**
+     * Downgrade a conversation to plaintext (design §5.2). The BLOCKING
+     * native confirmation is shown by the Kotlin plugin BEFORE this call
+     * (wipe parity) — this binding never shows UI, so it must be wired
+     * only to the post-confirm path.
+     */
+    @Throws(E2eeException::class)override fun `downgrade`(`conversationId`: kotlin.String, `selfUserId`: kotlin.String, `bundlesJson`: kotlin.String?): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_downgrade(
+        it, FfiConverterString.lower(`conversationId`),FfiConverterString.lower(`selfUserId`),FfiConverterOptionalString.lower(`bundlesJson`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
      * Generate identity + initial key batch. Returns the JSON
      * `PUT /e2ee/keys` body (public material only) for the webview to
      * publish under an MFA ticket, then `mark_published`.
@@ -2015,6 +2570,23 @@ open class E2eeEngine: Disposable, AutoCloseable, E2eeEngineInterface
     uniffiRustCallWithError(E2eeException) { _status ->
     UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_enable(
         it, _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Enable encryption for a group (design §2.5). The Kotlin side has
+     * shown the asserted-roster checklist + confirm.
+     */
+    @Throws(E2eeException::class)override fun `enableGroup`(`conversationId`: kotlin.String, `roster`: List<kotlin.String>, `selfUserId`: kotlin.String, `bundlesJson`: kotlin.String?): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_enable_group(
+        it, FfiConverterString.lower(`conversationId`),FfiConverterSequenceString.lower(`roster`),FfiConverterString.lower(`selfUserId`),FfiConverterOptionalString.lower(`bundlesJson`),_status)
 }
     }
     )
@@ -2034,6 +2606,55 @@ open class E2eeEngine: Disposable, AutoCloseable, E2eeEngineInterface
     uniffiRustCallWithError(E2eeException) { _status ->
     UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_encrypt(
         it, FfiConverterString.lower(`peerUserId`),FfiConverterString.lower(`selfUserId`),FfiConverterOptionalString.lower(`peerBundleJson`),FfiConverterOptionalString.lower(`selfBundleJson`),FfiConverterString.lower(`content`),FfiConverterSequenceString.lower(`attachments`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * JSON `EncryptResult` for a group message (audience = pinned roster).
+     */
+    @Throws(E2eeException::class)override fun `encryptGroup`(`conversationId`: kotlin.String, `selfUserId`: kotlin.String, `bundlesJson`: kotlin.String?, `content`: kotlin.String, `attachments`: List<kotlin.String>): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_encrypt_group(
+        it, FfiConverterString.lower(`conversationId`),FfiConverterString.lower(`selfUserId`),FfiConverterOptionalString.lower(`bundlesJson`),FfiConverterString.lower(`content`),FfiConverterSequenceString.lower(`attachments`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Reconcile a group's displayed member list against the pinned roster;
+     * returns the JSON `GroupReconcileReport`.
+     */
+    @Throws(E2eeException::class)override fun `groupReconcile`(`conversationId`: kotlin.String, `displayed`: List<kotlin.String>, `selfUserId`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_group_reconcile(
+        it, FfiConverterString.lower(`conversationId`),FfiConverterSequenceString.lower(`displayed`),FfiConverterString.lower(`selfUserId`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * JSON `GroupState`.
+     */
+    @Throws(E2eeException::class)override fun `groupState`(`conversationId`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_group_state(
+        it, FfiConverterString.lower(`conversationId`),_status)
 }
     }
     )
@@ -2074,6 +2695,48 @@ open class E2eeEngine: Disposable, AutoCloseable, E2eeEngineInterface
     
 
     
+    /**
+     * Whether E2EE has been provisioned on this device — a pure filesystem
+     * check that does NOT open (and therefore does NOT provision) the
+     * engine. The webview calls this on connect BEFORE any status query so a
+     * fresh install is NOT eagerly provisioned: `E2ee::open` writes the store
+     * and master key, and provisioning an empty store pre-empts key-backup
+     * RESTORE, which refuses to run over an already-provisioned store (design
+     * §6.1/§6.2 — restore must be the first E2EE op on a fresh install).
+     * Mirrors the desktop `e2ee_is_provisioned` command 1:1 and reuses the
+     * SAME marker-aware core check the `send_mode` fast path uses (filenames
+     * live in the core, never hand-copied), so a half-restored directory
+     * reads as provisioned (fail closed), never Plaintext. Approach 1b: the
+     * audited core is called, not changed.
+     */
+    @Throws(E2eeException::class)override fun `isProvisioned`(): kotlin.Boolean {
+            return FfiConverterBoolean.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_is_provisioned(
+        it, _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Clear the initiator-side pending-downgrade flag after receipts [G2: 5].
+     */
+    @Throws(E2eeException::class)override fun `markDowngradeDelivered`(`conversationId`: kotlin.String)
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_mark_downgrade_delivered(
+        it, FfiConverterString.lower(`conversationId`),_status)
+}
+    }
+    
+    
+
+    
     @Throws(E2eeException::class)override fun `markPublished`()
         = 
     callWithPointer {
@@ -2087,15 +2750,28 @@ open class E2eeEngine: Disposable, AutoCloseable, E2eeEngineInterface
 
     
     /**
-     * Decrypt an attachment for rendering — the WebView-interceptor path,
-     * mirroring the desktop `serve_attachment` handler EXACTLY: the same
-     * path-segment validation, and the same mime whitelist (only image,
-     * video and audio mime types are served as themselves; scriptable
-     * subtypes like SVG and everything else degraded to
-     * `application/octet-stream` so no sender-controlled mime can create
-     * a scriptable context inside the WebView). The core re-verifies the
-     * envelope-authenticated digest and per-chunk STREAM tags on every
-     * open, so a tampered at-rest file cannot render either.
+     * Mark a peer device user-verified after an in-person comparison.
+     */
+    @Throws(E2eeException::class)override fun `markVerified`(`peerUserId`: kotlin.String, `deviceId`: kotlin.String)
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_mark_verified(
+        it, FfiConverterString.lower(`peerUserId`),FfiConverterString.lower(`deviceId`),_status)
+}
+    }
+    
+    
+
+    
+    /**
+     * Decrypt an attachment for rendering — the WebView-interceptor path.
+     * The id validation, digest-verified decrypt and mime whitelist all
+     * live in the core's shared `serve_attachment_for_render` (slice 5:
+     * the ONE copy both shells call — carried-risk #2 resolution; the two
+     * shells previously duplicated this logic byte-for-byte). The core
+     * re-verifies the envelope-authenticated digest and per-chunk STREAM
+     * tags on every open, so a tampered at-rest file cannot render.
      */
     @Throws(E2eeException::class)override fun `openAttachmentForRender`(`messageId`: kotlin.String, `idx`: kotlin.UInt): AttachmentContent {
             return FfiConverterTypeAttachmentContent.lift(
@@ -2103,6 +2779,41 @@ open class E2eeEngine: Disposable, AutoCloseable, E2eeEngineInterface
     uniffiRustCallWithError(E2eeException) { _status ->
     UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_open_attachment_for_render(
         it, FfiConverterString.lower(`messageId`),FfiConverterUInt.lower(`idx`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * JSON array of conversation ids with an unresolved pending downgrade.
+     */
+    @Throws(E2eeException::class)override fun `pendingDowngrades`(): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_pending_downgrades(
+        it, _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * After a restore, mint a FRESH one-time-key batch + rotate the fallback
+     * key; returns the JSON `PUT /e2ee/keys` publish payload. The webview
+     * publishes it with `replace_one_time_keys: true` so the server drops the
+     * stale OTKs whose private halves died with the old install (design §6.3).
+     */
+    @Throws(E2eeException::class)override fun `postRestoreRekey`(): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_post_restore_rekey(
+        it, _status)
 }
     }
     )
@@ -2144,6 +2855,65 @@ open class E2eeEngine: Disposable, AutoCloseable, E2eeEngineInterface
 
     
     /**
+     * Re-emit a downgrade notice whose original fan-out never confirmed its
+     * receipts (no dialog — the user already confirmed the original) [G2: 5].
+     */
+    @Throws(E2eeException::class)override fun `resendDowngrade`(`conversationId`: kotlin.String, `selfUserId`: kotlin.String, `bundlesJson`: kotlin.String?): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_resend_downgrade(
+        it, FfiConverterString.lower(`conversationId`),FfiConverterString.lower(`selfUserId`),FfiConverterOptionalString.lower(`bundlesJson`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Restore from the account's backup blobs using the CODE the user typed
+     * into the native dialog (design §6). `blobs_json` is the JSON array of
+     * `{header, ciphertext, server_generation}` the webview fetched
+     * (MFA-ticketed) and couriered down. Rebuilds the local store atomically
+     * under a FRESH master minted through the Keystore protector (the old
+     * Keystore key did not survive the reinstall — a fresh master is
+     * correct), opens the engine on it, and returns the `RestoreReport` JSON.
+     *
+     * The CODE crosses only this FFI (Rust ↔ Kotlin) and is never returned to
+     * any caller. Refuses to run over a cleanly-provisioned store
+     * (`StoreAlreadyProvisioned`) — wiping live state is the wipe flow's job.
+     */
+    @Throws(E2eeException::class)override fun `restore`(`userId`: kotlin.String, `blobsJson`: kotlin.String, `code`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_restore(
+        it, FfiConverterString.lower(`userId`),FfiConverterString.lower(`blobsJson`),FfiConverterString.lower(`code`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * JSON `SafetyNumber` for a pinned peer device (digits + flags only).
+     */
+    @Throws(E2eeException::class)override fun `safetyNumber`(`selfUserId`: kotlin.String, `peerUserId`: kotlin.String, `deviceId`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_safety_number(
+        it, FfiConverterString.lower(`selfUserId`),FfiConverterString.lower(`peerUserId`),FfiConverterString.lower(`deviceId`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
      * JSON `SendMode` — the SOLE authority for plaintext-vs-encrypt,
      * decided from local truth only. Mirrors the desktop fast path: when
      * E2EE was never provisioned on this device the answer is `Plaintext`
@@ -2157,6 +2927,24 @@ open class E2eeEngine: Disposable, AutoCloseable, E2eeEngineInterface
     uniffiRustCallWithError(E2eeException) { _status ->
     UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_send_mode(
         it, FfiConverterString.lower(`peerUserId`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * JSON `SendMode` for a GROUP conversation — the group analog of
+     * `send_mode`, from the pinned roster + sticky state only. Same
+     * never-provisioned fast path.
+     */
+    @Throws(E2eeException::class)override fun `sendModeGroup`(`conversationId`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_send_mode_group(
+        it, FfiConverterString.lower(`conversationId`),_status)
 }
     }
     )
