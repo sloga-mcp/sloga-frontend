@@ -5,6 +5,7 @@ import { useLingui } from "@lingui-solid/solid/macro";
 import { styled } from "styled-system/jsx";
 
 import { CONFIGURATION } from "@revolt/common";
+import { useModals } from "@revolt/modal";
 import { useVoice } from "@revolt/rtc";
 import { useState } from "@revolt/state";
 import { Button, IconButton } from "@revolt/ui/components/design";
@@ -14,6 +15,7 @@ import { VoiceStatsOverlay } from "./VoiceStatsOverlay";
 export function VoiceCallCardActions(props: { size: "xs" | "sm" }) {
   const voice = useVoice();
   const state = useState();
+  const modals = useModals();
   const navigate = useNavigate();
   const { t } = useLingui();
 
@@ -102,6 +104,21 @@ export function VoiceCallCardActions(props: { size: "xs" | "sm" }) {
       >
         <Symbol>camera_video</Symbol>
       </IconButton>
+      <Show when={enableVideo}>
+        <IconButton
+          size={props.size}
+          variant="tonal"
+          onPress={() => modals.openModal({ type: "camera_settings" })}
+          use:floating={{
+            tooltip: {
+              placement: "top",
+              content: t`Camera settings`,
+            },
+          }}
+        >
+          <Symbol>tune</Symbol>
+        </IconButton>
+      </Show>
       <IconButton
         size={props.size}
         variant={enableVideo && voice.screenshare() ? "filled" : "tonal"}

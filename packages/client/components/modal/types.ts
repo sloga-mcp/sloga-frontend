@@ -181,6 +181,24 @@ export type Modals =
     }
   | {
       type: "e2ee_enable";
+      /**
+       * Lead with the restore-vs-start-fresh choice (slice 5.5). Set when the
+       * shell auto-opens this for a returning user on a new device — an
+       * unprovisioned device whose account previously opted into E2EE (design
+       * §6.1). Omitted for the ordinary settings opt-in, which still exposes
+       * "Restore from a recovery code" as a secondary action.
+       */
+      offerRestore?: boolean;
+    }
+  | {
+      /**
+       * §6.4 revoked-device re-enroll. Shown for a returning device whose
+       * server-side identity row was revoked while it was dead: the restore
+       * succeeded locally but the post-restore claim was rejected, so the
+       * restored keys must be re-published as a first publication under a
+       * second MFA ticket. Auto-opened by the shell on `e2ee.reenrollNeeded`.
+       */
+      type: "e2ee_reenroll";
     }
   | {
       type: "e2ee_disable";
@@ -371,4 +389,7 @@ export type Modals =
         image?: string;
       }[];
       onCancel: () => void;
+    }
+  | {
+      type: "camera_settings";
     };

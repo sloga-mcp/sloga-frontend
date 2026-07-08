@@ -34,6 +34,7 @@ import { EditPasswordModal } from "./modals/EditPassword";
 import { EditUsernameModal } from "./modals/EditUsername";
 import { E2EEDisableModal } from "./modals/E2EEDisable";
 import { E2EEEnableModal } from "./modals/E2EEEnable";
+import { E2EEReenrollModal } from "./modals/E2EEReenroll";
 import { E2EEEnableGroupModal } from "./modals/E2EEEnableGroup";
 import { E2EEIdentityChangeModal } from "./modals/E2EEIdentityChange";
 import { E2EEVerifyModal } from "./modals/E2EEVerify";
@@ -56,6 +57,7 @@ import { RenameSessionModal } from "./modals/RenameSession";
 import { ReportContentModal } from "./modals/ReportContent";
 import { ReportQueueModal } from "./modals/ReportQueue";
 import { ResetBotTokenModal } from "./modals/ResetBotToken";
+import { CameraSettingsModal } from "./modals/CameraSettings";
 import { ScreenSharePickerModal } from "./modals/ScreenSharePicker";
 import { ScreenShareSettingsModal } from "./modals/ScreenShareSettings";
 import { ServerIdentityModal } from "./modals/ServerIdentity";
@@ -152,6 +154,8 @@ export function RenderModal(props: ActiveModal & { onClose: () => void }) {
       return <E2EEEnableModal {...modalProps} />;
     case "e2ee_disable":
       return <E2EEDisableModal {...modalProps} />;
+    case "e2ee_reenroll":
+      return <E2EEReenrollModal {...modalProps} />;
     case "e2ee_identity_change":
       return <E2EEIdentityChangeModal {...modalProps} />;
     case "e2ee_verify":
@@ -217,6 +221,8 @@ export function RenderModal(props: ActiveModal & { onClose: () => void }) {
       return <ScreenShareSettingsModal {...modalProps} />;
     case "screen_share_picker":
       return <ScreenSharePickerModal {...modalProps} />;
+    case "camera_settings":
+      return <CameraSettingsModal {...modalProps} />;
     default:
       console.error(
         "Failed to create modal for",

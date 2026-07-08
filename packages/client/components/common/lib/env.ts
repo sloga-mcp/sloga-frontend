@@ -80,6 +80,15 @@ export default {
   RNNOISE_WORKLET_CDN_URL:
     (import.meta.env.VITE_RNNOISE_WORKLET_CDN_URL as string) ?? "",
   /**
+   * Base URL for the self-hosted MediaPipe segmentation assets used by camera
+   * background effects (blur / virtual background). Blank ⇒ use the bundled
+   * assets under `${BASE_URL}mediapipe`. Consume with `||` (NOT `??`): a
+   * leftover `__VITE_...__` docker placeholder is truthy, so `||` still routes
+   * through the intended value. See camera background effects in rtc/state.tsx.
+   */
+  SEGMENTATION_ASSETS_URL:
+    (import.meta.env.VITE_SEGMENTATION_ASSETS_URL as string) ?? "",
+  /**
    * Enable video allows the web client to enable video and screensharing
    */
   ENABLE_VIDEO:

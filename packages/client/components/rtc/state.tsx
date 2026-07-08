@@ -15,9 +15,12 @@ import {
 } from "solid-livekit-components";
 
 import {
+  LocalVideoTrack,
   Room,
   ScreenSharePresets,
   Track,
+  type TrackPublishOptions,
+  type VideoCaptureOptions,
   VideoResolution,
 } from "livekit-client";
 import { DenoiseTrackProcessor } from "livekit-rnnoise-processor";
@@ -49,58 +52,6 @@ class GainTrackProcessor {
     this.processedTrack = undefined;
   }
 }
-class BrightnessVideoProcessor {
-  name = "brightness-processor";
-  processedTrack: MediaStreamTrack | undefined;
-  #brightness: number;
-  #canvas: HTMLCanvasElement | undefined;
-  #ctx2d: CanvasRenderingContext2D | undefined;
-  #video: HTMLVideoElement | undefined;
-  #rafId: number | undefined;
-  #stopped = false;
-
-  constructor(brightness: number) {
-    this.#brightness = brightness;
-  }
-
-  setBrightness(brightness: number) {
-    this.#brightness = brightness;
-  }
-
-  async init(opts: { track: MediaStreamTrack }) {
-    this.#canvas = document.createElement("canvas");
-    this.#video = document.createElement("video");
-    this.#video.srcObject = new MediaStream([opts.track]);
-    this.#video.muted = true;
-    await this.#video.play();
-    this.#canvas.width = this.#video.videoWidth || 640;
-    this.#canvas.height = this.#video.videoHeight || 480;
-    this.#ctx2d = this.#canvas.getContext("2d")!;
-    this.#stopped = false;
-    const draw = () => {
-      if (this.#stopped) return;
-      if (this.#video && this.#ctx2d && this.#canvas) {
-        this.#ctx2d.filter = `brightness(${this.#brightness}%)`;
-        this.#ctx2d.drawImage(this.#video, 0, 0, this.#canvas.width, this.#canvas.height);
-      }
-      this.#rafId = requestAnimationFrame(draw);
-    };
-    this.#rafId = requestAnimationFrame(draw);
-    const stream = this.#canvas.captureStream(30);
-    this.processedTrack = stream.getVideoTracks()[0];
-  }
-
-  async destroy() {
-    this.#stopped = true;
-    if (this.#rafId !== undefined) cancelAnimationFrame(this.#rafId);
-    this.#video?.pause();
-    this.#video = undefined;
-    this.#canvas = undefined;
-    this.#ctx2d = undefined;
-    this.processedTrack = undefined;
-  }
-}
-
 import { Capacitor, registerPlugin } from "@capacitor/core";
 import { Channel } from "stoat.js";
 
@@ -124,11 +75,17 @@ import { CONFIGURATION } from "@revolt/common";
 import { ModalController, useModals } from "@revolt/modal";
 import { useState } from "@revolt/state";
 import {
+  CameraBackgroundMode,
+  CameraQualityName,
   ScreenShareQualityName,
   Voice as VoiceSettings,
 } from "@revolt/state/stores/Voice";
 import { VoiceCallCardContext } from "@revolt/ui/components/features/voice/callCard/VoiceCallCard";
 
+import {
+  CameraEffectsController,
+  type CameraBackgroundStatus,
+} from "./cameraEffects";
 import { InRoom } from "./components/InRoom";
 import { RoomAudioManager } from "./components/RoomAudioManager";
 
@@ -148,7 +105,25 @@ type ScreenShareQuality = {
 
 class Voice {
   #settings: VoiceSettings;
-  #brightnessProcessor: BrightnessVideoProcessor | undefined;
+  /** Shared engine that owns the camera track's processor slot + brightness. */
+  #cameraEffects = new CameraEffectsController();
+
+  /** Runtime-only: whether the active camera exposes a hardware brightness control. */
+  cameraHwBrightness: Accessor<boolean>;
+  #setCameraHwBrightness: Setter<boolean>;
+
+  /** Runtime-only: background processor status (intent lives in the store). */
+  cameraBackgroundStatus: Accessor<CameraBackgroundStatus>;
+  #setCameraBackgroundStatus: Setter<CameraBackgroundStatus>;
+
+  /**
+   * Runtime-only: increments AFTER each live camera-effects apply settles (the
+   * processed track may have been swapped). The settings preview depends on
+   * this to re-read the live track's `mediaStreamTrack` — a bare brightness
+   * signal fires on the sync store write, before the async processor swap.
+   */
+  cameraEffectsApplied: Accessor<number>;
+  #setCameraEffectsApplied: Setter<number>;
 
   channel: Accessor<Channel | undefined>;
   #setChannel: Setter<Channel | undefined>;
@@ -236,6 +211,24 @@ class Voice {
     const [showBar, setShowBar] = createSignal(true);
     this.showBar = showBar;
     this.#setShowBar = setShowBar;
+
+    const [hwBrightness, setHwBrightness] = createSignal(false);
+    this.cameraHwBrightness = hwBrightness;
+    this.#setCameraHwBrightness = setHwBrightness;
+
+    const [bgStatus, setBgStatus] = createSignal<CameraBackgroundStatus>("idle");
+    this.cameraBackgroundStatus = bgStatus;
+    this.#setCameraBackgroundStatus = setBgStatus;
+
+    const [effectsApplied, setEffectsApplied] = createSignal(0);
+    this.cameraEffectsApplied = effectsApplied;
+    this.#setCameraEffectsApplied = setEffectsApplied;
+
+    this.#cameraEffects.onHwSupportChange = (hw) =>
+      this.#setCameraHwBrightness(hw);
+    this.#cameraEffects.onImageMissing = () => {
+      this.#settings.cameraBackgroundMode = "none";
+    };
 
     this.openModal = modals.openModal;
 
@@ -331,6 +324,13 @@ class Voice {
       this.sound.playSound("userLeaveVoice");
     });
 
+    // Fires AFTER LiveKit finishes restarting the camera track for a new
+    // device. Re-apply effects here (not on the store write) so hardware
+    // brightness — dropped by restart — is re-established on the NEW source.
+    room.addListener("activeDeviceChanged", (kind) => {
+      if (kind === "videoinput") void this.reapplyCameraEffects();
+    });
+
     room.addListener("trackPublished", (pub) => {
       if (pub.source === Track.Source.ScreenShare) {
         pub.once("subscribed", (track) => {
@@ -385,6 +385,11 @@ class Voice {
       this.disposeTrackRoot = undefined;
       this.#stopPushToTalk();
       this.#stopVAD();
+
+      // Room disconnect stops tracks (destroying attached processors); drop the
+      // controller's references and release any virtual-background image URL.
+      this.#cameraEffects.reset();
+      this.#setCameraBackgroundStatus("idle");
 
       this.sound.playSound("userLeaveVoice");
     } catch (e) {
@@ -443,15 +448,31 @@ class Voice {
     try {
       const room = this.room();
       if (!room) throw "invalid state";
-      const pub = await room.localParticipant.setCameraEnabled(
-        !room.localParticipant.isCameraEnabled,
-      );
 
-      const brightness = this.#settings.cameraBrightness ?? 100;
-      this.#brightnessProcessor = undefined;
-      if (pub?.videoTrack && brightness !== 100) {
-        this.#brightnessProcessor = new BrightnessVideoProcessor(brightness);
-        await pub.videoTrack.setProcessor(this.#brightnessProcessor);
+      const enabling = !room.localParticipant.isCameraEnabled;
+
+      if (enabling) {
+        const { capture, publish } = this.#cameraCaptureOptions();
+        const pub = await room.localParticipant.setCameraEnabled(
+          true,
+          capture,
+          publish,
+        );
+        if (pub?.videoTrack) {
+          const mode = this.#settings.cameraBackgroundMode ?? "none";
+          this.#setCameraBackgroundStatus(
+            mode === "none" ? "idle" : "initializing",
+          );
+          await this.#applyCameraEffects(pub.videoTrack as LocalVideoTrack);
+        }
+      } else {
+        await room.localParticipant.setCameraEnabled(false);
+        // The track is gone; LiveKit destroyed any attached processor. Drop the
+        // controller's now-stale references (and release the background image
+        // URL) so a later re-enable rebuilds cleanly rather than switching a
+        // dead wrapper.
+        this.#cameraEffects.reset();
+        this.#setCameraBackgroundStatus("idle");
       }
 
       this.#setVideo(room.localParticipant.isCameraEnabled);
@@ -461,29 +482,153 @@ class Voice {
   }
 
   /**
-   * Apply a new camera brightness value to the live camera track, if any.
-   * Attaches the brightness processor on demand when the camera is already on.
+   * Capture + publish options for enabling the camera at the selected quality.
+   * Resolution is clamped to the server limit; bitrate is set ONLY when
+   * non-auto — `maxBitrate` is required and in bps, so `0` would freeze video,
+   * hence we omit `videoEncoding` entirely for "auto".
    */
+  #cameraCaptureOptions(): {
+    capture: VideoCaptureOptions;
+    publish?: TrackPublishOptions;
+  } {
+    const capture: VideoCaptureOptions = {
+      deviceId: this.#settings.preferredVideoDevice,
+    };
+    const q =
+      this.getEnabledCameraQualities()[this.#settings.cameraQuality ?? "auto"];
+    if (q?.resolution) capture.resolution = q.resolution;
+
+    const kbps = this.#settings.cameraMaxBitrateKbps ?? 0;
+    let publish: TrackPublishOptions | undefined;
+    if (kbps > 0) {
+      publish = {
+        videoEncoding: {
+          maxBitrate: kbps * 1000, // kbps -> bps (LiveKit unit)
+          maxFramerate: q?.resolution?.frameRate,
+        },
+      };
+    }
+    return { capture, publish };
+  }
+
+  /**
+   * Clamp a resolution to the server's video_resolution limit (0 on an axis =
+   * unlimited). Shared by camera + screenshare so neither can exceed the limit.
+   */
+  #clampResolutionToServerLimit(res: VideoResolution): VideoResolution {
+    const limit = this.getClient().configured()
+      ? this.getClient().configuration?.features.limits.default.video_resolution
+      : undefined;
+    if (!limit) return res;
+    const [maxW, maxH] = limit;
+    const out: VideoResolution = { ...res };
+    if (maxW && maxW > 0 && out.width > maxW) out.width = maxW;
+    if (maxH && maxH > 0 && out.height > maxH) out.height = maxH;
+    return out;
+  }
+
+  /**
+   * Selectable camera capture qualities. Every non-auto tier is clamped to the
+   * server limit so the published track can never exceed it.
+   */
+  getEnabledCameraQualities(): Record<
+    CameraQualityName,
+    { resolution?: VideoResolution; fullName: string }
+  > {
+    const clamp = (res: VideoResolution) =>
+      this.#clampResolutionToServerLimit(res);
+    return {
+      auto: { fullName: "Auto" },
+      sd: {
+        resolution: clamp({ width: 640, height: 480, frameRate: 30 }),
+        fullName: "480p",
+      },
+      hd: {
+        resolution: clamp({ width: 1280, height: 720, frameRate: 30 }),
+        fullName: "720p",
+      },
+      fhd: {
+        resolution: clamp({ width: 1920, height: 1080, frameRate: 30 }),
+        fullName: "1080p",
+      },
+    };
+  }
+
+  /**
+   * Apply all configured camera effects to a live camera track via the shared
+   * CameraEffectsController. Idempotent — safe on enable and on any live change.
+   * Fail-safe: on error the raw camera keeps publishing.
+   */
+  async #applyCameraEffects(videoTrack: LocalVideoTrack) {
+    const mode = this.#settings.cameraBackgroundMode ?? "none";
+    try {
+      await this.#cameraEffects.apply(videoTrack, {
+        backgroundMode: mode,
+        blurRadius: this.#settings.cameraBlurRadius ?? 10,
+        backgroundImageId: this.#settings.cameraBackgroundImageId,
+        brightness: this.#settings.cameraBrightness ?? 100,
+      });
+      this.#setCameraBackgroundStatus(
+        this.#cameraEffects.backgroundActive ? "active" : "idle",
+      );
+    } catch (e) {
+      console.error("camera effects failed", e);
+      this.#setCameraBackgroundStatus(mode === "none" ? "idle" : "failed");
+    } finally {
+      // Signal that the (possibly track-swapping) apply has settled so the
+      // preview re-reads mediaStreamTrack — covers brightness-only changes too.
+      this.#setCameraEffectsApplied((n) => n + 1);
+    }
+  }
+
+  /** Live-update camera brightness. Persists to the store and reapplies. */
   async setCameraBrightness(brightness: number) {
     this.#settings.cameraBrightness = brightness;
-
-    if (this.#brightnessProcessor) {
-      this.#brightnessProcessor.setBrightness(brightness);
-      return;
-    }
-
-    try {
-      const room = this.room();
-      if (!room?.localParticipant.isCameraEnabled) return;
-      const pub = room.localParticipant.getTrackPublication(
-        Track.Source.Camera,
+    const room = this.room();
+    if (!room?.localParticipant.isCameraEnabled) return;
+    const pub = room.localParticipant.getTrackPublication(Track.Source.Camera);
+    if (pub?.videoTrack) {
+      await this.#applyCameraEffects(pub.videoTrack as LocalVideoTrack).catch(
+        (e) => this.onErr(e),
       );
-      if (pub?.videoTrack && brightness !== 100) {
-        this.#brightnessProcessor = new BrightnessVideoProcessor(brightness);
-        await pub.videoTrack.setProcessor(this.#brightnessProcessor);
-      }
-    } catch (e) {
-      this.onErr(e);
+    }
+  }
+
+  /**
+   * Re-apply camera effects to the current live camera track — used after a
+   * live device switch (the picker swaps the device; effects/brightness must be
+   * re-established on the new source).
+   */
+  async reapplyCameraEffects() {
+    const room = this.room();
+    if (!room?.localParticipant.isCameraEnabled) return;
+    const pub = room.localParticipant.getTrackPublication(Track.Source.Camera);
+    if (pub?.videoTrack) {
+      await this.#applyCameraEffects(pub.videoTrack as LocalVideoTrack).catch(
+        (e) => this.onErr(e),
+      );
+    }
+  }
+
+  /** Live-update the camera background mode/options. Persists and reapplies. */
+  async setCameraBackground(
+    mode: CameraBackgroundMode,
+    opts?: { blurRadius?: number; imageId?: string },
+  ) {
+    this.#settings.cameraBackgroundMode = mode;
+    if (opts?.blurRadius != null)
+      this.#settings.cameraBlurRadius = opts.blurRadius;
+    if (opts?.imageId !== undefined)
+      this.#settings.cameraBackgroundImageId = opts.imageId;
+
+    const room = this.room();
+    if (!room?.localParticipant.isCameraEnabled) return;
+    const pub = room.localParticipant.getTrackPublication(Track.Source.Camera);
+    if (pub?.videoTrack) {
+      if (mode !== "none") this.#setCameraBackgroundStatus("initializing");
+      await this.#applyCameraEffects(pub.videoTrack as LocalVideoTrack).catch(
+        (e) => this.onErr(e),
+      );
     }
   }
 
@@ -529,7 +674,10 @@ class Voice {
             fullName: `1080p 30FPS`,
             contentHint: "motion",
           };
-          const originalResolution = ScreenSharePresets.original.resolution;
+          // Clone before mutating — ScreenSharePresets.original is a shared
+          // livekit-client singleton; writing to it in place corrupts it
+          // process-wide for any other consumer.
+          const originalResolution = { ...ScreenSharePresets.original.resolution };
           originalResolution.frameRate = 5;
           originalResolution.aspectRatio = 0;
           if (this.getClient().configured()) {
@@ -560,22 +708,35 @@ class Voice {
       }
     }
 
-    // Always offer higher quality options
+    // Offer higher quality options, each clamped to the server limit so a
+    // selection can never exceed video_resolution.
     qualities.fhd = {
       name: "fhd",
-      resolution: { width: 1920, height: 1080, frameRate: 60 },
+      resolution: this.#clampResolutionToServerLimit({
+        width: 1920,
+        height: 1080,
+        frameRate: 60,
+      }),
       fullName: `1080p 60FPS`,
       contentHint: "motion",
     };
     qualities.qhd = {
       name: "qhd",
-      resolution: { width: 2560, height: 1440, frameRate: 30 },
+      resolution: this.#clampResolutionToServerLimit({
+        width: 2560,
+        height: 1440,
+        frameRate: 30,
+      }),
       fullName: `1440p 30FPS`,
       contentHint: "motion",
     };
     qualities.uhd = {
       name: "uhd",
-      resolution: { width: 3840, height: 2160, frameRate: 30 },
+      resolution: this.#clampResolutionToServerLimit({
+        width: 3840,
+        height: 2160,
+        frameRate: 30,
+      }),
       fullName: `4K 30FPS`,
       contentHint: "motion",
     };
@@ -764,6 +925,18 @@ class Voice {
 
   getConnectedUser(userId: string) {
     return this.room()?.getParticipantByIdentity(userId);
+  }
+
+  /**
+   * The live local camera track, if the camera is on. Used by the settings
+   * preview to bind directly to the transmitted track (true WYSIWYG, no second
+   * camera open) instead of opening its own capture.
+   */
+  localCameraTrack(): LocalVideoTrack | undefined {
+    const pub = this.room()?.localParticipant.getTrackPublication(
+      Track.Source.Camera,
+    );
+    return pub?.videoTrack as LocalVideoTrack | undefined;
   }
 
   showCard(channel: Channel) {

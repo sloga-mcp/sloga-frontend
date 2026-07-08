@@ -3,9 +3,9 @@ import { Show } from "solid-js";
 import { CONFIGURATION } from "@revolt/common";
 import { Column } from "@revolt/ui";
 
+import { CameraOptions } from "./CameraOptions";
 import { MicrophoneLevelMeter } from "./MicrophoneLevelMeter";
 import { MicrophoneTest } from "./MicrophoneTest";
-import { ScreenShareOptions } from "./ScreenShareOptions";
 import { VoiceInputOptions } from "./VoiceInputOptions";
 import { VoiceProcessingOptions } from "./VoiceProcessingOptions";
 /**
@@ -19,7 +19,7 @@ export function VoiceSettings() {
       <MicrophoneTest />
       <VoiceProcessingOptions />
       <Show when={CONFIGURATION.ENABLE_VIDEO}>
-        <ScreenShareOptions />
+        <CameraOptions />
       </Show>
     </Column>
   );

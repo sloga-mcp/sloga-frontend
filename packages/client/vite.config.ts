@@ -41,6 +41,11 @@ export default defineConfig({
       strategies: "injectManifest",
       injectManifest: {
         maximumFileSizeToCacheInBytes: 4000000,
+        // MediaPipe segmentation WASM (~9.4MB each) exceeds the precache cap and
+        // vite-plugin-pwa THROWS (fails the build) on any globbed asset over it.
+        // These are self-hosted, lazily fetched by @livekit/track-processors at
+        // runtime — never precache them. Excludes the model too for good measure.
+        globIgnores: ["**/mediapipe/**"],
       },
       devOptions: {
         enabled: true,
