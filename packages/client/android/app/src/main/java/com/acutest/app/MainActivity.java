@@ -11,7 +11,23 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(VoiceCallServicePlugin.class);
         registerPlugin(PushTokenPlugin.class);
         registerPlugin(ApkUpdaterPlugin.class);
+        registerPlugin(com.acutest.app.e2ee.E2eePlugin.class);
         super.onCreate(savedInstanceState);
+        // Serve decrypted E2EE attachments from the native layer (the
+        // Android analog of the desktop e2ee-att protocol handler)
+        bridge.setWebViewClient(new com.acutest.app.e2ee.E2eeWebViewClient(bridge));
+
+        // DEBUG-ONLY WebView conveniences (slice-4 gate HIGH #1 / MEDIUM #2):
+        // release ships with these OFF via capacitor.config so a local
+        // attacker cannot attach devtools to read decrypted E2EE plaintext
+        // or inject cleartext subresources into the plaintext-capable
+        // origin. Re-enabled here strictly for debug builds.
+        if (com.acutest.app.BuildConfig.DEBUG && bridge.getWebView() != null) {
+            android.webkit.WebView.setWebContentsDebuggingEnabled(true);
+            bridge.getWebView().getSettings().setMixedContentMode(
+                    android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+        }
+
         handleNotificationIntent(getIntent());
     }
 

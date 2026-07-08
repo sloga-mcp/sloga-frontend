@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android < 12 auto-backup rules.
+
+     Two directories must NEVER ride device backups:
+
+     1. `files/e2ee` — the native E2EE store. Its master key only unwraps via
+        this install's Android Keystore entry (which does not survive
+        uninstall or transfer to another device), so restored files can
+        never decrypt — they would only wedge the engine fail-closed and
+        leak local metadata. Fresh install = fresh device identity.
+
+     2. `app_webview` — the WebView's localStorage/IndexedDB, where the
+        client persists per-conversation DRAFTS (and other caches) via
+        localforage. A draft typed in an encrypted DM is plaintext; without
+        this exclusion it would leave the device to Google's cloud (or a
+        device-to-device transfer) entirely outside the native crypto layer
+        (slice-4 gate MEDIUM #1). -->
+<full-backup-content>
+    <exclude domain="file" path="e2ee" />
+    <exclude domain="root" path="app_webview" />
+</full-backup-content>

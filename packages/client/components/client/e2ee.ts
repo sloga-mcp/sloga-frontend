@@ -26,6 +26,7 @@
  * verification hardens TOFU in slice 5). If no verified keys come back,
  * nothing is pinned and the conversation stays plaintext.
  */
+import { Capacitor, registerPlugin } from "@capacitor/core";
 import { ReactiveMap } from "@solid-primitives/map";
 
 import type {
@@ -145,17 +146,221 @@ export class E2EESendError extends Error {
 }
 
 /**
- * Whether the native E2EE layer is reachable (Tauri desktop shell). The
- * web build has no native layer — and the server additionally refuses
- * E2EE routes for sessions that never proved a device claim.
+ * Whether the native E2EE layer is reachable (Tauri desktop shell or the
+ * Capacitor Android shell). The web build has no native layer — and the
+ * server additionally refuses E2EE routes for sessions that never proved a
+ * device claim.
  */
 export function nativeE2EEAvailable(): boolean {
-  return !!(window as { __TAURI__?: TauriGlobal }).__TAURI__?.core?.invoke;
+  if ((window as { __TAURI__?: TauriGlobal }).__TAURI__?.core?.invoke)
+    return true;
+  return Capacitor.isNativePlatform() && Capacitor.getPlatform() === "android";
+}
+
+// ================================================================
+// Native transports
+//
+// One `E2EEBridge` speaks to two native shells through this seam. Both
+// expose the SAME command allowlist backed by the SAME core crate
+// (acutest-e2ee-core); only the carrier differs — Tauri IPC on desktop,
+// a Capacitor plugin over uniffi on Android. Command names, argument
+// shapes and error payloads are identical by construction, so every
+// security decision above this seam is platform-independent.
+// ================================================================
+
+interface NativeTransport {
+  /**
+   * True when attachment ciphertext moves natively (Android): upload and
+   * fetch happen in the shell, so multi-megabyte payloads never transit
+   * the JS bridge. Desktop moves ciphertext over the (fast, binary-safe)
+   * Tauri IPC and uploads from the webview instead.
+   */
+  readonly nativeBlobTransfer: boolean;
+  invoke<T>(
+    command: string,
+    args?: Record<string, unknown> | Uint8Array,
+    options?: { headers?: Record<string, string> },
+  ): Promise<T>;
+  /** WebView URL a decrypted attachment renders from (never carries keys) */
+  attachmentUrl(messageId: string, idx: number): string;
+  /** Android-only (`nativeBlobTransfer`): native ciphertext upload */
+  uploadPrepared?(
+    localId: string,
+    url: string,
+    authHeader: string,
+    authValue: string,
+    recipients: unknown[],
+  ): Promise<void>;
+  /** Android-only (`nativeBlobTransfer`): native ciphertext fetch+store */
+  fetchAndStore?(
+    localId: string,
+    url: string,
+    authHeader: string,
+    authValue: string,
+  ): Promise<"ready" | "expired" | "failed" | "pending">;
+}
+
+class TauriTransport implements NativeTransport {
+  readonly nativeBlobTransfer = false;
+  #tauri = (window as unknown as { __TAURI__: TauriGlobal }).__TAURI__;
+
+  invoke<T>(
+    command: string,
+    args?: Record<string, unknown> | Uint8Array,
+    options?: { headers?: Record<string, string> },
+  ): Promise<T> {
+    return this.#tauri.core.invoke<T>(command, args, options);
+  }
+
+  /**
+   * The desktop shell's `e2ee-att` protocol, which decrypts natively per
+   * request. Windows serving origin; both path segments are ULIDs /
+   * integers, so no encoding is needed.
+   */
+  attachmentUrl(messageId: string, idx: number): string {
+    return `https://e2ee-att.localhost/${messageId}/${idx}`;
+  }
+}
+
+/** Capacitor plugin surface (see android `E2eePlugin.kt`) */
+type E2eeCapacitorPlugin = {
+  call(options: Record<string, unknown>): Promise<{ json: string }>;
+  wipe(): Promise<{ json: string }>;
+  attachmentUpload(options: Record<string, unknown>): Promise<{ json: string }>;
+  attachmentFetch(options: Record<string, unknown>): Promise<{ json: string }>;
+};
+
+class CapacitorTransport implements NativeTransport {
+  readonly nativeBlobTransfer = true;
+  #plugin = registerPlugin<E2eeCapacitorPlugin>("E2ee");
+
+  /**
+   * Reject payloads are the core's scrubbed error JSON in the exception
+   * message; parse it back so callers see the SAME typed error objects the
+   * desktop Tauri IPC rejects with.
+   */
+  #rethrow(error: unknown): never {
+    const message = (error as { message?: string })?.message;
+    if (message?.startsWith("{")) {
+      try {
+        throw JSON.parse(message);
+      } catch (parsed) {
+        if (parsed && typeof parsed === "object" && "type" in parsed)
+          throw parsed;
+      }
+    }
+    throw error;
+  }
+
+  async invoke<T>(
+    command: string,
+    args?: Record<string, unknown> | Uint8Array,
+    options?: { headers?: Record<string, string> },
+  ): Promise<T> {
+    try {
+      if (command === "e2ee_wipe") {
+        // Dedicated plugin method: shows the BLOCKING native dialog
+        // (decline rejects with the typed `declined` error)
+        await this.#plugin.wipe();
+        return undefined as T;
+      }
+
+      let callArgs: Record<string, unknown>;
+      if (args instanceof Uint8Array) {
+        // Desktop raw-body convention → base64 + explicit fields. Only
+        // attachment prepare sends bytes JS→native on Android (fetched
+        // ciphertext moves natively via fetchAndStore).
+        if (command !== "e2ee_attachment_prepare")
+          throw { type: "invalid_argument", field: "body" };
+        const headers = options?.headers ?? {};
+        callArgs = {
+          peerUserId: headers["x-peer-user-id"],
+          name: decodeURIComponent(headers["x-name"] ?? ""),
+          mime: decodeURIComponent(headers["x-mime"] ?? ""),
+          plaintextBase64: bytesToBase64(args),
+        };
+      } else {
+        callArgs = args ?? {};
+      }
+
+      const { json } = await this.#plugin.call({
+        __cmd: command,
+        ...callArgs,
+      });
+      return JSON.parse(json) as T;
+    } catch (error) {
+      this.#rethrow(error);
+    }
+  }
+
+  /**
+   * Same-origin path intercepted by the Android shell's WebViewClient
+   * BEFORE the asset server (the `e2ee-att` analog) — decrypts natively
+   * per request; key material never reaches the WebView.
+   */
+  attachmentUrl(messageId: string, idx: number): string {
+    return `/_e2ee-att/${messageId}/${idx}`;
+  }
+
+  async uploadPrepared(
+    localId: string,
+    url: string,
+    authHeader: string,
+    authValue: string,
+    recipients: unknown[],
+  ): Promise<void> {
+    try {
+      await this.#plugin.attachmentUpload({
+        localId,
+        url,
+        authHeader,
+        authValue,
+        recipientsJson: JSON.stringify(recipients),
+      });
+    } catch (error) {
+      this.#rethrow(error);
+    }
+  }
+
+  async fetchAndStore(
+    localId: string,
+    url: string,
+    authHeader: string,
+    authValue: string,
+  ): Promise<"ready" | "expired" | "failed" | "pending"> {
+    try {
+      const { json } = await this.#plugin.attachmentFetch({
+        localId,
+        url,
+        authHeader,
+        authValue,
+      });
+      return JSON.parse(json);
+    } catch (error) {
+      this.#rethrow(error);
+    }
+  }
+}
+
+/** Chunk-safe base64 of a byte array (bridge-friendly) */
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
+function createNativeTransport(): NativeTransport {
+  if ((window as { __TAURI__?: TauriGlobal }).__TAURI__?.core?.invoke)
+    return new TauriTransport();
+  return new CapacitorTransport();
 }
 
 export class E2EEBridge implements E2EEAdapter {
   #client: Client;
-  #tauri: TauriGlobal;
+  #transport: NativeTransport;
 
   /** Sequentialises decrypts — ratchet order must match delivery order */
   #decryptQueue: Promise<void> = Promise.resolve();
@@ -184,6 +389,16 @@ export class E2EEBridge implements E2EEAdapter {
   /** Attachment fetches currently in flight (dedupe across syncs) */
   #fetchingAttachments = new Set<string>();
 
+  /**
+   * Set when reconcile reports own devices the native store has not pinned
+   * yet. The core pins own devices ONLY via the `selfBundle` encrypt
+   * parameter (it cannot distinguish "no other devices" from "unpinned
+   * other devices", so it never raises `needs_bundle` for self) — without
+   * this prefetch, own-device fan-out silently never happens and the
+   * account's other devices miss every sent message.
+   */
+  #selfDevicesUnpinned = false;
+
   /** Reactive native status (drives the settings consent flow) */
   readonly status = new ReactiveMap<
     "state",
@@ -192,7 +407,7 @@ export class E2EEBridge implements E2EEAdapter {
 
   constructor(client: Client) {
     this.#client = client;
-    this.#tauri = (window as unknown as { __TAURI__: TauriGlobal }).__TAURI__;
+    this.#transport = createNativeTransport();
 
     client.on("ready", () => void this.#onReady());
   }
@@ -206,7 +421,7 @@ export class E2EEBridge implements E2EEAdapter {
     args?: Record<string, unknown> | Uint8Array,
     options?: { headers?: Record<string, string> },
   ): Promise<T> {
-    return this.#tauri.core.invoke<T>(command, args, options);
+    return this.#transport.invoke<T>(command, args, options);
   }
 
   /**
@@ -393,6 +608,10 @@ export class E2EEBridge implements E2EEAdapter {
       changed: string[];
       new_devices: string[];
     }>("e2ee_reconcile_devices", { userId, devices });
+
+    if (userId === this.#client.user?.id && report.new_devices.length) {
+      this.#selfDevicesUnpinned = true;
+    }
 
     if (
       report.revoked.length ||
@@ -647,9 +866,20 @@ export class E2EEBridge implements E2EEAdapter {
     let peerBundle: unknown = null;
     let selfBundle: unknown = null;
 
+    if (this.#selfDevicesUnpinned) {
+      // Own devices need pinning and the core only pins them from a
+      // selfBundle passed here. Best-effort: fan-out to own devices must
+      // never block the send to the peer.
+      try {
+        selfBundle = await this.#api<unknown>("GET", `/e2ee/keys/${selfId}`);
+      } catch (error) {
+        console.warn("[e2ee] self bundle fetch failed; sending without own-device fan-out", error);
+      }
+    }
+
     for (let attempt = 0; ; attempt++) {
       try {
-        return await this.#invoke<EncryptResult>("e2ee_encrypt", {
+        const result = await this.#invoke<EncryptResult>("e2ee_encrypt", {
           peerUserId: peerId,
           selfUserId: selfId,
           peerBundle,
@@ -657,6 +887,9 @@ export class E2EEBridge implements E2EEAdapter {
           content,
           attachments,
         });
+        // Pins are durable in the native store — stop prefetching
+        if (selfBundle) this.#selfDevicesUnpinned = false;
+        return result;
       } catch (error) {
         const native = error as NativeError;
 
@@ -957,16 +1190,42 @@ export class E2EEBridge implements E2EEAdapter {
         },
       });
 
-      const ciphertext = await this.#invoke<ArrayBuffer>(
-        "e2ee_attachment_ciphertext",
-        { localId: prepared.local_id },
-      );
+      if (this.#transport.nativeBlobTransfer) {
+        // Android: ciphertext moves shell→Autumn natively (upload +
+        // attach_blob happen in the shell; bytes never transit the JS
+        // bridge). Coarse progress only.
+        const [authHeader, authValue] = this.#client.authenticationHeader;
+        try {
+          await this.#transport.uploadPrepared!(
+            prepared.local_id,
+            `${this.#client.configuration!.features.autumn.url}/e2ee`,
+            authHeader,
+            authValue,
+            recipients,
+          );
+        } catch {
+          throw new E2EESendError(
+            "The encrypted attachment could not be uploaded. Nothing was sent unencrypted.",
+            "delivery_failed",
+          );
+        }
+        onProgress?.(1);
+      } else {
+        const ciphertext = await this.#invoke<ArrayBuffer>(
+          "e2ee_attachment_ciphertext",
+          { localId: prepared.local_id },
+        );
 
-      const blobId = await this.#uploadBlob(ciphertext, recipients, onProgress);
-      await this.#invoke("e2ee_attachment_attach_blob", {
-        localId: prepared.local_id,
-        blobId,
-      });
+        const blobId = await this.#uploadBlob(
+          ciphertext,
+          recipients,
+          onProgress,
+        );
+        await this.#invoke("e2ee_attachment_attach_blob", {
+          localId: prepared.local_id,
+          blobId,
+        });
+      }
 
       localIds.push(prepared.local_id);
     }
@@ -1020,13 +1279,14 @@ export class E2EEBridge implements E2EEAdapter {
   }
 
   /**
-   * Webview URL a decrypted attachment renders from — the desktop shell's
-   * `e2ee-att` protocol, which decrypts natively per request (key material
-   * never crosses to the webview). Windows serving origin; both path
-   * segments are ULIDs / integers, so no encoding is needed.
+   * Webview URL a decrypted attachment renders from — the shell's
+   * attachment endpoint (desktop `e2ee-att` protocol / Android WebView
+   * interceptor), which decrypts natively per request: key material never
+   * crosses to the webview. Both path segments are ULIDs / integers, so no
+   * encoding is needed.
    */
   attachmentUrl(messageId: string, idx: number): string {
-    return `https://e2ee-att.localhost/${messageId}/${idx}`;
+    return this.#transport.attachmentUrl(messageId, idx);
   }
 
   /** Reactive attachment metadata of a message (empty when none) */
@@ -1066,6 +1326,31 @@ export class E2EEBridge implements E2EEAdapter {
 
     try {
       const [authHeader, authValue] = this.#client.authenticationHeader;
+
+      if (this.#transport.nativeBlobTransfer) {
+        // Android: the shell fetches the ciphertext and hands it straight
+        // to the core (mandatory digest verification there); bytes never
+        // transit the JS bridge. Same state machine as the webview path.
+        const state = await this.#transport.fetchAndStore!(
+          meta.local_id,
+          `${this.#client.configuration!.features.autumn.url}/e2ee/${meta.blob_id}`,
+          authHeader,
+          authValue,
+        );
+        if (state === "pending") return; // transient — next sync retries
+
+        const current = this.attachmentMeta.get(messageId);
+        if (current) {
+          this.attachmentMeta.set(
+            messageId,
+            current.map((entry) =>
+              entry.local_id === meta.local_id ? { ...entry, state } : entry,
+            ),
+          );
+        }
+        return;
+      }
+
       const response = await fetch(
         `${this.#client.configuration!.features.autumn.url}/e2ee/${meta.blob_id}`,
         { headers: { [authHeader]: authValue } },

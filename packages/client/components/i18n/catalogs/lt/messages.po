@@ -118,6 +118,12 @@ msgstr ""
 msgid "{0} renamed the channel"
 msgstr ""
 
+#. placeholder {0}: report.contentType
+#. placeholder {1}: report.reason
+#: components/client/NotificationsWorker.tsx
+msgid "{0} reported ({1})"
+msgstr ""
+
 #. placeholder {0}: user.displayName ?? user.username
 #: components/client/NotificationsWorker.tsx
 msgid "{0} sent you a friend request"
@@ -257,6 +263,7 @@ msgstr ""
 msgid "<0>Be careful!</0><1/>This is not the same as the link that was displayed:"
 msgstr ""
 
+#: components/modal/modals/SuspendUser.tsx
 #: components/modal/modals/BanMember.tsx
 msgid "1 day"
 msgstr ""
@@ -302,8 +309,13 @@ msgstr ""
 msgid "24 hours"
 msgstr ""
 
+#: components/modal/modals/SuspendUser.tsx
 #: components/modal/modals/BanMember.tsx
 msgid "3 days"
+msgstr ""
+
+#: components/modal/modals/SuspendUser.tsx
+msgid "30 days"
 msgstr ""
 
 #: components/app/interface/settings/channel/Overview.tsx
@@ -331,6 +343,7 @@ msgstr ""
 msgid "6 hours"
 msgstr ""
 
+#: components/modal/modals/SuspendUser.tsx
 #: components/modal/modals/BanMember.tsx
 msgid "7 days"
 msgstr ""
@@ -355,6 +368,10 @@ msgstr ""
 #: components/app/menus/UserContextMenu.tsx
 msgid "Accept friend request"
 msgstr "Priimti draugo prašymą"
+
+#: components/modal/modals/E2EEIdentityChange.tsx
+msgid "Accept new identity"
+msgstr ""
 
 #: components/modal/modals/PolicyChange.tsx
 msgid "Acknowledge"
@@ -506,12 +523,17 @@ msgstr "Avataras"
 #: src/interface/channels/PasswordGate.tsx
 #: src/interface/channels/AgeGate.tsx
 #: src/interface/channels/AgeGate.tsx
+#: components/modal/modals/ReportQueue.tsx
 #: components/modal/modals/MFAFlow.tsx
 #: components/auth/src/flows/FlowLogin.tsx
 #: components/auth/src/flows/FlowCreate.tsx
 #: components/auth/src/flows/FlowCheck.tsx
 #: components/app/interface/settings/user/_AccountCard.tsx
 msgid "Back"
+msgstr ""
+
+#: components/auth/src/flows/FlowOAuthCallback.tsx
+msgid "Back to login"
 msgstr ""
 
 #: components/ui/components/features/profiles/ProfileBadges.tsx
@@ -628,6 +650,7 @@ msgid "Camera Settings"
 msgstr ""
 
 #: src/interface/ServerEvents.tsx
+#: components/modal/modals/SuspendUser.tsx
 #: components/modal/modals/SignOutSessions.tsx
 #: components/modal/modals/ServerIdentity.tsx
 #: components/modal/modals/ScreenShareSettings.tsx
@@ -645,6 +668,8 @@ msgstr ""
 #: components/modal/modals/InviteToServer.tsx
 #: components/modal/modals/Invite.tsx
 #: components/modal/modals/EditCategory.tsx
+#: components/modal/modals/E2EEEnable.tsx
+#: components/modal/modals/E2EEDisable.tsx
 #: components/modal/modals/DeleteServer.tsx
 #: components/modal/modals/DeleteRole.tsx
 #: components/modal/modals/DeleteMessage.tsx
@@ -654,6 +679,7 @@ msgstr ""
 #: components/modal/modals/BanNonMember.tsx
 #: components/modal/modals/BanMember.tsx
 #: components/modal/modals/AddBot.tsx
+#: components/auth/src/flows/FlowOAuthCallback.tsx
 #: components/auth/src/flows/FlowLogin.tsx
 msgid "Cancel"
 msgstr "Atšaukti"
@@ -757,6 +783,7 @@ msgstr ""
 msgid "Check your mail!"
 msgstr "Patikrinkite savo el. paštą!"
 
+#: components/auth/src/flows/FlowOAuthCallback.tsx
 #: components/auth/src/flows/FlowLogin.tsx
 msgid "Choose a username"
 msgstr ""
@@ -809,6 +836,7 @@ msgstr "Kliento nustatymai"
 #: components/modal/modals/UserProfileMutualGroups.tsx
 #: components/modal/modals/UserProfileMutualFriends.tsx
 #: components/modal/modals/ServerInfo.tsx
+#: components/modal/modals/ReportQueue.tsx
 #: components/modal/modals/PolicyChange.tsx
 #: components/modal/modals/LinkWarning.tsx
 #: components/modal/modals/JoinServer.tsx
@@ -816,6 +844,7 @@ msgstr "Kliento nustatymai"
 #: components/modal/modals/EditUsername.tsx
 #: components/modal/modals/EditPassword.tsx
 #: components/modal/modals/EditEmail.tsx
+#: components/modal/modals/E2EEIdentityChange.tsx
 #: components/modal/modals/DeleteChannel.tsx
 #: components/modal/modals/CustomStatus.tsx
 #: components/modal/modals/CreateWebhook.tsx
@@ -859,6 +888,7 @@ msgid "Configure one-time password authentication"
 msgstr ""
 
 #: components/modal/modals/MFAFlow.tsx
+#: components/auth/src/flows/FlowOAuthCallback.tsx
 #: components/auth/src/flows/FlowLogin.tsx
 msgid "Confirm"
 msgstr "Patvirtinti"
@@ -903,6 +933,10 @@ msgstr ""
 
 #: components/auth/src/flows/FlowVerify.tsx
 msgid "Continue to app"
+msgstr ""
+
+#: components/auth/src/flows/FlowLogin.tsx
+msgid "Continue with Google"
 msgstr ""
 
 #: components/app/interface/settings/user/Language.tsx
@@ -1235,6 +1269,10 @@ msgstr ""
 msgid "Developer Documentation"
 msgstr ""
 
+#: components/app/interface/settings/user/SecurityAndPrivacy.tsx
+msgid "Direct messages with contacts who also have encryption on are end-to-end encrypted on this device. Encrypted history is stored only here — uncheck to turn encryption off on this device."
+msgstr ""
+
 #: components/app/interface/settings/user/Account.tsx
 msgid "Disable Account"
 msgstr "Išjungti paskyrą"
@@ -1316,11 +1354,17 @@ msgid "Donated to Sloga"
 msgstr ""
 
 #: components/modal/modals/MFARecovery.tsx
+#: components/modal/modals/E2EEEnable.tsx
+#: components/modal/modals/E2EEDisable.tsx
 msgid "Done"
 msgstr "Baigta"
 
 #: components/modal/modals/ReportContent.tsx
 msgid "Drugs or illegal goods"
+msgstr ""
+
+#: components/modal/modals/SuspendUser.tsx
+msgid "Duration"
 msgstr ""
 
 #. placeholder {0}: props.member.displayName
@@ -1424,6 +1468,34 @@ msgstr ""
 msgid "Enable transparency glass/blur effects (slow on older machines)"
 msgstr ""
 
+#: components/app/interface/settings/user/SecurityAndPrivacy.tsx
+msgid "Encrypted direct messages"
+msgstr ""
+
+#: components/modal/modals/E2EEEnable.tsx
+msgid "Encrypted direct messages are on for this device. Messages you send in an encrypted conversation are stored only on the devices that receive them — not on the server, and not in your web session."
+msgstr ""
+
+#: components/modal/modals/E2EEEnable.tsx
+msgid "Encrypted history lives on THIS device only. If you log out and choose to erase it, or lose the device, those messages cannot be recovered. You will confirm your identity to continue."
+msgstr ""
+
+#: components/app/interface/settings/user/SecurityAndPrivacy.tsx
+msgid "Encrypted messaging is on"
+msgstr ""
+
+#: components/modal/modals/E2EEDisable.tsx
+msgid "Encryption is off for this device. New direct messages are no longer end-to-end encrypted, and your contacts have been told this device no longer uses encryption."
+msgstr ""
+
+#: src/interface/channels/text/Composition.tsx
+msgid "Encryption status could not be verified. Nothing was sent."
+msgstr ""
+
+#: src/interface/channels/text/Composition.tsx
+msgid "Encryption will start once a message is sent."
+msgstr ""
+
 #: components/ui/components/features/voice/callCard/VoiceCallCardActions.tsx
 msgid "End call"
 msgstr ""
@@ -1508,6 +1580,10 @@ msgstr "Nepavyko patvirtinti!"
 #: components/app/interface/settings/user/Feedback.tsx
 msgid "Feedback"
 msgstr "Atsiliepimai"
+
+#: components/app/interface/channels/text/EncryptedAttachment.tsx
+msgid "Fetching encrypted attachment…"
+msgstr ""
 
 #: src/interface/Home.tsx
 msgid "Find a community based on your hobbies or interests."
@@ -1724,6 +1800,10 @@ msgstr ""
 msgid "Incorrect password."
 msgstr ""
 
+#: components/modal/modals/SuspendUser.tsx
+msgid "Indefinite"
+msgstr ""
+
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
 msgid "Input Gain"
 msgstr ""
@@ -1899,6 +1979,10 @@ msgstr "Išeiti iš serverio"
 msgid "Let Sloga use its own custom titlebar."
 msgstr ""
 
+#: components/app/menus/UserContextMenu.tsx
+msgid "Lift platform suspension"
+msgstr ""
+
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Light"
 msgstr ""
@@ -1914,6 +1998,14 @@ msgstr ""
 
 #: src/interface/ServerEvents.tsx
 msgid "Loading events…"
+msgstr ""
+
+#: components/modal/modals/ReportQueue.tsx
+msgid "Loading reports…"
+msgstr ""
+
+#: components/modal/modals/ReportQueue.tsx
+msgid "Loading snapshots…"
 msgstr ""
 
 #: components/auth/src/flows/FlowHome.tsx
@@ -2093,6 +2185,10 @@ msgstr "Žinutė buvo išsiųsta kitoje platformoje"
 msgid "Messages disappear after {0}"
 msgstr ""
 
+#: src/interface/channels/text/Composition.tsx
+msgid "Messages to this conversation are end-to-end encrypted."
+msgstr ""
+
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "Messaging"
 msgstr "Žinutės"
@@ -2128,6 +2224,10 @@ msgstr ""
 #: components/ui/components/features/voice/callCard/VoiceCallCardActions.tsx
 #: components/ui/components/features/voice/callCard/VoiceCallCardActions.tsx
 msgid "Missing permission"
+msgstr ""
+
+#: components/modal/modals/ReportQueue.tsx
+msgid "Moderator notes (used as reason when rejecting)"
 msgstr ""
 
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
@@ -2221,6 +2321,14 @@ msgstr ""
 msgid "NEW"
 msgstr ""
 
+#: components/modal/modals/E2EEDisable.tsx
+msgid "New direct messages from this device will no longer be end-to-end encrypted."
+msgstr ""
+
+#: components/modal/modals/E2EEEnable.tsx
+msgid "New direct messages with contacts who also have encryption on will be end-to-end encrypted. Only your devices can read them — the server relays ciphertext it cannot decrypt."
+msgstr ""
+
 #: src/interface/ServerEvents.tsx
 msgid "New Event"
 msgstr ""
@@ -2234,6 +2342,10 @@ msgstr ""
 #: components/auth/src/flows/Form.tsx
 msgid "New Password"
 msgstr "Naujas slaptažodis"
+
+#: components/client/NotificationsWorker.tsx
+msgid "New report"
+msgstr ""
 
 #: components/app/interface/channels/text/Message.tsx
 msgid "New to Sloga"
@@ -2259,6 +2371,14 @@ msgstr ""
 msgid "No events on this day."
 msgstr ""
 
+#: components/modal/modals/ReportQueue.tsx
+msgid "No open reports. All clear!"
+msgstr ""
+
+#: components/modal/modals/E2EEIdentityChange.tsx
+msgid "No pending identity changes remain."
+msgstr ""
+
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsOverview.tsx
 msgid "No permissions set yet"
 msgstr ""
@@ -2279,6 +2399,10 @@ msgstr "Jokių"
 
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Normal"
+msgstr ""
+
+#: src/interface/channels/text/Composition.tsx
+msgid "Not encrypted — the other person hasn't turned on encryption."
 msgstr ""
 
 #: components/modal/modals/ReportContent.tsx
@@ -2369,6 +2493,10 @@ msgstr ""
 msgid "Open Microphone"
 msgstr ""
 
+#: components/modal/modals/ReportQueue.tsx
+msgid "Open platform suspension for the reported user."
+msgstr ""
+
 #: components/app/menus/ServerContextMenu.tsx
 msgid "Open server settings"
 msgstr ""
@@ -2430,6 +2558,7 @@ msgstr "Leidimai"
 msgid "Pick a Screen to Share"
 msgstr ""
 
+#: components/auth/src/flows/FlowOAuthCallback.tsx
 #: components/auth/src/flows/FlowLogin.tsx
 msgid "Pick a username that you want people to be able to find you by. This can be changed later in your user settings."
 msgstr "Pasirinkite naudotojo vardą, pagal kurį jus galėtų rasti žmonės. Jis galės būti pakeistas naudotojo nustatymuose."
@@ -2569,6 +2698,8 @@ msgstr ""
 msgid "Ready to upload"
 msgstr ""
 
+#: components/modal/modals/SuspendUser.tsx
+#: components/modal/modals/ReportQueue.tsx
 #: components/modal/modals/BanNonMember.tsx
 #: components/modal/modals/BanMember.tsx
 #: components/app/interface/settings/server/bans/ListBans.tsx
@@ -2622,6 +2753,10 @@ msgstr "Registruotis"
 
 #: components/modal/modals/AddBot.tsx
 msgid "Registered since <0/>"
+msgstr ""
+
+#: components/modal/modals/ReportQueue.tsx
+msgid "Reject"
 msgstr ""
 
 #: components/app/menus/UserContextMenu.tsx
@@ -2706,6 +2841,11 @@ msgstr "Skųstis"
 msgid "Report message"
 msgstr "Skųstis žinute"
 
+#: src/interface/Home.tsx
+#: components/modal/modals/ReportQueue.tsx
+msgid "Report queue"
+msgstr ""
+
 #: components/app/menus/ServerContextMenu.tsx
 msgid "Report server"
 msgstr "Skųstis serveriu"
@@ -2713,6 +2853,19 @@ msgstr "Skųstis serveriu"
 #: components/app/menus/UserContextMenu.tsx
 msgid "Report user"
 msgstr "Skųstis naudotoju"
+
+#: components/modal/modals/ReportQueue.tsx
+#: components/modal/modals/ReportQueue.tsx
+msgid "Reported by"
+msgstr ""
+
+#: components/modal/modals/ReportQueue.tsx
+msgid "Reported content (as seen by the reporter)"
+msgstr ""
+
+#: components/modal/modals/ReportQueue.tsx
+msgid "Reported content (server copy)"
+msgstr ""
 
 #: components/auth/src/flows/FlowResend.tsx
 msgid "Resend"
@@ -2750,6 +2903,10 @@ msgstr ""
 msgid "Reset Token"
 msgstr ""
 
+#: components/modal/modals/ReportQueue.tsx
+msgid "Resolve"
+msgstr ""
+
 #: components/ui/components/features/profiles/ProfileBadges.tsx
 msgid "Responsibly disclosed security issues"
 msgstr ""
@@ -2766,8 +2923,16 @@ msgstr ""
 msgid "Revenge or underage pornography"
 msgstr ""
 
+#: src/interface/Home.tsx
+msgid "Review and resolve open content reports."
+msgstr ""
+
 #: components/modal/modals/PolicyChange.tsx
 msgid "Review policy changes"
+msgstr ""
+
+#: components/modal/modals/ReportQueue.tsx
+msgid "Review report"
 msgstr ""
 
 #: components/app/interface/settings/user/notifications/Sounds.tsx
@@ -2848,6 +3013,14 @@ msgstr ""
 
 #: components/modal/modals/InviteToServer.tsx
 msgid "Search friends..."
+msgstr ""
+
+#: components/app/interface/settings/UserSettings.tsx
+msgid "Security & Privacy"
+msgstr ""
+
+#: components/modal/modals/E2EEIdentityChange.tsx
+msgid "Security identity changed"
 msgstr ""
 
 #: components/app/interface/settings/user/voice/VoiceInputOptions.tsx
@@ -2980,6 +3153,10 @@ msgstr "Serverio pavadinimas"
 msgid "Server Roles"
 msgstr ""
 
+#: components/modal/modals/ReportQueue.tsx
+msgid "Server snapshot"
+msgstr ""
+
 #: components/app/interface/settings/UserSettings.tsx
 msgid "Sessions"
 msgstr "Sesijos"
@@ -3046,12 +3223,20 @@ msgstr ""
 msgid "Show send message button"
 msgstr ""
 
+#: components/auth/src/flows/FlowOAuthCallback.tsx
+msgid "Sign in failed"
+msgstr ""
+
 #: components/auth/src/flows/FlowLogin.tsx
 msgid "Sign into Sloga"
 msgstr ""
 
 #: components/auth/src/flows/FlowHome.tsx
 msgid "Sign Up"
+msgstr ""
+
+#: components/auth/src/flows/FlowOAuthCallback.tsx
+msgid "Signing you in…"
 msgstr ""
 
 #: components/app/interface/channels/text/Message.tsx
@@ -3105,6 +3290,10 @@ msgstr ""
 #. placeholder {0}: err.error
 #: components/i18n/errors.ts
 msgid "Something is wrong with your request, {0}."
+msgstr ""
+
+#: components/auth/src/flows/FlowOAuthCallback.tsx
+msgid "Something went wrong while signing you in with Google. Please try again."
 msgstr ""
 
 #: components/i18n/errors.ts
@@ -3207,6 +3396,23 @@ msgstr ""
 msgid "Support the project by donating - thank you!"
 msgstr "Paremkite projektą paaukodami – ačiū!"
 
+#: components/modal/modals/SuspendUser.tsx
+msgid "Suspend"
+msgstr ""
+
+#. placeholder {0}: username(reportedUserId())
+#: components/modal/modals/ReportQueue.tsx
+msgid "Suspend {0}"
+msgstr ""
+
+#: components/app/menus/UserContextMenu.tsx
+msgid "Suspend from platform"
+msgstr ""
+
+#: components/modal/modals/SuspendUser.tsx
+msgid "Suspend User From Platform"
+msgstr ""
+
 #: components/ui/components/features/voice/callCard/VoiceCallCardPreview.tsx
 msgid "Switch to this voice channel"
 msgstr ""
@@ -3263,21 +3469,55 @@ msgstr "Teksto kanalas"
 msgid "That action had no effect."
 msgstr ""
 
+#: components/modal/modals/E2EEDisable.tsx
+msgid "The encrypted message history stored on THIS device will be permanently deleted and cannot be recovered. You will confirm your identity, then confirm the deletion."
+msgstr ""
+
 #. placeholder {0}: file.name
 #: src/interface/channels/text/Composition.tsx
 msgid "The file \"{0}\" ({fileSize}) exceeds the maximum size limit of {maxSizeFormatted}."
+msgstr ""
+
+#: components/auth/src/flows/FlowOAuthCallback.tsx
+msgid "The Google sign-in was cancelled."
 msgstr ""
 
 #: components/i18n/errors.ts
 msgid "The password is too short."
 msgstr ""
 
+#. placeholder {0}: peer()?.username ?? t`this contact`
+#: components/modal/modals/E2EEIdentityChange.tsx
+msgid "The security identity for {0} changed. This happens when they reinstall or set up a new device — but it can also mean someone is attempting to intercept your messages."
+msgstr ""
+
 #: components/app/interface/settings/user/Sync.tsx
 msgid "Theme"
 msgstr "Tema"
 
+#: components/auth/src/flows/FlowOAuthCallback.tsx
+msgid "This account has been disabled."
+msgstr ""
+
+#: components/i18n/errors.ts
+msgid "This account has been suspended. Contact a moderator if you believe this is a mistake."
+msgstr ""
+
 #: components/i18n/errors.ts
 msgid "This account is not activated! Please check your account's inbox and try again."
+msgstr ""
+
+#. placeholder {0}: formatted()
+#: components/auth/src/flows/Form.tsx
+msgid "This account is suspended. Time remaining: {0}"
+msgstr ""
+
+#: components/app/interface/channels/text/EncryptedAttachment.tsx
+msgid "This attachment expired before it reached this device. Ask the sender to send it again."
+msgstr ""
+
+#: components/app/interface/channels/text/EncryptedAttachment.tsx
+msgid "This attachment failed verification and was discarded (it may have been tampered with in transit)."
 msgstr ""
 
 #: components/i18n/errors.ts
@@ -3302,6 +3542,14 @@ msgstr ""
 
 #: src/interface/channels/PasswordGate.tsx
 msgid "This channel is password protected."
+msgstr ""
+
+#: components/modal/modals/E2EEIdentityChange.tsx
+msgid "this contact"
+msgstr ""
+
+#: src/interface/channels/text/Composition.tsx
+msgid "This contact's security identity changed — review before sending."
 msgstr ""
 
 #: src/interface/channels/AgeGate.tsx
@@ -3397,6 +3645,26 @@ msgstr ""
 msgid "Trending GIFs"
 msgstr ""
 
+#: components/modal/modals/E2EEDisable.tsx
+msgid "Turn off"
+msgstr ""
+
+#: components/modal/modals/E2EEDisable.tsx
+msgid "Turn off encrypted direct messages"
+msgstr ""
+
+#: components/modal/modals/E2EEEnable.tsx
+msgid "Turn on"
+msgstr ""
+
+#: components/modal/modals/E2EEEnable.tsx
+msgid "Turn on encrypted direct messages"
+msgstr ""
+
+#: components/app/interface/settings/user/SecurityAndPrivacy.tsx
+msgid "Turn on end-to-end encrypted direct messages for this device."
+msgstr ""
+
 #: components/app/menus/UserContextMenu.tsx
 msgid "Unblock user"
 msgstr "Atblokuoti naudotoją"
@@ -3485,6 +3753,7 @@ msgstr "Naudotojas"
 msgid "User Banned"
 msgstr ""
 
+#: components/modal/modals/SuspendUser.tsx
 #: components/modal/modals/BanNonMember.tsx
 #: components/modal/modals/BanMember.tsx
 msgid "User broke a certain rule…"
@@ -3513,6 +3782,10 @@ msgstr "Naudotojas paliko skambutį"
 #: components/app/interface/settings/ServerSettings.tsx
 msgid "User Management"
 msgstr "Naudotojų valdymas"
+
+#: components/modal/modals/ReportQueue.tsx
+msgid "User profile snapshot"
+msgstr ""
 
 #: components/app/interface/settings/UserSettings.tsx
 msgid "User Settings"
@@ -3553,6 +3826,10 @@ msgstr ""
 
 #: src/interface/navigation/channels/ServerSidebar.tsx
 msgid "Verified"
+msgstr ""
+
+#: components/modal/modals/E2EEIdentityChange.tsx
+msgid "Verify the change with them through another channel before you continue. Accepting trusts the new identity and resumes sending; past encrypted messages are unaffected."
 msgstr ""
 
 #: components/auth/src/flows/FlowVerify.tsx
@@ -3681,6 +3958,11 @@ msgstr ""
 #. placeholder {0}: props.member.user?.username
 #: components/modal/modals/KickMember.tsx
 msgid "You are about to kick {0}"
+msgstr ""
+
+#. placeholder {0}: props.user.username
+#: components/modal/modals/SuspendUser.tsx
+msgid "You are about to suspend {0} from the entire platform. Their account will be disabled and all of their sessions will be revoked."
 msgstr ""
 
 #: components/i18n/errors.ts
@@ -3825,6 +4107,10 @@ msgstr "Jūsų paskyra patvirtinta!"
 msgid "Your discriminator change has been ratelimited, please try again later."
 msgstr ""
 
+#: components/auth/src/flows/FlowOAuthCallback.tsx
+msgid "Your Google account's email address is not verified."
+msgstr ""
+
 #: components/i18n/errors.ts
 msgid "Your message is too long, please remove some characters and try again."
 msgstr ""
@@ -3835,6 +4121,10 @@ msgstr "Jūsų atkūrimo kodai"
 
 #: components/i18n/errors.ts
 msgid "Your role ranking is too low to take this action."
+msgstr ""
+
+#: components/auth/src/flows/Form.tsx
+msgid "Your suspension has expired — try logging in again."
 msgstr ""
 
 #: components/i18n/errors.ts

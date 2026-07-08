@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 12+ backup & device-transfer rules. See backup_rules.xml for
+     why the native E2EE store (files/e2ee) AND the WebView storage
+     (app_webview — holds plaintext DM drafts in localStorage/IndexedDB)
+     are excluded from both cloud backup and device transfer. -->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="file" path="e2ee" />
+        <exclude domain="root" path="app_webview" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="file" path="e2ee" />
+        <exclude domain="root" path="app_webview" />
+    </device-transfer>
+</data-extraction-rules>

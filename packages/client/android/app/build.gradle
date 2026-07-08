@@ -1,4 +1,5 @@
 apply plugin: 'com.android.application'
+apply plugin: 'kotlin-android'
 
 // Release signing credentials live outside the repo (android/keystore.properties, gitignored)
 def keystoreProperties = new Properties()
@@ -10,12 +11,17 @@ if (keystorePropertiesFile.exists()) {
 android {
     namespace = "com.acutest.app"
     compileSdk = rootProject.ext.compileSdkVersion
+    // BuildConfig.DEBUG gates the debug-only WebView debugger / mixed-content
+    // (MainActivity) — AGP 8 requires opting in to BuildConfig generation.
+    buildFeatures {
+        buildConfig = true
+    }
     defaultConfig {
         applicationId "com.acutest.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 4
-        versionName "1.2.1"
+        versionCode 5
+        versionName "1.3.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -50,8 +56,15 @@ repositories {
     }
 }
 
+kotlin {
+    jvmToolchain(21)
+}
+
 dependencies {
     implementation fileTree(include: ['*.jar'], dir: 'libs')
+    // JNA: FFI runtime for the uniffi-generated E2EE bindings
+    // (loads libacutest_e2ee.so from jniLibs)
+    implementation 'net.java.dev.jna:jna:5.15.0@aar'
     implementation platform('com.google.firebase:firebase-bom:33.7.0')
     implementation 'com.google.firebase:firebase-messaging'
     implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
