@@ -216,7 +216,102 @@ class E2eePlugin : Plugin() {
                             requireString(call, "selfUserId"),
                         ),
                     )
-                // NOT here by design: e2ee_wipe (native dialog method),
+                // ---- Group DMs, verification, downgrade (slice 5) ----
+                "e2ee_send_mode_group" ->
+                    resolveJson(call, engine.sendModeGroup(requireString(call, "conversationId")))
+                "e2ee_encrypt_group" ->
+                    resolveJson(
+                        call,
+                        engine.encryptGroup(
+                            requireString(call, "conversationId"),
+                            requireString(call, "selfUserId"),
+                            call.getArray("bundles")?.toString(),
+                            requireString(call, "content"),
+                            call.getArray("attachments")?.toList<String>() ?: emptyList(),
+                        ),
+                    )
+                "e2ee_enable_group" ->
+                    resolveJson(
+                        call,
+                        engine.enableGroup(
+                            requireString(call, "conversationId"),
+                            call.getArray("roster")?.toList<String>() ?: emptyList(),
+                            requireString(call, "selfUserId"),
+                            call.getArray("bundles")?.toString(),
+                        ),
+                    )
+                "e2ee_add_group_member" ->
+                    resolveJson(
+                        call,
+                        engine.addGroupMember(
+                            requireString(call, "conversationId"),
+                            requireString(call, "userId"),
+                            requireString(call, "selfUserId"),
+                            call.getArray("bundles")?.toString(),
+                        ),
+                    )
+                "e2ee_group_reconcile" ->
+                    resolveJson(
+                        call,
+                        engine.groupReconcile(
+                            requireString(call, "conversationId"),
+                            call.getArray("displayed")?.toList<String>() ?: emptyList(),
+                            requireString(call, "selfUserId"),
+                        ),
+                    )
+                "e2ee_group_state" ->
+                    resolveJson(call, engine.groupState(requireString(call, "conversationId")))
+                "e2ee_safety_number" ->
+                    resolveJson(
+                        call,
+                        engine.safetyNumber(
+                            requireString(call, "selfUserId"),
+                            requireString(call, "peerUserId"),
+                            requireString(call, "deviceId"),
+                        ),
+                    )
+                "e2ee_mark_verified" -> {
+                    engine.markVerified(
+                        requireString(call, "peerUserId"),
+                        requireString(call, "deviceId"),
+                    )
+                    resolveJson(call, "null")
+                }
+                "e2ee_confirm_peer_downgrade" -> {
+                    engine.confirmPeerDowngrade(
+                        requireString(call, "conversationId"),
+                        call.getBoolean("accept") ?: false,
+                    )
+                    resolveJson(call, "null")
+                }
+                "e2ee_resend_downgrade" ->
+                    resolveJson(
+                        call,
+                        engine.resendDowngrade(
+                            requireString(call, "conversationId"),
+                            requireString(call, "selfUserId"),
+                            call.getArray("bundles")?.toString(),
+                        ),
+                    )
+                "e2ee_mark_downgrade_delivered" -> {
+                    engine.markDowngradeDelivered(requireString(call, "conversationId"))
+                    resolveJson(call, "null")
+                }
+                "e2ee_pending_downgrades" ->
+                    resolveJson(call, engine.pendingDowngrades())
+                "e2ee_attachment_recipients_group" ->
+                    resolveJson(
+                        call,
+                        engine.attachmentRecipientsGroup(
+                            requireString(call, "conversationId"),
+                            requireString(call, "selfUserId"),
+                        ),
+                    )
+                // NOT here by design: e2ee_wipe + e2ee_downgrade +
+                // e2ee_confirm_peer_downgrade-ACCEPT (native dialog methods;
+                // the generic `confirm_peer_downgrade` arm above only handles
+                // DECLINE — the JS transport routes accept + downgrade to the
+                // dedicated dialog methods below);
                 // e2ee_attachment_ciphertext / e2ee_attachment_store (bytes
                 // stay native — see attachmentUpload / attachmentFetch),
                 // open_attachment_for_render (WebView interceptor only).
@@ -255,6 +350,85 @@ class E2eePlugin : Plugin() {
                     call.reject("{\"type\":\"declined\"}")
                 }
                 .setOnCancelListener { call.reject("{\"type\":\"declined\"}") }
+                .show()
+        }
+    }
+
+    /**
+     * Turn off encryption for a conversation — behind a BLOCKING NATIVE
+     * dialog (slice 5, design §5.2). Mirrors the desktop `e2ee_downgrade`:
+     * the webview can only REQUEST; the plaintext-direction transition needs
+     * a physical tap. Decline rejects with the typed `declined` error.
+     */
+    @PluginMethod
+    fun downgrade(call: PluginCall) {
+        val conversationId = call.getString("conversationId") ?: run {
+            call.reject("{\"type\":\"invalid_argument\",\"field\":\"conversationId\"}")
+            return
+        }
+        val selfUserId = call.getString("selfUserId") ?: run {
+            call.reject("{\"type\":\"invalid_argument\",\"field\":\"selfUserId\"}")
+            return
+        }
+        val bundles = call.getArray("bundles")?.toString()
+        activity.runOnUiThread {
+            AlertDialog.Builder(activity)
+                .setTitle("Turn off encryption")
+                .setMessage(
+                    "New messages you send in this conversation will be readable by " +
+                        "the server and are no longer end-to-end encrypted. Existing " +
+                        "encrypted messages stay encrypted.\n\nTurn off encryption for " +
+                        "this conversation?",
+                )
+                .setPositiveButton("Turn off") { _, _ ->
+                    run(call) {
+                        resolveJson(call, engine().downgrade(conversationId, selfUserId, bundles))
+                    }
+                }
+                .setNegativeButton("Cancel") { _, _ -> call.reject("{\"type\":\"declined\"}") }
+                .setOnCancelListener { call.reject("{\"type\":\"declined\"}") }
+                .show()
+        }
+    }
+
+    /**
+     * ACCEPT a peer's downgrade — behind a BLOCKING NATIVE dialog (final-audit
+     * MEDIUM). The receiver's move to plaintext must be a physical tap, not a
+     * webview boolean. (The DECLINE path is handled by the generic
+     * `e2ee_confirm_peer_downgrade` dispatch arm without a dialog.)
+     */
+    @PluginMethod
+    fun confirmPeerDowngradeAccept(call: PluginCall) {
+        val conversationId = call.getString("conversationId") ?: run {
+            call.reject("{\"type\":\"invalid_argument\",\"field\":\"conversationId\"}")
+            return
+        }
+        activity.runOnUiThread {
+            AlertDialog.Builder(activity)
+                .setTitle("Encryption was turned off")
+                .setMessage(
+                    "The other side turned off end-to-end encryption for this " +
+                        "conversation. If you continue, new messages you send will be " +
+                        "readable by the server.\n\nSend unencrypted from now on?",
+                )
+                .setPositiveButton("Send unencrypted") { _, _ ->
+                    run(call) {
+                        engine().confirmPeerDowngrade(conversationId, true)
+                        resolveJson(call, "null")
+                    }
+                }
+                .setNegativeButton("Keep encrypted") { _, _ ->
+                    run(call) {
+                        engine().confirmPeerDowngrade(conversationId, false)
+                        resolveJson(call, "null")
+                    }
+                }
+                .setOnCancelListener {
+                    run(call) {
+                        engine().confirmPeerDowngrade(conversationId, false)
+                        resolveJson(call, "null")
+                    }
+                }
                 .show()
         }
     }

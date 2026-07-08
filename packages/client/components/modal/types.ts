@@ -172,6 +172,14 @@ export type Modals =
       peerUserId: string;
     }
   | {
+      type: "e2ee_verify";
+      peerUserId: string;
+    }
+  | {
+      type: "e2ee_enable_group";
+      channelId: string;
+    }
+  | {
       type: "e2ee_enable";
     }
   | {

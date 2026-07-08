@@ -20,7 +20,7 @@ import isEqual from "lodash.isequal";
 import { Channel, Message as MessageInterface } from "stoat.js";
 import { styled } from "styled-system/jsx";
 
-import { useClient, useClientLifecycle } from "@revolt/client";
+import { useClient, useClientLifecycle, useE2EE } from "@revolt/client";
 import { State } from "@revolt/client/Controller";
 import { useTime } from "@revolt/i18n";
 import { useState } from "@revolt/state";
@@ -101,6 +101,7 @@ export function Messages(props: Props) {
   const cache = useMessageCache();
   const lifecycle = useClientLifecycle();
   const client = useClient();
+  const e2ee = useE2EE();
   const state = useState();
   const dayjs = useTime();
 
@@ -652,11 +653,41 @@ export function Messages(props: Props) {
   );
 
   /**
+   * Whether this conversation is end-to-end encrypted (native local truth).
+   * The server is outside the trust boundary but still controls the ordinary
+   * Message pipeline for a DM/group channel — so in an encrypted
+   * conversation any message that this device did NOT decrypt-and-inject
+   * (`isEncryptedMessage`) is either server-injected or a plaintext send by a
+   * web/old client. It must NEVER render as if encrypted (final-audit HIGH,
+   * design §5.2). We suppress it from the encrypted transcript rather than
+   * showing server-controlled content under the lock.
+   */
+  function encryptedConversation(): boolean {
+    if (!e2ee) return false;
+    const conv =
+      props.channel.type === "Group"
+        ? props.channel.id
+        : props.channel.type === "DirectMessage"
+          ? props.channel.recipient?.id
+          : undefined;
+    if (!conv) return false;
+    const mode = e2ee.sendModes.get(conv);
+    return mode === "encrypt" || mode === "blocked";
+  }
+
+  /**
    * Handle incoming messages
    * @param message Message object
    */
   function onMessage(message: MessageInterface) {
     if (message.channelId === props.channel.id) {
+      // In an encrypted conversation, only accept messages this device
+      // authenticated + injected (trusted encrypted set). A message the
+      // server injected — or a plaintext send from a web/old client — is not
+      // in that set and must not appear under the lock as if authenticated.
+      if (encryptedConversation() && !e2ee?.isEncryptedMessage(message.id)) {
+        return;
+      }
       if (collectedMessages) {
         collectedMessages.push(message);
         return;

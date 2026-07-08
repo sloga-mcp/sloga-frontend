@@ -74,7 +74,31 @@ type NativeStatus = {
 type SendModeVerdict =
   | { mode: "encrypt" }
   | { mode: "blocked"; device_ids: string[] }
-  | { mode: "plaintext" };
+  | { mode: "plaintext" }
+  | { mode: "peer_downgraded"; user_id: string };
+
+/** Group roster entry + state (native `GroupState`) */
+type GroupMember = {
+  user_id: string;
+  status: "active" | "announced" | "removed";
+};
+type GroupState = {
+  conversation_id: string;
+  encrypted_since: number | null;
+  downgraded_at: number | null;
+  peer_downgraded_by: string | null;
+  pending_downgrade: boolean;
+  members: GroupMember[];
+};
+
+/** Native `SafetyNumber` (digits + verification flags — never key bytes) */
+export type SafetyNumber = {
+  digits: string;
+  binding_verified: boolean;
+  user_verified: boolean;
+};
+
+type KeyBundle = { user_id: string; devices: unknown[] };
 
 /** IPC-safe attachment metadata (mirrors native `AttachmentMeta` — no keys) */
 export type E2EEAttachmentMeta = {
@@ -94,9 +118,16 @@ type HistoryRow = {
   direction: "in" | "out";
   kind: string;
   content: string | null;
+  /** Group sender attribution (slice 5); null for legacy dm rows */
+  sender_user_id?: string | null;
   sender_device_id: string | null;
   sequence: number | null;
-  detail: { missing?: number } | null;
+  detail: {
+    missing?: number;
+    user_id?: string;
+    actor?: string;
+    roster?: string[];
+  } | null;
   created_at: number;
   attachments?: E2EEAttachmentMeta[];
 };
@@ -110,6 +141,10 @@ type DecryptOutcome =
       own_message: boolean;
       content: string;
       identity_changed: boolean;
+      conversation_kind: "dm" | "group";
+      /** "group_enable" | "roster_add" | "downgrade" — or null */
+      control: string | null;
+      control_detail: { user_id?: string; roster?: string[] } | null;
     }
   | { kind: "duplicate"; id: string }
   | {
@@ -226,6 +261,12 @@ class TauriTransport implements NativeTransport {
 type E2eeCapacitorPlugin = {
   call(options: Record<string, unknown>): Promise<{ json: string }>;
   wipe(): Promise<{ json: string }>;
+  /** Native-dialog-gated downgrade (slice 5) */
+  downgrade(options: Record<string, unknown>): Promise<{ json: string }>;
+  /** Native-dialog-gated accept of a peer downgrade (slice 5) */
+  confirmPeerDowngradeAccept(
+    options: Record<string, unknown>,
+  ): Promise<{ json: string }>;
   attachmentUpload(options: Record<string, unknown>): Promise<{ json: string }>;
   attachmentFetch(options: Record<string, unknown>): Promise<{ json: string }>;
 };
@@ -263,6 +304,25 @@ class CapacitorTransport implements NativeTransport {
         // (decline rejects with the typed `declined` error)
         await this.#plugin.wipe();
         return undefined as T;
+      }
+
+      // Downgrade + accept-peer-downgrade are plaintext-direction
+      // transitions → dedicated native-dialog plugin methods (wipe parity;
+      // the webview can only request, never silently open plaintext).
+      if (command === "e2ee_downgrade") {
+        const { json } = await this.#plugin.downgrade(
+          (args as Record<string, unknown>) ?? {},
+        );
+        return JSON.parse(json) as T;
+      }
+      if (
+        command === "e2ee_confirm_peer_downgrade" &&
+        (args as { accept?: boolean })?.accept
+      ) {
+        const { json } = await this.#plugin.confirmPeerDowngradeAccept(
+          (args as Record<string, unknown>) ?? {},
+        );
+        return JSON.parse(json) as T;
       }
 
       let callArgs: Record<string, unknown>;
@@ -484,9 +544,43 @@ export class E2EEBridge implements E2EEAdapter {
         // that is the MFA-gated key publish, which native status proves
         // already happened here).
         this.#advertiseOptIn();
+
+        // Resume any downgrade whose ctl fan-out never confirmed its
+        // receipts (crash / total POST failure) — re-send it so peers are
+        // notified, or leave the "may not have reached everyone" state
+        // [G2: 5].
+        void this.#resumePendingDowngrades();
       }
     } catch (error) {
       console.error("[e2ee] startup failed", error);
+    }
+  }
+
+  async #resumePendingDowngrades(): Promise<void> {
+    try {
+      const pending = await this.#invoke<string[]>("e2ee_pending_downgrades");
+      for (const conversationId of pending) {
+        try {
+          // Re-emit the downgrade ctl (no dialog — the original was already
+          // confirmed). Receivers absorb the duplicate harmlessly.
+          const result = await this.#invoke<EncryptResult>(
+            "e2ee_resend_downgrade",
+            {
+              conversationId,
+              selfUserId: this.#client.user!.id,
+              bundles: [],
+            },
+          );
+          await this.#api("POST", "/e2ee/messages", result.payload);
+          await this.#invoke("e2ee_mark_downgrade_delivered", {
+            conversationId,
+          });
+        } catch {
+          /* re-send failed; the flag stays set for the next connect */
+        }
+      }
+    } catch (error) {
+      console.error("[e2ee] pending-downgrade resume failed", error);
     }
   }
 
@@ -665,10 +759,30 @@ export class E2EEBridge implements E2EEAdapter {
     if (outcome.kind === "duplicate") return;
 
     const conversation = outcome.conversation;
-    await this.#refreshMode(conversation);
-    // Inject the message and any markers the decrypt recorded (gap,
-    // tampered, identity change …) with their canonical native row ids
-    await this.#syncRecent(conversation, /* live */ true);
+    const isGroup =
+      outcome.kind === "message" && outcome.conversation_kind === "group";
+
+    if (isGroup) {
+      // A group conversation may have been ESTABLISHED by this very message
+      // (an inbound group_enable). Resolve the group channel and surface it.
+      const channel = this.#groupChannel(conversation);
+      await this.#refreshGroupMode(conversation);
+      await this.#syncRecentConversation(
+        conversation,
+        channel?.id ?? conversation,
+        /* live */ true,
+      );
+    } else {
+      await this.#refreshMode(conversation);
+      // Inject the message and any markers the decrypt recorded (gap,
+      // tampered, identity change …) with their canonical native row ids
+      await this.#syncRecent(conversation, /* live */ true);
+    }
+  }
+
+  #groupChannel(conversationId: string): Channel | undefined {
+    const channel = this.#client.channels.get(conversationId);
+    return channel?.type === "Group" ? channel : undefined;
   }
 
   // ================================================================
@@ -707,7 +821,14 @@ export class E2EEBridge implements E2EEAdapter {
         "native",
       );
     }
-    this.sendModes.set(peerId, verdict.mode);
+    this.sendModes.set(peerId, this.#composerMode(verdict));
+
+    if (verdict.mode === "peer_downgraded") {
+      throw new E2EESendError(
+        "This contact turned off encryption. Confirm before sending unencrypted.",
+        "blocked",
+      );
+    }
 
     // Sender-initiated upgrade (slice-3 gate LOW #4): a never-encrypted
     // conversation whose peer ADVERTISES opt-in gets an encryption attempt
@@ -811,6 +932,378 @@ export class E2EEBridge implements E2EEAdapter {
 
     await this.#syncRecent(peerId);
     return message;
+  }
+
+  // ================================================================
+  // Group send path (slice 5) — mirrors the DM choke point over the
+  // native group surface (send_mode_group / encrypt_group). Audience is
+  // the pinned roster (never a server- or webview-supplied list); every
+  // encrypt-mode failure THROWS (no silent plaintext fallback).
+  // ================================================================
+
+  async handleGroupMessageSend(
+    channel: Channel,
+    data: E2EEDataMessageSend,
+  ): Promise<Message | null> {
+    if (channel.type !== "Group") return null;
+    const conversationId = channel.id;
+
+    let verdict: SendModeVerdict;
+    try {
+      verdict = await this.#invoke<SendModeVerdict>("e2ee_send_mode_group", {
+        conversationId,
+      });
+    } catch {
+      throw new E2EESendError(
+        "Encryption status could not be verified. The message was NOT sent.",
+        "native",
+      );
+    }
+    this.sendModes.set(conversationId, this.#composerMode(verdict));
+
+    if (verdict.mode === "plaintext") {
+      if (data.e2eeAttachments?.length) {
+        throw new E2EESendError(
+          "The encryption state changed while sending. Nothing was sent.",
+          "native",
+        );
+      }
+      return null; // never-encrypted group: ordinary plaintext path
+    }
+
+    if (verdict.mode === "peer_downgraded") {
+      throw new E2EESendError(
+        "A member turned off encryption for this group. Confirm before sending unencrypted.",
+        "blocked",
+      );
+    }
+
+    if (verdict.mode === "blocked") {
+      throw new E2EESendError(
+        "A member's security identity changed. Review the warning before sending.",
+        "blocked",
+      );
+    }
+
+    if (data.attachments?.length) {
+      throw new E2EESendError(
+        "Attachments must be re-added to this now-encrypted group.",
+        "attachments_unsupported",
+      );
+    }
+
+    const content = data.content ?? "";
+    const result = await this.#encryptGroupWithBundles(
+      conversationId,
+      content,
+      data.e2eeAttachments ?? [],
+    );
+
+    let receipts: unknown[];
+    try {
+      ({ receipts } = await this.#api<{ receipts: unknown[] }>(
+        "POST",
+        "/e2ee/messages",
+        result.payload,
+      ));
+    } catch {
+      throw new E2EESendError(
+        "The encrypted message could not be delivered. It was NOT sent unencrypted.",
+        "delivery_failed",
+      );
+    }
+
+    await this.#invoke<string[]>("e2ee_handle_receipts", { receipts });
+
+    const message = this.#inject(
+      channel.id,
+      {
+        id: result.message_id,
+        conversation: conversationId,
+        direction: "out",
+        kind: "text",
+        content,
+        sender_user_id: this.#client.user!.id,
+        sender_device_id: null,
+        sequence: null,
+        detail: null,
+        created_at: Math.floor(Date.now() / 1000),
+      },
+      true,
+    );
+
+    await this.#syncRecentConversation(conversationId, channel.id);
+    return message;
+  }
+
+  /**
+   * Encrypt to a group, fetching verified-later bundles only when the
+   * native layer demands them (`needs_bundle` for a sessionless member
+   * device). All-of-audience-or-nobody: a member that cannot be encrypted
+   * to is a hard error, never a partial send.
+   */
+  async #encryptGroupWithBundles(
+    conversationId: string,
+    content: string,
+    attachmentIds: string[],
+  ): Promise<EncryptResult> {
+    const bundles: KeyBundle[] = [];
+    const fetched = new Set<string>();
+
+    for (let attempt = 0; attempt < 8; attempt++) {
+      try {
+        return await this.#invoke<EncryptResult>("e2ee_encrypt_group", {
+          conversationId,
+          selfUserId: this.#client.user!.id,
+          bundles,
+          content,
+          attachments: attachmentIds,
+        });
+      } catch (raw) {
+        const native = raw as NativeError;
+        if (native.type === "needs_bundle" && native.user_id) {
+          if (fetched.has(native.user_id)) throw raw;
+          fetched.add(native.user_id);
+          const bundle = await this.#api<KeyBundle>(
+            "GET",
+            `/e2ee/keys/${native.user_id}`,
+          );
+          bundles.push(bundle);
+          continue;
+        }
+        if (native.type === "peer_identity_changed") {
+          await this.#refreshGroupMode(conversationId);
+          throw new E2EESendError(
+            "A member's security identity changed. Review the warning before sending.",
+            "blocked",
+          );
+        }
+        if (native.type === "fan_out_too_large") {
+          throw new E2EESendError(
+            "This encrypted group is too large to send to (too many member devices).",
+            "native",
+          );
+        }
+        throw raw;
+      }
+    }
+    throw new E2EESendError(
+      "Could not gather encryption keys for every group member.",
+      "native",
+    );
+  }
+
+  /**
+   * Enable end-to-end encryption for a group (design §2.5). The caller
+   * (settings UI) has shown the asserted-roster checklist and confirmed.
+   * `roster` MUST be the exact member set the user is asserting.
+   */
+  async enableGroupEncryption(channel: Channel, roster: string[]): Promise<void> {
+    if (channel.type !== "Group") throw new Error("not a group");
+    const bundles: KeyBundle[] = [];
+    const fetched = new Set<string>();
+
+    for (let attempt = 0; attempt < roster.length + 2; attempt++) {
+      try {
+        const result = await this.#invoke<EncryptResult>("e2ee_enable_group", {
+          conversationId: channel.id,
+          roster,
+          selfUserId: this.#client.user!.id,
+          bundles,
+        });
+        await this.#api("POST", "/e2ee/messages", result.payload);
+        await this.#refreshGroupMode(channel.id);
+        await this.#syncRecentConversation(channel.id, channel.id);
+        return;
+      } catch (raw) {
+        const native = raw as NativeError;
+        if (native.type === "needs_bundle" && native.user_id) {
+          if (fetched.has(native.user_id)) throw raw;
+          fetched.add(native.user_id);
+          bundles.push(
+            await this.#api<KeyBundle>("GET", `/e2ee/keys/${native.user_id}`),
+          );
+          continue;
+        }
+        throw raw;
+      }
+    }
+  }
+
+  /** Native group state (roster + sticky state) for the UI. */
+  async groupState(conversationId: string): Promise<GroupState> {
+    return this.#invoke<GroupState>("e2ee_group_state", { conversationId });
+  }
+
+  /**
+   * Reconcile a group's displayed member list against the pinned roster —
+   * announces displayed-but-unpinned members (loud, never encrypted to)
+   * and removes vanished ones (availability-only). Call on channel open and
+   * on membership events for encrypted groups.
+   *
+   * Also reconciles each member's SIGNED device listing so genuine member
+   * devices become `binding_verified` — the native layer requires that
+   * before honoring a member's roster-mutation / downgrade control message
+   * (final-audit CRITICAL-2 gate). Without this step a real member's roster
+   * change is deferred (fail-closed) until we've verified them.
+   */
+  async groupReconcile(channel: Channel): Promise<void> {
+    if (channel.type !== "Group") return;
+    try {
+      const displayed = [...channel.recipientIds.values()];
+      await this.#invoke("e2ee_group_reconcile", {
+        conversationId: channel.id,
+        displayed,
+        selfUserId: this.#client.user!.id,
+      });
+
+      // Verify every member's device identities from their signed listing
+      // (self included, so our OWN other devices' roster/downgrade controls
+      // also carry authority). A forged device can't produce a valid
+      // signature, so this only ever upgrades genuine bindings.
+      await Promise.all(
+        displayed.map((id) =>
+          this.#reconcileDevices(id).catch(() => {
+            /* a member we can't fetch stays unverified — fail closed */
+          }),
+        ),
+      );
+
+      await this.#syncRecentConversation(channel.id, channel.id);
+    } catch (error) {
+      // A non-established group throws group_not_established — expected for
+      // plaintext groups; ignore.
+      const native = error as NativeError;
+      if (native.type !== "group_not_established") {
+        console.error("[e2ee] group reconcile failed", error);
+      }
+    }
+  }
+
+  /**
+   * The safety number for a peer device (design §3) — digits + verification
+   * flags only; key bytes never cross the IPC.
+   */
+  async safetyNumber(
+    peerUserId: string,
+    deviceId: string,
+  ): Promise<SafetyNumber> {
+    return this.#invoke<SafetyNumber>("e2ee_safety_number", {
+      selfUserId: this.#client.user!.id,
+      peerUserId,
+      deviceId,
+    });
+  }
+
+  /** Mark a peer device user-verified after an in-person comparison. */
+  async markVerified(peerUserId: string, deviceId: string): Promise<void> {
+    await this.#invoke("e2ee_mark_verified", { peerUserId, deviceId });
+    await this.#syncRecent(peerUserId);
+  }
+
+  /**
+   * Explicitly downgrade a conversation (DM or group) to plaintext (design
+   * §5.2). The native layer shows a BLOCKING OS confirmation; declining
+   * rejects with the typed `declined` error. On success the downgrade
+   * control message fans out and the sticky state clears.
+   */
+  async downgradeConversation(channel: Channel): Promise<void> {
+    const conversationId =
+      channel.type === "Group" ? channel.id : this.#peerOf(channel);
+    if (!conversationId) return;
+
+    let result: EncryptResult;
+    try {
+      result = await this.#invoke<EncryptResult>("e2ee_downgrade", {
+        conversationId,
+        selfUserId: this.#client.user!.id,
+        bundles: [],
+      });
+    } catch (raw) {
+      const native = raw as NativeError;
+      if (native.type === "declined") return; // user cancelled the OS dialog
+      throw raw;
+    }
+
+    try {
+      await this.#api("POST", "/e2ee/messages", result.payload);
+      await this.#invoke("e2ee_mark_downgrade_delivered", { conversationId });
+    } catch {
+      // Receipts unconfirmed — the pending-downgrade flag stays set and is
+      // retried on next connect (#onReady). Surface nothing destructive.
+      console.warn("[e2ee] downgrade notice delivery unconfirmed");
+    }
+
+    if (channel.type === "Group") await this.#refreshGroupMode(conversationId);
+    else await this.#refreshMode(conversationId);
+    await this.#syncRecentConversation(conversationId, channel.id);
+  }
+
+  /**
+   * Resolve a peer's downgrade prompt (design §5.2) — the local user action
+   * that gates the plaintext direction on the receiving side. `accept`
+   * opens plaintext; declining keeps the conversation encrypted.
+   */
+  async confirmPeerDowngrade(
+    channel: Channel,
+    accept: boolean,
+  ): Promise<void> {
+    const conversationId =
+      channel.type === "Group" ? channel.id : this.#peerOf(channel);
+    if (!conversationId) return;
+    await this.#invoke("e2ee_confirm_peer_downgrade", {
+      conversationId,
+      accept,
+    });
+    if (channel.type === "Group") await this.#refreshGroupMode(conversationId);
+    else await this.#refreshMode(conversationId);
+  }
+
+  /** Composer-facing mode string (collapses peer_downgraded to blocked). */
+  #composerMode(
+    verdict: SendModeVerdict,
+  ): "encrypt" | "blocked" | "plaintext" {
+    if (verdict.mode === "encrypt") return "encrypt";
+    if (verdict.mode === "plaintext") return "plaintext";
+    return "blocked"; // blocked or peer_downgraded — composer shows a guard
+  }
+
+  async #refreshGroupMode(conversationId: string): Promise<void> {
+    try {
+      const verdict = await this.#invoke<SendModeVerdict>(
+        "e2ee_send_mode_group",
+        { conversationId },
+      );
+      this.sendModes.set(conversationId, this.#composerMode(verdict));
+    } catch {
+      /* leave the last known mode */
+    }
+  }
+
+  /**
+   * Populate the group send-mode cache for the composer (idempotent). Unlike
+   * groupReconcile this works for a never-encrypted group too, so the
+   * "Encrypt this group" affordance can appear.
+   */
+  primeGroupMode(conversationId: string): Promise<void> {
+    return this.#refreshGroupMode(conversationId);
+  }
+
+  /** Group-aware analog of `#syncRecent` (keyed by conversation id). */
+  async #syncRecentConversation(
+    conversationId: string,
+    channelId: string,
+    live = false,
+  ): Promise<void> {
+    const rows = await this.#invoke<HistoryRow[]>("e2ee_history", {
+      peerUserId: conversationId,
+      before: null,
+      limit: 10,
+    });
+    for (const row of rows.reverse()) {
+      const isNew = live && !this.#client.messages.has(row.id);
+      this.#inject(channelId, row, isNew);
+    }
   }
 
   /**
@@ -956,18 +1449,20 @@ export class E2EEBridge implements E2EEAdapter {
     const state = this.status.get("state");
     if (!state?.enabled) return null;
 
-    const peerId = this.#peerOf(channel);
-    if (!peerId) return null;
+    const isGroup = channel.type === "Group";
+    const conversationId = isGroup ? channel.id : this.#peerOf(channel);
+    if (!conversationId) return null;
 
-    const verdict = await this.#invoke<SendModeVerdict>("e2ee_send_mode", {
-      peerUserId: peerId,
-    });
-    this.sendModes.set(peerId, verdict.mode);
+    const verdict = await this.#invoke<SendModeVerdict>(
+      isGroup ? "e2ee_send_mode_group" : "e2ee_send_mode",
+      isGroup ? { conversationId } : { peerUserId: conversationId },
+    );
+    this.sendModes.set(conversationId, this.#composerMode(verdict));
     if (verdict.mode === "plaintext") return null;
 
     const limit = params?.limit ?? 50;
     const rows = await this.#invoke<HistoryRow[]>("e2ee_history", {
-      peerUserId: peerId,
+      peerUserId: conversationId,
       before: params?.before ?? null,
       limit,
     });
@@ -983,7 +1478,7 @@ export class E2EEBridge implements E2EEAdapter {
           channel.id,
           {
             id: `00${channel.id.slice(0, 24)}`,
-            conversation: peerId,
+            conversation: conversationId,
             direction: "in",
             kind: "history_start",
             content: null,
@@ -1070,9 +1565,32 @@ export class E2EEBridge implements E2EEAdapter {
         return "The secure session was reset after repeated undecryptable messages.";
       case "history_start":
         return "Messages are end-to-end encrypted. History starts here on this device.";
+      case "encryption_enabled": {
+        const actor = this.#displayName(row.detail?.actor);
+        const count = row.detail?.roster?.length;
+        return count
+          ? `${actor} turned on end-to-end encryption for these ${count} members.`
+          : `${actor} turned on end-to-end encryption.`;
+      }
+      case "encryption_disabled":
+        return `${this.#displayName(row.detail?.actor)} turned off end-to-end encryption. New messages will be readable by the server.`;
+      case "member_added":
+        return `${this.#displayName(row.detail?.user_id)} joined the encrypted conversation.`;
+      case "member_removed":
+        return `${this.#displayName(row.detail?.user_id)} left the encrypted conversation.`;
+      case "member_announced":
+        return `${this.#displayName(row.detail?.user_id)} is in this group but is NOT yet part of the encrypted conversation — they cannot read new messages until included.`;
+      case "device_verified":
+        return "You verified this contact's security number.";
       default:
         return "Encrypted conversation event.";
     }
+  }
+
+  #displayName(userId?: string): string {
+    if (!userId) return "Someone";
+    if (userId === this.#client.user?.id) return "You";
+    return this.#client.users.get(userId)?.username ?? "A member";
   }
 
   /** Build + insert a collection message from a native history row */
@@ -1089,14 +1607,17 @@ export class E2EEBridge implements E2EEAdapter {
     // fetches — also resumes fetches interrupted by a restart
     this.#trackAttachments(row);
 
+    // Author: prefer the native sender attribution (group transcripts carry
+    // it); fall back to the dm heuristic (out ⇒ us, in ⇒ the conversation
+    // peer) for legacy rows.
+    const author = isText
+      ? (row.sender_user_id ?? (row.direction === "out" ? self : row.conversation))
+      : SYSTEM_AUTHOR;
+
     const shape = {
       _id: row.id,
       channel: channelId,
-      author: isText
-        ? row.direction === "out"
-          ? self
-          : row.conversation
-        : SYSTEM_AUTHOR,
+      author,
       content: isText ? (row.content ?? "") : undefined,
       system: isText
         ? undefined
@@ -1131,14 +1652,21 @@ export class E2EEBridge implements E2EEAdapter {
     channel: Channel,
     items: E2EEDraftFile[],
   ): Promise<string[] | null> {
-    if (channel.type !== "DirectMessage") return null;
+    const isGroup = channel.type === "Group";
+    if (channel.type !== "DirectMessage" && !isGroup) return null;
 
-    const peerId = this.#peerOf(channel);
-    if (!peerId) return null;
+    const conversationId = isGroup ? channel.id : this.#peerOf(channel);
+    if (!conversationId) return null;
 
     let mode: "encrypt" | "blocked" | "plaintext";
     try {
-      mode = await this.sendModeNow(peerId);
+      mode = isGroup
+        ? this.#composerMode(
+            await this.#invoke<SendModeVerdict>("e2ee_send_mode_group", {
+              conversationId,
+            }),
+          )
+        : await this.sendModeNow(conversationId);
     } catch {
       throw new E2EESendError(
         "Encryption status could not be verified. Nothing was sent.",
@@ -1148,7 +1676,9 @@ export class E2EEBridge implements E2EEAdapter {
 
     if (mode === "blocked") {
       throw new E2EESendError(
-        "The recipient's security identity changed. Accept the change in the conversation before sending.",
+        isGroup
+          ? "This encrypted group is not in a sendable state. Resolve the warning before sending."
+          : "The recipient's security identity changed. Accept the change in the conversation before sending.",
         "blocked",
       );
     }
@@ -1156,14 +1686,17 @@ export class E2EEBridge implements E2EEAdapter {
 
     // ---- encrypt mode: plaintext bytes never leave the device ----
 
-    // Recipient devices declared on the blob (active pins of the peer +
-    // our own other devices — mirrors the envelope fan-out)
-    const recipients = await this.#invoke<
-      { user_id: string; device_id: string }[]
-    >("e2ee_attachment_recipients", {
-      peerUserId: peerId,
-      selfUserId: this.#client.user!.id,
-    });
+    // Recipient devices declared on the blob (active pins of every audience
+    // member / the peer + our own other devices — mirrors the fan-out)
+    const recipients = isGroup
+      ? await this.#invoke<{ user_id: string; device_id: string }[]>(
+          "e2ee_attachment_recipients_group",
+          { conversationId, selfUserId: this.#client.user!.id },
+        )
+      : await this.#invoke<{ user_id: string; device_id: string }[]>(
+          "e2ee_attachment_recipients",
+          { peerUserId: conversationId, selfUserId: this.#client.user!.id },
+        );
 
     if (!recipients.length) {
       throw new E2EESendError(
@@ -1182,7 +1715,7 @@ export class E2EEBridge implements E2EEAdapter {
         ciphertext_size: number;
       }>("e2ee_attachment_prepare", plaintext, {
         headers: {
-          "x-peer-user-id": peerId,
+          "x-peer-user-id": conversationId,
           "x-name": encodeURIComponent(file.name || "attachment"),
           "x-mime": encodeURIComponent(
             file.type || "application/octet-stream",
@@ -1401,7 +1934,7 @@ export class E2EEBridge implements E2EEAdapter {
       const verdict = await this.#invoke<SendModeVerdict>("e2ee_send_mode", {
         peerUserId: peerId,
       });
-      this.sendModes.set(peerId, verdict.mode);
+      this.sendModes.set(peerId, this.#composerMode(verdict));
     } catch {
       // Do NOT fabricate a mode on error: leave any known value untouched.
       // Fabricating "encrypt" here would show a lock the send path can't
@@ -1425,8 +1958,9 @@ export class E2EEBridge implements E2EEAdapter {
     const verdict = await this.#invoke<SendModeVerdict>("e2ee_send_mode", {
       peerUserId: peerId,
     });
-    this.sendModes.set(peerId, verdict.mode);
-    return verdict.mode;
+    const mode = this.#composerMode(verdict);
+    this.sendModes.set(peerId, mode);
+    return mode;
   }
 
   // ================================================================

@@ -34,7 +34,9 @@ import { EditPasswordModal } from "./modals/EditPassword";
 import { EditUsernameModal } from "./modals/EditUsername";
 import { E2EEDisableModal } from "./modals/E2EEDisable";
 import { E2EEEnableModal } from "./modals/E2EEEnable";
+import { E2EEEnableGroupModal } from "./modals/E2EEEnableGroup";
 import { E2EEIdentityChangeModal } from "./modals/E2EEIdentityChange";
+import { E2EEVerifyModal } from "./modals/E2EEVerify";
 import { EmojiPreviewModal } from "./modals/EmojiPreview";
 import { Error2Modal } from "./modals/Error2";
 import { ImageViewerModal } from "./modals/ImageViewer";
@@ -152,6 +154,10 @@ export function RenderModal(props: ActiveModal & { onClose: () => void }) {
       return <E2EEDisableModal {...modalProps} />;
     case "e2ee_identity_change":
       return <E2EEIdentityChangeModal {...modalProps} />;
+    case "e2ee_verify":
+      return <E2EEVerifyModal {...modalProps} />;
+    case "e2ee_enable_group":
+      return <E2EEEnableGroupModal {...modalProps} />;
     case "image_viewer":
       return <ImageViewerModal {...modalProps} />;
     case "invite":

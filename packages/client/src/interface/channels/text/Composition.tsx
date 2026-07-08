@@ -69,6 +69,19 @@ export function MessageComposition(props: Props) {
       ? props.channel.recipient?.id
       : undefined,
   );
+
+  /**
+   * The E2EE conversation id — the peer user id for DMs, the channel id for
+   * encrypted group DMs (slice 5). The `sendModes` cache is keyed by this.
+   */
+  const conversationId = createMemo(() =>
+    props.channel.type === "DirectMessage"
+      ? props.channel.recipient?.id
+      : props.channel.type === "Group"
+        ? props.channel.id
+        : undefined,
+  );
+  const isGroup = createMemo(() => props.channel.type === "Group");
   /** Whether E2EE is enabled + published on THIS device */
   const selfE2EEEnabled = createMemo(() => {
     const s = e2ee?.status.get("state");
@@ -95,13 +108,16 @@ export function MessageComposition(props: Props) {
    * - undefined     → neither side is using E2EE (or non-DM) → no indicator
    */
   const e2eeMode = createMemo(() => {
-    const peer = peerUserId();
-    if (!peer) return undefined;
-    const mode = e2ee?.sendModes.get(peer);
+    const conv = conversationId();
+    if (!conv) return undefined;
+    const mode = e2ee?.sendModes.get(conv);
     if (mode === "encrypt" || mode === "blocked") return mode;
-    // A plaintext conversation only warrants an indicator when THIS device
-    // is opted in — otherwise the user isn't using encryption and needs no
-    // nag. Distinguish "peer is set up, just not established yet" from "peer
+    // Groups have no per-peer advertise hint — an unencrypted group shows no
+    // indicator (encryption is opt-in via the group's Security settings).
+    if (isGroup()) return undefined;
+    // A plaintext DM only warrants an indicator when THIS device is opted in
+    // — otherwise the user isn't using encryption and needs no nag.
+    // Distinguish "peer is set up, just not established yet" from "peer
     // hasn't turned encryption on at all".
     if (mode === "plaintext" && selfE2EEEnabled()) {
       return peerE2EEEnabled() ? "pending" : "unencrypted";
@@ -123,12 +139,40 @@ export function MessageComposition(props: Props) {
     }
   };
 
+  /**
+   * A plaintext group this device could turn encryption on for (slice 5).
+   * The only entry point to group E2EE — shown as an affordance next to the
+   * composer. Groups have no per-peer advertise hint, so this appears
+   * whenever this device is E2EE-capable and the group is not yet encrypted.
+   */
+  const groupCanEnable = createMemo(
+    () =>
+      isGroup() &&
+      selfE2EEEnabled() &&
+      e2ee?.sendModes.get(props.channel.id) === "plaintext",
+  );
+
   // Prime the send-mode cache when the conversation opens so the indicator
   // is correct before the first send
   createEffect(
     on(peerUserId, (peer) => {
       if (peer && e2ee) void e2ee.primeSendMode(peer);
     }),
+  );
+
+  // Groups: prime the send-mode cache (drives the indicator + the "Encrypt
+  // this group" affordance), then reconcile the displayed roster against the
+  // pinned one (announces added-but-unpinned members, drops departed).
+  createEffect(
+    on(
+      () => (isGroup() ? props.channel.id : undefined),
+      (id) => {
+        if (id && e2ee) {
+          void e2ee.primeGroupMode(id);
+          void e2ee.groupReconcile(props.channel);
+        }
+      },
+    ),
   );
 
   const currentSlowmode = (): UserSlowmodes | undefined => {
@@ -352,6 +396,9 @@ export function MessageComposition(props: Props) {
       }
 
       if (mode === "blocked") {
+        // Distinguish a peer identity change (accept flow) from a peer
+        // downgrade (confirm-plaintext flow, slice 5) via the group/peer
+        // state — both surface as "blocked" to the composer.
         openModal({
           type: "e2ee_identity_change",
           peerUserId: peer,
@@ -566,6 +613,10 @@ export function MessageComposition(props: Props) {
                 type: "e2ee_identity_change",
                 peerUserId: peerUserId()!,
               });
+            } else if (e2eeMode() === "encrypt" && peerUserId()) {
+              // Green lock → the safety-number verification screen (slice 5).
+              // Groups verify per member via the member list, not here.
+              openModal({ type: "e2ee_verify", peerUserId: peerUserId()! });
             }
           }}
         >
@@ -586,6 +637,20 @@ export function MessageComposition(props: Props) {
               </Match>
             </Switch>
           </span>
+        </E2EEIndicator>
+      </Show>
+      <Show when={groupCanEnable()}>
+        <E2EEIndicator
+          data-mode="pending"
+          onClick={() =>
+            openModal({
+              type: "e2ee_enable_group",
+              channelId: props.channel.id,
+            })
+          }
+        >
+          <Symbol style={{ "font-size": "1rem" }}>lock_open</Symbol>
+          <span>{t`Turn on end-to-end encryption for this group.`}</span>
         </E2EEIndicator>
       </Show>
       <Show when={state.draft.hasAdditionalElements(props.channel.id)}>
