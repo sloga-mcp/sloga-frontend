@@ -1,131 +1,359 @@
 import {
   Component,
   For,
+  type JSX,
   Match,
   Show,
   Switch,
+  createEffect,
   createMemo,
   createResource,
   createSignal,
+  on,
+  onCleanup,
+  onMount,
+  splitProps,
 } from "solid-js";
 
-import { Trans } from "@lingui-solid/solid/macro";
-import { Channel } from "stoat.js";
+import { Trans, useLingui } from "@lingui-solid/solid/macro";
+import {
+  CalendarEvent,
+  DataCreateEvent,
+  EventRsvpData,
+  Frequency,
+  RecurrenceEnd,
+  RsvpStatus,
+  Server,
+  ServerMember,
+  Weekday,
+} from "stoat.js";
 import { styled } from "styled-system/jsx";
 
 import { useClient } from "@revolt/client";
+import { useModals } from "@revolt/modal";
 import { useNavigate, useParams } from "@revolt/routing";
-import { Button, Column, IconButton, Row, Text, typography } from "@revolt/ui";
+import { Avatar, Button, Column, IconButton, Row, typography } from "@revolt/ui";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
 
-import {
-  ServerEvent,
-  buildEventMessage,
-  getEventsForDay,
-  isSameDay,
-  parseEventMessage,
-} from "../lib/serverEvents";
+/**
+ * Typography text that also applies `style`. The shared `@revolt/ui` `Text`
+ * drops any `style` prop (it forwards only to the typography cva), so we wrap a
+ * span to keep colour/decoration styling working and type-clean.
+ */
+function Text(
+  props: Parameters<typeof typography>[0] & {
+    style?: JSX.CSSProperties;
+    children?: JSX.Element;
+  },
+) {
+  const [local, typo] = splitProps(props, ["style", "children"]);
+  return (
+    <span class={typography(typo)} style={local.style}>
+      {local.children}
+    </span>
+  );
+}
 
-const EVENTS_CHANNEL_NAME = "events";
-const MONTH_NAMES = [
-  "January","February","March","April","May","June",
-  "July","August","September","October","November","December",
+/** IANA timezone of this device — anchors recurrence + all-day semantics. */
+const LOCAL_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+/** Weekdays in RRULE order, for the weekly recurrence picker. */
+const WEEKDAYS: Weekday[] = [
+  "Monday",
+  "Tuesday",
+  "Wednesday",
+  "Thursday",
+  "Friday",
+  "Saturday",
+  "Sunday",
 ];
-const DAY_NAMES = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+
+const FREQUENCIES: Frequency[] = ["Daily", "Weekly", "Monthly"];
+
+/** A single expanded occurrence: the series plus one start instant (ms epoch). */
+type Occurrence = { event: CalendarEvent; start: number };
 
 export const ServerEvents: Component = () => {
   const params = useParams<{ server: string }>();
   const client = useClient();
   const navigate = useNavigate();
+  const { showError } = useModals();
 
-  const server = createMemo(() => client()!.servers.get(params.server)!);
-
-  const eventsChannel = createMemo<Channel | undefined>(() => {
-    if (!server()) return undefined;
-    return [...client()!.channels.values()].find(
-      (ch) =>
-        ch.serverId === server().id &&
-        ch.type === "TextChannel" &&
-        ch.name?.toLowerCase() === EVENTS_CHANNEL_NAME,
-    );
-  });
-
-  const [events, { refetch }] = createResource(
-    eventsChannel,
-    async (channel) => {
-      if (!channel) return [];
-      const { messages } = await channel.fetchMessagesWithUsers({ limit: 100 });
-      const parsed: ServerEvent[] = [];
-      for (const msg of messages) {
-        const evt = parseEventMessage(msg.id, msg.content ?? "", msg.authorId);
-        if (evt) parsed.push(evt);
-      }
-      return parsed.sort((a, b) => a.start.localeCompare(b.start));
-    },
-  );
+  const server = createMemo(() => client()!.servers.get(params.server));
 
   const today = new Date();
   const [viewYear, setViewYear] = createSignal(today.getFullYear());
   const [viewMonth, setViewMonth] = createSignal(today.getMonth());
   const [selectedDate, setSelectedDate] = createSignal<Date>(today);
 
-  const [showCreate, setShowCreate] = createSignal(false);
-  const [newTitle, setNewTitle] = createSignal("");
-  const [newDate, setNewDate] = createSignal(formatDateInput(today));
-  const [newTime, setNewTime] = createSignal("18:00");
-  const [newEndTime, setNewEndTime] = createSignal("20:00");
-  const [newDesc, setNewDesc] = createSignal("");
-  const [saving, setSaving] = createSignal(false);
-
-  function prevMonth() {
-    if (viewMonth() === 0) { setViewMonth(11); setViewYear(y => y - 1); }
-    else setViewMonth(m => m - 1);
-  }
-  function nextMonth() {
-    if (viewMonth() === 11) { setViewMonth(0); setViewYear(y => y + 1); }
-    else setViewMonth(m => m + 1);
-  }
-
+  // The visible grid (including leading/trailing spill days).
   const calendarDays = createMemo(() => {
     const year = viewYear();
     const month = viewMonth();
-    const firstDay = new Date(year, month, 1).getDay();
+    const firstWeekday = new Date(year, month, 1).getDay();
+    // Leading blanks relative to the locale's start-of-week.
+    const lead = (firstWeekday - weekStart() + 7) % 7;
     const daysInMonth = new Date(year, month + 1, 0).getDate();
     const days: (Date | null)[] = [];
-    for (let i = 0; i < firstDay; i++) days.push(null);
+    for (let i = 0; i < lead; i++) days.push(null);
     for (let d = 1; d <= daysInMonth; d++) days.push(new Date(year, month, d));
     while (days.length % 7 !== 0) days.push(null);
     return days;
   });
 
-  const selectedEvents = createMemo(() => {
-    const evts = events();
-    if (!evts) return [];
-    return getEventsForDay(evts, selectedDate());
+  // Query window = first visible cell 00:00 → last visible cell 23:59:59.999 local.
+  const windowRange = createMemo(() => {
+    const days = calendarDays().filter((d): d is Date => !!d);
+    const first = days[0] ?? new Date(viewYear(), viewMonth(), 1);
+    const last = days[days.length - 1] ?? first;
+    const from = new Date(
+      first.getFullYear(),
+      first.getMonth(),
+      first.getDate(),
+      0,
+      0,
+      0,
+      0,
+    ).getTime();
+    const to = new Date(
+      last.getFullYear(),
+      last.getMonth(),
+      last.getDate(),
+      23,
+      59,
+      59,
+      999,
+    ).getTime();
+    // Pad ±1 day so an all-day occurrence anchored in another timezone (bucketed
+    // by event-tz wall clock, not viewer-local) isn't clipped at the grid edges.
+    const DAY = 24 * 60 * 60 * 1000;
+    return { from: from - DAY, to: to + DAY };
   });
 
-  const canPost = createMemo(() =>
-    eventsChannel()?.havePermission("SendMessage") ?? false,
+  const [events, { refetch }] = createResource(
+    () => {
+      const s = server();
+      if (!s) return undefined;
+      const { from, to } = windowRange();
+      return [s.id, from, to] as const;
+    },
+    ([serverId, from, to]) =>
+      client()!.calendarEvents.listForServer(serverId, from, to),
   );
 
-  async function createEvent() {
-    const channel = eventsChannel();
-    if (!channel || !newTitle().trim() || !newDate()) return;
+  /** Whether the server has the events feature disabled. */
+  const featureDisabled = createMemo(
+    () => (events.error as { type?: string })?.type === "FeatureDisabled",
+  );
+
+  // Flatten series → per-occurrence instances.
+  const occurrences = createMemo<Occurrence[]>(() => {
+    // Reading an errored resource throws; the error surfaces via the empty state.
+    if (events.error) return [];
+    const rows = events();
+    if (!rows) return [];
+    const out: Occurrence[] = [];
+    for (const row of rows) {
+      for (const start of row.occurrences) {
+        out.push({ event: row.event, start });
+      }
+    }
+    return out.sort((a, b) => a.start - b.start);
+  });
+
+  const occurrencesForDay = createMemo(() => {
+    const key = dayKey(selectedDate());
+    return occurrences().filter((o) => occurrenceDayKey(o) === key);
+  });
+
+  const daysWithOccurrences = createMemo(() => {
+    const set = new Set<string>();
+    for (const o of occurrences()) set.add(occurrenceDayKey(o));
+    return set;
+  });
+
+  const upcoming = createMemo(() => {
+    const now = Date.now();
+    return occurrences()
+      .filter((o) => o.start >= now)
+      .slice(0, 5);
+  });
+
+  // --- Live reconciliation (stored handlers, removed by reference) -----------
+  // Capture the client instance once so subscribe + unsubscribe target the same
+  // object even if the accessor later resolves to a different one.
+  const liveClient = client();
+  const refetchGrid = debounced(() => refetch(), 150);
+  const refreshDetailDebounced = debounced(() => refreshDetail(), 200);
+
+  const onGridEvent = (event: CalendarEvent) => {
+    if (event.serverId === server()?.id) refetchGrid();
+  };
+  const onRsvp = (event: CalendarEvent) => {
+    // Refresh the open detail authoritatively (counts + attendee list); debounced
+    // so a burst of RSVPs doesn't storm fetchContext/fetchAttendees or race them.
+    if (openEvent()?.id === event.id) refreshDetailDebounced();
+  };
+
+  onMount(() => {
+    liveClient.on("calendarEventCreate", onGridEvent);
+    liveClient.on("calendarEventUpdate", onGridEvent);
+    liveClient.on("calendarEventInvite", onGridEvent);
+    liveClient.on("calendarEventRsvp", onRsvp);
+  });
+  onCleanup(() => {
+    liveClient.removeListener("calendarEventCreate", onGridEvent);
+    liveClient.removeListener("calendarEventUpdate", onGridEvent);
+    liveClient.removeListener("calendarEventInvite", onGridEvent);
+    liveClient.removeListener("calendarEventRsvp", onRsvp);
+  });
+
+  function prevMonth() {
+    if (viewMonth() === 0) {
+      setViewMonth(11);
+      setViewYear((y) => y - 1);
+    } else setViewMonth((m) => m - 1);
+  }
+  function nextMonth() {
+    if (viewMonth() === 11) {
+      setViewMonth(0);
+      setViewYear((y) => y + 1);
+    } else setViewMonth((m) => m + 1);
+  }
+
+  const canCreate = createMemo(() => !!server());
+
+  // ------------------------------------------------------------------ detail
+  const [openEvent, setOpenEvent] = createSignal<CalendarEvent | undefined>();
+  const [attendees, setAttendees] = createSignal<EventRsvpData[]>([]);
+  const [attendeesLoading, setAttendeesLoading] = createSignal(false);
+
+  async function openDetail(event: CalendarEvent) {
+    setShowCreate(false);
+    setOpenEvent(event);
+    setAttendees([]);
+    // Batch member sync so attendee rows resolve names/avatars without per-row fetch.
+    server()?.syncMembers().catch(() => {});
+    await refreshDetail();
+  }
+
+  async function refreshDetail() {
+    const event = openEvent();
+    if (!event) return;
+    try {
+      await event.fetchContext();
+    } catch {
+      /* counts stay as-is */
+    }
+    await loadAttendees(true);
+  }
+
+  async function loadAttendees(reset: boolean) {
+    const event = openEvent();
+    if (!event) return;
+    setAttendeesLoading(true);
+    try {
+      const current = reset ? [] : attendees();
+      const before = reset
+        ? undefined
+        : current[current.length - 1]?.user;
+      const page = await event.fetchAttendees({ limit: 100, before });
+      setAttendees(reset ? page : [...current, ...page]);
+    } catch (error) {
+      showError(error);
+    } finally {
+      setAttendeesLoading(false);
+    }
+  }
+
+  const attendeesByStatus = (status: RsvpStatus) =>
+    attendees().filter((a) => a.status === status);
+
+  const totalCount = createMemo(() => {
+    const c = openEvent()?.counts;
+    return c ? c.going + c.pending + c.not_going : 0;
+  });
+  const hasMoreAttendees = createMemo(
+    () => attendees().length < totalCount(),
+  );
+
+  async function doRsvp(status: RsvpStatus) {
+    const event = openEvent();
+    if (!event) return;
+    try {
+      await event.rsvp(status); // optimistic + revert handled in the binding
+    } catch (error) {
+      showError(error);
+    }
+  }
+
+  const canManage = createMemo(() => {
+    const event = openEvent();
+    if (!event) return false;
+    return (
+      event.creatorId === client().user?.id ||
+      (server()?.havePermission("ManageChannel") ?? false)
+    );
+  });
+
+  async function cancelOpenEvent() {
+    const event = openEvent();
+    if (!event) return;
+    try {
+      await event.cancel();
+    } catch (error) {
+      showError(error);
+    }
+  }
+
+  // ------------------------------------------------------------------ create
+  const [showCreate, setShowCreate] = createSignal(false);
+  const [createDate, setCreateDate] = createSignal<Date>(new Date());
+  const [saving, setSaving] = createSignal(false);
+
+  function openCreate(date: Date) {
+    setCreateDate(date);
+    setShowCreate(true);
+  }
+
+  // Reset transient view state when navigating between servers (the route param
+  // can change without remounting), so an open detail / create form from server
+  // A never bleeds into server B's roster.
+  createEffect(
+    on(
+      () => params.server,
+      () => {
+        setOpenEvent(undefined);
+        setShowCreate(false);
+        setAttendees([]);
+      },
+      { defer: true },
+    ),
+  );
+
+  async function createEvent(data: DataCreateEvent, invites: string[]) {
+    const s = server();
+    if (!s) return;
     setSaving(true);
     try {
-      const start = new Date(`${newDate()}T${newTime()}:00`).toISOString();
-      const end = new Date(`${newDate()}T${newEndTime()}:00`).toISOString();
-      const content = buildEventMessage({
-        title: newTitle().trim(),
-        start,
-        end,
-        desc: newDesc().trim() || undefined,
-      });
-      await channel.sendMessage({ content });
-      setNewTitle("");
-      setNewDesc("");
+      const event = await client().calendarEvents.createForServer(s.id, data);
+      if (invites.length) {
+        try {
+          await event.invite(invites);
+        } catch (error) {
+          // Surface the partial failure and land the organizer on the event
+          // detail so they can retry the invite (the event itself was created).
+          showError(error);
+          setShowCreate(false);
+          refetch();
+          openDetail(event);
+          return;
+        }
+      }
       setShowCreate(false);
-      await refetch();
+      refetch();
+    } catch (error) {
+      showError(error);
     } finally {
       setSaving(false);
     }
@@ -143,38 +371,51 @@ export const ServerEvents: Component = () => {
       </PageHeader>
 
       <Switch>
-        <Match when={!eventsChannel()}>
+        <Match when={featureDisabled()}>
           <EmptyState>
             <Symbol style={{ "font-size": "48px", color: "#FF8A00" }}>
-              calendar_month
+              event_busy
             </Symbol>
             <Text class="headline" size="small">
-              <Trans>No Events Channel Found</Trans>
+              <Trans>Events Not Enabled</Trans>
             </Text>
-            <Text class="body" size="medium" style={{ color: "var(--md-sys-color-on-surface-variant)" }}>
-              <Trans>
-                Create a text channel named <strong>events</strong> in this server to enable the calendar.
-              </Trans>
+            <Text
+              class="body"
+              size="medium"
+              style={{ color: "var(--md-sys-color-on-surface-variant)" }}
+            >
+              <Trans>The calendar feature is not enabled on this server.</Trans>
             </Text>
           </EmptyState>
         </Match>
-        <Match when={eventsChannel()}>
+        <Match when={events.error}>
+          <EmptyState>
+            <Symbol style={{ "font-size": "48px", color: "#FF8A00" }}>
+              error
+            </Symbol>
+            <Text class="headline" size="small">
+              <Trans>Couldn't load events</Trans>
+            </Text>
+            <Button variant="filled" onPress={() => refetch()}>
+              <Trans>Retry</Trans>
+            </Button>
+          </EmptyState>
+        </Match>
+        <Match when={!featureDisabled()}>
           <CalendarLayout>
             <CalendarPanel>
               <MonthNav>
                 <IconButton onPress={prevMonth}>
                   <Symbol>chevron_left</Symbol>
                 </IconButton>
-                <MonthLabel>
-                  {MONTH_NAMES[viewMonth()]} {viewYear()}
-                </MonthLabel>
+                <MonthLabel>{monthLabel(viewYear(), viewMonth())}</MonthLabel>
                 <IconButton onPress={nextMonth}>
                   <Symbol>chevron_right</Symbol>
                 </IconButton>
               </MonthNav>
 
               <DayGrid>
-                <For each={DAY_NAMES}>
+                <For each={weekdayHeaders()}>
                   {(name) => <DayName>{name}</DayName>}
                 </For>
                 <For each={calendarDays()}>
@@ -183,10 +424,13 @@ export const ServerEvents: Component = () => {
                       <DayCell
                         isToday={isSameDay(day!, today)}
                         isSelected={isSameDay(day!, selectedDate())}
-                        onClick={() => setSelectedDate(day!)}
+                        onClick={() => {
+                          setSelectedDate(day!);
+                          setOpenEvent(undefined);
+                        }}
                       >
                         <DayNumber>{day!.getDate()}</DayNumber>
-                        <Show when={(events() ?? []).some((e) => isSameDay(new Date(e.start), day!))}>
+                        <Show when={daysWithOccurrences().has(dayKey(day!))}>
                           <EventDot />
                         </Show>
                       </DayCell>
@@ -195,13 +439,13 @@ export const ServerEvents: Component = () => {
                 </For>
               </DayGrid>
 
-              <Show when={canPost()}>
+              <Show when={canCreate()}>
                 <div style={{ padding: "0 12px 12px" }}>
                   <Button
                     variant="filled"
                     onPress={() => {
-                      setNewDate(formatDateInput(selectedDate()));
-                      setShowCreate(true);
+                      setOpenEvent(undefined);
+                      openCreate(selectedDate());
                     }}
                   >
                     <Symbol size={18}>add</Symbol>
@@ -215,118 +459,70 @@ export const ServerEvents: Component = () => {
             <EventsPanel>
               <EventsPanelHeader>
                 <Text class="title" size="medium">
-                  {formatDisplayDate(selectedDate())}
+                  {displayDate(selectedDate())}
                 </Text>
               </EventsPanelHeader>
 
-              <Show when={showCreate() && canPost()}>
-                <CreateForm>
-                  <Text class="label" size="large" style={{ color: "#FF8A00" }}>
-                    <Trans>New Event</Trans>
-                  </Text>
-                  <FormInput
-                    type="text"
-                    placeholder="Event title"
-                    value={newTitle()}
-                    onInput={(e) => setNewTitle(e.currentTarget.value)}
+              <Switch
+                fallback={
+                  <DayView
+                    occurrences={occurrencesForDay()}
+                    upcoming={upcoming()}
+                    loading={events.loading}
+                    onOpen={openDetail}
+                    onJump={(start) => {
+                      const d = new Date(start);
+                      setViewYear(d.getFullYear());
+                      setViewMonth(d.getMonth());
+                      setSelectedDate(d);
+                    }}
                   />
-                  <Row gap="sm">
-                    <FormInput
-                      type="date"
-                      value={newDate()}
-                      onInput={(e) => setNewDate(e.currentTarget.value)}
-                      style={{ flex: 1 }}
-                    />
-                    <FormInput
-                      type="time"
-                      value={newTime()}
-                      onInput={(e) => setNewTime(e.currentTarget.value)}
-                      style={{ flex: 1 }}
-                    />
-                    <span style={{ "align-self": "center", color: "var(--md-sys-color-on-surface-variant)" }}>→</span>
-                    <FormInput
-                      type="time"
-                      value={newEndTime()}
-                      onInput={(e) => setNewEndTime(e.currentTarget.value)}
-                      style={{ flex: 1 }}
-                    />
-                  </Row>
-                  <FormInput
-                    type="text"
-                    placeholder="Description (optional)"
-                    value={newDesc()}
-                    onInput={(e) => setNewDesc(e.currentTarget.value)}
+                }
+              >
+                <Match when={showCreate() && server()}>
+                  <CreateForm
+                    defaultDate={createDate()}
+                    saving={saving()}
+                    onCancel={() => setShowCreate(false)}
+                    onSubmit={createEvent}
+                    server={server()!}
                   />
-                  <Row gap="sm">
-                    <Button variant="text" onPress={() => setShowCreate(false)}>
-                      <Trans>Cancel</Trans>
-                    </Button>
-                    <Button
-                      variant="filled"
-                      onPress={createEvent}
-                      isDisabled={saving() || !newTitle().trim()}
-                    >
-                      {saving() ? <Trans>Saving…</Trans> : <Trans>Create</Trans>}
-                    </Button>
-                  </Row>
-                </CreateForm>
-              </Show>
-
-              <Switch>
-                <Match when={events.loading}>
-                  <EmptyDayText>
-                    <Trans>Loading events…</Trans>
-                  </EmptyDayText>
                 </Match>
-                <Match when={selectedEvents().length === 0}>
-                  <EmptyDayText>
-                    <Trans>No events on this day.</Trans>
-                  </EmptyDayText>
-                </Match>
-                <Match when={selectedEvents().length > 0}>
-                  <Column gap="sm" style={{ padding: "8px 16px" }}>
-                    <For each={selectedEvents()}>
-                      {(evt) => <EventCard event={evt} />}
-                    </For>
-                  </Column>
+                <Match when={openEvent()}>
+                  <EventDetail
+                    event={openEvent()!}
+                    attendees={attendees()}
+                    attendeesLoading={attendeesLoading()}
+                    hasMore={hasMoreAttendees()}
+                    byStatus={attendeesByStatus}
+                    onLoadMore={() => loadAttendees(false)}
+                    onBack={() => setOpenEvent(undefined)}
+                    onRsvp={doRsvp}
+                    canManage={canManage()}
+                    onCancel={cancelOpenEvent}
+                    onUninvite={async (userId) => {
+                      try {
+                        await openEvent()!.uninvite(userId);
+                        // Refresh counts too (not just the attendee page).
+                        await refreshDetail();
+                      } catch (error) {
+                        showError(error);
+                      }
+                    }}
+                    onInvite={async (userIds) => {
+                      await openEvent()!.invite(userIds);
+                      await refreshDetail();
+                    }}
+                    memberOf={(userId) =>
+                      client().serverMembers.getByKey({
+                        server: params.server,
+                        user: userId,
+                      })
+                    }
+                    server={server()!}
+                  />
                 </Match>
               </Switch>
-
-              <Show when={(events() ?? []).length > 0 && !events.loading}>
-                <UpcomingSection>
-                  <Text class="label" size="small" style={{ color: "var(--md-sys-color-on-surface-variant)", padding: "4px 16px" }}>
-                    <Trans>Upcoming</Trans>
-                  </Text>
-                  <For each={(events() ?? []).filter((e) => new Date(e.start) >= today).slice(0, 5)}>
-                    {(evt) => (
-                      <UpcomingItem onClick={() => {
-                        const d = new Date(evt.start);
-                        setViewYear(d.getFullYear());
-                        setViewMonth(d.getMonth());
-                        setSelectedDate(d);
-                      }}>
-                        <UpcomingDate>
-                          <span style={{ color: "#FF8A00", "font-weight": "bold" }}>
-                            {new Date(evt.start).getDate()}
-                          </span>
-                          <span style={{ "font-size": "10px", color: "var(--md-sys-color-on-surface-variant)" }}>
-                            {MONTH_NAMES[new Date(evt.start).getMonth()].slice(0,3)}
-                          </span>
-                        </UpcomingDate>
-                        <div style={{ flex: 1, "min-width": 0 }}>
-                          <div style={{ overflow: "hidden", "text-overflow": "ellipsis", "white-space": "nowrap" }}>
-                            {evt.title}
-                          </div>
-                          <div style={{ "font-size": "11px", color: "var(--md-sys-color-on-surface-variant)" }}>
-                            {formatTime(new Date(evt.start))}
-                            {evt.end ? ` – ${formatTime(new Date(evt.end))}` : ""}
-                          </div>
-                        </div>
-                      </UpcomingItem>
-                    )}
-                  </For>
-                </UpcomingSection>
-              </Show>
             </EventsPanel>
           </CalendarLayout>
         </Match>
@@ -335,23 +531,146 @@ export const ServerEvents: Component = () => {
   );
 };
 
-function EventCard(props: { event: ServerEvent }) {
+// ===========================================================================
+// Sub-components
+// ===========================================================================
+
+function DayView(props: {
+  occurrences: Occurrence[];
+  upcoming: Occurrence[];
+  loading: boolean;
+  onOpen: (event: CalendarEvent) => void;
+  onJump: (start: number) => void;
+}) {
+  const { t } = useLingui();
   return (
-    <EventCardBase>
-      <EventCardAccent />
+    <>
+      <Switch>
+        <Match when={props.loading}>
+          <EmptyDayText>
+            <Trans>Loading events…</Trans>
+          </EmptyDayText>
+        </Match>
+        <Match when={props.occurrences.length === 0}>
+          <EmptyDayText>
+            <Trans>No events on this day.</Trans>
+          </EmptyDayText>
+        </Match>
+        <Match when={props.occurrences.length > 0}>
+          <Column gap="sm" style={{ padding: "8px 16px" }}>
+            <For each={props.occurrences}>
+              {(occ) => (
+                <EventCard occurrence={occ} onOpen={() => props.onOpen(occ.event)} />
+              )}
+            </For>
+          </Column>
+        </Match>
+      </Switch>
+
+      <Show when={props.upcoming.length > 0}>
+        <UpcomingSection>
+          <Text
+            class="label"
+            size="small"
+            style={{
+              color: "var(--md-sys-color-on-surface-variant)",
+              padding: "4px 16px",
+            }}
+          >
+            <Trans>Upcoming</Trans>
+          </Text>
+          <For each={props.upcoming}>
+            {(occ) => (
+              <UpcomingItem onClick={() => props.onJump(occ.start)}>
+                <UpcomingDate>
+                  <span style={{ color: "#FF8A00", "font-weight": "bold" }}>
+                    {new Date(occ.start).getDate()}
+                  </span>
+                  <span
+                    style={{
+                      "font-size": "10px",
+                      color: "var(--md-sys-color-on-surface-variant)",
+                    }}
+                  >
+                    {shortMonth(occ.start)}
+                  </span>
+                </UpcomingDate>
+                <div style={{ flex: 1, "min-width": 0 }}>
+                  <div
+                    style={{
+                      overflow: "hidden",
+                      "text-overflow": "ellipsis",
+                      "white-space": "nowrap",
+                      "text-decoration": occ.event.cancelled
+                        ? "line-through"
+                        : undefined,
+                    }}
+                  >
+                    {occ.event.title}
+                  </div>
+                  <div
+                    style={{
+                      "font-size": "11px",
+                      color: "var(--md-sys-color-on-surface-variant)",
+                    }}
+                  >
+                    {occurrenceTimeLabel(occ, t`All day`)}
+                  </div>
+                </div>
+              </UpcomingItem>
+            )}
+          </For>
+        </UpcomingSection>
+      </Show>
+    </>
+  );
+}
+
+function EventCard(props: { occurrence: Occurrence; onOpen: () => void }) {
+  const { t } = useLingui();
+  const event = () => props.occurrence.event;
+  return (
+    <EventCardBase onClick={props.onOpen}>
+      <EventCardAccent style={{ background: event().color ?? "#FF8A00" }} />
       <EventCardContent>
-        <Text class="title" size="medium">
-          {props.event.title}
+        <Row gap="sm" align>
+          <Text
+            class="title"
+            size="medium"
+            style={{
+              "text-decoration": event().cancelled ? "line-through" : undefined,
+            }}
+          >
+            {event().title}
+          </Text>
+          <Show when={event().cancelled}>
+            <CancelledPill>
+              <Trans>Cancelled</Trans>
+            </CancelledPill>
+          </Show>
+          <Show when={event().recurrence}>
+            <Symbol size={14}>repeat</Symbol>
+          </Show>
+        </Row>
+        <Text
+          class="body"
+          size="small"
+          style={{ color: "var(--md-sys-color-on-surface-variant)" }}
+        >
+          {occurrenceTimeLabel(props.occurrence, t`All day`)}
         </Text>
-        <Show when={props.event.start}>
-          <Text class="body" size="small" style={{ color: "var(--md-sys-color-on-surface-variant)" }}>
-            {formatTime(new Date(props.event.start))}
-            {props.event.end ? ` – ${formatTime(new Date(props.event.end))}` : ""}
+        <Show when={event().location}>
+          <Text
+            class="body"
+            size="small"
+            style={{ color: "var(--md-sys-color-on-surface-variant)" }}
+          >
+            <Symbol size={12}>location_on</Symbol> {event().location}
           </Text>
         </Show>
-        <Show when={props.event.desc}>
+        <Show when={event().description}>
           <Text class="body" size="medium">
-            {props.event.desc}
+            {event().description}
           </Text>
         </Show>
       </EventCardContent>
@@ -359,22 +678,749 @@ function EventCard(props: { event: ServerEvent }) {
   );
 }
 
-function formatDateInput(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+function EventDetail(props: {
+  event: CalendarEvent;
+  attendees: EventRsvpData[];
+  attendeesLoading: boolean;
+  hasMore: boolean;
+  byStatus: (status: RsvpStatus) => EventRsvpData[];
+  onLoadMore: () => void;
+  onBack: () => void;
+  onRsvp: (status: RsvpStatus) => void;
+  canManage: boolean;
+  onCancel: () => void;
+  onUninvite: (userId: string) => void;
+  onInvite: (userIds: string[]) => Promise<void>;
+  memberOf: (userId: string) => ServerMember | undefined;
+  server: Server;
+}) {
+  const { t } = useLingui();
+  const { showError } = useModals();
+  const counts = () => props.event.counts;
+
+  // Invite-more picker (manage only).
+  const [query, setQuery] = createSignal("");
+  const [results, setResults] = createSignal<ServerMember[]>([]);
+  let searchTimer: ReturnType<typeof setTimeout> | undefined;
+  onCleanup(() => clearTimeout(searchTimer));
+  function onSearch(value: string) {
+    setQuery(value);
+    clearTimeout(searchTimer);
+    if (!value.trim()) {
+      setResults([]);
+      return;
+    }
+    searchTimer = setTimeout(async () => {
+      try {
+        const { members } = await props.server.queryMembersExperimental(value);
+        const attending = new Set(props.attendees.map((a) => a.user));
+        setResults(members.filter((m) => !attending.has(m.id.user)));
+      } catch {
+        setResults([]);
+      }
+    }, 250);
+  }
+  async function invite(member: ServerMember) {
+    setQuery("");
+    setResults([]);
+    try {
+      await props.onInvite([member.id.user]);
+    } catch (error) {
+      showError(error);
+    }
+  }
+  return (
+    <DetailWrap>
+      <Row gap="sm" align>
+        <IconButton onPress={props.onBack}>
+          <Symbol>arrow_back</Symbol>
+        </IconButton>
+        <Text
+          class="title"
+          size="large"
+          style={{
+            "text-decoration": props.event.cancelled ? "line-through" : undefined,
+          }}
+        >
+          {props.event.title}
+        </Text>
+        <Show when={props.event.cancelled}>
+          <CancelledPill>
+            <Trans>Cancelled</Trans>
+          </CancelledPill>
+        </Show>
+      </Row>
+
+      <Text
+        class="body"
+        size="small"
+        style={{ color: "var(--md-sys-color-on-surface-variant)" }}
+      >
+        {eventWhenLabel(props.event, t`All day`)}
+      </Text>
+      <Show when={props.event.location}>
+        <Text class="body" size="small">
+          <Symbol size={14}>location_on</Symbol> {props.event.location}
+        </Text>
+      </Show>
+      <Show when={props.event.description}>
+        <Text class="body" size="medium">
+          {props.event.description}
+        </Text>
+      </Show>
+
+      {/* Caller RSVP control */}
+      <Show when={props.event.myRsvp !== undefined && !props.event.cancelled}>
+        <RsvpBar>
+          <Show
+            when={props.event.myRsvp === "Going"}
+            fallback={
+              <>
+                <Button variant="filled" onPress={() => props.onRsvp("Going")}>
+                  <Trans>Accept</Trans>
+                </Button>
+                <Button variant="text" onPress={() => props.onRsvp("NotGoing")}>
+                  <Trans>Decline</Trans>
+                </Button>
+              </>
+            }
+          >
+            <GoingTag>
+              <Symbol size={16}>check_circle</Symbol>
+              <Trans>You're going</Trans>
+            </GoingTag>
+            <Button variant="text" onPress={() => props.onRsvp("NotGoing")}>
+              <Trans>Cancel (can't attend)</Trans>
+            </Button>
+          </Show>
+        </RsvpBar>
+      </Show>
+
+      {/* Attendees grouped by status */}
+      <AttendeeSummary>
+        <span>
+          <Trans>Going</Trans> {counts()?.going ?? 0}
+        </span>
+        <span>
+          <Trans>Invited</Trans> {counts()?.pending ?? 0}
+        </span>
+        <span>
+          <Trans>Not going</Trans> {counts()?.not_going ?? 0}
+        </span>
+      </AttendeeSummary>
+
+      <AttendeeGroup
+        label={t`Going`}
+        rows={props.byStatus("Going")}
+        memberOf={props.memberOf}
+        canManage={props.canManage}
+        onUninvite={props.onUninvite}
+      />
+      <AttendeeGroup
+        label={t`Invited`}
+        rows={props.byStatus("Pending")}
+        memberOf={props.memberOf}
+        canManage={props.canManage}
+        onUninvite={props.onUninvite}
+      />
+      <AttendeeGroup
+        label={t`Not going`}
+        rows={props.byStatus("NotGoing")}
+        memberOf={props.memberOf}
+        canManage={props.canManage}
+        onUninvite={props.onUninvite}
+      />
+
+      <Show when={props.hasMore}>
+        <Button variant="text" onPress={props.onLoadMore} isDisabled={props.attendeesLoading}>
+          {props.attendeesLoading ? (
+            <Trans>Loading…</Trans>
+          ) : (
+            <Trans>Load more attendees</Trans>
+          )}
+        </Button>
+      </Show>
+
+      <Show when={props.canManage && !props.event.cancelled}>
+        <ManageBar>
+          <Text class="label" size="small">
+            <Trans>Invite members</Trans>
+          </Text>
+          <FormInput
+            type="text"
+            placeholder={t`Search members…`}
+            value={query()}
+            onInput={(e) => onSearch(e.currentTarget.value)}
+          />
+          <Show when={results().length > 0}>
+            <SearchResults>
+              <For each={results()}>
+                {(member) => (
+                  <SearchResultRow onClick={() => invite(member)}>
+                    <Avatar
+                      src={member.avatarURL}
+                      size={20}
+                      fallback={member.displayName ?? member.id.user}
+                    />
+                    <span style={{ flex: 1, "text-align": "start" }}>
+                      {member.displayName ?? member.id.user}
+                    </span>
+                    <Symbol size={16}>person_add</Symbol>
+                  </SearchResultRow>
+                )}
+              </For>
+            </SearchResults>
+          </Show>
+          <Button variant="text" onPress={props.onCancel}>
+            <Symbol size={16}>event_busy</Symbol>&nbsp;
+            <Trans>Cancel event</Trans>
+          </Button>
+        </ManageBar>
+      </Show>
+    </DetailWrap>
+  );
 }
 
-function formatDisplayDate(d: Date): string {
-  return `${MONTH_NAMES[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
+function AttendeeGroup(props: {
+  label: string;
+  rows: EventRsvpData[];
+  memberOf: (userId: string) => ServerMember | undefined;
+  canManage: boolean;
+  onUninvite: (userId: string) => void;
+}) {
+  return (
+    <Show when={props.rows.length > 0}>
+      <div>
+        <Text
+          class="label"
+          size="small"
+          style={{ color: "var(--md-sys-color-on-surface-variant)" }}
+        >
+          {props.label} · {props.rows.length}
+        </Text>
+        <For each={props.rows}>
+          {(row) => {
+            const member = () => props.memberOf(row.user);
+            return (
+              <AttendeeRow>
+                <Avatar
+                  src={member()?.avatarURL}
+                  size={24}
+                  fallback={member()?.displayName ?? row.user}
+                />
+                <span style={{ flex: 1, "min-width": 0 }}>
+                  {member()?.displayName ?? row.user}
+                </span>
+                <Show when={row.status === "NotGoing" && row.had_accepted}>
+                  <SmallMuted>
+                    <Trans>was going</Trans>
+                  </SmallMuted>
+                </Show>
+                <Show when={props.canManage}>
+                  <IconButton onPress={() => props.onUninvite(row.user)}>
+                    <Symbol size={16}>close</Symbol>
+                  </IconButton>
+                </Show>
+              </AttendeeRow>
+            );
+          }}
+        </For>
+      </div>
+    </Show>
+  );
 }
 
-function formatTime(d: Date): string {
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+function CreateForm(props: {
+  defaultDate: Date;
+  saving: boolean;
+  onCancel: () => void;
+  onSubmit: (data: DataCreateEvent, invites: string[]) => void;
+  server: Server;
+}) {
+  const { t } = useLingui();
+  const { showError } = useModals();
+  const client = useClient();
+
+  const [title, setTitle] = createSignal("");
+  const [date, setDate] = createSignal(inputDate(props.defaultDate));
+  const [startTime, setStartTime] = createSignal("18:00");
+  const [endTime, setEndTime] = createSignal("19:00");
+  const [allDay, setAllDay] = createSignal(false);
+  const [description, setDescription] = createSignal("");
+  const [location, setLocation] = createSignal("");
+
+  const [freq, setFreq] = createSignal<Frequency | "None">("None");
+  const [interval, setInterval] = createSignal(1);
+  const [weekdays, setWeekdays] = createSignal<Weekday[]>([]);
+  const [endMode, setEndMode] = createSignal<"count" | "until">("count");
+  const [count, setCount] = createSignal(10);
+  const [untilDate, setUntilDate] = createSignal(inputDate(props.defaultDate));
+
+  // Invite picker
+  const [query, setQuery] = createSignal("");
+  const [results, setResults] = createSignal<ServerMember[]>([]);
+  const [invited, setInvited] = createSignal<Map<string, ServerMember>>(new Map());
+
+  let searchTimer: ReturnType<typeof setTimeout> | undefined;
+  onCleanup(() => clearTimeout(searchTimer));
+  function onSearch(value: string) {
+    setQuery(value);
+    clearTimeout(searchTimer);
+    if (!value.trim()) {
+      setResults([]);
+      return;
+    }
+    searchTimer = setTimeout(async () => {
+      try {
+        const { members } = await props.server.queryMembersExperimental(value);
+        const self = client().user?.id;
+        setResults(
+          members.filter(
+            (m: ServerMember) =>
+              m.id.user !== self && !invited().has(m.id.user),
+          ),
+        );
+      } catch (error) {
+        showError(error);
+      }
+    }, 250);
+  }
+  function addInvite(member: ServerMember) {
+    const next = new Map(invited());
+    next.set(member.id.user, member);
+    setInvited(next);
+    setResults((r) => r.filter((m) => m.id.user !== member.id.user));
+  }
+  function removeInvite(userId: string) {
+    const next = new Map(invited());
+    next.delete(userId);
+    setInvited(next);
+  }
+
+  function toggleWeekday(day: Weekday) {
+    setWeekdays((days) =>
+      days.includes(day) ? days.filter((d) => d !== day) : [...days, day],
+    );
+  }
+
+  function submit() {
+    if (!title().trim() || !date()) return;
+
+    const startMs = allDay()
+      ? localMs(date(), "00:00")
+      : localMs(date(), startTime());
+    const data: DataCreateEvent = {
+      title: title().trim(),
+      start: startMs,
+      all_day: allDay(),
+      timezone: LOCAL_TZ,
+      description: description().trim() || undefined,
+      location: location().trim() || undefined,
+    };
+    if (!allDay()) {
+      data.end = localMs(date(), endTime());
+    }
+
+    if (freq() !== "None") {
+      const end: RecurrenceEnd =
+        endMode() === "count"
+          ? { type: "Count", count: count() }
+          : { type: "Until", timestamp: localMs(untilDate(), "23:59") };
+      data.recurrence = {
+        freq: freq() as Frequency,
+        interval: interval(),
+        by_weekday: freq() === "Weekly" ? weekdays() : [],
+        end,
+        exceptions: [],
+      };
+    }
+
+    props.onSubmit(data, [...invited().keys()]);
+  }
+
+  return (
+    <FormWrap>
+      <Text class="label" size="large" style={{ color: "#FF8A00" }}>
+        <Trans>New Event</Trans>
+      </Text>
+      <FormInput
+        type="text"
+        placeholder={t`Event title`}
+        value={title()}
+        onInput={(e) => setTitle(e.currentTarget.value)}
+      />
+
+      <Row gap="sm" align>
+        <label style={{ display: "flex", gap: "6px", "align-items": "center" }}>
+          <input
+            type="checkbox"
+            checked={allDay()}
+            onChange={(e) => setAllDay(e.currentTarget.checked)}
+          />
+          <Trans>All day</Trans>
+        </label>
+      </Row>
+
+      <Row gap="sm">
+        <FormInput
+          type="date"
+          value={date()}
+          onInput={(e) => setDate(e.currentTarget.value)}
+          style={{ flex: 1 }}
+        />
+        <Show when={!allDay()}>
+          <FormInput
+            type="time"
+            value={startTime()}
+            onInput={(e) => setStartTime(e.currentTarget.value)}
+            style={{ flex: 1 }}
+          />
+          <span
+            style={{
+              "align-self": "center",
+              color: "var(--md-sys-color-on-surface-variant)",
+            }}
+          >
+            →
+          </span>
+          <FormInput
+            type="time"
+            value={endTime()}
+            onInput={(e) => setEndTime(e.currentTarget.value)}
+            style={{ flex: 1 }}
+          />
+        </Show>
+      </Row>
+
+      <FormInput
+        type="text"
+        placeholder={t`Location (optional)`}
+        value={location()}
+        onInput={(e) => setLocation(e.currentTarget.value)}
+      />
+      <FormInput
+        type="text"
+        placeholder={t`Description (optional)`}
+        value={description()}
+        onInput={(e) => setDescription(e.currentTarget.value)}
+      />
+
+      {/* Recurrence */}
+      <Text class="label" size="small">
+        <Trans>Repeat</Trans>
+      </Text>
+      <Row gap="sm" wrap>
+        <FreqChip active={freq() === "None"} onClick={() => setFreq("None")}>
+          <Trans>None</Trans>
+        </FreqChip>
+        <For each={FREQUENCIES}>
+          {(f) => (
+            <FreqChip active={freq() === f} onClick={() => setFreq(f)}>
+              {/* macro-t must be used in component scope, not passed down */}
+              {f === "Daily" ? t`Daily` : f === "Weekly" ? t`Weekly` : t`Monthly`}
+            </FreqChip>
+          )}
+        </For>
+      </Row>
+
+      <Show when={freq() !== "None"}>
+        <Row gap="sm" align>
+          <span>
+            <Trans>Every</Trans>
+          </span>
+          <FormInput
+            type="number"
+            min="1"
+            max="52"
+            value={interval()}
+            onInput={(e) =>
+              setInterval(Math.max(1, parseInt(e.currentTarget.value) || 1))
+            }
+            style={{ width: "64px" }}
+          />
+        </Row>
+
+        <Show when={freq() === "Weekly"}>
+          <Row gap="sm" wrap>
+            <For each={WEEKDAYS}>
+              {(day) => (
+                <FreqChip
+                  active={weekdays().includes(day)}
+                  onClick={() => toggleWeekday(day)}
+                >
+                  {weekdayLabel(day)}
+                </FreqChip>
+              )}
+            </For>
+          </Row>
+        </Show>
+
+        <Row gap="sm" align wrap>
+          <FreqChip
+            active={endMode() === "count"}
+            onClick={() => setEndMode("count")}
+          >
+            <Trans>Ends after</Trans>
+          </FreqChip>
+          <Show when={endMode() === "count"}>
+            <FormInput
+              type="number"
+              min="1"
+              value={count()}
+              onInput={(e) =>
+                setCount(Math.max(1, parseInt(e.currentTarget.value) || 1))
+              }
+              style={{ width: "64px" }}
+            />
+            <span>
+              <Trans>occurrences</Trans>
+            </span>
+          </Show>
+          <FreqChip
+            active={endMode() === "until"}
+            onClick={() => setEndMode("until")}
+          >
+            <Trans>Ends on</Trans>
+          </FreqChip>
+          <Show when={endMode() === "until"}>
+            <FormInput
+              type="date"
+              value={untilDate()}
+              onInput={(e) => setUntilDate(e.currentTarget.value)}
+            />
+          </Show>
+        </Row>
+      </Show>
+
+      {/* Invite picker */}
+      <Text class="label" size="small">
+        <Trans>Invite members</Trans>
+      </Text>
+      <Show when={invited().size > 0}>
+        <Row gap="sm" wrap>
+          <For each={[...invited().values()]}>
+            {(member) => (
+              <InvitePill onClick={() => removeInvite(member.id.user)}>
+                {member.displayName ?? member.id.user}
+                <Symbol size={14}>close</Symbol>
+              </InvitePill>
+            )}
+          </For>
+        </Row>
+      </Show>
+      <FormInput
+        type="text"
+        placeholder={t`Search members…`}
+        value={query()}
+        onInput={(e) => onSearch(e.currentTarget.value)}
+      />
+      <Show when={results().length > 0}>
+        <SearchResults>
+          <For each={results()}>
+            {(member) => (
+              <SearchResultRow onClick={() => addInvite(member)}>
+                <Avatar
+                  src={member.avatarURL}
+                  size={20}
+                  fallback={member.displayName ?? member.id.user}
+                />
+                <span style={{ flex: 1, "text-align": "start" }}>
+                  {member.displayName ?? member.id.user}
+                </span>
+                <Symbol size={16}>person_add</Symbol>
+              </SearchResultRow>
+            )}
+          </For>
+        </SearchResults>
+      </Show>
+
+      <Row gap="sm">
+        <Button variant="text" onPress={props.onCancel}>
+          <Trans>Cancel</Trans>
+        </Button>
+        <Button
+          variant="filled"
+          onPress={submit}
+          isDisabled={props.saving || !title().trim()}
+        >
+          {props.saving ? <Trans>Saving…</Trans> : <Trans>Create</Trans>}
+        </Button>
+      </Row>
+    </FormWrap>
+  );
 }
 
-// --- Styled components ---
+// ===========================================================================
+// Helpers
+// ===========================================================================
+
+/** Trailing-edge debounce whose timer is cleared on component cleanup. */
+function debounced<A extends unknown[]>(
+  fn: (...args: A) => void,
+  ms: number,
+): (...args: A) => void {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  onCleanup(() => clearTimeout(timer));
+  return (...args: A) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), ms);
+  };
+}
+
+function isSameDay(a: Date, b: Date): boolean {
+  return (
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate()
+  );
+}
+
+/** Local Y-M-D key for a Date (used for the grid cells + timed occurrences). */
+function dayKey(d: Date): string {
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/**
+ * Which calendar cell an occurrence belongs to. All-day occurrences are floating
+ * dates anchored to the event's timezone (so they never shift a day for a viewer
+ * elsewhere); timed occurrences bucket to the viewer's local day.
+ */
+function occurrenceDayKey(occ: Occurrence): string {
+  if (occ.event.allDay) {
+    // en-CA formats as YYYY-MM-DD.
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: occ.event.timezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date(occ.start));
+  }
+  return dayKey(new Date(occ.start));
+}
+
+function occurrenceTimeLabel(occ: Occurrence, allDayText: string): string {
+  if (occ.event.allDay) return allDayText;
+  const start = new Date(occ.start);
+  const duration =
+    occ.event.endAt !== undefined ? occ.event.endAt - occ.event.startAt : 0;
+  const startLabel = time(start);
+  if (duration > 0) {
+    return `${startLabel} – ${time(new Date(occ.start + duration))}`;
+  }
+  return startLabel;
+}
+
+function eventWhenLabel(event: CalendarEvent, allDayText: string): string {
+  if (event.allDay) {
+    // All-day dates are floating in the event's timezone — format them there so
+    // the label matches the grid bucket for viewers in another timezone.
+    const dateLabel = new Intl.DateTimeFormat(undefined, {
+      timeZone: event.timezone,
+      weekday: "short",
+      month: "long",
+      day: "numeric",
+      year: "numeric",
+    }).format(event.start);
+    return `${dateLabel} · ${allDayText}`;
+  }
+  const start = event.start;
+  const end = event.end;
+  return `${displayDate(start)} · ${time(start)}${end ? ` – ${time(end)}` : ""}`;
+}
+
+function localMs(date: string, time: string): number {
+  return new Date(`${date}T${time}:00`).getTime();
+}
+
+function inputDate(d: Date): string {
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function pad(n: number): string {
+  return String(n).padStart(2, "0");
+}
+
+// --- locale-aware formatting (no hardcoded English month/day arrays) --------
+
+function monthLabel(year: number, month: number): string {
+  return new Intl.DateTimeFormat(undefined, {
+    month: "long",
+    year: "numeric",
+  }).format(new Date(year, month, 1));
+}
+
+function displayDate(d: Date): string {
+  return new Intl.DateTimeFormat(undefined, {
+    weekday: "short",
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  }).format(d);
+}
+
+function shortMonth(ms: number): string {
+  return new Intl.DateTimeFormat(undefined, { month: "short" }).format(
+    new Date(ms),
+  );
+}
+
+function time(d: Date): string {
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(d);
+}
+
+/**
+ * Locale's first day of the week as a JS day index (0=Sun … 6=Sat).
+ * Uses `Intl.Locale` week info where available; falls back to Sunday.
+ */
+function weekStart(): number {
+  try {
+    const locale = new Intl.Locale(navigator.language) as Intl.Locale & {
+      weekInfo?: { firstDay?: number };
+      getWeekInfo?: () => { firstDay?: number };
+    };
+    const info = locale.getWeekInfo?.() ?? locale.weekInfo;
+    // firstDay is 1=Mon … 7=Sun; convert to JS 0=Sun … 6=Sat.
+    if (info?.firstDay) return info.firstDay % 7;
+  } catch {
+    /* fall through to Sunday */
+  }
+  return 0;
+}
+
+/** Localized weekday headers, ordered from the locale's start-of-week. */
+function weekdayHeaders(): string[] {
+  const fmt = new Intl.DateTimeFormat(undefined, { weekday: "short" });
+  const start = weekStart();
+  // 2023-01-01 is a Sunday (JS day 0).
+  return Array.from({ length: 7 }, (_, i) =>
+    fmt.format(new Date(2023, 0, 1 + ((start + i) % 7))),
+  );
+}
+
+/** Day-of-month in Jan 2023 that falls on each weekday (Jan 2 = Monday). */
+const WEEKDAY_REF: Record<Weekday, number> = {
+  Monday: 2,
+  Tuesday: 3,
+  Wednesday: 4,
+  Thursday: 5,
+  Friday: 6,
+  Saturday: 7,
+  Sunday: 8,
+};
+
+/** Locale-aware short weekday name (lingui macros don't survive being passed a `t`). */
+function weekdayLabel(day: Weekday): string {
+  return new Intl.DateTimeFormat(undefined, { weekday: "short" }).format(
+    new Date(2023, 0, WEEKDAY_REF[day]),
+  );
+}
+
+// ===========================================================================
+// Styled components
+// ===========================================================================
 
 const PageBase = styled("div", {
   base: {
@@ -398,11 +1444,7 @@ const PageHeader = styled("div", {
 });
 
 const CalendarLayout = styled("div", {
-  base: {
-    display: "flex",
-    flex: 1,
-    overflow: "hidden",
-  },
+  base: { display: "flex", flex: 1, overflow: "hidden" },
 });
 
 const CalendarPanel = styled("div", {
@@ -462,9 +1504,7 @@ const DayCell = styled("div", {
     borderRadius: "6px",
     cursor: "pointer",
     transition: "background 0.1s",
-    "&:hover": {
-      background: "var(--md-sys-color-surface-container)",
-    },
+    "&:hover": { background: "var(--md-sys-color-surface-container)" },
   },
   variants: {
     isToday: {
@@ -476,19 +1516,12 @@ const DayCell = styled("div", {
       },
     },
     isSelected: {
-      true: {
-        background: "var(--md-sys-color-primary-container) !important",
-      },
+      true: { background: "var(--md-sys-color-primary-container) !important" },
     },
   },
 });
 
-const DayNumber = styled("span", {
-  base: {
-    fontSize: "13px",
-    lineHeight: "1.6",
-  },
-});
+const DayNumber = styled("span", { base: { fontSize: "13px", lineHeight: "1.6" } });
 
 const EventDot = styled("div", {
   base: {
@@ -518,7 +1551,7 @@ const EventsPanelHeader = styled("div", {
   },
 });
 
-const CreateForm = styled("div", {
+const FormWrap = styled("div", {
   base: {
     display: "flex",
     flexDirection: "column",
@@ -538,11 +1571,69 @@ const FormInput = styled("input", {
     color: "var(--md-sys-color-on-surface)",
     fontSize: "0.9rem",
     outline: "none",
-    width: "100%",
     boxSizing: "border-box",
-    "&:focus": {
-      borderColor: "var(--md-sys-color-primary)",
+    "&:focus": { borderColor: "var(--md-sys-color-primary)" },
+  },
+});
+
+const FreqChip = styled("button", {
+  base: {
+    padding: "4px 10px",
+    borderRadius: "999px",
+    border: "1.5px solid var(--md-sys-color-outline)",
+    background: "transparent",
+    color: "var(--md-sys-color-on-surface)",
+    cursor: "pointer",
+    fontSize: "0.8rem",
+  },
+  variants: {
+    active: {
+      true: {
+        background: "var(--md-sys-color-primary-container)",
+        borderColor: "var(--md-sys-color-primary)",
+      },
     },
+  },
+});
+
+const InvitePill = styled("button", {
+  base: {
+    display: "flex",
+    alignItems: "center",
+    gap: "4px",
+    padding: "4px 8px",
+    borderRadius: "999px",
+    border: "none",
+    background: "var(--md-sys-color-secondary-container)",
+    color: "var(--md-sys-color-on-secondary-container)",
+    cursor: "pointer",
+    fontSize: "0.8rem",
+  },
+});
+
+const SearchResults = styled("div", {
+  base: {
+    display: "flex",
+    flexDirection: "column",
+    borderRadius: "8px",
+    border: "1px solid var(--md-sys-color-outline-variant)",
+    maxHeight: "160px",
+    overflowY: "auto",
+  },
+});
+
+const SearchResultRow = styled("button", {
+  base: {
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+    padding: "6px 10px",
+    border: "none",
+    background: "transparent",
+    color: "var(--md-sys-color-on-surface)",
+    cursor: "pointer",
+    textAlign: "start",
+    "&:hover": { background: "var(--md-sys-color-surface-container-high)" },
   },
 });
 
@@ -561,15 +1652,13 @@ const EventCardBase = styled("div", {
     overflow: "hidden",
     background: "var(--md-sys-color-surface-container)",
     marginBottom: "8px",
+    cursor: "pointer",
+    "&:hover": { background: "var(--md-sys-color-surface-container-high)" },
   },
 });
 
 const EventCardAccent = styled("div", {
-  base: {
-    width: "4px",
-    flexShrink: 0,
-    background: "#FF8A00",
-  },
+  base: { width: "4px", flexShrink: 0, background: "#FF8A00" },
 });
 
 const EventCardContent = styled("div", {
@@ -580,6 +1669,80 @@ const EventCardContent = styled("div", {
     padding: "10px 14px",
     flex: 1,
     minWidth: 0,
+  },
+});
+
+const CancelledPill = styled("span", {
+  base: {
+    fontSize: "10px",
+    padding: "1px 6px",
+    borderRadius: "999px",
+    background: "var(--md-sys-color-error-container)",
+    color: "var(--md-sys-color-on-error-container)",
+  },
+});
+
+const DetailWrap = styled("div", {
+  base: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "8px",
+    padding: "12px 16px",
+  },
+});
+
+const RsvpBar = styled("div", {
+  base: {
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+    flexWrap: "wrap",
+    padding: "8px 0",
+  },
+});
+
+const GoingTag = styled("span", {
+  base: {
+    display: "flex",
+    alignItems: "center",
+    gap: "4px",
+    color: "var(--md-sys-color-primary)",
+    fontWeight: "600",
+  },
+});
+
+const AttendeeSummary = styled("div", {
+  base: {
+    display: "flex",
+    gap: "16px",
+    fontSize: "0.8rem",
+    color: "var(--md-sys-color-on-surface-variant)",
+    padding: "4px 0",
+  },
+});
+
+const AttendeeRow = styled("div", {
+  base: {
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+    padding: "4px 0",
+    fontSize: "0.9rem",
+  },
+});
+
+const SmallMuted = styled("span", {
+  base: {
+    fontSize: "11px",
+    color: "var(--md-sys-color-on-surface-variant)",
+  },
+});
+
+const ManageBar = styled("div", {
+  base: {
+    borderTop: "1px solid var(--md-sys-color-outline-variant)",
+    marginTop: "8px",
+    paddingTop: "8px",
   },
 });
 
@@ -599,9 +1762,7 @@ const UpcomingItem = styled("div", {
     padding: "8px 16px",
     cursor: "pointer",
     fontSize: "13px",
-    "&:hover": {
-      background: "var(--md-sys-color-surface-container)",
-    },
+    "&:hover": { background: "var(--md-sys-color-surface-container)" },
   },
 });
 
