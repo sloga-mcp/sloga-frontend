@@ -351,6 +351,18 @@ class E2eePlugin : Plugin() {
                     engine.backupForgetLocal()
                     resolveJson(call, "null")
                 }
+                // §6.4 durable re-enroll self-heal (design §8 HIGH-1): re-derive
+                // the post-restore FIRST-publish payload on demand for a device
+                // stranded provisioned-but-unpublished (its server row revoked
+                // while dead, then the re-enroll prompt dismissed / the app
+                // restarted before finishing). Public key material only (same
+                // shape as e2ee_enable), re-callable, and it never touches the
+                // recovery CODE — so it belongs on this ciphertext-only
+                // allowlist, not with the code-bearing dialog methods below. The
+                // uniffi postRestoreRekey already existed for the restore
+                // dialog; this exposes it re-callably to the webview.
+                "e2ee_backup_rederive_republish" ->
+                    resolveJson(call, engine.postRestoreRekey())
                 // NOT here by design: e2ee_wipe + e2ee_downgrade +
                 // e2ee_confirm_peer_downgrade-ACCEPT (native dialog methods;
                 // the generic `confirm_peer_downgrade` arm above only handles

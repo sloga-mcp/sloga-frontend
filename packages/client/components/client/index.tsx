@@ -90,15 +90,20 @@ export function ClientContext(props: { state: State; children: JSXElement }) {
   // opens the engine on a fresh install); open the opt-in modal in
   // restore-first mode, once per session. A plain effect (no `on`) so it fires
   // whether the flag is already set on first run or set later after ready.
+  // Both E2EE launch effects below need the current client's native bridge —
+  // extract the cast once.
+  const currentE2EE = () =>
+    controller.getCurrentClient()?.e2ee as
+      | import("./e2ee").E2EEBridge
+      | undefined;
+
   let offeredRestore = false;
   createEffect(() => {
     if (!controller.isLoggedIn()) {
       offeredRestore = false;
       return;
     }
-    const e2ee = controller.getCurrentClient()?.e2ee as
-      | import("./e2ee").E2EEBridge
-      | undefined;
+    const e2ee = currentE2EE();
     if (!e2ee) return;
     if (e2ee.restoreAvailable.get("state") && !offeredRestore) {
       offeredRestore = true;
@@ -109,17 +114,19 @@ export function ClientContext(props: { state: State; children: JSXElement }) {
   // Slice 5.5 §6.4: a device restored its history but its server-side identity
   // row had been revoked while it was dead, so the post-restore claim was
   // rejected and the bridge raised `reenrollNeeded`. Prompt the second re-auth
-  // that re-publishes the restored keys as a first publication. Opened once per
-  // episode (the guard resets when the flag clears on success).
+  // that re-publishes the restored keys as a first publication. This auto-modal
+  // is a BACKSTOP (opened once per episode); the durable recovery path is the
+  // persistent Security & Privacy affordance plus the bridge's `#onClaimResult`
+  // re-detection, which re-raise `reenrollNeeded` on every reconnect after a
+  // dismissal or a restart (design §8 HIGH-1). So a dismissed auto-modal is no
+  // longer fatal.
   let offeredReenroll = false;
   createEffect(() => {
     if (!controller.isLoggedIn()) {
       offeredReenroll = false;
       return;
     }
-    const e2ee = controller.getCurrentClient()?.e2ee as
-      | import("./e2ee").E2EEBridge
-      | undefined;
+    const e2ee = currentE2EE();
     if (!e2ee) return;
     const needed = !!e2ee.reenrollNeeded.get("state");
     if (needed && !offeredReenroll) {

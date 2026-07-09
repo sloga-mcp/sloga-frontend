@@ -702,6 +702,12 @@ export class E2EEBridge implements E2EEAdapter {
         // [G2: 5].
         void this.#resumePendingDowngrades();
       }
+      // NB: a §6.4 restore strand is NOT caught here. A restored store carries
+      // `published = true` (restore imports the source device's published flag,
+      // e2ee-core backup.rs), so a stranded restored device takes the branch
+      // ABOVE, sends its challenge, and the server rejects it (revoked row) →
+      // the durable re-enroll re-detection lives in `#onClaimResult`, which is
+      // exactly where that rejection lands.
     } catch (error) {
       console.error("[e2ee] startup failed", error);
     }
@@ -818,8 +824,8 @@ export class E2EEBridge implements E2EEAdapter {
       // publish would hit `assert_bound_session` and 401-loop, so corroborate
       // against the server directory before prompting re-enroll.
       if (this.#pendingRestoreRepublish) {
-        const revoked = await this.#ownDeviceMissing().catch(() => false);
-        if (revoked) {
+        const presence = await this.#ownDevicePresence();
+        if (presence === "missing") {
           console.warn(
             "[e2ee] post-restore claim rejected — device row revoked; " +
               "re-enroll required (design §6.4)",
@@ -827,9 +833,13 @@ export class E2EEBridge implements E2EEAdapter {
           this.reenrollNeeded.set("state", true);
           return;
         }
-        // Row still present ⇒ not §6.4. Re-bind via ONE fresh claim so the
-        // stashed republish drains on the normal §6.3 device-bound path; never
-        // loop (a superseding nonce or a hostile server must not spin us).
+        // Row present (or presence UNKNOWN — a blip we must not escalate on) ⇒
+        // not confirmably §6.4. Re-bind via ONE fresh claim so the stashed
+        // republish drains on the normal §6.3 device-bound path; never loop
+        // (a superseding nonce or a hostile server must not spin us). A real
+        // revocation masked as UNKNOWN here is re-detected durably on the next
+        // reconnect's challenge→reject cycle (published stays true, so the
+        // device re-challenges and lands back in this handler).
         if (!this.#restoreReclaimTried) {
           this.#restoreReclaimTried = true;
           console.warn(
@@ -850,6 +860,43 @@ export class E2EEBridge implements E2EEAdapter {
         );
         return;
       }
+
+      // No stashed republish. A rejected claim with an ABSENT server row here is
+      // the DURABLE §6.4 case (design §8 HIGH-1): a device that restored and was
+      // revoked-while-dead, whose in-memory re-enroll payload was lost to a
+      // dismissal or a reload — the restored store is `published = true`, so on
+      // reconnect it reaches this path via the normal challenge→reject flow
+      // rather than the initial in-session restore. Re-derive a fresh
+      // first-publish payload natively (`post_restore_rekey` is re-callable and
+      // rotates only served PUBLIC keys — never the audited AEAD/KDF/pickle) and
+      // re-raise `reenrollNeeded`, so the persistent affordance + backstop modal
+      // can drive `finishReenroll`. Runs on every reconnect until re-enrolled,
+      // which is what makes the recovery durable. A "present"/"unknown" row is
+      // NOT this case (see `#ownDevicePresence`) — fall through to the honest
+      // error so a transient reject or a hostile server can't churn re-derives.
+      if ((await this.#ownDevicePresence()) === "missing") {
+        try {
+          this.#pendingRestoreRepublish = await this.#invoke<Record<
+            string,
+            unknown
+          > | null>("e2ee_backup_rederive_republish");
+        } catch (error) {
+          console.error(
+            "[e2ee] re-derive of the re-enroll payload failed; retrying next connect",
+            error,
+          );
+          return;
+        }
+        if (this.#pendingRestoreRepublish) {
+          console.warn(
+            "[e2ee] claim rejected with an absent server row — re-arming durable " +
+              "§6.4 re-enroll (design §8 HIGH-1)",
+          );
+          this.reenrollNeeded.set("state", true);
+          return;
+        }
+      }
+
       console.error(
         "[e2ee] device claim REJECTED — this session cannot drain envelopes",
       );
@@ -899,21 +946,36 @@ export class E2EEBridge implements E2EEAdapter {
   }
 
   /**
-   * True when this device's identity row is ABSENT from the server directory —
-   * i.e. it was revoked/deleted (design §6.4). Used to tell a genuine
-   * revocation apart from a transient/forced claim rejection before escalating
-   * to an MFA'd first-publish re-enroll. A GET failure is treated as "not known
-   * missing" (conservative — avoids a spurious re-enroll prompt on a blip).
+   * This device's presence in the server directory, as a THREE-way signal so a
+   * genuine revocation during a network blip is not silently read as "still
+   * present" (design §8 HIGH-1, folded LOW):
+   *   - `"missing"` — the GET succeeded and our device_id is ABSENT (revoked /
+   *     deleted while we were dead, design §6.4);
+   *   - `"present"` — the GET succeeded and our device_id is listed;
+   *   - `"unknown"` — the GET failed (offline / transient) or we have no
+   *     device_id yet, so presence is not determinable this cycle.
+   * Callers escalate to an MFA'd re-enroll ONLY on `"missing"`. `"unknown"`
+   * must never trigger a first-publish (that would 401-loop against a
+   * still-present row); it self-heals on the next reconnect, when the device
+   * re-challenges and `#onClaimResult` re-evaluates presence — which is what
+   * makes the recovery durable.
    */
-  async #ownDeviceMissing(): Promise<boolean> {
+  async #ownDevicePresence(): Promise<"present" | "missing" | "unknown"> {
     const deviceId = this.status.get("state")?.device_id;
     const userId = this.#client.user?.id;
-    if (!deviceId || !userId) return false;
-    const devices = await this.#api<{ device_id: string }[]>(
-      "GET",
-      `/e2ee/devices/${userId}`,
-    );
-    return !devices.some((d) => d.device_id === deviceId);
+    if (!deviceId || !userId) return "unknown";
+    try {
+      const devices = await this.#api<{ device_id: string }[]>(
+        "GET",
+        `/e2ee/devices/${userId}`,
+      );
+      return devices.some((d) => d.device_id === deviceId)
+        ? "present"
+        : "missing";
+    } catch (error) {
+      console.error("[e2ee] device-presence check failed", error);
+      return "unknown";
+    }
   }
 
   /** Fetch a signed device listing and reconcile pins natively */
@@ -2341,8 +2403,9 @@ export class E2EEBridge implements E2EEAdapter {
 
   /**
    * §6.4 revoked-device restore. Called after `reenrollNeeded` is raised —
-   * which `#onClaimResult` sets ONLY once it has corroborated (via
-   * `#ownDeviceMissing`) that the server row is actually absent, so this is a
+   * which `#onClaimResult` sets (on either the in-session pending-payload path
+   * or the durable reconnect path) ONLY once it has corroborated (via
+   * `#ownDevicePresence`) that the server row is actually absent, so this is a
    * genuine first publication, not a transient reject. That corroboration is
    * what makes the retry-on-failure below safe (the PUT lands on the server's
    * `existing is None` path, never the immutable-identity/`assert_bound` path).

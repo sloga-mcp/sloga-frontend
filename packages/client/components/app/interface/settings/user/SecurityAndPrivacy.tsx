@@ -166,57 +166,119 @@ function RecoveryBackupCard() {
     }
   }
 
+  /**
+   * §6.4 durable re-enroll (design §8 HIGH-1). A device whose server-side
+   * identity row was revoked while it was dead (typically after a restore) is
+   * stranded receive-broken — its keys are `published=true` locally but the
+   * server has no row, so it must re-publish as a first publication. This is the
+   * PERSISTENT recovery entry — shown whenever the bridge has `reenrollNeeded`
+   * armed, which survives a dismissed auto-modal and a restart (re-raised on
+   * reconnect by the bridge's `#onClaimResult` re-detection). It re-auths and
+   * re-publishes the restored keys as a first publication; deliberately NOT a
+   * one-shot.
+   */
+  async function finishRestore() {
+    if (!e2ee) return;
+    // Flag already cleared (re-enrolled elsewhere / accepted claim) — don't
+    // burn an MFA prompt on a stale affordance.
+    if (!e2ee.reenrollNeeded.get("state")) return;
+    setBusy(true);
+    try {
+      const token = await reauth();
+      if (!token) return;
+      await e2ee.finishReenroll(token);
+    } catch (error) {
+      showError(error);
+    } finally {
+      setBusy(false);
+      setTimeout(reload, 500);
+    }
+  }
+
   const hasBackup = () => !!status()?.exists;
+  const reenrollNeeded = () => !!e2ee.reenrollNeeded.get("state");
 
   return (
-    <Show when={enabled()}>
-      <CategoryButton.Group>
-        <CategoryButton
-          icon={<MdKey {...iconSize(24)} />}
-          disabled={busy()}
-          description={
-            hasBackup() ? (
-              <Trans>
-                You have a recovery code. Anyone with this code and access to
-                your account can read your message history — Sloga cannot
-                recover it for you. Choose "Change recovery code" to replace it.
-              </Trans>
-            ) : (
-              <Trans>
-                Without a recovery code, your encrypted messages cannot be
-                restored if you lose this device. Create one and store it
-                somewhere safe.
-              </Trans>
-            )
-          }
-          onClick={() => (hasBackup() ? void rotate() : void create())}
-        >
-          <Switch>
-            <Match when={hasBackup()}>
-              <Trans>Change recovery code</Trans>
-            </Match>
-            <Match when={!hasBackup()}>
-              <Trans>Create a recovery code</Trans>
-            </Match>
-          </Switch>
-        </CategoryButton>
-
-        <Show when={hasBackup()}>
+    <>
+      {/*
+       * §6.4 durable re-enroll entry. Its own `<Show>` (independent of
+       * `enabled()`) because it must appear whenever the bridge has
+       * `reenrollNeeded` armed. NB a stranded restored device is `published=
+       * true` (restore imports the source's published flag), so `enabled()` is
+       * ALSO true for it — the re-enroll entry and the backup-management block
+       * below are mutually exclusive via `!reenrollNeeded()` there, so a strand
+       * shows only this recovery affordance (design §8 HIGH-1).
+       */}
+      <Show when={reenrollNeeded()}>
+        <CategoryButton.Group>
           <CategoryButton
             icon={<MdKey {...iconSize(24)} />}
             disabled={busy()}
             description={
               <Trans>
-                Remove the backup stored on the server. Your encrypted history
-                on this device is unaffected.
+                This device was logged out remotely, so it must be re-registered
+                before it can send and receive encrypted messages again. Confirm
+                your identity to finish — your contacts will see it come back
+                with no security warning, because its keys are unchanged.
               </Trans>
             }
-            onClick={() => void remove()}
+            onClick={() => void finishRestore()}
           >
-            <Trans>Delete backup</Trans>
+            <Trans>Finish restoring on this device</Trans>
           </CategoryButton>
-        </Show>
-      </CategoryButton.Group>
-    </Show>
+        </CategoryButton.Group>
+      </Show>
+
+      <Show when={enabled() && !reenrollNeeded()}>
+        <CategoryButton.Group>
+          <CategoryButton
+            icon={<MdKey {...iconSize(24)} />}
+            disabled={busy()}
+            description={
+              hasBackup() ? (
+                <Trans>
+                  You have a recovery code. Anyone with this code and access to
+                  your account can read your message history — Sloga cannot
+                  recover it for you. Choose "Change recovery code" to replace
+                  it.
+                </Trans>
+              ) : (
+                <Trans>
+                  Without a recovery code, your encrypted messages cannot be
+                  restored if you lose this device. Create one and store it
+                  somewhere safe.
+                </Trans>
+              )
+            }
+            onClick={() => (hasBackup() ? void rotate() : void create())}
+          >
+            <Switch>
+              <Match when={hasBackup()}>
+                <Trans>Change recovery code</Trans>
+              </Match>
+              <Match when={!hasBackup()}>
+                <Trans>Create a recovery code</Trans>
+              </Match>
+            </Switch>
+          </CategoryButton>
+
+          <Show when={hasBackup()}>
+            <CategoryButton
+              icon={<MdKey {...iconSize(24)} />}
+              disabled={busy()}
+              description={
+                <Trans>
+                  Remove the backup stored on the server. Your encrypted history
+                  on this device is unaffected.
+                </Trans>
+              }
+              onClick={() => void remove()}
+            >
+              <Trans>Delete backup</Trans>
+            </CategoryButton>
+          </Show>
+        </CategoryButton.Group>
+      </Show>
+    </>
   );
 }

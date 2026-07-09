@@ -1704,6 +1704,7 @@ msgid "Find a community based on your hobbies or interests."
 msgstr "Find a community based on your hobbies or interests."
 
 #: components/modal/modals/E2EEReenroll.tsx
+#: components/app/interface/settings/user/SecurityAndPrivacy.tsx
 msgid "Finish restoring on this device"
 msgstr "Finish restoring on this device"
 
@@ -3748,6 +3749,14 @@ msgstr "This contact's security identity changed — review before sending."
 msgid "This content is not available in your region."
 msgstr "This content is not available in your region."
 
+#: components/app/interface/settings/user/SecurityAndPrivacy.tsx
+msgid "This device was logged out remotely, so it must be re-registered before it can send and receive encrypted messages again. Confirm your identity to finish — your contacts will see it come back with no security warning, because its keys are unchanged."
+msgstr "This device was logged out remotely, so it must be re-registered before it can send and receive encrypted messages again. Confirm your identity to finish — your contacts will see it come back with no security warning, because its keys are unchanged."
+
+#: components/modal/modals/E2EEReenroll.tsx
+msgid "This device was logged out remotely, so it needs to be re-registered before it can send and receive encrypted messages again. Confirm your identity to finish."
+msgstr "This device was logged out remotely, so it needs to be re-registered before it can send and receive encrypted messages again. Confirm your identity to finish."
+
 #: components/i18n/errors.ts
 msgid "This feature is currently disabled."
 msgstr "This feature is currently disabled."
@@ -4354,8 +4363,8 @@ msgid "Your discriminator change has been ratelimited, please try again later."
 msgstr "Your discriminator change has been ratelimited, please try again later."
 
 #: components/modal/modals/E2EEReenroll.tsx
-msgid "Your encrypted history was restored, but this device had been logged out remotely, so it needs to be re-registered before it can send and receive again. Confirm your identity to finish."
-msgstr "Your encrypted history was restored, but this device had been logged out remotely, so it needs to be re-registered before it can send and receive again. Confirm your identity to finish."
+#~ msgid "Your encrypted history was restored, but this device had been logged out remotely, so it needs to be re-registered before it can send and receive again. Confirm your identity to finish."
+#~ msgstr "Your encrypted history was restored, but this device had been logged out remotely, so it needs to be re-registered before it can send and receive again. Confirm your identity to finish."
 
 #: components/auth/src/flows/FlowOAuthCallback.tsx
 msgid "Your Google account's email address is not verified."

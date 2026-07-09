@@ -1,4 +1,4 @@
-import { createSignal } from "solid-js";
+import { createEffect, createSignal, onCleanup } from "solid-js";
 
 import { Trans } from "@lingui-solid/solid/macro";
 
@@ -26,9 +26,40 @@ export function E2EEReenrollModal(
 ) {
   const client = useClient();
   const e2ee = useE2EE();
-  const { mfaFlow, showError } = useModals();
+  const modals = useModals();
+  const { mfaFlow, showError } = modals;
 
   const [busy, setBusy] = createSignal(false);
+
+  // Do not let the re-enroll publish be detached mid-flight (design §8 HIGH-1,
+  // folded MEDIUM). The backdrop is gated by `guardedClose` below; ESC goes
+  // through the controller's global CLOSE_MODAL keybind, so lock it there while
+  // busy. Track the token so we only ever release the lock WE took (never a
+  // concurrent flow's), and always unlock on cleanup so it cannot leak.
+  let lockToken: string | undefined;
+  createEffect(() => {
+    if (busy()) {
+      lockToken = modals.lockDismiss();
+    } else if (lockToken) {
+      modals.unlockDismiss(lockToken);
+      lockToken = undefined;
+    }
+  });
+  onCleanup(() => {
+    if (lockToken) modals.unlockDismiss(lockToken);
+  });
+
+  /**
+   * Dismiss unless a publish is in flight — a stray backdrop click / ESC must
+   * not detach `finishReenroll`. Losing the prompt is no longer fatal (the
+   * Security & Privacy affordance and the bridge's reconnect re-detection
+   * re-offer it), but a detached in-flight MFA'd publish is still worth
+   * preventing.
+   */
+  function guardedClose() {
+    if (busy()) return;
+    props.onClose();
+  }
 
   /** Prove account ownership; returns the MFA ticket token or undefined. */
   async function reauth(): Promise<string | undefined> {
@@ -48,10 +79,7 @@ export function E2EEReenrollModal(
     setBusy(true);
     try {
       const token = await reauth();
-      if (!token) {
-        setBusy(false);
-        return;
-      }
+      if (!token) return;
       // On success the bridge clears `reenrollNeeded`; a failure keeps it set
       // (and the stashed bundle) so the shell can re-offer this prompt.
       await e2ee.finishReenroll(token);
@@ -66,16 +94,17 @@ export function E2EEReenrollModal(
   return (
     <Dialog
       show={props.show}
-      onClose={props.onClose}
+      onClose={guardedClose}
       title={<Trans>Finish restoring on this device</Trans>}
       isDisabled={busy()}
       actions={[
         {
           text: <Trans>Not now</Trans>,
           onClick: () => {
-            props.onClose();
+            guardedClose();
             return false;
           },
+          isDisabled: busy(),
         },
         {
           text: <Trans>Confirm identity</Trans>,
@@ -90,9 +119,9 @@ export function E2EEReenrollModal(
       <Column>
         <Text>
           <Trans>
-            Your encrypted history was restored, but this device had been logged
-            out remotely, so it needs to be re-registered before it can send and
-            receive again. Confirm your identity to finish.
+            This device was logged out remotely, so it needs to be re-registered
+            before it can send and receive encrypted messages again. Confirm your
+            identity to finish.
           </Trans>
         </Text>
         <Text>

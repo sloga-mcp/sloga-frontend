@@ -41,6 +41,17 @@ export class ModalController {
   setModals: SetStoreFunction<ActiveModal[]>;
 
   /**
+   * Id of a modal that must not be dismissed via ESC while an irreversible
+   * in-flight action runs (e.g. the §6.4 re-enroll MFA'd first-publish, which
+   * must not be detached mid-flight). Scoped to a specific modal id — never a
+   * blanket lock — so a leaked lock can only ever affect that one (already
+   * gone) modal: `pop()` skips ONLY when the current top-most modal IS the
+   * locked one. The backdrop is gated separately by the owning modal's own
+   * `onClose`.
+   */
+  dismissLockedId: string | undefined = undefined;
+
+  /**
    * Construct controller
    */
   constructor() {
@@ -54,6 +65,8 @@ export class ModalController {
     this.remove = this.remove.bind(this);
     this.isOpen = this.isOpen.bind(this);
     this.closeAll = this.closeAll.bind(this);
+    this.lockDismiss = this.lockDismiss.bind(this);
+    this.unlockDismiss = this.unlockDismiss.bind(this);
   }
 
   /**
@@ -92,8 +105,36 @@ export class ModalController {
     const modal = [...this.modals].reverse().find((modal) => modal.show);
 
     if (modal) {
+      // Respect an active dismissal lock: never ESC-close the specific modal
+      // that holds it (a flow like §6.4 re-enroll is publishing). Scoped by
+      // id, so this can only block that one modal — any other top modal pops
+      // normally.
+      if (modal.id === this.dismissLockedId) return;
       this.remove(modal.id);
     }
+  }
+
+  /**
+   * Lock the current top-most modal against ESC dismissal for the duration of
+   * an irreversible in-flight action. Returns the locked modal id as a token to
+   * pass back to {@link unlockDismiss}, so a release only ever clears the lock
+   * it actually took — never another concurrent flow's. Pair with an
+   * `onCleanup` unlock so the lock cannot leak.
+   */
+  lockDismiss(): string | undefined {
+    const top = [...this.modals].reverse().find((modal) => modal.show);
+    this.dismissLockedId = top?.id;
+    return this.dismissLockedId;
+  }
+
+  /**
+   * Release the ESC dismissal lock set by {@link lockDismiss}. Pass the token
+   * that `lockDismiss` returned; the lock is cleared only if it still matches,
+   * so a stale/late release can never unlock a different flow's lock.
+   */
+  unlockDismiss(id?: string) {
+    if (id !== undefined && this.dismissLockedId !== id) return;
+    this.dismissLockedId = undefined;
   }
 
   /**

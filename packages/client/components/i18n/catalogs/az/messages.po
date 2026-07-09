@@ -1704,6 +1704,7 @@ msgid "Find a community based on your hobbies or interests."
 msgstr "Hobbinizə və ya maraqlarınıza əsaslanan bir cəmiyyət tapın."
 
 #: components/modal/modals/E2EEReenroll.tsx
+#: components/app/interface/settings/user/SecurityAndPrivacy.tsx
 msgid "Finish restoring on this device"
 msgstr ""
 
@@ -3748,6 +3749,14 @@ msgstr ""
 msgid "This content is not available in your region."
 msgstr ""
 
+#: components/app/interface/settings/user/SecurityAndPrivacy.tsx
+msgid "This device was logged out remotely, so it must be re-registered before it can send and receive encrypted messages again. Confirm your identity to finish — your contacts will see it come back with no security warning, because its keys are unchanged."
+msgstr ""
+
+#: components/modal/modals/E2EEReenroll.tsx
+msgid "This device was logged out remotely, so it needs to be re-registered before it can send and receive encrypted messages again. Confirm your identity to finish."
+msgstr ""
+
 #: components/i18n/errors.ts
 msgid "This feature is currently disabled."
 msgstr ""
@@ -4354,8 +4363,8 @@ msgid "Your discriminator change has been ratelimited, please try again later."
 msgstr ""
 
 #: components/modal/modals/E2EEReenroll.tsx
-msgid "Your encrypted history was restored, but this device had been logged out remotely, so it needs to be re-registered before it can send and receive again. Confirm your identity to finish."
-msgstr ""
+#~ msgid "Your encrypted history was restored, but this device had been logged out remotely, so it needs to be re-registered before it can send and receive again. Confirm your identity to finish."
+#~ msgstr ""
 
 #: components/auth/src/flows/FlowOAuthCallback.tsx
 msgid "Your Google account's email address is not verified."

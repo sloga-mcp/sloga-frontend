@@ -6,6 +6,7 @@ import {
   Switch,
   createEffect,
   createSignal,
+  onCleanup,
   onMount,
 } from "solid-js";
 
@@ -49,6 +50,20 @@ export function MFAFlowModal(
     recovery_code: createFormControl(""),
   });
 
+  // Resolve the awaiting `mfaFlow()` promise EXACTLY once. ESC / backdrop
+  // dismissal goes through `ModalController.pop()`/`remove()`, which unmounts
+  // this modal WITHOUT calling onSubmit/onCancel — so without settling on
+  // cleanup the caller's `await mfaFlow(...)` would hang forever (this is what
+  // left the §6.4 re-enroll modal stuck in a permanent busy/locked state). Any
+  // un-chosen dismissal is therefore treated as a cancel.
+  let settled = false;
+  onCleanup(() => {
+    if (!settled) {
+      settled = true;
+      props.callback();
+    }
+  });
+
   // Fetch available methods if they have not been provided.
   onMount(() => {
     if (!methods() && props.state === "known") {
@@ -90,8 +105,10 @@ export function MFAFlowModal(
 
       if (props.state === "known") {
         const ticket = await props.mfa.createTicket(mfa_response);
+        settled = true;
         props.callback(ticket);
       } else {
+        settled = true;
         props.callback(mfa_response);
       }
 
@@ -102,6 +119,7 @@ export function MFAFlowModal(
   }
 
   function onCancel() {
+    settled = true;
     props.callback();
     props.onClose();
   }
