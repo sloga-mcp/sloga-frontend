@@ -12,6 +12,7 @@ export enum LAYOUT_SECTIONS {
   MEMBER_SIDEBAR = "MEMBER_SIDEBAR",
   MENTION_REPLY = "MENTION_REPLY",
   MATURE = "nsfw",
+  SERVER_RAIL_EXPANDED = "SERVER_RAIL_EXPANDED",
 }
 
 export interface TypeLayout {
