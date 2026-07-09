@@ -30,6 +30,38 @@ export const ScreenShareQualityNames: ScreenShareQualityName[] = [
   "uhd",
 ];
 
+/**
+ * Possible camera capture qualities. "auto" lets LiveKit decide; the rest cap
+ * the capture resolution/framerate (always further clamped to the server's
+ * video_resolution limit at apply time).
+ */
+export type CameraQualityName = "auto" | "sd" | "hd" | "fhd";
+
+/**
+ * Array of available camera quality names.
+ */
+export const CameraQualityNames: CameraQualityName[] = [
+  "auto",
+  "sd",
+  "hd",
+  "fhd",
+];
+
+/**
+ * Camera background effect mode. "none" = raw camera, "blur" = blurred
+ * background, "image" = virtual background image (preset or user upload).
+ */
+export type CameraBackgroundMode = "none" | "blur" | "image";
+
+/**
+ * Array of available camera background modes.
+ */
+export const CameraBackgroundModes: CameraBackgroundMode[] = [
+  "none",
+  "blur",
+  "image",
+];
+
 export interface TypeVoice {
   preferredAudioInputDevice?: string;
   preferredAudioOutputDevice?: string;
@@ -51,6 +83,11 @@ export interface TypeVoice {
 
   microphoneGain: number;
   cameraBrightness: number;
+  cameraQuality: CameraQualityName;
+  cameraMaxBitrateKbps: number;
+  cameraBackgroundMode: CameraBackgroundMode;
+  cameraBlurRadius: number;
+  cameraBackgroundImageId?: string;
   inputVolume: number;
   outputVolume: number;
   deafen: boolean;
@@ -100,6 +137,10 @@ export class Voice extends AbstractStore<"voice", TypeVoice> {
       screenShareAudio: true,
       microphoneGain: 100,
       cameraBrightness: 100,
+      cameraQuality: "auto",
+      cameraMaxBitrateKbps: 0,
+      cameraBackgroundMode: "none",
+      cameraBlurRadius: 10,
       inputVolume: 1.0,
       outputVolume: 1.0,
       deafen: false,
@@ -190,6 +231,35 @@ export class Voice extends AbstractStore<"voice", TypeVoice> {
 
     if (typeof input.cameraBrightness === "number") {
       data.cameraBrightness = Math.max(0, Math.min(200, input.cameraBrightness));
+    }
+
+    if (
+      input.cameraQuality &&
+      CameraQualityNames.includes(input.cameraQuality)
+    ) {
+      data.cameraQuality = input.cameraQuality;
+    }
+
+    if (typeof input.cameraMaxBitrateKbps === "number") {
+      data.cameraMaxBitrateKbps = Math.max(
+        0,
+        Math.min(20000, input.cameraMaxBitrateKbps),
+      );
+    }
+
+    if (
+      input.cameraBackgroundMode &&
+      CameraBackgroundModes.includes(input.cameraBackgroundMode)
+    ) {
+      data.cameraBackgroundMode = input.cameraBackgroundMode;
+    }
+
+    if (typeof input.cameraBlurRadius === "number") {
+      data.cameraBlurRadius = Math.max(1, Math.min(20, input.cameraBlurRadius));
+    }
+
+    if (typeof input.cameraBackgroundImageId === "string") {
+      data.cameraBackgroundImageId = input.cameraBackgroundImageId;
     }
 
     if (typeof input.inputVolume === "number") {
@@ -410,6 +480,46 @@ export class Voice extends AbstractStore<"voice", TypeVoice> {
 
   set cameraBrightness(value: number) {
     this.set("cameraBrightness", value);
+  }
+
+  get cameraQuality(): CameraQualityName {
+    return this.get().cameraQuality ?? "auto";
+  }
+
+  set cameraQuality(value: CameraQualityName) {
+    this.set("cameraQuality", value);
+  }
+
+  get cameraMaxBitrateKbps(): number {
+    return this.get().cameraMaxBitrateKbps ?? 0;
+  }
+
+  set cameraMaxBitrateKbps(value: number) {
+    this.set("cameraMaxBitrateKbps", value);
+  }
+
+  get cameraBackgroundMode(): CameraBackgroundMode {
+    return this.get().cameraBackgroundMode ?? "none";
+  }
+
+  set cameraBackgroundMode(value: CameraBackgroundMode) {
+    this.set("cameraBackgroundMode", value);
+  }
+
+  get cameraBlurRadius(): number {
+    return this.get().cameraBlurRadius ?? 10;
+  }
+
+  set cameraBlurRadius(value: number) {
+    this.set("cameraBlurRadius", value);
+  }
+
+  get cameraBackgroundImageId(): string | undefined {
+    return this.get().cameraBackgroundImageId;
+  }
+
+  set cameraBackgroundImageId(value: string | undefined) {
+    this.set("cameraBackgroundImageId", value);
   }
 
   /**
