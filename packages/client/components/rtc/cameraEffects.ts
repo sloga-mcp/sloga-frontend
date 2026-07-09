@@ -246,8 +246,11 @@ export class CameraEffectsController {
       const id = settings.backgroundImageId;
       const resolved = id ? await resolveBackgroundUrl(id) : null;
       if (!resolved) {
-        // Dangling / deleted image id — fall back to no background.
-        this.onImageMissing?.();
+        // No image chosen yet (empty id) OR the chosen one was deleted. Show the
+        // raw background for now, but only fall back to "none" when a *selected*
+        // image fails to resolve (deleted) — with no selection yet, STAY in image
+        // mode so the picker remains visible for the user to choose one.
+        if (id) this.onImageMissing?.();
         await this.#teardownBackground(track);
         return;
       }

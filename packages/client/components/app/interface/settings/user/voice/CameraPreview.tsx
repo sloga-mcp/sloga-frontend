@@ -66,8 +66,9 @@ export function CameraPreview() {
         backgroundImageId: settings.cameraBackgroundImageId,
         brightness: settings.cameraBrightness,
       });
-    } catch {
-      /* fail-safe: raw preview */
+    } catch (e) {
+      // Fail-safe: raw preview — but surface WHY (segmenter/asset init, CSP…).
+      console.error("[camera] preview effects failed", e);
     }
     // The processed output track may have changed (processor added/removed).
     setPreviewTrack(track?.mediaStreamTrack);

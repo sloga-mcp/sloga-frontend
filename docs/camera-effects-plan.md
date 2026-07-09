@@ -158,6 +158,30 @@ Confirmed sound across the re-verify: HIGH-1 gen token, HIGH-2 fail-safe, the
 serialization chain, image→blur revoke, APK prune, singleton clone, lingui,
 store, env/Docker. **Only runtime verification with a real webcam remains.**
 
+## Runtime verification — DONE on real hardware (2026-07-08)
+
+Driven end-to-end on a real webcam at `localhost:5174`. All confirmed working:
+- Preview renders; **camera LED goes off** on Stop / leaving settings (the gUM
+  cancellation / leak fix).
+- **Blur** segmentation renders on a live person.
+- **Virtual backgrounds** — presets + upload + delete all work.
+- **In-call two-tab test** — a second client sees the blur on the *transmitted*
+  track (WYSIWYG on the sent path, not just local preview).
+
+Bugs found & fixed during verification (in this commit):
+- Selecting **Image** with nothing chosen yet reverted to None (hid the picker);
+  now stays in Image mode unless a *selected* image is missing (`cameraEffects.ts`
+  `#ensureBackground`).
+- Gallery thumbnails now lazy-load only in Image mode (`CameraOptions.tsx`).
+- Preview effect failures now log instead of swallowing silently (`CameraPreview.tsx`).
+
+**Dev-environment caveat (NOT a product bug):** the Vite dev server (WSL polling
+watcher) serves the 9 MB MediaPipe WASM at ~15 KB/s, so blur/virtual-bg can't
+initialize through `mise dev`/the tunnel — segmentation stalls with no error. To
+verify locally, serve `public/mediapipe` from a fast static server and point
+`VITE_SEGMENTATION_ASSETS_URL` at it. **Production follow-up:** ensure the static
+host serves `.wasm` with brotli/gzip (~3 MB) so real users get a fast one-time load.
+
 ## Out of scope
 
 Android background effects, beautify/touch-up filters, per-server background policies.

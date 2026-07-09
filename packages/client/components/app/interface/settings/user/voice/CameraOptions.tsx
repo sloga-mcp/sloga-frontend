@@ -209,27 +209,34 @@ function CameraBackgroundOptions() {
   let fetchSeq = 0;
   const [refetchKey, setRefetchKey] = createSignal(0);
 
-  const [items] = createResource(refetchKey, async () => {
-    const myFetch = ++fetchSeq;
-    const localRevokes: (() => void)[] = [];
-    const list = await listBackgrounds();
-    const resolved = await Promise.all(
-      list.map(async (item) => {
-        const r = await resolveBackgroundUrl(item.id);
-        if (r) localRevokes.push(r.revoke);
-        return { ...item, url: r?.url };
-      }),
-    );
-    if (disposed || myFetch !== fetchSeq) {
-      // Superseded by a newer refetch (or unmounted): free only our own URLs;
-      // never revoke the committed set (would blank the displayed thumbnails).
-      localRevokes.forEach((r) => r());
-      return [];
-    }
-    revokes.forEach((r) => r()); // release the previous run's URLs
-    revokes = localRevokes;
-    return resolved.filter((i) => i.url);
-  });
+  // Only fetch/render the gallery thumbnails while Image mode is active — a
+  // falsy source skips the fetcher, so scrolling through settings (or using
+  // None/Blur) does zero canvas/localforage work. `+ 1` keeps the source truthy
+  // even at refetchKey 0, while still re-fetching when the key changes.
+  const [items] = createResource(
+    () => (voice.cameraBackgroundMode === "image" ? refetchKey() + 1 : false),
+    async () => {
+      const myFetch = ++fetchSeq;
+      const localRevokes: (() => void)[] = [];
+      const list = await listBackgrounds();
+      const resolved = await Promise.all(
+        list.map(async (item) => {
+          const r = await resolveBackgroundUrl(item.id);
+          if (r) localRevokes.push(r.revoke);
+          return { ...item, url: r?.url };
+        }),
+      );
+      if (disposed || myFetch !== fetchSeq) {
+        // Superseded by a newer refetch (or unmounted): free only our own URLs;
+        // never revoke the committed set (would blank the displayed thumbnails).
+        localRevokes.forEach((r) => r());
+        return [];
+      }
+      revokes.forEach((r) => r()); // release the previous run's URLs
+      revokes = localRevokes;
+      return resolved.filter((i) => i.url);
+    },
+  );
 
   onCleanup(() => {
     disposed = true;
