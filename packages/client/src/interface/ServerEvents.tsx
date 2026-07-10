@@ -15,16 +15,21 @@ import {
   splitProps,
 } from "solid-js";
 
-import { Trans, useLingui } from "@lingui-solid/solid/macro";
+import { Plural, Trans, useLingui } from "@lingui-solid/solid/macro";
 import {
   CalendarEvent,
   DataCreateEvent,
+  DataEditEvent,
   EventRsvpData,
+  FieldsEvent,
   Frequency,
+  ImportResultData,
+  InviteResultData,
   RecurrenceEnd,
   RsvpStatus,
   Server,
   ServerMember,
+  ServerRole,
   Weekday,
 } from "stoat.js";
 import { styled } from "styled-system/jsx";
@@ -316,6 +321,61 @@ export const ServerEvents: Component = () => {
     setShowCreate(true);
   }
 
+  // -------------------------------------------------------------------- edit
+  const [editEvent, setEditEvent] = createSignal<CalendarEvent | undefined>();
+
+  // If the event is cancelled while the edit form is open (WS update — getters
+  // are store-backed), drop back to the detail, which shows the cancelled state.
+  createEffect(() => {
+    if (editEvent()?.cancelled) setEditEvent(undefined);
+  });
+
+  async function saveEdit(diff: DataEditEvent) {
+    const event = editEvent();
+    if (!event) return;
+    setSaving(true);
+    try {
+      await event.edit(diff);
+      setEditEvent(undefined);
+      refetch();
+      await refreshDetail();
+    } catch (error) {
+      // An in-flight rejection (e.g. cancelled server-side) surfaces without
+      // stranding the form; the user can adjust or back out.
+      showError(error);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  // ------------------------------------------------------------------ import
+  const [showImport, setShowImport] = createSignal(false);
+  const [importing, setImporting] = createSignal(false);
+  const [importResult, setImportResult] = createSignal<
+    ImportResultData | undefined
+  >();
+
+  /** Server-level manage gate (import is manager-triggered; UX only — the
+   *  server re-checks ManageChannel + source-channel ViewChannel). */
+  const canManageServer = createMemo(
+    () => server()?.havePermission("ManageChannel") ?? false,
+  );
+
+  async function runImport(channelId: string) {
+    const s = server();
+    if (!s) return;
+    setImporting(true);
+    try {
+      const result = await client().calendarEvents.importLegacy(s.id, channelId);
+      setImportResult(result);
+      refetch();
+    } catch (error) {
+      showError(error);
+    } finally {
+      setImporting(false);
+    }
+  }
+
   // Reset transient view state when navigating between servers (the route param
   // can change without remounting), so an open detail / create form from server
   // A never bleeds into server B's roster.
@@ -325,21 +385,38 @@ export const ServerEvents: Component = () => {
       () => {
         setOpenEvent(undefined);
         setShowCreate(false);
+        setEditEvent(undefined);
+        setShowImport(false);
+        setImportResult(undefined);
         setAttendees([]);
       },
       { defer: true },
     ),
   );
 
-  async function createEvent(data: DataCreateEvent, invites: string[]) {
+  async function createEvent(
+    data: DataCreateEvent,
+    userIds: string[],
+    roleIds: string[],
+  ) {
     const s = server();
     if (!s) return;
     setSaving(true);
     try {
       const event = await client().calendarEvents.createForServer(s.id, data);
-      if (invites.length) {
+      // Role-only selections must invite too (slice-F audit fe-MED-3).
+      if (userIds.length || roleIds.length) {
         try {
-          await event.invite(invites);
+          const result = await event.invite(userIds, roleIds);
+          if (result.invited === 0) {
+            // Nobody was actually added (already invited / non-viewers /
+            // pending deletion): land on the detail so the organizer sees the
+            // real attendee state instead of assuming the invites went out.
+            setShowCreate(false);
+            refetch();
+            openDetail(event);
+            return;
+          }
         } catch (error) {
           // Surface the partial failure and land the organizer on the event
           // detail so they can retry the invite (the event itself was created).
@@ -368,6 +445,23 @@ export const ServerEvents: Component = () => {
         <Text class="headline" size="medium" style={{ "margin-left": "8px" }}>
           <Trans>Server Events</Trans>
         </Text>
+        <div style={{ flex: 1 }} />
+        <Show when={canManageServer() && !featureDisabled()}>
+          <Button
+            variant="text"
+            onPress={() => {
+              setOpenEvent(undefined);
+              setShowCreate(false);
+              setEditEvent(undefined);
+              setImportResult(undefined);
+              setShowImport(true);
+            }}
+          >
+            <Symbol size={18}>upload</Symbol>
+            &nbsp;
+            <Trans>Import legacy events</Trans>
+          </Button>
+        </Show>
       </PageHeader>
 
       <Switch>
@@ -479,6 +573,18 @@ export const ServerEvents: Component = () => {
                   />
                 }
               >
+                <Match when={showImport() && server()}>
+                  <ImportPanel
+                    server={server()!}
+                    importing={importing()}
+                    result={importResult()}
+                    onImport={runImport}
+                    onClose={() => {
+                      setShowImport(false);
+                      setImportResult(undefined);
+                    }}
+                  />
+                </Match>
                 <Match when={showCreate() && server()}>
                   <CreateForm
                     defaultDate={createDate()}
@@ -487,6 +593,23 @@ export const ServerEvents: Component = () => {
                     onSubmit={createEvent}
                     server={server()!}
                   />
+                </Match>
+                <Match when={editEvent() && server()}>
+                  {/* Keyed: the form's signal initializers (prefill) run once per
+                      mount, so switching the edited event must remount it. */}
+                  <Show when={editEvent()} keyed>
+                    {(event) => (
+                      <CreateForm
+                        defaultDate={selectedDate()}
+                        saving={saving()}
+                        onCancel={() => setEditEvent(undefined)}
+                        onSubmit={createEvent}
+                        onEdit={saveEdit}
+                        event={event}
+                        server={server()!}
+                      />
+                    )}
+                  </Show>
                 </Match>
                 <Match when={openEvent()}>
                   <EventDetail
@@ -500,6 +623,7 @@ export const ServerEvents: Component = () => {
                     onRsvp={doRsvp}
                     canManage={canManage()}
                     onCancel={cancelOpenEvent}
+                    onEdit={() => setEditEvent(openEvent())}
                     onUninvite={async (userId) => {
                       try {
                         await openEvent()!.uninvite(userId);
@@ -509,9 +633,10 @@ export const ServerEvents: Component = () => {
                         showError(error);
                       }
                     }}
-                    onInvite={async (userIds) => {
-                      await openEvent()!.invite(userIds);
+                    onInvite={async (userIds, roleIds) => {
+                      const result = await openEvent()!.invite(userIds, roleIds);
                       await refreshDetail();
+                      return result;
                     }}
                     memberOf={(userId) =>
                       client().serverMembers.getByKey({
@@ -689,8 +814,12 @@ function EventDetail(props: {
   onRsvp: (status: RsvpStatus) => void;
   canManage: boolean;
   onCancel: () => void;
+  onEdit: () => void;
   onUninvite: (userId: string) => void;
-  onInvite: (userIds: string[]) => Promise<void>;
+  onInvite: (
+    userIds: string[],
+    roleIds: string[],
+  ) => Promise<InviteResultData | undefined>;
   memberOf: (userId: string) => ServerMember | undefined;
   server: Server;
 }) {
@@ -698,18 +827,31 @@ function EventDetail(props: {
   const { showError } = useModals();
   const counts = () => props.event.counts;
 
-  // Invite-more picker (manage only).
+  // Invite-more picker (manage only). Roles are matched client-side against the
+  // already-cached role map; a role row invites its CURRENT holders immediately
+  // (server-side expansion, slice F 0.1-A) — same interaction as member rows.
   const [query, setQuery] = createSignal("");
   const [results, setResults] = createSignal<ServerMember[]>([]);
+  const [roleResults, setRoleResults] = createSignal<ServerRole[]>([]);
+  const [lastInvite, setLastInvite] = createSignal<
+    InviteResultData | undefined
+  >();
   let searchTimer: ReturnType<typeof setTimeout> | undefined;
   onCleanup(() => clearTimeout(searchTimer));
   function onSearch(value: string) {
     setQuery(value);
     clearTimeout(searchTimer);
-    if (!value.trim()) {
+    const needle = value.trim().toLowerCase();
+    if (!needle) {
       setResults([]);
+      setRoleResults([]);
       return;
     }
+    setRoleResults(
+      props.server.orderedRoles.filter((role) =>
+        role.name.toLowerCase().includes(needle),
+      ),
+    );
     searchTimer = setTimeout(async () => {
       try {
         const { members } = await props.server.queryMembersExperimental(value);
@@ -720,11 +862,12 @@ function EventDetail(props: {
       }
     }, 250);
   }
-  async function invite(member: ServerMember) {
+  async function invite(userIds: string[], roleIds: string[]) {
     setQuery("");
     setResults([]);
+    setRoleResults([]);
     try {
-      await props.onInvite([member.id.user]);
+      setLastInvite(await props.onInvite(userIds, roleIds));
     } catch (error) {
       showError(error);
     }
@@ -848,15 +991,29 @@ function EventDetail(props: {
           </Text>
           <FormInput
             type="text"
-            placeholder={t`Search members…`}
+            placeholder={t`Search members or roles…`}
             value={query()}
             onInput={(e) => onSearch(e.currentTarget.value)}
           />
-          <Show when={results().length > 0}>
+          <Show when={roleResults().length > 0 || results().length > 0}>
             <SearchResults>
+              <For each={roleResults()}>
+                {(role) => (
+                  <SearchResultRow onClick={() => invite([], [role.id])}>
+                    <Symbol size={20}>group</Symbol>
+                    <span style={{ flex: 1, "text-align": "start" }}>
+                      {role.name}
+                    </span>
+                    <RoleBadge>
+                      <Trans>role</Trans>
+                    </RoleBadge>
+                    <Symbol size={16}>group_add</Symbol>
+                  </SearchResultRow>
+                )}
+              </For>
               <For each={results()}>
                 {(member) => (
-                  <SearchResultRow onClick={() => invite(member)}>
+                  <SearchResultRow onClick={() => invite([member.id.user], [])}>
                     <Avatar
                       src={member.avatarURL}
                       size={20}
@@ -871,10 +1028,35 @@ function EventDetail(props: {
               </For>
             </SearchResults>
           </Show>
-          <Button variant="text" onPress={props.onCancel}>
-            <Symbol size={16}>event_busy</Symbol>&nbsp;
-            <Trans>Cancel event</Trans>
-          </Button>
+          <Show when={lastInvite()}>
+            <SmallMuted>
+              <Show
+                when={lastInvite()!.invited > 0}
+                fallback={
+                  <Trans>
+                    Everyone in that selection was already invited or can't
+                    view this event
+                  </Trans>
+                }
+              >
+                <Plural
+                  value={lastInvite()!.invited}
+                  one="Invited # member"
+                  other="Invited # members"
+                />
+              </Show>
+            </SmallMuted>
+          </Show>
+          <Row gap="sm">
+            <Button variant="text" onPress={props.onEdit}>
+              <Symbol size={16}>edit</Symbol>&nbsp;
+              <Trans>Edit event</Trans>
+            </Button>
+            <Button variant="text" onPress={props.onCancel}>
+              <Symbol size={16}>event_busy</Symbol>&nbsp;
+              <Trans>Cancel event</Trans>
+            </Button>
+          </Row>
         </ManageBar>
       </Show>
     </DetailWrap>
@@ -930,46 +1112,115 @@ function AttendeeGroup(props: {
   );
 }
 
+/**
+ * Create/edit form. With an `event` prop it becomes the EDIT form: fields are
+ * prefilled once at mount (the caller keys/remounts it per event id), and
+ * submitting sends only a DIFF against those prefilled values.
+ *
+ * Dirty detection compares the form's OWN string/primitive representations to
+ * their prefilled initial values — NEVER a recomputed instant against the
+ * stored ms (a lossy round-trip that would silently rewrite the schedule of a
+ * cross-timezone all-day or seconds-precision imported event on a title-only
+ * edit). The schedule fields (`start`/`end`/`all_day`/`timezone`) travel as one
+ * atomic group: if any of them is dirty, the full tuple is recomputed from the
+ * form and re-anchored in the editor's timezone (exactly like create);
+ * `timezone` never travels without `start`.
+ */
 function CreateForm(props: {
   defaultDate: Date;
   saving: boolean;
   onCancel: () => void;
-  onSubmit: (data: DataCreateEvent, invites: string[]) => void;
+  onSubmit: (data: DataCreateEvent, userIds: string[], roleIds: string[]) => void;
+  onEdit?: (diff: DataEditEvent) => void;
+  event?: CalendarEvent;
   server: Server;
 }) {
   const { t } = useLingui();
   const { showError } = useModals();
   const client = useClient();
 
-  const [title, setTitle] = createSignal("");
-  const [date, setDate] = createSignal(inputDate(props.defaultDate));
-  const [startTime, setStartTime] = createSignal("18:00");
-  const [endTime, setEndTime] = createSignal("19:00");
-  const [allDay, setAllDay] = createSignal(false);
-  const [description, setDescription] = createSignal("");
-  const [location, setLocation] = createSignal("");
+  // Snapshot the edited event ONCE (mount-time prefill; parent keys by id).
+  const ev = props.event;
+  const timeOf = (d: Date) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const initial = {
+    title: ev?.title ?? "",
+    // All-day events bucket by wall-clock date in the EVENT's timezone (same
+    // en-CA trick as the grid — slice-E HIGH-1); timed events prefill viewer-local.
+    date: ev
+      ? ev.allDay
+        ? new Intl.DateTimeFormat("en-CA", { timeZone: ev.timezone }).format(
+            ev.start,
+          )
+        : inputDate(ev.start)
+      : inputDate(props.defaultDate),
+    startTime: ev && !ev.allDay ? timeOf(ev.start) : "18:00",
+    // An imported timed event may have NO end (legacy `end?` was optional): its
+    // end input prefills EMPTY so a schedule edit never fabricates an end the
+    // event never had. Create mode keeps the 19:00 default.
+    endTime: ev
+      ? ev.allDay || !ev.end
+        ? ""
+        : timeOf(ev.end)
+      : "19:00",
+    allDay: ev?.allDay ?? false,
+    description: ev?.description ?? "",
+    location: ev?.location ?? "",
+    freq: (ev?.recurrence?.freq ?? "None") as Frequency | "None",
+    interval: ev?.recurrence?.interval ?? 1,
+    weekdays: [...(ev?.recurrence?.by_weekday ?? [])],
+    endMode: (ev?.recurrence?.end.type === "Until" ? "until" : "count") as
+      | "count"
+      | "until",
+    count: ev?.recurrence?.end.type === "Count" ? ev.recurrence.end.count : 10,
+    untilDate:
+      ev?.recurrence?.end.type === "Until"
+        ? inputDate(new Date(ev.recurrence.end.timestamp))
+        : inputDate(props.defaultDate),
+  };
 
-  const [freq, setFreq] = createSignal<Frequency | "None">("None");
-  const [interval, setInterval] = createSignal(1);
-  const [weekdays, setWeekdays] = createSignal<Weekday[]>([]);
-  const [endMode, setEndMode] = createSignal<"count" | "until">("count");
-  const [count, setCount] = createSignal(10);
-  const [untilDate, setUntilDate] = createSignal(inputDate(props.defaultDate));
+  const [title, setTitle] = createSignal(initial.title);
+  const [date, setDate] = createSignal(initial.date);
+  const [startTime, setStartTime] = createSignal(initial.startTime);
+  const [endTime, setEndTime] = createSignal(initial.endTime);
+  const [allDay, setAllDay] = createSignal(initial.allDay);
+  const [description, setDescription] = createSignal(initial.description);
+  const [location, setLocation] = createSignal(initial.location);
 
-  // Invite picker
+  const [freq, setFreq] = createSignal<Frequency | "None">(initial.freq);
+  const [interval, setInterval] = createSignal(initial.interval);
+  const [weekdays, setWeekdays] = createSignal<Weekday[]>(initial.weekdays);
+  const [endMode, setEndMode] = createSignal<"count" | "until">(initial.endMode);
+  const [count, setCount] = createSignal(initial.count);
+  const [untilDate, setUntilDate] = createSignal(initial.untilDate);
+
+  // Invite picker (create mode only; the detail owns invites when editing)
   const [query, setQuery] = createSignal("");
   const [results, setResults] = createSignal<ServerMember[]>([]);
+  const [roleResults, setRoleResults] = createSignal<ServerRole[]>([]);
   const [invited, setInvited] = createSignal<Map<string, ServerMember>>(new Map());
+  const [invitedRoles, setInvitedRoles] = createSignal<Map<string, ServerRole>>(
+    new Map(),
+  );
 
   let searchTimer: ReturnType<typeof setTimeout> | undefined;
   onCleanup(() => clearTimeout(searchTimer));
   function onSearch(value: string) {
     setQuery(value);
     clearTimeout(searchTimer);
-    if (!value.trim()) {
+    const needle = value.trim().toLowerCase();
+    if (!needle) {
       setResults([]);
+      setRoleResults([]);
       return;
     }
+    // Roles match synchronously from the cached role map (no fetch).
+    setRoleResults(
+      props.server.orderedRoles.filter(
+        (role) =>
+          role.name.toLowerCase().includes(needle) &&
+          !invitedRoles().has(role.id),
+      ),
+    );
     searchTimer = setTimeout(async () => {
       try {
         const { members } = await props.server.queryMembersExperimental(value);
@@ -996,11 +1247,38 @@ function CreateForm(props: {
     next.delete(userId);
     setInvited(next);
   }
+  function addRoleInvite(role: ServerRole) {
+    const next = new Map(invitedRoles());
+    next.set(role.id, role);
+    setInvitedRoles(next);
+    setRoleResults((r) => r.filter((x) => x.id !== role.id));
+  }
+  function removeRoleInvite(roleId: string) {
+    const next = new Map(invitedRoles());
+    next.delete(roleId);
+    setInvitedRoles(next);
+  }
 
   function toggleWeekday(day: Weekday) {
     setWeekdays((days) =>
       days.includes(day) ? days.filter((d) => d !== day) : [...days, day],
     );
+  }
+
+  function buildRecurrence() {
+    const end: RecurrenceEnd =
+      endMode() === "count"
+        ? { type: "Count", count: count() }
+        : { type: "Until", timestamp: localMs(untilDate(), "23:59") };
+    return {
+      freq: freq() as Frequency,
+      interval: interval(),
+      by_weekday: freq() === "Weekly" ? weekdays() : [],
+      end,
+      // Left empty: the server clears exceptions on any time-affecting edit
+      // anyway (the documented recurrence-change semantics).
+      exceptions: [],
+    };
   }
 
   function submit() {
@@ -1017,32 +1295,97 @@ function CreateForm(props: {
       description: description().trim() || undefined,
       location: location().trim() || undefined,
     };
-    if (!allDay()) {
+    if (!allDay() && endTime()) {
       data.end = localMs(date(), endTime());
     }
 
     if (freq() !== "None") {
-      const end: RecurrenceEnd =
-        endMode() === "count"
-          ? { type: "Count", count: count() }
-          : { type: "Until", timestamp: localMs(untilDate(), "23:59") };
-      data.recurrence = {
-        freq: freq() as Frequency,
-        interval: interval(),
-        by_weekday: freq() === "Weekly" ? weekdays() : [],
-        end,
-        exceptions: [],
-      };
+      data.recurrence = buildRecurrence();
     }
 
-    props.onSubmit(data, [...invited().keys()]);
+    props.onSubmit(data, [...invited().keys()], [...invitedRoles().keys()]);
+  }
+
+  // ----- edit-mode diff ------------------------------------------------------
+
+  const sortedDays = (days: Weekday[]) => [...days].sort().join(",");
+  /** Any of date / times / all-day toggled ⇒ the whole schedule group resubmits. */
+  const scheduleDirty = () =>
+    date() !== initial.date ||
+    allDay() !== initial.allDay ||
+    (!allDay() &&
+      (startTime() !== initial.startTime || endTime() !== initial.endTime));
+  /** Compare only the form-editable subfields; weekday click-order is not dirt. */
+  const recurrenceDirty = () =>
+    freq() !== initial.freq ||
+    (freq() !== "None" &&
+      (interval() !== initial.interval ||
+        (freq() === "Weekly" &&
+          sortedDays(weekdays()) !== sortedDays(initial.weekdays)) ||
+        endMode() !== initial.endMode ||
+        (endMode() === "count"
+          ? count() !== initial.count
+          : untilDate() !== initial.untilDate)));
+
+  function submitEdit() {
+    if (!props.event || !props.onEdit) return;
+    if (!title().trim() || !date()) return;
+
+    const diff: DataEditEvent = {};
+    const remove: FieldsEvent[] = [];
+
+    if (title().trim() !== initial.title) diff.title = title().trim();
+    if (description().trim() !== initial.description) {
+      if (description().trim()) diff.description = description().trim();
+      else remove.push("Description");
+    }
+    if (location().trim() !== initial.location) {
+      if (location().trim()) diff.location = location().trim();
+      else remove.push("Location");
+    }
+
+    if (scheduleDirty()) {
+      // Atomic schedule group: a schedule edit re-anchors the series in the
+      // EDITOR's timezone (same semantics as create); `timezone` never travels
+      // without `start`. An EMPTY end input (all-day, an end-less imported
+      // event left untouched, or an explicitly cleared end) maps to
+      // remove:["End"] — the group never fabricates an end.
+      diff.start = allDay()
+        ? localMs(date(), "00:00")
+        : localMs(date(), startTime());
+      diff.all_day = allDay();
+      diff.timezone = LOCAL_TZ;
+      if (!allDay() && endTime()) diff.end = localMs(date(), endTime());
+      else remove.push("End");
+    }
+
+    if (recurrenceDirty()) {
+      if (freq() === "None") remove.push("Recurrence");
+      else diff.recurrence = buildRecurrence();
+    }
+
+    if (remove.length) diff.remove = remove;
+    if (Object.keys(diff).length === 0) {
+      // Nothing dirty — close without a PATCH.
+      props.onCancel();
+      return;
+    }
+    props.onEdit(diff);
   }
 
   return (
     <FormWrap>
       <Text class="label" size="large" style={{ color: "#FF8A00" }}>
-        <Trans>New Event</Trans>
+        {props.event ? <Trans>Edit Event</Trans> : <Trans>New Event</Trans>}
       </Text>
+      <Show when={props.event?.recurrence}>
+        <SmallMuted>
+          <Trans>
+            Changing the schedule re-anchors this series in your timezone and
+            resets any skipped occurrences.
+          </Trans>
+        </SmallMuted>
+      </Show>
       <FormInput
         type="text"
         placeholder={t`Event title`}
@@ -1192,46 +1535,71 @@ function CreateForm(props: {
         </Row>
       </Show>
 
-      {/* Invite picker */}
-      <Text class="label" size="small">
-        <Trans>Invite members</Trans>
-      </Text>
-      <Show when={invited().size > 0}>
-        <Row gap="sm" wrap>
-          <For each={[...invited().values()]}>
-            {(member) => (
-              <InvitePill onClick={() => removeInvite(member.id.user)}>
-                {member.displayName ?? member.id.user}
-                <Symbol size={14}>close</Symbol>
-              </InvitePill>
-            )}
-          </For>
-        </Row>
-      </Show>
-      <FormInput
-        type="text"
-        placeholder={t`Search members…`}
-        value={query()}
-        onInput={(e) => onSearch(e.currentTarget.value)}
-      />
-      <Show when={results().length > 0}>
-        <SearchResults>
-          <For each={results()}>
-            {(member) => (
-              <SearchResultRow onClick={() => addInvite(member)}>
-                <Avatar
-                  src={member.avatarURL}
-                  size={20}
-                  fallback={member.displayName ?? member.id.user}
-                />
-                <span style={{ flex: 1, "text-align": "start" }}>
+      {/* Invite picker (create only — the detail owns invites when editing) */}
+      <Show when={!props.event}>
+        <Text class="label" size="small">
+          <Trans>Invite members or roles</Trans>
+        </Text>
+        <Show when={invited().size > 0 || invitedRoles().size > 0}>
+          <Row gap="sm" wrap>
+            <For each={[...invitedRoles().values()]}>
+              {(role) => (
+                <InvitePill onClick={() => removeRoleInvite(role.id)}>
+                  <Symbol size={14}>group</Symbol>
+                  {role.name}
+                  <Symbol size={14}>close</Symbol>
+                </InvitePill>
+              )}
+            </For>
+            <For each={[...invited().values()]}>
+              {(member) => (
+                <InvitePill onClick={() => removeInvite(member.id.user)}>
                   {member.displayName ?? member.id.user}
-                </span>
-                <Symbol size={16}>person_add</Symbol>
-              </SearchResultRow>
-            )}
-          </For>
-        </SearchResults>
+                  <Symbol size={14}>close</Symbol>
+                </InvitePill>
+              )}
+            </For>
+          </Row>
+        </Show>
+        <FormInput
+          type="text"
+          placeholder={t`Search members or roles…`}
+          value={query()}
+          onInput={(e) => onSearch(e.currentTarget.value)}
+        />
+        <Show when={roleResults().length > 0 || results().length > 0}>
+          <SearchResults>
+            <For each={roleResults()}>
+              {(role) => (
+                <SearchResultRow onClick={() => addRoleInvite(role)}>
+                  <Symbol size={20}>group</Symbol>
+                  <span style={{ flex: 1, "text-align": "start" }}>
+                    {role.name}
+                  </span>
+                  <RoleBadge>
+                    <Trans>role</Trans>
+                  </RoleBadge>
+                  <Symbol size={16}>group_add</Symbol>
+                </SearchResultRow>
+              )}
+            </For>
+            <For each={results()}>
+              {(member) => (
+                <SearchResultRow onClick={() => addInvite(member)}>
+                  <Avatar
+                    src={member.avatarURL}
+                    size={20}
+                    fallback={member.displayName ?? member.id.user}
+                  />
+                  <span style={{ flex: 1, "text-align": "start" }}>
+                    {member.displayName ?? member.id.user}
+                  </span>
+                  <Symbol size={16}>person_add</Symbol>
+                </SearchResultRow>
+              )}
+            </For>
+          </SearchResults>
+        </Show>
       </Show>
 
       <Row gap="sm">
@@ -1240,10 +1608,99 @@ function CreateForm(props: {
         </Button>
         <Button
           variant="filled"
-          onPress={submit}
-          isDisabled={props.saving || !title().trim()}
+          onPress={() => (props.event ? submitEdit() : submit())}
+          isDisabled={props.saving || !title().trim() || !date()}
         >
-          {props.saving ? <Trans>Saving…</Trans> : <Trans>Create</Trans>}
+          {props.saving ? (
+            <Trans>Saving…</Trans>
+          ) : props.event ? (
+            <Trans>Save</Trans>
+          ) : (
+            <Trans>Create</Trans>
+          )}
+        </Button>
+      </Row>
+    </FormWrap>
+  );
+}
+
+/**
+ * Manager-triggered import of legacy `[ACUTEST_EVENT]:`-tagged messages
+ * (slice F, design §11). The channel select defaults to the channel literally
+ * named "events" (the legacy convention); when absent, an explicit choice is
+ * required — never a silent fallback. Re-running is dedup-safe server-side.
+ */
+function ImportPanel(props: {
+  server: Server;
+  importing: boolean;
+  result?: ImportResultData;
+  onImport: (channelId: string) => void;
+  onClose: () => void;
+}) {
+  const { t } = useLingui();
+  const textChannels = createMemo(() =>
+    props.server.channels.filter((c) => c.type === "TextChannel"),
+  );
+  const [channelId, setChannelId] = createSignal(
+    textChannels().find((c) => c.name?.toLowerCase() === "events")?.id ?? "",
+  );
+
+  return (
+    <FormWrap>
+      <Text class="label" size="large" style={{ color: "#FF8A00" }}>
+        <Trans>Import legacy events</Trans>
+      </Text>
+      <Text
+        class="body"
+        size="small"
+        style={{ color: "var(--md-sys-color-on-surface-variant)" }}
+      >
+        <Trans>
+          Scans a channel for old tagged event messages and turns them into
+          real calendar events. Already-imported messages are skipped, so
+          running this again is safe.
+        </Trans>
+      </Text>
+
+      <ChannelSelect
+        value={channelId()}
+        onChange={(e) => setChannelId(e.currentTarget.value)}
+      >
+        <option value="" disabled>
+          {t`Select a channel`}
+        </option>
+        <For each={textChannels()}>
+          {(channel) => <option value={channel.id}>#{channel.name}</option>}
+        </For>
+      </ChannelSelect>
+
+      <Show when={props.result}>
+        <SmallMuted>
+          <Trans>
+            Imported: {props.result!.imported} · Duplicates skipped:{" "}
+            {props.result!.skipped_duplicates} · Invalid:{" "}
+            {props.result!.skipped_invalid}
+          </Trans>
+          <Show when={props.result!.truncated}>
+            {" "}
+            <Trans>
+              The scan stopped at the message cap — run the import again to
+              continue.
+            </Trans>
+          </Show>
+        </SmallMuted>
+      </Show>
+
+      <Row gap="sm">
+        <Button variant="text" onPress={props.onClose}>
+          <Trans>Close</Trans>
+        </Button>
+        <Button
+          variant="filled"
+          onPress={() => props.onImport(channelId())}
+          isDisabled={props.importing || !channelId()}
+        >
+          {props.importing ? <Trans>Importing…</Trans> : <Trans>Import</Trans>}
         </Button>
       </Row>
     </FormWrap>
@@ -1619,6 +2076,28 @@ const SearchResults = styled("div", {
     border: "1px solid var(--md-sys-color-outline-variant)",
     maxHeight: "160px",
     overflowY: "auto",
+  },
+});
+
+const ChannelSelect = styled("select", {
+  base: {
+    padding: "8px 10px",
+    borderRadius: "8px",
+    border: "1px solid var(--md-sys-color-outline-variant)",
+    background: "var(--md-sys-color-surface-container)",
+    color: "var(--md-sys-color-on-surface)",
+  },
+});
+
+const RoleBadge = styled("span", {
+  base: {
+    padding: "1px 6px",
+    borderRadius: "999px",
+    background: "var(--md-sys-color-tertiary-container)",
+    color: "var(--md-sys-color-on-tertiary-container)",
+    fontSize: "0.65rem",
+    textTransform: "uppercase",
+    letterSpacing: "0.05em",
   },
 });
 
