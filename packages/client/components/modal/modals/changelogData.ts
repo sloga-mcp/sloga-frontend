@@ -9,6 +9,43 @@ import type { ChangelogResponse } from "./Changelog";
  */
 export const CHANGELOGS: ChangelogResponse[] = [
   {
+    id: "sloga-2026-07-10",
+    title: "Patch Notes",
+    published_at: "2026-07-10T20:00:00.000Z",
+    markdown_content: `## v0.7.0 — Events, encrypted DMs & translation
+
+### 📅 Server Events
+- **Schedule events in your server** — one-off or repeating, with a title, time, and description.
+- **Invite people or entire roles** — everyone can RSVP with Accept or Decline.
+- Get **notified** when an event you joined is starting.
+- Open the calendar from the top of your server to browse what's coming up.
+
+### 🔐 End-to-end encrypted DMs (native apps)
+- **Opt-in E2EE for direct messages** — messages are encrypted on your device and only you and the other person can read them. The server only ever sees scrambled ciphertext.
+- Works in **1:1 and group DMs**, including **attachments** — photos and files are encrypted before they leave your device.
+- **Safety numbers** let you verify you're really talking to who you think you are.
+- **Key backup with a recovery code** — restore your encrypted conversations on a new device.
+- Available in the desktop and Android apps. Both sides need E2EE turned on.
+
+### 🌍 Message translation
+- New in **Settings → Language**: automatically detect and **translate other people's messages** into the language you choose — in servers and DMs.
+- Translations appear right under the original message with a "Translated from …" note.
+- Your privacy is respected: **encrypted messages are never sent for translation**.
+
+### 🎲 Dice rolls
+- Roll dice right in chat from the composer — rolls are made **by the server**, so results can't be faked.
+
+### 🖥️ Interface
+- The **left sidebar can now expand** — click the arrow to see server and DM names at a glance.
+- Dark theme is now the default for new users.
+
+### 🛠️ Fixes & stability
+- Fixed a **reconnect loop** after network drops — the app now recovers cleanly when your connection blips.
+- Images, videos and downloads now load reliably behind the new sloga.gg address.
+
+*Sloga — Hop in.*`,
+  },
+  {
     id: "sloga-2026-07-06",
     title: "Patch Notes",
     published_at: "2026-07-06T02:00:00.000Z",
