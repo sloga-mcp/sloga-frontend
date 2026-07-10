@@ -50,6 +50,7 @@ import { startsWithPackPUA } from "@revolt/markdown/emoji/UnicodeEmoji";
 import { MediaPickerProps } from "@revolt/ui/components/features/messaging/composition/picker/CompositionMediaPicker";
 import { EditMessage } from "./EditMessage";
 import { EncryptedAttachment } from "./EncryptedAttachment";
+import { MessageTranslation } from "./MessageTranslation";
 
 /**
  * Regex for matching URLs
@@ -378,6 +379,18 @@ export function Message(props: Props) {
             <BreakText>
               <Markdown content={props.message.content!} />
             </BreakText>
+            {/* Never translate E2EE messages: decrypted text must not
+                leave the device (translation calls Google) */}
+            <Show
+              when={
+                state.settings.getValue("translation:enabled") &&
+                !props.message.systemMessage &&
+                props.message.authorId !== client().user?.id &&
+                !e2ee?.isEncryptedMessage(props.message.id)
+              }
+            >
+              <MessageTranslation content={props.message.content!} />
+            </Show>
           </Match>
         </Switch>
         <For each={props.message.attachments}>

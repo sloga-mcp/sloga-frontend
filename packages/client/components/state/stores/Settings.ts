@@ -2,6 +2,7 @@ import {
   UNICODE_EMOJI_PACKS,
   UnicodeEmojiPacks,
 } from "@revolt/markdown/emoji/UnicodeEmoji";
+import { TRANSLATE_LANGUAGE_CODES } from "@revolt/common";
 import { batch } from "solid-js";
 
 import { State } from "..";
@@ -100,6 +101,16 @@ interface SettingsDefinition {
    * Whether to share detected game activity with others (desktop app)
    */
   "activity:share": boolean;
+
+  /**
+   * Whether to automatically translate other people's messages
+   */
+  "translation:enabled": boolean;
+
+  /**
+   * Target language for automatic message translation
+   */
+  "translation:target": string;
 }
 
 /**
@@ -132,6 +143,8 @@ const EXPECTED_TYPES: { [K in keyof SettingsDefinition]: ValueType<K> } = {
   "sounds:ringtone_variant": "number",
   "sounds:disconnect_variant": "number",
   "activity:share": "boolean",
+  "translation:enabled": "boolean",
+  "translation:target": "string",
 };
 
 /**
@@ -147,6 +160,8 @@ const DEFAULT_VALUES: TypeSettings = {
   "sounds:ringtone_variant": 8,
   "sounds:disconnect_variant": 3,
   "activity:share": true,
+  "translation:enabled": false,
+  "translation:target": "en",
 };
 
 /**
@@ -183,6 +198,8 @@ export class Settings extends AbstractStore<"settings", TypeSettings> {
       "sounds:message_variant": 4,
       "sounds:ringtone_variant": 8,
       "sounds:disconnect_variant": 3,
+      "translation:enabled": false,
+      "translation:target": "en",
     };
   }
 
@@ -212,6 +229,10 @@ export class Settings extends AbstractStore<"settings", TypeSettings> {
         }
       } else if (key === "notifications:push") {
         if (NotificationPermissionStates.includes(input[key] as never)) {
+          settings[key] = input[key];
+        }
+      } else if (key === "translation:target") {
+        if (TRANSLATE_LANGUAGE_CODES.includes(input[key] as string)) {
           settings[key] = input[key];
         }
       } else if (typeof input[key] === expectedType) {

@@ -1,5 +1,6 @@
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
 
+import { TRANSLATE_LANGUAGES } from "@revolt/common";
 import { Language, Languages, browserPreferredLanguage } from "@revolt/i18n";
 import type { LanguageEntry } from "@revolt/i18n/Languages";
 import { timeLocale } from "@revolt/i18n/dayjs";
@@ -8,6 +9,7 @@ import { useState } from "@revolt/state";
 import {
   CategoryButton,
   CategorySelectOption,
+  Checkbox,
   Column,
   Row,
   Time,
@@ -34,6 +36,10 @@ export function LanguageSettings() {
       <CategoryButton.Group>
         <PickDateFormat />
         <PickTimeFormat />
+      </CategoryButton.Group>
+      <CategoryButton.Group>
+        <ToggleMessageTranslation />
+        <PickTranslationLanguage />
       </CategoryButton.Group>
       <CategoryButton.Group>
         <ContributeLanguageLink />
@@ -99,6 +105,72 @@ function PickLanguage() {
       value={i18n().locale as Language}
       options={langOpts}
       onUpdate={(id) => locale.switch(id)}
+    />
+  );
+}
+
+/**
+ * Toggle automatic translation of other people's messages
+ */
+function ToggleMessageTranslation() {
+  const state = useState();
+
+  return (
+    <CategoryButton
+      icon={<MdTranslate {...iconSize(22)} />}
+      description={
+        <Trans>
+          Automatically detect and translate messages sent by other people.
+          Message text is sent to Google Translate; encrypted messages are
+          never translated.
+        </Trans>
+      }
+      action={
+        <Checkbox
+          checked={state.settings.getValue("translation:enabled") ?? false}
+          onChange={(event) =>
+            state.settings.setValue(
+              "translation:enabled",
+              event.currentTarget.checked,
+            )
+          }
+        />
+      }
+      onClick={() =>
+        state.settings.setValue(
+          "translation:enabled",
+          !state.settings.getValue("translation:enabled"),
+        )
+      }
+    >
+      <Trans>Translate messages</Trans>
+    </CategoryButton>
+  );
+}
+
+/**
+ * Pick the target language for automatic message translation
+ */
+function PickTranslationLanguage() {
+  const state = useState();
+
+  const options: Record<string, CategorySelectOption> = {};
+  for (const [code, name] of TRANSLATE_LANGUAGES) {
+    options[code] = {
+      title: name,
+      shortDesc: name,
+    };
+  }
+
+  return (
+    <CategoryButton.Select
+      icon={<MdLanguage {...iconSize(22)} />}
+      title={<Trans>Translate messages to</Trans>}
+      value={(state.settings.getValue("translation:target") as string) ?? "en"}
+      options={options}
+      onUpdate={(code) =>
+        state.settings.setValue("translation:target", code as string)
+      }
     />
   );
 }
