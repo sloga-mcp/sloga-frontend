@@ -42,7 +42,22 @@ export interface TypeLayout {
    * Only the contrary is ever stored
    */
   openSections: Record<string, boolean>;
+
+  /**
+   * Height (in vh) of the docked voice/video call card.
+   *
+   * Adjustable by dragging the divider between the call card and the
+   * messages/composition below it. Clamped to [CALL_CARD_MIN, CALL_CARD_MAX].
+   */
+  callCardHeight?: number;
 }
+
+/**
+ * Bounds (in vh) for the resizable docked call card
+ */
+export const CALL_CARD_MIN = 20;
+export const CALL_CARD_MAX = 80;
+export const CALL_CARD_DEFAULT = 40;
 
 /**
  * Handles layout and navigation of the app.
@@ -107,7 +122,32 @@ export class Layout extends AbstractStore<"layout", TypeLayout> {
       }
     }
 
+    if (typeof input.callCardHeight === "number") {
+      layout.callCardHeight = Math.min(
+        CALL_CARD_MAX,
+        Math.max(CALL_CARD_MIN, input.callCardHeight),
+      );
+    }
+
     return layout;
+  }
+
+  /**
+   * Get the height (in vh) of the docked call card
+   */
+  getCallCardHeight() {
+    return this.get().callCardHeight ?? CALL_CARD_DEFAULT;
+  }
+
+  /**
+   * Set the height (in vh) of the docked call card, clamped to the allowed range
+   * @param vh New height in viewport-height units
+   */
+  setCallCardHeight(vh: number) {
+    this.set(
+      "callCardHeight",
+      Math.min(CALL_CARD_MAX, Math.max(CALL_CARD_MIN, vh)),
+    );
   }
 
   /**

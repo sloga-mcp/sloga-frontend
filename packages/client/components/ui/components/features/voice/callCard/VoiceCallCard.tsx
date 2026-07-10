@@ -43,9 +43,19 @@ const callCardContext = createContext<(info?: Info) => void>();
 /** Voice call card context */
 export function VoiceCallCardContext(props: { children: JSX.Element }) {
   const voice = useVoice();
+  const state = useState();
 
   const [mode, setMode] = createSignal<Mode>();
   const [info, setInfo] = createSignal<Info>();
+
+  // Expose the user-adjustable docked call card height as a CSS variable so
+  // both the floating wrapper and the card itself can size to it.
+  createEffect(() => {
+    document.documentElement.style.setProperty(
+      "--call-card-height",
+      `${state.layout.getCallCardHeight()}vh`,
+    );
+  });
 
   let ref: HTMLDivElement | undefined,
     events: AbortController | null,
@@ -155,8 +165,11 @@ const Float = styled("div", {
     position: "fixed",
     zIndex: 10,
     pointerEvents: "none",
-    transition: "all .3s cubic-bezier(1, 0, 0, 1)",
-    height: "40vh",
+    // Animate docking (transform) and width changes, but NOT height — height is
+    // user-driven by the resize divider and must track the pointer instantly.
+    transition:
+      "transform .3s cubic-bezier(1, 0, 0, 1), width .3s cubic-bezier(1, 0, 0, 1)",
+    height: "var(--call-card-height, 40vh)",
     touchAction: "none",
   },
   variants: {
@@ -221,9 +234,46 @@ export function VoiceChannelCallCardMount(props: { channel: Channel }) {
  */
 function VoiceCallCard(props: { channel: Channel }) {
   const voice = useVoice();
+  const state = useState();
   const inCall = () => !!voice.channel();
 
   let viewRef: HTMLDivElement | undefined;
+
+  // Resize-divider state: drag the bottom edge of the docked card to trade
+  // vertical space between the call and the messages/composition below.
+  const [resizing, setResizing] = createSignal(false);
+  let resizeTop = 0,
+    resizePid = 0,
+    resizeEvents: AbortController | null = null;
+
+  function resizeMove(e: PointerEvent) {
+    if (e.pointerId !== resizePid) return;
+    e.preventDefault();
+    const px = e.clientY - resizeTop;
+    state.layout.setCallCardHeight((px / window.innerHeight) * 100);
+  }
+
+  function resizeUp(e: PointerEvent) {
+    if (e.pointerId !== resizePid) return;
+    setResizing(false);
+    resizeEvents?.abort();
+    resizeEvents = null;
+  }
+
+  function resizeDown(e: PointerEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    resizePid = e.pointerId;
+    resizeTop = viewRef?.getBoundingClientRect().top ?? 0;
+    setResizing(true);
+    resizeEvents?.abort();
+    resizeEvents = new AbortController();
+    const opt = { passive: false, signal: resizeEvents.signal };
+    document.addEventListener("pointermove", resizeMove, opt);
+    document.addEventListener("pointerup", resizeUp, opt);
+  }
+
+  onCleanup(() => resizeEvents?.abort());
 
   onMount(() => {
     viewRef?.addEventListener("fullscreenchange", () => {
@@ -249,12 +299,21 @@ function VoiceCallCard(props: { channel: Channel }) {
   return (
     <Show when={voice.showCard(props.channel)}>
       <Base>
-        <Card ref={viewRef} active={inCall()}>
+        <Card
+          ref={viewRef}
+          active={inCall()}
+          style={resizing() ? { transition: "none" } : undefined}
+        >
           <Show
             when={inCall()}
             fallback={<VoiceCallCardPreview channel={props.channel} />}
           >
             <VoiceCallCardActiveRoom />
+          </Show>
+          <Show when={inCall() && !voice.fullscreen()}>
+            <ResizeHandle onPointerDown={resizeDown} title="Drag to resize">
+              <ResizeGrip />
+            </ResizeHandle>
           </Show>
         </Card>
       </Base>
@@ -283,6 +342,7 @@ const Base = styled("div", {
 const Card = styled("div", {
   base: {
     pointerEvents: "all",
+    position: "relative",
 
     maxWidth: "100%",
     transition: "var(--transitions-fast) all",
@@ -296,7 +356,7 @@ const Card = styled("div", {
     active: {
       true: {
         width: "100%",
-        height: "40vh",
+        height: "var(--call-card-height, 40vh)",
       },
       false: {
         width: "360px",
@@ -307,5 +367,51 @@ const Card = styled("div", {
   },
   defaultVariants: {
     active: false,
+  },
+});
+
+/**
+ * Draggable divider pinned to the bottom edge of the docked call card.
+ * Dragging it down grows the call and shrinks the space left for messages.
+ */
+const ResizeHandle = styled("div", {
+  base: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: "14px",
+    zIndex: 3,
+
+    display: "flex",
+    alignItems: "flex-end",
+    justifyContent: "center",
+
+    cursor: "ns-resize",
+    touchAction: "none",
+
+    "& > div": {
+      opacity: 0.4,
+      transition: "opacity .15s ease, background .15s ease",
+    },
+    _hover: {
+      "& > div": {
+        opacity: 1,
+        background: "var(--md-sys-color-primary)",
+      },
+    },
+  },
+});
+
+/**
+ * Visible grip in the middle of the resize divider
+ */
+const ResizeGrip = styled("div", {
+  base: {
+    width: "48px",
+    height: "4px",
+    marginBottom: "3px",
+    borderRadius: "var(--borderRadius-full)",
+    background: "var(--md-sys-color-outline)",
   },
 });
