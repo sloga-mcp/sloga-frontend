@@ -154,6 +154,10 @@ class Voice {
   showBar: Accessor<boolean>;
   #setShowBar: Setter<boolean>;
 
+  /** "Theater" mode: only the selected window, no other participants or chrome. */
+  immersive: Accessor<boolean>;
+  #setImmersive: Setter<boolean>;
+
   private sound: SoundController;
 
   private openModal;
@@ -211,6 +215,10 @@ class Voice {
     const [showBar, setShowBar] = createSignal(true);
     this.showBar = showBar;
     this.#setShowBar = setShowBar;
+
+    const [immersive, setImmersive] = createSignal(false);
+    this.immersive = immersive;
+    this.#setImmersive = setImmersive;
 
     const [hwBrightness, setHwBrightness] = createSignal(false);
     this.cameraHwBrightness = hwBrightness;
@@ -377,6 +385,7 @@ class Voice {
         this.#setRoom();
         this.#setChannel();
         this.#setFullscreen(false);
+        this.#setImmersive(false);
         this.vidTracks = () => [];
       });
 
@@ -895,6 +904,9 @@ class Voice {
 
   toggleFullscreen(fullscreen: boolean = !this.fullscreen()) {
     this.#setFullscreen(fullscreen);
+    // Theater mode only makes sense inside fullscreen — leaving fullscreen (via
+    // the button or the browser's Escape) always drops back to the normal view.
+    if (!fullscreen) this.toggleImmersive(false);
   }
 
   trackId(t: TrackReferenceOrPlaceholder) {
@@ -921,6 +933,39 @@ class Voice {
 
   toggleShowBar() {
     this.#setShowBar((s) => !s);
+  }
+
+  /**
+   * "Theater" mode: hide every other participant and the call chrome so the
+   * selected (focused) camera/screen-share fills the whole fullscreen view.
+   * Entering with nothing selected auto-picks a screen-share, else the first
+   * live video track — a no-op if there's no video to show. Exiting restores
+   * the other-participants strip so the normal fullscreen view comes straight
+   * back.
+   */
+  toggleImmersive(force?: boolean) {
+    const next = force ?? !this.immersive();
+    if (next) {
+      if (!this.focusTrack()) {
+        const withVideo = this.vidTracks().filter(
+          (t) => "publication" in t && t.publication,
+        );
+        const pick =
+          withVideo.find((t) => t.source === Track.Source.ScreenShare) ??
+          withVideo[0];
+        if (!pick) return;
+        this.#setFocus(this.trackId(pick));
+      }
+      batch(() => {
+        this.#setShowBar(false);
+        this.#setImmersive(true);
+      });
+    } else {
+      batch(() => {
+        this.#setImmersive(false);
+        this.#setShowBar(true);
+      });
+    }
   }
 
   getConnectedUser(userId: string) {

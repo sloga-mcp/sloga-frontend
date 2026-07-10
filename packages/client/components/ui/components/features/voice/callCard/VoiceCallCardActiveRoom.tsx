@@ -17,18 +17,25 @@ import { VoiceCallCardStatus } from "./VoiceCallCardStatus";
  * Call card (active)
  */
 export function VoiceCallCardActiveRoom() {
+  const voice = useVoice();
+
   return (
-    <View>
+    <View immersive={voice.immersive()}>
       <Participants />
-      <VoiceCallControls>
-        <VoiceCallControlHolder right>
-          <VoiceCallFullscreen />
-        </VoiceCallControlHolder>
-        <VoiceCallCardActions size="sm" />
-        <VoiceCallControlHolder left overflow>
-          <VoiceCallCardStatus />
-        </VoiceCallControlHolder>
-      </VoiceCallControls>
+      {/* Theater mode hides every control; the only chrome is the auto-dimming
+          exit button overlaid on the selected window (Escape also exits). */}
+      <Show when={!voice.immersive()} fallback={<ImmersiveExit />}>
+        <VoiceCallControls>
+          <VoiceCallControlHolder right>
+            <VoiceCallTheater />
+            <VoiceCallFullscreen />
+          </VoiceCallControlHolder>
+          <VoiceCallCardActions size="sm" />
+          <VoiceCallControlHolder left overflow>
+            <VoiceCallCardStatus />
+          </VoiceCallControlHolder>
+        </VoiceCallControls>
+      </Show>
     </View>
   );
 }
@@ -45,6 +52,61 @@ function VoiceCallFullscreen() {
         <Symbol>fullscreen_exit</Symbol>
       </Show>
     </IconButton>
+  );
+}
+
+/**
+ * Enter theater mode: only shown in fullscreen and only when there's a live
+ * camera/screen-share to maximize. Picks the currently-focused window, or
+ * auto-selects one if nothing is focused yet.
+ */
+function VoiceCallTheater() {
+  const voice = useVoice();
+  const { t } = useLingui();
+
+  const hasVideo = () =>
+    voice.vidTracks().some((tr) => "publication" in tr && tr.publication);
+
+  return (
+    <Show when={voice.fullscreen() && hasVideo()}>
+      <IconButton
+        size="sm"
+        variant={"standard"}
+        onPress={() => voice.toggleImmersive()}
+        use:floating={{
+          tooltip: {
+            placement: "top",
+            content: t`Maximize & hide participants`,
+          },
+        }}
+      >
+        <Symbol>open_in_full</Symbol>
+      </IconButton>
+    </Show>
+  );
+}
+
+/** Auto-dimming control overlaid in theater mode to bring everyone back. */
+function ImmersiveExit() {
+  const voice = useVoice();
+  const { t } = useLingui();
+
+  return (
+    <ImmersiveControls>
+      <IconButton
+        size="sm"
+        variant={"standard"}
+        onPress={() => voice.toggleImmersive(false)}
+        use:floating={{
+          tooltip: {
+            placement: "bottom",
+            content: t`Exit theater mode`,
+          },
+        }}
+      >
+        <Symbol>close_fullscreen</Symbol>
+      </IconButton>
+    </ImmersiveControls>
   );
 }
 
@@ -72,9 +134,13 @@ function Participants() {
     return `max(${TILE_MIN_WIDTH}, ${vidWidth}% - var(--gap-md))`;
   };
 
-  // Clear out any focus when the track that was focused is no longer available.
+  // Clear out any focus when the track that was focused is no longer available;
+  // a vanished window also drops theater mode (nothing left to maximize).
   createEffect(() => {
-    if (!voice.focusTrack()) voice.toggleFocus();
+    if (!voice.focusTrack()) {
+      voice.toggleFocus();
+      voice.toggleImmersive(false);
+    }
   });
 
   onMount(() => {
@@ -90,7 +156,7 @@ function Participants() {
     <Call ref={callRef} class={voice.focusId() ? "" : scrollableStyles()}>
       <InRoom>
         <FocusedParticipant />
-        <Show when={voice.focusId()}>
+        <Show when={voice.focusId() && !voice.immersive()}>
           <ShowBarButtonHolder>
             <div style={{ "margin-bottom": "10px" }}>
               <IconButton
@@ -156,6 +222,7 @@ function FocusedParticipant() {
 
 const View = styled("div", {
   base: {
+    position: "relative",
     minHeight: 0,
     height: "100%",
     width: "100%",
@@ -164,6 +231,34 @@ const View = styled("div", {
     flexDirection: "column",
     gap: "var(--gap-md)",
     padding: "var(--gap-md)",
+  },
+  variants: {
+    // Theater mode: drop the padding/gap so the selected window fills the frame.
+    immersive: {
+      true: {
+        gap: 0,
+        padding: 0,
+      },
+    },
+  },
+});
+
+/**
+ * Holder for the theater-mode exit button, pinned top-right over the maximized
+ * window. Kept subtle so it doesn't distract, brightening to full on hover.
+ */
+const ImmersiveControls = styled("div", {
+  base: {
+    position: "absolute",
+    top: "var(--gap-md)",
+    right: "var(--gap-md)",
+    zIndex: 4,
+
+    opacity: 0.4,
+    transition: "opacity .2s ease",
+    _hover: {
+      opacity: 1,
+    },
   },
 });
 
