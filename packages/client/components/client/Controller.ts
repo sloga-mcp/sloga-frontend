@@ -345,6 +345,9 @@ class Lifecycle {
         break;
       case State.Disconnected:
         switch (transition.type) {
+          case TransitionType.TemporaryFailure:
+            // Already disconnected; repeated failure notifications are harmless.
+            break;
           case TransitionType.DeviceOffline:
             this.#enter(State.Offline);
             break;
