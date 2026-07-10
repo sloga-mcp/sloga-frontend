@@ -21,6 +21,13 @@ export function VoiceCallCardActions(props: { size: "xs" | "sm" }) {
 
   const enableVideo = CONFIGURATION.ENABLE_VIDEO;
 
+  // Screen sharing goes through getDisplayMedia on web/desktop. Android WebView
+  // has no getDisplayMedia (needs a native MediaProjection plugin), so gate the
+  // button on the capability actually being present instead of throwing.
+  const screenShareSupported =
+    typeof navigator !== "undefined" &&
+    typeof navigator.mediaDevices?.getDisplayMedia === "function";
+
   return (
     <Actions>
       <Show when={props.size === "xs"}>
@@ -121,24 +128,30 @@ export function VoiceCallCardActions(props: { size: "xs" | "sm" }) {
       </Show>
       <IconButton
         size={props.size}
-        variant={enableVideo && voice.screenshare() ? "filled" : "tonal"}
+        variant={
+          enableVideo && screenShareSupported && voice.screenshare()
+            ? "filled"
+            : "tonal"
+        }
         onPress={() => {
-          if (enableVideo) voice.toggleScreenshare();
+          if (enableVideo && screenShareSupported) voice.toggleScreenshare();
         }}
         use:floating={{
           tooltip: {
             placement: "top",
-            content: enableVideo
-              ? voice.screenshare()
-                ? t`Stop sharing`
-                : t`Share screen`
-              : t`Coming soon! 👀`,
+            content: !enableVideo
+              ? t`Coming soon! 👀`
+              : !screenShareSupported
+                ? t`Screen sharing isn't supported on this device`
+                : voice.screenshare()
+                  ? t`Stop sharing`
+                  : t`Share screen`,
           },
         }}
-        isDisabled={!enableVideo}
+        isDisabled={!enableVideo || !screenShareSupported}
       >
         <Show
-          when={!enableVideo || voice.screenshare()}
+          when={!enableVideo || !screenShareSupported || voice.screenshare()}
           fallback={<Symbol>stop_screen_share</Symbol>}
         >
           <Symbol>screen_share</Symbol>
