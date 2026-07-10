@@ -101,6 +101,14 @@ type ScreenShareQuality = {
   resolution: VideoResolution;
   fullName: string;
   contentHint: string;
+  /**
+   * Upper bound on the encoded bitrate (kbps). Without this, LiveKit picks an
+   * effectively-uncapped default from the source resolution; at 1440p/4K that
+   * saturates a relayed (TURN) publisher path and collapses the peer
+   * connection — disconnecting off-LAN callers. Capping keeps the high-res
+   * option usable over the relay. LAN publishers rarely hit the cap.
+   */
+  maxBitrateKbps: number;
 };
 
 class Voice {
@@ -249,6 +257,12 @@ class Voice {
     this.disconnect();
 
     const room = new Room({
+      // Stop pushing upstream for tracks nobody is subscribed to — trims
+      // wasted bitrate on the (relayed) publisher path. Safe with the manual
+      // autoSubscribe:false flow below. adaptiveStream is intentionally left
+      // off: it pauses subscribed tracks by attached-element visibility, which
+      // the custom PiP/tile/fullscreen renderers here don't reliably signal.
+      dynacast: true,
       audioCaptureDefaults: {
         deviceId: this.#settings.preferredAudioInputDevice,
         echoCancellation: this.#settings.echoCancellation,
@@ -642,6 +656,35 @@ class Voice {
   }
 
   /**
+   * Cap the live screen-share sender's bitrate/framerate to the given quality
+   * tier via RTCRtpSender.setParameters. Needed when the picker changes quality
+   * after the track is already published — setScreenShareEnabled's encoding is
+   * fixed at publish time, and applyConstraints only touches the captured
+   * resolution, not the RTP bitrate. Best-effort: if a browser rejects
+   * setParameters mid-stream, the publish-time cap stays in force.
+   */
+  async #applyScreenShareEncoding(
+    videoTrack: LocalVideoTrack,
+    quality: ScreenShareQuality,
+  ) {
+    const sender = videoTrack.sender;
+    if (!sender) return;
+    try {
+      const params = sender.getParameters();
+      if (!params.encodings || params.encodings.length === 0) {
+        params.encodings = [{}];
+      }
+      params.encodings[0].maxBitrate = quality.maxBitrateKbps * 1000;
+      if (quality.resolution.frameRate) {
+        params.encodings[0].maxFramerate = quality.resolution.frameRate;
+      }
+      await sender.setParameters(params);
+    } catch (e) {
+      console.warn("could not apply screen-share encoding", e);
+    }
+  }
+
+  /**
    * Get the enabled screen share qualities. "low" will always be enabled.
    * Each screen share quality is checked against the limit if the limit is available on the client.
    *
@@ -662,6 +705,7 @@ class Voice {
         resolution: ScreenSharePresets.h720fps30.resolution,
         fullName: `720p 30FPS`,
         contentHint: "motion",
+        maxBitrateKbps: 1500,
       },
     };
 
@@ -682,6 +726,7 @@ class Voice {
             resolution: ScreenSharePresets.h1080fps30.resolution,
             fullName: `1080p 30FPS`,
             contentHint: "motion",
+            maxBitrateKbps: 2500,
           };
           // Clone before mutating — ScreenSharePresets.original is a shared
           // livekit-client singleton; writing to it in place corrupts it
@@ -712,6 +757,7 @@ class Voice {
             resolution: originalResolution,
             fullName: `Source 5FPS`,
             contentHint: "text",
+            maxBitrateKbps: 1500,
           };
         }
       }
@@ -728,6 +774,7 @@ class Voice {
       }),
       fullName: `1080p 60FPS`,
       contentHint: "motion",
+      maxBitrateKbps: 4000,
     };
     qualities.qhd = {
       name: "qhd",
@@ -738,6 +785,7 @@ class Voice {
       }),
       fullName: `1440p 30FPS`,
       contentHint: "motion",
+      maxBitrateKbps: 4000,
     };
     qualities.uhd = {
       name: "uhd",
@@ -748,6 +796,7 @@ class Voice {
       }),
       fullName: `4K 30FPS`,
       contentHint: "motion",
+      maxBitrateKbps: 8000,
     };
 
     return qualities;
@@ -795,14 +844,26 @@ class Voice {
       }
 
       try {
+        // Bitrate/framerate for the publish encoding come from the initial
+        // (stored) quality. If the picker changes the quality afterwards, the
+        // `callback` below re-applies the encoding to the new tier — a bare
+        // resolution swap via applyConstraints does NOT touch the publish
+        // bitrate cap, so we update the sender directly there.
+        const initialQuality =
+          qualities[this.#settings.screenShareQuality || "low"] ||
+          qualities.low!;
+
         const localTrack = await room.localParticipant.setScreenShareEnabled(
           true,
           {
-            resolution:
-              this.getEnabledScreenShareQualities()[
-                this.#settings.screenShareQuality || "low"
-              ]?.resolution,
+            resolution: initialQuality.resolution,
             audio: true,
+          },
+          {
+            videoEncoding: {
+              maxBitrate: initialQuality.maxBitrateKbps * 1000, // kbps -> bps
+              maxFramerate: initialQuality.resolution.frameRate,
+            },
           },
         );
 
@@ -846,6 +907,16 @@ class Voice {
               });
               localTrack.videoTrack.mediaStreamTrack.contentHint =
                 quality.contentHint;
+              // Re-cap the publish bitrate to the picked tier. applyConstraints
+              // above only changes the captured resolution/framerate; the RTP
+              // sender keeps whatever maxBitrate was set at publish time, so a
+              // 720p->1440p switch would otherwise stay starved (or, going the
+              // other way, keep an over-large cap). Best-effort — a failure
+              // just leaves the publish-time cap in place.
+              await this.#applyScreenShareEncoding(
+                localTrack.videoTrack,
+                quality,
+              );
               if (!audio && screenAudioTrack?.track) {
                 room.localParticipant.unpublishTrack(screenAudioTrack.track);
               }
