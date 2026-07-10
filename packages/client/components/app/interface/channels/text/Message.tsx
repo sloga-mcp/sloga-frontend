@@ -48,6 +48,7 @@ import {
 
 import { startsWithPackPUA } from "@revolt/markdown/emoji/UnicodeEmoji";
 import { MediaPickerProps } from "@revolt/ui/components/features/messaging/composition/picker/CompositionMediaPicker";
+import { DiceRollMessage, isDiceRollMessage } from "./DiceRollMessage";
 import { EditMessage } from "./EditMessage";
 import { EncryptedAttachment } from "./EncryptedAttachment";
 import { MessageTranslation } from "./MessageTranslation";
@@ -374,6 +375,14 @@ export function Message(props: Props) {
         <Switch>
           <Match when={props.editing}>
             <EditMessage message={props.message} />
+          </Match>
+          <Match
+            when={isDiceRollMessage(
+              props.message.flags,
+              props.message.content,
+            )}
+          >
+            <DiceRollMessage content={props.message.content!} />
           </Match>
           <Match when={props.message.content && !isOnlyGIF()}>
             <BreakText>

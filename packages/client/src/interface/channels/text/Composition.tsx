@@ -365,6 +365,61 @@ export function MessageComposition(props: Props) {
   const delayedStopTyping = debounce(stopTyping, 1000); // eslint-disable-line solid/reactivity
 
   /**
+   * Send a dice roll via the server-authoritative roll endpoint.
+   *
+   * The server parses the notation, rolls with its own RNG and sends the
+   * result message carrying the DiceRoll flag — results cannot be spoofed
+   * by clients. Uses raw fetch: the generated typed client drops bodies
+   * for routes missing from its tables.
+   */
+  async function sendRoll(notation: string) {
+    if (props.channel.type !== "TextChannel") {
+      openModal({
+        type: "error2",
+        error: t`Dice rolls are only available in server channels.`,
+      });
+      return;
+    }
+
+    try {
+      const c = client();
+      const [authHeader, authValue] = c.authenticationHeader;
+      const response = await fetch(
+        `${c.options.baseURL}/channels/${props.channel.id}/roll`,
+        {
+          method: "POST",
+          headers: {
+            [authHeader]: authValue,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ notation }),
+        },
+      );
+
+      if (!response.ok) {
+        let detail = "";
+        try {
+          const data = await response.json();
+          detail = data?.error ?? data?.type ?? "";
+        } catch {
+          /* no body */
+        }
+        throw new Error(detail || t`Dice roll failed (${response.status})`);
+      }
+
+      // Success — clear the /roll command from the draft
+      state.draft.setDraft(props.channel.id, { content: "" });
+      sound.playSound("messageSent");
+      props.onMessageSend?.();
+    } catch (error) {
+      openModal({
+        type: "error2",
+        error: error instanceof Error ? error : new Error(String(error)),
+      });
+    }
+  }
+
+  /**
    * Send a message using the current draft
    * @param useContent Content to send
    */
@@ -372,6 +427,16 @@ export function MessageComposition(props: Props) {
     if (!canSend() && typeof useContent !== "string") {
       return;
     } else if (currentSlowmode()) {
+      return;
+    }
+
+    // Intercept the /roll command — it becomes a server-side dice roll,
+    // never a plain message
+    const rawContent =
+      typeof useContent === "string" ? useContent : currentValue();
+    const trimmed = rawContent.trim();
+    if (/^\/roll(\s|$)/i.test(trimmed)) {
+      await sendRoll(trimmed.slice(5).trim() || "1d20");
       return;
     }
 
@@ -582,6 +647,30 @@ export function MessageComposition(props: Props) {
     return disappearOption().seconds === null
       ? t`Disappearing messages: Off`
       : t`Messages disappear after ${disappearOption().label}`;
+  }
+
+  // Dice roller (server text channels only)
+  const DICE_OPTIONS = [4, 6, 8, 10, 12, 20, 100];
+  const [showDiceMenu, setShowDiceMenu] = createSignal(false);
+  const [diceQty, setDiceQty] = createSignal(1);
+  const [diceMod, setDiceMod] = createSignal(0);
+  const [diceAdv, setDiceAdv] = createSignal<"none" | "adv" | "dis">("none");
+
+  /**
+   * Compose dice notation from the picker state and roll it.
+   * Advantage/disadvantage only applies to a single d20 (2d20kh1 / 2d20kl1).
+   */
+  function rollFromPicker(sides: number) {
+    let notation: string;
+    if (sides === 20 && diceQty() === 1 && diceAdv() !== "none") {
+      notation = diceAdv() === "adv" ? "2d20kh1" : "2d20kl1";
+    } else {
+      notation = `${diceQty()}d${sides}`;
+    }
+    const mod = diceMod();
+    if (mod !== 0) notation += mod > 0 ? `+${mod}` : `${mod}`;
+    setShowDiceMenu(false);
+    void sendRoll(notation);
   }
 
   return (
@@ -806,6 +895,123 @@ export function MessageComposition(props: Props) {
                   </Show>
                 </div>
               </MessageBox.InlineIcon>
+              <Show when={props.channel.type === "TextChannel"}>
+                <MessageBox.InlineIcon>
+                  <div style={{ position: "relative" }}>
+                    <Tooltip content={t`Roll dice`} placement="top">
+                      <IconButton onPress={() => setShowDiceMenu((v) => !v)}>
+                        <Symbol>casino</Symbol>
+                      </IconButton>
+                    </Tooltip>
+                    <Show when={showDiceMenu()}>
+                      <div
+                        style={{
+                          position: "fixed",
+                          inset: "0",
+                          "z-index": "999",
+                        }}
+                        onClick={() => setShowDiceMenu(false)}
+                      />
+                      <div
+                        style={{
+                          position: "absolute",
+                          bottom: "calc(100% + 8px)",
+                          right: "0",
+                          "z-index": "1000",
+                          background: "var(--md-sys-color-surface-container-high)",
+                          "border-radius": "12px",
+                          padding: "12px",
+                          "min-width": "240px",
+                          "box-shadow": "0 4px 20px rgba(0,0,0,0.4)",
+                          border: "1px solid var(--md-sys-color-outline-variant)",
+                        }}
+                      >
+                        <div style={{ padding: "0 0 8px", "font-size": "0.75em", opacity: "0.6", "font-weight": "600", "letter-spacing": "0.05em", "text-transform": "uppercase" }}>
+                          {t`Roll dice`}
+                        </div>
+                        {/* advantage / disadvantage (single d20 only) */}
+                        <div style={{ display: "flex", gap: "4px", "padding-bottom": "8px" }}>
+                          <For each={[
+                            { key: "none", label: t`Normal` },
+                            { key: "adv", label: t`Advantage` },
+                            { key: "dis", label: t`Disadvantage` },
+                          ] as const}>
+                            {(opt) => (
+                              <div
+                                onClick={() => setDiceAdv(opt.key)}
+                                style={{
+                                  flex: "1",
+                                  "text-align": "center",
+                                  padding: "4px 6px",
+                                  "border-radius": "8px",
+                                  cursor: "pointer",
+                                  "font-size": "0.75em",
+                                  "font-weight": "600",
+                                  background: diceAdv() === opt.key ? "var(--md-sys-color-primary-container)" : "transparent",
+                                  color: diceAdv() === opt.key ? "var(--md-sys-color-on-primary-container)" : "inherit",
+                                  border: "1px solid var(--md-sys-color-outline-variant)",
+                                }}
+                              >
+                                {opt.label}
+                              </div>
+                            )}
+                          </For>
+                        </div>
+                        {/* quantity + modifier steppers */}
+                        <div style={{ display: "flex", gap: "12px", "padding-bottom": "8px", "font-size": "0.85em" }}>
+                          <div style={{ flex: "1", display: "flex", "align-items": "center", gap: "6px" }}>
+                            <span style={{ opacity: "0.7" }}>{t`Dice`}</span>
+                            <IconButton size="sm" onPress={() => setDiceQty((q) => Math.max(1, q - 1))}>
+                              <Symbol>remove</Symbol>
+                            </IconButton>
+                            <span style={{ "min-width": "2ch", "text-align": "center", "font-weight": "600" }}>{diceQty()}</span>
+                            <IconButton size="sm" onPress={() => setDiceQty((q) => Math.min(20, q + 1))}>
+                              <Symbol>add</Symbol>
+                            </IconButton>
+                          </div>
+                          <div style={{ flex: "1", display: "flex", "align-items": "center", gap: "6px" }}>
+                            <span style={{ opacity: "0.7" }}>{t`Mod`}</span>
+                            <IconButton size="sm" onPress={() => setDiceMod((m) => Math.max(-99, m - 1))}>
+                              <Symbol>remove</Symbol>
+                            </IconButton>
+                            <span style={{ "min-width": "3ch", "text-align": "center", "font-weight": "600" }}>
+                              {diceMod() > 0 ? `+${diceMod()}` : diceMod()}
+                            </span>
+                            <IconButton size="sm" onPress={() => setDiceMod((m) => Math.min(99, m + 1))}>
+                              <Symbol>add</Symbol>
+                            </IconButton>
+                          </div>
+                        </div>
+                        {/* die buttons — click to roll */}
+                        <div style={{ display: "grid", "grid-template-columns": "repeat(4, 1fr)", gap: "6px" }}>
+                          <For each={DICE_OPTIONS}>
+                            {(sides) => (
+                              <div
+                                onClick={() => rollFromPicker(sides)}
+                                style={{
+                                  "text-align": "center",
+                                  padding: "8px 4px",
+                                  "border-radius": "8px",
+                                  cursor: "pointer",
+                                  "font-weight": "700",
+                                  "font-size": "0.85em",
+                                  background: "var(--md-sys-color-primary-container)",
+                                  color: "var(--md-sys-color-on-primary-container)",
+                                }}
+                              >
+                                d{sides}
+                              </div>
+                            )}
+                          </For>
+                        </div>
+                        <div style={{ padding: "8px 0 0", "font-size": "0.7em", opacity: "0.5" }}>
+                          {t`Or type /roll 2d6+3 in chat`}
+                        </div>
+                      </div>
+                    </Show>
+                  </div>
+                </MessageBox.InlineIcon>
+              </Show>
               <CompositionMediaPicker
                 onMessage={sendMessage}
                 onTextReplacement={(text) => setNodeReplacement([text])}
