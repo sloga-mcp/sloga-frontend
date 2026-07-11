@@ -243,7 +243,7 @@ importers:
         specifier: ^5.0.0
         version: 5.0.0
       livekit-client:
-        specifier: ^2.13.0
+        specifier: 2.15.13
         version: 2.15.13(@types/dom-mediacapture-record@1.0.22)
       livekit-rnnoise-processor:
         specifier: ^2.0.0

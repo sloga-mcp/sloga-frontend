@@ -20,8 +20,30 @@ export type { default as ClientController } from "./Controller";
 
 export { useNotifications } from "./NotificationsController";
 export { SoundContext, SoundController, useSound } from "./Sounds";
-export { E2EEBridge, E2EESendError, nativeE2EEAvailable } from "./e2ee";
+export {
+  classifyEnvelopeError,
+  E2EEBridge,
+  E2EESendError,
+  nativeE2EEAvailable,
+} from "./e2ee";
 export type { BackupStatusView, E2EEAttachmentMeta, SafetyNumber } from "./e2ee";
+export type {
+  CallE2EEState,
+  EnvelopeDisposition,
+  MlsCallCreated,
+  MlsCallState,
+  MlsClaimedKeyPackage,
+  MlsEnvelope,
+  MlsFrameKey,
+  MlsFrameKeys,
+  MlsJoinIntentPayload,
+  MlsJoinRequest,
+  MlsMemberDevice,
+  MlsProcessOutcome,
+  MlsPublishKeyPackages,
+  MlsRosterEntry,
+  MlsSubmitCommit,
+} from "./e2ee";
 
 /**
  * The native E2EE bridge for the current client, if this platform has one

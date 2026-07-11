@@ -22,7 +22,13 @@ import {
   type TrackPublishOptions,
   type VideoCaptureOptions,
   VideoResolution,
+  isE2EESupported,
 } from "livekit-client";
+// Self-hosted LiveKit E2EE worker — Vite `?worker` bundling ships it inside
+// the npm package (dist/livekit-client.e2ee.worker.mjs), fully first-party,
+// NO CDN (§4.1). External worker origins are blocked by the desktop shell CSP
+// (slice 6.2b) and violate the no-CDN policy everywhere else.
+import E2EEWorker from "livekit-client/e2ee-worker?worker";
 import { DenoiseTrackProcessor } from "livekit-rnnoise-processor";
 
 class GainTrackProcessor {
@@ -70,7 +76,14 @@ function nativeCallServiceStop() {
   VoiceCallServiceNative?.stop().catch(() => {});
 }
 
-import { SoundController, useClient, useSound } from "@revolt/client";
+import {
+  type E2EEBridge,
+  SoundController,
+  nativeE2EEAvailable,
+  useClient,
+  useSound,
+} from "@revolt/client";
+import { ReactiveMap } from "@solid-primitives/map";
 import { CONFIGURATION } from "@revolt/common";
 import { ModalController, useModals } from "@revolt/modal";
 import { useState } from "@revolt/state";
@@ -88,6 +101,7 @@ import {
 } from "./cameraEffects";
 import { InRoom } from "./components/InRoom";
 import { RoomAudioManager } from "./components/RoomAudioManager";
+import { MlsKeyProvider } from "./mlsCallKeys";
 
 type State =
   | "READY"
@@ -179,6 +193,41 @@ class Voice {
   #vadFrame: number | undefined;
   #vadSilenceTimer: ReturnType<typeof setTimeout> | undefined;
 
+  // --- Media E2EE (slice 6.3) ---------------------------------------
+  // The native-derived key provider + self-hosted worker are constructed per
+  // call whenever the shell can do media E2EE (`isE2EESupported()` + a native
+  // layer), so the Room is ALWAYS E2EE-capable and `setE2EEEnabled(true/false)`
+  // can toggle mode mid-call without a reconnect (§4.1 amendment A4). They are
+  // undefined on unsupported/web shells (treated as non-enrolled).
+  #mlsKeyProvider: MlsKeyProvider | undefined;
+  #e2eeWorker: Worker | undefined;
+  /** Unsubscribe for the native `e2ee:call-keys-changed` push (§3.5). */
+  #unlistenCallKeys: (() => void) | undefined;
+  /**
+   * Monotonic per-`connect()` token. `connect()` awaits (native listen, join,
+   * room.connect); a newer `connect()` (which runs `disconnect()` first) bumps
+   * this, so a stale invocation resuming after an await can detect it was
+   * superseded and bail instead of leaking its worker/listener or reviving an
+   * abandoned Room.
+   */
+  #connectGen = 0;
+  /**
+   * LiveKit's observed per-participant encryption status (identity → encrypted)
+   * — a REQUIRED gating input for the green lock (§4.4 invariant 11: native
+   * "keys pushed" is NOT "encryption happened"; only this webview-observed
+   * signal witnesses the media plane). Wired in 6.3; the dual-gated chip state
+   * machine that consumes it is 6.5.
+   */
+  readonly callEncryption = new ReactiveMap<string, boolean>();
+  /**
+   * First latched call-key/encryption error for this call — the STRUCTURED
+   * value (native error object or LiveKit error), never stringified, so 6.5
+   * can classify rotation-window `RE-SECURING` vs loud `NOT ENCRYPTED`
+   * (invariant 11).
+   */
+  callEncryptionError: Accessor<unknown>;
+  #setCallEncryptionError: Setter<unknown>;
+
   constructor(
     voiceSettings: VoiceSettings,
     modals: ModalController,
@@ -240,6 +289,11 @@ class Voice {
     this.cameraEffectsApplied = effectsApplied;
     this.#setCameraEffectsApplied = setEffectsApplied;
 
+    const [callEncryptionError, setCallEncryptionError] =
+      createSignal<unknown>();
+    this.callEncryptionError = callEncryptionError;
+    this.#setCallEncryptionError = setCallEncryptionError;
+
     this.#cameraEffects.onHwSupportChange = (hw) =>
       this.#setCameraHwBrightness(hw);
     this.#cameraEffects.onImageMissing = () => {
@@ -255,8 +309,46 @@ class Voice {
 
   async connect(channel: Channel, auth?: { url: string; token: string }) {
     this.disconnect();
+    // Supersession token: a later connect() runs disconnect() first and bumps
+    // this, so a stale invocation resuming after an await can detect it lost
+    // and bail (gate HIGH — async-registration race).
+    const gen = ++this.#connectGen;
+
+    // Media E2EE (§4.1, amendment A4): construct the Room E2EE-capable on ANY
+    // shell that can do media E2EE (`isE2EESupported()` + a native layer),
+    // REGARDLESS of whether THIS call is currently E2EE-eligible. LiveKit's
+    // `setE2EEEnabled()` THROWS if the `e2ee` option was omitted at
+    // construction (the E2EEManager only attaches in the constructor), so
+    // omitting it whenever a non-enrolled participant is present would make the
+    // §3.4 auto-re-upgrade impossible without a full reconnect. The option is
+    // INERT until `setE2EEEnabled(true)` (driven in 6.4/6.5); unsupported
+    // shells get no option and are treated as non-enrolled (loud downgrade
+    // path), never a silent plaintext Room.
+    //
+    // Fail-safe (gate HIGH): a worker/provider that cannot construct — e.g.
+    // the bundled `?worker` asset blocked by a `worker-src`-less CSP — must
+    // NOT break the call. Degrade to a NON-E2EE-capable Room (the same
+    // loud-non-enrolled path as an unsupported shell, never a silent plaintext
+    // lock) so voice still works.
+    let e2eeCapable = isE2EESupported() && nativeE2EEAvailable();
+    if (e2eeCapable) {
+      try {
+        this.#mlsKeyProvider = new MlsKeyProvider();
+        this.#e2eeWorker = new E2EEWorker();
+      } catch (error) {
+        this.#e2eeWorker?.terminate();
+        this.#mlsKeyProvider = undefined;
+        this.#e2eeWorker = undefined;
+        e2eeCapable = false;
+        this.onErr(error);
+      }
+    }
 
     const room = new Room({
+      e2ee:
+        e2eeCapable && this.#mlsKeyProvider && this.#e2eeWorker
+          ? { keyProvider: this.#mlsKeyProvider, worker: this.#e2eeWorker }
+          : undefined,
       // Stop pushing upstream for tracks nobody is subscribed to — trims
       // wasted bitrate on the (relayed) publisher path. Safe with the manual
       // autoSubscribe:false flow below. adaptiveStream is intentionally left
@@ -310,6 +402,14 @@ class Voice {
             this.#settings.micOn = track != null;
             if (!isAfk && track?.audioTrack) {
               const gain = this.#settings.microphoneGain ?? 100;
+              // Processor/E2EE ordering (§4.3) — DO NOT REORDER: denoise
+              // (this AudioWorklet) and camera effects are PRE-encode track
+              // processors on the raw media; LiveKit E2EE runs POST-encode on
+              // encoded frames (RTCRtpScriptTransform). The fixed pipeline is
+              // processor → encoder → E2EE encrypt → SFU, so there is no slot
+              // conflict and denoise + E2EE coexist (test T-10). Moving E2EE
+              // ahead of the encoder, or a processor after it, would break
+              // one or the other.
               if (this.#settings.noiseSupression === "enhanced") {
                 track.audioTrack.setProcessor(
                   new DenoiseTrackProcessor({
@@ -384,18 +484,121 @@ class Voice {
       }
     });
 
-    if (!auth) {
-      auth = await channel.joinCall("worldwide");
+    // --- Media E2EE wiring (slice 6.3) --------------------------------
+    // Dormant until the call is actually encrypted (native derives an MLS
+    // group and `setE2EEEnabled(true)` is driven — 6.4/6.5). Wiring it here
+    // keeps the media plane observable and the frame-key path ready.
+    if (e2eeCapable) {
+      const e2ee = this.getClient()?.e2ee as E2EEBridge | undefined;
+      const provider = this.#mlsKeyProvider;
+
+      // Keys-changed loop (§3.5): native pushes `e2ee:call-keys-changed` on
+      // every LOCAL epoch advance; re-fetch the current frame keys (the §7.2
+      // egress) and feed the provider (remote senders first, local last).
+      if (e2ee && provider) {
+        const unlisten = await e2ee.onCallKeysChanged(async (event) => {
+          const active = this.room();
+          if (!active) return;
+          try {
+            const frameKeys = await e2ee.callFrameKeys(event.group_id);
+            await provider.applyKeys(
+              frameKeys,
+              active.localParticipant.identity,
+            );
+          } catch (error) {
+            // Fail-closed (§4.2): any native error on the call-key path is the
+            // loud "not encrypted / re-securing" state (6.5 renders it), never
+            // a silent unencrypted send. Keep the STRUCTURED error so 6.5 can
+            // classify it (invariant 11).
+            this.#setCallEncryptionError(() => error);
+          }
+        });
+        // A newer connect() may have superseded us across the await — drop
+        // this listener immediately rather than orphaning it, and never clobber
+        // the newer invocation's shared state (gate HIGH).
+        if (gen !== this.#connectGen) {
+          unlisten();
+          room.disconnect();
+          return;
+        }
+        this.#unlistenCallKeys = unlisten;
+      }
+
+      // LiveKit's observed per-participant encryption status — a REQUIRED
+      // media-plane gating input for the green lock (§4.4 invariant 11:
+      // native "keys pushed" ≠ "encryption happened"; only this webview signal
+      // witnesses the media plane). 6.3 records it; 6.5 builds the chip.
+      room.addListener(
+        "participantEncryptionStatusChanged",
+        (encrypted, participant) => {
+          const identity =
+            participant?.identity ?? room.localParticipant.identity;
+          if (identity) this.callEncryption.set(identity, encrypted);
+        },
+      );
+      // LiveKit emits ONE `encryptionError` then silently drops frames
+      // (failureTolerance:0, §1.5) — LATCH the first, STRUCTURED (6.5
+      // classifies rotation-window vs loud failure).
+      room.addListener("encryptionError", (error) => {
+        this.#setCallEncryptionError((prev) => prev ?? error);
+      });
     }
 
-    await room.connect(auth.url, auth.token, {
-      autoSubscribe: false,
-    });
+    try {
+      if (!auth) {
+        auth = await channel.joinCall("worldwide");
+      }
+      // Superseded during joinCall → abandon this Room, leave the newer
+      // connect()'s shared state intact.
+      if (gen !== this.#connectGen) {
+        room.disconnect();
+        return;
+      }
+
+      await room.connect(auth.url, auth.token, {
+        autoSubscribe: false,
+      });
+      if (gen !== this.#connectGen) {
+        room.disconnect();
+        return;
+      }
+    } catch (error) {
+      // Failed connect: tear down THIS invocation's E2EE resources so the
+      // worker + native listener never leak (gate MEDIUM). Only if we still
+      // own the shared state — a newer connect() may already have taken it
+      // over (and cleaned ours) via its disconnect().
+      if (gen === this.#connectGen) {
+        this.#unlistenCallKeys?.();
+        this.#unlistenCallKeys = undefined;
+        this.#e2eeWorker?.terminate();
+        this.#e2eeWorker = undefined;
+        this.#mlsKeyProvider = undefined;
+      }
+      try {
+        room.disconnect();
+      } catch {
+        /* not connected */
+      }
+      throw error;
+    }
   }
 
   disconnect() {
     try {
       nativeCallServiceStop();
+
+      // Media E2EE teardown (§4.2 / §7.2): stop listening for native epoch
+      // pushes, terminate the worker (its residual per-participant key sets —
+      // LiveKit has no key-deletion API — die WITH it, bounding the §7.2 blast
+      // radius to the call), and drop the provider + observed status. Runs
+      // before the no-room guard so a half-set-up call still tears down.
+      this.#unlistenCallKeys?.();
+      this.#unlistenCallKeys = undefined;
+      this.#e2eeWorker?.terminate();
+      this.#e2eeWorker = undefined;
+      this.#mlsKeyProvider = undefined;
+      this.callEncryption.clear();
+      this.#setCallEncryptionError(undefined);
 
       const room = this.room();
       if (!room) return;

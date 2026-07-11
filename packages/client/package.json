@@ -108,7 +108,7 @@
     "json-stringify-deterministic": "^1.0.12",
     "katex": "^0.16.22",
     "linkify-it": "^5.0.0",
-    "livekit-client": "^2.13.0",
+    "livekit-client": "2.15.13",
     "livekit-rnnoise-processor": "^2.0.0",
     "localforage": "^1.10.0",
     "lodash.defaultsdeep": "^4.6.1",
