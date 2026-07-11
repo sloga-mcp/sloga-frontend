@@ -1,11 +1,10 @@
-import { Accessor, For, JSX, Show, createMemo, createSignal } from "solid-js";
+import { Accessor, For, JSX, Show, createSignal } from "solid-js";
 
 import { Trans } from "@lingui-solid/solid/macro";
 import { Channel, Server, User } from "stoat.js";
 import { cva } from "styled-system/css";
 import { styled } from "styled-system/jsx";
 
-import { useClient } from "@revolt/client";
 import { CONFIGURATION, useDevice } from "@revolt/common";
 import { KeybindAction, createKeybind } from "@revolt/keybinds";
 import { useModals } from "@revolt/modal";
@@ -25,7 +24,6 @@ import {
 import MdAdd from "@material-design-icons/svg/filled/add.svg?component-solid";
 import MdChevronRight from "@material-design-icons/svg/filled/chevron_right.svg?component-solid";
 import MdExplore from "@material-design-icons/svg/filled/explore.svg?component-solid";
-import MdHome from "@material-design-icons/svg/filled/home.svg?component-solid";
 import MdSettings from "@material-design-icons/svg/filled/settings.svg?component-solid";
 
 import { Tooltip } from "../../../../components/ui/components/floating";
@@ -83,7 +81,6 @@ const RAIL_EXPANDED_DEFAULT = true;
  */
 export const ServerList = (props: Props) => {
   const state = useState();
-  const client = useClient();
   const navigate = useNavigate();
   const device = useDevice();
   const { openModal } = useModals();
@@ -137,47 +134,23 @@ export const ServerList = (props: Props) => {
   createKeybind(KeybindAction.NAVIGATION_SERVER_UP, () => navigateServer(-1));
   createKeybind(KeybindAction.NAVIGATION_SERVER_DOWN, () => navigateServer(1));
 
-  const homeNotifications = createMemo(() => {
-    return client().users.filter((user) => user.relationship === "Incoming")
-      .length;
-  });
-
   // Ref for floating menu
   const [menuButton, setMenuButton] = createSignal<HTMLDivElement>();
 
   return (
     <ServerListBase expanded={railExpanded()}>
       <div use:invisibleScrollable={{ direction: "y", class: listBase() }}>
-        <a
-          class={entryContainer({
-            indicator: !props.selectedServer() ? "selected" : undefined,
-            expanded: railExpanded(),
-          })}
-          href="/app"
-          use:floating={{
-            tooltip: {
-              content: `You have ${homeNotifications()} pending friend requests.`,
-              placement: "right",
-            },
-          }}
-        >
-          <Avatar
-            size={42}
-            fallback={<MdHome />}
-            holepunch={homeNotifications() ? "top-right" : undefined}
-            overlay={
-              <Show when={homeNotifications()}>
-                <Unreads.Graphic
-                  unread={homeNotifications() !== 0}
-                  count={homeNotifications()}
-                />
-              </Show>
-            }
-          />
-          <Show when={railExpanded()}>
-            <RailLabel>Home</RailLabel>
-          </Show>
-        </a>
+        <Tooltip placement="right" content="Settings">
+          <a
+            class={entryContainer({ expanded: railExpanded() })}
+            onClick={() => openModal({ type: "settings", config: "user" })}
+          >
+            <Avatar size={42} fallback={<MdSettings />} interactive />
+            <Show when={railExpanded()}>
+              <RailLabel>Settings</RailLabel>
+            </Show>
+          </a>
+        </Tooltip>
         <Tooltip
           placement="right"
           content={() => (
@@ -402,17 +375,6 @@ export const ServerList = (props: Props) => {
       <Shadow>
         <div />
       </Shadow>
-      <Tooltip placement="right" content="Settings">
-        <a
-          class={entryContainer({ expanded: railExpanded() })}
-          onClick={() => openModal({ type: "settings", config: "user" })}
-        >
-          <Avatar size={42} fallback={<MdSettings />} interactive />
-          <Show when={railExpanded()}>
-            <RailLabel>Settings</RailLabel>
-          </Show>
-        </a>
-      </Tooltip>
     </ServerListBase>
   );
 };

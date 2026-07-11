@@ -26,6 +26,7 @@ import { Symbol } from "@revolt/ui/components/utils/Symbol";
 import MdClose from "@material-design-icons/svg/outlined/close.svg?component-solid";
 
 import { useDevice } from "@revolt/common";
+import { SlogaWordmark } from "../../Home";
 import { SidebarBase } from "./common";
 
 interface Props {
@@ -71,21 +72,8 @@ export const HomeSidebar = (props: Props) => {
     <SidebarBase class="channel_bar home" style={{"--md-sys-color-primary-container": "#FF8A00", "--md-sys-color-on-primary-container": "#ffffff"}}>
       <div ref={scrollTargetElement} use:invisibleScrollable>
         <List>
-          <SidebarTitle
-            href="/app"
-            class={
-              location.pathname === "/app" ? "selected" : undefined
-            }
-          >
-            <Symbol>home</Symbol>
-            <span
-              style={{
-                color:
-                  location.pathname === "/app" ? "#ffffff" : "#FF8A00",
-              }}
-            >
-              Sloga
-            </span>
+          <SidebarTitle href="/app">
+            <SlogaWordmark height={28} />
           </SidebarTitle>
 
           <div style={{ height: "5px" }} />
@@ -210,10 +198,6 @@ const SidebarTitle = styled("a", {
 
     "&:hover": {
       background: "var(--md-sys-color-surface-container-high)",
-    },
-
-    "&.selected": {
-      background: "var(--md-sys-color-primary-container)",
     },
 
     ...typography.raw({ class: "title" }),

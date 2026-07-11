@@ -33,7 +33,7 @@ import { HeaderIcon } from "./common/CommonHeader";
 /**
  * Sloga wordmark: the O is a circle of people around the online dot
  */
-export function SlogaWordmark(props: { height: number }) {
+export function SlogaWordmark(props: { height: number; color?: string }) {
   const dots = [...Array(8)].map((_, i) => {
     const angle = ((i * 45 - 90) * Math.PI) / 180;
     return {
@@ -55,7 +55,7 @@ export function SlogaWordmark(props: { height: number }) {
         y="72"
         font-size="82"
         font-weight="800"
-        fill="var(--md-sys-color-on-surface)"
+        fill={props.color ?? "var(--md-sys-color-on-surface)"}
         font-family="inherit"
       >
         Sl
@@ -71,7 +71,7 @@ export function SlogaWordmark(props: { height: number }) {
         y="72"
         font-size="82"
         font-weight="800"
-        fill="var(--md-sys-color-on-surface)"
+        fill={props.color ?? "var(--md-sys-color-on-surface)"}
         font-family="inherit"
       >
         ga

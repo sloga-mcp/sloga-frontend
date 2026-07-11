@@ -3,8 +3,10 @@ import { Accessor, JSX, Setter, Show } from "solid-js";
 import { css } from "styled-system/css";
 import { styled } from "styled-system/jsx";
 
+import { useState } from "@revolt/state";
 import { Breadcrumbs, IconButton, Text } from "@revolt/ui";
 
+import MdArrowBack from "@material-design-icons/svg/outlined/arrow_back.svg?component-solid";
 import MdClose from "@material-design-icons/svg/outlined/close.svg?component-solid";
 
 import { SettingsList } from "..";
@@ -22,12 +24,21 @@ export function SettingsContent(props: {
   ref: Setter<HTMLDivElement | undefined>;
 }) {
   const { navigate } = useSettingsNavigation();
+  const { diagDrawer } = useState();
 
   return (
     <div ref={props.ref} use:scrollable={{ class: base }}>
       <Show when={props.page()}>
         <InnerContent class="settings_cont">
           <InnerColumn>
+            <BackAction>
+              <IconButton
+                variant="tonal"
+                onPress={() => diagDrawer()?.setShown(false)}
+              >
+                <MdArrowBack />
+              </IconButton>
+            </BackAction>
             <Show when={props.page() !== "account"}>
               <Text class="title" size="large">
                 <Breadcrumbs
@@ -105,6 +116,24 @@ const InnerColumn = styled("div", {
     display: "flex",
     flexDirection: "column",
     marginBlockEnd: "80px",
+  },
+});
+
+/**
+ * Back button returning to the settings list — only relevant on phone
+ * layouts, where the content pane slides over the list and the only
+ * other way back is a swipe gesture
+ */
+const BackAction = styled("div", {
+  base: {
+    display: "none",
+
+    _phone: {
+      display: "flex",
+      position: "sticky",
+      top: "8px",
+      zIndex: 2,
+    },
   },
 });
 
