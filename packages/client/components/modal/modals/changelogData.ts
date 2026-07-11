@@ -35,6 +35,13 @@ export const CHANGELOGS: ChangelogResponse[] = [
 ### 🎲 Dice rolls
 - Roll dice right in chat from the composer — rolls are made **by the server**, so results can't be faked.
 
+### 📞 Voice & video calls
+- **Switch devices mid-call** — a new button in the call bar lets you swap your microphone, speaker, or camera without leaving the call.
+- **Theater mode** — go fullscreen and hit ⤢ to hide everything but the camera or screen-share you're watching; press Escape to come back.
+- **Resize the call** — drag the divider on the bottom edge of the call card to balance the video and the chat below it.
+- **Calls now work across different networks** — video and screen-share no longer drop after a second when you and a friend aren't on the same network.
+- More reliable **screen-sharing** at high resolutions, including for people connecting from outside your network.
+
 ### 🖥️ Interface
 - The **left sidebar can now expand** — click the arrow to see server and DM names at a glance.
 - Dark theme is now the default for new users.
@@ -42,6 +49,7 @@ export const CHANGELOGS: ChangelogResponse[] = [
 ### 🛠️ Fixes & stability
 - Fixed a **reconnect loop** after network drops — the app now recovers cleanly when your connection blips.
 - Images, videos and downloads now load reliably behind the new sloga.gg address.
+- **Large attachments are now cleared automatically** — files over 20MB are removed a day after they're sent to keep things fast and save space. The message text stays; only the big attachment is freed up.
 
 *Sloga — Hop in.*`,
   },

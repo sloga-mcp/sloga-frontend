@@ -52,6 +52,11 @@ msgstr ""
 msgid "{0, plural, one {Drop a file} other {Drop # files}}"
 msgstr ""
 
+#. placeholder {0}: lastInvite()!.invited
+#: src/interface/ServerEvents.tsx
+msgid "{0, plural, one {Invited # member} other {Invited # members}}"
+msgstr ""
+
 #. placeholder {0}: preset.label
 #. placeholder {0}: existingHash ? "Update Password" : "Set Password"
 #: components/app/interface/settings/user/notifications/Sounds.tsx
@@ -365,6 +370,7 @@ msgstr ""
 msgid "Able to speak in voice call"
 msgstr ""
 
+#: src/interface/ServerEvents.tsx
 #: components/modal/modals/SignOutSessions.tsx
 msgid "Accept"
 msgstr ""
@@ -431,6 +437,10 @@ msgstr ""
 msgid "Advanced"
 msgstr "Avanzado"
 
+#: src/interface/channels/text/Composition.tsx
+msgid "Advantage"
+msgstr ""
+
 #: components/app/interface/settings/server/roles/ServerRoleOverview.tsx
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsOverview.tsx
 msgid "Affects all roles and users"
@@ -438,6 +448,13 @@ msgstr ""
 
 #: src/interface/Friends.tsx
 msgid "All"
+msgstr ""
+
+#: src/interface/ServerEvents.tsx
+#: src/interface/ServerEvents.tsx
+#: src/interface/ServerEvents.tsx
+#: src/interface/ServerEvents.tsx
+msgid "All day"
 msgstr ""
 
 #: components/app/menus/ServerContextMenu.tsx
@@ -527,6 +544,10 @@ msgstr ""
 
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
 msgid "Automatic Gain Control"
+msgstr ""
+
+#: components/app/interface/settings/user/Language.tsx
+msgid "Automatically detect and translate messages sent by other people. Message text is sent to Google Translate; encrypted messages are never translated."
 msgstr ""
 
 #: components/app/interface/settings/user/profile/UserProfileEditor.tsx
@@ -756,12 +777,25 @@ msgstr ""
 msgid "Cancel"
 msgstr "Cancelar"
 
+#: src/interface/ServerEvents.tsx
+msgid "Cancel (can't attend)"
+msgstr ""
+
+#: src/interface/ServerEvents.tsx
+msgid "Cancel event"
+msgstr ""
+
 #: components/app/menus/UserContextMenu.tsx
 msgid "Cancel friend request"
 msgstr "Cancelar solicitud de amistad"
 
 #: components/app/menus/DraftMessageContextMenu.tsx
 msgid "Cancel message"
+msgstr ""
+
+#: src/interface/ServerEvents.tsx
+#: src/interface/ServerEvents.tsx
+msgid "Cancelled"
 msgstr ""
 
 #: components/app/interface/settings/user/Account.tsx
@@ -820,6 +854,10 @@ msgstr ""
 
 #: components/app/interface/settings/user/profile/EditProfile.tsx
 msgid "Change your profile per-server"
+msgstr ""
+
+#: src/interface/ServerEvents.tsx
+msgid "Changing the schedule re-anchors this series in your timezone and resets any skipped occurrences."
 msgstr ""
 
 #: components/app/interface/settings/channel/Overview.tsx
@@ -912,6 +950,7 @@ msgstr ""
 msgid "Client Settings"
 msgstr "Ajustes del cliente"
 
+#: src/interface/ServerEvents.tsx
 #: components/modal/modals/UserProfileRoles.tsx
 #: components/modal/modals/UserProfileMutualGroups.tsx
 #: components/modal/modals/UserProfileMutualFriends.tsx
@@ -1105,6 +1144,10 @@ msgid "Could not find what you requested."
 msgstr ""
 
 #: src/interface/ServerEvents.tsx
+msgid "Couldn't load events"
+msgstr ""
+
+#: src/interface/ServerEvents.tsx
 #: components/modal/modals/CreateWebhook.tsx
 #: components/modal/modals/CreateServer.tsx
 #: components/modal/modals/CreateRole.tsx
@@ -1146,8 +1189,8 @@ msgid "Create a recovery code so you can restore your identity and message histo
 msgstr ""
 
 #: src/interface/ServerEvents.tsx
-msgid "Create a text channel named <0>events</0> in this server to enable the calendar."
-msgstr ""
+#~ msgid "Create a text channel named <0>events</0> in this server to enable the calendar."
+#~ msgstr ""
 
 #: components/modal/modals/CreateWebhook.tsx
 msgid "Create a webhook"
@@ -1247,6 +1290,10 @@ msgstr ""
 msgid "Customisation"
 msgstr "Personalización"
 
+#: src/interface/ServerEvents.tsx
+msgid "Daily"
+msgstr ""
+
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Dark"
 msgstr ""
@@ -1273,6 +1320,10 @@ msgstr ""
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "Deafen Members"
 msgstr "Ensordecer miembros"
+
+#: src/interface/ServerEvents.tsx
+msgid "Decline"
+msgstr ""
 
 #: components/app/menus/shared/NotificationContextMenu.tsx
 msgid "Default"
@@ -1358,6 +1409,7 @@ msgstr "Eliminar Rol"
 msgid "Delete Server"
 msgstr ""
 
+#: src/interface/ServerEvents.tsx
 #: components/app/interface/settings/server/stickers/StickerList.tsx
 msgid "Description (optional)"
 msgstr ""
@@ -1373,6 +1425,19 @@ msgstr ""
 
 #: components/app/interface/settings/user/bots/MyBots.tsx
 msgid "Developer Documentation"
+msgstr ""
+
+#: src/interface/channels/text/Composition.tsx
+msgid "Dice"
+msgstr ""
+
+#. placeholder {0}: response.status
+#: src/interface/channels/text/Composition.tsx
+msgid "Dice roll failed ({0})"
+msgstr ""
+
+#: src/interface/channels/text/Composition.tsx
+msgid "Dice rolls are only available in server channels."
 msgstr ""
 
 #: components/app/interface/settings/user/SecurityAndPrivacy.tsx
@@ -1393,6 +1458,10 @@ msgstr ""
 #: components/app/interface/settings/server/Overview.tsx
 #: components/app/interface/settings/server/Overview.tsx
 msgid "Disabled"
+msgstr ""
+
+#: src/interface/channels/text/Composition.tsx
+msgid "Disadvantage"
 msgstr ""
 
 #: src/interface/channels/text/Composition.tsx
@@ -1488,6 +1557,14 @@ msgstr ""
 
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "Edit channel-specific role and default permissions"
+msgstr ""
+
+#: src/interface/ServerEvents.tsx
+msgid "Edit event"
+msgstr ""
+
+#: src/interface/ServerEvents.tsx
+msgid "Edit Event"
 msgstr ""
 
 #: components/app/interface/settings/user/profile/EditProfile.tsx
@@ -1610,6 +1687,14 @@ msgstr ""
 msgid "End call"
 msgstr ""
 
+#: src/interface/ServerEvents.tsx
+msgid "Ends after"
+msgstr ""
+
+#: src/interface/ServerEvents.tsx
+msgid "Ends on"
+msgstr ""
+
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
 msgid "Enhanced"
 msgstr ""
@@ -1653,6 +1738,22 @@ msgstr ""
 #: components/auth/src/flows/Form.tsx
 msgid "Enter your preferred username."
 msgstr "Introduce tu nombre de usuario preferido."
+
+#: src/interface/ServerEvents.tsx
+msgid "Event title"
+msgstr ""
+
+#: src/interface/ServerEvents.tsx
+msgid "Events Not Enabled"
+msgstr ""
+
+#: src/interface/ServerEvents.tsx
+msgid "Every"
+msgstr ""
+
+#: src/interface/ServerEvents.tsx
+msgid "Everyone in that selection was already invited or can't view this event"
+msgstr ""
 
 #: components/modal/modals/E2EEEnableGroup.tsx
 msgid "Everyone must have encryption set up, or this will not turn on. Encrypted history will live only on each person's own devices, and the server will no longer be able to read new messages."
@@ -1816,6 +1917,11 @@ msgstr ""
 msgid "Go to the Sloga Lounge"
 msgstr ""
 
+#: src/interface/ServerEvents.tsx
+#: src/interface/ServerEvents.tsx
+msgid "Going"
+msgstr ""
+
 #: components/modal/modals/Onboarding.tsx
 msgid "Good"
 msgstr ""
@@ -1912,6 +2018,26 @@ msgstr ""
 msgid "Impersonation"
 msgstr ""
 
+#: src/interface/ServerEvents.tsx
+msgid "Import"
+msgstr ""
+
+#: src/interface/ServerEvents.tsx
+#: src/interface/ServerEvents.tsx
+msgid "Import legacy events"
+msgstr ""
+
+#. placeholder {0}: props.result!.imported
+#. placeholder {1}: props.result!.skipped_duplicates
+#. placeholder {2}: props.result!.skipped_invalid
+#: src/interface/ServerEvents.tsx
+msgid "Imported: {0} · Duplicates skipped: {1} · Invalid: {2}"
+msgstr ""
+
+#: src/interface/ServerEvents.tsx
+msgid "Importing…"
+msgstr ""
+
 #: src/AndroidNag.tsx
 msgid "In the meantime, install Sloga from Google Play for a faster, smoother experience designed for Android."
 msgstr ""
@@ -1974,12 +2100,25 @@ msgstr "Código de invitación"
 msgid "Invite Friends to {0}"
 msgstr ""
 
+#: src/interface/ServerEvents.tsx
+msgid "Invite members"
+msgstr ""
+
+#: src/interface/ServerEvents.tsx
+msgid "Invite members or roles"
+msgstr ""
+
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "Invite Others"
 msgstr "Invitar a otros"
 
 #: components/app/interface/settings/user/bots/ViewBot.tsx
 msgid "Invite URL copied to clipboard"
+msgstr ""
+
+#: src/interface/ServerEvents.tsx
+#: src/interface/ServerEvents.tsx
+msgid "Invited"
 msgstr ""
 
 #: components/app/interface/settings/server/invites/ListServerInvites.tsx
@@ -2129,6 +2268,10 @@ msgid "Load file ({0})"
 msgstr ""
 
 #: src/interface/ServerEvents.tsx
+msgid "Load more attendees"
+msgstr ""
+
+#: src/interface/ServerEvents.tsx
 msgid "Loading events…"
 msgstr ""
 
@@ -2138,6 +2281,14 @@ msgstr ""
 
 #: components/modal/modals/ReportQueue.tsx
 msgid "Loading snapshots…"
+msgstr ""
+
+#: src/interface/ServerEvents.tsx
+msgid "Loading…"
+msgstr ""
+
+#: src/interface/ServerEvents.tsx
+msgid "Location (optional)"
 msgstr ""
 
 #: components/auth/src/flows/FlowHome.tsx
@@ -2371,6 +2522,10 @@ msgstr ""
 msgid "Missing permission"
 msgstr ""
 
+#: src/interface/channels/text/Composition.tsx
+msgid "Mod"
+msgstr ""
+
 #: components/modal/modals/ReportQueue.tsx
 msgid "Moderator notes (used as reason when rejecting)"
 msgstr ""
@@ -2381,6 +2536,10 @@ msgstr ""
 
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Monospace Font"
+msgstr ""
+
+#: src/interface/ServerEvents.tsx
+msgid "Monthly"
 msgstr ""
 
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
@@ -2509,8 +2668,8 @@ msgid "No channels available to create an invite for."
 msgstr ""
 
 #: src/interface/ServerEvents.tsx
-msgid "No Events Channel Found"
-msgstr ""
+#~ msgid "No Events Channel Found"
+#~ msgstr ""
 
 #: src/interface/ServerEvents.tsx
 msgid "No events on this day."
@@ -2544,6 +2703,7 @@ msgstr ""
 msgid "Nobody here right now!"
 msgstr ""
 
+#: src/interface/ServerEvents.tsx
 #: components/modal/modals/CameraSettings.tsx
 #: components/app/menus/ServerContextMenu.tsx
 #: components/app/menus/shared/NotificationContextMenu.tsx
@@ -2552,12 +2712,18 @@ msgstr ""
 msgid "None"
 msgstr "Ninguno"
 
+#: src/interface/channels/text/Composition.tsx
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Normal"
 msgstr ""
 
 #: src/interface/channels/text/Composition.tsx
 msgid "Not encrypted — the other person hasn't turned on encryption."
+msgstr ""
+
+#: src/interface/ServerEvents.tsx
+#: src/interface/ServerEvents.tsx
+msgid "Not going"
 msgstr ""
 
 #: components/modal/modals/E2EEReenroll.tsx
@@ -2573,6 +2739,10 @@ msgstr ""
 #: components/app/interface/settings/UserSettings.tsx
 msgid "Notifications"
 msgstr "Notificaciones"
+
+#: src/interface/ServerEvents.tsx
+msgid "occurrences"
+msgstr ""
 
 #: components/ui/components/features/messaging/composition/MessageReplyPreview.tsx
 msgid "Off"
@@ -2666,6 +2836,10 @@ msgstr "Abrir ajustes"
 
 #: components/modal/modals/E2EEEnable.tsx
 msgid "Or start fresh to set this up as a new device. You keep sending and receiving encrypted messages, but earlier history that lived only on your old device stays there."
+msgstr ""
+
+#: src/interface/channels/text/Composition.tsx
+msgid "Or type /roll 2d6+3 in chat"
 msgstr ""
 
 #: components/modal/modals/ReportContent.tsx
@@ -2996,6 +3170,10 @@ msgstr ""
 msgid "Rep Sloga using Discord rich presence."
 msgstr ""
 
+#: src/interface/ServerEvents.tsx
+msgid "Repeat"
+msgstr ""
+
 #: components/app/menus/MessageContextMenu.tsx
 msgid "Reply"
 msgstr "Responder"
@@ -3091,6 +3269,10 @@ msgstr ""
 msgid "Restore your encrypted messages"
 msgstr ""
 
+#: src/interface/ServerEvents.tsx
+msgid "Retry"
+msgstr ""
+
 #: components/app/menus/DraftMessageContextMenu.tsx
 msgid "Retry sending"
 msgstr ""
@@ -3119,6 +3301,11 @@ msgstr ""
 msgid "Ringtone Style"
 msgstr ""
 
+#: src/interface/ServerEvents.tsx
+#: src/interface/ServerEvents.tsx
+msgid "role"
+msgstr ""
+
 #: components/app/interface/settings/server/roles/ServerRoleEditor.tsx
 msgid "Role Icon"
 msgstr ""
@@ -3133,6 +3320,12 @@ msgstr "Nombre de rol"
 msgid "Roles"
 msgstr "Roles"
 
+#: src/interface/channels/text/Composition.tsx
+#: src/interface/channels/text/Composition.tsx
+msgid "Roll dice"
+msgstr ""
+
+#: src/interface/ServerEvents.tsx
 #: components/modal/modals/ServerIdentity.tsx
 #: components/modal/modals/CustomStatus.tsx
 #: components/app/interface/settings/user/profile/UserProfileEditor.tsx
@@ -3169,6 +3362,10 @@ msgstr ""
 msgid "Scams or fraud"
 msgstr ""
 
+#: src/interface/ServerEvents.tsx
+msgid "Scans a channel for old tagged event messages and turns them into real calendar events. Already-imported messages are skipped, so running this again is safe."
+msgstr ""
+
 #: components/modal/modals/ScreenShareSettings.tsx
 #: components/app/interface/settings/user/voice/CameraOptions.tsx
 msgid "Screen Share Settings"
@@ -3195,12 +3392,21 @@ msgstr ""
 msgid "Search friends..."
 msgstr ""
 
+#: src/interface/ServerEvents.tsx
+#: src/interface/ServerEvents.tsx
+msgid "Search members or roles…"
+msgstr ""
+
 #: components/app/interface/settings/UserSettings.tsx
 msgid "Security & Privacy"
 msgstr ""
 
 #: components/modal/modals/E2EEIdentityChange.tsx
 msgid "Security identity changed"
+msgstr ""
+
+#: src/interface/ServerEvents.tsx
+msgid "Select a channel"
 msgstr ""
 
 #: components/app/interface/settings/user/voice/VoiceInputOptions.tsx
@@ -3662,6 +3868,10 @@ msgstr "Canal de texto"
 msgid "That action had no effect."
 msgstr ""
 
+#: src/interface/ServerEvents.tsx
+msgid "The calendar feature is not enabled on this server."
+msgstr ""
+
 #: components/modal/modals/E2EEDisable.tsx
 msgid "The encrypted message history stored on THIS device will be permanently deleted and cannot be recovered. You will confirm your identity, then confirm the deletion."
 msgstr ""
@@ -3677,6 +3887,10 @@ msgstr ""
 
 #: components/i18n/errors.ts
 msgid "The password is too short."
+msgstr ""
+
+#: src/interface/ServerEvents.tsx
+msgid "The scan stopped at the message cap — run the import again to continue."
 msgstr ""
 
 #. placeholder {0}: peer()?.username ?? t`this contact`
@@ -3840,6 +4054,19 @@ msgstr ""
 
 #: components/app/interface/settings/user/Language.tsx
 msgid "Traditional (DD/MM/YYYY)"
+msgstr ""
+
+#: components/app/interface/settings/user/Language.tsx
+msgid "Translate messages"
+msgstr ""
+
+#: components/app/interface/settings/user/Language.tsx
+msgid "Translate messages to"
+msgstr ""
+
+#. placeholder {0}: translateLanguageName(result().detectedSource)
+#: components/app/interface/channels/text/MessageTranslation.tsx
+msgid "Translated from {0}"
 msgstr ""
 
 #: components/ui/components/features/messaging/composition/picker/GifPicker.tsx
@@ -4128,6 +4355,10 @@ msgstr ""
 msgid "Want to change username?"
 msgstr ""
 
+#: src/interface/ServerEvents.tsx
+msgid "was going"
+msgstr ""
+
 #: src/AndroidNag.tsx
 msgid "We are working hard on optimising our web app for mobile."
 msgstr ""
@@ -4152,6 +4383,10 @@ msgstr ""
 #: components/app/interface/settings/ChannelSettings.tsx
 msgid "Webhooks"
 msgstr "Webhooks"
+
+#: src/interface/ServerEvents.tsx
+msgid "Weekly"
+msgstr ""
 
 #: components/auth/src/flows/FlowLogin.tsx
 msgid "Welcome!"
@@ -4319,6 +4554,10 @@ msgstr ""
 #: components/modal/modals/Invite.tsx
 #: components/i18n/errors.ts
 msgid "You're already part of this server."
+msgstr ""
+
+#: src/interface/ServerEvents.tsx
+msgid "You're going"
 msgstr ""
 
 #: components/i18n/errors.ts

@@ -5,6 +5,9 @@ styled-system
 styled-system-studio
 *storybook.log
 
+# E2EE slice 6.0 spike evidence dumps (throwaway)
+/.spike-reports/
+
 # Playwright
 node_modules/
 /test-results/
