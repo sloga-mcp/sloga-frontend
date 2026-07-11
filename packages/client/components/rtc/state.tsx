@@ -344,6 +344,17 @@ class Voice {
       }
     }
 
+    // Device-qualified LiveKit identity (slice 6.1/6.4 item 3): source the
+    // E2EE device id so `joinCall` mints identity `{user_id}:{device_id}` —
+    // MlsKeyProvider's local-last send-key switch matches frame keys by that
+    // exact identity. Undefined ⇒ we request no qualified identity (non-E2EE
+    // / not-yet-provisioned), and the identity assertion below is skipped.
+    const selfUserId = this.getClient()?.user?.id;
+    const e2eeDeviceId = e2eeCapable
+      ? (this.getClient()?.e2ee as E2EEBridge | undefined)?.status.get("state")
+          ?.device_id
+      : undefined;
+
     const room = new Room({
       e2ee:
         e2eeCapable && this.#mlsKeyProvider && this.#e2eeWorker
@@ -546,7 +557,12 @@ class Voice {
 
     try {
       if (!auth) {
-        auth = await channel.joinCall("worldwide");
+        auth = await channel.joinCall(
+          "worldwide",
+          true,
+          undefined,
+          e2eeDeviceId,
+        );
       }
       // Superseded during joinCall → abandon this Room, leave the newer
       // connect()'s shared state intact.
@@ -561,6 +577,29 @@ class Voice {
       if (gen !== this.#connectGen) {
         room.disconnect();
         return;
+      }
+
+      // Assert the device-qualified identity the SFU actually minted (slice
+      // 6.1/6.4 item 3): if it isn't exactly `{user_id}:{device_id}`,
+      // MlsKeyProvider's local-last send-key would silently never install
+      // (frame keys are matched by this identity). Fail LOUD and latch the
+      // error rather than let a later setE2EEEnabled(true) publish plaintext
+      // under an encrypted flag; the enable gate (6.4 step 6) refuses to
+      // encrypt while callEncryptionError is set.
+      if (e2eeCapable && selfUserId && e2eeDeviceId) {
+        const expectedIdentity = `${selfUserId}:${e2eeDeviceId}`;
+        const actualIdentity = room.localParticipant.identity;
+        if (actualIdentity !== expectedIdentity) {
+          this.#setCallEncryptionError(
+            (prev) =>
+              prev ??
+              new Error(
+                `E2EE call identity mismatch: expected "${expectedIdentity}", ` +
+                  `got "${actualIdentity}" — refusing call encryption ` +
+                  `(device-qualified identity, slice 6.1/6.4).`,
+              ),
+          );
+        }
       }
     } catch (error) {
       // Failed connect: tear down THIS invocation's E2EE resources so the
