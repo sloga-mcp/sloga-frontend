@@ -30,6 +30,7 @@ import {
   MessageBox,
   MessageReplyPreview,
   Tooltip,
+  VoiceMessageButton,
   humanFileSize,
 } from "@revolt/ui";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
@@ -1010,6 +1011,14 @@ export function MessageComposition(props: Props) {
                       </div>
                     </Show>
                   </div>
+                </MessageBox.InlineIcon>
+              </Show>
+              <Show when={props.channel.havePermission("UploadFiles")}>
+                <MessageBox.InlineIcon>
+                  <VoiceMessageButton
+                    onFile={(file) => onFiles([file])}
+                    onError={(error) => openModal({ type: "error2", error })}
+                  />
                 </MessageBox.InlineIcon>
               </Show>
               <CompositionMediaPicker
