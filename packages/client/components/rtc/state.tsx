@@ -86,8 +86,6 @@ import {
   CameraEffectsController,
   type CameraBackgroundStatus,
 } from "./cameraEffects";
-// THROWAWAY (E2EE slice 6.0 platform spike) — removed at end of sub-slice 6.0
-import { mediaE2EESpike } from "./e2eeMediaSpike";
 import { InRoom } from "./components/InRoom";
 import { RoomAudioManager } from "./components/RoomAudioManager";
 
@@ -258,12 +256,7 @@ class Voice {
   async connect(channel: Channel, auth?: { url: string; token: string }) {
     this.disconnect();
 
-    // THROWAWAY (spike 6.0): e2ee Room option is undefined unless armed via
-    // localStorage — the spread is a no-op for every normal call.
-    const spikeE2EE = mediaE2EESpike.roomE2EEOptions();
-
     const room = new Room({
-      e2ee: spikeE2EE,
       // Stop pushing upstream for tracks nobody is subscribed to — trims
       // wasted bitrate on the (relayed) publisher path. Safe with the manual
       // autoSubscribe:false flow below. adaptiveStream is intentionally left
@@ -391,9 +384,6 @@ class Voice {
       }
     });
 
-    // THROWAWAY (spike 6.0): probe wiring; inert when disarmed.
-    mediaE2EESpike.attach(room);
-
     if (!auth) {
       auth = await channel.joinCall("worldwide");
     }
@@ -409,9 +399,6 @@ class Voice {
 
       const room = this.room();
       if (!room) return;
-
-      // THROWAWAY (spike 6.0): stop samplers + terminate the E2EE worker.
-      mediaE2EESpike.detach();
 
       room.removeAllListeners();
       room.disconnect();
