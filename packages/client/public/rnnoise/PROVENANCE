@@ -1,0 +1,18 @@
+Vendored RNNoise worklet assets for @livekit/livekit-rnnoise-processor.
+
+These are served self-hosted (see components/rtc/state.tsx DenoiseTrackProcessor
+call site) instead of the package's jsdelivr default, because:
+  - the desktop shell CSP (E2EE slice 6.2b) blocks external script/wasm origins;
+  - the no-CDN policy applies everywhere else too (plan §7.1 Q8).
+
+Upstream (exact bytes the package fetched at runtime before this was vendored):
+  https://cdn.jsdelivr.net/gh/dadadah/livekit-rnnoise-processor@860d8053d4917389dfdebb20d88d0bb6ce950bda/dist/DenoiserWorklet.js
+  https://cdn.jsdelivr.net/gh/dadadah/livekit-rnnoise-processor@860d8053d4917389dfdebb20d88d0bb6ce950bda/dist/rnnoise.wasm
+
+SHA-256:
+  7ad97860ea0e725609e0947b7bd1213e14b38d3e6b1f83a0b7d0a8e0ee0aaca2  DenoiserWorklet.js
+  8b68762597d2c17abc65fa6e88bbf006dee1a3cd7028a2a87bf4f90f5a497219  rnnoise.wasm
+
+To re-verify: curl the two URLs and compare `sha256sum`. To update: bump the
+pinned commit in both the URL above and the package dependency, re-download,
+and update these hashes in the same change.
