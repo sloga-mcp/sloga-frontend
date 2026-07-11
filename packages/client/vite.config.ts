@@ -17,11 +17,19 @@ const base = process.env.BASE_PATH ?? "/";
 // evidence POSTed by components/rtc/e2eeMediaSpike.ts from the desktop
 // WebView2 shells. Writes JSON snapshots under .spike-reports/ (untracked).
 // Removed at the end of sub-slice 6.0 together with the spike module.
+//
+// GATED on VITE_E2EE_SPIKE=1 (6.2b crypto gate finding #2): production
+// app.sloga.gg IS this Vite dev server (behind Caddy), so an always-on
+// `apply:"serve"` middleware exposed an UNAUTHENTICATED disk-writing POST
+// endpoint to the whole internet on the host that also holds the updater
+// signing key. Prod's `mise dev` never sets the flag, so the endpoint is not
+// registered there; set VITE_E2EE_SPIKE=1 to run the harness locally.
 function e2eeSpikeReportSink(): Plugin {
   return {
     name: "e2ee-spike-report-sink",
     apply: "serve",
     configureServer(server) {
+      if (process.env.VITE_E2EE_SPIKE !== "1") return;
       server.middlewares.use("/__e2ee_spike_report", (req, res) => {
         if (req.method !== "POST") {
           res.statusCode = 405;

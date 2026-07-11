@@ -559,21 +559,20 @@ class MediaE2EESpike {
 
 export const mediaE2EESpike = new MediaE2EESpike();
 
-// Dev-only global handle so the 6.0 spike can be driven over CDP from the
+// Global handle + arming UI for the 6.0 spike, driven over CDP from the
 // two-desktop harness (window.__E2EE_SPIKE__.runProbes(), .toggle(), .report).
-// VITE_E2EE_SPIKE=1 extends this to a PROBE-ONLY production build: the 6.2b
-// re-probe (6.0 must-carry #2) runs the same harness inside the bundled
-// tauri origin + final CSP. Never set for a shipped build.
-if (import.meta.env.DEV || import.meta.env.VITE_E2EE_SPIKE === "1") {
+// Gated on VITE_E2EE_SPIKE=1 ONLY — NOT import.meta.env.DEV: production
+// app.sloga.gg is served by the Vite DEV server, so `import.meta.env.DEV` is
+// true for live web users and would expose this to everyone (6.2b crypto gate
+// finding #2). Set VITE_E2EE_SPIKE=1 to run the harness locally; prod's
+// `mise dev` never sets it. Never set for a shipped build.
+if (import.meta.env.VITE_E2EE_SPIKE === "1") {
   (window as unknown as { __E2EE_SPIKE__: unknown }).__E2EE_SPIKE__ =
     mediaE2EESpike;
 }
 
-// Dev-only trigger chip; arming UI never appears in production builds. The
-// runtime arming check itself is intentionally NOT build-time gated so the
-// worker asset stays reachable and gets emitted by `vite build` (probe P2's
-// bundling half).
-if (import.meta.env.DEV) {
+// Trigger chip (same VITE_E2EE_SPIKE gate — off in prod and normal dev).
+if (import.meta.env.VITE_E2EE_SPIKE === "1") {
   const mount = () => {
     try {
       mediaE2EESpike.mountTrigger();
