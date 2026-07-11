@@ -23,14 +23,25 @@ export function ActivityWorker() {
 
   const [detectedGame, setDetectedGame] = createSignal<string | null>(null);
 
+  /**
+   * Whether this client has the desktop game-detection bridge. Only the
+   * desktop app may manage activity status — a web tab or the mobile app
+   * never receives game events, so letting them "sync" would wipe the
+   * activity the desktop just set every time they open.
+   */
+  const [isDesktop, setIsDesktop] = createSignal(false);
+
   onMount(() => {
     const tauri = (window as { __TAURI__?: TauriEventApi }).__TAURI__;
     if (!tauri?.event) return;
 
+    setIsDesktop(true);
+
     let unlisten: (() => void) | undefined;
     tauri.event
       .listen("game-activity", (event) => setDetectedGame(event.payload))
-      .then((fn) => (unlisten = fn));
+      .then((fn) => (unlisten = fn))
+      .catch(() => {});
 
     onCleanup(() => unlisten?.());
   });
@@ -39,6 +50,7 @@ export function ActivityWorker() {
   let synced: string | null | undefined;
 
   createEffect(() => {
+    if (!isDesktop()) return;
     const game = detectedGame();
     const share = state.settings.getValue("activity:share");
     const user = client().user;
