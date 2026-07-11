@@ -16,45 +16,41 @@ interface Props {
   onFile: (file: File) => void;
 
   /**
-   * Surface a recording failure (e.g. microphone permission denied)
+   * Surface a recording failure (e.g. camera permission denied)
    */
   onError?: (error: Error) => void;
 }
 
 /**
- * Recordings are cut off after half an hour — chunks are buffered in
+ * Recordings are cut off after three minutes — at ~1 Mbps the take stays
+ * within the default attachment size limit, and chunks are buffered in
  * memory for the whole take
  */
-const MAX_DURATION_S = 30 * 60;
+const MAX_DURATION_S = 3 * 60;
 
 /**
  * Container formats we can ask MediaRecorder for, in order of preference
  */
 const MIME_CANDIDATES = [
-  "audio/webm;codecs=opus",
-  "audio/webm",
-  "audio/mp4",
-  "audio/ogg;codecs=opus",
+  "video/webm;codecs=vp9,opus",
+  "video/webm;codecs=vp8,opus",
+  "video/webm",
+  "video/mp4",
 ];
 
-/**
- * The .weba extension is load-bearing: the file server classifies
- * audio-only WebM by extension because the container's magic bytes
- * read as video
- */
 function fileNameFor(mimeType: string) {
-  if (mimeType.startsWith("audio/webm")) return "Voice Message.weba";
-  if (mimeType.startsWith("audio/mp4")) return "Voice Message.m4a";
-  if (mimeType.startsWith("audio/ogg")) return "Voice Message.oga";
-  return "Voice Message";
+  if (mimeType.startsWith("video/webm")) return "Video Message.webm";
+  if (mimeType.startsWith("video/mp4")) return "Video Message.mp4";
+  return "Video Message";
 }
 
 type Mode = "idle" | "recording" | "review";
 
 /**
- * Composer action to record and attach a voice message
+ * Composer action to record and attach a video message using the
+ * camera and microphone
  */
-export function VoiceMessageButton(props: Props) {
+export function CameraMessageButton(props: Props) {
   const { t } = useLingui();
 
   const [mode, setMode] = createSignal<Mode>("idle");
@@ -89,11 +85,18 @@ export function VoiceMessageButton(props: Props) {
 
   async function start() {
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: "user",
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+        },
+        audio: true,
+      });
     } catch {
       props.onError?.(
         new Error(
-          t`Microphone access was denied. Check your microphone permissions and try again.`,
+          t`Camera or microphone access was denied. Check your device permissions and try again.`,
         ),
       );
       return;
@@ -106,6 +109,7 @@ export function VoiceMessageButton(props: Props) {
     try {
       recorder = new MediaRecorder(stream, {
         mimeType,
+        videoBitsPerSecond: 1_000_000,
         audioBitsPerSecond: 64_000,
       });
     } catch (error) {
@@ -124,14 +128,14 @@ export function VoiceMessageButton(props: Props) {
     });
 
     recorder.addEventListener("stop", () => {
-      // The microphone is no longer needed once the take ends —
-      // release it while the user reviews the recording
+      // The camera light goes off as soon as the take ends — the
+      // devices are not needed while the user reviews the recording
       releaseDevices();
 
       if (!discard && chunks.length) {
         // Strip codec parameters — the attachment pipeline and the E2EE
         // envelope both want the bare container type
-        const containerType = (recorder?.mimeType || "audio/webm").split(
+        const containerType = (recorder?.mimeType || "video/webm").split(
           ";",
         )[0];
         pendingFile = new File(chunks, fileNameFor(containerType), {
@@ -184,9 +188,9 @@ export function VoiceMessageButton(props: Props) {
     <Anchor>
       <Switch
         fallback={
-          <Tooltip content={t`Record a voice message`} placement="top">
+          <Tooltip content={t`Record a video message`} placement="top">
             <IconButton onPress={start}>
-              <Symbol>mic</Symbol>
+              <Symbol>videocam</Symbol>
             </IconButton>
           </Tooltip>
         }
@@ -200,22 +204,32 @@ export function VoiceMessageButton(props: Props) {
             </IconButton>
           </Tooltip>
           <Panel>
-            <Symbol
-              size={16}
-              style={{ color: "var(--md-sys-color-error)" }}
-            >
-              fiber_manual_record
-            </Symbol>
-            <Elapsed>{elapsedText()}</Elapsed>
-            <Tooltip content={t`Discard recording`} placement="top">
-              <IconButton size="sm" onPress={cancel}>
-                <Symbol>delete</Symbol>
-              </IconButton>
-            </Tooltip>
+            <LivePreview
+              ref={(el) => {
+                el.srcObject = stream ?? null;
+              }}
+              autoplay
+              muted
+              playsinline
+            />
+            <PanelRow>
+              <Symbol
+                size={16}
+                style={{ color: "var(--md-sys-color-error)" }}
+              >
+                fiber_manual_record
+              </Symbol>
+              <Elapsed>{elapsedText()}</Elapsed>
+              <Tooltip content={t`Discard recording`} placement="top">
+                <IconButton size="sm" onPress={cancel}>
+                  <Symbol>delete</Symbol>
+                </IconButton>
+              </Tooltip>
+            </PanelRow>
           </Panel>
         </Match>
         <Match when={mode() === "review"}>
-          <Tooltip content={t`Attach voice message`} placement="top">
+          <Tooltip content={t`Attach video message`} placement="top">
             <IconButton onPress={attach}>
               <Symbol style={{ color: "var(--md-sys-color-primary)" }}>
                 check
@@ -223,22 +237,26 @@ export function VoiceMessageButton(props: Props) {
             </IconButton>
           </Tooltip>
           <Panel>
-            <PreviewAudio
+            <PlaybackPreview
               ref={fixBlobDuration}
               controls
+              playsinline
               src={previewUrl()}
             />
-            <Tooltip content={t`Discard recording`} placement="top">
-              <IconButton size="sm" onPress={cancel}>
-                <Symbol>delete</Symbol>
-              </IconButton>
-            </Tooltip>
+            <PanelRow>
+              <Elapsed>{elapsedText()}</Elapsed>
+              <Tooltip content={t`Discard recording`} placement="top">
+                <IconButton size="sm" onPress={cancel}>
+                  <Symbol>delete</Symbol>
+                </IconButton>
+              </Tooltip>
+            </PanelRow>
           </Panel>
         </Match>
       </Switch>
       <Show when={mode() === "recording"}>
         <span aria-live="polite" style={{ display: "none" }}>
-          {t`Recording a voice message`}
+          {t`Recording a video message`}
         </span>
       </Show>
     </Anchor>
@@ -260,9 +278,10 @@ const Panel = styled("div", {
     zIndex: 1000,
 
     display: "flex",
-    alignItems: "center",
+    flexDirection: "column",
+    alignItems: "stretch",
     gap: "var(--gap-sm)",
-    padding: "var(--gap-sm) var(--gap-md)",
+    padding: "var(--gap-sm)",
 
     borderRadius: "var(--borderRadius-md)",
     background: "var(--md-sys-color-surface-container-high)",
@@ -271,10 +290,40 @@ const Panel = styled("div", {
   },
 });
 
-const PreviewAudio = styled("audio", {
+/**
+ * Live camera preview — mirrored like a selfie camera; the actual
+ * recording is not mirrored
+ */
+const LivePreview = styled("video", {
   base: {
-    width: "240px",
-    height: "36px",
+    width: "min(400px, 80vw)",
+    aspectRatio: "16 / 9",
+    objectFit: "cover",
+    borderRadius: "var(--borderRadius-sm)",
+    background: "black",
+    transform: "scaleX(-1)",
+  },
+});
+
+/**
+ * Playback of the finished take — unmirrored, exactly what will be sent
+ */
+const PlaybackPreview = styled("video", {
+  base: {
+    width: "min(400px, 80vw)",
+    aspectRatio: "16 / 9",
+    objectFit: "contain",
+    borderRadius: "var(--borderRadius-sm)",
+    background: "black",
+  },
+});
+
+const PanelRow = styled("div", {
+  base: {
+    display: "flex",
+    alignItems: "center",
+    gap: "var(--gap-sm)",
+    padding: "0 var(--gap-sm)",
   },
 });
 
@@ -284,5 +333,6 @@ const Elapsed = styled("span", {
     fontWeight: 600,
     fontVariantNumeric: "tabular-nums",
     userSelect: "none",
+    flexGrow: 1,
   },
 });

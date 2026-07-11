@@ -22,6 +22,7 @@ import { Keybind, KeybindAction, createKeybind } from "@revolt/keybinds";
 import { useModals } from "@revolt/modal";
 import { useState } from "@revolt/state";
 import {
+  CameraMessageButton,
   CompositionMediaPicker,
   FileCarousel,
   FileDropAnywhereCollector,
@@ -1014,6 +1015,12 @@ export function MessageComposition(props: Props) {
                 </MessageBox.InlineIcon>
               </Show>
               <Show when={props.channel.havePermission("UploadFiles")}>
+                <MessageBox.InlineIcon>
+                  <CameraMessageButton
+                    onFile={(file) => onFiles([file])}
+                    onError={(error) => openModal({ type: "error2", error })}
+                  />
+                </MessageBox.InlineIcon>
                 <MessageBox.InlineIcon>
                   <VoiceMessageButton
                     onFile={(file) => onFiles([file])}

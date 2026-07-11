@@ -1,3 +1,4 @@
+export { CameraMessageButton } from "./CameraMessageButton";
 export { FileCarousel } from "./FileCarousel";
 export { MessageBox } from "./MessageBox";
 export { MessageReplyPreview } from "./MessageReplyPreview";
