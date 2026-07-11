@@ -146,6 +146,13 @@ const PushTokenNative = Capacitor.isNativePlatform()
   : undefined;
 
 async function setUpServiceWorkerSubscription(client: Client) {
+  // Sloga Desktop: no service worker in the bundled shell (slice 6.2b) —
+  // push rides the WebSocket + native notifications instead. Throwing routes
+  // the manual settings toggle into the existing failure snackbar/reset.
+  if ("__TAURI__" in window) {
+    throw "Web push is not supported in the desktop app";
+  }
+
   // Native Android app: web push is unavailable in the WebView — register
   // the FCM device token as the push subscription instead.
   if (PushTokenNative) {

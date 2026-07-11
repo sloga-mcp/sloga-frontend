@@ -75,7 +75,10 @@ export default {
   MAX_FILE_SIZE:
     (import.meta.env.VITE_CFG_MAX_FILE_SIZE as number) ?? 20_000_000,
   /**
-   * RNNoise worklet CDN host location. Defaults to blank, which uses the url provided by the livekit-rnnoise-processor package.
+   * RNNoise worklet asset base. Blank ⇒ the self-hosted copy under
+   * `${BASE_URL}rnnoise/` (see the DenoiseTrackProcessor call site in
+   * rtc/state.tsx) — the package's jsdelivr default is never used (no-CDN
+   * policy; blocked by the desktop shell CSP).
    */
   RNNOISE_WORKLET_CDN_URL:
     (import.meta.env.VITE_RNNOISE_WORKLET_CDN_URL as string) ?? "",

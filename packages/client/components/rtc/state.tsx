@@ -313,7 +313,16 @@ class Voice {
               if (this.#settings.noiseSupression === "enhanced") {
                 track.audioTrack.setProcessor(
                   new DenoiseTrackProcessor({
-                    workletCDNURL: CONFIGURATION.RNNOISE_WORKLET_CDN_URL,
+                    // Self-hosted worklet assets (public/rnnoise/) — never the
+                    // package's jsdelivr default: external script origins are
+                    // blocked by the desktop shell CSP (slice 6.2b) and violate
+                    // the no-CDN policy everywhere else. Must be absolute: the
+                    // lib resolves it with base-less `new URL(...)`.
+                    workletCDNURL: new URL(
+                      CONFIGURATION.RNNOISE_WORKLET_CDN_URL ||
+                        `${import.meta.env.BASE_URL}rnnoise/`,
+                      window.location.origin,
+                    ).href,
                   }),
                 );
               } else if (gain !== 100) {

@@ -6,7 +6,11 @@ const [pendingUpdate, setPendingUpdate] = createSignal<() => void>();
 
 export { pendingUpdate };
 
-if (import.meta.env.PROD) {
+// Sloga Desktop (bundled Tauri shell, slice 6.2b): never register the service
+// worker. The signed installer/updater is the sole version authority there —
+// a SW would add a second, stale-prone cache layer over installer-shipped
+// assets, and desktop notifications/updates don't use web push.
+if (import.meta.env.PROD && !("__TAURI__" in window)) {
   const updateSW = registerSW({
     onNeedRefresh() {
       setPendingUpdate(() => void updateSW(true));
