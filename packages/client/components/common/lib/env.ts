@@ -52,6 +52,16 @@ export default {
     (import.meta.env.VITE_GIFBOX_URL as string) ??
     "https://api.gifbox.me",
   /**
+   * Base URL for unicode-emoji SVG packs. Routed through the app origin
+   * (proxied to the upstream pack host by Caddy) so the client never hits an
+   * external CDN directly — required by the desktop shell CSP (`img-src` has
+   * no external host) and the no-CDN policy. Blank ⇒ the upstream host, as a
+   * dev fallback. See unicodeEmojiUrl in markdown/emoji/UnicodeEmoji.tsx.
+   */
+  DEFAULT_EMOJI_URL:
+    (import.meta.env.VITE_EMOJI_URL as string) ??
+    "https://static.stoat.chat/emoji",
+  /**
    * hCaptcha site key to use if enabled
    */
   HCAPTCHA_SITEKEY: import.meta.env.VITE_HCAPTCHA_SITEKEY as string,
