@@ -87,3 +87,58 @@ export function drainAction(
         : { do: "retry" };
   }
 }
+
+/** What the drain does with a dequeued envelope while an identity-fetch is
+ * pending for the group (D10 / 6.4 gate MED-2). */
+export type FetchParkAction = "park" | "consume" | "escalate";
+
+/**
+ * Decide whether to PARK a dequeued envelope while a `fetch_identity` reconcile
+ * is in flight (D10, audit ME-MED-4 / CR-MED-5).
+ *
+ * The bug: a `fetch_identity` runs the reconcile DETACHED and the pump keeps
+ * draining. A same-group `mls_commit` behind the not-yet-applied Welcome then
+ * hits native `group_not_found` → quiet ack+drop → the commit is permanently
+ * consumed, and after the Welcome applies the member is missing that epoch.
+ *
+ * Rule:
+ *  - `pendingFetchGroupId == null` ⇒ no fetch pending ⇒ `consume` (normal).
+ *  - envelope's group MATCHES the pending group ⇒ `park` (hold until the fetch
+ *    resolves and the re-fed Welcome is processed first), UNLESS the parked
+ *    buffer already reached `maxParked` ⇒ `escalate` (the fetch isn't
+ *    converging fast enough — rejoin fresh, never plaintext, never a silent
+ *    drop).
+ *  - envelope's group does NOT match (transient during a rejoin/successor
+ *    migration that swapped the group id) ⇒ `consume` DEFENSIVELY — never a
+ *    fatal single-group assert (that would crash the drain).
+ *
+ * PURE: no secrecy dimension — native's strict-epoch-order gate is independent
+ * of this queue decision, so a wrong choice can only stall availability, never
+ * apply out of order or serve a stale key.
+ */
+export function shouldParkForPendingFetch(
+  envelopeGroupId: string,
+  pendingFetchGroupId: string | null,
+  parkedCount: number,
+  maxParked: number,
+): FetchParkAction {
+  if (pendingFetchGroupId === null) return "consume";
+  if (envelopeGroupId !== pendingFetchGroupId) return "consume";
+  return parkedCount >= maxParked ? "escalate" : "park";
+}
+
+/**
+ * The Welcome-before-parked re-feed order (D10, audit CR-MED-5). Returns the
+ * head-of-queue sequence to re-inject once an identity-fetch resolves: the
+ * re-fed Welcome FIRST, then the parked same-group envelopes in FIFO order.
+ * Extracted PURE so the load-bearing ordering has a regression guard — a
+ * commit ahead of the Welcome reintroduces the exact `group_not_found` drop
+ * D10 exists to fix. (Secrecy is safe regardless — native's epoch gate is
+ * independent of queue order — but availability is not.)
+ */
+export function spliceParkedAfterWelcome<T>(
+  welcome: T,
+  parked: readonly T[],
+): T[] {
+  return [welcome, ...parked];
+}

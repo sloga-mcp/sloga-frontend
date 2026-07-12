@@ -5,7 +5,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { drainAction, type DrainBounds } from "./mlsDrainPolicy.ts";
+import {
+  drainAction,
+  shouldParkForPendingFetch,
+  spliceParkedAfterWelcome,
+  type DrainBounds,
+} from "./mlsDrainPolicy.ts";
 
 const BOUNDS = { maxRetries: 5, maxParkAttempts: 8 };
 
@@ -96,4 +101,40 @@ test("needs_identity NEVER acks/drops the Welcome (fail-closed, every progress/r
 test("error bounded → retry, then ack_drop_poison at the retry cap", () => {
   assert.deepEqual(A(errDisp(), 0, 0, BOUNDS), { do: "retry" });
   assert.deepEqual(A(errDisp(), BOUNDS.maxRetries, 0, BOUNDS), { do: "ack_drop_poison" });
+});
+
+// D10 (6.4 gate MED-2): park same-group envelopes while an identity-fetch is
+// pending; consume when none pending or the group doesn't match; escalate on
+// buffer overflow. Never a fatal single-group assert.
+const MAX_PARKED = 8;
+test("shouldParkForPendingFetch: no pending fetch ⇒ consume", () => {
+  assert.equal(shouldParkForPendingFetch("g1", null, 0, MAX_PARKED), "consume");
+});
+
+test("shouldParkForPendingFetch: matching group + pending ⇒ park (below cap)", () => {
+  assert.equal(shouldParkForPendingFetch("g1", "g1", 0, MAX_PARKED), "park");
+  assert.equal(
+    shouldParkForPendingFetch("g1", "g1", MAX_PARKED - 1, MAX_PARKED),
+    "park",
+  );
+});
+
+test("shouldParkForPendingFetch: NON-matching group ⇒ consume defensively (no fatal assert, ME-MED-4)", () => {
+  // A stale old-group envelope during a rejoin/successor migration must be
+  // consumed, never parked (it is not the pending group) and never a crash.
+  assert.equal(shouldParkForPendingFetch("g2", "g1", 0, MAX_PARKED), "consume");
+});
+
+test("shouldParkForPendingFetch: buffer overflow ⇒ escalate (rejoin fresh, never plaintext)", () => {
+  assert.equal(
+    shouldParkForPendingFetch("g1", "g1", MAX_PARKED, MAX_PARKED),
+    "escalate",
+  );
+});
+
+test("spliceParkedAfterWelcome: Welcome FIRST, then parked FIFO (D10 ordering guard, CR-MED-5)", () => {
+  // The load-bearing D10 re-feed order: a commit ahead of the Welcome would
+  // reintroduce the group_not_found drop D10 exists to fix.
+  assert.deepEqual(spliceParkedAfterWelcome("W", ["c2", "c3"]), ["W", "c2", "c3"]);
+  assert.deepEqual(spliceParkedAfterWelcome("W", []), ["W"]);
 });

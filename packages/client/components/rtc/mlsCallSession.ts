@@ -81,7 +81,11 @@ import {
   callModeTransition,
   parseCtlPayload,
 } from "./mlsCallModePolicy";
-import { drainAction } from "./mlsDrainPolicy";
+import {
+  drainAction,
+  shouldParkForPendingFetch,
+  spliceParkedAfterWelcome,
+} from "./mlsDrainPolicy";
 import { joinRequestAction } from "./mlsJoinRequestPolicy";
 
 // ---- Timings + bounds (plan §1.4 / §3.3; all bounded — nothing spins) -------
@@ -808,6 +812,26 @@ export class MlsCallSession {
    * progress → rejoin fresh, never re-fetch. Cleared on group re-establish.
    */
   #identityFetches = new Set<string>();
+  /**
+   * Group id whose `fetch_identity` reconcile is in flight (D10 / 6.4 gate
+   * MED-2). While set, same-group envelopes dequeued by the pump are PARKED
+   * (not drained into a `group_not_found` ack+drop before the Welcome applies).
+   * Single group per session → at most one pending fetch. Cleared when the
+   * fetch resolves or on group re-establish.
+   */
+  #pendingIdentityFetch: string | null = null;
+  /** Same-group envelopes held while `#pendingIdentityFetch` is set; re-fed
+   * AFTER the Welcome once the fetch resolves (Welcome-before-parked, D10). */
+  #parkedDuringFetch: MlsEnvelope[] = [];
+  /**
+   * Generation token for the in-flight identity-fetch (D10, audit final LOW).
+   * Bumped when a fetch is scheduled, and again whenever that fetch is
+   * SUPERSEDED — a park-overflow escalate, or a group re-establish. The
+   * detached fetch timer captures its generation and NO-OPs its re-feed if the
+   * generation advanced, so an escalate→rejoin_fresh can't race a stale-Welcome
+   * re-feed from the timer it outran.
+   */
+  #identityFetchGen = 0;
 
   /** Our currently-staged own commit, kept in sync under the lock (H1 / C1). */
   #staged: StagedCommit | null = null;
@@ -1289,12 +1313,27 @@ export class MlsCallSession {
 
     const key = `${request.user_id}:${request.device_id}`;
     if (this.#scheduledAdmits.has(key)) return; // already scheduled
+    // D11 (6.4 gate LOW-1): RESERVE the dedup key BEFORE the awaits (mirrors
+    // #serveRejoin) so a duplicate join request arriving during the reconcile
+    // round-trip is deduped — otherwise both pass the .has() guard and schedule
+    // two reconciles + two admit timers (wasted KeyPackage claim). Cleared on
+    // every early-return below and replaced with the real timer when scheduled.
+    this.#scheduledAdmits.set(key, null);
 
     // Audit H3: verify the joiner's signed device listing BEFORE admit and
     // before the Add commit fans out, so this member accepts the joiner's leaf
-    // instead of failing loud (admitter) / poisoning (existing member).
-    await this.#reconcileRoster([request.user_id]);
-    if (this.#state !== "active" || request.group_id !== this.#groupId) return;
+    // instead of failing loud (admitter) / poisoning (existing member). Wrap
+    // so a rejected reconcile doesn't ORPHAN the reserved key (audit final LOW).
+    try {
+      await this.#reconcileRoster([request.user_id]);
+    } catch {
+      this.#scheduledAdmits.delete(key);
+      return;
+    }
+    if (this.#state !== "active" || request.group_id !== this.#groupId) {
+      this.#scheduledAdmits.delete(key);
+      return;
+    }
 
     // Stagger by our leaf index (roster order): the low leaf admits first, the
     // higher leaves are liveness failover if it's wedged. Correctness never
@@ -1308,9 +1347,13 @@ export class MlsCallSession {
           m.device_id === this.#deps.deviceId,
       );
     } catch {
+      this.#scheduledAdmits.delete(key);
       return;
     }
-    if (leaf < 0) return; // we are not a member of this group
+    if (leaf < 0) {
+      this.#scheduledAdmits.delete(key); // we are not a member of this group
+      return;
+    }
 
     const timer = setTimeout(() => {
       this.#scheduledAdmits.delete(key);
@@ -1337,9 +1380,10 @@ export class MlsCallSession {
 
     // Pin-then-verify (audit H3 analog): an unpinned-but-honest rejoiner
     // verifies after a reconcile; a forged relay never does. NEVER stage a
-    // Remove on the server relay alone.
-    await this.#reconcileRoster([request.user_id]);
+    // Remove on the server relay alone. Wrap the reconcile so a rejected IPC
+    // round-trip doesn't ORPHAN the reserved key (audit final LOW).
     try {
+      await this.#reconcileRoster([request.user_id]);
       await this.#deps.bridge.callVerifyJoinIntent(request);
     } catch {
       this.#scheduledAdmits.delete(key);
@@ -1507,6 +1551,17 @@ export class MlsCallSession {
         ) {
           return;
         }
+        // Native admit-cap backstop (6.6, audit ME-LOW-1): a compromised webview
+        // that bypassed #tryAdmit's cap can still trip native `mls_call_full`.
+        // Refusing to admit an OVERFLOW joiner must NOT downgrade the admitter's
+        // own (still fully-E2EE) call — treat it as a benign no-op. The call
+        // stays E2EE; the overflow joiner is refused by the server too (A3).
+        if (
+          kind === "admit" &&
+          (error as { type?: string } | null)?.type === "mls_call_full"
+        ) {
+          return;
+        }
         this.#onLoud(error);
         return;
       }
@@ -1612,7 +1667,39 @@ export class MlsCallSession {
         const release = await this.#lock.acquire();
         try {
           while (this.#inbound.length && !this.#terminal()) {
-            await this.#consume(this.#inbound.shift()!);
+            const env = this.#inbound.shift()!;
+            // D10: while an identity-fetch is pending for this group, PARK
+            // same-group envelopes instead of draining them into a premature
+            // group_not_found ack+drop (they apply after the re-fed Welcome).
+            const parkAction = shouldParkForPendingFetch(
+              env.group_id,
+              this.#pendingIdentityFetch,
+              this.#parkedDuringFetch.length,
+              MAX_PARK_ATTEMPTS,
+            );
+            if (parkAction === "park") {
+              this.#parkedDuringFetch.push(env);
+              this.#metrics.recordPark();
+              continue;
+            }
+            if (parkAction === "escalate") {
+              // The fetch isn't converging fast enough (park buffer full) —
+              // discard local state + rejoin fresh (never plaintext, never a
+              // silent drop). Detached (we hold the lock). Bump the fetch
+              // generation so the still-in-flight fetch timer no-ops its stale
+              // re-feed instead of racing this rejoin (audit final LOW).
+              this.#identityFetchGen++;
+              this.#pendingIdentityFetch = null;
+              this.#parkedDuringFetch = [];
+              this.#metrics.recordDesyncEscalation();
+              this.#scheduleGroupAction(() =>
+                this.#rejoinFresh(
+                  "identity fetch did not converge (park overflow)",
+                ),
+              );
+              continue;
+            }
+            await this.#consume(env);
           }
         } finally {
           release();
@@ -1720,9 +1807,18 @@ export class MlsCallSession {
         // re-pump. NOT via #scheduleGroupAction — that is single-flight and a
         // pending transition would silently drop our re-feed.
         this.#metrics.recordRetry();
+        // D10: mark the group's fetch as pending so the pump PARKS same-group
+        // envelopes (behind this not-yet-applied Welcome) instead of dropping
+        // them to group_not_found. Cleared when the fetch resolves below.
+        this.#pendingIdentityFetch = envelope.group_id;
+        const fetchGen = ++this.#identityFetchGen;
         const timer = setTimeout(async () => {
           this.#timers.delete(timer);
-          if (this.#terminal()) return;
+          if (this.#terminal()) {
+            this.#pendingIdentityFetch = null;
+            this.#parkedDuringFetch = [];
+            return;
+          }
           try {
             await this.#deps.bridge.reconcileCallRoster([action.userId]);
             // Progress budget: only a COMPLETED reconcile counts — the escalation
@@ -1737,8 +1833,22 @@ export class MlsCallSession {
               (this.#retries.get(envelope.id) ?? 0) + 1,
             );
           }
+          // Superseded (audit final LOW): a park-overflow escalate or a group
+          // re-establish bumped the generation while we were reconciling — the
+          // rejoin/reset already owns recovery, so DON'T re-feed this now-stale
+          // Welcome (it would race the rejoin). Our pending marker/buffer were
+          // already cleared by whoever superseded us.
+          if (this.#identityFetchGen !== fetchGen) return;
+          // Clear the pending marker and re-feed: the Welcome (this envelope)
+          // FIRST, then any parked same-group envelopes AFTER it, so the group
+          // is applied before its commits (Welcome-before-parked, audit
+          // CR-MED-5). Ordering is availability-only; native's epoch gate keeps
+          // secrecy regardless.
+          this.#pendingIdentityFetch = null;
+          const parked = this.#parkedDuringFetch;
+          this.#parkedDuringFetch = [];
           if (this.#terminal()) return;
-          this.#inbound.unshift(envelope);
+          this.#inbound.unshift(...spliceParkedAfterWelcome(envelope, parked));
           void this.#pump();
         }, 0);
         this.#timers.add(timer);
@@ -1934,6 +2044,9 @@ export class MlsCallSession {
     this.#seen.clear();
     this.#retries.clear();
     this.#identityFetches.clear(); // fresh group ⇒ fresh reconcile budget
+    this.#pendingIdentityFetch = null; // D10: fresh group ⇒ no pending fetch/park
+    this.#parkedDuringFetch = [];
+    this.#identityFetchGen++; // supersede any in-flight fetch timer's re-feed
     this.#inbound = [];
     for (const timer of this.#scheduledAdmits.values())
       if (timer) clearTimeout(timer);
@@ -2506,7 +2619,7 @@ export class MlsCallSession {
       await media.setEncryptionEnabled?.(true);
       await media.resumePublishing?.("enable-window");
       this.#mixPaused = false;
-      this.#setMode({ kind: "e2ee" }); // T0b
+      this.#setModeChained({ kind: "e2ee" }); // T0b (LOW-3: serialize the label)
     } catch (error) {
       // Enable failed ⇒ we are NOT encrypted; stay fail-closed (publishing
       // paused) and surface loud rather than resume into plaintext.
@@ -2527,7 +2640,7 @@ export class MlsCallSession {
       this.#mixPaused = true;
       void this.#media?.pausePublishing?.("mixed");
     }
-    this.#setMode({ kind: "mixed" }); // T1
+    this.#setModeChained({ kind: "mixed" }); // T1 (LOW-3: serialize the label)
   }
 
   /**
@@ -2559,6 +2672,10 @@ export class MlsCallSession {
               .catch(() => {});
           }
           this.#announcedBy = undefined;
+          // Direct (LOW-3): this carries the fail-closed `negotiating` pause and
+          // must take effect eagerly; it runs at the start of a successor
+          // teardown (rejoin scheduled just below) where no concurrent
+          // `#applyMode` transition competes for the label.
           this.#setMode({ kind: "negotiating" });
           this.#e2eeEnabled = false;
           this.#mixPaused = false;
@@ -2568,7 +2685,7 @@ export class MlsCallSession {
         } else {
           await this.#media?.resumePublishing?.("mixed");
           this.#mixPaused = false;
-          this.#setMode({ kind: "e2ee" }); // T2
+          this.#setModeChained({ kind: "e2ee" }); // T2 (LOW-3: serialize the label)
         }
       } catch (error) {
         this.#onMediaError(error);
@@ -2599,6 +2716,26 @@ export class MlsCallSession {
       nonEnrolled: this.#nonEnrolled,
       announcedBy: this.#announcedBy,
     });
+  }
+
+  /**
+   * Serialize a direct mode-label set onto `#modeChain` (6.5 LOW-3, audit
+   * CR-MED-4). ENQUEUES a continuation (not a bare `await`, which would not
+   * serialize — a concurrently-appended `#applyMode` continuation is a separate
+   * microtask) so the label update runs AFTER any in-flight transition and can't
+   * be lost to a stale-`#callMode` recompute.
+   *
+   * NB: "never plaintext" does NOT depend on the mode label — it is carried by
+   * state.tsx's `#publishGate` reason-set (resumes only at size 0) + invariant-11
+   * dual gating (LiveKit-observed per-participant encryption). A lost/late label
+   * is at worst over-encryption or a briefly-stale chip, never a plaintext
+   * publish. Callers that carry their OWN pause/enable side effects run those
+   * eagerly (fail-closed immediately) and only serialize the LABEL here.
+   */
+  #setModeChained(mode: CallMode): void {
+    this.#modeChain = this.#modeChain
+      .then(() => this.#setMode(mode))
+      .catch((error) => this.#onMediaError(error));
   }
 
   /**

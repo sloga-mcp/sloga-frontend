@@ -51,7 +51,18 @@ export function useCallPrejoinMode(
   const client = useClient();
   const state = useState();
 
-  const [resource] = createResource(deps, async (input) => {
+  // Read the "Encrypt my calls" toggle in the resource SOURCE so the pre-join
+  // badge refreshes IMMEDIATELY when it flips (6.5 LOW-2). Reading it only in
+  // the fetcher below left it untracked — the badge lagged until the next
+  // unrelated version bump.
+  const source = () => {
+    const d = deps();
+    return d
+      ? { ...d, e2eeCallsEnabled: state.voice.e2eeCallsEnabled }
+      : undefined;
+  };
+
+  const [resource] = createResource(source, async (input) => {
     const bridge = client()?.e2ee as E2EEBridge | undefined;
     // WE would negotiate encryption only when the shell can push keys AND the
     // device is enrolled AND "Encrypt my calls" is on (gate F4 — a toggle-OFF
@@ -60,7 +71,7 @@ export function useCallPrejoinMode(
     const wouldEncrypt =
       !!bridge?.nativeKeyPushAvailable() &&
       !!bridge.status.get("state")?.published &&
-      state.voice.e2eeCallsEnabled;
+      input.e2eeCallsEnabled;
 
     if (featureOff) {
       return classify(null, wouldEncrypt);

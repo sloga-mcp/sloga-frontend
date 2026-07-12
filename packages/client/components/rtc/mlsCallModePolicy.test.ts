@@ -264,6 +264,52 @@ test("chip resecuring beats unverified/green", () => {
   assert.equal(chipState(baseChip({ resecuring: true })), "resecuring");
 });
 
+// T-06-EXTENDED (6.6): a clean rotation's transient missing-key window must
+// classify AMBER (resecuring), NEVER flip the chip loud to not_encrypted, and
+// must RECOVER to green once media is observed encrypted again. Only a LATCHED
+// error (past the session's 10 s escalation) is allowed to flip loud.
+test("T-06-ext: a transient rotation-window resecuring stays amber, never not_encrypted", () => {
+  // Rotation debounce active (media-plane), session still active, no latch.
+  assert.equal(
+    chipState(baseChip({ resecuring: true, latchedError: false })),
+    "resecuring",
+  );
+  // Its media-plane form: a publishing participant momentarily lacks an
+  // observed-encrypted status during the key swap ⇒ amber, NOT loud.
+  assert.equal(
+    chipState(
+      baseChip({
+        publishingIdentities: ["u:d"],
+        observedEncrypted: new Map(), // status transiently missing mid-rotation
+      }),
+    ),
+    "resecuring",
+  );
+});
+
+test("T-06-ext: chip RECOVERS to green after the rotation window closes (no flap)", () => {
+  // Same participant, status now observed encrypted again ⇒ back to green.
+  assert.equal(
+    chipState(
+      baseChip({
+        resecuring: false,
+        publishingIdentities: ["u:d"],
+        observedEncrypted: new Map([["u:d", true]]),
+      }),
+    ),
+    "e2ee",
+  );
+});
+
+test("T-06-ext: ONLY a latched error (post-escalation) flips a rotating call loud", () => {
+  // Rotation window + a latched structured error ⇒ the latch wins (loud). This
+  // is the 10 s-escalation outcome, not the transient window itself.
+  assert.equal(
+    chipState(baseChip({ resecuring: true, latchedError: true })),
+    "not_encrypted",
+  );
+});
+
 test("chip starting → none (no chrome flash on a plain voice call, FE-13)", () => {
   assert.equal(
     chipState(baseChip({ sessionState: "starting", mode: NEGOTIATING })),
