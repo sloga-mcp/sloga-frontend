@@ -929,12 +929,14 @@ export class MlsCallSession {
     if (!payload) return; // above the watermark — nothing to publish
 
     try {
-      // Best-effort no-ticket first: an already-enrolled device replenishes on
-      // its device-bound session with no MFA. The FIRST publication for a
-      // device is MFA-gated server-side (mirrors the text-E2EE first key
-      // publish), surfaced as `mfa_required` — prompt for a ticket ONCE and
-      // retry. A declined / absent prompt leaves us unpublished: admission then
-      // fails LOUDLY (Exhausted), never a weak or plaintext admit.
+      // No MFA on any publish against an upgraded server (publish-UX plan
+      // §3.1): the device-bound session + server-verified credential binding
+      // is the credential, so a first E2EE call join never prompts for the
+      // account password (DAVE-parity UX). The `mfa_required` arm below is a
+      // LEGACY-SERVER fallback only (plan §3.3, remove after rollout) —
+      // prompt for a ticket ONCE and retry. A declined / absent prompt
+      // leaves us unpublished: admission then fails LOUDLY (Exhausted),
+      // never a weak or plaintext admit.
       let res = await this.#deps.bridge.mlsPutKeyPackages(payload);
       if (res.kind === "mfa_required" && this.#deps.requestMfaTicket) {
         const ticket = await this.#deps.requestMfaTicket();

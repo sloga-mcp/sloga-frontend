@@ -2656,6 +2656,43 @@ export class E2EEBridge implements E2EEAdapter {
     // already published, so enable() has succeeded; a failed PATCH here
     // is self-healed by #onReady on every subsequent connect.
     this.#advertiseOptIn();
+
+    // MLS KeyPackage pre-publish (publish-UX plan §3.2): seed the media-E2EE
+    // directory while the user is already in an enrollment flow, so a first
+    // call join finds it populated. Best-effort and NOT awaited — enable()
+    // has already succeeded, and the call-join path self-heals via
+    // `#ensureKeyPackages` (no-MFA publish, plan §3.1).
+    void this.#prepublishMlsKeyPackages();
+  }
+
+  /**
+   * Enrollment-time MLS KeyPackage pre-publish (publish-UX plan §3.2).
+   * Rides §3.1's no-MFA publish route: the PUT /e2ee/keys that just ran
+   * bound this session to the device, which is all the route demands.
+   * Quiet by design: `feature_disabled` (media E2EE off until 6.5) is a
+   * silent no-op, and any failure is only logged — the call-join
+   * `#ensureKeyPackages` path remains the authoritative self-heal.
+   */
+  async #prepublishMlsKeyPackages(): Promise<void> {
+    try {
+      const userId = this.#client.user?.id;
+      if (!userId) return;
+      const payload = await this.mlsPublishKeyPackages(userId);
+      const res = await this.mlsPutKeyPackages(payload);
+      if (res.kind !== "ok" && res.kind !== "feature_disabled") {
+        // `mfa_required` here means a pre-§3.1 server: acceptable during
+        // rollout — the join-time fallback still prompts (plan §3.3)
+        console.warn(
+          "[e2ee] enrollment MLS KeyPackage pre-publish not completed:",
+          res.kind,
+        );
+      }
+    } catch (error) {
+      console.error(
+        "[e2ee] enrollment MLS KeyPackage pre-publish failed (best-effort)",
+        error,
+      );
+    }
   }
 
   /**
@@ -2821,6 +2858,11 @@ export class E2EEBridge implements E2EEAdapter {
         device_id: status.device_id,
       });
     }
+
+    // Re-seed the MLS KeyPackage directory too (publish-UX plan §3.2): the
+    // revocation cascade deleted this device's packages, and the re-enroll
+    // PUT above re-bound the session, so the no-MFA publish rides now.
+    void this.#prepublishMlsKeyPackages();
   }
 
   /**
@@ -3447,12 +3489,15 @@ export class E2EEBridge implements E2EEAdapter {
       );
     }
 
-    // First MLS KeyPackage publish for a device is MFA-gated server-side: the
-    // handler returns 401 `InvalidToken` when no `X-MFA-Ticket` is presented.
-    // The auth guard already validated the session, so a 401 reaching HERE means
-    // "an MFA ticket is required", not a dead session. Surface it as a normal
-    // outcome ONLY for the opted-in publish route (the session prompts once and
+    // LEGACY-SERVER fallback (publish-UX plan §3.3): a pre-§3.1 server MFA-
+    // gates the first MLS KeyPackage publish per device and returns 401
+    // `InvalidToken` when no `X-MFA-Ticket` is presented. The auth guard
+    // already validated the session, so a 401 reaching HERE means "an MFA
+    // ticket is required", not a dead session. Surface it as a normal outcome
+    // ONLY for the opted-in publish route (the session prompts once and
     // retries); a 401 on any other MLS route stays a thrown auth failure.
+    // An upgraded server never demands a publish-time ticket; remove this
+    // arm in a post-rollout cleanup.
     if (opts?.mfaRetryable && response.status === 401) {
       return { kind: "mfa_required" };
     }
@@ -3469,9 +3514,10 @@ export class E2EEBridge implements E2EEAdapter {
 
   /**
    * `PUT /mls/key_packages` — publish/replenish this device's KeyPackages so
-   * admitters can claim one to add us. The FIRST MLS publication for a device
-   * needs an MFA ticket (like the text-E2EE first key publish); replenishes
-   * ride the device-bound session. `payload` is produced natively by
+   * admitters can claim one to add us. Every publication rides the
+   * device-bound session + server-verified credential binding — no MFA
+   * (publish-UX plan §3.1); `mfaTicket` only serves the legacy-server
+   * fallback (plan §3.3). `payload` is produced natively by
    * `mlsPublishKeyPackages` / `mlsReplenish`.
    */
   mlsPutKeyPackages(
