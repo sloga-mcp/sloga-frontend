@@ -22,7 +22,7 @@ type Props =
 // stoat-api's generated union predates threads; widen it locally. Threads
 // carry no own overrides (permissions are edited on the parent), so "Thread"
 // only ever hits the `desc.Any` fallback below.
-type Context = API.Channel["channel_type"] | "Thread" | "Server";
+type Context = API.Channel["channel_type"] | "Thread" | "Forum" | "Server";
 
 /**
  * Generic editor for any channel permissions

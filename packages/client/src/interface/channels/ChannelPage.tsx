@@ -15,6 +15,7 @@ import { Navigate, useParams } from "@revolt/routing";
 import { parseChannelPassword } from "../../lib/channelPassword";
 import { AgeGate } from "./AgeGate";
 import { PasswordGate } from "./PasswordGate";
+import { ForumChannel } from "./forum/ForumChannel";
 import { TextChannel } from "./text/TextChannel";
 
 /**
@@ -90,6 +91,24 @@ export const ChannelPage: Component = () => {
               channelName={channel()!.name!}
             >
               <TextChannel channel={channel()!} />
+            </PasswordGate>
+          </AgeGate>
+        </Match>
+        <Match when={channel()!.type === "Forum"}>
+          <AgeGate
+            enabled={channel()!.mature}
+            contentId={channel()!.id}
+            contentName={"#" + channel()!.name}
+            contentType="channel"
+          >
+            <PasswordGate
+              passwordHash={
+                parseChannelPassword(channel()!.description).passwordHash
+              }
+              channelId={channel()!.id}
+              channelName={channel()!.name!}
+            >
+              <ForumChannel channel={channel()!} />
             </PasswordGate>
           </AgeGate>
         </Match>

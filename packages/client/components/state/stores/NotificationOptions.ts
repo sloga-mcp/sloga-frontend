@@ -27,6 +27,7 @@ export const DEFAULT_STATES: {
   Group: "all",
   TextChannel: undefined!,
   Thread: undefined!,
+  Forum: undefined!,
 };
 
 /**

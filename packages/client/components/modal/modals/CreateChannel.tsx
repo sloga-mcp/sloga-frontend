@@ -26,6 +26,8 @@ export function CreateChannelModal(
   async function onSubmit() {
     try {
       const channel = await props.server.createChannel({
+        // "Forum" is an additive server channel type the typed client
+        // predates; the route passes it through verbatim.
         type: group.controls.type.value as "Text" | "Voice",
         name: group.controls.name.value,
       });
@@ -79,6 +81,9 @@ export function CreateChannelModal(
             </Radio2.Option>
             <Radio2.Option value="Voice">
               <Trans>Voice Channel</Trans>
+            </Radio2.Option>
+            <Radio2.Option value="Forum">
+              <Trans>Forum Channel</Trans>
             </Radio2.Option>
           </Form2.Radio>
         </Column>

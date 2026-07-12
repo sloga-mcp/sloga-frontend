@@ -14,6 +14,7 @@ import { ChannelToggleMatureModal } from "./modals/ChannelToggleMature";
 import { CreateBotModal } from "./modals/CreateBot";
 import { CreateCategoryModal } from "./modals/CreateCategory";
 import { CreateChannelModal } from "./modals/CreateChannel";
+import { CreateForumPostModal } from "./modals/CreateForumPost";
 import { CreateGroupModal } from "./modals/CreateGroup";
 import { CreateGroupOrServer } from "./modals/CreateGroupOrServer";
 import { CreateInviteModal } from "./modals/CreateInvite";
@@ -127,6 +128,8 @@ export function RenderModal(props: ActiveModal & { onClose: () => void }) {
       return <CreateServerModal {...modalProps} />;
     case "create_thread":
       return <CreateThreadModal {...modalProps} />;
+    case "create_forum_post":
+      return <CreateForumPostModal {...modalProps} />;
     case "create_webhook":
       return <CreateWebhookModal {...modalProps} />;
     case "custom_status":

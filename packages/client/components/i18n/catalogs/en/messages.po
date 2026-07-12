@@ -92,6 +92,11 @@ msgstr "{0} emoji slots remaining"
 msgid "{0} files exceed the maximum size limit of {maxSizeFormatted} and were not uploaded."
 msgstr "{0} files exceed the maximum size limit of {maxSizeFormatted} and were not uploaded."
 
+#. placeholder {0}: names().join(", ")
+#: components/ui/components/features/voice/callCard/VoiceCallDowngradeBanner.tsx
+msgid "{0} is not using encrypted calls. Your audio and video stay paused until you turn off encryption."
+msgstr "{0} is not using encrypted calls. Your audio and video stay paused until you turn off encryption."
+
 #. placeholder {0}: users()[0]!.username
 #: components/ui/components/features/messaging/composition/TypingIndicator.tsx
 msgid "{0} is typing…"
@@ -365,6 +370,10 @@ msgstr "6 hours"
 msgid "7 days"
 msgstr "7 days"
 
+#: components/ui/components/features/voice/callCard/VoiceCallDowngradeBanner.tsx
+msgid "A participant turned off encryption for this call. Resume to be heard — the server will be able to read this call."
+msgstr "A participant turned off encryption for this call. Resume to be heard — the server will be able to read this call."
+
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "Able to access channels on this server"
 msgstr "Able to access channels on this server"
@@ -433,6 +442,10 @@ msgstr "Add new members to the group"
 #: src/interface/navigation/servers/UserMenu.tsx
 msgid "Add status text"
 msgstr "Add status text"
+
+#: components/app/interface/settings/channel/ForumSettings.tsx
+msgid "Add tag"
+msgstr "Add tag"
 
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "Admin"
@@ -514,6 +527,7 @@ msgid "Appearance"
 msgstr "Appearance"
 
 #: src/interface/channels/text/ThreadsListSidebar.tsx
+#: src/interface/channels/forum/ForumChannel.tsx
 msgid "Archived"
 msgstr "Archived"
 
@@ -745,6 +759,14 @@ msgstr "Bypasses slowmode in channels"
 msgid "Call"
 msgstr "Call"
 
+#: components/ui/components/features/voice/callCard/VoiceCallRosterPanel.tsx
+msgid "Call encryption"
+msgstr "Call encryption"
+
+#: components/ui/components/features/voice/callCard/VoiceCallCardPreview.tsx
+msgid "Call full for encryption (100)"
+msgstr "Call full for encryption (100)"
+
 #: components/ui/components/features/voice/callCard/VoiceDeviceSelector.tsx
 #: components/modal/modals/CameraSettings.tsx
 msgid "Camera"
@@ -973,6 +995,7 @@ msgid "Click to copy username"
 msgstr "Click to copy username"
 
 #: src/interface/channels/ChannelHeader.tsx
+#: src/interface/channels/ChannelHeader.tsx
 msgid "Click to show full description"
 msgstr "Click to show full description"
 
@@ -1014,6 +1037,7 @@ msgstr "Client Settings"
 #: components/modal/modals/CreateServer.tsx
 #: components/modal/modals/CreateRole.tsx
 #: components/modal/modals/CreateGroup.tsx
+#: components/modal/modals/CreateForumPost.tsx
 #: components/modal/modals/CreateChannel.tsx
 #: components/modal/modals/CreateCategory.tsx
 #: components/modal/modals/CreateBot.tsx
@@ -1200,6 +1224,7 @@ msgstr "Couldn't load events"
 #: components/modal/modals/CreateServer.tsx
 #: components/modal/modals/CreateRole.tsx
 #: components/modal/modals/CreateGroup.tsx
+#: components/modal/modals/CreateForumPost.tsx
 #: components/modal/modals/CreateChannel.tsx
 #: components/modal/modals/CreateCategory.tsx
 #: components/modal/modals/CreateBot.tsx
@@ -1325,6 +1350,11 @@ msgstr "Create Webhook"
 msgid "Created <0/>"
 msgstr "Created <0/>"
 
+#: src/interface/channels/forum/ForumChannel.tsx
+#: components/app/interface/settings/channel/ForumSettings.tsx
+msgid "Creation date"
+msgstr "Creation date"
+
 #: components/modal/modals/EditUsername.tsx
 #: components/modal/modals/EditPassword.tsx
 #: components/modal/modals/EditEmail.tsx
@@ -1392,6 +1422,10 @@ msgstr "Default"
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsOverview.tsx
 msgid "Default Permissions"
 msgstr "Default Permissions"
+
+#: components/app/interface/settings/channel/ForumSettings.tsx
+msgid "Default sort order"
+msgstr "Default sort order"
 
 #: components/modal/modals/EmojiPreview.tsx
 #: components/modal/modals/DeleteServer.tsx
@@ -1715,9 +1749,25 @@ msgstr "Enable Push to Talk"
 msgid "Enable transparency glass/blur effects (slow on older machines)"
 msgstr "Enable transparency glass/blur effects (slow on older machines)"
 
+#: components/app/interface/settings/user/SecurityAndPrivacy.tsx
+msgid "Encrypt my calls"
+msgstr "Encrypt my calls"
+
 #: components/modal/modals/E2EEEnableGroup.tsx
 msgid "Encrypt this group"
 msgstr "Encrypt this group"
+
+#: components/app/interface/settings/user/SecurityAndPrivacy.tsx
+msgid "Encrypt your voice and video on this device. Everyone in a call must have this on; web participants can't join encrypted, and server features that need the raw audio or video (recording, transcoding) are turned off in encrypted calls."
+msgstr "Encrypt your voice and video on this device. Everyone in a call must have this on; web participants can't join encrypted, and server features that need the raw audio or video (recording, transcoding) are turned off in encrypted calls."
+
+#: components/ui/components/features/voice/callCard/VoiceCallCardStatus.tsx
+msgid "Encrypted · unverified"
+msgstr "Encrypted · unverified"
+
+#: components/app/interface/settings/user/SecurityAndPrivacy.tsx
+msgid "Encrypted calls aren't available on this device yet."
+msgstr "Encrypted calls aren't available on this device yet."
 
 #: components/app/interface/settings/user/SecurityAndPrivacy.tsx
 msgid "Encrypted direct messages"
@@ -1750,6 +1800,14 @@ msgstr "Encryption will start once a message is sent."
 #: components/ui/components/features/voice/callCard/VoiceCallCardActions.tsx
 msgid "End call"
 msgstr "End call"
+
+#: components/ui/components/features/voice/callCard/VoiceCallCardStatus.tsx
+msgid "End-to-end encrypted"
+msgstr "End-to-end encrypted"
+
+#: components/ui/components/features/voice/callCard/VoiceCallCardPreview.tsx
+msgid "End-to-end encrypted call"
+msgstr "End-to-end encrypted call"
 
 #: src/interface/ServerEvents.tsx
 msgid "Ends after"
@@ -1814,6 +1872,10 @@ msgstr "Events Not Enabled"
 #: src/interface/ServerEvents.tsx
 msgid "Every"
 msgstr "Every"
+
+#: components/app/interface/settings/channel/ForumSettings.tsx
+msgid "Every post must have at least one tag"
+msgstr "Every post must have at least one tag"
 
 #: src/interface/ServerEvents.tsx
 msgid "Everyone in that selection was already invited or can't view this event"
@@ -1913,6 +1975,14 @@ msgstr "For 3 hours"
 #: components/app/menus/shared/NotificationContextMenu.tsx
 msgid "For 8 hours"
 msgstr "For 8 hours"
+
+#: components/app/interface/settings/ChannelSettings.tsx
+msgid "Forum"
+msgstr "Forum"
+
+#: components/modal/modals/CreateChannel.tsx
+msgid "Forum Channel"
+msgstr "Forum Channel"
 
 #: components/auth/src/flows/FlowHome.tsx
 msgid "Free"
@@ -2291,6 +2361,11 @@ msgstr "Last sync <0/>"
 msgid "Latest"
 msgstr "Latest"
 
+#: src/interface/channels/forum/ForumChannel.tsx
+#: components/app/interface/settings/channel/ForumSettings.tsx
+msgid "Latest activity"
+msgstr "Latest activity"
+
 #: components/app/interface/settings/user/Native.tsx
 msgid "Launch Sloga when you log into your computer."
 msgstr "Launch Sloga when you log into your computer."
@@ -2310,6 +2385,10 @@ msgstr "Leave"
 #: components/modal/modals/DeleteChannel.tsx
 msgid "Leave {0}?"
 msgstr "Leave {0}?"
+
+#: components/ui/components/features/voice/callCard/VoiceCallDowngradeBanner.tsx
+msgid "Leave call"
+msgstr "Leave call"
 
 #: components/app/menus/ChannelContextMenu.tsx
 msgid "Leave group"
@@ -2347,6 +2426,10 @@ msgstr "Live"
 #: components/ui/components/features/messaging/elements/TextFile.tsx
 msgid "Load file ({0})"
 msgstr "Load file ({0})"
+
+#: src/interface/channels/forum/ForumChannel.tsx
+msgid "Load more"
+msgstr "Load more"
 
 #: src/interface/ServerEvents.tsx
 msgid "Load more attendees"
@@ -2521,6 +2604,7 @@ msgstr "Mentions"
 msgid "Mentions Only"
 msgstr "Mentions Only"
 
+#: components/modal/modals/CreateForumPost.tsx
 #: components/app/menus/UserContextMenu.tsx
 msgid "Message"
 msgstr "Message"
@@ -2618,6 +2702,10 @@ msgstr "Missing permission"
 #: src/interface/channels/text/Composition.tsx
 msgid "Mod"
 msgstr "Mod"
+
+#: components/app/interface/settings/channel/ForumSettings.tsx
+msgid "Moderated"
+msgstr "Moderated"
 
 #: components/modal/modals/ReportQueue.tsx
 msgid "Moderator notes (used as reason when rejecting)"
@@ -2740,6 +2828,14 @@ msgstr "New messages since {0}"
 msgid "New Password"
 msgstr "New Password"
 
+#: components/modal/modals/CreateForumPost.tsx
+msgid "New post"
+msgstr "New post"
+
+#: src/interface/channels/forum/ForumChannel.tsx
+msgid "New Post"
+msgstr "New Post"
+
 #: components/client/NotificationsWorker.tsx
 msgid "New report"
 msgstr "New report"
@@ -2760,6 +2856,10 @@ msgstr "Nickname"
 msgid "No active threads"
 msgstr "No active threads"
 
+#: src/interface/channels/forum/ForumChannel.tsx
+msgid "No archived posts"
+msgstr "No archived posts"
+
 #: src/interface/channels/text/ThreadsListSidebar.tsx
 msgid "No archived threads"
 msgstr "No archived threads"
@@ -2776,6 +2876,10 @@ msgstr "No channels available to create an invite for."
 msgid "No events on this day."
 msgstr "No events on this day."
 
+#: components/ui/components/features/voice/callCard/VoiceCallRosterPanel.tsx
+msgid "no media — divergent leaf"
+msgstr "no media — divergent leaf"
+
 #: components/modal/modals/ReportQueue.tsx
 msgid "No open reports. All clear!"
 msgstr "No open reports. All clear!"
@@ -2787,6 +2891,10 @@ msgstr "No pending identity changes remain."
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsOverview.tsx
 msgid "No permissions set yet"
 msgstr "No permissions set yet"
+
+#: src/interface/channels/forum/ForumChannel.tsx
+msgid "No posts yet"
+msgstr "No posts yet"
 
 #: components/modal/modals/E2EEEnable.tsx
 msgid "No recovery backup was found for your account, or the recovery window was closed. You can start fresh instead."
@@ -2817,6 +2925,14 @@ msgstr "None"
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Normal"
 msgstr "Normal"
+
+#: components/ui/components/features/voice/callCard/VoiceCallRosterPanel.tsx
+msgid "not encrypted"
+msgstr "not encrypted"
+
+#: components/ui/components/features/voice/callCard/VoiceCallCardStatus.tsx
+msgid "Not encrypted"
+msgstr "Not encrypted"
 
 #: src/interface/channels/text/Composition.tsx
 msgid "Not encrypted — the other person hasn't turned on encryption."
@@ -3115,6 +3231,10 @@ msgstr "Quality and bitrate changes apply the next time you turn on your camera.
 msgid "Raid or spam attack"
 msgstr "Raid or spam attack"
 
+#: components/ui/components/features/voice/callCard/VoiceCallCardStatus.tsx
+msgid "Re-securing…"
+msgstr "Re-securing…"
+
 #: components/app/menus/MessageContextMenu.tsx
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "React"
@@ -3334,6 +3454,10 @@ msgstr "Reported content (as seen by the reporter)"
 msgid "Reported content (server copy)"
 msgstr "Reported content (server copy)"
 
+#: components/app/interface/settings/channel/ForumSettings.tsx
+msgid "Require tags"
+msgstr "Require tags"
+
 #: components/auth/src/flows/FlowResend.tsx
 msgid "Resend"
 msgstr "Resend"
@@ -3385,6 +3509,10 @@ msgstr "Restore from a recovery code"
 #: components/modal/modals/E2EEEnable.tsx
 msgid "Restore your encrypted messages"
 msgstr "Restore your encrypted messages"
+
+#: components/ui/components/features/voice/callCard/VoiceCallDowngradeBanner.tsx
+msgid "Resume unencrypted"
+msgstr "Resume unencrypted"
 
 #: src/interface/ServerEvents.tsx
 msgid "Retry"
@@ -3449,6 +3577,7 @@ msgstr "Roll dice"
 #: components/app/interface/settings/server/Overview.tsx
 #: components/app/interface/settings/server/roles/ServerRoleEditor.tsx
 #: components/app/interface/settings/channel/Overview.tsx
+#: components/app/interface/settings/channel/ForumSettings.tsx
 #: components/app/interface/settings/channel/webhooks/ViewWebhook.tsx
 msgid "Save"
 msgstr "Save"
@@ -3790,6 +3919,10 @@ msgstr "Slowmode is enabled."
 msgid "Slowmode off"
 msgstr "Slowmode off"
 
+#: components/ui/components/features/voice/callCard/VoiceCallDowngradeBanner.tsx
+msgid "Someone in this call is not using encrypted calls. Your audio and video stay paused until you turn off encryption."
+msgstr "Someone in this call is not using encrypted calls. Your audio and video stay paused until you turn off encryption."
+
 #: components/modal/modals/EditEmail.tsx
 msgid "someone@example.com"
 msgstr "someone@example.com"
@@ -3858,6 +3991,10 @@ msgstr "Start with Computer"
 #: components/ui/components/features/profiles/ProfileStatus.tsx
 msgid "Status"
 msgstr "Status"
+
+#: components/ui/components/features/voice/callCard/VoiceCallDowngradeBanner.tsx
+msgid "Stay unencrypted"
+msgstr "Stay unencrypted"
 
 #: components/app/interface/settings/server/stickers/StickerList.tsx
 msgid "Sticker Name"
@@ -3956,6 +4093,23 @@ msgstr "System"
 #: components/app/interface/settings/server/Overview.tsx
 msgid "System message channels"
 msgstr "System message channels"
+
+#: components/app/interface/settings/channel/ForumSettings.tsx
+msgid "Tag name"
+msgstr "Tag name"
+
+#: components/modal/modals/CreateForumPost.tsx
+#: components/app/interface/settings/channel/ForumSettings.tsx
+msgid "Tags"
+msgstr "Tags"
+
+#: components/modal/modals/CreateForumPost.tsx
+msgid "Tags (at least one required)"
+msgstr "Tags (at least one required)"
+
+#: components/app/interface/settings/channel/ForumSettings.tsx
+msgid "Tags let members categorise posts. Moderated tags can only be applied by members who can manage this channel."
+msgstr "Tags let members categorise posts. Moderated tags can only be applied by members who can manage this channel."
 
 #: components/modal/modals/ReportContent.tsx
 msgid "Tell us what's wrong with this message"
@@ -4056,6 +4210,10 @@ msgstr "This attachment failed verification and was discarded (it may have been 
 msgid "This bot is private and can only be added by the creator."
 msgstr "This bot is private and can only be added by the creator."
 
+#: components/ui/components/features/voice/callCard/VoiceCallDowngradeBanner.tsx
+msgid "This call could not be secured. Your audio and video stay paused — leave, or continue without encryption."
+msgstr "This call could not be secured. Your audio and video stay paused — leave, or continue without encryption."
+
 #: components/app/interface/settings/channel/Overview.tsx
 msgid "This channel is about..."
 msgstr "This channel is about..."
@@ -4129,6 +4287,10 @@ msgstr "This message is already pinned."
 msgid "This message is empty and has not been sent."
 msgstr "This message is empty and has not been sent."
 
+#: components/modal/modals/E2EEVerify.tsx
+msgid "This participant's device is not verified yet. Compare safety numbers in person to verify them."
+msgstr "This participant's device is not verified yet. Compare safety numbers in person to verify them."
+
 #: components/i18n/errors.ts
 msgid "This password has previously appeared in security leaks, please use another password."
 msgstr "This password has previously appeared in security leaks, please use another password."
@@ -4177,6 +4339,10 @@ msgstr "Time format"
 msgid "Timeout Members"
 msgstr "Timeout Members"
 
+#: components/modal/modals/CreateForumPost.tsx
+msgid "Title"
+msgstr "Title"
+
 #: src/interface/common/CommonHeader.tsx
 msgid "Toggle main sidebar"
 msgstr "Toggle main sidebar"
@@ -4217,6 +4383,10 @@ msgstr "Turn off"
 #: components/modal/modals/E2EEDisable.tsx
 msgid "Turn off encrypted direct messages"
 msgstr "Turn off encrypted direct messages"
+
+#: components/ui/components/features/voice/callCard/VoiceCallDowngradeBanner.tsx
+msgid "Turn off encryption"
+msgstr "Turn off encryption"
 
 #: components/modal/modals/E2EEVerify.tsx
 msgid "Turn off encryption for this conversation"
@@ -4549,6 +4719,10 @@ msgstr "Whether other users can edit these settings"
 msgid "Which would you like to Start?"
 msgstr "Which would you like to Start?"
 
+#: components/ui/components/features/voice/callCard/VoiceCallCardPreview.tsx
+msgid "Will be end-to-end encrypted"
+msgstr "Will be end-to-end encrypted"
+
 #. placeholder {0}: names.join(", ")
 #: components/ui/components/features/voice/callCard/VoiceCallCardPreview.tsx
 msgid "With {0}"
@@ -4696,6 +4870,10 @@ msgstr "You won't be able to access your account unless you contact support - ho
 msgid "You won't be able to rejoin unless you are re-invited."
 msgstr "You won't be able to rejoin unless you are re-invited."
 
+#: components/ui/components/features/voice/callCard/VoiceCallCardPreview.tsx
+msgid "You'll join unencrypted — the call will show a warning"
+msgstr "You'll join unencrypted — the call will show a warning"
+
 #: components/i18n/errors.ts
 msgid "You're already part of this group."
 msgstr "You're already part of this group."
@@ -4737,6 +4915,10 @@ msgstr "Your account and all of your data (including your messages and friends l
 #: components/auth/src/flows/FlowVerify.tsx
 msgid "Your account has been verified!"
 msgstr "Your account has been verified!"
+
+#: components/app/interface/settings/user/SecurityAndPrivacy.tsx
+msgid "Your calls negotiate end-to-end encryption on this device when everyone in the call supports it."
+msgstr "Your calls negotiate end-to-end encryption on this device when everyone in the call supports it."
 
 #: components/modal/modals/E2EEVerify.tsx
 msgid "your contact"

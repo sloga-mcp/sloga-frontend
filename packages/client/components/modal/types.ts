@@ -93,6 +93,11 @@ export type Modals =
       message?: Message;
     }
   | {
+      type: "create_forum_post";
+      /** Forum channel the post will be created in */
+      channel: Channel;
+    }
+  | {
       type: "create_role";
       server: Server;
       callback: (id: string) => void;

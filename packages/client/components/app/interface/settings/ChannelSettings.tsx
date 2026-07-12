@@ -14,6 +14,7 @@ import { useModals } from "@revolt/modal";
 import { ColouredText } from "@revolt/ui";
 
 import { SettingsConfiguration } from ".";
+import ForumSettings from "./channel/ForumSettings";
 import ChannelOverview from "./channel/Overview";
 import { ChannelPermissionsEditor } from "./channel/permissions/ChannelPermissionsEditor";
 import { ChannelPermissionsOverview } from "./channel/permissions/ChannelPermissionsOverview";
@@ -78,11 +79,14 @@ const Config: SettingsConfiguration<Channel> = {
     switch (id) {
       case "overview":
         return <ChannelOverview channel={channel} />;
+      case "forum":
+        return <ForumSettings channel={channel} />;
       case "permissions":
         switch (channel.type) {
           case "Group":
             return <ChannelPermissionsEditor type="group" context={channel} />;
           case "TextChannel":
+          case "Forum":
             return <ChannelPermissionsOverview context={channel} />;
           default:
             return null;
@@ -116,6 +120,14 @@ const Config: SettingsConfiguration<Channel> = {
             },
             {
               hidden:
+                channel.type !== "Forum" ||
+                !channel.havePermission("ManageChannel"),
+              id: "forum",
+              icon: <BiRegularListUl size={20} />,
+              title: <Trans>Forum</Trans>,
+            },
+            {
+              hidden:
                 channel.type === "SavedMessages" ||
                 !channel.havePermission("ManagePermissions"),
               id: "permissions",
@@ -124,8 +136,10 @@ const Config: SettingsConfiguration<Channel> = {
             },
             {
               hidden:
-                !channel.havePermission("ManageWebhooks") &&
-                import.meta.env.DEV,
+                // forums have no message stream, so no webhooks either
+                channel.type === "Forum" ||
+                (!channel.havePermission("ManageWebhooks") &&
+                  import.meta.env.DEV),
               id: "webhooks",
               icon: <BiSolidCloud size={20} />,
               title: <Trans>Webhooks</Trans>,

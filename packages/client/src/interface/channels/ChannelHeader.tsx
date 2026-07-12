@@ -156,6 +156,52 @@ export function ChannelHeader(props: Props) {
             <TextWithEmoji content={props.channel.name!} />
           </NonBreakingText>
         </Match>
+        <Match when={props.channel.type === "Forum"}>
+          <HeaderIcon>
+            <Symbol>forum</Symbol>
+          </HeaderIcon>
+          <NonBreakingText
+            class={
+              typography({ class: "title", size: "medium" }) +
+              " " +
+              mobileOverflow
+            }
+            onClick={() =>
+              openModal({
+                type: "channel_info",
+                channel: props.channel,
+              })
+            }
+          >
+            <TextWithEmoji content={props.channel.name!} />
+          </NonBreakingText>
+          <Show when={layout() !== "phone" && cleanDescription()}>
+            <Divider />
+            <a
+              class={descriptionLink}
+              onClick={() =>
+                openModal({
+                  type: "channel_info",
+                  channel: props.channel,
+                })
+              }
+              use:floating={{
+                tooltip: {
+                  placement: "bottom",
+                  content: t`Click to show full description`,
+                },
+              }}
+            >
+              <OverflowingText
+                class={typography({ class: "title", size: "small" })}
+              >
+                <TextWithEmoji
+                  content={cleanDescription().split("\n").shift()}
+                />
+              </OverflowingText>
+            </a>
+          </Show>
+        </Match>
       </Switch>
 
       <Spacer />

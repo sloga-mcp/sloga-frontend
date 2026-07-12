@@ -515,10 +515,15 @@ function Entry(
   // Joined, non-archived threads hanging off this channel — nested below it.
   // Membership is seeded from Ready (joined threads only) and kept live by
   // ThreadMemberJoin/Leave events, so unread state never surfaces for
-  // threads the user hasn't joined.
+  // threads the user hasn't joined. Forum posts are threads too, so joined
+  // posts nest under their forum the same way.
   const joinedThreads = createMemo(() => {
     const selfId = client().user?.id;
-    if (!selfId || props.channel.type !== "TextChannel") return [];
+    if (
+      !selfId ||
+      (props.channel.type !== "TextChannel" && props.channel.type !== "Forum")
+    )
+      return [];
     return client()
       .channels.filter(
         (channel) =>
@@ -578,6 +583,9 @@ function Entry(
                 >
                   {props.channel.name?.toLowerCase() === "afk" ? "mic_off" : "mic"}
                 </Symbol>
+              </Match>
+              <Match when={props.channel.type === "Forum"}>
+                <Symbol>forum</Symbol>
               </Match>
             </Switch>
             <Show when={props.channel.icon}>
