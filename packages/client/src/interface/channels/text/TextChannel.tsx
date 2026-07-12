@@ -8,6 +8,7 @@ import {
   onCleanup,
 } from "solid-js";
 
+import { Trans } from "@lingui-solid/solid/macro";
 import { cva } from "styled-system/css";
 import { styled } from "styled-system/jsx";
 import { decodeTime, ulid } from "ulid";
@@ -15,11 +16,13 @@ import { decodeTime, ulid } from "ulid";
 import { DraftMessages, Messages } from "@revolt/app";
 import { useClient } from "@revolt/client";
 import { Keybind, KeybindAction, createKeybind } from "@revolt/keybinds";
+import { useModals } from "@revolt/modal";
 import { useNavigate, useSmartParams } from "@revolt/routing";
 import { useState } from "@revolt/state";
 import { LAYOUT_SECTIONS } from "@revolt/state/stores/Layout";
 import {
   BelowFloatingHeader,
+  Button,
   Header,
   NewMessages,
   Text,
@@ -27,6 +30,7 @@ import {
   main,
 } from "@revolt/ui";
 import { VoiceChannelCallCardMount } from "@revolt/ui/components/features/voice/callCard/VoiceCallCard";
+import { Symbol } from "@revolt/ui/components/utils/Symbol";
 
 import { ChannelHeader } from "../ChannelHeader";
 import { ChannelPageProps } from "../ChannelPage";
@@ -35,6 +39,7 @@ import { Channel } from "stoat.js";
 import { MessageComposition } from "./Composition";
 import { MemberSidebar } from "./MemberSidebar";
 import { TextSearchSidebar } from "./TextSearchSidebar";
+import { ThreadsListSidebar } from "./ThreadsListSidebar";
 
 /**
  * State of the channel sidebar
@@ -46,6 +51,9 @@ export type SidebarState =
     }
   | {
       state: "pins";
+    }
+  | {
+      state: "threads_list";
     }
   | {
       state: "default";
@@ -169,6 +177,9 @@ export function TextChannel(props: ChannelPageProps) {
           setSidebarState={setSidebarState}
         />
       </Header>
+      <Show when={props.channel.isThread}>
+        <ThreadBanner channel={props.channel} />
+      </Show>
       <Content>
         <Show
           when={
@@ -230,6 +241,16 @@ export function TextChannel(props: ChannelPageProps) {
                   />
                 </WideSidebarContainer>
               </Match>
+              <Match when={sidebarState().state === "threads_list"}>
+                <WideSidebarContainer>
+                  <SidebarTitle>
+                    <Text class="label" size="large">
+                      <Trans>Threads</Trans>
+                    </Text>
+                  </SidebarTitle>
+                  <ThreadsListSidebar channel={props.channel} />
+                </WideSidebarContainer>
+              </Match>
             </Switch>
 
             <Show when={sidebarState().state !== "default"}>
@@ -289,6 +310,139 @@ export function TextChannel(props: ChannelPageProps) {
     </>
   );
 }
+
+/**
+ * Thread banner row — parent breadcrumb, archived notice and join/leave
+ * controls for the navigated-into thread view
+ */
+function ThreadBanner(props: { channel: Channel }) {
+  const client = useClient();
+  const { showError } = useModals();
+
+  // Refresh membership whenever we navigate into a thread so the
+  // join/leave state is correct even before any live events arrive
+  createEffect(
+    on(
+      () => props.channel.id,
+      () => {
+        if (props.channel.isThread) {
+          props.channel.fetchThreadMembers().catch(() => void 0);
+        }
+      },
+    ),
+  );
+
+  const joined = () =>
+    props.channel.threadMembers.has(client().user?.id as string);
+
+  /**
+   * Whether we may unarchive: ManageChannel on the parent (the permission
+   * calculator resolves threads against their parent) or being the creator
+   */
+  const canUnarchive = () =>
+    props.channel.havePermission("ManageChannel") ||
+    props.channel.creatorId === client().user?.id;
+
+  return (
+    <ThreadBannerBase>
+      <Show when={props.channel.parent}>
+        <a href={props.channel.parent!.path}>
+          <ThreadBannerParent>
+            <Symbol size={16}>subdirectory_arrow_left</Symbol>
+            <Trans>Back to #{props.channel.parent!.name}</Trans>
+          </ThreadBannerParent>
+        </a>
+      </Show>
+      <ThreadBannerSpacer />
+      <Show when={props.channel.archived}>
+        <ThreadBannerNotice>
+          <Symbol size={16}>archive</Symbol>
+          <Trans>This thread is archived</Trans>
+        </ThreadBannerNotice>
+        <Show when={canUnarchive()}>
+          <Button
+            size="sm"
+            variant="text"
+            onPress={() => props.channel.unarchive().catch(showError)}
+          >
+            <Trans>Unarchive</Trans>
+          </Button>
+        </Show>
+      </Show>
+      <Show when={!props.channel.archived}>
+        <Show
+          when={joined()}
+          fallback={
+            <Button
+              size="sm"
+              onPress={() => props.channel.joinThread().catch(showError)}
+            >
+              <Trans>Join Thread</Trans>
+            </Button>
+          }
+        >
+          <Button
+            size="sm"
+            variant="text"
+            onPress={() => props.channel.leaveThread().catch(showError)}
+          >
+            <Trans>Leave Thread</Trans>
+          </Button>
+        </Show>
+      </Show>
+    </ThreadBannerBase>
+  );
+}
+
+/**
+ * Thread banner container
+ */
+const ThreadBannerBase = styled("div", {
+  base: {
+    display: "flex",
+    alignItems: "center",
+    gap: "var(--gap-md)",
+    paddingInline: "var(--gap-lg)",
+    paddingBlock: "var(--gap-sm)",
+    color: "var(--md-sys-color-on-surface)",
+    background: "var(--md-sys-color-surface-container-low)",
+    borderBottom: "1px solid var(--md-sys-color-outline-variant)",
+  },
+});
+
+/**
+ * Parent channel breadcrumb
+ */
+const ThreadBannerParent = styled("span", {
+  base: {
+    display: "flex",
+    alignItems: "center",
+    gap: "var(--gap-sm)",
+    color: "var(--md-sys-color-primary)",
+    cursor: "pointer",
+  },
+});
+
+/**
+ * Archived notice
+ */
+const ThreadBannerNotice = styled("span", {
+  base: {
+    display: "flex",
+    alignItems: "center",
+    gap: "var(--gap-sm)",
+    color: "var(--md-sys-color-on-surface-variant)",
+  },
+});
+
+/**
+ * Pushes actions to the end of the banner
+ */
+const ThreadBannerSpacer = styled("div", {
+  base: {
+    flexGrow: 1,
+  },
+});
 
 /**
  * Main content row layout

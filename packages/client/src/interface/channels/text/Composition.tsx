@@ -1065,7 +1065,13 @@ export function MessageComposition(props: Props) {
               ? t`Message ${props.channel.recipient?.username}`
               : t`Message ${props.channel.name}`
         }
-        sendingAllowed={props.channel.havePermission("SendMessage")}
+        sendingAllowed={
+          props.channel.havePermission("SendMessage") &&
+          // Archived/locked threads are read-only unless the user can manage
+          // the parent channel (mirrors the server-side write-lock).
+          (!(props.channel.archived || props.channel.locked) ||
+            props.channel.havePermission("ManageChannel"))
+        }
         autoCompleteSearchSpace={searchSpace}
         updateDraftSelection={(start, end) =>
           state.draft.setSelection(props.channel.id, start, end)

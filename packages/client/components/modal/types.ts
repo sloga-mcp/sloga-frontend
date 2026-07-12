@@ -86,6 +86,13 @@ export type Modals =
       client: Client;
     }
   | {
+      type: "create_thread";
+      /** Parent text channel the thread will hang off */
+      channel: Channel;
+      /** Message to anchor the thread to, if created from a message */
+      message?: Message;
+    }
+  | {
       type: "create_role";
       server: Server;
       callback: (id: string) => void;

@@ -26,6 +26,7 @@ export const DEFAULT_STATES: {
   DirectMessage: "all",
   Group: "all",
   TextChannel: undefined!,
+  Thread: undefined!,
 };
 
 /**
@@ -204,7 +205,17 @@ export class NotificationOptions extends AbstractStore<
    * @param channel Channel
    * @returns Notification state
    */
-  computeForChannel(channel: Channel) {
+  computeForChannel(channel: Channel): NotificationState | undefined {
+    // Threads inherit the parent channel's setting before falling back to
+    // the server default (parent is always a TextChannel, so this recurses
+    // at most once).
+    if (channel.type === "Thread" && channel.parent) {
+      return (
+        this.get().channel[channel.id] ??
+        this.computeForChannel(channel.parent)
+      );
+    }
+
     return (
       this.get().channel[channel.id] ??
       this.computeForServer(channel.server) ??
@@ -284,6 +295,13 @@ export class NotificationOptions extends AbstractStore<
     let value: MuteState | undefined;
     if (target instanceof Channel) {
       if (this.isMuted(target.server)) return true;
+      // Muting a channel also mutes its threads.
+      if (
+        target.type === "Thread" &&
+        target.parent &&
+        this.isChannelMuted(target.parent)
+      )
+        return true;
       value = this.get().channel_mutes[target.id];
     } else if (target instanceof Server) {
       value = this.get().server_mutes[target.id];

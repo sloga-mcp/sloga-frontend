@@ -9,6 +9,7 @@ import {
   MessagePinnedSystemMessage,
   SystemMessage as SystemMessageClass,
   TextSystemMessage,
+  ThreadCreatedSystemMessage,
   User,
   UserModeratedSystemMessage,
   UserSystemMessage,
@@ -252,6 +253,21 @@ export function SystemMessage(props: Props) {
               />
             </span>
           </Show>
+        </Match>
+        <Match when={props.systemMessage.type === "thread_created"}>
+          <Trans>
+            <UserMention
+              userId={(props.systemMessage as ThreadCreatedSystemMessage).byId}
+            />{" "}
+            started a thread:{" "}
+            <RenderAnchor
+              href={
+                location.origin +
+                (params().serverId ? `/server/${params().serverId}` : "") +
+                `/channel/${(props.systemMessage as ThreadCreatedSystemMessage).threadId}`
+              }
+            />
+          </Trans>
         </Match>
         <Match when={props.systemMessage.type === "text"}>
           {(props.systemMessage as TextSystemMessage).content}

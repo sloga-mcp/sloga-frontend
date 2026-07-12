@@ -1,4 +1,10 @@
-import { Component, Match, Switch, createMemo } from "solid-js";
+import {
+  Component,
+  Match,
+  Switch,
+  createMemo,
+  createResource,
+} from "solid-js";
 
 import { Channel } from "stoat.js";
 import { styled } from "styled-system/jsx";
@@ -33,6 +39,9 @@ const TEXT_CHANNEL_TYPES: Channel["type"][] = [
   "DirectMessage",
   "Group",
   "SavedMessages",
+  // threads reuse the entire TextChannel view (message pipeline reuse);
+  // v1 is navigate-into-thread, the side-by-side panel is a follow-up
+  "Thread",
 ];
 
 /**
@@ -41,27 +50,46 @@ const TEXT_CHANNEL_TYPES: Channel["type"][] = [
 export const ChannelPage: Component = () => {
   const params = useParams();
   const client = useClient();
-  const channel = createMemo(() => client()!.channels.get(params.channel)!);
+  const cached = createMemo(() => client()!.channels.get(params.channel));
+
+  // Ready only includes JOINED threads, so a deep-link or reload into a
+  // not-yet-joined thread misses the cache — try fetching it before
+  // bouncing the user out of the channel.
+  const [fetched] = createResource(
+    () => (cached() ? undefined : params.channel),
+    async (id) => {
+      try {
+        return await client()!.channels.fetch(id);
+      } catch {
+        return null;
+      }
+    },
+  );
+
+  const channel = () => cached() ?? fetched() ?? undefined;
 
   return (
     <Base>
       <Switch fallback="Unknown channel type!">
+        <Match when={!channel() && fetched.loading}>{null}</Match>
         <Match when={!channel()}>
           <Navigate href={"../.."} />
         </Match>
         <Match when={TEXT_CHANNEL_TYPES.includes(channel()!.type)}>
           <AgeGate
-            enabled={channel().mature}
-            contentId={channel().id}
-            contentName={"#" + channel().name}
+            enabled={channel()!.mature}
+            contentId={channel()!.id}
+            contentName={"#" + channel()!.name}
             contentType="channel"
           >
             <PasswordGate
-              passwordHash={parseChannelPassword(channel().description).passwordHash}
-              channelId={channel().id}
-              channelName={channel().name!}
+              passwordHash={
+                parseChannelPassword(channel()!.description).passwordHash
+              }
+              channelId={channel()!.id}
+              channelName={channel()!.name!}
             >
-              <TextChannel channel={channel()} />
+              <TextChannel channel={channel()!} />
             </PasswordGate>
           </AgeGate>
         </Match>

@@ -142,6 +142,20 @@ export function ChannelHeader(props: Props) {
           </HeaderIcon>
           <Trans>Saved Notes</Trans>
         </Match>
+        <Match when={props.channel.type === "Thread"}>
+          <HeaderIcon>
+            <Symbol>forum</Symbol>
+          </HeaderIcon>
+          <NonBreakingText
+            class={
+              typography({ class: "title", size: "medium" }) +
+              " " +
+              mobileOverflow
+            }
+          >
+            <TextWithEmoji content={props.channel.name!} />
+          </NonBreakingText>
+        </Match>
       </Switch>
 
       <Spacer />
@@ -219,6 +233,28 @@ export function ChannelHeader(props: Props) {
         >
           <MdPersonAdd />
         </Button>
+      </Show>
+
+      <Show when={props.sidebarState && props.channel.type === "TextChannel"}>
+        <IconButton
+          use:floating={{
+            tooltip: {
+              placement: "bottom",
+              content: t`View threads`,
+            },
+          }}
+          onPress={() =>
+            props.sidebarState!().state === "threads_list"
+              ? props.setSidebarState!({
+                  state: "default",
+                })
+              : props.setSidebarState!({
+                  state: "threads_list",
+                })
+          }
+        >
+          <Symbol>forum</Symbol>
+        </IconButton>
       </Show>
 
       <Show when={props.sidebarState}>

@@ -1,5 +1,6 @@
 import {
   BiRegularAlignLeft,
+  BiRegularChat,
   BiRegularLeftArrowAlt,
   BiRegularMinus,
   BiRegularPhone,
@@ -98,6 +99,9 @@ export function SystemMessageIcon(props: {
           <Match when={props.systemMessage.type === "call_started"}>
             <BiRegularPhone size={16} />
           </Match>
+          <Match when={props.systemMessage.type === "thread_created"}>
+            <BiRegularChat size={16} />
+          </Match>
         </Switch>
       </Tooltip>
     </Base>
@@ -152,6 +156,9 @@ const Base = styled("div", {
         color: "var(--md-sys-color-primary)",
       },
       call_started: {
+        color: "var(--md-sys-color-primary)",
+      },
+      thread_created: {
         color: "var(--md-sys-color-primary)",
       },
     },

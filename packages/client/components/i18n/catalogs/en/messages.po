@@ -248,6 +248,10 @@ msgid "<0/> started a call that lasted "
 msgstr "<0/> started a call that lasted "
 
 #: components/ui/components/features/messaging/elements/SystemMessage.tsx
+msgid "<0/> started a thread: <1/>"
+msgstr "<0/> started a thread: <1/>"
+
+#: components/ui/components/features/messaging/elements/SystemMessage.tsx
 msgid "<0/> transferred group ownership to <1/>"
 msgstr "<0/> transferred group ownership to <1/>"
 
@@ -279,6 +283,7 @@ msgstr "1 day"
 
 #: src/interface/channels/text/Composition.tsx
 #: src/interface/channels/text/Composition.tsx
+#: components/modal/modals/CreateThread.tsx
 #: components/modal/modals/BanMember.tsx
 #: components/app/interface/settings/channel/Overview.tsx
 msgid "1 hour"
@@ -314,11 +319,13 @@ msgstr "12 hours"
 msgid "2 hours"
 msgstr "2 hours"
 
+#: components/modal/modals/CreateThread.tsx
 #: components/app/interface/settings/user/Language.tsx
 msgid "24 hours"
 msgstr "24 hours"
 
 #: components/modal/modals/SuspendUser.tsx
+#: components/modal/modals/CreateThread.tsx
 #: components/modal/modals/BanMember.tsx
 msgid "3 days"
 msgstr "3 days"
@@ -353,6 +360,7 @@ msgid "6 hours"
 msgstr "6 hours"
 
 #: components/modal/modals/SuspendUser.tsx
+#: components/modal/modals/CreateThread.tsx
 #: components/modal/modals/BanMember.tsx
 msgid "7 days"
 msgstr "7 days"
@@ -386,6 +394,10 @@ msgstr "Accept new identity"
 #: components/modal/modals/PolicyChange.tsx
 msgid "Acknowledge"
 msgstr "Acknowledge"
+
+#: src/interface/channels/text/ThreadsListSidebar.tsx
+msgid "Active"
+msgstr "Active"
 
 #: components/ui/components/features/profiles/ProfileStatus.tsx
 msgid "Activity"
@@ -501,6 +513,10 @@ msgstr "An internal error occurred. ({0})"
 msgid "Appearance"
 msgstr "Appearance"
 
+#: src/interface/channels/text/ThreadsListSidebar.tsx
+msgid "Archived"
+msgstr "Archived"
+
 #: components/modal/modals/SignOutSessions.tsx
 msgid "Are you sure you want to clear your sessions?"
 msgstr "Are you sure you want to clear your sessions?"
@@ -527,9 +543,21 @@ msgstr "Assign lower-ranked roles to lower-ranking members"
 msgid "Assign Roles"
 msgstr "Assign Roles"
 
+#: components/ui/components/features/messaging/composition/CameraMessageButton.tsx
+msgid "Attach video message"
+msgstr "Attach video message"
+
+#: components/ui/components/features/messaging/composition/VoiceMessageButton.tsx
+msgid "Attach voice message"
+msgstr "Attach voice message"
+
 #: components/modal/modals/ScreenShareSettings.tsx
 msgid "Audio disabled by browser"
 msgstr "Audio disabled by browser"
+
+#: components/ui/components/features/voice/callCard/VoiceDeviceSelector.tsx
+msgid "Audio output"
+msgstr "Audio output"
 
 #: components/modal/modals/MFAFlow.tsx
 #: components/modal/modals/MFAFlow.tsx
@@ -541,6 +569,10 @@ msgstr "Authenticator App"
 #: components/app/interface/settings/user/voice/CameraOptions.tsx
 msgid "Auto"
 msgstr "Auto"
+
+#: components/modal/modals/CreateThread.tsx
+msgid "Auto-archive after inactivity"
+msgstr "Auto-archive after inactivity"
 
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
 msgid "Automatic Gain Control"
@@ -565,6 +597,11 @@ msgstr "Avatar"
 #: components/app/interface/settings/user/_AccountCard.tsx
 msgid "Back"
 msgstr "Back"
+
+#. placeholder {0}: props.channel.parent!.name
+#: src/interface/channels/text/TextChannel.tsx
+msgid "Back to #{0}"
+msgstr "Back to #{0}"
 
 #: components/auth/src/flows/FlowOAuthCallback.tsx
 msgid "Back to login"
@@ -708,6 +745,7 @@ msgstr "Bypasses slowmode in channels"
 msgid "Call"
 msgstr "Call"
 
+#: components/ui/components/features/voice/callCard/VoiceDeviceSelector.tsx
 #: components/modal/modals/CameraSettings.tsx
 msgid "Camera"
 msgstr "Camera"
@@ -715,6 +753,10 @@ msgstr "Camera"
 #: components/app/interface/settings/user/voice/CameraOptions.tsx
 msgid "Camera Brightness"
 msgstr "Camera Brightness"
+
+#: components/ui/components/features/messaging/composition/CameraMessageButton.tsx
+msgid "Camera or microphone access was denied. Check your device permissions and try again."
+msgstr "Camera or microphone access was denied. Check your device permissions and try again."
 
 #: components/app/interface/settings/user/voice/CameraPreview.tsx
 #: components/app/interface/settings/user/voice/CameraPreview.tsx
@@ -968,6 +1010,7 @@ msgstr "Client Settings"
 #: components/modal/modals/DeleteChannel.tsx
 #: components/modal/modals/CustomStatus.tsx
 #: components/modal/modals/CreateWebhook.tsx
+#: components/modal/modals/CreateThread.tsx
 #: components/modal/modals/CreateServer.tsx
 #: components/modal/modals/CreateRole.tsx
 #: components/modal/modals/CreateGroup.tsx
@@ -1065,6 +1108,10 @@ msgid "Continue to app"
 msgstr "Continue to app"
 
 #: components/auth/src/flows/FlowLogin.tsx
+msgid "Continue with Apple"
+msgstr "Continue with Apple"
+
+#: components/auth/src/flows/FlowLogin.tsx
 msgid "Continue with Google"
 msgstr "Continue with Google"
 
@@ -1149,6 +1196,7 @@ msgstr "Couldn't load events"
 
 #: src/interface/ServerEvents.tsx
 #: components/modal/modals/CreateWebhook.tsx
+#: components/modal/modals/CreateThread.tsx
 #: components/modal/modals/CreateServer.tsx
 #: components/modal/modals/CreateRole.tsx
 #: components/modal/modals/CreateGroup.tsx
@@ -1259,6 +1307,15 @@ msgstr "Create server"
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "Create server emoji"
 msgstr "Create server emoji"
+
+#: components/modal/modals/CreateThread.tsx
+#: components/app/menus/MessageContextMenu.tsx
+msgid "Create thread"
+msgstr "Create thread"
+
+#: src/interface/channels/text/ThreadsListSidebar.tsx
+msgid "Create Thread"
+msgstr "Create Thread"
 
 #: components/app/interface/settings/channel/webhooks/WebhooksList.tsx
 msgid "Create Webhook"
@@ -1467,6 +1524,13 @@ msgstr "Disadvantage"
 #: src/interface/channels/text/Composition.tsx
 msgid "Disappearing messages: Off"
 msgstr "Disappearing messages: Off"
+
+#: components/ui/components/features/messaging/composition/VoiceMessageButton.tsx
+#: components/ui/components/features/messaging/composition/VoiceMessageButton.tsx
+#: components/ui/components/features/messaging/composition/CameraMessageButton.tsx
+#: components/ui/components/features/messaging/composition/CameraMessageButton.tsx
+msgid "Discard recording"
+msgstr "Discard recording"
 
 #: components/app/interface/settings/user/notifications/Sounds.tsx
 msgid "Disconnect Sound Style"
@@ -1759,6 +1823,10 @@ msgstr "Everyone in that selection was already invited or can't view this event"
 msgid "Everyone must have encryption set up, or this will not turn on. Encrypted history will live only on each person's own devices, and the server will no longer be able to read new messages."
 msgstr "Everyone must have encryption set up, or this will not turn on. Encrypted history will live only on each person's own devices, and the server will no longer be able to read new messages."
 
+#: components/ui/components/features/voice/callCard/VoiceCallCardActiveRoom.tsx
+msgid "Exit theater mode"
+msgstr "Exit theater mode"
+
 #: components/modal/modals/LinkWarning.tsx
 msgid "External links can be dangerous!"
 msgstr "External links can be dangerous!"
@@ -1803,6 +1871,11 @@ msgstr "Fetching encrypted attachment…"
 #: src/interface/Home.tsx
 msgid "Find a community based on your hobbies or interests."
 msgstr "Find a community based on your hobbies or interests."
+
+#: components/ui/components/features/messaging/composition/VoiceMessageButton.tsx
+#: components/ui/components/features/messaging/composition/CameraMessageButton.tsx
+msgid "Finish recording"
+msgstr "Finish recording"
 
 #: components/modal/modals/E2EEReenroll.tsx
 #: components/app/interface/settings/user/SecurityAndPrivacy.tsx
@@ -2160,6 +2233,10 @@ msgstr "Join the Sloga Lounge"
 msgid "Join the voice channel"
 msgstr "Join the voice channel"
 
+#: src/interface/channels/text/TextChannel.tsx
+msgid "Join Thread"
+msgstr "Join Thread"
+
 #: components/ui/components/features/profiles/ProfileJoined.tsx
 #: components/ui/components/features/messaging/elements/Invite.tsx
 msgid "Joined"
@@ -2241,6 +2318,10 @@ msgstr "Leave group"
 #: components/app/menus/ServerContextMenu.tsx
 msgid "Leave server"
 msgstr "Leave server"
+
+#: src/interface/channels/text/TextChannel.tsx
+msgid "Leave Thread"
+msgstr "Leave Thread"
 
 #: components/app/interface/settings/user/Native.tsx
 msgid "Let Sloga use its own custom titlebar."
@@ -2396,6 +2477,10 @@ msgstr "Max bitrate: {0} Mbps"
 msgid "Max bitrate: Auto"
 msgstr "Max bitrate: Auto"
 
+#: components/ui/components/features/voice/callCard/VoiceCallCardActiveRoom.tsx
+msgid "Maximize & hide participants"
+msgstr "Maximize & hide participants"
+
 #: components/app/interface/settings/ServerSettings.tsx
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "Members"
@@ -2493,9 +2578,17 @@ msgstr "Messaging"
 msgid "Mic only activates when your volume exceeds the threshold below."
 msgstr "Mic only activates when your volume exceeds the threshold below."
 
+#: components/ui/components/features/voice/callCard/VoiceDeviceSelector.tsx
+msgid "Microphone"
+msgstr "Microphone"
+
 #: components/app/interface/settings/user/voice/MicrophoneLevelMeter.tsx
 msgid "Microphone access denied."
 msgstr "Microphone access denied."
+
+#: components/ui/components/features/messaging/composition/VoiceMessageButton.tsx
+msgid "Microphone access was denied. Check your microphone permissions and try again."
+msgstr "Microphone access was denied. Check your microphone permissions and try again."
 
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
 msgid "Microphone Gain"
@@ -2662,6 +2755,14 @@ msgstr "New to the server"
 #: components/modal/modals/ServerIdentity.tsx
 msgid "Nickname"
 msgstr "Nickname"
+
+#: src/interface/channels/text/ThreadsListSidebar.tsx
+msgid "No active threads"
+msgstr "No active threads"
+
+#: src/interface/channels/text/ThreadsListSidebar.tsx
+msgid "No archived threads"
+msgstr "No archived threads"
 
 #: components/modal/modals/InviteToServer.tsx
 msgid "No channels available to create an invite for."
@@ -3071,6 +3172,22 @@ msgstr "Reconnecting"
 msgid "Record"
 msgstr "Record"
 
+#: components/ui/components/features/messaging/composition/CameraMessageButton.tsx
+msgid "Record a video message"
+msgstr "Record a video message"
+
+#: components/ui/components/features/messaging/composition/VoiceMessageButton.tsx
+msgid "Record a voice message"
+msgstr "Record a voice message"
+
+#: components/ui/components/features/messaging/composition/CameraMessageButton.tsx
+msgid "Recording a video message"
+msgstr "Recording a video message"
+
+#: components/ui/components/features/messaging/composition/VoiceMessageButton.tsx
+msgid "Recording a voice message"
+msgstr "Recording a voice message"
+
 #: components/app/interface/settings/user/voice/MicrophoneTest.tsx
 msgid "Recording… (max 5s)"
 msgstr "Recording… (max 5s)"
@@ -3374,6 +3491,10 @@ msgstr "Screen Share Settings"
 #: components/app/menus/UserContextMenu.tsx
 msgid "Screen Share Volume"
 msgstr "Screen Share Volume"
+
+#: components/ui/components/features/voice/callCard/VoiceCallCardActions.tsx
+msgid "Screen sharing isn't supported on this device"
+msgstr "Screen sharing isn't supported on this device"
 
 #: src/interface/channels/ChannelHeader.tsx
 msgid "Search"
@@ -3808,6 +3929,10 @@ msgstr "Suspend from platform"
 msgid "Suspend User From Platform"
 msgstr "Suspend User From Platform"
 
+#: components/ui/components/features/voice/callCard/VoiceDeviceSelector.tsx
+msgid "Switch devices"
+msgstr "Switch devices"
+
 #: components/ui/components/features/voice/callCard/VoiceCallCardPreview.tsx
 msgid "Switch to this voice channel"
 msgstr "Switch to this voice channel"
@@ -4012,6 +4137,10 @@ msgstr "This password has previously appeared in security leaks, please use anot
 msgid "This server is about..."
 msgstr "This server is about..."
 
+#: src/interface/channels/text/TextChannel.tsx
+msgid "This thread is archived"
+msgstr "This thread is archived"
+
 #: components/i18n/errors.ts
 msgid "This user has blocked you."
 msgstr "This user has blocked you."
@@ -4031,6 +4160,14 @@ msgstr "This username is not allowed."
 #: components/modal/modals/ResetBotToken.tsx
 msgid "This will invalidate the current token and stop any existing instances of the bot from running."
 msgstr "This will invalidate the current token and stop any existing instances of the bot from running."
+
+#: components/modal/modals/CreateThread.tsx
+msgid "Thread Name"
+msgstr "Thread Name"
+
+#: src/interface/channels/text/TextChannel.tsx
+msgid "Threads"
+msgstr "Threads"
 
 #: components/app/interface/settings/user/Language.tsx
 msgid "Time format"
@@ -4108,6 +4245,10 @@ msgstr "Turn on end-to-end encryption for this group."
 #: components/app/interface/settings/user/voice/CameraPreview.tsx
 msgid "Turn on your camera to check it works and preview brightness and background effects."
 msgstr "Turn on your camera to check it works and preview brightness and background effects."
+
+#: src/interface/channels/text/TextChannel.tsx
+msgid "Unarchive"
+msgstr "Unarchive"
 
 #: components/app/menus/UserContextMenu.tsx
 msgid "Unblock user"
@@ -4317,6 +4458,14 @@ msgstr "View pinned messages"
 #: components/app/interface/settings/user/Account.tsx
 msgid "View Recovery Codes"
 msgstr "View Recovery Codes"
+
+#: components/app/interface/channels/text/Message.tsx
+msgid "View Thread"
+msgstr "View Thread"
+
+#: src/interface/channels/ChannelHeader.tsx
+msgid "View threads"
+msgstr "View threads"
 
 #: components/ui/components/features/messaging/bars/JumpToBottom.tsx
 msgid "Viewing older messages"

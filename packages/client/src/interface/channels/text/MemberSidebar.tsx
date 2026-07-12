@@ -45,7 +45,12 @@ export function MemberSidebar(props: Props) {
           scrollTargetElement={props.scrollTargetElement}
         />
       </Match>
-      <Match when={props.channel.type === "TextChannel"}>
+      <Match
+        when={
+          props.channel.type === "TextChannel" ||
+          props.channel.type === "Thread"
+        }
+      >
         <ServerMemberSidebar
           channel={props.channel}
           scrollTargetElement={props.scrollTargetElement}

@@ -20,6 +20,7 @@ import { CreateInviteModal } from "./modals/CreateInvite";
 import { CreateOrJoinServerModal } from "./modals/CreateOrJoinServer";
 import { CreateRoleModal } from "./modals/CreateRole";
 import { CreateServerModal } from "./modals/CreateServer";
+import { CreateThreadModal } from "./modals/CreateThread";
 import { CreateWebhookModal } from "./modals/CreateWebhook";
 import { CustomStatusModal } from "./modals/CustomStatus";
 import { DeleteBotModal } from "./modals/DeleteBot";
@@ -124,6 +125,8 @@ export function RenderModal(props: ActiveModal & { onClose: () => void }) {
       return <CreateRoleModal {...modalProps} />;
     case "create_server":
       return <CreateServerModal {...modalProps} />;
+    case "create_thread":
+      return <CreateThreadModal {...modalProps} />;
     case "create_webhook":
       return <CreateWebhookModal {...modalProps} />;
     case "custom_status":

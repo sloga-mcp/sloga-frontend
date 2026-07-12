@@ -1,6 +1,7 @@
 import { BiRegularCheckCircle, BiSolidCheckCircle } from "solid-icons/bi";
 import {
   Accessor,
+  For,
   JSX,
   Match,
   Setter,
@@ -432,6 +433,7 @@ function Category(
           <Entry
             channel={entry.item}
             active={entry.item.id === props.channelId}
+            channelId={props.channelId}
             menuGenerator={props.menuGenerator}
           />
         )}
@@ -498,12 +500,35 @@ const CategoryBase = styled("div", {
  * Server channel entry
  */
 function Entry(
-  props: { channel: Channel; active: boolean } & Pick<Props, "menuGenerator">,
+  props: {
+    channel: Channel;
+    active: boolean;
+    channelId: string | undefined;
+  } & Pick<Props, "menuGenerator">,
 ) {
   const state = useState();
   const voice = useVoice();
+  const client = useClient();
   const { openModal } = useModals();
   const { isMobile } = useDevice();
+
+  // Joined, non-archived threads hanging off this channel — nested below it.
+  // Membership is seeded from Ready (joined threads only) and kept live by
+  // ThreadMemberJoin/Leave events, so unread state never surfaces for
+  // threads the user hasn't joined.
+  const joinedThreads = createMemo(() => {
+    const selfId = client().user?.id;
+    if (!selfId || props.channel.type !== "TextChannel") return [];
+    return client()
+      .channels.filter(
+        (channel) =>
+          channel.isThread &&
+          channel.parentChannelId === props.channel.id &&
+          !channel.archived &&
+          channel.threadMembers.has(selfId),
+      )
+      .sort((a, b) => a.id.localeCompare(b.id));
+  });
 
   const canEditChannel = createMemo(() =>
     (["ManageChannel", "ManagePermissions", "ManageWebhooks"] as const).some(
@@ -614,9 +639,53 @@ function Entry(
       </MenuButton>
 
       <VoiceChannelPreview channel={props.channel} />
+
+      <For each={joinedThreads()}>
+        {(thread) => {
+          const threadActive = () => thread.id === props.channelId;
+          const threadAlert = () =>
+            !threadActive() &&
+            thread.unread &&
+            (thread.mentions?.size || true);
+
+          return (
+            <ThreadNest>
+              <MenuButton
+                href={`/server/${thread.serverId}/channel/${thread.id}`}
+                use:floating={props.menuGenerator(thread)}
+                size="normal"
+                alert={threadAlert()}
+                attention={
+                  threadActive()
+                    ? "selected"
+                    : state.notifications.isMuted(thread)
+                      ? "muted"
+                      : thread.unread
+                        ? "active"
+                        : "normal"
+                }
+                icon={<Symbol size={16}>subdirectory_arrow_right</Symbol>}
+              >
+                <OverflowingText>
+                  <TextWithEmoji content={thread.name!} />
+                </OverflowingText>
+              </MenuButton>
+            </ThreadNest>
+          );
+        }}
+      </For>
     </Column>
   );
 }
+
+/**
+ * Indentation wrapper for threads nested under their parent channel
+ */
+const ThreadNest = styled("div", {
+  base: {
+    paddingLeft: "var(--gap-lg)",
+  },
+});
 
 /**
  * Channel icon styling

@@ -11,7 +11,7 @@ import {
   useContext,
 } from "solid-js";
 
-import { useLingui } from "@lingui-solid/solid/macro";
+import { Trans, useLingui } from "@lingui-solid/solid/macro";
 import {
   ImageEmbed,
   Message as MessageInterface,
@@ -419,6 +419,17 @@ export function Message(props: Props) {
         <For each={props.message.embeds}>
           {(embed) => <Embed embed={embed} />}
         </For>
+        <Show when={props.message.thread}>
+          <a href={props.message.thread!.path}>
+            <ThreadPill>
+              <Symbol size={16}>subdirectory_arrow_right</Symbol>
+              <span class="name">{props.message.thread!.name}</span>
+              <span class="action">
+                <Trans>View Thread</Trans>
+              </span>
+            </ThreadPill>
+          </a>
+        </Show>
         <Reactions
           reactions={
             props.message.reactions as never as Map<string, Set<string>>
@@ -463,6 +474,42 @@ const BreakText = styled("div", {
       overflowX: "auto",
       overflowY: "hidden",
       maxHeight: "100vh",
+    },
+  },
+});
+
+/**
+ * Pill linking to the thread anchored to this message
+ */
+const ThreadPill = styled("div", {
+  base: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "var(--gap-sm)",
+    marginTop: "var(--gap-sm)",
+    padding: "var(--gap-sm) var(--gap-md)",
+    width: "fit-content",
+    maxWidth: "100%",
+    borderRadius: "var(--borderRadius-md)",
+    background: "var(--md-sys-color-surface-container-high)",
+    color: "var(--md-sys-color-on-surface)",
+    cursor: "pointer",
+    transition: "var(--transitions-fast) background",
+
+    "&:hover": {
+      background: "var(--md-sys-color-surface-container-highest)",
+    },
+
+    "& .name": {
+      fontWeight: 600,
+      overflow: "hidden",
+      whiteSpace: "nowrap",
+      textOverflow: "ellipsis",
+    },
+
+    "& .action": {
+      flexShrink: 0,
+      color: "var(--md-sys-color-primary)",
     },
   },
 });
