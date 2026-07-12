@@ -19,6 +19,8 @@ import { InRoom } from "@revolt/rtc";
 import { Avatar, Ripple, typography } from "../../design";
 import { Row } from "../../layout";
 
+import { participantUserId } from "./participantIdentity";
+
 import { VoiceStatefulUserIcons } from "./VoiceStatefulUserIcons";
 
 /**
@@ -129,7 +131,7 @@ function CommonUser(props: {
     "screenshare",
   ]);
 
-  const user = useUser(() => rest.userId);
+  const user = useUser(() => participantUserId(rest.userId));
 
   return (
     <div

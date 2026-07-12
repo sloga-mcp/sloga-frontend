@@ -21,6 +21,7 @@ import { Row } from "@revolt/ui/components/layout";
 import { OverflowingText } from "@revolt/ui/components/utils";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
 
+import { participantUserId } from "../participantIdentity";
 import { VoiceStatefulUserIcons } from "../VoiceStatefulUserIcons";
 
 type TileProps = {
@@ -35,7 +36,7 @@ export function ParticipantTile(props: TileProps) {
   const state = useState();
   const participant = useEnsureParticipant();
   const track = useTrackRefContext();
-  const user = useUser(participant.identity);
+  const user = useUser(participantUserId(participant.identity));
 
   let videoRef: HTMLVideoElement | undefined;
 
@@ -193,7 +194,7 @@ export function ParticipantTile(props: TileProps) {
                 </Show>
               ) : (
                 <VoiceStatefulUserIcons
-                  userId={participant.identity}
+                  userId={participantUserId(participant.identity)}
                   muted={isMuted()}
                   camera={isVideo()}
                 />

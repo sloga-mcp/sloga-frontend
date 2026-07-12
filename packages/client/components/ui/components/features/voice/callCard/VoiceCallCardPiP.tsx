@@ -19,6 +19,8 @@ import { Avatar } from "@revolt/ui/components/design";
 import { Row } from "@revolt/ui/components/layout";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
 
+import { participantUserId } from "../participantIdentity";
+
 import { VoiceCallCardActions } from "./VoiceCallCardActions";
 import { VoiceCallCardStatus } from "./VoiceCallCardStatus";
 
@@ -64,7 +66,7 @@ function ConnectedUser() {
   });
 
   const isSpeaking = useIsSpeaking(participant);
-  const user = useUser(participant.identity);
+  const user = useUser(participantUserId(participant.identity));
 
   return (
     <UserIcon speaking={isSpeaking()}>
