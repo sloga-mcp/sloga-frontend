@@ -39,6 +39,8 @@ import type {
   Message,
 } from "stoat.js";
 
+import { classifyEnvelopeError } from "./mlsEnvelopeClassify";
+
 /** Author id used for locally-injected system/marker messages */
 const SYSTEM_AUTHOR = "00000000000000000000000000";
 
@@ -352,6 +354,134 @@ export interface MlsFrameKeys {
   previous?: MlsFrameKey[];
 }
 
+// ================================================================
+// MLS Delivery Service HTTP wire (slice 6.4)
+//
+// Request/response bodies for the `/mls` routes, mirroring the server v0
+// models (crates/core/models/src/v0/mls.rs). The bridge couriers these; it
+// never derives them. Everything is PUBLIC material or opaque ciphertext.
+// ================================================================
+
+/** Body for `POST /mls/key_packages/claim`. */
+export interface MlsClaimKeyPackagesBody {
+  device_id: string;
+  group_id: string;
+  targets: MlsMemberDevice[];
+}
+
+/**
+ * One target's outcome in `ResponseClaimMlsKeyPackages.results`. The `Claimed`
+ * variant flattens into an `MlsClaimedKeyPackage` for `callAdmit` (the client
+ * re-verifies `binding_signature` natively — the DS relay is never trusted).
+ */
+export type MlsClaimResult =
+  | {
+      user_id: string;
+      device_id: string;
+      status: "Claimed";
+      key_package_ref: string;
+      key_package: string;
+      mls_signature_key: string;
+      binding_signature: string;
+      reused: boolean;
+    }
+  | { user_id: string; device_id: string; status: "Exhausted" }
+  | { user_id: string; device_id: string; status: "NotFound" };
+
+/** Response to `POST /mls/key_packages/claim` (one entry per target, in order). */
+export interface ResponseClaimMlsKeyPackages {
+  results: MlsClaimResult[];
+}
+
+/** Response to `PUT /mls/key_packages` — drives the low-water replenish. */
+export interface ResponsePublishMlsKeyPackages {
+  key_package_count: number;
+}
+
+/**
+ * A stored winning commit — the 409-Lost rebase body and the gap-refetch row.
+ * The `commit` is opaque ciphertext; the added/removed `(user, device)` lists
+ * are the call's per-device join/leave history (kept off channel co-members).
+ */
+export interface MlsCommitInfo {
+  group_id: string;
+  epoch: number;
+  committer: MlsMemberDevice;
+  commit: string;
+  added: MlsMemberDevice[];
+  removed: MlsMemberDevice[];
+}
+
+/** Response to `POST /mls/groups` (an `Arbitrated` — 200 Created / 409 Conflict). */
+export type ResponseCreateMlsGroup =
+  | { result: "Created" }
+  | {
+      result: "Conflict";
+      /** The channel's already-open group id — join THAT one. */
+      open_group_id: string;
+      /**
+       * The channel_id the open group is bound to (from the group record). The
+       * join path compares its route-truth channel against this before signing
+       * a join intent — the honest-DS T-15 leg (§1.4).
+       */
+      channel_id: string;
+    };
+
+/** Response to `POST /mls/groups/<id>/commits` (an `Arbitrated` — 200 Won / 409 Lost). */
+export type ResponseSubmitMlsCommit =
+  | { result: "Won" }
+  | { result: "Lost"; winning: MlsCommitInfo };
+
+/** Response to `GET /mls/groups/<id>/commits?from_epoch=` (ascending by epoch). */
+export interface ResponseFetchMlsCommits {
+  commits: MlsCommitInfo[];
+  /** The group's current epoch, so a caught-up client knows it is current. */
+  current_epoch: number;
+}
+
+/**
+ * Outcome of an MLS Delivery Service HTTP call.
+ *  - `ok`               — 2xx; `body` is the parsed response (`void` on 204).
+ *  - `conflict`         — 409 on an arbitrated route (create-race or commit
+ *                         Lost); `body` carries what the loser needs to rebase.
+ *                         NORMAL control flow, never an exception (§approved
+ *                         judgment call 3).
+ *  - `feature_disabled` — the media-E2EE flag is off, so every `/mls` route
+ *                         400s with `FeatureDisabled`. This is "not an E2EE
+ *                         call" (§3.4 L4), NOT a failure: the session drops to
+ *                         plaintext quietly and never latches a loud
+ *                         NOT-ENCRYPTED state.
+ * Any other non-2xx throws.
+ */
+export type MlsHttpResult<T> =
+  | { kind: "ok"; body: T }
+  | { kind: "conflict"; body: T }
+  | { kind: "mfa_required" }
+  | { kind: "feature_disabled" }
+  // 404 on an opted-in route only (`mlsJoinIntent`): the group is gone or
+  // CLOSED (the DS's solo-stale rejoin close) — normal control flow for the
+  // joiner, which re-establishes onto the create path.
+  | { kind: "not_found" };
+
+/**
+ * An event handed to the active call session's sink (registered via
+ * `registerMlsSink`). The bridge normalizes the raw `Mls*` bonfire events into
+ * the domain shapes the session works with — wire parsing stays in the bridge.
+ * With no session registered the events are dropped and their envelopes stay
+ * queued + UNACKED server-side, so a later call re-drains them (never ack what
+ * no call consumes; the session, not the bridge, acks after durable
+ * processing — §3.3).
+ */
+export type MlsSinkEvent =
+  // `rejoin` rides BESIDE the request (not inside it — `MlsJoinRequest` is
+  // the native wire shape): the intent came from a device that is already a
+  // member, so verifying members remove its stale leaf instead of admitting.
+  | { kind: "join_request"; request: MlsJoinRequest; rejoin: boolean }
+  | { kind: "envelope"; envelope: MlsEnvelope; recipientDeviceId: string };
+
+/** The active call session's inbound MLS event sink. */
+export type MlsSessionSink = (event: MlsSinkEvent) => void;
+
 /** Reactive per-channel call E2EE state (minimal in 6.3; 6.4/6.5 extend). */
 export interface CallE2EEState {
   group_id: string;
@@ -376,88 +506,18 @@ export type EnvelopeDisposition =
       successorNeeded: boolean;
       ack: true;
     }
+  // A leaf was rejected ONLY because the named peer device's pinned identity
+  // is not yet binding-verified — recoverable by reconciling that user's
+  // SIGNED device listing and reprocessing the SAME envelope (leaf-verify
+  // fix, audit MED-2/3). Never acked here; the drain bounds the attempts.
+  | { kind: "needs_identity"; userId: string; deviceId: string; ack: false }
   | { kind: "error"; error: unknown; ack: false };
 
-/**
- * Map a native `e2ee_call_process` rejection to a mailbox disposition (the
- * carried 6.2 ack-and-drop policy). Pure + exported so the policy is auditable
- * in isolation. The typed error crosses IPC as `{ type: "<snake_case>", … }`
- * (see e2ee-core `Error`, `#[serde(tag = "type")]`).
- *
- *  - `mls_epoch_gap` → PARK, gap-refetch, NEVER ack/skip (invariant 10).
- *  - `mls_poisoned_epoch` → ack+drop + successor-needed (channel-scoped
- *    successor flow, §1.4); loud.
- *  - `mls_group_not_found` → the group was left/wiped; ack+drop, quiet.
- *  - `mls_unsolicited_welcome` → the carried 6.1 defense fired natively;
- *    refuse + ack+drop, quiet (no group to disrupt).
- *  - `mls_welcome_context_mismatch` / `mls_leaf_rejected` → hostile-DS
- *    cross-group relay (T-15) or an unverifiable leaf; refuse LOUD + ack+drop.
- *  - anything else → surface loud, do NOT ack (may be reprocessable).
- */
-export function classifyEnvelopeError(error: unknown): EnvelopeDisposition {
-  const type = (error as { type?: string } | null)?.type;
-  switch (type) {
-    case "mls_epoch_gap": {
-      const e = error as { expected: number; got: number };
-      return { kind: "park", expected: e.expected, got: e.got, ack: false };
-    }
-    case "mls_poisoned_epoch":
-      return {
-        kind: "drop",
-        reason: "poisoned",
-        loud: true,
-        successorNeeded: true,
-        ack: true,
-      };
-    case "mls_group_not_found":
-      return {
-        kind: "drop",
-        reason: "wiped",
-        loud: false,
-        successorNeeded: false,
-        ack: true,
-      };
-    case "mls_unsolicited_welcome":
-      return {
-        kind: "drop",
-        reason: "unsolicited_welcome",
-        loud: false,
-        successorNeeded: false,
-        ack: true,
-      };
-    case "mls_welcome_context_mismatch":
-    case "mls_leaf_rejected":
-      return {
-        kind: "drop",
-        reason: type,
-        loud: true,
-        successorNeeded: false,
-        ack: true,
-      };
-    // Terminal STRUCTURAL rejections — a malformed / undecodable / unsuitable
-    // envelope never becomes valid on retry. An untrusted DS orders the
-    // mailbox (invariant 5), so without a terminal disposition here it could
-    // wedge one bad envelope at the HEAD of a victim's queue and block a
-    // legitimate Remove behind it (invariant-7 degradation). Ack+drop as a
-    // POISON PILL — distinct from the transient no-ack retries below.
-    case "mls":
-    case "invalid_argument":
-    case "mls_not_published":
-      return {
-        kind: "drop",
-        reason: type,
-        loud: true,
-        successorNeeded: false,
-        ack: true,
-      };
-    default:
-      // Genuinely transient (storage / protector / IPC / transport / an
-      // error type we don't recognise): surface loud, do NOT ack — the
-      // envelope may be reprocessable. The 6.4 drain MUST bound retries so an
-      // unrecognised terminal error still can't spin forever.
-      return { kind: "error", error, ack: false };
-  }
-}
+// `classifyEnvelopeError` (the pure native-rejection → disposition policy)
+// lives in `mlsEnvelopeClassify.ts` so its allow-list is unit-testable in
+// isolation (type-only back-import — no runtime cycle); re-exported here so
+// the bridge surface is unchanged.
+export { classifyEnvelopeError } from "./mlsEnvelopeClassify";
 
 /**
  * Whether the native E2EE layer is reachable (Tauri desktop shell or the
@@ -1029,6 +1089,48 @@ export class E2EEBridge implements E2EEAdapter {
       case "E2EEDeviceDelete":
         void this.#onDeviceDelete(event.user_id, event.device_id);
         break;
+      case "MlsJoinRequested":
+        // Admit trigger — hand the (already server-relayed, client-reverified)
+        // intent to the active call session's admit scheduler. No session ⇒
+        // dropped; a joiner re-broadcasts on its retry timer.
+        this.#mlsSink?.({
+          kind: "join_request",
+          request: {
+            group_id: event.group_id,
+            channel_id: event.channel_id,
+            user_id: event.user_id,
+            device_id: event.device_id,
+            key_package_ref: event.key_package_ref,
+            signature: event.signature,
+          },
+          rejoin: event.rejoin ?? false,
+        });
+        break;
+      case "MlsCommit":
+      case "MlsWelcome": {
+        // MLS handshake envelope → the session's per-group serialized drain
+        // (H1), NOT the text `#decryptQueue`. A well-formed MLS envelope always
+        // carries group_id + epoch; drop a malformed one (never route it into
+        // the drain, where it could park a group forever). NOT acked here —
+        // the session acks after durable native processing (§3.3).
+        if (event.group_id == null || event.epoch == null) {
+          break;
+        }
+        this.#mlsSink?.({
+          kind: "envelope",
+          recipientDeviceId: event.recipient_device_id,
+          envelope: {
+            id: event.id,
+            content_type:
+              event.content_type ??
+              (event.type === "MlsWelcome" ? "mls_welcome" : "mls_commit"),
+            group_id: event.group_id,
+            epoch: event.epoch,
+            ciphertext: event.ciphertext,
+          },
+        });
+        break;
+      }
     }
   }
 
@@ -1241,6 +1343,27 @@ export class E2EEBridge implements E2EEAdapter {
       await this.#refreshMode(userId);
       await this.#syncRecent(userId);
     }
+  }
+
+  /**
+   * Reconcile the SIGNED device listings for a set of media-call roster users
+   * (slice 6.4) so their MLS leaves become `binding_verified` BEFORE we accept
+   * a Welcome / admit a joiner / process their Add — the call-plane analog of
+   * `groupReconcile`'s per-member device step. De-duplicated + concurrent;
+   * fail-closed PER USER: one we can't fetch (or whose listing doesn't cover a
+   * device) stays unverified and its leaf is refused loudly later, never
+   * trusted. Only upgrades an existing curve-only stub / re-affirms a pin — a
+   * brand-new unpinned device stays UnknownIdentity (needs a bundle fetch,
+   * deferred).
+   */
+  async reconcileCallRoster(userIds: string[]): Promise<void> {
+    await Promise.all(
+      [...new Set(userIds)].map((id) =>
+        this.#reconcileDevices(id).catch(() => {
+          /* unfetchable / unverifiable stays unverified — fail closed */
+        }),
+      ),
+    );
   }
 
   async #onDeviceCreate(userId: string): Promise<void> {
@@ -2999,6 +3122,40 @@ export class E2EEBridge implements E2EEAdapter {
    */
   readonly callStates = new ReactiveMap<string, CallE2EEState>();
 
+  /**
+   * Active call session's inbound `Mls*` event sink (see `registerMlsSink`);
+   * null between calls. At most one call is active at a time.
+   */
+  #mlsSink: MlsSessionSink | null = null;
+
+  /**
+   * Register the active call session's inbound sink for `Mls*` events
+   * (`MlsJoinRequested` / `MlsCommit` / `MlsWelcome`). Returns an unregister
+   * fn (idempotent — only clears if still the current sink). While none is
+   * registered the events are dropped and their envelopes stay queued +
+   * unacked server-side, so a later call re-drains them: never ack what no
+   * call consumes. The session — NOT this bridge — acks after durable
+   * processing (§3.3).
+   */
+  registerMlsSink(sink: MlsSessionSink): () => void {
+    this.#mlsSink = sink;
+    return () => {
+      if (this.#mlsSink === sink) this.#mlsSink = null;
+    };
+  }
+
+  /**
+   * Acknowledge MLS envelopes (drop them from this device's server-side
+   * mailbox) after the call session has DURABLY processed them natively
+   * (§3.3). Same `E2EEAck` the text path sends per-envelope, but driven by the
+   * MLS drain rather than `#handleEnvelope`. Only ack what native accepted or
+   * terminally dropped — never a parked (gap) or transiently-failed envelope.
+   */
+  ackEnvelopes(ids: string[]): void {
+    if (!ids.length) return;
+    this.#client.events.send({ type: "E2EEAck", ids });
+  }
+
   /** Create the MLS group for a new call (`POST /mls/groups` body). */
   callCreate(
     channelId: string,
@@ -3049,6 +3206,16 @@ export class E2EEBridge implements E2EEAdapter {
       channelId: params.intendedChannelId,
       userId: params.userId,
     });
+  }
+
+  /**
+   * Verify a fanned-out join intent against OUR pinned identity for the
+   * claimed device (read-only, native). The rejoin trust gate: a member
+   * never stages the stale-leaf Remove a `rejoin` event asks for on the
+   * server relay alone — the same check `callAdmit` runs for the Add path.
+   */
+  callVerifyJoinIntent(request: MlsJoinRequest): Promise<void> {
+    return this.#invoke("e2ee_call_verify_join_intent", { request });
   }
 
   /** Admit a joiner: stage an Add commit + Welcome (verified natively). */
@@ -3209,6 +3376,206 @@ export class E2EEBridge implements E2EEAdapter {
   /** Prune expired local KeyPackage bookkeeping (client-timer driven). */
   mlsExpireKeyPackages(): Promise<void> {
     return this.#invoke("e2ee_mls_expire_key_packages");
+  }
+
+  // ================================================================
+  // Media E2EE — MLS Delivery Service couriers (slice 6.4)
+  //
+  // Thin HTTP couriers over the SAME transport seam as text E2EE (`#api` +
+  // the arbitration-aware `#apiMls`). Every body/response is PUBLIC material
+  // or opaque ciphertext — no key material crosses here (the sole secret
+  // egress stays `callFrameKeys`). `POST /mls/groups` and `.../commits` are
+  // arbitrated: a 409 is a create-race / commit-Lost, NORMAL control flow
+  // (never an exception). Every route 400s `FeatureDisabled` when the
+  // media-E2EE flag is off (§3.4 L4), surfaced as a quiet `feature_disabled`
+  // outcome so the session stays plaintext without a loud NOT-ENCRYPTED latch.
+  // ================================================================
+
+  /**
+   * Arbitration- and feature-flag-aware MLS fetch. Unlike `#api` (which throws
+   * on any non-2xx), this returns 409 arbitration and feature-off as NORMAL
+   * `MlsHttpResult` outcomes so the session treats create-race / commit-Lost /
+   * media-E2EE-disabled as control flow, not exceptions (judgment call 3, L4).
+   * Any OTHER non-2xx still throws.
+   */
+  async #apiMls<T>(
+    method: string,
+    path: string,
+    body?: unknown,
+    opts?: {
+      arbitrated?: boolean;
+      mfaRetryable?: boolean;
+      notFoundOutcome?: boolean;
+      headers?: Record<string, string>;
+    },
+  ): Promise<MlsHttpResult<T>> {
+    const [authHeader, authValue] = this.#client.authenticationHeader;
+
+    const response = await fetch(`${this.#client.options.baseURL}${path}`, {
+      method,
+      headers: {
+        [authHeader]: authValue,
+        ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+        ...(opts?.headers ?? {}),
+      },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+
+    if (response.ok) {
+      const parsed =
+        response.status === 204
+          ? (undefined as T)
+          : ((await response.json()) as T);
+      return { kind: "ok", body: parsed };
+    }
+
+    // 409 on an arbitrated route: the body carries the winner (the open group
+    // id, or the winning commit to rebase onto). Never an exception.
+    if (opts?.arbitrated && response.status === 409) {
+      return { kind: "conflict", body: (await response.json()) as T };
+    }
+
+    // Feature-off (400 `FeatureDisabled`): "not an E2EE call" — quiet. The
+    // session stays plaintext and MUST NOT latch a loud NOT-ENCRYPTED state.
+    if (response.status === 400) {
+      const err = (await response.json().catch(() => null)) as {
+        type?: string;
+      } | null;
+      if (err?.type === "FeatureDisabled") return { kind: "feature_disabled" };
+      throw new Error(
+        `E2EE MLS ${method} ${path} failed: 400 ${err?.type ?? "bad request"}`,
+      );
+    }
+
+    // First MLS KeyPackage publish for a device is MFA-gated server-side: the
+    // handler returns 401 `InvalidToken` when no `X-MFA-Ticket` is presented.
+    // The auth guard already validated the session, so a 401 reaching HERE means
+    // "an MFA ticket is required", not a dead session. Surface it as a normal
+    // outcome ONLY for the opted-in publish route (the session prompts once and
+    // retries); a 401 on any other MLS route stays a thrown auth failure.
+    if (opts?.mfaRetryable && response.status === 401) {
+      return { kind: "mfa_required" };
+    }
+
+    // 404 on an opted-in route: the group no longer exists or was CLOSED
+    // (e.g. the DS's solo-stale rejoin close) — the joiner treats this as
+    // "re-establish onto the create path", not a failure.
+    if (opts?.notFoundOutcome && response.status === 404) {
+      return { kind: "not_found" };
+    }
+
+    throw new Error(`E2EE MLS ${method} ${path} failed: ${response.status}`);
+  }
+
+  /**
+   * `PUT /mls/key_packages` — publish/replenish this device's KeyPackages so
+   * admitters can claim one to add us. The FIRST MLS publication for a device
+   * needs an MFA ticket (like the text-E2EE first key publish); replenishes
+   * ride the device-bound session. `payload` is produced natively by
+   * `mlsPublishKeyPackages` / `mlsReplenish`.
+   */
+  mlsPutKeyPackages(
+    payload: MlsPublishKeyPackages,
+    mfaTicket?: string,
+  ): Promise<MlsHttpResult<ResponsePublishMlsKeyPackages>> {
+    return this.#apiMls("PUT", "/mls/key_packages", payload, {
+      mfaRetryable: true,
+      headers: mfaTicket ? { "X-MFA-Ticket": mfaTicket } : undefined,
+    });
+  }
+
+  /**
+   * `POST /mls/key_packages/claim` — atomically consume one KeyPackage per
+   * target device for admission. The caller MUST re-verify each returned
+   * `binding_signature` natively (via `callAdmit`) — the DS relay is never the
+   * trust decision.
+   */
+  mlsClaimKeyPackage(
+    body: MlsClaimKeyPackagesBody,
+  ): Promise<MlsHttpResult<ResponseClaimMlsKeyPackages>> {
+    return this.#apiMls("POST", "/mls/key_packages/claim", body);
+  }
+
+  /**
+   * `POST /mls/groups` — register the epoch-0 group for a call (arbitrated).
+   * `ok` ⇒ we are the creator; `conflict` ⇒ another open group already exists
+   * for the channel and its id (+ the DS-asserted `channel_id`, the honest-DS
+   * T-15 leg) is in the body — take the join path.
+   */
+  mlsCreateGroup(
+    payload: MlsCreateGroupPayload,
+  ): Promise<MlsHttpResult<ResponseCreateMlsGroup>> {
+    return this.#apiMls("POST", "/mls/groups", payload, { arbitrated: true });
+  }
+
+  /**
+   * `POST /mls/groups/<id>/join_intent` — broadcast a signed join intent;
+   * members fan-out-verify and admit. 204 on success (`ok` with a `void`
+   * body). `payload` is produced + T-15-guarded natively by `callJoinIntent`.
+   */
+  mlsJoinIntent(
+    groupId: string,
+    payload: MlsJoinIntentPayload,
+  ): Promise<MlsHttpResult<void>> {
+    return this.#apiMls("POST", `/mls/groups/${groupId}/join_intent`, payload, {
+      notFoundOutcome: true,
+    });
+  }
+
+  /**
+   * `POST /mls/groups/<id>/commits` — submit our staged commit for the next
+   * epoch (arbitrated). `ok` ⇒ Won (merge via `callCommitWon`); `conflict` ⇒
+   * Lost, with the winning commit in the body to rebase onto (`callCommitLost`
+   * then process). `body` is produced natively (`callAdmit` / `callHeartbeat`
+   * / `callRemove`).
+   */
+  mlsSubmitCommit(
+    groupId: string,
+    body: MlsSubmitCommit,
+  ): Promise<MlsHttpResult<ResponseSubmitMlsCommit>> {
+    return this.#apiMls("POST", `/mls/groups/${groupId}/commits`, body, {
+      arbitrated: true,
+    });
+  }
+
+  /**
+   * `GET /mls/groups/<id>/commits?from_epoch=` — gap refetch for a desynced
+   * member (requires GROUP membership server-side). Ascending by epoch;
+   * `current_epoch` lets a caught-up caller confirm it is current. `groupId`
+   * is 64 lowercase hex chars, so it needs no URL encoding.
+   */
+  mlsFetchCommits(
+    groupId: string,
+    fromEpoch: number,
+  ): Promise<MlsHttpResult<ResponseFetchMlsCommits>> {
+    return this.#apiMls(
+      "GET",
+      `/mls/groups/${groupId}/commits?from_epoch=${fromEpoch}`,
+    );
+  }
+
+  /**
+   * Whether this shell can actually RECEIVE native call-key pushes — a
+   * SYNCHRONOUS capability probe (slice 6.4 step 7, audit H3/NEW-4). It is the
+   * exact precondition `onCallKeysChanged` checks before subscribing
+   * (`!!window.__TAURI__?.event`); kept here, next to it, so that when 6.7 adds
+   * the Android Capacitor key-push channel BOTH update together.
+   *
+   * The RTC layer folds this into `e2eeCapable` at Room-construction time. A
+   * shell that is `nativeE2EEAvailable()` but CANNOT receive key pushes (today:
+   * the Capacitor Android shell, whose `onCallKeysChanged` returns a no-op)
+   * must be built WITHOUT the LiveKit `e2ee` option — never an E2EE-capable
+   * Room whose first-key install can never arrive, which would leave the
+   * pause-publish window permanently open and publish plaintext to the SFU
+   * while believing it is encrypted (invariant 1). Fail CLOSED: no key-push
+   * channel ⇒ treat as a non-E2EE shell (the loud non-enrolled path).
+   *
+   * MUST stay synchronous: `e2eeCapable` and the `e2ee:` option are decided
+   * synchronously at Room construction, whereas `onCallKeysChanged` is awaited
+   * later — gating on its (always-truthy) return would decide too late.
+   */
+  nativeKeyPushAvailable(): boolean {
+    return !!(window as { __TAURI__?: TauriGlobal }).__TAURI__?.event;
   }
 
   /**

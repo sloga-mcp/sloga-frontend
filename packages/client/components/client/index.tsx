@@ -33,16 +33,23 @@ export type {
   MlsCallCreated,
   MlsCallState,
   MlsClaimedKeyPackage,
+  MlsClaimResult,
+  MlsCommitInfo,
   MlsEnvelope,
   MlsFrameKey,
   MlsFrameKeys,
+  MlsHttpResult,
   MlsJoinIntentPayload,
   MlsJoinRequest,
   MlsMemberDevice,
   MlsProcessOutcome,
   MlsPublishKeyPackages,
   MlsRosterEntry,
+  MlsSessionSink,
+  MlsSinkEvent,
   MlsSubmitCommit,
+  ResponseCreateMlsGroup,
+  ResponseSubmitMlsCommit,
 } from "./e2ee";
 
 /**

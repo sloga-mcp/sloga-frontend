@@ -85,7 +85,7 @@ import {
 } from "@revolt/client";
 import { ReactiveMap } from "@solid-primitives/map";
 import { CONFIGURATION } from "@revolt/common";
-import { ModalController, useModals } from "@revolt/modal";
+import { ModalControllerExtended, useModals } from "@revolt/modal";
 import { useState } from "@revolt/state";
 import {
   CameraBackgroundMode,
@@ -102,6 +102,7 @@ import {
 import { InRoom } from "./components/InRoom";
 import { RoomAudioManager } from "./components/RoomAudioManager";
 import { MlsKeyProvider } from "./mlsCallKeys";
+import { type MlsMediaBinding, MlsCallSession } from "./mlsCallSession";
 
 type State =
   | "READY"
@@ -184,6 +185,9 @@ class Voice {
 
   private openModal;
   private getClient;
+  /** App MFA password prompt — reused to mint the MLS first-publish ticket
+   * (slice 6.4); the password is entered natively and never reaches the store. */
+  #mfaFlow: ModalControllerExtended["mfaFlow"];
   private screenShareTracks: Set<string>;
   private disposeTrackRoot: (() => void) | undefined;
   #pttKeydown: ((e: KeyboardEvent) => void) | undefined;
@@ -201,6 +205,15 @@ class Voice {
   // undefined on unsupported/web shells (treated as non-enrolled).
   #mlsKeyProvider: MlsKeyProvider | undefined;
   #e2eeWorker: Worker | undefined;
+  /**
+   * The MLS control-plane session for this call (slice 6.4). Constructed once
+   * the device-qualified identity is proven; drives create-or-join, admission,
+   * rotation, roster reconciliation, and the enable gate. Undefined on
+   * non-E2EE-capable shells. With `media_e2ee_enabled` off, every `/mls` route
+   * returns FeatureDisabled and the session quietly stays plaintext (a normal
+   * voice call), so this wiring is inert until 6.5 flips the flag.
+   */
+  #mlsSession: MlsCallSession | undefined;
   /** Unsubscribe for the native `e2ee:call-keys-changed` push (§3.5). */
   #unlistenCallKeys: (() => void) | undefined;
   /**
@@ -227,10 +240,20 @@ class Voice {
    */
   callEncryptionError: Accessor<unknown>;
   #setCallEncryptionError: Setter<unknown>;
+  /**
+   * Non-enrolled participant identities in the current call (slice 6.4 §3.4) —
+   * empty ⇒ every SFU participant is in the MLS group. The state signal where
+   * 6.4's roster-reconciliation DETECTION meets 6.5's mixed-call banner + the
+   * downgrade UX; driven from the session's `onRosterReconciled`. The session
+   * has already PAUSED local publishing (fail-closed) whenever this is
+   * non-empty — 6.4 never opens a plaintext path.
+   */
+  callNonEnrolled: Accessor<readonly string[]>;
+  #setCallNonEnrolled: Setter<readonly string[]>;
 
   constructor(
     voiceSettings: VoiceSettings,
-    modals: ModalController,
+    modals: ModalControllerExtended,
     sound: SoundController,
   ) {
     this.#settings = voiceSettings;
@@ -294,6 +317,12 @@ class Voice {
     this.callEncryptionError = callEncryptionError;
     this.#setCallEncryptionError = setCallEncryptionError;
 
+    const [callNonEnrolled, setCallNonEnrolled] = createSignal<
+      readonly string[]
+    >([]);
+    this.callNonEnrolled = callNonEnrolled;
+    this.#setCallNonEnrolled = setCallNonEnrolled;
+
     this.#cameraEffects.onHwSupportChange = (hw) =>
       this.#setCameraHwBrightness(hw);
     this.#cameraEffects.onImageMissing = () => {
@@ -301,6 +330,7 @@ class Voice {
     };
 
     this.openModal = modals.openModal;
+    this.#mfaFlow = modals.mfaFlow;
 
     this.getClient = useClient();
 
@@ -330,7 +360,22 @@ class Voice {
     // NOT break the call. Degrade to a NON-E2EE-capable Room (the same
     // loud-non-enrolled path as an unsupported shell, never a silent plaintext
     // lock) so voice still works.
-    let e2eeCapable = isE2EESupported() && nativeE2EEAvailable();
+    //
+    // Fail-CLOSED on a no-key-push shell (slice 6.4 step 7, audit H3/NEW-4):
+    // `nativeE2EEAvailable()` is TRUE on the Capacitor Android shell, but that
+    // shell cannot yet RECEIVE `e2ee:call-keys-changed` (its listener is 6.7),
+    // so an E2EE-capable Room there would never install a first local key — the
+    // pause-publish window would stay open forever and publish plaintext under
+    // an "encrypted" Room (invariant 1). `nativeKeyPushAvailable()` is a
+    // SYNCHRONOUS probe decided HERE, at construction (never gated on the async
+    // `onCallKeysChanged` return, which resolves too late); a shell without the
+    // key-push channel is built as a non-E2EE shell (the loud non-enrolled
+    // path). The bridge is sourced once here and reused below.
+    const bridge = this.getClient()?.e2ee as E2EEBridge | undefined;
+    let e2eeCapable =
+      isE2EESupported() &&
+      nativeE2EEAvailable() &&
+      !!bridge?.nativeKeyPushAvailable();
     if (e2eeCapable) {
       try {
         this.#mlsKeyProvider = new MlsKeyProvider();
@@ -351,8 +396,7 @@ class Voice {
     // / not-yet-provisioned), and the identity assertion below is skipped.
     const selfUserId = this.getClient()?.user?.id;
     const e2eeDeviceId = e2eeCapable
-      ? (this.getClient()?.e2ee as E2EEBridge | undefined)?.status.get("state")
-          ?.device_id
+      ? bridge?.status.get("state")?.device_id
       : undefined;
 
     const room = new Room({
@@ -458,12 +502,18 @@ class Voice {
       nativeCallServiceStop();
     });
 
-    room.addListener("participantConnected", () => {
+    room.addListener("participantConnected", (participant) => {
       this.sound.playSound("userJoinVoice");
+      // Roster reconciliation (6.4 step 5): a reconnect within leave-grace
+      // cancels a pending Remove; a new SFU participant kicks a fresh reconcile.
+      this.#mlsSession?.onParticipantJoined(participant.identity);
     });
 
-    room.addListener("participantDisconnected", () => {
+    room.addListener("participantDisconnected", (participant) => {
       this.sound.playSound("userLeaveVoice");
+      // Arm the 10 s leave-grace before removing the departed leaf from the MLS
+      // group (a transient blip must not churn remove+rejoin).
+      this.#mlsSession?.onParticipantLeft(participant.identity);
     });
 
     // Fires AFTER LiveKit finishes restarting the camera track for a new
@@ -495,34 +545,23 @@ class Voice {
       }
     });
 
-    // --- Media E2EE wiring (slice 6.3) --------------------------------
-    // Dormant until the call is actually encrypted (native derives an MLS
-    // group and `setE2EEEnabled(true)` is driven — 6.4/6.5). Wiring it here
-    // keeps the media plane observable and the frame-key path ready.
+    // --- Media E2EE wiring (slice 6.3/6.4) ----------------------------
+    // The frame-key path + the media-plane observers are wired here; the MLS
+    // control-plane session (constructed after room.connect, below) is the SOLE
+    // driver of all of it. Inert until `media_e2ee_enabled` flips (6.5).
     if (e2eeCapable) {
-      const e2ee = this.getClient()?.e2ee as E2EEBridge | undefined;
-      const provider = this.#mlsKeyProvider;
-
       // Keys-changed loop (§3.5): native pushes `e2ee:call-keys-changed` on
-      // every LOCAL epoch advance; re-fetch the current frame keys (the §7.2
-      // egress) and feed the provider (remote senders first, local last).
-      if (e2ee && provider) {
-        const unlisten = await e2ee.onCallKeysChanged(async (event) => {
-          const active = this.room();
-          if (!active) return;
-          try {
-            const frameKeys = await e2ee.callFrameKeys(event.group_id);
-            await provider.applyKeys(
-              frameKeys,
-              active.localParticipant.identity,
-            );
-          } catch (error) {
-            // Fail-closed (§4.2): any native error on the call-key path is the
-            // loud "not encrypted / re-securing" state (6.5 renders it), never
-            // a silent unencrypted send. Keep the STRUCTURED error so 6.5 can
-            // classify it (invariant 11).
-            this.#setCallEncryptionError(() => error);
-          }
+      // every LOCAL epoch advance. Route it INTO the session (the SOLE
+      // `applyKeys` driver, NEW-3): it fetches the §7.2 frame-key egress and
+      // installs them under the Add-grace/Remove-immediate timing + the §4.4
+      // loud-state debounce — replacing 6.3's direct `provider.applyKeys`.
+      // (`bridge` is non-null here — `e2eeCapable` required it.)
+      if (bridge) {
+        const unlisten = await bridge.onCallKeysChanged((event) => {
+          void this.#mlsSession?.onLocalKeysChanged(
+            event.group_id,
+            event.epoch,
+          );
         });
         // A newer connect() may have superseded us across the await — drop
         // this listener immediately rather than orphaning it, and never clobber
@@ -545,13 +584,18 @@ class Voice {
           const identity =
             participant?.identity ?? room.localParticipant.identity;
           if (identity) this.callEncryption.set(identity, encrypted);
+          // A participant observed encrypted again clears a transient
+          // RE-SECURING in the session's §4.4 debounce before it goes loud.
+          if (encrypted) this.#mlsSession?.noteEncryptionRecovered();
         },
       );
       // LiveKit emits ONE `encryptionError` then silently drops frames
       // (failureTolerance:0, §1.5) — LATCH the first, STRUCTURED (6.5
-      // classifies rotation-window vs loud failure).
+      // classifies rotation-window vs loud failure), and hand it to the session
+      // for the §4.4 rotation-window-vs-loud classification.
       room.addListener("encryptionError", (error) => {
         this.#setCallEncryptionError((prev) => prev ?? error);
+        this.#mlsSession?.noteEncryptionError(error);
       });
     }
 
@@ -586,6 +630,7 @@ class Voice {
       // error rather than let a later setE2EEEnabled(true) publish plaintext
       // under an encrypted flag; the enable gate (6.4 step 6) refuses to
       // encrypt while callEncryptionError is set.
+      let e2eeIdentityOk = false;
       if (e2eeCapable && selfUserId && e2eeDeviceId) {
         const expectedIdentity = `${selfUserId}:${e2eeDeviceId}`;
         const actualIdentity = room.localParticipant.identity;
@@ -599,7 +644,35 @@ class Voice {
                   `(device-qualified identity, slice 6.1/6.4).`,
               ),
           );
+        } else {
+          e2eeIdentityOk = true;
         }
+      }
+
+      // Construct + start the MLS control-plane session (slice 6.4 step 6). Only
+      // once the identity is proven (else local-last never matches). No await
+      // has run since the gen check above, so we still own the shared state; a
+      // later connect() disposes this session via disconnect(). `start()` is
+      // fire-and-forget — with `media_e2ee_enabled` off it enrols, gets
+      // FeatureDisabled, and settles into "plaintext" (a normal voice call).
+      if (
+        e2eeCapable &&
+        e2eeIdentityOk &&
+        bridge &&
+        this.#mlsKeyProvider &&
+        selfUserId &&
+        e2eeDeviceId
+      ) {
+        const session = new MlsCallSession({
+          bridge,
+          userId: selfUserId,
+          deviceId: e2eeDeviceId,
+          channelId: channel.id,
+          requestMfaTicket: () => this.#requestMfaTicket(),
+        });
+        session.bindMedia(this.#buildMediaBinding(room, this.#mlsKeyProvider));
+        this.#mlsSession = session;
+        void session.start();
       }
     } catch (error) {
       // Failed connect: tear down THIS invocation's E2EE resources so the
@@ -607,6 +680,8 @@ class Voice {
       // own the shared state — a newer connect() may already have taken it
       // over (and cleaned ours) via its disconnect().
       if (gen === this.#connectGen) {
+        this.#mlsSession?.dispose();
+        this.#mlsSession = undefined;
         this.#unlistenCallKeys?.();
         this.#unlistenCallKeys = undefined;
         this.#e2eeWorker?.terminate();
@@ -626,11 +701,15 @@ class Voice {
     try {
       nativeCallServiceStop();
 
-      // Media E2EE teardown (§4.2 / §7.2): stop listening for native epoch
-      // pushes, terminate the worker (its residual per-participant key sets —
-      // LiveKit has no key-deletion API — die WITH it, bounding the §7.2 blast
-      // radius to the call), and drop the provider + observed status. Runs
-      // before the no-room guard so a half-set-up call still tears down.
+      // Media E2EE teardown (§4.2 / §7.2): dispose the MLS session FIRST (its
+      // best-effort self-`callRemove` wants the DS still reachable — before
+      // room.disconnect), then stop listening for native epoch pushes, terminate
+      // the worker (its residual per-participant key sets — LiveKit has no
+      // key-deletion API — die WITH it, bounding the §7.2 blast radius to the
+      // call), and drop the provider + observed status. Runs before the no-room
+      // guard so a half-set-up call still tears down.
+      this.#mlsSession?.dispose();
+      this.#mlsSession = undefined;
       this.#unlistenCallKeys?.();
       this.#unlistenCallKeys = undefined;
       this.#e2eeWorker?.terminate();
@@ -638,6 +717,7 @@ class Voice {
       this.#mlsKeyProvider = undefined;
       this.callEncryption.clear();
       this.#setCallEncryptionError(undefined);
+      this.#setCallNonEnrolled([]);
 
       const room = this.room();
       if (!room) return;
@@ -669,6 +749,69 @@ class Voice {
     } catch (e) {
       this.onErr(e);
     }
+  }
+
+  /**
+   * Mint an MFA ticket for the MLS session's FIRST KeyPackage publish (slice
+   * 6.4). Reuses the app's `mfaFlow` password prompt — the password is entered
+   * in the native modal and never reaches the store/session. Returns the ticket
+   * token, or undefined if the user declines or there is no client.
+   */
+  async #requestMfaTicket(): Promise<string | undefined> {
+    const client = this.getClient();
+    if (!client) return undefined;
+    const mfa = await client.account.mfa();
+    const ticket = await this.#mfaFlow(mfa);
+    return ticket?.token;
+  }
+
+  /**
+   * Build the Room/provider binding the MLS session drives (slice 6.4 step 6).
+   * Every closure reads the LIVE Room so a reconnect / track change / roster
+   * change is reflected. The session owns all timing + the enable state machine;
+   * these are just its thin Room-facing effects.
+   */
+  #buildMediaBinding(room: Room, provider: MlsKeyProvider): MlsMediaBinding {
+    return {
+      installer: provider,
+      localIdentity: () => room.localParticipant.identity,
+      sfuParticipants: () => [
+        room.localParticipant.identity,
+        ...[...room.remoteParticipants.values()].map((p) => p.identity),
+      ],
+      onEncryptionState: (state, error) => {
+        // Latch a loud media-plane failure into the existing structured signal
+        // (6.5 classifies RE-SECURING vs NOT-ENCRYPTED from callEncryption +
+        // this). A transient RE-SECURING is not latched (it may recover).
+        if (state === "loud" && error !== undefined) {
+          this.#setCallEncryptionError((prev) => prev ?? error);
+        }
+      },
+      onRosterReconciled: (result) => {
+        // 6.4 DETECTION → the state signal where 6.5's mixed-call banner + pause
+        // UX plug in. The session has ALREADY paused local publishing whenever
+        // this is non-empty (fail-closed) — 6.4 never opens a plaintext path.
+        this.#setCallNonEnrolled(result.nonEnrolled);
+      },
+      setEncryptionEnabled: (enabled) => room.setE2EEEnabled(enabled),
+      pausePublishing: () => this.#setUpstreamPaused(room, true),
+      resumePublishing: () => this.#setUpstreamPaused(room, false),
+    };
+  }
+
+  /**
+   * Pause / resume all local upstream publications — the plaintext-until-first-
+   * key guard + the mix fail-closed pause (§1.5/§3.4). LiveKit keeps the tracks
+   * captured but stops sending them upstream, so no frame is published while the
+   * send key is not yet installed (or while the call is mixed).
+   */
+  async #setUpstreamPaused(room: Room, paused: boolean): Promise<void> {
+    const ops: Promise<void>[] = [];
+    for (const pub of room.localParticipant.trackPublications.values()) {
+      if (!pub.track) continue;
+      ops.push(paused ? pub.pauseUpstream() : pub.resumeUpstream());
+    }
+    await Promise.allSettled(ops);
   }
 
   async toggleDeafen(fromMute?: boolean) {
