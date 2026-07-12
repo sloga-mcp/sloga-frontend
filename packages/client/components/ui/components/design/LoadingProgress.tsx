@@ -73,11 +73,21 @@ const ballKeyframes = BALLS.map((b) => {
 
 const STYLE_SHEET = `
 @keyframes sloga-ring-spin { to { transform: rotate(360deg); } }
+@keyframes sloga-core-pulse {
+  0%, ${RETRACT_START - 2}% { transform: scale(1); animation-timing-function: ${POP}; }
+  90% { transform: scale(1.09); animation-timing-function: cubic-bezier(0.4, 0, 0.6, 1); }
+  100% { transform: scale(1); }
+}
 ${ballKeyframes}
 .sloga-loader .sloga-ring {
   transform-box: view-box;
   transform-origin: ${CENTER}px ${CENTER}px;
   animation: sloga-ring-spin var(--sloga-loader-duration, 2.6s) linear infinite;
+}
+.sloga-loader .sloga-core {
+  transform-box: view-box;
+  transform-origin: ${CENTER}px ${CENTER}px;
+  animation: sloga-core-pulse var(--sloga-loader-duration, 2.6s) linear infinite;
 }
 .sloga-loader .sloga-ball {
   transform-box: view-box;
@@ -89,7 +99,8 @@ ${ballKeyframes}
   animation-iteration-count: infinite;
 }
 @media (prefers-reduced-motion: reduce) {
-  .sloga-loader .sloga-ring { animation: none; }
+  .sloga-loader .sloga-ring,
+  .sloga-loader .sloga-core { animation: none; }
   .sloga-loader .sloga-ball {
     animation: none;
     transform: rotate(var(--sloga-ball-angle)) translateY(-${RING_RADIUS}px);
@@ -143,7 +154,13 @@ export function CircularProgress(props: { size?: number }) {
             />
           ))}
         </g>
-        <circle cx={CENTER} cy={CENTER} r={CORE_RADIUS} fill={GREEN} />
+        <circle
+          class="sloga-core"
+          cx={CENTER}
+          cy={CENTER}
+          r={CORE_RADIUS}
+          fill={GREEN}
+        />
       </svg>
     </Base>
   );
