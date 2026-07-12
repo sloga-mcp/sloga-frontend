@@ -34,6 +34,10 @@ const RE_emojiValidFor = /(?<!\w):\w*/;
 const RE_mentionValidFor = /(?<!\w)@\w*/;
 const RE_roleValidFor = /(?<!\w)@\w*/;
 const RE_channelValidFor = /(?<!\w)#\w*/;
+// Slash commands: only ever matched at the very start of the draft (a
+// command must lead the message), so URLs containing "/" never trigger it.
+const RE_slashMatch = /\/[\w-]*/;
+const RE_slashValidFor = /^\/[\w-]*$/;
 
 export function codeMirrorAutoCompleteSource(
   searchSpace: Accessor<AutoCompleteSearchSpace>,
@@ -110,10 +114,38 @@ export function codeMirrorAutoCompleteSource(
     ),
   );
 
+  const commands = createMemo(() =>
+    (searchSpace()?.commands ?? []).map((command) => {
+      const bot = client().users.get(command.bot_id);
+      return {
+        type: "command",
+        label: "/" + command.name,
+        displayLabel: "/" + command.name,
+        detail: bot
+          ? `${command.description} — ${bot.username}`
+          : command.description,
+        // Insert the command; the user follows with option values, and send
+        // routes it through the interaction endpoint.
+        apply: `/${command.name} `,
+        url: bot?.animatedAvatarURL,
+      } as Completion;
+    }),
+  );
+
   // eslint-disable-next-line solid/reactivity
   return (context: CompletionContext) => {
     if (isInCodeBlock(context.state, context.pos, context.pos)) {
       return null;
+    }
+
+    // '/' command picker — strictly anchored to the start of the draft.
+    const slashToken = context.matchBefore(RE_slashMatch);
+    if (slashToken && slashToken.from === 0 && commands().length) {
+      return {
+        from: 0,
+        options: commands(),
+        validFor: RE_slashValidFor,
+      } as CompletionResult;
     }
 
     const token = context.matchBefore(RE_match);

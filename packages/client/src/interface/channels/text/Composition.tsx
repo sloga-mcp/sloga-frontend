@@ -6,6 +6,7 @@ import {
   Switch,
   createEffect,
   createMemo,
+  createResource,
   createSignal,
   on,
   onCleanup,
@@ -13,6 +14,7 @@ import {
 
 import { useLingui } from "@lingui-solid/solid/macro";
 import { Channel } from "stoat.js";
+import type { ApplicationCommandData } from "stoat.js";
 
 import { styled } from "styled-system/jsx";
 
@@ -422,6 +424,101 @@ export function MessageComposition(props: Props) {
   }
 
   /**
+   * Parse the argument string of a slash invocation into option values.
+   *
+   * Accepts `name:value` tokens (values may be double-quoted to contain
+   * spaces). As a convenience, when the command has exactly one required
+   * option and the input contains no `name:` tokens, the whole remainder
+   * becomes that option's value (`/say hello world`).
+   */
+  function parseCommandOptions(
+    command: ApplicationCommandData,
+    args: string,
+  ): Record<string, string> {
+    const options: Record<string, string> = {};
+    const trimmed = args.trim();
+    if (!trimmed) return options;
+
+    const tokenRe = /([\w-]+):(?:"([^"]*)"|(\S*))/g;
+    let match: RegExpExecArray | null;
+    let sawToken = false;
+    while ((match = tokenRe.exec(trimmed))) {
+      sawToken = true;
+      options[match[1]] = match[2] ?? match[3] ?? "";
+    }
+
+    if (!sawToken) {
+      const required = (command.options ?? []).filter((o) => o.required);
+      const target = required[0] ?? (command.options ?? [])[0];
+      if (target) options[target.name] = trimmed;
+    }
+
+    return options;
+  }
+
+  /**
+   * Invoke a slash command via the interactions endpoint. The bot's reply
+   * arrives as a regular message carrying the unforgeable `command_context`.
+   */
+  async function sendInteraction(
+    command: ApplicationCommandData,
+    args: string,
+  ) {
+    // Fail closed: never route command text into an encrypted or blocked
+    // conversation as plaintext, and never invoke interactions there either.
+    // Like the plaintext send path, this awaits the AUTHORITATIVE native
+    // verdict (an awaited round-trip, not the cached indicator, which can
+    // lag right after app launch); a native error also fails closed.
+    if (
+      e2ee &&
+      (props.channel.type === "DirectMessage" || props.channel.type === "Group")
+    ) {
+      let mode: "encrypt" | "blocked" | "plaintext" | null;
+      try {
+        mode = await e2ee.sendModeNowFor(props.channel);
+      } catch {
+        openModal({
+          type: "error2",
+          error: t`Encryption status could not be verified. Nothing was sent.`,
+        });
+        return;
+      }
+      if (mode === "encrypt" || mode === "blocked") {
+        openModal({
+          type: "error2",
+          error: t`Slash commands are unavailable in encrypted conversations.`,
+        });
+        return;
+      }
+    }
+
+    try {
+      await props.channel.createInteraction(
+        command._id,
+        parseCommandOptions(command, args),
+      );
+
+      // Success — clear the invocation from the draft
+      state.draft.setDraft(props.channel.id, { content: "" });
+      sound.playSound("messageSent");
+      props.onMessageSend?.();
+    } catch (error) {
+      const type = (error as { type?: string })?.type;
+      openModal({
+        type: "error2",
+        error:
+          type === "BotOffline"
+            ? t`That bot is currently offline — try again once it reconnects.`
+            : type === "InSlowmode"
+              ? t`You are in slowmode, wait before invoking commands.`
+              : new Error(
+                  type ?? (error instanceof Error ? error.message : String(error)),
+                ),
+      });
+    }
+  }
+
+  /**
    * Send a message using the current draft
    * @param useContent Content to send
    */
@@ -440,6 +537,19 @@ export function MessageComposition(props: Props) {
     if (/^\/roll(\s|$)/i.test(trimmed)) {
       await sendRoll(trimmed.slice(5).trim() || "1d20");
       return;
+    }
+
+    // Intercept registered slash commands (/roll keeps precedence above).
+    // Unknown /words fall through and send as plain text.
+    const slash = /^\/([a-z0-9_-]+)(?:\s+([\s\S]*))?$/i.exec(trimmed);
+    if (slash) {
+      const command = availableCommands().find(
+        (candidate) => candidate.name === slash[1].toLowerCase(),
+      );
+      if (command) {
+        await sendInteraction(command, slash[2] ?? "");
+        return;
+      }
     }
 
     // E2EE pre-send guard: a blocked conversation (peer identity change
@@ -621,7 +731,39 @@ export function MessageComposition(props: Props) {
     state.draft.removeFile(props.channel.id, fileId);
   }
 
-  const searchSpace = useSearchSpace(() => props.channel, client);
+  const baseSearchSpace = useSearchSpace(() => props.channel, client);
+
+  /**
+   * Slash commands invocable in this channel. Fetched lazily per channel;
+   * EMPTY (facet hidden, fail-closed) in encrypted or blocked conversations
+   * — interactions never get a plaintext fallback inside E2EE — and in
+   * DMs / saved messages, which the server structurally rejects anyway.
+   */
+  const [availableCommands] = createResource(
+    () =>
+      [props.channel.id, props.channel.type, e2eeMode()] as [
+        string,
+        string,
+        string | undefined,
+      ],
+    async ([, type, mode]) => {
+      if (mode === "encrypt" || mode === "blocked") return [];
+      if (type !== "TextChannel" && type !== "Thread" && type !== "Group")
+        return [];
+      try {
+        return await props.channel.fetchCommands();
+      } catch {
+        // Older servers (404) or transient failures: no picker, no error.
+        return [];
+      }
+    },
+    { initialValue: [] },
+  );
+
+  const searchSpace = createMemo(() => ({
+    ...baseSearchSpace(),
+    commands: availableCommands(),
+  }));
 
   // Disappearing messages
   const DISAPPEAR_OPTIONS: { label: string; seconds: number | null }[] = [

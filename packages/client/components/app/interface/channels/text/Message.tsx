@@ -50,6 +50,7 @@ import { startsWithPackPUA } from "@revolt/markdown/emoji/UnicodeEmoji";
 import { MediaPickerProps } from "@revolt/ui/components/features/messaging/composition/picker/CompositionMediaPicker";
 import { DiceRollMessage, isDiceRollMessage } from "./DiceRollMessage";
 import { EditMessage } from "./EditMessage";
+import { InteractionContext } from "./InteractionContext";
 import { EncryptedAttachment } from "./EncryptedAttachment";
 import { MessageTranslation } from "./MessageTranslation";
 
@@ -214,29 +215,39 @@ export function Message(props: Props) {
         isLink={props.isLink}
         tail={props.tail || state.settings.getValue("appearance:compact_mode")}
         header={
-          <For each={props.message.replyIds}>
-            {(reply_id) => {
-              /**
-               * Signal the actual message
-               */
-              const message = () => client().messages.get(reply_id);
+          <>
+            <Show
+              when={
+                props.message.isInteractionResponse &&
+                props.message.commandContext
+              }
+            >
+              <InteractionContext message={props.message} />
+            </Show>
+            <For each={props.message.replyIds}>
+              {(reply_id) => {
+                /**
+                 * Signal the actual message
+                 */
+                const message = () => client().messages.get(reply_id);
 
-              onMount(() => {
-                if (!message()) {
-                  props.message.channel!.fetchMessage(reply_id);
-                }
-              });
+                onMount(() => {
+                  if (!message()) {
+                    props.message.channel!.fetchMessage(reply_id);
+                  }
+                });
 
-              return (
-                <MessageReply
-                  mention={props.message.mentionIds?.includes(
-                    message()!.authorId!,
-                  )}
-                  message={message()}
-                />
-              );
-            }}
-          </For>
+                return (
+                  <MessageReply
+                    mention={props.message.mentionIds?.includes(
+                      message()!.authorId!,
+                    )}
+                    message={message()}
+                  />
+                );
+              }}
+            </For>
+          </>
         }
         info={
           <Switch fallback={<div />}>

@@ -108,6 +108,11 @@ export function codeMirrorAutoComplete(
           "autocomplete-tooltip autocomplete-tooltip-channel " +
           autocompleteScrollbarClasses
         );
+      } else if (completions[0]?.type == "command") {
+        return (
+          "autocomplete-tooltip autocomplete-tooltip-mention " +
+          autocompleteScrollbarClasses
+        );
       } else {
         return (
           "autocomplete-tooltip autocomplete-tooltip-unknown " +
@@ -144,6 +149,13 @@ export function codeMirrorAutoComplete(
             const span = document.createElement("span");
             span.classList.add("cm-channel-preview");
             return span;
+          } else if (completion.type == "command") {
+            // Bot avatar when cached, otherwise a blank placeholder.
+            const img = document.createElement("img");
+            img.classList.add("cm-user-preview");
+            img.loading = "lazy";
+            img.src = (completion as never as { url: string }).url || blankSvg;
+            return img;
           } else {
             return null;
           }

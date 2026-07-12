@@ -8,12 +8,15 @@ import {
   ServerRole,
   User,
 } from "stoat.js";
+import type { ApplicationCommandData } from "stoat.js";
 
 export interface AutoCompleteSearchSpace {
   users?: User[];
   members?: ServerMember[];
   channels?: Channel[];
   roles?: ServerRole[];
+  /** Slash commands invocable in the current channel ('/' picker facet). */
+  commands?: ApplicationCommandData[];
 }
 
 function generateSearchSpaceFrom(

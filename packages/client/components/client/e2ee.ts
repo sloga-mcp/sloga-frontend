@@ -2673,6 +2673,31 @@ export class E2EEBridge implements E2EEAdapter {
     return mode;
   }
 
+  /**
+   * Authoritative send-mode for any E2EE-capable conversation — DM peer or
+   * group — straight from the native layer (also refreshes the indicator
+   * cache). Returns null for channel types that can never be E2EE (server
+   * channels, threads, saved messages). Throws on native error — callers
+   * must treat a throw as fail-closed.
+   */
+  async sendModeNowFor(
+    channel: Channel,
+  ): Promise<"encrypt" | "blocked" | "plaintext" | null> {
+    const isGroup = channel.type === "Group";
+    if (channel.type !== "DirectMessage" && !isGroup) return null;
+
+    const conversationId = isGroup ? channel.id : this.#peerOf(channel);
+    if (!conversationId) return null;
+
+    const verdict = await this.#invoke<SendModeVerdict>(
+      isGroup ? "e2ee_send_mode_group" : "e2ee_send_mode",
+      isGroup ? { conversationId } : { peerUserId: conversationId },
+    );
+    const mode = this.#composerMode(verdict);
+    this.sendModes.set(conversationId, mode);
+    return mode;
+  }
+
   // ================================================================
   // Consent flow (settings UI)
   // ================================================================

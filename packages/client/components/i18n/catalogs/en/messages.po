@@ -277,6 +277,12 @@ msgstr "<0/> updated the group icon "
 msgid "<0/> updated the group name to <1>{0}</1>"
 msgstr "<0/> updated the group name to <1>{0}</1>"
 
+#. placeholder {0}: invoker()?.displayName ?? context()!.user_id
+#. placeholder {1}: context()!.command_name
+#: components/app/interface/channels/text/InteractionContext.tsx
+msgid "<0>{0}</0> used <1>/{1}</1>"
+msgstr "<0>{0}</0> used <1>/{1}</1>"
+
 #: components/modal/modals/LinkWarning.tsx
 msgid "<0>Be careful!</0><1/>This is not the same as the link that was displayed:"
 msgstr "<0>Be careful!</0><1/>This is not the same as the link that was displayed:"
@@ -1789,6 +1795,7 @@ msgstr "Encrypted messaging is on"
 msgid "Encryption is off for this device. New direct messages are no longer end-to-end encrypted, and your contacts have been told this device no longer uses encryption."
 msgstr "Encryption is off for this device. New direct messages are no longer end-to-end encrypted, and your contacts have been told this device no longer uses encryption."
 
+#: src/interface/channels/text/Composition.tsx
 #: src/interface/channels/text/Composition.tsx
 msgid "Encryption status could not be verified. Nothing was sent."
 msgstr "Encryption status could not be verified. Nothing was sent."
@@ -3883,6 +3890,10 @@ msgstr "Silent"
 msgid "Skip for now"
 msgstr "Skip for now"
 
+#: src/interface/channels/text/Composition.tsx
+msgid "Slash commands are unavailable in encrypted conversations."
+msgstr "Slash commands are unavailable in encrypted conversations."
+
 #: components/ui/components/features/profiles/ProfileBadges.tsx
 msgid "Sloga Developer"
 msgstr "Sloga Developer"
@@ -4146,6 +4157,10 @@ msgstr "Text Channel"
 #: components/i18n/errors.ts
 msgid "That action had no effect."
 msgstr "That action had no effect."
+
+#: src/interface/channels/text/Composition.tsx
+msgid "That bot is currently offline — try again once it reconnects."
+msgstr "That bot is currently offline — try again once it reconnects."
 
 #: src/interface/ServerEvents.tsx
 msgid "The calendar feature is not enabled on this server."
@@ -4760,6 +4775,10 @@ msgstr "You are about to suspend {0} from the entire platform. Their account wil
 #: components/i18n/errors.ts
 msgid "You are banned from this server."
 msgstr "You are banned from this server."
+
+#: src/interface/channels/text/Composition.tsx
+msgid "You are in slowmode, wait before invoking commands."
+msgstr "You are in slowmode, wait before invoking commands."
 
 #. placeholder {0}: members().length
 #: components/modal/modals/E2EEEnableGroup.tsx
