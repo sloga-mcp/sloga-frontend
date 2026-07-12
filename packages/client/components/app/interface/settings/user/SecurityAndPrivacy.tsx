@@ -2,13 +2,15 @@ import { Match, Show, Switch, createSignal, onMount } from "solid-js";
 
 import { Trans } from "@lingui-solid/solid/macro";
 
-import { useClient, useE2EE } from "@revolt/client";
 import type { BackupStatusView } from "@revolt/client";
+import { useClient, useE2EE } from "@revolt/client";
 import { useModals } from "@revolt/modal";
+import { useState } from "@revolt/state";
 import { CategoryButton, Checkbox, Column, iconSize } from "@revolt/ui";
 
 import MdKey from "@material-design-icons/svg/outlined/key.svg?component-solid";
 import MdLock from "@material-design-icons/svg/outlined/lock.svg?component-solid";
+import MdVideocam from "@material-design-icons/svg/outlined/videocam.svg?component-solid";
 
 /**
  * Security & Privacy settings page.
@@ -22,8 +24,94 @@ export function SecurityAndPrivacy() {
   return (
     <Column gap="lg">
       <EncryptionCard />
+      <CallEncryptionCard />
       <RecoveryBackupCard />
     </Column>
+  );
+}
+
+/**
+ * "Encrypt my calls" opt-in for this device (media E2EE, slice 6.5 §0.2 #9).
+ * LOCAL per-device (the `Voice` store is not synced). Enabling requires text-
+ * E2EE enrollment (shared infrastructure) — the row routes through the enable
+ * flow first when off. Gated on MEDIA capability (`nativeKeyPushAvailable`, not
+ * merely `useE2EE`): on Android (E2EE-enrolled but media-fail-closed until 6.7)
+ * the card renders DISABLED with explanatory copy so a user can't believe their
+ * calls are encrypted when they are not (FE-6).
+ */
+function CallEncryptionCard() {
+  const e2ee = useE2EE();
+  const state = useState();
+  const { openModal } = useModals();
+
+  if (!e2ee) return null;
+
+  // Media E2EE requires a native key-push channel (desktop today; Android 6.7).
+  const mediaCapable = () => e2ee.nativeKeyPushAvailable();
+  const textEnrolled = () => {
+    const s = e2ee.status.get("state");
+    return !!s?.enabled && !!s?.published;
+  };
+  const enabled = () => state.voice.e2eeCallsEnabled;
+
+  const onClick = () => {
+    if (!mediaCapable()) return; // disabled shell — no-op
+    if (enabled()) {
+      state.voice.e2eeCallsEnabled = false;
+      return;
+    }
+    // Turning ON requires text-E2EE enrollment (shared keys, §0.2 #9). If not
+    // enrolled, route through the enable flow first; the toggle stays off until
+    // the user is enrolled, then they can flip it.
+    if (!textEnrolled()) {
+      openModal({ type: "e2ee_enable" });
+      return;
+    }
+    state.voice.e2eeCallsEnabled = true;
+  };
+
+  return (
+    <CategoryButton.Group>
+      <CategoryButton
+        disabled={!mediaCapable()}
+        action={
+          <span style={{ "pointer-events": "none", display: "flex" }}>
+            <Checkbox checked={enabled() && mediaCapable()} />
+          </span>
+        }
+        icon={<MdVideocam {...iconSize(24)} />}
+        description={
+          <Show
+            when={mediaCapable()}
+            fallback={
+              <Trans>
+                Encrypted calls aren't available on this device yet.
+              </Trans>
+            }
+          >
+            <Show
+              when={enabled()}
+              fallback={
+                <Trans>
+                  Encrypt your voice and video on this device. Everyone in a
+                  call must have this on; web participants can't join encrypted,
+                  and server features that need the raw audio or video
+                  (recording, transcoding) are turned off in encrypted calls.
+                </Trans>
+              }
+            >
+              <Trans>
+                Your calls negotiate end-to-end encryption on this device when
+                everyone in the call supports it.
+              </Trans>
+            </Show>
+          </Show>
+        }
+        onClick={onClick}
+      >
+        <Trans>Encrypt my calls</Trans>
+      </CategoryButton>
+    </CategoryButton.Group>
   );
 }
 

@@ -16,7 +16,13 @@ const NoiseSuppresionStates: NoiseSuppresionState[] = [
 /**
  * Possible screen share qualities. Low is 720p@30fps, high 1080p@30fps and text is source@5fps.
  */
-export type ScreenShareQualityName = "low" | "high" | "text" | "fhd" | "qhd" | "uhd";
+export type ScreenShareQualityName =
+  | "low"
+  | "high"
+  | "text"
+  | "fhd"
+  | "qhd"
+  | "uhd";
 
 /**
  * Array of available screen share quality names.
@@ -92,6 +98,13 @@ export interface TypeVoice {
   outputVolume: number;
   deafen: boolean;
   micOn: boolean;
+  /**
+   * "Encrypt my calls" (media E2EE, slice 6.5 §0.2 #9). LOCAL PER-DEVICE —
+   * this store is NOT in the synced set (Sync.ts), deliberately: syncing it
+   * would hand the server a write path into the E2EE-attempt gate. Default
+   * off; enabling requires text-E2EE enrollment (shared infrastructure).
+   */
+  e2eeCallsEnabled: boolean;
 
   userVolumes: Record<string, number>;
   userMutes: Record<string, boolean>;
@@ -145,6 +158,7 @@ export class Voice extends AbstractStore<"voice", TypeVoice> {
       outputVolume: 1.0,
       deafen: false,
       micOn: true,
+      e2eeCallsEnabled: false,
       userVolumes: {},
       userMutes: {},
       screenShareVolumes: {},
@@ -206,6 +220,10 @@ export class Voice extends AbstractStore<"voice", TypeVoice> {
       data.pushToTalk = input.pushToTalk;
     }
 
+    if (typeof input.e2eeCallsEnabled === "boolean") {
+      data.e2eeCallsEnabled = input.e2eeCallsEnabled;
+    }
+
     if (typeof input.pushToTalkKey === "string") {
       data.pushToTalkKey = input.pushToTalkKey;
     }
@@ -230,7 +248,10 @@ export class Voice extends AbstractStore<"voice", TypeVoice> {
     }
 
     if (typeof input.cameraBrightness === "number") {
-      data.cameraBrightness = Math.max(0, Math.min(200, input.cameraBrightness));
+      data.cameraBrightness = Math.max(
+        0,
+        Math.min(200, input.cameraBrightness),
+      );
     }
 
     if (
@@ -663,5 +684,21 @@ export class Voice extends AbstractStore<"voice", TypeVoice> {
    */
   get micOn(): boolean {
     return this.get().micOn;
+  }
+
+  /**
+   * Whether "Encrypt my calls" is on for THIS device (slice 6.5 §0.2 #9).
+   */
+  get e2eeCallsEnabled(): boolean {
+    return this.get().e2eeCallsEnabled;
+  }
+
+  /**
+   * Toggle "Encrypt my calls" (local per-device). Enabling is only meaningful
+   * once text-E2EE enrollment exists (the settings card routes through the
+   * enroll flow first); this just persists the intent.
+   */
+  set e2eeCallsEnabled(value: boolean) {
+    this.set("e2eeCallsEnabled", value);
   }
 }

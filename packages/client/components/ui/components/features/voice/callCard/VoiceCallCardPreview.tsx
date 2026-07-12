@@ -1,4 +1,4 @@
-import { For, Show } from "solid-js";
+import { For, Match, Show, Switch } from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
 import { Channel } from "stoat.js";
@@ -10,6 +10,8 @@ import { Avatar, Ripple, Text } from "@revolt/ui/components/design";
 import { Row } from "@revolt/ui/components/layout";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
 
+import { useCallPrejoinMode } from "../useCallPrejoinMode";
+
 /**
  * Call card (preview)
  */
@@ -19,6 +21,13 @@ export function VoiceCallCardPreview(props: { channel: Channel }) {
 
   const ids = () => [...props.channel.voiceParticipants.keys()];
   const users = useUsers(ids);
+
+  // Pre-join mode (§3.4 compose-time = send-time rule + A3 cap warning): show
+  // what mode the call WILL use before joining, refreshed on roster change.
+  const prejoin = useCallPrejoinMode(() => ({
+    channelId: props.channel.id,
+    version: props.channel.voiceParticipants.size,
+  }));
 
   function subtext() {
     const names = users()
@@ -32,7 +41,14 @@ export function VoiceCallCardPreview(props: { channel: Channel }) {
     <Preview onClick={() => voice.connect(props.channel)}>
       <Ripple />
       <Row>
-        <For each={users()} fallback={<Symbol size={24} color="#FF8A00">voice_chat</Symbol>}>
+        <For
+          each={users()}
+          fallback={
+            <Symbol size={24} color="#FF8A00">
+              voice_chat
+            </Symbol>
+          }
+        >
           {(user) => (
             <Avatar size={24} src={user?.avatar} fallback={user?.username} />
           )}
@@ -47,9 +63,62 @@ export function VoiceCallCardPreview(props: { channel: Channel }) {
         </Show>
       </Text>
       <Text class="body">{subtext()}</Text>
+      <Show when={prejoin()}>
+        {(mode) => (
+          <PrejoinBadge kind={mode().mode}>
+            <Symbol size={14}>
+              {mode().mode === "e2ee-open" || mode().mode === "will-e2ee"
+                ? "lock"
+                : mode().mode === "self-plain"
+                  ? "no_encryption"
+                  : ""}
+            </Symbol>
+            <Switch>
+              <Match when={mode().mode === "e2ee-open"}>
+                <Show
+                  when={
+                    mode().mode === "e2ee-open" &&
+                    (mode() as { full: boolean }).full
+                  }
+                  fallback={<Trans>End-to-end encrypted call</Trans>}
+                >
+                  <Trans>Call full for encryption (100)</Trans>
+                </Show>
+              </Match>
+              <Match when={mode().mode === "will-e2ee"}>
+                <Trans>Will be end-to-end encrypted</Trans>
+              </Match>
+              <Match when={mode().mode === "self-plain"}>
+                <Trans>
+                  You'll join unencrypted — the call will show a warning
+                </Trans>
+              </Match>
+            </Switch>
+          </PrejoinBadge>
+        )}
+      </Show>
     </Preview>
   );
 }
+
+const PrejoinBadge = styled("div", {
+  base: {
+    display: "flex",
+    alignItems: "center",
+    gap: "var(--gap-sm)",
+    marginTop: "var(--gap-sm)",
+    fontSize: "0.75rem",
+    fontWeight: 600,
+  },
+  variants: {
+    kind: {
+      "e2ee-open": { color: "var(--md-sys-color-primary)" },
+      "will-e2ee": { color: "var(--md-sys-color-on-surface-variant)" },
+      "self-plain": { color: "var(--md-sys-color-error)" },
+      plain: { display: "none" },
+    },
+  },
+});
 
 const Preview = styled("div", {
   base: {

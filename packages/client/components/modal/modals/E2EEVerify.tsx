@@ -83,8 +83,7 @@ export function E2EEVerifyModal(
   async function turnOff() {
     if (!e2ee) return;
     const channel = [...client().channels.values()].find(
-      (c) =>
-        c.type === "DirectMessage" && c.recipientIds.has(props.peerUserId),
+      (c) => c.type === "DirectMessage" && c.recipientIds.has(props.peerUserId),
     );
     if (!channel) return;
     setBusy(true);
@@ -119,10 +118,20 @@ export function E2EEVerifyModal(
           when={state()?.length}
           fallback={
             <Text>
-              <Trans>
-                No verifiable devices yet — send or receive an encrypted message
-                first, then reopen this screen.
-              </Trans>
+              <Show
+                when={props.context === "call"}
+                fallback={
+                  <Trans>
+                    No verifiable devices yet — send or receive an encrypted
+                    message first, then reopen this screen.
+                  </Trans>
+                }
+              >
+                <Trans>
+                  This participant's device is not verified yet. Compare safety
+                  numbers in person to verify them.
+                </Trans>
+              </Show>
             </Text>
           }
         >
@@ -202,22 +211,27 @@ export function E2EEVerifyModal(
           </Trans>
         </Text>
 
-        <button
-          disabled={busy()}
-          onClick={() => void turnOff()}
-          style={{
-            "align-self": "flex-start",
-            padding: "6px 12px",
-            "border-radius": "8px",
-            border: "1px solid var(--md-sys-color-outline-variant)",
-            background: "transparent",
-            color: "var(--md-sys-color-error)",
-            cursor: busy() ? "default" : "pointer",
-            "font-weight": "500",
-          }}
-        >
-          <Trans>Turn off encryption for this conversation</Trans>
-        </button>
+        {/* FE-10: the DM-only downgrade button is hidden in call context —
+            it no-ops without a DM channel and is dangerously adjacent in
+            meaning to the whole-call downgrade. */}
+        <Show when={props.context !== "call"}>
+          <button
+            disabled={busy()}
+            onClick={() => void turnOff()}
+            style={{
+              "align-self": "flex-start",
+              padding: "6px 12px",
+              "border-radius": "8px",
+              border: "1px solid var(--md-sys-color-outline-variant)",
+              background: "transparent",
+              color: "var(--md-sys-color-error)",
+              cursor: busy() ? "default" : "pointer",
+              "font-weight": "500",
+            }}
+          >
+            <Trans>Turn off encryption for this conversation</Trans>
+          </button>
+        </Show>
       </Column>
     </Dialog>
   );

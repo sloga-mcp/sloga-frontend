@@ -304,14 +304,34 @@ export interface MlsEnvelope {
   ciphertext: string;
 }
 
+/**
+ * A received §3.4 downgrade ctl-announce (an MLS application message, 6.5).
+ * `sender_*` comes from the VERIFIED MLS sender leaf (native); `payload` is
+ * the raw application message (≤ 4 KiB) — the session validates its
+ * `v`/`kind`/`mode` semantics (unknown ⇒ quiet drop, never an action).
+ */
+export interface MlsCtlReceived {
+  sender_user_id: string;
+  sender_device_id: string;
+  payload: string;
+}
+
 /** Outcome of processing one inbound MLS envelope. */
 export interface MlsProcessOutcome {
   group_id: string;
-  kind: "welcome_joined" | "commit_applied" | "duplicate";
+  kind: "welcome_joined" | "commit_applied" | "duplicate" | "ctl_received";
   epoch: number;
   removed_self: boolean;
   /** Non-empty ⇒ a Remove-driven epoch (§1.5 immediate send-key switch). */
   removed?: MlsMemberDevice[];
+  /** Present only for `kind === "ctl_received"` (slice 6.5). */
+  ctl?: MlsCtlReceived;
+}
+
+/** Body for `POST /mls/groups/<id>/messages` (the ctl-announce, 6.5). */
+export interface MlsCtlPayload {
+  group_id: string;
+  ciphertext: string;
 }
 
 /** One call-roster member (display only — no key material). */
@@ -461,7 +481,13 @@ export type MlsHttpResult<T> =
   // 404 on an opted-in route only (`mlsJoinIntent`): the group is gone or
   // CLOSED (the DS's solo-stale rejoin close) — normal control flow for the
   // joiner, which re-establishes onto the create path.
-  | { kind: "not_found" };
+  | { kind: "not_found" }
+  // MlsCallFull (409) on `mlsJoinIntent` (slice 6.5, A3): the group is at the
+  // roster ceiling and this NEW joiner is refused — the call stays E2EE. The
+  // joiner auto-leaves the SFU (a lingering refused joiner would be
+  // non-enrolled and trip everyone's downgrade banner — the one-account
+  // downgrade A3 rejects).
+  | { kind: "call_full" };
 
 /**
  * An event handed to the active call session's sink (registered via
@@ -820,6 +846,13 @@ function createNativeTransport(): NativeTransport {
 export class E2EEBridge implements E2EEAdapter {
   #client: Client;
   #transport: NativeTransport;
+  /**
+   * Whether "Encrypt my calls" is on for this device (slice 6.5 §0.2 #9) —
+   * gates the media-E2EE KeyPackage pre-publish. FAIL-CLOSED default (ME-14):
+   * an un-wired accessor never prepublishes; the RTC layer injects the real
+   * one via `setCallsEnabled` from the local Voice store.
+   */
+  #callsEnabled: () => boolean = () => false;
 
   /** Sequentialises decrypts — ratchet order must match delivery order */
   #decryptQueue: Promise<void> = Promise.resolve();
@@ -895,6 +928,15 @@ export class E2EEBridge implements E2EEAdapter {
     this.#transport = createNativeTransport();
 
     client.on("ready", () => void this.#onReady());
+  }
+
+  /**
+   * Inject the "Encrypt my calls" accessor (slice 6.5 §0.2 #9) from the local
+   * Voice store. Gates the media-E2EE KeyPackage pre-publish; fail-closed until
+   * wired (ME-14). Idempotent.
+   */
+  setCallsEnabled(accessor: () => boolean): void {
+    this.#callsEnabled = accessor;
   }
 
   // ================================================================
@@ -1107,13 +1149,17 @@ export class E2EEBridge implements E2EEAdapter {
         });
         break;
       case "MlsCommit":
-      case "MlsWelcome": {
-        // MLS handshake envelope → the session's per-group serialized drain
-        // (H1), NOT the text `#decryptQueue`. A well-formed MLS envelope always
-        // carries group_id + epoch; drop a malformed one (never route it into
-        // the drain, where it could park a group forever). NOT acked here —
-        // the session acks after durable native processing (§3.3).
-        if (event.group_id == null || event.epoch == null) {
+      case "MlsWelcome":
+      case "MlsCtl": {
+        // MLS handshake / application envelope → the session's per-group
+        // serialized drain (H1), NOT the text `#decryptQueue`. A well-formed
+        // commit/welcome always carries group_id + epoch. A ctl (6.5) carries
+        // group_id but NO meaningful epoch (an application message has no
+        // per-group ordering) — require only group_id for it, and stamp epoch
+        // 0 so the drain never PARKS a ctl. NOT acked here — the session acks
+        // after durable native processing (§3.3).
+        const isCtl = event.type === "MlsCtl";
+        if (event.group_id == null || (!isCtl && event.epoch == null)) {
           break;
         }
         this.#mlsSink?.({
@@ -1123,9 +1169,13 @@ export class E2EEBridge implements E2EEAdapter {
             id: event.id,
             content_type:
               event.content_type ??
-              (event.type === "MlsWelcome" ? "mls_welcome" : "mls_commit"),
+              (event.type === "MlsWelcome"
+                ? "mls_welcome"
+                : event.type === "MlsCtl"
+                  ? "mls_ctl"
+                  : "mls_commit"),
             group_id: event.group_id,
-            epoch: event.epoch,
+            epoch: event.epoch ?? 0,
             ciphertext: event.ciphertext,
           },
         });
@@ -2674,6 +2724,9 @@ export class E2EEBridge implements E2EEAdapter {
    * `#ensureKeyPackages` path remains the authoritative self-heal.
    */
   async #prepublishMlsKeyPackages(): Promise<void> {
+    // Gate on "Encrypt my calls" (§0.2 #9): with calls E2EE off there is no
+    // reason to stock the MLS KeyPackage directory. Fail-closed until wired.
+    if (!this.#callsEnabled()) return;
     try {
       const userId = this.#client.user?.id;
       if (!userId) return;
@@ -3387,18 +3440,71 @@ export class E2EEBridge implements E2EEAdapter {
   }
 
   /**
-   * Request a whole-call downgrade to plaintext. Gated by a BLOCKING native
-   * OS dialog (the webview can only request). Resolves on confirm, rejects
-   * with `declined` on cancel. In 6.3 this is the dialog gate only; the MLS
-   * ctl-announce + transition state machine is 6.5.
+   * Request a whole-call downgrade to plaintext (§3.4). Gated by a BLOCKING
+   * native OS dialog whose non-enrolled roster is computed NATIVELY from the
+   * group's VERIFIED MLS roster (6.5, closes the 6.3 [6.5 crypto LOW]): the
+   * webview supplies the live SFU identities (attacker-controlled only in the
+   * safe direction — can distort what is displayed, never suppress the dialog)
+   * plus display names for rendering. On confirm this ALSO arms the native
+   * announce gate; resolves Ok, rejects with `declined` on cancel.
    */
   callConfirmDowngrade(
-    channelId: string,
-    nonEnrolled?: string[],
+    groupId: string,
+    sfuParticipants: string[],
+    displayNames: Record<string, string>,
   ): Promise<void> {
     return this.#invoke("e2ee_call_confirm_downgrade", {
-      channelId,
-      nonEnrolled: nonEnrolled ?? null,
+      groupId,
+      sfuParticipants,
+      displayNames,
+    });
+  }
+
+  /**
+   * Clear the call's confirmed-downgrade grant (6.5 gate LOW-1): invoked on
+   * a T6 re-upgrade so the announce oracle closes with the interlude, not at
+   * call end. Clearing is the SAFE direction (only forces a fresh confirm).
+   */
+  callClearDowngrade(groupId: string): Promise<void> {
+    return this.#invoke("e2ee_call_clear_downgrade", { groupId });
+  }
+
+  /**
+   * Native-computed non-enrolled verdict (the roster panel + banner read
+   * this): device-qualified SFU identities absent from the group's VERIFIED
+   * MLS roster. The webview supplies the live SFU list; native intersects.
+   * Attacker-controlled only in the safe direction (can over-report, never
+   * hide a real non-enrolled participant that would trip the loud state).
+   */
+  callNonEnrolled(
+    groupId: string,
+    sfuParticipants: string[],
+  ): Promise<string[]> {
+    return this.#invoke("e2ee_call_non_enrolled", { groupId, sfuParticipants });
+  }
+
+  /**
+   * Mint the group-encrypted §3.4 mode announcement (an MLS application
+   * message; never advances an epoch). CONFIRM-GATED natively: rejects with
+   * `mls_not_confirmed` unless `callConfirmDowngrade` already succeeded for
+   * this call — so a compromised webview can re-request an announce (the
+   * interlude re-announce after an epoch change) but never ORIGINATE one for
+   * an unconfirmed call. Returns the `POST /mls/groups/<id>/messages` body.
+   */
+  callAnnounce(groupId: string, userId: string): Promise<MlsCtlPayload> {
+    return this.#invoke("e2ee_call_announce", { groupId, userId });
+  }
+
+  /**
+   * `POST /mls/groups/<id>/messages` — relay a group-encrypted MLS
+   * application message (the §3.4 ctl-announce) to the roster. Member-gated +
+   * rate-limited server-side; `feature_disabled` when the flag is off (quiet).
+   * `payload.ciphertext` is opaque — no key material crosses.
+   */
+  mlsSendCtl(payload: MlsCtlPayload): Promise<MlsHttpResult<void>> {
+    return this.#apiMls("POST", `/mls/groups/${payload.group_id}/messages`, {
+      device_id: this.status.get("state")?.device_id,
+      ciphertext: payload.ciphertext,
     });
   }
 
@@ -3448,6 +3554,7 @@ export class E2EEBridge implements E2EEAdapter {
       arbitrated?: boolean;
       mfaRetryable?: boolean;
       notFoundOutcome?: boolean;
+      callFullOutcome?: boolean;
       headers?: Record<string, string>;
     },
   ): Promise<MlsHttpResult<T>> {
@@ -3475,6 +3582,19 @@ export class E2EEBridge implements E2EEAdapter {
     // id, or the winning commit to rebase onto). Never an exception.
     if (opts?.arbitrated && response.status === 409) {
       return { kind: "conflict", body: (await response.json()) as T };
+    }
+
+    // MlsCallFull (409) on an opted-in NON-arbitrated route (`mlsJoinIntent`):
+    // the roster is at the ceiling and this NEW joiner is refused (A3). Normal
+    // control flow — the joiner auto-leaves (never a lingering non-enrolled).
+    if (opts?.callFullOutcome && response.status === 409) {
+      const err = (await response.json().catch(() => null)) as {
+        type?: string;
+      } | null;
+      if (err?.type === "MlsCallFull") return { kind: "call_full" };
+      throw new Error(
+        `E2EE MLS ${method} ${path} failed: 409 ${err?.type ?? "conflict"}`,
+      );
     }
 
     // Feature-off (400 `FeatureDisabled`): "not an E2EE call" — quiet. The
@@ -3565,6 +3685,7 @@ export class E2EEBridge implements E2EEAdapter {
   ): Promise<MlsHttpResult<void>> {
     return this.#apiMls("POST", `/mls/groups/${groupId}/join_intent`, payload, {
       notFoundOutcome: true,
+      callFullOutcome: true,
     });
   }
 
@@ -3598,6 +3719,24 @@ export class E2EEBridge implements E2EEAdapter {
       "GET",
       `/mls/groups/${groupId}/commits?from_epoch=${fromEpoch}`,
     );
+  }
+
+  /**
+   * `GET /mls/channels/<id>/open_group` — the pre-join / in-call probe (6.5,
+   * FE-7): does the channel have an open MLS group (i.e. is the call E2EE)?
+   * Returns the group summary, or null on 404 / feature-off / any error (a
+   * plain call). `channelId` is a ULID, so no URL encoding is needed.
+   */
+  async mlsOpenGroup(
+    channelId: string,
+  ): Promise<{ group_id: string; member_count: number } | null> {
+    const res = await this.#apiMls<{
+      group_id: string;
+      member_count: number;
+    }>("GET", `/mls/channels/${channelId}/open_group`, undefined, {
+      notFoundOutcome: true,
+    });
+    return res.kind === "ok" ? res.body : null;
   }
 
   /**

@@ -61,7 +61,6 @@
  */
 import type {
   E2EEBridge,
-  EnvelopeDisposition,
   MlsClaimResult,
   MlsClaimedKeyPackage,
   MlsCommitInfo,
@@ -76,6 +75,12 @@ import type {
   ResponseSubmitMlsCommit,
 } from "@revolt/client";
 
+import {
+  type CallMode,
+  type CallModeEvent,
+  callModeTransition,
+  parseCtlPayload,
+} from "./mlsCallModePolicy";
 import { drainAction } from "./mlsDrainPolicy";
 import { joinRequestAction } from "./mlsJoinRequestPolicy";
 
@@ -97,6 +102,18 @@ const MAX_ENVELOPE_RETRIES = 5;
 const RETRY_DELAY_MS = 500;
 /** Bound on successive rejoin/successor re-establishes before failing loud. */
 const MAX_REESTABLISH = 3;
+/**
+ * Fail-safe (T0d, R2-6): if the session produces NO verdict within this window
+ * (DS unreachable — no create/join response) AND the channel has no known open
+ * MLS group, release the `negotiating` publish gate so a plain voice call is
+ * never stuck muted. If an open group IS known, the gate stays asserted and the
+ * state goes loud RE-SECURING — an E2EE-known call never auto-resumes plaintext.
+ */
+const NEGOTIATING_FAILSAFE_MS = 5_000;
+/** Bounded fail-safe re-arms while the open-group probe is still PENDING
+ *  (LOW-2) — beyond this the probe shares the DS's unreachability and the
+ *  availability escape applies. */
+const MAX_FAILSAFE_REARMS = 2;
 
 // ---- Rotation seam (step 4; plan §1.5 / §4.4) ------------------------------
 
@@ -209,6 +226,8 @@ export function routeCreateOrJoin(
     return { action: "failed", reason: "unexpected mfa_required on create" };
   if (res.kind === "not_found")
     return { action: "failed", reason: "unexpected not_found on create" };
+  if (res.kind === "call_full")
+    return { action: "failed", reason: "unexpected call_full on create" };
   // A conflict body (from either a 409 OR a defensive 200-Conflict) means join.
   if (res.body.result === "Conflict") {
     return {
@@ -247,6 +266,8 @@ export function classifyArbitration(
     return { outcome: "failed", reason: "unexpected mfa_required on commit" };
   if (res.kind === "not_found")
     return { outcome: "failed", reason: "unexpected not_found on commit" };
+  if (res.kind === "call_full")
+    return { outcome: "failed", reason: "unexpected call_full on commit" };
   if (res.body.result === "Lost")
     return { outcome: "lost", winning: res.body.winning };
   if (res.kind === "conflict") {
@@ -481,21 +502,59 @@ export interface MlsMediaBinding {
    */
   onRosterReconciled?(result: RosterReconcileResult): void;
   /**
-   * Toggle LiveKit E2EE mode on the Room (`room.setE2EEEnabled`) — the enable
-   * driver (step 6). Only ever called with `true` in 6.4 (a downgrade to
-   * plaintext is 6.5); the session keeps E2EE ON and PAUSES instead of ever
-   * disabling into plaintext.
+   * Surface the §3.4 call mode for the UI (6.5): the chip, the downgrade
+   * banner, and the roster panel all render from this. `detail` carries the
+   * non-enrolled set + (for a remote announce, T4) the announcing user.
+   */
+  onCallModeChanged?(mode: CallMode, detail: CallModeDetail): void;
+  /**
+   * Surface the full VERIFIED MLS roster + the divergent ghost leaves (6.5)
+   * so the roster panel renders from crypto truth (not just LiveKit tracks).
+   */
+  onRosterState?(
+    members: readonly MlsRosterMember[],
+    ghosts: readonly string[],
+  ): void;
+  /**
+   * Auto-leave the SFU call (A3 `call_full`, ME-10 terminal-loud): a refused /
+   * failed joiner must not linger as a non-enrolled participant. The session
+   * NEVER calls this synchronously from inside its own callback — `state.tsx`
+   * defers `disconnect()` via `queueMicrotask` (FE-9b).
+   */
+  autoLeave?(reason: string): void;
+  /**
+   * Toggle LiveKit E2EE mode on the Room (`room.setE2EEEnabled`). `true` = the
+   * enable driver (step 6). `false` = the §3.4 confirmed-plaintext downgrade
+   * (6.5, T3/T5) — reached ONLY after the native confirm dialog returns Ok.
    */
   setEncryptionEnabled?(enabled: boolean): Promise<void>;
   /**
-   * Pause / resume local upstream publishing — the plaintext-until-first-key
-   * guard + the mix fail-closed pause (§1.5/§3.4). Between `setEncryptionEnabled`
-   * and the first local send-key, and whenever a non-enrolled participant is
-   * present, local media is paused so no plaintext frame is published under an
-   * encrypted flag.
+   * Pause / resume local upstream publishing under a NAMED reason (R2-7): the
+   * gate owner (state.tsx) is a reason-SET, so `negotiating`/`enable-window`/
+   * `mixed` pauses can't collapse or double-count, and a resume only lifts its
+   * own reason. Publishing flows only when the set is empty — the
+   * plaintext-until-first-key guard + the mix fail-closed pause (§1.5/§3.4).
    */
-  pausePublishing?(): Promise<void>;
-  resumePublishing?(): Promise<void>;
+  pausePublishing?(reason: PublishGateReason): Promise<void>;
+  resumePublishing?(reason: PublishGateReason): Promise<void>;
+}
+
+/** A publish-gate reason (R2-7) — the session's contribution to state.tsx's set. */
+export type PublishGateReason = "negotiating" | "enable-window" | "mixed";
+
+/** One verified MLS roster member for the 6.5 roster panel. */
+export interface MlsRosterMember {
+  user_id: string;
+  device_id: string;
+  user_verified: boolean;
+}
+
+/** Detail accompanying a call-mode change (6.5 UI). */
+export interface CallModeDetail {
+  /** Device-qualified non-enrolled SFU identities (drives the banner names). */
+  nonEnrolled: readonly string[];
+  /** For a remote announce (T4): the user who announced plaintext. */
+  announcedBy?: string;
 }
 
 // ============================================================================
@@ -701,6 +760,15 @@ export interface MlsCallSessionDeps {
    * fresh device simply fails admission loudly until provisioned.
    */
   requestMfaTicket?: () => Promise<string | undefined>;
+  /**
+   * The channel's open-group probe state (tri-state, media-gate LOW-2). Read
+   * by the T0d fail-safe: `"open"` ⇒ hold the gate + loud RE-SECURING (an
+   * E2EE-known call never auto-resumes plaintext); `"pending"` ⇒ hold the
+   * gate and re-arm the fail-safe (bounded); `"none"` (a COMPLETED 404 /
+   * feature-off / probe error — the error arm is RATIFIED, R2-6: the probe
+   * and the DS share an origin) ⇒ the availability escape may release.
+   */
+  channelHasOpenGroup?: () => "open" | "none" | "pending";
 }
 
 /** One staged own commit awaiting arbitration (native pending mirror). */
@@ -807,6 +875,18 @@ export class MlsCallSession {
   #mixPaused = false;
   /** Pending re-upgrade hysteresis timer (mix cleared → resume after 15 s). */
   #reupgradeTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // --- §3.4 call mode (slice 6.5) --------------------------------------------
+  /** The §3.4 downgrade state machine's current mode — drives the 6.5 UI. */
+  #callMode: CallMode = { kind: "negotiating" };
+  /** For a remote announce (T4): the user who announced plaintext. */
+  #announcedBy: string | undefined;
+  /** Whether re-upgrade must go via a fresh successor (T6, after an interlude). */
+  #reupgradeViaSuccessor = false;
+  /** T0d fail-safe re-arms consumed while the open-group probe was pending. */
+  #failsafeRearms = 0;
+  /** Serializes §3.4 mode transitions + their awaited media effects (F8). */
+  #modeChain: Promise<void> = Promise.resolve();
   /** Self-rescheduling heartbeat tick + its enabled gate. */
   #heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
   #heartbeatEnabled = false;
@@ -822,6 +902,11 @@ export class MlsCallSession {
 
   state(): MlsSessionState {
     return this.#state;
+  }
+
+  /** The §3.4 call mode (slice 6.5) — the 6.5 UI reads this. */
+  callMode(): CallMode {
+    return this.#callMode;
   }
 
   groupId(): string | null {
@@ -855,6 +940,7 @@ export class MlsCallSession {
   async start(): Promise<void> {
     if (this.#state !== "starting") return;
     this.#unregisterSink = this.#deps.bridge.registerMlsSink(this.#onSink);
+    this.#armNegotiatingFailsafe();
     try {
       await this.#ensureKeyPackages();
       if (this.#terminal()) return;
@@ -862,6 +948,39 @@ export class MlsCallSession {
     } catch (error) {
       this.#onLoud(error);
     }
+  }
+
+  /**
+   * T0d fail-safe (R2-6 + media-gate LOW-2, tri-state): if we are STILL
+   * negotiating after the window (DS unreachable — no create/join verdict):
+   *  - probe says "open"    ⇒ hold the gate + loud RE-SECURING (an E2EE-known
+   *    call never auto-resumes plaintext);
+   *  - probe says "pending" ⇒ hold the gate and RE-ARM (bounded — a hung
+   *    probe eventually errors to "none" via fetch's own failure);
+   *  - probe says "none" (a COMPLETED verdict, incl. the RATIFIED error arm)
+   *    ⇒ availability escape: release the gate, keep negotiating quietly.
+   */
+  #armNegotiatingFailsafe(): void {
+    const timer = setTimeout(() => {
+      this.#timers.delete(timer);
+      if (this.#terminal() || this.#callMode.kind !== "negotiating") return;
+      const probe = this.#deps.channelHasOpenGroup?.() ?? "none";
+      if (probe === "open") {
+        this.#toResecuring("negotiation timed out with an open E2EE group");
+        return;
+      }
+      if (probe === "pending" && this.#failsafeRearms < MAX_FAILSAFE_REARMS) {
+        this.#failsafeRearms++;
+        this.#armNegotiatingFailsafe();
+        return;
+      }
+      // Completed no-group verdict (or the probe never resolved past the
+      // bounded re-arms — same-origin, so the DS is unreachable too) →
+      // availability escape: release the gate, keep negotiating in the
+      // background (a late verdict still applies).
+      void this.#media?.resumePublishing?.("negotiating");
+    }, NEGOTIATING_FAILSAFE_MS);
+    this.#timers.add(timer);
   }
 
   /**
@@ -1072,6 +1191,14 @@ export class MlsCallSession {
           await this.#rejoinFresh("group closed during join");
           return;
         }
+        if (res.kind === "call_full") {
+          // A3 (6.5): the roster is at the ceiling and we are a NEW joiner —
+          // the call stays E2EE and we are refused. Terminal `call_full`
+          // mode + auto-leave the SFU (a lingering refused joiner would be
+          // non-enrolled and trip everyone's downgrade banner).
+          this.#onCallFull();
+          return;
+        }
         if (res.kind !== "ok") {
           this.#onLoud(new Error("join intent rejected"));
           return;
@@ -1084,7 +1211,10 @@ export class MlsCallSession {
         // terminal, and the Welcome we need may already be in flight — so fall
         // through to the wait instead of throwing. The bounded attempt loop
         // (→ loud RE-SECURING below) is the backstop; never plaintext.
-        console.warn("[mls] join intent broadcast failed — awaiting Welcome", error);
+        console.warn(
+          "[mls] join intent broadcast failed — awaiting Welcome",
+          error,
+        );
       }
 
       // The admitter's winning Add fans a Welcome to us; the drain processes it
@@ -1137,7 +1267,10 @@ export class MlsCallSession {
 
   // ---- Admit scheduler (existing member admitting a joiner) -----------------
 
-  async #onJoinRequest(request: MlsJoinRequest, rejoin: boolean): Promise<void> {
+  async #onJoinRequest(
+    request: MlsJoinRequest,
+    rejoin: boolean,
+  ): Promise<void> {
     if (this.#state !== "active" || request.group_id !== this.#groupId) return;
 
     switch (
@@ -1536,7 +1669,13 @@ export class MlsCallSession {
         this.#parkAttempts = 0; // progress resets the park bound
         this.#deps.bridge.ackEnvelopes([envelope.id]);
         if (disp.kind === "processed" && disp.outcome.kind !== "duplicate") {
-          this.#onEpochAdvanced(disp.outcome);
+          // A ctl-announce (6.5) carries no epoch — route it to the §3.4 mode
+          // machine, NOT the rotation classifier (it never advances an epoch).
+          if (disp.outcome.kind === "ctl_received" && disp.outcome.ctl) {
+            this.#onCtlReceived(disp.outcome.ctl);
+          } else {
+            this.#onEpochAdvanced(disp.outcome);
+          }
         }
         return;
       }
@@ -1837,6 +1976,19 @@ export class MlsCallSession {
       epoch: outcome.epoch,
       removed: (outcome.removed?.length ?? 0) > 0,
     };
+
+    // ME-4: `max_past_epochs` is 0, so a prior announce becomes undecryptable
+    // to late processors after ANY epoch change. While a plaintext interlude
+    // is locally confirmed, re-announce on each epoch advance so a member who
+    // missed the first announce still gets the attribution (bounded by the
+    // server ctl rate limit; native-gated by the downgrade-confirmed flag).
+    if (
+      this.#callMode.kind === "interlude" &&
+      this.#callMode.localConfirmed &&
+      outcome.kind !== "welcome_joined"
+    ) {
+      void this.#announceDowngrade();
+    }
   }
 
   // ---- Rotation seam (step 4) — the SOLE applyKeys driver (NEW-3) -----------
@@ -2140,8 +2292,10 @@ export class MlsCallSession {
     if (!media || this.#state !== "active" || !this.#groupId) return null;
 
     let mlsIdentities: string[];
+    let members: MlsRosterMember[];
     try {
       const state = await this.#deps.bridge.callState(this.#groupId);
+      members = state.members;
       mlsIdentities = state.members.map((m) => `${m.user_id}:${m.device_id}`);
     } catch {
       return null; // transient — the next tick retries
@@ -2155,6 +2309,8 @@ export class MlsCallSession {
       localIdentity,
     );
     this.#nonEnrolled = result.nonEnrolled;
+    // Surface the VERIFIED MLS roster + divergent ghosts for the 6.5 panel.
+    media.onRosterState?.(members, result.ghosts);
 
     // Arm a ghost-divergence timer for each newly-ghost leaf (unless a faster
     // leave-grace already covers it); clear timers for leaves no longer ghosts.
@@ -2306,18 +2462,32 @@ export class MlsCallSession {
   #evaluateEnable(result: RosterReconcileResult): void {
     if (!this.#media || this.#state !== "active") return;
     const consistent = result.nonEnrolled.length === 0;
+    const inInterlude = this.#callMode.kind === "interlude";
 
     if (!consistent) {
       // A live participant we cannot encrypt to ⇒ mixed call ⇒ pause (never
-      // publish plaintext). Cancels any pending re-upgrade.
-      if (this.#e2eeEnabled) this.#onMixDetected();
+      // publish plaintext). In a confirmed interlude the pause is not
+      // reasserted (the user authorized plaintext), but any pending
+      // re-upgrade is cancelled so we don't resume-encrypt while a mix
+      // persists (T4/turnover, ME-16).
+      if (inInterlude) {
+        this.#applyMode({ type: "mix_detected" });
+      } else if (this.#e2eeEnabled) {
+        this.#onMixDetected();
+      }
       return;
     }
     // Consistent roster from here.
+    if (inInterlude) {
+      // T6 ONLY (ME-6): an interlude NEVER warm-enables the old group; its
+      // sole exit is the fresh-successor re-upgrade after the hysteresis.
+      this.#applyMode({ type: "mix_cleared" });
+      return;
+    }
     if (this.#hasLocalKey && !this.#e2eeEnabled) {
       void this.#enable();
     } else if (this.#mixPaused) {
-      this.#scheduleReupgrade();
+      this.#applyMode({ type: "mix_cleared" }); // T2 warm resume
     }
   }
 
@@ -2332,10 +2502,11 @@ export class MlsCallSession {
     if (!media || this.#e2eeEnabled || this.#state !== "active") return;
     this.#e2eeEnabled = true; // set first — re-entry guard across the awaits
     try {
-      await media.pausePublishing?.();
+      await media.pausePublishing?.("enable-window");
       await media.setEncryptionEnabled?.(true);
-      await media.resumePublishing?.();
+      await media.resumePublishing?.("enable-window");
       this.#mixPaused = false;
+      this.#setMode({ kind: "e2ee" }); // T0b
     } catch (error) {
       // Enable failed ⇒ we are NOT encrypted; stay fail-closed (publishing
       // paused) and surface loud rather than resume into plaintext.
@@ -2346,25 +2517,28 @@ export class MlsCallSession {
 
   /**
    * A non-enrolled participant appeared in an encrypted call: PAUSE local
-   * publishing (fail-closed — 6.4 never opens a plaintext path; the loud mixed
-   * banner + the confirm-to-downgrade flow are 6.5). The `onRosterReconciled`
-   * callback already carries the non-enrolled set for the UI.
+   * publishing (fail-closed — never open a plaintext path without the native
+   * confirm). Sets the §3.4 `mixed` mode — the 6.5 banner + confirm flow read
+   * it. `onRosterReconciled` already carried the non-enrolled set for the UI.
    */
   #onMixDetected(): void {
     this.#cancelReupgrade();
-    if (this.#mixPaused) return;
-    this.#mixPaused = true;
-    void this.#media?.pausePublishing?.();
+    if (!this.#mixPaused) {
+      this.#mixPaused = true;
+      void this.#media?.pausePublishing?.("mixed");
+    }
+    this.#setMode({ kind: "mixed" }); // T1
   }
 
   /**
-   * The mix cleared: after a 15 s hysteresis (a bouncing participant must not
-   * flap pause/resume), resume encrypted publishing on the still-valid warm
-   * group (the non-enrolled participant never held media keys). Sticky
-   * direction — re-upgrade needs no confirm (§3.4).
+   * Schedule the re-upgrade hysteresis (a bouncing participant must not flap
+   * pause/resume). `viaSuccessor` (T6, after a confirmed interlude): re-secure
+   * with a FRESH successor group + re-enable. Else (T2, warm): the group never
+   * left E2EE mode and keys never reached a non-member, so just resume.
    */
-  #scheduleReupgrade(): void {
-    if (this.#reupgradeTimer || !this.#mixPaused) return;
+  #scheduleReupgrade(viaSuccessor: boolean): void {
+    if (this.#reupgradeTimer) return;
+    this.#reupgradeViaSuccessor = viaSuccessor;
     const timer = setTimeout(async () => {
       this.#reupgradeTimer = null;
       this.#timers.delete(timer);
@@ -2372,14 +2546,208 @@ export class MlsCallSession {
       // Re-check at fire time: a participant may have bounced back in.
       if (!(await this.rosterConsistent())) return;
       try {
-        await this.#media?.resumePublishing?.();
-        this.#mixPaused = false;
+        if (viaSuccessor) {
+          // Fresh-successor re-upgrade (§3.4 sticky direction, no confirm):
+          // rejoin fresh drops to negotiating, then the normal enable path
+          // pauses → setE2EEEnabled(true) → first key → resume. Close the
+          // announce oracle WITH the interlude (media-gate LOW-1): clear the
+          // native downgrade grant before migrating — best-effort, and the
+          // SAFE direction (clearing only ever forces a fresh confirm).
+          if (this.#groupId) {
+            void this.#deps.bridge
+              .callClearDowngrade(this.#groupId)
+              .catch(() => {});
+          }
+          this.#announcedBy = undefined;
+          this.#setMode({ kind: "negotiating" });
+          this.#e2eeEnabled = false;
+          this.#mixPaused = false;
+          this.#scheduleGroupAction(() =>
+            this.#rejoinFresh("re-upgrade after plaintext interlude"),
+          );
+        } else {
+          await this.#media?.resumePublishing?.("mixed");
+          this.#mixPaused = false;
+          this.#setMode({ kind: "e2ee" }); // T2
+        }
       } catch (error) {
         this.#onMediaError(error);
       }
     }, REUPGRADE_HYSTERESIS_MS);
     this.#reupgradeTimer = timer;
     this.#timers.add(timer);
+  }
+
+  // ---- §3.4 mode machine glue (slice 6.5) -----------------------------------
+
+  /**
+   * Set the mode + emit it to the UI binding. Keeps the publish-gate
+   * `negotiating` reason in lockstep with the mode (R2-1/R2-5): state.tsx
+   * asserts it BEFORE room.connect, and the session releases it the moment it
+   * leaves `negotiating` (any verdict — e2ee/off/mixed/interlude/call_full),
+   * or re-asserts it if it drops back to negotiating (a successor re-upgrade).
+   */
+  #setMode(mode: CallMode): void {
+    const wasNegotiating = this.#callMode.kind === "negotiating";
+    this.#callMode = mode;
+    if (mode.kind === "negotiating" && !wasNegotiating) {
+      void this.#media?.pausePublishing?.("negotiating");
+    } else if (mode.kind !== "negotiating" && wasNegotiating) {
+      void this.#media?.resumePublishing?.("negotiating");
+    }
+    this.#media?.onCallModeChanged?.(mode, {
+      nonEnrolled: this.#nonEnrolled,
+      announcedBy: this.#announcedBy,
+    });
+  }
+
+  /**
+   * Run one §3.4 transition through the pure machine and execute its effects.
+   * Used for the genuinely-new 6.5 transitions (interlude / remote announce /
+   * mix-cleared-in-interlude); the 6.4 negotiating/mixed/e2ee mechanics call
+   * `#setMode` directly (they own their own pause/enable timing).
+   */
+  #applyMode(event: CallModeEvent): void {
+    // Transitions are SERIALIZED on a chain: each event's transition is
+    // computed against the freshest mode (two rapid events must not both
+    // compute from the same stale mode), media-plane effects run serially and
+    // AWAITED, and the mode (whose lockstep may release the `negotiating`
+    // gate = a resume) is set only after they complete — so `set_e2ee(false)`
+    // STRICTLY precedes any resume in COMPLETION order, not just initiation
+    // order (gate F8: a resume racing ahead of the E2EE-off would briefly
+    // publish encrypted frames to keyless peers). Timers/announce/auto-leave
+    // dispatch without blocking the chain.
+    this.#modeChain = this.#modeChain
+      .then(async () => {
+        const { mode, effects } = callModeTransition(this.#callMode, event);
+        for (const effect of effects) {
+          switch (effect.do) {
+            case "pause":
+              await this.#media?.pausePublishing?.(effect.reason);
+              break;
+            case "resume":
+              await this.#media?.resumePublishing?.(effect.reason);
+              break;
+            case "set_e2ee":
+              if (!effect.enabled) this.#e2eeEnabled = false;
+              await this.#media?.setEncryptionEnabled?.(effect.enabled);
+              break;
+            case "announce":
+              void this.#announceDowngrade();
+              break;
+            case "schedule_reupgrade":
+              this.#scheduleReupgrade(effect.viaSuccessor);
+              break;
+            case "cancel_reupgrade":
+              this.#cancelReupgrade();
+              break;
+            case "auto_leave":
+              this.#media?.autoLeave?.("call full for E2EE");
+              break;
+          }
+        }
+        this.#setMode(mode);
+      })
+      .catch((error) => this.#onMediaError(error));
+  }
+
+  /**
+   * The user confirmed the whole-call plaintext downgrade (§3.4 T3/T5). Public
+   * entry from the 6.5 banner. Shows the BLOCKING native confirm dialog (its
+   * non-enrolled roster is native-computed); on Ok, transitions to a confirmed
+   * interlude — set_e2ee(false) STRICTLY before resume (invariant 1), then a
+   * best-effort announce. Cancel keeps the mixed pause.
+   */
+  async confirmPlaintext(displayNames: Record<string, string>): Promise<void> {
+    if (!this.#groupId || this.#terminal()) return;
+    // Reachable from: mixed (T3), an unconfirmed interlude (T5), or — the
+    // ME-10 terminal-loud escape — a call that FAILED to secure while still
+    // `negotiating` (retry exhaustion / loud failure): "Stay unencrypted".
+    // A HEALTHY negotiation is excluded (no UI offers the button there, and
+    // the guard makes the API unmisusable).
+    // Terminal-loud populations (re-verify MED-B): retry exhaustion / loud
+    // failure (`failed`/`resecuring`) AND a LATCHED loud media-plane error
+    // while the state is still nominally `active` (e.g. `#enable` threw —
+    // the E2EE worker died — and `#latchLoud` latched without failing the
+    // session). All show the same terminal banner; all must make its
+    // "Stay unencrypted" button real.
+    const terminalEscape =
+      this.#callMode.kind === "negotiating" &&
+      (this.#state === "failed" ||
+        this.#state === "resecuring" ||
+        this.#loudLatched);
+    if (
+      this.#callMode.kind !== "mixed" &&
+      !(
+        this.#callMode.kind === "interlude" && !this.#callMode.localConfirmed
+      ) &&
+      !terminalEscape
+    ) {
+      return; // not a confirmable state
+    }
+    const sfu = this.#media?.sfuParticipants() ?? [];
+    try {
+      // The native dialog computes its own non-enrolled set; Declined throws.
+      await this.#deps.bridge.callConfirmDowngrade(
+        this.#groupId,
+        sfu,
+        displayNames,
+      );
+    } catch {
+      return; // Declined ⇒ stay mixed (paused, receive-only); banner persists
+    }
+    if (this.#terminal() || !this.#groupId) return;
+    this.#announcedBy = undefined;
+    this.#applyMode({ type: "local_confirm" });
+  }
+
+  /** Courier a best-effort §3.4 mode announcement (ME-4/ME-12). */
+  async #announceDowngrade(): Promise<void> {
+    if (!this.#groupId || this.#terminal()) return;
+    try {
+      const payload = await this.#deps.bridge.callAnnounce(
+        this.#groupId,
+        this.#deps.userId,
+      );
+      await this.#deps.bridge.mlsSendCtl(payload);
+    } catch (error) {
+      // Best-effort: an announce failure never blocks the local transition
+      // (peers converge via their own mix detection, ME-4). Log for telemetry.
+      console.warn(
+        "[mls] downgrade announce failed (peers converge via mix)",
+        error,
+      );
+    }
+  }
+
+  /**
+   * A received §3.4 ctl-announce (T4/T5). Parse default-closed; act only on a
+   * plaintext mode change from a verified member whose channel+group match the
+   * live call. Never opens the local plaintext path — it re-words the banner
+   * and offers the confirm.
+   */
+  #onCtlReceived(ctl: {
+    sender_user_id: string;
+    sender_device_id: string;
+    payload: string;
+  }): void {
+    if (this.#terminal() || !this.#groupId) return;
+    const parsed = parseCtlPayload(ctl.payload);
+    if (!parsed) return; // unknown/forward-compat → quiet no-op (ME-15)
+    if (parsed.groupId !== this.#groupId) return; // wrong group binding
+    if (parsed.channelId !== this.#deps.channelId) return; // wrong channel
+    // T4: only meaningful while mixed (an already-interlude member ignores a
+    // duplicate announce — T5 dedupe). Publishing STAYS PAUSED.
+    if (this.#callMode.kind !== "mixed") return;
+    this.#announcedBy = ctl.sender_user_id;
+    this.#applyMode({ type: "remote_announce" });
+  }
+
+  /** A3 (6.5): a NEW joiner refused at the roster cap — terminal + auto-leave. */
+  #onCallFull(): void {
+    if (this.#terminal()) return;
+    this.#onLoud(new Error("call full for E2EE"));
+    this.#applyMode({ type: "call_full" });
   }
 
   #cancelReupgrade(): void {
@@ -2400,11 +2768,18 @@ export class MlsCallSession {
    */
   #resetEnableState(): void {
     this.#cancelReupgrade();
-    if (this.#e2eeEnabled || this.#mixPaused) {
-      void this.#media?.pausePublishing?.();
+    // A locally-confirmed interlude keeps publishing plaintext THROUGH a
+    // control-plane re-secure (the authorization came from the user, not from
+    // group state; Room E2EE is off, so there is no key dependency). Every
+    // other state pauses through the re-secure (successor keys not installed).
+    const confirmedInterlude =
+      this.#callMode.kind === "interlude" && this.#callMode.localConfirmed;
+    if (!confirmedInterlude && (this.#e2eeEnabled || this.#mixPaused)) {
+      void this.#media?.pausePublishing?.("enable-window");
     }
     this.#e2eeEnabled = false;
     this.#mixPaused = false;
+    if (!confirmedInterlude) this.#announcedBy = undefined;
   }
 
   // ---- Heartbeat (step 6; §1.4) — bound stable-roster exposure ---------------
@@ -2511,6 +2886,7 @@ export class MlsCallSession {
   #toPlaintext(): void {
     // Quiet (L4) — feature off / not an E2EE call; NOT a loud failure.
     this.#setState("plaintext");
+    this.#setMode({ kind: "off" }); // T0a — no chrome on a plain voice call
   }
 
   #toResecuring(reason: string): void {

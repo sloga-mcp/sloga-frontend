@@ -19,6 +19,7 @@ import {
   Room,
   ScreenSharePresets,
   Track,
+  TrackEvent,
   type TrackPublishOptions,
   type VideoCaptureOptions,
   VideoResolution,
@@ -102,7 +103,21 @@ import {
 import { InRoom } from "./components/InRoom";
 import { RoomAudioManager } from "./components/RoomAudioManager";
 import { MlsKeyProvider } from "./mlsCallKeys";
-import { type MlsMediaBinding, MlsCallSession } from "./mlsCallSession";
+import {
+  type MlsMediaBinding,
+  type MlsRosterMember,
+  type PublishGateReason,
+  MlsCallSession,
+} from "./mlsCallSession";
+import {
+  type CallMode,
+  type ChipState,
+  chipState,
+} from "./mlsCallModePolicy";
+
+/** A3(b) product gate: video/screenshare off above this many participants in
+ *  an E2EE call (control-plane cost scales with roster). Trivially tunable. */
+const MAX_VIDEO_PARTICIPANTS = 30;
 
 type State =
   | "READY"
@@ -250,6 +265,55 @@ class Voice {
    */
   callNonEnrolled: Accessor<readonly string[]>;
   #setCallNonEnrolled: Setter<readonly string[]>;
+  /**
+   * The §3.4 call mode (slice 6.5): `negotiating` | `off` | `e2ee` | `mixed` |
+   * `interlude` | `call_full`. The banner + chip + roster panel render from it.
+   * Undefined when there is no session (a non-capable shell / a plain call).
+   */
+  callMode: Accessor<CallMode | undefined>;
+  #setCallMode: Setter<CallMode | undefined>;
+  /** For a remote announce (T4): the user who announced plaintext (banner copy). */
+  callAnnouncedBy: Accessor<string | undefined>;
+  #setCallAnnouncedBy: Setter<string | undefined>;
+  /** The VERIFIED MLS roster + divergent ghosts for the 6.5 roster panel. */
+  callRoster: Accessor<{
+    members: readonly MlsRosterMember[];
+    ghosts: readonly string[];
+  }>;
+  #setCallRoster: Setter<{
+    members: readonly MlsRosterMember[];
+    ghosts: readonly string[];
+  }>;
+  /** The channel has an open MLS group (the pre-join probe; chip input FE-7). */
+  callChannelHasOpenGroup: Accessor<boolean>;
+  #setCallChannelHasOpenGroup: Setter<boolean>;
+  /** LiveKit encryption-status version bump — the chip's non-reactive
+   *  participant/track domain changed (R2-3/FE-8). */
+  callParticipantsVersion: Accessor<number>;
+  #setCallParticipantsVersion: Setter<number>;
+  /** Whether the call roster / verification panel is open (chip click). */
+  callRosterPanelOpen: Accessor<boolean>;
+  #setCallRosterPanelOpen: Setter<boolean>;
+
+  /**
+   * The single publish-gate reason SET (FE-3/R2-1/R2-7). Local upstream
+   * publishing flows ONLY when this is empty; the session adds/removes its
+   * reasons (`negotiating`/`enable-window`/`mixed`). The screenshare quality
+   * modal keeps its own PER-TRACK pause but its resume defers to this gate
+   * (it only resumes when the set is empty — the gate owner resumes every
+   * publication when the set empties). Every LocalTrackPublished +
+   * UpstreamResumed/TrackProcessorUpdate re-asserts the gate so a late
+   * publication or livekit's unconditional resumes can never bypass it.
+   */
+  #publishGate = new Set<string>();
+  /**
+   * Open-group probe lifecycle for the CURRENT call (media-gate LOW-2): the
+   * T0d fail-safe must distinguish a COMPLETED "no open group" verdict from a
+   * still-pending probe — releasing the gate on a merely-slow probe for a call
+   * that turns out E2EE would auto-resume plaintext. Tri-state read by the
+   * session via `channelHasOpenGroup`.
+   */
+  #openGroupProbe: "pending" | "open" | "none" = "pending";
 
   constructor(
     voiceSettings: VoiceSettings,
@@ -323,6 +387,37 @@ class Voice {
     this.callNonEnrolled = callNonEnrolled;
     this.#setCallNonEnrolled = setCallNonEnrolled;
 
+    const [callMode, setCallMode] = createSignal<CallMode | undefined>();
+    this.callMode = callMode;
+    this.#setCallMode = setCallMode;
+
+    const [callAnnouncedBy, setCallAnnouncedBy] = createSignal<
+      string | undefined
+    >();
+    this.callAnnouncedBy = callAnnouncedBy;
+    this.#setCallAnnouncedBy = setCallAnnouncedBy;
+
+    const [callRoster, setCallRoster] = createSignal<{
+      members: readonly MlsRosterMember[];
+      ghosts: readonly string[];
+    }>({ members: [], ghosts: [] });
+    this.callRoster = callRoster;
+    this.#setCallRoster = setCallRoster;
+
+    const [callChannelHasOpenGroup, setCallChannelHasOpenGroup] =
+      createSignal(false);
+    this.callChannelHasOpenGroup = callChannelHasOpenGroup;
+    this.#setCallChannelHasOpenGroup = setCallChannelHasOpenGroup;
+
+    const [callParticipantsVersion, setCallParticipantsVersion] =
+      createSignal(0);
+    this.callParticipantsVersion = callParticipantsVersion;
+    this.#setCallParticipantsVersion = setCallParticipantsVersion;
+
+    const [callRosterPanelOpen, setCallRosterPanelOpen] = createSignal(false);
+    this.callRosterPanelOpen = callRosterPanelOpen;
+    this.#setCallRosterPanelOpen = setCallRosterPanelOpen;
+
     this.#cameraEffects.onHwSupportChange = (hw) =>
       this.#setCameraHwBrightness(hw);
     this.#cameraEffects.onImageMissing = () => {
@@ -372,10 +467,17 @@ class Voice {
     // key-push channel is built as a non-E2EE shell (the loud non-enrolled
     // path). The bridge is sourced once here and reused below.
     const bridge = this.getClient()?.e2ee as E2EEBridge | undefined;
+    // Wire the "Encrypt my calls" accessor into the bridge (§0.2 #9) so the
+    // media-E2EE KeyPackage pre-publish is gated on the local toggle (ME-14).
+    bridge?.setCallsEnabled(() => this.#settings.e2eeCallsEnabled);
     let e2eeCapable =
       isE2EESupported() &&
       nativeE2EEAvailable() &&
-      !!bridge?.nativeKeyPushAvailable();
+      !!bridge?.nativeKeyPushAvailable() &&
+      // "Encrypt my calls" (§0.2 #9): with it OFF we negotiate plaintext —
+      // no session, no E2EE Room — and appear non-enrolled to E2EE peers
+      // (their loud downgrade attributes it to us). LOCAL per-device toggle.
+      this.#settings.e2eeCallsEnabled;
     if (e2eeCapable) {
       try {
         this.#mlsKeyProvider = new MlsKeyProvider();
@@ -507,6 +609,9 @@ class Voice {
       // Roster reconciliation (6.4 step 5): a reconnect within leave-grace
       // cancels a pending Remove; a new SFU participant kicks a fresh reconcile.
       this.#mlsSession?.onParticipantJoined(participant.identity);
+      // The chip's participant/track domain changed (R2-3/FE-8): bump the
+      // version so the derived chip re-runs (remoteParticipants is not reactive).
+      this.#setCallParticipantsVersion((v) => v + 1);
     });
 
     room.addListener("participantDisconnected", (participant) => {
@@ -514,6 +619,7 @@ class Voice {
       // Arm the 10 s leave-grace before removing the departed leaf from the MLS
       // group (a transient blip must not churn remove+rejoin).
       this.#mlsSession?.onParticipantLeft(participant.identity);
+      this.#setCallParticipantsVersion((v) => v + 1);
     });
 
     // Fires AFTER LiveKit finishes restarting the camera track for a new
@@ -524,6 +630,10 @@ class Voice {
     });
 
     room.addListener("trackPublished", (pub) => {
+      // Gate (b)'s quantification domain changed (R2-3): a trackless-then-
+      // publishing REMOTE participant must drop the chip from green
+      // immediately, not on the next unrelated join/leave.
+      this.#setCallParticipantsVersion((v) => v + 1);
       if (pub.source === Track.Source.ScreenShare) {
         pub.once("subscribed", (track) => {
           // Play the sound once playback starts, which might be quite a bit after subscription
@@ -543,6 +653,54 @@ class Voice {
         this.sound.playSound("streamEnd");
         this.screenShareTracks.delete(unpub.trackSid);
       }
+      // Gate (b)'s quantification domain changed (R2-3): re-derive the chip.
+      this.#setCallParticipantsVersion((v) => v + 1);
+    });
+
+    // Publish-gate hardening (R2-1): a NEW local publication, or livekit's
+    // two unconditional resume paths, must never bypass a held gate:
+    //  (a) `setMediaStreamTrack` (device switch / unmute-restart / reconnect)
+    //      ends in an unconditional `resumeUpstream()` — `_isUpstreamPaused`
+    //      goes false and `UpstreamResumed` fires, so a bare `pauseUpstream()`
+    //      re-asserts cleanly.
+    //  (b) `setProcessor` (denoise/gain/camera-effects attach) calls
+    //      `sender.replaceTrack(processedTrack)` DIRECTLY without touching
+    //      `_isUpstreamPaused` and emits only `TrackProcessorUpdate` — the
+    //      flag stays stale-true, so a bare `pauseUpstream()` would no-op on
+    //      its own idempotency guard while real RTP flows. The re-assert for
+    //      this path is resume-then-pause (the resume resets the flag; its
+    //      nested `UpstreamResumed` triggers arm (a), whose bare pause
+    //      serializes behind livekit's per-track lock and early-returns —
+    //      bounded, no loop; verified against the pinned 2.15.13 source).
+    room.addListener("localTrackPublished", (pub) => {
+      this.#setCallParticipantsVersion((v) => v + 1);
+      if (this.#publishGate.size > 0) void this.#applyPublishGate(room);
+      const track = pub.track;
+      if (!track) return;
+      track.on(TrackEvent.UpstreamResumed, () => {
+        if (this.#publishGate.size > 0) void this.#applyPublishGate(room);
+      });
+      track.on(TrackEvent.TrackProcessorUpdate, () => {
+        if (this.#publishGate.size === 0) return;
+        void (async () => {
+          try {
+            await track.resumeUpstream(); // reset the stale pause flag
+          } catch {
+            /* unsupported/edge — the pause below still applies */
+          }
+          // The gate may have EMPTIED while we serialized behind livekit's
+          // per-track lock (e.g. the session settled plaintext and released
+          // `negotiating` mid-sequence) — re-check before the trailing pause,
+          // or a healthy call ends silently muted with nothing left to resume
+          // it (re-verify MED-A).
+          if (this.#publishGate.size === 0) return;
+          try {
+            await track.pauseUpstream();
+          } catch {
+            /* torn-down track */
+          }
+        })();
+      });
     });
 
     // --- Media E2EE wiring (slice 6.3/6.4) ----------------------------
@@ -568,6 +726,11 @@ class Voice {
         // the newer invocation's shared state (gate HIGH).
         if (gen !== this.#connectGen) {
           unlisten();
+          // Strip THIS room's listeners before abandoning it (FE-9c): its
+          // async `disconnected` event would otherwise fire `#setState(
+          // "DISCONNECTED")` + `nativeCallServiceStop()` and clobber the newer
+          // call's state / kill its foreground service.
+          room.removeAllListeners();
           room.disconnect();
           return;
         }
@@ -611,17 +774,31 @@ class Voice {
       // Superseded during joinCall → abandon this Room, leave the newer
       // connect()'s shared state intact.
       if (gen !== this.#connectGen) {
+        room.removeAllListeners(); // FE-9c — don't let its `disconnected` clobber
         room.disconnect();
         return;
       }
+
+      // Assert the `negotiating` publish gate BEFORE connect (R2-5): a plain
+      // mic publish is initiated in the `connected` handler, which races
+      // session construction — the gate must already hold so no plaintext
+      // frame escapes the negotiation window. The session takes over managing
+      // this reason once bound (releases it on its verdict). Only for E2EE-
+      // capable shells (an unsupported shell is a normal plaintext call).
+      if (e2eeCapable) this.#publishGate.add("negotiating");
 
       await room.connect(auth.url, auth.token, {
         autoSubscribe: false,
       });
       if (gen !== this.#connectGen) {
+        this.#publishGate.delete("negotiating");
+        room.removeAllListeners(); // FE-9c
         room.disconnect();
         return;
       }
+      // Sweep any already-published local track under the gate (a track can
+      // publish during `await room.connect`).
+      if (this.#publishGate.size > 0) await this.#applyPublishGate(room);
 
       // Assert the device-qualified identity the SFU actually minted (slice
       // 6.1/6.4 item 3): if it isn't exactly `{user_id}:{device_id}`,
@@ -649,6 +826,36 @@ class Voice {
         }
       }
 
+      // Probe whether this channel already has an open E2EE group — the chip's
+      // in-call FE-7 input, the §0.2 #9 self-attribution for web/toggle-off
+      // shells (gate F4: this must run for EVERY call, not just E2EE-capable
+      // ones), and the T0d fail-safe's tri-state gate (media-gate LOW-2: the
+      // fail-safe holds the publish gate while the probe is PENDING; a
+      // completed 404 / feature-off / error resolves "none" — probe-error ⇒
+      // availability escape is RATIFIED, same origin as the DS, R2-6). Raw
+      // authenticated fetch so it works without the desktop bridge.
+      this.#openGroupProbe = "pending";
+      {
+        const apiClient = this.getClient();
+        if (apiClient) {
+          const [authHeader, authValue] = apiClient.authenticationHeader;
+          void fetch(
+            `${apiClient.options.baseURL}/mls/channels/${channel.id}/open_group`,
+            { headers: { [authHeader]: authValue } },
+          )
+            .then(async (response) => {
+              const open = response.ok;
+              this.#openGroupProbe = open ? "open" : "none";
+              this.#setCallChannelHasOpenGroup(open);
+            })
+            .catch(() => {
+              this.#openGroupProbe = "none";
+            });
+        } else {
+          this.#openGroupProbe = "none";
+        }
+      }
+
       // Construct + start the MLS control-plane session (slice 6.4 step 6). Only
       // once the identity is proven (else local-last never matches). No await
       // has run since the gen check above, so we still own the shared state; a
@@ -669,10 +876,16 @@ class Voice {
           deviceId: e2eeDeviceId,
           channelId: channel.id,
           requestMfaTicket: () => this.#requestMfaTicket(),
+          channelHasOpenGroup: () => this.#openGroupProbe,
         });
         session.bindMedia(this.#buildMediaBinding(room, this.#mlsKeyProvider));
         this.#mlsSession = session;
         void session.start();
+      } else if (e2eeCapable) {
+        // Capable shell but identity/provider setup failed: release the gate
+        // (no session will manage it) so the plain call is not stuck muted.
+        this.#publishGate.delete("negotiating");
+        if (this.room() === room) void this.#applyPublishGate(room);
       }
     } catch (error) {
       // Failed connect: tear down THIS invocation's E2EE resources so the
@@ -716,8 +929,17 @@ class Voice {
       this.#e2eeWorker = undefined;
       this.#mlsKeyProvider = undefined;
       this.callEncryption.clear();
+      this.#publishGate.clear();
       this.#setCallEncryptionError(undefined);
       this.#setCallNonEnrolled([]);
+      // Reset the 6.5 signals so the next call's card never flashes this
+      // call's latched mode/roster/attribution (FE-9a).
+      this.#setCallMode(undefined);
+      this.#setCallAnnouncedBy(undefined);
+      this.#setCallRoster({ members: [], ghosts: [] });
+      this.#setCallChannelHasOpenGroup(false);
+      this.#setCallRosterPanelOpen(false);
+      this.#openGroupProbe = "pending";
 
       const room = this.room();
       if (!room) return;
@@ -793,22 +1015,61 @@ class Voice {
         // this is non-empty (fail-closed) — 6.4 never opens a plaintext path.
         this.#setCallNonEnrolled(result.nonEnrolled);
       },
+      onCallModeChanged: (mode, detail) => {
+        // §3.4 mode → the 6.5 UI (chip / banner / roster panel). Batched so an
+        // intermediate chip state never renders for a frame (FE-8).
+        batch(() => {
+          this.#setCallMode(mode);
+          this.#setCallNonEnrolled(detail.nonEnrolled);
+          this.#setCallAnnouncedBy(detail.announcedBy);
+        });
+      },
+      onRosterState: (members, ghosts) => {
+        this.#setCallRoster({ members, ghosts });
+      },
+      autoLeave: (reason) => {
+        // ME-10 / A3: never `disconnect()` synchronously from inside the
+        // session's own callback — defer (FE-9b). The explainer modal names
+        // why the call ended.
+        queueMicrotask(() => {
+          console.warn("[mls] auto-leaving call:", reason);
+          this.disconnect();
+          this.openModal({ type: "error2", error: reason });
+        });
+      },
       setEncryptionEnabled: (enabled) => room.setE2EEEnabled(enabled),
-      pausePublishing: () => this.#setUpstreamPaused(room, true),
-      resumePublishing: () => this.#setUpstreamPaused(room, false),
+      pausePublishing: (reason) => this.#pauseGate(room, reason),
+      resumePublishing: (reason) => this.#resumeGate(room, reason),
     };
   }
 
   /**
-   * Pause / resume all local upstream publications — the plaintext-until-first-
-   * key guard + the mix fail-closed pause (§1.5/§3.4). LiveKit keeps the tracks
-   * captured but stops sending them upstream, so no frame is published while the
-   * send key is not yet installed (or while the call is mixed).
+   * The publish-gate reason SET (FE-3/R2-1/R2-7). Publishing flows only when
+   * the set is empty; adding a reason SWEEPS existing publications, removing
+   * the last reason resumes them. Hardened against livekit-client 2.15.13's
+   * unconditional resumes (`setMediaStreamTrack`/`setProcessor`): the
+   * LocalTrackPublished + UpstreamResumed listeners (wired at connect) re-apply
+   * the gate, so a device switch, unmute-restart, or processor attach can never
+   * bypass it while a reason is held.
    */
-  async #setUpstreamPaused(room: Room, paused: boolean): Promise<void> {
+  async #pauseGate(room: Room, reason: string): Promise<void> {
+    this.#publishGate.add(reason);
+    await this.#applyPublishGate(room);
+  }
+
+  async #resumeGate(room: Room, reason: string): Promise<void> {
+    this.#publishGate.delete(reason);
+    await this.#applyPublishGate(room);
+  }
+
+  /** Sweep every local publication to match the gate (empty ⇒ resume all). */
+  async #applyPublishGate(room: Room): Promise<void> {
+    const paused = this.#publishGate.size > 0;
     const ops: Promise<void>[] = [];
     for (const pub of room.localParticipant.trackPublications.values()) {
       if (!pub.track) continue;
+      // Re-assert unconditionally: `pauseUpstream` is idempotent, and a
+      // resume must only happen when the gate is truly empty.
       ops.push(paused ? pub.pauseUpstream() : pub.resumeUpstream());
     }
     await Promise.allSettled(ops);
@@ -1347,9 +1608,18 @@ class Voice {
                 audio: !!screenAudioTrack,
                 callback: async (qualityName, audio) => {
                   callback(qualityName, audio);
-                  localTrack.resumeUpstream();
-                  if (audio) {
-                    screenAudioTrack?.resumeUpstream();
+                  // Publish-gate coexistence (R2-8): the quality modal's
+                  // per-track resume must never override a held session gate
+                  // (negotiating / mixed / enable-window) — a direct resume
+                  // here would briefly publish a plaintext screenshare into a
+                  // mixed call before the UpstreamResumed backstop re-pauses
+                  // it. If the gate is held, skip the resume: the gate owner
+                  // resumes EVERY publication when the set empties.
+                  if (this.#publishGate.size === 0) {
+                    localTrack.resumeUpstream();
+                    if (audio) {
+                      screenAudioTrack?.resumeUpstream();
+                    }
                   }
                 },
               });
@@ -1471,6 +1741,104 @@ class Voice {
     // DMs and group DMs don't have server permissions — always allow speaking
     if (channel.type === "DirectMessage" || channel.type === "Group") return true;
     return !!channel.havePermission("Speak");
+  }
+
+  /**
+   * The §4.4 dual-gated encryption chip state (slice 6.5). Derived from the
+   * session mode/state, LiveKit's observed per-participant encryption, the
+   * verified MLS roster, the latched error, and the open-group probe — via the
+   * pure `chipState` policy (unit-tested). Reactive: reads the participants
+   * version so it re-runs when the SFU roster / published tracks change.
+   */
+  callEncryptionChip(): ChipState {
+    this.callParticipantsVersion(); // reactive dependency (FE-8/R2-3)
+    const room = this.room();
+    const session = this.#mlsSession;
+    const mode = this.callMode();
+    const publishing: string[] = [];
+    if (room) {
+      for (const [identity, p] of [
+        [room.localParticipant.identity, room.localParticipant] as const,
+        ...[...room.remoteParticipants.values()].map(
+          (p) => [p.identity, p] as const,
+        ),
+      ]) {
+        // Only participants with ≥1 published track ever report an encryption
+        // status (FE-2); trackless listeners are covered by MLS membership.
+        if (p.trackPublications.size > 0) publishing.push(identity);
+      }
+    }
+    const observed = new Map<string, boolean>();
+    for (const identity of publishing) {
+      const v = this.callEncryption.get(identity);
+      if (v !== undefined) observed.set(identity, v);
+    }
+    return chipState({
+      hasSession: !!session,
+      sessionState: session?.state(),
+      mode,
+      e2eeEnabled: mode?.kind === "e2ee",
+      hasLocalKey: mode?.kind === "e2ee",
+      resecuring: session?.state() === "resecuring",
+      latchedError: this.callEncryptionError() !== undefined,
+      publishingIdentities: publishing,
+      observedEncrypted: observed,
+      rosterVerified: this.callRoster().members.map((m) => m.user_verified),
+      channelHasOpenGroup: this.callChannelHasOpenGroup(),
+      capableAndEnabled: this.#settings.e2eeCallsEnabled,
+    });
+  }
+
+  /**
+   * The user confirmed the whole-call plaintext downgrade (§3.4 T3/T5) from the
+   * 6.5 banner. Delegates to the session, which shows the BLOCKING native
+   * confirm dialog (native-computed non-enrolled roster), then transitions to a
+   * confirmed interlude. `displayNames` labels the natively-selected ids only.
+   */
+  async confirmCallPlaintext(): Promise<void> {
+    const session = this.#mlsSession;
+    if (!session) return;
+    const client = this.getClient();
+    const names: Record<string, string> = {};
+    for (const identity of this.callNonEnrolled()) {
+      const userId = identity.split(":")[0];
+      const user = client?.users.get(userId);
+      if (user?.username) names[userId] = user.username;
+    }
+    await session.confirmPlaintext(names);
+  }
+
+  /** Toggle the call roster / verification panel (chip click, slice 6.5). */
+  toggleCallRosterPanel(): void {
+    this.#setCallRosterPanelOpen((open) => !open);
+  }
+
+  /**
+   * ME-10 terminal-loud state (slice 6.5): the call FAILED to secure while
+   * still negotiating (retry exhaustion / loud failure) — publishing is gated
+   * and the banner offers the blocking Leave / Stay-unencrypted choice (the
+   * "stay" leg runs the same native-confirmed plaintext path as a mixed-call
+   * downgrade). Distinct from mixed/interlude, which have their own banner.
+   */
+  callTerminalLoud(): boolean {
+    return (
+      this.callMode()?.kind === "negotiating" &&
+      this.callEncryptionChip() === "not_encrypted"
+    );
+  }
+
+  /**
+   * Whether enabling video/screenshare is refused by the A3(b) product gate
+   * (slice 6.5): while an E2EE call has more than `MAX_VIDEO_PARTICIPANTS`
+   * participants, video is off (control-plane cost scales with roster). The
+   * >30-after-video-on direction + the join-side refusal need the 6.6 server
+   * leg (D12) — this is the client half. Only gates ENCRYPTED calls.
+   */
+  videoCapReached(): boolean {
+    if (this.callMode()?.kind !== "e2ee") return false;
+    const room = this.room();
+    if (!room) return false;
+    return room.remoteParticipants.size + 1 > MAX_VIDEO_PARTICIPANTS;
   }
 
   #startPushToTalk(room: Room) {

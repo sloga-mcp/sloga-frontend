@@ -181,6 +181,14 @@ export type Modals =
   | {
       type: "e2ee_verify";
       peerUserId: string;
+      /**
+       * Where the screen was opened from (slice 6.5 FE-10). `"call"` = the
+       * call roster panel: use call-context fallback copy and HIDE the
+       * DM-only "turn off encryption for this conversation" button (which
+       * no-ops without a DM channel and is dangerously adjacent to the call
+       * downgrade). Default (undefined) = the DM verification entry point.
+       */
+      context?: "call";
     }
   | {
       type: "e2ee_enable_group";

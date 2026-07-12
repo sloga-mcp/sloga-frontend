@@ -11,7 +11,12 @@ import { scrollableStyles } from "@revolt/ui/directives";
 
 import { ParticipantTile, tile } from "./ParticipantTile";
 import { VoiceCallCardActions } from "./VoiceCallCardActions";
-import { VoiceCallCardStatus } from "./VoiceCallCardStatus";
+import {
+  VoiceCallCardStatus,
+  VoiceCallEncryptionChip,
+} from "./VoiceCallCardStatus";
+import { VoiceCallDowngradeBanner } from "./VoiceCallDowngradeBanner";
+import { VoiceCallRosterPanel } from "./VoiceCallRosterPanel";
 
 /**
  * Call card (active)
@@ -21,6 +26,18 @@ export function VoiceCallCardActiveRoom() {
 
   return (
     <View immersive={voice.immersive()}>
+      {/* The §3.4 downgrade banner + §4.4 loud chip must remain visible in
+          theater/fullscreen too (FE-12) — they render OUTSIDE the chrome
+          `<Show>` below, overlaid on the participant grid. In immersive mode
+          the chip gets its own overlay copy (the controls-bar instance is
+          hidden with the rest of the chrome). */}
+      <VoiceCallDowngradeBanner />
+      <VoiceCallRosterPanel />
+      <Show when={voice.immersive()}>
+        <ImmersiveChipOverlay>
+          <VoiceCallEncryptionChip />
+        </ImmersiveChipOverlay>
+      </Show>
       <Participants />
       {/* Theater mode hides every control; the only chrome is the auto-dimming
           exit button overlaid on the selected window (Escape also exits). */}
@@ -32,6 +49,7 @@ export function VoiceCallCardActiveRoom() {
           </VoiceCallControlHolder>
           <VoiceCallCardActions size="sm" />
           <VoiceCallControlHolder left overflow>
+            <VoiceCallEncryptionChip />
             <VoiceCallCardStatus />
           </VoiceCallControlHolder>
         </VoiceCallControls>
@@ -371,5 +389,18 @@ const FocusBox = styled("div", {
     flexDirection: "column",
     justifyContent: "center",
     margin: "0 auto",
+  },
+});
+
+/**
+ * Positions the encryption chip's immersive-mode copy (FE-12): theater mode
+ * hides all chrome, but an amber/loud encryption state must stay visible.
+ */
+const ImmersiveChipOverlay = styled("div", {
+  base: {
+    position: "absolute",
+    left: "var(--gap-md)",
+    top: "var(--gap-md)",
+    zIndex: 5,
   },
 });

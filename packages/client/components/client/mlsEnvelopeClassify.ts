@@ -88,6 +88,19 @@ export function classifyEnvelopeError(error: unknown): EnvelopeDisposition {
         successorNeeded: false,
         ack: true,
       };
+    // A §3.4 ctl-announce (6.5) that could not be decrypted/parsed — sent
+    // under a prior epoch/generation this device no longer holds keys for
+    // (`max_past_epochs` is 0), malformed, or the wrong content kind. QUIET
+    // ack+drop: the announce is coordination-only and every member converges
+    // via its own mix detection without it. Never loud, never a successor.
+    case "mls_stale_ctl":
+      return {
+        kind: "drop",
+        reason: type,
+        loud: false,
+        successorNeeded: false,
+        ack: true,
+      };
     // Terminal STRUCTURAL rejections — a malformed / undecodable / unsuitable
     // envelope never becomes valid on retry. An untrusted DS orders the
     // mailbox (invariant 5), so without a terminal disposition here it could

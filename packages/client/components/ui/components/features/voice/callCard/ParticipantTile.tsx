@@ -86,21 +86,31 @@ export function ParticipantTile(props: TileProps) {
 
   const qualityColor = () => {
     switch (quality()) {
-      case ConnectionQuality.Excellent: return "#4caf50";
-      case ConnectionQuality.Good:     return "#cddc39";
-      case ConnectionQuality.Poor:     return "#ff9800";
-      case ConnectionQuality.Lost:     return "#f44336";
-      default:                         return "#9e9e9e";
+      case ConnectionQuality.Excellent:
+        return "#4caf50";
+      case ConnectionQuality.Good:
+        return "#cddc39";
+      case ConnectionQuality.Poor:
+        return "#ff9800";
+      case ConnectionQuality.Lost:
+        return "#f44336";
+      default:
+        return "#9e9e9e";
     }
   };
 
   const qualityMs = () => {
     switch (quality()) {
-      case ConnectionQuality.Excellent: return "<50ms";
-      case ConnectionQuality.Good:     return "~150ms";
-      case ConnectionQuality.Poor:     return "~400ms";
-      case ConnectionQuality.Lost:     return "lost";
-      default:                         return "—";
+      case ConnectionQuality.Excellent:
+        return "<50ms";
+      case ConnectionQuality.Good:
+        return "~150ms";
+      case ConnectionQuality.Poor:
+        return "~400ms";
+      case ConnectionQuality.Lost:
+        return "lost";
+      default:
+        return "—";
     }
   };
 
@@ -179,6 +189,15 @@ export function ParticipantTile(props: TileProps) {
           <OverlayInner>
             <OverflowingText>{user().username}</OverflowingText>
             <Row gap="md">
+              {/* Per-participant media-E2EE lock (slice 6.5 §4.4): MLS member
+                  ⇒ lock (filled if user-verified, outline if not); SFU
+                  participant absent from the verified roster ⇒ loud slashed
+                  lock. Same iconography family as slice-5 chat verification.
+                  Shown only on an E2EE call (a lock exists in the roster). */}
+              <ParticipantLock
+                identity={participant.identity}
+                userId={participantUserId(participant.identity)}
+              />
               {isScreenShare() ? (
                 <Show when={isScreenShareAudioUserMuted()}>
                   <Symbol
@@ -360,3 +379,44 @@ const PingDot = styled("div", {
     flexShrink: 0,
   },
 });
+
+/**
+ * Per-participant media-E2EE lock (slice 6.5 §4.4). Reads the session's
+ * verified MLS roster + the non-enrolled set (native-computed) via the Voice
+ * store. Renders nothing on a plain call (no lock in the roster).
+ */
+function ParticipantLock(props: { identity: string; userId: string }) {
+  const voice = useVoice();
+
+  const member = () =>
+    voice
+      .callRoster()
+      .members.find((m) => `${m.user_id}:${m.device_id}` === props.identity);
+  const nonEnrolled = () => voice.callNonEnrolled().includes(props.identity);
+
+  return (
+    <Show when={voice.callMode() && voice.callMode()!.kind !== "off"}>
+      <Show
+        when={member()}
+        fallback={
+          <Show when={nonEnrolled()}>
+            <Symbol size={16} color="var(--md-sys-color-error)">
+              no_encryption
+            </Symbol>
+          </Show>
+        }
+      >
+        <Symbol
+          size={16}
+          color={
+            member()!.user_verified
+              ? "var(--md-sys-color-primary)"
+              : "var(--md-sys-color-outline)"
+          }
+        >
+          {member()!.user_verified ? "verified_user" : "lock"}
+        </Symbol>
+      </Show>
+    </Show>
+  );
+}
