@@ -108,6 +108,16 @@ export type Modals =
       message: Message;
     }
   | {
+      type: "forward_message";
+      /** Message to forward (server copies an immutable snapshot) */
+      message: Message;
+    }
+  | {
+      type: "schedule_message";
+      /** Channel whose current draft should be scheduled */
+      channel: Channel;
+    }
+  | {
       type: "create_role";
       server: Server;
       callback: (id: string) => void;

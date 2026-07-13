@@ -50,6 +50,7 @@ import { startsWithPackPUA } from "@revolt/markdown/emoji/UnicodeEmoji";
 import { MediaPickerProps } from "@revolt/ui/components/features/messaging/composition/picker/CompositionMediaPicker";
 import { DiceRollMessage, isDiceRollMessage } from "./DiceRollMessage";
 import { EditMessage } from "./EditMessage";
+import { ForwardedMessage } from "./ForwardedMessage";
 import { InteractionContext } from "./InteractionContext";
 import { MessageComponents } from "./MessageComponents";
 import { PollMessage, isPollMessage } from "./PollMessage";
@@ -403,6 +404,11 @@ export function Message(props: Props) {
               push notifications which must not double-render here */}
           <Match when={isPollMessage(props.message.flags, props.message.poll)}>
             <PollMessage message={props.message} />
+          </Match>
+          {/* Forwarded messages have no content of their own — the whole
+              body is the immutable server-copied snapshot */}
+          <Match when={props.message.isForwarded}>
+            <ForwardedMessage message={props.message} />
           </Match>
           <Match when={props.message.content && !isOnlyGIF()}>
             <BreakText>

@@ -10,6 +10,8 @@ import {
 
 import type { Client, User } from "stoat.js";
 
+import { useLingui } from "@lingui-solid/solid/macro";
+
 import { useModals } from "@revolt/modal";
 import { fetchLatestChangelog } from "@revolt/modal/modals/Changelog";
 import { State } from "@revolt/state";
@@ -67,6 +69,7 @@ const clientContext = createContext(null! as ClientController);
  */
 export function ClientContext(props: { state: State; children: JSXElement }) {
   const { openModal } = useModals();
+  const { t } = useLingui();
 
   // eslint-disable-next-line solid/reactivity
   const controller = new ClientController(props.state);
@@ -164,6 +167,31 @@ export function ClientContext(props: { state: State; children: JSXElement }) {
     } else if (!needed) {
       offeredReenroll = false;
     }
+  });
+
+  // Scheduled-message delivery failures are permanent (permissions revoked,
+  // channel gone, fire-time validation) and arrive on the author's private
+  // topic — surface them loudly wherever the user happens to be.
+  createEffect(() => {
+    if (!controller.isLoggedIn()) return;
+    const client = controller.getCurrentClient();
+    if (!client) return;
+
+    const onScheduledMessageFail = (
+      _id: string,
+      _channelId: string,
+      reason: string,
+    ) => {
+      openModal({
+        type: "error2",
+        error: t`A scheduled message could not be sent: ${reason}`,
+      });
+    };
+
+    client.addListener("scheduledMessageFail", onScheduledMessageFail);
+    onCleanup(() =>
+      client.removeListener("scheduledMessageFail", onScheduledMessageFail),
+    );
   });
 
   return (

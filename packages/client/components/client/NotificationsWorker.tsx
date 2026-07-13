@@ -109,6 +109,11 @@ export function NotificationsWorker() {
     if (message.content) {
       body = message.contentPlain;
       icon = message.avatarURL;
+    } else if (message.forwarded) {
+      // Forwarded messages carry no content of their own — preview the
+      // snapshot instead of showing an empty notification
+      body = message.forwarded.content ?? t`Forwarded a message`;
+      icon = message.avatarURL;
     } else if (message.systemMessage) {
       switch (message.systemMessage.type) {
         case "text":

@@ -183,6 +183,22 @@ export function MessageComposition(props: Props) {
       !currentSlowmode(),
   );
 
+  /**
+   * Scheduled messages are stored on the server as plaintext until they
+   * fire, so the composer fails closed for encrypted (or blocked)
+   * conversations — same client-side E2EE enforcement point as polls.
+   * Attachments are not supported for scheduling (v1: text and replies).
+   */
+  const scheduleAllowed = createMemo(
+    () =>
+      ["TextChannel", "Thread", "Group", "DirectMessage"].includes(
+        props.channel.type,
+      ) &&
+      props.channel.havePermission("SendMessage") &&
+      e2eeMode() !== "encrypt" &&
+      e2eeMode() !== "blocked",
+  );
+
   // Prime the send-mode cache when the conversation opens so the indicator
   // is correct before the first send
   createEffect(
@@ -1127,6 +1143,34 @@ export function MessageComposition(props: Props) {
                       }
                     >
                       <Symbol>ballot</Symbol>
+                    </IconButton>
+                  </Tooltip>
+                </MessageBox.InlineIcon>
+              </Show>
+              <Show when={scheduleAllowed()}>
+                <MessageBox.InlineIcon>
+                  <Tooltip
+                    content={
+                      draft()?.files?.length
+                        ? t`Scheduling doesn't support attachments yet`
+                        : !draft()?.content?.trim()
+                          ? t`Write a message first, then schedule it`
+                          : t`Send later`
+                    }
+                    placement="top"
+                  >
+                    <IconButton
+                      isDisabled={
+                        !!draft()?.files?.length || !draft()?.content?.trim()
+                      }
+                      onPress={() =>
+                        openModal({
+                          type: "schedule_message",
+                          channel: props.channel,
+                        })
+                      }
+                    >
+                      <Symbol>schedule_send</Symbol>
                     </IconButton>
                   </Tooltip>
                 </MessageBox.InlineIcon>

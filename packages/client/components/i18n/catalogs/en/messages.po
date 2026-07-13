@@ -134,6 +134,11 @@ msgstr "{0} renamed the channel"
 msgid "{0} reported ({1})"
 msgstr "{0} reported ({1})"
 
+#. placeholder {0}: rows().length
+#: components/app/interface/channels/text/ScheduledMessagesBar.tsx
+msgid "{0} scheduled"
+msgstr "{0} scheduled"
+
 #. placeholder {0}: user.displayName ?? user.username
 #: components/client/NotificationsWorker.tsx
 msgid "{0} sent you a friend request"
@@ -143,6 +148,11 @@ msgstr "{0} sent you a friend request"
 #: components/client/NotificationsWorker.tsx
 msgid "{0} unpinned a message"
 msgstr "{0} unpinned a message"
+
+#. placeholder {0}: state()?.totalVotes ?? 0
+#: components/app/interface/channels/text/PollMessage.tsx
+msgid "{0} votes"
+msgstr "{0} votes"
 
 #. placeholder {0}: (message.systemMessage as UserModeratedSystemMessage).user?.username
 #. placeholder {1}: (message.systemMessage as UserModeratedSystemMessage).by?.username
@@ -178,6 +188,11 @@ msgstr "{0}-{1} of {2}"
 msgid "{0}'s roles"
 msgstr "{0}'s roles"
 
+#. placeholder {0}: Math.ceil(hours / 24)
+#: components/app/interface/channels/text/PollMessage.tsx
+msgid "{0}d left"
+msgstr "{0}d left"
+
 #: components/client/NotificationsWorker.tsx
 msgid "{callerName} is calling in {channelName}"
 msgstr "{callerName} is calling in {channelName}"
@@ -187,10 +202,18 @@ msgstr "{callerName} is calling in {channelName}"
 msgid "{h} hours"
 msgstr "{h} hours"
 
+#: components/app/interface/channels/text/PollMessage.tsx
+msgid "{hours}h left"
+msgstr "{hours}h left"
+
 #: src/interface/channels/text/Composition.tsx
 #: src/interface/channels/text/Composition.tsx
 msgid "{m} minutes"
 msgstr "{m} minutes"
+
+#: components/app/interface/channels/text/PollMessage.tsx
+msgid "{minutes}m left"
+msgstr "{minutes}m left"
 
 #: src/interface/channels/text/Composition.tsx
 msgid "{sec} seconds"
@@ -295,6 +318,7 @@ msgstr "1 day"
 #: src/interface/channels/text/Composition.tsx
 #: src/interface/channels/text/Composition.tsx
 #: components/modal/modals/CreateThread.tsx
+#: components/modal/modals/CreatePoll.tsx
 #: components/modal/modals/BanMember.tsx
 #: components/app/interface/settings/channel/Overview.tsx
 msgid "1 hour"
@@ -314,6 +338,10 @@ msgstr "1 person reacted"
 msgid "1 second"
 msgstr "1 second"
 
+#: components/modal/modals/CreatePoll.tsx
+msgid "1 week"
+msgstr "1 week"
+
 #: components/app/interface/settings/channel/Overview.tsx
 msgid "10 minutes"
 msgstr "10 minutes"
@@ -330,13 +358,19 @@ msgstr "12 hours"
 msgid "2 hours"
 msgstr "2 hours"
 
+#: components/modal/modals/CreatePoll.tsx
+msgid "2 weeks"
+msgstr "2 weeks"
+
 #: components/modal/modals/CreateThread.tsx
+#: components/modal/modals/CreatePoll.tsx
 #: components/app/interface/settings/user/Language.tsx
 msgid "24 hours"
 msgstr "24 hours"
 
 #: components/modal/modals/SuspendUser.tsx
 #: components/modal/modals/CreateThread.tsx
+#: components/modal/modals/CreatePoll.tsx
 #: components/modal/modals/BanMember.tsx
 msgid "3 days"
 msgstr "3 days"
@@ -352,6 +386,14 @@ msgstr "30 minutes"
 #: components/app/interface/settings/channel/Overview.tsx
 msgid "30 seconds"
 msgstr "30 seconds"
+
+#: components/modal/modals/CreatePoll.tsx
+msgid "32 days"
+msgstr "32 days"
+
+#: components/modal/modals/CreatePoll.tsx
+msgid "4 hours"
+msgstr "4 hours"
 
 #: components/auth/src/flows/FlowHome.tsx
 msgid "4k streaming"
@@ -376,9 +418,17 @@ msgstr "6 hours"
 msgid "7 days"
 msgstr "7 days"
 
+#: components/modal/modals/CreatePoll.tsx
+msgid "8 hours"
+msgstr "8 hours"
+
 #: components/ui/components/features/voice/callCard/VoiceCallDowngradeBanner.tsx
 msgid "A participant turned off encryption for this call. Resume to be heard — the server will be able to read this call."
 msgstr "A participant turned off encryption for this call. Resume to be heard — the server will be able to read this call."
+
+#: components/client/index.tsx
+msgid "A scheduled message could not be sent: {reason}"
+msgstr "A scheduled message could not be sent: {reason}"
 
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "Able to access channels on this server"
@@ -431,6 +481,10 @@ msgstr "Add a Friend"
 #: components/modal/modals/AddFriend.tsx
 msgid "Add a new friend"
 msgstr "Add a new friend"
+
+#: components/modal/modals/CreatePoll.tsx
+msgid "Add answer"
+msgstr "Add answer"
 
 #: components/app/menus/UserContextMenu.tsx
 msgid "Add friend"
@@ -498,6 +552,10 @@ msgstr "All Messages"
 msgid "Allow members to change name and avatar per-message"
 msgstr "Allow members to change name and avatar per-message"
 
+#: components/modal/modals/CreatePoll.tsx
+msgid "Allow multiple answers"
+msgstr "Allow multiple answers"
+
 #: components/app/interface/settings/user/bots/ViewBot.tsx
 msgid "Allow others to add your bot to their servers from Discover"
 msgstr "Allow others to add your bot to their servers from Discover"
@@ -526,6 +584,15 @@ msgstr "An error occurred."
 #: components/i18n/errors.ts
 msgid "An internal error occurred. ({0})"
 msgstr "An internal error occurred. ({0})"
+
+#. placeholder {0}: index() + 1
+#: components/modal/modals/CreatePoll.tsx
+msgid "Answer {0}"
+msgstr "Answer {0}"
+
+#: components/modal/modals/CreatePoll.tsx
+msgid "Answers"
+msgstr "Answers"
 
 #: components/app/interface/settings/UserSettings.tsx
 #: components/app/interface/settings/user/Sync.tsx
@@ -570,6 +637,10 @@ msgstr "Attach video message"
 #: components/ui/components/features/messaging/composition/VoiceMessageButton.tsx
 msgid "Attach voice message"
 msgstr "Attach voice message"
+
+#: components/modal/modals/ForwardMessage.tsx
+msgid "Attachments"
+msgstr "Attachments"
 
 #: components/modal/modals/ScreenShareSettings.tsx
 msgid "Audio disabled by browser"
@@ -727,12 +798,16 @@ msgid "Brightness: {0}%"
 msgstr "Brightness: {0}%"
 
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
-msgid "Browser"
-msgstr "Browser"
+#~ msgid "Browser"
+#~ msgstr "Browser"
 
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
 msgid "Browser Echo Cancellation"
 msgstr "Browser Echo Cancellation"
+
+#: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
+msgid "Browser Noise Suppression"
+msgstr "Browser Noise Suppression"
 
 #: components/app/interface/settings/user/Feedback.tsx
 msgid "Bug Tracker"
@@ -817,6 +892,7 @@ msgstr "Camera unavailable — check permissions and that no other app is using 
 #: components/modal/modals/ServerIdentity.tsx
 #: components/modal/modals/ScreenShareSettings.tsx
 #: components/modal/modals/ScreenSharePicker.tsx
+#: components/modal/modals/ScheduleMessage.tsx
 #: components/modal/modals/ResetBotToken.tsx
 #: components/modal/modals/ReportContent.tsx
 #: components/modal/modals/RenameSession.tsx
@@ -829,6 +905,7 @@ msgstr "Camera unavailable — check permissions and that no other app is using 
 #: components/modal/modals/KickMember.tsx
 #: components/modal/modals/InviteToServer.tsx
 #: components/modal/modals/Invite.tsx
+#: components/modal/modals/ForwardMessage.tsx
 #: components/modal/modals/EditCategory.tsx
 #: components/modal/modals/E2EEEnableGroup.tsx
 #: components/modal/modals/E2EEEnable.tsx
@@ -862,6 +939,10 @@ msgstr "Cancel friend request"
 #: components/app/menus/DraftMessageContextMenu.tsx
 msgid "Cancel message"
 msgstr "Cancel message"
+
+#: components/app/interface/channels/text/ScheduledMessagesBar.tsx
+msgid "Cancel scheduled message"
+msgstr "Cancel scheduled message"
 
 #: src/interface/ServerEvents.tsx
 #: src/interface/ServerEvents.tsx
@@ -1027,6 +1108,7 @@ msgstr "Client Settings"
 #: components/modal/modals/UserProfileMutualFriends.tsx
 #: components/modal/modals/ServerInfo.tsx
 #: components/modal/modals/ReportQueue.tsx
+#: components/modal/modals/PollVoters.tsx
 #: components/modal/modals/PolicyChange.tsx
 #: components/modal/modals/LinkWarning.tsx
 #: components/modal/modals/JoinServer.tsx
@@ -1042,6 +1124,7 @@ msgstr "Client Settings"
 #: components/modal/modals/CreateThread.tsx
 #: components/modal/modals/CreateServer.tsx
 #: components/modal/modals/CreateRole.tsx
+#: components/modal/modals/CreatePoll.tsx
 #: components/modal/modals/CreateGroup.tsx
 #: components/modal/modals/CreateForumPost.tsx
 #: components/modal/modals/CreateChannel.tsx
@@ -1062,6 +1145,10 @@ msgstr "Close chat"
 #: components/modal/modals/DeleteChannel.tsx
 msgid "Close conversation with {0}?"
 msgstr "Close conversation with {0}?"
+
+#: components/app/interface/channels/text/PollMessage.tsx
+msgid "Closing…"
+msgstr "Closing…"
 
 #: components/modal/modals/JoinServer.tsx
 msgid "Code"
@@ -1220,6 +1307,10 @@ msgstr "Copy webhook URL"
 msgid "Could not find what you requested."
 msgstr "Could not find what you requested."
 
+#: components/modal/modals/PollVoters.tsx
+msgid "Could not load voters."
+msgstr "Could not load voters."
+
 #: src/interface/ServerEvents.tsx
 msgid "Couldn't load events"
 msgstr "Couldn't load events"
@@ -1229,6 +1320,7 @@ msgstr "Couldn't load events"
 #: components/modal/modals/CreateThread.tsx
 #: components/modal/modals/CreateServer.tsx
 #: components/modal/modals/CreateRole.tsx
+#: components/modal/modals/CreatePoll.tsx
 #: components/modal/modals/CreateGroup.tsx
 #: components/modal/modals/CreateForumPost.tsx
 #: components/modal/modals/CreateChannel.tsx
@@ -1321,6 +1413,11 @@ msgstr "Create Invite"
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "Create invites for others to use"
 msgstr "Create invites for others to use"
+
+#: src/interface/channels/text/Composition.tsx
+#: components/modal/modals/CreatePoll.tsx
+msgid "Create poll"
+msgstr "Create poll"
 
 #: components/modal/modals/E2EEEnable.tsx
 msgid "Create recovery code"
@@ -1549,7 +1646,6 @@ msgstr "Disable Account"
 msgid "Disable one-time password authenticator"
 msgstr "Disable one-time password authenticator"
 
-#: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
 #: components/app/interface/settings/server/Overview.tsx
 #: components/app/interface/settings/server/Overview.tsx
 #: components/app/interface/settings/server/Overview.tsx
@@ -1813,6 +1909,10 @@ msgstr "Encryption will start once a message is sent."
 msgid "End call"
 msgstr "End call"
 
+#: components/app/menus/MessageContextMenu.tsx
+msgid "End poll now"
+msgstr "End poll now"
+
 #: components/ui/components/features/voice/callCard/VoiceCallCardStatus.tsx
 msgid "End-to-end encrypted"
 msgstr "End-to-end encrypted"
@@ -1830,12 +1930,12 @@ msgid "Ends on"
 msgstr "Ends on"
 
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
-msgid "Enhanced"
-msgstr "Enhanced"
+#~ msgid "Enhanced"
+#~ msgstr "Enhanced"
 
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
-msgid "Enhanced (RNNoise)"
-msgstr "Enhanced (RNNoise)"
+#~ msgid "Enhanced (RNNoise)"
+#~ msgstr "Enhanced (RNNoise)"
 
 #: components/modal/modals/RenameSession.tsx
 msgid "Enter a new name for this session"
@@ -1942,6 +2042,14 @@ msgstr "Feedback"
 msgid "Fetching encrypted attachment…"
 msgstr "Fetching encrypted attachment…"
 
+#: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
+msgid "Filter background noise from your microphone with RNNoise, an open source machine-learning noise filter that runs on your device. Applies immediately, even mid-call."
+msgstr "Filter background noise from your microphone with RNNoise, an open source machine-learning noise filter that runs on your device. Applies immediately, even mid-call."
+
+#: components/app/interface/channels/text/PollMessage.tsx
+msgid "Final results"
+msgstr "Final results"
+
 #: src/interface/Home.tsx
 msgid "Find a community based on your hobbies or interests."
 msgstr "Find a community based on your hobbies or interests."
@@ -1995,6 +2103,24 @@ msgstr "Forum"
 #: components/modal/modals/CreateChannel.tsx
 msgid "Forum Channel"
 msgstr "Forum Channel"
+
+#: components/modal/modals/ForwardMessage.tsx
+#: components/app/menus/MessageContextMenu.tsx
+msgid "Forward"
+msgstr "Forward"
+
+#: components/modal/modals/ForwardMessage.tsx
+msgid "Forward message"
+msgstr "Forward message"
+
+#: components/app/interface/channels/text/ForwardedMessage.tsx
+msgid "Forwarded"
+msgstr "Forwarded"
+
+#: components/ui/components/features/messaging/elements/MessageReply.tsx
+#: components/client/NotificationsWorker.tsx
+msgid "Forwarded a message"
+msgstr "Forwarded a message"
 
 #: components/auth/src/flows/FlowHome.tsx
 msgid "Free"
@@ -2192,6 +2318,22 @@ msgstr "Imported: {0} · Duplicates skipped: {1} · Invalid: {2}"
 #: src/interface/ServerEvents.tsx
 msgid "Importing…"
 msgstr "Importing…"
+
+#: components/modal/modals/ScheduleMessage.tsx
+msgid "In 1 hour"
+msgstr "In 1 hour"
+
+#: components/modal/modals/ScheduleMessage.tsx
+msgid "In 30 minutes"
+msgstr "In 30 minutes"
+
+#: components/modal/modals/ScheduleMessage.tsx
+msgid "In 4 hours"
+msgstr "In 4 hours"
+
+#: components/modal/modals/ScheduleMessage.tsx
+msgid "In a week"
+msgstr "In a week"
 
 #: src/AndroidNag.tsx
 msgid "In the meantime, install Sloga from Google Play for a faster, smoother experience designed for Android."
@@ -2464,6 +2606,7 @@ msgid "Loading snapshots…"
 msgstr "Loading snapshots…"
 
 #: src/interface/ServerEvents.tsx
+#: components/modal/modals/PollVoters.tsx
 msgid "Loading…"
 msgstr "Loading…"
 
@@ -2669,6 +2812,10 @@ msgstr "Message was sent on another platform"
 #: src/interface/channels/text/Composition.tsx
 msgid "Messages disappear after {0}"
 msgstr "Messages disappear after {0}"
+
+#: components/app/interface/channels/text/ScheduledMessagesBar.tsx
+msgid "Messages go out around their scheduled time."
+msgstr "Messages go out around their scheduled time."
 
 #: src/interface/channels/text/Composition.tsx
 msgid "Messages to this conversation are end-to-end encrypted."
@@ -2888,6 +3035,10 @@ msgstr "No archived threads"
 msgid "No channels available to create an invite for."
 msgstr "No channels available to create an invite for."
 
+#: components/modal/modals/ForwardMessage.tsx
+msgid "No channels found"
+msgstr "No channels found"
+
 #: src/interface/ServerEvents.tsx
 #~ msgid "No Events Channel Found"
 #~ msgstr "No Events Channel Found"
@@ -2928,9 +3079,21 @@ msgstr "No stickers yet. Upload one above!"
 msgid "No verifiable devices yet — send or receive an encrypted message first, then reopen this screen."
 msgstr "No verifiable devices yet — send or receive an encrypted message first, then reopen this screen."
 
+#: components/modal/modals/PollVoters.tsx
+msgid "No votes for this answer yet"
+msgstr "No votes for this answer yet"
+
 #: src/interface/Friends.tsx
 msgid "Nobody here right now!"
 msgstr "Nobody here right now!"
+
+#: components/ui/components/features/voice/callCard/VoiceDeviceSelector.tsx
+msgid "Noise suppression"
+msgstr "Noise suppression"
+
+#: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
+msgid "Noise Suppression"
+msgstr "Noise Suppression"
 
 #: src/interface/ServerEvents.tsx
 #: components/modal/modals/CameraSettings.tsx
@@ -3075,6 +3238,10 @@ msgstr "Open server settings"
 msgid "Open settings"
 msgstr "Open settings"
 
+#: components/modal/modals/ScheduleMessage.tsx
+msgid "Or pick a time"
+msgstr "Or pick a time"
+
 #: components/modal/modals/E2EEEnable.tsx
 msgid "Or start fresh to set this up as a new device. You keep sending and receiving encrypted messages, but earlier history that lived only on your old device stays there."
 msgstr "Or start fresh to set this up as a new device. You keep sending and receiving encrypted messages, but earlier history that lived only on your old device stays there."
@@ -3135,6 +3302,10 @@ msgstr "Permissions"
 #: components/modal/modals/ScreenSharePicker.tsx
 msgid "Pick a Screen to Share"
 msgstr "Pick a Screen to Share"
+
+#: components/modal/modals/ScheduleMessage.tsx
+msgid "Pick a time between 30 seconds and 30 days from now."
+msgstr "Pick a time between 30 seconds and 30 days from now."
 
 #: components/auth/src/flows/FlowOAuthCallback.tsx
 #: components/auth/src/flows/FlowLogin.tsx
@@ -3200,13 +3371,29 @@ msgstr "Please select a method to authenticate your request."
 msgid "Please select a reason"
 msgstr "Please select a reason"
 
+#: components/modal/modals/CreatePoll.tsx
+msgid "Poll duration"
+msgstr "Poll duration"
+
+#: components/modal/modals/PollVoters.tsx
+msgid "Poll votes"
+msgstr "Poll votes"
+
+#: components/modal/modals/CreatePoll.tsx
+msgid "Polls are counted by the server and are never end-to-end encrypted — the question, answers and votes are visible to it."
+msgstr "Polls are counted by the server and are never end-to-end encrypted — the question, answers and votes are visible to it."
+
+#: components/app/interface/channels/text/PollMessage.tsx
+msgid "Polls are not available in encrypted conversations — votes are counted by the server."
+msgstr "Polls are not available in encrypted conversations — votes are counted by the server."
+
 #: src/interface/Friends.tsx
 msgid "Pop out friends list"
 msgstr "Pop out friends list"
 
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
-msgid "Powered by RNNoise"
-msgstr "Powered by RNNoise"
+#~ msgid "Powered by RNNoise"
+#~ msgstr "Powered by RNNoise"
 
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
 msgid "Press any key..."
@@ -3250,6 +3437,10 @@ msgstr "Push to Talk Key"
 #: components/app/interface/settings/user/voice/CameraOptions.tsx
 msgid "Quality and bitrate changes apply the next time you turn on your camera."
 msgstr "Quality and bitrate changes apply the next time you turn on your camera."
+
+#: components/modal/modals/CreatePoll.tsx
+msgid "Question"
+msgstr "Question"
 
 #: components/modal/modals/ReportContent.tsx
 msgid "Raid or spam attack"
@@ -3410,6 +3601,10 @@ msgstr "Remove reaction"
 #: components/app/interface/settings/user/SecurityAndPrivacy.tsx
 msgid "Remove the backup stored on the server. Your encrypted history on this device is unaffected."
 msgstr "Remove the backup stored on the server. Your encrypted history on this device is unaffected."
+
+#: components/app/interface/channels/text/PollMessage.tsx
+msgid "Remove vote"
+msgstr "Remove vote"
 
 #: components/modal/modals/RenameSession.tsx
 #: components/modal/modals/EditCategory.tsx
@@ -3617,6 +3812,7 @@ msgstr "Save to your notes"
 #: src/interface/navigation/channels/HomeSidebar.tsx
 #: src/interface/navigation/channels/HomeSidebar.tsx
 #: src/interface/channels/ChannelHeader.tsx
+#: components/modal/modals/ForwardMessage.tsx
 msgid "Saved Notes"
 msgstr "Saved Notes"
 
@@ -3636,6 +3832,18 @@ msgstr "Scams or fraud"
 msgid "Scans a channel for old tagged event messages and turns them into real calendar events. Already-imported messages are skipped, so running this again is safe."
 msgstr "Scans a channel for old tagged event messages and turns them into real calendar events. Already-imported messages are skipped, so running this again is safe."
 
+#: components/modal/modals/ScheduleMessage.tsx
+msgid "Schedule"
+msgstr "Schedule"
+
+#: src/interface/channels/text/Composition.tsx
+msgid "Scheduling doesn't support attachments yet"
+msgstr "Scheduling doesn't support attachments yet"
+
+#: components/app/menus/UserContextMenu.tsx
+msgid "Screen Share"
+msgstr "Screen Share"
+
 #: components/modal/modals/ScreenShareSettings.tsx
 #: components/app/interface/settings/user/voice/CameraOptions.tsx
 msgid "Screen Share Settings"
@@ -3652,6 +3860,10 @@ msgstr "Screen sharing isn't supported on this device"
 #: src/interface/channels/ChannelHeader.tsx
 msgid "Search"
 msgstr "Search"
+
+#: components/modal/modals/ForwardMessage.tsx
+msgid "Search for a channel or conversation…"
+msgstr "Search for a channel or conversation…"
 
 #: components/modal/modals/AddBot.tsx
 msgid "Search for groups..."
@@ -3696,8 +3908,12 @@ msgid "Select members to add"
 msgstr "Select members to add"
 
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
-msgid "Select noise suppression"
-msgstr "Select noise suppression"
+#~ msgid "Select noise suppression"
+#~ msgstr "Select noise suppression"
+
+#: components/app/interface/channels/text/PollMessage.tsx
+msgid "Select one or more answers"
+msgstr "Select one or more answers"
 
 #: components/app/interface/settings/user/voice/CameraOptions.tsx
 msgid "Select screen share quality"
@@ -3730,6 +3946,11 @@ msgstr "Send Embeds"
 #: components/modal/modals/InviteToServer.tsx
 msgid "Send Invites"
 msgstr "Send Invites"
+
+#: src/interface/channels/text/Composition.tsx
+#: components/modal/modals/ScheduleMessage.tsx
+msgid "Send later"
+msgstr "Send later"
 
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "Send Messages"
@@ -4077,6 +4298,10 @@ msgstr "Suggest new Sloga features on GitHub discussions."
 msgid "Support the project by donating - thank you!"
 msgstr "Support the project by donating - thank you!"
 
+#: components/ui/components/features/voice/callCard/VoiceDeviceSelector.tsx
+msgid "Suppress background noise (RNNoise)"
+msgstr "Suppress background noise (RNNoise)"
+
 #: components/modal/modals/SuspendUser.tsx
 msgid "Suspend"
 msgstr "Suspend"
@@ -4198,9 +4423,17 @@ msgstr "The encrypted message history stored on THIS device will be permanently 
 msgid "The file \"{0}\" ({fileSize}) exceeds the maximum size limit of {maxSizeFormatted}."
 msgstr "The file \"{0}\" ({fileSize}) exceeds the maximum size limit of {maxSizeFormatted}."
 
+#: components/modal/modals/ForwardMessage.tsx
+msgid "The forward keeps a copy of the message as it is right now — later edits or deletion of the original won't change it. Encrypted conversations can't receive forwards."
+msgstr "The forward keeps a copy of the message as it is right now — later edits or deletion of the original won't change it. Encrypted conversations can't receive forwards."
+
 #: components/auth/src/flows/FlowOAuthCallback.tsx
 msgid "The Google sign-in was cancelled."
 msgstr "The Google sign-in was cancelled."
+
+#: components/modal/modals/ScheduleMessage.tsx
+msgid "The message is stored on the server and sent around the chosen time. You can cancel it from the channel until it goes out."
+msgstr "The message is stored on the server and sent around the chosen time. You can cancel it from the channel until it goes out."
 
 #: components/i18n/errors.ts
 msgid "The password is too short."
@@ -4389,6 +4622,10 @@ msgstr "Toggle main sidebar"
 msgid "Token copied to clipboard"
 msgstr "Token copied to clipboard"
 
+#: components/modal/modals/ScheduleMessage.tsx
+msgid "Tomorrow at 9:00"
+msgstr "Tomorrow at 9:00"
+
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Tonal Spot"
 msgstr "Tonal Spot"
@@ -4538,6 +4775,10 @@ msgstr "Use a code or invite link"
 msgid "Use the graphics card to improve performance."
 msgstr "Use the graphics card to improve performance."
 
+#: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
+msgid "Use your browser's built-in noise suppression instead. Turn both off to send unprocessed audio (music, instruments)."
+msgstr "Use your browser's built-in noise suppression instead. Turn both off to send unprocessed audio (music, instruments)."
+
 #: components/app/interface/settings/server/bans/ListBans.tsx
 msgid "User"
 msgstr "User"
@@ -4647,6 +4888,10 @@ msgstr "Version:"
 msgid "Video"
 msgstr "Video"
 
+#: components/app/menus/UserContextMenu.tsx
+msgid "Video Call"
+msgstr "Video Call"
+
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "View Channel"
 msgstr "View Channel"
@@ -4674,6 +4919,10 @@ msgstr "View Thread"
 #: src/interface/channels/ChannelHeader.tsx
 msgid "View threads"
 msgstr "View threads"
+
+#: components/app/interface/channels/text/PollMessage.tsx
+msgid "View votes"
+msgstr "View votes"
 
 #: components/ui/components/features/messaging/bars/JumpToBottom.tsx
 msgid "Viewing older messages"
@@ -4707,6 +4956,14 @@ msgstr "Voice Processing"
 #: components/app/menus/UserContextMenu.tsx
 msgid "Volume"
 msgstr "Volume"
+
+#: components/app/interface/channels/text/PollMessage.tsx
+msgid "Vote"
+msgstr "Vote"
+
+#: components/app/interface/channels/text/PollMessage.tsx
+msgid "Vote to see results"
+msgstr "Vote to see results"
 
 #. placeholder {0}: pendingInvoke()!.command
 #: src/interface/channels/text/Composition.tsx
@@ -4778,6 +5035,10 @@ msgstr "Without a recovery code, your encrypted messages cannot be restored if y
 #: components/modal/modals/CreateOrJoinServer.tsx
 msgid "Would you like to create a new server or join an existing one?"
 msgstr "Would you like to create a new server or join an existing one?"
+
+#: src/interface/channels/text/Composition.tsx
+msgid "Write a message first, then schedule it"
+msgstr "Write a message first, then schedule it"
 
 #: components/app/interface/settings/user/bots/MyBots.tsx
 msgid "You agree that your bot is subject to the Acceptable Usage Policy."
@@ -4978,6 +5239,10 @@ msgstr "Your contacts will see this device come back — with no security warnin
 #: components/i18n/errors.ts
 msgid "Your discriminator change has been ratelimited, please try again later."
 msgstr "Your discriminator change has been ratelimited, please try again later."
+
+#: components/modal/modals/ScheduleMessage.tsx
+msgid "Your draft is empty"
+msgstr "Your draft is empty"
 
 #: components/modal/modals/E2EEReenroll.tsx
 #~ msgid "Your encrypted history was restored, but this device had been logged out remotely, so it needs to be re-registered before it can send and receive again. Confirm your identity to finish."

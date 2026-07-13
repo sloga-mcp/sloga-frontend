@@ -43,6 +43,7 @@ import { E2EEIdentityChangeModal } from "./modals/E2EEIdentityChange";
 import { E2EEVerifyModal } from "./modals/E2EEVerify";
 import { EmojiPreviewModal } from "./modals/EmojiPreview";
 import { Error2Modal } from "./modals/Error2";
+import { ForwardMessageModal } from "./modals/ForwardMessage";
 import { ImageViewerModal } from "./modals/ImageViewer";
 import { InviteModal } from "./modals/Invite";
 import { InviteToServerModal } from "./modals/InviteToServer";
@@ -58,6 +59,7 @@ import { PolicyChangeModal } from "./modals/PolicyChange";
 import { PollVotersModal } from "./modals/PollVoters";
 import { RemoveMemberModal } from "./modals/RemoveMember";
 import { RenameSessionModal } from "./modals/RenameSession";
+import { ScheduleMessageModal } from "./modals/ScheduleMessage";
 import { ReportContentModal } from "./modals/ReportContent";
 import { ReportQueueModal } from "./modals/ReportQueue";
 import { ResetBotTokenModal } from "./modals/ResetBotToken";
@@ -136,6 +138,10 @@ export function RenderModal(props: ActiveModal & { onClose: () => void }) {
       return <CreatePollModal {...modalProps} />;
     case "poll_voters":
       return <PollVotersModal {...modalProps} />;
+    case "forward_message":
+      return <ForwardMessageModal {...modalProps} />;
+    case "schedule_message":
+      return <ScheduleMessageModal {...modalProps} />;
     case "create_webhook":
       return <CreateWebhookModal {...modalProps} />;
     case "custom_status":

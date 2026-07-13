@@ -3,7 +3,7 @@ import { Accessor, For, Match, Show, Switch } from "solid-js";
 import { Trans } from "@lingui-solid/solid/macro";
 import { File, Message } from "stoat.js";
 
-import { useClient, useUser } from "@revolt/client";
+import { useClient, useE2EE, useUser } from "@revolt/client";
 import { CustomEmoji, UnicodeEmoji } from "@revolt/markdown/emoji";
 import { useModals } from "@revolt/modal";
 import { useState } from "@revolt/state";
@@ -17,6 +17,7 @@ import MdDownload from "@material-design-icons/svg/outlined/download.svg?compone
 import MdEdit from "@material-design-icons/svg/outlined/edit.svg?component-solid";
 import MdEmojiEmotions from "@material-design-icons/svg/outlined/emoji_emotions.svg?component-solid";
 import MdForum from "@material-design-icons/svg/outlined/forum.svg?component-solid";
+import MdForward from "@material-design-icons/svg/outlined/forward.svg?component-solid";
 import MdLink from "@material-design-icons/svg/outlined/link.svg?component-solid";
 import MdHowToVote from "@material-design-icons/svg/outlined/how_to_vote.svg?component-solid";
 import MdMarkChatUnread from "@material-design-icons/svg/outlined/mark_chat_unread.svg?component-solid";
@@ -48,7 +49,23 @@ export function MessageContextMenu(props: {
   const user = useUser();
   const state = useState();
   const client = useClient();
+  const e2ee = useE2EE();
   const { openModal, showError } = useModals();
+
+  /**
+   * Whether the message can be forwarded: needs server-side substance
+   * (content or attachments), and never system messages, polls (state
+   * wouldn't travel), ephemerals, or locally-decrypted E2EE messages
+   * (their server-side form is useless ciphertext — nothing to forward).
+   */
+  const canForward = () =>
+    !props.message!.isEphemeral &&
+    !props.message!.systemMessage &&
+    !props.message!.isPoll &&
+    !e2ee?.isEncryptedMessage(props.message!.id) &&
+    (!!props.message!.content ||
+      !!props.message!.attachments?.length ||
+      props.message!.isForwarded);
 
   /**
    * Reply to this message
@@ -184,6 +201,19 @@ export function MessageContextMenu(props: {
         >
           <ContextMenuButton icon={MdReply} onClick={reply}>
             <Trans>Reply</Trans>
+          </ContextMenuButton>
+        </Show>
+        <Show when={canForward()}>
+          <ContextMenuButton
+            icon={MdForward}
+            onClick={() =>
+              openModal({
+                type: "forward_message",
+                message: props.message!,
+              })
+            }
+          >
+            <Trans>Forward</Trans>
           </ContextMenuButton>
         </Show>
         <Show

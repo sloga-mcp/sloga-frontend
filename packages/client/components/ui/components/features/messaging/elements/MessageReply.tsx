@@ -149,6 +149,17 @@ export function MessageReply(props: Props) {
                 {renderReplyContent(props.message!.content!)}
               </ReplyContent>
             </Show>
+            {/* Forwarded messages have no content of their own — preview
+                the snapshot instead of rendering blank */}
+            <Show when={!props.message!.content && props.message!.forwarded}>
+              <ReplyContent>
+                <Switch fallback={<Trans>Forwarded a message</Trans>}>
+                  <Match when={props.message!.forwarded!.content}>
+                    {renderReplyContent(props.message!.forwarded!.content!)}
+                  </Match>
+                </Switch>
+              </ReplyContent>
+            </Show>
           </Link>
         </Match>
       </Switch>

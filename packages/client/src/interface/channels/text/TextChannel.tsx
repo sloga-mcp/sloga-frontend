@@ -13,7 +13,7 @@ import { cva } from "styled-system/css";
 import { styled } from "styled-system/jsx";
 import { decodeTime, ulid } from "ulid";
 
-import { DraftMessages, Messages } from "@revolt/app";
+import { DraftMessages, Messages, ScheduledMessagesBar } from "@revolt/app";
 import { useClient } from "@revolt/client";
 import { Keybind, KeybindAction, createKeybind } from "@revolt/keybinds";
 import { useModals } from "@revolt/modal";
@@ -300,6 +300,8 @@ export function TextChannel(props: ChannelPageProps) {
             jumpToBottomRef={(ref) => (jumpToBottomRef = ref)}
             atEnd={[atEnd, setEnd]}
           />
+
+          <ScheduledMessagesBar channel={props.channel} />
 
           <MessageComposition
             channel={props.channel}
