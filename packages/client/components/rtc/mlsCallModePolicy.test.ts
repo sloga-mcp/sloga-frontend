@@ -12,6 +12,7 @@ import {
   type ChipInputs,
   callModeTransition,
   chipState,
+  classifyEncryptionError,
   parseCtlPayload,
 } from "./mlsCallModePolicy.ts";
 
@@ -440,4 +441,24 @@ test("parseCtlPayload default-closed: unknown v/kind/mode, bad JSON, missing ids
     JSON.stringify(42),
   ];
   for (const c of cases) assert.equal(parseCtlPayload(c), null, c);
+});
+
+// ---- encryptionError classification (§4.4 debounce, 6.7b joiner window) -----
+
+test("encryptionError inside a rotation window classifies resecuring", () => {
+  assert.equal(classifyEncryptionError(true, false), "resecuring");
+});
+
+test("encryptionError while awaiting the first key classifies resecuring (6.7b joiner window)", () => {
+  // A mid-call joiner receives already-encrypted frames before its Welcome
+  // resolves — expected noise, bounded by the same resecure escalation.
+  assert.equal(classifyEncryptionError(false, true), "resecuring");
+});
+
+test("encryptionError with keys installed and no window is immediately loud", () => {
+  assert.equal(classifyEncryptionError(false, false), "loud");
+});
+
+test("both windows open still resecuring (no double-count to loud)", () => {
+  assert.equal(classifyEncryptionError(true, true), "resecuring");
 });

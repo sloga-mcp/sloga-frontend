@@ -753,11 +753,16 @@ class Voice {
         },
       );
       // LiveKit emits ONE `encryptionError` then silently drops frames
-      // (failureTolerance:0, §1.5) — LATCH the first, STRUCTURED (6.5
-      // classifies rotation-window vs loud failure), and hand it to the session
-      // for the §4.4 rotation-window-vs-loud classification.
+      // (failureTolerance:0, §1.5) — hand it to the session's §4.4
+      // rotation-window-vs-loud classification. Latching happens ONLY via the
+      // session's verdict (`onEncryptionState("loud")` in #buildMediaBinding),
+      // NOT directly here (6.7b fix): a joiner receiving already-encrypted
+      // frames before its Welcome resolves raises EXPECTED missing-key errors,
+      // and a direct latch pinned the chip loud past a successful join. A
+      // session-less error can't latch — but session-less means torn down /
+      // never constructed, where the ME-7 no-session policy arm already keeps
+      // an E2EE-known call loud (chipState `channelHasOpenGroup` branch).
       room.addListener("encryptionError", (error) => {
-        this.#setCallEncryptionError((prev) => prev ?? error);
         this.#mlsSession?.noteEncryptionError(error);
       });
     }

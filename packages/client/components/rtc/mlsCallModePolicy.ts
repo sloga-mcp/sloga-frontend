@@ -416,3 +416,36 @@ export function parseCtlPayload(raw: string): CtlModeAnnounce | null {
     groupId: obj.group_id,
   };
 }
+
+// ---- LiveKit encryptionError classification (the §4.4 loud-state debounce) --
+
+/**
+ * Classify a LiveKit `encryptionError`: a missing key INSIDE a known rotation
+ * window (an epoch change we are mid-processing, or within the Add-grace) is
+ * `resecuring` (transient, bounded); the same error OUTSIDE a known window is
+ * immediately `loud`. Clean rotations never flap because a correctly-graced
+ * rotation produces no missing-key error.
+ *
+ * `awaitingFirstKey` (6.7b fix, found in the on-device Android×desktop
+ * proof): a joiner that connects to the SFU while existing members are
+ * ALREADY publishing encrypted frames receives those frames BEFORE its
+ * Welcome resolves and its first key installs — LiveKit raises missing-key
+ * `encryptionError`s that are EXPECTED join-in-progress noise, not a
+ * media-plane failure. Classifying them loud latched the session terminally
+ * (`#latchLoud` is by design not cleared by a later successful join), wedging
+ * every rejoin/mid-call join whose admit takes longer than the first inbound
+ * encrypted frame — near-certain on a real network (an on-device Android
+ * admitter takes seconds); desktop↔desktop on one machine admits sub-second,
+ * which is why the 6.4–6.6 desktop proofs never hit it. The window is
+ * BOUNDED exactly like a rotation window: the caller arms the same
+ * `RESECURE_ESCALATE_MS` escalation, so a join that never completes still
+ * goes loud; the chip stays amber throughout (never green — chip gate (a)
+ * requires the first local key) and the publish gate holds (no plaintext can
+ * escape while re-securing).
+ */
+export function classifyEncryptionError(
+  inRotationWindow: boolean,
+  awaitingFirstKey: boolean,
+): "resecuring" | "loud" {
+  return inRotationWindow || awaitingFirstKey ? "resecuring" : "loud";
+}

@@ -79,6 +79,7 @@ import {
   type CallMode,
   type CallModeEvent,
   callModeTransition,
+  classifyEncryptionError,
   parseCtlPayload,
 } from "./mlsCallModePolicy";
 import {
@@ -377,18 +378,8 @@ export function lagAction(currentEpoch: number, ourEpoch: number): LagAction {
   return { do: "ok" };
 }
 
-/**
- * Classify a LiveKit `encryptionError` for the §4.4 loud-state debounce: a
- * missing key INSIDE a known rotation window (an epoch change we are mid-
- * processing, or within the Add-grace) is `resecuring` (transient, bounded);
- * the same error OUTSIDE a known window is immediately `loud`. Clean rotations
- * never flap because a correctly-graced rotation produces no missing-key error.
- */
-export function classifyEncryptionError(
-  inRotationWindow: boolean,
-): "resecuring" | "loud" {
-  return inRotationWindow ? "resecuring" : "loud";
-}
+// `classifyEncryptionError` (the §4.4 loud-state debounce classifier) lives in
+// `mlsCallModePolicy.ts` with the other pure, unit-tested call policies.
 
 // ---- Roster reconciliation (step 5; plan §1.4 / §3.4, carried item 5) --------
 
@@ -2202,6 +2193,14 @@ export class MlsCallSession {
    */
   #onLocalKeyInstalled(): void {
     this.#hasLocalKey = true;
+    // 6.7b MEDIUM-1: installing the FIRST local key is the genuine recovery
+    // that closes the joiner window (`!#hasLocalKey` — see #surfaceError /
+    // classifyEncryptionError). Clear the awaiting-first-key escalation HERE,
+    // driven by the local install itself, so a successful join can never
+    // false-latch loud at RESECURE_ESCALATE_MS — and so noteEncryptionRecovered
+    // no longer has to (it fires on ANY participant's encrypted status,
+    // including a remote's, which does NOT witness our local key).
+    this.#clearResecureTimer();
     if (!this.#e2eeEnabled) void this.reconcileNow();
   }
 
@@ -2263,7 +2262,10 @@ export class MlsCallSession {
     const media = this.#media;
     if (!media || this.#terminal() || this.#loudLatched) return;
 
-    if (classifyEncryptionError(this.#rotationWindow) === "resecuring") {
+    if (
+      classifyEncryptionError(this.#rotationWindow, !this.#hasLocalKey) ===
+      "resecuring"
+    ) {
       media.onEncryptionState?.("resecuring", error);
       // Escalate to loud if the window does not resolve within the bound. Armed
       // once; refreshed only by a genuine recovery (noteEncryptionRecovered).
@@ -2290,6 +2292,17 @@ export class MlsCallSession {
    */
   noteEncryptionRecovered(): void {
     if (this.#loudLatched) return; // loud is terminal until re-establish
+    // 6.7b MEDIUM-1: this fires on ANY participant's `encrypted=true`
+    // (including a REMOTE peer, which is already encrypted the instant a joiner
+    // arrives). A remote's status does NOT witness our OWN first-key install,
+    // so during the joiner window (`!#hasLocalKey`) it must NOT clear the
+    // awaiting-first-key escalation — otherwise a joiner whose local key never
+    // installs would be stranded in amber (paused, no loud terminal / ME-10
+    // Leave-Stay banner) forever. Only a genuine LOCAL recovery clears the
+    // bound: #onLocalKeyInstalled clears it on the first key, and a post-key
+    // rotation-window resecuring (where #hasLocalKey is already true) clears
+    // here as before.
+    if (!this.#hasLocalKey) return;
     this.#clearResecureTimer();
     this.#media?.onEncryptionState?.("clear");
   }

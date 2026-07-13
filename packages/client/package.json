@@ -5,6 +5,7 @@
   "scripts": {
     "prepare": "panda codegen",
     "build:android": "vite build && node -e \"require('fs').rmSync('dist/mediapipe',{recursive:true,force:true})\" && cap sync android",
+    "capacitor:copy:after": "node scripts/injectAndroidCsp.mjs",
     "open:android": "cap open android"
   },
   "devDependencies": {
