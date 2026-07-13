@@ -1588,6 +1588,10 @@ msgstr "Discord RPC"
 msgid "Discover Sloga"
 msgstr "Discover Sloga"
 
+#: components/app/interface/channels/text/Message.tsx
+msgid "Dismiss"
+msgstr "Dismiss"
+
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Display & Text"
 msgstr "Display & Text"
@@ -3033,6 +3037,10 @@ msgstr "Online"
 #: src/interface/navigation/servers/UserMenu.tsx
 msgid "Only mentions will notify you"
 msgstr "Only mentions will notify you"
+
+#: components/app/interface/channels/text/Message.tsx
+msgid "Only you can see this — it disappears when you reload."
+msgstr "Only you can see this — it disappears when you reload."
 
 #: components/modal/modals/Invite.tsx
 msgid "Open"

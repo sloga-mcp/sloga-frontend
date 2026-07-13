@@ -92,6 +92,12 @@ type Props = CommonProps & {
   sendStatus?: "sending" | "failed";
 
   /**
+   * Whether this is an ephemeral interaction response (only visible to
+   * this user; tinted to set it apart from persisted messages)
+   */
+  ephemeral?: boolean;
+
+  /**
    * Whether we are hovering this message
    */
   onHover?: (hovering: boolean) => void;
@@ -153,6 +159,12 @@ const base = cva({
     highlight: {
       true: {
         animation: "highlightMessage 3s",
+      },
+    },
+    ephemeral: {
+      true: {
+        background:
+          "color-mix(in srgb, var(--md-sys-color-secondary-container) 35%, transparent)",
       },
     },
     sendStatus: {
@@ -325,6 +337,7 @@ export function MessageContainer(props: Props) {
           highlight: props.highlight,
           sendStatus: props.sendStatus,
           isLink: props.isLink,
+          ephemeral: props.ephemeral,
         })
       }
       use:floating={{ contextMenu: props.contextMenu }}

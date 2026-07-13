@@ -214,6 +214,7 @@ export function Message(props: Props) {
         highlight={props.highlight}
         editing={props.editing}
         isLink={props.isLink}
+        ephemeral={props.message.isEphemeral}
         tail={props.tail || state.settings.getValue("appearance:compact_mode")}
         header={
           <>
@@ -436,6 +437,19 @@ export function Message(props: Props) {
         <Show when={props.message.components?.length}>
           <MessageComponents message={props.message} />
         </Show>
+        <Show when={props.message.isEphemeral}>
+          <EphemeralNotice>
+            <Symbol size={14}>visibility_off</Symbol>
+            <span>
+              <Trans>
+                Only you can see this — it disappears when you reload.
+              </Trans>
+            </span>
+            <a onClick={() => props.message.dismiss()}>
+              <Trans>Dismiss</Trans>
+            </a>
+          </EphemeralNotice>
+        </Show>
         <Show when={props.message.thread}>
           <a href={props.message.thread!.path}>
             <ThreadPill>
@@ -491,6 +505,27 @@ const BreakText = styled("div", {
       overflowX: "auto",
       overflowY: "hidden",
       maxHeight: "100vh",
+    },
+  },
+});
+
+/**
+ * "Only you can see this" notice under an ephemeral interaction response
+ */
+const EphemeralNotice = styled("div", {
+  base: {
+    display: "flex",
+    alignItems: "center",
+    gap: "var(--gap-sm)",
+    marginTop: "var(--gap-sm)",
+
+    color: "var(--md-sys-color-outline)",
+    fontSize: "0.75rem",
+
+    "& a": {
+      color: "var(--md-sys-color-primary)",
+      cursor: "pointer",
+      fontWeight: 500,
     },
   },
 });

@@ -48,6 +48,10 @@ export function NotificationsWorker() {
   function onMessage(message: Message) {
     const us = client().user!;
 
+    // Ephemeral interaction responses are the bot answering something this
+    // user just did — never worth a notification (and never persisted)
+    if (message.isEphemeral) return;
+
     // Ignore if we are currently looking at the channel
     if (params().channelId === message.channelId && document.hasFocus()) return;
 

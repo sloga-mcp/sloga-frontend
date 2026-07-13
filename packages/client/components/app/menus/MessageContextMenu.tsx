@@ -170,13 +170,24 @@ export function MessageContextMenu(props: {
         <ContextMenuDivider />
       </Show>
       <Show when={props.message}>
-        <Show when={props.message!.channel?.havePermission("SendMessage")}>
+        {/* Ephemeral messages have no server-side existence: every action
+            that references their id on the server (reply anchors, threads,
+            acks, reactions, pins, deletion, reports) is a guaranteed dead
+            end, so those items are hidden. Dismiss lives on the message
+            banner itself. */}
+        <Show
+          when={
+            !props.message!.isEphemeral &&
+            props.message!.channel?.havePermission("SendMessage")
+          }
+        >
           <ContextMenuButton icon={MdReply} onClick={reply}>
             <Trans>Reply</Trans>
           </ContextMenuButton>
         </Show>
         <Show
           when={
+            !props.message!.isEphemeral &&
             props.message!.channel?.type === "TextChannel" &&
             props.message!.channel?.havePermission("SendMessage") &&
             !props.message!.thread
@@ -195,9 +206,11 @@ export function MessageContextMenu(props: {
             <Trans>Create thread</Trans>
           </ContextMenuButton>
         </Show>
-        <ContextMenuButton icon={MdMarkChatUnread} onClick={markAsUnread}>
-          <Trans>Mark as unread</Trans>
-        </ContextMenuButton>
+        <Show when={!props.message!.isEphemeral}>
+          <ContextMenuButton icon={MdMarkChatUnread} onClick={markAsUnread}>
+            <Trans>Mark as unread</Trans>
+          </ContextMenuButton>
+        </Show>
         <ContextMenuButton icon={MdContentCopy} onClick={copyText}>
           <Trans>Copy text</Trans>
         </ContextMenuButton>
@@ -206,7 +219,9 @@ export function MessageContextMenu(props: {
 
         <Show
           when={
-            props.reactPicker && props.message?.channel?.havePermission("React")
+            !props.message!.isEphemeral &&
+            props.reactPicker &&
+            props.message?.channel?.havePermission("React")
           }
         >
           <ContextMenuButton
@@ -232,8 +247,9 @@ export function MessageContextMenu(props: {
         </Show>
         <Show
           when={
-            props.message!.channel?.type === "DirectMessage" ||
-            props.message!.channel?.havePermission("ManageMessages")
+            !props.message!.isEphemeral &&
+            (props.message!.channel?.type === "DirectMessage" ||
+              props.message!.channel?.havePermission("ManageMessages"))
           }
         >
           <ContextMenuButton
@@ -296,8 +312,9 @@ export function MessageContextMenu(props: {
         </Show>
         <Show
           when={
-            props.message!.author?.self ||
-            props.message!.channel?.havePermission("ManageMessages")
+            !props.message!.isEphemeral &&
+            (props.message!.author?.self ||
+              props.message!.channel?.havePermission("ManageMessages"))
           }
         >
           <ContextMenuButton
@@ -309,7 +326,11 @@ export function MessageContextMenu(props: {
           </ContextMenuButton>
         </Show>
         <Show
-          when={!props.message!.author?.self && !props.message!.systemMessage}
+          when={
+            !props.message!.isEphemeral &&
+            !props.message!.author?.self &&
+            !props.message!.systemMessage
+          }
         >
           <ContextMenuButton icon={MdReport} onClick={report} destructive>
             <Trans>Report message</Trans>
