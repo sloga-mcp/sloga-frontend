@@ -156,6 +156,14 @@ export function MessageComposition(props: Props) {
       e2ee?.sendModes.get(props.channel.id) === "plaintext",
   );
 
+  // `currentSlowmode` must be declared BEFORE `pollAllowed`: the latter's
+  // createMemo evaluates eagerly and reads `currentSlowmode()`, so declaring
+  // it afterwards is a temporal-dead-zone ReferenceError that crashes
+  // MessageComposition and blanks every channel pane.
+  const currentSlowmode = (): UserSlowmodes | undefined => {
+    return client().userSlowmodes.get(props.channel.id);
+  };
+
   /**
    * Polls are server-counted plaintext by construction, so the composer
    * fails closed for encrypted (or blocked) conversations — this client-side
@@ -198,9 +206,6 @@ export function MessageComposition(props: Props) {
     ),
   );
 
-  const currentSlowmode = (): UserSlowmodes | undefined => {
-    return client().userSlowmodes.get(props.channel.id);
-  };
   const countdownForEntry = createMemo(() => {
     const entry = currentSlowmode();
     if (!entry) return;
