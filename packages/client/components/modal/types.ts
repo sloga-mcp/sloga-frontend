@@ -98,6 +98,16 @@ export type Modals =
       channel: Channel;
     }
   | {
+      type: "create_poll";
+      /** Channel the poll will be posted to */
+      channel: Channel;
+    }
+  | {
+      type: "poll_voters";
+      /** Poll message whose ballots to list (author / moderator only) */
+      message: Message;
+    }
+  | {
       type: "create_role";
       server: Server;
       callback: (id: string) => void;

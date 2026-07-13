@@ -19,6 +19,7 @@ import { CreateGroupModal } from "./modals/CreateGroup";
 import { CreateGroupOrServer } from "./modals/CreateGroupOrServer";
 import { CreateInviteModal } from "./modals/CreateInvite";
 import { CreateOrJoinServerModal } from "./modals/CreateOrJoinServer";
+import { CreatePollModal } from "./modals/CreatePoll";
 import { CreateRoleModal } from "./modals/CreateRole";
 import { CreateServerModal } from "./modals/CreateServer";
 import { CreateThreadModal } from "./modals/CreateThread";
@@ -54,6 +55,7 @@ import { MFAFlowModal } from "./modals/MFAFlow";
 import { MFARecoveryModal } from "./modals/MFARecovery";
 import { OnboardingModal } from "./modals/Onboarding";
 import { PolicyChangeModal } from "./modals/PolicyChange";
+import { PollVotersModal } from "./modals/PollVoters";
 import { RemoveMemberModal } from "./modals/RemoveMember";
 import { RenameSessionModal } from "./modals/RenameSession";
 import { ReportContentModal } from "./modals/ReportContent";
@@ -130,6 +132,10 @@ export function RenderModal(props: ActiveModal & { onClose: () => void }) {
       return <CreateThreadModal {...modalProps} />;
     case "create_forum_post":
       return <CreateForumPostModal {...modalProps} />;
+    case "create_poll":
+      return <CreatePollModal {...modalProps} />;
+    case "poll_voters":
+      return <PollVotersModal {...modalProps} />;
     case "create_webhook":
       return <CreateWebhookModal {...modalProps} />;
     case "custom_status":

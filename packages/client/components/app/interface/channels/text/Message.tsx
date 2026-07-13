@@ -52,6 +52,7 @@ import { DiceRollMessage, isDiceRollMessage } from "./DiceRollMessage";
 import { EditMessage } from "./EditMessage";
 import { InteractionContext } from "./InteractionContext";
 import { MessageComponents } from "./MessageComponents";
+import { PollMessage, isPollMessage } from "./PollMessage";
 import { EncryptedAttachment } from "./EncryptedAttachment";
 import { MessageTranslation } from "./MessageTranslation";
 
@@ -396,6 +397,12 @@ export function Message(props: Props) {
             )}
           >
             <DiceRollMessage content={props.message.content!} />
+          </Match>
+          {/* Renders INSTEAD of the markdown branch: poll messages carry a
+              fallback content string ("📊 question") for legacy clients and
+              push notifications which must not double-render here */}
+          <Match when={isPollMessage(props.message.flags, props.message.poll)}>
+            <PollMessage message={props.message} />
           </Match>
           <Match when={props.message.content && !isOnlyGIF()}>
             <BreakText>

@@ -156,6 +156,25 @@ export function MessageComposition(props: Props) {
       e2ee?.sendModes.get(props.channel.id) === "plaintext",
   );
 
+  /**
+   * Polls are server-counted plaintext by construction, so the composer
+   * fails closed for encrypted (or blocked) conversations — this client-side
+   * gate is the E2EE enforcement point, mirroring message_send (the server
+   * cannot reliably know a conversation's encryption state).
+   */
+  const pollAllowed = createMemo(
+    () =>
+      ["TextChannel", "Thread", "Group", "DirectMessage"].includes(
+        props.channel.type,
+      ) &&
+      props.channel.havePermission("SendMessage") &&
+      e2eeMode() !== "encrypt" &&
+      e2eeMode() !== "blocked" &&
+      // Slowmode: creating a poll sends a message, so the affordance hides
+      // during an active cooldown (server enforces regardless)
+      !currentSlowmode(),
+  );
+
   // Prime the send-mode cache when the conversation opens so the indicator
   // is correct before the first send
   createEffect(
@@ -1091,6 +1110,22 @@ export function MessageComposition(props: Props) {
                   </Show>
                 </div>
               </MessageBox.InlineIcon>
+              <Show when={pollAllowed()}>
+                <MessageBox.InlineIcon>
+                  <Tooltip content={t`Create poll`} placement="top">
+                    <IconButton
+                      onPress={() =>
+                        openModal({
+                          type: "create_poll",
+                          channel: props.channel,
+                        })
+                      }
+                    >
+                      <Symbol>ballot</Symbol>
+                    </IconButton>
+                  </Tooltip>
+                </MessageBox.InlineIcon>
+              </Show>
               <Show when={props.channel.type === "TextChannel"}>
                 <MessageBox.InlineIcon>
                   <div style={{ position: "relative" }}>
