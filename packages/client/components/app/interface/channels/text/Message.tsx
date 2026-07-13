@@ -51,6 +51,7 @@ import { MediaPickerProps } from "@revolt/ui/components/features/messaging/compo
 import { DiceRollMessage, isDiceRollMessage } from "./DiceRollMessage";
 import { EditMessage } from "./EditMessage";
 import { InteractionContext } from "./InteractionContext";
+import { MessageComponents } from "./MessageComponents";
 import { EncryptedAttachment } from "./EncryptedAttachment";
 import { MessageTranslation } from "./MessageTranslation";
 
@@ -430,6 +431,11 @@ export function Message(props: Props) {
         <For each={props.message.embeds}>
           {(embed) => <Embed embed={embed} />}
         </For>
+        {/* Bot-author gating (defence-in-depth) lives inside the
+            renderer, which fetches the author on cache miss */}
+        <Show when={props.message.components?.length}>
+          <MessageComponents message={props.message} />
+        </Show>
         <Show when={props.message.thread}>
           <a href={props.message.thread!.path}>
             <ThreadPill>

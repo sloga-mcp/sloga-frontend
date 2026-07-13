@@ -1797,6 +1797,7 @@ msgstr "Encryption is off for this device. New direct messages are no longer end
 
 #: src/interface/channels/text/Composition.tsx
 #: src/interface/channels/text/Composition.tsx
+#: components/app/interface/channels/text/MessageComponents.tsx
 msgid "Encryption status could not be verified. Nothing was sent."
 msgstr "Encryption status could not be verified. Nothing was sent."
 
@@ -2220,6 +2221,10 @@ msgstr "Input Level"
 msgid "Instead of closing, Sloga will hide in your tray."
 msgstr "Instead of closing, Sloga will hide in your tray."
 
+#: components/app/interface/channels/text/MessageComponents.tsx
+msgid "Interactions are unavailable in encrypted conversations."
+msgstr "Interactions are unavailable in encrypted conversations."
+
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Interface Font"
 msgstr "Interface Font"
@@ -2490,6 +2495,10 @@ msgstr "Logs you out of all sessions except this device."
 #: components/auth/src/flows/FlowHome.tsx
 msgid "Low latency"
 msgstr "Low latency"
+
+#: components/app/interface/channels/text/MessageComponents.tsx
+msgid "Make a selection"
+msgstr "Make a selection"
 
 #: components/modal/modals/ReportContent.tsx
 msgid "Malware or phishing"
@@ -4159,8 +4168,14 @@ msgid "That action had no effect."
 msgstr "That action had no effect."
 
 #: src/interface/channels/text/Composition.tsx
+#: components/app/interface/channels/text/MessageComponents.tsx
 msgid "That bot is currently offline — try again once it reconnects."
 msgstr "That bot is currently offline — try again once it reconnects."
+
+#: src/interface/channels/text/Composition.tsx
+#: components/app/interface/channels/text/MessageComponents.tsx
+msgid "The bot did not respond in time."
+msgstr "The bot did not respond in time."
 
 #: src/interface/ServerEvents.tsx
 msgid "The calendar feature is not enabled on this server."
@@ -4684,6 +4699,11 @@ msgstr "Voice Processing"
 #: components/app/menus/UserContextMenu.tsx
 msgid "Volume"
 msgstr "Volume"
+
+#. placeholder {0}: pendingInvoke()!.command
+#: src/interface/channels/text/Composition.tsx
+msgid "Waiting for /{0} to respond…"
+msgstr "Waiting for /{0} to respond…"
 
 #: components/app/interface/settings/user/profile/UserProfileEditor.tsx
 msgid "Want to change username?"

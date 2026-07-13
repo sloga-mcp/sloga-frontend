@@ -14,7 +14,7 @@ import {
 
 import { useLingui } from "@lingui-solid/solid/macro";
 import { Channel } from "stoat.js";
-import type { ApplicationCommandData } from "stoat.js";
+import type { ApplicationCommandData, Message } from "stoat.js";
 
 import { styled } from "styled-system/jsx";
 
@@ -456,6 +456,37 @@ export function MessageComposition(props: Props) {
     return options;
   }
 
+  // "Waiting for the bot" indicator after invoking a slash command —
+  // cleared when the response message arrives (correlated by interaction
+  // id via `command_context`) or after a 15s timeout.
+  const [pendingInvoke, setPendingInvoke] = createSignal<{
+    id: string;
+    command: string;
+  } | null>(null);
+  let pendingInvokeTimer: number | undefined;
+
+  function clearPendingInvoke() {
+    if (pendingInvokeTimer) window.clearTimeout(pendingInvokeTimer);
+    pendingInvokeTimer = undefined;
+    setPendingInvoke(null);
+  }
+
+  const onInteractionResponse = (message: Message) => {
+    const pending = pendingInvoke();
+    if (
+      pending &&
+      message.channelId === props.channel.id &&
+      message.commandContext?.id === pending.id
+    ) {
+      clearPendingInvoke();
+    }
+  };
+  client().addListener("messageCreate", onInteractionResponse);
+  onCleanup(() => {
+    client().removeListener("messageCreate", onInteractionResponse);
+    if (pendingInvokeTimer) window.clearTimeout(pendingInvokeTimer);
+  });
+
   /**
    * Invoke a slash command via the interactions endpoint. The bot's reply
    * arrives as a regular message carrying the unforgeable `command_context`.
@@ -493,15 +524,26 @@ export function MessageComposition(props: Props) {
     }
 
     try {
-      await props.channel.createInteraction(
+      const interactionId = await props.channel.createInteraction(
         command._id,
         parseCommandOptions(command, args),
       );
 
-      // Success — clear the invocation from the draft
+      // Success — clear the invocation from the draft and show the
+      // waiting indicator until the bot's reply lands
       state.draft.setDraft(props.channel.id, { content: "" });
       sound.playSound("messageSent");
       props.onMessageSend?.();
+
+      clearPendingInvoke();
+      setPendingInvoke({ id: interactionId, command: command.name });
+      pendingInvokeTimer = window.setTimeout(() => {
+        clearPendingInvoke();
+        openModal({
+          type: "error2",
+          error: t`The bot did not respond in time.`,
+        });
+      }, 15_000);
     } catch (error) {
       const type = (error as { type?: string })?.type;
       openModal({
@@ -835,6 +877,16 @@ export function MessageComposition(props: Props) {
               </SlowmodeText>
             </SlowmodeRow>
           </Tooltip>
+        </SlowmodeContainer>
+      </Show>
+      <Show when={pendingInvoke()}>
+        <SlowmodeContainer>
+          <SlowmodeRow>
+            <Symbol style={{ "font-size": "1rem" }}>hourglass_top</Symbol>
+            <SlowmodeText>
+              {t`Waiting for /${pendingInvoke()!.command} to respond…`}
+            </SlowmodeText>
+          </SlowmodeRow>
         </SlowmodeContainer>
       </Show>
       <Show when={e2eeMode()}>
