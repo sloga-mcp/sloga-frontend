@@ -1,4 +1,4 @@
-import { Match, Show, Switch } from "solid-js";
+import { Match, Show, Switch, createSignal, onMount } from "solid-js";
 
 import { Trans } from "@lingui-solid/solid/macro";
 import { PublicChannelInvite } from "stoat.js";
@@ -16,6 +16,7 @@ import {
   Header,
   iconSize,
   main,
+  slogaBurstKeyframes,
 } from "@revolt/ui";
 
 import MdAddCircle from "@material-design-icons/svg/filled/add_circle.svg?component-solid";
@@ -30,18 +31,92 @@ import MdSettings from "@material-design-icons/svg/filled/settings.svg?component
 
 import { HeaderIcon } from "./common/CommonHeader";
 
+// Satellite colors clockwise from the top, matching the brand mark.
+const DOT_COLORS = [
+  "#3BB8ED",
+  "#F5870D",
+  "#CF2A27",
+  "#E3CF1B",
+  "#3BB8ED",
+  "#F5870D",
+  "#2B2BD8",
+  "#C05FC8",
+];
+
 /**
- * Sloga wordmark: the O is a circle of people around the online dot
+ * Geometry of the wordmark's "O" within the 258×96 viewBox: centre point, the
+ * resting ring the satellites sit on (r=29), and the green core (r=10). The
+ * satellites are drawn at the centre and pushed out to the ring by a transform,
+ * exactly like the loader — so the same brand animation can drive them.
  */
-export function SlogaWordmark(props: { height: number; color?: string }) {
-  const dots = [...Array(8)].map((_, i) => {
-    const angle = ((i * 45 - 90) * Math.PI) / 180;
-    return {
-      x: 37 + 29 * Math.cos(angle),
-      y: 37 + 29 * Math.sin(angle),
-      fill: i % 2 === 0 ? "#FF8A00" : "#00B2FF",
-    };
-  });
+const O = { cx: 115, cy: 55, ring: 29, core: 10 };
+
+/** Length of one click-burst; long enough to read the spiral, short enough to feel like a flourish. */
+const BURST_DURATION = "2400ms";
+
+/**
+ * Inject the wordmark's resting + burst styles once. The @keyframes are built
+ * from the shared brand-motion curves (see slogaBurstKeyframes); the base rules
+ * pin every satellite on the resting ring so the logo looks identical at rest,
+ * and only `.playing` runs the one-shot spin.
+ */
+let wordmarkStylesInjected = false;
+function ensureWordmarkStyles() {
+  if (wordmarkStylesInjected || typeof document === "undefined") return;
+  wordmarkStylesInjected = true;
+  const el = document.createElement("style");
+  el.setAttribute("data-sloga-wordmark", "");
+  el.textContent = `
+${slogaBurstKeyframes("sloga-wm", { core: O.core, ring: O.ring })}
+.sloga-wm-ball {
+  transform-box: view-box;
+  transform-origin: ${O.cx}px ${O.cy}px;
+  transform: rotate(var(--sloga-ball-angle)) translateY(-${O.ring}px);
+}
+.sloga-wm-core {
+  transform-box: view-box;
+  transform-origin: ${O.cx}px ${O.cy}px;
+}
+.sloga-wm-ball.playing {
+  will-change: transform;
+  animation: sloga-wm-ball ${BURST_DURATION} linear 1;
+}
+.sloga-wm-core.playing {
+  animation: sloga-wm-core ${BURST_DURATION} linear 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  .sloga-wm-ball.playing, .sloga-wm-core.playing { animation: none; }
+}`;
+  document.head.appendChild(el);
+}
+
+/**
+ * Sloga wordmark: the O is a circle of people around the online dot.
+ *
+ * Pass `interactive` to make it a little easter egg — clicking the wordmark
+ * plays the brand's ball animation on the O (unwind into the core, gulp, burst
+ * back out) without navigating anywhere. Off by default so the nav-link copy in
+ * the sidebar stays a plain, static logo.
+ */
+export function SlogaWordmark(props: {
+  height: number;
+  color?: string;
+  interactive?: boolean;
+}) {
+  const [playing, setPlaying] = createSignal(false);
+
+  onMount(ensureWordmarkStyles);
+
+  const play = () => {
+    if (!props.interactive || playing()) return;
+    // Respect users who'd rather not see motion.
+    if (
+      typeof window !== "undefined" &&
+      window.matchMedia?.("(prefers-reduced-motion: reduce)").matches
+    )
+      return;
+    setPlaying(true);
+  };
 
   return (
     <svg
@@ -49,6 +124,8 @@ export function SlogaWordmark(props: { height: number; color?: string }) {
       height={props.height}
       role="img"
       aria-label="Sloga"
+      style={{ cursor: props.interactive ? "pointer" : undefined }}
+      onClick={play}
     >
       <text
         x="0"
@@ -60,12 +137,26 @@ export function SlogaWordmark(props: { height: number; color?: string }) {
       >
         Sl
       </text>
-      <g transform="translate(78,18)">
-        {dots.map((d) => (
-          <circle cx={d.x} cy={d.y} r="8" fill={d.fill} />
-        ))}
-        <circle cx="37" cy="37" r="10" fill="#3ABF7E" />
-      </g>
+      {DOT_COLORS.map((fill, i) => (
+        <circle
+          class="sloga-wm-ball"
+          classList={{ playing: playing() }}
+          cx={O.cx}
+          cy={O.cy}
+          r="8"
+          fill={fill}
+          style={{ "--sloga-ball-angle": `${i * 45}deg` }}
+        />
+      ))}
+      <circle
+        class="sloga-wm-core"
+        classList={{ playing: playing() }}
+        cx={O.cx}
+        cy={O.cy}
+        r="10"
+        fill="#27A163"
+        onAnimationEnd={() => setPlaying(false)}
+      />
       <text
         x="158"
         y="72"
@@ -162,7 +253,7 @@ export function HomePage() {
       </Header>
       <div use:scrollable={{ class: content() }}>
         <Column>
-          <SlogaWordmark height={64} />
+          <SlogaWordmark height={64} interactive />
         </Column>
         <Buttons>
           <SeparatedColumn>
