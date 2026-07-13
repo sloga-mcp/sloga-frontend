@@ -619,6 +619,26 @@ interface NativeTransport {
     userId: string,
     blobs: { header: string; ciphertext: string; server_generation: number }[],
   ): Promise<Record<string, unknown> | null>;
+  /**
+   * Whether this shell can RECEIVE native call-key epoch pushes — a
+   * SYNCHRONOUS capability probe (media E2EE 6.4 step 7 / 6.7a). The RTC
+   * layer folds it into `e2eeCapable` at Room construction: a shell that is
+   * `nativeE2EEAvailable()` but cannot receive key pushes MUST be built
+   * without the LiveKit `e2ee` option (fail-closed — a first-key install
+   * that can never arrive would leave the pause-publish window open and
+   * publish plaintext under an "encrypted" Room, invariant 1). Both carriers
+   * live behind this seam so the two shells update together (6.4 H3/NEW-4).
+   */
+  keyPushAvailable(): boolean;
+  /**
+   * Subscribe to native epoch-advance pushes (desktop `e2ee:call-keys-changed`
+   * / Android `callKeysChanged`). The RTC layer re-derives frame keys on each.
+   * Returns an unsubscribe fn. The event payload is the PUBLIC `{group_id,
+   * epoch}` pair — never key material.
+   */
+  subscribeKeysChanged(
+    callback: (event: { group_id: string; epoch: number }) => void,
+  ): Promise<() => void>;
 }
 
 class TauriTransport implements NativeTransport {
@@ -641,6 +661,20 @@ class TauriTransport implements NativeTransport {
   attachmentUrl(messageId: string, idx: number): string {
     return `https://e2ee-att.localhost/${messageId}/${idx}`;
   }
+
+  keyPushAvailable(): boolean {
+    return !!this.#tauri.event;
+  }
+
+  async subscribeKeysChanged(
+    callback: (event: { group_id: string; epoch: number }) => void,
+  ): Promise<() => void> {
+    if (!this.#tauri.event) return () => {};
+    return this.#tauri.event.listen<{ group_id: string; epoch: number }>(
+      "e2ee:call-keys-changed",
+      (event) => callback(event.payload),
+    );
+  }
 }
 
 /** Capacitor plugin surface (see android `E2eePlugin.kt`) */
@@ -661,6 +695,25 @@ type E2eeCapacitorPlugin = {
   backupRotate(options: Record<string, unknown>): Promise<{ json: string }>;
   /** Native-dialog RESTORE: enters the code, returns the republish payload */
   backupRestore(options: Record<string, unknown>): Promise<{ json: string }>;
+  /**
+   * Native-dialog-gated whole-call downgrade (media E2EE 6.7a) — the
+   * desktop `e2ee_call_confirm_downgrade` analog. The non-enrolled roster
+   * is computed natively; the webview can only REQUEST the plaintext
+   * direction. Resolves `{json:"null"}` on confirm, rejects `declined` on
+   * cancel.
+   */
+  callConfirmDowngrade(
+    options: Record<string, unknown>,
+  ): Promise<{ json: string }>;
+  /**
+   * Subscribe to native `callKeysChanged` epoch-advance pushes (the
+   * desktop `e2ee:call-keys-changed` analog). The event payload is the
+   * PUBLIC `{group_id, epoch}` pair — never key material.
+   */
+  addListener(
+    eventName: "callKeysChanged",
+    listenerFunc: (event: { group_id: string; epoch: number }) => void,
+  ): Promise<{ remove: () => Promise<void> }>;
 };
 
 class CapacitorTransport implements NativeTransport {
@@ -712,6 +765,17 @@ class CapacitorTransport implements NativeTransport {
         (args as { accept?: boolean })?.accept
       ) {
         const { json } = await this.#plugin.confirmPeerDowngradeAccept(
+          (args as Record<string, unknown>) ?? {},
+        );
+        return JSON.parse(json) as T;
+      }
+
+      // Whole-call downgrade (media E2EE 6.7a): plaintext-direction
+      // transition → dedicated native-dialog method (wipe parity; the
+      // webview can only request, never silently open plaintext). The
+      // native side computes the non-enrolled roster itself.
+      if (command === "e2ee_call_confirm_downgrade") {
+        const { json } = await this.#plugin.callConfirmDowngrade(
           (args as Record<string, unknown>) ?? {},
         );
         return JSON.parse(json) as T;
@@ -824,6 +888,26 @@ class CapacitorTransport implements NativeTransport {
     } catch (error) {
       this.#rethrow(error);
     }
+  }
+
+  keyPushAvailable(): boolean {
+    // The `callKeysChanged` channel ships in the SAME APK as this JS bundle
+    // (capacitor.config `webDir: "dist"`, NO `server.url` remote override),
+    // so there is no version skew: if the JS can ask, the shell can push.
+    // A remote-webview config would reintroduce skew (new JS asserting this
+    // against an old shell) and must NOT be used while media E2EE ships.
+    return (
+      Capacitor.isNativePlatform() && Capacitor.getPlatform() === "android"
+    );
+  }
+
+  async subscribeKeysChanged(
+    callback: (event: { group_id: string; epoch: number }) => void,
+  ): Promise<() => void> {
+    const handle = await this.#plugin.addListener("callKeysChanged", callback);
+    return () => {
+      void handle.remove();
+    };
   }
 }
 
@@ -3783,25 +3867,26 @@ export class E2EEBridge implements E2EEAdapter {
    * MUST stay synchronous: `e2eeCapable` and the `e2ee:` option are decided
    * synchronously at Room construction, whereas `onCallKeysChanged` is awaited
    * later — gating on its (always-truthy) return would decide too late.
+   *
+   * The per-shell answer lives behind the transport seam (`keyPushAvailable`):
+   * Tauri gates on `window.__TAURI__.event`; the Capacitor Android shell
+   * returns true (its `callKeysChanged` channel landed in 6.7a). Both update
+   * together there, as the 6.4 H3/NEW-4 note anticipated.
    */
   nativeKeyPushAvailable(): boolean {
-    return !!(window as { __TAURI__?: TauriGlobal }).__TAURI__?.event;
+    return this.#transport.keyPushAvailable();
   }
 
   /**
-   * Subscribe to native epoch-change pushes (`e2ee:call-keys-changed`). On
-   * every local epoch advance the RTC layer re-invokes `callFrameKeys` and
-   * feeds `MlsKeyProvider` (plan §3.5). Desktop (Tauri) only; the Android
-   * Capacitor listener is 6.7. Returns an unsubscribe fn.
+   * Subscribe to native epoch-change pushes (desktop `e2ee:call-keys-changed`
+   * / Android `callKeysChanged`). On every local epoch advance the RTC layer
+   * re-invokes `callFrameKeys` and feeds `MlsKeyProvider` (plan §3.5). The
+   * carrier is per-shell (Tauri event bus vs Capacitor plugin listener),
+   * resolved behind the transport seam. Returns an unsubscribe fn.
    */
   async onCallKeysChanged(
     callback: (event: { group_id: string; epoch: number }) => void,
   ): Promise<() => void> {
-    const tauri = (window as { __TAURI__?: TauriGlobal }).__TAURI__;
-    if (!tauri?.event) return () => {};
-    return tauri.event.listen<{ group_id: string; epoch: number }>(
-      "e2ee:call-keys-changed",
-      (event) => callback(event.payload),
-    );
+    return this.#transport.subscribeKeysChanged(callback);
   }
 }

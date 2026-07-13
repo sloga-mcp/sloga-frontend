@@ -838,6 +838,46 @@ internal open class UniffiVTableCallbackInterfaceKeyProtector(
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -916,6 +956,46 @@ fun uniffi_acutest_e2ee_checksum_method_e2eeengine_mark_downgrade_delivered(
 fun uniffi_acutest_e2ee_checksum_method_e2eeengine_mark_published(
 ): Short
 fun uniffi_acutest_e2ee_checksum_method_e2eeengine_mark_verified(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_call_admit(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_call_announce(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_call_clear_downgrade_confirmed(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_call_commit_lost(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_call_commit_won(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_call_create(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_call_frame_keys(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_call_heartbeat(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_call_join_intent(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_call_leave_cleanup(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_call_mark_downgrade_confirmed(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_call_non_enrolled(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_call_pending_commit_epoch(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_call_process(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_call_remove(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_call_state(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_call_verify_join_intent(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_expire_key_packages(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_publish_key_packages(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_replenish(
 ): Short
 fun uniffi_acutest_e2ee_checksum_method_e2eeengine_open_attachment_for_render(
 ): Short
@@ -1069,6 +1149,46 @@ fun uniffi_acutest_e2ee_fn_method_e2eeengine_mark_published(`ptr`: Pointer,uniff
 ): Unit
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_mark_verified(`ptr`: Pointer,`peerUserId`: RustBuffer.ByValue,`deviceId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_mls_call_admit(`ptr`: Pointer,`requestJson`: RustBuffer.ByValue,`claimedJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_mls_call_announce(`ptr`: Pointer,`groupId`: RustBuffer.ByValue,`userId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_mls_call_clear_downgrade_confirmed(`ptr`: Pointer,`groupId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_mls_call_commit_lost(`ptr`: Pointer,`groupId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_mls_call_commit_won(`ptr`: Pointer,`groupId`: RustBuffer.ByValue,`wonEpoch`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_mls_call_create(`ptr`: Pointer,`channelId`: RustBuffer.ByValue,`userId`: RustBuffer.ByValue,`supersedes`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_mls_call_frame_keys(`ptr`: Pointer,`groupId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_mls_call_heartbeat(`ptr`: Pointer,`groupId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_mls_call_join_intent(`ptr`: Pointer,`groupId`: RustBuffer.ByValue,`channelId`: RustBuffer.ByValue,`userId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_mls_call_leave_cleanup(`ptr`: Pointer,`groupId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_mls_call_mark_downgrade_confirmed(`ptr`: Pointer,`groupId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_mls_call_non_enrolled(`ptr`: Pointer,`groupId`: RustBuffer.ByValue,`sfuParticipants`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_mls_call_pending_commit_epoch(`ptr`: Pointer,`groupId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_mls_call_process(`ptr`: Pointer,`envelopeJson`: RustBuffer.ByValue,`userId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_mls_call_remove(`ptr`: Pointer,`groupId`: RustBuffer.ByValue,`targetUserId`: RustBuffer.ByValue,`targetDeviceId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_mls_call_state(`ptr`: Pointer,`groupId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_mls_call_verify_join_intent(`ptr`: Pointer,`requestJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_mls_expire_key_packages(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_mls_publish_key_packages(`ptr`: Pointer,`userId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_mls_replenish(`ptr`: Pointer,`userId`: RustBuffer.ByValue,`serverRemaining`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_open_attachment_for_render(`ptr`: Pointer,`messageId`: RustBuffer.ByValue,`idx`: Int,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_pending_downgrades(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
@@ -1325,6 +1445,66 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_mark_verified() != 15851.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_call_admit() != 19066.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_call_announce() != 43745.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_call_clear_downgrade_confirmed() != 23621.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_call_commit_lost() != 38903.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_call_commit_won() != 1102.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_call_create() != 53778.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_call_frame_keys() != 40529.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_call_heartbeat() != 39828.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_call_join_intent() != 35408.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_call_leave_cleanup() != 28121.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_call_mark_downgrade_confirmed() != 62795.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_call_non_enrolled() != 24009.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_call_pending_commit_epoch() != 43148.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_call_process() != 57380.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_call_remove() != 22066.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_call_state() != 48542.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_call_verify_join_intent() != 2556.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_expire_key_packages() != 8919.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_publish_key_packages() != 33779.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_replenish() != 21555.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_open_attachment_for_render() != 17452.toShort()) {
@@ -2021,6 +2201,170 @@ public interface E2eeEngineInterface {
      * Mark a peer device user-verified after an in-person comparison.
      */
     fun `markVerified`(`peerUserId`: kotlin.String, `deviceId`: kotlin.String)
+    
+    /**
+     * Admit a joiner: verify their fanned-out intent against OUR pins,
+     * verify the claimed KeyPackage binding, and stage an Add commit +
+     * Welcome (`POST /mls/groups/<id>/commits` body). NOTHING applies
+     * locally until the DS confirms the win via `mls_call_commit_won`.
+     */
+    fun `mlsCallAdmit`(`requestJson`: kotlin.String, `claimedJson`: kotlin.String): kotlin.String
+    
+    /**
+     * Mint the group-encrypted mode announcement (an MLS application
+     * message; never advances an epoch). CONFIRM-GATED in the CORE: fails
+     * with the typed `mls_not_confirmed` error unless the downgrade dialog
+     * already armed the gate for this call — the webview can re-request an
+     * announce (interlude re-announce after an epoch change) but never
+     * originate one for an unconfirmed call. Returns the
+     * `POST /mls/groups/<id>/messages` body JSON.
+     */
+    fun `mlsCallAnnounce`(`groupId`: kotlin.String, `userId`: kotlin.String): kotlin.String
+    
+    /**
+     * Clear the call's confirmed-downgrade grant: invoked on a re-upgrade
+     * so the announce oracle closes with the interlude, not at call end.
+     * Webview-invocable is the SAFE direction — clearing only forces a
+     * fresh native confirm before any future announce.
+     */
+    fun `mlsCallClearDowngradeConfirmed`(`groupId`: kotlin.String)
+    
+    /**
+     * The DS rejected OUR staged commit: discard it. The caller then rebases
+     * by feeding the winning commit through `mls_call_process`.
+     */
+    fun `mlsCallCommitLost`(`groupId`: kotlin.String)
+    
+    /**
+     * The DS confirmed OUR staged commit won `won_epoch`: merge it. The
+     * epoch MUST come from an authoritative DS `Won` response — native
+     * cross-checks against the staged commit and REFUSES on mismatch, so a
+     * caller that guesses "won" after a crash cannot fork the group.
+     * Returns the `MlsProcessOutcome` JSON; Kotlin emits `callKeysChanged`.
+     */
+    fun `mlsCallCommitWon`(`groupId`: kotlin.String, `wonEpoch`: kotlin.Long): kotlin.String
+    
+    /**
+     * Create the MLS group for a new call (`POST /mls/groups` body). Returns
+     * the `MlsCallCreated` JSON; epoch-0 group with just this device. The
+     * Kotlin caller emits `callKeysChanged{group_id, epoch: 0}` on success.
+     */
+    fun `mlsCallCreate`(`channelId`: kotlin.String, `userId`: kotlin.String, `supersedes`: kotlin.String?): kotlin.String
+    
+    /**
+     * THE documented invariant-6 egress (media plan section 7.2): JSON
+     * `MlsFrameKeys` — per-sender, per-epoch 32-byte HKDF frame-key
+     * MATERIAL (+ the previous epoch during rotation overlap) for the
+     * LiveKit E2EE worker. The ONLY method on this surface that returns
+     * secret-bearing data; the roster is fully re-verified before any
+     * derivation, and exporter/epoch secrets never leave native. The
+     * webview hands these straight to `MlsKeyProvider` — memory-only,
+     * never persisted, never logged (`loggingBehavior: "none"` is a
+     * REQUIRED control on this path).
+     */
+    fun `mlsCallFrameKeys`(`groupId`: kotlin.String): kotlin.String
+    
+    /**
+     * Stage the epoch-heartbeat commit (HPKE-only self-update — the single
+     * legal leaf-mutation shape). Staged like any outbound commit; applies
+     * only on `mls_call_commit_won`. Cadence/stagger is the client layer's.
+     */
+    fun `mlsCallHeartbeat`(`groupId`: kotlin.String): kotlin.String
+    
+    /**
+     * Sign + persist a join intent for the channel's open group
+     * (`POST /mls/groups/<id>/join_intent` body). The persisted intent makes
+     * unsolicited-Welcome refusal survive a crash (enforced natively). The
+     * T-15 client-leg is unchanged: the shared JS `callJoinIntent` wrapper
+     * binds the USER-intended channel, never the server-echoed value.
+     */
+    fun `mlsCallJoinIntent`(`groupId`: kotlin.String, `channelId`: kotlin.String, `userId`: kotlin.String): kotlin.String
+    
+    /**
+     * Wipe local MLS state for a call group (one DELETE + OpenMLS delete
+     * walk). Also clears the call's confirmed-downgrade grant when this was
+     * the channel's last group (core-side logic).
+     */
+    fun `mlsCallLeaveCleanup`(`groupId`: kotlin.String)
+    
+    /**
+     * Arm the native announce gate after the user confirmed the whole-call
+     * downgrade on the BLOCKING native dialog.
+     *
+     * Reachable ONLY from the Kotlin plugin's confirm-dialog click
+     * (`E2eePlugin.callConfirmDowngrade`, wipe parity) — this method must
+     * never be wired to any path that skips that dialog, and it is NOT in
+     * the plugin's generic `call()` allowlist. A webview that could arm
+     * the gate directly would reduce the downgrade dialog to decoration.
+     * (Backstop: `mls_call_announce` is confirm-gated in the CORE, so even
+     * an arming bug cannot let the webview originate an announce.)
+     */
+    fun `mlsCallMarkDowngradeConfirmed`(`groupId`: kotlin.String)
+    
+    /**
+     * JSON string array: native-computed non-enrolled verdict for a call
+     * (the roster panel + downgrade banner read this; the confirm dialog
+     * computes its own). The webview supplies the live SFU identities;
+     * native intersects against the VERIFIED MLS roster —
+     * attacker-controlled only in the safe direction.
+     */
+    fun `mlsCallNonEnrolled`(`groupId`: kotlin.String, `sfuParticipants`: List<kotlin.String>): kotlin.String
+    
+    /**
+     * JSON `Option<i64>` (`null` or a number): the epoch a currently-staged
+     * own commit would establish — the native half of the crash-safe
+     * reconnect check. On reconnect the client compares against the DS
+     * authoritative epoch and calls `mls_call_commit_lost` + rebases if
+     * someone else's commit occupies it — NEVER `commit_won` on a guess.
+     */
+    fun `mlsCallPendingCommitEpoch`(`groupId`: kotlin.String): kotlin.String
+    
+    /**
+     * Process one inbound MLS envelope (mailbox drain or live push); returns
+     * the `MlsProcessOutcome` JSON. The caller acks the envelope ONLY after
+     * this returns Ok and applies the ack-and-drop / park-and-refetch policy
+     * on the typed error (the shared JS `classifyProcessError`). The Kotlin
+     * caller emits `callKeysChanged` when `kind` is `welcome_joined` or
+     * `commit_applied` (an actual epoch advance; never a duplicate).
+     */
+    fun `mlsCallProcess`(`envelopeJson`: kotlin.String, `userId`: kotlin.String): kotlin.String
+    
+    /**
+     * Stage a Remove commit for a departed (or ghost) member. Staged like
+     * any outbound commit; leave-grace / divergence policy is the caller's.
+     */
+    fun `mlsCallRemove`(`groupId`: kotlin.String, `targetUserId`: kotlin.String, `targetDeviceId`: kotlin.String): kotlin.String
+    
+    /**
+     * JSON `MlsCallState`: roster snapshot with per-member verification
+     * status, epoch, and lifecycle flags. Display data only — no keys.
+     */
+    fun `mlsCallState`(`groupId`: kotlin.String): kotlin.String
+    
+    /**
+     * Verify a fanned-out join intent against OUR pinned identity for the
+     * claimed device — read-only; the rejoin affordance's trust gate.
+     */
+    fun `mlsCallVerifyJoinIntent`(`requestJson`: kotlin.String)
+    
+    /**
+     * Sweep expired local KeyPackage bookkeeping (client-timer driven).
+     */
+    fun `mlsExpireKeyPackages`()
+    
+    /**
+     * Generate + record a full KeyPackage batch; returns the
+     * `PUT /mls/key_packages` body JSON (public KeyPackages + signed
+     * credential binding). Called on first call-enrollment and after wipe.
+     */
+    fun `mlsPublishKeyPackages`(`userId`: kotlin.String): kotlin.String
+    
+    /**
+     * Low-water KeyPackage replenish driven by the server-reported
+     * remaining count (the OTK contract). JSON publish payload when below
+     * the watermark, else JSON `null`.
+     */
+    fun `mlsReplenish`(`userId`: kotlin.String, `serverRemaining`: kotlin.ULong): kotlin.String
     
     /**
      * Decrypt an attachment for rendering — the WebView-interceptor path.
@@ -2761,6 +3105,384 @@ open class E2eeEngine: Disposable, AutoCloseable, E2eeEngineInterface
 }
     }
     
+    
+
+    
+    /**
+     * Admit a joiner: verify their fanned-out intent against OUR pins,
+     * verify the claimed KeyPackage binding, and stage an Add commit +
+     * Welcome (`POST /mls/groups/<id>/commits` body). NOTHING applies
+     * locally until the DS confirms the win via `mls_call_commit_won`.
+     */
+    @Throws(E2eeException::class)override fun `mlsCallAdmit`(`requestJson`: kotlin.String, `claimedJson`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_mls_call_admit(
+        it, FfiConverterString.lower(`requestJson`),FfiConverterString.lower(`claimedJson`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Mint the group-encrypted mode announcement (an MLS application
+     * message; never advances an epoch). CONFIRM-GATED in the CORE: fails
+     * with the typed `mls_not_confirmed` error unless the downgrade dialog
+     * already armed the gate for this call — the webview can re-request an
+     * announce (interlude re-announce after an epoch change) but never
+     * originate one for an unconfirmed call. Returns the
+     * `POST /mls/groups/<id>/messages` body JSON.
+     */
+    @Throws(E2eeException::class)override fun `mlsCallAnnounce`(`groupId`: kotlin.String, `userId`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_mls_call_announce(
+        it, FfiConverterString.lower(`groupId`),FfiConverterString.lower(`userId`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Clear the call's confirmed-downgrade grant: invoked on a re-upgrade
+     * so the announce oracle closes with the interlude, not at call end.
+     * Webview-invocable is the SAFE direction — clearing only forces a
+     * fresh native confirm before any future announce.
+     */
+    @Throws(E2eeException::class)override fun `mlsCallClearDowngradeConfirmed`(`groupId`: kotlin.String)
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_mls_call_clear_downgrade_confirmed(
+        it, FfiConverterString.lower(`groupId`),_status)
+}
+    }
+    
+    
+
+    
+    /**
+     * The DS rejected OUR staged commit: discard it. The caller then rebases
+     * by feeding the winning commit through `mls_call_process`.
+     */
+    @Throws(E2eeException::class)override fun `mlsCallCommitLost`(`groupId`: kotlin.String)
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_mls_call_commit_lost(
+        it, FfiConverterString.lower(`groupId`),_status)
+}
+    }
+    
+    
+
+    
+    /**
+     * The DS confirmed OUR staged commit won `won_epoch`: merge it. The
+     * epoch MUST come from an authoritative DS `Won` response — native
+     * cross-checks against the staged commit and REFUSES on mismatch, so a
+     * caller that guesses "won" after a crash cannot fork the group.
+     * Returns the `MlsProcessOutcome` JSON; Kotlin emits `callKeysChanged`.
+     */
+    @Throws(E2eeException::class)override fun `mlsCallCommitWon`(`groupId`: kotlin.String, `wonEpoch`: kotlin.Long): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_mls_call_commit_won(
+        it, FfiConverterString.lower(`groupId`),FfiConverterLong.lower(`wonEpoch`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Create the MLS group for a new call (`POST /mls/groups` body). Returns
+     * the `MlsCallCreated` JSON; epoch-0 group with just this device. The
+     * Kotlin caller emits `callKeysChanged{group_id, epoch: 0}` on success.
+     */
+    @Throws(E2eeException::class)override fun `mlsCallCreate`(`channelId`: kotlin.String, `userId`: kotlin.String, `supersedes`: kotlin.String?): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_mls_call_create(
+        it, FfiConverterString.lower(`channelId`),FfiConverterString.lower(`userId`),FfiConverterOptionalString.lower(`supersedes`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * THE documented invariant-6 egress (media plan section 7.2): JSON
+     * `MlsFrameKeys` — per-sender, per-epoch 32-byte HKDF frame-key
+     * MATERIAL (+ the previous epoch during rotation overlap) for the
+     * LiveKit E2EE worker. The ONLY method on this surface that returns
+     * secret-bearing data; the roster is fully re-verified before any
+     * derivation, and exporter/epoch secrets never leave native. The
+     * webview hands these straight to `MlsKeyProvider` — memory-only,
+     * never persisted, never logged (`loggingBehavior: "none"` is a
+     * REQUIRED control on this path).
+     */
+    @Throws(E2eeException::class)override fun `mlsCallFrameKeys`(`groupId`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_mls_call_frame_keys(
+        it, FfiConverterString.lower(`groupId`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Stage the epoch-heartbeat commit (HPKE-only self-update — the single
+     * legal leaf-mutation shape). Staged like any outbound commit; applies
+     * only on `mls_call_commit_won`. Cadence/stagger is the client layer's.
+     */
+    @Throws(E2eeException::class)override fun `mlsCallHeartbeat`(`groupId`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_mls_call_heartbeat(
+        it, FfiConverterString.lower(`groupId`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Sign + persist a join intent for the channel's open group
+     * (`POST /mls/groups/<id>/join_intent` body). The persisted intent makes
+     * unsolicited-Welcome refusal survive a crash (enforced natively). The
+     * T-15 client-leg is unchanged: the shared JS `callJoinIntent` wrapper
+     * binds the USER-intended channel, never the server-echoed value.
+     */
+    @Throws(E2eeException::class)override fun `mlsCallJoinIntent`(`groupId`: kotlin.String, `channelId`: kotlin.String, `userId`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_mls_call_join_intent(
+        it, FfiConverterString.lower(`groupId`),FfiConverterString.lower(`channelId`),FfiConverterString.lower(`userId`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Wipe local MLS state for a call group (one DELETE + OpenMLS delete
+     * walk). Also clears the call's confirmed-downgrade grant when this was
+     * the channel's last group (core-side logic).
+     */
+    @Throws(E2eeException::class)override fun `mlsCallLeaveCleanup`(`groupId`: kotlin.String)
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_mls_call_leave_cleanup(
+        it, FfiConverterString.lower(`groupId`),_status)
+}
+    }
+    
+    
+
+    
+    /**
+     * Arm the native announce gate after the user confirmed the whole-call
+     * downgrade on the BLOCKING native dialog.
+     *
+     * Reachable ONLY from the Kotlin plugin's confirm-dialog click
+     * (`E2eePlugin.callConfirmDowngrade`, wipe parity) — this method must
+     * never be wired to any path that skips that dialog, and it is NOT in
+     * the plugin's generic `call()` allowlist. A webview that could arm
+     * the gate directly would reduce the downgrade dialog to decoration.
+     * (Backstop: `mls_call_announce` is confirm-gated in the CORE, so even
+     * an arming bug cannot let the webview originate an announce.)
+     */
+    @Throws(E2eeException::class)override fun `mlsCallMarkDowngradeConfirmed`(`groupId`: kotlin.String)
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_mls_call_mark_downgrade_confirmed(
+        it, FfiConverterString.lower(`groupId`),_status)
+}
+    }
+    
+    
+
+    
+    /**
+     * JSON string array: native-computed non-enrolled verdict for a call
+     * (the roster panel + downgrade banner read this; the confirm dialog
+     * computes its own). The webview supplies the live SFU identities;
+     * native intersects against the VERIFIED MLS roster —
+     * attacker-controlled only in the safe direction.
+     */
+    @Throws(E2eeException::class)override fun `mlsCallNonEnrolled`(`groupId`: kotlin.String, `sfuParticipants`: List<kotlin.String>): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_mls_call_non_enrolled(
+        it, FfiConverterString.lower(`groupId`),FfiConverterSequenceString.lower(`sfuParticipants`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * JSON `Option<i64>` (`null` or a number): the epoch a currently-staged
+     * own commit would establish — the native half of the crash-safe
+     * reconnect check. On reconnect the client compares against the DS
+     * authoritative epoch and calls `mls_call_commit_lost` + rebases if
+     * someone else's commit occupies it — NEVER `commit_won` on a guess.
+     */
+    @Throws(E2eeException::class)override fun `mlsCallPendingCommitEpoch`(`groupId`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_mls_call_pending_commit_epoch(
+        it, FfiConverterString.lower(`groupId`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Process one inbound MLS envelope (mailbox drain or live push); returns
+     * the `MlsProcessOutcome` JSON. The caller acks the envelope ONLY after
+     * this returns Ok and applies the ack-and-drop / park-and-refetch policy
+     * on the typed error (the shared JS `classifyProcessError`). The Kotlin
+     * caller emits `callKeysChanged` when `kind` is `welcome_joined` or
+     * `commit_applied` (an actual epoch advance; never a duplicate).
+     */
+    @Throws(E2eeException::class)override fun `mlsCallProcess`(`envelopeJson`: kotlin.String, `userId`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_mls_call_process(
+        it, FfiConverterString.lower(`envelopeJson`),FfiConverterString.lower(`userId`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Stage a Remove commit for a departed (or ghost) member. Staged like
+     * any outbound commit; leave-grace / divergence policy is the caller's.
+     */
+    @Throws(E2eeException::class)override fun `mlsCallRemove`(`groupId`: kotlin.String, `targetUserId`: kotlin.String, `targetDeviceId`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_mls_call_remove(
+        it, FfiConverterString.lower(`groupId`),FfiConverterString.lower(`targetUserId`),FfiConverterString.lower(`targetDeviceId`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * JSON `MlsCallState`: roster snapshot with per-member verification
+     * status, epoch, and lifecycle flags. Display data only — no keys.
+     */
+    @Throws(E2eeException::class)override fun `mlsCallState`(`groupId`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_mls_call_state(
+        it, FfiConverterString.lower(`groupId`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Verify a fanned-out join intent against OUR pinned identity for the
+     * claimed device — read-only; the rejoin affordance's trust gate.
+     */
+    @Throws(E2eeException::class)override fun `mlsCallVerifyJoinIntent`(`requestJson`: kotlin.String)
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_mls_call_verify_join_intent(
+        it, FfiConverterString.lower(`requestJson`),_status)
+}
+    }
+    
+    
+
+    
+    /**
+     * Sweep expired local KeyPackage bookkeeping (client-timer driven).
+     */
+    @Throws(E2eeException::class)override fun `mlsExpireKeyPackages`()
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_mls_expire_key_packages(
+        it, _status)
+}
+    }
+    
+    
+
+    
+    /**
+     * Generate + record a full KeyPackage batch; returns the
+     * `PUT /mls/key_packages` body JSON (public KeyPackages + signed
+     * credential binding). Called on first call-enrollment and after wipe.
+     */
+    @Throws(E2eeException::class)override fun `mlsPublishKeyPackages`(`userId`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_mls_publish_key_packages(
+        it, FfiConverterString.lower(`userId`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Low-water KeyPackage replenish driven by the server-reported
+     * remaining count (the OTK contract). JSON publish payload when below
+     * the watermark, else JSON `null`.
+     */
+    @Throws(E2eeException::class)override fun `mlsReplenish`(`userId`: kotlin.String, `serverRemaining`: kotlin.ULong): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_mls_replenish(
+        it, FfiConverterString.lower(`userId`),FfiConverterULong.lower(`serverRemaining`),_status)
+}
+    }
+    )
+    }
     
 
     

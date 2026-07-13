@@ -136,12 +136,9 @@ class E2eePlugin : Plugin() {
                 "e2ee_replenish" ->
                     resolveJson(
                         call,
-                        engine.replenish(
-                            call.getInt("serverRemaining")?.toULong()
-                                ?: throw E2eeException.Failure(
-                                    "{\"type\":\"invalid_argument\",\"field\":\"serverRemaining\"}",
-                                ),
-                        ),
+                        // Full-width unsigned (audit LOW-2): shares requireCount
+                        // with the MLS replenish arm — no truncation/sign-wrap.
+                        engine.replenish(requireCount(call, "serverRemaining")),
                     )
                 "e2ee_sign_claim" ->
                     resolveJson(
@@ -363,6 +360,148 @@ class E2eePlugin : Plugin() {
                 // dialog; this exposes it re-callably to the webview.
                 "e2ee_backup_rederive_republish" ->
                     resolveJson(call, engine.postRestoreRekey())
+                // ---- Media E2EE — MLS call control plane (slice 6.7a) ----
+                // Public wire shapes / opaque ciphertext in and out, 1:1 with
+                // the desktop Tauri surface (`src-tauri/src/e2ee.rs`). The one
+                // secret-bearing command is `e2ee_call_frame_keys` (the
+                // documented section 7.2 egress). Three arms additionally emit
+                // the `callKeysChanged` event (the desktop
+                // `e2ee:call-keys-changed` analog) on a local epoch advance —
+                // see `emitKeysChanged` / `emitFromOutcome`.
+                "e2ee_call_create" -> {
+                    val json =
+                        engine.mlsCallCreate(
+                            requireString(call, "channelId"),
+                            requireString(call, "userId"),
+                            call.getString("supersedes"),
+                        )
+                    // Epoch 0 established locally; the creator's own frame key
+                    // is derivable (matches the desktop create emit).
+                    parseGroupId(json)?.let { emitKeysChanged(it, 0L) }
+                    resolveJson(call, json)
+                }
+                "e2ee_call_join_intent" ->
+                    resolveJson(
+                        call,
+                        engine.mlsCallJoinIntent(
+                            requireString(call, "groupId"),
+                            // The USER-intended channel, T-15-bound in the
+                            // shared JS `callJoinIntent` before this call.
+                            requireString(call, "channelId"),
+                            requireString(call, "userId"),
+                        ),
+                    )
+                "e2ee_call_verify_join_intent" -> {
+                    engine.mlsCallVerifyJoinIntent(objectJson(call, "request"))
+                    resolveJson(call, "null")
+                }
+                "e2ee_call_admit" ->
+                    resolveJson(
+                        call,
+                        engine.mlsCallAdmit(
+                            objectJson(call, "request"),
+                            objectJson(call, "claimed"),
+                        ),
+                    )
+                "e2ee_call_process" -> {
+                    val json =
+                        engine.mlsCallProcess(
+                            objectJson(call, "envelope"),
+                            requireString(call, "userId"),
+                        )
+                    // Emit ONLY on an actual epoch advance (a joined Welcome or
+                    // an applied commit), never a duplicate — gated on `kind`.
+                    emitFromOutcome(json, onlyEpochAdvancing = true)
+                    resolveJson(call, json)
+                }
+                "e2ee_call_commit_won" -> {
+                    val json =
+                        engine.mlsCallCommitWon(
+                            requireString(call, "groupId"),
+                            requireLong(call, "wonEpoch"),
+                        )
+                    // A won commit always advances the epoch (desktop emits
+                    // unconditionally here).
+                    emitFromOutcome(json, onlyEpochAdvancing = false)
+                    resolveJson(call, json)
+                }
+                "e2ee_call_commit_lost" -> {
+                    engine.mlsCallCommitLost(requireString(call, "groupId"))
+                    resolveJson(call, "null")
+                }
+                "e2ee_call_pending_commit_epoch" ->
+                    resolveJson(
+                        call,
+                        engine.mlsCallPendingCommitEpoch(requireString(call, "groupId")),
+                    )
+                "e2ee_call_leave_cleanup" -> {
+                    engine.mlsCallLeaveCleanup(requireString(call, "groupId"))
+                    resolveJson(call, "null")
+                }
+                "e2ee_call_heartbeat" ->
+                    resolveJson(call, engine.mlsCallHeartbeat(requireString(call, "groupId")))
+                "e2ee_call_remove" ->
+                    resolveJson(
+                        call,
+                        engine.mlsCallRemove(
+                            requireString(call, "groupId"),
+                            requireString(call, "targetUserId"),
+                            requireString(call, "targetDeviceId"),
+                        ),
+                    )
+                "e2ee_call_state" ->
+                    resolveJson(call, engine.mlsCallState(requireString(call, "groupId")))
+                "e2ee_call_frame_keys" ->
+                    // THE documented section-7.2 egress: HKDF key MATERIAL for
+                    // the LiveKit worker. `loggingBehavior: "none"` keeps this
+                    // out of logcat — a REQUIRED control on this path.
+                    resolveJson(call, engine.mlsCallFrameKeys(requireString(call, "groupId")))
+                "e2ee_call_non_enrolled" ->
+                    resolveJson(
+                        call,
+                        engine.mlsCallNonEnrolled(
+                            requireString(call, "groupId"),
+                            // REQUIRED (plan-audit LOW-5): a missing array must
+                            // NOT default to empty — that would compute
+                            // non_enrolled = [] off a key typo. Desktop Tauri
+                            // hard-errors on a missing arg; match it.
+                            requireStringList(call, "sfuParticipants"),
+                        ),
+                    )
+                "e2ee_call_clear_downgrade" -> {
+                    engine.mlsCallClearDowngradeConfirmed(requireString(call, "groupId"))
+                    resolveJson(call, "null")
+                }
+                "e2ee_call_announce" ->
+                    // Confirm-gated in the CORE (`mls_not_confirmed`): a
+                    // compromised webview can re-request an announce but never
+                    // originate one for an unconfirmed call.
+                    resolveJson(
+                        call,
+                        engine.mlsCallAnnounce(
+                            requireString(call, "groupId"),
+                            requireString(call, "userId"),
+                        ),
+                    )
+                "e2ee_mls_publish_key_packages" ->
+                    resolveJson(
+                        call,
+                        engine.mlsPublishKeyPackages(requireString(call, "userId")),
+                    )
+                "e2ee_mls_replenish" ->
+                    resolveJson(
+                        call,
+                        engine.mlsReplenish(
+                            requireString(call, "userId"),
+                            // Full-width unsigned (audit LOW-2): a >2^31 count
+                            // must not truncate, a negative must not wrap.
+                            requireCount(call, "serverRemaining"),
+                        ),
+                    )
+                "e2ee_mls_expire_key_packages" -> {
+                    engine.mlsExpireKeyPackages()
+                    resolveJson(call, "null")
+                }
                 // NOT here by design: e2ee_wipe + e2ee_downgrade +
                 // e2ee_confirm_peer_downgrade-ACCEPT (native dialog methods;
                 // the generic `confirm_peer_downgrade` arm above only handles
@@ -374,11 +513,126 @@ class E2eePlugin : Plugin() {
                 // backupCreate / backupRotate / backupRestore (the recovery
                 // CODE is displayed/entered in a native dialog — dedicated
                 // methods below, wipe parity; never routed through call()).
+                //
+                // e2ee_call_confirm_downgrade (native downgrade dialog —
+                // dedicated `callConfirmDowngrade` method below, wipe parity;
+                // the plaintext-direction transition needs a physical tap) and
+                // its arming primitive `mls_call_mark_downgrade_confirmed`
+                // (reachable ONLY from that dialog's confirm click — a webview
+                // that could arm the announce gate directly would reduce the
+                // dialog to decoration; the core `mls_not_confirmed` gate is
+                // the backstop).
                 else ->
                     call.reject("{\"type\":\"invalid_argument\",\"field\":\"name\"}")
             }
         }
     }
+
+    /**
+     * Emit the `callKeysChanged` event — the Android analog of the desktop
+     * IPC-layer `e2ee:call-keys-changed` emit (`src-tauri/src/e2ee.rs`
+     * `emit_keys_changed`). The plugin is the Android shell layer, the same
+     * trust class as the desktop Rust IPC layer, so the emit lives HERE.
+     *
+     * Payload is the PUBLIC `{group_id, epoch}` pair ONLY — never key
+     * material (same rule as desktop's `CallKeysChanged`). The keys are
+     * deliberately snake_case to match the `onCallKeysChanged` listener type
+     * and the desktop struct; the plugin's camelCase argument convention does
+     * NOT apply to this payload.
+     */
+    private fun emitKeysChanged(groupId: String, epoch: Long) {
+        val payload = JSObject()
+        payload.put("group_id", groupId)
+        payload.put("epoch", epoch)
+        notifyListeners("callKeysChanged", payload)
+    }
+
+    /** `group_id` from a resolve JSON, or null if absent/malformed. */
+    private fun parseGroupId(json: String): String? =
+        try {
+            org.json.JSONObject(json).optString("group_id", "").ifEmpty { null }
+        } catch (error: Exception) {
+            null
+        }
+
+    /**
+     * Emit `callKeysChanged` from an `MlsProcessOutcome` JSON. The three
+     * fields (`kind`, `group_id`, `epoch`) are read BY NAME — the field-name
+     * contract pinned by the e2ee-android binding tests (a core rename fails
+     * a test, not silently on device). When [onlyEpochAdvancing] (the
+     * `e2ee_call_process` path) the emit is gated on `kind` ∈
+     * {welcome_joined, commit_applied}; the `e2ee_call_commit_won` path emits
+     * unconditionally (a won commit always advances the epoch), matching
+     * desktop.
+     *
+     * A malformed JSON or a missing/empty `group_id` skips the emit; a
+     * missing `epoch` DEFAULTS to 0 rather than skipping (benign — the RTC
+     * layer re-derives from `callFrameKeys`, which reads native's
+     * authoritative epoch, and only uses `group_id`; the event epoch is
+     * informational). A skip is NOT equivalent to a dropped Tauri event for a
+     * Remove-won epoch: the local send key would stay on the
+     * removed-member-readable epoch until the next epoch event (heartbeat
+     * bounds this). The parse is therefore minimal (two public fields off
+     * well-formed core JSON the caller also transports verbatim), so a skip
+     * requires JSON that would equally break the JS caller.
+     */
+    private fun emitFromOutcome(json: String, onlyEpochAdvancing: Boolean) {
+        try {
+            val outcome = org.json.JSONObject(json)
+            val kind = outcome.optString("kind", "")
+            if (onlyEpochAdvancing && kind != "welcome_joined" && kind != "commit_applied") {
+                return
+            }
+            val groupId = outcome.optString("group_id", "")
+            if (groupId.isEmpty()) return
+            emitKeysChanged(groupId, outcome.optLong("epoch", 0L))
+        } catch (error: Exception) {
+            // Emit-skip; the JS keys loop re-pulls native truth on the next
+            // lifecycle event (see the doc-comment's Remove-won caveat).
+        }
+    }
+
+    /**
+     * A REQUIRED i64 argument. `call.getInt` would truncate a >2^31 epoch, so
+     * this reads the full 64-bit value — but ONLY from a JSON number: a
+     * missing key, an explicit null, or a non-numeric value (e.g. a string,
+     * which `optLong` would silently coerce to 0) is rejected as
+     * `invalid_argument`, matching desktop Tauri's `i64` deserialization.
+     * A silent 0 for `wonEpoch` would corrupt the crash-safe reconnect check.
+     */
+    private fun requireLong(call: PluginCall, key: String): Long {
+        val value = call.data.opt(key)
+        if (value !is Number) {
+            throw E2eeException.Failure("{\"type\":\"invalid_argument\",\"field\":\"$key\"}")
+        }
+        return value.toLong()
+    }
+
+    /**
+     * A REQUIRED non-negative count argument (server-reported KeyPackage/OTK
+     * remaining), read at FULL width. `getInt(...).toULong()` would truncate
+     * a >2^31 value and sign-wrap a negative Int into a huge u64; this rejects
+     * a non-number or a negative as `invalid_argument` and preserves the full
+     * u64 range the core expects.
+     */
+    private fun requireCount(call: PluginCall, key: String): ULong {
+        val value = call.data.opt(key)
+        if (value !is Number) {
+            throw E2eeException.Failure("{\"type\":\"invalid_argument\",\"field\":\"$key\"}")
+        }
+        val n = value.toLong()
+        if (n < 0) {
+            throw E2eeException.Failure("{\"type\":\"invalid_argument\",\"field\":\"$key\"}")
+        }
+        return n.toULong()
+    }
+
+    /** A REQUIRED string array (throws invalid_argument when absent). */
+    private fun requireStringList(call: PluginCall, key: String): List<String> =
+        call.getArray(key)?.toList<String>()
+            ?: throw E2eeException.Failure(
+                "{\"type\":\"invalid_argument\",\"field\":\"$key\"}",
+            )
 
     /**
      * Destroy ALL local E2EE state — behind a BLOCKING NATIVE dialog.
@@ -490,6 +744,91 @@ class E2eePlugin : Plugin() {
                 }
                 .show()
         }
+    }
+
+    /**
+     * Confirm a whole-call downgrade to plaintext (media plan section 3.4) —
+     * behind a BLOCKING NATIVE dialog. The Android analog of the desktop
+     * `e2ee_call_confirm_downgrade` command: the webview can only REQUEST;
+     * the plaintext direction needs a physical tap.
+     *
+     * The non-enrolled roster shown is computed NATIVELY from the group's
+     * VERIFIED MLS roster (`mlsCallNonEnrolled`) — the trust-load-bearing
+     * part. The webview supplies the live SFU identities (attacker-controlled
+     * only in the safe direction: it can distort the DISPLAYED set, never
+     * suppress the dialog) plus display names for rendering. On confirm this
+     * ARMS the native announce gate (`mlsCallMarkDowngradeConfirmed`) and
+     * resolves; Cancel/back rejects with the typed `declined` error and arms
+     * nothing.
+     */
+    @PluginMethod
+    fun callConfirmDowngrade(call: PluginCall) {
+        val groupId = call.getString("groupId") ?: run {
+            call.reject("{\"type\":\"invalid_argument\",\"field\":\"groupId\"}")
+            return
+        }
+        // REQUIRED (plan-audit LOW-5): a missing array/object must NOT default
+        // to empty — desktop hard-errors, and a silent empty set would distort
+        // the native non-enrolled computation.
+        val sfuParticipants = call.getArray("sfuParticipants")?.toList<String>() ?: run {
+            call.reject("{\"type\":\"invalid_argument\",\"field\":\"sfuParticipants\"}")
+            return
+        }
+        val displayNames = call.getObject("displayNames") ?: run {
+            call.reject("{\"type\":\"invalid_argument\",\"field\":\"displayNames\"}")
+            return
+        }
+        // Compute the native set off the UI thread (roster verification), then
+        // hop to the UI thread for the blocking dialog.
+        executor.execute {
+            try {
+                val nonEnrolledJson = engine().mlsCallNonEnrolled(groupId, sfuParticipants)
+                val identities = org.json.JSONArray(nonEnrolledJson)
+                val rendered = ArrayList<String>(identities.length())
+                for (i in 0 until identities.length()) {
+                    val identity = identities.getString(i)
+                    // Device-qualified identity → "name (raw_user_id)" so a
+                    // mislabeling webview cannot hide WHO by supplying a false
+                    // name (the raw id is always shown).
+                    val userId = identity.substringBefore(':')
+                    val name = displayNames.optString(userId, "")
+                    rendered.add(if (name.isNotEmpty()) "$name ($userId)" else userId)
+                }
+                val who =
+                    if (rendered.isEmpty()) {
+                        // Fail toward prompting: the computed set may be empty
+                        // (a lying or lagging webview), but the user still
+                        // explicitly authorizes below.
+                        " (participants could not be verified)"
+                    } else {
+                        " (" + rendered.joinToString(", ") + ")"
+                    }
+                activity.runOnUiThread { showConfirmDowngradeDialog(call, groupId, who) }
+            } catch (error: Throwable) {
+                rejectScrubbed(call, error)
+            }
+        }
+    }
+
+    private fun showConfirmDowngradeDialog(call: PluginCall, groupId: String, who: String) {
+        AlertDialog.Builder(activity)
+            .setTitle("Turn off call encryption")
+            .setMessage(
+                "Someone in this call$who is not using end-to-end encryption. " +
+                    "If you continue, your voice and video will be readable by the " +
+                    "server for everyone in the call.\n\nTurn off encryption for " +
+                    "this call?",
+            )
+            .setPositiveButton("Turn off") { _, _ ->
+                run(call) {
+                    // Only this path arms the announce gate.
+                    engine().mlsCallMarkDowngradeConfirmed(groupId)
+                    resolveJson(call, "null")
+                }
+            }
+            .setNegativeButton("Cancel") { _, _ -> call.reject("{\"type\":\"declined\"}") }
+            .setOnCancelListener { call.reject("{\"type\":\"declined\"}") }
+            .show()
     }
 
     // ================================================================

@@ -14,8 +14,11 @@ const config: CapacitorConfig = {
     allowMixedContent: false,
     captureInput: true,
     webContentsDebuggingEnabled: false,
-    // Never log plugin call data (would leak attachment plaintext + the
-    // session token to logcat).
+    // Never log plugin call data (would leak attachment plaintext, the
+    // session token, AND — since media E2EE 6.7a — the `e2ee_call_frame_keys`
+    // HKDF key material that rides the resolve payload) to logcat. Both this
+    // and webContentsDebuggingEnabled:false are REQUIRED controls on the
+    // frame-key egress path — do not flip them "temporarily" to debug.
     loggingBehavior: "none",
   },
 };
