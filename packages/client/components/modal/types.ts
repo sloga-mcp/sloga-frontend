@@ -118,6 +118,11 @@ export type Modals =
       channel: Channel;
     }
   | {
+      type: "follow_channel";
+      /** Announcement channel to follow from another server's channel */
+      channel: Channel;
+    }
+  | {
       type: "create_role";
       server: Server;
       callback: (id: string) => void;

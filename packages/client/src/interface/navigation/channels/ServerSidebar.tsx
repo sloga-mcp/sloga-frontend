@@ -587,6 +587,9 @@ function Entry(
               <Match when={props.channel.type === "Forum"}>
                 <Symbol>forum</Symbol>
               </Match>
+              <Match when={props.channel.isAnnouncement}>
+                <Symbol>campaign</Symbol>
+              </Match>
             </Switch>
             <Show when={props.channel.icon}>
               <ChannelIcon

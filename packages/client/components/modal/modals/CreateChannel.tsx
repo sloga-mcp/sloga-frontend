@@ -1,3 +1,5 @@
+import { Show } from "solid-js";
+
 import { createFormControl, createFormGroup } from "solid-forms";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
@@ -21,6 +23,7 @@ export function CreateChannelModal(
   const group = createFormGroup({
     name: createFormControl("", { required: true }),
     type: createFormControl("Text"),
+    announcement: createFormControl(false),
   });
 
   async function onSubmit() {
@@ -30,7 +33,13 @@ export function CreateChannelModal(
         // predates; the route passes it through verbatim.
         type: group.controls.type.value as "Text" | "Voice",
         name: group.controls.name.value,
-      });
+        // `announcement` is additive (stoat-api predates it) and only
+        // meaningful on text channels — pass it through verbatim.
+        ...(group.controls.type.value === "Text" &&
+        group.controls.announcement.value
+          ? { announcement: true }
+          : {}),
+      } as never);
 
       if (props.cb) {
         props.cb(channel);
@@ -86,6 +95,15 @@ export function CreateChannelModal(
               <Trans>Forum Channel</Trans>
             </Radio2.Option>
           </Form2.Radio>
+
+          <Show when={group.controls.type.value === "Text"}>
+            <Form2.Checkbox
+              name="announcement"
+              control={group.controls.announcement}
+            >
+              <Trans>Announcement channel</Trans>
+            </Form2.Checkbox>
+          </Show>
         </Column>
       </form>
     </Dialog>

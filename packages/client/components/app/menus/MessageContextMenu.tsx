@@ -10,6 +10,7 @@ import { useState } from "@revolt/state";
 import { MediaPickerProps } from "@revolt/ui/components/features/messaging/composition/picker/CompositionMediaPicker";
 
 import MdBadge from "@material-design-icons/svg/outlined/badge.svg?component-solid";
+import MdCampaign from "@material-design-icons/svg/outlined/campaign.svg?component-solid";
 import MdContentCopy from "@material-design-icons/svg/outlined/content_copy.svg?component-solid";
 import MdDelete from "@material-design-icons/svg/outlined/delete.svg?component-solid";
 import MdDeleteSweep from "@material-design-icons/svg/outlined/delete_sweep.svg?component-solid";
@@ -66,6 +67,44 @@ export function MessageContextMenu(props: {
     (!!props.message!.content ||
       !!props.message!.attachments?.length ||
       props.message!.isForwarded);
+
+  /**
+   * Whether this message can be published (crossposted): it lives in an
+   * announcement channel, hasn't already been published, isn't itself a
+   * delivered crosspost copy, isn't a system/ephemeral/E2EE message, and the
+   * user may publish it (SendMessage for their own, ManageMessages for
+   * others').
+   */
+  const canPublish = () => {
+    const message = props.message!;
+    const channel = message.channel;
+    if (
+      !channel?.isAnnouncement ||
+      message.isCrossposted ||
+      message.isCrosspost ||
+      message.systemMessage ||
+      message.isEphemeral ||
+      e2ee?.isEncryptedMessage(message.id)
+    ) {
+      return false;
+    }
+    const isAuthor = message.authorId === user()?.id;
+    return channel.havePermission(
+      isAuthor ? "SendMessage" : "ManageMessages",
+    );
+  };
+
+  /**
+   * Publish (crosspost) this message into every follower channel. The
+   * "Published" state flips via the resulting MessageUpdate.
+   */
+  async function publish() {
+    try {
+      await props.message!.publish();
+    } catch (error) {
+      showError(error);
+    }
+  }
 
   /**
    * Reply to this message
@@ -214,6 +253,11 @@ export function MessageContextMenu(props: {
             }
           >
             <Trans>Forward</Trans>
+          </ContextMenuButton>
+        </Show>
+        <Show when={canPublish()}>
+          <ContextMenuButton icon={MdCampaign} onClick={publish}>
+            <Trans>Publish</Trans>
           </ContextMenuButton>
         </Show>
         <Show

@@ -37,6 +37,20 @@ export function useError() {
             | { type: "InternalError" }
           >;
 
+      // Announcement-channel / follow errors — stoat-api's generated Error
+      // union predates these variants, so match them via a cast before the
+      // typed switch (same lag pattern as the routes).
+      const errType = err.type as string;
+      const errMax = (err as { max?: number }).max ?? 0;
+      if (errType === "NotAnAnnouncementChannel")
+        return t`This isn't an announcement channel.`;
+      if (errType === "AlreadyCrossposted")
+        return t`This message has already been published.`;
+      if (errType === "TooManyFollowers")
+        return t`This announcement channel has reached its follower limit (${errMax}).`;
+      if (errType === "TooManyCrossposts")
+        return t`You're publishing too fast — up to ${errMax} announcements can be published per hour.`;
+
       switch (err.type) {
         case "AccountDisabled":
           return t`This account has been suspended. Contact a moderator if you believe this is a mistake.`;

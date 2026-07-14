@@ -1,5 +1,14 @@
 import { createFormControl, createFormGroup } from "solid-forms";
-import { Match, Show, Switch, createSignal } from "solid-js";
+import {
+  For,
+  Match,
+  Show,
+  Switch,
+  createResource,
+  createSignal,
+  onCleanup,
+  onMount,
+} from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
 import type { API } from "stoat.js";
@@ -32,6 +41,66 @@ export default function ChannelOverview(props: ChannelSettingsProps) {
   const { t } = useLingui();
   const client = useClient();
   const { openModal } = useModals();
+
+  const canManageChannel = () => props.channel.havePermission("ManageChannel");
+
+  const [announcementSaving, setAnnouncementSaving] = createSignal(false);
+
+  /** Toggle this text channel's announcement-channel flag. */
+  async function toggleAnnouncement() {
+    setAnnouncementSaving(true);
+    try {
+      await props.channel.edit({
+        // stoat-api predates `announcement` — pass it through verbatim.
+        announcement: !props.channel.isAnnouncement,
+      } as never);
+    } finally {
+      setAnnouncementSaving(false);
+    }
+  }
+
+  // Follower list (source-side): refetched on the source-topic
+  // channelFollowersUpdate signal and on any follow deletion.
+  const [followers, { refetch: refetchFollowers }] = createResource(
+    () => props.channel.id,
+    () => props.channel.fetchFollowers(),
+  );
+
+  onMount(() => {
+    const onUpdate = (channelId: string) => {
+      if (channelId === props.channel.id) refetchFollowers();
+    };
+    const onDelete = (ref: { sourceChannel: string }) => {
+      if (ref.sourceChannel === props.channel.id) refetchFollowers();
+    };
+    client().on("channelFollowersUpdate", onUpdate);
+    client().on("channelFollowCreate", refetchFollowers);
+    client().on("channelFollowDelete", onDelete);
+    onCleanup(() => {
+      client().off("channelFollowersUpdate", onUpdate);
+      client().off("channelFollowCreate", refetchFollowers);
+      client().off("channelFollowDelete", onDelete);
+    });
+  });
+
+  /** Sever a follow from the source side, then refresh the list. */
+  async function unfollow(followId: string) {
+    await props.channel.unfollow(followId);
+    refetchFollowers();
+  }
+
+  /** Human label for a follower row's target (resolved when visible). */
+  function followerLabel(follow: {
+    target_server: string;
+    target_channel: string;
+  }): string {
+    const server = client().servers.get(follow.target_server);
+    const channel = client().channels.get(follow.target_channel);
+    if (server && channel) {
+      return `${server.name} • #${channel.name ?? channel.id}`;
+    }
+    return t`Another server`;
+  }
 
   const { cleanDescription, passwordHash: existingHash } =
     parseChannelPassword(props.channel.description);
@@ -258,6 +327,80 @@ export default function ChannelOverview(props: ChannelSettingsProps) {
           </Show>
         </div>
       </Column>
+
+      <Show when={props.channel.type === "TextChannel" && canManageChannel()}>
+        <Column>
+          <Text class="label">
+            <Trans>Announcement Channel</Trans>
+          </Text>
+          <Text>
+            <Trans>
+              Announcement channels can be followed by other servers, and
+              their messages published into those servers' channels.
+            </Trans>
+          </Text>
+          <div>
+            <Button
+              onPress={toggleAnnouncement}
+              isDisabled={announcementSaving()}
+            >
+              <Switch
+                fallback={<Trans>Make Announcement Channel</Trans>}
+              >
+                <Match when={props.channel.isAnnouncement}>
+                  <Trans>Stop being an Announcement Channel</Trans>
+                </Match>
+              </Switch>
+            </Button>
+          </div>
+        </Column>
+      </Show>
+
+      <Show when={props.channel.isAnnouncement && canManageChannel()}>
+        <Column>
+          <Text class="label">
+            <Trans>Followers</Trans>
+          </Text>
+          <Text>
+            <Trans>
+              Channels in other servers that receive this channel's published
+              messages.
+            </Trans>
+          </Text>
+          <Switch
+            fallback={
+              <Text>
+                <Trans>No channels are following yet.</Trans>
+              </Text>
+            }
+          >
+            <Match when={followers.loading}>
+              <CircularProgress />
+            </Match>
+            <Match when={followers()?.length}>
+              <Column gap="sm">
+                <For each={followers()}>
+                  {(follow) => (
+                    <div
+                      style={{
+                        display: "flex",
+                        "align-items": "center",
+                        "justify-content": "space-between",
+                        gap: "8px",
+                      }}
+                    >
+                      <Text>{followerLabel(follow)}</Text>
+                      <Button onPress={() => unfollow(follow._id)}>
+                        <Trans>Remove</Trans>
+                      </Button>
+                    </div>
+                  )}
+                </For>
+              </Column>
+            </Match>
+          </Switch>
+        </Column>
+      </Show>
 
       <Column>
         <Text class="label">

@@ -204,6 +204,25 @@ export function ChannelHeader(props: Props) {
         </Match>
       </Switch>
 
+      <Show when={props.channel.isAnnouncement}>
+        <IconButton
+          onPress={() =>
+            openModal({
+              type: "follow_channel",
+              channel: props.channel,
+            })
+          }
+          use:floating={{
+            tooltip: {
+              placement: "bottom",
+              content: t`Follow this announcement channel`,
+            },
+          }}
+        >
+          <Symbol>campaign</Symbol>
+        </IconButton>
+      </Show>
+
       <Show when={props.channel.isVoice && !voice.showCard(props.channel)}>
         <IconButton
           onPress={() => voice.connect(props.channel)}

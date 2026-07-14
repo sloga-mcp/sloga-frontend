@@ -155,6 +155,23 @@ export function Message(props: Props) {
     !props.message.content.replace(RE_URL, "").length;
 
   /**
+   * Origin attribution label for a delivered crosspost copy, resolved from
+   * the server-set `crosspost` ids. Falls back to a generic label when the
+   * origin server/channel isn't visible to this user.
+   */
+  const crosspostOrigin = () => {
+    const info = props.message.crosspost;
+    if (!info) return undefined;
+    const server = client().servers.get(info.server_id);
+    const channel = client().channels.get(info.channel_id);
+    if (server && channel) {
+      const name = channel.name ?? channel.id;
+      return t`From ${server.name} • #${name}`;
+    }
+    return t`From another server`;
+  };
+
+  /**
    * React with an emoji
    * @param emoji Emoji
    */
@@ -387,6 +404,12 @@ export function Message(props: Props) {
             return <></>;
           }}
         </CompositionMediaPicker>
+        <Show when={props.message.isCrosspost}>
+          <CrosspostAttribution>
+            <Symbol size={14}>campaign</Symbol>
+            <span>{crosspostOrigin()}</span>
+          </CrosspostAttribution>
+        </Show>
         <Switch>
           <Match when={props.editing}>
             <EditMessage message={props.message} />
@@ -449,6 +472,14 @@ export function Message(props: Props) {
             renderer, which fetches the author on cache miss */}
         <Show when={props.message.components?.length}>
           <MessageComponents message={props.message} />
+        </Show>
+        <Show when={props.message.isCrossposted}>
+          <PublishedChip>
+            <Symbol size={14}>campaign</Symbol>
+            <span>
+              <Trans>Published</Trans>
+            </span>
+          </PublishedChip>
         </Show>
         <Show when={props.message.isEphemeral}>
           <EphemeralNotice>
@@ -540,6 +571,39 @@ const EphemeralNotice = styled("div", {
       cursor: "pointer",
       fontWeight: 500,
     },
+  },
+});
+
+/**
+ * Origin attribution shown above a delivered crosspost copy's content
+ */
+const CrosspostAttribution = styled("div", {
+  base: {
+    display: "flex",
+    alignItems: "center",
+    gap: "var(--gap-sm)",
+    marginBottom: "2px",
+
+    color: "var(--md-sys-color-outline)",
+    fontSize: "0.75rem",
+    fontWeight: 500,
+  },
+});
+
+/**
+ * Chip marking an announcement message that has been published
+ */
+const PublishedChip = styled("div", {
+  base: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "var(--gap-sm)",
+    marginTop: "var(--gap-sm)",
+    width: "fit-content",
+
+    color: "var(--md-sys-color-primary)",
+    fontSize: "0.75rem",
+    fontWeight: 500,
   },
 });
 

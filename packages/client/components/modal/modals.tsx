@@ -43,6 +43,7 @@ import { E2EEIdentityChangeModal } from "./modals/E2EEIdentityChange";
 import { E2EEVerifyModal } from "./modals/E2EEVerify";
 import { EmojiPreviewModal } from "./modals/EmojiPreview";
 import { Error2Modal } from "./modals/Error2";
+import { FollowChannelModal } from "./modals/FollowChannel";
 import { ForwardMessageModal } from "./modals/ForwardMessage";
 import { ImageViewerModal } from "./modals/ImageViewer";
 import { InviteModal } from "./modals/Invite";
@@ -142,6 +143,8 @@ export function RenderModal(props: ActiveModal & { onClose: () => void }) {
       return <ForwardMessageModal {...modalProps} />;
     case "schedule_message":
       return <ScheduleMessageModal {...modalProps} />;
+    case "follow_channel":
+      return <FollowChannelModal {...modalProps} />;
     case "create_webhook":
       return <CreateWebhookModal {...modalProps} />;
     case "custom_status":
