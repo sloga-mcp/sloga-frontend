@@ -128,6 +128,11 @@ interface SettingsDefinition {
   "captions:spoken": string;
 
   /**
+   * Whether to also read translated call captions aloud (on-device TTS)
+   */
+  "captions:speak": boolean;
+
+  /**
    * Streamer Mode: master toggle
    */
   "streamer:enabled": boolean;
@@ -194,6 +199,7 @@ const EXPECTED_TYPES: { [K in keyof SettingsDefinition]: ValueType<K> } = {
   "captions:enabled": "boolean",
   "captions:target": "string",
   "captions:spoken": "string",
+  "captions:speak": "boolean",
   "streamer:enabled": "boolean",
   "streamer:auto_detect": "boolean",
   "streamer:hide_personal": "boolean",
@@ -220,6 +226,7 @@ const DEFAULT_VALUES: TypeSettings = {
   "captions:enabled": false,
   "captions:target": "en",
   "captions:spoken": "",
+  "captions:speak": false,
   "streamer:enabled": false,
   "streamer:auto_detect": true,
   "streamer:hide_personal": true,
@@ -267,6 +274,7 @@ export class Settings extends AbstractStore<"settings", TypeSettings> {
       "captions:enabled": false,
       "captions:target": "en",
       "captions:spoken": "",
+      "captions:speak": false,
       "streamer:enabled": false,
       "streamer:auto_detect": true,
       "streamer:hide_personal": true,

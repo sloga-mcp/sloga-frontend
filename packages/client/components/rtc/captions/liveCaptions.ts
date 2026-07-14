@@ -63,6 +63,11 @@ export class LiveCaptions {
   #encoder = new TextEncoder();
   #decoder = new TextDecoder();
 
+  /** This device's LiveKit identity — lets the narrator skip my own captions. */
+  get localIdentity(): string {
+    return this.#localIdentity;
+  }
+
   #clampText(text: string): string {
     return text.length > MAX_CAPTION_CHARS
       ? text.slice(0, MAX_CAPTION_CHARS)

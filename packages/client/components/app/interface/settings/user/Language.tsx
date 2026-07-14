@@ -27,6 +27,7 @@ import MdMic from "@material-design-icons/svg/outlined/mic.svg?component-solid";
 import MdRecordVoiceOver from "@material-design-icons/svg/outlined/record_voice_over.svg?component-solid";
 import MdSchedule from "@material-design-icons/svg/outlined/schedule.svg?component-solid";
 import MdTranslate from "@material-design-icons/svg/outlined/translate.svg?component-solid";
+import MdVolumeUp from "@material-design-icons/svg/outlined/volume_up.svg?component-solid";
 
 /**
  * Language
@@ -50,6 +51,7 @@ export function LanguageSettings() {
         <ToggleCallCaptions />
         <PickCaptionLanguage />
         <PickSpokenLanguage />
+        <ToggleSpeakCaptions />
       </CategoryButton.Group>
       <CategoryButton.Group>
         <ContributeLanguageLink />
@@ -292,6 +294,44 @@ function PickSpokenLanguage() {
         state.settings.setValue("captions:spoken", code as string)
       }
     />
+  );
+}
+
+/**
+ * Toggle reading translated call captions aloud (on-device TTS)
+ */
+function ToggleSpeakCaptions() {
+  const state = useState();
+
+  return (
+    <CategoryButton
+      icon={<MdVolumeUp {...iconSize(22)} />}
+      description={
+        <Trans>
+          Also read translated captions aloud using your device's voice. Runs on
+          the receiving side and never reads your own captions back to you.
+        </Trans>
+      }
+      action={
+        <Checkbox
+          checked={state.settings.getValue("captions:speak") ?? false}
+          onChange={(event) =>
+            state.settings.setValue(
+              "captions:speak",
+              event.currentTarget.checked,
+            )
+          }
+        />
+      }
+      onClick={() =>
+        state.settings.setValue(
+          "captions:speak",
+          !state.settings.getValue("captions:speak"),
+        )
+      }
+    >
+      <Trans>Speak captions aloud</Trans>
+    </CategoryButton>
   );
 }
 

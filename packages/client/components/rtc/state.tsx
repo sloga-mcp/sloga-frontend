@@ -102,6 +102,7 @@ import {
 } from "./cameraEffects";
 import { LiveCaptions } from "./captions/liveCaptions";
 import { CaptionPublisher } from "./components/CaptionPublisher";
+import { CaptionSpeaker } from "./components/CaptionSpeaker";
 import { InRoom } from "./components/InRoom";
 import { RoomAudioManager } from "./components/RoomAudioManager";
 import { MlsKeyProvider } from "./mlsCallKeys";
@@ -1979,6 +1980,7 @@ export function VoiceContext(props: { children: JSX.Element }) {
         <InRoom>
           <RoomAudioManager />
           <CaptionPublisher />
+          <CaptionSpeaker />
         </InRoom>
       </RoomContext.Provider>
     </voiceContext.Provider>
