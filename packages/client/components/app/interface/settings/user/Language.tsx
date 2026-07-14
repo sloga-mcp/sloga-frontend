@@ -1,6 +1,9 @@
+import { Show } from "solid-js";
+
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
 
 import { TRANSLATE_LANGUAGES } from "@revolt/common";
+import { webSpeechSupported } from "@revolt/rtc";
 import { Language, Languages, browserPreferredLanguage } from "@revolt/i18n";
 import type { LanguageEntry } from "@revolt/i18n/Languages";
 import { timeLocale } from "@revolt/i18n/dayjs";
@@ -20,6 +23,8 @@ import MdErrorFill from "@material-design-icons/svg/filled/error.svg?component-s
 import MdVerifiedFill from "@material-design-icons/svg/filled/verified.svg?component-solid";
 import MdCalendarMonth from "@material-design-icons/svg/outlined/calendar_month.svg?component-solid";
 import MdLanguage from "@material-design-icons/svg/outlined/language.svg?component-solid";
+import MdMic from "@material-design-icons/svg/outlined/mic.svg?component-solid";
+import MdRecordVoiceOver from "@material-design-icons/svg/outlined/record_voice_over.svg?component-solid";
 import MdSchedule from "@material-design-icons/svg/outlined/schedule.svg?component-solid";
 import MdTranslate from "@material-design-icons/svg/outlined/translate.svg?component-solid";
 
@@ -40,6 +45,11 @@ export function LanguageSettings() {
       <CategoryButton.Group>
         <ToggleMessageTranslation />
         <PickTranslationLanguage />
+      </CategoryButton.Group>
+      <CategoryButton.Group>
+        <ToggleCallCaptions />
+        <PickCaptionLanguage />
+        <PickSpokenLanguage />
       </CategoryButton.Group>
       <CategoryButton.Group>
         <ContributeLanguageLink />
@@ -170,6 +180,116 @@ function PickTranslationLanguage() {
       options={options}
       onUpdate={(code) =>
         state.settings.setValue("translation:target", code as string)
+      }
+    />
+  );
+}
+
+/**
+ * Toggle translated live captions during voice/video calls
+ */
+function ToggleCallCaptions() {
+  const state = useState();
+
+  return (
+    <CategoryButton
+      icon={<MdRecordVoiceOver {...iconSize(22)} />}
+      description={
+        <>
+          <Trans>
+            Show live captions during voice and video calls, translated into
+            your chosen language. Your microphone audio is sent to your
+            browser's speech service (Google) to transcribe it, and the text is
+            sent to Google Translate; captions are disabled on end-to-end
+            encrypted calls.
+          </Trans>
+          <Show when={!webSpeechSupported()}>
+            {" "}
+            <Trans>
+              Broadcasting your own captions isn't supported in this app or
+              browser — you'll still see other people's captions.
+            </Trans>
+          </Show>
+        </>
+      }
+      action={
+        <Checkbox
+          checked={state.settings.getValue("captions:enabled") ?? false}
+          onChange={(event) =>
+            state.settings.setValue(
+              "captions:enabled",
+              event.currentTarget.checked,
+            )
+          }
+        />
+      }
+      onClick={() =>
+        state.settings.setValue(
+          "captions:enabled",
+          !state.settings.getValue("captions:enabled"),
+        )
+      }
+    >
+      <Trans>Live call captions</Trans>
+    </CategoryButton>
+  );
+}
+
+/**
+ * Pick the language call captions are translated into
+ */
+function PickCaptionLanguage() {
+  const state = useState();
+
+  const options: Record<string, CategorySelectOption> = {};
+  for (const [code, name] of TRANSLATE_LANGUAGES) {
+    options[code] = {
+      title: name,
+      shortDesc: name,
+    };
+  }
+
+  return (
+    <CategoryButton.Select
+      icon={<MdLanguage {...iconSize(22)} />}
+      title={<Trans>Translate captions to</Trans>}
+      value={(state.settings.getValue("captions:target") as string) ?? "en"}
+      options={options}
+      onUpdate={(code) =>
+        state.settings.setValue("captions:target", code as string)
+      }
+    />
+  );
+}
+
+/**
+ * Pick the language I speak, used to transcribe my outgoing captions
+ */
+function PickSpokenLanguage() {
+  const state = useState();
+  const { t } = useLingui();
+
+  const options: Record<string, CategorySelectOption> = {
+    "": {
+      title: t`Automatic`,
+      shortDesc: t`Automatic`,
+    },
+  };
+  for (const [code, name] of TRANSLATE_LANGUAGES) {
+    options[code] = {
+      title: name,
+      shortDesc: name,
+    };
+  }
+
+  return (
+    <CategoryButton.Select
+      icon={<MdMic {...iconSize(22)} />}
+      title={<Trans>My spoken language</Trans>}
+      value={(state.settings.getValue("captions:spoken") as string) ?? ""}
+      options={options}
+      onUpdate={(code) =>
+        state.settings.setValue("captions:spoken", code as string)
       }
     />
   );

@@ -100,6 +100,8 @@ import {
   CameraEffectsController,
   type CameraBackgroundStatus,
 } from "./cameraEffects";
+import { LiveCaptions } from "./captions/liveCaptions";
+import { CaptionPublisher } from "./components/CaptionPublisher";
 import { InRoom } from "./components/InRoom";
 import { RoomAudioManager } from "./components/RoomAudioManager";
 import { MlsKeyProvider } from "./mlsCallKeys";
@@ -248,6 +250,13 @@ class Voice {
    */
   readonly callEncryption = new ReactiveMap<string, boolean>();
   /**
+   * Translated live captions for this call (STT → data channel → per-receiver
+   * translation). Attached on connect, torn down on disconnect. Local
+   * broadcasting is gated OFF on E2EE calls (audio would reach the speech
+   * vendor and the transcript rides an unencrypted data channel).
+   */
+  readonly captions = new LiveCaptions();
+  /**
    * First latched call-key/encryption error for this call — the STRUCTURED
    * value (native error object or LiveKit error), never stringified, so 6.5
    * can classify rotation-window `RE-SECURING` vs loud `NOT ENCRYPTED`
@@ -272,6 +281,15 @@ class Voice {
    */
   callMode: Accessor<CallMode | undefined>;
   #setCallMode: Setter<CallMode | undefined>;
+  /**
+   * Whether THIS call is E2EE-capable — the connect-time `e2eeCapable` snapshot
+   * (isE2EESupported + native layer + key-push + "Encrypt my calls"). The
+   * caption fail-closed gate reads it: on a capable call captions broadcast
+   * ONLY when the mode is POSITIVELY plaintext ("off"); a non-capable call is
+   * always plaintext, so an undefined mode there is safe.
+   */
+  callE2EECapable: Accessor<boolean>;
+  #setCallE2EECapable: Setter<boolean>;
   /** For a remote announce (T4): the user who announced plaintext (banner copy). */
   callAnnouncedBy: Accessor<string | undefined>;
   #setCallAnnouncedBy: Setter<string | undefined>;
@@ -391,6 +409,10 @@ class Voice {
     this.callMode = callMode;
     this.#setCallMode = setCallMode;
 
+    const [callE2EECapable, setCallE2EECapable] = createSignal(false);
+    this.callE2EECapable = callE2EECapable;
+    this.#setCallE2EECapable = setCallE2EECapable;
+
     const [callAnnouncedBy, setCallAnnouncedBy] = createSignal<
       string | undefined
     >();
@@ -491,6 +513,11 @@ class Voice {
       }
     }
 
+    // Snapshot the call's E2EE capability for the caption fail-closed gate:
+    // captions must never broadcast on a call that can be encrypted unless the
+    // mode is positively plaintext.
+    this.#setCallE2EECapable(e2eeCapable);
+
     // Device-qualified LiveKit identity (slice 6.1/6.4 item 3): source the
     // E2EE device id so `joinCall` mints identity `{user_id}:{device_id}` —
     // MlsKeyProvider's local-last send-key switch matches frame keys by that
@@ -549,6 +576,7 @@ class Voice {
     room.addListener("connected", () => {
       this.#setState("CONNECTED");
       nativeCallServiceStart();
+      this.captions.attach(room, room.localParticipant.identity);
       this.#startPushToTalk(room);
       this.#startVAD(room);
       const isAfk = channel.name?.toLowerCase() === "afk";
@@ -933,6 +961,7 @@ class Voice {
       this.#e2eeWorker?.terminate();
       this.#e2eeWorker = undefined;
       this.#mlsKeyProvider = undefined;
+      this.captions.detach();
       this.callEncryption.clear();
       this.#publishGate.clear();
       this.#setCallEncryptionError(undefined);
@@ -940,6 +969,7 @@ class Voice {
       // Reset the 6.5 signals so the next call's card never flashes this
       // call's latched mode/roster/attribution (FE-9a).
       this.#setCallMode(undefined);
+      this.#setCallE2EECapable(false);
       this.#setCallAnnouncedBy(undefined);
       this.#setCallRoster({ members: [], ghosts: [] });
       this.#setCallChannelHasOpenGroup(false);
@@ -1948,6 +1978,7 @@ export function VoiceContext(props: { children: JSX.Element }) {
         <VoiceCallCardContext>{props.children}</VoiceCallCardContext>
         <InRoom>
           <RoomAudioManager />
+          <CaptionPublisher />
         </InRoom>
       </RoomContext.Provider>
     </voiceContext.Provider>

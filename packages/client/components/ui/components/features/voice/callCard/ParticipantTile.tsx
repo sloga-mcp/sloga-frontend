@@ -24,6 +24,8 @@ import { Symbol } from "@revolt/ui/components/utils/Symbol";
 import { participantUserId } from "../participantIdentity";
 import { VoiceStatefulUserIcons } from "../VoiceStatefulUserIcons";
 
+import { ParticipantCaption } from "./ParticipantCaption";
+
 type TileProps = {
   focus?: boolean;
 };
@@ -225,6 +227,9 @@ export function ParticipantTile(props: TileProps) {
             {qualityMs()}
           </PingBadge>
         </Overlay>
+        <Show when={!isScreenShare()}>
+          <ParticipantCaption identity={participant.identity} />
+        </Show>
       </div>
     </Show>
   );

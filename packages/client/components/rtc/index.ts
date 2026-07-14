@@ -1,5 +1,7 @@
 export { VoiceContext, useVoice } from "./state";
 
+export { webSpeechSupported } from "./captions/speechCaptionEngine";
+
 export { InRoom } from "./components/InRoom";
 export { RoomAudioManager } from "./components/RoomAudioManager";
 

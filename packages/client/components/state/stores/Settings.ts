@@ -113,6 +113,21 @@ interface SettingsDefinition {
   "translation:target": string;
 
   /**
+   * Whether to show translated live captions during voice/video calls
+   */
+  "captions:enabled": boolean;
+
+  /**
+   * Target language for call captions (Google Translate code)
+   */
+  "captions:target": string;
+
+  /**
+   * My spoken language for outgoing captions (BCP-47); empty = browser default
+   */
+  "captions:spoken": string;
+
+  /**
    * Streamer Mode: master toggle
    */
   "streamer:enabled": boolean;
@@ -176,6 +191,9 @@ const EXPECTED_TYPES: { [K in keyof SettingsDefinition]: ValueType<K> } = {
   "activity:share": "boolean",
   "translation:enabled": "boolean",
   "translation:target": "string",
+  "captions:enabled": "boolean",
+  "captions:target": "string",
+  "captions:spoken": "string",
   "streamer:enabled": "boolean",
   "streamer:auto_detect": "boolean",
   "streamer:hide_personal": "boolean",
@@ -199,6 +217,9 @@ const DEFAULT_VALUES: TypeSettings = {
   "activity:share": true,
   "translation:enabled": false,
   "translation:target": "en",
+  "captions:enabled": false,
+  "captions:target": "en",
+  "captions:spoken": "",
   "streamer:enabled": false,
   "streamer:auto_detect": true,
   "streamer:hide_personal": true,
@@ -243,6 +264,9 @@ export class Settings extends AbstractStore<"settings", TypeSettings> {
       "sounds:disconnect_variant": 3,
       "translation:enabled": false,
       "translation:target": "en",
+      "captions:enabled": false,
+      "captions:target": "en",
+      "captions:spoken": "",
       "streamer:enabled": false,
       "streamer:auto_detect": true,
       "streamer:hide_personal": true,
@@ -280,7 +304,7 @@ export class Settings extends AbstractStore<"settings", TypeSettings> {
         if (NotificationPermissionStates.includes(input[key] as never)) {
           settings[key] = input[key];
         }
-      } else if (key === "translation:target") {
+      } else if (key === "translation:target" || key === "captions:target") {
         if (TRANSLATE_LANGUAGE_CODES.includes(input[key] as string)) {
           settings[key] = input[key];
         }
