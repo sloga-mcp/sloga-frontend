@@ -2,6 +2,7 @@ import { createContext, JSXElement, useContext } from "solid-js";
 
 import { Sounds, TypeSounds, useState } from "@revolt/state";
 import { Settings } from "@revolt/state/stores/Settings";
+import { streamerModeHides } from "@revolt/state/streamer";
 import deafenSound from "../../public/assets/sounds/deafen.ogg";
 import muteSound from "../../public/assets/sounds/mute.ogg";
 import ringtoneIncomingSound from "../../public/assets/sounds/ringtone_incoming.ogg";
@@ -307,6 +308,11 @@ export class SoundController {
   canPlay(newSound: keyof TypeSounds): boolean {
     // Never let a sound turned off play
     if (!this.soundState.enabled(newSound)) {
+      return false;
+    }
+
+    // Streamer Mode can mute all event sounds (previews use force=true)
+    if (streamerModeHides(this.settingsState, "sounds")) {
       return false;
     }
 

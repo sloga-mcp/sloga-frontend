@@ -4,9 +4,11 @@ import {
   JSX,
   Match,
   onCleanup,
+  Show,
   Switch,
 } from "solid-js";
 
+import { Trans } from "@lingui-solid/solid/macro";
 import { Server } from "stoat.js";
 import { styled } from "styled-system/jsx";
 
@@ -18,11 +20,14 @@ import { State } from "@revolt/client/Controller";
 import { ActivityWorker } from "@revolt/client/ActivityWorker";
 import { ApkUpdateWorker } from "@revolt/client/ApkUpdateWorker";
 import { NotificationsWorker } from "@revolt/client/NotificationsWorker";
+import { StreamerModeWorker } from "@revolt/client/StreamerModeWorker";
 import { useModals } from "@revolt/modal";
 import { Navigate, useBeforeLeave, useLocation } from "@revolt/routing";
 import { useState } from "@revolt/state";
+import { streamerModeActive } from "@revolt/state/streamer";
 import { LAYOUT_SECTIONS } from "@revolt/state/stores/Layout";
 import { CircularProgress } from "@revolt/ui";
+import { Symbol } from "@revolt/ui/components/utils/Symbol";
 
 import { SlideDrawer } from "../components/ui/components/navigation/SlideDrawer";
 import { Sidebar } from "./interface/Sidebar";
@@ -93,6 +98,17 @@ const Interface = (props: { children: JSX.Element }) => {
     <MessageCache client={client()}>
       <AppRoot ref={rootRef} class="app_root">
         <Titlebar />
+        <Show when={streamerModeActive(state.settings)}>
+          <StreamerBanner
+            onClick={() => openModal({ type: "settings", config: "user" })}
+          >
+            <Symbol size={16}>videocam</Symbol>
+            <Trans>
+              Streamer Mode is on — personal info, invites and notifications
+              are hidden
+            </Trans>
+          </StreamerBanner>
+        </Show>
         <Switch fallback={<CircularProgress />}>
           <Match when={!isLoggedIn()}>
             <Navigate href="/login" />
@@ -102,6 +118,11 @@ const Interface = (props: { children: JSX.Element }) => {
               disconnected={isDisconnected()}
               style={{ "flex-grow": 1, "min-height": 0 }}
               onDragOver={(e) => {
+                // Cancel the dragover so the browser never navigates to a
+                // dropped file; FileDropAnywhereCollector listens on document
+                // (after this handler) and flips the effect to "copy" to
+                // accept files wherever a composer is mounted.
+                e.preventDefault();
                 if (e.dataTransfer) e.dataTransfer.dropEffect = "none";
               }}
               onDrop={(e) => e.preventDefault()}
@@ -137,6 +158,7 @@ const Interface = (props: { children: JSX.Element }) => {
 
         <NotificationsWorker />
         <ActivityWorker />
+        <StreamerModeWorker />
         <ApkUpdateWorker />
       </AppRoot>
     </MessageCache>
@@ -148,6 +170,28 @@ const AppRoot = styled("div", {
     display: "flex",
     flexDirection: "column",
     height: "100%",
+  },
+});
+
+/**
+ * Slim banner shown while Streamer Mode is active
+ */
+const StreamerBanner = styled("div", {
+  base: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: "var(--gap-sm)",
+
+    padding: "2px var(--gap-md)",
+    fontSize: "0.8em",
+    fontWeight: 600,
+    cursor: "pointer",
+    userSelect: "none",
+
+    fill: "var(--md-sys-color-on-error-container)",
+    color: "var(--md-sys-color-on-error-container)",
+    background: "var(--md-sys-color-error-container)",
   },
 });
 

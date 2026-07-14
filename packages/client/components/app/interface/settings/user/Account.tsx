@@ -8,7 +8,9 @@ import {
   createOwnProfileResource,
 } from "@revolt/client/resources";
 import { useModals } from "@revolt/modal";
-import { CategoryButton, Column, Row, iconSize } from "@revolt/ui";
+import { useState } from "@revolt/state";
+import { streamerModeHides } from "@revolt/state/streamer";
+import { CategoryButton, Column, Row, Text, iconSize } from "@revolt/ui";
 
 import MdAlternateEmail from "@material-design-icons/svg/outlined/alternate_email.svg?component-solid";
 import MdBlock from "@material-design-icons/svg/outlined/block.svg?component-solid";
@@ -50,8 +52,14 @@ export function MyAccount() {
  */
 function EditAccount() {
   const client = useClient();
+  const state = useState();
   const { openModal } = useModals();
   const [email, setEmail] = createSignal("•••••••••••@•••••••••••");
+
+  /** Keep the email masked (even if already revealed) during Streamer Mode */
+  const hidePersonal = () => streamerModeHides(state.settings, "personal");
+  const displayEmail = () =>
+    hidePersonal() ? "•••••••••••@•••••••••••" : email();
 
   return (
     <CategoryButton.Group>
@@ -79,8 +87,13 @@ function EditAccount() {
         icon={<MdMail {...iconSize(22)} />}
         description={
           <Row>
-            {email()}{" "}
-            <Show when={email().startsWith("•")}>
+            {displayEmail()}{" "}
+            <Show when={hidePersonal()}>
+              <Text class="label">
+                <Trans>Hidden by Streamer Mode</Trans>
+              </Text>
+            </Show>
+            <Show when={email().startsWith("•") && !hidePersonal()}>
               <a
                 onClick={(event) => {
                   event.stopPropagation();

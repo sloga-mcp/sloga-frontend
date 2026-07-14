@@ -111,6 +111,37 @@ interface SettingsDefinition {
    * Target language for automatic message translation
    */
   "translation:target": string;
+
+  /**
+   * Streamer Mode: master toggle
+   */
+  "streamer:enabled": boolean;
+
+  /**
+   * Streamer Mode: automatically activate while a streaming app
+   * (OBS, Streamlabs, XSplit, ...) is running (desktop app only)
+   */
+  "streamer:auto_detect": boolean;
+
+  /**
+   * Streamer Mode: hide personal information (e.g. email address)
+   */
+  "streamer:hide_personal": boolean;
+
+  /**
+   * Streamer Mode: hide invite links and codes
+   */
+  "streamer:hide_invites": boolean;
+
+  /**
+   * Streamer Mode: suppress desktop notification popups
+   */
+  "streamer:disable_notifications": boolean;
+
+  /**
+   * Streamer Mode: mute notification and call sounds
+   */
+  "streamer:disable_sounds": boolean;
 }
 
 /**
@@ -145,6 +176,12 @@ const EXPECTED_TYPES: { [K in keyof SettingsDefinition]: ValueType<K> } = {
   "activity:share": "boolean",
   "translation:enabled": "boolean",
   "translation:target": "string",
+  "streamer:enabled": "boolean",
+  "streamer:auto_detect": "boolean",
+  "streamer:hide_personal": "boolean",
+  "streamer:hide_invites": "boolean",
+  "streamer:disable_notifications": "boolean",
+  "streamer:disable_sounds": "boolean",
 };
 
 /**
@@ -162,6 +199,12 @@ const DEFAULT_VALUES: TypeSettings = {
   "activity:share": true,
   "translation:enabled": false,
   "translation:target": "en",
+  "streamer:enabled": false,
+  "streamer:auto_detect": true,
+  "streamer:hide_personal": true,
+  "streamer:hide_invites": true,
+  "streamer:disable_notifications": true,
+  "streamer:disable_sounds": true,
 };
 
 /**
@@ -200,6 +243,12 @@ export class Settings extends AbstractStore<"settings", TypeSettings> {
       "sounds:disconnect_variant": 3,
       "translation:enabled": false,
       "translation:target": "en",
+      "streamer:enabled": false,
+      "streamer:auto_detect": true,
+      "streamer:hide_personal": true,
+      "streamer:hide_invites": true,
+      "streamer:disable_notifications": true,
+      "streamer:disable_sounds": true,
     };
   }
 

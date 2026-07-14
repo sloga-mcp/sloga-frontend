@@ -5,7 +5,9 @@ import { useMutation } from "@tanstack/solid-query";
 import { styled } from "styled-system/jsx";
 
 import { CONFIGURATION } from "@revolt/common";
-import { Dialog, DialogProps } from "@revolt/ui";
+import { useState } from "@revolt/state";
+import { streamerModeHides } from "@revolt/state/streamer";
+import { Dialog, DialogProps, Text } from "@revolt/ui";
 
 import { useModals } from "..";
 import { Modals } from "../types";
@@ -26,6 +28,20 @@ const Invite = styled("div", {
       fontFamily: "var(--fonts-monospace)",
     },
   },
+  variants: {
+    // Streamer Mode: keep the link off-screen unless deliberately hovered
+    concealed: {
+      true: {
+        "& code": {
+          filter: "blur(8px)",
+          transition: "filter 0.15s ease",
+          _hover: {
+            filter: "none",
+          },
+        },
+      },
+    },
+  },
 });
 
 /**
@@ -35,7 +51,10 @@ export function CreateInviteModal(
   props: DialogProps & Modals & { type: "create_invite" },
 ) {
   const { showError } = useModals();
+  const state = useState();
   const [link, setLink] = createSignal("...");
+
+  const concealed = () => streamerModeHides(state.settings, "invites");
 
   const fetchInvite = useMutation(() => ({
     mutationFn: () =>
@@ -73,10 +92,18 @@ export function CreateInviteModal(
         when={!fetchInvite.isPending}
         fallback={<Trans>Generating invite…</Trans>}
       >
-        <Invite>
+        <Invite concealed={concealed()}>
           <Trans>
             Here is your new invite code: <code>{link()}</code>
           </Trans>
+          <Show when={concealed()}>
+            <Text class="label">
+              <Trans>
+                Streamer Mode is hiding your invite link — hover over it to
+                reveal.
+              </Trans>
+            </Text>
+          </Show>
         </Invite>
       </Show>
     </Dialog>

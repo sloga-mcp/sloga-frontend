@@ -47,6 +47,7 @@ import Notifications from "./user/notifications/Notifications";
 import { EditProfile } from "./user/profile";
 import { SecurityAndPrivacy } from "./user/SecurityAndPrivacy";
 import { Sessions } from "./user/Sessions";
+import { StreamerModeSettings } from "./user/StreamerMode";
 import { EditSubscription } from "./user/subscriptions";
 import { VoiceSettings } from "./user/voice/VoiceSettings";
 
@@ -108,6 +109,8 @@ const Config: SettingsConfiguration<{ server: Server }> = {
         return <VoiceSettings />;
       case "notifications":
         return <Notifications isDesktop={!!window.native} />;
+      case "streamer":
+        return <StreamerModeSettings />;
       default:
         return null;
     }
@@ -266,6 +269,11 @@ const Config: SettingsConfiguration<{ server: Server }> = {
               id: "notifications",
               icon: <MdNotifications {...iconSize(20)} />,
               title: <Trans>Notifications</Trans>,
+            },
+            {
+              id: "streamer",
+              icon: <Symbol size={20}>videocam</Symbol>,
+              title: <Trans>Streamer Mode</Trans>,
             },
             // {
             //   id: "keybinds",

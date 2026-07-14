@@ -20,6 +20,7 @@ import {
 import { useNavigate, useSmartParams } from "@revolt/routing";
 import { useVoice } from "@revolt/rtc";
 import { useState } from "@revolt/state";
+import { streamerModeHides } from "@revolt/state/streamer";
 
 import { useClient, useNotifications, useSound } from ".";
 import {
@@ -40,6 +41,13 @@ export function NotificationsWorker() {
   const sound = useSound();
 
   const { initNotifications } = useNotifications();
+
+  /**
+   * Whether Streamer Mode is suppressing notification popups right now.
+   * Sounds are gated separately by the sound controller.
+   */
+  const notificationsSuppressed = () =>
+    streamerModeHides(state.settings, "notifications");
 
   /**
    * Handle incoming messages
@@ -221,6 +229,8 @@ export function NotificationsWorker() {
 
     sound.playSound("message");
 
+    if (notificationsSuppressed()) return;
+
     console.info(`[notification] ${title} ${icon} ${body}`);
 
     showNotification({
@@ -265,7 +275,8 @@ export function NotificationsWorker() {
     // Show desktop notification if permitted
     if (
       notificationPermissionGranted() &&
-      state.settings.desktopNotificationsState === "allowed"
+      state.settings.desktopNotificationsState === "allowed" &&
+      !notificationsSuppressed()
     ) {
       showNotification({
         title: t`Incoming Call`,
@@ -302,7 +313,8 @@ export function NotificationsWorker() {
 
     if (
       notificationPermissionGranted() &&
-      state.settings.desktopNotificationsState === "allowed"
+      state.settings.desktopNotificationsState === "allowed" &&
+      !notificationsSuppressed()
     ) {
       showNotification({
         title: t`Friend Request`,
@@ -377,7 +389,7 @@ export function NotificationsWorker() {
     contentType: "Message" | "Server" | "User";
     reason: string;
   }) {
-    if (!notificationPermissionGranted()) return;
+    if (!notificationPermissionGranted() || notificationsSuppressed()) return;
 
     showNotification({
       title: t`New report`,

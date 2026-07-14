@@ -673,6 +673,10 @@ msgstr "Automatic Gain Control"
 msgid "Automatically detect and translate messages sent by other people. Message text is sent to Google Translate; encrypted messages are never translated."
 msgstr "Automatically detect and translate messages sent by other people. Message text is sent to Google Translate; encrypted messages are never translated."
 
+#: components/app/interface/settings/user/StreamerMode.tsx
+msgid "Automatically enable"
+msgstr "Automatically enable"
+
 #: components/app/interface/settings/user/profile/UserProfileEditor.tsx
 msgid "Avatar"
 msgstr "Avatar"
@@ -1642,9 +1646,17 @@ msgstr "Direct messages with contacts who also have encryption on are end-to-end
 msgid "Disable Account"
 msgstr "Disable Account"
 
+#: components/app/interface/settings/user/StreamerMode.tsx
+msgid "Disable notifications"
+msgstr "Disable notifications"
+
 #: components/app/interface/settings/user/Account.tsx
 msgid "Disable one-time password authenticator"
 msgstr "Disable one-time password authenticator"
+
+#: components/app/interface/settings/user/StreamerMode.tsx
+msgid "Disable sounds"
+msgstr "Disable sounds"
 
 #: components/app/interface/settings/server/Overview.tsx
 #: components/app/interface/settings/server/Overview.tsx
@@ -1850,6 +1862,10 @@ msgstr "Enable Push Notifications"
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
 msgid "Enable Push to Talk"
 msgstr "Enable Push to Talk"
+
+#: components/app/interface/settings/user/StreamerMode.tsx
+msgid "Enable Streamer Mode"
+msgstr "Enable Streamer Mode"
 
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Enable transparency glass/blur effects (slow on older machines)"
@@ -2247,9 +2263,29 @@ msgstr "Helped translate Sloga"
 msgid "Here is your new invite code: <0>{0}</0>"
 msgstr "Here is your new invite code: <0>{0}</0>"
 
+#: components/app/interface/settings/user/Account.tsx
+msgid "Hidden by Streamer Mode"
+msgstr "Hidden by Streamer Mode"
+
+#: components/app/interface/settings/user/StreamerMode.tsx
+msgid "Hide invite links"
+msgstr "Hide invite links"
+
+#: components/app/interface/settings/user/StreamerMode.tsx
+msgid "Hide invites in chat and blur newly created invite links so viewers can't join your servers."
+msgstr "Hide invites in chat and blur newly created invite links so viewers can't join your servers."
+
 #: components/ui/components/features/voice/callCard/VoiceCallCardActiveRoom.tsx
 msgid "Hide Others"
 msgstr "Hide Others"
+
+#: components/app/interface/settings/user/StreamerMode.tsx
+msgid "Hide personal details, invite links, notifications and sounds while you are live."
+msgstr "Hide personal details, invite links, notifications and sounds while you are live."
+
+#: components/app/interface/settings/user/StreamerMode.tsx
+msgid "Hide personal information"
+msgstr "Hide personal information"
 
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "High Contrast"
@@ -2401,6 +2437,10 @@ msgstr "Invite Code"
 msgid "Invite Friends to {0}"
 msgstr "Invite Friends to {0}"
 
+#: components/markdown/plugins/anchors.tsx
+msgid "Invite hidden by Streamer Mode"
+msgstr "Invite hidden by Streamer Mode"
+
 #: src/interface/ServerEvents.tsx
 msgid "Invite members"
 msgstr "Invite members"
@@ -2485,6 +2525,10 @@ msgstr "Keep as is"
 #: components/auth/src/flows/FlowLogin.tsx
 msgid "Keep me logged in"
 msgstr "Keep me logged in"
+
+#: components/app/interface/settings/user/StreamerMode.tsx
+msgid "Keep your email address masked in account settings."
+msgstr "Keep your email address masked in account settings."
 
 #: components/modal/modals/KickMember.tsx
 msgid "Kick"
@@ -2925,6 +2969,10 @@ msgstr "Mute lower-ranking members in voice call"
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "Mute Members"
 msgstr "Mute Members"
+
+#: components/app/interface/settings/user/StreamerMode.tsx
+msgid "Mute message, call and notification sounds."
+msgstr "Mute message, call and notification sounds."
 
 #: components/app/menus/UserContextMenu.tsx
 msgid "Mute Screen Share"
@@ -3837,8 +3885,12 @@ msgid "Schedule"
 msgstr "Schedule"
 
 #: src/interface/channels/text/Composition.tsx
-msgid "Scheduling doesn't support attachments yet"
-msgstr "Scheduling doesn't support attachments yet"
+msgid "Scheduling does not support attachments yet"
+msgstr "Scheduling does not support attachments yet"
+
+#: src/interface/channels/text/Composition.tsx
+#~ msgid "Scheduling doesn't support attachments yet"
+#~ msgstr "Scheduling doesn't support attachments yet"
 
 #: components/app/menus/UserContextMenu.tsx
 msgid "Screen Share"
@@ -4274,6 +4326,27 @@ msgstr "Stream End"
 msgid "Stream Start"
 msgstr "Stream Start"
 
+#: components/app/interface/settings/UserSettings.tsx
+msgid "Streamer Mode"
+msgstr "Streamer Mode"
+
+#: components/app/interface/settings/user/StreamerMode.tsx
+msgid "Streamer Mode is currently active."
+msgstr "Streamer Mode is currently active."
+
+#: components/modal/modals/CreateInvite.tsx
+msgid "Streamer Mode is hiding your invite link — hover over it to reveal."
+msgstr "Streamer Mode is hiding your invite link — hover over it to reveal."
+
+#: src/Interface.tsx
+msgid "Streamer Mode is on — personal info, invites and notifications are hidden"
+msgstr "Streamer Mode is on — personal info, invites and notifications are hidden"
+
+#. placeholder {0}: detectedStreamingApp()
+#: components/app/interface/settings/user/StreamerMode.tsx
+msgid "Streaming app detected: {0}"
+msgstr "Streaming app detected: {0}"
+
 #: components/app/interface/settings/user/Feedback.tsx
 msgid "Submit feature suggestion"
 msgstr "Submit feature suggestion"
@@ -4301,6 +4374,10 @@ msgstr "Support the project by donating - thank you!"
 #: components/ui/components/features/voice/callCard/VoiceDeviceSelector.tsx
 msgid "Suppress background noise (RNNoise)"
 msgstr "Suppress background noise (RNNoise)"
+
+#: components/app/interface/settings/user/StreamerMode.tsx
+msgid "Suppress desktop notification popups so messages don't appear on stream."
+msgstr "Suppress desktop notification popups so messages don't appear on stream."
 
 #: components/modal/modals/SuspendUser.tsx
 msgid "Suspend"
@@ -4690,6 +4767,10 @@ msgstr "Turn on end-to-end encryption for this group."
 #: components/app/interface/settings/user/voice/CameraPreview.tsx
 msgid "Turn on your camera to check it works and preview brightness and background effects."
 msgstr "Turn on your camera to check it works and preview brightness and background effects."
+
+#: components/app/interface/settings/user/StreamerMode.tsx
+msgid "Turn Streamer Mode on while a streaming app (OBS, Streamlabs, XSplit, ...) is running."
+msgstr "Turn Streamer Mode on while a streaming app (OBS, Streamlabs, XSplit, ...) is running."
 
 #: src/interface/channels/text/TextChannel.tsx
 msgid "Unarchive"

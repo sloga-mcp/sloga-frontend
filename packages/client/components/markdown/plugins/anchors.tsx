@@ -8,6 +8,7 @@ import { useClient } from "@revolt/client";
 import { useModals } from "@revolt/modal";
 import { paramsFromPathname } from "@revolt/routing";
 import { useState } from "@revolt/state";
+import { streamerModeHides } from "@revolt/state/streamer";
 import { Avatar, iconSize } from "@revolt/ui";
 import { Invite } from "@revolt/ui/components/features/messaging/elements/Invite";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
@@ -175,7 +176,21 @@ export function RenderAnchor(
         remoteProps.children[0] === localProps.href &&
         !localProps.disabled
       ) {
-        return <Invite code={params.inviteId} />;
+        const state = useState();
+
+        return (
+          <Show
+            when={!streamerModeHides(state.settings, "invites")}
+            fallback={
+              <span class={internalLink()}>
+                <Symbol>visibility_off</Symbol>
+                <Trans>Invite hidden by Streamer Mode</Trans>
+              </span>
+            }
+          >
+            <Invite code={params.inviteId} />
+          </Show>
+        );
       } else {
         const internalUrl = () =>
           new URL(url.pathname, location.origin).toString();
