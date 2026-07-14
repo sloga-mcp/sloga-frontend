@@ -1131,50 +1131,6 @@ export function MessageComposition(props: Props) {
                   </Show>
                 </div>
               </MessageBox.InlineIcon>
-              <Show when={pollAllowed()}>
-                <MessageBox.InlineIcon>
-                  <Tooltip content={t`Create poll`} placement="top">
-                    <IconButton
-                      onPress={() =>
-                        openModal({
-                          type: "create_poll",
-                          channel: props.channel,
-                        })
-                      }
-                    >
-                      <Symbol>ballot</Symbol>
-                    </IconButton>
-                  </Tooltip>
-                </MessageBox.InlineIcon>
-              </Show>
-              <Show when={scheduleAllowed()}>
-                <MessageBox.InlineIcon>
-                  <Tooltip
-                    content={
-                      draft()?.files?.length
-                        ? t`Scheduling doesn't support attachments yet`
-                        : !draft()?.content?.trim()
-                          ? t`Write a message first, then schedule it`
-                          : t`Send later`
-                    }
-                    placement="top"
-                  >
-                    <IconButton
-                      isDisabled={
-                        !!draft()?.files?.length || !draft()?.content?.trim()
-                      }
-                      onPress={() =>
-                        openModal({
-                          type: "schedule_message",
-                          channel: props.channel,
-                        })
-                      }
-                    >
-                      <Symbol>schedule_send</Symbol>
-                    </IconButton>
-                  </Tooltip>
-                </MessageBox.InlineIcon>
-              </Show>
               <Show when={props.channel.type === "TextChannel"}>
                 <MessageBox.InlineIcon>
                   <div style={{ position: "relative" }}>
@@ -1292,6 +1248,49 @@ export function MessageComposition(props: Props) {
                   </div>
                 </MessageBox.InlineIcon>
               </Show>
+              <Show when={pollAllowed()}>
+                <MessageBox.InlineIcon>
+                  <Tooltip content={t`Create poll`} placement="top">
+                    <IconButton
+                      onPress={() =>
+                        openModal({
+                          type: "create_poll",
+                          channel: props.channel,
+                        })
+                      }
+                    >
+                      <Symbol>ballot</Symbol>
+                    </IconButton>
+                  </Tooltip>
+                </MessageBox.InlineIcon>
+              </Show>
+              <CompositionMediaPicker
+                onMessage={sendMessage}
+                onTextReplacement={(text) => setNodeReplacement([text])}
+              >
+                {(triggerProps) => (
+                  <>
+                    <MessageBox.InlineIcon>
+                      <IconButton onPress={triggerProps.onClickSticker}>
+                        <Symbol>note_stack</Symbol>
+                      </IconButton>
+                    </MessageBox.InlineIcon>
+                    <Show when={!canSend()}>
+                      <MessageBox.InlineIcon>
+                        <IconButton onPress={triggerProps.onClickGif}>
+                          <Symbol>gif</Symbol>
+                        </IconButton>
+                      </MessageBox.InlineIcon>
+                    </Show>
+                    <MessageBox.InlineIcon>
+                      <IconButton onPress={triggerProps.onClickEmoji}>
+                        <Symbol>emoticon</Symbol>
+                      </IconButton>
+                    </MessageBox.InlineIcon>
+                    <div ref={triggerProps.ref} />
+                  </>
+                )}
+              </CompositionMediaPicker>
               <Show when={props.channel.havePermission("UploadFiles")}>
                 <MessageBox.InlineIcon>
                   <CameraMessageButton
@@ -1306,33 +1305,34 @@ export function MessageComposition(props: Props) {
                   />
                 </MessageBox.InlineIcon>
               </Show>
-              <CompositionMediaPicker
-                onMessage={sendMessage}
-                onTextReplacement={(text) => setNodeReplacement([text])}
-              >
-                {(triggerProps) => (
-                  <>
-                    <Show when={!canSend()}>
-                      <MessageBox.InlineIcon>
-                        <IconButton onPress={triggerProps.onClickGif}>
-                          <Symbol>gif</Symbol>
-                        </IconButton>
-                      </MessageBox.InlineIcon>
-                    </Show>
-                    <MessageBox.InlineIcon>
-                      <IconButton onPress={triggerProps.onClickEmoji}>
-                        <Symbol>emoticon</Symbol>
-                      </IconButton>
-                    </MessageBox.InlineIcon>
-                    <MessageBox.InlineIcon>
-                      <IconButton onPress={triggerProps.onClickSticker}>
-                        <Symbol>note_stack</Symbol>
-                      </IconButton>
-                    </MessageBox.InlineIcon>
-                    <div ref={triggerProps.ref} />
-                  </>
-                )}
-              </CompositionMediaPicker>
+              <Show when={scheduleAllowed()}>
+                <MessageBox.InlineIcon>
+                  <Tooltip
+                    content={
+                      draft()?.files?.length
+                        ? t`Scheduling does not support attachments yet`
+                        : !draft()?.content?.trim()
+                          ? t`Write a message first, then schedule it`
+                          : t`Send later`
+                    }
+                    placement="top"
+                  >
+                    <IconButton
+                      isDisabled={
+                        !!draft()?.files?.length || !draft()?.content?.trim()
+                      }
+                      onPress={() =>
+                        openModal({
+                          type: "schedule_message",
+                          channel: props.channel,
+                        })
+                      }
+                    >
+                      <Symbol>schedule_send</Symbol>
+                    </IconButton>
+                  </Tooltip>
+                </MessageBox.InlineIcon>
+              </Show>
             </MessageBox.ActionContainer>
           </MessageBox.ActionContainer>
         }
