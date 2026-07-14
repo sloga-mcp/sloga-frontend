@@ -2,9 +2,11 @@ import {
   Accessor,
   batch,
   createContext,
+  createEffect,
   createRoot,
   createSignal,
   JSX,
+  onCleanup,
   Setter,
   useContext,
 } from "solid-js";
@@ -117,6 +119,7 @@ import {
   type ChipState,
   chipState,
 } from "./mlsCallModePolicy";
+import { SoundboardPlayback } from "./soundboardPlayback";
 
 /** A3(b) product gate: video/screenshare off above this many participants in
  *  an E2EE call (control-plane cost scales with roster). Trivially tunable. */
@@ -257,6 +260,12 @@ class Voice {
    * vendor and the transcript rides an unencrypted data channel).
    */
   readonly captions = new LiveCaptions();
+  /**
+   * Client-local soundboard playback. Subscribes to the `soundboardSound`
+   * client event app-lifetime (in the constructor) and plays a received clip
+   * only if we are in the triggering call — never on the LiveKit/MLS path.
+   */
+  #soundboard: SoundboardPlayback;
   /**
    * First latched call-key/encryption error for this call — the STRUCTURED
    * value (native error object or LiveKit error), never stringified, so 6.5
@@ -451,6 +460,37 @@ class Voice {
     this.#mfaFlow = modals.mfaFlow;
 
     this.getClient = useClient();
+
+    // Client-local soundboard playback. The `soundboardSound` client event is
+    // app-lifetime (not room-scoped), so subscribe ONCE here and do all
+    // scoping in the handler — this survives leave/rejoin (a connect/disconnect
+    // subscription would go dead after the first call). The effect re-binds if
+    // the client instance itself changes (reconnect).
+    this.#soundboard = new SoundboardPlayback({
+      isActiveChannel: (channelId) =>
+        this.state() === "CONNECTED" && this.channel()?.id === channelId,
+      deafened: () => this.deafen(),
+      outputVolume: () => this.#settings.outputVolume,
+      outputDeviceId: () => this.#settings.preferredAudioOutputDevice,
+    });
+    createEffect(() => {
+      const client = this.getClient();
+      if (!client) return;
+      const handler = (detail: {
+        channelId: string;
+        soundId: string;
+        serverId: string;
+        emoji?: string;
+      }) => this.#soundboard.handleTrigger(detail);
+      client.addListener("soundboardSound", handler);
+      onCleanup(() => client.removeListener("soundboardSound", handler));
+    });
+    // Re-point any in-flight soundboard playback when the output device
+    // changes mid-call (future plays read the device per-play already).
+    createEffect(() => {
+      this.#settings.preferredAudioOutputDevice;
+      this.#soundboard.refreshOutputDevice();
+    });
 
     this.screenShareTracks = new Set();
   }

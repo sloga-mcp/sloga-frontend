@@ -11,6 +11,7 @@ import { useState } from "@revolt/state";
 import { Button, IconButton } from "@revolt/ui/components/design";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
 import { VoiceDeviceSelector } from "./VoiceDeviceSelector";
+import { VoiceSoundboardButton } from "./VoiceSoundboardButton";
 import { VoiceStatsOverlay } from "./VoiceStatsOverlay";
 
 export function VoiceCallCardActions(props: { size: "xs" | "sm" }) {
@@ -158,6 +159,14 @@ export function VoiceCallCardActions(props: { size: "xs" | "sm" }) {
           <Symbol>screen_share</Symbol>
         </Show>
       </IconButton>
+      <Show
+        when={
+          voice.channel()?.serverId &&
+          voice.channel()?.havePermission("UseSoundboard")
+        }
+      >
+        <VoiceSoundboardButton size={props.size} />
+      </Show>
       <VoiceDeviceSelector size={props.size} />
       <VoiceStatsOverlay size={props.size} />
       <Button

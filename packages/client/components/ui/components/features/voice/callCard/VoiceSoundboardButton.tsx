@@ -1,0 +1,197 @@
+import {
+  For,
+  Match,
+  Show,
+  Switch,
+  createResource,
+  createSignal,
+  onCleanup,
+} from "solid-js";
+
+import { useLingui } from "@lingui-solid/solid/macro";
+import { styled } from "styled-system/jsx";
+
+import { useClient } from "@revolt/client";
+import { CONFIGURATION } from "@revolt/common";
+import { useVoice } from "@revolt/rtc";
+import { CircularProgress } from "@revolt/ui";
+import { IconButton } from "@revolt/ui/components/design";
+import { Symbol } from "@revolt/ui/components/utils/Symbol";
+
+interface Sound {
+  id: string;
+  name: string;
+  file_id: string;
+  emoji?: string;
+}
+
+/**
+ * In-call soundboard picker: a bar button that opens a popover of the server's
+ * soundboard sounds. Clicking one hits the trigger REST route — the server
+ * fans a `SoundboardSound` event to everyone in the call, who each play the
+ * clip locally (no LiveKit track, no MLS). Gated on `UseSoundboard`; only
+ * shown in a server voice channel.
+ */
+export function VoiceSoundboardButton(props: { size: "xs" | "sm" }) {
+  const { t } = useLingui();
+  const voice = useVoice();
+  const client = useClient();
+
+  const [open, setOpen] = createSignal(false);
+
+  let container: HTMLDivElement | undefined;
+
+  function onPointerDown(event: PointerEvent) {
+    if (container && !container.contains(event.target as Node)) {
+      setOpen(false);
+    }
+  }
+
+  function toggle() {
+    if (open()) {
+      setOpen(false);
+    } else {
+      setOpen(true);
+      document.addEventListener("pointerdown", onPointerDown);
+    }
+  }
+
+  onCleanup(() => document.removeEventListener("pointerdown", onPointerDown));
+
+  // Fetch the server's sounds the first time the popover opens (and refetch on
+  // reopen so a just-uploaded sound appears without a reload).
+  const [sounds] = createResource(open, async (isOpen) => {
+    if (!isOpen) return [] as Sound[];
+    const serverId = voice.channel()?.serverId;
+    if (!serverId) return [] as Sound[];
+    const [key, value] = client().authenticationHeader;
+    const res = await fetch(
+      `${CONFIGURATION.DEFAULT_API_URL}/custom/server/${serverId}/sounds`,
+      { headers: { [key]: value } },
+    );
+    if (!res.ok) return [] as Sound[];
+    return (await res.json()) as Sound[];
+  });
+
+  function trigger(soundId: string) {
+    void voice.channel()?.triggerSound(soundId);
+  }
+
+  return (
+    <Container ref={container}>
+      <Show when={open()}>
+        <Overlay>
+          <Switch fallback={<Empty>{t`No sounds in this server yet`}</Empty>}>
+            <Match when={sounds.loading}>
+              <CircularProgress />
+            </Match>
+            <Match when={sounds() && sounds()!.length}>
+              <Grid>
+                <For each={sounds()}>
+                  {(sound) => (
+                    <SoundButton
+                      onClick={() => trigger(sound.id)}
+                      title={sound.name}
+                    >
+                      <span>{sound.emoji || "🔊"}</span>
+                      <Label>{sound.name}</Label>
+                    </SoundButton>
+                  )}
+                </For>
+              </Grid>
+            </Match>
+          </Switch>
+        </Overlay>
+      </Show>
+      <IconButton
+        size={props.size}
+        variant={open() ? "filled" : "tonal"}
+        onPress={toggle}
+        use:floating={{
+          tooltip: {
+            placement: "top",
+            content: t`Soundboard`,
+          },
+        }}
+      >
+        <Symbol>graphic_eq</Symbol>
+      </IconButton>
+    </Container>
+  );
+}
+
+const Container = styled("div", {
+  base: {
+    position: "relative",
+    display: "flex",
+  },
+});
+
+const Overlay = styled("div", {
+  base: {
+    position: "absolute",
+    bottom: "calc(100% + var(--gap-sm))",
+    left: "50%",
+    transform: "translateX(-50%)",
+    zIndex: 3,
+
+    minWidth: "240px",
+    maxWidth: "320px",
+    maxHeight: "320px",
+    overflowY: "auto",
+    padding: "var(--gap-md)",
+
+    borderRadius: "var(--borderRadius-lg)",
+    background: "var(--md-sys-color-surface-container-high)",
+    boxShadow: "0 4px 16px rgba(0, 0, 0, 0.35)",
+  },
+});
+
+const Grid = styled("div", {
+  base: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fill, minmax(72px, 1fr))",
+    gap: "var(--gap-sm)",
+  },
+});
+
+const SoundButton = styled("button", {
+  base: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    gap: "2px",
+    padding: "var(--gap-sm)",
+
+    cursor: "pointer",
+    borderRadius: "var(--borderRadius-md)",
+    background: "var(--md-sys-color-surface-container)",
+    color: "var(--md-sys-color-on-surface)",
+    fontSize: "1.4em",
+    border: "none",
+
+    transition: "background 0.1s",
+    _hover: {
+      background: "var(--md-sys-color-surface-container-highest)",
+    },
+  },
+});
+
+const Label = styled("span", {
+  base: {
+    fontSize: "0.6em",
+    maxWidth: "100%",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+    color: "var(--md-sys-color-on-surface-variant)",
+  },
+});
+
+const Empty = styled("div", {
+  base: {
+    padding: "var(--gap-md)",
+    fontSize: "0.85em",
+    color: "var(--md-sys-color-on-surface-variant)",
+  },
+});

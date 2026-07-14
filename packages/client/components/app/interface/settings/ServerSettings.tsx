@@ -4,6 +4,7 @@ import {
   BiSolidGroup,
   BiSolidHappyBeaming,
   BiSolidInfoCircle,
+  BiSolidMusic,
   BiSolidSticker,
   BiSolidTrash,
   BiSolidUserX,
@@ -22,6 +23,7 @@ import { ChannelPermissionsEditor } from "./channel/permissions/ChannelPermissio
 import Overview from "./server/Overview";
 import { ListServerBans } from "./server/bans/ListBans";
 import { EmojiList } from "./server/emojis/EmojiList";
+import { SoundboardList } from "./server/soundboard/SoundboardList";
 import { StickerList } from "./server/stickers/StickerList";
 import { ListServerInvites } from "./server/invites/ListServerInvites";
 import { ServerRoleEditor } from "./server/roles/ServerRoleEditor";
@@ -77,6 +79,8 @@ const Config: SettingsConfiguration<Server> = {
         return <EmojiList server={server} />;
       case "stickers":
         return <StickerList server={server} />;
+      case "soundboard":
+        return <SoundboardList server={server} />;
       case "roles":
         return <ServerRoleOverview context={server} />;
       case "invites":
@@ -125,6 +129,11 @@ const Config: SettingsConfiguration<Server> = {
               id: "stickers",
               icon: <BiSolidSticker size={20} />,
               title: <Trans>Stickers</Trans>,
+            },
+            {
+              id: "soundboard",
+              icon: <BiSolidMusic size={20} />,
+              title: <Trans>Soundboard</Trans>,
             },
           ],
         },
