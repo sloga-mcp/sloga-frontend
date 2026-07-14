@@ -1,4 +1,4 @@
-import { For, Show, createSignal } from "solid-js";
+import { Index, Show, createSignal } from "solid-js";
 
 import { createFormControl, createFormGroup } from "solid-forms";
 
@@ -116,25 +116,29 @@ export function CreatePollModal(
           <FieldLabel>
             <Trans>Answers</Trans>
           </FieldLabel>
-          <For each={answers()}>
+          {/* Index (not For): the answer strings mutate on every keystroke,
+              and For keys rows by value — it would destroy and recreate the
+              input node each letter, dropping focus. Index keys by position,
+              so the node persists and only its value updates. */}
+          <Index each={answers()}>
             {(answer, index) => (
               <AnswerRow>
                 <AnswerInput
-                  value={answer}
+                  value={answer()}
                   maxlength={100}
-                  placeholder={t`Answer ${index() + 1}`}
+                  placeholder={t`Answer ${index + 1}`}
                   onInput={(event) =>
-                    setAnswer(index(), event.currentTarget.value)
+                    setAnswer(index, event.currentTarget.value)
                   }
                 />
                 <Show when={answers().length > MIN_ANSWERS}>
-                  <IconButton onPress={() => removeAnswer(index())}>
+                  <IconButton onPress={() => removeAnswer(index)}>
                     <Symbol>close</Symbol>
                   </IconButton>
                 </Show>
               </AnswerRow>
             )}
-          </For>
+          </Index>
           <Show when={answers().length < MAX_ANSWERS}>
             <AddAnswer type="button" onClick={addAnswer}>
               <Symbol>add</Symbol> <Trans>Add answer</Trans>
