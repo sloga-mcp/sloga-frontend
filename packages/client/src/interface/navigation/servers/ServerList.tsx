@@ -1,4 +1,4 @@
-import { Accessor, For, JSX, Show, createSignal } from "solid-js";
+import { Accessor, For, JSX, Show, createSignal, onMount } from "solid-js";
 
 import { Trans } from "@lingui-solid/solid/macro";
 import { Channel, Server, User } from "stoat.js";
@@ -19,6 +19,7 @@ import {
   Unreads,
   UserStatus,
   iconSize,
+  slogaBurstKeyframes,
 } from "@revolt/ui";
 
 import MdAdd from "@material-design-icons/svg/filled/add.svg?component-solid";
@@ -75,6 +76,110 @@ interface Props {
  * store's "only store the contrary" behaviour stays consistent.
  */
 const RAIL_EXPANDED_DEFAULT = true;
+
+/**
+ * Sloga brand palette for the standalone "O" mark — green core in the middle,
+ * each satellite its own colour, clockwise from top. Kept local, mirroring the
+ * loader (LoadingProgress) and wordmark (Home) which each redeclare it.
+ */
+const HOME_GREEN = "#27A163";
+const HOME_DOT_COLORS = [
+  "#3BB8ED",
+  "#F5870D",
+  "#CF2A27",
+  "#E3CF1B",
+  "#3BB8ED",
+  "#F5870D",
+  "#2B2BD8",
+  "#C05FC8",
+];
+
+/** Geometry of the "O" mark in a 512 viewBox (static-mark proportions). */
+const HOME_O = { center: 256, ring: 148, core: 52, ball: 44 };
+
+/** One-shot burst length — a quick flourish when the button is clicked. */
+const HOME_BURST_DURATION = "2400ms";
+
+/**
+ * Inject the home mark's resting + burst styles once. The @keyframes come from
+ * the shared brand-motion curves (slogaBurstKeyframes), so this animates exactly
+ * like the loader and wordmark; the base rules pin every satellite on the
+ * resting ring so it looks like the static logo until `.playing` runs.
+ */
+let homeLogoStylesInjected = false;
+function ensureHomeLogoStyles() {
+  if (homeLogoStylesInjected || typeof document === "undefined") return;
+  homeLogoStylesInjected = true;
+  const el = document.createElement("style");
+  el.setAttribute("data-sloga-home", "");
+  el.textContent = `
+${slogaBurstKeyframes("sloga-home", { core: HOME_O.core, ring: HOME_O.ring })}
+.sloga-home-ball {
+  transform-box: view-box;
+  transform-origin: ${HOME_O.center}px ${HOME_O.center}px;
+  transform: rotate(var(--sloga-ball-angle)) translateY(-${HOME_O.ring}px);
+}
+.sloga-home-core {
+  transform-box: view-box;
+  transform-origin: ${HOME_O.center}px ${HOME_O.center}px;
+}
+.sloga-home-ball.playing {
+  will-change: transform;
+  animation: sloga-home-ball ${HOME_BURST_DURATION} linear 1;
+}
+.sloga-home-core.playing {
+  animation: sloga-home-core ${HOME_BURST_DURATION} linear 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  .sloga-home-ball.playing, .sloga-home-core.playing { animation: none; }
+}`;
+  document.head.appendChild(el);
+}
+
+/**
+ * The Sloga "O" mark sized for the rail. At rest it's the static logo; when the
+ * parent flips `playing` (on click of the Home button) it plays the brand's
+ * one-shot burst — balls unwind into the core, the core gulps, then they burst
+ * back out to reform the ring — and calls `onDone` when the animation finishes.
+ */
+function HomeLogo(props: {
+  size: number;
+  playing: boolean;
+  onDone: () => void;
+}) {
+  onMount(ensureHomeLogoStyles);
+
+  return (
+    <svg
+      viewBox="0 0 512 512"
+      width={props.size}
+      height={props.size}
+      role="img"
+      aria-label="Home"
+    >
+      {HOME_DOT_COLORS.map((fill, i) => (
+        <circle
+          class="sloga-home-ball"
+          classList={{ playing: props.playing }}
+          cx={HOME_O.center}
+          cy={HOME_O.center}
+          r={HOME_O.ball}
+          fill={fill}
+          style={{ "--sloga-ball-angle": `${i * 45}deg` }}
+        />
+      ))}
+      <circle
+        class="sloga-home-core"
+        classList={{ playing: props.playing }}
+        cx={HOME_O.center}
+        cy={HOME_O.center}
+        r={HOME_O.core}
+        fill={HOME_GREEN}
+        onAnimationEnd={() => props.onDone()}
+      />
+    </svg>
+  );
+}
 
 /**
  * Server list sidebar component
@@ -137,9 +242,39 @@ export const ServerList = (props: Props) => {
   // Ref for floating menu
   const [menuButton, setMenuButton] = createSignal<HTMLDivElement>();
 
+  // Home button's one-shot brand animation, fired when the button is clicked
+  // (which also navigates home — the rail stays mounted so it plays through).
+  const [homePlaying, setHomePlaying] = createSignal(false);
+  const playHome = () => {
+    if (homePlaying()) return;
+    // Respect users who'd rather not see motion.
+    if (
+      typeof window !== "undefined" &&
+      window.matchMedia?.("(prefers-reduced-motion: reduce)").matches
+    )
+      return;
+    setHomePlaying(true);
+  };
+
   return (
     <ServerListBase expanded={railExpanded()}>
       <div use:invisibleScrollable={{ direction: "y", class: listBase() }}>
+        <Tooltip placement="right" content="Home">
+          <a
+            class={entryContainer({ expanded: railExpanded() })}
+            href="/app"
+            onClick={playHome}
+          >
+            <HomeLogo
+              size={42}
+              playing={homePlaying()}
+              onDone={() => setHomePlaying(false)}
+            />
+            <Show when={railExpanded()}>
+              <RailLabel>Home</RailLabel>
+            </Show>
+          </a>
+        </Tooltip>
         <Tooltip placement="right" content="Settings">
           <a
             class={entryContainer({ expanded: railExpanded() })}

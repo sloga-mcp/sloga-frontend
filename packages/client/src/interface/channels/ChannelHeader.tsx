@@ -204,8 +204,6 @@ export function ChannelHeader(props: Props) {
         </Match>
       </Switch>
 
-      <Spacer />
-
       <Show when={props.channel.isVoice && !voice.showCard(props.channel)}>
         <IconButton
           onPress={() => voice.connect(props.channel)}
@@ -355,6 +353,8 @@ export function ChannelHeader(props: Props) {
           <MdGroup />
         </IconButton>
       </Show>
+
+      <Spacer />
 
       <Show when={searchValue() !== null}>
         <Show

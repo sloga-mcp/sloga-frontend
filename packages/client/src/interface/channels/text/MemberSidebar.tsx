@@ -1,4 +1,12 @@
-import { createEffect, createMemo, Match, on, Show, Switch } from "solid-js";
+import {
+  createEffect,
+  createMemo,
+  createSignal,
+  Match,
+  on,
+  Show,
+  Switch,
+} from "solid-js";
 
 import { useLingui } from "@lingui-solid/solid/macro";
 import { VirtualContainer } from "@minht11/solid-virtual-container";
@@ -20,6 +28,7 @@ import {
   Username,
   UserStatus,
 } from "@revolt/ui";
+import { Symbol } from "@revolt/ui/components/utils/Symbol";
 
 interface Props {
   /**
@@ -80,6 +89,19 @@ const LARGE_SERVERS = [
  */
 export function ServerMemberSidebar(props: Props) {
   const client = useClient();
+
+  // Track which member categories are collapsed (keyed by role/category id)
+  const [collapsed, setCollapsed] = createSignal<Set<string>>(new Set());
+  const toggleCollapsed = (id: string) =>
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
 
   // todo: useQuery
   createEffect(
@@ -188,28 +210,33 @@ export function ServerMemberSidebar(props: Props) {
   });
 
   type MemberRoleElement =
-    | { t: 0; name: string; count: number; icon?: string | null }
+    | { t: 0; id: string; name: string; count: number; icon?: string | null }
     | { t: 1; member: ServerMember; icon?: never };
 
   // Stage 5: Flatten into a single list with caching
   const objectCache = new Map<string, MemberRoleElement>();
 
   const elements = createMemo(() => {
+    const collapsedSet = collapsed();
     const elements: MemberRoleElement[] = [];
 
     // Create elements
     for (const role of roles()) {
-      const roleElement = objectCache.get(role.role.name + role.members.length);
+      const roleElement = objectCache.get(role.role.id + role.members.length);
       if (roleElement) {
         elements.push(roleElement);
       } else {
         elements.push({
           t: 0,
+          id: role.role.id,
           name: role.role.name,
           icon: role.role.icon?.previewUrl,
           count: role.members.length,
         });
       }
+
+      // Collapsed categories only render their header, not their members
+      if (collapsedSet.has(role.role.id)) continue;
 
       for (const member of role.members) {
         const memberElement = objectCache.get(
@@ -232,7 +259,7 @@ export function ServerMemberSidebar(props: Props) {
     // Populate cache
     for (const element of elements) {
       if (element.t === 0) {
-        objectCache.set(element.name + element.count, element);
+        objectCache.set(element.id + element.count, element);
       } else {
         objectCache.set(
           `${element.member.id.server}-${element.member.id.user}`,
@@ -280,7 +307,16 @@ export function ServerMemberSidebar(props: Props) {
             >
               <Switch
                 fallback={
-                  <CategoryTitle>
+                  <CategoryTitle
+                    onClick={() =>
+                      toggleCollapsed((item.item as { id: string }).id)
+                    }
+                  >
+                    <Symbol size={18}>
+                      {collapsed().has((item.item as { id: string }).id)
+                        ? "add"
+                        : "remove"}
+                    </Symbol>
                     <Show when={item.item.icon}>
                       <RoleIcon src={item.item.icon!} alt="" />
                     </Show>
@@ -360,6 +396,8 @@ const CategoryTitle = styled("div", {
     display: "flex",
     alignItems: "center",
     gap: "6px",
+    cursor: "pointer",
+    userSelect: "none",
 
     ...typography.raw({ class: "label", size: "small" }),
   },
