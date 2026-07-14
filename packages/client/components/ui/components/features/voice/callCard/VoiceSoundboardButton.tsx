@@ -19,7 +19,7 @@ import { IconButton } from "@revolt/ui/components/design";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
 
 interface Sound {
-  id: string;
+  _id: string;
   name: string;
   file_id: string;
   emoji?: string;
@@ -62,7 +62,7 @@ export function VoiceSoundboardButton(props: { size: "xs" | "sm" }) {
   // reopen so a just-uploaded sound appears without a reload).
   const [sounds] = createResource(open, async (isOpen) => {
     if (!isOpen) return [] as Sound[];
-    const serverId = voice.channel()?.serverId;
+    const serverId = voice?.channel()?.serverId;
     if (!serverId) return [] as Sound[];
     const [key, value] = client().authenticationHeader;
     const res = await fetch(
@@ -74,7 +74,7 @@ export function VoiceSoundboardButton(props: { size: "xs" | "sm" }) {
   });
 
   function trigger(soundId: string) {
-    void voice.channel()?.triggerSound(soundId);
+    void voice?.channel()?.triggerSound(soundId);
   }
 
   return (
@@ -90,7 +90,7 @@ export function VoiceSoundboardButton(props: { size: "xs" | "sm" }) {
                 <For each={sounds()}>
                   {(sound) => (
                     <SoundButton
-                      onClick={() => trigger(sound.id)}
+                      onClick={() => trigger(sound._id)}
                       title={sound.name}
                     >
                       <span>{sound.emoji || "🔊"}</span>
@@ -122,7 +122,6 @@ export function VoiceSoundboardButton(props: { size: "xs" | "sm" }) {
 
 const Container = styled("div", {
   base: {
-    position: "relative",
     display: "flex",
   },
 });
@@ -130,14 +129,18 @@ const Container = styled("div", {
 const Overlay = styled("div", {
   base: {
     position: "absolute",
-    bottom: "calc(100% + var(--gap-sm))",
+    // Fixed offset (not `100%`) because the containing block is the call Card,
+    // not this wrapper — sit just above the controls bar and grow upward, so
+    // the rounded controls bar doesn't clip the popover (matches
+    // VoiceDeviceSelector).
+    bottom: "64px",
     left: "50%",
     transform: "translateX(-50%)",
-    zIndex: 3,
+    zIndex: 10,
 
     minWidth: "240px",
     maxWidth: "320px",
-    maxHeight: "320px",
+    maxHeight: "min(420px, 60vh)",
     overflowY: "auto",
     padding: "var(--gap-md)",
 

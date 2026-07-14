@@ -19,7 +19,7 @@ import { IconButton } from "@revolt/ui/components/design";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
 
 interface Sound {
-  id: string;
+  _id: string;
   server_id: string;
   creator_id: string;
   name: string;
@@ -170,7 +170,7 @@ export function SoundboardList(props: { server: Server }) {
                   onClick={() => preview(sound.file_id)}
                   action={
                     props.server.havePermission("ManageCustomisation") ? (
-                      <IconButton onPress={() => deleteSound(sound.id)}>
+                      <IconButton onPress={() => deleteSound(sound._id)}>
                         <Symbol>delete</Symbol>
                       </IconButton>
                     ) : undefined
