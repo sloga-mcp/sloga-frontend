@@ -116,7 +116,7 @@ export function VoiceCallDowngradeBanner() {
           <Show when={!localConfirmed()}>
             <Button
               size="sm"
-              variant="error"
+              variant="text"
               onPress={() => void voice.confirmCallPlaintext()}
             >
               <Show
@@ -131,7 +131,7 @@ export function VoiceCallDowngradeBanner() {
               </Show>
             </Button>
           </Show>
-          <Button size="sm" variant="plain" onPress={() => voice.disconnect()}>
+          <Button size="sm" variant="text" onPress={() => voice.disconnect()}>
             <Trans>Leave call</Trans>
           </Button>
         </Actions>
@@ -183,5 +183,12 @@ const Actions = styled("div", {
     display: "flex",
     gap: "var(--gap-sm)",
     flexShrink: 0,
+
+    // banner actions: dark app background + the banner's own text colour
+    // (tracks both the error and interlude banner variants)
+    "& button": {
+      background: "var(--md-sys-color-surface)",
+      "--color": "currentColor",
+    },
   },
 });
