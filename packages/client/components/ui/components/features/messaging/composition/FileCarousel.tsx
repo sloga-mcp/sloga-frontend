@@ -284,13 +284,17 @@ const Container = styled("div", {
     userSelect: "none",
     flexDirection: "column",
 
+    width: "fit-content",
+    maxWidth: "100%",
+
     gap: "var(--gap-md)",
     padding: "var(--gap-md)",
     margin: "var(--gap-md) 0",
     borderRadius: "var(--borderRadius-lg)",
 
-    background: "var(--md-sys-color-primary-container)",
-    color: "var(--md-sys-color-on-primary-container)",
+    // Sloga logo dark-blue satellite
+    background: "#2B2BD8",
+    color: "white",
 
     "--preview-size": "100px",
   },

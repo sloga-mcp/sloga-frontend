@@ -4,6 +4,7 @@ import { type JSX, Match, Show, Switch } from "solid-js";
 import type { Channel, Message, ServerMember, User } from "stoat.js";
 
 import { useClient } from "@revolt/client";
+import { CONFIGURATION } from "@revolt/common";
 import { useModals } from "@revolt/modal";
 import { useSmartParams } from "@revolt/routing";
 import { useVoice } from "@revolt/rtc";
@@ -27,6 +28,8 @@ import MdMicOff from "@material-design-icons/svg/outlined/mic_off.svg?component-
 import MdPersonAddAlt from "@material-design-icons/svg/outlined/person_add_alt.svg?component-solid";
 import MdPersonRemove from "@material-design-icons/svg/outlined/person_remove.svg?component-solid";
 import MdReport from "@material-design-icons/svg/outlined/report.svg?component-solid";
+import MdScreenShare from "@material-design-icons/svg/outlined/screen_share.svg?component-solid";
+import MdVideocam from "@material-design-icons/svg/outlined/videocam.svg?component-solid";
 import MdChecked from "@material-symbols/svg-400/outlined/check_box.svg?component-solid";
 import MdUnchecked from "@material-symbols/svg-400/outlined/check_box_outline_blank.svg?component-solid";
 
@@ -78,6 +81,36 @@ export function UserContextMenu(props: {
     }).catch(console.error);
     props.onClose?.();
   }
+
+  /**
+   * Start a call in the DM channel with the camera enabled
+   */
+  function startVideoCall() {
+    props.user.openDM().then(async (channel) => {
+      navigate(channel.path);
+      await voice.connect(channel);
+      await voice.toggleCamera();
+    }).catch(console.error);
+    props.onClose?.();
+  }
+
+  /**
+   * Start a call in the DM channel and immediately share the screen
+   */
+  function startScreenShareCall() {
+    props.user.openDM().then(async (channel) => {
+      navigate(channel.path);
+      await voice.connect(channel);
+      await voice.toggleScreenshare();
+    }).catch(console.error);
+    props.onClose?.();
+  }
+
+  // Screen sharing goes through getDisplayMedia on web/desktop; Android
+  // WebView has no getDisplayMedia, so hide the entry where it can't work.
+  const screenShareSupported =
+    typeof navigator !== "undefined" &&
+    typeof navigator.mediaDevices?.getDisplayMedia === "function";
 
   /**
    * Delete channel
@@ -447,6 +480,19 @@ export function UserContextMenu(props: {
         <ContextMenuButton icon={MdCall} onClick={startVoiceCall}>
           <Trans>Call</Trans>
         </ContextMenuButton>
+        <Show when={CONFIGURATION.ENABLE_VIDEO}>
+          <ContextMenuButton icon={MdVideocam} onClick={startVideoCall}>
+            <Trans>Video Call</Trans>
+          </ContextMenuButton>
+          <Show when={screenShareSupported}>
+            <ContextMenuButton
+              icon={MdScreenShare}
+              onClick={startScreenShareCall}
+            >
+              <Trans>Screen Share</Trans>
+            </ContextMenuButton>
+          </Show>
+        </Show>
       </Show>
       <Show when={props.channel?.type === "TextChannel"}>
         <ContextMenuButton icon={MdAlternateEmail} onClick={mention}>
