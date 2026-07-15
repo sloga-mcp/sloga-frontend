@@ -39,6 +39,9 @@ export function VoiceCallCardActiveRoom() {
         </ImmersiveChipOverlay>
       </Show>
       <Participants />
+      {/* Dice-roll results flashed over the video (§ /roll → in-call overlay).
+          Sits above the tiles in every mode (normal / fullscreen / theater). */}
+      <DiceRollOverlay />
       {/* Theater mode hides every control; the only chrome is the auto-dimming
           exit button overlaid on the selected window (Escape also exits). */}
       <Show when={!voice.immersive()} fallback={<ImmersiveExit />}>
@@ -238,6 +241,43 @@ function FocusedParticipant() {
   );
 }
 
+/**
+ * Transient dice-roll results overlaid on the call video. Reads the Voice
+ * store's `diceRolls()` (populated when a server /roll lands in the channel
+ * this call is in); each toast auto-removes after DICE_TOAST_MS. Purely
+ * informational — `pointer-events: none`, so it never blocks the tiles.
+ */
+function DiceRollOverlay() {
+  const voice = useVoice();
+
+  return (
+    <DiceOverlayHolder aria-live="polite">
+      <For each={voice.diceRolls()}>
+        {(roll) => (
+          <DiceToast data-natural={roll.natural}>
+            <Symbol size={20}>casino</Symbol>
+            <DiceToastBody>
+              <DiceToastHeadline>
+                <DiceToastName>{roll.username}</DiceToastName> rolled a{" "}
+                <DiceToastTotal data-natural={roll.natural}>
+                  {roll.total}
+                </DiceToastTotal>
+              </DiceToastHeadline>
+              <DiceToastMeta>
+                {roll.notation}
+                <Show when={roll.natural}>
+                  {" · "}
+                  {roll.natural === "crit" ? "Natural 20! 🎉" : "Natural 1"}
+                </Show>
+              </DiceToastMeta>
+            </DiceToastBody>
+          </DiceToast>
+        )}
+      </For>
+    </DiceOverlayHolder>
+  );
+}
+
 const View = styled("div", {
   base: {
     position: "relative",
@@ -402,5 +442,97 @@ const ImmersiveChipOverlay = styled("div", {
     left: "var(--gap-md)",
     top: "var(--gap-md)",
     zIndex: 5,
+  },
+});
+
+/** Top-centred stack that holds the transient dice-roll toasts. */
+const DiceOverlayHolder = styled("div", {
+  base: {
+    position: "absolute",
+    top: "var(--gap-md)",
+    left: "50%",
+    transform: "translateX(-50%)",
+    zIndex: 6,
+
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    gap: "var(--gap-sm)",
+
+    // Informational only — never intercept clicks meant for the tiles/controls.
+    pointerEvents: "none",
+    maxWidth: "90%",
+  },
+});
+
+/**
+ * A single dice-roll toast. Snackbar-style (inverse surface) so it stays legible
+ * over any camera/screen-share frame. `diceRollToast` runs the whole show — fade
+ * in, hold ~3s, fade out — matched to DICE_TOAST_MS in rtc/state.tsx.
+ */
+const DiceToast = styled("div", {
+  base: {
+    display: "flex",
+    alignItems: "center",
+    gap: "10px",
+    padding: "8px 14px",
+    borderRadius: "14px",
+
+    background: "var(--md-sys-color-inverse-surface)",
+    color: "var(--md-sys-color-inverse-on-surface)",
+    boxShadow: "0 4px 16px rgba(0, 0, 0, 0.35)",
+    border: "1px solid transparent",
+
+    // Full-lifecycle animation (enter → hold → exit); `both` keeps the final
+    // (faded-out) frame until the node is unmounted.
+    animation: "diceRollToast 3400ms ease both",
+
+    "&[data-natural='crit']": {
+      borderColor: "#3BA55D",
+    },
+    "&[data-natural='fumble']": {
+      borderColor: "var(--md-sys-color-error)",
+    },
+  },
+});
+
+const DiceToastBody = styled("div", {
+  base: {
+    display: "flex",
+    flexDirection: "column",
+    lineHeight: 1.25,
+  },
+});
+
+const DiceToastHeadline = styled("div", {
+  base: {
+    fontSize: "0.95rem",
+  },
+});
+
+const DiceToastName = styled("span", {
+  base: {
+    fontWeight: "700",
+  },
+});
+
+const DiceToastTotal = styled("span", {
+  base: {
+    fontWeight: "800",
+    fontSize: "1.05rem",
+    "&[data-natural='crit']": {
+      color: "#3BA55D",
+    },
+    "&[data-natural='fumble']": {
+      color: "var(--md-sys-color-error)",
+    },
+  },
+});
+
+const DiceToastMeta = styled("div", {
+  base: {
+    fontSize: "0.7rem",
+    opacity: 0.7,
+    fontFamily: "monospace",
   },
 });

@@ -1,4 +1,5 @@
 export { VoiceContext, useVoice } from "./state";
+export type { DiceRollToast } from "./state";
 
 export { webSpeechSupported } from "./captions/speechCaptionEngine";
 

@@ -3,21 +3,13 @@ import { For, Match, Show, Switch, createMemo } from "solid-js";
 import { styled } from "styled-system/jsx";
 
 import { Markdown } from "@revolt/markdown";
+import { FLAG_DICE_ROLL, isDiceRollMessage } from "@revolt/rtc/diceRoll";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
 
-/**
- * DiceRoll message flag (bit 4). Server-assigned only: the regular send
- * path rejects client-supplied flag values above 7, so a message carrying
- * this bit is a guaranteed-authentic server-side roll.
- */
-export const FLAG_DICE_ROLL = 1 << 4;
-
-/**
- * Whether a message is a server-generated dice roll
- */
-export function isDiceRollMessage(flags: number, content?: string) {
-  return (flags & FLAG_DICE_ROLL) === FLAG_DICE_ROLL && !!content;
-}
+// Re-exported for existing importers (Message.tsx). The flag + predicate now
+// live in @revolt/rtc/diceRoll so the in-call overlay can share them without a
+// circular import.
+export { FLAG_DICE_ROLL, isDiceRollMessage };
 
 /**
  * Server roll content format (stable, produced by delta's dice engine):

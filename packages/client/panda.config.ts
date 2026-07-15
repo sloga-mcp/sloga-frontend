@@ -73,6 +73,27 @@ export default defineConfig({
             backgroundPosition: "-200% 0",
           },
         },
+        // Full lifecycle of an in-call dice-roll toast: slide+fade in, hold for
+        // ~3s, fade out. Duration is DICE_TOAST_MS (rtc/state.tsx) — the node is
+        // unmounted as this finishes, so keep the two in sync.
+        diceRollToast: {
+          "0%": {
+            opacity: "0",
+            transform: "translateY(-10px) scale(0.96)",
+          },
+          "8%": {
+            opacity: "1",
+            transform: "translateY(0) scale(1)",
+          },
+          "90%": {
+            opacity: "1",
+            transform: "translateY(0) scale(1)",
+          },
+          "100%": {
+            opacity: "0",
+            transform: "translateY(-6px) scale(0.98)",
+          },
+        },
       },
     },
   },

@@ -62,7 +62,7 @@ class GainTrackProcessor {
   }
 }
 import { Capacitor, registerPlugin } from "@capacitor/core";
-import { Channel } from "stoat.js";
+import { Channel, Message } from "stoat.js";
 
 /** Native Android foreground service keeping calls alive in the background */
 const VoiceCallServiceNative = Capacitor.isNativePlatform()
@@ -120,6 +120,39 @@ import {
   chipState,
 } from "./mlsCallModePolicy";
 import { SoundboardPlayback } from "./soundboardPlayback";
+import { isDiceRollMessage, summariseDiceRoll } from "./diceRoll";
+
+/**
+ * A dice-roll result shown briefly over the call's video (e.g. "Jeff rolled
+ * a 20"). Pushed when a DiceRoll-flagged message lands in the channel we're
+ * currently in a call for, and auto-removed after {@link DICE_TOAST_MS}.
+ */
+export interface DiceRollToast {
+  /** Monotonic id (list key / removal handle). */
+  id: number;
+  /** Display name of whoever rolled. */
+  username: string;
+  /** Rolled notation, e.g. `1d20` (shown small under the headline). */
+  notation: string;
+  /** Final total, as printed by the server. */
+  total: string;
+  /** Natural 20 / natural 1 accent, if any. */
+  natural?: "crit" | "fumble";
+}
+
+/**
+ * How long a dice-roll toast stays on the video before it's removed. Kept in
+ * sync with the `diceRollToast` keyframe duration in panda.config.ts (the
+ * animation fades the toast out just as this timer unmounts it).
+ */
+export const DICE_TOAST_MS = 3400;
+
+/**
+ * Cap the visible toast stack (roomy enough for a party rolling initiative at
+ * once) so a burst of rolls can't wall off the video. Older toasts drop early;
+ * their removal timers no-op against the already-trimmed list.
+ */
+const MAX_DICE_TOASTS = 5;
 
 /** A3(b) product gate: video/screenshare off above this many participants in
  *  an E2EE call (control-plane cost scales with roster). Trivially tunable. */
@@ -201,6 +234,14 @@ class Voice {
   /** "Theater" mode: only the selected window, no other participants or chrome. */
   immersive: Accessor<boolean>;
   #setImmersive: Setter<boolean>;
+
+  /** Dice-roll results currently shown over the video (see DiceRollToast). */
+  diceRolls: Accessor<DiceRollToast[]>;
+  #setDiceRolls: Setter<DiceRollToast[]>;
+  /** Monotonic id source for dice toasts. */
+  #diceToastSeq = 0;
+  /** Pending removal timers, cleared on disconnect so none fire post-call. */
+  #diceToastTimers = new Set<ReturnType<typeof setTimeout>>();
 
   private sound: SoundController;
 
@@ -392,6 +433,10 @@ class Voice {
     this.immersive = immersive;
     this.#setImmersive = setImmersive;
 
+    const [diceRolls, setDiceRolls] = createSignal<DiceRollToast[]>([]);
+    this.diceRolls = diceRolls;
+    this.#setDiceRolls = setDiceRolls;
+
     const [hwBrightness, setHwBrightness] = createSignal(false);
     this.cameraHwBrightness = hwBrightness;
     this.#setCameraHwBrightness = setHwBrightness;
@@ -492,7 +537,55 @@ class Voice {
       this.#soundboard.refreshOutputDevice();
     });
 
+    // Dice-roll toasts. A server-authoritative /roll is just a flagged message
+    // on the channel, which every call participant already receives — so, like
+    // the soundboard, subscribe app-lifetime here and scope in the handler
+    // (survives leave/rejoin). When a DiceRoll message lands in the channel we
+    // have a call open for, flash "<user> rolled a <total>" over the video.
+    createEffect(() => {
+      const client = this.getClient();
+      if (!client) return;
+      const handler = (message: Message) => this.#onMessageForDiceToast(message);
+      client.addListener("messageCreate", handler);
+      onCleanup(() => client.removeListener("messageCreate", handler));
+    });
+
     this.screenShareTracks = new Set();
+  }
+
+  /**
+   * Handle an incoming message for the dice-roll overlay: show a toast only if
+   * it's a server-authoritative roll in the channel we're actively in a call
+   * for. All scoping lives here (the listener is app-lifetime).
+   */
+  #onMessageForDiceToast(message: Message): void {
+    if (this.state() !== "CONNECTED") return;
+    if (message.channelId !== this.channel()?.id) return;
+    if (!isDiceRollMessage(message.flags, message.content)) return;
+
+    const summary = summariseDiceRoll(message.content);
+    if (!summary) return;
+
+    const id = ++this.#diceToastSeq;
+    this.#setDiceRolls((prev) =>
+      [
+        ...prev,
+        { id, username: message.username ?? "Someone", ...summary },
+      ].slice(-MAX_DICE_TOASTS),
+    );
+
+    const timer = setTimeout(() => {
+      this.#diceToastTimers.delete(timer);
+      this.#setDiceRolls((prev) => prev.filter((t) => t.id !== id));
+    }, DICE_TOAST_MS);
+    this.#diceToastTimers.add(timer);
+  }
+
+  /** Drop any pending dice toasts + their removal timers (call teardown). */
+  #clearDiceToasts(): void {
+    for (const timer of this.#diceToastTimers) clearTimeout(timer);
+    this.#diceToastTimers.clear();
+    this.#setDiceRolls([]);
   }
 
   async connect(channel: Channel, auth?: { url: string; token: string }) {
@@ -1003,6 +1096,7 @@ class Voice {
       this.#e2eeWorker = undefined;
       this.#mlsKeyProvider = undefined;
       this.captions.detach();
+      this.#clearDiceToasts();
       this.callEncryption.clear();
       this.#publishGate.clear();
       this.#setCallEncryptionError(undefined);
