@@ -912,6 +912,18 @@ function EventDetail(props: {
         </Text>
       </Show>
 
+      {/* Attachments — visible to anyone who can view the event */}
+      <Show when={(props.event.attachments?.length ?? 0) > 0}>
+        <Text class="label" size="small">
+          <Trans>Attachments</Trans>
+        </Text>
+        <AttachmentList>
+          <For each={props.event.attachments}>
+            {(file) => <AttachmentItem file={file} />}
+          </For>
+        </AttachmentList>
+      </Show>
+
       {/* Caller RSVP control */}
       <Show when={props.event.myRsvp !== undefined && !props.event.cancelled}>
         <RsvpBar>
@@ -1060,6 +1072,42 @@ function EventDetail(props: {
         </ManageBar>
       </Show>
     </DetailWrap>
+  );
+}
+
+/** The stoat.js `File` model instance an event carries (derived — avoids importing
+ * the `File` name, which would shadow the DOM `File` global used for uploads). */
+type EventFile = NonNullable<CalendarEvent["attachments"]>[number];
+
+/**
+ * One event attachment in the detail view: an inline preview for images, else a
+ * download row (filename + size) linking to the Autumn file URL.
+ */
+function AttachmentItem(props: { file: EventFile }) {
+  const { t } = useLingui();
+  const url = () => props.file.createFileURL() ?? props.file.originalUrl;
+  const isImage = () => props.file.metadata.type === "Image";
+  return (
+    <Show
+      when={isImage()}
+      fallback={
+        <AttachmentLink href={url()} target="_blank" rel="noopener noreferrer">
+          <Symbol size={18}>description</Symbol>
+          <span style={{ flex: 1, "overflow-wrap": "anywhere" }}>
+            {props.file.filename ?? t`file`}
+          </span>
+          <SmallMuted>{props.file.humanReadableSize}</SmallMuted>
+          <Symbol size={16}>download</Symbol>
+        </AttachmentLink>
+      }
+    >
+      <a href={url()} target="_blank" rel="noopener noreferrer">
+        <AttachmentImage
+          src={props.file.createFileURL()}
+          alt={props.file.filename ?? ""}
+        />
+      </a>
+    </Show>
   );
 }
 
@@ -1259,6 +1307,50 @@ function CreateForm(props: {
     setInvitedRoles(next);
   }
 
+  // Attachments — new uploads (create + edit), plus edit-mode removals of the
+  // event's existing files. Files upload to Autumn on selection (like the
+  // soundboard/emoji flow) so their ids are ready by submit time. Capped at 10
+  // (must match the server's MAX_EVENT_ATTACHMENTS).
+  const MAX_ATTACHMENTS = 10;
+  const [newFiles, setNewFiles] = createSignal<{ id: string; name: string }[]>(
+    [],
+  );
+  const [removedExisting, setRemovedExisting] = createSignal<Set<string>>(
+    new Set(),
+  );
+  const [uploading, setUploading] = createSignal(0);
+  let fileInput: HTMLInputElement | undefined;
+
+  /** Existing (server-side) attachments the user has not removed in this edit. */
+  const keptExisting = () =>
+    (props.event?.attachments ?? []).filter((f) => !removedExisting().has(f.id));
+  const attachmentCount = () => keptExisting().length + newFiles().length;
+
+  async function onPickFiles(list: FileList | null) {
+    if (!list) return;
+    for (const file of Array.from(list)) {
+      if (attachmentCount() >= MAX_ATTACHMENTS) break;
+      setUploading((n) => n + 1);
+      try {
+        const id = await client().uploadFile("attachments", file);
+        setNewFiles((prev) => [...prev, { id, name: file.name }]);
+      } catch (error) {
+        showError(error);
+      } finally {
+        setUploading((n) => n - 1);
+      }
+    }
+    // Reset so re-selecting the same file fires onChange again.
+    if (fileInput) fileInput.value = "";
+  }
+
+  function removeNewFile(id: string) {
+    setNewFiles((prev) => prev.filter((f) => f.id !== id));
+  }
+  function removeExisting(id: string) {
+    setRemovedExisting((prev) => new Set(prev).add(id));
+  }
+
   function toggleWeekday(day: Weekday) {
     setWeekdays((days) =>
       days.includes(day) ? days.filter((d) => d !== day) : [...days, day],
@@ -1301,6 +1393,10 @@ function CreateForm(props: {
 
     if (freq() !== "None") {
       data.recurrence = buildRecurrence();
+    }
+
+    if (newFiles().length) {
+      data.attachments = newFiles().map((f) => f.id);
     }
 
     props.onSubmit(data, [...invited().keys()], [...invitedRoles().keys()]);
@@ -1363,6 +1459,11 @@ function CreateForm(props: {
       if (freq() === "None") remove.push("Recurrence");
       else diff.recurrence = buildRecurrence();
     }
+
+    // Attachments: new uploads add, removed existing ones detach (server marks
+    // the detached files deleted; an emptied set is unset server-side).
+    if (newFiles().length) diff.attachments = newFiles().map((f) => f.id);
+    if (removedExisting().size) diff.remove_attachments = [...removedExisting()];
 
     if (remove.length) diff.remove = remove;
     if (Object.keys(diff).length === 0) {
@@ -1534,6 +1635,59 @@ function CreateForm(props: {
           </Show>
         </Row>
       </Show>
+
+      {/* Attachments (create + edit) */}
+      <Text class="label" size="small">
+        <Trans>Attachments</Trans>
+      </Text>
+      <Show when={keptExisting().length > 0 || newFiles().length > 0}>
+        <Row gap="sm" wrap>
+          <For each={keptExisting()}>
+            {(file) => (
+              <InvitePill onClick={() => removeExisting(file.id)}>
+                <Symbol size={14}>attach_file</Symbol>
+                {file.filename ?? t`file`}
+                <Symbol size={14}>close</Symbol>
+              </InvitePill>
+            )}
+          </For>
+          <For each={newFiles()}>
+            {(file) => (
+              <InvitePill onClick={() => removeNewFile(file.id)}>
+                <Symbol size={14}>attach_file</Symbol>
+                {file.name}
+                <Symbol size={14}>close</Symbol>
+              </InvitePill>
+            )}
+          </For>
+        </Row>
+      </Show>
+      <Row gap="sm" align>
+        <Button
+          variant="text"
+          onPress={() => fileInput?.click()}
+          isDisabled={attachmentCount() >= MAX_ATTACHMENTS || uploading() > 0}
+        >
+          <Symbol size={16}>upload_file</Symbol>&nbsp;
+          <Show when={uploading() > 0} fallback={<Trans>Add files</Trans>}>
+            <Trans>Uploading…</Trans>
+          </Show>
+        </Button>
+        <SmallMuted>
+          <Plural
+            value={attachmentCount()}
+            one="# / 10 file attached"
+            other="# / 10 files attached"
+          />
+        </SmallMuted>
+      </Row>
+      <input
+        ref={fileInput}
+        type="file"
+        multiple
+        style={{ display: "none" }}
+        onChange={(e) => onPickFiles(e.currentTarget.files)}
+      />
 
       {/* Invite picker (create only — the detail owns invites when editing) */}
       <Show when={!props.event}>
@@ -2113,6 +2267,39 @@ const SearchResultRow = styled("button", {
     cursor: "pointer",
     textAlign: "start",
     "&:hover": { background: "var(--md-sys-color-surface-container-high)" },
+  },
+});
+
+const AttachmentList = styled("div", {
+  base: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "6px",
+  },
+});
+
+const AttachmentLink = styled("a", {
+  base: {
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+    padding: "8px 10px",
+    borderRadius: "8px",
+    border: "1px solid var(--md-sys-color-outline-variant)",
+    background: "var(--md-sys-color-surface-container)",
+    color: "var(--md-sys-color-on-surface)",
+    textDecoration: "none",
+    fontSize: "0.85rem",
+    "&:hover": { background: "var(--md-sys-color-surface-container-high)" },
+  },
+});
+
+const AttachmentImage = styled("img", {
+  base: {
+    maxWidth: "100%",
+    maxHeight: "240px",
+    borderRadius: "8px",
+    objectFit: "cover",
   },
 });
 
