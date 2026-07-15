@@ -19,7 +19,7 @@ import type { ApplicationCommandData, Message } from "stoat.js";
 import { styled } from "styled-system/jsx";
 
 import { E2EESendError, useClient, useE2EE, useSound } from "@revolt/client";
-import { CONFIGURATION, debounce } from "@revolt/common";
+import { CONFIGURATION, debounce, useDevice } from "@revolt/common";
 import { Keybind, KeybindAction, createKeybind } from "@revolt/keybinds";
 import { useModals } from "@revolt/modal";
 import { useState } from "@revolt/state";
@@ -62,6 +62,17 @@ export function MessageComposition(props: Props) {
   const e2ee = useE2EE();
   const sound = useSound();
   const { openModal } = useModals();
+  const { layout } = useDevice();
+
+  /**
+   * On phones and tablets the composer splits into two bars (see MessageBox);
+   * the bottom bar always carries a send button since there's no reliable
+   * enter-to-send on touch keyboards.
+   */
+  const isStackedLayout = () => layout() !== "desktop";
+  const showSendButton = () =>
+    isStackedLayout() ||
+    state.settings.getValue("appearance:show_send_button");
 
   /**
    * E2EE send mode for this conversation (DMs only). Reflects the native
@@ -1354,11 +1365,9 @@ export function MessageComposition(props: Props) {
         updateDraftSelection={(start, end) =>
           state.draft.setSelection(props.channel.id, start, end)
         }
-        hasActionsAppend={
-          state.settings.getValue("appearance:show_send_button") || false
-        }
+        hasActionsAppend={showSendButton() || false}
         actionsAppend={
-          <Show when={state.settings.getValue("appearance:show_send_button")}>
+          <Show when={showSendButton()}>
             <IconButton
               _compositionSendMessage
               size="sm"

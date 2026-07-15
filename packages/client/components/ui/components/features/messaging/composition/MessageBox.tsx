@@ -4,6 +4,7 @@ import { Accessor, JSX, Match, Show, Switch, onMount } from "solid-js";
 import { Trans } from "@lingui-solid/solid/macro";
 import { styled } from "styled-system/jsx";
 
+import { useDevice } from "@revolt/common";
 import { Row } from "@revolt/ui";
 import { AutoCompleteSearchSpace } from "@revolt/ui/components/utils/autoComplete";
 
@@ -132,6 +133,54 @@ const Parent = styled("div", {
 });
 
 /**
+ * Two-row composer wrapper (phone): the action bar stacked above the input row.
+ */
+const StackedParent = styled("div", {
+  base: {
+    flexGrow: 1,
+    flexShrink: 0,
+
+    display: "flex",
+    flexDirection: "column",
+    gap: "var(--gap-sm)",
+    margin: "0 0 var(--gap-md) 0",
+  },
+});
+
+/**
+ * Top bar (phone) holding every composer action. Scrolls horizontally when
+ * the icons don't fit, so the input row below always keeps its full width.
+ */
+const ActionBar = styled("div", {
+  base: {
+    display: "flex",
+    alignItems: "center",
+    gap: "var(--gap-sm)",
+
+    padding: "var(--gap-sm) var(--gap-md)",
+    borderRadius: "var(--borderRadius-xl)",
+    background: "var(--md-sys-color-surface-container-high)",
+    color: "var(--md-sys-color-on-surface)",
+
+    overflowX: "auto",
+    scrollbarWidth: "none",
+    "&::-webkit-scrollbar": { display: "none" },
+  },
+});
+
+/**
+ * Bottom bar (phone): the text field alongside the send button.
+ */
+const InputRow = styled("div", {
+  base: {
+    display: "flex",
+    gap: "var(--gap-md)",
+    minWidth: 0,
+    maxHeight: "var(--layout-height-message-box)",
+  },
+});
+
+/**
  * Blocked message
  */
 const Blocked = styled(Row, {
@@ -219,6 +268,15 @@ export function MessageBox(props: Props) {
   //   event.currentTarget.selectionEnd,
   // );
 
+  const { layout } = useDevice();
+
+  /**
+   * On phones and tablets the composer stacks into two bars: every action
+   * moves to a top bar, leaving the bottom bar as just the text field + send
+   * button. Desktop keeps everything on a single row.
+   */
+  const twoRow = () => layout() !== "desktop";
+
   /**
    * Set initial draft selection
    */
@@ -226,46 +284,82 @@ export function MessageBox(props: Props) {
     props.updateDraftSelection?.(props.content.length, props.content.length),
   );
 
+  /**
+   * The text field, or a permission notice when sending isn't allowed.
+   * Shared by both layouts (only one is ever mounted at a time).
+   */
+  const Editor = () => (
+    <Switch
+      fallback={
+        <TextEditor2
+          placeholder={props.placeholder}
+          initialValue={props.initialValue}
+          nodeReplacement={props.nodeReplacement}
+          onChange={props.setContent}
+          onComplete={props.onSendMessage}
+          onTyping={props.onTyping}
+          onPreviousContext={props.onEditLastMessage}
+          autoCompleteSearchSpace={props.autoCompleteSearchSpace}
+        />
+      }
+    >
+      <Match when={!props.sendingAllowed}>
+        <Blocked align noPad>
+          <Trans>
+            You don't have permission to send messages in this channel.
+          </Trans>
+        </Blocked>
+      </Match>
+    </Switch>
+  );
+
   return (
-    <Parent>
-      <Base hasActionsAppend={props.hasActionsAppend}>
-        <Switch fallback={props.actionsStart}>
-          <Match when={!props.sendingAllowed}>
-            <InlineIcon>
-              <Blocked>
-                <BiRegularBlock size={24} />
-              </Blocked>
-            </InlineIcon>
-          </Match>
-        </Switch>
-        <Switch
-          fallback={
-            <>
-              <TextEditor2
-                placeholder={props.placeholder}
-                initialValue={props.initialValue}
-                nodeReplacement={props.nodeReplacement}
-                onChange={props.setContent}
-                onComplete={props.onSendMessage}
-                onTyping={props.onTyping}
-                onPreviousContext={props.onEditLastMessage}
-                autoCompleteSearchSpace={props.autoCompleteSearchSpace}
-              />
-              <Show when={props.sendingAllowed}>{props.actionsEnd}</Show>
-            </>
-          }
-        >
-          <Match when={!props.sendingAllowed}>
-            <Blocked align noPad>
-              <Trans>
-                You don't have permission to send messages in this channel.
-              </Trans>
-            </Blocked>
-          </Match>
-        </Switch>
-      </Base>
-      <Show when={props.sendingAllowed}>{props.actionsAppend}</Show>
-    </Parent>
+    <>
+      {/* Phone: two stacked bars — actions on top, input + send below */}
+      <Show when={twoRow()}>
+        <StackedParent>
+          <Show when={props.sendingAllowed}>
+            <ActionBar>
+              {props.actionsStart}
+              {props.actionsEnd}
+            </ActionBar>
+          </Show>
+          <InputRow>
+            <Base hasActionsAppend={props.hasActionsAppend}>
+              <Show when={!props.sendingAllowed}>
+                <InlineIcon>
+                  <Blocked>
+                    <BiRegularBlock size={24} />
+                  </Blocked>
+                </InlineIcon>
+              </Show>
+              <Editor />
+            </Base>
+            <Show when={props.sendingAllowed}>{props.actionsAppend}</Show>
+          </InputRow>
+        </StackedParent>
+      </Show>
+
+      {/* Desktop / tablet: everything on a single row */}
+      <Show when={!twoRow()}>
+        <Parent>
+          <Base hasActionsAppend={props.hasActionsAppend}>
+            <Switch fallback={props.actionsStart}>
+              <Match when={!props.sendingAllowed}>
+                <InlineIcon>
+                  <Blocked>
+                    <BiRegularBlock size={24} />
+                  </Blocked>
+                </InlineIcon>
+              </Match>
+            </Switch>
+            <Editor />
+            <Show when={props.sendingAllowed}>{props.actionsEnd}</Show>
+          </Base>
+          <Show when={props.sendingAllowed}>{props.actionsAppend}</Show>
+        </Parent>
+      </Show>
+    </>
   );
 }
 
