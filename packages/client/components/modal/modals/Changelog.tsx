@@ -52,7 +52,17 @@ export function ChangelogModal(
     <Dialog
       show={props.show}
       onClose={onClose}
-      title={<Trans>Patch Notes</Trans>}
+      title={
+        <TitleRow>
+          <Trans>Patch Notes</Trans>
+          <img
+            src="/assets/web/sloga-icon.png"
+            alt="Sloga"
+            width={30}
+            height={30}
+          />
+        </TitleRow>
+      }
       actions={actions}
     >
       <Column>
@@ -68,6 +78,20 @@ export function ChangelogModal(
     </Dialog>
   );
 }
+
+const TitleRow = styled("span", {
+  base: {
+    display: "flex",
+    width: "100%",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: "var(--gap-md)",
+    "& img": {
+      flexShrink: 0,
+      display: "block",
+    },
+  },
+});
 
 const Subtitle = styled("span", {
   base: {

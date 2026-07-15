@@ -51,7 +51,7 @@ export const CHANGELOGS: ChangelogResponse[] = [
 - Images, videos and downloads now load reliably behind the new sloga.gg address.
 - **Large attachments are now cleared automatically** — files over 20MB are removed a day after they're sent to keep things fast and save space. The message text stays; only the big attachment is freed up.
 
-*Sloga — Hop in.*`,
+*Sloga — Hop on.*`,
   },
   {
     id: "sloga-2026-07-06",
@@ -74,7 +74,7 @@ Sloga now lives at a permanent address: **app.sloga.gg**. No more moving links �
 - Fresh installer with the new Sloga look.
 - The app now connects through sloga.gg, so it works from anywhere.
 
-*Sloga — Hop in.*`,
+*Sloga — Hop on.*`,
   },
   {
     id: "sloga-2026-07-04",
@@ -88,7 +88,7 @@ Sloga now lives at a permanent address: **app.sloga.gg**. No more moving links �
 - **New name, new logo**: the circle of dots is us — different people, one circle.
 - Everything else works exactly as before: your account, messages, friends, and servers are unchanged.
 
-*Sloga — Hop in.*`,
+*Sloga — Hop on.*`,
   },
   {
     id: "acutest-2026-07-04",
