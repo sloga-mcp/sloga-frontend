@@ -8,7 +8,7 @@ import { AddFriendModal } from "./modals/AddFriend";
 import { AddMembersToGroupModal } from "./modals/AddMembersToGroup";
 import { BanMemberModal } from "./modals/BanMember";
 import { BanNonMemberModal } from "./modals/BanNonMember";
-import { ChangelogModal } from "./modals/Changelog";
+import { ChangelogHistoryModal, ChangelogModal } from "./modals/Changelog";
 import { ChannelInfoModal } from "./modals/ChannelInfo";
 import { ChannelToggleMatureModal } from "./modals/ChannelToggleMature";
 import { CreateBotModal } from "./modals/CreateBot";
@@ -107,6 +107,8 @@ export function RenderModal(props: ActiveModal & { onClose: () => void }) {
       return <SuspendUserModal {...modalProps} />;
     case "changelog":
       return <ChangelogModal {...modalProps} />;
+    case "changelog_history":
+      return <ChangelogHistoryModal {...modalProps} />;
     case "add_members_to_group":
       return <AddMembersToGroupModal {...modalProps} />;
     case "channel_info":

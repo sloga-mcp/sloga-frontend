@@ -1,4 +1,4 @@
-import { createSignal } from "solid-js";
+import { For, Show, createSignal } from "solid-js";
 
 import { Trans } from "@lingui-solid/solid/macro";
 import { styled } from "styled-system/jsx";
@@ -27,6 +27,12 @@ export async function fetchLatestChangelog(): Promise<ChangelogResponse | null> 
   // Patch notes are maintained locally in changelogData.ts (newest first)
   const { CHANGELOGS } = await import("./changelogData");
   return CHANGELOGS[0] ?? null;
+}
+
+export async function fetchAllChangelogs(): Promise<ChangelogResponse[]> {
+  // Full patch notes history, newest first (see changelogData.ts)
+  const { CHANGELOGS } = await import("./changelogData");
+  return CHANGELOGS;
 }
 
 export function ChangelogModal(
@@ -78,6 +84,79 @@ export function ChangelogModal(
     </Dialog>
   );
 }
+
+/**
+ * Full patch notes history — every entry, newest first, in one scrollable
+ * dialog. Opened from Settings → Patch Notes. Unlike the launch popup this has
+ * no "don't show again" checkbox and never touches the release-notes store.
+ */
+export function ChangelogHistoryModal(
+  props: DialogProps & Modals & { type: "changelog_history" },
+) {
+  const dayjs = useTime();
+
+  const actions: DialogAction[] = [{ text: <Trans>Close</Trans> }];
+
+  return (
+    <Dialog
+      show={props.show}
+      onClose={props.onClose}
+      title={
+        <TitleRow>
+          <Trans>Patch Notes</Trans>
+          <img
+            src="/assets/web/sloga-icon.png"
+            alt="Sloga"
+            width={30}
+            height={30}
+          />
+        </TitleRow>
+      }
+      actions={actions}
+    >
+      <History>
+        <For each={props.changelogs}>
+          {(entry, index) => (
+            <Entry>
+              <Show when={index() > 0}>
+                <Divider />
+              </Show>
+              <Subtitle>{dayjs(entry.published_at).format("LL")}</Subtitle>
+              <div>{renderChangelogMarkdown(entry.markdown_content)}</div>
+            </Entry>
+          )}
+        </For>
+      </History>
+    </Dialog>
+  );
+}
+
+const History = styled("div", {
+  base: {
+    display: "flex",
+    flexDirection: "column",
+    maxHeight: "60vh",
+    overflowY: "auto",
+    // room so the scrollbar doesn't overlap content
+    paddingInlineEnd: "var(--gap-md)",
+  },
+});
+
+const Entry = styled("div", {
+  base: {
+    display: "flex",
+    flexDirection: "column",
+  },
+});
+
+const Divider = styled("hr", {
+  base: {
+    width: "100%",
+    border: "none",
+    borderTop: "1px solid var(--md-sys-color-outline-variant)",
+    marginBlock: "var(--gap-lg)",
+  },
+});
 
 const TitleRow = styled("span", {
   base: {

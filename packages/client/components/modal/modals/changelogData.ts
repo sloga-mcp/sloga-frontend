@@ -9,6 +9,81 @@ import type { ChangelogResponse } from "./Changelog";
  */
 export const CHANGELOGS: ChangelogResponse[] = [
   {
+    id: "sloga-2026-07-14",
+    title: "Patch Notes",
+    published_at: "2026-07-14T20:00:00.000Z",
+    markdown_content: `## v0.10.0 — Encrypted calls, announcements & soundboard
+
+### 🔐 End-to-end encrypted calls
+- **Your voice, video and screen share can now be end-to-end encrypted.** Media is encrypted on your device — the server only ever relays scrambled data it can't read.
+- Turn it on with **"Encrypt my calls"** in call settings. Everyone in the call needs a compatible app (desktop or Android); if someone can't encrypt, you'll see a clear notice before anything is sent in the clear.
+- A lock indicator on the call shows when a call is fully encrypted.
+
+### 📣 Announcement channels
+- **Mark a channel as an announcement channel** — other servers can *follow* it, and every post you make is published to their followed channel automatically.
+- Great for release notes, patch notes, and community-wide updates that should reach more than one server.
+
+### 🔊 Server soundboard
+- **Play sound clips in a voice channel** for everyone to hear — Discord-style.
+- Upload and manage your server's clips in **Server Settings → Soundboard**, then trigger them from the in-call soundboard picker.
+
+*Sloga — Hop on.*`,
+  },
+  {
+    id: "sloga-2026-07-13",
+    title: "Patch Notes",
+    published_at: "2026-07-13T20:00:00.000Z",
+    markdown_content: `## v0.9.0 — Bots, polls, captions & more ways to share
+
+### 🤖 Slash-command bots
+- **Interactive bots** are here — type \`/\` in the composer to run a bot command.
+- Bots can reply with **buttons, dropdown menus, and pop-up forms**, and can respond **just to you** (ephemeral) when it makes sense.
+
+### 📊 Polls
+- **Create a poll right from the composer** — add your options and let people vote.
+- Live results update as votes come in.
+
+### ↪️ Forwarding & ⏰ scheduled messages
+- **Forward a message** to another channel or DM, keeping its attachments intact.
+- **Schedule a message** to send later — write it now, pick a time, and Sloga delivers it for you.
+
+### 💬 Live call captions
+- **Real-time subtitles in calls**, translated into your chosen language, appearing under each person's video tile.
+- Optional **spoken translation** reads the translated text aloud.
+- Encrypted calls are respected — captions are generated on your own device.
+
+### 🎙️ Noise suppression
+- **Background noise removal for your mic** (keyboard, fans, room noise) — on by default, with a toggle in **Settings → Voice**.
+
+### 📺 Inline video playback
+- Uploaded videos now **play directly in chat** instead of only downloading.
+
+### 🎬 Streamer mode
+- **Hide sensitive info while you stream** — your email, invite links, and notification content are tucked away.
+- On desktop, Sloga can **auto-detect when OBS or other streaming apps are running** and switch it on for you.
+
+### 🎨 A fresh look
+- New **multicolor Sloga logo** across the app.
+
+*Sloga — Hop on.*`,
+  },
+  {
+    id: "sloga-2026-07-12",
+    title: "Patch Notes",
+    published_at: "2026-07-12T20:00:00.000Z",
+    markdown_content: `## v0.8.0 — Threads & Forums
+
+### 🧵 Threads
+- **Branch a side conversation off any message** without cluttering the main channel.
+- Threads keep focused discussions together and notify only the people taking part.
+
+### 🗂️ Forum channels
+- **A new channel type built for topics** — every post is its own thread that people can reply to.
+- Perfect for questions, guides, and long-running discussions that deserve their own space.
+
+*Sloga — Hop on.*`,
+  },
+  {
     id: "sloga-2026-07-10",
     title: "Patch Notes",
     published_at: "2026-07-10T20:00:00.000Z",

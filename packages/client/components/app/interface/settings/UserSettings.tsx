@@ -12,7 +12,7 @@ import {
 import { CONFIGURATION } from "@revolt/common";
 import { useUser } from "@revolt/markdown/users";
 import { useModals } from "@revolt/modal";
-import { fetchLatestChangelog } from "@revolt/modal/modals/Changelog";
+import { fetchAllChangelogs } from "@revolt/modal/modals/Changelog";
 import { ColouredText, Column, Text, iconSize } from "@revolt/ui";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
 
@@ -211,9 +211,9 @@ const Config: SettingsConfiguration<{ server: Server }> = {
               icon: <MdCampaign {...iconSize(20)} />,
               title: <Trans>Patch Notes</Trans>,
               async onClick() {
-                const changelog = await fetchLatestChangelog();
-                if (changelog) {
-                  openModal({ type: "changelog", changelog });
+                const changelogs = await fetchAllChangelogs();
+                if (changelogs.length) {
+                  openModal({ type: "changelog_history", changelogs });
                 }
               },
             },

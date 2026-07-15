@@ -60,6 +60,10 @@ export type Modals =
       changelog: ChangelogResponse;
     }
   | {
+      type: "changelog_history";
+      changelogs: ChangelogResponse[];
+    }
+  | {
       type: "channel_info";
       channel: Channel;
     }
