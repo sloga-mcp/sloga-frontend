@@ -73,9 +73,41 @@ function getRecognitionCtor(): SpeechRecognitionCtor | undefined {
   return w.SpeechRecognition ?? w.webkitSpeechRecognition;
 }
 
-/** Whether on-device Web Speech recognition is available in this shell. */
+/**
+ * Whether *broadcasting* on-device Web Speech captions actually works in this
+ * shell — in practice, real desktop Chrome/Edge only.
+ *
+ * The `SpeechRecognition` constructor being present is necessary but NOT
+ * sufficient. The Tauri desktop WebView2 and the Android Capacitor System
+ * WebView are both Chromium and expose the constructor, yet Chromium only ships
+ * the Google speech backend (and its API key) in genuine browser builds — inside
+ * an embedded webview `start()` yields no `onresult`, errors `network`, and the
+ * engine's restart loop silently backs off to nothing. Gating on the
+ * constructor alone therefore made the settings UI advertise caption
+ * broadcasting those shells can't deliver (no "unsupported" note, a toggle that
+ * produces silence). We additionally require that we are NOT inside a native
+ * webview shell, reusing the same Tauri/Capacitor probe the OAuth flow uses.
+ *
+ * This gate is BROADCAST-only: receiving remote captions and narrating them via
+ * SpeechSynthesis still work in every shell (see `captionSpeech.ts`).
+ */
 export function webSpeechSupported(): boolean {
-  return getRecognitionCtor() !== undefined;
+  return getRecognitionCtor() !== undefined && !inNativeWebviewShell();
+}
+
+/**
+ * True inside the Tauri (desktop) or Capacitor (Android) webview, where the Web
+ * Speech recognition service is unreachable despite the constructor existing.
+ * Mirrors `FlowLogin`'s embedded-webview check (Google likewise refuses OAuth
+ * from these shells).
+ */
+function inNativeWebviewShell(): boolean {
+  if (typeof window === "undefined") return false;
+  const win = window as {
+    __TAURI__?: unknown;
+    Capacitor?: { isNativePlatform?: () => boolean };
+  };
+  return !!(win.__TAURI__ || win.Capacitor?.isNativePlatform?.());
 }
 
 /**
