@@ -1362,24 +1362,36 @@ export function MessageComposition(props: Props) {
             <IconButton
               _compositionSendMessage
               size="sm"
-              variant={canSend() ? "filled" : "tonal"}
+              variant="tonal"
               shape="square"
               isDisabled={!canSend()}
               onPress={sendMessage}
+              // Logo-styled send button: a dark Sloga-navy chip with an
+              // orange rim and a Discord-style send arrow in the logo ball's
+              // blue. Brand colours light up only when a send is possible;
+              // disabled falls back to a muted slate look.
+              style={{
+                width: "56px",
+                background: "#101823",
+                "box-shadow": `inset 0 0 0 2px ${
+                  canSend() ? "#F5870D" : "#2a3547"
+                }`,
+              }}
             >
-              <svg width="20" height="20" viewBox="0 0 480 480" xmlns="http://www.w3.org/2000/svg">
-                <defs>
-                  <marker id="sbL" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="3" markerHeight="3" orient="auto-start-reverse">
-                    <path d="M0 0L10 5L0 10L3 5Z" fill="currentColor"/>
-                  </marker>
-                  <marker id="sbR" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="3" markerHeight="3" orient="auto">
-                    <path d="M0 0L10 5L0 10L3 5Z" fill="currentColor"/>
-                  </marker>
-                </defs>
-                <g transform="rotate(90, 240, 240)">
-                  <path d="M80 420 L240 60 L400 420" stroke="currentColor" stroke-width="40" stroke-linecap="round" stroke-linejoin="round" fill="none" marker-start="url(#sbL)" marker-end="url(#sbR)"/>
-                  <path d="M176 200 Q240 230 304 200" stroke="currentColor" stroke-width="40" stroke-linecap="round" fill="none"/>
-                </g>
+              <svg width="30" height="30" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                {/* Discord-style paper-plane send arrow, in the logo ball's blue */}
+                <path
+                  d="M22 2 L15 22 L11 13 L2 9 Z"
+                  fill={canSend() ? "#3BB8ED" : "#3a4759"}
+                />
+                {/* fold crease, cut in the chip colour */}
+                <path
+                  d="M22 2 L11 13"
+                  stroke="#101823"
+                  stroke-width="1.3"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
               </svg>
             </IconButton>
           </Show>
