@@ -11,6 +11,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(VoiceCallServicePlugin.class);
         registerPlugin(PushTokenPlugin.class);
         registerPlugin(ApkUpdaterPlugin.class);
+        registerPlugin(SpeechToTextPlugin.class);
         registerPlugin(com.acutest.app.e2ee.E2eePlugin.class);
         super.onCreate(savedInstanceState);
         // Serve decrypted E2EE attachments from the native layer (the
@@ -41,10 +42,10 @@ public class MainActivity extends BridgeActivity {
     /** Route notification taps (message / answer call) into the web app */
     private void handleNotificationIntent(Intent intent) {
         if (intent == null) return;
-        String path = intent.getStringExtra("acutest_path");
+        String path = intent.getStringExtra("sloga_path");
         if (path == null) return;
-        boolean answer = intent.getBooleanExtra("acutest_answer_call", false);
-        intent.removeExtra("acutest_path");
+        boolean answer = intent.getBooleanExtra("sloga_answer_call", false);
+        intent.removeExtra("sloga_path");
 
         // Action-button taps don't auto-dismiss notifications — clear the
         // call notification once we're handling the answer.
@@ -57,7 +58,7 @@ public class MainActivity extends BridgeActivity {
         PushTokenPlugin.setPendingAction(path, answer);
         if (bridge != null) {
             bridge.triggerWindowJSEvent(
-                    "acutestNotificationAction",
+                    "slogaNotificationAction",
                     "{\"path\":\"" + path + "\",\"answer\":" + answer + "}");
         }
     }

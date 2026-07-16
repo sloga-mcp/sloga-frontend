@@ -372,9 +372,9 @@ export function NotificationsWorker() {
         /* ignore malformed payloads */
       }
     };
-    window.addEventListener("acutestNotificationAction", onAction);
+    window.addEventListener("slogaNotificationAction", onAction);
     onCleanup(() =>
-      window.removeEventListener("acutestNotificationAction", onAction),
+      window.removeEventListener("slogaNotificationAction", onAction),
     );
   });
 

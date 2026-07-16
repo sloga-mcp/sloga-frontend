@@ -1224,7 +1224,7 @@ class E2eePlugin : Plugin() {
 
             val ciphertext = engine().attachmentCiphertext(localId)
 
-            val boundary = "acutest-e2ee-" + System.nanoTime()
+            val boundary = "sloga-e2ee-" + System.nanoTime()
             val connection = openAutumn(url)
             connection.requestMethod = "POST"
             connection.doOutput = true

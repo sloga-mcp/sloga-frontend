@@ -1,6 +1,11 @@
 export { VoiceContext, useVoice } from "./state";
 export type { DiceRollToast } from "./state";
 
+export {
+  captionBroadcastSupported,
+  captionSttEngineKind,
+} from "./captions/captionEngine";
+export type { CaptionSttEngineKind } from "./captions/captionEngine";
 export { webSpeechSupported } from "./captions/speechCaptionEngine";
 
 export { InRoom } from "./components/InRoom";

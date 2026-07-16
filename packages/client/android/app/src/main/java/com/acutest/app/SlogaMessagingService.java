@@ -4,6 +4,7 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.os.Build;
@@ -15,6 +16,7 @@ import androidx.core.app.NotificationManagerCompat;
 import com.google.firebase.messaging.FirebaseMessagingService;
 import com.google.firebase.messaging.RemoteMessage;
 
+import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.Map;
@@ -33,9 +35,52 @@ public class SlogaMessagingService extends FirebaseMessagingService {
 
     @Override
     public void onNewToken(String token) {
-        // The web layer re-syncs the token on every app start, so nothing to
-        // do here; log for debugging.
-        Log.i(TAG, "FCM token rotated");
+        // FCM can rotate the token while the app is killed. The web layer only
+        // re-syncs on the next app launch, so without this the backend would
+        // hold a stale token and silently drop notifications until the user
+        // reopens the app. Re-subscribe directly using credentials the web
+        // layer persisted on its last successful subscribe.
+        Log.i(TAG, "FCM token rotated; re-syncing with backend");
+        resubscribe(token);
+    }
+
+    /**
+     * POST the rotated FCM token to pushd so delivery to this device keeps
+     * working. No-op when the user isn't subscribed/logged in (no stored
+     * credentials). Runs off the caller's thread so it never blocks FCM.
+     */
+    private void resubscribe(String token) {
+        SharedPreferences prefs = getSharedPreferences("sloga_push", MODE_PRIVATE);
+        String apiUrl = prefs.getString("api_url", null);
+        String sessionToken = prefs.getString("session_token", null);
+        if (apiUrl == null || sessionToken == null || token == null) return;
+
+        new Thread(() -> {
+            HttpURLConnection conn = null;
+            try {
+                URL url = new URL(apiUrl.replaceAll("/+$", "") + "/push/subscribe");
+                conn = (HttpURLConnection) url.openConnection();
+                conn.setRequestMethod("POST");
+                conn.setConnectTimeout(5000);
+                conn.setReadTimeout(5000);
+                conn.setDoOutput(true);
+                conn.setRequestProperty("Content-Type", "application/json");
+                conn.setRequestProperty("X-Session-Token", sessionToken);
+                // FCM tokens contain no JSON-special characters, so inlining is safe.
+                String body = "{\"endpoint\":\"fcm\",\"p256dh\":\"\",\"auth\":\"" + token + "\"}";
+                try (OutputStream os = conn.getOutputStream()) {
+                    os.write(body.getBytes("UTF-8"));
+                }
+                int code = conn.getResponseCode();
+                if (code < 200 || code >= 300) {
+                    Log.w(TAG, "Token re-sync failed: HTTP " + code);
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "Token re-sync error: " + e.getMessage());
+            } finally {
+                if (conn != null) conn.disconnect();
+            }
+        }).start();
     }
 
     @Override
@@ -93,6 +138,34 @@ public class SlogaMessagingService extends FirebaseMessagingService {
                         data.get("image"), null);
                 break;
             }
+            case "push.calendar": {
+                String kind = data.get("kind");
+                String eventTitle = data.get("title");
+                String serverId = data.get("server_id");
+                String eventId = data.get("event_id");
+                String title;
+                String body;
+                String channel;
+                if ("cancelled".equals(kind)) {
+                    title = "Event cancelled";
+                    body = (eventTitle != null ? eventTitle : "An event") + " was cancelled";
+                    channel = CHANNEL_SOCIAL;
+                } else if ("reminder".equals(kind)) {
+                    title = "Upcoming event";
+                    body = (eventTitle != null ? eventTitle : "An event") + " is starting soon";
+                    channel = CHANNEL_MESSAGES; // time-sensitive -> high importance
+                } else { // "invited" (or an unknown future kind)
+                    title = "Event invitation";
+                    body = "You're invited to " + (eventTitle != null ? eventTitle : "an event");
+                    channel = CHANNEL_SOCIAL;
+                }
+                notifyTapToOpen(
+                        channel,
+                        eventId != null ? eventId.hashCode() : 6,
+                        title, body, null,
+                        serverId != null ? "/server/" + serverId : null);
+                break;
+            }
         }
     }
 
@@ -102,8 +175,8 @@ public class SlogaMessagingService extends FirebaseMessagingService {
 
         Intent answer = new Intent(this, MainActivity.class);
         answer.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-        if (path != null) answer.putExtra("acutest_path", path);
-        answer.putExtra("acutest_answer_call", true);
+        if (path != null) answer.putExtra("sloga_path", path);
+        answer.putExtra("sloga_answer_call", true);
         PendingIntent answerIntent = PendingIntent.getActivity(
                 this, notificationId + 100000, answer,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
@@ -140,7 +213,7 @@ public class SlogaMessagingService extends FirebaseMessagingService {
             String imageUrl, String path) {
         Intent launch = new Intent(this, MainActivity.class);
         launch.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-        if (path != null) launch.putExtra("acutest_path", path);
+        if (path != null) launch.putExtra("sloga_path", path);
         PendingIntent contentIntent = PendingIntent.getActivity(
                 this, notificationId, launch,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
