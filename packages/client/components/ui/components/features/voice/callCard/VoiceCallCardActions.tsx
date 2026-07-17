@@ -23,6 +23,10 @@ export function VoiceCallCardActions(props: { size: "xs" | "sm" }) {
 
   const enableVideo = CONFIGURATION.ENABLE_VIDEO;
 
+  // The floating PiP card is a fixed 300px wide — only the essential controls
+  // fit there. Secondary controls stay available on the full docked card.
+  const compact = () => props.size === "xs";
+
   // Screen sharing goes through getDisplayMedia on web/desktop. Android WebView
   // has no getDisplayMedia (needs a native MediaProjection plugin), so gate the
   // button on the capability actually being present instead of throwing.
@@ -113,7 +117,7 @@ export function VoiceCallCardActions(props: { size: "xs" | "sm" }) {
       >
         <Symbol>camera_video</Symbol>
       </IconButton>
-      <Show when={enableVideo}>
+      <Show when={enableVideo && !compact()}>
         <IconButton
           size={props.size}
           variant="tonal"
@@ -161,14 +165,17 @@ export function VoiceCallCardActions(props: { size: "xs" | "sm" }) {
       </IconButton>
       <Show
         when={
+          !compact() &&
           voice.channel()?.serverId &&
           voice.channel()?.havePermission("UseSoundboard")
         }
       >
         <VoiceSoundboardButton size={props.size} />
       </Show>
-      <VoiceDeviceSelector size={props.size} />
-      <VoiceStatsOverlay size={props.size} />
+      <Show when={!compact()}>
+        <VoiceDeviceSelector size={props.size} />
+        <VoiceStatsOverlay size={props.size} />
+      </Show>
       <Button
         size={props.size}
         variant="_error"
@@ -195,6 +202,10 @@ const Actions = styled("div", {
 
     display: "flex",
     width: "fit-content",
+    // Never spill past the card (and off-screen) — wrap onto another row when
+    // the available width can't fit every control.
+    maxWidth: "100%",
+    flexWrap: "wrap",
     justifyContent: "center",
     alignSelf: "center",
 
