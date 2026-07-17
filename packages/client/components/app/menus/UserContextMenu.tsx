@@ -106,6 +106,17 @@ export function UserContextMenu(props: {
     props.onClose?.();
   }
 
+  /**
+   * Whether we can open a DM with this user
+   */
+  function canDm() {
+    return (
+      !props.user.self &&
+      props.user.relationship !== "Blocked" &&
+      props.user.relationship !== "BlockedOther"
+    );
+  }
+
   // Screen sharing goes through getDisplayMedia on web/desktop; Android
   // WebView has no getDisplayMedia, so hide the entry where it can't work.
   const screenShareSupported =
@@ -473,9 +484,9 @@ export function UserContextMenu(props: {
           <Trans>Profile</Trans>
         </ContextMenuButton>
       </Show>
-      <Show when={props.user.relationship === "Friend"}>
+      <Show when={canDm()}>
         <ContextMenuButton icon={MdChat} onClick={openDm}>
-          <Trans>Message</Trans>
+          <Trans>Send Message</Trans>
         </ContextMenuButton>
         <ContextMenuButton icon={MdCall} onClick={startVoiceCall}>
           <Trans>Call</Trans>

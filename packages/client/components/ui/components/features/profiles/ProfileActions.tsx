@@ -5,6 +5,7 @@ import { ServerMember, User } from "stoat.js";
 import { styled } from "styled-system/jsx";
 
 import { UserContextMenu } from "@revolt/app";
+import { CONFIGURATION } from "@revolt/common";
 import { useModals } from "@revolt/modal";
 import { useVoice } from "@revolt/rtc";
 
@@ -12,6 +13,7 @@ import MdCall from "@material-design-icons/svg/filled/call.svg?component-solid";
 import MdCancel from "@material-design-icons/svg/filled/cancel.svg?component-solid";
 import MdEdit from "@material-design-icons/svg/filled/edit.svg?component-solid";
 import MdMoreVert from "@material-design-icons/svg/filled/more_vert.svg?component-solid";
+import MdVideocam from "@material-design-icons/svg/filled/videocam.svg?component-solid";
 
 import { Button, IconButton } from "../../design";
 import { iconSize } from "../../utils";
@@ -50,6 +52,29 @@ export function ProfileActions(props: {
   }
 
   /**
+   * Start a call in the DM channel with the camera enabled
+   */
+  function startVideoCall() {
+    props.user.openDM().then(async (channel) => {
+      navigate(channel.path);
+      await voice.connect(channel);
+      await voice.toggleCamera();
+    }).catch(console.error);
+    props.onClose();
+  }
+
+  /**
+   * Whether we can open a DM with this user
+   */
+  function canDm() {
+    return (
+      !props.user.self &&
+      props.user.relationship !== "Blocked" &&
+      props.user.relationship !== "BlockedOther"
+    );
+  }
+
+  /**
    * Open edit menu
    */
   function openEdit() {
@@ -79,11 +104,16 @@ export function ProfileActions(props: {
           Cancel friend request
         </Button>
       </Show>
-      <Show when={props.user.relationship === "Friend"}>
+      <Show when={canDm()}>
         <Button onPress={openDm}>Message</Button>
         <IconButton onPress={startVoiceCall} use:floating={{ tooltip: { placement: "top", content: "Voice Call" } }}>
           <MdCall {...iconSize(16)} />
         </IconButton>
+        <Show when={CONFIGURATION.ENABLE_VIDEO}>
+          <IconButton onPress={startVideoCall} use:floating={{ tooltip: { placement: "top", content: "Video Call" } }}>
+            <MdVideocam {...iconSize(16)} />
+          </IconButton>
+        </Show>
       </Show>
 
       <Show
@@ -124,6 +154,7 @@ export function ProfileActions(props: {
 const Actions = styled("div", {
   base: {
     display: "flex",
+    flexWrap: "wrap",
     gap: "var(--gap-md)",
     justifyContent: "flex-end",
   },
