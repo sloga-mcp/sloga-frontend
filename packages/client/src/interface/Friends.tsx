@@ -10,6 +10,7 @@ import {
 } from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
+import { useNavigate } from "@solidjs/router";
 import { VirtualContainer } from "@minht11/solid-virtual-container";
 import type { User } from "stoat.js";
 import { styled } from "styled-system/jsx";
@@ -291,7 +292,28 @@ function Entry(
   >,
 ) {
   const { openModal } = useModals();
+  const navigate = useNavigate();
   const [local, remote] = splitProps(props, ["user"]);
+
+  // Delay single-click so a double-click can cancel it and open the DM instead
+  let clickTimer: number | undefined;
+
+  function onClick() {
+    if (clickTimer !== undefined) return;
+    clickTimer = window.setTimeout(() => {
+      clickTimer = undefined;
+      openModal({ type: "user_profile", user: local.user });
+    }, 250);
+  }
+
+  function onDblClick() {
+    if (clickTimer !== undefined) {
+      window.clearTimeout(clickTimer);
+      clickTimer = undefined;
+    }
+
+    local.user.openDM().then((channel) => navigate(channel.url));
+  }
 
   return (
     <a
@@ -299,7 +321,8 @@ function Entry(
       use:floating={{
         contextMenu: () => <UserContextMenu user={local.user} />,
       }}
-      onClick={() => openModal({ type: "user_profile", user: local.user })}
+      onClick={onClick}
+      onDblClick={onDblClick}
     >
       <ListItem>
         <Avatar
