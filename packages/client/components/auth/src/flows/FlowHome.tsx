@@ -1,12 +1,13 @@
 import { Match, Show, Switch } from "solid-js";
 
 import { Trans } from "@lingui-solid/solid/macro";
-import { css } from "styled-system/css";
 
 import { useClientLifecycle } from "@revolt/client";
 import { TransitionType } from "@revolt/client/Controller";
 import { Navigate } from "@revolt/routing";
 import { Button, Column } from "@revolt/ui";
+
+import { LogoStory } from "./LogoStory";
 
 import { useState } from "@revolt/state";
 
@@ -26,30 +27,7 @@ export default function FlowHome() {
           </Show>
 
           <Column gap="xl">
-            <span
-              class={css({
-                fontSize: "48px",
-                fontWeight: "700",
-                letterSpacing: "-1px",
-                textAlign: "center",
-                color: "var(--md-sys-color-on-surface)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: "2px",
-              })}
-            >
-              Sl
-              <img
-                src="/assets/web/sloga-icon.png"
-                alt="o"
-                class={css({
-                  height: "40px",
-                  width: "40px",
-                })}
-              />
-              ga
-            </span>
+            <LogoStory />
 
             <Column>
               <b
@@ -67,7 +45,7 @@ export default function FlowHome() {
                   <br />
                   <Trans>High quality voice chat</Trans>
                   <br />
-                  <Trans>4k streaming</Trans>
+                  <Trans>4k screen share</Trans>
                   <br />
                   <Trans>Free</Trans>
                 </span>
@@ -91,7 +69,7 @@ export default function FlowHome() {
               <a href="/login/create">
                 <Column>
                   <div style={{"--md-sys-color-on-secondary-container":"#ffffff", "width": "100%", "display": "flex", "flex-direction": "column"}}>
-                    <Button variant="tonal" bg="#8B00FF">
+                    <Button variant="tonal" bg="#3BB8ED">
                       <b><Trans>Sign Up</Trans></b>
                     </Button>
                   </div>
