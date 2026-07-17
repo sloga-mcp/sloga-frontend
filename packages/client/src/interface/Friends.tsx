@@ -312,7 +312,7 @@ function Entry(
       clickTimer = undefined;
     }
 
-    local.user.openDM().then((channel) => navigate(channel.url));
+    local.user.openDM().then((channel) => navigate(channel.path)).catch(console.error);
   }
 
   return (
