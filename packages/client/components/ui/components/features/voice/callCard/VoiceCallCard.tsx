@@ -26,7 +26,9 @@ import { VoiceCallCardPiP } from "./VoiceCallCardPiP";
 import { VoiceCallCardPreview } from "./VoiceCallCardPreview";
 
 type Mode = "floating" | "moving";
-type FloatType = "tl" | "tr" | "bl" | "br";
+// Corners plus the midpoint of each screen edge; "c" in either slot means
+// centred on that axis (dead-centre "cc" is not a dock target).
+type FloatType = "tl" | "tc" | "tr" | "cl" | "cr" | "bl" | "bc" | "br";
 
 type Info = {
   channel: Channel;
@@ -86,11 +88,26 @@ export function VoiceCallCardContext(props: { children: JSX.Element }) {
     if (e.pointerId !== pid) return;
     const sty = ref!.style,
       pos = ref!.getBoundingClientRect(),
-      left = e.clientX - ofsX + pos.width / 2 < innerWidth / 2,
-      top = e.clientY - ofsY + pos.height / 2 < innerHeight / 2;
+      // Card centre as a fraction of the viewport; outer thirds dock to that
+      // edge/corner, the middle third docks to the centre of the axis.
+      cx = (e.clientX - ofsX + pos.width / 2) / innerWidth,
+      cy = (e.clientY - ofsY + pos.height / 2) / innerHeight,
+      h = cx < 1 / 3 ? "l" : cx > 2 / 3 ? "r" : "c",
+      v = cy < 1 / 3 ? "t" : cy > 2 / 3 ? "b" : "c";
 
     sty.transition = "all .2s cubic-bezier(0, 1.5, 0.85, 0.8)";
-    setFloat(left ? (top ? "tl" : "bl") : top ? "tr" : "br");
+    // Dead centre isn't a dock — snap to the nearest edge midpoint instead
+    setFloat(
+      h === "c" && v === "c"
+        ? Math.abs(cx - 0.5) > Math.abs(cy - 0.5)
+          ? cx < 0.5
+            ? "cl"
+            : "cr"
+          : cy < 0.5
+            ? "tc"
+            : "bc"
+        : (`${v}${h}` as FloatType),
+    );
     //Reset CSS transition on next render pass
     setTimeout(() => (sty.transition = ""), 1);
     resetEvents();
@@ -132,8 +149,18 @@ export function VoiceCallCardContext(props: { children: JSX.Element }) {
 
   function setFloat(float: FloatType) {
     const sty = ref!.style,
-      x = float[1] === "l" ? PAD_X : `calc(100vw - var(--flt-w) - ${PAD_X})`,
-      y = float[0] === "t" ? PAD_Y : `calc(100vh - var(--flt-h) - ${PAD_Y})`;
+      x =
+        float[1] === "l"
+          ? PAD_X
+          : float[1] === "r"
+            ? `calc(100vw - var(--flt-w) - ${PAD_X})`
+            : `calc((100vw - var(--flt-w)) / 2)`,
+      y =
+        float[0] === "t"
+          ? PAD_Y
+          : float[0] === "b"
+            ? `calc(100vh - var(--flt-h) - ${PAD_Y})`
+            : `calc((100vh - var(--flt-h)) / 2)`;
     sty.transform = `translate(${x}, ${y})`;
     sty.width = "";
     setMode("floating");
