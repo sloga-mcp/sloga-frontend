@@ -37,6 +37,7 @@ import {
   SystemMessageIcon,
   Tooltip,
   Username,
+  isSlogaStaff,
 } from "@revolt/ui";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
 
@@ -199,6 +200,10 @@ export function Message(props: Props) {
                 props.message.username
               }
               colour={props.message.roleColour!}
+              brand={
+                !props.message.masquerade?.name &&
+                isSlogaStaff(props.message.author)
+              }
             />
           </div>
         }

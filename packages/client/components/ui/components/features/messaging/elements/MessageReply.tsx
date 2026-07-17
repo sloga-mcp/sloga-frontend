@@ -11,7 +11,7 @@ import { renderSimpleMarkdown } from "@revolt/markdown";
 import { Avatar, typography } from "@revolt/ui/components/design";
 import { NonBreakingText } from "@revolt/ui/components/utils";
 
-import { Username } from "../../legacy";
+import { Username, isSlogaStaff } from "../../legacy";
 
 interface Props {
   /**
@@ -130,6 +130,10 @@ export function MessageReply(props: Props) {
               <Username
                 colour={props.message!.roleColour!}
                 username={(props.mention ? "@" : "") + props.message!.username}
+                brand={
+                  !props.message!.masquerade?.name &&
+                  isSlogaStaff(props.message!.author)
+                }
               />
             </NonBreakingText>
           </div>
