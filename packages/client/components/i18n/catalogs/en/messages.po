@@ -5352,3 +5352,7 @@ msgstr "Your suspension has expired — try logging in again."
 #: components/i18n/errors.ts
 msgid "Your user has already been created? Try logging in again or refreshing the app."
 msgstr "Your user has already been created? Try logging in again or refreshing the app."
+
+#: components/app/menus/UserContextMenu.tsx
+msgid "Send Message"
+msgstr "Send Message"
