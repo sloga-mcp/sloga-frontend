@@ -47,9 +47,9 @@ export function EncryptedAttachment(props: {
           </Details>
           <Show when={props.meta.state === "ready"}>
             <SaveAction
-              role="button"
-              aria-label={t}
-              title={t}
+              type="button"
+              aria-label={t`Save`}
+              title={t`Save`}
               onClick={() =>
                 void props.e2ee
                   .attachmentSave(props.messageId, props.meta.idx ?? 0)
@@ -147,8 +147,12 @@ const StateContainer = styled("div", {
   },
 });
 
-const SaveAction = styled("div", {
+const SaveAction = styled("button", {
   base: {
+    appearance: "none",
+    border: 0,
+    background: "transparent",
+    color: "inherit",
     display: "grid",
     placeItems: "center",
     cursor: "pointer",
