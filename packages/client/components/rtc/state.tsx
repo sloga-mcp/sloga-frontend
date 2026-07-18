@@ -254,6 +254,11 @@ class Voice {
   private disposeTrackRoot: (() => void) | undefined;
   #pttKeydown: ((e: KeyboardEvent) => void) | undefined;
   #pttKeyup: ((e: KeyboardEvent) => void) | undefined;
+  /** EL-PTT: key the desktop shell's global hook is armed to (undefined =
+   * not armed — web build, unmappable key, or shell without the commands) */
+  #pttNativeKey: string | undefined;
+  #pttNativeUnlisten: (() => void)[] = [];
+  #pttNativeArming = false;
   #vadStream: MediaStream | undefined;
   #vadCtx: AudioContext | undefined;
   #vadFrame: number | undefined;
@@ -2018,6 +2023,10 @@ class Voice {
       if (!this.#settings.pushToTalk) return;
       if (e.code !== this.#settings.pushToTalkKey) return;
       if (e.repeat) return;
+      // EL-PTT: the user can only change the setting/keybind while focused,
+      // so a focused keydown is the perfect lazy re-arm point for the
+      // global hook (covers mid-call enable + keybind changes).
+      void this.#ensureNativePtt(room);
       if (room.localParticipant.isMicrophoneEnabled) return;
       room.localParticipant.setMicrophoneEnabled(true);
     };
@@ -2031,13 +2040,93 @@ class Voice {
 
     window.addEventListener("keydown", this.#pttKeydown);
     window.addEventListener("keyup", this.#pttKeyup);
+
+    if (this.#settings.pushToTalk) void this.#ensureNativePtt(room);
+  }
+
+  /**
+   * EL-PTT (global push-to-talk, P1 + P4): arm the desktop shell's native
+   * key hook and subscribe to its `ptt:down`/`ptt:up` events so
+   * hold-to-talk works while the app is unfocused (alt-tabbed into a
+   * game). The focused window listeners above stay active alongside — the
+   * already-enabled/already-disabled guards make the dual sources
+   * idempotent. No-ops on the web build and on shells without the
+   * `ptt_arm` command (older installs, Linux until its EL-PTT legs land):
+   * PTT then stays focused-only, exactly the pre-slice behavior.
+   */
+  async #ensureNativePtt(room: Room) {
+    const tauri = (
+      window as {
+        __TAURI__?: {
+          core?: {
+            invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T>;
+          };
+          event?: {
+            listen<T>(
+              event: string,
+              handler: (event: { payload: T }) => void,
+            ): Promise<() => void>;
+          };
+        };
+      }
+    ).__TAURI__;
+    if (!tauri?.core?.invoke || !tauri.event) return;
+    if (this.#pttNativeArming) return;
+    const key = this.#settings.pushToTalkKey;
+    if (this.#pttNativeKey === key) return;
+
+    this.#pttNativeArming = true;
+    try {
+      // Re-arming with a new key just retargets the existing hook.
+      const armed = await tauri.core.invoke<boolean>("ptt_arm", { key });
+      if (!armed) return;
+
+      if (this.#pttNativeUnlisten.length === 0) {
+        const down = await tauri.event.listen<void>("ptt:down", () => {
+          if (!this.#settings.pushToTalk) {
+            // Setting turned off mid-call: drop the global hook entirely
+            // (it must not outlive the feature being on — EL-PTT P3/P4).
+            void this.#disarmNativePtt();
+            return;
+          }
+          if (room.localParticipant.isMicrophoneEnabled) return;
+          room.localParticipant.setMicrophoneEnabled(true);
+        });
+        const up = await tauri.event.listen<void>("ptt:up", () => {
+          if (!this.#settings.pushToTalk) return;
+          if (!room.localParticipant.isMicrophoneEnabled) return;
+          room.localParticipant.setMicrophoneEnabled(false);
+        });
+        this.#pttNativeUnlisten.push(down, up);
+      }
+      this.#pttNativeKey = key;
+    } catch {
+      // Shell without the ptt commands — focused-only fallback.
+    } finally {
+      this.#pttNativeArming = false;
+    }
+  }
+
+  async #disarmNativePtt() {
+    for (const unlisten of this.#pttNativeUnlisten) unlisten();
+    this.#pttNativeUnlisten = [];
+    if (this.#pttNativeKey === undefined) return;
+    this.#pttNativeKey = undefined;
+    const tauri = (
+      window as {
+        __TAURI__?: { core?: { invoke<T>(cmd: string): Promise<T> } };
+      }
+    ).__TAURI__;
+    await tauri?.core?.invoke("ptt_disarm").catch(() => {});
   }
 
   #stopPushToTalk() {
-    if (this.#pttKeydown) window.removeEventListener("keydown", this.#pttKeydown);
+    if (this.#pttKeydown)
+      window.removeEventListener("keydown", this.#pttKeydown);
     if (this.#pttKeyup) window.removeEventListener("keyup", this.#pttKeyup);
     this.#pttKeydown = undefined;
     this.#pttKeyup = undefined;
+    void this.#disarmNativePtt();
   }
 
   async #startVAD(room: Room) {

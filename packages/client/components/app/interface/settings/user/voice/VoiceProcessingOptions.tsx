@@ -144,7 +144,31 @@ export function VoiceProcessingOptions() {
           icon="blank"
           action={<Checkbox checked={voice.pushToTalk} />}
           onClick={() => (voice.pushToTalk = !voice.pushToTalk)}
-          description={<Trans>Hold a key to unmute while in a voice channel.</Trans>}
+          description={
+            <Column gap="sm">
+              <Trans>Hold a key to unmute while in a voice channel.</Trans>
+              {/* EL-PTT honesty (P5): say which key source this build has
+                  instead of silently degrading. */}
+              <Show
+                when={"__TAURI__" in window}
+                fallback={
+                  <Text class="label">
+                    <Trans>
+                      In this build the key only registers while the app is
+                      focused — the desktop app supports global push to talk.
+                    </Trans>
+                  </Text>
+                }
+              >
+                <Text class="label">
+                  <Trans>
+                    Works globally: the key registers even while your game or
+                    another app is focused.
+                  </Trans>
+                </Text>
+              </Show>
+            </Column>
+          }
         >
           <Trans>Enable Push to Talk</Trans>
         </CategoryButton>
