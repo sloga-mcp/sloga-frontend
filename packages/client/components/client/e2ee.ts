@@ -555,6 +555,10 @@ export { classifyEnvelopeError } from "./mlsEnvelopeClassify";
 export function nativeE2EEAvailable(): boolean {
   if ((window as { __TAURI__?: TauriGlobal }).__TAURI__?.core?.invoke)
     return true;
+  // Electron shell (EL1.2): the preload exposes slogaShell.e2ee ONLY when
+  // the native bridge is live — a dead bridge reads as "no native layer".
+  if ((window as { slogaShell?: SlogaShellGlobal }).slogaShell?.e2ee)
+    return true;
   return Capacitor.isNativePlatform() && Capacitor.getPlatform() === "android";
 }
 
@@ -640,6 +644,19 @@ interface NativeTransport {
   subscribeKeysChanged(
     callback: (event: { group_id: string; epoch: number }) => void,
   ): Promise<() => void>;
+  /**
+   * Subscribe to the desktop `e2ee:recovery-complete` event — the
+   * recovery window finished (or died) and the main window must courier
+   * any pending ciphertext (EL1 RFC B3: this used to be a direct
+   * `__TAURI__.event` use OUTSIDE the seam; on Electron that silently
+   * no-oped and a minted code's backup bundle would never reach
+   * `PUT /e2ee/backup`). Absent on Android: recovery there is a native
+   * DIALOG (no separate window, no courier event). Payload is the
+   * core-derived outcome mode — never a secret.
+   */
+  subscribeRecoveryComplete?(
+    callback: (mode: string) => void,
+  ): Promise<() => void>;
 }
 
 class TauriTransport implements NativeTransport {
@@ -674,6 +691,111 @@ class TauriTransport implements NativeTransport {
     return this.#tauri.event.listen<{ group_id: string; epoch: number }>(
       "e2ee:call-keys-changed",
       (event) => callback(event.payload),
+    );
+  }
+
+  async subscribeRecoveryComplete(
+    callback: (mode: string) => void,
+  ): Promise<() => void> {
+    if (!this.#tauri.event) return () => {};
+    return this.#tauri.event.listen<string>("e2ee:recovery-complete", (event) =>
+      callback(event.payload),
+    );
+  }
+}
+
+/** Electron shell bridge surface (see electron-shell/src/preload.cjs) */
+export type SlogaShellGlobal = {
+  name: string;
+  platform: string;
+  /** Present ONLY when the native e2ee bridge is live (preload-gated) */
+  e2ee?: {
+    invoke(command: string, args?: unknown): Promise<unknown>;
+    /** Allowlisted event subscription; returns an unsubscribe fn */
+    on(name: string, callback: (payload: unknown) => void): () => void;
+  };
+};
+
+/**
+ * Electron (Linux) shell transport — third `NativeTransport` impl
+ * (EL1.2). Same command names, same argument JSON, same typed error
+ * objects as the Tauri IPC — the carrier is the shell's `ipcMain`
+ * multiplexer behind `slogaShell.e2ee`. Desktop model like Tauri:
+ * the webview uploads; IPC is binary-safe (`nativeBlobTransfer` false).
+ *
+ * The two non-JSON Tauri call shapes are adapted HERE so `E2EEBridge`
+ * call sites are unchanged: the raw-body + x-header commands become
+ * explicit fields (percent-DECODED — the Tauri path encodes them), and
+ * the ciphertext return is normalized to the typed `ArrayBuffer`
+ * contract. Envelope: `{ok} | {err}` — `err` rethrows as the parsed
+ * typed object (CapacitorTransport `#rethrow` parity), transport
+ * rejections pass through and classify `unavailable` upstream.
+ */
+class ElectronTransport implements NativeTransport {
+  readonly nativeBlobTransfer = false;
+  #e2ee = (window as unknown as { slogaShell: Required<SlogaShellGlobal> })
+    .slogaShell.e2ee;
+
+  async invoke<T>(
+    command: string,
+    args?: Record<string, unknown> | Uint8Array,
+    options?: { headers?: Record<string, string> },
+  ): Promise<T> {
+    let payload: Record<string, unknown> | undefined;
+    if (args instanceof Uint8Array) {
+      const headers = options?.headers ?? {};
+      if (command === "e2ee_attachment_prepare") {
+        payload = {
+          peerUserId: headers["x-peer-user-id"],
+          name: decodeURIComponent(headers["x-name"] ?? ""),
+          mime: decodeURIComponent(headers["x-mime"] ?? ""),
+          body: args,
+        };
+      } else if (command === "e2ee_attachment_store") {
+        payload = { localId: headers["x-local-id"], body: args };
+      } else {
+        throw { type: "invalid_argument", field: "args" };
+      }
+    } else {
+      payload = args;
+    }
+
+    const res = (await this.#e2ee.invoke(command, payload)) as {
+      ok?: unknown;
+      err?: unknown;
+    };
+    if (res && typeof res === "object" && res.err != null) throw res.err;
+    let ok = res?.ok;
+    // Binary-out: the shell's Buffer structured-clones to a Uint8Array;
+    // the bridge contract for ciphertext is a typed ArrayBuffer.
+    if (ok instanceof Uint8Array) {
+      ok = ok.buffer.slice(ok.byteOffset, ok.byteOffset + ok.byteLength);
+    }
+    return ok as T;
+  }
+
+  /** EL1.3 registers the `e2ee-att` protocol; the URL shape is final. */
+  attachmentUrl(messageId: string, idx: number): string {
+    return `e2ee-att://att/${messageId}/${idx}`;
+  }
+
+  keyPushAvailable(): boolean {
+    return typeof this.#e2ee.on === "function";
+  }
+
+  async subscribeKeysChanged(
+    callback: (event: { group_id: string; epoch: number }) => void,
+  ): Promise<() => void> {
+    return this.#e2ee.on("e2ee:call-keys-changed", (payload) =>
+      callback(payload as { group_id: string; epoch: number }),
+    );
+  }
+
+  async subscribeRecoveryComplete(
+    callback: (mode: string) => void,
+  ): Promise<() => void> {
+    return this.#e2ee.on("e2ee:recovery-complete", (payload) =>
+      callback(String(payload)),
     );
   }
 }
@@ -925,6 +1047,8 @@ function bytesToBase64(bytes: Uint8Array): string {
 function createNativeTransport(): NativeTransport {
   if ((window as { __TAURI__?: TauriGlobal }).__TAURI__?.core?.invoke)
     return new TauriTransport();
+  if ((window as { slogaShell?: SlogaShellGlobal }).slogaShell?.e2ee)
+    return new ElectronTransport();
   return new CapacitorTransport();
 }
 
@@ -3237,11 +3361,15 @@ export class E2EEBridge implements E2EEAdapter {
    */
   async #ensureBackupCourier(): Promise<void> {
     if (this.#backupCourierReady) return;
-    const tauri = (window as { __TAURI__?: TauriGlobal }).__TAURI__;
-    if (!tauri?.event) return;
+    // Routed through the transport seam (EL1 RFC B3): the direct
+    // `__TAURI__.event` gate here silently no-oped on any other shell —
+    // on Electron a minted recovery code's bundle would never have been
+    // couriered to `PUT /e2ee/backup` (data-loss class). Shells without
+    // a recovery window (Android) simply don't implement the member.
+    if (!this.#transport.subscribeRecoveryComplete) return;
     this.#backupCourierReady = true;
-    await tauri.event.listen<string>("e2ee:recovery-complete", (event) => {
-      this.#courierRecovery(event.payload).catch((error) =>
+    await this.#transport.subscribeRecoveryComplete((mode) => {
+      this.#courierRecovery(mode).catch((error) =>
         console.error("[e2ee] backup courier failed", error),
       );
     });

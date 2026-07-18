@@ -148,6 +148,19 @@ export interface DiceRollToast {
 export const DICE_TOAST_MS = 3400;
 
 /**
+ * Whether THIS platform's shell has an AUDITED media-E2EE path (EL1 audit
+ * S7, hard exit criterion). FALSE whenever the Electron shell
+ * (`slogaShell`) is present — for ANY platform it may ever claim, not
+ * just Linux (a hypothetical mac shell must not claim media E2EE with
+ * zero audit work) — even though insertable streams and the key-push
+ * channel both probe TRUE there. Flipped per-platform only by EL4's own
+ * audited slice. Windows Tauri / Android Capacitor are unaffected.
+ */
+export function platformMediaE2EESupported(): boolean {
+  return !("slogaShell" in window);
+}
+
+/**
  * Cap the visible toast stack (roomy enough for a party rolling initiative at
  * once) so a burst of rolls can't wall off the video. Older toasts drop early;
  * their removal timers no-op against the already-trimmed list.
@@ -635,6 +648,11 @@ class Voice {
       isE2EESupported() &&
       nativeE2EEAvailable() &&
       !!bridge?.nativeKeyPushAvailable() &&
+      // Media E2EE is NOT audited on the Electron shell yet (EL1 audit S7,
+      // hard exit criterion): fail-closed there even though insertable
+      // streams + the key-push channel both probe TRUE — flipped
+      // per-platform only by EL4's own audited slice.
+      platformMediaE2EESupported() &&
       // "Encrypt my calls" (§0.2 #9): with it OFF we negotiate plaintext —
       // no session, no E2EE Room — and appear non-enrolled to E2EE peers
       // (their loud downgrade attributes it to us). LOCAL per-device toggle.

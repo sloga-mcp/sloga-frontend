@@ -7,6 +7,16 @@ import type { Channel, Client, ServerMember, ServerRole, User } from "stoat.js";
 declare global {
   interface Window {
     __TAURI__: object;
+    /** Electron desktop shell marker (EL0); `e2ee` present only when the
+     * native bridge is live (EL1.2 preload gate). */
+    slogaShell?: {
+      name: string;
+      platform: string;
+      e2ee?: {
+        invoke(command: string, args?: unknown): Promise<unknown>;
+        on(name: string, callback: (payload: unknown) => void): () => void;
+      };
+    };
   }
 }
 

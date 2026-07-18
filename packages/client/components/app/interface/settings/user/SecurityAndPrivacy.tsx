@@ -5,6 +5,7 @@ import { Trans } from "@lingui-solid/solid/macro";
 import type { BackupStatusView } from "@revolt/client";
 import { useClient, useE2EE } from "@revolt/client";
 import { useModals } from "@revolt/modal";
+import { platformMediaE2EESupported } from "@revolt/rtc";
 import { useState } from "@revolt/state";
 import { CategoryButton, Checkbox, Column, iconSize } from "@revolt/ui";
 
@@ -45,6 +46,11 @@ function CallEncryptionCard() {
   const { openModal } = useModals();
 
   if (!e2ee) return null;
+  // Electron shell (EL1.2): media E2EE is fail-closed until EL4's audited
+  // slice — hide the toggle entirely so a user can't believe their calls
+  // are encrypted when they are not (same FE-6 rationale as the Android
+  // disabled state; hidden rather than disabled because no ETA copy fits).
+  if (!platformMediaE2EESupported()) return null;
 
   // Media E2EE requires a native key-push channel (desktop today; Android 6.7).
   const mediaCapable = () => e2ee.nativeKeyPushAvailable();
