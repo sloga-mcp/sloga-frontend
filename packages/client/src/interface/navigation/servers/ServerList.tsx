@@ -452,7 +452,7 @@ export const ServerList = (props: Props) => {
                 >
                   <Avatar
                     size={42}
-                    src={entry.item.iconURL}
+                    src={entry.item.animatedIconURL ?? entry.item.iconURL}
                     holepunch={
                       entry.item.mentions.length ? "top-right" : "none"
                     }
