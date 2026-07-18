@@ -687,8 +687,13 @@ export function Messages(props: Props) {
       // in that set and must not appear under the lock as if authenticated.
       if (encryptedConversation() && !e2ee?.isEncryptedMessage(message.id)) {
         // Design §4: never a SILENT drop — leave a visible (non-
-        // persisted) marker in place of the suppressed plaintext.
-        e2ee?.noteDroppedPlaintext(props.channel.id);
+        // persisted) marker in place of the suppressed plaintext. System
+        // messages (join/leave/rename) stay silently suppressed — an
+        // "unencrypted message hidden" marker per membership event would
+        // be misleading noise (review MINOR-4).
+        if (!message.systemMessage) {
+          e2ee?.noteDroppedPlaintext(props.channel.id);
+        }
         return;
       }
       if (collectedMessages) {

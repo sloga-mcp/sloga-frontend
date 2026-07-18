@@ -1732,20 +1732,6 @@ export class E2EEBridge implements E2EEAdapter {
       await this.#refreshMode(peerId);
     }
 
-    // Rev-2 MAJOR-1: a fan-out that reached ZERO live devices would
-    // otherwise render as a clean send — the one-message silent-loss
-    // window when every device-change event was missed. Surface it and
-    // arm the bundle prefetch so the user's resend heals. The marker is
-    // NON-PERSISTED (live session only — design §7).
-    const statuses = (receipts as { status?: string }[]).map((r) => r?.status);
-    if (statuses.length && statuses.every((st) => st === "UnknownDevice")) {
-      this.#bundleNeeded.add(peerId);
-      this.#injectLocalMarker(
-        channel.id,
-        "Not delivered — the recipient's devices changed. Send the message again.",
-      );
-    }
-
     // Local echo with the native store's canonical message id. Attachment
     // metadata arrives with the #syncRecent below (the rows were bound in
     // the native encrypt transaction) — the renderer reads the reactive
@@ -1767,6 +1753,22 @@ export class E2EEBridge implements E2EEAdapter {
     );
 
     await this.#syncRecent(peerId);
+
+    // Rev-2 MAJOR-1: a fan-out that reached ZERO live devices would
+    // otherwise render as a clean send — the one-message silent-loss
+    // window when every device-change event was missed. Surface it and
+    // arm the bundle prefetch so the user's resend heals. Injected AFTER
+    // the echo so the marker reads under the message it refers to
+    // (review MINOR-2). NON-PERSISTED (live session only — design §7).
+    const statuses = (receipts as { status?: string }[]).map((r) => r?.status);
+    if (statuses.length && statuses.every((st) => st === "UnknownDevice")) {
+      this.#bundleNeeded.add(peerId);
+      this.#injectLocalMarker(
+        channel.id,
+        "Not delivered — the recipient's devices changed. Send the message again.",
+      );
+    }
+
     return message;
   }
 
