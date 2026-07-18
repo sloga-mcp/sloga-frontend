@@ -1,4 +1,4 @@
-import { Match, Switch } from "solid-js";
+import { Match, Show, Switch } from "solid-js";
 
 import { useLingui } from "@lingui-solid/solid/macro";
 import { css } from "styled-system/css";
@@ -45,6 +45,22 @@ export function EncryptedAttachment(props: {
             <span>{props.meta.name}</span>
             <Hint>{humanSize()}</Hint>
           </Details>
+          <Show when={props.meta.state === "ready"}>
+            <SaveAction
+              role="button"
+              aria-label={t}
+              title={t}
+              onClick={() =>
+                void props.e2ee
+                  .attachmentSave(props.messageId, props.meta.idx ?? 0)
+                  .catch((error) =>
+                    console.error("[e2ee] attachment save failed", error),
+                  )
+              }
+            >
+              <Symbol>download</Symbol>
+            </SaveAction>
+          </Show>
         </StateContainer>
       }
     >
@@ -127,6 +143,20 @@ const StateContainer = styled("div", {
     "&[data-error]": {
       color: "var(--md-sys-color-on-error-container)",
       background: "var(--md-sys-color-error-container)",
+    },
+  },
+});
+
+const SaveAction = styled("div", {
+  base: {
+    display: "grid",
+    placeItems: "center",
+    cursor: "pointer",
+    padding: "var(--gap-sm)",
+    borderRadius: "var(--borderRadius-md)",
+    opacity: 0.85,
+    "&:hover": {
+      opacity: 1,
     },
   },
 });

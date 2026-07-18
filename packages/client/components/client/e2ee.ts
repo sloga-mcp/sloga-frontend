@@ -2616,6 +2616,17 @@ export class E2EEBridge implements E2EEAdapter {
     return this.#transport.attachmentUrl(messageId, idx);
   }
 
+  /**
+   * Ask the SHELL to save one decrypted attachment to a user-chosen
+   * location. The native OS save dialog is the consent and the bytes are
+   * written from native code -- plaintext never enters the webview (the
+   * webview can only REQUEST a save). Resolves false when the user
+   * cancels the dialog; rejects with the scrubbed native error otherwise.
+   */
+  attachmentSave(messageId: string, idx: number): Promise<boolean> {
+    return this.#invoke<boolean>("e2ee_attachment_save", { messageId, idx });
+  }
+
   /** Reactive attachment metadata of a message (empty when none) */
   attachmentsFor(messageId: string): E2EEAttachmentMeta[] {
     return this.attachmentMeta.get(messageId) ?? [];
