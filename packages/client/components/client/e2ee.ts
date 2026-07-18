@@ -2318,12 +2318,61 @@ export class E2EEBridge implements E2EEAdapter {
   // Local history (the ONLY history for E2EE DMs)
   // ================================================================
 
+  /** Single-flight guard for the boot-time status resolution below. */
+  #bootStatusResolution: Promise<void> | null = null;
+
+  /**
+   * Resolve native status for a boot-race history fetch (single-flight —
+   * several channel fetches can race this at boot; only one pair of native
+   * calls runs). Uses #onReady's side-effect-free gate: `#isProvisioned`
+   * first, so a fresh install NEVER opens the engine and key-backup restore
+   * stays reachable (design §6.1). Returns with `status` still unset on a
+   * PROVEN-unprovisioned device; on native failure it retries once and then
+   * THROWS — a failure is ambiguous (the conversation may be encrypted),
+   * and returning normally would let the caller seed the session-long
+   * channel cache with server rows, the very symptom this exists to fix.
+   * Fail-closed mirrors the send path's contract.
+   */
+  #ensureBootStatus(): Promise<void> {
+    this.#bootStatusResolution ??= (async () => {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          if (!(await this.#isProvisioned())) return;
+          await this.refreshStatus();
+          return;
+        } catch (error) {
+          console.error(
+            "[e2ee] boot-time status resolution failed during history fetch",
+            error,
+          );
+          if (attempt >= 1) throw error;
+        }
+      }
+    })().finally(() => {
+      this.#bootStatusResolution = null;
+    });
+    return this.#bootStatusResolution;
+  }
+
   async fetchLocalHistory(
     channel: Channel,
     params?: { limit?: number; before?: string },
   ): Promise<Message[] | null> {
-    const state = this.status.get("state");
-    if (!state?.enabled) return null;
+    let state = this.status.get("state");
+    if (!state) {
+      // Boot race: a channel view restored straight into a DM route can
+      // fetch messages BEFORE `#onReady` has resolved the native status —
+      // an encrypted conversation would then silently seed (and cache, for
+      // the whole session) SERVER rows instead of the native transcript.
+      // Resolve it here; a still-unset status afterwards means a proven
+      // unprovisioned device → honest server-history fallback. A THROW
+      // (native failure after retry) propagates and fails the fetch —
+      // retryable in the view, never silently the wrong transcript.
+      await this.#ensureBootStatus();
+      state = this.status.get("state");
+      if (!state) return null;
+    }
+    if (!state.enabled) return null;
 
     const isGroup = channel.type === "Group";
     const conversationId = isGroup ? channel.id : this.#peerOf(channel);
