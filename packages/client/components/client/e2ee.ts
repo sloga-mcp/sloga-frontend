@@ -28,6 +28,7 @@
  */
 import { Capacitor, registerPlugin } from "@capacitor/core";
 import { ReactiveMap } from "@solid-primitives/map";
+import { ulid } from "ulid";
 
 import type {
   Channel,
@@ -975,6 +976,19 @@ export class E2EEBridge implements E2EEAdapter {
    */
   #selfDevicesUnpinned = false;
 
+  /**
+   * Peers whose device listing reported new devices that no send has
+   * pinned yet (device-lifecycle fixes §1). The next send volunteers a
+   * fresh signed bundle so the native encrypt can verify-and-pin them.
+   * Cleared ONLY by a reconcile that reports zero new_devices (rev-2
+   * MAJOR-4 consume semantics) — never by the send itself.
+   */
+  #bundleNeeded = new Set<string>();
+
+  /** Per-user last DM-open reconcile (60 s TTL — §1 open-parity). */
+  #reconciledAt = new Map<string, number>();
+
+
   /** Reactive native status (drives the settings consent flow) */
   readonly status = new ReactiveMap<
     "state",
@@ -1469,6 +1483,13 @@ export class E2EEBridge implements E2EEAdapter {
       this.#selfDevicesUnpinned = true;
     }
 
+    // Peer new devices: arm (or, when the listing is fully covered,
+    // disarm) the bundle prefetch for the next send (§1 / MAJOR-4)
+    if (userId !== this.#client.user?.id) {
+      if (report.new_devices.length) this.#bundleNeeded.add(userId);
+      else this.#bundleNeeded.delete(userId);
+    }
+
     if (
       report.revoked.length ||
       report.changed.length ||
@@ -1498,6 +1519,24 @@ export class E2EEBridge implements E2EEAdapter {
         }),
       ),
     );
+  }
+
+  /**
+   * Fire-and-forget peer device reconcile on DM open (device-lifecycle
+   * fixes §1): DMs previously relied on live events alone, so one missed
+   * event stranded a peer's new device until an app restart. TTL-guarded
+   * so channel-hopping cannot hammer the listing route.
+   */
+  reconcilePeerOnOpen(userId: string): void {
+    if (userId === this.#client.user?.id) return;
+    const last = this.#reconciledAt.get(userId) ?? 0;
+    if (Date.now() - last < 60_000) return;
+    this.#reconciledAt.set(userId, Date.now());
+    void this.#reconcileDevices(userId).catch(() => {
+      // Unfetchable listing keeps current pins (fail closed); allow the
+      // next open to retry immediately.
+      this.#reconciledAt.delete(userId);
+    });
   }
 
   async #onDeviceCreate(userId: string): Promise<void> {
@@ -1691,6 +1730,20 @@ export class E2EEBridge implements E2EEAdapter {
       // opportunistic: the conversation just became sticky-encrypted —
       // flip the composer indicator to the lock
       await this.#refreshMode(peerId);
+    }
+
+    // Rev-2 MAJOR-1: a fan-out that reached ZERO live devices would
+    // otherwise render as a clean send — the one-message silent-loss
+    // window when every device-change event was missed. Surface it and
+    // arm the bundle prefetch so the user's resend heals. The marker is
+    // NON-PERSISTED (live session only — design §7).
+    const statuses = (receipts as { status?: string }[]).map((r) => r?.status);
+    if (statuses.length && statuses.every((st) => st === "UnknownDevice")) {
+      this.#bundleNeeded.add(peerId);
+      this.#injectLocalMarker(
+        channel.id,
+        "Not delivered — the recipient's devices changed. Send the message again.",
+      );
     }
 
     // Local echo with the native store's canonical message id. Attachment
@@ -2164,6 +2217,27 @@ export class E2EEBridge implements E2EEAdapter {
       }
     }
 
+    let peerBundlePrefetched = false;
+    if (this.#bundleNeeded.has(peerId)) {
+      // A reconcile reported new peer devices that no send has pinned yet
+      // (§1): volunteer a fresh signed bundle so THIS send's native
+      // encrypt can verify-and-pin them — needs_bundle alone never fires
+      // while any stale pinned device remains. Availability-only on
+      // failure: the send proceeds on existing pins, the flag stays set.
+      // (Bundle effects are the audited needs_bundle-retry semantics:
+      // verified pins added, absent devices revoked loudly, identity
+      // changes flip to the sticky send-block.)
+      try {
+        peerBundle = await this.#api<unknown>("GET", `/e2ee/keys/${peerId}`);
+        peerBundlePrefetched = true;
+      } catch (error) {
+        console.warn(
+          "[e2ee] peer bundle prefetch failed; sending on existing pins",
+          error,
+        );
+      }
+    }
+
     for (let attempt = 0; ; attempt++) {
       try {
         const result = await this.#invoke<EncryptResult>("e2ee_encrypt", {
@@ -2176,6 +2250,12 @@ export class E2EEBridge implements E2EEAdapter {
         });
         // Pins are durable in the native store — stop prefetching
         if (selfBundle) this.#selfDevicesUnpinned = false;
+        if (peerBundlePrefetched) {
+          // Consume-check (rev-2 MAJOR-4): only a fresh reconcile that
+          // reports zero remaining new_devices clears the flag — a bundle
+          // that failed to cover the reported device leaves it set.
+          void this.#reconcileDevices(peerId).catch(() => {});
+        }
         return result;
       } catch (error) {
         const native = error as NativeError;
@@ -2341,6 +2421,39 @@ export class E2EEBridge implements E2EEAdapter {
   }
 
   /** Marker row → user-facing system text */
+  /**
+   * Client-side system marker (NOT a native history row — vanishes on
+   * reload; design §4/§7 documents the limitation). Counted as an
+   * encrypted-conversation event so the encrypted-view filter shows it.
+   */
+  #injectLocalMarker(channelId: string, text: string): void {
+    const id = ulid();
+    this.#encryptedIds.add(id);
+    this.#client.messages.getOrCreate(
+      id,
+      {
+        _id: id,
+        channel: channelId,
+        author: SYSTEM_AUTHOR,
+        content: undefined,
+        system: { type: "text", content: text },
+      } as never,
+      true,
+    );
+  }
+
+  /**
+   * Visible suppression of a live plaintext message arriving in an
+   * encrypted view (design §4): honesty about the drop, without
+   * rendering server-controlled plaintext under the lock.
+   */
+  noteDroppedPlaintext(channelId: string): void {
+    this.#injectLocalMarker(
+      channelId,
+      "An unencrypted message was received and hidden — this conversation only shows encrypted messages.",
+    );
+  }
+
   #markerText(row: HistoryRow): string {
     switch (row.kind) {
       case "gap":
@@ -2884,7 +2997,9 @@ export class E2EEBridge implements E2EEAdapter {
    *     anything, so a lingering registry entry is harmless and its queued
    *     envelopes expire by TTL.
    */
-  async disable(mfaTicketToken: string): Promise<void> {
+  async disable(
+    mfaTicketToken: string,
+  ): Promise<{ revokeFailed: boolean; deviceId?: string }> {
     // Capture the device id before the wipe removes it from local state
     const deviceId = this.status.get("state")?.device_id;
 
@@ -2903,19 +3018,44 @@ export class E2EEBridge implements E2EEAdapter {
       console.error("[e2ee] clearing opt-in flag failed", error);
     }
 
+    let revokeFailed = false;
     if (deviceId) {
       try {
         await this.#api("DELETE", `/e2ee/keys/${deviceId}`, undefined, {
           "X-MFA-Ticket": mfaTicketToken,
         });
       } catch (error) {
-        // Lingering server-side device is harmless (wiped device can't
-        // decrypt; its envelopes TTL out). Logged, not surfaced.
+        // NOT harmless (device-lifecycle fixes §3): peers keep fanning
+        // envelopes to the lingering row, wasting queue + one-time-key
+        // claims — and clients without the §1 prefetch lose messages to
+        // it outright. Surfaced to the caller for a loud retry.
         console.error("[e2ee] server-side device revoke failed", error);
+        revokeFailed = true;
       }
     }
 
     await this.refreshStatus();
+    return { revokeFailed, deviceId };
+  }
+
+  /**
+   * Retry ONLY the server-side revoke from a failed [disable] (rev-2
+   * MAJOR-2): re-issues the DELETE with a fresh MFA ticket — never the
+   * wipe. NotFound means the original DELETE actually landed and the
+   * response was lost: SUCCESS, not an error.
+   */
+  async retryDeviceRevoke(
+    deviceId: string,
+    mfaTicketToken: string,
+  ): Promise<void> {
+    try {
+      await this.#api("DELETE", `/e2ee/keys/${deviceId}`, undefined, {
+        "X-MFA-Ticket": mfaTicketToken,
+      });
+    } catch (error) {
+      if (/failed: 404$/.test((error as Error)?.message ?? "")) return;
+      throw error;
+    }
   }
 
   // ================================================================

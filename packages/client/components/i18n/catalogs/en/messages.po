@@ -42,6 +42,11 @@ msgstr "dddd [at] LT"
 msgid "(changes are being saved…)"
 msgstr "(changes are being saved…)"
 
+#. placeholder {0}: attachmentCount()
+#: src/interface/ServerEvents.tsx
+msgid "{0, plural, one {# / 10 file attached} other {# / 10 files attached}}"
+msgstr "{0, plural, one {# / 10 file attached} other {# / 10 files attached}}"
+
 #. placeholder {0}: props.count
 #: components/ui/components/features/messaging/elements/BlockedMessage.tsx
 msgid "{0, plural, one {# blocked message} other {# blocked messages}}"
@@ -396,8 +401,12 @@ msgid "4 hours"
 msgstr "4 hours"
 
 #: components/auth/src/flows/FlowHome.tsx
-msgid "4k streaming"
-msgstr "4k streaming"
+msgid "4k screen share"
+msgstr "4k screen share"
+
+#: components/auth/src/flows/FlowHome.tsx
+#~ msgid "4k streaming"
+#~ msgstr "4k streaming"
 
 #: components/app/interface/settings/channel/Overview.tsx
 msgid "5 minutes"
@@ -486,6 +495,10 @@ msgstr "Add a new friend"
 msgid "Add answer"
 msgstr "Add answer"
 
+#: src/interface/ServerEvents.tsx
+msgid "Add files"
+msgstr "Add files"
+
 #: components/app/menus/UserContextMenu.tsx
 msgid "Add friend"
 msgstr "Add friend"
@@ -568,6 +581,10 @@ msgstr "Already friends with this user."
 msgid "Already have a recovery code from another device? Choose \"Restore from a recovery code\" to bring back your history. Otherwise, encrypted history lives on THIS device only and cannot be recovered if the device is lost. You will confirm your identity to continue."
 msgstr "Already have a recovery code from another device? Choose \"Restore from a recovery code\" to bring back your history. Otherwise, encrypted history lives on THIS device only and cannot be recovered if the device is lost. You will confirm your identity to continue."
 
+#: components/app/interface/settings/user/Language.tsx
+msgid "Also read translated captions aloud using your device's voice. Runs on the receiving side and never reads your own captions back to you."
+msgstr "Also read translated captions aloud using your device's voice. Runs on the receiving side and never reads your own captions back to you."
+
 #: components/app/interface/settings/user/voice/CameraOptions.tsx
 msgid "Always Ask for Screen Share Quality"
 msgstr "Always Ask for Screen Share Quality"
@@ -585,7 +602,23 @@ msgstr "An error occurred."
 msgid "An internal error occurred. ({0})"
 msgstr "An internal error occurred. ({0})"
 
-#. placeholder {0}: index() + 1
+#: components/modal/modals/CreateChannel.tsx
+msgid "Announcement channel"
+msgstr "Announcement channel"
+
+#: components/app/interface/settings/channel/Overview.tsx
+msgid "Announcement Channel"
+msgstr "Announcement Channel"
+
+#: components/app/interface/settings/channel/Overview.tsx
+msgid "Announcement channels can be followed by other servers, and their messages published into those servers' channels."
+msgstr "Announcement channels can be followed by other servers, and their messages published into those servers' channels."
+
+#: components/app/interface/settings/channel/Overview.tsx
+msgid "Another server"
+msgstr "Another server"
+
+#. placeholder {0}: index + 1
 #: components/modal/modals/CreatePoll.tsx
 msgid "Answer {0}"
 msgstr "Answer {0}"
@@ -638,6 +671,8 @@ msgstr "Attach video message"
 msgid "Attach voice message"
 msgstr "Attach voice message"
 
+#: src/interface/ServerEvents.tsx
+#: src/interface/ServerEvents.tsx
 #: components/modal/modals/ForwardMessage.tsx
 msgid "Attachments"
 msgstr "Attachments"
@@ -664,6 +699,11 @@ msgstr "Auto"
 #: components/modal/modals/CreateThread.tsx
 msgid "Auto-archive after inactivity"
 msgstr "Auto-archive after inactivity"
+
+#: components/app/interface/settings/user/Language.tsx
+#: components/app/interface/settings/user/Language.tsx
+msgid "Automatic"
+msgstr "Automatic"
 
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
 msgid "Automatic Gain Control"
@@ -801,17 +841,21 @@ msgstr "Brightness is unavailable on this camera while a background effect is ac
 msgid "Brightness: {0}%"
 msgstr "Brightness: {0}%"
 
+#: components/app/interface/settings/user/Language.tsx
+msgid "Broadcasting your own captions isn't supported in this app or browser — you'll still see other people's captions."
+msgstr "Broadcasting your own captions isn't supported in this app or browser — you'll still see other people's captions."
+
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
-#~ msgid "Browser"
-#~ msgstr "Browser"
+msgid "Browser"
+msgstr "Browser"
 
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
 msgid "Browser Echo Cancellation"
 msgstr "Browser Echo Cancellation"
 
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
-msgid "Browser Noise Suppression"
-msgstr "Browser Noise Suppression"
+#~ msgid "Browser Noise Suppression"
+#~ msgstr "Browser Noise Suppression"
 
 #: components/app/interface/settings/user/Feedback.tsx
 msgid "Bug Tracker"
@@ -910,6 +954,7 @@ msgstr "Camera unavailable — check permissions and that no other app is using 
 #: components/modal/modals/InviteToServer.tsx
 #: components/modal/modals/Invite.tsx
 #: components/modal/modals/ForwardMessage.tsx
+#: components/modal/modals/FollowChannel.tsx
 #: components/modal/modals/EditCategory.tsx
 #: components/modal/modals/E2EEEnableGroup.tsx
 #: components/modal/modals/E2EEEnable.tsx
@@ -1044,6 +1089,10 @@ msgstr "Channel Slowmode"
 msgid "Channels"
 msgstr "Channels"
 
+#: components/app/interface/settings/channel/Overview.tsx
+msgid "Channels in other servers that receive this channel's published messages."
+msgstr "Channels in other servers that receive this channel's published messages."
+
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Chat Input"
 msgstr "Chat Input"
@@ -1135,6 +1184,7 @@ msgstr "Client Settings"
 #: components/modal/modals/CreateCategory.tsx
 #: components/modal/modals/CreateBot.tsx
 #: components/modal/modals/ChannelInfo.tsx
+#: components/modal/modals/Changelog.tsx
 #: components/modal/modals/Changelog.tsx
 #: components/modal/modals/AddMembersToGroup.tsx
 #: components/modal/modals/AddFriend.tsx
@@ -1229,8 +1279,8 @@ msgid "Continue to app"
 msgstr "Continue to app"
 
 #: components/auth/src/flows/FlowLogin.tsx
-msgid "Continue with Apple"
-msgstr "Continue with Apple"
+#~ msgid "Continue with Apple"
+#~ msgstr "Continue with Apple"
 
 #: components/auth/src/flows/FlowLogin.tsx
 msgid "Continue with Google"
@@ -1658,6 +1708,7 @@ msgstr "Disable one-time password authenticator"
 msgid "Disable sounds"
 msgstr "Disable sounds"
 
+#: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
 #: components/app/interface/settings/server/Overview.tsx
 #: components/app/interface/settings/server/Overview.tsx
 #: components/app/interface/settings/server/Overview.tsx
@@ -1831,6 +1882,10 @@ msgstr "Effective <0/> (<1/>)"
 msgid "Email"
 msgstr "Email"
 
+#: components/app/interface/settings/server/soundboard/SoundboardList.tsx
+msgid "Emoji (optional)"
+msgstr "Emoji (optional)"
+
 #: components/app/interface/settings/server/emojis/EmojiList.tsx
 msgid "Emoji Name"
 msgstr "Emoji Name"
@@ -1946,12 +2001,12 @@ msgid "Ends on"
 msgstr "Ends on"
 
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
-#~ msgid "Enhanced"
-#~ msgstr "Enhanced"
+msgid "Enhanced"
+msgstr "Enhanced"
 
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
-#~ msgid "Enhanced (RNNoise)"
-#~ msgstr "Enhanced (RNNoise)"
+msgid "Enhanced (RNNoise)"
+msgstr "Enhanced (RNNoise)"
 
 #: components/modal/modals/RenameSession.tsx
 msgid "Enter a new name for this session"
@@ -2058,9 +2113,14 @@ msgstr "Feedback"
 msgid "Fetching encrypted attachment…"
 msgstr "Fetching encrypted attachment…"
 
+#: src/interface/ServerEvents.tsx
+#: src/interface/ServerEvents.tsx
+msgid "file"
+msgstr "file"
+
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
-msgid "Filter background noise from your microphone with RNNoise, an open source machine-learning noise filter that runs on your device. Applies immediately, even mid-call."
-msgstr "Filter background noise from your microphone with RNNoise, an open source machine-learning noise filter that runs on your device. Applies immediately, even mid-call."
+#~ msgid "Filter background noise from your microphone with RNNoise, an open source machine-learning noise filter that runs on your device. Applies immediately, even mid-call."
+#~ msgstr "Filter background noise from your microphone with RNNoise, an open source machine-learning noise filter that runs on your device. Applies immediately, even mid-call."
 
 #: components/app/interface/channels/text/PollMessage.tsx
 msgid "Final results"
@@ -2086,6 +2146,26 @@ msgstr "Finish restoring on this device"
 #: components/ui/components/features/profiles/ProfileStatus.tsx
 msgid "Focus"
 msgstr "Focus"
+
+#: components/modal/modals/FollowChannel.tsx
+msgid "Follow"
+msgstr "Follow"
+
+#: components/modal/modals/FollowChannel.tsx
+msgid "Follow announcement channel"
+msgstr "Follow announcement channel"
+
+#: src/interface/channels/ChannelHeader.tsx
+msgid "Follow this announcement channel"
+msgstr "Follow this announcement channel"
+
+#: components/app/interface/settings/channel/Overview.tsx
+msgid "Followers"
+msgstr "Followers"
+
+#: components/modal/modals/FollowChannel.tsx
+msgid "Following creates a webhook in the destination channel. The destination server can stop the follow at any time by deleting that webhook."
+msgstr "Following creates a webhook in the destination channel. The destination server can stop the follow at any time by deleting that webhook."
 
 #: components/app/menus/ServerContextMenu.tsx
 #: components/app/menus/shared/NotificationContextMenu.tsx
@@ -2150,6 +2230,15 @@ msgstr "Friend Request"
 #: src/interface/navigation/channels/HomeSidebar.tsx
 msgid "Friends"
 msgstr "Friends"
+
+#. placeholder {0}: server.name
+#: components/app/interface/channels/text/Message.tsx
+msgid "From {0} • #{name}"
+msgstr "From {0} • #{name}"
+
+#: components/app/interface/channels/text/Message.tsx
+msgid "From another server"
+msgstr "From another server"
 
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Fruit Salad"
@@ -2624,6 +2713,10 @@ msgstr "Listen"
 msgid "Live"
 msgstr "Live"
 
+#: components/app/interface/settings/user/Language.tsx
+msgid "Live call captions"
+msgstr "Live call captions"
+
 #. placeholder {0}: humanFileSize(props.file.size ?? 0)
 #: components/ui/components/features/messaging/elements/TextFile.tsx
 msgid "Load file ({0})"
@@ -2690,6 +2783,10 @@ msgstr "Low latency"
 #: components/app/interface/channels/text/MessageComponents.tsx
 msgid "Make a selection"
 msgstr "Make a selection"
+
+#: components/app/interface/settings/channel/Overview.tsx
+msgid "Make Announcement Channel"
+msgstr "Make Announcement Channel"
 
 #: components/modal/modals/ReportContent.tsx
 msgid "Malware or phishing"
@@ -3008,6 +3105,10 @@ msgstr "My Account"
 msgid "My Bots"
 msgstr "My Bots"
 
+#: components/app/interface/settings/user/Language.tsx
+msgid "My spoken language"
+msgstr "My spoken language"
+
 #: components/modal/modals/RenameSession.tsx
 #: components/modal/modals/CreateCategory.tsx
 msgid "Name"
@@ -3051,6 +3152,11 @@ msgstr "New post"
 msgid "New Post"
 msgstr "New Post"
 
+#. placeholder {0}: props.channel.name ?? props.channel.id
+#: components/modal/modals/FollowChannel.tsx
+msgid "New posts published in #{0} will appear in the channel you pick below."
+msgstr "New posts published in #{0} will appear in the channel you pick below."
+
 #: components/client/NotificationsWorker.tsx
 msgid "New report"
 msgstr "New report"
@@ -3079,6 +3185,10 @@ msgstr "No archived posts"
 msgid "No archived threads"
 msgstr "No archived threads"
 
+#: components/app/interface/settings/channel/Overview.tsx
+msgid "No channels are following yet."
+msgstr "No channels are following yet."
+
 #: components/modal/modals/InviteToServer.tsx
 msgid "No channels available to create an invite for."
 msgstr "No channels available to create an invite for."
@@ -3086,6 +3196,10 @@ msgstr "No channels available to create an invite for."
 #: components/modal/modals/ForwardMessage.tsx
 msgid "No channels found"
 msgstr "No channels found"
+
+#: components/modal/modals/FollowChannel.tsx
+msgid "No channels where you can manage webhooks. You need the Manage Webhooks permission on the destination channel."
+msgstr "No channels where you can manage webhooks. You need the Manage Webhooks permission on the destination channel."
 
 #: src/interface/ServerEvents.tsx
 #~ msgid "No Events Channel Found"
@@ -3119,6 +3233,14 @@ msgstr "No posts yet"
 msgid "No recovery backup was found for your account, or the recovery window was closed. You can start fresh instead."
 msgstr "No recovery backup was found for your account, or the recovery window was closed. You can start fresh instead."
 
+#: components/ui/components/features/voice/callCard/VoiceSoundboardButton.tsx
+msgid "No sounds in this server yet"
+msgstr "No sounds in this server yet"
+
+#: components/app/interface/settings/server/soundboard/SoundboardList.tsx
+msgid "No sounds yet. Upload one above!"
+msgstr "No sounds yet. Upload one above!"
+
 #: components/app/interface/settings/server/stickers/StickerList.tsx
 msgid "No stickers yet. Upload one above!"
 msgstr "No stickers yet. Upload one above!"
@@ -3136,12 +3258,12 @@ msgid "Nobody here right now!"
 msgstr "Nobody here right now!"
 
 #: components/ui/components/features/voice/callCard/VoiceDeviceSelector.tsx
-msgid "Noise suppression"
-msgstr "Noise suppression"
+#~ msgid "Noise suppression"
+#~ msgstr "Noise suppression"
 
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
-msgid "Noise Suppression"
-msgstr "Noise Suppression"
+#~ msgid "Noise Suppression"
+#~ msgstr "Noise Suppression"
 
 #: src/interface/ServerEvents.tsx
 #: components/modal/modals/CameraSettings.tsx
@@ -3335,6 +3457,7 @@ msgid "Password set!"
 msgstr "Password set!"
 
 #: components/modal/modals/Changelog.tsx
+#: components/modal/modals/Changelog.tsx
 #: components/app/interface/settings/UserSettings.tsx
 msgid "Patch Notes"
 msgstr "Patch Notes"
@@ -3367,6 +3490,11 @@ msgstr "Pin message"
 #: components/ui/components/features/profiles/ProfileBadges.tsx
 msgid "Platform Moderator"
 msgstr "Platform Moderator"
+
+#: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
+#: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
+msgid "Play server soundboard sounds in a voice call"
+msgstr "Play server soundboard sounds in a voice call"
 
 #: components/app/interface/settings/user/notifications/Sounds.tsx
 msgid "Play sound"
@@ -3440,8 +3568,8 @@ msgid "Pop out friends list"
 msgstr "Pop out friends list"
 
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
-#~ msgid "Powered by RNNoise"
-#~ msgstr "Powered by RNNoise"
+msgid "Powered by RNNoise"
+msgstr "Powered by RNNoise"
 
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
 msgid "Press any key..."
@@ -3473,6 +3601,14 @@ msgstr "Promotes harm"
 #: components/i18n/errors.ts
 msgid "Provided email or password is wrong."
 msgstr "Provided email or password is wrong."
+
+#: components/app/menus/MessageContextMenu.tsx
+msgid "Publish"
+msgstr "Publish"
+
+#: components/app/interface/channels/text/Message.tsx
+msgid "Published"
+msgstr "Published"
 
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
 msgid "Push to Talk"
@@ -3520,6 +3656,7 @@ msgid "Read past messages sent in channels"
 msgstr "Read past messages sent in channels"
 
 #: components/app/interface/settings/server/stickers/StickerList.tsx
+#: components/app/interface/settings/server/soundboard/SoundboardList.tsx
 msgid "Ready to upload"
 msgstr "Ready to upload"
 
@@ -3610,6 +3747,7 @@ msgstr "Relevance"
 
 #: components/modal/modals/RemoveMember.tsx
 #: components/app/interface/settings/user/voice/CameraOptions.tsx
+#: components/app/interface/settings/channel/Overview.tsx
 msgid "Remove"
 msgstr "Remove"
 
@@ -3917,6 +4055,10 @@ msgstr "Search"
 msgid "Search for a channel or conversation…"
 msgstr "Search for a channel or conversation…"
 
+#: components/modal/modals/FollowChannel.tsx
+msgid "Search for a channel to deliver into…"
+msgstr "Search for a channel to deliver into…"
+
 #: components/modal/modals/AddBot.tsx
 msgid "Search for groups..."
 msgstr "Search for groups..."
@@ -3960,8 +4102,8 @@ msgid "Select members to add"
 msgstr "Select members to add"
 
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
-#~ msgid "Select noise suppression"
-#~ msgstr "Select noise suppression"
+msgid "Select noise suppression"
+msgstr "Select noise suppression"
 
 #: components/app/interface/channels/text/PollMessage.tsx
 msgid "Select one or more answers"
@@ -4148,6 +4290,14 @@ msgstr "Show corrections and suggestions as you type."
 msgid "Show friends what game you are playing (desktop app only)."
 msgstr "Show friends what game you are playing (desktop app only)."
 
+#: components/app/interface/settings/user/Language.tsx
+msgid "Show live captions during voice and video calls, translated into your chosen language. Your microphone audio is sent to your browser's speech service (Google) to transcribe it, and the text is sent to Google Translate; captions are disabled on end-to-end encrypted calls."
+msgstr "Show live captions during voice and video calls, translated into your chosen language. Your microphone audio is sent to your browser's speech service (Google) to transcribe it, and the text is sent to Google Translate; captions are disabled on end-to-end encrypted calls."
+
+#: components/app/interface/settings/user/Language.tsx
+msgid "Show live captions during voice and video calls, translated into your chosen language. Your speech is transcribed on your device, and the text is sent to Google Translate; captions are disabled on end-to-end encrypted calls."
+msgstr "Show live captions during voice and video calls, translated into your chosen language. Your speech is transcribed on your device, and the text is sent to Google Translate; captions are disabled on end-to-end encrypted calls."
+
 #: components/ui/components/features/voice/callCard/VoiceCallCardActiveRoom.tsx
 msgid "Show Others"
 msgstr "Show Others"
@@ -4245,6 +4395,15 @@ msgstr "Something went wrong while signing you in with Google. Please try again.
 msgid "Something went wrong! {error}"
 msgstr "Something went wrong! {error}"
 
+#: components/app/interface/settings/server/soundboard/SoundboardList.tsx
+msgid "Sound Name"
+msgstr "Sound Name"
+
+#: components/ui/components/features/voice/callCard/VoiceSoundboardButton.tsx
+#: components/app/interface/settings/ServerSettings.tsx
+msgid "Soundboard"
+msgstr "Soundboard"
+
 #: components/app/interface/settings/user/notifications/Sounds.tsx
 msgid "Sounds"
 msgstr "Sounds"
@@ -4256,6 +4415,10 @@ msgstr "Spam or similar platform abuse"
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "Speak"
 msgstr "Speak"
+
+#: components/app/interface/settings/user/Language.tsx
+msgid "Speak captions aloud"
+msgstr "Speak captions aloud"
 
 #: components/app/interface/settings/user/Native.tsx
 msgid "Spellchecker"
@@ -4309,6 +4472,10 @@ msgstr "Stickers"
 #: components/app/interface/settings/user/voice/CameraPreview.tsx
 msgid "Stop"
 msgstr "Stop"
+
+#: components/app/interface/settings/channel/Overview.tsx
+msgid "Stop being an Announcement Channel"
+msgstr "Stop being an Announcement Channel"
 
 #: components/ui/components/features/voice/callCard/VoiceCallCardActions.tsx
 msgid "Stop camera"
@@ -4372,8 +4539,8 @@ msgid "Support the project by donating - thank you!"
 msgstr "Support the project by donating - thank you!"
 
 #: components/ui/components/features/voice/callCard/VoiceDeviceSelector.tsx
-msgid "Suppress background noise (RNNoise)"
-msgstr "Suppress background noise (RNNoise)"
+#~ msgid "Suppress background noise (RNNoise)"
+#~ msgstr "Suppress background noise (RNNoise)"
 
 #: components/app/interface/settings/user/StreamerMode.tsx
 msgid "Suppress desktop notification popups so messages don't appear on stream."
@@ -4546,6 +4713,10 @@ msgstr "This account is not activated! Please check your account's inbox and try
 msgid "This account is suspended. Time remaining: {0}"
 msgstr "This account is suspended. Time remaining: {0}"
 
+#: components/i18n/errors.ts
+msgid "This announcement channel has reached its follower limit ({errMax})."
+msgstr "This announcement channel has reached its follower limit ({errMax})."
+
 #: components/app/interface/channels/text/EncryptedAttachment.tsx
 msgid "This attachment expired before it reached this device. Ask the sender to send it again."
 msgstr "This attachment expired before it reached this device. Ask the sender to send it again."
@@ -4626,6 +4797,14 @@ msgstr "This is the start of your conversation."
 #: components/ui/components/features/messaging/elements/ConversationStart.tsx
 msgid "This is the start of your notes."
 msgstr "This is the start of your notes."
+
+#: components/i18n/errors.ts
+msgid "This isn't an announcement channel."
+msgstr "This isn't an announcement channel."
+
+#: components/i18n/errors.ts
+msgid "This message has already been published."
+msgstr "This message has already been published."
 
 #: components/i18n/errors.ts
 msgid "This message is already pinned."
@@ -4710,6 +4889,10 @@ msgstr "Tonal Spot"
 #: components/app/interface/settings/user/Language.tsx
 msgid "Traditional (DD/MM/YYYY)"
 msgstr "Traditional (DD/MM/YYYY)"
+
+#: components/app/interface/settings/user/Language.tsx
+msgid "Translate captions to"
+msgstr "Translate captions to"
 
 #: components/app/interface/settings/user/Language.tsx
 msgid "Translate messages"
@@ -4844,21 +5027,33 @@ msgstr "Upcoming"
 msgid "Upload Files"
 msgstr "Upload Files"
 
+#: components/app/interface/settings/server/soundboard/SoundboardList.tsx
+msgid "Upload Sound"
+msgstr "Upload Sound"
+
 #: components/app/interface/settings/server/stickers/StickerList.tsx
 msgid "Upload Sticker"
 msgstr "Upload Sticker"
 
+#: src/interface/ServerEvents.tsx
+msgid "Uploading…"
+msgstr "Uploading…"
+
 #: components/modal/modals/JoinServer.tsx
 msgid "Use a code or invite link"
 msgstr "Use a code or invite link"
+
+#: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
+msgid "Use Soundboard"
+msgstr "Use Soundboard"
 
 #: components/app/interface/settings/user/Native.tsx
 msgid "Use the graphics card to improve performance."
 msgstr "Use the graphics card to improve performance."
 
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
-msgid "Use your browser's built-in noise suppression instead. Turn both off to send unprocessed audio (music, instruments)."
-msgstr "Use your browser's built-in noise suppression instead. Turn both off to send unprocessed audio (music, instruments)."
+#~ msgid "Use your browser's built-in noise suppression instead. Turn both off to send unprocessed audio (music, instruments)."
+#~ msgstr "Use your browser's built-in noise suppression instead. Turn both off to send unprocessed audio (music, instruments)."
 
 #: components/app/interface/settings/server/bans/ListBans.tsx
 msgid "User"
@@ -5277,6 +5472,10 @@ msgid "You're going"
 msgstr "You're going"
 
 #: components/i18n/errors.ts
+msgid "You're publishing too fast — up to {errMax} announcements can be published per hour."
+msgstr "You're publishing too fast — up to {errMax} announcements can be published per hour."
+
+#: components/i18n/errors.ts
 msgid "You've already sent a request to this user."
 msgstr "You've already sent a request to this user."
 
@@ -5356,3 +5555,8 @@ msgstr "Your user has already been created? Try logging in again or refreshing t
 #: components/app/menus/UserContextMenu.tsx
 msgid "Send Message"
 msgstr "Send Message"
+
+#. E2EEDisable modal: server-side revoke failed after a successful local wipe
+#: components/modal/modals/E2EEDisable.tsx
+msgid "Your encrypted data on this device was destroyed, but the old device entry could not be removed from the server. Other devices may keep sending messages to it until it is removed. You can retry now, and this entry can also be removed later."
+msgstr "Your encrypted data on this device was destroyed, but the old device entry could not be removed from the server. Other devices may keep sending messages to it until it is removed. You can retry now, and this entry can also be removed later."

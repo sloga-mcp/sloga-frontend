@@ -686,6 +686,9 @@ export function Messages(props: Props) {
       // server injected — or a plaintext send from a web/old client — is not
       // in that set and must not appear under the lock as if authenticated.
       if (encryptedConversation() && !e2ee?.isEncryptedMessage(message.id)) {
+        // Design §4: never a SILENT drop — leave a visible (non-
+        // persisted) marker in place of the suppressed plaintext.
+        e2ee?.noteDroppedPlaintext(props.channel.id);
         return;
       }
       if (collectedMessages) {

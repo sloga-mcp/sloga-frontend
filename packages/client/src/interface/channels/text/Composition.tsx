@@ -214,7 +214,12 @@ export function MessageComposition(props: Props) {
   // is correct before the first send
   createEffect(
     on(peerUserId, (peer) => {
-      if (peer && e2ee) void e2ee.primeSendMode(peer);
+      if (peer && e2ee) {
+        void e2ee.primeSendMode(peer);
+        // Device-lifecycle fixes §1: DM-open device reconcile (TTL-
+        // guarded) — events alone strand a peer's new device when missed.
+        e2ee.reconcilePeerOnOpen(peer);
+      }
     }),
   );
 
