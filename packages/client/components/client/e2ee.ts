@@ -1212,6 +1212,22 @@ export class E2EEBridge implements E2EEAdapter {
     return status;
   }
 
+  /**
+   * Overwrite the status snapshot with the proven-disabled truth (post-wipe
+   * design §2 / HIGH-1): the single source for the synthesized value — it
+   * must mirror what native `e2ee_status` fast-paths for an unprovisioned
+   * store, or a stale `enabled: true` snapshot defeats every enabled-gate.
+   */
+  #setDisabledStatus(): void {
+    this.status.set("state", {
+      enabled: false,
+      published: false,
+      device_id: null,
+      protocol_version: 1,
+      claimed: false,
+    });
+  }
+
   // ================================================================
   // Lifecycle: connect → claim device → drain → replenish
   // ================================================================
@@ -1594,8 +1610,20 @@ export class E2EEBridge implements E2EEAdapter {
     }
   }
 
-  /** Fetch a signed device listing and reconcile pins natively */
-  async #reconcileDevices(userId: string): Promise<void> {
+  /**
+   * Fetch a signed device listing and reconcile pins natively. Returns
+   * whether the reconcile actually RAN — post-wipe design §2 choke point:
+   * every caller (device events, DM-open, call roster, consume-check
+   * reconciles) fires without direct user intent, and while
+   * unprovisioned/disabled there are no pins to reconcile; a fast-pathed
+   * empty report must never touch flag state (rev-2 MAJOR-4 disarm) or
+   * burn the open-TTL. `#ensureBootStatus` is side-effect-free for
+   * unprovisioned devices (native §1 fast path).
+   */
+  async #reconcileDevices(userId: string): Promise<boolean> {
+    await this.#ensureBootStatus();
+    if (!this.status.get("state")?.enabled) return false;
+
     const devices = await this.#api<unknown[]>("GET", `/e2ee/devices/${userId}`);
     const report = await this.#invoke<{
       revoked: string[];
@@ -1622,6 +1650,7 @@ export class E2EEBridge implements E2EEAdapter {
       await this.#refreshMode(userId);
       await this.#syncRecent(userId);
     }
+    return true;
   }
 
   /**
@@ -1656,11 +1685,18 @@ export class E2EEBridge implements E2EEAdapter {
     const last = this.#reconciledAt.get(userId) ?? 0;
     if (Date.now() - last < 60_000) return;
     this.#reconciledAt.set(userId, Date.now());
-    void this.#reconcileDevices(userId).catch(() => {
-      // Unfetchable listing keeps current pins (fail closed); allow the
-      // next open to retry immediately.
-      this.#reconciledAt.delete(userId);
-    });
+    void this.#reconcileDevices(userId)
+      .then((ran) => {
+        // A skipped (disabled/unprovisioned) reconcile must not burn the
+        // TTL — after a same-session restore the FIRST real open has to
+        // reconcile immediately (post-wipe design §2).
+        if (!ran) this.#reconciledAt.delete(userId);
+      })
+      .catch(() => {
+        // Unfetchable listing keeps current pins (fail closed); allow the
+        // next open to retry immediately.
+        this.#reconciledAt.delete(userId);
+      });
   }
 
   async #onDeviceCreate(userId: string): Promise<void> {
@@ -1675,6 +1711,13 @@ export class E2EEBridge implements E2EEAdapter {
 
   async #onDeviceDelete(userId: string, deviceId: string): Promise<void> {
     try {
+      // Post-wipe design §2: our OWN wipe's server-side revoke fans this
+      // event straight back at us — handling it while unprovisioned or
+      // disabled must be a no-op (the native layer fast-paths too; this
+      // also skips the pointless mode/sync work while disabled).
+      await this.#ensureBootStatus();
+      if (!this.status.get("state")?.enabled) return;
+
       await this.#invoke("e2ee_device_removed", { userId, deviceId });
       await this.#refreshMode(userId);
       await this.#syncRecent(userId);
@@ -2150,6 +2193,13 @@ export class E2EEBridge implements E2EEAdapter {
    */
   async groupReconcile(channel: Channel): Promise<void> {
     if (channel.type !== "Group") return;
+    // Post-wipe design §2 (verify-pass HIGH): this fires on every group
+    // OPEN with no other gate, and the group_not_established catch below
+    // silently swallows the evidence — on an unprovisioned device the
+    // invoke was a silent store-creating open (native now fast-paths it
+    // too; belt and braces).
+    await this.#ensureBootStatus();
+    if (!this.status.get("state")?.enabled) return;
     try {
       const displayed = [...channel.recipientIds.values()];
       await this.#invoke("e2ee_group_reconcile", {
@@ -2500,7 +2550,13 @@ export class E2EEBridge implements E2EEAdapter {
     this.#bootStatusResolution ??= (async () => {
       for (let attempt = 0; ; attempt++) {
         try {
-          if (!(await this.#isProvisioned())) return;
+          if (!(await this.#isProvisioned())) {
+            // Proven unprovisioned. A SURVIVING status snapshot is a lie
+            // (pre-wipe `enabled: true` would pass every enabled-gate —
+            // diff-review HIGH-1); overwrite it with the truth.
+            if (this.status.get("state")?.enabled) this.#setDisabledStatus();
+            return;
+          }
           await this.refreshStatus();
           return;
         } catch (error) {
@@ -3219,6 +3275,23 @@ export class E2EEBridge implements E2EEAdapter {
 
     // (1) Local wipe with the native OS confirmation — throws on decline
     await this.#invoke("e2ee_wipe");
+
+    // Bridge session state must not survive the wipe (post-wipe design
+    // §2): a stale #bundleNeeded entry could be wrongly MAJOR-4-disarmed
+    // by a post-restore reconcile, a stale open-TTL would suppress the
+    // first real reconcile for 60s, and stale composer verdicts lie.
+    this.#bundleNeeded.clear();
+    this.#reconciledAt.clear();
+    this.#selfDevicesUnpinned = false;
+    this.sendModes.clear();
+
+    // Zero the status snapshot SYNCHRONOUSLY (diff-review HIGH-1): the
+    // steps below are network round-trips, and the DELETE's own-device
+    // E2EEDeviceDelete fans back INSIDE that window — every enabled-gate
+    // reading the stale pre-wipe snapshot would pass and re-open the
+    // engine. The trailing refreshStatus() below re-reads native truth,
+    // but the gates must never see `enabled: true` after this line.
+    this.#setDisabledStatus();
 
     // (2) Post-wipe cleanup. Failures here never resurrect local state.
     try {
