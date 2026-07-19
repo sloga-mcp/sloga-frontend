@@ -5653,3 +5653,28 @@ msgstr "Your suspension has expired — try logging in again."
 #: components/i18n/errors.ts
 msgid "Your user has already been created? Try logging in again or refreshing the app."
 msgstr "Your user has already been created? Try logging in again or refreshing the app."
+
+#: components/app/interface/settings/user/voice/CameraOptions.tsx
+#: components/modal/modals/CameraSettings.tsx
+msgid "Filters"
+msgstr "Filters"
+
+#: components/app/interface/settings/user/voice/CameraOptions.tsx
+#: components/modal/modals/CameraSettings.tsx
+msgid "Color filter"
+msgstr "Color filter"
+
+#: components/app/interface/settings/user/voice/CameraOptions.tsx
+#: components/modal/modals/CameraSettings.tsx
+msgid "Beautify: {0}%"
+msgstr "Beautify: {0}%"
+
+#: components/app/interface/settings/user/voice/CameraOptions.tsx
+#: components/modal/modals/CameraSettings.tsx
+msgid "Filters are paused while background effects are on."
+msgstr "Filters are paused while background effects are on."
+
+#: components/app/interface/settings/user/voice/CameraOptions.tsx
+#: components/modal/modals/CameraSettings.tsx
+msgid "Face tracking failed — stickers and beautify are unavailable."
+msgstr "Face tracking failed — stickers and beautify are unavailable."

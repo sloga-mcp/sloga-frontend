@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="260" height="320" viewBox="0 0 260 320">
+  <!-- Sloga original artwork (face-filter asset) -->
+  <defs>
+    <clipPath id="cone">
+      <path d="M130 30 L235 295 L25 295 Z"/>
+    </clipPath>
+  </defs>
+  <g clip-path="url(#cone)">
+    <path d="M130 30 L235 295 L25 295 Z" fill="#5865f2"/>
+    <path d="M0 240 L260 190 L260 235 L0 285 Z" fill="#ffd166"/>
+    <path d="M0 155 L260 105 L260 150 L0 200 Z" fill="#f26d7d"/>
+    <path d="M40 90 L220 55 L230 95 L50 130 Z" fill="#4dd4ac"/>
+  </g>
+  <path d="M130 30 L235 295 L25 295 Z" fill="none" stroke="#3b45c4" stroke-width="8"/>
+  <circle cx="130" cy="30" r="26" fill="#ffd166" stroke="#e0b04f" stroke-width="6"/>
+</svg>

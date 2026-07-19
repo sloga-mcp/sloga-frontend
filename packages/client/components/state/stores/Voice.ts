@@ -68,6 +68,49 @@ export const CameraBackgroundModes: CameraBackgroundMode[] = [
   "image",
 ];
 
+/**
+ * Face-filter (AR sticker) ids. The store owns the VALID id list so `clean()`
+ * can validate persisted data without importing from `@revolt/rtc` (which
+ * imports this store — a runtime cycle). The rtc catalog maps each id to its
+ * art/anchors and a test pins the 1:1 correspondence.
+ */
+export type CameraFaceFilterId =
+  | "dog"
+  | "cat"
+  | "sunglasses"
+  | "mustache"
+  | "party-hat"
+  | "heart-eyes";
+
+/**
+ * Array of available face-filter ids.
+ */
+export const CameraFaceFilterIds: CameraFaceFilterId[] = [
+  "dog",
+  "cat",
+  "sunglasses",
+  "mustache",
+  "party-hat",
+  "heart-eyes",
+];
+
+/**
+ * Color-look (one-tap grade) ids. Same ownership rationale as
+ * {@link CameraFaceFilterIds}.
+ */
+export type CameraColorLookId = "warm" | "cool" | "vintage" | "mono" | "vivid";
+
+/**
+ * Array of available color-look ids.
+ */
+export const CameraColorLookIds: CameraColorLookId[] = [
+  "warm",
+  "cool",
+  "vintage",
+  "mono",
+  "vivid",
+];
+
 export interface TypeVoice {
   preferredAudioInputDevice?: string;
   preferredAudioOutputDevice?: string;
@@ -94,6 +137,12 @@ export interface TypeVoice {
   cameraBackgroundMode: CameraBackgroundMode;
   cameraBlurRadius: number;
   cameraBackgroundImageId?: string;
+  /** AR sticker filter; undefined = none. Inert while a background is active. */
+  cameraFaceFilterId?: CameraFaceFilterId;
+  /** Skin-smoothing strength 0–100; 0 (default) = off. */
+  cameraBeautify: number;
+  /** One-tap color grade; undefined = none. */
+  cameraColorLookId?: CameraColorLookId;
   inputVolume: number;
   outputVolume: number;
   deafen: boolean;
@@ -154,6 +203,7 @@ export class Voice extends AbstractStore<"voice", TypeVoice> {
       cameraMaxBitrateKbps: 0,
       cameraBackgroundMode: "none",
       cameraBlurRadius: 10,
+      cameraBeautify: 0,
       inputVolume: 1.0,
       outputVolume: 1.0,
       deafen: false,
@@ -281,6 +331,27 @@ export class Voice extends AbstractStore<"voice", TypeVoice> {
 
     if (typeof input.cameraBackgroundImageId === "string") {
       data.cameraBackgroundImageId = input.cameraBackgroundImageId;
+    }
+
+    // Unknown/corrupt persisted filter ids clean to undefined (render as None).
+    if (
+      input.cameraFaceFilterId &&
+      CameraFaceFilterIds.includes(input.cameraFaceFilterId)
+    ) {
+      data.cameraFaceFilterId = input.cameraFaceFilterId;
+    }
+
+    if (typeof input.cameraBeautify === "number") {
+      data.cameraBeautify = Number.isFinite(input.cameraBeautify)
+        ? Math.max(0, Math.min(100, input.cameraBeautify))
+        : 0;
+    }
+
+    if (
+      input.cameraColorLookId &&
+      CameraColorLookIds.includes(input.cameraColorLookId)
+    ) {
+      data.cameraColorLookId = input.cameraColorLookId;
     }
 
     if (typeof input.inputVolume === "number") {
@@ -541,6 +612,30 @@ export class Voice extends AbstractStore<"voice", TypeVoice> {
 
   set cameraBackgroundImageId(value: string | undefined) {
     this.set("cameraBackgroundImageId", value);
+  }
+
+  get cameraFaceFilterId(): CameraFaceFilterId | undefined {
+    return this.get().cameraFaceFilterId;
+  }
+
+  set cameraFaceFilterId(value: CameraFaceFilterId | undefined) {
+    this.set("cameraFaceFilterId", value);
+  }
+
+  get cameraBeautify(): number {
+    return this.get().cameraBeautify ?? 0;
+  }
+
+  set cameraBeautify(value: number) {
+    this.set("cameraBeautify", value);
+  }
+
+  get cameraColorLookId(): CameraColorLookId | undefined {
+    return this.get().cameraColorLookId;
+  }
+
+  set cameraColorLookId(value: CameraColorLookId | undefined) {
+    this.set("cameraColorLookId", value);
   }
 
   /**

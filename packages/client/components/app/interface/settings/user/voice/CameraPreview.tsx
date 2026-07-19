@@ -65,6 +65,9 @@ export function CameraPreview() {
         blurRadius: settings.cameraBlurRadius,
         backgroundImageId: settings.cameraBackgroundImageId,
         brightness: settings.cameraBrightness,
+        faceFilterId: settings.cameraFaceFilterId,
+        beautify: settings.cameraBeautify,
+        colorLookId: settings.cameraColorLookId,
       });
     } catch (e) {
       // Fail-safe: raw preview — but surface WHY (segmenter/asset init, CSP…).
@@ -117,6 +120,9 @@ export function CameraPreview() {
         () => settings.cameraBackgroundMode,
         () => settings.cameraBlurRadius,
         () => settings.cameraBackgroundImageId,
+        () => settings.cameraFaceFilterId,
+        () => settings.cameraBeautify,
+        () => settings.cameraColorLookId,
       ],
       () => {
         if (track && testing() && !liveTrack()) void applyEffects();

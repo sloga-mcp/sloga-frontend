@@ -22,6 +22,7 @@ export { RoomAudioManager } from "./components/RoomAudioManager";
 export {
   CameraEffectsController,
   cameraBackgroundSupported,
+  faceFiltersSupported,
   SEGMENTATION_ASSET_PATHS,
   BrightnessVideoProcessor,
 } from "./cameraEffects";
@@ -30,6 +31,9 @@ export type {
   CameraBackgroundMode,
   CameraEffectSettings,
 } from "./cameraEffects";
+
+export { FACE_FILTERS, COLOR_LOOKS } from "./faceFilterCatalog";
+export type { FaceFilterDef, ColorLookDef } from "./faceFilterCatalog";
 
 export {
   listBackgrounds,

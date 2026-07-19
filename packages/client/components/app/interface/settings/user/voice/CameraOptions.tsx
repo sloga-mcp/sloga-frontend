@@ -3,8 +3,11 @@ import { For, Show, createResource, createSignal, onCleanup } from "solid-js";
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
 
 import {
+  COLOR_LOOKS,
+  FACE_FILTERS,
   addUpload,
   cameraBackgroundSupported,
+  faceFiltersSupported,
   listBackgrounds,
   removeUpload,
   resolveBackgroundUrl,
@@ -13,11 +16,14 @@ import {
 import { useState } from "@revolt/state";
 import {
   CameraBackgroundMode,
+  CameraColorLookIds,
+  CameraFaceFilterIds,
   CameraQualityName,
   CameraQualityNames,
   ScreenShareQualityName,
 } from "@revolt/state/stores/Voice";
 import {
+  Button,
   CategoryButton,
   CategorySelectOption,
   Checkbox,
@@ -99,6 +105,10 @@ export function CameraOptions() {
         }
       >
         <CameraBackgroundOptions />
+      </Show>
+
+      <Show when={faceFiltersSupported()}>
+        <CameraFilterOptions />
       </Show>
 
       <CategoryButton.Group>
@@ -190,6 +200,148 @@ export function CameraOptions() {
         </CategoryButton>
       </CategoryButton.Group>
     </Column>
+  );
+}
+
+/**
+ * Face filters: AR sticker gallery + beautify slider + color looks. Settings
+ * write through even while a background effect holds the processor slot —
+ * they sit INERT with the "paused" badge until the background is turned off
+ * (camera-face-filters plan §5).
+ */
+function CameraFilterOptions() {
+  const { voice } = useState();
+  const voiceContext = useVoice();
+  const { t } = useLingui();
+
+  const filterAssetBase = `${import.meta.env.BASE_URL}filters`.replace(
+    /\/$/,
+    "",
+  );
+  const pausedByBackground = () => voice.cameraBackgroundMode !== "none";
+
+  const thumbStyle = (selected: boolean) => ({
+    width: "72px",
+    height: "72px",
+    display: "flex",
+    "flex-direction": "column" as const,
+    "align-items": "center",
+    "justify-content": "center",
+    gap: "4px",
+    "border-radius": "8px",
+    cursor: "pointer",
+    border: "none",
+    padding: "4px",
+    background: "var(--md-sys-color-surface-container-high)",
+    outline: selected ? "2px solid var(--md-sys-color-primary)" : "none",
+    "font-size": "0.7em",
+    color: "var(--md-sys-color-on-surface)",
+  });
+
+  return (
+    <CategoryButton.Group>
+      <CategoryButton
+        icon={<Symbol>face_retouching_natural</Symbol>}
+        description={
+          <Column gap="sm">
+            <Show when={pausedByBackground()}>
+              <Text class="label">
+                <Trans>
+                  Filters are paused while background effects are on.
+                </Trans>
+              </Text>
+            </Show>
+
+            <div style={{ display: "flex", "flex-wrap": "wrap", gap: "8px" }}>
+              <button
+                style={thumbStyle(!voice.cameraFaceFilterId)}
+                onClick={() =>
+                  voiceContext.setCameraFaceFilter({ filterId: null })
+                }
+              >
+                <Symbol>block</Symbol>
+                {t`None`}
+              </button>
+              <For each={CameraFaceFilterIds}>
+                {(id) => (
+                  <button
+                    style={thumbStyle(voice.cameraFaceFilterId === id)}
+                    onClick={() =>
+                      voiceContext.setCameraFaceFilter({ filterId: id })
+                    }
+                  >
+                    <img
+                      src={`${filterAssetBase}/${FACE_FILTERS[id].thumb}`}
+                      alt={FACE_FILTERS[id].name}
+                      style={{
+                        width: "40px",
+                        height: "40px",
+                        "object-fit": "contain",
+                      }}
+                    />
+                    {FACE_FILTERS[id].name}
+                  </button>
+                )}
+              </For>
+            </div>
+
+            <Text class="label">
+              <Trans>Beautify: {voice.cameraBeautify}%</Trans>
+            </Text>
+            <Slider
+              min={0}
+              max={100}
+              step={1}
+              value={voice.cameraBeautify}
+              onInput={(e) =>
+                voiceContext.setCameraFaceFilter({
+                  beautify: Number(e.currentTarget.value),
+                })
+              }
+              labelFormatter={(v) => `${v}%`}
+            />
+
+            <Text class="label">
+              <Trans>Color filter</Trans>
+            </Text>
+            <div style={{ display: "flex", "flex-wrap": "wrap", gap: "8px" }}>
+              <Button
+                variant={!voice.cameraColorLookId ? "filled" : "secondary"}
+                onPress={() =>
+                  voiceContext.setCameraFaceFilter({ colorLookId: null })
+                }
+              >
+                {t`None`}
+              </Button>
+              <For each={CameraColorLookIds}>
+                {(id) => (
+                  <Button
+                    variant={
+                      voice.cameraColorLookId === id ? "filled" : "secondary"
+                    }
+                    onPress={() =>
+                      voiceContext.setCameraFaceFilter({ colorLookId: id })
+                    }
+                  >
+                    {COLOR_LOOKS[id].name}
+                  </Button>
+                )}
+              </For>
+            </div>
+
+            <Show when={voiceContext.cameraFaceFilterStatus() === "failed"}>
+              <Text class="label">
+                <Trans>
+                  Face tracking failed — stickers and beautify are unavailable.
+                </Trans>
+              </Text>
+            </Show>
+          </Column>
+        }
+      >
+        <Trans>Filters</Trans>
+      </CategoryButton>
+    </CategoryButton.Group>
   );
 }
 

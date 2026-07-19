@@ -17,6 +17,14 @@
  *    with a background.
  *  - Documented gap: on a camera lacking hardware brightness, brightness is
  *    unavailable WHILE a background effect is active (both want the one slot).
+ *
+ * Face filters (camera-face-filters plan §5): the slot has THREE candidates —
+ * background wins over face filters (v1 mutual exclusion, filters sit inert
+ * with a "paused" badge), and the canvas brightness fallback only runs when
+ * neither holds the slot. `pickSlotOccupant` (faceFilterCatalog.ts) is the
+ * pure, unit-tested decision. Under a FaceFilterProcessor, brightness for
+ * non-HW cameras rides IN the filter's ctx.filter chain (an improvement over
+ * the background gap); HW brightness always targets the RAW source.
  */
 import {
   BackgroundProcessor,
@@ -27,9 +35,18 @@ import { Capacitor } from "@capacitor/core";
 import { LocalVideoTrack } from "livekit-client";
 
 import { CONFIGURATION } from "@revolt/common";
-import type { CameraBackgroundMode } from "@revolt/state/stores/Voice";
+import type {
+  CameraBackgroundMode,
+  CameraColorLookId,
+  CameraFaceFilterId,
+} from "@revolt/state/stores/Voice";
 
 import { resolveBackgroundUrl } from "./cameraBackgrounds";
+import { pickSlotOccupant, type SlotOccupant } from "./faceFilterCatalog";
+import {
+  FaceFilterProcessor,
+  type FaceFilterStatusReport,
+} from "./faceFilterProcessor";
 
 /**
  * Canvas brightness fallback for cameras without a hardware brightness control
@@ -83,6 +100,21 @@ export class BrightnessVideoProcessor {
     this.processedTrack = stream.getVideoTracks()[0];
   }
 
+  /**
+   * Live rebind after a device switch. REQUIRED by LiveKit's TrackProcessor
+   * interface — LocalTrack.restart() calls it unconditionally BEFORE any
+   * `activeDeviceChanged` handler runs, so its absence was a latent
+   * device-switch crash (camera-face-filters plan §2).
+   */
+  async restart(opts: { track: MediaStreamTrack }) {
+    if (!this.#video) {
+      await this.init(opts);
+      return;
+    }
+    this.#video.srcObject = new MediaStream([opts.track]);
+    await this.#video.play();
+  }
+
   async destroy() {
     this.#stopped = true;
     if (this.#rafId !== undefined) cancelAnimationFrame(this.#rafId);
@@ -128,6 +160,14 @@ export function cameraBackgroundSupported(): boolean {
   return _cameraBgSupported;
 }
 
+/**
+ * Whether face filters (stickers/beautify/looks) can run here. Same gate as
+ * backgrounds — desktop-first, non-Capacitor (plan §6).
+ */
+export function faceFiltersSupported(): boolean {
+  return cameraBackgroundSupported();
+}
+
 export type { CameraBackgroundMode };
 
 export type CameraBackgroundStatus =
@@ -142,6 +182,12 @@ export interface CameraEffectSettings {
   backgroundImageId?: string;
   /** 0-200, 100 = neutral. */
   brightness: number;
+  /** AR sticker filter (undefined = none). Inert while a background is active. */
+  faceFilterId?: CameraFaceFilterId;
+  /** Skin smoothing 0–100 (0 = off). */
+  beautify: number;
+  /** Color look (undefined = none). */
+  colorLookId?: CameraColorLookId;
 }
 
 /**
@@ -151,6 +197,7 @@ export interface CameraEffectSettings {
  */
 export class CameraEffectsController {
   #bg: BackgroundProcessorWrapper | undefined;
+  #face: FaceFilterProcessor | undefined;
   #brightness: BrightnessVideoProcessor | undefined;
   #revokeImg: (() => void) | undefined;
   #hwSupported = false;
@@ -167,6 +214,8 @@ export class CameraEffectsController {
   onHwSupportChange?: (hw: boolean) => void;
   /** Notified when the configured background image id no longer resolves. */
   onImageMissing?: () => void;
+  /** Forwarded from the live FaceFilterProcessor (landmark failure + degrade). */
+  onFaceFilterStatus?: (s: FaceFilterStatusReport) => void;
 
   get hwBrightnessSupported(): boolean {
     return this.#hwSupported;
@@ -174,6 +223,10 @@ export class CameraEffectsController {
 
   get backgroundActive(): boolean {
     return !!this.#bg;
+  }
+
+  get faceFilterActive(): boolean {
+    return !!this.#face;
   }
 
   #chain: Promise<unknown> = Promise.resolve();
@@ -196,31 +249,121 @@ export class CameraEffectsController {
 
   async #applyInner(track: LocalVideoTrack, settings: CameraEffectSettings) {
     const myGen = this.#gen;
-    const wantBg =
-      settings.backgroundMode !== "none" && cameraBackgroundSupported();
 
-    let bgError: unknown;
-    if (wantBg) {
+    // Probe HW brightness on the RAW source BEFORE building any occupant
+    // (plan §5, re-verify NEW-2): the verdict decides the brightness value
+    // baked into a face-filter config, and stays single-sourced for the
+    // whole apply pass.
+    const hw = this.#hasHwBrightness(this.#rawSource(track));
+
+    const occupant: SlotOccupant = pickSlotOccupant(
+      {
+        backgroundMode: settings.backgroundMode,
+        faceFilterId: settings.faceFilterId,
+        beautify: settings.beautify,
+        colorLookId: settings.colorLookId,
+        brightness: settings.brightness,
+      },
+      {
+        backgroundSupported: cameraBackgroundSupported(),
+        faceFiltersSupported: faceFiltersSupported(),
+        hwBrightness: hw,
+      },
+    );
+
+    let effectError: unknown;
+    if (occupant === "background") {
       this.#brightness = undefined; // slot goes to the background
       try {
+        await this.#teardownFace(track);
         await this.#ensureBackground(track, myGen, settings);
       } catch (e) {
         // Fail-safe: never leave a poisoned wrapper, never skip brightness.
-        bgError = e;
+        effectError = e;
         await this.#teardownBackground(track).catch(() => {});
+      }
+    } else if (occupant === "face") {
+      this.#brightness = undefined; // slot goes to the filter processor
+      try {
+        await this.#teardownBackground(track);
+        await this.#ensureFace(track, myGen, settings, hw);
+      } catch (e) {
+        effectError = e;
+        await this.#teardownFace(track).catch(() => {});
       }
     } else {
       await this.#teardownBackground(track);
+      await this.#teardownFace(track);
     }
 
     // Superseded by a reset()/detach() mid-apply → don't touch the (torn-down)
     // track's brightness.
     if (myGen !== this.#gen) return;
 
-    await this.#applyBrightness(track, settings.brightness);
+    await this.#applyBrightness(track, settings.brightness, hw);
 
-    // Surface the background failure only AFTER brightness has landed.
-    if (bgError) throw bgError;
+    // Surface the effect failure only AFTER brightness has landed.
+    if (effectError) throw effectError;
+  }
+
+  /** The raw camera track, whichever occupant (if any) holds the slot. */
+  #rawSource(track: LocalVideoTrack): MediaStreamTrack | undefined {
+    return this.#bg?.source ?? this.#face?.source ?? track.mediaStreamTrack;
+  }
+
+  /**
+   * Create or live-update the face-filter processor. `hw` decides whether the
+   * config carries the user brightness (non-HW source: applied in the filter's
+   * ctx.filter chain) or neutral 100 (HW: exactly one mechanism, plan §5).
+   */
+  async #ensureFace(
+    track: LocalVideoTrack,
+    myGen: number,
+    settings: CameraEffectSettings,
+    hw: boolean,
+  ) {
+    const cfg = {
+      filterId: settings.faceFilterId,
+      beautify: settings.beautify,
+      lookId: settings.colorLookId,
+      brightness: hw ? 100 : settings.brightness,
+    };
+
+    if (this.#face) {
+      this.#face.setConfig(cfg);
+      return;
+    }
+
+    const proc = new FaceFilterProcessor(cfg);
+    proc.onStatus = (s) => {
+      // Only the CURRENT occupant reports (a superseded/destroyed processor
+      // stops firing after destroy(), but guard anyway).
+      if (this.#face === proc || !this.#face) this.onFaceFilterStatus?.(s);
+    };
+    try {
+      await track.setProcessor(proc);
+    } catch (e) {
+      await proc.destroy().catch(() => {});
+      throw e;
+    }
+    if (myGen !== this.#gen) {
+      // Superseded during init (reset/detach ran) — destroy, don't resurrect.
+      await proc.destroy().catch(() => {});
+      return;
+    }
+    this.#face = proc;
+  }
+
+  /** Remove the face-filter processor (if any). */
+  async #teardownFace(track: LocalVideoTrack) {
+    if (this.#face) {
+      try {
+        await track.stopProcessor();
+      } catch {
+        /* ignore */
+      }
+      this.#face = undefined;
+    }
   }
 
   /** Create or (within a live session) switch the single background processor. */
@@ -336,17 +479,21 @@ export class CameraEffectsController {
     } as unknown as MediaTrackConstraints);
   }
 
-  async #applyBrightness(track: LocalVideoTrack, brightness: number) {
-    const bgActive = !!this.#bg;
-    const source = bgActive ? this.#bg?.source : track.mediaStreamTrack;
-    const hw = this.#hasHwBrightness(source);
+  async #applyBrightness(track: LocalVideoTrack, brightness: number, hw: boolean) {
+    // HW detection/constraints ALWAYS target the raw camera track — with ANY
+    // processor attached, `track.mediaStreamTrack` returns the PROCESSED track
+    // (plan §5): probing it would mis-report hw support and constraining it
+    // would be a no-op.
+    const source = this.#rawSource(track);
     if (hw !== this.#hwSupported) {
       this.#hwSupported = hw;
       this.onHwSupportChange?.(hw);
     }
 
     if (hw) {
-      if (this.#brightness && !bgActive) {
+      if (this.#brightness) {
+        // The canvas fallback never coexists with #bg/#face, so if it exists
+        // it holds the slot — safe to stop.
         try {
           await track.stopProcessor();
         } catch {
@@ -354,13 +501,18 @@ export class CameraEffectsController {
         }
         this.#brightness = undefined;
       }
-      // stopProcessor / background teardown resets the track's original
+      // stopProcessor / occupant teardown resets the track's original
       // constraints (dropping prior brightness), so always re-apply here.
       await this.#applyHardwareBrightness(source, brightness);
       return;
     }
 
-    if (bgActive) return; // documented gap: no canvas brightness + background
+    if (this.#bg) return; // documented gap: no canvas brightness + background
+
+    // Non-HW brightness under a face filter rides in ITS ctx.filter chain
+    // (set at #ensureFace config time) — never attach the fallback processor
+    // while the filter holds the slot (it would evict it).
+    if (this.#face) return;
 
     if (brightness === 100) {
       // Zero overhead at default: fully tear the canvas processor down.
@@ -391,6 +543,7 @@ export class CameraEffectsController {
   async detach(track: LocalVideoTrack) {
     this.#gen++; // supersede any apply still initializing
     await this.#teardownBackground(track);
+    await this.#teardownFace(track);
     if (this.#brightness) {
       try {
         await track.stopProcessor();
@@ -409,6 +562,7 @@ export class CameraEffectsController {
   reset() {
     this.#gen++; // supersede any apply still initializing (destroy-on-resolve)
     this.#bg = undefined;
+    this.#face = undefined;
     this.#brightness = undefined;
     this.#revokeImg?.();
     this.#revokeImg = undefined;

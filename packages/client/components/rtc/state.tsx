@@ -92,6 +92,8 @@ import { ModalControllerExtended, useModals } from "@revolt/modal";
 import { useState } from "@revolt/state";
 import {
   CameraBackgroundMode,
+  type CameraColorLookId,
+  type CameraFaceFilterId,
   CameraQualityName,
   ScreenShareQualityName,
   Voice as VoiceSettings,
@@ -102,6 +104,7 @@ import {
   CameraEffectsController,
   type CameraBackgroundStatus,
 } from "./cameraEffects";
+import { faceSettingsActive } from "./faceFilterCatalog";
 import { LiveCaptions } from "./captions/liveCaptions";
 import { CaptionPublisher } from "./components/CaptionPublisher";
 import { CaptionSpeaker } from "./components/CaptionSpeaker";
@@ -205,6 +208,19 @@ class Voice {
   /** Runtime-only: background processor status (intent lives in the store). */
   cameraBackgroundStatus: Accessor<CameraBackgroundStatus>;
   #setCameraBackgroundStatus: Setter<CameraBackgroundStatus>;
+
+  /**
+   * Runtime-only: face-filter processor status, parallel to
+   * {@link cameraBackgroundStatus} (plan §5). "Inert" (filters configured but
+   * a background holds the slot) reads as "idle" here — the UI derives the
+   * paused badge from the STORE state, not this signal.
+   */
+  cameraFaceFilterStatus: Accessor<CameraBackgroundStatus>;
+  #setCameraFaceFilterStatus: Setter<CameraBackgroundStatus>;
+
+  /** Runtime-only: face-filter degrade-ladder step (0 = full quality). */
+  cameraFaceFilterDegraded: Accessor<number>;
+  #setCameraFaceFilterDegraded: Setter<number>;
 
   /**
    * Runtime-only: increments AFTER each live camera-effects apply settles (the
@@ -463,6 +479,14 @@ class Voice {
     this.cameraBackgroundStatus = bgStatus;
     this.#setCameraBackgroundStatus = setBgStatus;
 
+    const [ffStatus, setFfStatus] = createSignal<CameraBackgroundStatus>("idle");
+    this.cameraFaceFilterStatus = ffStatus;
+    this.#setCameraFaceFilterStatus = setFfStatus;
+
+    const [ffDegraded, setFfDegraded] = createSignal(0);
+    this.cameraFaceFilterDegraded = ffDegraded;
+    this.#setCameraFaceFilterDegraded = setFfDegraded;
+
     const [effectsApplied, setEffectsApplied] = createSignal(0);
     this.cameraEffectsApplied = effectsApplied;
     this.#setCameraEffectsApplied = setEffectsApplied;
@@ -517,6 +541,12 @@ class Voice {
       this.#setCameraHwBrightness(hw);
     this.#cameraEffects.onImageMissing = () => {
       this.#settings.cameraBackgroundMode = "none";
+    };
+    this.#cameraEffects.onFaceFilterStatus = (s) => {
+      // Live processor reports: landmark tracking died (→ failed, look-only
+      // keeps drawing) or the degrade ladder moved.
+      this.#setCameraFaceFilterStatus(s.landmarksFailed ? "failed" : "active");
+      this.#setCameraFaceFilterDegraded(s.degraded);
     };
 
     this.openModal = modals.openModal;
@@ -1159,6 +1189,8 @@ class Voice {
       // controller's references and release any virtual-background image URL.
       this.#cameraEffects.reset();
       this.#setCameraBackgroundStatus("idle");
+      this.#setCameraFaceFilterStatus("idle");
+      this.#setCameraFaceFilterDegraded(0);
 
       this.sound.playSound("userLeaveVoice");
     } catch (e) {
@@ -1334,6 +1366,9 @@ class Voice {
           this.#setCameraBackgroundStatus(
             mode === "none" ? "idle" : "initializing",
           );
+          this.#setCameraFaceFilterStatus(
+            mode === "none" && this.#faceSettings() ? "initializing" : "idle",
+          );
           await this.#applyCameraEffects(pub.videoTrack as LocalVideoTrack);
         }
       } else {
@@ -1344,6 +1379,8 @@ class Voice {
         // dead wrapper.
         this.#cameraEffects.reset();
         this.#setCameraBackgroundStatus("idle");
+        this.#setCameraFaceFilterStatus("idle");
+        this.#setCameraFaceFilterDegraded(0);
       }
 
       this.#setVideo(room.localParticipant.isCameraEnabled);
@@ -1432,19 +1469,31 @@ class Voice {
    */
   async #applyCameraEffects(videoTrack: LocalVideoTrack) {
     const mode = this.#settings.cameraBackgroundMode ?? "none";
+    const wantFace = this.#faceSettings();
     try {
       await this.#cameraEffects.apply(videoTrack, {
         backgroundMode: mode,
         blurRadius: this.#settings.cameraBlurRadius ?? 10,
         backgroundImageId: this.#settings.cameraBackgroundImageId,
         brightness: this.#settings.cameraBrightness ?? 100,
+        faceFilterId: this.#settings.cameraFaceFilterId,
+        beautify: this.#settings.cameraBeautify ?? 0,
+        colorLookId: this.#settings.cameraColorLookId,
       });
       this.#setCameraBackgroundStatus(
         this.#cameraEffects.backgroundActive ? "active" : "idle",
       );
+      // Inert (background holds the slot) and off both read as idle; the
+      // paused badge is derived from the store, not this signal.
+      this.#setCameraFaceFilterStatus(
+        this.#cameraEffects.faceFilterActive ? "active" : "idle",
+      );
     } catch (e) {
       console.error("camera effects failed", e);
       this.#setCameraBackgroundStatus(mode === "none" ? "idle" : "failed");
+      this.#setCameraFaceFilterStatus(
+        wantFace && !this.#cameraEffects.backgroundActive ? "failed" : "idle",
+      );
     } finally {
       // Signal that the (possibly track-swapping) apply has settled so the
       // preview re-reads mediaStreamTrack — covers brightness-only changes too.
@@ -1475,6 +1524,55 @@ class Voice {
     if (!room?.localParticipant.isCameraEnabled) return;
     const pub = room.localParticipant.getTrackPublication(Track.Source.Camera);
     if (pub?.videoTrack) {
+      await this.#applyCameraEffects(pub.videoTrack as LocalVideoTrack).catch(
+        (e) => this.onErr(e),
+      );
+    }
+  }
+
+  /** Whether any face-filter setting is active in the store. */
+  #faceSettings(): boolean {
+    return faceSettingsActive({
+      backgroundMode: this.#settings.cameraBackgroundMode ?? "none",
+      faceFilterId: this.#settings.cameraFaceFilterId,
+      beautify: this.#settings.cameraBeautify ?? 0,
+      colorLookId: this.#settings.cameraColorLookId,
+      brightness: this.#settings.cameraBrightness ?? 100,
+    });
+  }
+
+  /**
+   * Live-update face-filter settings (sticker / beautify / color look).
+   * Persists to the store and reapplies. While a background effect is active
+   * the settings write through but stay INERT (plan §5 — the UI shows a
+   * paused badge and they take effect when the background is turned off).
+   */
+  async setCameraFaceFilter(opts: {
+    filterId?: CameraFaceFilterId | null;
+    beautify?: number;
+    colorLookId?: CameraColorLookId | null;
+  }) {
+    if (opts.filterId !== undefined) {
+      this.#settings.cameraFaceFilterId = opts.filterId ?? undefined;
+    }
+    if (opts.beautify !== undefined) {
+      this.#settings.cameraBeautify = opts.beautify;
+    }
+    if (opts.colorLookId !== undefined) {
+      this.#settings.cameraColorLookId = opts.colorLookId ?? undefined;
+    }
+
+    const room = this.room();
+    if (!room?.localParticipant.isCameraEnabled) return;
+    const pub = room.localParticipant.getTrackPublication(Track.Source.Camera);
+    if (pub?.videoTrack) {
+      if (
+        this.#faceSettings() &&
+        !this.#cameraEffects.faceFilterActive &&
+        (this.#settings.cameraBackgroundMode ?? "none") === "none"
+      ) {
+        this.#setCameraFaceFilterStatus("initializing");
+      }
       await this.#applyCameraEffects(pub.videoTrack as LocalVideoTrack).catch(
         (e) => this.onErr(e),
       );

@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="200" height="190" viewBox="0 0 200 190">
+  <!-- Sloga original artwork (face-filter asset) -->
+  <path d="M100 178 C 45 135, 8 100, 8 60 C 8 30, 32 10, 58 10 C 78 10, 93 22, 100 38 C 107 22, 122 10, 142 10 C 168 10, 192 30, 192 60 C 192 100, 155 135, 100 178 Z" fill="#e63956"/>
+  <ellipse cx="58" cy="48" rx="20" ry="13" fill="#ff7d93" transform="rotate(-25 58 48)"/>
+</svg>

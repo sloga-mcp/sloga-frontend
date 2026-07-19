@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="560" height="190" viewBox="0 0 560 190">
+  <!-- Sloga original artwork (face-filter asset) -->
+  <path d="M10 30 L550 30" stroke="#1c1c22" stroke-width="16" stroke-linecap="round"/>
+  <g>
+    <rect x="35" y="28" width="215" height="140" rx="46" fill="#1c1c22"/>
+    <rect x="49" y="42" width="187" height="112" rx="36" fill="#2e2e3a"/>
+    <path d="M75 60 C 100 46, 140 44, 165 52 C 140 66, 100 70, 75 60 Z" fill="#55556a" opacity="0.8"/>
+  </g>
+  <g transform="translate(560,0) scale(-1,1)">
+    <rect x="35" y="28" width="215" height="140" rx="46" fill="#1c1c22"/>
+    <rect x="49" y="42" width="187" height="112" rx="36" fill="#2e2e3a"/>
+    <path d="M75 60 C 100 46, 140 44, 165 52 C 140 66, 100 70, 75 60 Z" fill="#55556a" opacity="0.8"/>
+  </g>
+  <rect x="250" y="52" width="60" height="22" rx="11" fill="#1c1c22"/>
+</svg>
