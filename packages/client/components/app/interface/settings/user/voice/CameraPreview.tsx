@@ -5,9 +5,21 @@ import { Trans } from "@lingui-solid/solid/macro";
 import { LocalVideoTrack } from "livekit-client";
 
 import { CameraEffectsController, useVoice } from "@revolt/rtc";
+import type { CameraBackgroundStatus } from "@revolt/rtc";
 import { useState } from "@revolt/state";
 import { Button, CategoryButton, Column, Text } from "@revolt/ui";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
+
+/**
+ * Face-filter status of the IDLE settings preview's own effects controller
+ * (the in-call controller reports through voice.cameraFaceFilterStatus — this
+ * covers the not-in-a-call "Test camera" path so a landmarker failure is
+ * visible in settings too; diff-review finding 3). Module-scope signal so the
+ * sibling CameraOptions section can render the shared failure badge.
+ */
+const [previewFaceFilterStatusSignal, setPreviewFaceFilterStatus] =
+  createSignal<CameraBackgroundStatus>("idle");
+export const previewFaceFilterStatus = previewFaceFilterStatusSignal;
 
 /**
  * Opt-in webcam self-view for the Voice settings page.
@@ -38,12 +50,16 @@ export function CameraPreview() {
   effects.onImageMissing = () => {
     settings.cameraBackgroundMode = "none";
   };
+  effects.onFaceFilterStatus = (s) => {
+    setPreviewFaceFilterStatus(s.landmarksFailed ? "failed" : "active");
+  };
 
   /** The live in-call camera track, if any (reactive via voice.video()). */
   const liveTrack = () => (voice.video() ? voice.localCameraTrack() : undefined);
 
   function stopIdlePreview() {
     gen++; // invalidate any pending acquire
+    setPreviewFaceFilterStatus("idle");
     const t = track;
     track = undefined;
     if (t) {

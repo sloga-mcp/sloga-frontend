@@ -5,6 +5,7 @@ import { Trans, useLingui } from "@lingui-solid/solid/macro";
 import {
   COLOR_LOOKS,
   FACE_FILTERS,
+  FILTER_ASSETS_BASE,
   addUpload,
   cameraBackgroundSupported,
   faceFiltersSupported,
@@ -33,7 +34,7 @@ import {
 } from "@revolt/ui";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
 
-import { CameraPreview } from "./CameraPreview";
+import { CameraPreview, previewFaceFilterStatus } from "./CameraPreview";
 
 /**
  * Camera + screen-share settings. Camera section adds a live preview, brightness,
@@ -214,11 +215,11 @@ function CameraFilterOptions() {
   const voiceContext = useVoice();
   const { t } = useLingui();
 
-  const filterAssetBase = `${import.meta.env.BASE_URL}filters`.replace(
-    /\/$/,
-    "",
-  );
   const pausedByBackground = () => voice.cameraBackgroundMode !== "none";
+  // Failure can come from the in-call controller OR the idle settings preview.
+  const trackingFailed = () =>
+    voiceContext.cameraFaceFilterStatus() === "failed" ||
+    previewFaceFilterStatus() === "failed";
 
   const thumbStyle = (selected: boolean) => ({
     width: "72px",
@@ -271,7 +272,7 @@ function CameraFilterOptions() {
                     }
                   >
                     <img
-                      src={`${filterAssetBase}/${FACE_FILTERS[id].thumb}`}
+                      src={`${FILTER_ASSETS_BASE}/${FACE_FILTERS[id].thumb}`}
                       alt={FACE_FILTERS[id].name}
                       style={{
                         width: "40px",
@@ -329,7 +330,7 @@ function CameraFilterOptions() {
               </For>
             </div>
 
-            <Show when={voiceContext.cameraFaceFilterStatus() === "failed"}>
+            <Show when={trackingFailed()}>
               <Text class="label">
                 <Trans>
                   Face tracking failed — stickers and beautify are unavailable.

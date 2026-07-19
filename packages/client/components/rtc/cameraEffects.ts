@@ -56,6 +56,12 @@ import {
 export class BrightnessVideoProcessor {
   name = "brightness-processor";
   processedTrack: MediaStreamTrack | undefined;
+  /**
+   * The RAW camera track this processor consumes — the controller's HW probe
+   * must target this, never `track.mediaStreamTrack` (which returns the
+   * processed canvas track while this processor is attached).
+   */
+  source: MediaStreamTrack | undefined;
   #brightness: number;
   #canvas: HTMLCanvasElement | undefined;
   #ctx2d: CanvasRenderingContext2D | undefined;
@@ -72,6 +78,7 @@ export class BrightnessVideoProcessor {
   }
 
   async init(opts: { track: MediaStreamTrack }) {
+    this.source = opts.track;
     this.#canvas = document.createElement("canvas");
     this.#video = document.createElement("video");
     this.#video.srcObject = new MediaStream([opts.track]);
@@ -111,6 +118,7 @@ export class BrightnessVideoProcessor {
       await this.init(opts);
       return;
     }
+    this.source = opts.track;
     this.#video.srcObject = new MediaStream([opts.track]);
     await this.#video.play();
   }
@@ -123,6 +131,7 @@ export class BrightnessVideoProcessor {
     this.#canvas = undefined;
     this.#ctx2d = undefined;
     this.processedTrack = undefined;
+    this.source = undefined;
   }
 }
 
@@ -198,6 +207,8 @@ export interface CameraEffectSettings {
 export class CameraEffectsController {
   #bg: BackgroundProcessorWrapper | undefined;
   #face: FaceFilterProcessor | undefined;
+  /** The face processor whose setProcessor is in flight (status-forward window). */
+  #facePending: FaceFilterProcessor | undefined;
   #brightness: BrightnessVideoProcessor | undefined;
   #revokeImg: (() => void) | undefined;
   #hwSupported = false;
@@ -276,6 +287,9 @@ export class CameraEffectsController {
       this.#brightness = undefined; // slot goes to the background
       try {
         await this.#teardownFace(track);
+        // A reset()/detach() during the teardown await must not build onto a
+        // torn-down track (diff-review finding 5).
+        if (myGen !== this.#gen) return;
         await this.#ensureBackground(track, myGen, settings);
       } catch (e) {
         // Fail-safe: never leave a poisoned wrapper, never skip brightness.
@@ -286,6 +300,7 @@ export class CameraEffectsController {
       this.#brightness = undefined; // slot goes to the filter processor
       try {
         await this.#teardownBackground(track);
+        if (myGen !== this.#gen) return;
         await this.#ensureFace(track, myGen, settings, hw);
       } catch (e) {
         effectError = e;
@@ -300,15 +315,23 @@ export class CameraEffectsController {
     // track's brightness.
     if (myGen !== this.#gen) return;
 
-    await this.#applyBrightness(track, settings.brightness, hw);
+    await this.#applyBrightness(track, settings.brightness, hw, myGen);
 
     // Surface the effect failure only AFTER brightness has landed.
     if (effectError) throw effectError;
   }
 
-  /** The raw camera track, whichever occupant (if any) holds the slot. */
+  /** The raw camera track, whichever occupant (if any) holds the slot —
+   *  including the brightness fallback (diff-review finding 2: probing
+   *  `track.mediaStreamTrack` with the fallback attached reads its processed
+   *  canvas track and locks in a wrong hw verdict across device switches). */
   #rawSource(track: LocalVideoTrack): MediaStreamTrack | undefined {
-    return this.#bg?.source ?? this.#face?.source ?? track.mediaStreamTrack;
+    return (
+      this.#bg?.source ??
+      this.#face?.source ??
+      this.#brightness?.source ??
+      track.mediaStreamTrack
+    );
   }
 
   /**
@@ -335,19 +358,29 @@ export class CameraEffectsController {
     }
 
     const proc = new FaceFilterProcessor(cfg);
+    this.#facePending = proc;
     proc.onStatus = (s) => {
-      // Only the CURRENT occupant reports (a superseded/destroyed processor
-      // stops firing after destroy(), but guard anyway).
-      if (this.#face === proc || !this.#face) this.onFaceFilterStatus?.(s);
+      // Forward only from the CURRENT occupant, or from this proc while its
+      // setProcessor is still in flight. A destroyed processor additionally
+      // self-mutes (its #reportStatus no-ops on #disposed) — the pair closes
+      // diff-review finding 1 (late init failure flipping the UI to "failed"
+      // after teardown).
+      if (this.#face === proc || this.#facePending === proc) {
+        this.onFaceFilterStatus?.(s);
+      }
     };
     try {
       await track.setProcessor(proc);
     } catch (e) {
+      this.#facePending = undefined;
+      proc.onStatus = undefined;
       await proc.destroy().catch(() => {});
       throw e;
     }
+    this.#facePending = undefined;
     if (myGen !== this.#gen) {
       // Superseded during init (reset/detach ran) — destroy, don't resurrect.
+      proc.onStatus = undefined;
       await proc.destroy().catch(() => {});
       return;
     }
@@ -357,6 +390,7 @@ export class CameraEffectsController {
   /** Remove the face-filter processor (if any). */
   async #teardownFace(track: LocalVideoTrack) {
     if (this.#face) {
+      this.#face.onStatus = undefined; // belt-and-braces: no reports past here
       try {
         await track.stopProcessor();
       } catch {
@@ -479,7 +513,12 @@ export class CameraEffectsController {
     } as unknown as MediaTrackConstraints);
   }
 
-  async #applyBrightness(track: LocalVideoTrack, brightness: number, hw: boolean) {
+  async #applyBrightness(
+    track: LocalVideoTrack,
+    brightness: number,
+    hw: boolean,
+    myGen: number,
+  ) {
     // HW detection/constraints ALWAYS target the raw camera track — with ANY
     // processor attached, `track.mediaStreamTrack` returns the PROCESSED track
     // (plan §5): probing it would mis-report hw support and constraining it
@@ -530,8 +569,21 @@ export class CameraEffectsController {
     if (this.#brightness) {
       this.#brightness.setBrightness(brightness);
     } else {
-      this.#brightness = new BrightnessVideoProcessor(brightness);
-      await track.setProcessor(this.#brightness);
+      // Assign ONLY after setProcessor resolves (carried-over invariant,
+      // diff-review finding 6) — a failed init must not leave a dead reference
+      // that later applies silently setBrightness() into.
+      const proc = new BrightnessVideoProcessor(brightness);
+      try {
+        await track.setProcessor(proc);
+      } catch (e) {
+        await proc.destroy().catch(() => {});
+        throw e;
+      }
+      if (myGen !== this.#gen) {
+        await proc.destroy().catch(() => {});
+        return;
+      }
+      this.#brightness = proc;
     }
   }
 
@@ -563,6 +615,7 @@ export class CameraEffectsController {
     this.#gen++; // supersede any apply still initializing (destroy-on-resolve)
     this.#bg = undefined;
     this.#face = undefined;
+    this.#facePending = undefined; // close the status-forward window too
     this.#brightness = undefined;
     this.#revokeImg?.();
     this.#revokeImg = undefined;

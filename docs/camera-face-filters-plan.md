@@ -223,3 +223,17 @@ Gated by `faceFiltersSupported()` = same gate as `cameraBackgroundSupported()` (
 2. **Canonical id arrays live in the Voice store, not the catalogue (§6 refinement).** `clean()` needs the valid id lists but `@revolt/state` cannot import `@revolt/rtc` (cycle). `CameraFaceFilterIds`/`CameraColorLookIds` live in Voice.ts (mirroring `CameraBackgroundModes`); the rtc catalogue is typed `Record<CameraFaceFilterId, …>`, so tsc statically enforces the 1:1 correspondence, plus a runtime pin in faceFilterPolicy.test.ts (hardcoded copies — the store module graph pulls browser deps node's test runner can't load).
 3. **i18n:** 5 new strings appended to en `messages.po` + precompiled `messages.ts` per the established recipe (lingui extract still broken); non-en locales get the strings at the next catalog resync, same as every recent feature.
 4. **`pickSlotOccupant` takes an explicit caps struct** (`backgroundSupported`/`faceFiltersSupported`/`hwBrightness`) rather than probing inside — keeps it pure/testable and makes the §5 probe-before-build ordering explicit at the call site.
+5. **§8 degrade observability is devtools/signal-only in v1** (diff-review finding 10, accepted): the ladder step is exposed via `cameraFaceFilterDegraded` + the processor's `degradeStep` getter for the runtime gate; no end-user "reduced quality" chrome yet.
+
+## 15. Diff-review record (commit `4b5c7e89`)
+
+frontend-code-reviewer verdict: **SHIP WITH FIXES** — 1 HIGH, 3 MEDIUM, 7 LOW; all §5/§2 seams, leak/race audit, per-frame path, store contract, reactivity, assets/CSP, i18n verified conformant. Fixes folded in the follow-up commit:
+- **F1 HIGH** late post-destroy landmarker failure flipped UI to "failed" after teardown → `#reportStatus` no-ops on `#disposed`; controller forwards only from current/`#facePending` proc; `onStatus` nulled on every teardown path.
+- **F2 MED** `#rawSource` missed the brightness-fallback occupant (probe read its canvas track after a device switch) → `BrightnessVideoProcessor.source` added, included in `#rawSource`.
+- **F3 MED** settings-preview controller never wired `onFaceFilterStatus` → module-scope `previewFaceFilterStatus` signal; badge = in-call OR preview failed.
+- **F4 MED** background failure with inert filters mis-set filter status "failed" → catch attributes by built occupant (`mode === "none"`).
+- **F5/F6 LOW** `#gen` re-check between teardown-await and build; brightness-fallback assign-after-resolve + gen check.
+- **F7/F8 LOW** landmarker init no longer discarded on config-only `#cfgGen` bumps (config-independent); landmarker closed when config drops to look-only.
+- **F9 LOW** `destroy()` stops `processedTrack`. **F10 LOW** accepted as §14.5. **F11 LOW** `FILTER_ASSETS_BASE` exported, UI reuses it.
+
+Remaining before release: **real-webcam runtime gate (§10)** — two-tab transmitted-track, mid-call device switch with sticker, background↔filter handoff, brightness HW/non-HW legs, LED-off, failed-init look-only degrade.

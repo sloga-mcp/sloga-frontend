@@ -57,8 +57,9 @@ const MEDIAPIPE_BASE = (
   `${import.meta.env.BASE_URL}mediapipe`
 ).replace(/\/$/, "");
 
-/** Sticker art base — BASE_URL-aware so non-root deployments resolve (plan §3). */
-const FILTER_ASSETS_BASE = `${import.meta.env.BASE_URL}filters`.replace(
+/** Sticker art base — BASE_URL-aware so non-root deployments resolve (plan §3).
+ *  Exported so the UI (gallery thumbnails) resolves from the SAME base. */
+export const FILTER_ASSETS_BASE = `${import.meta.env.BASE_URL}filters`.replace(
   /\/$/,
   "",
 );
@@ -148,14 +149,22 @@ export class FaceFilterProcessor {
 
   /**
    * Live config update (slider drags, sticker swaps) — no processor rebuild.
-   * May lazily start landmarker init when landmarks become needed.
+   * May lazily start landmarker init when landmarks become needed, and frees
+   * the landmarker (WASM + delegate memory) when they stop being needed.
    */
   setConfig(config: FaceFilterConfig) {
     this.#cfgGen++;
     this.#cfg = { ...config };
     if (this.#disposed) return;
     void this.#syncBitmaps();
-    this.#ensureLandmarker();
+    if (needsLandmarks(this.#cfg)) {
+      this.#ensureLandmarker();
+    } else if (this.#landmarker) {
+      // Look-only config: release detection resources (lazily re-inits later).
+      this.#landmarker.close();
+      this.#landmarker = undefined;
+      this.#lastLandmarks = undefined;
+    }
     this.#reportStatus();
   }
 
@@ -219,6 +228,10 @@ export class FaceFilterProcessor {
     this.#stopped = true;
     this.#cfgGen++;
     this.#cancelFrame();
+    // LiveKit's stopProcessor stops processedTrack on the normal path; stop it
+    // here too so the controller's direct destroy() paths (superseded init,
+    // failed setProcessor) don't leave a live canvas-capture track dangling.
+    this.processedTrack?.stop();
     this.#video?.pause();
     this.#video = undefined;
     this.#canvas = undefined;
@@ -461,7 +474,6 @@ export class FaceFilterProcessor {
       return;
     }
     this.#landmarkerInitInFlight = true;
-    const myGen = this.#cfgGen;
     void (async () => {
       let lm: FaceLandmarker | undefined;
       try {
@@ -475,12 +487,18 @@ export class FaceFilterProcessor {
         this.#failLandmarker();
         return;
       }
-      // Stale resolve (config moved on / destroyed): free immediately —
-      // this is the leak class the controller's #gen can't see (plan §2).
-      if (this.#disposed || myGen !== this.#cfgGen) {
+      // Post-destroy resolve: free immediately — this is the leak class the
+      // controller's #gen can't see (plan §2). The landmarker itself is
+      // config-INDEPENDENT (fixed model, numFaces:1), so a mere setConfig
+      // during the ~1s init is NOT staleness — discarding on #cfgGen would
+      // chain throwaway 3.7MB model re-inits on every slider tick.
+      if (this.#disposed) {
         lm.close();
-        // Not a failure — a later config may re-init.
-        if (!this.#disposed) this.#ensureLandmarker();
+        return;
+      }
+      if (!needsLandmarks(this.#cfg)) {
+        // Config dropped to look-only while we were initializing.
+        lm.close();
         return;
       }
       this.#landmarker = lm;
@@ -567,6 +585,10 @@ export class FaceFilterProcessor {
   }
 
   #reportStatus() {
+    // A destroyed processor must never report — a late landmarker-init
+    // rejection after teardown would otherwise flip the UI to "failed" while
+    // filters/camera are already off (diff-review finding 1).
+    if (this.#disposed) return;
     this.onStatus?.({
       landmarksFailed: needsLandmarks(this.#cfg) && this.#landmarkerFailed,
       degraded: this.#ladder.step,

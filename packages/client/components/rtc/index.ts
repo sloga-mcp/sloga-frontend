@@ -34,6 +34,7 @@ export type {
 
 export { FACE_FILTERS, COLOR_LOOKS } from "./faceFilterCatalog";
 export type { FaceFilterDef, ColorLookDef } from "./faceFilterCatalog";
+export { FILTER_ASSETS_BASE } from "./faceFilterProcessor";
 
 export {
   listBackgrounds,

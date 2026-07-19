@@ -1491,8 +1491,12 @@ class Voice {
     } catch (e) {
       console.error("camera effects failed", e);
       this.#setCameraBackgroundStatus(mode === "none" ? "idle" : "failed");
+      // Attribute the failure to the occupant that was actually BUILT: with a
+      // background configured, filters were inert and never attempted — a
+      // segmenter failure must not read as "Face tracking failed"
+      // (diff-review finding 4).
       this.#setCameraFaceFilterStatus(
-        wantFace && !this.#cameraEffects.backgroundActive ? "failed" : "idle",
+        wantFace && mode === "none" ? "failed" : "idle",
       );
     } finally {
       // Signal that the (possibly track-swapping) apply has settled so the
