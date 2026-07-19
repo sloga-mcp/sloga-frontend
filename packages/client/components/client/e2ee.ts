@@ -1301,21 +1301,59 @@ export class E2EEBridge implements E2EEAdapter {
       for (const conversationId of pending) {
         try {
           // Re-emit the downgrade ctl (no dialog — the original was already
-          // confirmed). Receivers absorb the duplicate harmlessly.
-          const result = await this.#invoke<EncryptResult>(
-            "e2ee_resend_downgrade",
-            {
-              conversationId,
-              selfUserId: this.#client.user!.id,
-              bundles: [],
-            },
-          );
+          // confirmed). Receivers absorb the duplicate harmlessly. A
+          // post-restore device has pins without sessions: handle
+          // needs_bundle with the standard bounded fetch-retry
+          // (needs-bundle §1) instead of failing the resume every connect.
+          const bundles: KeyBundle[] = [];
+          const fetched = new Set<string>();
+          let result: EncryptResult | undefined;
+          // Bound like the audited group-encrypt loop (8, fetched-set-
+          // guarded): a flat 3 never converges for a pending GROUP
+          // downgrade with several sessionless members — silently never
+          // resending, forever (diff-review finding 2).
+          for (let attempt = 0; attempt < 8; attempt++) {
+            try {
+              result = await this.#invoke<EncryptResult>(
+                "e2ee_resend_downgrade",
+                {
+                  conversationId,
+                  selfUserId: this.#client.user!.id,
+                  bundles,
+                },
+              );
+              break;
+            } catch (raw) {
+              const native = raw as NativeError;
+              if (
+                native.type === "needs_bundle" &&
+                native.user_id &&
+                !fetched.has(native.user_id)
+              ) {
+                fetched.add(native.user_id);
+                bundles.push(
+                  await this.#api<KeyBundle>(
+                    "GET",
+                    `/e2ee/keys/${native.user_id}`,
+                  ),
+                );
+                continue;
+              }
+              throw raw;
+            }
+          }
+          if (!result) continue; // flag stays set for the next connect
           await this.#api("POST", "/e2ee/messages", result.payload);
           await this.#invoke("e2ee_mark_downgrade_delivered", {
             conversationId,
           });
-        } catch {
-          /* re-send failed; the flag stays set for the next connect */
+        } catch (error) {
+          // Re-send failed; the flag stays set for the next connect
+          console.error(
+            "[e2ee] pending-downgrade resume failed for conversation",
+            conversationId,
+            error,
+          );
         }
       }
     } catch (error) {
@@ -1612,17 +1650,19 @@ export class E2EEBridge implements E2EEAdapter {
 
   /**
    * Fetch a signed device listing and reconcile pins natively. Returns
-   * whether the reconcile actually RAN — post-wipe design §2 choke point:
-   * every caller (device events, DM-open, call roster, consume-check
-   * reconciles) fires without direct user intent, and while
+   * the report — or null when SKIPPED (post-wipe design §2 choke point:
+   * every caller — device events, DM-open, call roster, consume-check
+   * reconciles — fires without direct user intent, and while
    * unprovisioned/disabled there are no pins to reconcile; a fast-pathed
    * empty report must never touch flag state (rev-2 MAJOR-4 disarm) or
-   * burn the open-TTL. `#ensureBootStatus` is side-effect-free for
+   * burn the open-TTL). `#ensureBootStatus` is side-effect-free for
    * unprovisioned devices (native §1 fast path).
    */
-  async #reconcileDevices(userId: string): Promise<boolean> {
+  async #reconcileDevices(
+    userId: string,
+  ): Promise<{ new_devices: string[] } | null> {
     await this.#ensureBootStatus();
-    if (!this.status.get("state")?.enabled) return false;
+    if (!this.status.get("state")?.enabled) return null;
 
     const devices = await this.#api<unknown[]>("GET", `/e2ee/devices/${userId}`);
     const report = await this.#invoke<{
@@ -1650,7 +1690,32 @@ export class E2EEBridge implements E2EEAdapter {
       await this.#refreshMode(userId);
       await this.#syncRecent(userId);
     }
-    return true;
+
+    if (report.new_devices.length) {
+      // Late-device downgrade notices (needs-bundle §2): the newly
+      // discovered device must learn of any confirmed downgrade. For a
+      // peer: their DM conversation (id == user id). For our OWN late
+      // device: every confirmed-downgraded conversation (own-device
+      // fan-out reaches it). Fire-and-forget — native refuses when
+      // nothing is due. Group conversations of a PEER's new device
+      // converge on the next group open (groupReconcile's trigger).
+      // ALWAYS gated on native downgraded state BEFORE any bundle fetch
+      // (diff-review finding 1): a bundle fetch consumes one OTK per
+      // device of that user server-side, and the overwhelmingly common
+      // case is "no downgrade exists" — never burn keys to be refused.
+      void this.#invoke<string[]>("e2ee_downgraded_conversations")
+        .then(async (convs) => {
+          if (userId === this.#client.user?.id) {
+            await Promise.all(
+              convs.map((c) => this.#notifyDowngrade(c, [userId])),
+            );
+          } else if (convs.includes(userId)) {
+            await this.#notifyDowngrade(userId, [userId]);
+          }
+        })
+        .catch(() => {});
+    }
+    return report;
   }
 
   /**
@@ -1686,11 +1751,11 @@ export class E2EEBridge implements E2EEAdapter {
     if (Date.now() - last < 60_000) return;
     this.#reconciledAt.set(userId, Date.now());
     void this.#reconcileDevices(userId)
-      .then((ran) => {
+      .then((report) => {
         // A skipped (disabled/unprovisioned) reconcile must not burn the
         // TTL — after a same-session restore the FIRST real open has to
         // reconcile immediately (post-wipe design §2).
-        if (!ran) this.#reconciledAt.delete(userId);
+        if (!report) this.#reconciledAt.delete(userId);
       })
       .catch(() => {
         // Unfetchable listing keeps current pins (fail closed); allow the
@@ -2212,13 +2277,28 @@ export class E2EEBridge implements E2EEAdapter {
       // (self included, so our OWN other devices' roster/downgrade controls
       // also carry authority). A forged device can't produce a valid
       // signature, so this only ever upgrades genuine bindings.
-      await Promise.all(
+      const reports = await Promise.all(
         displayed.map((id) =>
-          this.#reconcileDevices(id).catch(() => {
-            /* a member we can't fetch stays unverified — fail closed */
-          }),
+          this.#reconcileDevices(id).catch(() => null as null),
         ),
       );
+
+      // Late-device downgrade notices for the GROUP (needs-bundle §2):
+      // one notify carrying bundles for every member that reported new
+      // devices — gated on native downgraded state BEFORE any
+      // OTK-consuming bundle fetch (diff-review finding 1).
+      const newDeviceUsers = displayed.filter(
+        (_, i) => reports[i]?.new_devices.length,
+      );
+      if (newDeviceUsers.length) {
+        void this.#invoke<string[]>("e2ee_downgraded_conversations")
+          .then((convs) => {
+            if (convs.includes(channel.id)) {
+              return this.#notifyDowngrade(channel.id, newDeviceUsers);
+            }
+          })
+          .catch(() => {});
+      }
 
       await this.#syncRecentConversation(channel.id, channel.id);
     } catch (error) {
@@ -2263,17 +2343,62 @@ export class E2EEBridge implements E2EEAdapter {
       channel.type === "Group" ? channel.id : this.#peerOf(channel);
     if (!conversationId) return;
 
-    let result: EncryptResult;
-    try {
-      result = await this.#invoke<EncryptResult>("e2ee_downgrade", {
-        conversationId,
-        selfUserId: this.#client.user!.id,
-        bundles: [],
-      });
-    } catch (raw) {
-      const native = raw as NativeError;
-      if (native.type === "declined") return; // user cancelled the OS dialog
-      throw raw;
+    // Audience for the preflight — DM peer, or the NATIVE pinned roster
+    // (needs-bundle §1: displayed recipients can diverge from the actual
+    // fan-out audience and would defeat the preflight).
+    let audience: string[] = [conversationId];
+    if (channel.type === "Group") {
+      try {
+        audience = (await this.groupState(conversationId)).members
+          .filter((m) => m.status === "active")
+          .map((m) => m.user_id);
+      } catch {
+        audience = [...channel.recipientIds.values()];
+      }
+    }
+
+    // Preflight (needs-bundle §1): a post-restore device has pins without
+    // sessions; without the bundle the encrypt aborts AFTER the native
+    // confirm and the retry re-prompts. Fetch up front so the common case
+    // shows ONE dialog.
+    const bundles = await this.#downgradeBundlePreflight(audience);
+    const fetched = new Set(bundles.map((b) => b.user_id));
+
+    let result: EncryptResult | undefined;
+    for (let attempt = 0; attempt < audience.length + 2; attempt++) {
+      try {
+        result = await this.#invoke<EncryptResult>("e2ee_downgrade", {
+          conversationId,
+          selfUserId: this.#client.user!.id,
+          bundles,
+        });
+        break;
+      } catch (raw) {
+        const native = raw as NativeError;
+        if (native.type === "declined") return; // user cancelled the OS dialog
+        // Race backstop: a device appeared between preflight and invoke,
+        // or a preflight fetch failed. The re-invoke re-shows the native
+        // confirm — accepted residual (the consent dialog stays on every
+        // state-changing call; weakening it for retries is rejected).
+        if (
+          native.type === "needs_bundle" &&
+          native.user_id &&
+          !fetched.has(native.user_id)
+        ) {
+          fetched.add(native.user_id);
+          bundles.push(
+            await this.#api<KeyBundle>("GET", `/e2ee/keys/${native.user_id}`),
+          );
+          continue;
+        }
+        throw raw;
+      }
+    }
+    if (!result) {
+      throw new E2EESendError(
+        "Could not gather encryption keys to deliver the downgrade notice.",
+        "native",
+      );
     }
 
     try {
@@ -2288,6 +2413,113 @@ export class E2EEBridge implements E2EEAdapter {
     if (channel.type === "Group") await this.#refreshGroupMode(conversationId);
     else await this.#refreshMode(conversationId);
     await this.#syncRecentConversation(conversationId, channel.id);
+  }
+
+  /**
+   * Preflight for the downgrade paths (needs-bundle §1): bundles for every
+   * audience user (self included — own-device fan-out) that has an
+   * Active-status device lacking an active session, EXCLUDING the local
+   * device (it never needs a self-session and would trigger needless
+   * fetches). Availability-only: a failed query/fetch leaves that user to
+   * the retry backstop.
+   */
+  async #downgradeBundlePreflight(audience: string[]): Promise<KeyBundle[]> {
+    const selfId = this.#client.user!.id;
+    const localDevice = this.status.get("state")?.device_id;
+    const bundles: KeyBundle[] = [];
+    for (const userId of new Set([...audience, selfId])) {
+      try {
+        const state = await this.conversationState(userId);
+        const needs = state.devices.some(
+          (d) =>
+            d.status === "active" &&
+            !d.has_active_session &&
+            !(userId === selfId && d.device_id === localDevice),
+        );
+        if (needs) {
+          bundles.push(
+            await this.#api<KeyBundle>("GET", `/e2ee/keys/${userId}`),
+          );
+        }
+      } catch (error) {
+        console.warn("[e2ee] downgrade preflight skipped a user", error);
+      }
+    }
+    return bundles;
+  }
+
+  /**
+   * Late-device downgrade notify (needs-bundle §2), fire-and-forget from
+   * the reconcile path when NEW devices are reported. Native is the sole
+   * authority on whether a notice is due — the typed refusals
+   * (not_downgraded / already_notified) are the common case and stay
+   * silent. The reported users' bundles are fetched UP FRONT: a late
+   * device is discovered-but-unpinned, so without its bundle the fan-out
+   * cannot reach it (needs_bundle never fires for unpinned devices).
+   */
+  async #notifyDowngrade(
+    conversationId: string,
+    bundleUsers: string[],
+  ): Promise<void> {
+    try {
+      const bundles: KeyBundle[] = [];
+      for (const user of new Set(bundleUsers)) {
+        try {
+          bundles.push(await this.#api<KeyBundle>("GET", `/e2ee/keys/${user}`));
+        } catch {
+          /* availability-only: the notify proceeds on existing pins */
+        }
+      }
+      const fetched = new Set(bundles.map((b) => b.user_id));
+      // Bound like the audited group-encrypt loop (8, fetched-set-guarded)
+      // — a flat 3 cannot converge for groups with several sessionless
+      // members (diff-review finding 2).
+      for (let attempt = 0; attempt < 8; attempt++) {
+        try {
+          const result = await this.#invoke<EncryptResult>(
+            "e2ee_notify_downgrade",
+            {
+              conversationId,
+              selfUserId: this.#client.user!.id,
+              bundles,
+            },
+          );
+          const { receipts } = await this.#api<{ receipts: unknown[] }>(
+            "POST",
+            "/e2ee/messages",
+            result.payload,
+          );
+          await this.#invoke("e2ee_handle_receipts", { receipts });
+          return;
+        } catch (raw) {
+          const native = raw as NativeError & { field?: string };
+          // The TYPED refusals — nothing due, by design. Other
+          // invalid_arguments are real failures and must not be masked
+          // (diff-review finding 4).
+          if (
+            native.type === "invalid_argument" &&
+            (native.field === "not_downgraded" ||
+              native.field === "already_notified")
+          ) {
+            return;
+          }
+          if (
+            native.type === "needs_bundle" &&
+            native.user_id &&
+            !fetched.has(native.user_id)
+          ) {
+            fetched.add(native.user_id);
+            bundles.push(
+              await this.#api<KeyBundle>("GET", `/e2ee/keys/${native.user_id}`),
+            );
+            continue;
+          }
+          throw raw;
+        }
+      }
+    } catch (error) {
+      console.warn("[e2ee] downgrade notify failed", error);
+    }
   }
 
   /**
