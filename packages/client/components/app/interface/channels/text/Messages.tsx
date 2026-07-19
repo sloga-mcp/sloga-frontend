@@ -672,7 +672,9 @@ export function Messages(props: Props) {
           : undefined;
     if (!conv) return false;
     const mode = e2ee.sendModes.get(conv);
-    return mode === "encrypt" || mode === "blocked";
+    return (
+      mode === "encrypt" || mode === "blocked" || mode === "peer_downgraded"
+    );
   }
 
   /**

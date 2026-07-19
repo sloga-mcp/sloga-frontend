@@ -1076,7 +1076,7 @@ export class E2EEBridge implements E2EEAdapter {
   /** Reactive per-peer send-mode cache for the composer indicator */
   readonly sendModes = new ReactiveMap<
     string,
-    "encrypt" | "blocked" | "plaintext"
+    "encrypt" | "blocked" | "plaintext" | "peer_downgraded"
   >();
 
   /**
@@ -2542,13 +2542,20 @@ export class E2EEBridge implements E2EEAdapter {
     else await this.#refreshMode(conversationId);
   }
 
-  /** Composer-facing mode string (collapses peer_downgraded to blocked). */
+  /**
+   * Composer-facing mode string. `peer_downgraded` is DISTINCT from
+   * `blocked` (identity change): they clear through different flows —
+   * identity acceptance vs `confirmPeerDowngrade` — and collapsing them
+   * routed the peer-downgrade prompt to the (empty) identity modal, a
+   * send dead-end on the receiving side (gate sitting bug 5).
+   */
   #composerMode(
     verdict: SendModeVerdict,
-  ): "encrypt" | "blocked" | "plaintext" {
+  ): "encrypt" | "blocked" | "plaintext" | "peer_downgraded" {
     if (verdict.mode === "encrypt") return "encrypt";
     if (verdict.mode === "plaintext") return "plaintext";
-    return "blocked"; // blocked or peer_downgraded — composer shows a guard
+    if (verdict.mode === "peer_downgraded") return "peer_downgraded";
+    return "blocked";
   }
 
   async #refreshGroupMode(conversationId: string): Promise<void> {
@@ -3067,7 +3074,7 @@ export class E2EEBridge implements E2EEAdapter {
     const conversationId = isGroup ? channel.id : this.#peerOf(channel);
     if (!conversationId) return null;
 
-    let mode: "encrypt" | "blocked" | "plaintext";
+    let mode: "encrypt" | "blocked" | "plaintext" | "peer_downgraded";
     try {
       mode = isGroup
         ? this.#composerMode(
@@ -3088,6 +3095,15 @@ export class E2EEBridge implements E2EEAdapter {
         isGroup
           ? "This encrypted group is not in a sendable state. Resolve the warning before sending."
           : "The recipient's security identity changed. Accept the change in the conversation before sending.",
+        "blocked",
+      );
+    }
+    if (mode === "peer_downgraded") {
+      // Undecided peer downgrade: neither the encrypted nor the plaintext
+      // direction is consented — nothing may send until the user resolves
+      // the prompt (fail closed, same class as blocked).
+      throw new E2EESendError(
+        "Encryption was turned off for this conversation. Choose whether to continue before sending.",
         "blocked",
       );
     }
@@ -3374,7 +3390,9 @@ export class E2EEBridge implements E2EEAdapter {
    * encrypt/blocked conversation can never leak a file to Autumn. Throws on
    * native error — callers must treat a throw as fail-closed.
    */
-  async sendModeNow(peerId: string): Promise<"encrypt" | "blocked" | "plaintext"> {
+  async sendModeNow(
+    peerId: string,
+  ): Promise<"encrypt" | "blocked" | "plaintext" | "peer_downgraded"> {
     const verdict = await this.#invoke<SendModeVerdict>("e2ee_send_mode", {
       peerUserId: peerId,
     });
@@ -3392,7 +3410,7 @@ export class E2EEBridge implements E2EEAdapter {
    */
   async sendModeNowFor(
     channel: Channel,
-  ): Promise<"encrypt" | "blocked" | "plaintext" | null> {
+  ): Promise<"encrypt" | "blocked" | "plaintext" | "peer_downgraded" | null> {
     const isGroup = channel.type === "Group";
     if (channel.type !== "DirectMessage" && !isGroup) return null;
 

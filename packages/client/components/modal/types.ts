@@ -214,6 +214,11 @@ export type Modals =
       peerUserId: string;
     }
   | {
+      type: "e2ee_peer_downgrade";
+      channelId: string;
+      peerUserId?: string;
+    }
+  | {
       type: "e2ee_verify";
       peerUserId: string;
       /**

@@ -110,7 +110,7 @@ export function MessageComponents(props: { message: Message }) {
       e2ee &&
       (channel.type === "DirectMessage" || channel.type === "Group")
     ) {
-      let mode: "encrypt" | "blocked" | "plaintext" | null;
+      let mode: "encrypt" | "blocked" | "plaintext" | "peer_downgraded" | null;
       try {
         mode = await e2ee.sendModeNowFor(channel);
       } catch {
@@ -120,7 +120,7 @@ export function MessageComponents(props: { message: Message }) {
         });
         return;
       }
-      if (mode === "encrypt" || mode === "blocked") {
+      if (mode === "encrypt" || mode === "blocked" || mode === "peer_downgraded") {
         openModal({
           type: "error2",
           error: t`Interactions are unavailable in encrypted conversations.`,

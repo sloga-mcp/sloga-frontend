@@ -5678,3 +5678,27 @@ msgstr "Filters are paused while background effects are on."
 #: components/modal/modals/CameraSettings.tsx
 msgid "Face tracking failed — stickers and beautify are unavailable."
 msgstr "Face tracking failed — stickers and beautify are unavailable."
+
+#: src/interface/channels/text/Composition.tsx
+msgid "Encryption was turned off — choose how to continue."
+msgstr "Encryption was turned off — choose how to continue."
+
+#: components/modal/modals/E2EEPeerDowngrade.tsx
+msgid "Encryption turned off"
+msgstr "Encryption turned off"
+
+#: components/modal/modals/E2EEPeerDowngrade.tsx
+msgid "Keep encrypted"
+msgstr "Keep encrypted"
+
+#: components/modal/modals/E2EEPeerDowngrade.tsx
+msgid "Send unencrypted"
+msgstr "Send unencrypted"
+
+#: components/modal/modals/E2EEPeerDowngrade.tsx
+msgid "This contact turned off end-to-end encryption for this conversation."
+msgstr "This contact turned off end-to-end encryption for this conversation."
+
+#: components/modal/modals/E2EEPeerDowngrade.tsx
+msgid "Continue unencrypted — new messages will be readable by the server — or keep the conversation encrypted on your side. Your encrypted history is unaffected either way."
+msgstr "Continue unencrypted — new messages will be readable by the server — or keep the conversation encrypted on your side. Your encrypted history is unaffected either way."

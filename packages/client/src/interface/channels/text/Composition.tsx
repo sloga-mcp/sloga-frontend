@@ -126,7 +126,8 @@ export function MessageComposition(props: Props) {
     const conv = conversationId();
     if (!conv) return undefined;
     const mode = e2ee?.sendModes.get(conv);
-    if (mode === "encrypt" || mode === "blocked") return mode;
+    if (mode === "encrypt" || mode === "blocked" || mode === "peer_downgraded")
+      return mode;
     // Groups have no per-peer advertise hint — an unencrypted group shows no
     // indicator (encryption is opt-in via the group's Security settings).
     if (isGroup()) return undefined;
@@ -145,6 +146,8 @@ export function MessageComposition(props: Props) {
     switch (e2eeMode()) {
       case "blocked":
         return "gpp_maybe";
+      case "peer_downgraded":
+        return "lock_open";
       case "pending":
         return "lock_clock";
       case "unencrypted":
@@ -189,6 +192,9 @@ export function MessageComposition(props: Props) {
       props.channel.havePermission("SendMessage") &&
       e2eeMode() !== "encrypt" &&
       e2eeMode() !== "blocked" &&
+      // Peer downgraded but this side hasn't consented to plaintext yet —
+      // polls are stored plaintext server-side, so fail closed like blocked
+      e2eeMode() !== "peer_downgraded" &&
       // Slowmode: creating a poll sends a message, so the affordance hides
       // during an active cooldown (server enforces regardless)
       !currentSlowmode(),
@@ -207,7 +213,8 @@ export function MessageComposition(props: Props) {
       ) &&
       props.channel.havePermission("SendMessage") &&
       e2eeMode() !== "encrypt" &&
-      e2eeMode() !== "blocked",
+      e2eeMode() !== "blocked" &&
+      e2eeMode() !== "peer_downgraded",
   );
 
   // Prime the send-mode cache when the conversation opens so the indicator
@@ -560,7 +567,7 @@ export function MessageComposition(props: Props) {
       e2ee &&
       (props.channel.type === "DirectMessage" || props.channel.type === "Group")
     ) {
-      let mode: "encrypt" | "blocked" | "plaintext" | null;
+      let mode: "encrypt" | "blocked" | "plaintext" | "peer_downgraded" | null;
       try {
         mode = await e2ee.sendModeNowFor(props.channel);
       } catch {
@@ -570,7 +577,7 @@ export function MessageComposition(props: Props) {
         });
         return;
       }
-      if (mode === "encrypt" || mode === "blocked") {
+      if (mode === "encrypt" || mode === "blocked" || mode === "peer_downgraded") {
         openModal({
           type: "error2",
           error: t`Slash commands are unavailable in encrypted conversations.`,
@@ -658,7 +665,7 @@ export function MessageComposition(props: Props) {
     // sendDraft (attachments now ride the encrypted path, slice 3.5).
     const peer = peerUserId();
     if (peer && e2ee) {
-      let mode: "encrypt" | "blocked" | "plaintext";
+      let mode: "encrypt" | "blocked" | "plaintext" | "peer_downgraded";
       try {
         mode = await e2ee.sendModeNow(peer);
       } catch {
@@ -671,11 +678,21 @@ export function MessageComposition(props: Props) {
       }
 
       if (mode === "blocked") {
-        // Distinguish a peer identity change (accept flow) from a peer
-        // downgrade (confirm-plaintext flow, slice 5) via the group/peer
-        // state — both surface as "blocked" to the composer.
+        // Peer identity change — cleared only by explicit acceptance.
         openModal({
           type: "e2ee_identity_change",
+          peerUserId: peer,
+        });
+        return;
+      }
+      if (mode === "peer_downgraded") {
+        // Peer turned encryption off — cleared only through
+        // confirmPeerDowngrade (accept plaintext / keep encrypted), the
+        // dialog-gated core exit (design §5.2). Routing this to the
+        // identity modal was the gate-sitting bug-5 dead-end.
+        openModal({
+          type: "e2ee_peer_downgrade",
+          channelId: props.channel.id,
           peerUserId: peer,
         });
         return;
@@ -845,7 +862,12 @@ export function MessageComposition(props: Props) {
         string | undefined,
       ],
     async ([, type, mode]) => {
-      if (mode === "encrypt" || mode === "blocked") return [];
+      if (
+        mode === "encrypt" ||
+        mode === "blocked" ||
+        mode === "peer_downgraded"
+      )
+        return [];
       if (type !== "TextChannel" && type !== "Thread" && type !== "Group")
         return [];
       try {
@@ -954,6 +976,15 @@ export function MessageComposition(props: Props) {
                 type: "e2ee_identity_change",
                 peerUserId: peerUserId()!,
               });
+            } else if (e2eeMode() === "peer_downgraded") {
+              // Groups reach the confirm flow through this banner too —
+              // confirmPeerDowngrade keys on the channel id there, no peer
+              // needed (frontend review HIGH-2).
+              openModal({
+                type: "e2ee_peer_downgrade",
+                channelId: props.channel.id,
+                peerUserId: peerUserId(),
+              });
             } else if (e2eeMode() === "encrypt" && peerUserId()) {
               // Green lock → the safety-number verification screen (slice 5).
               // Groups verify per member via the member list, not here.
@@ -975,6 +1006,9 @@ export function MessageComposition(props: Props) {
               </Match>
               <Match when={e2eeMode() === "blocked"}>
                 {t`This contact's security identity changed — review before sending.`}
+              </Match>
+              <Match when={e2eeMode() === "peer_downgraded"}>
+                {t`Encryption was turned off — choose how to continue.`}
               </Match>
             </Switch>
           </span>

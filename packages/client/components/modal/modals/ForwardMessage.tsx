@@ -40,7 +40,9 @@ export function ForwardMessageModal(
       channel.type === "DirectMessage" ? channel.recipient?.id : channel.id;
     if (!conversationId) return false;
     const mode = e2ee?.sendModes.get(conversationId);
-    return mode === "encrypt" || mode === "blocked";
+    return (
+      mode === "encrypt" || mode === "blocked" || mode === "peer_downgraded"
+    );
   };
 
   const candidates = createMemo(() => {
