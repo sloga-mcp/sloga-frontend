@@ -162,6 +162,64 @@ export const FACE_FILTERS: Record<CameraFaceFilterId, FaceFilterDef> = {
       },
     ],
   },
+  viking: {
+    id: "viking",
+    name: "Viking",
+    thumb: "viking-helmet.svg",
+    layers: [
+      {
+        src: "viking-beard.svg",
+        anchor: "upper-lip",
+        widthFactor: 2.3,
+        offset: { x: 0, y: 0.55 },
+      },
+      {
+        src: "viking-helmet.svg",
+        anchor: "head-top",
+        widthFactor: 2.5,
+        offset: { x: 0, y: -0.6 },
+      },
+    ],
+  },
+  "gamer-headset": {
+    id: "gamer-headset",
+    name: "Headset",
+    thumb: "gamer-headset.svg",
+    layers: [
+      {
+        src: "gamer-headset.svg",
+        anchor: "eyes",
+        widthFactor: 3.5,
+        offset: { x: 0, y: -0.2 },
+      },
+    ],
+  },
+  "pixel-shades": {
+    id: "pixel-shades",
+    name: "Pixel Shades",
+    thumb: "pixel-shades.svg",
+    layers: [
+      {
+        src: "pixel-shades.svg",
+        anchor: "eyes",
+        widthFactor: 2.7,
+        offset: { x: 0, y: 0.02 },
+      },
+    ],
+  },
+  "health-bar": {
+    id: "health-bar",
+    name: "Health Bar",
+    thumb: "health-bar.svg",
+    layers: [
+      {
+        src: "health-bar.svg",
+        anchor: "head-top",
+        widthFactor: 2.4,
+        offset: { x: 0, y: -1.25 },
+      },
+    ],
+  },
 };
 
 /** One-tap color grades (brightness handled separately by the processor). */

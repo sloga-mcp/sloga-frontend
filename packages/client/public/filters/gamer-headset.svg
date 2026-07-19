@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="700" height="540" viewBox="0 0 700 540">
+  <!-- Sloga original artwork (face-filter asset) -->
+  <!-- Headband -->
+  <path d="M80 300 C 80 130, 200 40, 350 40 C 500 40, 620 130, 620 300 L 570 300 C 570 160, 475 90, 350 90 C 225 90, 130 160, 130 300 Z" fill="#22232a"/>
+  <path d="M300 46 L 400 46 L 396 92 L 304 92 Z" fill="#3a3c46"/>
+  <!-- Ear cups -->
+  <g>
+    <rect x="52" y="256" width="120" height="180" rx="52" fill="#22232a"/>
+    <rect x="68" y="272" width="88" height="148" rx="40" fill="#2e3038"/>
+    <rect x="76" y="280" width="72" height="132" rx="34" fill="none" stroke="#7b5cff" stroke-width="10"/>
+  </g>
+  <g transform="translate(700,0) scale(-1,1)">
+    <rect x="52" y="256" width="120" height="180" rx="52" fill="#22232a"/>
+    <rect x="68" y="272" width="88" height="148" rx="40" fill="#2e3038"/>
+    <rect x="76" y="280" width="72" height="132" rx="34" fill="none" stroke="#7b5cff" stroke-width="10"/>
+  </g>
+  <!-- Mic boom (from left cup toward mouth) -->
+  <path d="M112 436 C 120 480, 160 510, 220 516 C 250 519, 275 517, 295 512" stroke="#3a3c46" stroke-width="20" stroke-linecap="round" fill="none"/>
+  <ellipse cx="312" cy="508" rx="34" ry="26" fill="#4d525b"/>
+  <ellipse cx="312" cy="508" rx="22" ry="16" fill="#5c626d"/>
+</svg>

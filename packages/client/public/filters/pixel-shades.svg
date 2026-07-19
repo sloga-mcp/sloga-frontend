@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="560" height="180" viewBox="0 0 560 180">
+  <!-- Sloga original artwork (face-filter asset) — 8-bit shades -->
+  <g fill="#101014">
+    <!-- Top bar -->
+    <rect x="0" y="0" width="560" height="36"/>
+    <!-- Left lens, stepped -->
+    <rect x="36" y="36" width="180" height="36"/>
+    <rect x="54" y="72" width="144" height="36"/>
+    <rect x="72" y="108" width="108" height="36"/>
+    <rect x="90" y="144" width="72" height="24"/>
+    <!-- Right lens, stepped -->
+    <rect x="344" y="36" width="180" height="36"/>
+    <rect x="362" y="72" width="144" height="36"/>
+    <rect x="380" y="108" width="108" height="36"/>
+    <rect x="398" y="144" width="72" height="24"/>
+    <!-- Bridge -->
+    <rect x="216" y="36" width="128" height="18"/>
+  </g>
+  <g fill="#3a3f52">
+    <rect x="54" y="54" width="36" height="18"/>
+    <rect x="362" y="54" width="36" height="18"/>
+  </g>
+</svg>

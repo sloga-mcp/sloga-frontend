@@ -80,7 +80,11 @@ export type CameraFaceFilterId =
   | "sunglasses"
   | "mustache"
   | "party-hat"
-  | "heart-eyes";
+  | "heart-eyes"
+  | "viking"
+  | "gamer-headset"
+  | "pixel-shades"
+  | "health-bar";
 
 /**
  * Array of available face-filter ids.
@@ -92,6 +96,10 @@ export const CameraFaceFilterIds: CameraFaceFilterId[] = [
   "mustache",
   "party-hat",
   "heart-eyes",
+  "viking",
+  "gamer-headset",
+  "pixel-shades",
+  "health-bar",
 ];
 
 /**

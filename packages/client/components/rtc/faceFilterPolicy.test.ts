@@ -19,6 +19,10 @@ const CameraFaceFilterIds = [
   "mustache",
   "party-hat",
   "heart-eyes",
+  "viking",
+  "gamer-headset",
+  "pixel-shades",
+  "health-bar",
 ] as const;
 const CameraColorLookIds = ["warm", "cool", "vintage", "mono", "vivid"] as const;
 

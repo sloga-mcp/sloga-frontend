@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="560" height="360" viewBox="0 0 560 360">
+  <!-- Sloga original artwork (face-filter asset) -->
+  <!-- Horns -->
+  <g>
+    <path d="M118 210 C 60 190, 22 140, 20 70 C 55 95, 80 100, 108 118 C 96 150, 100 185, 118 210 Z" fill="#efe6d0"/>
+    <path d="M20 70 C 40 84, 62 93, 82 102 C 76 116, 72 130, 71 143 C 45 124, 28 100, 20 70 Z" fill="#d9cbaa"/>
+  </g>
+  <g transform="translate(560,0) scale(-1,1)">
+    <path d="M118 210 C 60 190, 22 140, 20 70 C 55 95, 80 100, 108 118 C 96 150, 100 185, 118 210 Z" fill="#efe6d0"/>
+    <path d="M20 70 C 40 84, 62 93, 82 102 C 76 116, 72 130, 71 143 C 45 124, 28 100, 20 70 Z" fill="#d9cbaa"/>
+  </g>
+  <!-- Dome -->
+  <path d="M280 40 C 175 40, 105 120, 100 240 L 460 240 C 455 120, 385 40, 280 40 Z" fill="#9aa1ab"/>
+  <path d="M280 40 C 220 40, 170 70, 140 120 C 190 95, 235 85, 280 85 C 325 85, 370 95, 420 120 C 390 70, 340 40, 280 40 Z" fill="#b6bcc6"/>
+  <!-- Center ridge -->
+  <path d="M270 42 L 290 42 L 290 240 L 270 240 Z" fill="#7c828c"/>
+  <!-- Rim band + rivets -->
+  <rect x="92" y="235" width="376" height="46" rx="20" fill="#6b7280"/>
+  <g fill="#4d525b">
+    <circle cx="140" cy="258" r="8"/>
+    <circle cx="210" cy="258" r="8"/>
+    <circle cx="280" cy="258" r="8"/>
+    <circle cx="350" cy="258" r="8"/>
+    <circle cx="420" cy="258" r="8"/>
+  </g>
+</svg>
