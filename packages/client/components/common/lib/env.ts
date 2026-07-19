@@ -50,7 +50,9 @@ export default {
   DEFAULT_GIFBOX_URL:
     (import.meta.env.DEV ? import.meta.env.VITE_DEV_GIFBOX_URL : undefined) ??
     (import.meta.env.VITE_GIFBOX_URL as string) ??
-    "https://api.gifbox.me",
+    // our own delta /gifs proxy — the public gifbox (api.gifbox.me) only
+    // accepts upstream sessions and its Tenor backend shut down 2026-06-30
+    "https://app.sloga.gg/api/gifs",
   /**
    * Base URL for unicode-emoji SVG packs. Routed through the app origin
    * (proxied to the upstream pack host by Caddy) so the client never hits an
