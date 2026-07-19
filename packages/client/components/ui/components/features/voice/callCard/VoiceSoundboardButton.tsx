@@ -210,8 +210,11 @@ const Overlay = styled("div", {
 
     minWidth: "240px",
     maxWidth: "320px",
-    maxHeight: "min(420px, 60vh)",
+    // Compact panel: with the default-sound list growing, cap well below the
+    // card height and scroll — never let the popover swallow the whole call.
+    maxHeight: "min(280px, 40vh)",
     overflowY: "auto",
+    overscrollBehavior: "contain",
     padding: "var(--gap-md)",
 
     borderRadius: "var(--borderRadius-lg)",
