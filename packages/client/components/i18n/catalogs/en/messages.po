@@ -52,6 +52,11 @@ msgstr "{0, plural, one {# / 10 file attached} other {# / 10 files attached}}"
 msgid "{0, plural, one {# blocked message} other {# blocked messages}}"
 msgstr "{0, plural, one {# blocked message} other {# blocked messages}}"
 
+#. placeholder {0}: props.server.memberCount
+#: components/modal/modals/DiscoverJoin.tsx
+msgid "{0, plural, one {# member} other {# members}}"
+msgstr "{0, plural, one {# member} other {# members}}"
+
 #. placeholder {0}: items().length
 #: components/ui/components/utils/files/FileDropAnywhereCollector.tsx
 msgid "{0, plural, one {Drop a file} other {Drop # files}}"
@@ -198,6 +203,7 @@ msgstr "{0}'s roles"
 msgid "{0}d left"
 msgstr "{0}d left"
 
+#: components/ui/components/features/voice/IncomingCallOverlay.tsx
 #: components/client/NotificationsWorker.tsx
 msgid "{callerName} is calling in {channelName}"
 msgstr "{callerName} is calling in {channelName}"
@@ -453,6 +459,7 @@ msgid "Able to speak in voice call"
 msgstr "Able to speak in voice call"
 
 #: src/interface/ServerEvents.tsx
+#: components/ui/components/features/voice/IncomingCallOverlay.tsx
 #: components/modal/modals/SignOutSessions.tsx
 msgid "Accept"
 msgstr "Accept"
@@ -479,6 +486,7 @@ msgstr "Activity"
 
 #: components/modal/modals/AddMembersToGroup.tsx
 #: components/modal/modals/AddBot.tsx
+#: components/app/interface/settings/server/apps/AppsList.tsx
 msgid "Add"
 msgstr "Add"
 
@@ -519,6 +527,10 @@ msgstr "Add status text"
 #: components/app/interface/settings/channel/ForumSettings.tsx
 msgid "Add tag"
 msgstr "Add tag"
+
+#: components/app/interface/settings/server/apps/AppsList.tsx
+msgid "Added ✓"
+msgstr "Added ✓"
 
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "Admin"
@@ -632,6 +644,11 @@ msgstr "Answers"
 msgid "Appearance"
 msgstr "Appearance"
 
+#: components/app/interface/settings/ServerSettings.tsx
+#: components/app/interface/settings/ServerSettings.tsx
+msgid "Apps"
+msgstr "Apps"
+
 #: src/interface/channels/text/ThreadsListSidebar.tsx
 #: src/interface/channels/forum/ForumChannel.tsx
 msgid "Archived"
@@ -654,6 +671,10 @@ msgstr "Are you sure you want to go to "
 #: components/modal/modals/RemoveMember.tsx
 msgid "Are you sure you want to remove {0} from {1}?"
 msgstr "Are you sure you want to remove {0} from {1}?"
+
+#: components/app/interface/settings/server/Overview.tsx
+msgid "Ask for this server to be shown in the public directory. Its name, icon, description and member count become publicly visible once approved."
+msgstr "Ask for this server to be shown in the public directory. Its name, icon, description and member count become publicly visible once approved."
 
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "Assign lower-ranked roles to lower-ranking members"
@@ -959,6 +980,7 @@ msgstr "Camera unavailable — check permissions and that no other app is using 
 #: components/modal/modals/E2EEEnableGroup.tsx
 #: components/modal/modals/E2EEEnable.tsx
 #: components/modal/modals/E2EEDisable.tsx
+#: components/modal/modals/DiscoverJoin.tsx
 #: components/modal/modals/DeleteServer.tsx
 #: components/modal/modals/DeleteRole.tsx
 #: components/modal/modals/DeleteMessage.tsx
@@ -1171,6 +1193,7 @@ msgstr "Client Settings"
 #: components/modal/modals/EditEmail.tsx
 #: components/modal/modals/E2EEVerify.tsx
 #: components/modal/modals/E2EEIdentityChange.tsx
+#: components/modal/modals/E2EEDisable.tsx
 #: components/modal/modals/DeleteChannel.tsx
 #: components/modal/modals/CustomStatus.tsx
 #: components/modal/modals/CreateWebhook.tsx
@@ -1364,6 +1387,10 @@ msgstr "Could not find what you requested."
 #: components/modal/modals/PollVoters.tsx
 msgid "Could not load voters."
 msgstr "Could not load voters."
+
+#: components/app/interface/settings/server/apps/AppsList.tsx
+msgid "Couldn't add the app — try again."
+msgstr "Couldn't add the app — try again."
 
 #: src/interface/ServerEvents.tsx
 msgid "Couldn't load events"
@@ -1566,6 +1593,7 @@ msgid "Deafen Members"
 msgstr "Deafen Members"
 
 #: src/interface/ServerEvents.tsx
+#: components/ui/components/features/voice/IncomingCallOverlay.tsx
 msgid "Decline"
 msgstr "Decline"
 
@@ -2420,6 +2448,10 @@ msgstr "Illegal hacking or cracking"
 msgid "Image"
 msgstr "Image"
 
+#: components/app/interface/settings/server/Overview.tsx
+msgid "Immediately remove this server from the public directory"
+msgstr "Immediately remove this server from the public directory"
+
 #: components/modal/modals/ReportContent.tsx
 msgid "Impersonation"
 msgstr "Impersonation"
@@ -2464,6 +2496,14 @@ msgstr "In a week"
 msgid "In the meantime, install Sloga from Google Play for a faster, smoother experience designed for Android."
 msgstr "In the meantime, install Sloga from Google Play for a faster, smoother experience designed for Android."
 
+#: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
+msgid "In this build the key only registers while the app is focused — the desktop app supports global push to talk."
+msgstr "In this build the key only registers while the app is focused — the desktop app supports global push to talk."
+
+#: src/interface/navigation/channels/HomeSidebar.tsx
+#: components/ui/components/features/voice/IncomingCallOverlay.tsx
+#: components/ui/components/features/voice/IncomingCallOverlay.tsx
+#: components/ui/components/features/voice/IncomingCallOverlay.tsx
 #: components/client/NotificationsWorker.tsx
 msgid "Incoming Call"
 msgstr "Incoming Call"
@@ -2573,6 +2613,7 @@ msgstr "ISO Standard (YYYY-MM-DD)"
 
 #: components/modal/modals/JoinServer.tsx
 #: components/modal/modals/Invite.tsx
+#: components/modal/modals/DiscoverJoin.tsx
 msgid "Join"
 msgstr "Join"
 
@@ -2708,6 +2749,10 @@ msgstr "Light"
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "Listen"
 msgstr "Listen"
+
+#: components/app/interface/settings/server/Overview.tsx
+msgid "Listing requested — waiting for approval by the Sloga team."
+msgstr "Listing requested — waiting for approval by the Sloga team."
 
 #: components/app/interface/settings/user/voice/CameraPreview.tsx
 msgid "Live"
@@ -2909,7 +2954,6 @@ msgid "Mentions Only"
 msgstr "Mentions Only"
 
 #: components/modal/modals/CreateForumPost.tsx
-#: components/app/menus/UserContextMenu.tsx
 msgid "Message"
 msgstr "Message"
 
@@ -3177,6 +3221,10 @@ msgstr "Nickname"
 msgid "No active threads"
 msgstr "No active threads"
 
+#: components/app/interface/settings/server/apps/AppsList.tsx
+msgid "No apps are available right now."
+msgstr "No apps are available right now."
+
 #: src/interface/channels/forum/ForumChannel.tsx
 msgid "No archived posts"
 msgstr "No archived posts"
@@ -3318,6 +3366,14 @@ msgstr "occurrences"
 msgid "Off"
 msgstr "Off"
 
+#: components/app/interface/settings/server/apps/AppsList.tsx
+msgid "Official"
+msgstr "Official"
+
+#: components/app/interface/settings/server/apps/AppsList.tsx
+msgid "Official apps hosted by Sloga. Adding one gives this server its slash commands — type / in any channel to use them."
+msgstr "Official apps hosted by Sloga. Adding one gives this server its slash commands — type / in any channel to use them."
+
 #: components/app/interface/channels/text/Message.tsx
 msgid "Official Communication"
 msgstr "Official Communication"
@@ -3376,6 +3432,7 @@ msgid "Only you can see this — it disappears when you reload."
 msgstr "Only you can see this — it disappears when you reload."
 
 #: components/modal/modals/Invite.tsx
+#: components/modal/modals/DiscoverJoin.tsx
 msgid "Open"
 msgstr "Open"
 
@@ -3602,6 +3659,10 @@ msgstr "Promotes harm"
 msgid "Provided email or password is wrong."
 msgstr "Provided email or password is wrong."
 
+#: components/app/interface/settings/server/Overview.tsx
+msgid "Public discovery"
+msgstr "Public discovery"
+
 #: components/app/menus/MessageContextMenu.tsx
 msgid "Publish"
 msgstr "Publish"
@@ -3767,6 +3828,10 @@ msgstr "Remove Avatars"
 msgid "Remove friend"
 msgstr "Remove friend"
 
+#: components/app/interface/settings/server/Overview.tsx
+msgid "Remove from public directory"
+msgstr "Remove from public directory"
+
 #: components/modal/modals/RemoveMember.tsx
 #: components/app/menus/UserContextMenu.tsx
 msgid "Remove Member"
@@ -3859,6 +3924,10 @@ msgstr "Reported content (as seen by the reporter)"
 msgid "Reported content (server copy)"
 msgstr "Reported content (server copy)"
 
+#: components/app/interface/settings/server/Overview.tsx
+msgid "Request public listing"
+msgstr "Request public listing"
+
 #: components/app/interface/settings/channel/ForumSettings.tsx
 msgid "Require tags"
 msgstr "Require tags"
@@ -3920,6 +3989,8 @@ msgid "Resume unencrypted"
 msgstr "Resume unencrypted"
 
 #: src/interface/ServerEvents.tsx
+#: components/modal/modals/E2EEDisable.tsx
+#: components/app/interface/settings/server/apps/AppsList.tsx
 msgid "Retry"
 msgstr "Retry"
 
@@ -3984,6 +4055,8 @@ msgstr "Roll dice"
 #: components/app/interface/settings/channel/Overview.tsx
 #: components/app/interface/settings/channel/ForumSettings.tsx
 #: components/app/interface/settings/channel/webhooks/ViewWebhook.tsx
+#: components/app/interface/channels/text/EncryptedAttachment.tsx
+#: components/app/interface/channels/text/EncryptedAttachment.tsx
 msgid "Save"
 msgstr "Save"
 
@@ -4145,6 +4218,10 @@ msgstr "Send Invites"
 #: components/modal/modals/ScheduleMessage.tsx
 msgid "Send later"
 msgstr "Send later"
+
+#: components/app/menus/UserContextMenu.tsx
+msgid "Send Message"
+msgstr "Send Message"
 
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "Send Messages"
@@ -4826,6 +4903,14 @@ msgstr "This password has previously appeared in security leaks, please use anot
 msgid "This server is about..."
 msgstr "This server is about..."
 
+#: components/app/interface/settings/server/Overview.tsx
+msgid "This server is listed in the public directory on the Sloga website."
+msgstr "This server is listed in the public directory on the Sloga website."
+
+#: components/app/interface/settings/server/Overview.tsx
+msgid "This server is not publicly listed. Request a listing to appear in the public directory once approved by the Sloga team."
+msgstr "This server is not publicly listed. Request a listing to appear in the public directory once approved by the Sloga team."
+
 #: src/interface/channels/text/TextChannel.tsx
 msgid "This thread is archived"
 msgstr "This thread is archived"
@@ -4958,6 +5043,10 @@ msgstr "Turn Streamer Mode on while a streaming app (OBS, Streamlabs, XSplit, ..
 #: src/interface/channels/text/TextChannel.tsx
 msgid "Unarchive"
 msgstr "Unarchive"
+
+#: components/app/interface/settings/server/apps/AppsList.tsx
+msgid "Unavailable"
+msgstr "Unavailable"
 
 #: components/app/menus/UserContextMenu.tsx
 msgid "Unblock user"
@@ -5308,9 +5397,17 @@ msgstr "With {0}"
 msgid "Without a recovery code, your encrypted messages cannot be restored if you lose this device. Create one and store it somewhere safe."
 msgstr "Without a recovery code, your encrypted messages cannot be restored if you lose this device. Create one and store it somewhere safe."
 
+#: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
+msgid "Works globally: the key registers even while your game or another app is focused."
+msgstr "Works globally: the key registers even while your game or another app is focused."
+
 #: components/modal/modals/CreateOrJoinServer.tsx
 msgid "Would you like to create a new server or join an existing one?"
 msgstr "Would you like to create a new server or join an existing one?"
+
+#: components/modal/modals/DiscoverJoin.tsx
+msgid "Would you like to join this server?"
+msgstr "Would you like to join this server?"
 
 #: src/interface/channels/text/Composition.tsx
 msgid "Write a message first, then schedule it"
@@ -5463,6 +5560,7 @@ msgid "You're already part of this group."
 msgstr "You're already part of this group."
 
 #: components/modal/modals/Invite.tsx
+#: components/modal/modals/DiscoverJoin.tsx
 #: components/i18n/errors.ts
 msgid "You're already part of this server."
 msgstr "You're already part of this server."
@@ -5524,6 +5622,10 @@ msgstr "Your discriminator change has been ratelimited, please try again later."
 msgid "Your draft is empty"
 msgstr "Your draft is empty"
 
+#: components/modal/modals/E2EEDisable.tsx
+msgid "Your encrypted data on this device was destroyed, but the old device entry could not be removed from the server. Other devices may keep sending messages to it until it is removed. You can retry now, and this entry can also be removed later."
+msgstr "Your encrypted data on this device was destroyed, but the old device entry could not be removed from the server. Other devices may keep sending messages to it until it is removed. You can retry now, and this entry can also be removed later."
+
 #: components/modal/modals/E2EEReenroll.tsx
 #~ msgid "Your encrypted history was restored, but this device had been logged out remotely, so it needs to be re-registered before it can send and receive again. Confirm your identity to finish."
 #~ msgstr "Your encrypted history was restored, but this device had been logged out remotely, so it needs to be re-registered before it can send and receive again. Confirm your identity to finish."
@@ -5551,42 +5653,3 @@ msgstr "Your suspension has expired — try logging in again."
 #: components/i18n/errors.ts
 msgid "Your user has already been created? Try logging in again or refreshing the app."
 msgstr "Your user has already been created? Try logging in again or refreshing the app."
-
-#: components/app/menus/UserContextMenu.tsx
-msgid "Send Message"
-msgstr "Send Message"
-
-#. E2EEDisable modal: server-side revoke failed after a successful local wipe
-#: components/modal/modals/E2EEDisable.tsx
-msgid "Your encrypted data on this device was destroyed, but the old device entry could not be removed from the server. Other devices may keep sending messages to it until it is removed. You can retry now, and this entry can also be removed later."
-msgstr "Your encrypted data on this device was destroyed, but the old device entry could not be removed from the server. Other devices may keep sending messages to it until it is removed. You can retry now, and this entry can also be removed later."
-
-msgid "Would you like to join this server?"
-msgstr "Would you like to join this server?"
-
-msgid "Public discovery"
-msgstr "Public discovery"
-
-msgid "This server is listed in the public directory on the Sloga website."
-msgstr "This server is listed in the public directory on the Sloga website."
-
-msgid "Listing requested — waiting for approval by the Sloga team."
-msgstr "Listing requested — waiting for approval by the Sloga team."
-
-msgid "This server is not publicly listed. Request a listing to appear in the public directory once approved by the Sloga team."
-msgstr "This server is not publicly listed. Request a listing to appear in the public directory once approved by the Sloga team."
-
-msgid "Immediately remove this server from the public directory"
-msgstr "Immediately remove this server from the public directory"
-
-msgid "Remove from public directory"
-msgstr "Remove from public directory"
-
-msgid "Ask for this server to be shown in the public directory. Its name, icon, description and member count become publicly visible once approved."
-msgstr "Ask for this server to be shown in the public directory. Its name, icon, description and member count become publicly visible once approved."
-
-msgid "Request public listing"
-msgstr "Request public listing"
-
-msgid "{0, plural, one {# member} other {# members}}"
-msgstr "{0, plural, one {# member} other {# members}}"

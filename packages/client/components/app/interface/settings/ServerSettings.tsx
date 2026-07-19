@@ -1,5 +1,6 @@
 import {
   BiSolidEnvelope,
+  BiSolidExtension,
   BiSolidFlagAlt,
   BiSolidGroup,
   BiSolidHappyBeaming,
@@ -21,6 +22,7 @@ import { ColouredText } from "@revolt/ui";
 import { SettingsConfiguration } from ".";
 import { ChannelPermissionsEditor } from "./channel/permissions/ChannelPermissionsEditor";
 import Overview from "./server/Overview";
+import { AppsList } from "./server/apps/AppsList";
 import { ListServerBans } from "./server/bans/ListBans";
 import { EmojiList } from "./server/emojis/EmojiList";
 import { SoundboardList } from "./server/soundboard/SoundboardList";
@@ -81,6 +83,8 @@ const Config: SettingsConfiguration<Server> = {
         return <StickerList server={server} />;
       case "soundboard":
         return <SoundboardList server={server} />;
+      case "apps":
+        return <AppsList server={server} />;
       case "roles":
         return <ServerRoleOverview context={server} />;
       case "invites":
@@ -134,6 +138,18 @@ const Config: SettingsConfiguration<Server> = {
               id: "soundboard",
               icon: <BiSolidMusic size={20} />,
               title: <Trans>Soundboard</Trans>,
+            },
+          ],
+        },
+        {
+          // Matches the backend gate on POST /bots/<id>/invite.
+          hidden: !server.havePermission("ManageServer"),
+          title: <Trans>Apps</Trans>,
+          entries: [
+            {
+              id: "apps",
+              icon: <BiSolidExtension size={20} />,
+              title: <Trans>Apps</Trans>,
             },
           ],
         },
