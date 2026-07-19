@@ -1959,6 +1959,7 @@ export class E2EEBridge implements E2EEAdapter {
       conversationId,
       content,
       data.e2eeAttachments ?? [],
+      [...channel.recipientIds.values()],
     );
 
     let receipts: unknown[];
@@ -2003,24 +2004,62 @@ export class E2EEBridge implements E2EEAdapter {
    * native layer demands them (`needs_bundle` for a sessionless member
    * device). All-of-audience-or-nobody: a member that cannot be encrypted
    * to is a hard error, never a partial send.
+   *
+   * Reconcile-reported devices (restored/new — tombstone design §2, the
+   * lifecycle §1 "group analog"): members flagged in `#bundleNeeded`
+   * (and self on `#selfDevicesUnpinned`) get their bundle PREFETCHED
+   * into the encrypt — `needs_bundle` never fires while any stale
+   * pinned device remains, so without this a group fan-out excludes a
+   * restored member device forever. Availability-only on fetch failure:
+   * the send proceeds on existing pins and the flag stays set.
    */
   async #encryptGroupWithBundles(
     conversationId: string,
     content: string,
     attachmentIds: string[],
+    memberIds: string[],
   ): Promise<EncryptResult> {
     const bundles: KeyBundle[] = [];
     const fetched = new Set<string>();
 
+    const selfId = this.#client.user!.id;
+    const prefetchedMembers: string[] = [];
+    let selfPrefetched = false;
+    for (const id of new Set([selfId, ...memberIds])) {
+      const flagged =
+        id === selfId ? this.#selfDevicesUnpinned : this.#bundleNeeded.has(id);
+      if (!flagged) continue;
+      try {
+        bundles.push(await this.#api<KeyBundle>("GET", `/e2ee/keys/${id}`));
+        fetched.add(id);
+        if (id === selfId) selfPrefetched = true;
+        else prefetchedMembers.push(id);
+      } catch (error) {
+        console.warn(
+          "[e2ee] group bundle prefetch failed; sending on existing pins",
+          error,
+        );
+      }
+    }
+
     for (let attempt = 0; attempt < 8; attempt++) {
       try {
-        return await this.#invoke<EncryptResult>("e2ee_encrypt_group", {
+        const result = await this.#invoke<EncryptResult>("e2ee_encrypt_group", {
           conversationId,
-          selfUserId: this.#client.user!.id,
+          selfUserId: selfId,
           bundles,
           content,
           attachments: attachmentIds,
         });
+        // Pins are durable in the native store — stop prefetching. Self
+        // clears optimistically (DM parity); member flags go through the
+        // MAJOR-4 consume-check: only a reconcile reporting zero
+        // remaining new_devices disarms them.
+        if (selfPrefetched) this.#selfDevicesUnpinned = false;
+        for (const id of prefetchedMembers) {
+          void this.#reconcileDevices(id).catch(() => {});
+        }
+        return result;
       } catch (raw) {
         const native = raw as NativeError;
         if (native.type === "needs_bundle" && native.user_id) {
