@@ -26,6 +26,38 @@ interface Sound {
 }
 
 /**
+ * Global preconfigured sound ("Sloga Sounds") — NOTE the server serializes
+ * these with a plain `id`, unlike server sounds' `_id` (not a DB document).
+ */
+interface DefaultSound {
+  id: string;
+  name: string;
+  emoji?: string;
+}
+
+// The default-sound list only changes when the server operator redeploys
+// config, so fetch it once per app lifetime and share across popover opens.
+// A failed fetch clears the cache so the next open retries.
+let defaultSoundsPromise: Promise<DefaultSound[]> | undefined;
+
+function fetchDefaultSounds(header: [string, string]): Promise<DefaultSound[]> {
+  if (!defaultSoundsPromise) {
+    defaultSoundsPromise = (async () => {
+      const res = await fetch(
+        `${CONFIGURATION.DEFAULT_API_URL}/custom/sounds/default`,
+        { headers: { [header[0]]: header[1] } },
+      );
+      if (!res.ok) throw new Error(`default sounds fetch ${res.status}`);
+      return (await res.json()) as DefaultSound[];
+    })().catch((error) => {
+      defaultSoundsPromise = undefined;
+      throw error;
+    });
+  }
+  return defaultSoundsPromise;
+}
+
+/**
  * In-call soundboard picker: a bar button that opens a popover of the server's
  * soundboard sounds. Clicking one hits the trigger REST route — the server
  * fans a `SoundboardSound` event to everyone in the call, who each play the
@@ -58,19 +90,25 @@ export function VoiceSoundboardButton(props: { size: "xs" | "sm" }) {
 
   onCleanup(() => document.removeEventListener("pointerdown", onPointerDown));
 
-  // Fetch the server's sounds the first time the popover opens (and refetch on
-  // reopen so a just-uploaded sound appears without a reload).
+  // Fetch the server's sounds each time the popover opens (so a just-uploaded
+  // sound appears without a reload); the global default list rides the
+  // app-lifetime cache. Either list failing renders that section empty.
   const [sounds] = createResource(open, async (isOpen) => {
-    if (!isOpen) return [] as Sound[];
-    const serverId = voice?.channel()?.serverId;
-    if (!serverId) return [] as Sound[];
+    if (!isOpen) return { server: [] as Sound[], defaults: [] as DefaultSound[] };
     const [key, value] = client().authenticationHeader;
-    const res = await fetch(
-      `${CONFIGURATION.DEFAULT_API_URL}/custom/server/${serverId}/sounds`,
-      { headers: { [key]: value } },
-    );
-    if (!res.ok) return [] as Sound[];
-    return (await res.json()) as Sound[];
+    const header: [string, string] = [key, value];
+    const serverId = voice?.channel()?.serverId;
+    const serverSounds: Promise<Sound[]> = serverId
+      ? fetch(
+          `${CONFIGURATION.DEFAULT_API_URL}/custom/server/${serverId}/sounds`,
+          { headers: { [key]: value } },
+        ).then((res) => (res.ok ? (res.json() as Promise<Sound[]>) : []))
+      : Promise.resolve([]);
+    const [server, defaults] = await Promise.all([
+      serverSounds.catch(() => [] as Sound[]),
+      fetchDefaultSounds(header).catch(() => [] as DefaultSound[]),
+    ]);
+    return { server, defaults };
   });
 
   function trigger(soundId: string) {
@@ -85,20 +123,52 @@ export function VoiceSoundboardButton(props: { size: "xs" | "sm" }) {
             <Match when={sounds.loading}>
               <CircularProgress />
             </Match>
-            <Match when={sounds() && sounds()!.length}>
-              <Grid>
-                <For each={sounds()}>
-                  {(sound) => (
-                    <SoundButton
-                      onClick={() => trigger(sound._id)}
-                      title={sound.name}
-                    >
-                      <span>{sound.emoji || "🔊"}</span>
-                      <Label>{sound.name}</Label>
-                    </SoundButton>
-                  )}
-                </For>
-              </Grid>
+            <Match
+              when={
+                sounds() &&
+                (sounds()!.server.length || sounds()!.defaults.length)
+              }
+            >
+              <Show when={sounds()!.server.length}>
+                {/* Header is the server's name (data, not a msgid — the
+                    catalog toolchain is frozen); hidden if uncached. */}
+                <Show
+                  when={
+                    client().servers.get(voice?.channel()?.serverId ?? "")?.name
+                  }
+                >
+                  {(name) => <SectionHeader>{name()}</SectionHeader>}
+                </Show>
+                <Grid>
+                  <For each={sounds()!.server}>
+                    {(sound) => (
+                      <SoundButton
+                        onClick={() => trigger(sound._id)}
+                        title={sound.name}
+                      >
+                        <span>{sound.emoji || "🔊"}</span>
+                        <Label>{sound.name}</Label>
+                      </SoundButton>
+                    )}
+                  </For>
+                </Grid>
+              </Show>
+              <Show when={sounds()!.defaults.length}>
+                <SectionHeader>Sloga Sounds</SectionHeader>
+                <Grid>
+                  <For each={sounds()!.defaults}>
+                    {(sound) => (
+                      <SoundButton
+                        onClick={() => trigger(sound.id)}
+                        title={sound.name}
+                      >
+                        <span>{sound.emoji || "🔊"}</span>
+                        <Label>{sound.name}</Label>
+                      </SoundButton>
+                    )}
+                  </For>
+                </Grid>
+              </Show>
             </Match>
           </Switch>
         </Overlay>
@@ -155,6 +225,18 @@ const Grid = styled("div", {
     display: "grid",
     gridTemplateColumns: "repeat(auto-fill, minmax(72px, 1fr))",
     gap: "var(--gap-sm)",
+  },
+});
+
+const SectionHeader = styled("div", {
+  base: {
+    fontSize: "0.65em",
+    fontWeight: 600,
+    textTransform: "uppercase",
+    letterSpacing: "0.04em",
+    color: "var(--md-sys-color-on-surface-variant)",
+    padding: "var(--gap-sm) var(--gap-sm) var(--gap-xs)",
+    textAlign: "start",
   },
 });
 
