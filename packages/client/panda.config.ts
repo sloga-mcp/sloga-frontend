@@ -32,6 +32,17 @@ export default defineConfig({
             paddingInline: "var(--padding-inline)",
           },
         },
+        incomingCallPulse: {
+          "0%": {
+            boxShadow: "0 0 0 0 var(--md-sys-color-primary)",
+          },
+          "70%": {
+            boxShadow: "0 0 0 10px transparent",
+          },
+          "100%": {
+            boxShadow: "0 0 0 0 transparent",
+          },
+        },
         scrimFadeIn: {
           "0%": {
             background: "transparent",

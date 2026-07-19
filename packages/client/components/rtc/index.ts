@@ -1,6 +1,19 @@
 export { VoiceContext, useVoice, platformMediaE2EESupported } from "./state";
 export type { DiceRollToast } from "./state";
 
+export {
+  incomingCall,
+  presentIncomingCall,
+  dismissIncomingCall,
+  INCOMING_CALL_TIMEOUT_MS,
+} from "./incomingCall";
+export type { IncomingCall } from "./incomingCall";
+
+export {
+  captionBroadcastSupported,
+  captionSttEngineKind,
+} from "./captions/captionEngine";
+export type { CaptionSttEngineKind } from "./captions/captionEngine";
 export { webSpeechSupported } from "./captions/speechCaptionEngine";
 
 export { InRoom } from "./components/InRoom";

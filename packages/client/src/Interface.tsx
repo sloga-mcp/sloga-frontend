@@ -27,6 +27,7 @@ import { useState } from "@revolt/state";
 import { streamerModeActive } from "@revolt/state/streamer";
 import { LAYOUT_SECTIONS } from "@revolt/state/stores/Layout";
 import { CircularProgress } from "@revolt/ui";
+import { IncomingCallOverlay } from "@revolt/ui/components/features/voice/IncomingCallOverlay";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
 
 import { SlideDrawer } from "../components/ui/components/navigation/SlideDrawer";
@@ -160,6 +161,7 @@ const Interface = (props: { children: JSX.Element }) => {
         <ActivityWorker />
         <StreamerModeWorker />
         <ApkUpdateWorker />
+        <IncomingCallOverlay />
       </AppRoot>
     </MessageCache>
   );

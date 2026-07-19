@@ -11,6 +11,7 @@ import { useClient } from "@revolt/client";
 import { TextWithEmoji } from "@revolt/markdown";
 import { useModals } from "@revolt/modal";
 import { useLocation, useNavigate } from "@revolt/routing";
+import { incomingCall } from "@revolt/rtc";
 import {
   Avatar,
   Deferred,
@@ -267,9 +268,15 @@ function Entry(
   const { openModal } = useModals();
 
   /**
+   * Whether this conversation has a call ringing us right now
+   */
+  const ringing = () => incomingCall()?.channel.id === local.channel.id;
+
+  /**
    * Determine user status if present
    */
   const status = () => {
+    if (ringing()) return t`Incoming Call`;
     const activity = local.channel.recipient?.activity;
     if (activity) return t`Playing ${activity.name}`;
     return local.channel.recipient?.statusMessage((s) =>
@@ -291,18 +298,21 @@ function Entry(
       href={`/channel/${local.channel.id}`}
       size="normal"
       alert={
-        !local.active &&
-        local.channel.unread &&
-        (local.channel.mentions?.size || true)
+        (!local.active && ringing()) ||
+        (!local.active &&
+          local.channel.unread &&
+          (local.channel.mentions?.size || true))
       }
       attention={
         local.active
           ? "selected"
-          : local.channel.muted
-            ? "muted"
-            : local.channel.unread
-              ? "active"
-              : "normal"
+          : ringing()
+            ? "active"
+            : local.channel.muted
+              ? "muted"
+              : local.channel.unread
+                ? "active"
+                : "normal"
       }
       icon={
         <Switch>

@@ -53,9 +53,31 @@ export async function requestNotificationPermission(): Promise<boolean> {
   return (await Notification.requestPermission()) === "granted";
 }
 
+/** Tauri core invoke, present only inside the desktop app */
+function tauriInvoke():
+  | ((cmd: string, args?: Record<string, unknown>) => Promise<unknown>)
+  | undefined {
+  return (
+    window as {
+      __TAURI__?: {
+        core?: {
+          invoke?: (
+            cmd: string,
+            args?: Record<string, unknown>,
+          ) => Promise<unknown>;
+        };
+      };
+    }
+  ).__TAURI__?.core?.invoke;
+}
+
 /**
- * Show a desktop notification. Click handling (focus + navigate) only works
- * on web — Tauri toast clicks just open the app via the tray/taskbar.
+ * Show a desktop notification.
+ * - Web: standard Notification with `onClick`.
+ * - Tauri: if `path` is given, route through the shell's clickable toast
+ *   (`show_clickable_notification` — clicking focuses the window and emits
+ *   `notification_clicked` with the path, handled in NotificationsWorker);
+ *   shells without that command fall back to a fire-and-forget toast.
  */
 export function showNotification(options: {
   title: string;
@@ -65,9 +87,27 @@ export function showNotification(options: {
   tag?: string;
   timestamp?: Date;
   onClick?: () => void;
+  /** In-app path to open when the notification is clicked (serializable) */
+  path?: string;
 }): void {
   const tauri = tauriNotification();
   if (tauri) {
+    const invoke = tauriInvoke();
+    if (invoke && options.path) {
+      invoke("show_clickable_notification", {
+        title: options.title,
+        body: options.body ?? null,
+        path: options.path,
+      }).catch(() =>
+        // Older shell without the command — plain toast
+        tauri.sendNotification({
+          title: options.title,
+          body: options.body,
+        }),
+      );
+      return;
+    }
+
     tauri.sendNotification({
       title: options.title,
       body: options.body,

@@ -18,7 +18,11 @@ import {
 } from "stoat.js";
 
 import { useNavigate, useSmartParams } from "@revolt/routing";
-import { useVoice } from "@revolt/rtc";
+import {
+  dismissIncomingCall,
+  presentIncomingCall,
+  useVoice,
+} from "@revolt/rtc";
 import { useState } from "@revolt/state";
 import { streamerModeHides } from "@revolt/state/streamer";
 
@@ -240,6 +244,7 @@ export function NotificationsWorker() {
       body,
       timestamp: message.createdAt,
       tag: message.channelId,
+      path: message.path,
       onClick: () => {
         window.focus();
         navigate(message.path);
@@ -259,11 +264,16 @@ export function NotificationsWorker() {
     // We answered (or started) the call — stop any ringing
     if (userId === us.id) {
       sound.stopRingtone();
+      dismissIncomingCall(channel.id);
       return;
     }
 
     // Never ring if we're already in this call (e.g. the other side answering)
     if (channel.voiceParticipants.has(us.id)) return;
+
+    // Only ring when the call STARTS (the joiner is the sole participant);
+    // later joiners of an ongoing group call shouldn't re-ring us
+    if (channel.voiceParticipants.size !== 1) return;
 
     const callerUser = client().users.get(userId);
     const callerName = callerUser?.displayName ?? callerUser?.username ?? "Someone";
@@ -271,6 +281,14 @@ export function NotificationsWorker() {
 
     // Play incoming ringtone (respects user sound preference)
     sound.playSound("ringtoneIncoming");
+
+    // In-app ringing popup (IncomingCallOverlay) with Accept/Decline — shown
+    // regardless of desktop-notification permission so calls are answerable
+    presentIncomingCall({
+      channel,
+      caller: callerUser,
+      receivedAt: Date.now(),
+    });
 
     // Show desktop notification if permitted
     if (
@@ -283,6 +301,7 @@ export function NotificationsWorker() {
         body: t`${callerName} is calling in ${channelName}`,
         icon: callerUser?.avatarURL,
         tag: `call-${channel.id}`,
+        path: channel.path,
         onClick: () => {
           window.focus();
           navigate(channel.path);
@@ -298,6 +317,7 @@ export function NotificationsWorker() {
     if (channel.type !== "DirectMessage" && channel.type !== "Group") return;
     if (channel.voiceParticipants.size === 0) {
       sound.stopRingtone();
+      dismissIncomingCall(channel.id);
     }
   }
 
@@ -321,6 +341,7 @@ export function NotificationsWorker() {
         body: t`${user.displayName ?? user.username} sent you a friend request`,
         icon: user.animatedAvatarURL ?? user.avatarURL,
         tag: `friend-request-${user.id}`,
+        path: "/friends",
         onClick: () => {
           window.focus();
           navigate("/friends");
@@ -328,6 +349,32 @@ export function NotificationsWorker() {
       });
     }
   }
+
+  // Desktop shell: clicking a WinRT toast focuses the window and emits
+  // `notification_clicked` with the in-app path to open (see
+  // show_clickable_notification in the desktop shell)
+  onMount(() => {
+    const tauriEvent = (
+      window as {
+        __TAURI__?: {
+          event?: {
+            listen(
+              event: string,
+              handler: (event: { payload: unknown }) => void,
+            ): Promise<() => void>;
+          };
+        };
+      }
+    ).__TAURI__?.event;
+    if (!tauriEvent) return;
+
+    const unlisten = tauriEvent.listen("notification_clicked", (event) => {
+      if (typeof event.payload === "string" && event.payload.startsWith("/")) {
+        navigate(event.payload);
+      }
+    });
+    onCleanup(() => unlisten.then((fn) => fn()).catch(() => {}));
+  });
 
   // Native app: notification taps (open message / answer call) navigate here
   onMount(() => {
@@ -372,9 +419,9 @@ export function NotificationsWorker() {
         /* ignore malformed payloads */
       }
     };
-    window.addEventListener("acutestNotificationAction", onAction);
+    window.addEventListener("slogaNotificationAction", onAction);
     onCleanup(() =>
-      window.removeEventListener("acutestNotificationAction", onAction),
+      window.removeEventListener("slogaNotificationAction", onAction),
     );
   });
 
