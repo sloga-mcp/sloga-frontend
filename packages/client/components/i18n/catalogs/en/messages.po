@@ -5560,3 +5560,33 @@ msgstr "Send Message"
 #: components/modal/modals/E2EEDisable.tsx
 msgid "Your encrypted data on this device was destroyed, but the old device entry could not be removed from the server. Other devices may keep sending messages to it until it is removed. You can retry now, and this entry can also be removed later."
 msgstr "Your encrypted data on this device was destroyed, but the old device entry could not be removed from the server. Other devices may keep sending messages to it until it is removed. You can retry now, and this entry can also be removed later."
+
+msgid "Would you like to join this server?"
+msgstr "Would you like to join this server?"
+
+msgid "Public discovery"
+msgstr "Public discovery"
+
+msgid "This server is listed in the public directory on the Sloga website."
+msgstr "This server is listed in the public directory on the Sloga website."
+
+msgid "Listing requested — waiting for approval by the Sloga team."
+msgstr "Listing requested — waiting for approval by the Sloga team."
+
+msgid "This server is not publicly listed. Request a listing to appear in the public directory once approved by the Sloga team."
+msgstr "This server is not publicly listed. Request a listing to appear in the public directory once approved by the Sloga team."
+
+msgid "Immediately remove this server from the public directory"
+msgstr "Immediately remove this server from the public directory"
+
+msgid "Remove from public directory"
+msgstr "Remove from public directory"
+
+msgid "Ask for this server to be shown in the public directory. Its name, icon, description and member count become publicly visible once approved."
+msgstr "Ask for this server to be shown in the public directory. Its name, icon, description and member count become publicly visible once approved."
+
+msgid "Request public listing"
+msgstr "Request public listing"
+
+msgid "{0, plural, one {# member} other {# members}}"
+msgstr "{0, plural, one {# member} other {# members}}"

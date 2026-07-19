@@ -12,7 +12,7 @@ import { Navigate, Route, Router, useParams } from "@solidjs/router";
 import { QueryClient, QueryClientProvider } from "@tanstack/solid-query";
 import "material-symbols";
 import "mdui/mdui.css";
-import { PublicBot, PublicChannelInvite } from "stoat.js";
+import { DiscoverableServer, PublicBot, PublicChannelInvite } from "stoat.js";
 
 import FlowCheck from "@revolt/auth/src/flows/FlowCheck";
 import FlowConfirmReset from "@revolt/auth/src/flows/FlowConfirmReset";
@@ -46,7 +46,6 @@ import AuthPage from "./Auth";
 import Interface from "./Interface";
 import "./index.css";
 import { DevelopmentPage } from "./interface/Development";
-import { Discover } from "./interface/Discover";
 import { Friends } from "./interface/Friends";
 import { FriendsPopout } from "./interface/FriendsPopout";
 import { HomePage } from "./interface/Home";
@@ -90,6 +89,26 @@ function InviteRedirect() {
         .api.get(`/invites/${params.code as ""}`)
         .then((invite) => PublicChannelInvite.from(client(), invite))
         .then((invite) => openModal({ type: "invite", invite }))
+        .catch(showError);
+    }
+  });
+
+  return <PWARedirect />;
+}
+
+/**
+ * Open a discoverable server's join prompt and redirect to last active path
+ * (landing route for sloga.gg/discover "Open Sloga" buttons)
+ */
+function DiscoverRedirect() {
+  const params = useParams();
+  const client = useClient();
+  const { openModal, showError } = useModals();
+
+  onMount(() => {
+    if (params.id) {
+      DiscoverableServer.fetch(client(), params.id)
+        .then((server) => openModal({ type: "discover_join", server }))
         .catch(showError);
     }
   });
@@ -179,7 +198,7 @@ render(
           <Route path="/" component={Interface as never}>
             <Route path="/pwa" component={PWARedirect} />
             <Route path="/dev" component={DevelopmentPage} />
-            <Route path="/discover/*" component={Discover} />
+            <Route path="/discover/server/:id" component={DiscoverRedirect} />
             <Route path="/settings" component={SettingsRedirect} />
             <Route path="/invite/:code" component={InviteRedirect} />
             <Route path="/bot/:code" component={BotRedirect} />

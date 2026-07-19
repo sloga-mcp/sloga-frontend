@@ -4,6 +4,7 @@ import {
   Bot,
   Channel,
   Client,
+  DiscoverableServer,
   Emoji,
   File,
   ImageEmbed,
@@ -325,6 +326,10 @@ export type Modals =
   | {
       type: "invite";
       invite: PublicChannelInvite;
+    }
+  | {
+      type: "discover_join";
+      server: DiscoverableServer;
     }
   | {
       type: "settings";

@@ -7,6 +7,8 @@ import type { API } from "stoat.js";
 import { useClient } from "@revolt/client";
 import { CONFIGURATION } from "@revolt/common";
 import {
+  CategoryButton,
+  Checkbox,
   CircularProgress,
   Column,
   Form2,
@@ -14,6 +16,8 @@ import {
   Row,
   Text,
 } from "@revolt/ui";
+
+import { useModals } from "@revolt/modal";
 
 import { ServerSettingsProps } from "../ServerSettings";
 
@@ -23,6 +27,35 @@ import { ServerSettingsProps } from "../ServerSettings";
 export default function ServerOverview(props: ServerSettingsProps) {
   const { t } = useLingui();
   const client = useClient();
+  const { showError } = useModals();
+
+  /**
+   * Listing a community publicly is an owner-level decision — the section
+   * below only renders for the server owner. Listing itself (`discoverable`)
+   * is flipped by platform admins; owners request/withdraw and can delist.
+   */
+  const isOwner = () => props.server.ownerId === client().user?.id;
+
+  const discoveryStatus = () =>
+    props.server.discoverable
+      ? "listed"
+      : props.server.discoveryRequested
+        ? "pending"
+        : "unlisted";
+
+  function setDiscoveryRequested(requested: boolean) {
+    props.server
+      .edit({
+        discovery_requested: requested,
+      } as never)
+      .catch(showError);
+  }
+
+  function delist() {
+    props.server
+      .edit({ discoverable: false } as never)
+      .catch(showError);
+  }
 
   /* eslint-disable solid/reactivity */
   const editGroup = createFormGroup({
@@ -324,6 +357,61 @@ export default function ServerOverview(props: ServerSettingsProps) {
           </Row>
         </Column>
       </form>
+      <Show when={isOwner()}>
+        <Column>
+          <Text class="title" size="small">
+            <Trans>Public discovery</Trans>
+          </Text>
+          <Text class="label">
+            <Show when={discoveryStatus() === "listed"}>
+              <Trans>
+                This server is listed in the public directory on the Sloga
+                website.
+              </Trans>
+            </Show>
+            <Show when={discoveryStatus() === "pending"}>
+              <Trans>
+                Listing requested — waiting for approval by the Sloga team.
+              </Trans>
+            </Show>
+            <Show when={discoveryStatus() === "unlisted"}>
+              <Trans>
+                This server is not publicly listed. Request a listing to
+                appear in the public directory once approved by the Sloga
+                team.
+              </Trans>
+            </Show>
+          </Text>
+          <CategoryButton.Group>
+            <Show
+              when={discoveryStatus() !== "listed"}
+              fallback={
+                <CategoryButton
+                  description={t`Immediately remove this server from the public directory`}
+                  onClick={delist}
+                >
+                  <Trans>Remove from public directory</Trans>
+                </CategoryButton>
+              }
+            >
+              <CategoryButton
+                action={
+                  <Checkbox
+                    checked={props.server.discoveryRequested}
+                    onChange={(event) =>
+                      setDiscoveryRequested(event.currentTarget.checked)
+                    }
+                  />
+                }
+                description={t`Ask for this server to be shown in the public directory. Its name, icon, description and member count become publicly visible once approved.`}
+                onClick={() => void 0}
+              >
+                <Trans>Request public listing</Trans>
+              </CategoryButton>
+            </Show>
+          </CategoryButton.Group>
+        </Column>
+      </Show>
     </Column>
   );
 }
