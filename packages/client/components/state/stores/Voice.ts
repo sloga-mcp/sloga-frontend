@@ -84,7 +84,11 @@ export type CameraFaceFilterId =
   | "viking"
   | "gamer-headset"
   | "pixel-shades"
-  | "health-bar";
+  | "health-bar"
+  | "wizard-hat"
+  | "dragon"
+  | "d20"
+  | "elf-ears";
 
 /**
  * Array of available face-filter ids.
@@ -100,6 +104,10 @@ export const CameraFaceFilterIds: CameraFaceFilterId[] = [
   "gamer-headset",
   "pixel-shades",
   "health-bar",
+  "wizard-hat",
+  "dragon",
+  "d20",
+  "elf-ears",
 ];
 
 /**

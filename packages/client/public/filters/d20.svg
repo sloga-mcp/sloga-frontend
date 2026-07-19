@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="260" height="290" viewBox="0 0 260 290">
+  <!-- Sloga original artwork (face-filter asset) — the die of destiny -->
+  <!-- Hex silhouette -->
+  <path d="M130 8 L 246 76 L 246 214 L 130 282 L 14 214 L 14 76 Z" fill="#5b3fa8"/>
+  <!-- Facets -->
+  <g stroke="#8b6fd8" stroke-width="6" stroke-linejoin="round" fill="none">
+    <path d="M130 8 L 60 92 L 130 60 L 200 92 Z"/>
+    <path d="M130 8 L 14 76 L 60 92 M 130 8 L 246 76 L 200 92"/>
+    <path d="M60 92 L 130 230 L 200 92 L 130 60 L 60 92 Z"/>
+    <path d="M14 76 L 60 92 M 14 214 L 60 92 M 14 214 L 130 230 L 130 282 M 246 214 L 200 92 M 246 214 L 130 230"/>
+  </g>
+  <!-- Center 20 -->
+  <g font-family="'Courier New', monospace" font-weight="bold" text-anchor="middle">
+    <text x="130" y="165" font-size="64" fill="#ffffff">20</text>
+  </g>
+</svg>

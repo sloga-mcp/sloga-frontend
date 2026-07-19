@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="240" viewBox="0 0 680 240">
+  <!-- Sloga original artwork (face-filter asset) — pointy ears, middle transparent -->
+  <g>
+    <path d="M118 200 C 70 190, 30 160, 8 96 C 4 82, 8 62, 24 44 C 46 22, 78 18, 104 38 C 96 60, 92 88, 94 118 C 96 150, 104 178, 118 200 Z" fill="#e8b48f"/>
+    <path d="M24 44 C 42 30, 66 28, 86 42 C 78 62, 74 86, 76 112 C 56 100, 38 80, 28 56 C 26 52, 25 48, 24 44 Z" fill="#d99d77"/>
+  </g>
+  <g transform="translate(680,0) scale(-1,1)">
+    <path d="M118 200 C 70 190, 30 160, 8 96 C 4 82, 8 62, 24 44 C 46 22, 78 18, 104 38 C 96 60, 92 88, 94 118 C 96 150, 104 178, 118 200 Z" fill="#e8b48f"/>
+    <path d="M24 44 C 42 30, 66 28, 86 42 C 78 62, 74 86, 76 112 C 56 100, 38 80, 28 56 C 26 52, 25 48, 24 44 Z" fill="#d99d77"/>
+  </g>
+</svg>

@@ -220,6 +220,64 @@ export const FACE_FILTERS: Record<CameraFaceFilterId, FaceFilterDef> = {
       },
     ],
   },
+  "wizard-hat": {
+    id: "wizard-hat",
+    name: "Wizard",
+    thumb: "wizard-hat.svg",
+    layers: [
+      {
+        src: "wizard-hat.svg",
+        anchor: "head-top",
+        widthFactor: 2.3,
+        offset: { x: 0, y: -0.95 },
+      },
+    ],
+  },
+  dragon: {
+    id: "dragon",
+    name: "Dragon",
+    thumb: "dragon-horns.svg",
+    layers: [
+      {
+        src: "dragon-horns.svg",
+        anchor: "head-top",
+        widthFactor: 2.6,
+        offset: { x: 0, y: -0.6 },
+      },
+      {
+        src: "dragon-flame.svg",
+        anchor: "upper-lip",
+        widthFactor: 1.3,
+        offset: { x: 0, y: 0.8 },
+      },
+    ],
+  },
+  d20: {
+    id: "d20",
+    name: "D20",
+    thumb: "d20.svg",
+    layers: [
+      {
+        src: "d20.svg",
+        anchor: "head-top",
+        widthFactor: 1.1,
+        offset: { x: 0, y: -1.35 },
+      },
+    ],
+  },
+  "elf-ears": {
+    id: "elf-ears",
+    name: "Elf Ears",
+    thumb: "elf-ears.svg",
+    layers: [
+      {
+        src: "elf-ears.svg",
+        anchor: "eyes",
+        widthFactor: 3.3,
+        offset: { x: 0, y: 0.1 },
+      },
+    ],
+  },
 };
 
 /** One-tap color grades (brightness handled separately by the processor). */

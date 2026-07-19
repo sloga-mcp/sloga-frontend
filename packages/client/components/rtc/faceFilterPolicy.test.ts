@@ -23,6 +23,10 @@ const CameraFaceFilterIds = [
   "gamer-headset",
   "pixel-shades",
   "health-bar",
+  "wizard-hat",
+  "dragon",
+  "d20",
+  "elf-ears",
 ] as const;
 const CameraColorLookIds = ["warm", "cool", "vintage", "mono", "vivid"] as const;
 
