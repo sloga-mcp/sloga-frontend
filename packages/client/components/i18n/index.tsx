@@ -26,8 +26,13 @@ export async function loadAndSwitchLocale(
         : (await import(`./catalogs/${Languages[key].i18n}/messages.ts`))
             .messages;
 
+    // English underlay: any id missing from the active locale's catalog falls
+    // back to the en string instead of rendering the raw lingui hash (e.g.
+    // "cSev+j") — locale catalogs lag behind en whenever new strings land
+    // (extract/resync has been broken), and en-US variants are the DEFAULT for
+    // most browsers via the exact-match in browserPreferredLanguage.
     i18n.load({
-      [key]: data,
+      [key]: { ...en, ...data },
     });
 
     i18n.activate(key);

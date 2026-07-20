@@ -24,7 +24,6 @@ import {
   ScreenShareQualityName,
 } from "@revolt/state/stores/Voice";
 import {
-  Button,
   CategoryButton,
   CategorySelectOption,
   Checkbox,
@@ -221,6 +220,24 @@ function CameraFilterOptions() {
     voiceContext.cameraFaceFilterStatus() === "failed" ||
     previewFaceFilterStatus() === "failed";
 
+  // Solid theme-token chip (the shared Button "secondary" gradient is
+  // illegible in dense pill rows — user report 2026-07-19).
+  const chipStyle = (selected: boolean) =>
+    ({
+      padding: "6px 14px",
+      "border-radius": "999px",
+      border: "1px solid var(--md-sys-color-outline-variant)",
+      cursor: "pointer",
+      "font-size": "0.9em",
+      "font-weight": "600",
+      background: selected
+        ? "var(--md-sys-color-primary)"
+        : "var(--md-sys-color-surface-container-high)",
+      color: selected
+        ? "var(--md-sys-color-on-primary)"
+        : "var(--md-sys-color-on-surface)",
+    }) as const;
+
   const thumbStyle = (selected: boolean) => ({
     width: "72px",
     height: "72px",
@@ -306,26 +323,24 @@ function CameraFilterOptions() {
               <Trans>Color filter</Trans>
             </Text>
             <div style={{ display: "flex", "flex-wrap": "wrap", gap: "8px" }}>
-              <Button
-                variant={!voice.cameraColorLookId ? "filled" : "secondary"}
-                onPress={() =>
+              <button
+                style={chipStyle(!voice.cameraColorLookId)}
+                onClick={() =>
                   voiceContext.setCameraFaceFilter({ colorLookId: null })
                 }
               >
                 {t`None`}
-              </Button>
+              </button>
               <For each={CameraColorLookIds}>
                 {(id) => (
-                  <Button
-                    variant={
-                      voice.cameraColorLookId === id ? "filled" : "secondary"
-                    }
-                    onPress={() =>
+                  <button
+                    style={chipStyle(voice.cameraColorLookId === id)}
+                    onClick={() =>
                       voiceContext.setCameraFaceFilter({ colorLookId: id })
                     }
                   >
                     {COLOR_LOOKS[id].name}
-                  </Button>
+                  </button>
                 )}
               </For>
             </div>
