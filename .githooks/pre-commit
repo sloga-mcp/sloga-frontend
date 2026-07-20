@@ -1,0 +1,38 @@
+#!/bin/sh
+# Sloga pre-commit secret scanner.
+# Blocks a commit whose staged changes add a high-signal secret. Self-contained
+# (POSIX sh + grep -E); no external tools required.
+#
+# Enable once per clone:   git config core.hooksPath .githooks
+# Bypass (discouraged):    git commit --no-verify
+#
+# This is a safety net, not a guarantee. Never commit real credentials; keep them
+# in gitignored files (Revolt.overrides.toml, .env, google-services.json, ...).
+
+added=$(git diff --cached --no-color --unified=0 --diff-filter=ACM 2>/dev/null \
+        | grep '^+' | grep -v '^+++')
+[ -z "$added" ] && exit 0
+
+hits=$(printf '%s\n' "$added" | grep -nE \
+  -e '-----BEGIN[A-Z ]*PRIVATE KEY-----' \
+  -e '(^|[^A-Za-z0-9])(AKIA|ASIA)[0-9A-Z]{16}' \
+  -e '(^|[^A-Za-z0-9])re_[0-9A-Za-z]{22,}' \
+  -e '(^|[^A-Za-z0-9])(sk|rk|pk)_live_[0-9A-Za-z]{16,}' \
+  -e '(^|[^A-Za-z0-9])xox[baprs]-[0-9]{8,}-[0-9A-Za-z-]{8,}' \
+  -e '(^|[^A-Za-z0-9])AIza[0-9A-Za-z_-]{35}' \
+  -e '(^|[^A-Za-z0-9])gh[pousr]_[0-9A-Za-z]{36}' \
+  -e '(^|[^A-Za-z0-9])github_pat_[0-9A-Za-z_]{40,}' \
+  -e 'eyJ[0-9A-Za-z_-]{15,}\.eyJ[0-9A-Za-z_-]{15,}\.' \
+  -e 'mongodb(\+srv)?://[^ :"]+:[^ @"]+@' \
+  -e '(redis|amqp|postgres|postgresql|mysql|https?)://[A-Za-z0-9._%+-]+:[^@ /"]{6,}@')
+
+if [ -n "$hits" ]; then
+  echo "=============================================================="
+  echo " Sloga pre-commit: possible secret in staged changes — BLOCKED"
+  echo "=============================================================="
+  printf '%s\n' "$hits" | head -20
+  echo ""
+  echo " If this is a genuine false positive: git commit --no-verify"
+  exit 1
+fi
+exit 0

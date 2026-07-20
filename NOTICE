@@ -1,0 +1,27 @@
+Sloga — web / desktop client
+Copyright (C) Sloga Technologies LLC and the Sloga contributors.
+
+This program is a modified version of the Revolt client
+(https://github.com/revoltchat/frontend). Portions are Copyright (C) the Revolt
+contributors.
+
+LICENSE
+-------
+Except where a workspace package or subdirectory provides its own LICENSE file,
+this program is free software: you may redistribute it and/or modify it under
+the terms of the GNU Affero General Public License, version 3, or (at your
+option) any later version (AGPL-3.0-or-later). See the LICENSE file for the full
+text. Some bundled workspace packages (for example, packages/stoat.js) carry
+their own MIT LICENSE.
+
+AGPL section 13: if you run a modified version of this software on a network
+server and let users interact with it there, you must offer those users access
+to the Corresponding Source of your modified version.
+
+END-TO-END ENCRYPTION
+---------------------
+This repository includes compiled native binaries and generated bindings for
+Sloga's end-to-end-encryption layer (for example, libacutest_e2ee.*). The source
+for those components (the `e2ee-core` / `e2ee-android` crates) is independently
+authored by Sloga Technologies LLC, separately licensed, and maintained outside
+this repository.
