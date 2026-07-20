@@ -7,7 +7,7 @@
 	update = none
 [submodule "packages/solid-livekit-components"]
 	path = packages/solid-livekit-components
-	url = https://github.com/revoltchat/solid-livekit-components
+	url = https://github.com/sloga-mcp/sloga-solid-livekit-components.git
 [submodule "packages/js-lingui-solid"]
 	path = packages/js-lingui-solid
 	url = https://github.com/revoltchat/js-lingui-solid

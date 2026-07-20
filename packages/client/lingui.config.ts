@@ -12,6 +12,7 @@ const supressWarningIfWereNotInLinguiExtract = !(
 
 export default defineConfig({
   sourceLocale: "en",
+  compileNamespace: "ts",
   locales: Object.values(Languages).map(({ i18n }) => i18n),
   catalogs: [
     {

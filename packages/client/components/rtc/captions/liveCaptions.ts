@@ -1,8 +1,8 @@
 import { ReactiveMap } from "@solid-primitives/map";
 import type { Room } from "livekit-client";
 
+import { createCaptionEngine } from "./captionEngine";
 import type { CaptionEngine, CaptionResult } from "./speechCaptionEngine";
-import { WebSpeechCaptionEngine } from "./speechCaptionEngine";
 
 /** A caption currently displayed for one call participant. */
 export interface CaptionEntry {
@@ -56,9 +56,7 @@ export class LiveCaptions {
   #localIdentity = "";
   #localLang = "en-US";
   #publishing = false;
-  #dataHandler:
-    | ((payload: Uint8Array, ...rest: unknown[]) => void)
-    | undefined;
+  #dataHandler: ((payload: Uint8Array, ...rest: unknown[]) => void) | undefined;
   #clearTimers = new Map<string, ReturnType<typeof setTimeout>>();
   #encoder = new TextEncoder();
   #decoder = new TextDecoder();
@@ -121,7 +119,7 @@ export class LiveCaptions {
   }
 
   #startLocal() {
-    const engine = (this.#engine ??= new WebSpeechCaptionEngine());
+    const engine = (this.#engine ??= createCaptionEngine());
     if (!engine.supported) return;
     // start() re-targets the language if already running.
     engine.start(this.#localLang, (result) => this.#onLocalResult(result));

@@ -142,7 +142,14 @@ export function useNotifications() {
 
 /** Native bridge to fetch the FCM device token (Android app only) */
 const PushTokenNative = Capacitor.isNativePlatform()
-  ? registerPlugin<{ getToken(): Promise<{ token: string }> }>("PushToken")
+  ? registerPlugin<{
+      getToken(): Promise<{ token: string }>;
+      saveSubscription(opts: {
+        apiUrl: string;
+        sessionToken: string;
+      }): Promise<void>;
+      clearSubscription(): Promise<void>;
+    }>("PushToken")
   : undefined;
 
 async function setUpServiceWorkerSubscription(client: Client) {
@@ -161,6 +168,13 @@ async function setUpServiceWorkerSubscription(client: Client) {
       endpoint: "fcm",
       p256dh: "",
       auth: token,
+    });
+    // Persist the API base + session token so the native FirebaseMessagingService
+    // can re-subscribe on its own if FCM rotates the token while the app is
+    // killed (onNewToken), instead of waiting for the next app launch.
+    await PushTokenNative.saveSubscription({
+      apiUrl: client.options.baseURL,
+      sessionToken: client.authenticationHeader[1],
     });
     return;
   }
@@ -225,6 +239,9 @@ export async function killServiceWorkerSubscription(
 ) {
   if (PushTokenNative) {
     if (!loggingOut) await client.api.post("/push/unsubscribe");
+    // Drop stored credentials so a later token rotation can't re-register this
+    // now logged-out / unsubscribed session.
+    await PushTokenNative.clearSubscription();
     return;
   }
 

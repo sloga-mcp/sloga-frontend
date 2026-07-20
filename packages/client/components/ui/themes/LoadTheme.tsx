@@ -58,7 +58,7 @@ export function LoadTheme() {
       "--md-sys-color-on-secondary-container": "#c8d8e8",
       "--mdui-color-primary": "0, 178, 255",
       "--mdui-color-on-primary": "255, 255, 255",
-      "--acutest-highlight": "#FF8A00",
+      "--sloga-highlight": "#FF8A00",
     })) {
       document.body.style.setProperty(key, value);
     }

@@ -68,4 +68,13 @@
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <!-- Package visibility (Android 11+): SpeechToTextPlugin binds the system
+         speech recognition service for on-device call captions; without this
+         query SpeechRecognizer.isRecognitionAvailable() returns false. -->
+    <queries>
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+    </queries>
 </manifest>

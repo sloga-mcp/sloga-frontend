@@ -1,5 +1,8 @@
 package com.acutest.app;
 
+import android.content.Context;
+import android.content.SharedPreferences;
+
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
@@ -62,5 +65,32 @@ public class PushTokenPlugin extends Plugin {
                     call.resolve(result);
                 })
                 .addOnFailureListener(e -> call.reject("Failed to get FCM token", e));
+    }
+
+    /**
+     * Persist the API base URL + session token so SlogaMessagingService can
+     * re-subscribe on its own when FCM rotates the token while the app is
+     * killed. Called by the web layer after each successful /push/subscribe.
+     */
+    @PluginMethod
+    public void saveSubscription(PluginCall call) {
+        SharedPreferences prefs = getContext()
+                .getSharedPreferences("sloga_push", Context.MODE_PRIVATE);
+        prefs.edit()
+                .putString("api_url", call.getString("apiUrl"))
+                .putString("session_token", call.getString("sessionToken"))
+                .apply();
+        call.resolve();
+    }
+
+    /**
+     * Clear stored credentials (logout / unsubscribe) so a later token
+     * rotation can't re-register this now-invalid session.
+     */
+    @PluginMethod
+    public void clearSubscription(PluginCall call) {
+        getContext().getSharedPreferences("sloga_push", Context.MODE_PRIVATE)
+                .edit().clear().apply();
+        call.resolve();
     }
 }

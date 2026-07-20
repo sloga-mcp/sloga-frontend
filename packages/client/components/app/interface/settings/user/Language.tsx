@@ -3,11 +3,11 @@ import { Show } from "solid-js";
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
 
 import { TRANSLATE_LANGUAGES } from "@revolt/common";
-import { webSpeechSupported } from "@revolt/rtc";
 import { Language, Languages, browserPreferredLanguage } from "@revolt/i18n";
 import type { LanguageEntry } from "@revolt/i18n/Languages";
 import { timeLocale } from "@revolt/i18n/dayjs";
 import { UnicodeEmoji } from "@revolt/markdown/emoji";
+import { captionBroadcastSupported, captionSttEngineKind } from "@revolt/rtc";
 import { useState } from "@revolt/state";
 import {
   CategoryButton,
@@ -130,8 +130,8 @@ function ToggleMessageTranslation() {
       description={
         <Trans>
           Automatically detect and translate messages sent by other people.
-          Message text is sent to Google Translate; encrypted messages are
-          never translated.
+          Message text is sent to Google Translate; encrypted messages are never
+          translated.
         </Trans>
       }
       action={
@@ -195,14 +195,26 @@ function ToggleCallCaptions() {
       icon={<MdRecordVoiceOver {...iconSize(22)} />}
       description={
         <>
-          <Trans>
-            Show live captions during voice and video calls, translated into
-            your chosen language. Your microphone audio is sent to your
-            browser's speech service (Google) to transcribe it, and the text is
-            sent to Google Translate; captions are disabled on end-to-end
-            encrypted calls.
-          </Trans>
-          <Show when={!webSpeechSupported()}>
+          <Show
+            when={captionSttEngineKind() === "android"}
+            fallback={
+              <Trans>
+                Show live captions during voice and video calls, translated into
+                your chosen language. Your microphone audio is sent to your
+                browser's speech service (Google) to transcribe it, and the text
+                is sent to Google Translate; captions are disabled on end-to-end
+                encrypted calls.
+              </Trans>
+            }
+          >
+            <Trans>
+              Show live captions during voice and video calls, translated into
+              your chosen language. Your speech is transcribed on your device,
+              and the text is sent to Google Translate; captions are disabled on
+              end-to-end encrypted calls.
+            </Trans>
+          </Show>
+          <Show when={!captionBroadcastSupported()}>
             {" "}
             <Trans>
               Broadcasting your own captions isn't supported in this app or

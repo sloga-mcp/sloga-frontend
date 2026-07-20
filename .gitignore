@@ -9,3 +9,8 @@ dist
 .vercel
 
 .idea
+
+# build output + snapshot backups — never publish
+dist/
+dist-*/
+dist_*/
