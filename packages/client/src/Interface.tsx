@@ -17,6 +17,7 @@ import { MessageCache } from "@revolt/app/interface/channels/text/MessageCache";
 import { Titlebar } from "@revolt/app/interface/desktop/Titlebar";
 import { useClient, useClientLifecycle } from "@revolt/client";
 import { State } from "@revolt/client/Controller";
+import { IS_POPOUT_WINDOW } from "@revolt/client/popout";
 import { ActivityWorker } from "@revolt/client/ActivityWorker";
 import { ApkUpdateWorker } from "@revolt/client/ApkUpdateWorker";
 import { NotificationsWorker } from "@revolt/client/NotificationsWorker";
@@ -37,6 +38,15 @@ import { Sidebar } from "./interface/Sidebar";
  * Application layout
  */
 const Interface = (props: { children: JSX.Element }) => {
+  // The friends popout window must never host the full app shell (single
+  // full-client model — see @revolt/client/popout): any navigation that
+  // escapes /friends-popout (friend double-click, profile-modal actions,
+  // the post-login redirect) bounces straight back instead of booting a
+  // second set of workers over a web-mode client.
+  if (IS_POPOUT_WINDOW) {
+    return <Navigate href="/friends-popout" />;
+  }
+
   const state = useState();
   const client = useClient();
   const { openModal } = useModals();

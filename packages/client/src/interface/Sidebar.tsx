@@ -58,6 +58,11 @@ export const Sidebar = (props: {
             // TODO: muting channels
             (channel) => channel.unread,
           )}
+        pendingFriendRequests={
+          client()
+            ?.users.toList()
+            .filter((user) => user.relationship === "Incoming").length ?? 0
+        }
         user={user()!}
         selectedServer={() => params.server}
         onCreateOrJoinServer={() =>

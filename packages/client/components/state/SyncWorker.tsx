@@ -3,6 +3,7 @@ import { createEffect, on, onCleanup } from "solid-js";
 import { ProtocolV1 } from "stoat.js/lib/events/v1";
 
 import { useClient, useClientLifecycle } from "@revolt/client";
+import { IS_POPOUT_WINDOW } from "@revolt/client/popout";
 
 import { useState } from ".";
 
@@ -10,6 +11,12 @@ import { useState } from ".";
  * Manage synchronisation of settings to-from API
  */
 export function SyncWorker() {
+  // The friends popout is a lean second client: it hydrates settings from
+  // the shared localStorage but must not become a second sync writer (two
+  // State instances doing local→remote save would last-writer-win each
+  // other) — the main window owns synchronisation.
+  if (IS_POPOUT_WINDOW) return null;
+
   const state = useState();
   const client = useClient();
   const { isLoggedIn } = useClientLifecycle();

@@ -6,17 +6,19 @@ import {
   Switch,
   createMemo,
   createSignal,
+  onMount,
   splitProps,
 } from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
-import { useNavigate } from "@solidjs/router";
+import { type RouteSectionProps, useNavigate } from "@solidjs/router";
 import { VirtualContainer } from "@minht11/solid-virtual-container";
 import type { User } from "stoat.js";
 import { styled } from "styled-system/jsx";
 
 import { UserContextMenu } from "@revolt/app";
 import { useClient } from "@revolt/client";
+import { IS_POPOUT_WINDOW } from "@revolt/client/popout";
 import { useModals } from "@revolt/modal";
 import {
   Avatar,
@@ -54,12 +56,92 @@ const Base = styled("div", {
 });
 
 /**
- * Friends menu
+ * Tauri invoke, when running inside the Windows desktop shell.
  */
-export function Friends() {
+function tauriInvoke():
+  | (<T>(cmd: string, args?: Record<string, unknown>) => Promise<T>)
+  | undefined {
+  return (
+    window as {
+      __TAURI__?: {
+        core?: {
+          invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T>;
+        };
+      };
+    }
+  ).__TAURI__?.core?.invoke;
+}
+
+/**
+ * Electron (Linux) shell popout surface — the preload exposes it only
+ * inside the popout window itself.
+ */
+function electronPopout():
+  | {
+      getState(): { alwaysOnTop: boolean } | null;
+      setAlwaysOnTop(value: boolean): Promise<unknown>;
+    }
+  | undefined {
+  return (
+    window as {
+      slogaShell?: { popout?: ReturnType<typeof electronPopout> };
+    }
+  ).slogaShell?.popout;
+}
+
+/**
+ * Open the detachable friends-list window. The Windows shell builds a
+ * native window via IPC; on web this is a browser popup, which the Linux
+ * shell's main process intercepts and replaces with a native window.
+ */
+function openPopout() {
+  const invoke = tauriInvoke();
+  if (invoke) {
+    invoke("open_friends_popout").catch(console.error);
+    return;
+  }
+  window.open(
+    "/friends-popout",
+    "friends-popout",
+    "width=420,height=650,resizable=yes,popup=yes",
+  );
+}
+
+/**
+ * Friends menu (also mounted directly on the `/friends` route, so the
+ * props must stay route-component compatible)
+ */
+export function Friends(props: Partial<RouteSectionProps> & { popout?: boolean }) {
   const { t } = useLingui();
   const client = useClient();
   const { openModal } = useModals();
+
+  // Always-on-top pin (popout window on a desktop shell only).
+  const [pinned, setPinned] = createSignal(false);
+  const pinSupported = () => !!tauriInvoke() || !!electronPopout();
+  onMount(() => {
+    if (!props.popout) return;
+    const invoke = tauriInvoke();
+    if (invoke) {
+      invoke<boolean>("friends_popout_state")
+        .then(setPinned)
+        .catch(() => void 0);
+    } else {
+      const state = electronPopout()?.getState();
+      if (state) setPinned(state.alwaysOnTop);
+    }
+  });
+  function togglePin() {
+    const next = !pinned();
+    setPinned(next);
+    const revert = () => setPinned(!next);
+    const invoke = tauriInvoke();
+    if (invoke) {
+      invoke("friends_popout_set_always_on_top", { value: next }).catch(revert);
+    } else {
+      electronPopout()?.setAlwaysOnTop(next).catch(revert);
+    }
+  }
 
   /**
    * Reference to the parent scroll container
@@ -110,18 +192,27 @@ export function Friends() {
           <Symbol>group</Symbol>
         </HeaderIcon>
         <Trans>Friends</Trans>
-        <Show when={!window.opener}>
+        <Show when={!props.popout && !window.opener}>
           <IconButton
-            onPress={() =>
-              window.open(
-                "/friends-popout",
-                "friends-popout",
-                "width=420,height=650,resizable=yes,popup=yes",
-              )
-            }
+            onPress={openPopout}
             use:floating={{ tooltip: { placement: "bottom", content: t`Pop out friends list` } }}
           >
             <Symbol>open_in_new</Symbol>
+          </IconButton>
+        </Show>
+        <Show when={props.popout && pinSupported()}>
+          <IconButton
+            onPress={togglePin}
+            use:floating={{
+              tooltip: {
+                placement: "bottom",
+                // plain strings on purpose — same precedent as the rail's
+                // hardcoded tooltips; avoids a catalog resync
+                content: pinned() ? "Unpin from top" : "Keep on top",
+              },
+            }}
+          >
+            <Symbol fill={pinned()}>keep</Symbol>
           </IconButton>
         </Show>
       </Header>
@@ -311,6 +402,11 @@ function Entry(
       window.clearTimeout(clickTimer);
       clickTimer = undefined;
     }
+
+    // In the popout window the app shell would bounce this navigation
+    // straight back (single full-client model) — the profile modal via
+    // single-click is the popout's affordance.
+    if (IS_POPOUT_WINDOW) return;
 
     local.user.openDM().then((channel) => navigate(channel.path)).catch(console.error);
   }

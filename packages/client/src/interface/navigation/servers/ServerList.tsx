@@ -25,6 +25,7 @@ import {
 import MdAdd from "@material-design-icons/svg/filled/add.svg?component-solid";
 import MdChevronRight from "@material-design-icons/svg/filled/chevron_right.svg?component-solid";
 import MdExplore from "@material-design-icons/svg/filled/explore.svg?component-solid";
+import MdGroup from "@material-design-icons/svg/filled/group.svg?component-solid";
 import MdSettings from "@material-design-icons/svg/filled/settings.svg?component-solid";
 
 import { Tooltip } from "../../../../components/ui/components/floating";
@@ -48,6 +49,11 @@ interface Props {
    * Unread conversations list
    */
   unreadConversations: Channel[];
+
+  /**
+   * Number of incoming friend requests (badge on the Friends entry)
+   */
+  pendingFriendRequests: number;
 
   /**
    * Current logged in user
@@ -272,6 +278,30 @@ export const ServerList = (props: Props) => {
             />
             <Show when={railExpanded()}>
               <RailLabel>Home</RailLabel>
+            </Show>
+          </a>
+        </Tooltip>
+        <Tooltip placement="right" content="Friends">
+          <a
+            class={entryContainer({ expanded: railExpanded() })}
+            href="/friends"
+          >
+            <Avatar
+              size={42}
+              fallback={<MdGroup />}
+              holepunch={props.pendingFriendRequests > 0 ? "top-right" : "none"}
+              overlay={
+                <Show when={props.pendingFriendRequests > 0}>
+                  <Unreads.Graphic
+                    count={props.pendingFriendRequests}
+                    unread
+                  />
+                </Show>
+              }
+              interactive
+            />
+            <Show when={railExpanded()}>
+              <RailLabel>Friends</RailLabel>
             </Show>
           </a>
         </Tooltip>

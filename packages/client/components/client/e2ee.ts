@@ -41,6 +41,7 @@ import type {
 } from "stoat.js";
 
 import { classifyEnvelopeError } from "./mlsEnvelopeClassify";
+import { IS_POPOUT_WINDOW } from "./popout";
 
 /** Author id used for locally-injected system/marker messages */
 const SYSTEM_AUTHOR = "00000000000000000000000000";
@@ -553,6 +554,15 @@ export { classifyEnvelopeError } from "./mlsEnvelopeClassify";
  * device claim.
  */
 export function nativeE2EEAvailable(): boolean {
+  // The friends popout window is a lean SECOND client on desktop shells —
+  // it must read as web-mode: two full clients driving the one native
+  // engine would double-process envelopes and race the ratchets. The flag
+  // is FROZEN at window boot (see popout.ts) so this answer can never
+  // drift from the boot-time engine-attach decision. (The shells enforce
+  // the posture too: the popout's Tauri capability grants no e2ee
+  // commands, and the Electron popout preload never exposes
+  // slogaShell.e2ee.)
+  if (IS_POPOUT_WINDOW) return false;
   if ((window as { __TAURI__?: TauriGlobal }).__TAURI__?.core?.invoke)
     return true;
   // Electron shell (EL1.2): the preload exposes slogaShell.e2ee ONLY when

@@ -1,3 +1,5 @@
+import { onMount } from "solid-js";
+
 import { useClientLifecycle } from "@revolt/client";
 import { Navigate } from "@revolt/routing";
 
@@ -8,6 +10,10 @@ import { Friends } from "./Friends";
  */
 export function FriendsPopout() {
   const { isLoggedIn } = useClientLifecycle();
+
+  onMount(() => {
+    document.title = "Friends — Sloga";
+  });
 
   if (!isLoggedIn()) {
     return <Navigate href="/login" />;
@@ -24,7 +30,7 @@ export function FriendsPopout() {
         background: "var(--md-sys-color-surface)",
       }}
     >
-      <Friends />
+      <Friends popout />
     </div>
   );
 }
