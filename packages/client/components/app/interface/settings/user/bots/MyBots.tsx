@@ -52,11 +52,6 @@ function CreateBot() {
             },
           })
         }
-        description={
-          <Trans>
-            You agree that your bot is subject to the Acceptable Usage Policy.
-          </Trans>
-        }
       >
         <Trans>Create Bot</Trans>
       </CategoryButton>
