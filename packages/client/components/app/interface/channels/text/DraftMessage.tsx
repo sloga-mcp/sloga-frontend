@@ -76,9 +76,15 @@ export function DraftMessage(props: Props) {
 
           return (
             <>
+              {/* Not wrapped in <Trans> on purpose: the catalogs can't be
+                  resynced right now and a missing msgid renders as a raw
+                  hash. */}
               <Text class="label">
-                Uploading file `{file.file.name}`...{" "}
-                {(file.uploadProgress[0]() * 100).toFixed()}%
+                {file.uploadProcessing[0]()
+                  ? `Processing \`${file.file.name}\` on the server...`
+                  : `Uploading file \`${file.file.name}\`... ${(
+                      file.uploadProgress[0]() * 100
+                    ).toFixed()}%`}
               </Text>
               <Switch>
                 <Match when={file.dimensions}>

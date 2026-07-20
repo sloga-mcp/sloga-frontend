@@ -10,6 +10,15 @@ import { State } from "..";
 import { AbstractStore } from ".";
 import { LAYOUT_SECTIONS } from "./Layout";
 
+/**
+ * Attachment upload timeout, in milliseconds. Autumn buffers the whole file,
+ * hashes it twice, encrypts it and PUTs it to S3 in one shot before responding,
+ * so the wait after the last byte is sent scales with file size.
+ */
+const UPLOAD_TIMEOUT_BASE = 120e3;
+const UPLOAD_TIMEOUT_PER_10MB = 60e3;
+const UPLOAD_TIMEOUT_MAX = 30 * 60e3;
+
 export interface DraftData {
   /**
    * Message content
@@ -104,6 +113,13 @@ export class Draft extends AbstractStore<"draft", TypeDraft> {
       dimensions?: [number, number];
       autumnId?: string;
       uploadProgress: [Accessor<number>, Setter<number>];
+      /**
+       * Set once the request body has been fully written to the socket but the
+       * server hasn't responded yet. uploadProgress only measures bytes sent,
+       * so without this the UI parks at 100% for the whole server-side leg
+       * (hashing, encryption, S3 PUT) with no indication anything is happening.
+       */
+      uploadProcessing: [Accessor<boolean>, Setter<boolean>];
     }
   >;
 
@@ -341,70 +357,98 @@ export class Draft extends AbstractStore<"draft", TypeDraft> {
       data.e2eeAttachments = e2eeAttachments;
     }
 
-    // Add any files if attached (plaintext path only — for an encrypted
-    // conversation they were already uploaded as ciphertext blobs above)
-    if (files?.length && !e2eeAttachments) {
-      // TODO: keep track of % upload progress
-      // we could visually show this in chat like
-      // on Discord mobile and allow individual
-      // files to be cancelled
-      for (const fileId of files) {
-        // Prepare for upload
-        const body = new FormData();
-        const { file, autumnId, uploadProgress } = this.getFile(fileId);
-
-        // Use ID if already uploaded
-        if (autumnId) {
-          attachments.push(autumnId);
-          continue;
-        }
-
-        body.set("file", file);
-
-        // We have to use XMLHttpRequest because modern fetch duplex streams require QUIC or HTTP/2
-        const xhr = new XMLHttpRequest();
-
-        const [success, response] = await new Promise<
-          [boolean, { id: string }]
-        >((resolve) => {
-          xhr.upload.addEventListener("progress", (event) => {
-            if (event.lengthComputable) {
-              uploadProgress[1](event.loaded / event.total);
-            }
-          });
-
-          xhr.addEventListener("loadend", () => {
-            uploadProgress[1](1);
-            resolve([xhr.readyState === 4 && xhr.status === 200, xhr.response]);
-          });
-
-          xhr.open(
-            "POST",
-            `${client.configuration!.features.autumn.url}/attachments`,
-            true,
-          );
-
-          const [authHeader, authHeaderValue] = client.authenticationHeader;
-          xhr.setRequestHeader(authHeader, authHeaderValue);
-          xhr.responseType = "json";
-
-          xhr.send(body);
-        });
-
-        if (!success) throw "Upload Error";
-
-        attachments.push(response.id);
-        this.fileCache[fileId].autumnId = response.id;
-      }
-    }
-
-    // TODO: fix bug with backend
-    if (!attachments.length) {
-      delete data.attachments;
-    }
-
-    // Send the message and clear the draft
+    // Both the upload loop and the send itself must share one catch: an upload
+    // that throws outside it leaves the outbox entry wedged at "sending"
+    // forever with no user-visible error.
     try {
+      // Add any files if attached (plaintext path only — for an encrypted
+      // conversation they were already uploaded as ciphertext blobs above)
+      if (files?.length && !e2eeAttachments) {
+        // TODO: allow individual files to be cancelled
+        for (const fileId of files) {
+          // Prepare for upload
+          const body = new FormData();
+          const { file, autumnId, uploadProgress, uploadProcessing } =
+            this.getFile(fileId);
+
+          // Use ID if already uploaded
+          if (autumnId) {
+            attachments.push(autumnId);
+            continue;
+          }
+
+          body.set("file", file);
+
+          // We have to use XMLHttpRequest because modern fetch duplex streams require QUIC or HTTP/2
+          const xhr = new XMLHttpRequest();
+
+          const [success, response] = await new Promise<
+            [boolean, { id: string }]
+          >((resolve) => {
+            xhr.upload.addEventListener("progress", (event) => {
+              if (event.lengthComputable) {
+                uploadProgress[1](event.loaded / event.total);
+              }
+            });
+
+            // The body is now fully written to the socket; everything after
+            // this is the server hashing, encrypting and storing the file.
+            xhr.upload.addEventListener("load", () => {
+              uploadProgress[1](1);
+              uploadProcessing[1](true);
+            });
+
+            xhr.addEventListener("loadend", () => {
+              uploadProgress[1](1);
+              uploadProcessing[1](false);
+              resolve([
+                xhr.readyState === 4 && xhr.status === 200,
+                xhr.response,
+              ]);
+            });
+
+            xhr.open(
+              "POST",
+              `${client.configuration!.features.autumn.url}/attachments`,
+              true,
+            );
+
+            // Neither the browser nor Caddy imposes a timeout here, so without
+            // this a stalled S3 write hangs the send indefinitely. Scale with
+            // file size — the server-side leg is proportional to it.
+            xhr.timeout = Math.min(
+              UPLOAD_TIMEOUT_BASE + (file.size / 10e6) * UPLOAD_TIMEOUT_PER_10MB,
+              UPLOAD_TIMEOUT_MAX,
+            );
+
+            const [authHeader, authHeaderValue] = client.authenticationHeader;
+            xhr.setRequestHeader(authHeader, authHeaderValue);
+            xhr.responseType = "json";
+
+            xhr.send(body);
+          });
+
+          // "loadend" fires for error/abort/timeout too, so a non-200 (or no
+          // response at all) lands here rather than hanging.
+          if (!success) {
+            throw new Error(
+              xhr.status
+                ? `Upload failed for \`${file.name}\` (HTTP ${xhr.status})`
+                : `Upload of \`${file.name}\` timed out or was interrupted`,
+            );
+          }
+
+          attachments.push(response.id);
+          this.fileCache[fileId].autumnId = response.id;
+        }
+      }
+
+      // TODO: fix bug with backend
+      if (!attachments.length) {
+        delete data.attachments;
+      }
+
+      // Send the message and clear the draft
       await channel.sendMessage(data, idempotencyKey);
 
       if (files) {
@@ -651,6 +695,8 @@ export class Draft extends AbstractStore<"draft", TypeDraft> {
       // we know what we're doing here...
       // eslint-disable-next-line solid/reactivity
       uploadProgress: createSignal(0),
+      // eslint-disable-next-line solid/reactivity
+      uploadProcessing: createSignal(false),
     };
 
     if (this.fileCache[id].dataUri) {
