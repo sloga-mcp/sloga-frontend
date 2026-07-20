@@ -156,6 +156,23 @@ export function Message(props: Props) {
     !props.message.content.replace(RE_URL, "").length;
 
   /**
+   * If the message is exactly one sticker URL (what the sticker picker
+   * sends), render the sticker image itself instead of a link + embed.
+   * Only trusts our own media host — arbitrary external URLs never match.
+   */
+  const stickerUrl = () => {
+    const content = props.message.content?.trim();
+    if (!content) return undefined;
+    const autumn = client().configuration?.features.autumn.url;
+    if (!autumn) return undefined;
+    const prefix = `${autumn}/stickers/`;
+    if (!content.startsWith(prefix)) return undefined;
+    return /^[A-Za-z0-9_-]+$/.test(content.slice(prefix.length))
+      ? content
+      : undefined;
+  };
+
+  /**
    * Origin attribution label for a delivered crosspost copy, resolved from
    * the server-set `crosspost` ids. Falls back to a generic label when the
    * origin server/channel isn't visible to this user.
@@ -438,6 +455,11 @@ export function Message(props: Props) {
           <Match when={props.message.isForwarded}>
             <ForwardedMessage message={props.message} />
           </Match>
+          {/* Sticker picker messages: show the sticker, not the URL (the
+              lone Image embed for the same URL is suppressed below) */}
+          <Match when={stickerUrl()}>
+            <StickerImage src={stickerUrl()} alt="Sticker" loading="lazy" />
+          </Match>
           <Match when={props.message.content && !isOnlyGIF()}>
             <BreakText>
               <Markdown content={props.message.content!} />
@@ -470,7 +492,7 @@ export function Message(props: Props) {
             />
           )}
         </For>
-        <For each={props.message.embeds}>
+        <For each={stickerUrl() ? [] : props.message.embeds}>
           {(embed) => <Embed embed={embed} />}
         </For>
         {/* Bot-author gating (defence-in-depth) lives inside the
@@ -576,6 +598,20 @@ const EphemeralNotice = styled("div", {
       cursor: "pointer",
       fontWeight: 500,
     },
+  },
+});
+
+/**
+ * Sticker rendered in place of a sticker-URL message
+ */
+const StickerImage = styled("img", {
+  base: {
+    width: "160px",
+    height: "160px",
+    objectFit: "contain",
+    objectPosition: "left center",
+    display: "block",
+    margin: "var(--gap-xs) 0",
   },
 });
 

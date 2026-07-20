@@ -164,6 +164,7 @@ export function StickerPicker() {
 const Stack = styled("div", {
   base: {
     minHeight: 0,
+    flexGrow: 1,
     display: "flex",
     flexDirection: "column",
     gap: "var(--gap-sm)",
@@ -173,9 +174,14 @@ const Stack = styled("div", {
 
 const StickerGrid = styled("div", {
   base: {
+    // fill the flex-sized wrapper so the grid actually overflows and
+    // scrolls (without a height it grows to content and just gets clipped)
+    height: "100%",
     overflowY: "auto",
     flexGrow: 1,
     padding: "0 var(--gap-md)",
+    scrollbarColor: "var(--md-sys-color-primary) transparent",
+    scrollbarWidth: "thin",
   },
 });
 
