@@ -48,13 +48,7 @@ const internalLink = cva({
 
 function inAppScope(link: URL): boolean {
   return (
-    [
-      location.origin,
-      "https://old.stoat.chat",
-      "https://revolt.chat",
-      "https://app.revolt.chat",
-      "https://stoat.chat",
-    ].includes(link.origin) &&
+    [location.origin].includes(link.origin) &&
     /\/(app|home|pwa|dev|invite|bot|friends|server|channel)\/?/.test(
       link.pathname,
     )

@@ -1,137 +1,50 @@
 import { useNavigate } from "@solidjs/router";
-import { Match, Switch } from "solid-js";
+import { Show } from "solid-js";
 
 import { Trans } from "@lingui-solid/solid/macro";
-import { PublicChannelInvite } from "stoat.js";
-import { styled } from "styled-system/jsx";
 
 import MdGroups3 from "@material-design-icons/svg/filled/groups_3.svg?component-solid";
-import MdBugReport from "@material-design-icons/svg/outlined/bug_report.svg?component-solid";
-import MdFormatListNumbered from "@material-design-icons/svg/outlined/format_list_numbered.svg?component-solid";
-import MdStar from "@material-design-icons/svg/outlined/star_outline.svg?component-solid";
 
 import { useClient } from "@revolt/client";
-import { CONFIGURATION } from "@revolt/common";
 import { useModals } from "@revolt/modal";
-import { CategoryButton, Column, iconSize } from "@revolt/ui";
+import { CategoryButton, Column } from "@revolt/ui";
+
+/**
+ * "Welcome to Sloga" server, which every user is auto-joined to on onboarding
+ */
+const LOUNGE_SERVER_ID = "01KXJPE1HBR1A4W996QNB3DG1A";
 
 /**
  * Feedback
  */
 export function Feedback() {
-  const { openModal, pop } = useModals();
+  const { pop } = useModals();
   const navigate = useNavigate();
   const client = useClient();
 
-  const showLoungeButton = CONFIGURATION.IS_STOAT;
-  const isInLounge =
-    client()!.servers.get("01F7ZSBSFHQ8TA81725KQCSDDP") !== undefined;
+  const isInLounge = client()!.servers.get(LOUNGE_SERVER_ID) !== undefined;
 
   return (
     <Column gap="lg">
       <CategoryButton.Group>
-        {/* <Link
-          href="https://example.com"
-          target="_blank"
-        >
+        <Show when={isInLounge}>
           <CategoryButton
-            action="external"
-            icon={<MdViewKanban {...iconSize(22)} />}
-            onClick={() => void 0}
-            description={<Trans>See what we're currently working on.</Trans>}
-          >
-            <Trans>Roadmap</Trans>
-          </CategoryButton>
-        </Link> */}
-        <Link
-          href="https://github.com/orgs/stoatchat/discussions/categories/feature-suggestions"
-          target="_blank"
-        >
-          <CategoryButton
-            action="external"
-            icon={<MdStar {...iconSize(22)} />}
-            onClick={() => void 0}
+            onClick={() => {
+              navigate(`/server/${LOUNGE_SERVER_ID}`);
+              pop();
+            }}
             description={
-              <Trans>Suggest new Sloga features on GitHub discussions.</Trans>
+              <Trans>
+                You can report issues and discuss improvements with us directly
+                here.
+              </Trans>
             }
+            icon={<MdGroups3 />}
           >
-            <Trans>Submit feature suggestion</Trans>
+            <Trans>Go to the Sloga Lounge</Trans>
           </CategoryButton>
-        </Link>
-        <Link
-          href="https://github.com/orgs/stoatchat/discussions/categories/feedback"
-          target="_blank"
-        >
-          <CategoryButton
-            action="external"
-            icon={<MdFormatListNumbered {...iconSize(22)} />}
-            onClick={() => void 0}
-            description={<Trans>Submit feedback</Trans>}
-          >
-            <Trans>Feedback</Trans>
-          </CategoryButton>
-        </Link>
-        <Link
-          href="https://github.com/stoatchat/for-web/issues?q=is%3Aissue%20state%3Aopen%20type%3ABug"
-          target="_blank"
-        >
-          <CategoryButton
-            action="external"
-            icon={<MdBugReport {...iconSize(22)} />}
-            onClick={() => void 0}
-            description={<Trans>View currently active bug reports here.</Trans>}
-          >
-            <Trans>Bug Tracker</Trans>
-          </CategoryButton>
-        </Link>
-        <Switch fallback={null}>
-          <Match when={showLoungeButton && isInLounge}>
-            <CategoryButton
-              onClick={() => {
-                navigate("/server/01F7ZSBSFHQ8TA81725KQCSDDP");
-                pop();
-              }}
-              description={
-                <Trans>
-                  You can report issues and discuss improvements with us
-                  directly here.
-                </Trans>
-              }
-              icon={<MdGroups3 />}
-            >
-              <Trans>Go to the Sloga Lounge</Trans>
-            </CategoryButton>
-          </Match>
-          <Match when={showLoungeButton && !isInLounge}>
-            <CategoryButton
-              onClick={() => {
-                client()
-                  .api.get("/invites/Testers")
-                  .then((invite) => PublicChannelInvite.from(client(), invite))
-                  .then((invite) => openModal({ type: "invite", invite }));
-              }}
-              description={
-                <Trans>
-                  You can report issues and discuss improvements with us
-                  directly here.
-                </Trans>
-              }
-              icon={<MdGroups3 />}
-            >
-              <Trans>Join the Sloga Lounge</Trans>
-            </CategoryButton>
-          </Match>
-        </Switch>
+        </Show>
       </CategoryButton.Group>
     </Column>
   );
 }
-
-/**
- * Link without decorations
- */
-const Link = styled("a", {
-  base: {
-    textDecoration: "none",
-  },
-});

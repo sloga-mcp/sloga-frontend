@@ -102,10 +102,6 @@ function mapMailProvider(email?: string): [string, string] | undefined {
     case "ro.ru":
     case "rambler.ua":
       return ["Rambler", "https://rambler.ru/"];
-    case "revolt.chat":
-    case "revolt.wtf":
-    case "stoat.chat":
-      return ["Sloga Mail", "https://webmail.revolt.wtf"];
     default:
       return [domain, `https://${domain}`];
   }
