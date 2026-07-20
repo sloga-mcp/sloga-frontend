@@ -9,6 +9,132 @@ import type { ChangelogResponse } from "./Changelog";
  */
 export const CHANGELOGS: ChangelogResponse[] = [
   {
+    id: "sloga-2026-07-20",
+    title: "Patch Notes",
+    published_at: "2026-07-20T20:00:00.000Z",
+    markdown_content: `## v0.13.0 — Friends popout, stickers & a tidier mic
+
+### 🪟 Pop out your friends list
+- **Detach the friends list into its own window**, Steam-style, so you can keep an eye on who's online while you're playing or working in another app.
+- Available on the desktop app — pop it out from the Friends rail entry.
+
+### 🖼️ Sticker fixes
+- **Stickers now render inline in chat** instead of showing up as a plain attachment.
+- The sticker picker got a **scrollable grid**, so larger packs are actually browsable.
+
+### 🎙️ Cleaner voice settings
+- **Mic modes are now mutually exclusive** — Voice Activity, Open Mic and Push-to-Talk behave like proper radio buttons, so you can't end up in two modes at once.
+
+### ✨ Polish
+- Removed leftover upstream links from the server and bot creation screens — everything points at Sloga now.
+
+*Sloga — Hop on.*`,
+  },
+  {
+    id: "sloga-2026-07-19",
+    title: "Patch Notes",
+    published_at: "2026-07-19T20:00:00.000Z",
+    markdown_content: `## v0.12.0 — Face filters, server discovery & Sloga Helper
+
+### 🎭 Webcam face filters
+- **14 AR face filters** for your camera — classic, viking, gaming and D&D packs.
+- Plus a **beautify** slider and a set of **color looks** to grade your video.
+- Everything runs on your own device, so it works in encrypted calls too.
+
+### 🧭 Public server discovery
+- **Browse a directory of public communities** and join with one click.
+- Server owners can **opt their server in** from server settings; listings are admin-approved.
+
+### 🤖 Sloga Helper
+- A **first-party bot** you can add from **Server Settings → Apps**, with a curated catalog of official bots.
+- First command: **\`/giveaway\`** — run a giveaway in a channel with a button people click to enter, and Sloga Helper picks the winner.
+
+### 📞 Better incoming calls
+- **A global Accept / Decline popup** now appears wherever you are in the app.
+- Calls **ring from the moment they start**, and desktop notifications are **clickable** — click the toast to jump straight into the call.
+
+### 🔊 Soundboard & GIFs
+- **"Sloga Sounds"** — 35 built-in sound clips available in every server, no upload needed.
+- The soundboard picker is now a **compact scrollable popover**.
+- The GIF picker now runs through **our own proxy**, so no third party sees what you search for.
+
+### 💛 Support Sloga
+- Added a **Donate** entry on Home and in Settings, if you'd like to help keep the lights on.
+
+*Sloga — Hop on.*`,
+  },
+  {
+    id: "sloga-2026-07-18",
+    title: "Patch Notes",
+    published_at: "2026-07-18T20:00:00.000Z",
+    markdown_content: `## v0.11.1 — Encryption reliability
+
+### 🔐 Fewer surprises with encrypted DMs
+- **Fixed messages going missing** after you re-enabled encryption on a device — Sloga now fetches what it needs up front and reconciles when you open a DM.
+- **Clear markers** when a message couldn't be decrypted, instead of a silent gap.
+- **Re-enabling encryption now sticks** — sending an encrypted message no longer leaves the conversation showing as plaintext.
+- Revoking a device **retries loudly** instead of failing quietly.
+
+### 💾 Save encrypted attachments
+- Encrypted images and files now have a **Save button** on desktop that decrypts and writes straight to disk.
+
+### ⏳ No more frozen recovery window
+- Creating, rotating or restoring your **recovery key** no longer freezes the app while it works.
+
+*Sloga — Hop on.*`,
+  },
+  {
+    id: "sloga-2026-07-17",
+    title: "Patch Notes",
+    published_at: "2026-07-17T20:00:00.000Z",
+    markdown_content: `## v0.11.0 — Push-to-talk, profiles & a warmer welcome
+
+### 🎙️ Global push-to-talk
+- **Push-to-talk now works even when Sloga isn't focused** on desktop — hold your key while you're in a game and talk.
+
+### 👋 A warmer start
+- New members are **automatically added to the Sloga welcome server**, so nobody lands in an empty app.
+- **Sloga-branded emails** for verification, password reset and account notices.
+- An **animated Sloga logo** now plays on the login screen.
+
+### 👤 Profiles & friends
+- **Message or call someone you're not friends with** straight from their profile card or context menu — including a video call button.
+- **Double-click a friend** in the friends list to open the DM instead of the profile.
+- **Friend requests appear instantly** instead of needing a refresh.
+- **Staff usernames** render in Sloga's brand colours.
+
+### 🖼️ Animated server icons
+- Servers with animated icons now **play them in the server rail**.
+
+### 📱 Floating call card
+- Call controls **stay on-screen** in the floating picture-in-picture card, and it now **docks to edge midpoints** as well as corners.
+
+*Sloga — Hop on.*`,
+  },
+  {
+    id: "sloga-2026-07-15",
+    title: "Patch Notes",
+    published_at: "2026-07-15T20:00:00.000Z",
+    markdown_content: `## v0.10.1 — Mobile composer & event attachments
+
+### ⌨️ Two-bar composer on mobile
+- The message box on **phones and tablets** is now a two-bar layout — more room to type, and the actions you actually use within thumb reach.
+- New **Sloga-styled send button**, and a tidier attachment card.
+- Start a **video call or screen share from a DM** via the composer menu.
+
+### 🎲 Dice rolls in calls
+- Roll results now **flash over the call video**, so everyone sees the roll without leaving the call.
+
+### 📅 Event attachments
+- **Attach files to a calendar event** — maps, rosters, rules, whatever the event needs.
+
+### 🐛 Fixes
+- Captions only advertise **broadcast** where it actually works.
+- The last row of the member list is no longer flush against the window edge.
+
+*Sloga — Hop on.*`,
+  },
+  {
     id: "sloga-2026-07-14",
     title: "Patch Notes",
     published_at: "2026-07-14T20:00:00.000Z",
