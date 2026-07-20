@@ -4712,3 +4712,7 @@ msgstr "Streaming on {0}"
 #: components/client/NotificationsWorker.tsx
 msgid "{0} is live on {1}"
 msgstr "{0} is live on {1}"
+
+#: components/app/interface/settings/UserSettings.tsx
+msgid "Connections"
+msgstr "Connections"

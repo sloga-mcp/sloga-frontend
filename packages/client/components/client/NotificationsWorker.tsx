@@ -27,6 +27,7 @@ import { useState } from "@revolt/state";
 import { streamerModeHides } from "@revolt/state/streamer";
 
 import { useClient, useNotifications, useSound } from ".";
+import { connectionUrl } from "./streamConnections";
 import {
   notificationPermissionGranted,
   showNotification,
@@ -343,12 +344,7 @@ export function NotificationsWorker() {
       state.settings.desktopNotificationsState === "allowed" &&
       !notificationsSuppressed()
     ) {
-      const channelUrl =
-        nowLive.platform === "Twitch"
-          ? `https://twitch.tv/${nowLive.handle}`
-          : nowLive.handle.startsWith("@")
-            ? `https://youtube.com/${nowLive.handle}`
-            : `https://youtube.com/channel/${nowLive.handle}`;
+      const channelUrl = connectionUrl(nowLive);
 
       showNotification({
         title: t`${user.displayName ?? user.username} is live on ${nowLive.platform}`,

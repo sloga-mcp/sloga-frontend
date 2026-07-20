@@ -4,6 +4,8 @@ import { Trans } from "@lingui-solid/solid/macro";
 import { User } from "stoat.js";
 import { styled } from "styled-system/jsx";
 
+import { connectionUrl } from "@revolt/client/streamConnections";
+
 import { Text, typography } from "../../design";
 
 import { ProfileCard } from "./ProfileCard";
@@ -15,17 +17,6 @@ import { ProfileCard } from "./ProfileCard";
 export function ProfileConnections(props: { user: User }) {
   const connections = () => props.user.connections;
 
-  /**
-   * External channel URL for a connection (YouTube handle is "@custom"
-   * or a raw channel id)
-   */
-  const url = (connection: (typeof props.user.connections)[number]) =>
-    connection.platform === "Twitch"
-      ? `https://twitch.tv/${connection.handle}`
-      : connection.handle.startsWith("@")
-        ? `https://youtube.com/${connection.handle}`
-        : `https://youtube.com/channel/${connection.handle}`;
-
   return (
     <Show when={connections().length}>
       <ProfileCard>
@@ -36,7 +27,7 @@ export function ProfileConnections(props: { user: User }) {
           {(connection) => (
             <Row>
               <ChannelLink
-                href={url(connection)}
+                href={connectionUrl(connection)}
                 target="_blank"
                 rel="noreferrer"
               >
