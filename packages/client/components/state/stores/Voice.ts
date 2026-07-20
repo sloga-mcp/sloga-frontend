@@ -14,6 +14,12 @@ const NoiseSuppresionStates: NoiseSuppresionState[] = [
 ];
 
 /**
+ * Microphone activation mode. Exactly one is active at a time: open mic
+ * (always transmitting), voice activity detection, or push to talk.
+ */
+export type MicrophoneMode = "openMic" | "vad" | "pushToTalk";
+
+/**
  * Possible screen share qualities. Low is 720p@30fps, high 1080p@30fps and text is source@5fps.
  */
 export type ScreenShareQualityName =
@@ -286,6 +292,18 @@ export class Voice extends AbstractStore<"voice", TypeVoice> {
       data.pushToTalk = input.pushToTalk;
     }
 
+    // The microphone modes are mutually exclusive; persisted state from
+    // before that invariant may have any combination enabled. Keep the most
+    // deliberate choice (push to talk, then VAD), fall back to open mic.
+    if (data.pushToTalk) {
+      data.vadEnabled = false;
+      data.openMic = false;
+    } else if (data.vadEnabled) {
+      data.openMic = false;
+    } else {
+      data.openMic = true;
+    }
+
     if (typeof input.e2eeCallsEnabled === "boolean") {
       data.e2eeCallsEnabled = input.e2eeCallsEnabled;
     }
@@ -537,20 +555,20 @@ export class Voice extends AbstractStore<"voice", TypeVoice> {
     this.set("autoGainControl", value);
   }
 
-  set openMic(value: boolean) {
-    this.set("openMic", value);
-  }
-
-  set vadEnabled(value: boolean) {
-    this.set("vadEnabled", value);
+  /**
+   * Select the microphone mode. The three modes are mutually exclusive —
+   * exactly one of openMic / vadEnabled / pushToTalk is true at any time.
+   */
+  setMicrophoneMode(mode: MicrophoneMode) {
+    this.set({
+      openMic: mode === "openMic",
+      vadEnabled: mode === "vad",
+      pushToTalk: mode === "pushToTalk",
+    } as Partial<TypeVoice>);
   }
 
   set vadThreshold(value: number) {
     this.set("vadThreshold", value);
-  }
-
-  set pushToTalk(value: boolean) {
-    this.set("pushToTalk", value);
   }
 
   set pushToTalkKey(value: string) {

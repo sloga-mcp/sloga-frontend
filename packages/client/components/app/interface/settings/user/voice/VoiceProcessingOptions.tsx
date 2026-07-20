@@ -101,7 +101,7 @@ export function VoiceProcessingOptions() {
         <CategoryButton
           icon="blank"
           action={<Checkbox checked={voice.openMic} />}
-          onClick={() => (voice.openMic = !voice.openMic)}
+          onClick={() => voice.setMicrophoneMode("openMic")}
           description={<Trans>Microphone stays on automatically when in a voice channel.</Trans>}
         >
           <Trans>Open Microphone</Trans>
@@ -109,7 +109,7 @@ export function VoiceProcessingOptions() {
         <CategoryButton
           icon="blank"
           action={<Checkbox checked={voice.vadEnabled} />}
-          onClick={() => (voice.vadEnabled = !voice.vadEnabled)}
+          onClick={() => voice.setMicrophoneMode("vad")}
           description={<Trans>Mic only activates when your volume exceeds the threshold below.</Trans>}
         >
           <Trans>Voice Activity Detection</Trans>
@@ -143,7 +143,7 @@ export function VoiceProcessingOptions() {
         <CategoryButton
           icon="blank"
           action={<Checkbox checked={voice.pushToTalk} />}
-          onClick={() => (voice.pushToTalk = !voice.pushToTalk)}
+          onClick={() => voice.setMicrophoneMode("pushToTalk")}
           description={
             <Column gap="sm">
               <Trans>Hold a key to unmute while in a voice channel.</Trans>
