@@ -207,6 +207,12 @@ const Config: SettingsConfiguration<{ server: Server }> = {
               title: <Trans>Feedback</Trans>,
             },
             {
+              id: "donate",
+              icon: <MdCoffee {...iconSize(20)} />,
+              title: <Trans>Donate to Sloga</Trans>,
+              href: "https://ko-fi.com/slogatech",
+            },
+            {
               id: "changelog",
               icon: <MdCampaign {...iconSize(20)} />,
               title: <Trans>Patch Notes</Trans>,
