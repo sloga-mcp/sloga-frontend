@@ -38,6 +38,7 @@ import { SettingsConfiguration } from ".";
 import { AccountCard, BackCard } from "./user/_AccountCard";
 import { MyAccount } from "./user/Account";
 import AdvancedSettings from "./user/Advanced";
+import { ConnectionsSettings } from "./user/Connections";
 import { AppearanceMenu } from "./user/appearance";
 import { MyBots, ViewBot } from "./user/bots";
 import { Feedback } from "./user/Feedback";
@@ -111,6 +112,8 @@ const Config: SettingsConfiguration<{ server: Server }> = {
         return <Notifications isDesktop={!!window.native} />;
       case "streamer":
         return <StreamerModeSettings />;
+      case "connections":
+        return <ConnectionsSettings />;
       default:
         return null;
     }
@@ -182,6 +185,11 @@ const Config: SettingsConfiguration<{ server: Server }> = {
               id: "sessions",
               icon: <MdVerifiedUser {...iconSize(20)} />,
               title: <Trans>Sessions</Trans>,
+            },
+            {
+              id: "connections",
+              icon: <Symbol size={20}>link</Symbol>,
+              title: <Trans>Connections</Trans>,
             },
             {
               id: "security",

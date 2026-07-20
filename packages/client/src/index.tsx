@@ -7,6 +7,8 @@ import "./sentry";
 import { JSX, onMount } from "solid-js";
 import { render } from "solid-js/web";
 
+import { useLingui } from "@lingui-solid/solid/macro";
+
 import { attachDevtoolsOverlay } from "@solid-devtools/overlay";
 import { Navigate, Route, Router, useParams } from "@solidjs/router";
 import { QueryClient, QueryClientProvider } from "@tanstack/solid-query";
@@ -25,6 +27,7 @@ import FlowResend from "@revolt/auth/src/flows/FlowResend";
 import FlowReset from "@revolt/auth/src/flows/FlowReset";
 import FlowVerify from "@revolt/auth/src/flows/FlowVerify";
 import { ClientContext, SoundContext, useClient } from "@revolt/client";
+import { completeStreamLink } from "@revolt/client/streamConnections";
 import { DeviceContext } from "@revolt/common";
 import { I18nProvider } from "@revolt/i18n";
 import { KeybindContext } from "@revolt/keybinds";
@@ -36,6 +39,7 @@ import {
   LoadTheme,
   SnackbarController,
   SnackbarProvider,
+  useSnackbar,
 } from "@revolt/ui";
 
 /* @refresh reload */
@@ -65,12 +69,47 @@ function PWARedirect() {
 }
 
 /**
- * Open settings and redirect to last active path
+ * Open settings and redirect to last active path.
+ *
+ * Also the landing point for the streaming-channel link flow: the OAuth
+ * callback redirects here with `stream_complete` (one-time handoff code)
+ * or `stream_error` query params (see backend routes/oauth/link.rs).
  */
 function SettingsRedirect() {
+  const client = useClient();
   const { openModal } = useModals();
+  const { t } = useLingui();
+  const snackbar = useSnackbar();
 
-  onMount(() => openModal({ type: "settings", config: "user" }));
+  onMount(() => {
+    const params = new URLSearchParams(window.location.search);
+    const complete = params.get("stream_complete");
+    const platform = params.get("stream_platform");
+    const error = params.get("stream_error");
+
+    if (complete && (platform === "twitch" || platform === "youtube")) {
+      completeStreamLink(client(), platform, complete)
+        .then((connection) =>
+          snackbar.show({
+            message: t`Linked channel: ${connection.display_name}`,
+          }),
+        )
+        .catch(() =>
+          snackbar.show({
+            message: t`Failed to link your channel, try again.`,
+          }),
+        );
+    } else if (error) {
+      snackbar.show({
+        message:
+          error === "no_channel"
+            ? t`That account has no channel to link.`
+            : t`Channel linking failed or was cancelled.`,
+      });
+    }
+
+    openModal({ type: "settings", config: "user" });
+  });
   return <PWARedirect />;
 }
 

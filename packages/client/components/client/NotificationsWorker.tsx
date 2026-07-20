@@ -322,9 +322,52 @@ export function NotificationsWorker() {
   }
 
   /**
+   * A friend's linked channel flipped offline→live: notify. The backend
+   * push covers closed/offline clients; the shared tag dedupes the two on
+   * web. Never fires for non-friends (server members only get the badge).
+   */
+  function onFriendWentLive(user: User, previousUser: HydratedUser) {
+    if (user.relationship !== "Friend") return;
+
+    const nowLive = user.liveConnections[0];
+    if (!nowLive) return;
+    const wasLive = (previousUser.connections ?? []).some(
+      (connection) => connection.live,
+    );
+    if (wasLive) return;
+
+    sound.playSound("message");
+
+    if (
+      notificationPermissionGranted() &&
+      state.settings.desktopNotificationsState === "allowed" &&
+      !notificationsSuppressed()
+    ) {
+      const channelUrl =
+        nowLive.platform === "Twitch"
+          ? `https://twitch.tv/${nowLive.handle}`
+          : nowLive.handle.startsWith("@")
+            ? `https://youtube.com/${nowLive.handle}`
+            : `https://youtube.com/channel/${nowLive.handle}`;
+
+      showNotification({
+        title: t`${user.displayName ?? user.username} is live on ${nowLive.platform}`,
+        body: nowLive.live_title ?? nowLive.display_name,
+        icon: user.animatedAvatarURL ?? user.avatarURL,
+        tag: `friend-live-${user.id}`,
+        onClick: () => {
+          window.open(channelUrl, "_blank");
+        },
+      });
+    }
+  }
+
+  /**
    * Handle friend requests — fires when a user's relationship changes to Incoming
    */
   function onUserUpdate(user: User, previousUser: HydratedUser) {
+    onFriendWentLive(user, previousUser);
+
     if (user.relationship !== "Incoming") return;
     if (previousUser.relationship === "Incoming") return;
 

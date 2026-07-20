@@ -52,6 +52,7 @@ export function UserProfileModal(
         />
         <Profile.Roles member={props.member} />
         <Profile.Status user={props.user} />
+        <Profile.Connections user={props.user} />
         <Profile.Badges user={props.user} />
         <Profile.Joined user={props.user} member={props.member} />
         <Profile.Mutuals user={props.user} member={props.member} />

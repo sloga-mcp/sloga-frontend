@@ -5702,3 +5702,63 @@ msgstr "This contact turned off end-to-end encryption for this conversation."
 #: components/modal/modals/E2EEPeerDowngrade.tsx
 msgid "Continue unencrypted — new messages will be readable by the server — or keep the conversation encrypted on your side. Your encrypted history is unaffected either way."
 msgstr "Continue unencrypted — new messages will be readable by the server — or keep the conversation encrypted on your side. Your encrypted history is unaffected either way."
+
+#: src/index.tsx
+msgid "Linked channel: {0}"
+msgstr "Linked channel: {0}"
+
+#: src/index.tsx
+msgid "Failed to link your channel, try again."
+msgstr "Failed to link your channel, try again."
+
+#: src/index.tsx
+msgid "That account has no channel to link."
+msgstr "That account has no channel to link."
+
+#: src/index.tsx
+msgid "Channel linking failed or was cancelled."
+msgstr "Channel linking failed or was cancelled."
+
+#: components/app/interface/settings/user/Connections.tsx
+msgid "Link your streaming channel to show it on your profile. When you go live, friends get a notification and members of your servers see a LIVE badge next to your name."
+msgstr "Link your streaming channel to show it on your profile. When you go live, friends get a notification and members of your servers see a LIVE badge next to your name."
+
+#: components/app/interface/settings/user/Connections.tsx
+msgid "Disconnect"
+msgstr "Disconnect"
+
+#: components/app/interface/settings/user/Connections.tsx
+msgid "LIVE"
+msgstr "LIVE"
+
+#: components/app/interface/settings/user/Connections.tsx
+msgid "Sign in with your account to link your channel."
+msgstr "Sign in with your account to link your channel."
+
+#: components/app/interface/settings/user/Connections.tsx
+msgid "Channel linking is not enabled on this server yet."
+msgstr "Channel linking is not enabled on this server yet."
+
+#: components/app/interface/settings/user/Connections.tsx
+msgid "Could not start linking, try again later."
+msgstr "Could not start linking, try again later."
+
+#: components/app/interface/settings/user/Connections.tsx
+msgid "Channel unlinked."
+msgstr "Channel unlinked."
+
+#: components/app/interface/settings/user/Connections.tsx
+msgid "Could not unlink the channel, try again."
+msgstr "Could not unlink the channel, try again."
+
+#: src/interface/channels/text/MemberSidebar.tsx
+msgid "Streaming: {0}"
+msgstr "Streaming: {0}"
+
+#: src/interface/channels/text/MemberSidebar.tsx
+msgid "Streaming on {0}"
+msgstr "Streaming on {0}"
+
+#: components/client/NotificationsWorker.tsx
+msgid "{0} is live on {1}"
+msgstr "{0} is live on {1}"

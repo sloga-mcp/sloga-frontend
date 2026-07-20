@@ -8,7 +8,7 @@ import {
   Switch,
 } from "solid-js";
 
-import { useLingui } from "@lingui-solid/solid/macro";
+import { Trans, useLingui } from "@lingui-solid/solid/macro";
 import { VirtualContainer } from "@minht11/solid-virtual-container";
 import { Channel, ServerMember, User } from "stoat.js";
 import { styled } from "styled-system/jsx";
@@ -435,6 +435,24 @@ const MemberTitle = styled("div", {
 });
 
 /**
+ * Red LIVE pill shown next to the username while a linked streaming
+ * channel is live
+ */
+const LivePill = styled("span", {
+  base: {
+    ...typography.raw({ class: "label", size: "small" }),
+    background: "#e91916",
+    color: "#fff",
+    borderRadius: "var(--borderRadius-sm)",
+    padding: "0 var(--gap-sm)",
+    marginInlineStart: "var(--gap-sm)",
+    fontWeight: 700,
+    lineHeight: "1.4",
+    verticalAlign: "middle",
+  },
+});
+
+/**
  * Styles required to correctly display name and status
  */
 const NameStatusStack = styled("div", {
@@ -463,10 +481,21 @@ function Member(props: {
     userInformation((props.user ?? props.member?.user)!, props.member);
 
   /**
+   * Linked streaming channel that is currently live, if any
+   */
+  const liveConnection = () =>
+    (props.user ?? props.member?.user)?.liveConnections[0];
+
+  /**
    * Get user status
    */
   const status = () => {
     const target = props.user ?? props.member?.user;
+    const live = liveConnection();
+    if (live)
+      return live.live_title
+        ? t`Streaming: ${live.live_title}`
+        : t`Streaming on ${live.platform}`;
     const activity = target?.activity;
     if (activity) return t`Playing ${activity.name}`;
     return target?.statusMessage((s) =>
@@ -512,6 +541,11 @@ function Member(props: {
         <NameStatusStack>
           <OverflowingText>
             <Username username={user().username} colour={user().colour!} />
+            <Show when={liveConnection()}>
+              <LivePill>
+                <Trans>LIVE</Trans>
+              </LivePill>
+            </Show>
           </OverflowingText>
           <Show when={status()}>
             <Tooltip
