@@ -317,7 +317,7 @@ export function HomePage() {
             <div style={{"--md-sys-color-primary": "#FF8A00", "--md-sys-color-on-primary": "#ffffff"}}>
             <CategoryButton
               variant="filled"
-              onClick={() => window.open("https://ko-fi.com/stoatchat")}
+              onClick={() => window.open("https://ko-fi.com/slogatech")}
               description={
                 <Trans>Support the project by donating - thank you!</Trans>
               }
