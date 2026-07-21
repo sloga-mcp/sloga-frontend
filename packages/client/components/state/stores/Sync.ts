@@ -7,16 +7,22 @@ import { Client } from "stoat.js";
 import { State } from "..";
 
 import { AbstractStore } from ".";
+import { TypeFriends } from "./Friends";
 import { TypeNotificationOptions } from "./NotificationOptions";
 import { TypeOrdering } from "./Ordering";
 import { TypeReleaseNotes } from "./ReleaseNotes";
 
-type SynchronisedStores = "ordering" | "notifications" | "release-notes";
+type SynchronisedStores =
+  | "ordering"
+  | "notifications"
+  | "release-notes"
+  | "friends";
 
 const STORE_KEYS: SynchronisedStores[] = [
   "ordering",
   "notifications",
   "release-notes",
+  "friends",
 ];
 
 export interface TypeSynchronisation {
@@ -61,6 +67,7 @@ export class Sync extends AbstractStore<"sync", TypeSynchronisation> {
         ordering: 0,
         notifications: 0,
         "release-notes": 0,
+        friends: 0,
       },
     };
   }
@@ -183,7 +190,10 @@ export class Sync extends AbstractStore<"sync", TypeSynchronisation> {
       if (
         !isEqual(
           this.state[key].get(),
-          parsed as TypeOrdering & TypeNotificationOptions & TypeReleaseNotes,
+          parsed as TypeOrdering &
+            TypeNotificationOptions &
+            TypeReleaseNotes &
+            TypeFriends,
         )
       ) {
         this.touch(key);
