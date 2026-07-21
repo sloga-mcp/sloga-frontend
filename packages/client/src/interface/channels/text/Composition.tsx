@@ -765,10 +765,20 @@ export function MessageComposition(props: Props) {
     const rejectedFiles: File[] = [];
     const validFiles: File[] = [];
 
-    const maxSize = client().configured()
+    const serverLimit = client().configured()
       ? (client().configuration?.features.limits.default.file_upload_size_limits
           .attachments ?? CONFIGURATION.MAX_FILE_SIZE)
       : CONFIGURATION.MAX_FILE_SIZE;
+
+    // Clamp to what a single upload request can actually carry. The server may
+    // advertise far more (5 GB today), but the CDN kills any request body over
+    // 100 MB before it reaches the file server, which used to surface as an
+    // upload frozen at ~1% with no error. Reject it here instead, with a size
+    // the user can act on.
+    const maxSize = Math.min(
+      serverLimit,
+      CONFIGURATION.MAX_UPLOAD_REQUEST_SIZE,
+    );
 
     for (const file of files) {
       if (file.size > maxSize) {

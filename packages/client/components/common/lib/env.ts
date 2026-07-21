@@ -87,6 +87,22 @@ export default {
   MAX_FILE_SIZE:
     (import.meta.env.VITE_CFG_MAX_FILE_SIZE as number) ?? 20_000_000,
   /**
+   * Hard ceiling on a single upload request, regardless of what the server
+   * advertises as its file size limit.
+   *
+   * The CDN in front of the API rejects any single request body over 100 MB —
+   * it returns 413 at the edge after only a couple of MB, so the file never
+   * reaches the file server at all and the upload appears to freeze at a low
+   * percentage. Anything above this can therefore never succeed, however high
+   * `file_upload_size_limits` is set server-side.
+   *
+   * Raising this requires chunked/resumable uploads (each chunk its own
+   * sub-100 MB request) — see the stoatchat repo's
+   * `docs/chunked-resumable-uploads-design.md`.
+   */
+  MAX_UPLOAD_REQUEST_SIZE:
+    (import.meta.env.VITE_CFG_MAX_UPLOAD_REQUEST_SIZE as number) ?? 95_000_000,
+  /**
    * RNNoise worklet asset base. Blank ⇒ the self-hosted copy under
    * `${BASE_URL}rnnoise/` (see the DenoiseTrackProcessor call site in
    * rtc/state.tsx) — the package's jsdelivr default is never used (no-CDN
