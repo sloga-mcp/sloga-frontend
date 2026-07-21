@@ -216,8 +216,14 @@ const Config: SettingsConfiguration<{ server: Server }> = {
             },
             {
               id: "donate",
-              icon: <MdCoffee {...iconSize(20)} />,
-              title: <Trans>Donate to Sloga</Trans>,
+              // Brand orange, matching the Home screen donate button and the
+              // sloga.gg header — this entry is meant to stand out.
+              icon: <MdCoffee {...iconSize(20)} fill="#FF8A00" />,
+              title: (
+                <ColouredText colour="#FF8A00">
+                  <Trans>Donate to Sloga</Trans>
+                </ColouredText>
+              ),
               href: "https://ko-fi.com/slogatech",
             },
             {
