@@ -35,6 +35,7 @@ import { ModalContext, ModalRenderer, useModals } from "@revolt/modal";
 import { VoiceContext } from "@revolt/rtc";
 import { StateContext, SyncWorker, useState } from "@revolt/state";
 import {
+  FileDropGuard,
   FloatingManager,
   LoadTheme,
   SnackbarController,
@@ -203,6 +204,7 @@ function MountContext(props: { children?: JSX.Element }) {
                     <ModalRenderer />
                     <FloatingManager />
                     <AndroidNag />
+                    <FileDropGuard />
                   </SnackbarProvider>
                 </QueryClientProvider>
               </VoiceContext>

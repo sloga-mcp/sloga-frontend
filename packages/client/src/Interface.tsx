@@ -125,18 +125,12 @@ const Interface = (props: { children: JSX.Element }) => {
             <Navigate href="/login" />
           </Match>
           <Match when={lifecycle.loadedOnce()}>
+            {/* file drops are cancelled app-wide by FileDropGuard, mounted
+                at the root — this subtree used to do it alone, which left
+                modals, portals and the login page navigating away */}
             <Layout
               disconnected={isDisconnected()}
               style={{ "flex-grow": 1, "min-height": 0 }}
-              onDragOver={(e) => {
-                // Cancel the dragover so the browser never navigates to a
-                // dropped file; FileDropAnywhereCollector listens on document
-                // (after this handler) and flips the effect to "copy" to
-                // accept files wherever a composer is mounted.
-                e.preventDefault();
-                if (e.dataTransfer) e.dataTransfer.dropEffect = "none";
-              }}
-              onDrop={(e) => e.preventDefault()}
             >
               <Sidebar
                 menuGenerator={(target) => ({

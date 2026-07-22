@@ -22,6 +22,7 @@ import { useModals } from "@revolt/modal";
 
 // import { typography } from "../../design";
 import { PreviewStack } from "../PreviewStack";
+import { isFileDrag } from "./FileDropGuard";
 
 interface Props {
   /**
@@ -64,6 +65,11 @@ const DimScreen = styled("div", {
     bottom: 0,
     position: "fixed",
     background: "rgba(0, 0, 0, 0.8)",
+
+    // purely decorative: if it took the pointer it would become the drag
+    // target the instant it appeared, firing a dragleave at whatever was
+    // under the cursor and making the overlay flicker
+    pointerEvents: "none",
   },
 });
 
@@ -100,7 +106,9 @@ export function FileDropAnywhereCollector(props: Props) {
    * @param event Drag event
    */
   function onDragOver(event: DragEvent) {
-    if (isOpen()) return;
+    // Dragging a server around the rail or a selection out of a message is
+    // not an attachment — don't dim the screen and offer to eat it.
+    if (!isFileDrag(event) || isOpen()) return;
 
     event.preventDefault();
     clearTimeout(deferredHide);
@@ -134,10 +142,15 @@ export function FileDropAnywhereCollector(props: Props) {
    * @param event Drag event
    */
   function onDrop(event: DragEvent) {
+    // Same gate as the dragover: a file dropped onto an open modal is
+    // swallowed by FileDropGuard rather than silently landing in the draft
+    // of whatever channel is behind it.
+    if (!isFileDrag(event) || isOpen()) return;
+
     event.preventDefault();
 
     const files = event.dataTransfer?.files;
-    if (files) {
+    if (files?.length) {
       props.onFiles([...files]);
     }
 
