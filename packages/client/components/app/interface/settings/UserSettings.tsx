@@ -194,7 +194,7 @@ const Config: SettingsConfiguration<{ server: Server }> = {
             {
               id: "security",
               icon: <MdSecurity {...iconSize(20)} />,
-              title: <Trans>Security & Privacy</Trans>,
+              title: <Trans>E2E Encryption</Trans>,
               // Only meaningful where the native E2EE layer exists (desktop);
               // the web build has no key material.
               hidden: !nativeE2EEAvailable(),

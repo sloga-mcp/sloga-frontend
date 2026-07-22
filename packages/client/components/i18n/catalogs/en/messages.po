@@ -1437,8 +1437,8 @@ msgid "Create a recovery code"
 msgstr "Create a recovery code"
 
 #: components/modal/modals/E2EEEnable.tsx
-msgid "Create a recovery code so you can restore your identity and message history if you lose this device. Without one, encrypted history is gone for good if the device is lost. You can also do this later from Security & Privacy settings."
-msgstr "Create a recovery code so you can restore your identity and message history if you lose this device. Without one, encrypted history is gone for good if the device is lost. You can also do this later from Security & Privacy settings."
+msgid "Create a recovery code so you can restore your identity and message history if you lose this device. Without one, encrypted history is gone for good if the device is lost. You can also do this later from E2E Encryption settings."
+msgstr "Create a recovery code so you can restore your identity and message history if you lose this device. Without one, encrypted history is gone for good if the device is lost. You can also do this later from E2E Encryption settings."
 
 #: src/interface/ServerEvents.tsx
 #~ msgid "Create a text channel named <0>events</0> in this server to enable the calendar."
@@ -4151,8 +4151,8 @@ msgid "Search members or roles…"
 msgstr "Search members or roles…"
 
 #: components/app/interface/settings/UserSettings.tsx
-msgid "Security & Privacy"
-msgstr "Security & Privacy"
+msgid "E2E Encryption"
+msgstr "E2E Encryption"
 
 #: components/modal/modals/E2EEIdentityChange.tsx
 msgid "Security identity changed"

@@ -188,7 +188,7 @@ export function E2EEEnableModal(
                 Create a recovery code so you can restore your identity and
                 message history if you lose this device. Without one, encrypted
                 history is gone for good if the device is lost. You can also do
-                this later from Security &amp; Privacy settings.
+                this later from E2E Encryption settings.
               </Trans>
             </Text>
           </Match>
