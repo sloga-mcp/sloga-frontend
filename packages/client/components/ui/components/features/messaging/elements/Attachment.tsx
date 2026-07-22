@@ -17,10 +17,17 @@ import { TextFile } from "./TextFile";
  */
 export const AttachmentContainer = styled(Column, {
   base: {
+    // sized to its contents, like the composer's pre-send carousel — a sent
+    // file used to stretch the full width of the message list
+    width: "fit-content",
+    maxWidth: "100%",
+
     padding: "var(--gap-md)",
-    borderRadius: "var(--borderRadius-md)",
-    color: "var(--md-sys-color-inverse-on-surface)",
-    background: "var(--md-sys-color-inverse-surface)",
+    borderRadius: "var(--borderRadius-lg)",
+
+    // deep purple, rather than the near-white inverse surface
+    color: "white",
+    background: "#2E1A5E",
   },
 });
 

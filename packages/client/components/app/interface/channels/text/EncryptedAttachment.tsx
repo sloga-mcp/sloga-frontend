@@ -136,9 +136,11 @@ const StateContainer = styled("div", {
     width: "fit-content",
     maxWidth: "420px",
     padding: "var(--gap-md)",
-    borderRadius: "var(--borderRadius-md)",
-    color: "var(--md-sys-color-inverse-on-surface)",
-    background: "var(--md-sys-color-inverse-surface)",
+    borderRadius: "var(--borderRadius-lg)",
+
+    // same deep purple as the plaintext attachment card (AttachmentContainer)
+    color: "white",
+    background: "#2E1A5E",
 
     "&[data-error]": {
       color: "var(--md-sys-color-on-error-container)",
@@ -151,16 +153,18 @@ const SaveAction = styled("button", {
   base: {
     appearance: "none",
     border: 0,
-    background: "transparent",
-    color: "inherit",
     display: "grid",
     placeItems: "center",
     cursor: "pointer",
     padding: "var(--gap-sm)",
-    borderRadius: "var(--borderRadius-md)",
-    opacity: 0.85,
+    borderRadius: "var(--borderRadius-full)",
+
+    // brand orange, matching the plaintext card's download button
+    background: "#FF8A00",
+    color: "#2E1A5E",
+
     "&:hover": {
-      opacity: 1,
+      background: "#FFA333",
     },
   },
 });

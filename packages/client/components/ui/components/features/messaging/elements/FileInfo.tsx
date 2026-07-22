@@ -19,7 +19,33 @@ import { Symbol } from "@revolt/ui/components/utils/Symbol";
  * Base container
  */
 const Base = styled(Row, {
-  base: {},
+  base: {
+    // keep the filename from crowding the download button once the card is
+    // only as wide as its contents
+    paddingInlineEnd: "var(--gap-sm)",
+  },
+});
+
+/**
+ * Download affordance
+ *
+ * Brand orange on the purple card so it reads as the one thing to click,
+ * rather than a grey glyph in the corner.
+ */
+const DownloadLink = styled("a", {
+  base: {
+    display: "flex",
+    alignSelf: "center",
+
+    "& button": {
+      background: "#FF8A00",
+      "--colour": "#2E1A5E",
+    },
+
+    "&:hover button": {
+      background: "#FFA333",
+    },
+  },
 });
 
 interface Props {
@@ -73,7 +99,7 @@ export function FileInfo(props: Props) {
         </Show>
       </Column>
       <Show when={props.file}>
-        <a
+        <DownloadLink
           target="_blank"
           href={props.file?.originalUrl}
           download={props.file?.filename}
@@ -81,7 +107,7 @@ export function FileInfo(props: Props) {
           <IconButton>
             <Symbol>download</Symbol>
           </IconButton>
-        </a>
+        </DownloadLink>
       </Show>
     </Base>
   );
