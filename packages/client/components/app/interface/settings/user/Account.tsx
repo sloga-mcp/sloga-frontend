@@ -138,8 +138,9 @@ function MultiFactorAuth() {
    */
   async function showRecoveryCodes() {
     const ticket = await mfaFlow(mfa.data!);
+    if (!ticket) return;
 
-    ticket!.fetchRecoveryCodes().then((codes) =>
+    ticket.fetchRecoveryCodes().then((codes) =>
       openModal({
         type: "mfa_recovery",
         mfa: mfa.data!,
@@ -153,8 +154,9 @@ function MultiFactorAuth() {
    */
   async function generateRecoveryCodes() {
     const ticket = await mfaFlow(mfa.data!);
+    if (!ticket) return;
 
-    ticket!.generateRecoveryCodes().then((codes) =>
+    ticket.generateRecoveryCodes().then((codes) =>
       openModal({
         type: "mfa_recovery",
         mfa: mfa.data!,
@@ -168,18 +170,23 @@ function MultiFactorAuth() {
    */
   async function setupAuthenticatorApp() {
     const ticket = await mfaFlow(mfa.data!);
-    const secret = await ticket!.generateAuthenticatorSecret();
+    if (!ticket) return;
 
-    let success;
+    const secret = await ticket.generateAuthenticatorSecret();
+
+    let success = false;
     while (!success) {
-      try {
-        const code = await mfaEnableTOTP(secret, client().user!.username);
+      const code = await mfaEnableTOTP(secret, client().user!.username);
 
-        if (code) {
-          await mfa.data!.enableAuthenticator(code);
-          success = true;
-        }
+      // Dismissing the QR dialog resolves without a code — abandon setup
+      // rather than re-prompting, which would trap the user in the modal.
+      if (!code) return;
+
+      try {
+        await mfa.data!.enableAuthenticator(code);
+        success = true;
       } catch (err) {
+        // Wrong or expired code: report it and prompt again.
         showError(err);
       }
     }
@@ -189,7 +196,7 @@ function MultiFactorAuth() {
    * Disable authenticator app
    */
   function disableAuthenticatorApp() {
-    mfaFlow(mfa.data!).then((ticket) => ticket!.disableAuthenticator());
+    mfaFlow(mfa.data!).then((ticket) => ticket?.disableAuthenticator());
   }
 
   return (
@@ -288,7 +295,7 @@ function ManageAccount() {
    */
   function disableAccount() {
     mfaFlow(mfa.data!).then((ticket) =>
-      ticket!.disableAccount().then(() => logout()),
+      ticket?.disableAccount().then(() => logout()),
     );
   }
 
@@ -297,7 +304,7 @@ function ManageAccount() {
    */
   function deleteAccount() {
     mfaFlow(mfa.data!).then((ticket) =>
-      ticket!.deleteAccount().then(() => logout()),
+      ticket?.deleteAccount().then(() => logout()),
     );
   }
 

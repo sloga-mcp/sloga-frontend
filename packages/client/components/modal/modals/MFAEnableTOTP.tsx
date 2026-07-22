@@ -1,4 +1,5 @@
 import { createFormControl, createFormGroup } from "solid-forms";
+import { onCleanup } from "solid-js";
 import { QRCodeSVG } from "solid-qr-code";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
@@ -46,6 +47,23 @@ export function MFAEnableTOTPModal(
   });
 
   /**
+   * Resolve the caller's promise exactly once.
+   *
+   * The dialog has three exits — Cancel, backdrop click and ESC — and ESC pops
+   * the modal from the controller without going through any handler here, so
+   * without the `onCleanup` below that path would never settle and the awaiting
+   * caller would hang forever. Settling with no code means "cancelled".
+   */
+  let settled = false;
+  function settle(code?: string) {
+    if (settled) return;
+    settled = true;
+    props.callback(code);
+  }
+
+  onCleanup(() => settle());
+
+  /**
    * Generate OTP URI
    */
   const uri = () =>
@@ -54,7 +72,7 @@ export function MFAEnableTOTPModal(
   async function onSubmit() {
     try {
       const code = group.controls.code.value.trim().replace(/\s/g, "");
-      await props.callback(code);
+      settle(code);
       props.onClose();
     } catch (error) {
       showError(error);
@@ -67,7 +85,7 @@ export function MFAEnableTOTPModal(
     <Dialog
       show={props.show}
       onClose={() => {
-        props.callback();
+        settle();
         props.onClose();
       }}
       title={<Trans>Enable authenticator app</Trans>}
@@ -75,7 +93,7 @@ export function MFAEnableTOTPModal(
         {
           text: <Trans>Cancel</Trans>,
           onClick() {
-            props.callback();
+            settle();
           },
         },
         {
