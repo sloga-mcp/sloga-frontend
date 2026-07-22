@@ -8,7 +8,12 @@ import {
   VideoTrack,
 } from "solid-livekit-components";
 
-import { ConnectionQuality, ParticipantEvent, Track } from "livekit-client";
+import {
+  type LocalTrack,
+  ConnectionQuality,
+  ParticipantEvent,
+  Track,
+} from "livekit-client";
 import { cva } from "styled-system/css";
 import { styled } from "styled-system/jsx";
 
@@ -101,16 +106,85 @@ export function ParticipantTile(props: TileProps) {
     }
   };
 
-  const qualityMs = () => {
+  /**
+   * Real round-trip time to the SFU, in ms.
+   *
+   * RTT is a property of a peer connection, so the only one we can actually
+   * measure is OUR OWN link to the server — a remote participant's RTT to the
+   * SFU is not observable from this client. It is therefore polled only on the
+   * local tile; remote tiles fall back to LiveKit's quality bucket (below).
+   */
+  const [rttMs, setRttMs] = createSignal<number>();
+
+  if (participant.isLocal) {
+    const readRtt = async () => {
+      const pub =
+        participant.getTrackPublication(Track.Source.Microphone) ??
+        participant.getTrackPublication(Track.Source.Camera);
+      // `track` is typed as the abstract base here; only Local/RemoteTrack
+      // expose the stats report.
+      const track = pub?.track as LocalTrack | undefined;
+      if (!track) return setRttMs(undefined);
+
+      try {
+        const report = await track.getRTCStatsReport();
+        if (!report) return;
+
+        // Prefer the nominated ICE candidate pair (transport-level RTT).
+        // `remote-inbound-rtp.roundTripTime` is the RTCP-derived fallback for
+        // browsers that don't surface candidate-pair stats off a sender — it is
+        // what VoiceStatsOverlay already reads.
+        let candidatePair: number | undefined;
+        let remoteInbound: number | undefined;
+        report.forEach((stat: RTCStats) => {
+          const r = stat as any;
+          if (
+            r.type === "candidate-pair" &&
+            r.nominated &&
+            typeof r.currentRoundTripTime === "number"
+          ) {
+            candidatePair = r.currentRoundTripTime * 1000;
+          } else if (
+            r.type === "remote-inbound-rtp" &&
+            typeof r.roundTripTime === "number"
+          ) {
+            remoteInbound = r.roundTripTime * 1000;
+          }
+        });
+
+        const rtt = candidatePair ?? remoteInbound;
+        setRttMs(rtt === undefined ? undefined : Math.round(rtt));
+      } catch {
+        // Stats unavailable on this browser/track — fall back to the bucket.
+        setRttMs(undefined);
+      }
+    };
+
+    readRtt();
+    const timer = setInterval(readRtt, 3000);
+    onCleanup(() => clearInterval(timer));
+  }
+
+  /**
+   * Badge text: a measured number where one exists, otherwise LiveKit's
+   * coarse quality bucket named as what it is. This deliberately no longer
+   * prints a millisecond figure for remote participants — the previous
+   * "<50ms"/"~150ms"/"~400ms" strings were hardcoded per bucket and were never
+   * measurements of anything.
+   */
+  const qualityLabel = () => {
+    const ms = rttMs();
+    if (ms !== undefined) return `${ms}ms`;
+
     switch (quality()) {
       case ConnectionQuality.Excellent:
-        return "<50ms";
+        return "Excellent";
       case ConnectionQuality.Good:
-        return "~150ms";
+        return "Good";
       case ConnectionQuality.Poor:
-        return "~400ms";
+        return "Poor";
       case ConnectionQuality.Lost:
-        return "lost";
+        return "Lost";
       default:
         return "—";
     }
@@ -224,7 +298,7 @@ export function ParticipantTile(props: TileProps) {
           </OverlayInner>
           <PingBadge style={{ color: qualityColor() }}>
             <PingDot style={{ background: qualityColor() }} />
-            {qualityMs()}
+            {qualityLabel()}
           </PingBadge>
         </Overlay>
         <Show when={!isScreenShare()}>
