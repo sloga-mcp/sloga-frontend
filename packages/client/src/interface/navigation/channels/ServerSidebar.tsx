@@ -554,6 +554,17 @@ function Entry(
 
   const inCall = () => props.channel.id === voice.channel()?.id;
 
+  // Colour of the mic icon while we're connected to this voice channel.
+  // Deliberately not --md-sys-color-primary: the theme sets that to the same
+  // #00B2FF as --md-sys-color-primary-container, which is the selected-channel
+  // pill background, so the icon vanished into the highlight whenever you were
+  // viewing the channel you had joined. On the pill we fall back to the pill's
+  // own foreground; everywhere else we use the online-presence green.
+  const inCallIconColour = () =>
+    props.active
+      ? "var(--md-sys-color-on-primary-container)"
+      : "var(--brand-presence-online)";
+
   const attentionState = createMemo(() =>
     props.active
       ? "selected"
@@ -578,9 +589,7 @@ function Entry(
           <>
             <Switch fallback={<Symbol>edit</Symbol>}>
               <Match when={props.channel.isVoice}>
-                <Symbol
-                  color={inCall() ? "var(--md-sys-color-primary)" : undefined}
-                >
+                <Symbol color={inCall() ? inCallIconColour() : undefined}>
                   {props.channel.name?.toLowerCase() === "afk" ? "mic_off" : "mic"}
                 </Symbol>
               </Match>
