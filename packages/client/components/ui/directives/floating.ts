@@ -184,8 +184,8 @@ export function floating(element: HTMLElement, accessor: Accessor<Props>) {
           onCleanup(() => {
             element.removeEventListener("mouseenter", onMouseEnter);
             element.removeEventListener("mouseleave", onMouseLeave);
-            element.addEventListener("touchstart", onTouch);
-            element.addEventListener("touchend", onTouch);
+            element.removeEventListener("touchstart", onTouch);
+            element.removeEventListener("touchend", onTouch);
           });
         }
       },

@@ -39,7 +39,7 @@ export function FloatingManager() {
   }
 
   onMount(() => document.addEventListener("mousemove", onMouseMove));
-  onCleanup(() => document.addEventListener("mousemove", onMouseMove));
+  onCleanup(() => document.removeEventListener("mousemove", onMouseMove));
 
   /**
    * Whether a floating element is visible
