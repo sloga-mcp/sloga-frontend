@@ -89,7 +89,12 @@ export function ComposerPopover(props: Props) {
             <Backdrop onClick={() => props.onDismiss!()} />
           </Show>
           <Panel
-            ref={setFloating}
+            ref={(element) => {
+              // Clear on close, otherwise `autoUpdate` keeps observing the
+              // detached panel for as long as the popover stays shut.
+              setFloating(element);
+              onCleanup(() => setFloating(undefined));
+            }}
             style={{
               position: position.strategy,
               top: `${position.y ?? 0}px`,
