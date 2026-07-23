@@ -419,34 +419,59 @@ export function NotificationsWorker() {
   onMount(() => {
     if (!Capacitor.isNativePlatform()) return;
 
-    const handleAction = (path?: string | null, answer?: boolean) => {
+    const handleAction = (
+      path?: string | null,
+      answer?: boolean,
+      ring?: boolean,
+      callerId?: string | null,
+    ) => {
       if (!path) return;
       navigate(path);
+      if (!answer && !ring) return;
 
-      // "Answer" on an incoming call notification: join the call directly
+      const channelId = path.split("/").pop();
+      // Cold start: the client may still be connecting, so retry until the
+      // channel is hydrated (~10s) before giving up.
+      const withChannel = (fn: (channel: Channel) => void, attempt = 0) => {
+        const channel = channelId ? client().channels.get(channelId) : undefined;
+        if (channel) fn(channel);
+        else if (attempt < 20) setTimeout(() => withChannel(fn, attempt + 1), 500);
+      };
+
       if (answer) {
-        const channelId = path.split("/").pop();
-        const joinCall = (attempt: number) => {
-          const channel = channelId
-            ? client().channels.get(channelId)
-            : undefined;
-          if (channel) {
-            voice.connect(channel).catch(console.error);
-          } else if (attempt < 20) {
-            // Cold start: wait for the client to connect and hydrate
-            setTimeout(() => joinCall(attempt + 1), 500);
-          }
-        };
-        joinCall(0);
+        // Explicit "Answer" action button — the ONLY path that joins directly.
+        withChannel((channel) => voice.connect(channel).catch(console.error));
+        return;
       }
+
+      // Ring: the notification was opened (or Android auto-launched the
+      // full-screen intent because the screen was off/locked). Show the
+      // Accept/Decline popup — NEVER auto-join.
+      withChannel((channel) => {
+        presentIncomingCall({
+          channel,
+          caller: callerId ? client().users.get(callerId) : undefined,
+          receivedAt: Date.now(),
+        });
+        // The native notification is cancelled once the popup is resolved, so
+        // carry the ring over in-app rather than leaving it silent.
+        sound.playSound("ringtoneIncoming");
+      });
     };
 
     // Cold start: consume the action stored before the web app was ready
     registerPlugin<{
-      consumeLaunchAction(): Promise<{ path?: string | null; answer: boolean }>;
+      consumeLaunchAction(): Promise<{
+        path?: string | null;
+        answer: boolean;
+        ring?: boolean;
+        callerId?: string | null;
+      }>;
     }>("PushToken")
       .consumeLaunchAction()
-      .then(({ path, answer }) => handleAction(path, answer))
+      .then(({ path, answer, ring, callerId }) =>
+        handleAction(path, answer, ring, callerId),
+      )
       .catch(() => {});
 
     // Warm app: actions arrive as window events. Capacitor's
@@ -461,15 +486,22 @@ export function NotificationsWorker() {
       const e = event as Event & {
         path?: unknown;
         answer?: unknown;
+        ring?: unknown;
+        callerId?: unknown;
         detail?: string | null;
       };
       if (typeof e.path === "string") {
-        handleAction(e.path, e.answer === true);
+        handleAction(
+          e.path,
+          e.answer === true,
+          e.ring === true,
+          typeof e.callerId === "string" ? e.callerId : undefined,
+        );
         return;
       }
       try {
         const data = JSON.parse(e.detail ?? "{}");
-        handleAction(data.path, data.answer);
+        handleAction(data.path, data.answer, data.ring, data.callerId);
       } catch {
         /* ignore malformed payloads */
       }

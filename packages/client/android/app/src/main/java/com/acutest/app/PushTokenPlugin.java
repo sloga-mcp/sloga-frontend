@@ -25,10 +25,14 @@ import com.google.firebase.messaging.FirebaseMessaging;
 public class PushTokenPlugin extends Plugin {
     private static String pendingPath;
     private static boolean pendingAnswer;
+    private static boolean pendingRing;
+    private static String pendingCallerId;
 
-    static void setPendingAction(String path, boolean answer) {
+    static void setPendingAction(String path, boolean answer, boolean ring, String callerId) {
         pendingPath = path;
         pendingAnswer = answer;
+        pendingRing = ring;
+        pendingCallerId = callerId;
     }
 
     /** Returns and clears the navigation requested by a tapped notification */
@@ -37,9 +41,30 @@ public class PushTokenPlugin extends Plugin {
         JSObject result = new JSObject();
         result.put("path", pendingPath);
         result.put("answer", pendingAnswer);
+        result.put("ring", pendingRing);
+        result.put("callerId", pendingCallerId);
         pendingPath = null;
         pendingAnswer = false;
+        pendingRing = false;
+        pendingCallerId = null;
         call.resolve(result);
+    }
+
+    /**
+     * Cancel the ringing call notification for a channel. Called when the
+     * in-app incoming-call popup is resolved (accepted, declined or timed out)
+     * so the native ringtone stops instead of ringing on into the call. The
+     * notification id is derived here so JS never has to reproduce Java's
+     * String.hashCode().
+     */
+    @PluginMethod
+    public void dismissCallNotification(PluginCall call) {
+        String channelId = call.getString("channelId");
+        if (channelId != null) {
+            androidx.core.app.NotificationManagerCompat.from(getContext())
+                    .cancel(channelId.hashCode());
+        }
+        call.resolve();
     }
 
     @PluginMethod

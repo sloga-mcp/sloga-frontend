@@ -1,5 +1,7 @@
 import { createSignal } from "solid-js";
 
+import { Capacitor, registerPlugin } from "@capacitor/core";
+
 import type { Channel, User } from "stoat.js";
 
 /**
@@ -54,6 +56,25 @@ function requestWindowAttention(active: boolean) {
   }
 }
 
+/**
+ * Android: cancel the ringing call notification (no-op elsewhere). The
+ * full-screen intent leaves a native notification ringing while the popup is
+ * up; once the user has accepted or declined it must stop, or the ringtone
+ * carries on into the call.
+ */
+function dismissNativeCallNotification(channelId: string) {
+  try {
+    if (!Capacitor.isNativePlatform()) return;
+    registerPlugin<{
+      dismissCallNotification(options: { channelId: string }): Promise<void>;
+    }>("PushToken")
+      .dismissCallNotification({ channelId })
+      .catch(() => {});
+  } catch {
+    // plugin unavailable on this shell
+  }
+}
+
 /** Present the ringing popup for a starting call */
 export function presentIncomingCall(call: IncomingCall) {
   setIncomingCall(call);
@@ -66,6 +87,10 @@ export function presentIncomingCall(call: IncomingCall) {
  */
 export function dismissIncomingCall(channelId?: string) {
   if (channelId && incomingCall()?.channel.id !== channelId) return;
-  if (incomingCall()) requestWindowAttention(false);
+  const active = incomingCall();
+  if (active) {
+    requestWindowAttention(false);
+    dismissNativeCallNotification(active.channel.id);
+  }
   setIncomingCall(undefined);
 }

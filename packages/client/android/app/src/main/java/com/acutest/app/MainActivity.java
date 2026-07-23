@@ -39,13 +39,17 @@ public class MainActivity extends BridgeActivity {
         handleNotificationIntent(intent);
     }
 
-    /** Route notification taps (message / answer call) into the web app */
+    /** Route notification taps (message / ring / answer call) into the web app */
     private void handleNotificationIntent(Intent intent) {
         if (intent == null) return;
         String path = intent.getStringExtra("sloga_path");
         if (path == null) return;
         boolean answer = intent.getBooleanExtra("sloga_answer_call", false);
+        boolean ring = intent.getBooleanExtra("sloga_ring_call", false);
+        String callerId = intent.getStringExtra("sloga_caller_id");
         intent.removeExtra("sloga_path");
+        intent.removeExtra("sloga_ring_call");
+        intent.removeExtra("sloga_answer_call");
 
         // Action-button taps don't auto-dismiss notifications — clear the
         // call notification once we're handling the answer.
@@ -55,11 +59,58 @@ public class MainActivity extends BridgeActivity {
                     .cancel(channelId.hashCode());
         }
 
-        PushTokenPlugin.setPendingAction(path, answer);
+        // A full-screen intent fires while the device is asleep or locked. Wake
+        // the display and show over the keyguard so the Accept/Decline UI is
+        // actually reachable — the call must NEVER be joined without that
+        // explicit choice.
+        if (ring) applyRingingWindowFlags();
+
+        PushTokenPlugin.setPendingAction(path, answer, ring, callerId);
         if (bridge != null) {
             bridge.triggerWindowJSEvent(
                     "slogaNotificationAction",
-                    "{\"path\":\"" + path + "\",\"answer\":" + answer + "}");
+                    "{\"path\":\"" + path + "\",\"answer\":" + answer
+                            + ",\"ring\":" + ring
+                            + ",\"callerId\":"
+                            + (callerId != null ? "\"" + callerId + "\"" : "null")
+                            + "}");
         }
+    }
+
+    /** Turn the screen on and show over the lockscreen while a call is ringing. */
+    private void applyRingingWindowFlags() {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true);
+            setTurnScreenOn(true);
+        } else {
+            getWindow().addFlags(
+                    android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
+                            | android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON);
+        }
+        // Don't let the display sleep again mid-ring.
+        getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+    }
+
+    /**
+     * Drop the lockscreen bypass once the app leaves the foreground. Without
+     * this a single incoming call would leave the app permanently showable over
+     * the keyguard — anyone could read the user's DMs without unlocking.
+     */
+    private void clearRingingWindowFlags() {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(false);
+            setTurnScreenOn(false);
+        } else {
+            getWindow().clearFlags(
+                    android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
+                            | android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON);
+        }
+        getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+    }
+
+    @Override
+    public void onPause() {
+        super.onPause();
+        clearRingingWindowFlags();
     }
 }

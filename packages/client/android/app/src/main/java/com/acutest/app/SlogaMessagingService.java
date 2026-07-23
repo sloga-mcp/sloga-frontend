@@ -113,7 +113,7 @@ public class SlogaMessagingService extends FirebaseMessagingService {
                     // Remove the incoming call notification
                     NotificationManagerCompat.from(this).cancel(notificationId);
                 } else {
-                    notifyIncomingCall(notificationId, channelId);
+                    notifyIncomingCall(notificationId, channelId, data.get("initiator_id"));
                 }
                 break;
             }
@@ -170,9 +170,24 @@ public class SlogaMessagingService extends FirebaseMessagingService {
     }
 
     /** Ringing notification with Answer / Decline actions */
-    private void notifyIncomingCall(int notificationId, String channelId) {
+    private void notifyIncomingCall(int notificationId, String channelId, String callerId) {
         String path = channelId != null ? "/channel/" + channelId : null;
 
+        // RING intent — drives the full-screen intent and tapping the notification
+        // body. Android fires a full-screen intent AUTOMATICALLY when the screen is
+        // off or locked, so this MUST NOT answer: it only wakes the screen and opens
+        // the ringing UI, where the user picks Accept or Decline. (Wiring the answer
+        // intent here made calls auto-join with the screen still off.)
+        Intent ring = new Intent(this, MainActivity.class);
+        ring.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        if (path != null) ring.putExtra("sloga_path", path);
+        ring.putExtra("sloga_ring_call", true);
+        if (callerId != null) ring.putExtra("sloga_caller_id", callerId);
+        PendingIntent ringIntent = PendingIntent.getActivity(
+                this, notificationId + 300000, ring,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+
+        // ANSWER intent — ONLY the explicit "Answer" action button joins the call.
         Intent answer = new Intent(this, MainActivity.class);
         answer.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
         if (path != null) answer.putExtra("sloga_path", path);
@@ -195,8 +210,8 @@ public class SlogaMessagingService extends FirebaseMessagingService {
                 .setPriority(NotificationCompat.PRIORITY_MAX)
                 .setOngoing(true)
                 .setAutoCancel(true)
-                .setFullScreenIntent(answerIntent, true)
-                .setContentIntent(answerIntent)
+                .setFullScreenIntent(ringIntent, true)
+                .setContentIntent(ringIntent)
                 .addAction(0, "Decline", declineIntent)
                 .addAction(0, "Answer", answerIntent)
                 .setTimeoutAfter(45_000);
