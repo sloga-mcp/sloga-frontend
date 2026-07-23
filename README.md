@@ -10,6 +10,8 @@
   [![License](https://img.shields.io/github/license/stoatchat/for-web?style=flat-square&logoColor=white)](https://github.com/stoatchat/for-web/blob/main/LICENSE)
 </h1>
 The official web client powering https://stoat.chat/app, built with <a href="https://www.solidjs.com/">Solid.js</a> 💖. <br/>
+This fork powers <b><a href="https://sloga.gg">Sloga</a></b> — game chat for guilds and clans, with opt-in end-to-end encrypted DMs and calls.<br/>
+Downloads for Windows, Linux and Android: <a href="https://sloga.gg">sloga.gg</a><br/>
 Track the project roadmap on <a href="https://op.stoatinternal.com/projects/revolt-for-web/roadmap">OpenProject</a>.
 </div>
 <br/>
