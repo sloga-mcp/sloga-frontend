@@ -449,10 +449,26 @@ export function NotificationsWorker() {
       .then(({ path, answer }) => handleAction(path, answer))
       .catch(() => {});
 
-    // Warm app: actions arrive as window events
+    // Warm app: actions arrive as window events. Capacitor's
+    // triggerWindowJSEvent delivers the payload by copying each field of the
+    // data object DIRECTLY onto the dispatched event (native-bridge.js
+    // `createEvent`: `ev[i] = eventData[i]`), so the values live at
+    // `event.path` / `event.answer` — NOT under `event.detail`. Reading
+    // `.detail` (as this did) always parsed `"{}"`, so a warm/backgrounded
+    // "Answer" tap silently did nothing. Read the fields off the event; keep
+    // a `.detail` JSON fallback in case a shell ever delivers it that way.
     const onAction = (event: Event) => {
+      const e = event as Event & {
+        path?: unknown;
+        answer?: unknown;
+        detail?: string | null;
+      };
+      if (typeof e.path === "string") {
+        handleAction(e.path, e.answer === true);
+        return;
+      }
       try {
-        const data = JSON.parse((event as CustomEvent).detail ?? "{}");
+        const data = JSON.parse(e.detail ?? "{}");
         handleAction(data.path, data.answer);
       } catch {
         /* ignore malformed payloads */
