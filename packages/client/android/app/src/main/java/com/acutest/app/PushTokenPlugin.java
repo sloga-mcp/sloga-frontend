@@ -64,6 +64,11 @@ public class PushTokenPlugin extends Plugin {
             androidx.core.app.NotificationManagerCompat.from(getContext())
                     .cancel(channelId.hashCode());
         }
+        // The ring is over — give up the lockscreen bypass the full-screen
+        // intent asked for, so the app can't be read over the keyguard later.
+        if (getActivity() instanceof MainActivity) {
+            ((MainActivity) getActivity()).clearRingingWindowFlags();
+        }
         call.resolve();
     }
 

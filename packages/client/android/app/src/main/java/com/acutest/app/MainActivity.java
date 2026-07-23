@@ -92,25 +92,35 @@ public class MainActivity extends BridgeActivity {
     }
 
     /**
-     * Drop the lockscreen bypass once the app leaves the foreground. Without
-     * this a single incoming call would leave the app permanently showable over
-     * the keyguard — anyone could read the user's DMs without unlocking.
+     * Drop the lockscreen bypass once the ring is over. Without this a single
+     * incoming call would leave the app permanently showable over the keyguard —
+     * anyone could read the user's DMs without unlocking.
+     *
+     * Deliberately NOT called from onPause: a full-screen intent that arrives
+     * while the device is asleep can pause the activity during the launch race,
+     * and clearing `turnScreenOn` there cancels the very wake it was asked for
+     * (observed on a Retroid Pocket 5 / Android 13 — the screen stayed off).
+     * The lifetime is tied to the RING instead: cleared when the popup is
+     * resolved (accept / decline / timeout, via PushTokenPlugin), with onStop as
+     * a backstop for when the activity is genuinely no longer visible.
      */
-    private void clearRingingWindowFlags() {
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O_MR1) {
-            setShowWhenLocked(false);
-            setTurnScreenOn(false);
-        } else {
-            getWindow().clearFlags(
-                    android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
-                            | android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON);
-        }
-        getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+    void clearRingingWindowFlags() {
+        runOnUiThread(() -> {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O_MR1) {
+                setShowWhenLocked(false);
+                setTurnScreenOn(false);
+            } else {
+                getWindow().clearFlags(
+                        android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
+                                | android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON);
+            }
+            getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        });
     }
 
     @Override
-    public void onPause() {
-        super.onPause();
+    public void onStop() {
+        super.onStop();
         clearRingingWindowFlags();
     }
 }
