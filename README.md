@@ -1,24 +1,23 @@
 <div align="center">
 <h1>
-  Stoat Frontend
+  Sloga Frontend
   
-  [![Stars](https://img.shields.io/github/stars/stoatchat/for-web?style=flat-square&logoColor=white)](https://github.com/stoatchat/for-web/stargazers)
-  [![Forks](https://img.shields.io/github/forks/stoatchat/for-web?style=flat-square&logoColor=white)](https://github.com/stoatchat/for-web/network/members)
-  [![Pull Requests](https://img.shields.io/github/issues-pr/stoatchat/for-web?style=flat-square&logoColor=white)](https://github.com/stoatchat/for-web/pulls)
-  [![Issues](https://img.shields.io/github/issues/stoatchat/for-web?style=flat-square&logoColor=white)](https://github.com/stoatchat/for-web/issues)
-  [![Contributors](https://img.shields.io/github/contributors/stoatchat/for-web?style=flat-square&logoColor=white)](https://github.com/stoatchat/for-web/graphs/contributors)
-  [![License](https://img.shields.io/github/license/stoatchat/for-web?style=flat-square&logoColor=white)](https://github.com/stoatchat/for-web/blob/main/LICENSE)
+  [![Stars](https://img.shields.io/github/stars/sloga-mcp/sloga-frontend?style=flat-square&logoColor=white)](https://github.com/sloga-mcp/sloga-frontend/stargazers)
+  [![Forks](https://img.shields.io/github/forks/sloga-mcp/sloga-frontend?style=flat-square&logoColor=white)](https://github.com/sloga-mcp/sloga-frontend/network/members)
+  [![Pull Requests](https://img.shields.io/github/issues-pr/sloga-mcp/sloga-frontend?style=flat-square&logoColor=white)](https://github.com/sloga-mcp/sloga-frontend/pulls)
+  [![Issues](https://img.shields.io/github/issues/sloga-mcp/sloga-frontend?style=flat-square&logoColor=white)](https://github.com/sloga-mcp/sloga-frontend/issues)
+  [![Contributors](https://img.shields.io/github/contributors/sloga-mcp/sloga-frontend?style=flat-square&logoColor=white)](https://github.com/sloga-mcp/sloga-frontend/graphs/contributors)
+  [![License](https://img.shields.io/github/license/sloga-mcp/sloga-frontend?style=flat-square&logoColor=white)](https://github.com/sloga-mcp/sloga-frontend/blob/main/LICENSE)
 </h1>
-The official web client powering https://stoat.chat/app, built with <a href="https://www.solidjs.com/">Solid.js</a> 💖. <br/>
-This fork powers <b><a href="https://sloga.gg">Sloga</a></b> — game chat for guilds and clans, with opt-in end-to-end encrypted DMs and calls.<br/>
+The web client powering <b><a href="https://app.sloga.gg">Sloga</a></b> — game chat for guilds and clans, with opt-in end-to-end encrypted DMs and calls. Built with <a href="https://www.solidjs.com/">Solid.js</a> 💖.<br/>
 Downloads for Windows, Linux and Android: <a href="https://sloga.gg">sloga.gg</a><br/>
-Track the project roadmap on <a href="https://op.stoatinternal.com/projects/revolt-for-web/roadmap">OpenProject</a>.
+<sub>A fork of the upstream Revolt/Stoat web client, <a href="./LICENSE">AGPL-licensed</a>.</sub>
 </div>
 <br/>
 
 ## Development Guide
 
-Before contributing, make yourself familiar with [our contribution guidelines](https://developers.stoat.chat/developing/contrib/), the [code style guidelines](./GUIDELINES.md), and the [technical documentation for this project](https://stoatchat.github.io/for-web/).
+Before contributing, read the [code style guidelines](./GUIDELINES.md).
 
 Before getting started, you'll want to install:
 
@@ -29,7 +28,7 @@ Then proceed to setup:
 
 ```bash
 # clone the repository
-git clone --recursive https://github.com/stoatchat/for-web client
+git clone --recursive https://github.com/sloga-mcp/sloga-frontend client
 cd client
 
 # update submodules if you pull new changes
@@ -54,7 +53,7 @@ mise dev
 mise check
 ```
 
-Finally, navigate to http://local.revolt.chat:5173.
+Finally, navigate to http://localhost:5173.
 
 ### Using the official backend
 
@@ -63,7 +62,7 @@ By default, the client connects to a backend running on the same host (localhost
 If you want the client to connect to the official hosted backend instead, open the .env file at /packages/client/.env and comment out the local URL varaibles like this:
 
 ```env
-# connect to local Stoat instance
+# connect to a local Sloga instance
 #VITE_API_URL=http://localhost:14702
 #VITE_WS_URL=ws://localhost:14703
 #VITE_MEDIA_URL=http://localhost:14704
@@ -71,7 +70,7 @@ If you want the client to connect to the official hosted backend instead, open t
 
 ```
 
-When these variables are not set, the client automatically falls back to the official backend. (See https://github.com/stoatchat/for-web/blob/main/packages/client/components/common/lib/env.ts)
+When these variables are not set, the client automatically falls back to the official backend. (See [env.ts](packages/client/components/common/lib/env.ts).)
 
 ## Deployment Guide
 
@@ -87,7 +86,7 @@ mise build:deps
 # build for web
 mise build
 
-# ... when building for Stoat production
+# ... when building for Sloga production
 mise build:prod
 ```
 

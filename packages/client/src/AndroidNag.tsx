@@ -11,10 +11,13 @@ import AndroidPromo from "../public/assets/inapp-promotion/web/android-phone.png
 const ANDROID_NAG_DISMISS_KEY = "android-nag-dismissed";
 
 /**
- * Google Play listing for the Stoat app
+ * Where the Android app comes from.
+ *
+ * Sloga is not on Google Play — the APK is self-hosted. This is the stable
+ * redirect rather than a version-pinned file, so releases do not strand old
+ * clients on a dead link, and it is counted server-side.
  */
-const PLAY_STORE_URL =
-  "https://play.google.com/store/apps/details?id=chat.revolt";
+const ANDROID_DOWNLOAD_URL = "https://sloga.gg/dl/android";
 
 /**
  * Whether the current device is running Android
@@ -28,8 +31,8 @@ const isEligibleOrigin = () => {
   const { hostname } = window.location;
   return (
     hostname === "localhost" ||
-    hostname.endsWith(".stoat.chat") ||
-    hostname === "stoat.chat"
+    hostname.endsWith(".sloga.gg") ||
+    hostname === "sloga.gg"
   );
 };
 
@@ -82,7 +85,7 @@ export function AndroidNag() {
           <Button
             variant="filled"
             onPress={() => {
-              window.open(PLAY_STORE_URL, "_blank", "noopener,noreferrer");
+              window.open(ANDROID_DOWNLOAD_URL, "_blank", "noopener,noreferrer");
             }}
           >
             <Trans>Get it on Google Play</Trans>
