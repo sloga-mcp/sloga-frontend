@@ -5,6 +5,10 @@ This program is a modified version of the Revolt client
 (https://github.com/revoltchat/frontend). Portions are Copyright (C) the Revolt
 contributors.
 
+Modified by Sloga Technologies LLC on an ongoing basis since 30 June 2026.
+The repository commit history is the authoritative record of what changed
+and when.
+
 LICENSE
 -------
 Except where a workspace package or subdirectory provides its own LICENSE file,
