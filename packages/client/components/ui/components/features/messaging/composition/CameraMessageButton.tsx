@@ -7,6 +7,7 @@ import { IconButton } from "@revolt/ui/components/design";
 import { Tooltip } from "@revolt/ui/components/floating";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
 
+import { ComposerPopover } from "./ComposerPopover";
 import { fixBlobDuration } from "./fixBlobDuration";
 
 interface Props {
@@ -185,7 +186,57 @@ export function CameraMessageButton(props: Props) {
   };
 
   return (
-    <Anchor>
+    <ComposerPopover
+      open={mode() !== "idle"}
+      panel={
+        <Switch>
+          <Match when={mode() === "recording"}>
+            <Panel>
+              <LivePreview
+                ref={(el) => {
+                  el.srcObject = stream ?? null;
+                }}
+                autoplay
+                muted
+                playsinline
+              />
+              <PanelRow>
+                <Symbol
+                  size={16}
+                  style={{ color: "var(--md-sys-color-error)" }}
+                >
+                  fiber_manual_record
+                </Symbol>
+                <Elapsed>{elapsedText()}</Elapsed>
+                <Tooltip content={t`Discard recording`} placement="top">
+                  <IconButton size="sm" onPress={cancel}>
+                    <Symbol>delete</Symbol>
+                  </IconButton>
+                </Tooltip>
+              </PanelRow>
+            </Panel>
+          </Match>
+          <Match when={mode() === "review"}>
+            <Panel>
+              <PlaybackPreview
+                ref={fixBlobDuration}
+                controls
+                playsinline
+                src={previewUrl()}
+              />
+              <PanelRow>
+                <Elapsed>{elapsedText()}</Elapsed>
+                <Tooltip content={t`Discard recording`} placement="top">
+                  <IconButton size="sm" onPress={cancel}>
+                    <Symbol>delete</Symbol>
+                  </IconButton>
+                </Tooltip>
+              </PanelRow>
+            </Panel>
+          </Match>
+        </Switch>
+      }
+    >
       <Switch
         fallback={
           <Tooltip content={t`Record a video message`} placement="top">
@@ -203,30 +254,6 @@ export function CameraMessageButton(props: Props) {
               </Symbol>
             </IconButton>
           </Tooltip>
-          <Panel>
-            <LivePreview
-              ref={(el) => {
-                el.srcObject = stream ?? null;
-              }}
-              autoplay
-              muted
-              playsinline
-            />
-            <PanelRow>
-              <Symbol
-                size={16}
-                style={{ color: "var(--md-sys-color-error)" }}
-              >
-                fiber_manual_record
-              </Symbol>
-              <Elapsed>{elapsedText()}</Elapsed>
-              <Tooltip content={t`Discard recording`} placement="top">
-                <IconButton size="sm" onPress={cancel}>
-                  <Symbol>delete</Symbol>
-                </IconButton>
-              </Tooltip>
-            </PanelRow>
-          </Panel>
         </Match>
         <Match when={mode() === "review"}>
           <Tooltip content={t`Attach video message`} placement="top">
@@ -236,22 +263,6 @@ export function CameraMessageButton(props: Props) {
               </Symbol>
             </IconButton>
           </Tooltip>
-          <Panel>
-            <PlaybackPreview
-              ref={fixBlobDuration}
-              controls
-              playsinline
-              src={previewUrl()}
-            />
-            <PanelRow>
-              <Elapsed>{elapsedText()}</Elapsed>
-              <Tooltip content={t`Discard recording`} placement="top">
-                <IconButton size="sm" onPress={cancel}>
-                  <Symbol>delete</Symbol>
-                </IconButton>
-              </Tooltip>
-            </PanelRow>
-          </Panel>
         </Match>
       </Switch>
       <Show when={mode() === "recording"}>
@@ -259,24 +270,12 @@ export function CameraMessageButton(props: Props) {
           {t`Recording a video message`}
         </span>
       </Show>
-    </Anchor>
+    </ComposerPopover>
   );
 }
 
-const Anchor = styled("div", {
-  base: {
-    position: "relative",
-    display: "flex",
-  },
-});
-
 const Panel = styled("div", {
   base: {
-    position: "absolute",
-    bottom: "calc(100% + 8px)",
-    right: 0,
-    zIndex: 1000,
-
     display: "flex",
     flexDirection: "column",
     alignItems: "stretch",

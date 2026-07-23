@@ -25,6 +25,7 @@ import { useModals } from "@revolt/modal";
 import { useState } from "@revolt/state";
 import {
   CameraMessageButton,
+  ComposerPopover,
   CompositionMediaPicker,
   FileCarousel,
   FileDropAnywhereCollector,
@@ -1113,7 +1114,53 @@ export function MessageComposition(props: Props) {
             </Show>
             <MessageBox.ActionContainer>
               <MessageBox.InlineIcon>
-                <div style={{ position: "relative" }}>
+                <ComposerPopover
+                  open={showDisappearMenu()}
+                  onDismiss={() => setShowDisappearMenu(false)}
+                  panel={
+                    <div
+                      style={{
+                        background: "var(--md-sys-color-surface-container-high)",
+                        "border-radius": "12px",
+                        padding: "8px 0",
+                        "min-width": "160px",
+                        "box-shadow": "0 4px 20px rgba(0,0,0,0.4)",
+                        border: "1px solid var(--md-sys-color-outline-variant)",
+                      }}
+                    >
+                      <div style={{ padding: "4px 12px 8px", "font-size": "0.75em", opacity: "0.6", "font-weight": "600", "letter-spacing": "0.05em", "text-transform": "uppercase" }}>
+                        Disappear after
+                      </div>
+                      <For each={DISAPPEAR_OPTIONS}>
+                        {(opt, i) => (
+                          <div
+                            onClick={() => selectDisappear(i())}
+                            style={{
+                              display: "flex",
+                              "align-items": "center",
+                              gap: "10px",
+                              padding: "12px 16px",
+                              cursor: "pointer",
+                              background: disappearIdx() === i() ? "var(--md-sys-color-primary-container)" : "transparent",
+                              color: disappearIdx() === i() ? "var(--md-sys-color-on-primary-container)" : "inherit",
+                              "font-size": "0.9em",
+                            }}
+                          >
+                            <div style={{
+                              width: "16px",
+                              height: "16px",
+                              "border-radius": "50%",
+                              border: `2px solid ${disappearIdx() === i() ? "#FF8A00" : "var(--md-sys-color-outline)"}`,
+                              background: disappearIdx() === i() ? "#FF8A00" : "transparent",
+                              "flex-shrink": "0",
+                            }} />
+                            {opt.label}
+                          </div>
+                        )}
+                      </For>
+                    </div>
+                  }
+                >
                   <Tooltip
                     content={disappearTooltipText()}
                     placement="top"
@@ -1134,86 +1181,16 @@ export function MessageComposition(props: Props) {
                       </Show>
                     </div>
                   </Tooltip>
-                  <Show when={showDisappearMenu()}>
-                    <div
-                      style={{
-                        position: "fixed",
-                        inset: "0",
-                        "z-index": "999",
-                      }}
-                      onClick={() => setShowDisappearMenu(false)}
-                    />
-                    <div
-                      style={{
-                        position: "absolute",
-                        bottom: "calc(100% + 8px)",
-                        right: "0",
-                        "z-index": "1000",
-                        background: "var(--md-sys-color-surface-container-high)",
-                        "border-radius": "12px",
-                        padding: "8px 0",
-                        "min-width": "160px",
-                        "box-shadow": "0 4px 20px rgba(0,0,0,0.4)",
-                        border: "1px solid var(--md-sys-color-outline-variant)",
-                      }}
-                    >
-                      <div style={{ padding: "4px 12px 8px", "font-size": "0.75em", opacity: "0.6", "font-weight": "600", "letter-spacing": "0.05em", "text-transform": "uppercase" }}>
-                        Disappear after
-                      </div>
-                      <For each={DISAPPEAR_OPTIONS}>
-                        {(opt, i) => (
-                          <div
-                            onClick={() => selectDisappear(i())}
-                            style={{
-                              display: "flex",
-                              "align-items": "center",
-                              gap: "10px",
-                              padding: "8px 16px",
-                              cursor: "pointer",
-                              background: disappearIdx() === i() ? "var(--md-sys-color-primary-container)" : "transparent",
-                              color: disappearIdx() === i() ? "var(--md-sys-color-on-primary-container)" : "inherit",
-                              "font-size": "0.9em",
-                            }}
-                          >
-                            <div style={{
-                              width: "16px",
-                              height: "16px",
-                              "border-radius": "50%",
-                              border: `2px solid ${disappearIdx() === i() ? "#FF8A00" : "var(--md-sys-color-outline)"}`,
-                              background: disappearIdx() === i() ? "#FF8A00" : "transparent",
-                              "flex-shrink": "0",
-                            }} />
-                            {opt.label}
-                          </div>
-                        )}
-                      </For>
-                    </div>
-                  </Show>
-                </div>
+                </ComposerPopover>
               </MessageBox.InlineIcon>
               <Show when={props.channel.type === "TextChannel"}>
                 <MessageBox.InlineIcon>
-                  <div style={{ position: "relative" }}>
-                    <Tooltip content={t`Roll dice`} placement="top">
-                      <IconButton onPress={() => setShowDiceMenu((v) => !v)}>
-                        <Symbol>casino</Symbol>
-                      </IconButton>
-                    </Tooltip>
-                    <Show when={showDiceMenu()}>
+                  <ComposerPopover
+                    open={showDiceMenu()}
+                    onDismiss={() => setShowDiceMenu(false)}
+                    panel={
                       <div
                         style={{
-                          position: "fixed",
-                          inset: "0",
-                          "z-index": "999",
-                        }}
-                        onClick={() => setShowDiceMenu(false)}
-                      />
-                      <div
-                        style={{
-                          position: "absolute",
-                          bottom: "calc(100% + 8px)",
-                          right: "0",
-                          "z-index": "1000",
                           background: "var(--md-sys-color-surface-container-high)",
                           "border-radius": "12px",
                           padding: "12px",
@@ -1238,7 +1215,7 @@ export function MessageComposition(props: Props) {
                                 style={{
                                   flex: "1",
                                   "text-align": "center",
-                                  padding: "4px 6px",
+                                  padding: "8px 6px",
                                   "border-radius": "8px",
                                   cursor: "pointer",
                                   "font-size": "0.75em",
@@ -1286,7 +1263,7 @@ export function MessageComposition(props: Props) {
                                 onClick={() => rollFromPicker(sides)}
                                 style={{
                                   "text-align": "center",
-                                  padding: "8px 4px",
+                                  padding: "12px 4px",
                                   "border-radius": "8px",
                                   cursor: "pointer",
                                   "font-weight": "700",
@@ -1304,8 +1281,14 @@ export function MessageComposition(props: Props) {
                           {t`Or type /roll 2d6+3 in chat`}
                         </div>
                       </div>
-                    </Show>
-                  </div>
+                    }
+                  >
+                    <Tooltip content={t`Roll dice`} placement="top">
+                      <IconButton onPress={() => setShowDiceMenu((v) => !v)}>
+                        <Symbol>casino</Symbol>
+                      </IconButton>
+                    </Tooltip>
+                  </ComposerPopover>
                 </MessageBox.InlineIcon>
               </Show>
               <Show when={pollAllowed()}>

@@ -7,6 +7,7 @@ import { IconButton } from "@revolt/ui/components/design";
 import { Tooltip } from "@revolt/ui/components/floating";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
 
+import { ComposerPopover } from "./ComposerPopover";
 import { fixBlobDuration } from "./fixBlobDuration";
 
 interface Props {
@@ -181,7 +182,43 @@ export function VoiceMessageButton(props: Props) {
   };
 
   return (
-    <Anchor>
+    <ComposerPopover
+      open={mode() !== "idle"}
+      panel={
+        <Switch>
+          <Match when={mode() === "recording"}>
+            <Panel>
+              <Symbol
+                size={16}
+                style={{ color: "var(--md-sys-color-error)" }}
+              >
+                fiber_manual_record
+              </Symbol>
+              <Elapsed>{elapsedText()}</Elapsed>
+              <Tooltip content={t`Discard recording`} placement="top">
+                <IconButton size="sm" onPress={cancel}>
+                  <Symbol>delete</Symbol>
+                </IconButton>
+              </Tooltip>
+            </Panel>
+          </Match>
+          <Match when={mode() === "review"}>
+            <Panel>
+              <PreviewAudio
+                ref={fixBlobDuration}
+                controls
+                src={previewUrl()}
+              />
+              <Tooltip content={t`Discard recording`} placement="top">
+                <IconButton size="sm" onPress={cancel}>
+                  <Symbol>delete</Symbol>
+                </IconButton>
+              </Tooltip>
+            </Panel>
+          </Match>
+        </Switch>
+      }
+    >
       <Switch
         fallback={
           <Tooltip content={t`Record a voice message`} placement="top">
@@ -199,20 +236,6 @@ export function VoiceMessageButton(props: Props) {
               </Symbol>
             </IconButton>
           </Tooltip>
-          <Panel>
-            <Symbol
-              size={16}
-              style={{ color: "var(--md-sys-color-error)" }}
-            >
-              fiber_manual_record
-            </Symbol>
-            <Elapsed>{elapsedText()}</Elapsed>
-            <Tooltip content={t`Discard recording`} placement="top">
-              <IconButton size="sm" onPress={cancel}>
-                <Symbol>delete</Symbol>
-              </IconButton>
-            </Tooltip>
-          </Panel>
         </Match>
         <Match when={mode() === "review"}>
           <Tooltip content={t`Attach voice message`} placement="top">
@@ -222,18 +245,6 @@ export function VoiceMessageButton(props: Props) {
               </Symbol>
             </IconButton>
           </Tooltip>
-          <Panel>
-            <PreviewAudio
-              ref={fixBlobDuration}
-              controls
-              src={previewUrl()}
-            />
-            <Tooltip content={t`Discard recording`} placement="top">
-              <IconButton size="sm" onPress={cancel}>
-                <Symbol>delete</Symbol>
-              </IconButton>
-            </Tooltip>
-          </Panel>
         </Match>
       </Switch>
       <Show when={mode() === "recording"}>
@@ -241,24 +252,12 @@ export function VoiceMessageButton(props: Props) {
           {t`Recording a voice message`}
         </span>
       </Show>
-    </Anchor>
+    </ComposerPopover>
   );
 }
 
-const Anchor = styled("div", {
-  base: {
-    position: "relative",
-    display: "flex",
-  },
-});
-
 const Panel = styled("div", {
   base: {
-    position: "absolute",
-    bottom: "calc(100% + 8px)",
-    right: 0,
-    zIndex: 1000,
-
     display: "flex",
     alignItems: "center",
     gap: "var(--gap-sm)",

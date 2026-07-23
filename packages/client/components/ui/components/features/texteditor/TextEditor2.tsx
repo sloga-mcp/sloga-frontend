@@ -68,6 +68,17 @@ interface Props {
 
 const placeholderCompartment = new Compartment();
 
+// Chrome on Android drives CodeMirror through the EditContext API by default.
+// Gesture ("swipe"/glide) typing does not survive that path: Gboard and
+// SwiftKey commit a swiped word as one composition update, EditContext reports
+// it back inconsistently, and the word is dropped — sometimes wedging the
+// editor read-only until it's re-focused. Opting back into the contenteditable
+// input path restores gesture typing, autocorrect and word suggestions;
+// CodeMirror has handled Android whole-word replacement there for years.
+//
+// No effect anywhere else: CodeMirror only reaches for EditContext on Android.
+(EditorView as unknown as { EDIT_CONTEXT: boolean }).EDIT_CONTEXT = false;
+
 /**
  * Text editor powered by CodeMirror
  */
@@ -125,11 +136,15 @@ export function TextEditor2(props: Props) {
     state: EditorState.create({
       doc: props.initialValue?.[0],
       extensions: [
-        /* Enable browser spellchecking */
+        /* Enable browser spellchecking, autocorrect and word suggestions.
+           `autocorrect` and `autocapitalize` are enumerated attributes, so
+           they need real keywords — "true" is not one of them, and mobile
+           keyboards read these to decide whether to offer suggestions and
+           gesture typing at all. */
         EditorView.contentAttributes.of({
           spellcheck: "true",
-          autocorrect: "true",
-          autocapitalize: "true",
+          autocorrect: "on",
+          autocapitalize: "sentences",
         }),
 
         /* Mount keymaps */
