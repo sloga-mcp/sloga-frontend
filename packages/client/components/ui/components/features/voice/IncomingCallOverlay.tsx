@@ -1,4 +1,5 @@
 import { Show, createEffect, onCleanup } from "solid-js";
+import { Portal } from "solid-js/web";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
 import { styled } from "styled-system/jsx";
@@ -65,37 +66,44 @@ export function IncomingCallOverlay() {
     return t`${callerName} is calling in ${channelName}`;
   };
 
+  // Portalled to <body>: mounted inside the app tree the popup was painted
+  // UNDER the channel's "Join the voice channel" card despite z-index 9999 (an
+  // ancestor stacking context traps it), which clipped the Decline button and
+  // sent taps through to the message author behind it. A portal escapes every
+  // ancestor stacking context so the ringing popup is always the top layer.
   return (
-    <Show when={incomingCall()}>
-      <Popup role="alertdialog" aria-label={t`Incoming Call`}>
-        <PulsingAvatar>
-          <Avatar
-            size={48}
-            src={caller()?.animatedAvatarURL ?? caller()?.avatarURL}
-            fallback={callerName()}
-          />
-        </PulsingAvatar>
-        <Details>
-          <Name>{callerName()}</Name>
-          <Subtitle>
-            <Show
-              when={groupSubtitle()}
-              fallback={<Trans>Incoming Call</Trans>}
-            >
-              {groupSubtitle()}
-            </Show>
-          </Subtitle>
-        </Details>
-        <Actions>
-          <Button variant="filled" size="sm" onPress={accept}>
-            <Symbol>call</Symbol> <Trans>Accept</Trans>
-          </Button>
-          <Button variant="_error" size="sm" onPress={decline}>
-            <Symbol>call_end</Symbol> <Trans>Decline</Trans>
-          </Button>
-        </Actions>
-      </Popup>
-    </Show>
+    <Portal>
+      <Show when={incomingCall()}>
+        <Popup role="alertdialog" aria-label={t`Incoming Call`}>
+          <PulsingAvatar>
+            <Avatar
+              size={48}
+              src={caller()?.animatedAvatarURL ?? caller()?.avatarURL}
+              fallback={callerName()}
+            />
+          </PulsingAvatar>
+          <Details>
+            <Name>{callerName()}</Name>
+            <Subtitle>
+              <Show
+                when={groupSubtitle()}
+                fallback={<Trans>Incoming Call</Trans>}
+              >
+                {groupSubtitle()}
+              </Show>
+            </Subtitle>
+          </Details>
+          <Actions>
+            <Button variant="filled" size="sm" onPress={accept}>
+              <Symbol>call</Symbol> <Trans>Accept</Trans>
+            </Button>
+            <Button variant="_error" size="sm" onPress={decline}>
+              <Symbol>call_end</Symbol> <Trans>Decline</Trans>
+            </Button>
+          </Actions>
+        </Popup>
+      </Show>
+    </Portal>
   );
 }
 
