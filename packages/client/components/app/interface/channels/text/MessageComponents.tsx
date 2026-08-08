@@ -297,8 +297,8 @@ const ComponentButton = styled("button", {
         color: "var(--md-sys-color-on-surface)",
       },
       Success: {
-        background: "var(--customColours-success-color)",
-        color: "var(--customColours-success-onColour)",
+        background: "var(--brand-success)",
+        color: "var(--brand-on-success)",
       },
       Danger: {
         background: "var(--md-sys-color-error)",

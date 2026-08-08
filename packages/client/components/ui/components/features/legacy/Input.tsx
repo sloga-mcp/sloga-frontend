@@ -29,7 +29,7 @@ export const Input = styled("input", {
     },
     "&:focus": {
       outlineOffset: "4px",
-      borderColor: "var(--customColours-warning-color)",
+      borderColor: "var(--brand-warning)",
     },
     "&:valid": {
       borderColor: "transparent",
@@ -56,7 +56,7 @@ export const Input = styled("input", {
     submissionTried: {
       true: {
         "&:invalid": {
-          borderColor: "var(--customColours-error-color)",
+          borderColor: "var(--md-sys-color-error)",
         },
       },
     },

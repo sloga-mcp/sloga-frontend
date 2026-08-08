@@ -36,6 +36,22 @@ export function createStoatWebVariables(theme: SelectedTheme) {
     "--brand-presence-focus": "#4799F0",
     "--brand-presence-invisible": "#A5A5A5",
 
+    // semantic state
+    // The legacy generator builds a `customColours` table holding success /
+    // warning / error and then drops it on the floor -- it never reaches the
+    // returned object, so nothing mounts it and
+    // `var(--customColours-success-color)` resolves to nothing. The
+    // declaration is then thrown away silently, which no type-check can see.
+    // These are the real tokens. Anchored on the presence palette so a
+    // success green is the same green as an online dot; both hues fail
+    // contrast against white, hence the near-black `on-` pairs (8.5:1 and
+    // 9.3:1 respectively). Error deliberately has no token here --
+    // `--md-sys-color-error` is already real and already carries it.
+    "--brand-success": "#3ABF7E",
+    "--brand-on-success": "#05090F",
+    "--brand-warning": "#F39F00",
+    "--brand-on-warning": "#05090F",
+
     // font
     "--fonts-primary": `"${theme.interfaceFont}", "Inter", sans-serif`,
     "--fonts-monospace": `"${theme.monospaceFont}", "Jetbrains Mono", sans-serif`,
