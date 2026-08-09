@@ -1,4 +1,4 @@
-import { createSignal, onMount } from "solid-js";
+import { Show, createSignal, onMount } from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
 
@@ -63,6 +63,17 @@ export default function Native() {
 }
 
 /**
+ * Reply from `multi_instance_get`/`_set`. `slot` is this window's own —
+ * 1 for the first Sloga launched, 2 for the next — and does not change
+ * until relaunch, because the shell fixes it before the window exists.
+ */
+declare type MultiInstanceState = {
+  supported: boolean;
+  enabled: boolean;
+  slot: number;
+};
+
+/**
  * Windows (Tauri) shell settings. The OS launch entry is the source of
  * truth for autostart (default off) — the same state the tray's "Start
  * with Windows" item toggles, so the shell keeps the two in sync.
@@ -70,12 +81,25 @@ export default function Native() {
 function TauriNative() {
   const invoke = tauriInvoke()!;
   const [autostart, setAutostart] = createSignal(false);
+  const [multi, setMulti] = createSignal<MultiInstanceState>({
+    // Until the shell answers, assume unsupported: the row stays hidden
+    // rather than flashing a checkbox an older shell cannot honor.
+    supported: false,
+    enabled: false,
+    slot: 0,
+  });
 
   onMount(async () => {
     try {
       setAutostart(await invoke<boolean>("autostart_get"));
     } catch (err) {
       console.error("[native-settings] autostart_get failed:", err);
+    }
+
+    try {
+      setMulti(await invoke<MultiInstanceState>("multi_instance_get"));
+    } catch (err) {
+      console.error("[native-settings] multi_instance_get failed:", err);
     }
   });
 
@@ -87,6 +111,20 @@ function TauriNative() {
       );
     } catch (err) {
       console.error("[native-settings] autostart_set failed:", err);
+    }
+  }
+
+  async function toggleMultiInstance() {
+    try {
+      // As above: the RESULTING state, so a write that failed leaves the
+      // checkbox showing what is actually on disk.
+      setMulti(
+        await invoke<MultiInstanceState>("multi_instance_set", {
+          enabled: !multi().enabled,
+        }),
+      );
+    } catch (err) {
+      console.error("[native-settings] multi_instance_set failed:", err);
     }
   }
 
@@ -103,6 +141,22 @@ function TauriNative() {
         >
           <Trans>Start with Computer</Trans>
         </CategoryButton>
+        <Show when={multi().supported}>
+          <CategoryButton
+            action={<Checkbox checked={multi().enabled} />}
+            onClick={toggleMultiInstance}
+            icon={<Symbol>filter_none</Symbol>}
+            description={
+              <Trans>
+                Open Sloga more than once to use a second account. Takes
+                effect next time you launch; the first window you open is
+                always your main account.
+              </Trans>
+            }
+          >
+            <Trans>Allow Multiple Instances</Trans>
+          </CategoryButton>
+        </Show>
       </CategoryButton.Group>
     </Column>
   );

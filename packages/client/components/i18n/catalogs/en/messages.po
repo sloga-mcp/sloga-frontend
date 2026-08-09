@@ -643,6 +643,10 @@ msgstr "Allow members to change name and avatar per-message"
 msgid "Allow multiple answers"
 msgstr "Allow multiple answers"
 
+#: components/app/interface/settings/user/Native.tsx
+msgid "Allow Multiple Instances"
+msgstr "Allow Multiple Instances"
+
 #: components/app/interface/settings/user/bots/ViewBot.tsx
 msgid "Allow others to add your bot to their servers from Discover"
 msgstr "Allow others to add your bot to their servers from Discover"
@@ -4043,6 +4047,10 @@ msgstr "Open server settings"
 #: src/interface/Home.tsx
 msgid "Open settings"
 msgstr "Open settings"
+
+#: components/app/interface/settings/user/Native.tsx
+msgid "Open Sloga more than once to use a second account. Takes effect next time you launch; the first window you open is always your main account."
+msgstr "Open Sloga more than once to use a second account. Takes effect next time you launch; the first window you open is always your main account."
 
 #: components/modal/modals/ScheduleMessage.tsx
 msgid "Or pick a time"
