@@ -161,9 +161,9 @@ export function VoiceCallCardActions(props: { size: "xs" | "sm" }) {
       >
         <Show
           when={!enableVideo || !screenShareSupported || voice.screenshare()}
-          fallback={<Symbol>stop_screen_share</Symbol>}
+          fallback={<Symbol>screen_share</Symbol>}
         >
-          <Symbol>screen_share</Symbol>
+          <Symbol>stop_screen_share</Symbol>
         </Show>
       </IconButton>
       <Show
