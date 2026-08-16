@@ -20,6 +20,7 @@ import {
 import {
   type TrackPublishOptions,
   type VideoCaptureOptions,
+  ConnectionState,
   isE2EESupported,
   LocalVideoTrack,
   Room,
@@ -251,6 +252,17 @@ const OPEN_GROUP_PROBE_TIMEOUT_MS = 10_000;
  */
 const DISABLE_WEB_AUDIO_MIX_KEY = "slogaDisableWebAudioMix";
 
+/**
+ * How long `canPlaybackAudio === false` must HOLD before the "enable audio"
+ * banner shows. A reconnect's re-attach churn emits a transient false while
+ * audio keeps audibly flowing (live leg 2026-08-16: a ~10s Wi-Fi drop put the
+ * banner on BOTH participants' screens over working audio), and a genuinely
+ * suspended AudioContext stays false until a user gesture — so waiting loses
+ * nothing on the real case and swallows the blip. 1.5s comfortably outlives
+ * the attach churn without feeling laggy to a user who joined truly blocked.
+ */
+const AUDIO_BLOCKED_HOLD_MS = 1_500;
+
 type State =
   | "READY"
   | "DISCONNECTED"
@@ -423,6 +435,13 @@ class Voice {
   #vadCtx: AudioContext | undefined;
   #vadFrame: number | undefined;
   #vadSilenceTimer: ReturnType<typeof setTimeout> | undefined;
+  /**
+   * Pending delayed re-check behind the autoplay-gate banner: set while a
+   * `canPlaybackAudio === false` edge is waiting out `AUDIO_BLOCKED_HOLD_MS`
+   * before it is believed. Cleared by the true edge, by `disconnect()`, and
+   * by the re-check itself when it resolves.
+   */
+  #audioBlockedRecheck: ReturnType<typeof setTimeout> | undefined;
   /**
    * Supersession token for `#startVAD`'s async capture, bumped by `#stopVAD`:
    * a start superseded mid-getUserMedia (device switch, call ended) must stop
@@ -1602,8 +1621,19 @@ class Voice {
     // startAudio-on-mic-publish rescue, so the banner self-clears for users
     // the rescue reaches. Room-level and registered before connect: the
     // failure can fire during the initial track attach.
+    //
+    // The edges are asymmetric on purpose: true clears the banner (and any
+    // pending re-check) immediately, but false only ARMS a delayed re-check —
+    // see `#armAudioBlockedRecheck` for why the false edge cannot be trusted
+    // as it lands.
     room.on(RoomEvent.AudioPlaybackStatusChanged, () => {
-      this.#setAudioPlaybackBlocked(!room.canPlaybackAudio);
+      if (room.canPlaybackAudio) {
+        clearTimeout(this.#audioBlockedRecheck);
+        this.#audioBlockedRecheck = undefined;
+        this.#setAudioPlaybackBlocked(false);
+        return;
+      }
+      this.#armAudioBlockedRecheck(room);
     });
 
     this.disposeTrackRoot?.();
@@ -2238,6 +2268,8 @@ class Voice {
         // Per-room state: the next call starts with a fresh Room whose
         // playback status arrives via its own event, not this one's.
         this.#setAudioPlaybackBlocked(false);
+        clearTimeout(this.#audioBlockedRecheck);
+        this.#audioBlockedRecheck = undefined;
         // Focus is per-track-list state: leaving it set would start the NEXT
         // call in the focus layout with nothing to focus, until the card's
         // clearing effect gets a chance to run.
@@ -2413,6 +2445,46 @@ class Voice {
       defaults.deviceId = undefined;
       return room.localParticipant.setMicrophoneEnabled(enabled);
     }
+  }
+
+  /**
+   * (Re)arm the delayed re-check that stands between a `canPlaybackAudio`
+   * false edge and the "enable audio" banner.
+   *
+   * The false edge is not trustworthy as it lands: a reconnect re-attaches
+   * every remote audio track, and that churn emits a transient false while
+   * audio keeps audibly flowing (live leg 2026-08-16 — the banner appeared on
+   * both sides of a Wi-Fi-drop reconnect, over audio each could hear). A
+   * genuinely suspended AudioContext stays false until a user gesture, so
+   * only showing the banner once the status has HELD false costs the real
+   * case nothing but the hold. livekit emits the recovering true edge when
+   * playback succeeds, which cancels the pending re-check outright (the
+   * event handler's fast path) — this re-check is the slow path that decides
+   * a false that never recovered was real.
+   *
+   * If the room is still (signal-)reconnecting when the re-check fires, it
+   * re-arms instead of deciding: attach state is exactly what a reconnect is
+   * in the middle of rebuilding, so a verdict now would repeat the original
+   * bug on any reconnect longer than the hold.
+   */
+  #armAudioBlockedRecheck(room: Room) {
+    clearTimeout(this.#audioBlockedRecheck);
+    this.#audioBlockedRecheck = setTimeout(() => {
+      this.#audioBlockedRecheck = undefined;
+      // Room swap or teardown while we waited: verdicts about a dead room
+      // are nobody's business (disconnect() also clears this timer, so this
+      // is belt-and-braces for a swap racing the timeout).
+      if (this.room() !== room) return;
+      if (room.canPlaybackAudio) return;
+      if (
+        room.state === ConnectionState.Reconnecting ||
+        room.state === ConnectionState.SignalReconnecting
+      ) {
+        this.#armAudioBlockedRecheck(room);
+        return;
+      }
+      this.#setAudioPlaybackBlocked(true);
+    }, AUDIO_BLOCKED_HOLD_MS);
   }
 
   /**

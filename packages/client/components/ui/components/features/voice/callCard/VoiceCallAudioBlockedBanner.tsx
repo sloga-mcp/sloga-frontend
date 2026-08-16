@@ -15,11 +15,12 @@ import { Button } from "@revolt/ui/components/design";
  * rescue is `startAudio` on mic-publish, which never fires for a listener who
  * joined muted or has no microphone — this button is that user's way out.
  *
- * No debounce, unlike the downgrade banner: this state means the user hears
- * nothing at all, and livekit only emits the failure once playback has
- * actually been refused — there is no transient in/out to smooth over. The
- * banner self-clears via `AudioPlaybackStatusChanged` once playback succeeds,
- * however that happens (this button, or the SDK's own rescue).
+ * The blocked flag is debounced in `Voice` (`#armAudioBlockedRecheck`): a
+ * reconnect's track re-attach emits a transient `canPlaybackAudio === false`
+ * while audio keeps flowing, so the flag only latches once the status has
+ * held false past the reconnect churn. The banner self-clears via
+ * `AudioPlaybackStatusChanged` once playback succeeds, however that happens
+ * (this button, or the SDK's own rescue).
  */
 export function VoiceCallAudioBlockedBanner() {
   const voice = useVoice();
