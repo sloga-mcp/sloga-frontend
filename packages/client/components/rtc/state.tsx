@@ -335,6 +335,19 @@ class Voice {
   state: Accessor<State>;
   #setState: Setter<State>;
 
+  /**
+   * TRUE while the browser refuses to play the call's audio (autoplay
+   * policy: no user gesture yet, or sound blocked for the site). Under
+   * `webAudioMix` every remote participant plays through ONE shared
+   * AudioContext, so a suspended context is total silence for the whole
+   * call — not a per-user nuisance. The SDK's only automatic rescue is
+   * `startAudio` on mic-publish, which never fires for a listener who
+   * joined muted or has no microphone. `startCallAudio()` is the user
+   * gesture that clears this.
+   */
+  audioPlaybackBlocked: Accessor<boolean>;
+  #setAudioPlaybackBlocked: Setter<boolean>;
+
   deafen: Accessor<boolean>;
   microphone: Accessor<boolean>;
 
@@ -773,6 +786,10 @@ class Voice {
     const [state, setState] = createSignal<State>("READY");
     this.state = state;
     this.#setState = setState;
+
+    const [audioPlaybackBlocked, setAudioPlaybackBlocked] = createSignal(false);
+    this.audioPlaybackBlocked = audioPlaybackBlocked;
+    this.#setAudioPlaybackBlocked = setAudioPlaybackBlocked;
 
     this.deafen = () => voiceSettings.deafen;
     // Whispering suppresses the primary room mic (the aside rides its own
@@ -1579,6 +1596,16 @@ class Voice {
       );
     });
 
+    // Autoplay gate. livekit flips `canPlaybackAudio` false when the browser
+    // refuses playback (suspended AudioContext / element play() rejection)
+    // and back to true once playback succeeds — including via its own
+    // startAudio-on-mic-publish rescue, so the banner self-clears for users
+    // the rescue reaches. Room-level and registered before connect: the
+    // failure can fire during the initial track attach.
+    room.on(RoomEvent.AudioPlaybackStatusChanged, () => {
+      this.#setAudioPlaybackBlocked(!room.canPlaybackAudio);
+    });
+
     this.disposeTrackRoot?.();
     this.disposeTrackRoot = createRoot((dispose) => {
       this.vidTracks = useTracks(
@@ -2208,6 +2235,9 @@ class Voice {
         this.#setChannel();
         this.#setFullscreen(false);
         this.#setImmersive(false);
+        // Per-room state: the next call starts with a fresh Room whose
+        // playback status arrives via its own event, not this one's.
+        this.#setAudioPlaybackBlocked(false);
         // Focus is per-track-list state: leaving it set would start the NEXT
         // call in the focus layout with nothing to focus, until the card's
         // clearing effect gets a chance to run.
@@ -2382,6 +2412,26 @@ class Voice {
       this.#pinnedMicId = undefined;
       defaults.deviceId = undefined;
       return room.localParticipant.setMicrophoneEnabled(enabled);
+    }
+  }
+
+  /**
+   * The user gesture that resumes the shared AudioContext after the browser's
+   * autoplay policy blocked it. On success livekit emits
+   * `AudioPlaybackStatusChanged` and `audioPlaybackBlocked` clears itself; on
+   * failure the banner stays up, which is the honest state — silently
+   * pretending audio works is exactly the failure mode this exists to fix.
+   */
+  async startCallAudio() {
+    const room = this.room();
+    if (!room) return;
+    try {
+      await room.startAudio();
+    } catch (error) {
+      // Keep the banner (the event won't have flipped) and log for the
+      // console-side diagnosis path — this should be unreachable from a real
+      // click, since the click IS the gesture the policy wants.
+      console.error("[rtc] startAudio failed — audio is still blocked", error);
     }
   }
 

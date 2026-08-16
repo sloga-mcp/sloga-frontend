@@ -16,6 +16,7 @@ import { scrollableStyles } from "@revolt/ui/directives";
 
 import { MinigameChip } from "../minigame/MinigameChip";
 import { ParticipantTile, tile } from "./ParticipantTile";
+import { VoiceCallAudioBlockedBanner } from "./VoiceCallAudioBlockedBanner";
 import { VoiceCallCardActions } from "./VoiceCallCardActions";
 import {
   VoiceCallCardStatus,
@@ -48,6 +49,10 @@ export function VoiceCallCardActiveRoom() {
           recording notice is informational. */}
       <TopBanners>
         <VoiceCallDowngradeBanner />
+        {/* Audio-blocked goes second: downgrade is a decision the user must
+            make, audio-blocked is one click and self-clears. Both being up at
+            once is real (join muted into a mixed call) and stacks fine. */}
+        <VoiceCallAudioBlockedBanner />
         <VoiceCallRecordingBanner />
         <VoiceCallWhisperBanner />
       </TopBanners>

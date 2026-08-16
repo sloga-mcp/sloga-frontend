@@ -2260,6 +2260,10 @@ msgstr "Emoji Pack (affects your messages only)"
 msgid "Emojis"
 msgstr "Emojis"
 
+#: components/ui/components/features/voice/callCard/VoiceCallAudioBlockedBanner.tsx
+msgid "Enable audio"
+msgstr "Enable audio"
+
 #: components/app/interface/settings/user/Account.tsx
 msgid "Enable Authenticator"
 msgstr "Enable Authenticator"
@@ -6781,6 +6785,10 @@ msgstr "Your account and all of your data (including your messages and friends l
 #: components/auth/src/flows/FlowVerify.tsx
 msgid "Your account has been verified!"
 msgstr "Your account has been verified!"
+
+#: components/ui/components/features/voice/callCard/VoiceCallAudioBlockedBanner.tsx
+msgid "Your browser is blocking this call's audio until you interact with the page."
+msgstr "Your browser is blocking this call's audio until you interact with the page."
 
 #: components/modal/modals/E2EEVerify.tsx
 msgid "your contact"
