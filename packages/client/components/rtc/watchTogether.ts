@@ -85,6 +85,7 @@ const EMPTY_STATUS: ProviderStatus = {
   ratePermille: RATE_NORMAL,
   error: null,
   title: null,
+  videoId: null,
   muted: false,
   volume: 100,
 };
@@ -136,6 +137,15 @@ export class WatchTogether {
   #setVolume: Setter<number>;
   readonly muted: Accessor<boolean>;
   #setMuted: Setter<boolean>;
+  /**
+   * The playlist OUR embed is playing through (plan §7.3 4f) — HOST-LOCAL
+   * state, never in the session: viewers ride the ordinary per-video media
+   * swaps and never know a playlist exists. Undefined for viewers, for
+   * single videos, and after a page reload (documented accepted cost: a
+   * host reload rebuilds from session media and loses the queue).
+   */
+  readonly hostPlaylist: Accessor<string | undefined>;
+  #setHostPlaylist: Setter<string | undefined>;
   /** Debug line for the live leg (plan §9). */
   readonly stats: Accessor<WatchStats | undefined>;
   #setStats: Setter<WatchStats | undefined>;
@@ -234,6 +244,7 @@ export class WatchTogether {
     [this.serverTranscode, this.#setServerTranscode] = createSignal<string | undefined>();
     [this.volume, this.#setVolume] = createSignal(readVolume());
     [this.muted, this.#setMuted] = createSignal(readMuted());
+    [this.hostPlaylist, this.#setHostPlaylist] = createSignal<string | undefined>();
 
     const host = document.createElement("div");
     host.className = "sloga-watch-host";
@@ -385,14 +396,18 @@ export class WatchTogether {
 
   // ---- host / starter actions -------------------------------------------
 
-  async start(media: WatchMediaData): Promise<boolean> {
+  async start(media: WatchMediaData, hostListId?: string): Promise<boolean> {
     const ch = this.#ctx?.channel();
     if (!ch) return false;
     this.#setBusy(true);
     this.#setError(undefined);
+    // Set BEFORE the create lands so #ensureProvider builds the host's
+    // embed in playlist mode on the first update (§7.3 4f).
+    this.#setHostPlaylist(hostListId);
     try {
       const r = await ch.startWatch(media);
       if (!r.ok) {
+        this.#setHostPlaylist(undefined);
         this.#setError(r.error);
         return false;
       }
@@ -436,6 +451,9 @@ export class WatchTogether {
   }
   /** Host: swap the video without ending the session. */
   hostSwap(media: WatchMediaData) {
+    // A manual swap leaves playlist mode: the next #ensureProvider re-keys
+    // to a single-video embed.
+    this.#setHostPlaylist(undefined);
     this.#queueWrite({ media, positionMs: 0, playing: false });
   }
 
@@ -490,6 +508,7 @@ export class WatchTogether {
 
   #clearSession() {
     this.#setSession(undefined);
+    this.#setHostPlaylist(undefined);
     this.#setNeedsTap(false);
     this.#setHostUnreachable(false);
     this.#setNeedsJellyfinSignin(undefined);
@@ -505,6 +524,21 @@ export class WatchTogether {
   #ensureProvider(s: WatchSessionData) {
     const key = providerKey(s.media);
     if (this.#provider && this.#providerKey === key) return;
+    // Playlist re-key guard (§7.3 4f): the HOST's own media PATCH echoing
+    // back after an auto-advance must not rebuild the playing embed — the
+    // iframe already reports the new video, so just ADOPT the new key.
+    // Viewers always rebuild (their embeds are single-video).
+    if (
+      this.#provider &&
+      this.isHost() &&
+      this.hostPlaylist() &&
+      s.media.provider === "youtube" &&
+      this.#providerKey?.startsWith("yt:") &&
+      this.#provider.status().videoId === s.media.video_id
+    ) {
+      this.#providerKey = key;
+      return;
+    }
     this.#disposeProvider();
     this.#providerKey = key;
     this.#syncState = INITIAL_SYNC_STATE;
@@ -518,6 +552,11 @@ export class WatchTogether {
         // The host gets YouTube's own bar as a control surface; viewers
         // don't, so scrubbing it can't desync them (plan §4.1).
         controls: this.isHost(),
+        // Playlist mode is host-only and host-local (§7.3 4f).
+        ...(() => {
+          const listId = this.isHost() ? this.hostPlaylist() : undefined;
+          return listId ? { listId } : {};
+        })(),
         // A paused session must not blip audio at 0 before the corrector
         // pauses it; the corrector issues play() when the host plays.
         autoplay: s.playing,
@@ -738,11 +777,39 @@ export class WatchTogether {
         this.#hostSuspended = true;
       } else if (!(this.#hostSuspended && st.state === "paused")) {
         // While suspended, repeat paused reports (volume changes etc.)
-        // must not sneak the opinion back to paused either.
-        this.#hostOpinion = st.state;
+        // must not sneak the opinion back to paused either — and a playlist
+        // host's `ended` is the embed BETWEEN videos (§7.3 4f), not the end
+        // of the show: adopting it would write playing:false and pause every
+        // viewer for the gap. The advance write below carries the truth.
+        if (!(this.isHost() && this.hostPlaylist() && st.state === "ended")) {
+          this.#hostOpinion = st.state;
+        }
       }
     }
     if (this.isHost()) {
+      const s = this.session();
+      // Playlist auto-advance (§7.3 4f): the embed moved to the next video
+      // — ONE write carrying the new media, position 0 and playing:true
+      // (the embed IS already playing it; the hostSwap shape would pause
+      // every viewer and gamble on ungestured autoplay per item). Viewers
+      // re-key providers through the normal media-swap path. Accepted cost:
+      // every advance is a full iframe reload (+ possible ad) per viewer.
+      if (
+        this.hostPlaylist() &&
+        st.videoId &&
+        s?.media.provider === "youtube" &&
+        st.videoId !== s.media.video_id
+      ) {
+        this.#queueWrite({
+          media: {
+            provider: "youtube",
+            video_id: st.videoId,
+            ...(st.title ? { title: st.title } : {}),
+          },
+          positionMs: 0,
+          playing: true,
+        });
+      }
       // A STATE TRANSITION the host's player reports (clicked the video,
       // ended, stalled-then-resumed) is host truth — write it (plan §1,
       // rev 3). Volume/mute/rate/duration changes also come through here
@@ -751,7 +818,6 @@ export class WatchTogether {
         this.#queueWrite({ playing: st.state === "playing" });
       }
       // Title learned from the embed: write it once so late joiners see it.
-      const s = this.session();
       if (st.title && s?.media.provider === "youtube" && !s.media.title) {
         this.#queueWrite({ media: { ...s.media, title: st.title } });
       }

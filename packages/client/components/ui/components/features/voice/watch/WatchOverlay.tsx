@@ -19,7 +19,7 @@ import { Symbol } from "@revolt/ui/components/utils/Symbol";
 
 import { JellyfinBrowser } from "./JellyfinBrowser";
 import { JellyfinConnect } from "./JellyfinConnect";
-import { parseYouTubeInput } from "./providers/youtubeWire";
+import { parseYouTubeWatchInput } from "./providers/youtubeWire";
 import { watchOverlayVisible } from "./watchPolicy";
 
 /**
@@ -146,6 +146,19 @@ export function WatchOverlay() {
                 {t`You're hosting`}
               </Show>
             </HeaderMeta>
+            <Show when={watch.isHost() && watch.hostPlaylist()}>
+              <Symbol
+                size={16}
+                use:floating={{
+                  tooltip: {
+                    placement: "top",
+                    content: t`Playing a playlist — videos advance for everyone when they end`,
+                  },
+                }}
+              >
+                playlist_play
+              </Symbol>
+            </Show>
             <IconButton
               size="xs"
               variant={showStats() ? "filled" : "tonal"}
@@ -327,17 +340,26 @@ function Picker() {
   const translateError = useError();
   const watch = voice.watch;
   const [raw, setRaw] = createSignal("");
-  const [bad, setBad] = createSignal(false);
+  const [bad, setBad] = createSignal<"no" | "not-youtube" | "bare-list">("no");
   const [tab, setTab] = createSignal<"youtube" | "jellyfin">("youtube");
 
   const submit = () => {
-    const id = parseYouTubeInput(raw());
-    if (!id) {
-      setBad(true);
+    const parsed = parseYouTubeWatchInput(raw());
+    if (!parsed) {
+      setBad("not-youtube");
       return;
     }
-    setBad(false);
-    void watch.start({ provider: "youtube", video_id: id });
+    if (!parsed.videoId) {
+      // A playlist link with no video: without the Data API (§8) there is
+      // no knowable first video — ask for a link that names one.
+      setBad("bare-list");
+      return;
+    }
+    setBad("no");
+    void watch.start(
+      { provider: "youtube", video_id: parsed.videoId },
+      parsed.listId ?? undefined,
+    );
   };
 
   return (
@@ -374,8 +396,11 @@ function Picker() {
           {t`Watch`}
         </Button>
       </PickerRow>
-      <Show when={bad()}>
+      <Show when={bad() === "not-youtube"}>
         <Notice>{t`That doesn't look like a YouTube link or video id.`}</Notice>
+      </Show>
+      <Show when={bad() === "bare-list"}>
+        <Notice>{t`That's a playlist link without a video. Open the first video of the playlist on YouTube and paste that link — the playlist rides along and advances for everyone.`}</Notice>
       </Show>
       <Show when={watch.error()}>
         <Notice>{translateError({ type: watch.error() })}</Notice>

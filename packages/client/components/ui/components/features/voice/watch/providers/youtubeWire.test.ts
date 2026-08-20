@@ -7,6 +7,7 @@ import {
   commandMessage,
   listeningMessage,
   parseYouTubeInput,
+  parseYouTubeWatchInput,
   parseYouTubeMessage,
   providerStateFromYt,
   stuckStateTracker,
@@ -161,4 +162,69 @@ test("trackStuckState: parked, jittering, or legitimately frozen players are nev
   r = trackStuckState(r.tracker, "playing", 1600);
   r = trackStuckState(r.tracker, "unstarted", 1900);
   assert.equal(r.state, "unstarted");
+});
+
+test("watch input: video+list parses both, bare list is flagged, junk is null (4f)", () => {
+  const both = parseYouTubeWatchInput(
+    "https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PLabcdefghijklmnopqrstuvwxyz012345",
+  );
+  assert.deepEqual(both, {
+    videoId: "dQw4w9WgXcQ",
+    listId: "PLabcdefghijklmnopqrstuvwxyz012345",
+  });
+  // Bare playlist: recognizably YouTube, but no knowable first video.
+  const bare = parseYouTubeWatchInput(
+    "https://www.youtube.com/playlist?list=PLabcdefghijklmnopqrstuvwxyz012345",
+  );
+  assert.equal(bare?.videoId, null);
+  assert.equal(bare?.listId, "PLabcdefghijklmnopqrstuvwxyz012345");
+  // Plain video link / bare id: no list.
+  assert.deepEqual(parseYouTubeWatchInput("https://youtu.be/dQw4w9WgXcQ"), {
+    videoId: "dQw4w9WgXcQ",
+    listId: null,
+  });
+  assert.deepEqual(parseYouTubeWatchInput("dQw4w9WgXcQ"), {
+    videoId: "dQw4w9WgXcQ",
+    listId: null,
+  });
+  // Junk.
+  assert.equal(parseYouTubeWatchInput("not a link"), null);
+  // A malformed list param is dropped, the video survives.
+  assert.deepEqual(parseYouTubeWatchInput("https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=x"), {
+    videoId: "dQw4w9WgXcQ",
+    listId: null,
+  });
+});
+
+test("embed url: listId adds playlist params, absent adds none (4f)", () => {
+  const url = youtubeEmbedUrl({
+    videoId: "dQw4w9WgXcQ",
+    origin: "https://app.example",
+    listId: "PLabcdefghijklmnopqrstuvwxyz012345",
+  });
+  assert.ok(url.includes("listType=playlist"));
+  assert.ok(url.includes("list=PLabcdefghijklmnopqrstuvwxyz012345"));
+  const plain = youtubeEmbedUrl({ videoId: "dQw4w9WgXcQ", origin: "https://app.example" });
+  assert.ok(!plain.includes("listType"));
+  assert.ok(!plain.includes("list="));
+});
+
+test("infoDelivery: videoData.video_id surfaces as info.videoId (4f)", () => {
+  const msg = JSON.stringify({
+    event: "infoDelivery",
+    id: "x",
+    info: { currentTime: 1, videoData: { video_id: "AAAAAAAAAAA", title: "Next up" } },
+  });
+  const parsed = parseYouTubeMessage(msg, "x");
+  assert.equal(parsed.kind, "info");
+  if (parsed.kind === "info") {
+    assert.equal(parsed.info.videoId, "AAAAAAAAAAA");
+    assert.equal(parsed.info.title, "Next up");
+  }
+  // A malformed id never surfaces.
+  const bad = parseYouTubeMessage(
+    JSON.stringify({ event: "infoDelivery", id: "x", info: { videoData: { video_id: "nope" } } }),
+    "x",
+  );
+  if (bad.kind === "info") assert.equal(bad.info.videoId, undefined);
 });

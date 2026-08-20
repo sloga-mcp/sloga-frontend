@@ -4604,6 +4604,10 @@ msgstr "Playing {0}"
 msgid "Playing {0} for {1}"
 msgstr "Playing {0} for {1}"
 
+#: components/ui/components/features/voice/watch/WatchOverlay.tsx
+msgid "Playing a playlist — videos advance for everyone when they end"
+msgstr "Playing a playlist — videos advance for everyone when they end"
+
 #: components/app/interface/settings/user/voice/MicrophoneTest.tsx
 #: components/app/interface/settings/user/voice/MicrophoneTest.tsx
 msgid "Playing back…"
@@ -6070,7 +6074,7 @@ msgstr "Test Microphone"
 msgid "Text Channel"
 msgstr "Text Channel"
 
-#: src/index.tsx
+#: components/modal/modals/settings/LinkChannel.tsx
 msgid "That account has no channel to link."
 msgstr "That account has no channel to link."
 
@@ -6082,6 +6086,10 @@ msgstr "That action had no effect."
 #: components/app/interface/channels/text/MessageComponents.tsx
 msgid "That bot is currently offline — try again once it reconnects."
 msgstr "That bot is currently offline — try again once it reconnects."
+
+#: components/ui/components/features/voice/watch/WatchOverlay.tsx
+msgid "That's a playlist link without a video. Open the first video of the playlist on YouTube and paste that link — the playlist rides along and advances for everyone."
+msgstr "That's a playlist link without a video. Open the first video of the playlist on YouTube and paste that link — the playlist rides along and advances for everyone."
 
 #: components/modal/modals/ImportDiscord.tsx
 msgid "That doesn't look like a Discord server template link."

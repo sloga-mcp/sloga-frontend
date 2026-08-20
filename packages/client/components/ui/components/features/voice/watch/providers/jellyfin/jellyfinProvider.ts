@@ -77,6 +77,7 @@ export class JellyfinProvider implements Provider {
     ratePermille: 1000,
     error: null,
     title: null,
+    videoId: null,
     muted: false,
     volume: 100,
   };

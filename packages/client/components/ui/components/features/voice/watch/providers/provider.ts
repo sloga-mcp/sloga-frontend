@@ -22,6 +22,10 @@ export interface ProviderStatus {
   error: string | null;
   /** Title the provider learned (YouTube `videoData.title`). */
   title: string | null;
+  /** The id the player is ACTUALLY playing, when the provider knows it
+   * (YouTube `videoData.video_id`) — how a host's playlist auto-advance is
+   * observed (plan §7.3 4f). Null elsewhere. */
+  videoId: string | null;
   muted: boolean;
   /** 0..100 */
   volume: number;

@@ -36,6 +36,9 @@ export interface YouTubeProviderOptions {
   mute?: boolean;
   volume: number;
   muted: boolean;
+  /** HOST ONLY (plan §7.3 4f): play as part of this playlist so the embed
+   * auto-advances on `ended`. Host-local — never in the session. */
+  listId?: string;
 }
 
 const CAPABILITIES: ProviderCapabilities = {
@@ -59,6 +62,7 @@ export class YouTubeProvider implements Provider {
     ratePermille: 1000,
     error: null,
     title: null,
+    videoId: null,
     muted: false,
     volume: 100,
   };
@@ -103,6 +107,7 @@ export class YouTubeProvider implements Provider {
         if (i.muted != null) patch.muted = i.muted;
         if (i.volume != null) patch.volume = i.volume;
         if (i.title != null) patch.title = i.title;
+        if (i.videoId != null) patch.videoId = i.videoId;
         if (i.playerState != null) {
           const s = providerStateFromYt(i.playerState);
           if (s) patch.state = s;
@@ -136,6 +141,7 @@ export class YouTubeProvider implements Provider {
       autoplay: opts.autoplay !== false,
       controls: opts.controls,
       mute: opts.mute || opts.muted,
+      ...(opts.listId ? { listId: opts.listId } : {}),
     });
     f.addEventListener("load", () => {
       // Handshake: YouTube starts streaming infoDelivery for our id.
@@ -223,6 +229,7 @@ export class YouTubeProvider implements Provider {
       before.state !== after.state ||
       before.error !== after.error ||
       before.title !== after.title ||
+      before.videoId !== after.videoId ||
       before.durationMs !== after.durationMs ||
       before.muted !== after.muted ||
       before.volume !== after.volume ||

@@ -148,6 +148,36 @@ export function parseYouTubeInput(raw: string): string | null {
   return null;
 }
 
+/** Playlist id shape (PL/UU/RD/OL…, lengths vary — bound, don't enumerate). */
+export const YOUTUBE_LIST_RE = /^[A-Za-z0-9_-]{10,128}$/;
+
+/**
+ * Parse a paste for the watch picker (plan §7.3 4f): the video id plus, if
+ * the URL carries one, a playlist id. v1 rule: a playlist plays only from a
+ * link that ALSO names a video (`v=` + `list=`) — a bare playlist link has
+ * no knowable first video without the Data API (§8 non-goal), so the
+ * picker rejects it with a hint. Null = nothing YouTube-ish at all.
+ */
+export function parseYouTubeWatchInput(
+  raw: string,
+): { videoId: string | null; listId: string | null } | null {
+  const videoId = parseYouTubeInput(raw);
+  let listId: string | null = null;
+  const s = raw.trim();
+  try {
+    const url = new URL(/^[a-z]+:\/\//i.test(s) ? s : `https://${s}`);
+    const host = url.hostname.replace(/^www\.|^m\.|^music\./, "");
+    if (host === "youtu.be" || host === "youtube.com" || host === "youtube-nocookie.com") {
+      const l = url.searchParams.get("list");
+      if (l && YOUTUBE_LIST_RE.test(l)) listId = l;
+    }
+  } catch {
+    /* bare id or garbage — no list either way */
+  }
+  if (!videoId && !listId) return null;
+  return { videoId, listId };
+}
+
 export interface YouTubeEmbedOptions {
   videoId: string;
   /** `location.origin` of the embedding document — YouTube checks it. */
@@ -156,6 +186,13 @@ export interface YouTubeEmbedOptions {
   /** Viewers get `controls=0` so scrubbing the YouTube bar can't desync them. */
   controls?: boolean;
   mute?: boolean;
+  /**
+   * HOST ONLY (plan §7.3 4f): load the video as part of this playlist so
+   * the embed auto-advances on `ended`. The playlist is host-local state —
+   * the session only ever names the current video, and viewers' embeds
+   * never see the list.
+   */
+  listId?: string;
 }
 
 export function youtubeEmbedUrl(o: YouTubeEmbedOptions): string {
@@ -172,6 +209,10 @@ export function youtubeEmbedUrl(o: YouTubeEmbedOptions): string {
     iv_load_policy: "3",
   });
   if (o.mute) params.set("mute", "1");
+  if (o.listId) {
+    params.set("listType", "playlist");
+    params.set("list", o.listId);
+  }
   return `${YOUTUBE_EMBED_ORIGIN}/embed/${encodeURIComponent(o.videoId)}?${params}`;
 }
 
@@ -203,6 +244,9 @@ export interface YouTubeInfo {
   muted?: boolean;
   volume?: number;
   title?: string;
+  /** The id the embed is actually playing — how a host's playlist advance
+   * is observed (plan §7.3 4f). */
+  videoId?: string;
 }
 
 export type YouTubeInbound =
@@ -245,8 +289,11 @@ export function parseYouTubeMessage(data: unknown, expectedId: string): YouTubeI
       if (typeof raw.playbackRate === "number") info.playbackRate = raw.playbackRate;
       if (typeof raw.muted === "boolean") info.muted = raw.muted;
       if (typeof raw.volume === "number") info.volume = raw.volume;
-      const vd = raw.videoData as { title?: unknown } | undefined;
+      const vd = raw.videoData as { title?: unknown; video_id?: unknown } | undefined;
       if (vd && typeof vd.title === "string" && vd.title) info.title = vd.title;
+      if (vd && typeof vd.video_id === "string" && YOUTUBE_ID_RE.test(vd.video_id)) {
+        info.videoId = vd.video_id;
+      }
       return { kind: "info", info };
     }
     default:
