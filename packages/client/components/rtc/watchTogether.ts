@@ -53,6 +53,7 @@ import {
 import {
   hostUnreachable,
   hostWriteIsNoop,
+  isHostTransition,
   needsTapToStart,
   pauseIsEnvironmental,
   pausedScrubTracker,
@@ -218,6 +219,8 @@ export class WatchTogether {
    * the position from the session timeline, and the tick rejoins it once
    * the tab is shown (plan §7.2c finding 1). */
   #hostSuspended = false;
+  /** Session id we last claimed the `watching` roster flag for (§7.3 4b). */
+  #watchingClaimedFor: string | undefined;
 
   constructor() {
     [this.session, this.#setSession] = createSignal<WatchSessionData | undefined>();
@@ -324,10 +327,50 @@ export class WatchTogether {
     this.#lastUpdateLocalMs = Date.now();
     this.#setHostUnreachable(false);
     this.#setError(undefined);
+    // Handoff (§7.3 4a): the same session under a new host. Reset BEFORE
+    // the session lands so a promoted viewer's first heartbeat and a
+    // demoted host's next tick both see clean state.
+    if (isHostTransition({ prevId: this.session()?.id, prevHostId: this.session()?.host_id, nextId: s.id, nextHostId: s.host_id })) {
+      this.#onHostTransition(s);
+    }
     this.#setSession(s);
     this.setPickerOpen(false);
     this.#ensureProvider(s);
     this.#ensureLoops();
+    // Roster hint (§7.3 4b): tell the channel we have this session attached.
+    // Best-effort — an undeployed backend 404s and nothing depends on it.
+    if (this.#watchingClaimedFor !== s.id) {
+      this.#watchingClaimedFor = s.id;
+      this.#claimWatching(true);
+    }
+  }
+
+  /**
+   * The host-only residue that must not survive a handoff (§7.3 rev 2):
+   * without the rate reset, a viewer promoted mid-correction keeps its
+   * nudged rate (±10 %) as the new ground truth and every heartbeat writes
+   * that fast clock — the whole call then chases an accelerating timeline.
+   * The provider itself is deliberately NOT re-keyed (an iframe rebuild
+   * reloads the video and its ad break).
+   */
+  #onHostTransition(s: WatchSessionData) {
+    this.#hostOpinion = null;
+    this.#lastProviderState = undefined;
+    this.#scrubTrack = pausedScrubTracker();
+    this.#syncState = INITIAL_SYNC_STATE;
+    this.#writeSentAt = [];
+    this.#queued = undefined;
+    if (this.#scrubTimer) clearTimeout(this.#scrubTimer);
+    this.#scrubTimer = undefined;
+    this.#nudgeRate = RATE_NORMAL;
+    this.#provider?.setRate(s.rate_permille);
+    // Tap-to-start is viewer machinery the host tick never evaluates or
+    // clears — a stale prompt would sit over the new host's controls.
+    this.#playAskedAt = null;
+    this.#setNeedsTap(false);
+    // A stale environment-pause latch gates the opinion path (it is not
+    // host-scoped) and would misbehave on a later re-promotion.
+    this.#hostSuspended = false;
   }
 
   onEnd(detail: { channelId: string; id: string }) {
@@ -392,6 +435,30 @@ export class WatchTogether {
     this.#setError(undefined);
     try {
       const r = await ch.startWatch(media);
+      if (!r.ok) {
+        this.#setError(r.error);
+        return false;
+      }
+      this.#noteClock(r);
+      this.onUpdate({ channelId: ch.id, session: r.body.session });
+      return true;
+    } finally {
+      this.#setBusy(false);
+    }
+  }
+
+  /**
+   * Host or manager: hand the session to another call participant (§7.3
+   * 4a). The result's `NotInVoiceChannel` refers to the TARGET (they left
+   * between the menu opening and the click) — a plain refusal, never the
+   * self-join retry-once rule.
+   */
+  async handoff(userId: string): Promise<boolean> {
+    const ch = this.#ctx?.channel();
+    if (!ch) return false;
+    this.#setBusy(true);
+    try {
+      const r = await ch.watchHost(userId);
       if (!r.ok) {
         this.#setError(r.error);
         return false;
@@ -474,6 +541,15 @@ export class WatchTogether {
 
   // ---- internals -------------------------------------------------------------
 
+  /** Best-effort roster claim (§7.3 4b): failures are invisible on purpose
+   * — an undeployed backend 404s, a leave races NotInVoiceChannel, and the
+   * hint is advisory either way. */
+  #claimWatching(value: boolean) {
+    const ch = this.#ctx?.channel();
+    if (!ch) return;
+    void ch.setWatching(value).catch(() => undefined);
+  }
+
   #noteClock(r: Extract<WatchResult, { ok: true }>) {
     if (!r.body) return;
     const rtt = r.receivedAt - r.sentAt;
@@ -489,6 +565,12 @@ export class WatchTogether {
   }
 
   #clearSession() {
+    if (this.#watchingClaimedFor) {
+      this.#watchingClaimedFor = undefined;
+      // Best-effort: session end already cleared the flag server-side; a
+      // leave clears it with the voice state. Idempotent either way.
+      this.#claimWatching(false);
+    }
     this.#setSession(undefined);
     this.#setNeedsTap(false);
     this.#setHostUnreachable(false);
@@ -1052,8 +1134,10 @@ export class WatchTogether {
       } else if (r.status === 404) {
         this.#clearSession();
       } else if (r.status === 403) {
-        // We are no longer host (handoff / moderator) — stop writing.
+        // We are no longer host (handoff / moderator) — stop writing, and
+        // re-GET so a raced-out host converges on who is (§7.3 rev 2).
         this.#setError(r.error);
+        void this.refetch(false);
       }
     })().finally(() => {
       this.#inFlight = undefined;

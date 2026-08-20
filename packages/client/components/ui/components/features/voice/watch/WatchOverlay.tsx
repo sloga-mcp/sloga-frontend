@@ -97,6 +97,17 @@ export function WatchOverlay() {
   const canControl = () =>
     watch.isHost() || !!voice.channel()?.havePermission("ManageChannel");
 
+  // Handoff (§7.3 4a): every other current call participant, from the same
+  // roster the sidebar renders. The backend re-validates (in-call, not a
+  // bot, holds the bit in server channels), so a stale row just errors.
+  const [handoffOpen, setHandoffOpen] = createSignal(false);
+  const handoffCandidates = createMemo(() => {
+    const hostId = watch.session()?.host_id;
+    const ch = voice.channel();
+    if (!ch) return [] as string[];
+    return [...ch.voiceParticipants.keys()].filter((id) => id !== hostId);
+  });
+
   // Debug stats line for the live leg (plan §9) — off by default, toggled
   // from the header; remembered per device.
   const [showStats, setShowStats] = createSignal(
@@ -154,6 +165,17 @@ export function WatchOverlay() {
             >
               <Symbol>insights</Symbol>
             </IconButton>
+            <Show when={canControl() && handoffCandidates().length > 0}>
+              <IconButton
+                size="xs"
+                variant={handoffOpen() ? "filled" : "tonal"}
+                isDisabled={watch.busy()}
+                onPress={() => setHandoffOpen((v) => !v)}
+                use:floating={{ tooltip: { placement: "top", content: t`Make someone else the host` } }}
+              >
+                <Symbol>switch_account</Symbol>
+              </IconButton>
+            </Show>
             <Show when={canControl()}>
               <IconButton
                 size="xs"
@@ -166,6 +188,26 @@ export function WatchOverlay() {
               </IconButton>
             </Show>
           </Header>
+          <Show when={handoffOpen() && canControl()}>
+            <HandoffRow>
+              <HandoffLabel>{t`Make host`}</HandoffLabel>
+              <For each={handoffCandidates()}>
+                {(id) => (
+                  <Button
+                    variant="tonal"
+                    isDisabled={watch.busy()}
+                    onPress={() =>
+                      void watch.handoff(id).then((ok) => {
+                        if (ok) setHandoffOpen(false);
+                      })
+                    }
+                  >
+                    {client()?.users.get(id)?.displayName ?? id}
+                  </Button>
+                )}
+              </For>
+            </HandoffRow>
+          </Show>
           <PlayerSlot ref={setSlot}>
             {/* The iframe is positioned over this slot by the store. These
                 are the states where the slot itself needs to say something. */}
@@ -484,6 +526,17 @@ const TapRow = styled("div", {
 });
 const TapHint = styled("span", {
   base: { fontSize: "12px", color: "var(--md-sys-color-on-surface-variant)" },
+});
+const HandoffRow = styled("div", {
+  base: {
+    display: "flex",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: "var(--gap-sm)",
+  },
+});
+const HandoffLabel = styled("span", {
+  base: { fontSize: "12px", color: "var(--md-sys-color-outline)" },
 });
 const Notice = styled("div", {
   base: {

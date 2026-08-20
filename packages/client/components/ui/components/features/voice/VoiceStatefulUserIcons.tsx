@@ -15,6 +15,9 @@ export function VoiceStatefulUserIcons(props: {
   deafened?: boolean;
   camera?: boolean;
   screenshare?: boolean;
+  /** In the channel's watch party (a self-reported roster hint — absence
+   * means "hasn't said", older clients never claim it). */
+  watching?: boolean;
 }) {
   const { t } = useLingui();
   const state = useState();
@@ -51,6 +54,19 @@ export function VoiceStatefulUserIcons(props: {
       </Show>
       <Show when={props.screenshare}>
         <Symbol size={16}>screen_share</Symbol>
+      </Show>
+      <Show when={props.watching}>
+        <Symbol
+          size={16}
+          use:floating={{
+            tooltip: {
+              placement: "top",
+              content: t`Watching together`,
+            },
+          }}
+        >
+          movie
+        </Symbol>
       </Show>
     </>
   );

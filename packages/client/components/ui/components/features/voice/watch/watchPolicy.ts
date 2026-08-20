@@ -108,6 +108,28 @@ export function pauseIsEnvironmental(i: {
   return i.isHost && i.sessionPlaying && i.providerState === "paused" && i.documentHidden;
 }
 
+/**
+ * Handoff detection (§7.3 4a): the SAME session arriving under a new host.
+ * A different session id is a new session — the provider rebuild resets
+ * everything anyway — and the very first update (no previous session) is
+ * never a transition. The store resets its host-only residue (nudge rate,
+ * host opinion, scrub tracker, write queue, tap state, suspension latch)
+ * exactly when this returns true.
+ */
+export function isHostTransition(i: {
+  prevId: string | undefined;
+  prevHostId: string | undefined;
+  nextId: string;
+  nextHostId: string;
+}): boolean {
+  return (
+    i.prevId !== undefined &&
+    i.prevId === i.nextId &&
+    i.prevHostId !== undefined &&
+    i.prevHostId !== i.nextHostId
+  );
+}
+
 /** A suspended host rejoins the session timeline only once its tab is
  * shown again — issuing play() while still hidden just fights the browser. */
 export function shouldResumeSuspendedHost(i: {

@@ -119,6 +119,7 @@ function ParticipantLive(props: { channel: Channel }) {
       camera={state()?.isCamera() ?? false}
       screenshare={screenAudioOnly(state())}
       sharingScreen={state()?.isScreenVideo() ?? false}
+      watching={state()?.isWatching() ?? false}
       isLive
     />
   );
@@ -137,6 +138,7 @@ function ParticipantPreview(props: { participant: VoiceParticipant }) {
       camera={props.participant.isCamera()}
       screenshare={screenAudioOnly(props.participant)}
       sharingScreen={props.participant.isScreenVideo()}
+      watching={props.participant.isWatching()}
     />
   );
 }
@@ -151,6 +153,8 @@ function CommonUser(props: {
   deafened: boolean;
   camera: boolean;
   screenshare: boolean;
+  /** In the channel's watch party (self-reported roster hint) */
+  watching?: boolean;
   /** Screen VIDEO is live — this is what earns the LIVE badge */
   sharingScreen?: boolean;
   isLive?: boolean;
@@ -162,6 +166,7 @@ function CommonUser(props: {
     "deafened",
     "camera",
     "screenshare",
+    "watching",
   ]);
 
   const user = useUser(() => participantUserId(rest.userId));

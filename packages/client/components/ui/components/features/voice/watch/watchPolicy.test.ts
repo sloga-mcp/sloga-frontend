@@ -10,6 +10,7 @@ import {
   PAUSED_SCRUB_JITTER_MS,
   hostUnreachable,
   hostWriteIsNoop,
+  isHostTransition,
   needsTapToStart,
   pauseIsEnvironmental,
   pausedScrubTracker,
@@ -197,6 +198,29 @@ test("needsTapToStart: session paused, never-asked, and in-grace all stay quiet"
   );
   assert.equal(
     needsTapToStart({ providerState: "idle", sessionPlaying: true, playAskedAtMs: 0, nowLocalMs: AUTOPLAY_GRACE_MS }),
+    false,
+  );
+});
+
+test("isHostTransition: same session under a new host, and only that", () => {
+  // The handoff shape.
+  assert.equal(
+    isHostTransition({ prevId: "s1", prevHostId: "alice", nextId: "s1", nextHostId: "bob" }),
+    true,
+  );
+  // A NEW session is never a transition (the provider rebuild resets all).
+  assert.equal(
+    isHostTransition({ prevId: "s1", prevHostId: "alice", nextId: "s2", nextHostId: "bob" }),
+    false,
+  );
+  // The very first update has nothing to transition from.
+  assert.equal(
+    isHostTransition({ prevId: undefined, prevHostId: undefined, nextId: "s1", nextHostId: "bob" }),
+    false,
+  );
+  // Same host: an ordinary update.
+  assert.equal(
+    isHostTransition({ prevId: "s1", prevHostId: "alice", nextId: "s1", nextHostId: "alice" }),
     false,
   );
 });

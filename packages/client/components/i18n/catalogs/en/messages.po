@@ -3718,6 +3718,14 @@ msgstr "Make a selection"
 msgid "Make Announcement Channel"
 msgstr "Make Announcement Channel"
 
+#: components/ui/components/features/voice/watch/WatchOverlay.tsx
+msgid "Make host"
+msgstr "Make host"
+
+#: components/ui/components/features/voice/watch/WatchOverlay.tsx
+msgid "Make someone else the host"
+msgstr "Make someone else the host"
+
 #: components/modal/modals/ReportContent.tsx
 msgid "Malware or phishing"
 msgstr "Malware or phishing"
