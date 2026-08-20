@@ -111,6 +111,7 @@ import { CaptureClaim } from "./captureClaim";
 import { entranceSoundFor } from "./entranceSound";
 import { watchLocalUserId } from "./localUserIdentity";
 import { RemoteControl } from "./remoteControl";
+import { WatchDuck } from "./watchDuck";
 import { WatchTogether } from "./watchTogether";
 import {
   type RemoteControlQueue,
@@ -597,6 +598,14 @@ class Voice {
    */
   readonly watch = new WatchTogether();
   /**
+   * Movie ducking for watch-together (plan §7.3 4d): follows the room's
+   * REMOTE active speakers and hands the watch store a volume multiplier.
+   */
+  #watchDuck = new WatchDuck(
+    () => this.watch.duckEnabled(),
+    (mult) => this.watch.setDuckMult(mult),
+  );
+  /**
    * Client-local soundboard playback. Subscribes to the `soundboardSound`
    * client event app-lifetime (in the constructor) and plays a received clip
    * only if we are in the triggering call — never on the LiveKit/MLS path.
@@ -840,6 +849,11 @@ class Voice {
       void this.#settings.attenuateWhenISpeak;
       void this.#settings.attenuateWhenOthersSpeak;
       untrack(() => this.#attenuation.refresh());
+    });
+    // The duck toggle lands on an active duck immediately, same shape.
+    createEffect(() => {
+      void this.watch.duckEnabled();
+      untrack(() => this.#watchDuck.refresh());
     });
 
     const [channel, setChannel] = createSignal<Channel>();
@@ -1806,6 +1820,7 @@ class Voice {
       this.#startPushToTalk(room);
       this.#startVAD(room);
       this.#attenuation.attach(room);
+      this.#watchDuck.attach(room);
       this.#playEntranceSound(channel);
       const isAfk = channel.name?.toLowerCase() === "afk";
       // Honour the persisted pre-call state (the sidebar user bar makes
@@ -2401,6 +2416,7 @@ class Voice {
       this.#stopPushToTalk();
       this.#stopVAD();
       this.#attenuation.detach();
+      this.#watchDuck.detach();
 
       // Room disconnect stops tracks (destroying attached processors); drop the
       // controller's references and release any virtual-background image URL.

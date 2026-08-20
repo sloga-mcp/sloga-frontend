@@ -305,6 +305,16 @@ function Controls() {
         </RateSelect>
       </Show>
       <Spacer />
+      <IconButton
+        size="xs"
+        variant={watch.duckEnabled() ? "filled" : "tonal"}
+        onPress={() => watch.setDuckEnabled(!watch.duckEnabled())}
+        use:floating={{
+          tooltip: { placement: "top", content: t`Lower the movie while people talk` },
+        }}
+      >
+        <Symbol>volume_down</Symbol>
+      </IconButton>
       <IconButton size="xs" variant="tonal" onPress={() => watch.setMuted(!watch.muted())}>
         <Symbol>{watch.muted() ? "volume_off" : "volume_up"}</Symbol>
       </IconButton>

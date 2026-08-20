@@ -3706,6 +3706,10 @@ msgstr "Looking For More"
 msgid "Low latency"
 msgstr "Low latency"
 
+#: components/ui/components/features/voice/watch/WatchOverlay.tsx
+msgid "Lower the movie while people talk"
+msgstr "Lower the movie while people talk"
+
 #: components/app/interface/settings/user/voice/AttenuationOptions.tsx
 msgid "Lower the volume of your games and other applications by this much while someone is speaking. Set to 0% to turn it off. Sloga's own audio is never lowered."
 msgstr "Lower the volume of your games and other applications by this much while someone is speaking. Set to 0% to turn it off. Sloga's own audio is never lowered."
