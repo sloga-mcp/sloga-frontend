@@ -36,7 +36,12 @@ import { Capacitor, registerPlugin } from "@capacitor/core";
 
 import { tauriInvoke } from "@revolt/common";
 
-import { type ShellKind, transportUrl, webTransportProblem } from "./jellyfinWire";
+import {
+  composeSpecList,
+  type ShellKind,
+  transportUrl,
+  webTransportProblem,
+} from "./jellyfinWire";
 import type { SavedServer } from "./servers";
 
 interface TauriGlobal {
@@ -108,18 +113,19 @@ export const PROBE_SERVER_ID = "connect-probe-0";
  * silently drop the provisional entry mid-connect — the Quick Connect poll
  * would then dead-end on unknown-server errors with no visible failure.
  */
-let activeProbeUrl: string | null = null;
+let activeProbe: { url: string; trust: boolean } | null = null;
 
 function toSpecList(servers: SavedServer[]) {
-  const list = servers.map((s) => ({
-    id: s.id,
-    baseUrl: s.baseUrl,
-    trustSelfSigned: s.trustSelfSigned === true,
-  }));
-  if (activeProbeUrl !== null) {
-    list.push({ id: PROBE_SERVER_ID, baseUrl: activeProbeUrl, trustSelfSigned: false });
-  }
-  return list;
+  // Module STATE, not a call parameter (§7.3 4e acceptance criterion): a
+  // concurrent replace-all re-push must carry the probe's trust choice
+  // through, or it silently drops mid-Quick-Connect against a self-signed
+  // server.
+  return composeSpecList(
+    servers,
+    activeProbe === null
+      ? null
+      : { id: PROBE_SERVER_ID, url: activeProbe.url, trust: activeProbe.trust },
+  );
 }
 
 async function pushServers(
@@ -172,14 +178,15 @@ export async function registerServers(servers: SavedServer[]): Promise<void> {
 export async function registerProbeServer(
   baseUrl: string,
   saved: SavedServer[],
+  trustSelfSigned = false,
 ): Promise<void> {
-  activeProbeUrl = baseUrl;
+  activeProbe = { url: baseUrl, trust: trustSelfSigned === true };
   await pushServers(toSpecList(saved));
 }
 
 /** Drop the provisional connect-flow entry from every future push. */
 export function clearProbeServer(): void {
-  activeProbeUrl = null;
+  activeProbe = null;
 }
 
 /** Build a fetchable URL for a Jellyfin path against a saved server. */

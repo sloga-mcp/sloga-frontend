@@ -132,8 +132,18 @@ class JellyfinPlugin : Plugin() {
                 } catch (ignored: Exception) {
                     /* already dead */
                 }
-                // Opaque: DNS/refused/TLS all look the same to the webview.
-                call.reject("network")
+                // 526 marks a TLS/certificate failure specifically (the
+                // desktop shells' code for the same thing), so the connect
+                // flow can offer per-server trust only when trusting would
+                // help. Everything else (DNS/refused/timeout) stays opaque.
+                if (e is javax.net.ssl.SSLException) {
+                    val ret = JSObject()
+                    ret.put("status", 526)
+                    ret.put("body", "")
+                    call.resolve(ret)
+                } else {
+                    call.reject("network")
+                }
             }
         }
     }

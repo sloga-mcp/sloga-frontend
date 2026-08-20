@@ -7,13 +7,18 @@ import { Button, IconButton } from "@revolt/ui/components/design";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
 
 import { JellyfinApi, JfError } from "./providers/jellyfin/api";
-import { normalizeServerUrl, statusText } from "./providers/jellyfin/jellyfinWire";
+import {
+  TLS_ERROR_STATUS,
+  normalizeServerUrl,
+  statusText,
+} from "./providers/jellyfin/jellyfinWire";
 import { type SavedServer, listServers, saveServer } from "./providers/jellyfin/servers";
 import {
   PROBE_SERVER_ID,
   clearProbeServer,
   registerProbeServer,
   registerServers,
+  shellKind,
   transportProblem,
 } from "./providers/jellyfin/transport";
 
@@ -43,6 +48,14 @@ export function JellyfinConnect(props: {
   const [password, setPassword] = createSignal("");
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal<string | undefined>();
+  // Per-server cert trust (plan §7.3 4e, the item-10 decision). `trusted`
+  // is the user's explicit choice for THIS typed address; `tlsOffer` shows
+  // the affordance and only ever turns on for the shell-reported TLS
+  // status — a typo'd port or sleeping NAS is a plain error, never an
+  // invitation to trust-click. Web can't skip cert validation, so the
+  // offer never appears there.
+  const [trusted, setTrusted] = createSignal(false);
+  const [tlsOffer, setTlsOffer] = createSignal(false);
 
   let quickPoll: ReturnType<typeof setInterval> | undefined;
   const stopQuickPoll = () => {
@@ -89,11 +102,14 @@ export function JellyfinConnect(props: {
     }
     setBusy(true);
     setError(undefined);
+    setTlsOffer(false);
     try {
       // The server isn't saved yet, so a native shell's forwarder doesn't
       // know it — register the typed URL provisionally first (viewer-
-      // initiated contact: they typed it and clicked Connect, §5.1).
-      await registerProbeServer(base, listServers());
+      // initiated contact: they typed it and clicked Connect, §5.1). The
+      // trust choice rides the probe entry so the whole pre-save flow
+      // (probe, Quick Connect, password auth) honors it.
+      await registerProbeServer(base, listServers(), trusted());
       const info = await JellyfinApi.probe(base);
       setServer({ name: info.ServerName, id: info.Id, baseUrl: base });
       let qc = false;
@@ -105,10 +121,27 @@ export function JellyfinConnect(props: {
       setQuickEnabled(qc);
       goToStep("method");
     } catch (e) {
-      setError(errText(e));
+      if (
+        e instanceof JfError &&
+        e.status === TLS_ERROR_STATUS &&
+        !trusted() &&
+        shellKind() !== "web" &&
+        base.startsWith("https://")
+      ) {
+        setTlsOffer(true);
+        setError(undefined);
+      } else {
+        setError(errText(e));
+      }
     } finally {
       setBusy(false);
     }
+  }
+
+  function trustAndRetry() {
+    setTrusted(true);
+    setTlsOffer(false);
+    void probe();
   }
 
   async function startQuickConnect() {
@@ -176,6 +209,9 @@ export function JellyfinConnect(props: {
       baseUrl: s.baseUrl,
       token,
       userId,
+      // Only an explicit user choice ever writes trust; changing it later
+      // is remove + re-add (said in the offer copy).
+      ...(trusted() ? { trustSelfSigned: true } : {}),
       lastUsed: Date.now(),
     };
     saveServer(saved);
@@ -202,7 +238,12 @@ export function JellyfinConnect(props: {
             type="url"
             placeholder="http://192.168.1.10:8096"
             value={rawUrl()}
-            onInput={(e) => setRawUrl(e.currentTarget.value)}
+            onInput={(e) => {
+              setRawUrl(e.currentTarget.value);
+              // Trust is per typed address — editing it revokes the choice.
+              setTrusted(false);
+              setTlsOffer(false);
+            }}
             onKeyDown={(e) => e.key === "Enter" && void probe()}
             autofocus
           />
@@ -261,6 +302,16 @@ export function JellyfinConnect(props: {
             </Button>
           </>
         )}
+      </Show>
+
+      <Show when={tlsOffer()}>
+        <ErrorNote>
+          {t`This server's certificate can't be verified. Only trust it if this is your own server — a changed certificate can also mean someone is intercepting the connection. Trust applies to this device only; to undo it later, remove the server and add it again.`}
+        </ErrorNote>
+        <Button variant="secondary" isDisabled={busy()} onPress={trustAndRetry}>
+          <Symbol>gpp_maybe</Symbol>
+          {t`Trust this server's certificate`}
+        </Button>
       </Show>
 
       <Show when={error()}>

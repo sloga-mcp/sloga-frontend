@@ -6304,6 +6304,10 @@ msgstr "This server is listed in the public directory on the Sloga website."
 msgid "This server is not publicly listed. Request a listing to appear in the public directory once approved by the Sloga team."
 msgstr "This server is not publicly listed. Request a listing to appear in the public directory once approved by the Sloga team."
 
+#: components/ui/components/features/voice/watch/JellyfinConnect.tsx
+msgid "This server's certificate can't be verified. Only trust it if this is your own server — a changed certificate can also mean someone is intercepting the connection. Trust applies to this device only; to undo it later, remove the server and add it again."
+msgstr "This server's certificate can't be verified. Only trust it if this is your own server — a changed certificate can also mean someone is intercepting the connection. Trust applies to this device only; to undo it later, remove the server and add it again."
+
 #: src/interface/channels/text/TextChannel.tsx
 msgid "This thread is archived"
 msgstr "This thread is archived"
@@ -6404,6 +6408,10 @@ msgstr "Translate captions to"
 #: components/app/interface/settings/user/Language.tsx
 msgid "Translate messages"
 msgstr "Translate messages"
+
+#: components/ui/components/features/voice/watch/JellyfinConnect.tsx
+msgid "Trust this server's certificate"
+msgstr "Trust this server's certificate"
 
 #: components/app/interface/settings/user/Language.tsx
 msgid "Translate messages to"

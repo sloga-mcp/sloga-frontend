@@ -126,6 +126,38 @@ export function webTransportProblem(
   return null;
 }
 
+/**
+ * The status every shell answers a TLS/certificate failure with (the
+ * Cloudflare "invalid SSL certificate" code): desktop `jellyfin.rs`,
+ * Electron `jellyfin.js` and the Android plugin all map their stack's
+ * cert errors to it, and everything ELSE stays an opaque 502/0. The
+ * connect flow offers per-server trust ONLY on this status — a typo'd
+ * port must never train the user to trust-click (plan §7.3 4e).
+ */
+export const TLS_ERROR_STATUS = 526;
+
+/**
+ * The forwarding table pushed to a native shell: the saved servers plus,
+ * while a connect flow is running, the provisional probe entry — WITH the
+ * trust choice the user made for it. Pure so the re-push behavior (a
+ * concurrent registerServers must carry the probe's trust through, §7.2b
+ * item 3 + §7.3 4e) is testable under `node --test`.
+ */
+export function composeSpecList(
+  saved: Array<{ id: string; baseUrl: string; trustSelfSigned?: boolean }>,
+  probe: { id: string; url: string; trust: boolean } | null,
+): Array<{ id: string; baseUrl: string; trustSelfSigned: boolean }> {
+  const list = saved.map((s) => ({
+    id: s.id,
+    baseUrl: s.baseUrl,
+    trustSelfSigned: s.trustSelfSigned === true,
+  }));
+  if (probe !== null) {
+    list.push({ id: probe.id, baseUrl: probe.url, trustSelfSigned: probe.trust === true });
+  }
+  return list;
+}
+
 export interface CodecSupport {
   h264: boolean;
   vp9: boolean;

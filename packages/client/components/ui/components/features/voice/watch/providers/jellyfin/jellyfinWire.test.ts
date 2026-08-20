@@ -5,6 +5,7 @@ import { test } from "node:test";
 
 import {
   authorizationHeader,
+  composeSpecList,
   buildDeviceProfile,
   describeTranscode,
   imagePath,
@@ -137,4 +138,33 @@ test("imagePath + itemLabel", () => {
     "Show — S1E2 · Pilot",
   );
   assert.equal(itemLabel({ Name: "Clip", Type: "Video" }), "Clip");
+});
+
+test("composeSpecList: the probe entry carries its trust choice through every re-push (4e)", () => {
+  const saved = [
+    { id: "aaaaaaaaaaaa", baseUrl: "https://nas.local:8920", trustSelfSigned: true },
+    { id: "bbbbbbbbbbbb", baseUrl: "http://192.168.1.10:8096" },
+  ];
+  // No connect flow running: saved servers only, trust normalized to bool.
+  assert.deepEqual(composeSpecList(saved, null), [
+    { id: "aaaaaaaaaaaa", baseUrl: "https://nas.local:8920", trustSelfSigned: true },
+    { id: "bbbbbbbbbbbb", baseUrl: "http://192.168.1.10:8096", trustSelfSigned: false },
+  ]);
+  // Mid-connect with trust granted: EVERY composition (i.e. every re-push,
+  // including a concurrent registerServers) appends the probe WITH trust.
+  const probe = { id: "connect-probe-0", url: "https://selfsigned.lan", trust: true };
+  const twice = [composeSpecList(saved, probe), composeSpecList(saved, probe)];
+  for (const list of twice) {
+    assert.deepEqual(list[2], {
+      id: "connect-probe-0",
+      baseUrl: "https://selfsigned.lan",
+      trustSelfSigned: true,
+    });
+  }
+  // Default probe stays untrusted.
+  assert.equal(
+    composeSpecList([], { id: "connect-probe-0", url: "https://x", trust: false })[0]
+      .trustSelfSigned,
+    false,
+  );
 });
