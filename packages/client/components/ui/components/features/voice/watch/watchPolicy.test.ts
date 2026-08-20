@@ -5,6 +5,7 @@ import { test } from "node:test";
 
 import {
   AUTOPLAY_GRACE_MS,
+  WATCH_STRIP_MIN_WIDTH_PX,
   HOST_UNREACHABLE_AFTER_MS,
   IDLE_BOOT_GRACE_MS,
   PAUSED_SCRUB_JITTER_MS,
@@ -18,6 +19,7 @@ import {
   watchButtonVisible,
   watchCanStart,
   watchOverlayVisible,
+  watchStripVisible,
 } from "./watchPolicy.ts";
 
 const LIVE = { enabled: true, connected: true, hasSession: true, immersive: false };
@@ -199,4 +201,12 @@ test("needsTapToStart: session paused, never-asked, and in-grace all stay quiet"
     needsTapToStart({ providerState: "idle", sessionPlaying: true, playAskedAtMs: 0, nowLocalMs: AUTOPLAY_GRACE_MS }),
     false,
   );
+});
+
+test("strip: every veto input vetoes on its own (4c)", () => {
+  const base = { userPref: true, hasTracks: true, widthPx: WATCH_STRIP_MIN_WIDTH_PX };
+  assert.equal(watchStripVisible(base), true);
+  assert.equal(watchStripVisible({ ...base, userPref: false }), false);
+  assert.equal(watchStripVisible({ ...base, hasTracks: false }), false);
+  assert.equal(watchStripVisible({ ...base, widthPx: WATCH_STRIP_MIN_WIDTH_PX - 1 }), false);
 });

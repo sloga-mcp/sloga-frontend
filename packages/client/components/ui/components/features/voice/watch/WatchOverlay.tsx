@@ -10,17 +10,21 @@ import {
 import { useLingui } from "@lingui-solid/solid/macro";
 import { styled } from "styled-system/jsx";
 
+import { TrackLoop } from "solid-livekit-components";
+
 import { useClient } from "@revolt/client";
 import { CONFIGURATION } from "@revolt/common";
 import { useError } from "@revolt/i18n";
-import { useVoice } from "@revolt/rtc";
+import { InRoom, useVoice } from "@revolt/rtc";
 import { Button, IconButton } from "@revolt/ui/components/design";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
+
+import { ParticipantTile } from "../callCard/ParticipantTile";
 
 import { JellyfinBrowser } from "./JellyfinBrowser";
 import { JellyfinConnect } from "./JellyfinConnect";
 import { parseYouTubeInput } from "./providers/youtubeWire";
-import { watchOverlayVisible } from "./watchPolicy";
+import { watchOverlayVisible, watchStripVisible } from "./watchPolicy";
 
 /**
  * Watch-together overlay (plan §2.1). Copies the MinigameChip placement:
@@ -97,6 +101,50 @@ export function WatchOverlay() {
   const canControl = () =>
     watch.isHost() || !!voice.channel()?.havePermission("ManageChannel");
 
+  // Cams side-strip (plan §7.3 4c): a fixed column of live tiles beside the
+  // player, INSIDE the overlay (the overlay's opaque cover is what hides
+  // the grid). Real publications only — raw vidTracks() includes a camera
+  // placeholder per participant, which would show avatar tiles beside the
+  // movie in every call. Tap-inert BY CONSTRUCTION (pointer-events: none on
+  // the column): ParticipantTile's click is toggleFocus against the hidden
+  // grid/FocusBox, and the RC capture machinery hangs off focus changes.
+  const [stripPref, setStripPref] = createSignal(
+    (() => {
+      try {
+        return localStorage.getItem("sloga:watch:strip") !== "0";
+      } catch {
+        return true;
+      }
+    })(),
+  );
+  const toggleStrip = () => {
+    const next = !stripPref();
+    setStripPref(next);
+    try {
+      localStorage.setItem("sloga:watch:strip", next ? "1" : "0");
+    } catch {
+      /* private mode */
+    }
+  };
+  const [overlayW, setOverlayW] = createSignal(0);
+  const [rootRef, setRootRef] = createSignal<HTMLDivElement>();
+  createEffect(() => {
+    const el = rootRef();
+    if (!el) return;
+    const ro = new ResizeObserver(() => setOverlayW(el.clientWidth));
+    ro.observe(el);
+    setOverlayW(el.clientWidth);
+    onCleanup(() => ro.disconnect());
+  });
+  const stripTracks = () =>
+    voice.vidTracks().filter((tr) => "publication" in tr && tr.publication);
+  const stripVisible = () =>
+    watchStripVisible({
+      userPref: stripPref(),
+      hasTracks: stripTracks().length > 0,
+      widthPx: overlayW(),
+    });
+
   // Debug stats line for the live leg (plan §9) — off by default, toggled
   // from the header; remembered per device.
   const [showStats, setShowStats] = createSignal(
@@ -135,7 +183,7 @@ export function WatchOverlay() {
         </Overlay>
       </Show>
       <Show when={visible()}>
-        <Overlay>
+        <Overlay ref={setRootRef}>
           <Header>
             <HeaderTitle title={title()}>
               <Symbol size={18}>movie</Symbol>
@@ -146,6 +194,18 @@ export function WatchOverlay() {
                 {t`You're hosting`}
               </Show>
             </HeaderMeta>
+            <Show when={stripTracks().length > 0}>
+              <IconButton
+                size="xs"
+                variant={stripPref() ? "filled" : "tonal"}
+                onPress={toggleStrip}
+                use:floating={{
+                  tooltip: { placement: "top", content: t`Show cameras beside the video` },
+                }}
+              >
+                <Symbol>view_sidebar</Symbol>
+              </IconButton>
+            </Show>
             <IconButton
               size="xs"
               variant={showStats() ? "filled" : "tonal"}
@@ -166,6 +226,7 @@ export function WatchOverlay() {
               </IconButton>
             </Show>
           </Header>
+          <BodyRow>
           <PlayerSlot ref={setSlot}>
             {/* The iframe is positioned over this slot by the store. These
                 are the states where the slot itself needs to say something. */}
@@ -198,6 +259,16 @@ export function WatchOverlay() {
               )}
             </Show>
           </PlayerSlot>
+          <Show when={stripVisible()}>
+            {/* The anchor mechanism resizes the player to whatever rect
+                PlayerSlot ends up with — the strip just takes its column. */}
+            <StripCol style={{ "--vc-tile-width": "160px" }}>
+              <InRoom>
+                <TrackLoop tracks={stripTracks}>{() => <ParticipantTile />}</TrackLoop>
+              </InRoom>
+            </StripCol>
+          </Show>
+          </BodyRow>
           <Show when={watch.needsTap()}>
             <TapRow>
               <Button variant="filled" onPress={() => watch.tapToStart()}>
@@ -458,11 +529,34 @@ const HeaderTitle = styled("div", {
 const HeaderMeta = styled("span", {
   base: { fontSize: "12px", color: "var(--md-sys-color-on-surface-variant)", whiteSpace: "nowrap" },
 });
+const BodyRow = styled("div", {
+  base: {
+    display: "flex",
+    flexDirection: "row",
+    gap: "var(--gap-sm)",
+    flex: "1 1 0",
+    minHeight: 0,
+  },
+});
+const StripCol = styled("div", {
+  base: {
+    flex: "0 0 168px",
+    minHeight: 0,
+    display: "flex",
+    flexDirection: "column",
+    gap: "var(--gap-sm)",
+    overflowY: "auto",
+    // Tap-inert by construction: ParticipantTile's click is toggleFocus
+    // against the hidden grid, and the RC capture machinery hangs off it.
+    pointerEvents: "none",
+  },
+});
 const PlayerSlot = styled("div", {
   base: {
     position: "relative",
     flex: "1 1 0",
     minHeight: 0,
+    minWidth: 0,
     borderRadius: "8px",
     background: "#000",
     overflow: "hidden",

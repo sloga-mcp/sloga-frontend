@@ -5589,6 +5589,10 @@ msgstr "Show 'copy ID' in context menus"
 msgid "Show admin panel shortcuts in context menus"
 msgstr "Show admin panel shortcuts in context menus"
 
+#: components/ui/components/features/voice/watch/WatchOverlay.tsx
+msgid "Show cameras beside the video"
+msgstr "Show cameras beside the video"
+
 #: components/app/interface/settings/user/Native.tsx
 msgid "Show corrections and suggestions as you type."
 msgstr "Show corrections and suggestions as you type."

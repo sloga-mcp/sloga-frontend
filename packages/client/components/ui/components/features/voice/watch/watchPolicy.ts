@@ -52,6 +52,27 @@ export function watchCanStart(i: WatchStartInputs): boolean {
 }
 
 /**
+ * Cams side-strip rule (plan §7.3 4c): a fixed-width column of live tiles
+ * beside the player, INSIDE the overlay (the overlay's opaque cover is what
+ * hides the grid — the strip re-renders what matters). Vetoes:
+ * - `userPref` — the overlay toggle (per device, default on);
+ * - `hasTracks` — REAL publications only: raw `vidTracks()` includes a
+ *   camera placeholder for every participant, which would default the strip
+ *   on in every call showing avatar tiles beside the movie;
+ * - `widthPx` — below this the strip would starve the player (the resizable
+ *   card's small/PiP sizes).
+ */
+export const WATCH_STRIP_MIN_WIDTH_PX = 560;
+
+export function watchStripVisible(i: {
+  userPref: boolean;
+  hasTracks: boolean;
+  widthPx: number;
+}): boolean {
+  return i.userPref && i.hasTracks && i.widthPx >= WATCH_STRIP_MIN_WIDTH_PX;
+}
+
+/**
  * Host-unreachable rule (plan §1): the session TTL expiring fans no event,
  * so a viewer that has seen no update for this long while the session says
  * `playing` shows a banner and re-fetches; a 404 then clears it.

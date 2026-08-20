@@ -9,6 +9,7 @@ import {
 import { Track } from "livekit-client";
 import { styled } from "styled-system/jsx";
 
+import { CONFIGURATION } from "@revolt/common";
 import { InRoom, useVoice } from "@revolt/rtc";
 import { IconButton } from "@revolt/ui/components/design";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
@@ -16,6 +17,7 @@ import { scrollableStyles } from "@revolt/ui/directives";
 
 import { MinigameChip } from "../minigame/MinigameChip";
 import { WatchOverlay } from "../watch/WatchOverlay";
+import { watchOverlayVisible } from "../watch/watchPolicy";
 import { ParticipantTile, tile } from "./ParticipantTile";
 import { VoiceCallAudioBlockedBanner } from "./VoiceCallAudioBlockedBanner";
 import { VoiceCallCardActions } from "./VoiceCallCardActions";
@@ -380,6 +382,16 @@ function Participants() {
     });
   });
 
+  // The watch overlay is covering the participant area right now — the
+  // exact rule the overlay itself renders by (watchPolicy, one source).
+  const watchCovering = () =>
+    watchOverlayVisible({
+      enabled: CONFIGURATION.ENABLE_WATCH_TOGETHER,
+      connected: voice.state() === "CONNECTED",
+      hasSession: !!voice.watch.session(),
+      immersive: voice.immersive(),
+    });
+
   return (
     <Call
       ref={callRef}
@@ -440,6 +452,14 @@ function Participants() {
             ...(narrowSidebar()
               ? { "--vc-sidebar-w": NARROW_SIDEBAR_WIDTH }
               : {}),
+            // While the watch overlay covers this area (§7.3 4c), the grid's
+            // full-size <video>s would keep compositing invisibly under its
+            // opaque background — with adaptiveStream deliberately OFF,
+            // nothing throttles them, so N hidden tiles + the movie is real
+            // work for nothing. display:none keeps the tiles MOUNTED (no
+            // track detach churn when the overlay toggles) but skips the
+            // compositing; the overlay's side-strip re-renders what matters.
+            ...(watchCovering() ? { display: "none" } : {}),
           }}
         >
           <TrackLoop
