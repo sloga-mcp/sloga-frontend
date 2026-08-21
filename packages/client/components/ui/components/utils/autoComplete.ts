@@ -8,7 +8,7 @@ import {
   ServerRole,
   User,
 } from "stoat.js";
-import type { ApplicationCommandData } from "stoat.js";
+import type { ApplicationCommandData, CommandChoice } from "stoat.js";
 
 export interface AutoCompleteSearchSpace {
   users?: User[];
@@ -17,6 +17,19 @@ export interface AutoCompleteSearchSpace {
   roles?: ServerRole[];
   /** Slash commands invocable in the current channel ('/' picker facet). */
   commands?: ApplicationCommandData[];
+  /**
+   * Ask a command's bot to suggest values for the option being typed.
+   *
+   * A callback rather than a list, because unlike every other facet these
+   * suggestions are per-request: they depend on what has been typed so far
+   * and are fetched from the bot over a round-trip. Resolves empty on any
+   * failure — a bot that is offline or slow costs the user nothing.
+   */
+  requestCommandAutocomplete?: (
+    commandId: string,
+    focusedOption: string,
+    options: Record<string, string>,
+  ) => Promise<CommandChoice[]>;
 }
 
 function generateSearchSpaceFrom(

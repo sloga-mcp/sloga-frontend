@@ -21,6 +21,7 @@ import {
   User,
   VideoEmbed,
 } from "stoat.js";
+import type { ModalData } from "stoat.js";
 import { ProtocolV1 } from "stoat.js/lib/events/v1";
 
 import type { SettingsConfigurations } from "@revolt/app";
@@ -114,6 +115,17 @@ export type Modals =
       type: "create_poll";
       /** Channel the poll will be posted to */
       channel: Channel;
+    }
+  | {
+      type: "bot_interaction_modal";
+      /**
+       * Interaction to submit the completed form against. This is a FRESH
+       * interaction created when the form was opened — not the command or
+       * click that prompted it.
+       */
+      interactionId: string;
+      /** The form to render, as defined by the bot */
+      modal: ModalData;
     }
   | {
       type: "poll_voters";

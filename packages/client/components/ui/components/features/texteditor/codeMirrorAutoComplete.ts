@@ -108,7 +108,10 @@ export function codeMirrorAutoComplete(
           "autocomplete-tooltip autocomplete-tooltip-channel " +
           autocompleteScrollbarClasses
         );
-      } else if (completions[0]?.type == "command") {
+      } else if (
+        completions[0]?.type == "command" ||
+        completions[0]?.type == "command-option"
+      ) {
         return (
           "autocomplete-tooltip autocomplete-tooltip-mention " +
           autocompleteScrollbarClasses

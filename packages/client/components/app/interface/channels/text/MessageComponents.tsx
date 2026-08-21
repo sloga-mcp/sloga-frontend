@@ -11,7 +11,7 @@ import {
 } from "solid-js";
 
 import { useLingui } from "@lingui-solid/solid/macro";
-import type { ComponentData, Message } from "stoat.js";
+import type { ComponentData, Message, ModalOpenEvent } from "stoat.js";
 
 import { styled } from "styled-system/jsx";
 
@@ -41,16 +41,20 @@ export function MessageComponents(props: { message: Message }) {
 
   const [pending, setPending] = createSignal<Record<string, boolean>>({});
   const timers = new Map<string, number>();
+  /** In-flight interaction id per control, to match a form back to its click. */
+  const inFlight = new Map<string, string>();
 
   function clearPending(customId?: string) {
     if (customId) {
       const timer = timers.get(customId);
       if (timer) window.clearTimeout(timer);
       timers.delete(customId);
+      inFlight.delete(customId);
       setPending((entries) => ({ ...entries, [customId]: false }));
     } else {
       for (const timer of timers.values()) window.clearTimeout(timer);
       timers.clear();
+      inFlight.clear();
       setPending({});
     }
   }
@@ -97,6 +101,22 @@ export function MessageComponents(props: { message: Message }) {
     onCleanup(() => client().removeListener("messageCreate", handler));
   });
 
+  // Form path: the bot answered by opening a form. That IS a response, but
+  // it produces no message, so without this the control would stay spinning
+  // and then claim the bot never answered.
+  onMount(() => {
+    const handler = (open: ModalOpenEvent) => {
+      for (const [customId, interactionId] of inFlight) {
+        if (interactionId === open.source_id) {
+          clearPending(customId);
+          return;
+        }
+      }
+    };
+    client().addListener("interactionModalOpen", handler);
+    onCleanup(() => client().removeListener("interactionModalOpen", handler));
+  });
+
   async function interact(component: ComponentData, values?: string[]) {
     if (component.disabled || pending()[component.custom_id]) return;
 
@@ -132,11 +152,13 @@ export function MessageComponents(props: { message: Message }) {
     setPending((entries) => ({ ...entries, [component.custom_id]: true }));
 
     try {
-      await channel.interactWithMessage(
+      const interactionId = await channel.interactWithMessage(
         props.message.id,
         component.custom_id,
         values,
       );
+
+      inFlight.set(component.custom_id, interactionId);
 
       timers.set(
         component.custom_id,

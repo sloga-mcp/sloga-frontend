@@ -8,7 +8,7 @@ import {
   useContext,
 } from "solid-js";
 
-import type { Client, User } from "stoat.js";
+import type { Client, ModalOpenEvent, User } from "stoat.js";
 
 import { useLingui } from "@lingui-solid/solid/macro";
 
@@ -197,6 +197,29 @@ export function ClientContext(props: { state: State; children: JSXElement }) {
     client.addListener("scheduledMessageFail", onScheduledMessageFail);
     onCleanup(() =>
       client.removeListener("scheduledMessageFail", onScheduledMessageFail),
+    );
+  });
+
+  // A bot answering an interaction with a form. Hooked globally rather than
+  // in the composer because the prompting click can come from anywhere a bot
+  // message renders, and the form has its own 15-minute window — the user
+  // may well have navigated elsewhere by the time it arrives.
+  createEffect(() => {
+    if (!controller.isLoggedIn()) return;
+    const client = controller.getCurrentClient();
+    if (!client) return;
+
+    const onInteractionModalOpen = (open: ModalOpenEvent) => {
+      openModal({
+        type: "bot_interaction_modal",
+        interactionId: open.interaction_id,
+        modal: open.modal,
+      });
+    };
+
+    client.addListener("interactionModalOpen", onInteractionModalOpen);
+    onCleanup(() =>
+      client.removeListener("interactionModalOpen", onInteractionModalOpen),
     );
   });
 

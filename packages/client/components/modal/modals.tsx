@@ -8,6 +8,7 @@ import { AddFriendModal } from "./modals/AddFriend";
 import { AddMembersToGroupModal } from "./modals/AddMembersToGroup";
 import { BanMemberModal } from "./modals/BanMember";
 import { BanNonMemberModal } from "./modals/BanNonMember";
+import { BotInteractionModal } from "./modals/BotInteractionModal";
 import { ChangelogHistoryModal, ChangelogModal } from "./modals/Changelog";
 import { ChannelInfoModal } from "./modals/ChannelInfo";
 import { ChannelToggleMatureModal } from "./modals/ChannelToggleMature";
@@ -151,6 +152,8 @@ export function RenderModal(props: ActiveModal & { onClose: () => void }) {
       return <CreateForumPostModal {...modalProps} />;
     case "create_poll":
       return <CreatePollModal {...modalProps} />;
+    case "bot_interaction_modal":
+      return <BotInteractionModal {...modalProps} />;
     case "poll_voters":
       return <PollVotersModal {...modalProps} />;
     case "create_softres":

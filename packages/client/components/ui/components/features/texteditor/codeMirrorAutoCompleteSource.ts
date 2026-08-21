@@ -6,6 +6,7 @@ import type {
   CompletionResult,
 } from "@codemirror/autocomplete";
 import { User } from "stoat.js";
+import type { ApplicationCommandData, CommandOptionData } from "stoat.js";
 
 import { useClient } from "@revolt/client";
 import {
@@ -41,6 +42,78 @@ const RE_channelValidFor = /(?<!\w)#\w*/;
 // command must lead the message), so URLs containing "/" never trigger it.
 const RE_slashMatch = /\/[\w-]*/;
 const RE_slashValidFor = /^\/[\w-]*$/;
+
+// `/name ` followed by whatever the user has typed for its options.
+const RE_commandHead = /^\/([a-z0-9_-]+)\s+/i;
+// The `option:value` the caret currently sits in, quoted or bare.
+const RE_focusedOption = /(?:^|\s)([\w-]+):("[^"]*|[^\s"]*)$/;
+// Same grammar the composer uses to turn a draft into option values.
+const RE_optionToken = /([\w-]+):(?:"([^"]*)"|(\S*))/g;
+
+/**
+ * How long to sit on a keystroke before asking a bot for suggestions.
+ *
+ * CodeMirror aborts a query as soon as the next one supersedes it, so
+ * waiting here means only the last keystroke of a burst reaches the network.
+ * Without it a fast typist would spend the autocomplete ratelimit (40 per
+ * 10s) in about four seconds and get nothing back for the rest.
+ */
+const AUTOCOMPLETE_DEBOUNCE_MS = 250;
+
+/**
+ * Work out which command option the caret is inside, if any.
+ *
+ * Returns the option, the document offset its value starts at, and the
+ * values of every other option typed so far — the bot is told what has been
+ * filled in already so it can narrow its suggestions.
+ */
+function focusedCommandOption(
+  text: string,
+  commands: ApplicationCommandData[],
+) {
+  const head = RE_commandHead.exec(text);
+  if (!head) return null;
+
+  const command = commands.find(
+    (entry) => entry.name === head[1].toLowerCase(),
+  );
+  if (!command?.options?.length) return null;
+
+  const args = text.slice(head[0].length);
+
+  let option: CommandOptionData | undefined;
+  let from: number;
+
+  const focused = RE_focusedOption.exec(text);
+  if (focused) {
+    option = command.options.find((entry) => entry.name === focused[1]);
+    // Point AT any opening quote rather than past it: an applied suggestion
+    // brings its own quoting, so leaving the original in place would produce
+    // `track:""Blue Monday"`.
+    from = text.length - focused[2].length;
+  } else if (command.options.length === 1 && !args.includes(":")) {
+    // The composer's convenience form: with a single option, a bare
+    // argument is that option's value.
+    option = command.options[0];
+    from = head[0].length;
+  } else {
+    return null;
+  }
+
+  if (!option?.autocomplete) return null;
+
+  // Everything else already typed, by the composer's own grammar.
+  const options: Record<string, string> = {};
+  RE_optionToken.lastIndex = 0;
+  let token: RegExpExecArray | null;
+  while ((token = RE_optionToken.exec(args))) {
+    options[token[1]] = token[2] ?? token[3] ?? "";
+  }
+  // The bot is told what the user MEANS, not how they quoted it.
+  options[option.name] = text.slice(from).replace(/^"/, "");
+
+  return { command, option, from, options };
+}
 
 export function codeMirrorAutoCompleteSource(
   searchSpace: Accessor<AutoCompleteSearchSpace>,
@@ -117,8 +190,12 @@ export function codeMirrorAutoCompleteSource(
     ),
   );
 
+  // The raw command list, shared by the '/' picker below and the option
+  // autocomplete branch (which needs the typed option schema, not labels).
+  const commandData = createMemo(() => searchSpace()?.commands ?? []);
+
   const commands = createMemo(() =>
-    (searchSpace()?.commands ?? []).map((command) => {
+    commandData().map((command) => {
       const bot = client().users.get(command.bot_id);
       return {
         type: "command",
@@ -149,6 +226,55 @@ export function codeMirrorAutoCompleteSource(
         options: commands(),
         validFor: RE_slashValidFor,
       } as CompletionResult;
+    }
+
+    // Option autocomplete — only past the command name, and only for
+    // options whose bot asked to be consulted. Unlike every other branch
+    // this one is asynchronous: the answers come from the bot.
+    const request = searchSpace()?.requestCommandAutocomplete;
+    if (request) {
+      const textBefore = context.state.sliceDoc(0, context.pos);
+      const focused = focusedCommandOption(textBefore, commandData());
+      if (focused) {
+        return (async () => {
+          // Sit out the burst. CodeMirror aborts this query the moment the
+          // next keystroke starts one, so only the final one hits the API.
+          await new Promise((resolve) =>
+            setTimeout(resolve, AUTOCOMPLETE_DEBOUNCE_MS),
+          );
+          if (context.aborted) return null;
+
+          const choices = await request(
+            focused.command._id,
+            focused.option.name,
+            focused.options,
+          );
+          if (context.aborted || !choices.length) return null;
+
+          return {
+            from: focused.from,
+            to: context.pos,
+            options: choices.map(
+              (choice) =>
+                ({
+                  type: "command-option",
+                  label: choice.name,
+                  displayLabel: choice.name,
+                  detail:
+                    choice.name === choice.value ? undefined : choice.value,
+                  // Quote anything with a space, or the composer's
+                  // `name:value` grammar would read only the first word.
+                  apply: /\s/.test(choice.value)
+                    ? `"${choice.value}" `
+                    : `${choice.value} `,
+                }) as Completion,
+            ),
+            // Deliberately no validFor: these answers were computed by the
+            // bot for this exact prefix, so they must not be re-filtered
+            // locally against anything typed afterwards.
+          } as CompletionResult;
+        })();
+      }
     }
 
     const token = context.matchBefore(RE_match);

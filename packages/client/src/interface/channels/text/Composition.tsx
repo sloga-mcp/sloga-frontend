@@ -14,7 +14,13 @@ import {
 
 import { useLingui } from "@lingui-solid/solid/macro";
 import { Channel } from "stoat.js";
-import type { ApplicationCommandData, Message } from "stoat.js";
+import type {
+  ApplicationCommandData,
+  AutocompleteResultEvent,
+  CommandChoice,
+  Message,
+  ModalOpenEvent,
+} from "stoat.js";
 
 import { styled } from "styled-system/jsx";
 
@@ -574,9 +580,22 @@ export function MessageComposition(props: Props) {
       clearPendingInvoke();
     }
   };
+
+  // Answering with a form IS a response, but it produces no message — so
+  // without this the 15s timer would fire "the bot did not respond" while
+  // the user is sitting in front of the form it just opened.
+  const onInteractionModalOpen = (open: ModalOpenEvent) => {
+    const pending = pendingInvoke();
+    if (pending && open.source_id === pending.id) {
+      clearPendingInvoke();
+    }
+  };
+
   client().addListener("messageCreate", onInteractionResponse);
+  client().addListener("interactionModalOpen", onInteractionModalOpen);
   onCleanup(() => {
     client().removeListener("messageCreate", onInteractionResponse);
+    client().removeListener("interactionModalOpen", onInteractionModalOpen);
     if (pendingInvokeTimer) window.clearTimeout(pendingInvokeTimer);
   });
 
@@ -1012,9 +1031,55 @@ export function MessageComposition(props: Props) {
     { initialValue: [] },
   );
 
+  /**
+   * Ask a command's bot to suggest values for the option being typed.
+   *
+   * The request is a REST call; the answer comes back over the WebSocket on
+   * this user's private topic, so the two are correlated by interaction id.
+   * Resolves empty on anything going wrong — a slow or offline bot must cost
+   * the user nothing while they are mid-word, so nothing here ever throws or
+   * opens an error modal.
+   */
+  async function requestCommandAutocomplete(
+    commandId: string,
+    focusedOption: string,
+    options: Record<string, string>,
+  ): Promise<CommandChoice[]> {
+    let interactionId: string;
+    try {
+      interactionId = await props.channel.autocompleteOption(
+        commandId,
+        focusedOption,
+        options,
+      );
+    } catch {
+      return [];
+    }
+
+    return await new Promise<CommandChoice[]>((resolve) => {
+      const onResult = (result: AutocompleteResultEvent) => {
+        if (result.interaction_id !== interactionId) return;
+        finish(result.choices);
+      };
+
+      // The server gives the bot a minute, but a suggestion list that lands
+      // after the user has typed on is useless — give up long before then.
+      const timer = window.setTimeout(() => finish([]), 3_000);
+
+      function finish(choices: CommandChoice[]) {
+        window.clearTimeout(timer);
+        client().removeListener("interactionAutocompleteResult", onResult);
+        resolve(choices);
+      }
+
+      client().addListener("interactionAutocompleteResult", onResult);
+    });
+  }
+
   const searchSpace = createMemo(() => ({
     ...baseSearchSpace(),
     commands: availableCommands(),
+    requestCommandAutocomplete,
   }));
 
   // Disappearing messages
