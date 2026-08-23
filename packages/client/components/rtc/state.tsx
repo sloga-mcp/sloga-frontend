@@ -1330,6 +1330,8 @@ class Voice {
         targetId: string;
         sharerEphemeralPub: string;
         rcSessionId: string;
+        inputClass?: string;
+        protocolVersion?: number;
       }) => {
         // `EventV1::private(id)` publishes to EVERY session of the target —
         // off-call desktops, web, Android. Only the session that is actually
@@ -1348,6 +1350,8 @@ class Voice {
             sharerId: detail.sharerId,
             sharerEphemeralPub: detail.sharerEphemeralPub,
             rcSessionId: detail.rcSessionId,
+            inputClass: detail.inputClass,
+            protocolVersion: detail.protocolVersion,
           });
         });
       };
@@ -1381,12 +1385,16 @@ class Voice {
         offerId?: string;
         grantId: string;
         controllerEphemeralPub: string;
+        controllerProtocolVersion?: number;
+        controllerInputClass?: string;
       }) => {
         const sharing = this.remoteControl.sharing();
         if (!respondsToOurOffer(sharing, detail)) return;
         void this.remoteControl.armSession({
           grantId: detail.grantId,
           controllerEphemeralPub: detail.controllerEphemeralPub,
+          controllerProtocolVersion: detail.controllerProtocolVersion,
+          controllerInputClass: detail.controllerInputClass,
           durationMs: 0,
         });
       };

@@ -287,6 +287,17 @@ export type RcOffer = {
   sharerId: string;
   sharerEphemeralPub: string;
   rcSessionId: string;
+  /**
+   * The input class the sharer pinned on the offer (`kbm` or `gamepad`),
+   * and the control-protocol version their build speaks. Both are relayed
+   * verbatim by the server and handed straight to native, which binds the
+   * class into the key transcript and refuses a version skew BEFORE the
+   * dedup burn. Absent means `kbm` / v1 — the set of builds that predate
+   * the fields — so an old sharer is refused legibly rather than armed
+   * against a transcript that can never match.
+   */
+  inputClass?: string;
+  protocolVersion?: number;
 };
 
 /**
@@ -1056,7 +1067,12 @@ export class RemoteControl {
         // same 0 sent there; see the note on `armSession`.
         display: args.display,
         durationMs: 0,
-      })) as { rcSessionId: string; sharerEphemeralPub: string };
+      })) as {
+        rcSessionId: string;
+        sharerEphemeralPub: string;
+        inputClass: string;
+        protocolVersion: number;
+      };
 
       // RAW FETCH, not the typed stoat-api client: it sends `{}` for routes
       // it does not know, which would silently drop the ephemeral public and
@@ -1073,6 +1089,15 @@ export class RemoteControl {
             target: args.controllerId,
             sharer_ephemeral_pub: minted.sharerEphemeralPub,
             rc_session_id: minted.rcSessionId,
+            // Both from the command's RETURN, never from an argument this
+            // side holds: core pins the class on the offer, and the class
+            // the far end binds into its transcript has to be the one the
+            // native dialog described. The version is what lets the far
+            // end refuse a skew at accept with a legible message instead
+            // of deriving a key that cannot match and presenting as a MITM
+            // ten seconds later.
+            input_class: minted.inputClass,
+            protocol_version: minted.protocolVersion,
           }),
         },
       );
@@ -1263,7 +1288,18 @@ export class RemoteControl {
         controllerId: args.localUserId,
         sharerEphemeralPub: args.offer.sharerEphemeralPub,
         rcSessionId: args.offer.rcSessionId,
-      })) as { controllerEphemeralPub: string; sas: string };
+        // Straight from the offer event. Native binds the class into its
+        // half of the transcript and checks the version FIRST — a skew is
+        // refused here, before the session id is burned, with an error that
+        // names which side has to update. Absent is `kbm` / v1.
+        inputClass: args.offer.inputClass,
+        offerProtocolVersion: args.offer.protocolVersion,
+      })) as {
+        controllerEphemeralPub: string;
+        sas: string;
+        protocolVersion: number;
+        inputClass: string;
+      };
 
       const response = await fetch(url, {
         method: "PUT",
@@ -1271,6 +1307,13 @@ export class RemoteControl {
         body: JSON.stringify({
           accept: true,
           controller_ephemeral_pub: accepted.controllerEphemeralPub,
+          // Echoed from what native actually BOUND, not from the offer: the
+          // class is the one field the server relays, so it is the one a
+          // relay can flip, and the sharer compares this against the class
+          // its own offer pinned. The version lets the sharer refuse a skew
+          // before its arming dialog.
+          protocol_version: accepted.protocolVersion,
+          input_class: accepted.inputClass,
         }),
       });
       if (!response.ok) {
@@ -1326,6 +1369,15 @@ export class RemoteControl {
     grantId: string;
     controllerEphemeralPub: string;
     /**
+     * From `RemoteControlAccepted`, relayed verbatim. Native checks the
+     * version and compares the class against the offer's pin BEFORE the
+     * `RcArm` dialog and before the dedup burn, so a skew or a flipped
+     * class costs neither a prompt nor a spent session id. Absent means
+     * v1 / `kbm`.
+     */
+    controllerProtocolVersion?: number;
+    controllerInputClass?: string;
+    /**
      * 🔴 Must be the SAME value `offerControl` sent, and `sharing.display`
      * must still be the display it sent. Under Express Connect the offer
      * dialog stated both, native pinned the labels it composed from them, and
@@ -1353,6 +1405,8 @@ export class RemoteControl {
         controllerDisplay: sharing.controllerName,
         display: sharing.display,
         durationMs: args.durationMs,
+        controllerProtocolVersion: args.controllerProtocolVersion,
+        controllerInputClass: args.controllerInputClass,
       })) as { sas: string; calibrated: boolean };
       batch(() => {
         this.#setSharing({
