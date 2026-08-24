@@ -452,6 +452,16 @@ export class RemoteControl {
            * back to the sharer-driven path.
            */
           grantId?: string;
+          /**
+           * The class native BOUND at accept (`kbm` or `gamepad`), from the
+           * command's return. The capture surface branches on it: a kbm
+           * batch on a pad session is refused at seal, and the capture pump
+           * treats a failed seal as session-gone — so mounting the kbm
+           * wiring on a pad session would tear the session down on its
+           * first keyframe. Today nothing offers the pad class outside a
+           * §2.6 measurement build, so in production this is always `kbm`.
+           */
+          inputClass?: string;
           phase: RcControllerPhase;
           sas?: string;
         }
@@ -820,6 +830,92 @@ export class RemoteControl {
   }
 
   // ===================================================================
+  // Gamepad leg (§2.6 part 2) — measurement builds only
+  // ===================================================================
+
+  /**
+   * A strictly-advancing sequence, per frame, forever. A pad frame carries
+   * its ENTIRE state under this number and the sharer applies it only when
+   * strictly newer, so a repeat is a SILENT stall — the pad freezes with
+   * input visibly flowing and no error anywhere. It never resets: a later
+   * session's native high-water mark starts at zero, so a counter that only
+   * rises is correct across sessions too.
+   */
+  #padSeq = 0;
+
+  /**
+   * Seal + publish ONE pad frame over the real transport. The dev-only
+   * capture loop (`rcPadLegRuntime`) drives this at frame cadence; there is
+   * no product pad capture until G2.
+   *
+   * Pad frames ride LOSSY with `keyframe: true`: each frame is complete
+   * state, so a dropped one is superseded by the next rather than missed.
+   * A pad frame may carry nothing else — native refuses a hybrid batch,
+   * because the class was agreed at consent time and a renderer that could
+   * send both would be choosing for the user.
+   *
+   * Single-flight on the lossy stream, shared with the kbm motion path's
+   * flag: a frame that finds one in flight is DROPPED, not queued — the
+   * next tick's frame supersedes it anyway, and a queue here would add
+   * exactly the latency this leg exists to measure.
+   *
+   * 🔴 Dead code in production: the guard is const-folded and the body
+   * eliminated, and nothing else reads `#padSeq`.
+   */
+  async sendPadFrame(
+    pad: {
+      buttons: number;
+      leftTrigger: number;
+      rightTrigger: number;
+      lx: number;
+      ly: number;
+      rx: number;
+      ry: number;
+    },
+    sharerIdentity: string,
+  ): Promise<boolean> {
+    if (import.meta.env.VITE_CFG_RC_GAMEPAD_LEG !== "true") return false;
+    const invoke = tauriInvoke();
+    const controlling = this.controlling();
+    const room = this.#room;
+    if (!invoke || !controlling || !room) return false;
+    if (this.#inFlight[STREAM_LOSSY]) return false;
+    this.#inFlight[STREAM_LOSSY] = true;
+    try {
+      const sealed = (await invoke("e2ee_rc_seal", {
+        sessionId: controlling.rcSessionId,
+        stream: STREAM_LOSSY,
+        keyframe: true,
+        batch: { motionSeq: ++this.#padSeq, pad },
+      })) as number[];
+      await room.localParticipant.publishData(new Uint8Array(sealed), {
+        reliable: false,
+        topic: RC_TOPIC,
+        destinationIdentities: [sharerIdentity],
+      });
+      return true;
+    } catch (err) {
+      // Same contract as `#send`: a seal that fails means the native
+      // session is gone. Stop claiming to be in control.
+      this.#setError(String(err));
+      this.endControlling("seal_failed");
+      return false;
+    } finally {
+      this.#inFlight[STREAM_LOSSY] = false;
+    }
+  }
+
+  /**
+   * The live room, for the leg's best-effort ICE-pair readout — §2.6a's
+   * topology question ("which path did this run actually take?") must never
+   * be open again. Undefined in production builds, same guard as above.
+   */
+  padLegRoom(): Room | undefined {
+    if (import.meta.env.VITE_CFG_RC_GAMEPAD_LEG !== "true") return undefined;
+    return this.#room;
+  }
+
+  // ===================================================================
   // Handshake
   // ===================================================================
 
@@ -1045,8 +1141,38 @@ export class RemoteControl {
     const invoke = tauriInvoke();
     if (!invoke) return false;
     this.#setError(undefined);
+
+    // §2.6 part 2 (measurement builds only): every offer this build makes
+    // requests the GAMEPAD class, and the ViGEmBus driver is checked HERE —
+    // before the peer is named and contacted — because the alternative is
+    // the arm failing on `pad_plugin_bounded` after the guest has already
+    // accepted, i.e. after the operator has burned a whole handshake
+    // learning what a preflight would have said for free.
+    //
+    // 🔴 The guard reads `import.meta.env` DIRECTLY so Vite const-folds it
+    // and Rollup eliminates the block: a production offer stays
+    // byte-identical (an `undefined` invoke arg is dropped by
+    // JSON serialization, so the body does not even gain a key).
+    let legInputClass: string | undefined;
+    if (import.meta.env.VITE_CFG_RC_GAMEPAD_LEG === "true") {
+      const driver = (await invoke("rc_gamepad_driver_status")) as {
+        available: boolean;
+        detail?: string;
+      };
+      if (!driver.available) {
+        this.#setError(
+          `gamepad leg: ViGEmBus is not usable on this machine — ` +
+            `${driver.detail ?? "not installed"}. Install ViGEmBus 1.22.0 ` +
+            `and retry.`,
+        );
+        return false;
+      }
+      legInputClass = "gamepad";
+    }
+
     try {
       const minted = (await invoke("e2ee_rc_offer", {
+        inputClass: legInputClass,
         channelId: args.channelId,
         sharerId: args.sharerId,
         controllerId: args.controllerId,
@@ -1341,6 +1467,9 @@ export class RemoteControl {
         sharerId: args.offer.sharerId,
         sharerName: args.sharerName,
         grantId,
+        // What native BOUND, not what the offer claimed — the same
+        // source-of-truth rule as the echo in the accept body above.
+        inputClass: accepted.inputClass,
         // NOT "active": the sharer still has to answer their own `RcArm`
         // dialog, and nothing tells us when they do. Until then input is
         // sealed and sent and simply not injected, so a UI that claimed

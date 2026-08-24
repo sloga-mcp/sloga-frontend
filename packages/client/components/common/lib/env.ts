@@ -252,6 +252,13 @@ export default {
    * the probe's own strings instead (`press-to-photon`,
    * `data-rc-latency-probe`), which discriminate 0-vs-1 between the two
    * builds.
+   *
+   * `VITE_CFG_RC_GAMEPAD_LEG` follows the same rule for the same reason. It
+   * gates §2.6 part 2's GAMEPAD leg — every offer requests the pad class,
+   * and the dev-only pad capture loop (`rcPadLegRuntime`) mounts on the
+   * controller — and unlike the probe it changes SESSION SEMANTICS, which
+   * is exactly why it must be impossible for a production dist to carry it.
+   * Audit on the pad leg's own strings (`gamepad leg:`, `pad: NONE`).
    */
   /**
    * Session ID to set during development.

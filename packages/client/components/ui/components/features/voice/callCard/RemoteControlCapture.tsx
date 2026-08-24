@@ -439,6 +439,37 @@ export function RemoteControlCapture(props: {
 
   onMount(() => {
     if (!surface) return;
+
+    // A GAMEPAD-class session captures a pad, not the DOM, so NONE of the
+    // kbm wiring below may mount for one — in ANY build: a kbm batch on a
+    // pad session is refused at seal, and the capture pump treats a failed
+    // seal as session-gone, so the wiring would tear the session down on
+    // its own first keyframe. In production nothing offers the pad class
+    // yet, so this branch is unreachable there; when a measurement build
+    // (§2.6 part 2) armed one, the dev-only pad leg is what captures.
+    //
+    // 🔴 Same const-fold rule as the probe below: the guard reads
+    // `import.meta.env` directly so the pad-leg chunk is DROPPED from a
+    // production dist, not merely never fetched.
+    if (rc.controlling()?.inputClass === "gamepad") {
+      if (import.meta.env.VITE_CFG_RC_GAMEPAD_LEG === "true" && props.video) {
+        const video = props.video;
+        let padLeg: { detach: () => void } | undefined;
+        let padLegDisposed = false;
+        void import("@revolt/rtc/rcPadLegRuntime").then((m) => {
+          // The surface can unmount before this resolves; attaching then
+          // would leak a timer driving a session that no longer exists.
+          if (padLegDisposed) return;
+          padLeg = m.attachPadLeg(video, rc, props.sharerIdentity);
+        });
+        onCleanup(() => {
+          padLegDisposed = true;
+          padLeg?.detach();
+        });
+      }
+      return;
+    }
+
     // The generation this surface owns. Toggling focus swaps the tile between
     // two different `TrackLoop`s and Solid mounts the replacement BEFORE
     // disposing the original, so without a generation the outgoing tile's

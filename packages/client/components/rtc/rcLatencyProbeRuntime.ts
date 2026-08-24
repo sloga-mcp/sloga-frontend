@@ -29,7 +29,29 @@ type VideoWithRVFC = HTMLVideoElement & {
 const SAMPLE_W = 32;
 const SAMPLE_H = 18;
 
-export type ProbeHandle = { detach: () => void };
+export type ProbeHandle = {
+  detach: () => void;
+  /**
+   * Feed one actuation from OUTSIDE the DOM — the gamepad leg's rising
+   * edges. Same arming path as a keydown, so the busy/settling refusals and
+   * the miss accounting apply identically.
+   */
+  press: (pressAt: number, key: string) => void;
+  /** Replace the persistent status line under the header (pad state, ICE pair). */
+  status: (line: string | undefined) => void;
+};
+
+export type ProbeOptions = {
+  /** Header label for what an actuation is. Default `"keydown"`. */
+  pressLabel?: string;
+  /**
+   * Whether a window keydown arms the machine (default true). The gamepad
+   * leg turns this OFF: on a pad-class session keydowns are not forwarded
+   * at all, so arming on them would only manufacture misses. The F-key
+   * controls keep working either way.
+   */
+  keydownArms?: boolean;
+};
 
 /**
  * Attach the probe to a screen-share tile.
@@ -38,7 +60,10 @@ export type ProbeHandle = { detach: () => void };
  * capture surface uses, so the probe sees exactly the events that get
  * forwarded — including when focus has drifted to `body`.
  */
-export function attachProbe(video: HTMLVideoElement): ProbeHandle {
+export function attachProbe(
+  video: HTMLVideoElement,
+  opts: ProbeOptions = {},
+): ProbeHandle {
   const canvas = document.createElement("canvas");
   canvas.width = SAMPLE_W;
   canvas.height = SAMPLE_H;
@@ -46,11 +71,18 @@ export function attachProbe(video: HTMLVideoElement): ProbeHandle {
   // Chromium keeps the surface on the GPU and each readback stalls the
   // pipeline. That stall lands inside the measurement window.
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
-  const machine = new PressToChange(DEFAULT_PROBE_CONFIG);
+  // A mutable copy so F7/F8 can move the threshold mid-run: a busy game
+  // scene needs more than the static-scene default, and rebuilding the rig
+  // to change a constant is how a run ends up taken at the wrong one.
+  // `PressToChange` holds its config by reference, so the edit takes effect
+  // on the next frame.
+  const config = { ...DEFAULT_PROBE_CONFIG };
+  const machine = new PressToChange(config);
   const samples: ProbeSample[] = [];
   let misses = 0;
   let rejected = 0;
   let showAll = false;
+  let statusLine: string | undefined;
 
   const readout = document.createElement("div");
   readout.setAttribute("data-rc-latency-probe", "");
@@ -76,11 +108,17 @@ export function attachProbe(video: HTMLVideoElement): ProbeHandle {
     const ms = samples.map((s) => s.ms);
     const stats = summarise(ms);
     const lines = [
-      "RC press-to-photon probe  (keydown → changed frame)",
-      `threshold ${DEFAULT_PROBE_CONFIG.threshold}  ·  F9 reset  ·  F10 list  ·  misses ${misses}  rejected ${rejected}`,
+      `RC press-to-photon probe  (${opts.pressLabel ?? "keydown"} → changed frame)`,
+      `threshold ${config.threshold} (F7−/F8+)  ·  F9 reset  ·  F10 list  ·  misses ${misses}  rejected ${rejected}`,
     ];
+    if (statusLine) lines.push(statusLine);
     if (!stats) {
-      lines.push("", "no samples yet — press a key that changes the screen");
+      lines.push(
+        "",
+        `no samples yet — ${
+          opts.pressLabel ? "actuate something" : "press a key"
+        } that changes the screen`,
+      );
     } else {
       lines.push(
         "",
@@ -164,6 +202,23 @@ export function attachProbe(video: HTMLVideoElement): ProbeHandle {
 
   // ---- press ------------------------------------------------------------
 
+  /** One arming path for BOTH sources, so their accounting cannot diverge. */
+  function armPress(pressAt: number, key: string) {
+    const verdict = machine.onPress(pressAt, key);
+    if (verdict === "armed") {
+      render(`armed on "${key}" — waiting for the frame to change`);
+    } else {
+      rejected++;
+      render(
+        verdict === "settling"
+          ? "ignored: scene has not returned to baseline yet — press slower"
+          : verdict === "busy"
+            ? "ignored: previous press still outstanding"
+            : "ignored: no video frames sampled yet",
+      );
+    }
+  }
+
   function onKeyDown(event: KeyboardEvent) {
     if (event.key === "F9") {
       samples.length = 0;
@@ -178,25 +233,26 @@ export function attachProbe(video: HTMLVideoElement): ProbeHandle {
       render();
       return;
     }
+    // Threshold nudges, clamped to stay a usable detector: below 2 sensor
+    // noise trips it on nothing (reporting a latency SHORTER than the
+    // truth, the dangerous direction), and a run that needs more than 60
+    // has no localized change to measure at all.
+    if (event.key === "F7" || event.key === "F8") {
+      config.threshold = Math.max(
+        2,
+        Math.min(60, config.threshold + (event.key === "F8" ? 1 : -1)),
+      );
+      render();
+      return;
+    }
+    if (opts.keydownArms === false) return;
     // Auto-repeat is not an actuation.
     if (event.repeat) return;
     // `event.timeStamp`, not `performance.now()`: the former is when the
     // event happened, the latter is when this handler got to run. On a busy
     // renderer that difference is several ms of pure measurement error, and
     // it biases the result LOW-to-HIGH unpredictably.
-    const verdict = machine.onPress(event.timeStamp, event.key);
-    if (verdict === "armed") {
-      render(`armed on "${event.key}" — waiting for the frame to change`);
-    } else {
-      rejected++;
-      render(
-        verdict === "settling"
-          ? "ignored: scene has not returned to baseline yet — press slower"
-          : verdict === "busy"
-            ? "ignored: previous press still outstanding"
-            : "ignored: no video frames sampled yet",
-      );
-    }
+    armPress(event.timeStamp, event.key);
   }
   window.addEventListener("keydown", onKeyDown, true);
 
@@ -230,6 +286,14 @@ export function attachProbe(video: HTMLVideoElement): ProbeHandle {
       if (raf !== undefined) cancelAnimationFrame(raf);
       machine.reset();
       readout.remove();
+    },
+    press(pressAt, key) {
+      if (stopped) return;
+      armPress(pressAt, key);
+    },
+    status(line) {
+      statusLine = line;
+      render();
     },
   };
 }
