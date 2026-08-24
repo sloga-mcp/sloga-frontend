@@ -237,6 +237,23 @@ export default {
       (import.meta.env.VITE_CFG_ENABLE_WATCH_TOGETHER as string) ?? ""
     ).toLowerCase() == "true",
   /**
+   * NOTE — `VITE_CFG_RC_LATENCY_PROBE` deliberately has NO entry here.
+   *
+   * It gates the press-to-photon measurement probe (couch co-op §2.6 part 2)
+   * and is read as `import.meta.env.VITE_CFG_RC_LATENCY_PROBE` at its single
+   * call site in `RemoteControlCapture` instead, because only that form is
+   * const-folded by Vite — which is what lets Rollup drop the probe's chunk
+   * from a build with the flag off. A `CONFIGURATION.X` guard cannot be
+   * const-folded and ships the chunk (verified: emitted in both dists).
+   *
+   * An entry here would also be dead: nothing would read it, so it is
+   * tree-shaken out and greps for it find NOTHING IN EITHER BUILD — an
+   * audit marker that silently always passes. Audit a measurement dist on
+   * the probe's own strings instead (`press-to-photon`,
+   * `data-rc-latency-probe`), which discriminate 0-vs-1 between the two
+   * builds.
+   */
+  /**
    * Session ID to set during development.
    */
   DEVELOPMENT_SESSION_ID: import.meta.env.DEV

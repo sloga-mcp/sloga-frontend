@@ -489,6 +489,39 @@ export function RemoteControlCapture(props: {
     // there from the start, not only on the first click.
     textSink?.focus({ preventScroll: true });
 
+    // §2.6 part 2 measurement probe, measurement builds only. The handle is
+    // disposed with this surface — the probe holds a window keydown listener
+    // and does a `getImageData` every video frame, neither of which may
+    // outlive the tile it is measuring.
+    //
+    // 🔴 THE GUARD READS `import.meta.env` DIRECTLY, NOT `CONFIGURATION`, and
+    // that is load-bearing rather than stylistic. Vite substitutes
+    // `import.meta.env.*` with a literal at build time, so with the flag off
+    // this whole block is statically dead and Rollup drops the dynamic
+    // import along with its chunk. Guarding on `CONFIGURATION.X` — a property
+    // access on an imported object — cannot be const-folded, so the `import()`
+    // survives and the probe chunk is EMITTED INTO THE PRODUCTION DIST. It is
+    // never fetched there (the runtime guard is still false), but it ships,
+    // and "dev instrumentation that merely never runs" is not the property
+    // this is supposed to have.
+    //
+    // Verified rather than assumed, both ways: flag off = 322 chunks and zero
+    // hits for the probe's own strings; flag on = 323 chunks and one hit
+    // each, with `willReadFrequently` going 2 -> 3 as the positive control
+    // that the difference is exactly this chunk. Audit on those strings — see
+    // the note in env.ts for why a CONFIGURATION entry cannot be the marker.
+    let probe: { detach: () => void } | undefined;
+    let probeDisposed = false;
+    if (import.meta.env.VITE_CFG_RC_LATENCY_PROBE === "true" && props.video) {
+      const video = props.video;
+      void import("@revolt/rtc/rcLatencyProbeRuntime").then((m) => {
+        // The surface can unmount before this resolves; attaching then would
+        // leak a listener onto a tile that no longer exists.
+        if (probeDisposed) return;
+        probe = m.attachProbe(video);
+      });
+    }
+
     // Alt+Tab delivers a keydown for Alt and never a keyup, so without these
     // the sharer is left with Alt latched and every subsequent letter is an
     // accelerator on their machine.
@@ -519,6 +552,8 @@ export function RemoteControlCapture(props: {
       document.removeEventListener("visibilitychange", onVisibilityChange);
       surface?.removeEventListener("pointercancel", releaseAll);
       surface?.removeEventListener("lostpointercapture", onLostPointerCapture);
+      probeDisposed = true;
+      probe?.detach();
       // The flag describes THIS surface's suspension; a torn-down capture is
       // not "typing locally", it is not capturing at all.
       rc.setLocalTyping(false);
