@@ -193,6 +193,24 @@ class E2eePlugin : Plugin() {
                             arrayJson(call, "devices"),
                         ),
                     )
+                // The call-plane listing pin. Reconcile alone can only upgrade
+                // or re-affirm an EXISTING pin, so without this a device we
+                // have never exchanged encrypted text with stays
+                // UnknownIdentity, every admit aborts `leaf_unverifiable`, and
+                // the call silently falls back to unencrypted —
+                // `reconcileCallRoster`'s fail-closed catch swallows the
+                // rejection, so the only symptom is a "Not encrypted" chip.
+                // `devices` arrives as a JSON array; uniffi takes it as text.
+                "e2ee_pin_call_identities" ->
+                    resolveJson(
+                        call,
+                        engine.pinCallIdentities(
+                            requireString(call, "selfUserId"),
+                            requireString(call, "userId"),
+                            requireStringList(call, "targets"),
+                            arrayJson(call, "devices"),
+                        ),
+                    )
                 "e2ee_handle_receipts" ->
                     resolveJson(call, engine.handleReceipts(arrayJson(call, "receipts")))
                 "e2ee_device_removed" -> {
