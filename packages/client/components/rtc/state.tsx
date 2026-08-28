@@ -21,6 +21,7 @@ import {
   type TrackPublishOptions,
   type VideoCaptureOptions,
   ConnectionState,
+  DisconnectReason,
   isE2EESupported,
   LocalVideoTrack,
   Room,
@@ -273,6 +274,44 @@ export const DISABLE_WEB_AUDIO_MIX_KEY = "slogaDisableWebAudioMix";
  */
 const AUDIO_BLOCKED_HOLD_MS = 1_500;
 
+/**
+ * Disconnect reasons that mean the call ended ON PURPOSE — hung up, removed,
+ * superseded by a join from another device, or the room itself closed. Every
+ * OTHER reason (state mismatch, signal close, server shutdown, migration,
+ * timeout, unknown) is a transport death the user never asked for, and the
+ * client auto-rejoins instead of stranding them: LiveKit's own recovery can
+ * give up terminally — its connection reconcile hard-disconnects with
+ * STATE_MISMATCH after 3 failed probes and never re-enters the retry policy
+ * (observed live 2026-08-22: a websocket drop ~92 s after the window was
+ * minimised left a dead "Disconnected" on a healthy network, forever).
+ */
+const NO_REJOIN_DISCONNECT_REASONS = new Set<DisconnectReason>([
+  DisconnectReason.CLIENT_INITIATED,
+  DisconnectReason.DUPLICATE_IDENTITY,
+  DisconnectReason.PARTICIPANT_REMOVED,
+  DisconnectReason.ROOM_DELETED,
+  DisconnectReason.ROOM_CLOSED,
+  DisconnectReason.USER_UNAVAILABLE,
+  DisconnectReason.USER_REJECTED,
+  DisconnectReason.SIP_TRUNK_FAILURE,
+]);
+
+/**
+ * Backoff between automatic rejoin attempts; the last value repeats. Each
+ * attempt is a full REST join + room connect, so the tail is deliberately
+ * slow — but a visibility/online edge short-circuits the wait (see
+ * `#rejoinWait`), so a user coming back to a recovered network never sits
+ * out a 30 s sleep.
+ */
+const REJOIN_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 15_000, 30_000];
+
+/**
+ * Stop auto-rejoining after this many consecutive failures (~1.5 min of
+ * trying) and fall back to the actionable DISCONNECTED card (Rejoin button)
+ * — a server that keeps refusing the join should not be hammered forever.
+ */
+const MAX_REJOIN_ATTEMPTS = 8;
+
 type State =
   | "READY"
   | "DISCONNECTED"
@@ -509,6 +548,19 @@ class Voice {
    * CONNECTING was silently lost — connect() resumed and joined anyway.
    */
   #connectGen = 0;
+  /**
+   * Ownership token for the auto-rejoin loop (`#autoRejoin`). Bumped by every
+   * loop entry AND by any user-driven `disconnect()` (hang-up, or a manual
+   * join's leading teardown), so a loop resuming after an await can detect it
+   * was cancelled and stop. The loop's OWN attempts also pass through
+   * `disconnect()` — `#rejoinConnectInFlight` marks those so they don't
+   * cancel the very loop that issued them.
+   */
+  #rejoinSeq = 0;
+  /** TRUE while `#autoRejoin`'s own connect() attempt is running. */
+  #rejoinConnectInFlight = false;
+  /** Resolves the rejoin loop's pending backoff wait early (cancellation). */
+  #cancelRejoinWait: (() => void) | undefined;
   /**
    * The mic id `connect()` pinned `{ exact }` into `audioCaptureDefaults` for
    * the CURRENT call; undefined when no pin is in force. Lets
@@ -1887,9 +1939,24 @@ class Voice {
       this.sound.playSound("userJoinVoice");
     });
 
-    room.addListener("disconnected", () => {
-      this.#setState("DISCONNECTED");
+    room.addListener("disconnected", (reason) => {
       nativeCallServiceStop();
+      // A deliberate end stays DISCONNECTED (a plain hang-up never even
+      // lands here — disconnect() strips the listeners first). Anything
+      // else is a transport death on a call the user was IN: auto-rejoin
+      // via the full connect() path — the manual hang-up-and-rejoin that
+      // always recovered by hand, automated. Gated on CONNECTED so a
+      // failing initial join (which also emits `disconnected`) keeps its
+      // existing surface-the-error path in connect()'s catch.
+      if (
+        this.state() === "CONNECTED" &&
+        (reason === undefined || !NO_REJOIN_DISCONNECT_REASONS.has(reason))
+      ) {
+        this.#setState("RECONNECTING");
+        void this.#autoRejoin(channel);
+      } else {
+        this.#setState("DISCONNECTED");
+      }
     });
 
     room.addListener("participantConnected", (participant) => {
@@ -2275,6 +2342,14 @@ class Voice {
       // join still supersedes cleanly: connect()'s own leading disconnect()
       // is followed by its own bump.)
       this.#connectGen++;
+      // A user-driven teardown (hang-up, or a manual join's leading
+      // disconnect) also ends any pending auto-rejoin loop. The loop's OWN
+      // attempts come through here too — connect()'s leading disconnect —
+      // and must not cancel the loop that issued them.
+      if (!this.#rejoinConnectInFlight) {
+        this.#rejoinSeq++;
+        this.#cancelRejoinWait?.();
+      }
       nativeCallServiceStop();
 
       // Media E2EE teardown (§4.2 / §7.2): dispose the MLS session FIRST (its
@@ -2352,7 +2427,18 @@ class Voice {
       this.#callAudioContext = undefined;
 
       const room = this.room();
-      if (!room) return;
+      if (!room) {
+        // The rejoin loop keeps `channel`/state asserted with NO Room so the
+        // card stays up as "Reconnecting" between attempts (and as the
+        // actionable "Disconnected" after giving up) — a hang-up landing in
+        // that window must still clear the call UI.
+        batch(() => {
+          this.#setState("READY");
+          this.#setChannel();
+          this.#setFocus(undefined);
+        });
+        return;
+      }
 
       // Finalise the recording BEFORE the room is torn down, because
       // `room.disconnect()` stops every track and the graph would then feed
@@ -2426,10 +2512,93 @@ class Voice {
       this.#setCameraFaceFilterStatus("idle");
       this.#setCameraFaceFilterDegraded(0);
 
-      this.sound.playSound("userLeaveVoice");
+      // Not during the rejoin loop's own churn: tearing down the dead room
+      // before an attempt (and after a failed one) is not the user leaving,
+      // and a leave blip per retry reads as the call dying over and over.
+      if (!this.#rejoinConnectInFlight)
+        this.sound.playSound("userLeaveVoice");
     } catch (e) {
       this.onErr(e);
     }
+  }
+
+  /**
+   * Automatic rejoin after an unexpected disconnect. Each attempt is the FULL
+   * `connect()` path — fresh token, fresh Room, fresh MLS session — because
+   * that is exactly the manual hang-up-and-rejoin that always recovered by
+   * hand while every SDK-level resume had given up. Backoff between attempts,
+   * short-circuited by a visibility/online edge: a minimised window's
+   * throttled timers are one way the original wedge happened, and those edges
+   * are the moment a retry is most likely to succeed.
+   *
+   * Cancellation is `#rejoinSeq`, re-checked after every await: any
+   * user-driven `disconnect()` (hang-up, or a manual join's leading teardown)
+   * bumps it and resolves the pending wait. A `connect()` that reports
+   * "superseded" (false) ends the loop the same way. After
+   * `MAX_REJOIN_ATTEMPTS` consecutive failures the loop stops hammering and
+   * leaves the card up as DISCONNECTED with the channel still asserted — the
+   * Rejoin affordance renders from that exact state.
+   */
+  async #autoRejoin(channel: Channel) {
+    const seq = ++this.#rejoinSeq;
+    for (let attempt = 0; attempt < MAX_REJOIN_ATTEMPTS; attempt++) {
+      const delay =
+        REJOIN_DELAYS_MS[Math.min(attempt, REJOIN_DELAYS_MS.length - 1)];
+      await this.#rejoinWait(delay);
+      if (seq !== this.#rejoinSeq) return;
+      try {
+        this.#rejoinConnectInFlight = true;
+        // true ⇒ recovered (the `connected` handler set CONNECTED);
+        // false ⇒ a manual join or hang-up took over mid-attempt. Done
+        // either way.
+        await this.connect(channel);
+        return;
+      } catch (error) {
+        console.warn(`[rtc] rejoin attempt ${attempt + 1} failed`, error);
+      } finally {
+        this.#rejoinConnectInFlight = false;
+      }
+      if (seq !== this.#rejoinSeq) return;
+      // The failed attempt's teardown cleared the call signals — re-assert
+      // them so the card stays up as "Reconnecting" through the backoff
+      // instead of flashing away to nothing.
+      batch(() => {
+        this.#setChannel(channel);
+        this.#setState("RECONNECTING");
+      });
+    }
+    if (seq !== this.#rejoinSeq) return;
+    // Out of attempts: an actionable "Disconnected" (channel kept ⇒ the
+    // card and its Rejoin button stay up), never a dead one.
+    this.#setState("DISCONNECTED");
+  }
+
+  /**
+   * Sleep between rejoin attempts. Resolves early when the document becomes
+   * visible or the browser reports the network back — or when a user-driven
+   * `disconnect()` cancels the loop (via `#cancelRejoinWait`; the caller's
+   * `#rejoinSeq` check then stops it). Background throttling can stretch the
+   * timer, but unlike the SDK's abandoned recovery it still fires.
+   */
+  #rejoinWait(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      const onVisible = () => {
+        if (document.visibilityState === "visible") finish();
+      };
+      const onOnline = () => finish();
+      const finish = () => {
+        clearTimeout(timer);
+        document.removeEventListener("visibilitychange", onVisible);
+        window.removeEventListener("online", onOnline);
+        if (this.#cancelRejoinWait === finish)
+          this.#cancelRejoinWait = undefined;
+        resolve();
+      };
+      const timer = setTimeout(finish, ms);
+      document.addEventListener("visibilitychange", onVisible);
+      window.addEventListener("online", onOnline);
+      this.#cancelRejoinWait = finish;
+    });
   }
 
   /**
