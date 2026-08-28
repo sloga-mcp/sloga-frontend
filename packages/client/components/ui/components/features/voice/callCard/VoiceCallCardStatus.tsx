@@ -129,9 +129,39 @@ export function VoiceCallCardStatus(props: { pip?: boolean }) {
     <Status status={voice.state()} pip={props.pip}>
       <Symbol>{symbol()}</Symbol>{" "}
       <FadeOut fade={voice.state() === "CONNECTED"}>{text()}</FadeOut>
+      {/* Auto-rejoin exhausted its attempts (or the disconnect reason was
+          terminal): never leave a bare "Disconnected" with nothing to do
+          about it. Same full-join path as the channel preview's join. */}
+      <Show when={voice.state() === "DISCONNECTED" && voice.channel()}>
+        {(channel) => (
+          <RejoinButton onClick={() => voice.connect(channel())}>
+            <Symbol size={16}>refresh</Symbol>
+            <Trans>Rejoin</Trans>
+          </RejoinButton>
+        )}
+      </Show>
     </Status>
   );
 }
+
+const RejoinButton = styled("button", {
+  base: {
+    display: "flex",
+    alignItems: "center",
+    gap: "var(--gap-sm)",
+    flexShrink: 0,
+    marginLeft: "var(--gap-md)",
+    padding: "2px var(--gap-md)",
+    borderRadius: "var(--borderRadius-full)",
+    fontSize: "0.75rem",
+    fontWeight: 600,
+    cursor: "pointer",
+    border: "none",
+    color: "var(--md-sys-color-on-primary)",
+    background: "var(--md-sys-color-primary)",
+    pointerEvents: "all",
+  },
+});
 
 const FadeOut = styled("div", {
   base: {
