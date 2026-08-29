@@ -715,6 +715,10 @@ msgstr "All Messages"
 msgid "All servers"
 msgstr "All servers"
 
+#: components/app/interface/settings/user/notifications/Notifications.tsx
+msgid "Allow full-screen call alerts"
+msgstr "Allow full-screen call alerts"
+
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "Allow members to change name and avatar per-message"
 msgstr "Allow members to change name and avatar per-message"
@@ -3187,6 +3191,11 @@ msgstr "Hidden by Streamer Mode"
 msgid "Hide"
 msgstr "Hide"
 
+#: src/Interface.tsx
+#: src/Interface.tsx
+msgid "Hide banner"
+msgstr "Hide banner"
+
 #: components/app/interface/settings/user/StreamerMode.tsx
 msgid "Hide invite links"
 msgstr "Hide invite links"
@@ -3387,6 +3396,10 @@ msgstr "Incoming Call"
 #: components/app/interface/settings/user/notifications/Sounds.tsx
 msgid "Incoming Call Ringtone"
 msgstr "Incoming Call Ringtone"
+
+#: components/app/interface/settings/user/notifications/Notifications.tsx
+msgid "Incoming calls ring, but cannot turn on your screen while it is locked. Open system settings to allow it."
+msgstr "Incoming calls ring, but cannot turn on your screen while it is locked. Open system settings to allow it."
 
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
 msgid "Incoming Voices"
@@ -6082,9 +6095,17 @@ msgstr "Show Others"
 msgid "Show overlay during calls"
 msgstr "Show overlay during calls"
 
+#: components/app/interface/settings/user/StreamerMode.tsx
+msgid "Show reminder banner"
+msgstr "Show reminder banner"
+
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Show send message button"
 msgstr "Show send message button"
+
+#: components/app/interface/settings/user/StreamerMode.tsx
+msgid "Show the banner above the app while Streamer Mode is active. You can also hide it from the banner itself."
+msgstr "Show the banner above the app while Streamer Mode is active. You can also hide it from the banner itself."
 
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Show usernames"

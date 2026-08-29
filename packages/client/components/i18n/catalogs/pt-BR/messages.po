@@ -715,6 +715,10 @@ msgstr "Todas as mensagens"
 msgid "All servers"
 msgstr ""
 
+#: components/app/interface/settings/user/notifications/Notifications.tsx
+msgid "Allow full-screen call alerts"
+msgstr ""
+
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "Allow members to change name and avatar per-message"
 msgstr "Permitir que os membros alterem o nome e o avatar por mensagem"
@@ -3200,6 +3204,11 @@ msgstr "Oculto pelo modo Streamer"
 msgid "Hide"
 msgstr "Esconder"
 
+#: src/Interface.tsx
+#: src/Interface.tsx
+msgid "Hide banner"
+msgstr ""
+
 #: components/app/interface/settings/user/StreamerMode.tsx
 msgid "Hide invite links"
 msgstr "Ocultar links de convite"
@@ -3400,6 +3409,10 @@ msgstr "Chamada recebida"
 #: components/app/interface/settings/user/notifications/Sounds.tsx
 msgid "Incoming Call Ringtone"
 msgstr "Toque de chamada recebida"
+
+#: components/app/interface/settings/user/notifications/Notifications.tsx
+msgid "Incoming calls ring, but cannot turn on your screen while it is locked. Open system settings to allow it."
+msgstr ""
 
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
 msgid "Incoming Voices"
@@ -6092,9 +6105,17 @@ msgstr "Mostrar outros"
 msgid "Show overlay during calls"
 msgstr "Mostrar sobreposição durante chamadas"
 
+#: components/app/interface/settings/user/StreamerMode.tsx
+msgid "Show reminder banner"
+msgstr ""
+
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Show send message button"
 msgstr "Mostrar botão enviar mensagem"
+
+#: components/app/interface/settings/user/StreamerMode.tsx
+msgid "Show the banner above the app while Streamer Mode is active. You can also hide it from the banner itself."
+msgstr ""
 
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Show usernames"
