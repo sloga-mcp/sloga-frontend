@@ -26,8 +26,13 @@ export const CHANGELOGS: ChangelogResponse[] = [
   // To publish, in the release that lights the flag:
   //   1. uncomment and move to the TOP of the array;
   //   2. set `id` to `sloga-<real date>`, `published_at` to that date, and
-  //      `web_version` to that release's version (required — Settings takes its
-  //      "Version:" line from the newest entry's `web_version`);
+  //      `web_version` to that release's version. 🔴 `web_version` is declared
+  //      on `ChangelogResponse` but READ NOWHERE on this branch — the code that
+  //      makes Settings derive its "Version:" line from it lives on the
+  //      unmerged `version-display` branch. Set it anyway so the entry is
+  //      correct when that lands, but do NOT rely on it to move the version
+  //      users see: today that comes from `packages/client/package.json`, so
+  //      bump that too if the release is meant to change it;
   //   3. re-read it against what actually shipped. If slice 2 (window shares)
   //      landed in the same release the "whole-screen shares only" bullet is
   //      WRONG and must go.
@@ -46,6 +51,27 @@ export const CHANGELOGS: ChangelogResponse[] = [
   // - PARAPHRASE the new dialog strings, never quote them: they are this
   //   release's deploy gate markers, and quoting them here would put them in the
   //   changelog chunk, so a dist grep would pass on the notes alone.
+  // - 🔴 SAY NOTHING ABOUT ENCRYPTION. The silence is deliberate, not an
+  //   oversight. A "your system audio is end-to-end encrypted" line would be
+  //   false in two reachable states: a mixed/downgraded call publishes screen
+  //   audio in plaintext by design (the assertion is skipped when
+  //   `!room.isE2EEEnabled`), and §7 records that even on a full-E2EE call the
+  //   assertion is a detector rather than a preventer, with a residual of
+  //   server-visible plaintext.
+  // - 🔴 DO NOT make the echo exclusion unconditional. The measured exclusion
+  //   covers the target process and its DIRECT children, one level; a
+  //   grandchild-owned render session is NOT excluded, the §11.9 runtime
+  //   control that would catch it is unbuilt, and the one-level result is a
+  //   single-box measurement. System sounds (pid 0) are under no root at all,
+  //   so Sloga's own notification dings are still captured (WE24). The bullet
+  //   below is therefore written as what Sloga does — leave its own output out
+  //   of the capture — and NOT as a promise that no echo is possible.
+  // - 🔴 DO NOT claim failures are always surfaced. At least four paths degrade
+  //   to a SILENT share by design and report nothing: a probe failure or
+  //   timeout, no Tauri bridge, refusing to start over an existing session, and
+  //   the `SLOGA_NO_SCREEN_AUDIO=1` opt-out. §9 names the silent share as the
+  //   ACCEPTED degrade; the existence of the settings-dialog help text is proof
+  //   that shares do go quietly silent.
   //
   // {
   //   id: "sloga-YYYY-MM-DD",
@@ -55,10 +81,10 @@ export const CHANGELOGS: ChangelogResponse[] = [
   //   markdown_content: `## vX.Y.Z — Windows screen shares carry your computer's sound
   //
   // ### 🔊 Screen sharing in the Windows desktop app
-  // - **Share your whole screen and your computer's sound goes with it — without dragging the call along.** Sloga now captures what your machine is playing directly, and leaves its own output out of that capture. Your game, your video and your music reach everyone; the voices of the people you are already talking to do not come back as an echo.
+  // - **Share your whole screen and your computer's sound goes with it — without dragging the call along.** Sloga now captures what your machine is playing directly, and leaves its own output out of that capture, so your game, your video and your music reach everyone without the voices of the people you are already talking to being fed back into the stream.
   // - **There is no system-audio checkbox to remember any more.** The Windows picker used to offer one, and ticking it was what caused the echo. Sound follows your screen-share audio setting instead, so there is one less thing to get wrong.
   // - **Whole-screen shares only, for now.** Sharing a single window still carries no sound.
-  // - **If the sound cannot start, the share tells you instead of going quietly silent** — on older Windows builds, for instance, or when a second copy of Sloga is already running and holding the capture.
+  // - **When we can tell why the sound did not start, we say so** — on older Windows builds, for instance, or when a second copy of Sloga is already running and holding the capture. Some setups still share silently without an explanation; if that is you, the screen-share settings dialog says what it can.
   //
   // ### What has not changed
   // - This is the Windows desktop app. Sharing system audio **in a web browser still picks up everything the machine is playing, the call included** — that one needs a fix in the browser engine itself, and we are chasing it upstream.
