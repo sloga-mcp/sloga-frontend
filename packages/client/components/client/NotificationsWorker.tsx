@@ -280,8 +280,11 @@ export function NotificationsWorker() {
     const callerName = callerUser?.displayName ?? callerUser?.username ?? "Someone";
     const channelName = channel.type === "Group" ? channel.name : callerName;
 
-    // Play incoming ringtone (respects user sound preference)
-    sound.playSound("ringtoneIncoming");
+    // Android rings through the native call notification, which is the only
+    // source that also works while the app is asleep or killed. Playing the
+    // web ringtone as well put two ringtones on top of each other, and the
+    // web one is unstoppable from the notification's Decline button.
+    if (!Capacitor.isNativePlatform()) sound.playSound("ringtoneIncoming");
 
     // In-app ringing popup (IncomingCallOverlay) with Accept/Decline — shown
     // regardless of desktop-notification permission so calls are answerable
@@ -453,10 +456,20 @@ export function NotificationsWorker() {
           caller: callerId ? client().users.get(callerId) : undefined,
           receivedAt: Date.now(),
         });
-        // The native notification is cancelled once the popup is resolved, so
-        // carry the ring over in-app rather than leaving it silent.
-        sound.playSound("ringtoneIncoming");
+        // The native notification stays up (and keeps ringing) until the popup
+        // is resolved, so don't stack a second ringtone on top of it here.
       });
+    };
+
+    /**
+     * The Decline action on the native notification. Cancelling the
+     * notification silences the system ringtone, but nothing else tells the
+     * web layer the call is over — the popup would stay on screen (and, on
+     * shells that ring in-app, keep ringing) until its 45s timer fired.
+     */
+    const handleDeclined = (channelId?: string | null) => {
+      sound.stopRingtone();
+      dismissIncomingCall(channelId ?? undefined);
     };
 
     // Cold start: consume the action stored before the web app was ready
@@ -488,8 +501,16 @@ export function NotificationsWorker() {
         answer?: unknown;
         ring?: unknown;
         callerId?: unknown;
+        declined?: unknown;
+        channelId?: unknown;
         detail?: string | null;
       };
+      // Declines carry no path, so they must be handled before handleAction's
+      // `if (!path) return`.
+      if (e.declined === true) {
+        handleDeclined(typeof e.channelId === "string" ? e.channelId : undefined);
+        return;
+      }
       if (typeof e.path === "string") {
         handleAction(
           e.path,
@@ -501,6 +522,10 @@ export function NotificationsWorker() {
       }
       try {
         const data = JSON.parse(e.detail ?? "{}");
+        if (data.declined) {
+          handleDeclined(data.channelId);
+          return;
+        }
         handleAction(data.path, data.answer, data.ring, data.callerId);
       } catch {
         /* ignore malformed payloads */
