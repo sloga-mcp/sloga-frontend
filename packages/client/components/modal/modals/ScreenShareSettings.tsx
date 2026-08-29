@@ -1,7 +1,11 @@
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
 import { createFormControl, createFormGroup } from "solid-forms";
 
-import { screenAudioSupported, useVoice } from "@revolt/rtc";
+import {
+  screenAudioPickerAudioSuppressed,
+  screenAudioSupported,
+  useVoice,
+} from "@revolt/rtc";
 import { useState } from "@revolt/state";
 import { ScreenShareQualityName } from "@revolt/state/stores/Voice";
 import { Column, Dialog, DialogProps, Form2 } from "@revolt/ui";
@@ -26,19 +30,30 @@ export function ScreenShareSettingsModal(
   const voiceContext = useVoice();
   const { t } = useLingui();
 
-  // 🔴 CAPABILITY, not platform. On a capable Windows shell the native capture
-  // replaced the browser's "Share system audio" checkbox — `getDisplayMedia`
-  // is called with `audio: false`, which REMOVES it rather than unticking it —
-  // so the old "restart the share and tick it" instruction is not merely
-  // unhelpful there, it is impossible to follow. The same shell on the web,
-  // an older shell, Win10 < 19041 or a dark flag all still have the checkbox
-  // and still need the old copy verbatim.
+  // 🔴 CAPABILITY, not platform — and TWO questions, kept apart exactly as the
+  // share path keeps them apart, because they have different answers and the
+  // old copy is wrong on the difference.
   //
-  // Async because the shell's probe is: it settled long before this dialog,
-  // which only opens once a share is already publishing, so this resolves on
-  // the first microtask. The whole help block waits on it rather than
-  // rendering the fallback first and swapping — a help text that changes its
-  // mind in front of the user is worse than one that appears a frame late.
+  // (1) Is there still a checkbox to tick? `getDisplayMedia` is called with
+  //     `audio: false` on this shell, which REMOVES the browser's "Share system
+  //     audio" checkbox rather than unticking it. That is decided by
+  //     `screenAudioPickerAudioSuppressed()` alone — build flag, platform,
+  //     Tauri bridge — and it is SYNCHRONOUS, so a slow shell cannot answer
+  //     "no" and hand the checkbox back.
+  // (2) Can the native capture actually run? That needs the shell's probe.
+  //
+  // 🔴 The gap between them is real and is the whole reason the fallback copy
+  // is keyed on (1): a shell where the probe has not settled, or has failed,
+  // answers NO to (2) while the checkbox is still gone. Keying the "restart and
+  // tick it" instruction on (2) would print it to a user who has nothing to
+  // tick — the very bug this matrix exists to remove.
+  //
+  // (2) is async only because the probe is. It settled long before this dialog,
+  // which opens only once a share is already publishing, so this resolves on
+  // the first microtask; the help block waits on it rather than rendering one
+  // answer and swapping, because a help text that changes its mind in front of
+  // the user is worse than one that appears a frame late.
+  const pickerAudioGone = screenAudioPickerAudioSuppressed();
   const [nativeAudio] = createResource(() => screenAudioSupported());
 
   // Slice 1 captures system audio for ENTIRE-SCREEN shares only; window shares
@@ -174,9 +189,12 @@ export function ScreenShareSettingsModal(
                     tab — restart the share and pick a tab to include its sound.
                   </Trans>
                 </Match>
-                {/* The three capable-shell branches. Order matters: each one
-                    rules out the reason above it, so the last is reached only
-                    when the capture was asked for, allowed, and still failed. */}
+                {/* The shells with no checkbox. Order matters: each branch
+                    rules out the reason above it. The first two are the ones
+                    the user can act on; the last is the catch-all, and it is
+                    keyed on the checkbox being GONE rather than on the capture
+                    being available, so a shell whose probe never settled lands
+                    here instead of on the fallback's tick-the-box advice. */}
                 <Match when={nativeAudio() && !entireScreen()}>
                   <Trans>
                     Only entire-screen shares carry your computer's audio.
@@ -189,7 +207,7 @@ export function ScreenShareSettingsModal(
                     This share is silent because "Share audio" is turned off.
                   </Trans>
                 </Match>
-                <Match when={nativeAudio()}>
+                <Match when={pickerAudioGone}>
                   <Trans>
                     Sloga couldn't capture your computer's audio for this share.
                     Your screen is still being shared.

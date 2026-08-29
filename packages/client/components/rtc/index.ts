@@ -41,12 +41,24 @@ export {
 export type { CaptionSttEngineKind } from "./captions/captionEngine";
 export { webSpeechSupported } from "./captions/speechCaptionEngine";
 
-// Whether this shell can capture system audio natively. Exported for the
-// `ScreenShareSettings` copy matrix, which keys on CAPABILITY — never on a UA
-// sniff, and never on `navigator.platform`, which cannot tell a Windows web tab
-// (no native capture, browser checkbox present) from a Windows desktop shell
-// (native capture, no checkbox) — the two cases whose instructions differ.
-export { screenAudioSupported } from "./screenAudioNative";
+// The two capability questions behind the `ScreenShareSettings` copy matrix,
+// kept separate for the same reason the share path keeps them separate: they
+// have different answers, and the copy needs both.
+//
+// `screenAudioPickerAudioSuppressed()` — is the browser's "Share system audio"
+// checkbox GONE? Synchronous, and the actual determinant, so any copy telling
+// the user to tick it must be keyed on this and nothing else.
+// `screenAudioSupported()` — can the native capture actually RUN? Needs the
+// shell probe, and answers no when that has not settled.
+//
+// Neither is a UA sniff, and `navigator.platform` can answer neither: it cannot
+// tell a Windows web tab (checkbox present, no native capture) from a Windows
+// desktop shell (checkbox gone, native capture) — exactly the two cases whose
+// instructions differ.
+export {
+  screenAudioPickerAudioSuppressed,
+  screenAudioSupported,
+} from "./screenAudioNative";
 
 export { InRoom } from "./components/InRoom";
 export { RoomAudioManager } from "./components/RoomAudioManager";
