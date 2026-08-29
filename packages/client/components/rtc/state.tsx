@@ -39,6 +39,7 @@ import {
 // NO CDN (§4.1). External worker origins are blocked by the desktop shell CSP
 // (slice 6.2b) and violate the no-CDN policy everywhere else.
 import { Capacitor, registerPlugin } from "@capacitor/core";
+import { t } from "@lingui/core/macro";
 import E2EEWorker from "livekit-client/e2ee-worker?worker";
 import { DenoiseTrackProcessor } from "livekit-rnnoise-processor";
 import { Channel, Message } from "stoat.js";
@@ -4278,25 +4279,34 @@ class Voice {
    * shared with the Linux feature, so a string written there would have to be
    * duplicated on both sides.
    *
-   * 🔴 THESE STRINGS ARE NOT LOCALIZED, and that is a deliberate, temporary
-   * state rather than an oversight. The obvious fix — ``t`…` `` from
-   * `@lingui/core/macro` — COMPILES AND RENDERS but is never EXTRACTED here:
-   * `lingui.config.ts` sets `macro.corePackage: ["@lingui-solid/solid"]`,
-   * which REPLACES the default `["@lingui/core/macro"]` rather than adding to
-   * it. The proof is already in the tree: `EditCategory.tsx` uses that macro,
-   * its `<Trans>` strings appear in `catalogs/en/messages.po` and its
-   * ``t`New name` `` appears in no catalog at all. A macro that silently fails
-   * to extract is worse than a plain string, because it looks correct.
+   * These are localized with ``t`…` `` from `@lingui/core/macro` rather than
+   * `useLingui()`, because `Voice` is a plain class: the hook needs component
+   * scope and there is none here. Slice 1 left them as plain English because
+   * that macro COMPILED AND RENDERED but was never EXTRACTED — `corePackage`
+   * REPLACES lingui's default rather than adding to it, so `lingui extract`
+   * skipped it. Slice 3 fixed `lingui.config.ts` (see the comment there) and
+   * confirmed it with a control-pair extract before writing these; the msgids
+   * are in `catalogs/en/messages.po`, and a string that reaches no catalog
+   * renders its source text in every locale.
    *
-   * So: plain strings, and slice 3 — which owns the copy matrix, is REQUIRED
-   * for lighting, and has to fix `ScreenShareSettings.tsx`'s now-impossible
-   * Windows instructions anyway — localizes them, after the `corePackage`
-   * config bug is fixed and an extract run confirms it.
+   * 🔴 The `no-root` string names the multi-instance case on purpose. It is the
+   * one failure a user can act on, and it has to survive being retyped into a
+   * bug report — so it stays a distinct sentence rather than folding into the
+   * generic start failure.
    *
-   * Slice 3 also owns the SURFACE: these route through `onErr`, a blocking
-   * modal, rather than the toast §3.4 asks for. Recorded rather than papered
-   * over; it is the one place this implementation knowingly differs from the
-   * design.
+   * 🔴 Each string is wrapped in `new Error(...)` rather than passed bare.
+   * `onErr` renders through `useError()`, whose ONLY verbatim path is the
+   * `.message` of an Error — "pass-through pre-localised errors" in its own
+   * words. A bare string falls past that arm into
+   * ``t`Something went wrong! ${error}` ``, which prefixes every one of these
+   * sentences with an apology and, worse, sends the `no-root` diagnostic into a
+   * bug report wearing a generic error's clothes. Same shape as the
+   * `TrackMuted` handler above.
+   *
+   * Slice 3 does NOT change the SURFACE: these still route through `onErr`, a
+   * blocking modal, rather than the toast §3.4 asks for. Recorded rather than
+   * papered over; it is the one place this implementation knowingly differs
+   * from the design.
    */
   #reportScreenAudioFailure(failure: ScreenAudioFailure) {
     switch (failure.kind) {
@@ -4305,27 +4315,39 @@ class Voice {
           // The multi-instance case, named so it is diagnosable from a user
           // report rather than landing as an unrecognizable capability loss.
           this.onErr(
-            "Screen audio is unavailable in this window. If you are running a second copy of Sloga, only the first one can share system audio.",
+            new Error(
+              t`Screen audio is unavailable in this window. If you are running a second copy of Sloga, only the first one can share system audio.`,
+            ),
           );
           return;
         }
         if (failure.code === "unsupported") {
-          this.onErr("This version of Windows cannot share system audio.");
+          this.onErr(
+            new Error(t`This version of Windows cannot share system audio.`),
+          );
           return;
         }
         if (failure.code === "disabled-by-env") return; // deliberate opt-out
-        this.onErr("Screen audio could not start; sharing without it.");
+        this.onErr(
+          new Error(t`Screen audio could not start; sharing without it.`),
+        );
         return;
       case "not-encrypted":
-        this.onErr("Screen audio could not be encrypted and was stopped.");
+        this.onErr(
+          new Error(t`Screen audio could not be encrypted and was stopped.`),
+        );
         return;
       case "graph":
-        this.onErr("Screen audio could not start; sharing without it.");
+        this.onErr(
+          new Error(t`Screen audio could not start; sharing without it.`),
+        );
         return;
       case "died":
       default:
         console.error("[screen-audio] died:", failure);
-        this.onErr("Screen audio stopped. The screen is still being shared.");
+        this.onErr(
+          new Error(t`Screen audio stopped. The screen is still being shared.`),
+        );
     }
   }
 
