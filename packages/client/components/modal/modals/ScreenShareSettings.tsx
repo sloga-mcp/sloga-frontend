@@ -1,13 +1,13 @@
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
 import { createFormControl, createFormGroup } from "solid-forms";
 
-import { useVoice } from "@revolt/rtc";
+import { screenAudioSupported, useVoice } from "@revolt/rtc";
 import { useState } from "@revolt/state";
 import { ScreenShareQualityName } from "@revolt/state/stores/Voice";
 import { Column, Dialog, DialogProps, Form2 } from "@revolt/ui";
 import { VideoTrack } from "solid-livekit-components";
 
-import { Match, Show, Switch } from "solid-js";
+import { createResource, Match, Show, Switch } from "solid-js";
 import { ScreenShareQualityLabel } from "./ScreenShareQualityLabel";
 import { Modals } from "../types";
 
@@ -25,6 +25,34 @@ export function ScreenShareSettingsModal(
   const { voice } = useState();
   const voiceContext = useVoice();
   const { t } = useLingui();
+
+  // 🔴 CAPABILITY, not platform. On a capable Windows shell the native capture
+  // replaced the browser's "Share system audio" checkbox — `getDisplayMedia`
+  // is called with `audio: false`, which REMOVES it rather than unticking it —
+  // so the old "restart the share and tick it" instruction is not merely
+  // unhelpful there, it is impossible to follow. The same shell on the web,
+  // an older shell, Win10 < 19041 or a dark flag all still have the checkbox
+  // and still need the old copy verbatim.
+  //
+  // Async because the shell's probe is: it settled long before this dialog,
+  // which only opens once a share is already publishing, so this resolves on
+  // the first microtask. The whole help block waits on it rather than
+  // rendering the fallback first and swapping — a help text that changes its
+  // mind in front of the user is worse than one that appears a frame late.
+  const [nativeAudio] = createResource(() => screenAudioSupported());
+
+  // Slice 1 captures system audio for ENTIRE-SCREEN shares only; window shares
+  // are slice 2. `undefined` counts as a monitor share — the same rule the
+  // publish path and the privacy shield use (state.tsx), and what this shell's
+  // getDisplayMedia actually reports.
+  const entireScreen = () => {
+    const surface = (
+      props.trackReference.publication?.track?.mediaStreamTrack.getSettings() as
+        | (MediaTrackSettings & { displaySurface?: string })
+        | undefined
+    )?.displaySurface;
+    return surface === "monitor" || surface === undefined;
+  };
 
   const group = createFormGroup({
     qualityName: createFormControl<ScreenShareQualityName>(
@@ -124,7 +152,7 @@ export function ScreenShareSettingsModal(
           <Form2.Checkbox control={group.controls.dontAsk}>
             <Trans>Don't ask me again</Trans>
           </Form2.Checkbox>
-          <Show when={!props.audio}>
+          <Show when={!props.audio && !nativeAudio.loading}>
             <small>
               <Switch
                 fallback={
@@ -144,6 +172,27 @@ export function ScreenShareSettingsModal(
                   <Trans>
                     On macOS the browser can only capture audio when sharing a
                     tab — restart the share and pick a tab to include its sound.
+                  </Trans>
+                </Match>
+                {/* The three capable-shell branches. Order matters: each one
+                    rules out the reason above it, so the last is reached only
+                    when the capture was asked for, allowed, and still failed. */}
+                <Match when={nativeAudio() && !entireScreen()}>
+                  <Trans>
+                    Only entire-screen shares carry your computer's audio.
+                    Restart the share and pick a whole screen instead of a
+                    window.
+                  </Trans>
+                </Match>
+                <Match when={nativeAudio() && !voice.screenShareAudio}>
+                  <Trans>
+                    This share is silent because "Share audio" is turned off.
+                  </Trans>
+                </Match>
+                <Match when={nativeAudio()}>
+                  <Trans>
+                    Sloga couldn't capture your computer's audio for this share.
+                    Your screen is still being shared.
                   </Trans>
                 </Match>
               </Switch>

@@ -41,6 +41,13 @@ export {
 export type { CaptionSttEngineKind } from "./captions/captionEngine";
 export { webSpeechSupported } from "./captions/speechCaptionEngine";
 
+// Whether this shell can capture system audio natively. Exported for the
+// `ScreenShareSettings` copy matrix, which keys on CAPABILITY — never on a UA
+// sniff, and never on `navigator.platform`, which cannot tell a Windows web tab
+// (no native capture, browser checkbox present) from a Windows desktop shell
+// (native capture, no checkbox) — the two cases whose instructions differ.
+export { screenAudioSupported } from "./screenAudioNative";
+
 export { InRoom } from "./components/InRoom";
 export { RoomAudioManager } from "./components/RoomAudioManager";
 
