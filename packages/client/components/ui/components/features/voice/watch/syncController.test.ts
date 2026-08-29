@@ -130,7 +130,7 @@ test("host play: viewer paused → play; viewer stalled → NOT told to play", (
 
 test("viewer stall then resume: seeks forward, nobody waited", () => {
   // Stalled for 3 s: buffering, position frozen at 65_000 while expected ran to 68_000.
-  let r = reconcile(snap(session(), provider({ state: "buffering", currentTimeMs: 65_000 }), 1_008_000), INITIAL_SYNC_STATE);
+  const r = reconcile(snap(session(), provider({ state: "buffering", currentTimeMs: 65_000 }), 1_008_000), INITIAL_SYNC_STATE);
   // Drift is large → a seek is issued even during buffering (the seek target
   // is where the host IS; the player lands there when it can).
   assert.deepEqual(r.actions, [{ type: "seek", ms: 68_000 }]);

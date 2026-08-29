@@ -78,9 +78,11 @@ export function PasswordGate(props: {
           }}
         />
         <Show when={error()}>
-          <Text class="body" style={{ color: "#E24B4A" }}>
-            <Trans>Incorrect password.</Trans>
-          </Text>
+          <span style={{ color: "#E24B4A" }}>
+            <Text class="body">
+              <Trans>Incorrect password.</Trans>
+            </Text>
+          </span>
         </Show>
         <Actions>
           <Button variant="text" onPress={() => history.back()}>

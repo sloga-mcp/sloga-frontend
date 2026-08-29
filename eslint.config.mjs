@@ -29,6 +29,25 @@ export default defineConfig([
   solid,
   prettier,
   {
+    // Build/tooling scripts run under Node, not in the browser, so the
+    // browser-shaped default globals leave `console`/`process` undefined and
+    // every use reads as `no-undef`. Flat config has no `/* eslint-env node */`
+    // equivalent, so the environment is declared here instead.
+    files: ["**/scripts/**/*.{mjs,cjs,js}", "**/*.config.{mjs,cjs,js}"],
+    languageOptions: {
+      globals: {
+        __dirname: "readonly",
+        __filename: "readonly",
+        Buffer: "readonly",
+        console: "readonly",
+        fetch: "readonly",
+        process: "readonly",
+        URL: "readonly",
+        URLSearchParams: "readonly",
+      },
+    },
+  },
+  {
     rules: {
       "@typescript-eslint/no-unused-vars": [
         "warn",

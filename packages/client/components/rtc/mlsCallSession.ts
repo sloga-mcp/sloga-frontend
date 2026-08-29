@@ -1020,8 +1020,6 @@ export class MlsCallSession {
   #callMode: CallMode = { kind: "negotiating" };
   /** For a remote announce (T4): the user who announced plaintext. */
   #announcedBy: string | undefined;
-  /** Whether re-upgrade must go via a fresh successor (T6, after an interlude). */
-  #reupgradeViaSuccessor = false;
   /** T0d fail-safe re-arms consumed while the open-group probe was pending. */
   #failsafeRearms = 0;
   /** Serializes §3.4 mode transitions + their awaited media effects (F8). */
@@ -3456,7 +3454,9 @@ export class MlsCallSession {
    */
   #scheduleReupgrade(viaSuccessor: boolean): void {
     if (this.#reupgradeTimer) return;
-    this.#reupgradeViaSuccessor = viaSuccessor;
+    // No field mirrors `viaSuccessor`: the timer closure below captures the
+    // parameter, and the guard above means a scheduled re-upgrade is never
+    // re-scheduled with a different value, so a copy could only go stale.
     const timer = setTimeout(async () => {
       this.#reupgradeTimer = null;
       this.#timers.delete(timer);

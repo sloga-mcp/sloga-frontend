@@ -3675,7 +3675,9 @@ export class E2EEBridge implements E2EEAdapter {
     }
 
     await this.refreshStatus();
-    return { revokeFailed, deviceId };
+    // `device_id` is nullable on the status record; the caller's contract is
+    // "absent" rather than "explicitly null".
+    return { revokeFailed, deviceId: deviceId ?? undefined };
   }
 
   /**

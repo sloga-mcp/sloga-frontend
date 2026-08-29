@@ -32,6 +32,7 @@ import {
   TrackEvent,
   VideoResolution,
 } from "livekit-client";
+import type { AudioProcessorOptions } from "livekit-client";
 // Self-hosted LiveKit E2EE worker — Vite `?worker` bundling ships it inside
 // the npm package (dist/livekit-client.e2ee.worker.mjs), fully first-party,
 // NO CDN (§4.1). External worker origins are blocked by the desktop shell CSP
@@ -46,24 +47,37 @@ class GainTrackProcessor {
   processedTrack: MediaStreamTrack | undefined;
   #gainNode: GainNode | undefined;
   #gainValue: number;
-  #ctx: AudioContext | undefined;
 
   constructor(gain: number) {
     this.#gainValue = gain;
   }
 
-  async init(opts: {
-    track: MediaStreamTrack;
-    audioContext: AudioContext;
-    sourceNode: AudioNode;
-  }) {
-    this.#ctx = opts.audioContext;
+  /**
+   * `sourceNode` is NOT part of livekit's public `AudioProcessorOptions`
+   * (which is `{ track, audioContext }`), so requiring it made this class
+   * fail to satisfy `TrackProcessor` at all. Take it when it is offered and
+   * derive one from the track when it is not, which is correct under either
+   * SDK behavior rather than betting on an undeclared field.
+   */
+  async init(opts: AudioProcessorOptions & { sourceNode?: AudioNode }) {
     this.#gainNode = opts.audioContext.createGain();
     this.#gainNode.gain.value = this.#gainValue / 100;
     const dest = opts.audioContext.createMediaStreamDestination();
-    opts.sourceNode.connect(this.#gainNode);
+    const source =
+      opts.sourceNode ??
+      opts.audioContext.createMediaStreamSource(new MediaStream([opts.track]));
+    source.connect(this.#gainNode);
     this.#gainNode.connect(dest);
     this.processedTrack = dest.stream.getAudioTracks()[0];
+  }
+
+  /** Required by livekit's `TrackProcessor`, and NOT ceremonial: the SDK
+   * calls it when the source track restarts (a device switch, an unmute
+   * restart), and a processor without it throws mid-call. Tear the old graph
+   * down and rebuild it on the new source. */
+  async restart(opts: AudioProcessorOptions & { sourceNode?: AudioNode }) {
+    await this.destroy();
+    await this.init(opts);
   }
 
   async destroy() {
@@ -1340,7 +1354,9 @@ class Voice {
     // Re-point any in-flight soundboard playback when the output device
     // changes mid-call (future plays read the device per-play already).
     createEffect(() => {
-      this.#settings.preferredAudioOutputDevice;
+      // Read purely to register the reactive dependency; `void` marks that as
+      // deliberate rather than a dropped expression.
+      void this.#settings.preferredAudioOutputDevice;
       this.#soundboard.refreshOutputDevice();
     });
     // Re-point the VAD capture when the input device changes mid-call: the
@@ -1348,7 +1364,8 @@ class Voice {
     // but the VAD stream is opened by us and would otherwise keep listening on
     // the old device. `#startVAD` no-ops unless voice-activity mode is on.
     createEffect(() => {
-      this.#settings.preferredAudioInputDevice;
+      // Dependency-registering read (see above).
+      void this.#settings.preferredAudioInputDevice;
       // Untracked as a block: `#startVAD` synchronously reads `vadEnabled`
       // (and re-reads the preference) before its first await, which would
       // otherwise silently join this effect's dependency set and make the
@@ -2204,7 +2221,14 @@ class Voice {
         // decisive for the room's first joiner — the server pins a channel
         // to the node that opened it.
         const node = await voiceNodeForChannel(this.getClient(), channel);
-        auth = await channel.joinCall(node, true, undefined, e2eeDeviceId);
+        auth = await channel.joinCall(
+          node,
+          true,
+          undefined,
+          // `device_id` is nullable on the status record; the route takes
+          // "absent", not "explicitly null".
+          e2eeDeviceId ?? undefined,
+        );
       }
       // Superseded during joinCall → abandon this Room, leave the newer
       // connect()'s shared state intact.

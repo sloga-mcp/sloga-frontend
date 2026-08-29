@@ -127,7 +127,11 @@ export function StickerPicker() {
                       <ServerHeader>
                         <Avatar
                           size={20}
-                          src={(server as any).animatedIconURL}
+                          src={
+                            (server as typeof server & {
+                              animatedIconURL?: string;
+                            }).animatedIconURL
+                          }
                           fallback={server.name}
                         />
                         <span>{server.name}</span>

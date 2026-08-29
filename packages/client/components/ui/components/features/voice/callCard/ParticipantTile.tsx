@@ -306,8 +306,16 @@ export function ParticipantTile(props: TileProps) {
         // what VoiceStatsOverlay already reads.
         let candidatePair: number | undefined;
         let remoteInbound: number | undefined;
+        // The members below are real on the relevant stat types but absent
+        // from the base `RTCStats` DOM lib type; widen to exactly those
+        // rather than to `any`, so the typeof guards still mean something.
+        type RttStat = RTCStats & {
+          nominated?: boolean;
+          currentRoundTripTime?: number;
+          roundTripTime?: number;
+        };
         report.forEach((stat: RTCStats) => {
-          const r = stat as any;
+          const r = stat as RttStat;
           if (
             r.type === "candidate-pair" &&
             r.nominated &&

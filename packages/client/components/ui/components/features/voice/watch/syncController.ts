@@ -149,7 +149,7 @@ const NO_OPINION: ReadonlySet<ProviderState> = new Set([
 export function reconcile(snap: SyncSnapshot, prev: SyncState): ReconcileResult {
   const { session, provider, nowLocalMs, nowServerMs } = snap;
   const actions: SyncAction[] = [];
-  let state: SyncState = { ...prev };
+  const state: SyncState = { ...prev };
   const expectedMs = expectedPosition(session, nowServerMs);
 
   // Provider not usable yet / broken: nothing to do (UI shows the state).

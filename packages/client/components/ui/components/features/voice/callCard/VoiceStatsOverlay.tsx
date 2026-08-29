@@ -1,5 +1,7 @@
 import { createSignal, onCleanup, Show } from "solid-js";
 
+import { Track } from "livekit-client";
+
 import { css } from "styled-system/css";
 import { styled } from "styled-system/jsx";
 
@@ -38,7 +40,7 @@ export function VoiceStatsOverlay(props: { size: "xs" | "sm" }) {
 
     try {
       const reports = await room.localParticipant
-        .getTrackPublication("microphone")
+        .getTrackPublication(Track.Source.Microphone)
         ?.track?.getRTCStatsReport?.();
 
       // RTT comes from the ICE candidate pair, NOT from
@@ -54,8 +56,15 @@ export function VoiceStatsOverlay(props: { size: "xs" | "sm" }) {
       let bytes = 0;
 
       if (reports) {
+        // Real members of the concrete stat types, absent from the base
+        // `RTCStats` DOM lib type — widen to these, not to `any`.
+        type ReportStat = RTCStats & {
+          jitter?: number;
+          packetsLost?: number;
+          bytesSent?: number;
+        };
         reports.forEach((report: RTCStats) => {
-          const r = report as any;
+          const r = report as ReportStat;
           if (r.type === "remote-inbound-rtp") {
             if (typeof r.jitter === "number") jitter = Math.round(r.jitter * 1000);
             if (typeof r.packetsLost === "number") packetsLost = r.packetsLost;

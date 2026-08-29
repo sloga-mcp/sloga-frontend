@@ -775,7 +775,13 @@ export function MessageComposition(props: Props) {
       const onMsg = (message: any) => {
         if (message.channelId === channelId && message.authorId === userId) {
           client().removeListener("messageCreate", onMsg);
-          setTimeout(() => { try { message.delete(); } catch {} }, timer * 1000);
+          setTimeout(() => {
+            try {
+              message.delete();
+            } catch {
+              // Best-effort self-destruct: the message may already be gone.
+            }
+          }, timer * 1000);
         }
       };
       client().on("messageCreate", onMsg);

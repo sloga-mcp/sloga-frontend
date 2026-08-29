@@ -171,6 +171,8 @@ function HomeLogo(props: {
       role="img"
       aria-label="Home"
     >
+      {/* eslint-disable-next-line solid/prefer-for -- HOME_DOT_COLORS is a
+          module-level constant; nothing here is reactive. */}
       {HOME_DOT_COLORS.map((fill, i) => (
         <circle
           class="sloga-home-ball"

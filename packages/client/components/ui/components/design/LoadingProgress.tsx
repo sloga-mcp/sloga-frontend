@@ -212,6 +212,8 @@ export function CircularProgress(props: { size?: number }) {
         role="img"
         aria-label="Loading"
       >
+        {/* eslint-disable-next-line solid/prefer-for -- DOT_COLORS is a
+            module-level constant; nothing here is reactive. */}
         {DOT_COLORS.map((color, i) => (
           <circle
             class="sloga-ball"

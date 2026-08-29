@@ -155,6 +155,9 @@ export function SlogaWordmark(props: {
       >
         Sl
       </text>
+      {/* eslint-disable-next-line solid/prefer-for -- DOT_COLORS is a
+          module-level constant, so there is no reactive list to keep
+          identity for; <For> would only add a wrapper. */}
       {DOT_COLORS.map((fill, i) => (
         <circle
           class="sloga-wm-ball"
