@@ -13,7 +13,10 @@ import { fetchStreamingFlags } from "@revolt/client/streamConnections";
 import { CONFIGURATION, tauriInvoke } from "@revolt/common";
 import { useUser } from "@revolt/markdown/users";
 import { useModals } from "@revolt/modal";
-import { fetchAllChangelogs } from "@revolt/modal/modals/Changelog";
+import {
+  fetchAllChangelogs,
+  fetchAppVersion,
+} from "@revolt/modal/modals/Changelog";
 import { overlayShellAvailable } from "@revolt/rtc/overlay/shell";
 import { ColouredText, Column, Text, iconSize } from "@revolt/ui";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
@@ -155,6 +158,18 @@ const Config: SettingsConfiguration<{ server: Server }> = {
       (streamingFlags.state !== "ready" ||
         (!streamingFlags()?.twitch && !streamingFlags()?.youtube));
 
+    // The release version comes from the patch notes, not the root
+    // package.json — that file stopped tracking releases at 0.48.0, so every
+    // client reported "0.48.0" to support regardless of what was installed.
+    const [appVersion] = createResource(fetchAppVersion);
+
+    // The Windows (Tauri) shell has no `window.native`; ask the shell itself.
+    // `plugin:app|version` is granted through `core:default`, so this works
+    // against shells already in the field. Resolves undefined everywhere else.
+    const [tauriShellVersion] = createResource(() =>
+      tauriInvoke()?.<string>("plugin:app|version").catch(() => undefined),
+    );
+
     return {
       context: null!,
       prepend: (
@@ -170,8 +185,13 @@ const Config: SettingsConfiguration<{ server: Server }> = {
             <span class={css({ userSelect: "none", fontWeight: "bold" })}>
               <Trans>Version:</Trans>
             </span>{" "}
-            <span class={css({ userSelect: "all" })}>{pkg.version}</span>
+            <span class={css({ userSelect: "all" })}>
+              {appVersion() ?? pkg.version}
+            </span>
           </Text>
+          <Show when={tauriShellVersion()}>
+            <Text class="label">Sloga for Desktop {tauriShellVersion()}</Text>
+          </Show>
           <Show when={window.native}>
             <Text class="label">
               Sloga for Desktop {window.native.versions.desktop()}

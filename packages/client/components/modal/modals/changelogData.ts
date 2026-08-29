@@ -6,6 +6,10 @@ import type { ChangelogResponse } from "./Changelog";
  * To publish a new entry: add an object to the TOP of this array with a new
  * unique `id` (bump the number) and a `published_at` ISO timestamp. Users see
  * the newest entry once, automatically, next time they open the app.
+ *
+ * Set `web_version` on the new entry — Settings displays the newest one as
+ * the app version. If it is omitted, the `## vX.Y.Z` heading of the entry's
+ * markdown is parsed instead, so keep that heading convention either way.
  */
 export const CHANGELOGS: ChangelogResponse[] = [
   // v0.54.0: the shell sweep — screen-share audio fixes + the v0.53.0 profile
@@ -27,6 +31,7 @@ export const CHANGELOGS: ChangelogResponse[] = [
   {
     id: "sloga-2026-08-27",
     title: "Patch Notes",
+    web_version: "0.54.0",
     published_at: "2026-08-27T21:00:00.000Z",
     markdown_content: `## v0.54.0 — Screen share audio, and the profile update lands everywhere
 

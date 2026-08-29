@@ -44,6 +44,25 @@ export async function fetchAllChangelogs(): Promise<ChangelogResponse[]> {
   return CHANGELOGS;
 }
 
+/**
+ * The release version this bundle carries, taken from the patch notes —
+ * publishing an entry is the release act, so the notes are the source of
+ * truth. The root package.json version stopped tracking releases at 0.48.0
+ * and is only a last-resort fallback for the caller.
+ *
+ * Newest entry first: prefer an explicit `web_version`, otherwise read the
+ * `## vX.Y.Z` heading its markdown opens with.
+ */
+export async function fetchAppVersion(): Promise<string | undefined> {
+  const { CHANGELOGS } = await import("./changelogData");
+  for (const entry of CHANGELOGS) {
+    if (entry.web_version) return entry.web_version;
+    const heading = entry.markdown_content.match(/^##\s+v(\d+\.\d+\.\d+)/m);
+    if (heading) return heading[1];
+  }
+  return undefined;
+}
+
 export function ChangelogModal(
   props: DialogProps & Modals & { type: "changelog" },
 ) {
