@@ -1946,6 +1946,19 @@ class Voice {
       // identical reason: the native side should not be left running while
       // the renderer waits for an SFU timeout that never comes.
       void teardownScreenAudio();
+      // 🔴 Release the attenuation duck.
+      //
+      // `Attenuation.detach()` runs only from `Voice.disconnect()`, which this
+      // handler does not call — so a socket drop mid-call with someone
+      // speaking applies a duck that NOTHING ever releases: every other
+      // application on the machine stays at 10 % volume until the user
+      // manually leaves the call. Idempotent, and this client never
+      // auto-rejoins after a drop, so detaching here is safe.
+      //
+      // Deliberately its own commit: unlike everything around it this is a
+      // LIVE behaviour change, not gated by the screen-audio flag, and it has
+      // to be revertable without taking the dark feature with it.
+      this.#attenuation.detach();
     });
 
     room.addListener("participantConnected", (participant) => {
