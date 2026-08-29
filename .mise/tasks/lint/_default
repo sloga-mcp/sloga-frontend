@@ -1,5 +1,90 @@
 #!/usr/bin/env bash
 #MISE description="Lint code and find issues"
-set -e
 
-pnpm exec eslint --ext .ts,.tsx packages/client
+# Linting the whole package in ONE eslint process is pathological here: it ran
+# 13+ minutes at 100% CPU locally and died in CI with "JavaScript heap out of
+# memory" after ~11 minutes, on every commit for days. The same files lint in
+# ~2 minutes total when the run is split up, so the cost is superlinear in one
+# process rather than any single bad file — expected with
+# `eslint-plugin-solid/configs/typescript`, which is type-aware and holds a
+# program over all ~800 files at once.
+#
+# Chunking is SEMANTICALLY equivalent here: every rule in eslint.config.mjs is
+# per-file, so no finding depends on other files being in the same run.
+#
+# `--ext` is gone with it: it is ignored under flat config, so it never
+# restricted anything (eslint was linting the .mjs build scripts all along).
+#
+# Chunks are derived from the tree rather than hard-coded, which is what keeps
+# coverage total — a new directory is picked up automatically instead of being
+# silently skipped.
+
+set -uo pipefail
+shopt -s nullglob
+
+ROOT="packages/client"
+ESLINT="node_modules/.bin/eslint"
+
+# Never let one chunk hang the job the way the single run did.
+CHUNK_TIMEOUT="${LINT_CHUNK_TIMEOUT:-300}"
+
+targets=()
+
+# components/ split one level deeper — the granularity proven to complete.
+for d in "$ROOT"/components/*/; do targets+=("$d"); done
+for f in "$ROOT"/components/*.ts "$ROOT"/components/*.tsx; do targets+=("$f"); done
+
+# Every other child directory of the package.
+for d in "$ROOT"/*/; do
+  case "$(basename "$d")" in
+  components | node_modules | dist | dist_* | styled-system | coverage) continue ;;
+  esac
+  targets+=("$d")
+done
+
+# Loose files at the package root (vite/playwright/lingui configs live here).
+for f in "$ROOT"/*.ts "$ROOT"/*.tsx "$ROOT"/*.mjs "$ROOT"/*.cjs "$ROOT"/*.js; do
+  targets+=("$f")
+done
+
+if [ "${#targets[@]}" -eq 0 ]; then
+  echo "lint: no targets found under $ROOT — refusing to report success" >&2
+  exit 1
+fi
+
+status=0
+wedged=0
+for t in "${targets[@]}"; do
+  # Skip a directory with nothing lintable, so eslint does not fail the job
+  # complaining that everything in it is ignored.
+  if [ -d "$t" ] && [ -z "$(find "$t" -type f \
+    \( -name '*.ts' -o -name '*.tsx' -o -name '*.mjs' -o -name '*.cjs' -o -name '*.js' \) \
+    -not -path '*/node_modules/*' -print -quit)" ]; then
+    continue
+  fi
+
+  out=$(timeout "$CHUNK_TIMEOUT" "$ESLINT" --no-warn-ignored "$t" 2>&1)
+  rc=$?
+
+  # A chunk whose files are ALL ignored by eslint.config.mjs (public/, for
+  # one) is a fatal "…but all of the files matching the glob pattern…are
+  # ignored", not a finding. The chunk list comes from the directory tree and
+  # deliberately does not restate the config's ignore list, so forgive
+  # exactly this case — and only this one.
+  if [ "$rc" -ne 0 ] && [[ "$out" == *"are ignored"* ]]; then
+    continue
+  fi
+
+  [ -n "$out" ] && printf '%s\n' "$out"
+  if [ "$rc" -eq 124 ]; then
+    echo "lint: TIMED OUT after ${CHUNK_TIMEOUT}s on $t" >&2
+    wedged=1
+  elif [ "$rc" -ne 0 ]; then
+    status=1
+  fi
+done
+
+# A wedged chunk is a FAILURE, not a pass — the old job's whole problem was
+# that "no result" was indistinguishable from "no findings".
+if [ "$wedged" -ne 0 ]; then exit 1; fi
+exit "$status"

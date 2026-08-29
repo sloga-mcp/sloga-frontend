@@ -11,9 +11,17 @@ export default defineConfig([
       "**/i18n/catalogs/**",
       "**/i18n/locales/**",
 
+      // Vendored/generated assets served verbatim — never source. This is
+      // what exhausted the heap: `--ext .ts,.tsx` is IGNORED under flat
+      // config, so eslint was type-aware-parsing tesseract's two 4 MB
+      // single-line emscripten glue files (plus mediapipe's and a minified
+      // worker) on every run.
+      "**/public/**",
+
       // build artifacts
       "**/coverage/**",
       "**/dist/**",
+      "**/dist_*/**",
       "**/styled-system/**",
     ],
   },
