@@ -503,6 +503,17 @@ class Voice {
   #mlsKeyProvider: MlsKeyProvider | undefined;
   #e2eeWorker: Worker | undefined;
   /**
+   * Native screen audio observed the E2EE transform MISSING on one of its own
+   * publications during this call. Set at detection in
+   * `#assertScreenAudioEncrypted`; `#publishNativeScreenAudio` refuses to
+   * re-arm while it is set; cleared only in `disconnect()`.
+   *
+   * The reasoning for that lifetime — why "until the call is re-secured"
+   * resolves to "for the rest of this call" and not to any in-call recovery
+   * signal — is at the refusal site, next to the `if` it governs.
+   */
+  #screenAudioPlaintext = false;
+  /**
    * The shared web-audio context handed to livekit via
    * `webAudioMix: { audioContext }`. Owned HERE, not by the SDK — livekit
    * only closes contexts it created itself (boolean-option form), so passing
@@ -2415,6 +2426,10 @@ class Voice {
       this.#publishGate.clear();
       this.#pinnedMicId = undefined;
       this.#setCallEncryptionError(undefined);
+      // Clears with the call's other latched encryption state and nowhere
+      // else — a new call is the only thing that counts as re-secured for it
+      // (see `#publishNativeScreenAudio`).
+      this.#screenAudioPlaintext = false;
       this.#setCallNonEnrolled([]);
       // Reset the 6.5 signals so the next call's card never flashes this
       // call's latched mode/roster/attribution (FE-9a).
@@ -4110,6 +4125,46 @@ class Voice {
   async #publishNativeScreenAudio(
     room: Room,
   ): Promise<LocalTrackPublication | undefined> {
+    // 🔴 REFUSE to re-arm after this call has already published screen audio
+    // through a sender with no E2EE transform. Latched at detection, in
+    // `#assertScreenAudioEncrypted`.
+    //
+    // Without this the failure is per-share and self-repeating: the state
+    // machine returns to `IDLE`, the next share reaches this method again,
+    // and the only gate in its way is `room.isE2EEEnabled` — still true,
+    // because a dead worker does not turn E2EE off. Every retry then emits
+    // another burst of plaintext to the SFU, paying §7's residual (order tens
+    // to low hundreds of milliseconds, all of it server-visible) again per
+    // attempt.
+    //
+    // 🔴 "Until the call is re-secured" resolves to "for the rest of this
+    // call". That is a decision, and the cause this latch records is what
+    // decides it. `handleSender` opens
+    // `if (E2EE_FLAG in sender || !this.worker) return`, so the flag is
+    // absent because there is no live worker. That worker is `#e2eeWorker`:
+    // constructed once per call in `connect()`, handed to the `Room` at
+    // construction, and stored by livekit in the single assignment at
+    // `livekit-client.esm.mjs:14060` — the pinned 2.15.13 never writes it
+    // again, its own recovery line (`this.worker = new Worker('')`, `:14081`)
+    // being commented out. So NO in-call event rebuilds it. An MLS rotation
+    // installs fresh keys into the same worker; a `resecuring → active`
+    // transition reports the CONTROL plane recovering. Neither touches the
+    // media-plane transform, so clearing the latch on either would re-arm on
+    // evidence unrelated to the cause and re-open the window. The one event
+    // that does construct a new worker is a new call, so the latch is cleared
+    // exactly where the call's other latched encryption state is.
+    //
+    // The degrade is a silent share, the same one every other refusal here
+    // takes. The user was told loudly when it happened and the call chip
+    // stays not-encrypted for the rest of the call; a second share is not the
+    // place to re-litigate it.
+    if (this.#screenAudioPlaintext) {
+      console.error(
+        "[screen-audio] refusing to re-arm: this call already published screen audio through a sender with no E2EE transform",
+      );
+      return undefined;
+    }
+
     // 🔴 Filled in once the track exists, and the host unpublishes BY TRACK
     // rather than by source. Two windows make a by-source lookup silently
     // no-op: a death during the publish window (livekit registers the
@@ -4342,12 +4397,22 @@ class Voice {
         // `lk_e2ee` from `handleSender` for every local sender, so the mic and
         // the screen video published in the same negotiation are in the same
         // state. Only this track is asserted on and only this track is torn
-        // down, so the copy hedges the scope rather than implying the rest of
-        // the call is fine. Latching that into a call-level indicator is the
-        // real fix and is owed, not done here (§9).
+        // down.
+        //
+        // 🔴 Slice 3 could only HEDGE that scope ("may be affected"), because
+        // nothing here knew it. `#screenAudioScopeIsCallWide` now surveys the
+        // other local senders at detection and makes one direction knowable,
+        // so that direction says it plainly. The other stays hedged on
+        // purpose — see that method for why a PRESENT `lk_e2ee` is not
+        // evidence of health. Neither sentence claims the leak was
+        // prevented; "was sent" is the accurate tense in both states, since
+        // by the time this event reaches us `negotiate()` has returned and
+        // the track is on the wire.
         this.onErr(
           new Error(
-            t`Screen audio was sent without encryption and has been stopped. Some of it may already have reached the server unencrypted, and other tracks in this call may be affected as well.`,
+            failure.callWide
+              ? t`Screen audio was sent without encryption and has been stopped. Some of it may already have reached the server unencrypted, and everything else you are publishing in this call is unencrypted too. Leave the call if that matters to you.`
+              : t`Screen audio was sent without encryption and has been stopped. Some of it may already have reached the server unencrypted, and other tracks in this call may be affected as well.`,
           ),
         );
         return;
@@ -4379,11 +4444,98 @@ class Voice {
     if (!screenAudioActive()) return;
     if (!room.isE2EEEnabled) return;
     if (screenAudioSenderEncrypted(pub.track?.sender)) return;
+
+    // 🔴 Everything CALL-LEVEL happens here, synchronously, before the
+    // teardown is even started.
+    //
+    // The `LIVE` edge reports only after `teardownScreenAudio()` settles, and
+    // that is two bounded 2 s awaits. A latch set from the report would leave
+    // the call chip GREEN for up to four seconds after the client held proof
+    // that it should not be, and would leave a racing `toggleScreenshare`
+    // free to re-arm inside the gap. Detection is the moment the evidence
+    // exists, so it is also the moment the indicator and the re-arm refusal
+    // take effect.
+    const callWide = this.#screenAudioScopeIsCallWide(room, pub);
+    this.#screenAudioPlaintext = true;
+
+    // 🔴 Drive the EXISTING not-encrypted chip (`chipState`'s `latchedError`,
+    // highest precedence) rather than inventing a second indicator. Until
+    // this line the failure reached the user only as a dismissible per-track
+    // modal while the call's own lock stayed green — and the cause it records
+    // is not per-track: livekit stamps `lk_e2ee` from `handleSender` for
+    // EVERY local sender, so a dead worker puts the mic and the screen video
+    // published in the same negotiation in the same state, with only this
+    // track asserted on and only this track torn down.
+    //
+    // First writer wins, matching this signal's other two writers: an earlier
+    // structured cause is not worth overwriting with this one.
+    //
+    // 🔴 This deliberately does NOT make the call terminal-loud.
+    // `isTerminalLoud` requires the mode to be `negotiating` or undefined,
+    // and a call that reached `e2ee` is neither — its banner offers the
+    // Leave / Stay-unencrypted choice for a call that never secured. This
+    // call secured and then lost a transform; the chip is the indicator that
+    // state has, and widening the banner's trigger would change behavior for
+    // the two unrelated writers as well.
+    this.#setCallEncryptionError(
+      (prev) =>
+        prev ??
+        new Error(
+          `Screen-audio E2EE transform missing on publication ${pub.trackSid} ` +
+            `(lk_e2ee absent on the sender). Scope: ` +
+            (callWide
+              ? "call-wide — every other local sender is also missing it."
+              : "not determinable from the other local senders."),
+        ),
+    );
+
     // 🔴 The response differs by state — a failure during the publish window
     // must LATCH and refuse the pending publish, where one on a live
-    // publication must unpublish first — so the rule lives in the module that
-    // owns the state machine rather than here.
-    screenAudioEncryptionFailed();
+    // publication must discard and unpublish first — so the rule lives in the
+    // module that owns the state machine rather than here.
+    screenAudioEncryptionFailed(callWide);
+  }
+
+  /**
+   * Is the missing transform CALL-WIDE, or confined to this publication?
+   *
+   * livekit stamps `lk_e2ee` from `handleSender`, which runs for every local
+   * sender, so the dominant cause of an absent flag — no worker — cannot be
+   * confined to one track. Reading the sharer's other local senders answers
+   * the question slice 3's copy had to hedge.
+   *
+   * 🔴 The answer is deliberately ASYMMETRIC, and the asymmetry is the point.
+   * "Every other sender is also missing the flag" is proof the whole local
+   * publication set is plaintext: `sender[E2EE_FLAG] = true` runs
+   * synchronously at the end of `handleSender`, so its absence on a sender
+   * that exists means no transform was ever installed on it. The converse is
+   * NOT proof of health — a sender that acquired the flag while the worker
+   * was alive keeps it after the worker dies — so a mixed result, or no other
+   * senders at all, returns false and the copy stays hedged. Only the
+   * knowable direction gets specific copy.
+   *
+   * Cheap and synchronous on purpose: it runs on the detection path, ahead of
+   * the teardown, and must not add an await to it.
+   */
+  #screenAudioScopeIsCallWide(room: Room, except: LocalTrackPublication) {
+    let others = 0;
+    for (const other of room.localParticipant.trackPublications.values()) {
+      // Skip OURSELVES. `addTrackPublication` runs before the
+      // `LocalTrackPublished` emit (`livekit-client.esm.mjs:23910`-`:23911`),
+      // so the publication we were handed is already in this map and is the
+      // same instance — but `trackSid` is compared too, because the reconnect
+      // republish this assertion re-arms for constructs a FRESH publication
+      // object. Counting our own known-bad sender as an "other" would report
+      // call-wide on a share that is the only publication in the call.
+      if (other === except || other.trackSid === except.trackSid) continue;
+      const sender = other.track?.sender;
+      // No sender ⇒ nothing was ever negotiated for it, so it is evidence
+      // neither way.
+      if (!sender) continue;
+      if (screenAudioSenderEncrypted(sender)) return false;
+      others += 1;
+    }
+    return others > 0;
   }
 
   async toggleScreenshare() {

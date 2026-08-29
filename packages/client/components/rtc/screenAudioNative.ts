@@ -65,8 +65,21 @@ export type ScreenAudioFailure =
   | { kind: "start"; code: string }
   /** The capture died mid-share. */
   | { kind: "died"; reason: string }
-  /** The E2EE transform was not attached to this publication. */
-  | { kind: "not-encrypted" }
+  /**
+   * The E2EE transform was not attached to this publication.
+   *
+   * `callWide` is the SCOPE, surveyed by the HOST at detection (it needs the
+   * Room; this module never touches one). True means every OTHER local sender
+   * was also missing the transform, which makes the whole local publication
+   * set plaintext rather than just this track.
+   *
+   * 🔴 False does NOT mean the rest of the call is fine — it means the scope
+   * is not knowable from here. `lk_e2ee` is stamped at sender construction,
+   * so a sender carrying it proves a transform was installed THEN, never that
+   * the worker is still alive now. The host's copy states the scope in the
+   * true case and keeps slice 3's hedge in the false one.
+   */
+  | { kind: "not-encrypted"; callWide: boolean }
   /** The graph could not be built after the shell had already started. */
   | { kind: "graph" };
 
@@ -917,28 +930,46 @@ export function screenAudioSenderEncrypted(
  *   instead would enter `EXPECTED_STOP`, where the death branch is suppressed,
  *   and the publish would go ahead: the whole system-audio capture on the wire
  *   as plaintext while the signaling still stamps GCM.
- * - In `LIVE` there is a live publication, so the correct act is to UNPUBLISH
- *   FIRST — stop the plaintext sender — and then tear down normally.
+ * - In `LIVE` there is a live publication, so the correct act is to DISCARD
+ *   the worklet's queue synchronously — the ordinary stop path does not, and
+ *   this sender is known to carry no transform — then UNPUBLISH, and only
+ *   then tear down and report.
  *
  * Both fail LOUD. The caller does nothing but report; the state transition and
  * the teardown belong here so the two edges cannot drift apart.
  */
-export function screenAudioEncryptionFailed(): void {
+export function screenAudioEncryptionFailed(callWide: boolean): void {
   if (state === "STARTING") {
     // `die()` latches (so `beginScreenAudioPublish`/`finishScreenAudioPublish`
     // both refuse), discards the worklet queue, unpublishes if the publish was
     // already issued, tears down and reports.
-    die({ kind: "not-encrypted" });
+    die({ kind: "not-encrypted", callWide });
     return;
   }
   if (state === "LIVE") {
-    const host = session?.host;
-    // 🔴 UNPUBLISH FIRST, then report. Teardown's step 2 is the unpublish and
-    // step 0 disarms before it, so the plaintext sender stops before anything
-    // user-facing happens; reporting first would leave it producing while a
-    // modal opened.
+    const active = session;
+    // 🔴 DISCARD FIRST, synchronously, BEFORE teardown's first `await`.
+    //
+    // `die()` opens the death branch with `discardWorkletQueue`; this edge
+    // goes through `teardownScreenAudio()` instead, whose step 0 stops the
+    // ticks and releases the Channel but deliberately does NOT discard —
+    // an ordinary stop drains its tail rather than clipping it. That default
+    // is wrong here and only here: the sender on the far end of that drain is
+    // one we have just proven carries no transform, so every buffered frame
+    // it swallows is plaintext on the wire. Step 2 then awaits
+    // `settleWithin(unpublish, 2_000)`, which is how long the drain had.
+    //
+    // Ordering matches `die()`'s (discard → stop ticks → release channel), so
+    // both edges stop the source identically — which is what this function's
+    // docstring promises. The whole sequence is synchronous: step 0 has no
+    // suspension point, so no Channel frame can be forwarded in between.
+    if (active) discardWorkletQueue(active);
+    const host = active?.host;
+    // 🔴 UNPUBLISH BEFORE REPORTING. Teardown's step 2 is the unpublish and
+    // step 0 disarms before it; reporting first would open a modal over a
+    // publication that was still up.
     void teardownScreenAudio().finally(() =>
-      host?.report({ kind: "not-encrypted" }),
+      host?.report({ kind: "not-encrypted", callWide }),
     );
   }
 }
