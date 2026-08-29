@@ -8,6 +8,64 @@ import type { ChangelogResponse } from "./Changelog";
  * the newest entry once, automatically, next time they open the app.
  */
 export const CHANGELOGS: ChangelogResponse[] = [
+  // ==========================================================================
+  // 🔴 HELD BACK — DO NOT UNCOMMENT UNTIL THE FLAG IS LIT.
+  //
+  // Native Windows screen-share audio (WASAPI process-loopback), written as
+  // slice 3 of `windows-wasapi-screenshare-audio.md` — which requires the copy
+  // matrix AND these notes before the feature may be lit. The feature is DARK:
+  // `ENABLE_WIN_NATIVE_SCREEN_AUDIO` is off and the live legs (L1–L17 plus the
+  // §11.9 grandchild negative control) are still owed, so publishing now would
+  // describe behavior no user can reach.
+  //
+  // A COMMENT rather than an array entry on purpose. An entry that merely sits
+  // on main unbuilt is NOT safe: on 2026-08-20 exactly that reached users as a
+  // side effect of an unrelated feature deploy, describing more than had
+  // actually shipped.
+  //
+  // To publish, in the release that lights the flag:
+  //   1. uncomment and move to the TOP of the array;
+  //   2. set `id` to `sloga-<real date>`, `published_at` to that date, and
+  //      `web_version` to that release's version (required — Settings takes its
+  //      "Version:" line from the newest entry's `web_version`);
+  //   3. re-read it against what actually shipped. If slice 2 (window shares)
+  //      landed in the same release the "whole-screen shares only" bullet is
+  //      WRONG and must go.
+  //
+  // Copy constraints, load-bearing:
+  // - Windows DESKTOP SHELL only. Never claim it for the web — a Windows
+  //   browser tab has no native capture and still echoes the call — and never
+  //   for macOS or Linux.
+  // - The upstream Chromium bug was DRAFTED, NOT FILED (slice 0 leg 5). Say the
+  //   browser engine needs the fix; do not say a bug is open.
+  // - ENTIRE-SCREEN shares only. Window shares are slice 2 and carry no audio.
+  // - This entry CORRECTS v0.54.0's below, which tells Windows users to redo the
+  //   share with the system-audio box ticked. On a capable shell that box no
+  //   longer exists, so the old advice is impossible to follow — that
+  //   correction is why these notes gate the lighting.
+  // - PARAPHRASE the new dialog strings, never quote them: they are this
+  //   release's deploy gate markers, and quoting them here would put them in the
+  //   changelog chunk, so a dist grep would pass on the notes alone.
+  //
+  // {
+  //   id: "sloga-YYYY-MM-DD",
+  //   title: "Patch Notes",
+  //   published_at: "YYYY-MM-DDTHH:MM:SS.000Z",
+  //   web_version: "X.Y.Z",
+  //   markdown_content: `## vX.Y.Z — Windows screen shares carry your computer's sound
+  //
+  // ### 🔊 Screen sharing in the Windows desktop app
+  // - **Share your whole screen and your computer's sound goes with it — without dragging the call along.** Sloga now captures what your machine is playing directly, and leaves its own output out of that capture. Your game, your video and your music reach everyone; the voices of the people you are already talking to do not come back as an echo.
+  // - **There is no system-audio checkbox to remember any more.** The Windows picker used to offer one, and ticking it was what caused the echo. Sound follows your screen-share audio setting instead, so there is one less thing to get wrong.
+  // - **Whole-screen shares only, for now.** Sharing a single window still carries no sound.
+  // - **If the sound cannot start, the share tells you instead of going quietly silent** — on older Windows builds, for instance, or when a second copy of Sloga is already running and holding the capture.
+  //
+  // ### What has not changed
+  // - This is the Windows desktop app. Sharing system audio **in a web browser still picks up everything the machine is playing, the call included** — that one needs a fix in the browser engine itself, and we are chasing it upstream.
+  // - macOS and Linux screen shares are unchanged for now.
+  // `,
+  // },
+  // ==========================================================================
   // v0.54.0: the shell sweep — screen-share audio fixes + the v0.53.0 profile
   // release reaching desktop/Linux/Android. Copy constraints, load-bearing:
   // - Users are shown only the NEWEST entry automatically, so shell users
