@@ -85,6 +85,15 @@ jobs:
       - run: mise build:deps
       - run: mise lint
       - run: mise format
+        env:
+          # On a PUSH, diff against what the branch looked like before it, so
+          # every commit the push introduced is checked — not just the tip.
+          # Without this the push build compares main against itself, finds
+          # nothing changed, and passes having checked no files at all.
+          # Empty on pull_request (the task uses the merge-base with main),
+          # and all-zeros on a branch's first push, which the task rejects
+          # and falls back from.
+          FORMAT_BASE: ${{ github.event_name == 'push' && github.event.before || '' }}
 
   e2e:
     name: e2e Integration Test
