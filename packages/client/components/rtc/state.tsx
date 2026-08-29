@@ -1946,13 +1946,6 @@ class Voice {
       // identical reason: the native side should not be left running while
       // the renderer waits for an SFU timeout that never comes.
       void teardownScreenAudio();
-      // 🔴 A pre-existing bug this lands on top of: `Attenuation.detach()`
-      // runs only from `Voice.disconnect()`, which this handler does not
-      // call. A socket drop mid-share with someone speaking therefore applies
-      // a duck that nothing ever releases — every other application on the
-      // machine stays at 10 % volume until the user manually leaves the call.
-      // Detach is idempotent and this client never auto-rejoins after a drop.
-      this.#attenuation.detach();
     });
 
     room.addListener("participantConnected", (participant) => {
