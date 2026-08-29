@@ -4263,16 +4263,6 @@ class Voice {
   }
 
   /**
-   * The `lk_e2ee` assertion, per publication.
-   *
-   * Fails LOUD: a dead E2EE worker plus one publish sends the whole
-   * system-audio capture to the SFU as PLAINTEXT while the signaling still
-   * stamps GCM at participant level. Receivers fail-decrypt and drop, so the
-   * symptom is "the far end hears nothing" — indistinguishable from a quiet
-   * desktop, and server-visible plaintext media is the worst outcome in this
-   * feature's threat model.
-   */
-  /**
    * Turn a shared-module failure CODE into copy.
    *
    * 🔴 The copy lives here, not in `screenAudioNative.ts`. That module is
@@ -4333,8 +4323,32 @@ class Voice {
         );
         return;
       case "not-encrypted":
+        // 🔴 This sentence is deliberately NOT "could not be encrypted".
+        //
+        // §7 (WE56) is explicit that the `lk_e2ee` assertion is a DETECTOR,
+        // not a preventer: `LocalSenderCreated` fires inside `negotiate()`
+        // while `LocalTrackPublished` is emitted after it returns, so with no
+        // transform installed the encoder is already emitting — the residual
+        // is "order tens to low hundreds of milliseconds" of SERVER-VISIBLE
+        // PLAINTEXT MEDIA, which §7 calls the worst outcome in the threat
+        // model. "Could not be encrypted" tells the user nothing left the
+        // machine in the clear, so they have no reason to treat it as a
+        // disclosure. It has to say that some already did.
+        //
+        // 🔴 And it must not confine the problem to screen audio. §7 records
+        // that the assertion cannot false-positive on a timing race, so when
+        // it fires the transform genuinely was not installed — and the cause
+        // it names is a dead E2EE worker, which is call-wide: livekit sets
+        // `lk_e2ee` from `handleSender` for every local sender, so the mic and
+        // the screen video published in the same negotiation are in the same
+        // state. Only this track is asserted on and only this track is torn
+        // down, so the copy hedges the scope rather than implying the rest of
+        // the call is fine. Latching that into a call-level indicator is the
+        // real fix and is owed, not done here (§9).
         this.onErr(
-          new Error(t`Screen audio could not be encrypted and was stopped.`),
+          new Error(
+            t`Screen audio was sent without encryption and has been stopped. Some of it may already have reached the server unencrypted, and other tracks in this call may be affected as well.`,
+          ),
         );
         return;
       case "graph":
@@ -4351,6 +4365,16 @@ class Voice {
     }
   }
 
+  /**
+   * The `lk_e2ee` assertion, per publication.
+   *
+   * Fails LOUD: a dead E2EE worker plus one publish sends the whole
+   * system-audio capture to the SFU as PLAINTEXT while the signaling still
+   * stamps GCM at participant level. Receivers fail-decrypt and drop, so the
+   * symptom is "the far end hears nothing" — indistinguishable from a quiet
+   * desktop, and server-visible plaintext media is the worst outcome in this
+   * feature's threat model.
+   */
   #assertScreenAudioEncrypted(room: Room, pub: LocalTrackPublication) {
     if (!screenAudioActive()) return;
     if (!room.isE2EEEnabled) return;
@@ -4676,6 +4700,10 @@ class Voice {
                   return { name: k, fullName: v.fullName };
                 }),
                 audio: !!screenAudioTrack,
+                // Computed above from the RAW track, before the shield's
+                // processor could swap what `mediaStreamTrack` returns. The
+                // modal must not re-derive it — see the prop's docstring.
+                entireScreen,
                 callback: async (qualityName, audio) => {
                   callback(qualityName, audio);
                   // Publish-gate coexistence (R2-8): the quality modal's

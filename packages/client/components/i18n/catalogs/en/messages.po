@@ -5696,10 +5696,6 @@ msgid "Scheduling does not support attachments yet"
 msgstr "Scheduling does not support attachments yet"
 
 #: components/rtc/state.tsx
-msgid "Screen audio could not be encrypted and was stopped."
-msgstr "Screen audio could not be encrypted and was stopped."
-
-#: components/rtc/state.tsx
 #: components/rtc/state.tsx
 msgid "Screen audio could not start; sharing without it."
 msgstr "Screen audio could not start; sharing without it."
@@ -5711,6 +5707,10 @@ msgstr "Screen audio is unavailable in this window. If you are running a second 
 #: components/rtc/state.tsx
 msgid "Screen audio stopped. The screen is still being shared."
 msgstr "Screen audio stopped. The screen is still being shared."
+
+#: components/rtc/state.tsx
+msgid "Screen audio was sent without encryption and has been stopped. Some of it may already have reached the server unencrypted, and other tracks in this call may be affected as well."
+msgstr "Screen audio was sent without encryption and has been stopped. Some of it may already have reached the server unencrypted, and other tracks in this call may be affected as well."
 
 #: components/app/interface/settings/user/voice/OverlaySettings.tsx
 msgid "Screen position"
@@ -6195,8 +6195,8 @@ msgid "Sloga connects your device straight to your server. It never sees or stor
 msgstr "Sloga connects your device straight to your server. It never sees or stores your Jellyfin password."
 
 #: components/modal/modals/ScreenShareSettings.tsx
-msgid "Sloga couldn't capture your computer's audio for this share. Your screen is still being shared."
-msgstr "Sloga couldn't capture your computer's audio for this share. Your screen is still being shared."
+msgid "Sloga couldn't capture your computer's audio for this share."
+msgstr "Sloga couldn't capture your computer's audio for this share."
 
 #: components/ui/components/features/profiles/ProfileBadges.tsx
 msgid "Sloga Developer"
@@ -6949,8 +6949,8 @@ msgid "This share has no audio. To include sound, restart the share and pick a t
 msgstr "This share has no audio. To include sound, restart the share and pick a tab or your entire screen with \"Share system audio\" enabled."
 
 #: components/modal/modals/ScreenShareSettings.tsx
-msgid "This share is silent because \"Share audio\" is turned off."
-msgstr "This share is silent because \"Share audio\" is turned off."
+msgid "This share is silent because \"Share audio\" is turned off. Tick it above and restart the share to include your computer's sound."
+msgstr "This share is silent because \"Share audio\" is turned off. Tick it above and restart the share to include your computer's sound."
 
 #: src/interface/channels/text/TextChannel.tsx
 msgid "This thread is archived"
