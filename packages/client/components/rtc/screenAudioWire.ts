@@ -73,18 +73,27 @@ export interface Timings {
  * the watchdog fires on the stall it was sized to survive.
  */
 export function validateTimings(raw: Partial<Timings> | undefined): Timings {
-  const positive = (value: unknown, fallback: number) =>
+  // 🔴 A FLOOR, not just a type check. Rejecting only non-numbers guards
+  // against a shell that OMITS a value and does nothing about one that sends a
+  // WRONG value: a units bug shipping `frameWatchdogMs: 2.5` passes any
+  // is-it-a-number test and then kills every share ~2.5 ms in, with a modal.
+  // §3.6.5 states the inequality (N > the measured survivable wedge) as the
+  // check, so encode the inequality rather than a weaker proxy for it.
+  const atLeast = (value: unknown, floor: number) =>
     typeof value === "number" && Number.isFinite(value) && value > 0
-      ? value
-      : fallback;
+      ? Math.max(value, floor)
+      : floor;
   return {
-    tickCadenceMs: positive(raw?.tickCadenceMs, 250),
-    quantaPerTick: positive(raw?.quantaPerTick, 94),
-    frameWatchdogMs: positive(raw?.frameWatchdogMs, 2500),
-    relayWatchdogMs: positive(raw?.relayWatchdogMs, 2500),
-    heartbeatQuanta: positive(raw?.heartbeatQuanta, 940),
-    jitterTargetMs: positive(raw?.jitterTargetMs, 100),
-    frameMs: positive(raw?.frameMs, 10),
+    tickCadenceMs: atLeast(raw?.tickCadenceMs, 250),
+    quantaPerTick: atLeast(raw?.quantaPerTick, 94),
+    // Above the 2430 ms underrun slice 0 measured from a 2 s wedge.
+    frameWatchdogMs: atLeast(raw?.frameWatchdogMs, 2500),
+    relayWatchdogMs: atLeast(raw?.relayWatchdogMs, 2500),
+    heartbeatQuanta: atLeast(raw?.heartbeatQuanta, 940),
+    // Slice 0 measured p99.9 transport at 84 ms, so a target under 100 ms
+    // underruns outright.
+    jitterTargetMs: atLeast(raw?.jitterTargetMs, 100),
+    frameMs: atLeast(raw?.frameMs, 10),
   };
 }
 

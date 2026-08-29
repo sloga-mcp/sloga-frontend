@@ -105,6 +105,27 @@ test("the frame watchdog default clears the measured survivable wedge", () => {
   assert.ok(validateTimings(undefined).frameWatchdogMs > 2430);
 });
 
+test("🔴 a WRONG value is floored, not just a missing one", () => {
+  // The units bug: a shell shipping seconds where milliseconds were meant
+  // passes every is-it-a-number check and then kills each share 2.5 ms in.
+  // §3.6.5 records the inequality as the check, so the check is the
+  // inequality.
+  const t = validateTimings({
+    frameWatchdogMs: 2.5,
+    relayWatchdogMs: 2.5,
+    jitterTargetMs: 1,
+  });
+  assert.ok(t.frameWatchdogMs > 2430);
+  assert.ok(t.relayWatchdogMs > 2430);
+  assert.ok(t.jitterTargetMs >= 100);
+});
+
+test("a value ABOVE the floor is respected — the floor is not a clamp", () => {
+  const t = validateTimings({ frameWatchdogMs: 9000, jitterTargetMs: 250 });
+  assert.equal(t.frameWatchdogMs, 9000);
+  assert.equal(t.jitterTargetMs, 250);
+});
+
 test("garbage from a mismatched shell is replaced, not adopted", () => {
   const t = validateTimings({
     frameWatchdogMs: 0,
