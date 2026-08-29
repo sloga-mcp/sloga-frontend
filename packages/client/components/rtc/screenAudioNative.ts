@@ -238,26 +238,48 @@ export function primeScreenAudioProbe(): void {
 }
 
 /**
- * The single capability choke point: build flag AND platform AND the shell's
- * own probe (which also carries the `SLOGA_NO_SCREEN_AUDIO=1` escape).
+ * 🔴 Should the browser's "Also share system audio" checkbox be REMOVED?
  *
- * 🔴 Callers must key `audio: false` into getDisplayMedia on THIS, never on
- * whether the user wants screen audio. The two are different questions and
- * conflating them resurrects the measured-broken browser loopback on the one
- * shell this feature fixes.
+ * This is deliberately SYNCHRONOUS and deliberately NOT the same question as
+ * "can we run the native capture". Fusing them is a silent regression in the
+ * direction of the original bug: if the probe has not answered — and room join,
+ * where it is primed, is the busiest moment for both the shell and the
+ * renderer — a fused answer of `false` does not merely skip the native
+ * capture, it hands the user back the checkbox. They tick it, and the
+ * measured-no-op `restrictOwnAudio` loopback re-broadcasts every other
+ * participant's voice into the call: the exact echo this design exists to
+ * eliminate, on the exact shell it exists to fix.
+ *
+ * So the checkbox is suppressed on what is knowable WITHOUT waiting: the build
+ * flag, the platform, and the presence of a Tauri bridge. A shell that then
+ * turns out to be incapable gives a SILENT share, which §9 already names as
+ * the acceptable degrade — not a loopback share.
+ */
+export function screenAudioPickerAudioSuppressed(): boolean {
+  if (!CONFIGURATION.ENABLE_WIN_NATIVE_SCREEN_AUDIO) return false;
+  if (!isWindowsShell()) return false;
+  // A Tauri bridge is what distinguishes the desktop shell from a web tab on
+  // Windows; without it the browser checkbox is the only source there is.
+  return !!tauriInvoke();
+}
+
+/**
+ * Can the native capture actually run? Build flag AND platform AND the shell's
+ * own probe (which also carries the `SLOGA_NO_SCREEN_AUDIO=1` escape).
  *
  * 🔴 BOUNDED, because this sits on the user-gesture path immediately before
  * `getDisplayMedia`. An unbounded await here is not merely slow: exceed the
  * transient-activation window and `getDisplayMedia` rejects for lost
  * activation, which breaks SCREENSHARING ENTIRELY on that shell rather than
- * just its audio — and a probe that never resolves leaves the share button
- * doing nothing at all, permanently, since the promise is cached. A shell
- * that has not answered in 200 ms is treated as not capable, which degrades
- * to today's behavior.
+ * just its audio — and a probe that never resolves would leave the share
+ * button doing nothing at all, permanently, since the promise is cached.
+ *
+ * An unsettled probe answers "no", which is safe HERE precisely because the
+ * checkbox question is answered separately above: the degrade is a silent
+ * share, never a loopback one.
  */
 export async function screenAudioSupported(): Promise<boolean> {
-  if (!CONFIGURATION.ENABLE_WIN_NATIVE_SCREEN_AUDIO) return false;
-  if (!isWindowsShell()) return false;
+  if (!screenAudioPickerAudioSuppressed()) return false;
   if (probeSettled) return !!probeResult?.available;
   const raced = await Promise.race([
     probe(),
@@ -560,11 +582,19 @@ export async function captureScreenAudio(options: {
   // covers both halves of the window.
   const abandon = () => {
     pendingDeaths = [];
+    lastDeathReason = "";
     adoptedGeneration = 0;
     state = "IDLE";
     releaseRawChannel(channel);
-    void invoke("screen_audio_disown", { generation }).catch(() => undefined);
-    void invoke("screen_audio_stop").catch(() => undefined);
+    // 🔴 ONE verb, and it carries the generation.
+    //
+    // `stop` is generation-scoped on the shell side for the same reason
+    // `disown` is: this returns the machine to `IDLE` synchronously while the
+    // IPC is still in flight, so a user who re-shares immediately would
+    // otherwise have their NEW capture killed by this stale stop landing in
+    // `CAPTURING(G′)`. Sending `disown` as well would be a second verb with
+    // the same effect and one more row to keep consistent.
+    void invoke("screen_audio_stop", { generation }).catch(() => undefined);
   };
   if (pendingDeaths.length > 0) {
     abandon();
@@ -939,6 +969,12 @@ function die(failure: ScreenAudioFailure) {
   const active = session;
   state = "DEAD";
   if (!active) {
+    // `STARTING` with no session yet: an in-flight `captureScreenAudio` is
+    // still building the graph and would otherwise carry on and publish. Not
+    // reachable today — `onShellDeath` latches rather than dying while there
+    // is no session, and the E2EE path needs a publication — but it is one
+    // new call site away from being live, and the cost of the flag is nothing.
+    startCancelled = true;
     state = "IDLE";
     return;
   }
@@ -1058,7 +1094,11 @@ async function runTeardownSteps(active: Session, unpublish: boolean) {
   // the life of the page and every subsequent share is silent with no
   // user-visible cause.
   if (invoke) {
-    await settleWithin(invoke("screen_audio_stop"), 2_000, "stop");
+    await settleWithin(
+      invoke("screen_audio_stop", { generation: active.generation }),
+      2_000,
+      "stop",
+    );
   }
 }
 
@@ -1136,17 +1176,22 @@ export async function teardownScreenAudio(): Promise<void> {
   }
 }
 
-/** Diagnostics for the live legs — L13 cannot separate "the relay was
- *  throttled" from "the audio render thread died" without both stamps. */
-export function screenAudioDiagnostics():
-  | {
-      state: State;
-      generation: number;
-      sinceFrameMs: number;
-      sinceTickMs: number;
-      lastReceivedSeq: number;
-    }
-  | undefined {
+interface ScreenAudioDiagnostics {
+  state: State;
+  generation: number;
+  /** 🔴 L13's discriminator. Once §11.7 retired "the audio engine went idle",
+   *  the two surviving causes — the relay was throttled, or the audio render
+   *  thread died — present IDENTICALLY at the shell-side tick counter. These
+   *  two stamps are what separates them. */
+  sinceFrameMs: number;
+  sinceTickMs: number;
+  lastReceivedSeq: number;
+  /** §11.9's recorded verdict, so the lighting gate can be read from the same
+   *  place as everything else. */
+  exclusion?: { check: string; conclusivelyPassed: boolean; detail?: string };
+}
+
+export function screenAudioDiagnostics(): ScreenAudioDiagnostics | undefined {
   if (!session) return undefined;
   const now = performance.now();
   return {
@@ -1155,5 +1200,28 @@ export function screenAudioDiagnostics():
     sinceFrameMs: now - session.lastFrameDeliveredAt,
     sinceTickMs: now - session.lastTickDeliveredAt,
     lastReceivedSeq: session.lastReceivedSeq,
+    exclusion: probeResult?.exclusion,
+  };
+}
+
+/**
+ * 🔴 A REACHABLE debug surface, because two module-scope exports in a minified
+ * bundle are not one.
+ *
+ * L13 requires both delivery stamps in its recorded output and §11.9's verdict
+ * gates lighting, and neither can be read from devtools against a bundled
+ * dist without this. Installed only when the build flag is lit, so a dark
+ * build adds no global; read-only, and it exposes counters and a verdict —
+ * never audio, never a track, never a key.
+ */
+if (
+  typeof window !== "undefined" &&
+  CONFIGURATION.ENABLE_WIN_NATIVE_SCREEN_AUDIO
+) {
+  (window as unknown as { __slogaScreenAudio?: unknown }).__slogaScreenAudio = {
+    diagnostics: screenAudioDiagnostics,
+    exclusion: screenAudioExclusionStatus,
+    supported: screenAudioSupported,
+    pickerAudioSuppressed: screenAudioPickerAudioSuppressed,
   };
 }

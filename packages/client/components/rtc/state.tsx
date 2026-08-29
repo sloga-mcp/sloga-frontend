@@ -43,12 +43,6 @@ import E2EEWorker from "livekit-client/e2ee-worker?worker";
 import { DenoiseTrackProcessor } from "livekit-rnnoise-processor";
 import { Channel, Message } from "stoat.js";
 
-// The non-hook macro: `Voice` is a class, not a component, so `useLingui()`
-// has no reactive scope to attach to. Compiles to `i18n._(...)` and falls back
-// to the source string when no catalog is loaded, so the worst case is
-// today's behavior with the strings now extractable.
-import { t } from "@lingui/core/macro";
-
 import {
   type ScreenAudioFailure,
   beginScreenAudioPublish,
@@ -57,6 +51,7 @@ import {
   primeScreenAudioProbe,
   screenAudioActive,
   screenAudioEncryptionFailed,
+  screenAudioPickerAudioSuppressed,
   screenAudioSenderEncrypted,
   screenAudioSupported,
   teardownScreenAudio,
@@ -4110,6 +4105,20 @@ class Voice {
     // nothing — and because the DOM `"ended"` event is unreachable for a
     // destination-node track, livekit's auto-unpublish net cannot clean up
     // after it either.
+    // 🔴 §3.4 E3, checked BEFORE the shell is asked to capture anything.
+    //
+    // It is checked again immediately before `publishTrack` below, because the
+    // gate can be acquired across the awaits in between. This first check
+    // exists so a gated share does not spin up a native capture and an
+    // AudioContext that the gate says must not exist, only to tear them down.
+    if (this.#publishGate.size > 0) {
+      console.error(
+        "[screen-audio] not starting a capture while the publish gate is held:",
+        [...this.#publishGate].join(", "),
+      );
+      return undefined;
+    }
+
     // Assigned below, after the gate checks, and read by the host closure
     // above — so it cannot be `const`.
     // eslint-disable-next-line prefer-const
@@ -4254,17 +4263,27 @@ class Voice {
    *
    * 🔴 The copy lives here, not in `screenAudioNative.ts`. That module is
    * shared with the Linux feature, so a string written there would have to be
-   * duplicated; and every user-facing string in this client is a lingui macro
-   * with ~70 catalogs behind it, which a raw literal in a cross-platform
-   * module silently bypasses.
+   * duplicated on both sides.
    *
-   * Slice 3's copy matrix owns the final wording AND the surface. Until then
-   * these route through `onErr`, which is a blocking modal rather than the
-   * toast the design asks for — recorded here rather than papered over,
-   * because it is the one place this implementation knowingly differs from
-   * §3.4, and because the same slice has to fix
-   * `ScreenShareSettings.tsx`'s Windows instructions, which tell the user to
-   * re-share and tick a checkbox the capable path has removed.
+   * 🔴 THESE STRINGS ARE NOT LOCALIZED, and that is a deliberate, temporary
+   * state rather than an oversight. The obvious fix — ``t`…` `` from
+   * `@lingui/core/macro` — COMPILES AND RENDERS but is never EXTRACTED here:
+   * `lingui.config.ts` sets `macro.corePackage: ["@lingui-solid/solid"]`,
+   * which REPLACES the default `["@lingui/core/macro"]` rather than adding to
+   * it. The proof is already in the tree: `EditCategory.tsx` uses that macro,
+   * its `<Trans>` strings appear in `catalogs/en/messages.po` and its
+   * ``t`New name` `` appears in no catalog at all. A macro that silently fails
+   * to extract is worse than a plain string, because it looks correct.
+   *
+   * So: plain strings, and slice 3 — which owns the copy matrix, is REQUIRED
+   * for lighting, and has to fix `ScreenShareSettings.tsx`'s now-impossible
+   * Windows instructions anyway — localizes them, after the `corePackage`
+   * config bug is fixed and an extract run confirms it.
+   *
+   * Slice 3 also owns the SURFACE: these route through `onErr`, a blocking
+   * modal, rather than the toast §3.4 asks for. Recorded rather than papered
+   * over; it is the one place this implementation knowingly differs from the
+   * design.
    */
   #reportScreenAudioFailure(failure: ScreenAudioFailure) {
     switch (failure.kind) {
@@ -4273,27 +4292,27 @@ class Voice {
           // The multi-instance case, named so it is diagnosable from a user
           // report rather than landing as an unrecognizable capability loss.
           this.onErr(
-            t`Screen audio is unavailable in this window. If you are running a second copy of Sloga, only the first one can share system audio.`,
+            "Screen audio is unavailable in this window. If you are running a second copy of Sloga, only the first one can share system audio.",
           );
           return;
         }
         if (failure.code === "unsupported") {
-          this.onErr(t`This version of Windows cannot share system audio.`);
+          this.onErr("This version of Windows cannot share system audio.");
           return;
         }
         if (failure.code === "disabled-by-env") return; // deliberate opt-out
-        this.onErr(t`Screen audio could not start; sharing without it.`);
+        this.onErr("Screen audio could not start; sharing without it.");
         return;
       case "not-encrypted":
-        this.onErr(t`Screen audio could not be encrypted and was stopped.`);
+        this.onErr("Screen audio could not be encrypted and was stopped.");
         return;
       case "graph":
-        this.onErr(t`Screen audio could not start; sharing without it.`);
+        this.onErr("Screen audio could not start; sharing without it.");
         return;
       case "died":
       default:
         console.error("[screen-audio] died:", failure);
-        this.onErr(t`Screen audio stopped. The screen is still being shared.`);
+        this.onErr("Screen audio stopped. The screen is still being shared.");
     }
   }
 
@@ -4369,14 +4388,19 @@ class Voice {
           qualities[this.#settings.screenShareQuality || "low"] ||
           qualities.low!;
 
-        // 🔴 CAPABILITY, never preference. On a capable shell this removes
-        // the picker's "Also share system audio" checkbox entirely, and it
-        // must do so even when the user's stored setting says they do NOT
-        // want screen audio: otherwise a capable user with the setting off
-        // sees the checkbox, ticks it, and resurrects the measured-broken
-        // browser loopback on the exact shell this feature exists to fix.
-        // Whether the NATIVE capture then runs is the preference's business,
-        // below.
+        // 🔴 TWO questions, deliberately answered separately.
+        //
+        // (1) Should the picker's "Also share system audio" checkbox be gone?
+        //     CAPABILITY, never preference — a capable user with the setting
+        //     off would otherwise see the checkbox, tick it, and resurrect the
+        //     measured-broken browser loopback on the exact shell this feature
+        //     fixes. Synchronous, so a slow shell cannot answer "no" and hand
+        //     the checkbox back.
+        // (2) Can the native capture actually run? That needs the shell's
+        //     probe, and if it has not settled the answer is no — which gives
+        //     a SILENT share, the acceptable degrade, rather than a loopback
+        //     one.
+        const suppressPickerAudio = screenAudioPickerAudioSuppressed();
         const nativeScreenAudio = await screenAudioSupported();
 
         const localTrack = await room.localParticipant.setScreenShareEnabled(
@@ -4404,7 +4428,13 @@ class Voice {
             // Nothing may call it a fix again until a leg shows
             // `getSettings().restrictOwnAudio === true`. livekit's
             // AudioCaptureOptions type lags the spec, hence the cast.
-            audio: nativeScreenAudio
+            // 🔴 Keyed on the SYNCHRONOUS suppression answer, never on
+            // whether the native capture turned out to be runnable. If the
+            // shell's probe has not settled, "not capable" must mean a SILENT
+            // share, not a share with the broken checkbox back in the picker
+            // — the latter degrades in the direction of the very echo this
+            // exists to remove.
+            audio: suppressPickerAudio
               ? false
               : ({ restrictOwnAudio: true } as AudioCaptureOptions),
           },
