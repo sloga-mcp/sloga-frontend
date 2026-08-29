@@ -700,6 +700,41 @@ export function screenAudioSenderEncrypted(
   return "lk_e2ee" in sender;
 }
 
+/**
+ * What to do when [`screenAudioSenderEncrypted`] says no.
+ *
+ * 🔴 The two states take DIFFERENT edges and the difference is load-bearing:
+ *
+ * - In `STARTING` this is a **death**. The publish window spans an SDP
+ *   negotiation — hundreds of milliseconds, unbounded on a congested link —
+ *   and the failure must LATCH so a publish that has not been issued yet is
+ *   REFUSED rather than completed. Routing it through the ordinary stop path
+ *   instead would enter `EXPECTED_STOP`, where the death branch is suppressed,
+ *   and the publish would go ahead: the whole system-audio capture on the wire
+ *   as plaintext while the signaling still stamps GCM.
+ * - In `LIVE` there is a live publication, so the correct act is to UNPUBLISH
+ *   FIRST — stop the plaintext sender — and then tear down normally.
+ *
+ * Both fail LOUD. The caller does nothing but report; the state transition and
+ * the teardown belong here so the two edges cannot drift apart.
+ */
+export function screenAudioEncryptionFailed(): void {
+  const message = "Screen audio could not be encrypted and was stopped.";
+  if (state === "STARTING") {
+    // `die()` latches (so `beginScreenAudioPublish`/`finishScreenAudioPublish`
+    // both refuse), discards the worklet queue, unpublishes if the publish was
+    // already issued, tears down and toasts.
+    die(message);
+    return;
+  }
+  if (state === "LIVE") {
+    const host = session?.host;
+    // Teardown's step 2 IS the unpublish, and step 0 disarms first so the
+    // shell's terminal response cannot arrive at an armed renderer.
+    void teardownScreenAudio().finally(() => host?.toast(message));
+  }
+}
+
 /** True while a session exists that the caller is expected to be publishing. */
 export function screenAudioActive(): boolean {
   return state === "STARTING" || state === "LIVE";

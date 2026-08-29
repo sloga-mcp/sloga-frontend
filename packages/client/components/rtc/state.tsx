@@ -48,6 +48,7 @@ import {
   captureScreenAudio,
   finishScreenAudioPublish,
   screenAudioActive,
+  screenAudioEncryptionFailed,
   screenAudioSenderEncrypted,
   screenAudioSupported,
   teardownScreenAudio,
@@ -4203,18 +4204,11 @@ class Voice {
     if (!screenAudioActive()) return;
     if (!room.isE2EEEnabled) return;
     if (screenAudioSenderEncrypted(pub.track?.sender)) return;
-    this.onErr("Screen audio could not be encrypted and was stopped.");
-    void (async () => {
-      // Unpublish FIRST, then tear down: the plaintext sender must stop
-      // before anything else, and teardown's own unpublish step is then a
-      // no-op.
-      try {
-        if (pub.track) await room.localParticipant.unpublishTrack(pub.track);
-      } catch (error) {
-        console.error("[screen-audio] unpublish after E2EE failure", error);
-      }
-      await teardownScreenAudio();
-    })();
+    // 🔴 The response differs by state — a failure during the publish window
+    // must LATCH and refuse the pending publish, where one on a live
+    // publication must unpublish first — so the rule lives in the module that
+    // owns the state machine rather than here.
+    screenAudioEncryptionFailed();
   }
 
   async toggleScreenshare() {
