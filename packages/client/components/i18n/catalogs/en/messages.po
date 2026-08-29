@@ -4307,6 +4307,10 @@ msgstr "New Event"
 msgid "New messages since {0}"
 msgstr "New messages since {0}"
 
+#: components/modal/modals/EditCategory.tsx
+msgid "New name"
+msgstr "New name"
+
 #: components/modal/modals/EditPassword.tsx
 #: components/auth/src/flows/Form.tsx
 msgid "New Password"
@@ -4635,6 +4639,10 @@ msgstr "One row per reserved item (ItemId, Name, Class, Note, Plus) — for spre
 #: components/ui/components/features/profiles/ProfileStatus.tsx
 msgid "Online"
 msgstr "Online"
+
+#: components/modal/modals/ScreenShareSettings.tsx
+msgid "Only entire-screen shares carry your computer's audio. Restart the share and pick a whole screen instead of a window."
+msgstr "Only entire-screen shares carry your computer's audio. Restart the share and pick a whole screen instead of a window."
 
 #: src/interface/navigation/servers/UserMenu.tsx
 msgid "Only mentions will notify you"
@@ -5687,6 +5695,23 @@ msgstr "Schedule"
 msgid "Scheduling does not support attachments yet"
 msgstr "Scheduling does not support attachments yet"
 
+#: components/rtc/state.tsx
+msgid "Screen audio could not be encrypted and was stopped."
+msgstr "Screen audio could not be encrypted and was stopped."
+
+#: components/rtc/state.tsx
+#: components/rtc/state.tsx
+msgid "Screen audio could not start; sharing without it."
+msgstr "Screen audio could not start; sharing without it."
+
+#: components/rtc/state.tsx
+msgid "Screen audio is unavailable in this window. If you are running a second copy of Sloga, only the first one can share system audio."
+msgstr "Screen audio is unavailable in this window. If you are running a second copy of Sloga, only the first one can share system audio."
+
+#: components/rtc/state.tsx
+msgid "Screen audio stopped. The screen is still being shared."
+msgstr "Screen audio stopped. The screen is still being shared."
+
 #: components/app/interface/settings/user/voice/OverlaySettings.tsx
 msgid "Screen position"
 msgstr "Screen position"
@@ -6168,6 +6193,10 @@ msgstr "Sloga cannot tell which screen you are sharing, so it will not hand over
 #: components/ui/components/features/voice/watch/JellyfinConnect.tsx
 msgid "Sloga connects your device straight to your server. It never sees or stores your Jellyfin password."
 msgstr "Sloga connects your device straight to your server. It never sees or stores your Jellyfin password."
+
+#: components/modal/modals/ScreenShareSettings.tsx
+msgid "Sloga couldn't capture your computer's audio for this share. Your screen is still being shared."
+msgstr "Sloga couldn't capture your computer's audio for this share. Your screen is still being shared."
 
 #: components/ui/components/features/profiles/ProfileBadges.tsx
 msgid "Sloga Developer"
@@ -6919,6 +6948,10 @@ msgstr "This session is playing from {0}. Sign in to that Jellyfin to watch alon
 msgid "This share has no audio. To include sound, restart the share and pick a tab or your entire screen with \"Share system audio\" enabled."
 msgstr "This share has no audio. To include sound, restart the share and pick a tab or your entire screen with \"Share system audio\" enabled."
 
+#: components/modal/modals/ScreenShareSettings.tsx
+msgid "This share is silent because \"Share audio\" is turned off."
+msgstr "This share is silent because \"Share audio\" is turned off."
+
 #: src/interface/channels/text/TextChannel.tsx
 msgid "This thread is archived"
 msgstr "This thread is archived"
@@ -6938,6 +6971,10 @@ msgstr "This username is already taken."
 #: components/i18n/errors.ts
 msgid "This username is not allowed."
 msgstr "This username is not allowed."
+
+#: components/rtc/state.tsx
+msgid "This version of Windows cannot share system audio."
+msgstr "This version of Windows cannot share system audio."
 
 #: components/modal/modals/ResetBotToken.tsx
 msgid "This will invalidate the current token and stop any existing instances of the bot from running."
