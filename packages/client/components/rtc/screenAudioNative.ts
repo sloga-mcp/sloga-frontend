@@ -350,21 +350,40 @@ function evaluateWatchdogs() {
   const framesStale = framesStaleFor > active.timings.frameWatchdogMs;
   const ticksStale = ticksStaleFor > active.timings.relayWatchdogMs;
 
+  // 🔴 §3.6.4 invariant 2, stated as the three-way decision it actually is —
+  // BOTH loops are conditioned on the other's freshness, not just loop 8.
+  //
+  // Both stale is a MAIN-THREAD WEDGE: nothing was delivered because nothing
+  // was running, and slice 0 measured that state as survivable (a 2 s wedge
+  // produced one silent gap, 2.1 s of stale audio discarded, and the queue
+  // back at target within ~608 ms, with no permanent latency growth). Tearing
+  // down there kills a share that was about to recover on its own.
+  //
+  // The quiescence barrier already makes this hard to observe — arrivals
+  // refresh both stamps before the barrier is ever scheduled — but the
+  // invariant is not "unreachable in practice", it is a rule, and the loop
+  // that would violate it is the one whose trip is a teardown.
+  if (framesStale && ticksStale) return;
+
   if (framesStale) {
-    // Loop 7. The feed is continuous BY CONSTRUCTION — the shell synthesizes
-    // silence for capture gaps and a gated session still emits the keepalive
-    // — so "no frames for N" unambiguously means transport or producer death,
-    // never quiet audio. It is also the ONLY detector of a wedged Tauri
-    // channel fetch, whose rejection is swallowed by a bare `.catch` in the
-    // injected JS while `Channel::send` keeps returning Ok.
+    // Loop 7 — frames stale while ticks are FRESH: the main thread is running
+    // its own tasks and our audio graph is alive, so the producer or the
+    // transport died. The feed is continuous BY CONSTRUCTION — the shell
+    // synthesizes silence for capture gaps and a gated session still emits the
+    // keepalive — so this unambiguously means death, never quiet audio. It is
+    // also the ONLY detector of a wedged Tauri channel fetch, whose rejection
+    // is swallowed by a bare `.catch` in the injected JS while
+    // `Channel::send` keeps returning Ok.
     die("screen audio stopped (no frames from the capture)");
     return;
   }
 
-  // 🔴 Loop 8 fires only when loop 7 is QUIET: ticks stale AND frames fresh
-  // means our audio render thread died. Both stale is a main-thread wedge,
-  // which slice 0 measured as survivable and which must not tear down.
   if (ticksStale) {
+    // Loop 8 — ticks stale while frames are FRESH: frames keep arriving and
+    // look healthy while our audio render thread has died (context suspended,
+    // sink error, endpoint loss). Before tick generation moved onto the audio
+    // thread both signals shared a thread and this failure could not be seen
+    // at all.
     die("screen audio stopped (the audio graph stopped running)");
   }
 }
