@@ -37,19 +37,58 @@
 
 import { CONFIGURATION, tauriInvoke } from "@revolt/common";
 
+import {
+  type Timings,
+  FLAG_SENTINEL,
+  HEADER_BYTES,
+  WIRE_VERSION,
+  evaluateLiveness,
+  readHeader,
+  validateTimings,
+} from "./screenAudioWire";
+
 /** Slice 2 gets `{ includePid }`; slice 1 implements `"system"` only. */
 export type ScreenAudioMode = "system" | { includePid: number };
+
+/**
+ * Stable failure codes.
+ *
+ * 🔴 This module emits CODES, never English. It is shared with the Linux
+ * feature, so copy written here would have to be duplicated there; and the
+ * client's user-facing strings are lingui macros with ~70 catalogs behind
+ * them, which a raw literal in a cross-platform module silently bypasses.
+ * `state.tsx` owns the mapping to localized copy, and slice 3's copy matrix
+ * owns the final wording.
+ */
+export type ScreenAudioFailure =
+  /** The shell refused to start: OS too old, no exclusion root, env kill. */
+  | { kind: "start"; code: string }
+  /** The capture died mid-share. */
+  | { kind: "died"; reason: string }
+  /** The E2EE transform was not attached to this publication. */
+  | { kind: "not-encrypted" }
+  /** The graph could not be built after the shell had already started. */
+  | { kind: "graph" };
 
 /** What the host (`Voice`) must be able to do on our behalf. */
 export interface ScreenAudioHost {
   /**
    * Unpublish the ScreenShareAudio publication if one exists. Must be
    * idempotent and must never throw — it is called from a death path.
+   *
+   * 🔴 The host must resolve the publication by TRACK, not by source. A death
+   * during the publish window finds no publication by source (livekit
+   * registers it only after `negotiate()` returns), and neither does a
+   * teardown landing inside `republishAllTracks`'s unpublish/republish
+   * window — which is how every full reconnect works. In both cases an
+   * unpublish-by-source silently no-ops, and because the DOM `"ended"` event
+   * is unreachable for our track (contract (a) above) livekit's auto-unpublish
+   * net cannot clean up after it either.
    */
   unpublish(): Promise<void>;
   /** Loud, user-visible failure. Never silent: a silent zombie is the one
    *  outcome this whole protocol exists to prevent. */
-  toast(message: string): void;
+  report(failure: ScreenAudioFailure): void;
 }
 
 export interface ScreenAudioCapture {
@@ -62,19 +101,6 @@ export interface ScreenAudioCapture {
 /** Section 3.6.2's states, verbatim. */
 type State = "IDLE" | "STARTING" | "LIVE" | "EXPECTED_STOP" | "DEAD";
 
-/** Section 3.6.5, handed over by the shell rather than restated here — every
- *  restatement of a derived number is a place for two copies to diverge, and
- *  the design shipped a stale one twice for exactly that reason. */
-interface Timings {
-  tickCadenceMs: number;
-  quantaPerTick: number;
-  frameWatchdogMs: number;
-  relayWatchdogMs: number;
-  heartbeatQuanta: number;
-  jitterTargetMs: number;
-  frameMs: number;
-}
-
 interface StartResult {
   generation: number;
   format: { rate: number; channels: number; bits: number };
@@ -86,38 +112,13 @@ interface ProbeResult {
   reason?: string;
   format: { rate: number; channels: number; bits: number };
   timings: Timings;
+  /** §11.9's recorded verdict — read by the lighting gate, never by the share. */
+  exclusion?: { check: string; conclusivelyPassed: boolean; detail?: string };
 }
 
 interface CommandError {
   code: string;
   detail: string;
-}
-
-// ---------------------------------------------------------------------------
-// Wire format. Must match `screen-audio/src/frame.rs`.
-// ---------------------------------------------------------------------------
-
-const HEADER_BYTES = 24;
-const WIRE_VERSION = 1;
-const FLAG_SENTINEL = 1 << 0;
-
-interface FrameHeader {
-  version: number;
-  flags: number;
-  generation: number;
-  seq: number;
-}
-
-function readHeader(buffer: ArrayBuffer): FrameHeader | undefined {
-  if (buffer.byteLength < HEADER_BYTES) return undefined;
-  const view = new DataView(buffer);
-  return {
-    version: view.getUint16(0, true),
-    flags: view.getUint16(2, true),
-    generation: view.getUint32(4, true),
-    // Safe as a Number: at 100 frames/s a 2^53 sequence is ~2.8 million years.
-    seq: Number(view.getBigUint64(8, true)),
-  };
 }
 
 // ---------------------------------------------------------------------------
@@ -153,15 +154,36 @@ interface Session {
 let state: State = "IDLE";
 let session: Session | undefined;
 /**
- * Died-events that arrived while `screen_audio_start` was still in flight, so
- * before we could adopt a generation.
+ * Deaths seen before `session` exists, keyed by generation (0 = "before we
+ * knew our own generation").
  *
- * Section 3.6.3: `STARTING` is entered at the CALL and G is only known when
- * `start` RESOLVES, so a died-event landing in that window must be latched
- * against the generation `start` is about to return, never dropped as stale.
+ * 🔴 §3.6.3: `STARTING` is entered at the CALL and G is only known when
+ * `start` RESOLVES — but the danger window is LONGER than that. `session` is
+ * not assigned until the worklet module has been fetched and the graph built,
+ * which is another IPC and a network-or-disk read. A death landing anywhere in
+ * that span must be LATCHED, or `captureScreenAudio` returns a track, the
+ * share goes `LIVE`, and the ≤100 ms captured under a stale exclusion root is
+ * DRAINED into the encoder instead of discarded — the other participants'
+ * decrypted voices, under the sharer's own key.
+ *
+ * The sentinel does not cover this window either: the Tauri JS `Channel`
+ * initializes `onmessage` to a no-op and dispatches in-order messages
+ * immediately, so a sentinel arriving before the handler is installed is
+ * silently consumed. Hence `channel.onmessage` is installed BEFORE
+ * `screen_audio_start` is invoked, and the generation is adopted into a
+ * module variable the instant `start` resolves.
  */
 let pendingDeaths: number[] = [];
+/** Non-zero from the moment `start` resolves until `session` is assigned. */
+let adoptedGeneration = 0;
 let awaitingGeneration = false;
+/**
+ * Set by any stop path that arrives while we are still building the graph.
+ * §3.6.3's "any stop path" row has to mean something in that sub-state too,
+ * or a socket drop during `addModule` leaves the shell capturing the desktop
+ * with nothing owning it.
+ */
+let startCancelled = false;
 
 // ---------------------------------------------------------------------------
 // Capability
@@ -176,19 +198,43 @@ function isWindowsShell(): boolean {
   return /Windows/i.test(navigator.userAgent);
 }
 
-async function probe(): Promise<ProbeResult | undefined> {
+/** Resolved value, so the capability check never has to await in a gesture. */
+let probeResult: ProbeResult | undefined;
+let probeSettled = false;
+
+function probe(): Promise<ProbeResult | undefined> {
   const invoke = tauriInvoke();
-  if (!invoke) return undefined;
+  if (!invoke) return Promise.resolve(undefined);
   if (!probeCache) {
-    probeCache = invoke<ProbeResult>("screen_audio_probe").catch((error) => {
-      // An old shell has no such command; a new one that fails the probe is
-      // reporting a real incapability. Both mean "not available", and neither
-      // is worth a toast — the share proceeds without system audio.
-      console.warn("[screen-audio] probe failed", error);
-      return undefined;
-    });
+    probeCache = invoke<ProbeResult>("screen_audio_probe")
+      .catch((error) => {
+        // An old shell has no such command; a new one that fails the probe is
+        // reporting a real incapability. Both mean "not available", and
+        // neither is worth surfacing — the share proceeds without system
+        // audio.
+        console.warn("[screen-audio] probe failed", error);
+        return undefined;
+      })
+      .then((result) => {
+        probeResult = result;
+        probeSettled = true;
+        return result;
+      });
   }
   return probeCache;
+}
+
+/**
+ * Warm the capability answer well before anyone clicks Share.
+ *
+ * 🔴 This exists so [`screenAudioSupported`] never has to block. It is called
+ * from the room-join path, which is minutes of wall clock before a share in
+ * the normal case and still a whole connect in the fast case.
+ */
+export function primeScreenAudioProbe(): void {
+  if (!CONFIGURATION.ENABLE_WIN_NATIVE_SCREEN_AUDIO) return;
+  if (!isWindowsShell()) return;
+  void probe();
 }
 
 /**
@@ -199,12 +245,37 @@ async function probe(): Promise<ProbeResult | undefined> {
  * whether the user wants screen audio. The two are different questions and
  * conflating them resurrects the measured-broken browser loopback on the one
  * shell this feature fixes.
+ *
+ * 🔴 BOUNDED, because this sits on the user-gesture path immediately before
+ * `getDisplayMedia`. An unbounded await here is not merely slow: exceed the
+ * transient-activation window and `getDisplayMedia` rejects for lost
+ * activation, which breaks SCREENSHARING ENTIRELY on that shell rather than
+ * just its audio — and a probe that never resolves leaves the share button
+ * doing nothing at all, permanently, since the promise is cached. A shell
+ * that has not answered in 200 ms is treated as not capable, which degrades
+ * to today's behavior.
  */
 export async function screenAudioSupported(): Promise<boolean> {
   if (!CONFIGURATION.ENABLE_WIN_NATIVE_SCREEN_AUDIO) return false;
   if (!isWindowsShell()) return false;
-  const result = await probe();
-  return !!result?.available;
+  if (probeSettled) return !!probeResult?.available;
+  const raced = await Promise.race([
+    probe(),
+    new Promise<undefined>((resolve) =>
+      setTimeout(() => resolve(undefined), 200),
+    ),
+  ]);
+  return !!raced?.available;
+}
+
+/**
+ * The §11.9 verdict, for the LIGHTING gate and for the live legs. Never gates
+ * the share: an inconclusive check blocks lighting, not sharing.
+ */
+export function screenAudioExclusionStatus():
+  | { check: string; conclusivelyPassed: boolean; detail?: string }
+  | undefined {
+  return probeResult?.exclusion;
 }
 
 // ---------------------------------------------------------------------------
@@ -260,33 +331,46 @@ let deathListenerRegistered = false;
  * guard emits a died-event into a renderer that is already STARTING or LIVE on
  * the new one.
  */
-function ensureDeathListener() {
-  if (deathListenerRegistered) return;
+async function ensureDeathListener(): Promise<boolean> {
+  if (deathListenerRegistered) return true;
   const tauri = (window as { __TAURI__?: TauriEventApi }).__TAURI__;
-  if (!tauri?.event) return;
-  deathListenerRegistered = true;
-  void tauri.event
-    .listen<{ generation: number; reason: string }>(
+  if (!tauri?.event) return false;
+  try {
+    // 🔴 AWAITED. `listen()` is an async IPC, so returning before it resolves
+    // means the shell can start capturing with no subscription in place — and
+    // the first share of a session is exactly when that happens.
+    await tauri.event.listen<{ generation: number; reason: string }>(
       "screen-audio-died",
       (event) => onShellDeath(event.payload.generation, event.payload.reason),
-    )
-    .catch((error) => {
-      deathListenerRegistered = false;
-      console.error("[screen-audio] death listener failed to register", error);
-    });
+    );
+    deathListenerRegistered = true;
+    return true;
+  } catch (error) {
+    console.error("[screen-audio] death listener failed to register", error);
+    return false;
+  }
 }
 
 function onShellDeath(generation: number, reason: string) {
-  if (awaitingGeneration && !session) {
-    // Section 3.6.3: latch it against the generation `start` is about to
-    // return. Dropping it as stale is how a share publishes frames captured
-    // after its producer died.
-    pendingDeaths.push(generation);
+  if (!session) {
+    // 🔴 Latch, never drop. Before `start` resolves we do not yet know our
+    // generation, so everything is kept; after it resolves but before the
+    // graph exists we know it and can filter. Either way the machine is in
+    // `STARTING` and the death is ours to honor.
+    if (
+      awaitingGeneration ||
+      (adoptedGeneration && generation === adoptedGeneration)
+    ) {
+      pendingDeaths.push(generation);
+      lastDeathReason = reason;
+    }
     return;
   }
-  if (!session || generation !== session.generation) return;
-  die(`screen audio stopped (${reason})`);
+  if (generation !== session.generation) return;
+  die({ kind: "died", reason });
 }
+
+let lastDeathReason = "";
 
 // ---------------------------------------------------------------------------
 // Loops 7 and 8 — the two watchdogs, behind the quiescence barrier
@@ -347,44 +431,36 @@ function evaluateWatchdogs() {
   const framesStaleFor = now - active.lastFrameDeliveredAt;
   const ticksStaleFor = now - active.lastTickDeliveredAt;
 
-  const framesStale = framesStaleFor > active.timings.frameWatchdogMs;
-  const ticksStale = ticksStaleFor > active.timings.relayWatchdogMs;
-
-  // 🔴 §3.6.4 invariant 2, stated as the three-way decision it actually is —
-  // BOTH loops are conditioned on the other's freshness, not just loop 8.
-  //
-  // Both stale is a MAIN-THREAD WEDGE: nothing was delivered because nothing
-  // was running, and slice 0 measured that state as survivable (a 2 s wedge
-  // produced one silent gap, 2.1 s of stale audio discarded, and the queue
-  // back at target within ~608 ms, with no permanent latency growth). Tearing
-  // down there kills a share that was about to recover on its own.
-  //
-  // The quiescence barrier already makes this hard to observe — arrivals
-  // refresh both stamps before the barrier is ever scheduled — but the
-  // invariant is not "unreachable in practice", it is a rule, and the loop
-  // that would violate it is the one whose trip is a teardown.
-  if (framesStale && ticksStale) return;
-
-  if (framesStale) {
-    // Loop 7 — frames stale while ticks are FRESH: the main thread is running
-    // its own tasks and our audio graph is alive, so the producer or the
-    // transport died. The feed is continuous BY CONSTRUCTION — the shell
-    // synthesizes silence for capture gaps and a gated session still emits the
-    // keepalive — so this unambiguously means death, never quiet audio. It is
-    // also the ONLY detector of a wedged Tauri channel fetch, whose rejection
-    // is swallowed by a bare `.catch` in the injected JS while
-    // `Channel::send` keeps returning Ok.
-    die("screen audio stopped (no frames from the capture)");
-    return;
-  }
-
-  if (ticksStale) {
-    // Loop 8 — ticks stale while frames are FRESH: frames keep arriving and
-    // look healthy while our audio render thread has died (context suspended,
-    // sink error, endpoint loss). Before tick generation moved onto the audio
-    // thread both signals shared a thread and this failure could not be seen
-    // at all.
-    die("screen audio stopped (the audio graph stopped running)");
+  // §3.6.4 invariant 2 as a three-way decision, in `screenAudioWire.ts` so it
+  // is unit-tested rather than asserted here.
+  switch (evaluateLiveness(framesStaleFor, ticksStaleFor, active.timings)) {
+    case "wedged":
+      // Both stamps stale: nothing was delivered because nothing was RUNNING.
+      // Slice 0 measured this recovering — one silent gap, 2.1 s of stale
+      // audio discarded, back at target within ~608 ms — so tearing down here
+      // kills a share that was about to fix itself.
+      return;
+    case "producer-dead":
+      // Loop 7 — frames stale while ticks are FRESH: the main thread is
+      // running its own tasks and our audio graph is alive, so the producer or
+      // the transport died. The feed is continuous BY CONSTRUCTION (the shell
+      // synthesizes silence for capture gaps and a gated session still emits
+      // the keepalive), so this means death, never quiet audio. It is also the
+      // ONLY detector of a wedged Tauri channel fetch, whose rejection is
+      // swallowed by a bare `.catch` in the injected JS while `Channel::send`
+      // keeps returning Ok.
+      die({ kind: "died", reason: "no frames from the capture" });
+      return;
+    case "graph-dead":
+      // Loop 8 — ticks stale while frames are FRESH: frames keep arriving and
+      // look healthy while our audio render thread has died (context
+      // suspended, sink error, endpoint loss). Before tick generation moved
+      // onto the audio thread both signals shared a thread and this failure
+      // could not be seen at all.
+      die({ kind: "died", reason: "the audio graph stopped running" });
+      return;
+    default:
+      return;
   }
 }
 
@@ -430,41 +506,77 @@ export async function captureScreenAudio(options: {
   const ChannelCtor = tauriChannelCtor();
   if (!invoke || !ChannelCtor) return undefined;
 
-  ensureDeathListener();
+  // 🔴 AWAITED. `listen()` is itself an async IPC, so a fire-and-forget
+  // registration may not exist when the shell begins capturing — and on the
+  // first share of a session that is exactly when it would be needed. A
+  // registration failure is a START failure, not a silent degrade: without it
+  // the whole shell-death branch is dead for the session with nothing
+  // observable anywhere.
+  if (!(await ensureDeathListener())) {
+    options.host.report({ kind: "start", code: "no-death-listener" });
+    return undefined;
+  }
 
   state = "STARTING";
   awaitingGeneration = true;
+  adoptedGeneration = 0;
+  startCancelled = false;
   pendingDeaths = [];
 
+  // 🔴 The handler is installed BEFORE the invoke. The Tauri JS `Channel`
+  // initializes `onmessage` to a no-op and dispatches in-order messages
+  // immediately, so anything delivered before this assignment — INCLUDING a
+  // terminal sentinel — is silently swallowed. The object already exists, so
+  // this costs nothing; the alternative loses the shell's death signal on both
+  // transports for the whole graph-construction window.
   const channel: TauriChannel = new ChannelCtor();
+  let adopted: Session | undefined;
+  channel.onmessage = (message) => {
+    if (adopted) onFrame(adopted, message);
+    else onEarlyFrame(message);
+  };
+
   let started: StartResult;
   try {
     started = await invoke<StartResult>("screen_audio_start", { channel });
   } catch (error) {
-    // Section 3.6.3's `screen_audio_start rejects` row: back to IDLE, toast,
-    // and the share continues SILENT. Leaving the machine in STARTING here is
-    // what an earlier revision did, and it never recovered.
+    // §3.6.3's `screen_audio_start rejects` row: back to IDLE, report, and the
+    // share continues SILENT. Leaving the machine in STARTING here is what an
+    // earlier revision did, and it never recovered.
     state = "IDLE";
     awaitingGeneration = false;
-    channel.cleanupCallback?.();
+    releaseRawChannel(channel);
     const failure = error as Partial<CommandError>;
-    options.host.toast(startFailureMessage(failure));
+    options.host.report({ kind: "start", code: failure.code ?? "unknown" });
     return undefined;
   }
 
   const generation = started.generation;
   awaitingGeneration = false;
+  adoptedGeneration = generation;
 
-  // The latch: a death that arrived before we knew our own generation.
-  if (pendingDeaths.includes(generation)) {
+  // The latch. A death that landed before we knew our own generation is kept
+  // unfiltered (generation 0 in the buffer means "unknown yet"), so this
+  // covers both halves of the window.
+  const abandon = () => {
     pendingDeaths = [];
+    adoptedGeneration = 0;
     state = "IDLE";
-    channel.cleanupCallback?.();
+    releaseRawChannel(channel);
+    void invoke("screen_audio_disown", { generation }).catch(() => undefined);
     void invoke("screen_audio_stop").catch(() => undefined);
-    options.host.toast("Screen audio could not start.");
+  };
+  if (pendingDeaths.length > 0) {
+    abandon();
+    options.host.report({ kind: "died", reason: lastDeathReason || "start" });
     return undefined;
   }
-  pendingDeaths = [];
+  if (startCancelled) {
+    // A stop path ran while `start` was in flight. Not a failure — the user
+    // or the room ended it — so no report, but the shell must still be told.
+    abandon();
+    return undefined;
+  }
 
   // 🔴 Pin the rate. A bare `new AudioContext()` adopts the DEFAULT OUTPUT
   // DEVICE's rate while the shell sends 48 kHz, so a sharer on a 44.1 kHz
@@ -481,22 +593,48 @@ export async function captureScreenAudio(options: {
     // capture, so it is a STARTING-state failure that must run teardown — not
     // an unhandled rejection that leaks a live capture.
     console.error("[screen-audio] AudioContext construction failed", error);
-    state = "EXPECTED_STOP";
-    channel.cleanupCallback?.();
-    void invoke("screen_audio_disown", { generation }).catch(() => undefined);
-    void invoke("screen_audio_stop").catch(() => undefined);
-    state = "IDLE";
-    options.host.toast("Screen audio could not start.");
+    abandon();
+    options.host.report({ kind: "graph" });
     return undefined;
   }
 
   try {
     await context.audioWorklet.addModule(workletUrl());
+    // 🔴 Re-check after EVERY await: a death or a stop path can land while the
+    // worklet module is being fetched, and without this the graph is built,
+    // the share goes LIVE, and the only remaining detector is loop 7 at
+    // N > 2430 ms — by which time frames captured under a stale exclusion root
+    // have been drained into the encoder rather than discarded.
+    if (pendingDeaths.length > 0 || startCancelled) {
+      await context.close().catch(() => undefined);
+      const died = pendingDeaths.length > 0;
+      abandon();
+      if (died) {
+        options.host.report({
+          kind: "died",
+          reason: lastDeathReason || "start",
+        });
+      }
+      return undefined;
+    }
     // The context is created after the picker interaction, which is browser
     // chrome and grants no page activation — sticky activation "usually"
     // covering it is not a design guarantee.
     if (context.state !== "running") await context.resume();
+    if (pendingDeaths.length > 0 || startCancelled) {
+      await context.close().catch(() => undefined);
+      const died = pendingDeaths.length > 0;
+      abandon();
+      if (died) {
+        options.host.report({
+          kind: "died",
+          reason: lastDeathReason || "start",
+        });
+      }
+      return undefined;
+    }
 
+    const timings = validateTimings(started.timings);
     const node = new AudioWorkletNode(context, "ScreenAudioWorklet", {
       numberOfInputs: 0,
       numberOfOutputs: 1,
@@ -504,9 +642,9 @@ export async function captureScreenAudio(options: {
       processorOptions: {
         channels: started.format.channels,
         sampleRate: started.format.rate,
-        jitterTargetMs: started.timings.jitterTargetMs,
-        quantaPerTick: started.timings.quantaPerTick,
-        heartbeatQuanta: started.timings.heartbeatQuanta,
+        jitterTargetMs: timings.jitterTargetMs,
+        quantaPerTick: timings.quantaPerTick,
+        heartbeatQuanta: timings.heartbeatQuanta,
       },
     });
     const destination = context.createMediaStreamDestination();
@@ -523,7 +661,7 @@ export async function captureScreenAudio(options: {
       destination,
       track,
       channel,
-      timings: started.timings,
+      timings,
       publishCalled: false,
       lastFrameDeliveredAt: performance.now(),
       lastTickDeliveredAt: performance.now(),
@@ -533,8 +671,9 @@ export async function captureScreenAudio(options: {
       relayPending: false,
     };
     session = active;
-
-    channel.onmessage = (message) => onFrame(active, message);
+    // The handler installed before the invoke now routes to the real session
+    // rather than to the early-frame buffer.
+    adopted = active;
     node.port.onmessage = (event) => onWorkletMessage(active, event.data);
 
     if (context.state !== "running") {
@@ -545,29 +684,37 @@ export async function captureScreenAudio(options: {
   } catch (error) {
     console.error("[screen-audio] graph construction failed", error);
     session = undefined;
-    state = "EXPECTED_STOP";
-    channel.cleanupCallback?.();
-    void invoke("screen_audio_disown", { generation }).catch(() => undefined);
+    adopted = undefined;
     await context.close().catch(() => undefined);
-    void invoke("screen_audio_stop").catch(() => undefined);
-    state = "IDLE";
-    options.host.toast("Screen audio could not start.");
+    abandon();
+    options.host.report({ kind: "graph" });
     return undefined;
   }
 }
 
-function startFailureMessage(error: Partial<CommandError>): string {
-  switch (error.code) {
-    case "no-root":
-      // The multi-instance case, named so it is diagnosable from a user
-      // report rather than landing as an unrecognizable capability loss.
-      return "Screen audio is unavailable in this window. If you are running a second copy of Sloga, only the first one can share system audio.";
-    case "unsupported":
-      return "This version of Windows cannot share system audio natively.";
-    case "disabled-by-env":
-      return "Screen audio is disabled on this machine.";
-    default:
-      return "Screen audio could not start; sharing without it.";
+/**
+ * A frame that arrived before the graph existed.
+ *
+ * Only the SENTINEL matters here — audio has nowhere to go yet, and dropping
+ * it costs at most the few milliseconds before the worklet is up. The sentinel
+ * is latched exactly like a died-event so the start path can refuse.
+ */
+function onEarlyFrame(message: ArrayBuffer) {
+  const header = readHeader(message);
+  if (!header || header.version !== WIRE_VERSION) return;
+  if (!(header.flags & FLAG_SENTINEL)) return;
+  if (adoptedGeneration && header.generation !== adoptedGeneration) return;
+  pendingDeaths.push(header.generation);
+  if (!lastDeathReason) lastDeathReason = "sentinel";
+}
+
+/** Release a channel we never handed to a session. */
+function releaseRawChannel(channel: TauriChannel) {
+  channel.onmessage = () => undefined;
+  try {
+    channel.cleanupCallback?.();
+  } catch {
+    /* older api surface */
   }
 }
 
@@ -593,7 +740,7 @@ function onFrame(active: Session, message: ArrayBuffer) {
   noteArrival();
 
   if (header.flags & FLAG_SENTINEL) {
-    die("screen audio stopped");
+    die({ kind: "died", reason: "sentinel" });
     return;
   }
 
@@ -645,7 +792,16 @@ function relayTick(active: Session) {
     .catch(() => undefined)
     .finally(() => {
       active.relayInFlight = false;
-      if (active.relayPending && session === active) {
+      // 🔴 Also gated on STATE, not just on session identity. §3.6.2 stops
+      // loops 5/6 in `EXPECTED_STOP` precisely so a stalled teardown lets the
+      // shell's credit EXPIRE — that credit is the only backstop left under an
+      // unowned capture. A re-fire queued before step 0 would buy it one more
+      // CREDIT period.
+      if (
+        active.relayPending &&
+        session === active &&
+        (state === "STARTING" || state === "LIVE")
+      ) {
         active.relayPending = false;
         relayTick(active);
       }
@@ -738,19 +894,22 @@ export function screenAudioSenderEncrypted(
  * the teardown belong here so the two edges cannot drift apart.
  */
 export function screenAudioEncryptionFailed(): void {
-  const message = "Screen audio could not be encrypted and was stopped.";
   if (state === "STARTING") {
     // `die()` latches (so `beginScreenAudioPublish`/`finishScreenAudioPublish`
     // both refuse), discards the worklet queue, unpublishes if the publish was
-    // already issued, tears down and toasts.
-    die(message);
+    // already issued, tears down and reports.
+    die({ kind: "not-encrypted" });
     return;
   }
   if (state === "LIVE") {
     const host = session?.host;
-    // Teardown's step 2 IS the unpublish, and step 0 disarms first so the
-    // shell's terminal response cannot arrive at an armed renderer.
-    void teardownScreenAudio().finally(() => host?.toast(message));
+    // 🔴 UNPUBLISH FIRST, then report. Teardown's step 2 is the unpublish and
+    // step 0 disarms before it, so the plaintext sender stops before anything
+    // user-facing happens; reporting first would leave it producing while a
+    // modal opened.
+    void teardownScreenAudio().finally(() =>
+      host?.report({ kind: "not-encrypted" }),
+    );
   }
 }
 
@@ -768,7 +927,7 @@ export function screenAudioGeneration(): number | undefined {
 // ---------------------------------------------------------------------------
 
 /** Every `→ DEAD` row in section 3.6.3 lands here. */
-function die(message: string) {
+function die(failure: ScreenAudioFailure) {
   // Section 3.6.2: the death branch is SUPPRESSED in IDLE, EXPECTED_STOP and
   // DEAD. IDLE's cell reads "suppressed", not "n/a" — the died-event is
   // delivered asynchronously and can land after teardown already returned the
@@ -808,7 +967,7 @@ function die(message: string) {
     }
   });
 
-  host.toast(message);
+  host.report(failure);
 }
 
 function discardWorkletQueue(active: Session) {
@@ -864,11 +1023,16 @@ async function runTeardownSteps(active: Session, unpublish: boolean) {
 
   // Step 2
   if (unpublish) {
-    try {
-      await active.host.unpublish();
-    } catch (error) {
-      console.error("[screen-audio] unpublish failed", error);
-    }
+    // 🔴 BOUNDED, not merely caught. Invariant 3's rule is "fire-and-forget,
+    // or await under a short timeout" — because a guard that only handles
+    // REJECTION does nothing about a HANG, and this call can hang: livekit's
+    // `unpublishTrack` awaits `pendingPublishPromises` and then
+    // `engine.negotiate()`, both of which sit on a dead PeerConnection after a
+    // socket drop. An unbounded await here means step 4 never runs, and a few
+    // drops later Chromium's per-page AudioContext cap is exhausted and ALL
+    // call audio dies — the same failure the per-step guards exist to prevent,
+    // reached through the hang door instead of the reject door.
+    await settleWithin(active.host.unpublish(), 2_000, "unpublish");
   }
 
   // Step 3
@@ -889,11 +1053,40 @@ async function runTeardownSteps(active: Session, unpublish: boolean) {
 
   // Step 5. Reaching this is load-bearing twice over: it stops the capture,
   // and dropping the shell's `Channel` is what makes the page-side callback
-  // eligible for `cleanupCallback()`'s removal.
+  // eligible for `cleanupCallback()`'s removal. Bounded for the same reason as
+  // step 2 — if this one hangs, the machine is pinned in `EXPECTED_STOP` for
+  // the life of the page and every subsequent share is silent with no
+  // user-visible cause.
+  if (invoke) {
+    await settleWithin(invoke("screen_audio_stop"), 2_000, "stop");
+  }
+}
+
+/**
+ * Await a promise, but never longer than `ms`. Rejections and timeouts are
+ * both logged and swallowed: this is a teardown, and no step may gate the
+ * next.
+ */
+async function settleWithin(
+  work: Promise<unknown>,
+  ms: number,
+  what: string,
+): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    await invoke?.("screen_audio_stop");
-  } catch (error) {
-    console.error("[screen-audio] stop failed", error);
+    await Promise.race([
+      work.catch((error) => {
+        console.error(`[screen-audio] ${what} failed`, error);
+      }),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(() => {
+          console.error(`[screen-audio] ${what} did not settle within ${ms}ms`);
+          resolve();
+        }, ms);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
 }
 
@@ -910,16 +1103,21 @@ async function runTeardownSteps(active: Session, unpublish: boolean) {
 export async function teardownScreenAudio(): Promise<void> {
   if (state === "EXPECTED_STOP") return;
   const active = session;
-  if (!active || state === "IDLE" || state === "DEAD") {
-    // Nothing armed. Still ask the shell to stop, in case a session outlived
-    // a renderer that lost track of it — the command is idempotent and
-    // answers Ok on an unknown generation.
-    const invoke = tauriInvoke();
-    if (invoke && state === "IDLE") {
-      void invoke("screen_audio_stop").catch(() => undefined);
-    }
+  if (!active) {
+    // 🔴 `STARTING` with no session yet is the graph-construction window, and
+    // a stop path landing there has to MEAN something: without this the
+    // `disconnected` handler is a complete no-op while the shell is already
+    // capturing, `captureScreenAudio` goes on to build the graph and publish
+    // into a dead room, and livekit sits on its 15 s
+    // `waitUntilEngineConnected` timeout — fifteen seconds of unowned desktop
+    // capture, with the relay refreshing the shell's credit throughout.
+    if (state === "STARTING") startCancelled = true;
+    // Nothing else is armed. Deliberately NO IPC here: a dark build must not
+    // talk to a shell that has no such command, and there is no session to
+    // stop.
     return;
   }
+  if (state === "IDLE" || state === "DEAD") return;
 
   // Step 0: DISARM, locally and synchronously. No IPC. This step cannot fail,
   // and it must precede the disown — otherwise the shell's terminal response

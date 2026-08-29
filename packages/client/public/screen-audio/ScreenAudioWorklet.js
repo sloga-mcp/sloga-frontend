@@ -73,6 +73,23 @@ class ScreenAudioProcessor extends AudioWorkletProcessor {
     this.quantaSinceTick = 0;
     this.quantaSinceFrame = 0;
     this.ticking = true;
+    /**
+     * 🔴 PRIMING. The target is a floor as well as a ceiling.
+     *
+     * Draining from the very first sample makes `targetFrames` nothing but a
+     * drain-down bound: occupancy converges to ~0 and stays there, because
+     * silence-fill advances the playout position during starvation so a late
+     * packet never rebuilds depth. Against slice 0's measured one-way delivery
+     * — p50 5.7 ms, p95 17 ms, p99 47 ms, against a 10 ms frame period — the
+     * jitter exceeds one frame period well below the 90th percentile, so the
+     * far end hears near-continuous dropouts on the headline feature. And
+     * nothing detects it: the frame watchdog sees a healthy feed and the tick
+     * keeps arriving.
+     *
+     * So hold silence until the buffer has reached the target once, and
+     * re-enter priming after an underrun rather than limping along empty.
+     */
+    this.priming = true;
 
     // Diagnostics for the live legs. L13 in particular cannot distinguish "the
     // relay was throttled" from "the audio render thread died" without them.
@@ -141,12 +158,26 @@ class ScreenAudioProcessor extends AudioWorkletProcessor {
     if (!output || output.length === 0) return true;
     const frames = output[0].length || RENDER_QUANTUM;
 
+    // Hold output silent until the buffer has filled to the target once.
+    if (this.priming) {
+      if (this.queuedFrames >= this.targetFrames) {
+        this.priming = false;
+      } else {
+        for (let ch = 0; ch < output.length; ch++) output[ch].fill(0);
+        this.quantaSinceTick++;
+        this.quantaSinceFrame++;
+        this.emitLoops();
+        return true;
+      }
+    }
+
     for (let frame = 0; frame < frames; frame++) {
       if (this.queue.length === 0) {
-        // Underrun: synthesize silence. Capture gaps are NORMAL — the shell
-        // fills what WASAPI never delivered, but transport jitter is ours.
+        // Underrun: synthesize silence and go back to priming, so the buffer
+        // rebuilds to target instead of running permanently empty.
         for (let ch = 0; ch < output.length; ch++) output[ch][frame] = 0;
         this.underrunFrames++;
+        this.priming = true;
         continue;
       }
       const head = this.queue[0];
@@ -167,19 +198,37 @@ class ScreenAudioProcessor extends AudioWorkletProcessor {
 
     this.quantaSinceTick++;
     this.quantaSinceFrame++;
+    this.emitLoops();
 
-    if (this.ticking && this.quantaSinceTick >= this.quantaPerTick) {
+    // Never return false: a `MediaStreamAudioDestinationNode` graph with
+    // nothing on `ctx.destination` is a pure generator, and letting the
+    // processor be collected would end the published track silently.
+    return true;
+  }
+
+  /** Loops 5 and 9 — tick generation and the heartbeat. */
+  emitLoops() {
+    if (!this.ticking) return;
+
+    if (this.quantaSinceTick >= this.quantaPerTick) {
       this.quantaSinceTick = 0;
       this.port.postMessage({
         type: "tick",
         seq: this.lastSeq,
         queuedMs: (this.queuedFrames / this.sampleRate) * 1000,
+        priming: this.priming,
+        // 🔴 Per-tick RATES, not lifetime totals. A running total tells a live
+        // leg that SOME audio was lost at some point; the rate tells it
+        // whether audio is being lost NOW, which is what L1 and L14 actually
+        // assert on.
         underrunMs: (this.underrunFrames / this.sampleRate) * 1000,
         discardedMs: (this.discardedFrames / this.sampleRate) * 1000,
       });
+      this.underrunFrames = 0;
+      this.discardedFrames = 0;
     }
 
-    if (this.ticking && this.quantaSinceFrame >= this.heartbeatQuanta) {
+    if (this.quantaSinceFrame >= this.heartbeatQuanta) {
       this.quantaSinceFrame = 0;
       // Loop 9. A redundant belt: loops 5/6 keep ticking in LIVE and their
       // arrivals already schedule the quiescence barrier, so loop 7 trips
@@ -187,11 +236,6 @@ class ScreenAudioProcessor extends AudioWorkletProcessor {
       // relay have gone quiet.
       this.port.postMessage({ type: "heartbeat", seq: this.lastSeq });
     }
-
-    // Never return false: a `MediaStreamAudioDestinationNode` graph with
-    // nothing on `ctx.destination` is a pure generator, and letting the
-    // processor be collected would end the published track silently.
-    return true;
   }
 }
 

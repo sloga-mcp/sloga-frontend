@@ -43,10 +43,18 @@ import E2EEWorker from "livekit-client/e2ee-worker?worker";
 import { DenoiseTrackProcessor } from "livekit-rnnoise-processor";
 import { Channel, Message } from "stoat.js";
 
+// The non-hook macro: `Voice` is a class, not a component, so `useLingui()`
+// has no reactive scope to attach to. Compiles to `i18n._(...)` and falls back
+// to the source string when no catalog is loaded, so the worst case is
+// today's behavior with the strings now extractable.
+import { t } from "@lingui/core/macro";
+
 import {
+  type ScreenAudioFailure,
   beginScreenAudioPublish,
   captureScreenAudio,
   finishScreenAudioPublish,
+  primeScreenAudioProbe,
   screenAudioActive,
   screenAudioEncryptionFailed,
   screenAudioSenderEncrypted,
@@ -1848,6 +1856,12 @@ class Voice {
       this.#startPushToTalk(room);
       this.#startVAD(room);
       this.#attenuation.attach(room);
+      // 🔴 Warm the screen-audio capability answer NOW, minutes before anyone
+      // clicks Share. The check sits on the user-gesture path immediately
+      // before `getDisplayMedia`, where an unresolved shell IPC would burn the
+      // transient-activation window and break SCREENSHARING ENTIRELY, not just
+      // its audio.
+      primeScreenAudioProbe();
       this.#watchDuck.attach(room);
       this.#playEntranceSound(channel);
       const isAfk = channel.name?.toLowerCase() === "afk";
@@ -4087,23 +4101,38 @@ class Voice {
   async #publishNativeScreenAudio(
     room: Room,
   ): Promise<LocalTrackPublication | undefined> {
+    // 🔴 Filled in once the track exists, and the host unpublishes BY TRACK
+    // rather than by source. Two windows make a by-source lookup silently
+    // no-op: a death during the publish window (livekit registers the
+    // publication only after `negotiate()` returns) and a teardown landing
+    // inside `republishAllTracks`'s unpublish/republish gap, which is how
+    // every full reconnect works. In both cases the by-source lookup finds
+    // nothing — and because the DOM `"ended"` event is unreachable for a
+    // destination-node track, livekit's auto-unpublish net cannot clean up
+    // after it either.
+    // Assigned below, after the gate checks, and read by the host closure
+    // above — so it cannot be `const`.
+    // eslint-disable-next-line prefer-const
+    let audioTrack: LocalAudioTrack | undefined;
+
     const capture = await captureScreenAudio({
       mode: "system",
       host: {
         // Idempotent and non-throwing: this is called from a death path.
         unpublish: async () => {
-          const pub = room.localParticipant.getTrackPublication(
-            Track.Source.ScreenShareAudio,
-          );
-          if (pub?.track) {
-            try {
-              await room.localParticipant.unpublishTrack(pub.track);
-            } catch (error) {
-              console.error("[screen-audio] unpublish failed", error);
-            }
+          const target =
+            audioTrack ??
+            room.localParticipant.getTrackPublication(
+              Track.Source.ScreenShareAudio,
+            )?.track;
+          if (!target) return;
+          try {
+            await room.localParticipant.unpublishTrack(target);
+          } catch (error) {
+            console.error("[screen-audio] unpublish failed", error);
           }
         },
-        toast: (message) => this.onErr(message),
+        report: (failure) => this.#reportScreenAudioFailure(failure),
       },
     });
     if (!capture) return undefined;
@@ -4111,6 +4140,26 @@ class Voice {
     // Stale-share guard: `captureScreenAudio` spans an IPC round trip plus a
     // worklet module load, and the call can end underneath it.
     if (this.room() !== room) {
+      await teardownScreenAudio();
+      return undefined;
+    }
+
+    // 🔴 §3.4 E3: the publish gate is checked BEFORE the publish, not after.
+    //
+    // The `localTrackPublished` listener re-applies the gate, but only once
+    // `negotiate()` has returned and the encoder is already producing — so
+    // publishing into a held gate puts the whole desktop mix on the wire and
+    // pauses it a task or two later. The gate holds `"negotiating"` from
+    // before `room.connect` until the MLS verdict, and the MLS session adds
+    // and removes further reasons after that, so this is a window a share can
+    // easily land in. The house precedent is to refuse outright
+    // (`startWhisper`: `if (this.#publishGate.size > 0) throw`), and a silent
+    // share is the right degrade.
+    if (this.#publishGate.size > 0) {
+      console.error(
+        "[screen-audio] refusing to publish while the publish gate is held:",
+        [...this.#publishGate].join(", "),
+      );
       await teardownScreenAudio();
       return undefined;
     }
@@ -4131,7 +4180,7 @@ class Voice {
     // `userProvidedTrack: true` — the track is ours, from a
     // MediaStreamAudioDestinationNode, and livekit must never try to
     // "reacquire" it the way it would a gUM track.
-    const audioTrack = new LocalAudioTrack(capture.track, undefined, true);
+    audioTrack = new LocalAudioTrack(capture.track, undefined, true);
 
     // 🔴 No `await` between this and `publishTrack`. The two `STARTING` death
     // rows differ by exactly whether the publish has been ISSUED — before it,
@@ -4200,6 +4249,54 @@ class Voice {
    * desktop, and server-visible plaintext media is the worst outcome in this
    * feature's threat model.
    */
+  /**
+   * Turn a shared-module failure CODE into copy.
+   *
+   * 🔴 The copy lives here, not in `screenAudioNative.ts`. That module is
+   * shared with the Linux feature, so a string written there would have to be
+   * duplicated; and every user-facing string in this client is a lingui macro
+   * with ~70 catalogs behind it, which a raw literal in a cross-platform
+   * module silently bypasses.
+   *
+   * Slice 3's copy matrix owns the final wording AND the surface. Until then
+   * these route through `onErr`, which is a blocking modal rather than the
+   * toast the design asks for — recorded here rather than papered over,
+   * because it is the one place this implementation knowingly differs from
+   * §3.4, and because the same slice has to fix
+   * `ScreenShareSettings.tsx`'s Windows instructions, which tell the user to
+   * re-share and tick a checkbox the capable path has removed.
+   */
+  #reportScreenAudioFailure(failure: ScreenAudioFailure) {
+    switch (failure.kind) {
+      case "start":
+        if (failure.code === "no-root") {
+          // The multi-instance case, named so it is diagnosable from a user
+          // report rather than landing as an unrecognizable capability loss.
+          this.onErr(
+            t`Screen audio is unavailable in this window. If you are running a second copy of Sloga, only the first one can share system audio.`,
+          );
+          return;
+        }
+        if (failure.code === "unsupported") {
+          this.onErr(t`This version of Windows cannot share system audio.`);
+          return;
+        }
+        if (failure.code === "disabled-by-env") return; // deliberate opt-out
+        this.onErr(t`Screen audio could not start; sharing without it.`);
+        return;
+      case "not-encrypted":
+        this.onErr(t`Screen audio could not be encrypted and was stopped.`);
+        return;
+      case "graph":
+        this.onErr(t`Screen audio could not start; sharing without it.`);
+        return;
+      case "died":
+      default:
+        console.error("[screen-audio] died:", failure);
+        this.onErr(t`Screen audio stopped. The screen is still being shared.`);
+    }
+  }
+
   #assertScreenAudioEncrypted(room: Room, pub: LocalTrackPublication) {
     if (!screenAudioActive()) return;
     if (!room.isE2EEEnabled) return;
@@ -4338,11 +4435,35 @@ class Voice {
           Track.Source.ScreenShareAudio,
         );
 
+        // 🔴 ENTIRE SCREEN ONLY. Slice 1's non-goal is window-share audio;
+        // the native capture is the whole system mix minus our own subtree, so
+        // publishing it for a WINDOW share would send the user's music, their
+        // notifications and every other application to the call while they
+        // believe they are sharing one window — something Chromium never
+        // offered for a window share and nothing in the UI would tell them.
+        // (A tab share is the same argument: the browser's tab-audio capture
+        // is what belongs there, not the desktop mix.) The surface is already
+        // read below for the privacy shield, so this costs nothing.
+        //
+        // `undefined` is treated as a monitor share: that is what the shield
+        // below assumes, and on this shell getDisplayMedia does report it.
+        const shareSurface = (
+          localTrack?.videoTrack?.mediaStreamTrack.getSettings() as
+            | (MediaTrackSettings & { displaySurface?: string })
+            | undefined
+        )?.displaySurface;
+        const entireScreen =
+          shareSurface === "monitor" || shareSurface === undefined;
+
         // Native screen-share audio (capable Windows shells). The browser
         // checkbox is gone on this path, so this is the ONLY source of system
         // audio — and the stored preference governs whether it runs, exactly
         // as it governs what the non-ask path passes to `callback` below.
-        if (nativeScreenAudio && this.#settings.screenShareAudio) {
+        if (
+          nativeScreenAudio &&
+          entireScreen &&
+          this.#settings.screenShareAudio
+        ) {
           await this.#publishNativeScreenAudio(room).then(
             (pub) => (screenAudioTrack = pub ?? screenAudioTrack),
           );
