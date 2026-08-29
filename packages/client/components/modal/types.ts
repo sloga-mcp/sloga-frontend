@@ -518,6 +518,22 @@ export type Modals =
       trackReference: TrackReference;
       qualities: { name: string; fullName: string }[];
       audio: boolean;
+      /**
+       * Whether this share is a whole screen rather than a single window.
+       *
+       * 🔴 Passed in rather than re-derived from `trackReference`. A
+       * `LocalTrack`'s `mediaStreamTrack` getter returns
+       * `processor?.processedTrack ?? _mediaStreamTrack`, and the privacy
+       * shield is attached and AWAITED before this modal opens — so reading
+       * the surface here would inspect a canvas capture stream, whose
+       * `getSettings()` carries no `displaySurface` at all. That lands on the
+       * `undefined ⇒ monitor` fallback and is right today only because the
+       * shield itself attaches on monitor shares; it breaks the moment a
+       * window share can carry audio. The publish path reads the RAW track
+       * and has already computed this, so sharing its answer is the only way
+       * the two cannot disagree.
+       */
+      entireScreen: boolean;
       callback: (qualityName: ScreenShareQualityName, audio: boolean) => void;
       onCancel: () => void;
     }
