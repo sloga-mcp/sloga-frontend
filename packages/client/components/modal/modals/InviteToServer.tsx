@@ -2,9 +2,16 @@ import { createMemo, createSignal, For } from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
 
-import { inviteUrl } from "@revolt/common";
 import { useClient } from "@revolt/client";
-import { Avatar, Checkbox, Column, Dialog, DialogProps, Row, TextField } from "@revolt/ui";
+import { inviteUrl } from "@revolt/common";
+import {
+  Avatar,
+  Checkbox,
+  Column,
+  Dialog,
+  DialogProps,
+  TextField,
+} from "@revolt/ui";
 
 import { useModals } from "..";
 import { Modals } from "../types";

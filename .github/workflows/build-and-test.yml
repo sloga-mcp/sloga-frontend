@@ -71,6 +71,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+          # `mise format` checks the files a change actually touches, so it
+          # needs history to diff against. A shallow checkout has no base and
+          # the task fails loudly rather than passing vacuously.
+          fetch-depth: 0
 
       - name: Setup Mise
         uses: immich-app/devtools/actions/use-mise@7b8610a904d57da241e4ddba17fa62b62b15aed4 # use-mise-action-v2.0.2

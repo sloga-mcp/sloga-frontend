@@ -13,8 +13,8 @@ import {
 } from "solid-js";
 
 import { useLingui } from "@lingui-solid/solid/macro";
-import { Channel } from "stoat.js";
 import type { ApplicationCommandData, Message } from "stoat.js";
+import { Channel } from "stoat.js";
 
 import { styled } from "styled-system/jsx";
 
@@ -76,8 +76,7 @@ export function MessageComposition(props: Props) {
    */
   const isStackedLayout = () => layout() !== "desktop";
   const showSendButton = () =>
-    isStackedLayout() ||
-    state.settings.getValue("appearance:show_send_button");
+    isStackedLayout() || state.settings.getValue("appearance:show_send_button");
 
   /**
    * E2EE send mode for this conversation (DMs only). Reflects the native
@@ -607,7 +606,11 @@ export function MessageComposition(props: Props) {
         });
         return;
       }
-      if (mode === "encrypt" || mode === "blocked" || mode === "peer_downgraded") {
+      if (
+        mode === "encrypt" ||
+        mode === "blocked" ||
+        mode === "peer_downgraded"
+      ) {
         openModal({
           type: "error2",
           error: t`Slash commands are unavailable in encrypted conversations.`,
@@ -647,7 +650,8 @@ export function MessageComposition(props: Props) {
             : type === "InSlowmode"
               ? t`You are in slowmode, wait before invoking commands.`
               : new Error(
-                  type ?? (error instanceof Error ? error.message : String(error)),
+                  type ??
+                    (error instanceof Error ? error.message : String(error)),
                 ),
       });
     }
@@ -1286,24 +1290,45 @@ export function MessageComposition(props: Props) {
                             panel={
                               <div
                                 style={{
-                                  background: "var(--md-sys-color-surface-container-high)",
+                                  background:
+                                    "var(--md-sys-color-surface-container-high)",
                                   "border-radius": "12px",
                                   padding: "12px",
                                   "min-width": "240px",
                                   "box-shadow": "0 4px 20px rgba(0,0,0,0.4)",
-                                  border: "1px solid var(--md-sys-color-outline-variant)",
+                                  border:
+                                    "1px solid var(--md-sys-color-outline-variant)",
                                 }}
                               >
-                                <div style={{ padding: "0 0 8px", "font-size": "0.75em", opacity: "0.6", "font-weight": "600", "letter-spacing": "0.05em", "text-transform": "uppercase" }}>
+                                <div
+                                  style={{
+                                    padding: "0 0 8px",
+                                    "font-size": "0.75em",
+                                    opacity: "0.6",
+                                    "font-weight": "600",
+                                    "letter-spacing": "0.05em",
+                                    "text-transform": "uppercase",
+                                  }}
+                                >
                                   {t`Roll dice`}
                                 </div>
                                 {/* advantage / disadvantage (single d20 only) */}
-                                <div style={{ display: "flex", gap: "4px", "padding-bottom": "8px" }}>
-                                  <For each={[
-                                    { key: "none", label: t`Normal` },
-                                    { key: "adv", label: t`Advantage` },
-                                    { key: "dis", label: t`Disadvantage` },
-                                  ] as const}>
+                                <div
+                                  style={{
+                                    display: "flex",
+                                    gap: "4px",
+                                    "padding-bottom": "8px",
+                                  }}
+                                >
+                                  <For
+                                    each={
+                                      [
+                                        { key: "none", label: t`Normal` },
+                                        { key: "adv", label: t`Advantage` },
+                                        { key: "dis", label: t`Disadvantage` },
+                                      ] as const
+                                    }
+                                  >
                                     {(opt) => (
                                       <div
                                         onClick={() => setDiceAdv(opt.key)}
@@ -1315,9 +1340,16 @@ export function MessageComposition(props: Props) {
                                           cursor: "pointer",
                                           "font-size": "0.75em",
                                           "font-weight": "600",
-                                          background: diceAdv() === opt.key ? "var(--md-sys-color-primary-container)" : "transparent",
-                                          color: diceAdv() === opt.key ? "var(--md-sys-color-on-primary-container)" : "inherit",
-                                          border: "1px solid var(--md-sys-color-outline-variant)",
+                                          background:
+                                            diceAdv() === opt.key
+                                              ? "var(--md-sys-color-primary-container)"
+                                              : "transparent",
+                                          color:
+                                            diceAdv() === opt.key
+                                              ? "var(--md-sys-color-on-primary-container)"
+                                              : "inherit",
+                                          border:
+                                            "1px solid var(--md-sys-color-outline-variant)",
                                         }}
                                       >
                                         {opt.label}
@@ -1326,32 +1358,99 @@ export function MessageComposition(props: Props) {
                                   </For>
                                 </div>
                                 {/* quantity + modifier steppers */}
-                                <div style={{ display: "flex", gap: "12px", "padding-bottom": "8px", "font-size": "0.85em" }}>
-                                  <div style={{ flex: "1", display: "flex", "align-items": "center", gap: "6px" }}>
-                                    <span style={{ opacity: "0.7" }}>{t`Dice`}</span>
-                                    <IconButton size="sm" onPress={() => setDiceQty((q) => Math.max(1, q - 1))}>
+                                <div
+                                  style={{
+                                    display: "flex",
+                                    gap: "12px",
+                                    "padding-bottom": "8px",
+                                    "font-size": "0.85em",
+                                  }}
+                                >
+                                  <div
+                                    style={{
+                                      flex: "1",
+                                      display: "flex",
+                                      "align-items": "center",
+                                      gap: "6px",
+                                    }}
+                                  >
+                                    <span
+                                      style={{ opacity: "0.7" }}
+                                    >{t`Dice`}</span>
+                                    <IconButton
+                                      size="sm"
+                                      onPress={() =>
+                                        setDiceQty((q) => Math.max(1, q - 1))
+                                      }
+                                    >
                                       <Symbol>remove</Symbol>
                                     </IconButton>
-                                    <span style={{ "min-width": "2ch", "text-align": "center", "font-weight": "600" }}>{diceQty()}</span>
-                                    <IconButton size="sm" onPress={() => setDiceQty((q) => Math.min(20, q + 1))}>
+                                    <span
+                                      style={{
+                                        "min-width": "2ch",
+                                        "text-align": "center",
+                                        "font-weight": "600",
+                                      }}
+                                    >
+                                      {diceQty()}
+                                    </span>
+                                    <IconButton
+                                      size="sm"
+                                      onPress={() =>
+                                        setDiceQty((q) => Math.min(20, q + 1))
+                                      }
+                                    >
                                       <Symbol>add</Symbol>
                                     </IconButton>
                                   </div>
-                                  <div style={{ flex: "1", display: "flex", "align-items": "center", gap: "6px" }}>
-                                    <span style={{ opacity: "0.7" }}>{t`Mod`}</span>
-                                    <IconButton size="sm" onPress={() => setDiceMod((m) => Math.max(-99, m - 1))}>
+                                  <div
+                                    style={{
+                                      flex: "1",
+                                      display: "flex",
+                                      "align-items": "center",
+                                      gap: "6px",
+                                    }}
+                                  >
+                                    <span
+                                      style={{ opacity: "0.7" }}
+                                    >{t`Mod`}</span>
+                                    <IconButton
+                                      size="sm"
+                                      onPress={() =>
+                                        setDiceMod((m) => Math.max(-99, m - 1))
+                                      }
+                                    >
                                       <Symbol>remove</Symbol>
                                     </IconButton>
-                                    <span style={{ "min-width": "3ch", "text-align": "center", "font-weight": "600" }}>
-                                      {diceMod() > 0 ? `+${diceMod()}` : diceMod()}
+                                    <span
+                                      style={{
+                                        "min-width": "3ch",
+                                        "text-align": "center",
+                                        "font-weight": "600",
+                                      }}
+                                    >
+                                      {diceMod() > 0
+                                        ? `+${diceMod()}`
+                                        : diceMod()}
                                     </span>
-                                    <IconButton size="sm" onPress={() => setDiceMod((m) => Math.min(99, m + 1))}>
+                                    <IconButton
+                                      size="sm"
+                                      onPress={() =>
+                                        setDiceMod((m) => Math.min(99, m + 1))
+                                      }
+                                    >
                                       <Symbol>add</Symbol>
                                     </IconButton>
                                   </div>
                                 </div>
                                 {/* die buttons — click to roll */}
-                                <div style={{ display: "grid", "grid-template-columns": "repeat(4, 1fr)", gap: "6px" }}>
+                                <div
+                                  style={{
+                                    display: "grid",
+                                    "grid-template-columns": "repeat(4, 1fr)",
+                                    gap: "6px",
+                                  }}
+                                >
                                   <For each={DICE_OPTIONS}>
                                     {(sides) => (
                                       <div
@@ -1363,8 +1462,10 @@ export function MessageComposition(props: Props) {
                                           cursor: "pointer",
                                           "font-weight": "700",
                                           "font-size": "0.85em",
-                                          background: "var(--md-sys-color-primary-container)",
-                                          color: "var(--md-sys-color-on-primary-container)",
+                                          background:
+                                            "var(--md-sys-color-primary-container)",
+                                          color:
+                                            "var(--md-sys-color-on-primary-container)",
                                         }}
                                       >
                                         d{sides}
@@ -1372,14 +1473,22 @@ export function MessageComposition(props: Props) {
                                     )}
                                   </For>
                                 </div>
-                                <div style={{ padding: "8px 0 0", "font-size": "0.7em", opacity: "0.5" }}>
+                                <div
+                                  style={{
+                                    padding: "8px 0 0",
+                                    "font-size": "0.7em",
+                                    opacity: "0.5",
+                                  }}
+                                >
                                   {t`Or type /roll 2d6+3 in chat`}
                                 </div>
                               </div>
                             }
                           >
                             <Tooltip content={t`Roll dice`} placement="top">
-                              <IconButton onPress={() => setShowDiceMenu((v) => !v)}>
+                              <IconButton
+                                onPress={() => setShowDiceMenu((v) => !v)}
+                              >
                                 <Symbol>casino</Symbol>
                               </IconButton>
                             </Tooltip>
@@ -1469,7 +1578,8 @@ export function MessageComposition(props: Props) {
                   panel={
                     <div
                       style={{
-                        background: "var(--md-sys-color-surface-container-high)",
+                        background:
+                          "var(--md-sys-color-surface-container-high)",
                         "border-radius": "12px",
                         padding: "8px 0",
                         "min-width": "160px",
@@ -1477,7 +1587,16 @@ export function MessageComposition(props: Props) {
                         border: "1px solid var(--md-sys-color-outline-variant)",
                       }}
                     >
-                      <div style={{ padding: "4px 12px 8px", "font-size": "0.75em", opacity: "0.6", "font-weight": "600", "letter-spacing": "0.05em", "text-transform": "uppercase" }}>
+                      <div
+                        style={{
+                          padding: "4px 12px 8px",
+                          "font-size": "0.75em",
+                          opacity: "0.6",
+                          "font-weight": "600",
+                          "letter-spacing": "0.05em",
+                          "text-transform": "uppercase",
+                        }}
+                      >
                         Disappear after
                       </div>
                       <For each={DISAPPEAR_OPTIONS}>
@@ -1490,19 +1609,30 @@ export function MessageComposition(props: Props) {
                               gap: "10px",
                               padding: "12px 16px",
                               cursor: "pointer",
-                              background: disappearIdx() === i() ? "var(--md-sys-color-primary-container)" : "transparent",
-                              color: disappearIdx() === i() ? "var(--md-sys-color-on-primary-container)" : "inherit",
+                              background:
+                                disappearIdx() === i()
+                                  ? "var(--md-sys-color-primary-container)"
+                                  : "transparent",
+                              color:
+                                disappearIdx() === i()
+                                  ? "var(--md-sys-color-on-primary-container)"
+                                  : "inherit",
                               "font-size": "0.9em",
                             }}
                           >
-                            <div style={{
-                              width: "16px",
-                              height: "16px",
-                              "border-radius": "50%",
-                              border: `2px solid ${disappearIdx() === i() ? "#FF8A00" : "var(--md-sys-color-outline)"}`,
-                              background: disappearIdx() === i() ? "#FF8A00" : "transparent",
-                              "flex-shrink": "0",
-                            }} />
+                            <div
+                              style={{
+                                width: "16px",
+                                height: "16px",
+                                "border-radius": "50%",
+                                border: `2px solid ${disappearIdx() === i() ? "#FF8A00" : "var(--md-sys-color-outline)"}`,
+                                background:
+                                  disappearIdx() === i()
+                                    ? "#FF8A00"
+                                    : "transparent",
+                                "flex-shrink": "0",
+                              }}
+                            />
                             {opt.label}
                           </div>
                         )}
@@ -1510,21 +1640,39 @@ export function MessageComposition(props: Props) {
                     </div>
                   }
                 >
-                  <Tooltip
-                    content={disappearTooltipText()}
-                    placement="top"
-                  >
-                    <div style={{ display: "flex", "flex-direction": "column", "align-items": "center" }}>
+                  <Tooltip content={disappearTooltipText()} placement="top">
+                    <div
+                      style={{
+                        display: "flex",
+                        "flex-direction": "column",
+                        "align-items": "center",
+                      }}
+                    >
                       <IconButton
                         onPress={toggleDisappearMenu}
-                        style={disappearOption().seconds !== null ? { color: "#FF8A00" } : {}}
+                        style={
+                          disappearOption().seconds !== null
+                            ? { color: "#FF8A00" }
+                            : {}
+                        }
                       >
                         <Symbol>
-                          {disappearOption().seconds === null ? "timer_off" : "timer"}
+                          {disappearOption().seconds === null
+                            ? "timer_off"
+                            : "timer"}
                         </Symbol>
                       </IconButton>
                       <Show when={disappearOption().seconds !== null}>
-                        <span style={{ "font-size": "0.6em", "line-height": "1", "margin-top": "-4px", color: "#FF8A00", "font-weight": "600", "pointer-events": "none" }}>
+                        <span
+                          style={{
+                            "font-size": "0.6em",
+                            "line-height": "1",
+                            "margin-top": "-4px",
+                            color: "#FF8A00",
+                            "font-weight": "600",
+                            "pointer-events": "none",
+                          }}
+                        >
                           {disappearOption().label}
                         </span>
                       </Show>
@@ -1617,7 +1765,13 @@ export function MessageComposition(props: Props) {
                 }`,
               }}
             >
-              <svg width="30" height="30" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <svg
+                width="30"
+                height="30"
+                viewBox="0 0 24 24"
+                fill="none"
+                xmlns="http://www.w3.org/2000/svg"
+              >
                 {/* Discord-style paper-plane send arrow, in the logo ball's blue */}
                 <path
                   d="M22 2 L15 22 L11 13 L2 9 Z"

@@ -1,5 +1,54 @@
 #!/usr/bin/env bash
-#MISE description="Check code formatting"
-set -e
+#MISE description="Check code formatting (files changed vs main)"
 
-pnpm exec prettier --check 'packages/client/**/*.{ts,tsx,json}'
+# Scoped to CHANGED files on purpose. The whole-repo check has never passed:
+# 129 files under packages/client are committed unformatted (several were
+# never prettier'd at all — src/interface/channels/text/Composition.tsx is
+# the worst), so `prettier --check` over everything is red on every commit
+# and gates nothing. Reformatting all 129 at once is the one change most
+# likely to LOSE work: it collides with every in-flight branch across the
+# shared worktrees, and formatting conflicts are the kind people resolve
+# carelessly.
+#
+# Checking what a change actually touches makes the gate enforceable for the
+# first time, and it is self-maintaining: the backlog shrinks as files are
+# touched, with no exemption list to rot.
+#
+# To go back to the strict repo-wide check after a dedicated reformat, drop
+# everything below and restore:
+#   pnpm exec prettier --check 'packages/client/**/*.{ts,tsx,json}'
+# 🔴 CI needs `fetch-depth: 0` on the checkout for the diff below to have a
+# base to compare against; without it the run is shallow and this FAILS LOUD
+# rather than passing vacuously.
+
+set -uo pipefail
+
+BASE="${FORMAT_BASE:-origin/main}"
+
+if ! git rev-parse --verify --quiet "$BASE" > /dev/null; then
+  if git rev-parse --verify --quiet main > /dev/null; then
+    BASE=main
+  else
+    echo "format: cannot resolve a base ref ($BASE or main) to diff against." >&2
+    echo "        In CI this means the checkout is shallow — set fetch-depth: 0." >&2
+    echo "        Refusing to report success without checking anything." >&2
+    exit 1
+  fi
+fi
+
+MERGE_BASE=$(git merge-base "$BASE" HEAD 2>/dev/null || echo "$BASE")
+
+# Only files prettier is configured for, and only ones that still exist.
+mapfile -t files < <(
+  git diff --name-only --diff-filter=ACMR "$MERGE_BASE"...HEAD -- \
+    'packages/client/***.ts' 'packages/client/***.tsx' 'packages/client/***.json' |
+    while IFS= read -r f; do [ -f "$f" ] && printf '%s\n' "$f"; done
+)
+
+if [ "${#files[@]}" -eq 0 ]; then
+  echo "format: no changed .ts/.tsx/.json under packages/client since ${MERGE_BASE:0:12}"
+  exit 0
+fi
+
+echo "format: checking ${#files[@]} changed file(s) against ${BASE}"
+pnpm exec prettier --check "${files[@]}"

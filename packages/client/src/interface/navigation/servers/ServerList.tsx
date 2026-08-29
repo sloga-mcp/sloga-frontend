@@ -409,25 +409,17 @@ export const ServerList = (props: Props) => {
           )}
         </For>
         <Show when={props.unreadConversations.length > 9}>
-          <a
-            class={entryContainer({ expanded: railExpanded() })}
-            href={`/`}
-          >
+          <a class={entryContainer({ expanded: railExpanded() })} href={`/`}>
             <Avatar
               size={42}
               fallback={<>+{props.unreadConversations.length - 9}</>}
             />
             <Show when={railExpanded()}>
-              <RailLabel>
-                {props.unreadConversations.length - 9} more
-              </RailLabel>
+              <RailLabel>{props.unreadConversations.length - 9} more</RailLabel>
             </Show>
           </a>
         </Show>
-        <Show
-          when={device.layout() !== "phone"}
-          fallback={<LineDivider />}
-        >
+        <Show when={device.layout() !== "phone"} fallback={<LineDivider />}>
           <DividerRow>
             <DividerLine />
             <ToggleButton

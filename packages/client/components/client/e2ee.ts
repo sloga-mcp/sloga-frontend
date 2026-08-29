@@ -1141,7 +1141,6 @@ export class E2EEBridge implements E2EEAdapter {
   /** Per-user last DM-open reconcile (60 s TTL — §1 open-parity). */
   #reconciledAt = new Map<string, number>();
 
-
   /** Reactive native status (drives the settings consent flow) */
   readonly status = new ReactiveMap<
     "state",
@@ -1237,7 +1236,10 @@ export class E2EEBridge implements E2EEAdapter {
   async refreshStatus(): Promise<NativeStatus> {
     const status = await this.#invoke<NativeStatus>("e2ee_status");
     const previous = this.status.get("state");
-    this.status.set("state", { ...status, claimed: previous?.claimed ?? false });
+    this.status.set("state", {
+      ...status,
+      claimed: previous?.claimed ?? false,
+    });
     return status;
   }
 
@@ -1693,7 +1695,10 @@ export class E2EEBridge implements E2EEAdapter {
     await this.#ensureBootStatus();
     if (!this.status.get("state")?.enabled) return null;
 
-    const devices = await this.#api<unknown[]>("GET", `/e2ee/devices/${userId}`);
+    const devices = await this.#api<unknown[]>(
+      "GET",
+      `/e2ee/devices/${userId}`,
+    );
     const report = await this.#invoke<{
       revoked: string[];
       changed: string[];
@@ -2285,7 +2290,10 @@ export class E2EEBridge implements E2EEAdapter {
    * (settings UI) has shown the asserted-roster checklist and confirmed.
    * `roster` MUST be the exact member set the user is asserting.
    */
-  async enableGroupEncryption(channel: Channel, roster: string[]): Promise<void> {
+  async enableGroupEncryption(
+    channel: Channel,
+    roster: string[],
+  ): Promise<void> {
     if (channel.type !== "Group") throw new Error("not a group");
     const bundles: KeyBundle[] = [];
     const fetched = new Set<string>();
@@ -2605,10 +2613,7 @@ export class E2EEBridge implements E2EEAdapter {
    * that gates the plaintext direction on the receiving side. `accept`
    * opens plaintext; declining keeps the conversation encrypted.
    */
-  async confirmPeerDowngrade(
-    channel: Channel,
-    accept: boolean,
-  ): Promise<void> {
+  async confirmPeerDowngrade(channel: Channel, accept: boolean): Promise<void> {
     const conversationId =
       channel.type === "Group" ? channel.id : this.#peerOf(channel);
     if (!conversationId) return;
@@ -2745,7 +2750,10 @@ export class E2EEBridge implements E2EEAdapter {
       try {
         selfBundle = await this.#api<unknown>("GET", `/e2ee/keys/${selfId}`);
       } catch (error) {
-        console.warn("[e2ee] self bundle fetch failed; sending without own-device fan-out", error);
+        console.warn(
+          "[e2ee] self bundle fetch failed; sending without own-device fan-out",
+          error,
+        );
       }
     }
 
@@ -2991,8 +2999,7 @@ export class E2EEBridge implements E2EEAdapter {
   async #dmChannel(peerId: string): Promise<Channel | undefined> {
     const existing = [...this.#client.channels.values()].find(
       (channel) =>
-        channel.type === "DirectMessage" &&
-        channel.recipientIds.has(peerId),
+        channel.type === "DirectMessage" && channel.recipientIds.has(peerId),
     );
     if (existing) return existing;
 
@@ -3105,7 +3112,8 @@ export class E2EEBridge implements E2EEAdapter {
     // it); fall back to the dm heuristic (out ⇒ us, in ⇒ the conversation
     // peer) for legacy rows.
     const author = isText
-      ? (row.sender_user_id ?? (row.direction === "out" ? self : row.conversation))
+      ? (row.sender_user_id ??
+        (row.direction === "out" ? self : row.conversation))
       : SYSTEM_AUTHOR;
 
     const shape = {
@@ -3118,11 +3126,7 @@ export class E2EEBridge implements E2EEAdapter {
         : { type: "text", content: this.#markerText(row) },
     };
 
-    return this.#client.messages.getOrCreate(
-      row.id,
-      shape as never,
-      isNew,
-    );
+    return this.#client.messages.getOrCreate(row.id, shape as never, isNew);
   }
 
   /** Trusted encrypted-ness of a message id (see `#encryptedIds`) */
@@ -3220,9 +3224,7 @@ export class E2EEBridge implements E2EEAdapter {
         headers: {
           "x-peer-user-id": conversationId,
           "x-name": encodeURIComponent(file.name || "attachment"),
-          "x-mime": encodeURIComponent(
-            file.type || "application/octet-stream",
-          ),
+          "x-mime": encodeURIComponent(file.type || "application/octet-stream"),
         },
       });
 

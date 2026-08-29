@@ -66,7 +66,8 @@ export function VoiceStatsOverlay(props: { size: "xs" | "sm" }) {
         reports.forEach((report: RTCStats) => {
           const r = report as ReportStat;
           if (r.type === "remote-inbound-rtp") {
-            if (typeof r.jitter === "number") jitter = Math.round(r.jitter * 1000);
+            if (typeof r.jitter === "number")
+              jitter = Math.round(r.jitter * 1000);
             if (typeof r.packetsLost === "number") packetsLost = r.packetsLost;
           }
           if (r.type === "outbound-rtp") {
@@ -78,7 +79,9 @@ export function VoiceStatsOverlay(props: { size: "xs" | "sm" }) {
       const now = Date.now();
       let bitrate: number | null = null;
       if (prevTime && bytes > prevBytes) {
-        bitrate = Math.round(((bytes - prevBytes) * 8) / ((now - prevTime) / 1000) / 1000);
+        bitrate = Math.round(
+          ((bytes - prevBytes) * 8) / ((now - prevTime) / 1000) / 1000,
+        );
       }
       prevBytes = bytes;
       prevTime = now;
@@ -105,9 +108,17 @@ export function VoiceStatsOverlay(props: { size: "xs" | "sm" }) {
 
   onCleanup(() => clearInterval(interval));
 
-  const row = css({ display: "flex", justifyContent: "space-between", gap: "12px" });
+  const row = css({
+    display: "flex",
+    justifyContent: "space-between",
+    gap: "12px",
+  });
   const label = css({ opacity: "0.6", fontSize: "0.75rem" });
-  const value = css({ fontWeight: "600", fontSize: "0.75rem", fontFamily: "monospace" });
+  const value = css({
+    fontWeight: "600",
+    fontSize: "0.75rem",
+    fontFamily: "monospace",
+  });
 
   function fmt(v: number | null, unit: string) {
     return v === null ? "—" : `${v} ${unit}`;

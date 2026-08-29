@@ -18,6 +18,7 @@ import {
   useTracks,
 } from "solid-livekit-components";
 
+import type { AudioProcessorOptions } from "livekit-client";
 import {
   type AudioCaptureOptions,
   type TrackPublishOptions,
@@ -32,7 +33,6 @@ import {
   TrackEvent,
   VideoResolution,
 } from "livekit-client";
-import type { AudioProcessorOptions } from "livekit-client";
 // Self-hosted LiveKit E2EE worker — Vite `?worker` bundling ships it inside
 // the npm package (dist/livekit-client.e2ee.worker.mjs), fully first-party,
 // NO CDN (§4.1). External worker origins are blocked by the desktop shell CSP
@@ -145,9 +145,6 @@ import { CaptureClaim } from "./captureClaim";
 import { entranceSoundFor } from "./entranceSound";
 import { watchLocalUserId } from "./localUserIdentity";
 import { RemoteControl } from "./remoteControl";
-import { voiceNodeForChannel } from "./voiceNode";
-import { WatchDuck } from "./watchDuck";
-import { WatchTogether } from "./watchTogether";
 import {
   type RemoteControlQueue,
   addToQueue,
@@ -185,6 +182,9 @@ import {
   levelFromFrequencyData,
   VAD_FFT_SIZE,
 } from "./vadLevel";
+import { voiceNodeForChannel } from "./voiceNode";
+import { WatchDuck } from "./watchDuck";
+import { WatchTogether } from "./watchTogether";
 
 import { LiveAnnotations } from "./annotations/liveAnnotations";
 import {

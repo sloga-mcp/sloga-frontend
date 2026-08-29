@@ -1,25 +1,24 @@
 import {
-  Match,
-  Show,
-  Switch,
   createEffect,
   createResource,
   createSignal,
+  Match,
   onCleanup,
   onMount,
+  Show,
+  Switch,
 } from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
 import { PublicChannelInvite } from "stoat.js";
-import { css, cva } from "styled-system/css";
+import { cva } from "styled-system/css";
 import { styled } from "styled-system/jsx";
 
-import { allowsDonationLinks, IS_DEV, useClient } from "@revolt/client";
+import { allowsDonationLinks, useClient } from "@revolt/client";
 import { CONFIGURATION } from "@revolt/common";
 import { useModals } from "@revolt/modal";
 import { useNavigate } from "@revolt/routing";
 import {
-  Button,
   CategoryButton,
   Column,
   Header,
@@ -34,7 +33,6 @@ import MdGroups3 from "@material-design-icons/svg/filled/groups_3.svg?component-
 import MdHome from "@material-design-icons/svg/filled/home.svg?component-solid";
 import MdPayments from "@material-design-icons/svg/filled/payments.svg?component-solid";
 import MdPersonAdd from "@material-design-icons/svg/filled/person_add.svg?component-solid";
-import MdRateReview from "@material-design-icons/svg/filled/rate_review.svg?component-solid";
 import MdReport from "@material-design-icons/svg/filled/report.svg?component-solid";
 import MdSettings from "@material-design-icons/svg/filled/settings.svg?component-solid";
 import MdTravelExplore from "@material-design-icons/svg/filled/travel_explore.svg?component-solid";
@@ -369,25 +367,30 @@ export function HomePage() {
         </Column>
         <Buttons>
           <SeparatedColumn>
-            <div style={{"--md-sys-color-primary": "#00B2FF", "--md-sys-color-on-primary": "#05090F"}}>
-            <CategoryButton
-              variant="filled"
-              onClick={() =>
-                openModal({
-                  type: "create_group_or_server",
-                  client: client()!,
-                })
-              }
-              description={
-                <Trans>
-                  Invite all of your friends, some cool bots, and throw a big
-                  party.
-                </Trans>
-              }
-              icon={<MdAddCircle />}
+            <div
+              style={{
+                "--md-sys-color-primary": "#00B2FF",
+                "--md-sys-color-on-primary": "#05090F",
+              }}
             >
-              <Trans>Start a Chat Room/Server</Trans>
-            </CategoryButton>
+              <CategoryButton
+                variant="filled"
+                onClick={() =>
+                  openModal({
+                    type: "create_group_or_server",
+                    client: client()!,
+                  })
+                }
+                description={
+                  <Trans>
+                    Invite all of your friends, some cool bots, and throw a big
+                    party.
+                  </Trans>
+                }
+                icon={<MdAddCircle />}
+              >
+                <Trans>Start a Chat Room/Server</Trans>
+              </CategoryButton>
             </div>
             <Switch fallback={null}>
               <Match when={showLoungeButton && isInLounge}>
@@ -430,44 +433,65 @@ export function HomePage() {
                 Play payments-policy grey area and Sloga is not a registered
                 nonprofit. Web, desktop and the sloga.gg APK still show it. */}
             <Show when={allowsDonationLinks()}>
-            <div style={{"--md-sys-color-primary": "#FF8A00", "--md-sys-color-on-primary": "#05090F"}}>
-            <CategoryButton
-              variant="filled"
-              onClick={() => window.open("https://ko-fi.com/slogatech")}
-              description={
-                <Trans>Support the project by donating - thank you!</Trans>
-              }
-              icon={<MdPayments />}
-            >
-              <Trans>Donate to Sloga</Trans>
-            </CategoryButton>
-            </div>
+              <div
+                style={{
+                  "--md-sys-color-primary": "#FF8A00",
+                  "--md-sys-color-on-primary": "#05090F",
+                }}
+              >
+                <CategoryButton
+                  variant="filled"
+                  onClick={() => window.open("https://ko-fi.com/slogatech")}
+                  description={
+                    <Trans>Support the project by donating - thank you!</Trans>
+                  }
+                  icon={<MdPayments />}
+                >
+                  <Trans>Donate to Sloga</Trans>
+                </CategoryButton>
+              </div>
             </Show>
           </SeparatedColumn>
           <SeparatedColumn>
-            <div style={{"--md-sys-color-primary": "#00B2FF", "--md-sys-color-on-primary": "#05090F"}}>
-            <CategoryButton
-              variant="filled"
-              onClick={() => openModal({ type: "add_friend", client: client()! })}
-              description={<Trans>Connect with someone by adding them as a friend.</Trans>}
-              icon={<MdPersonAdd />}
+            <div
+              style={{
+                "--md-sys-color-primary": "#00B2FF",
+                "--md-sys-color-on-primary": "#05090F",
+              }}
             >
-              <Trans>Add a Friend</Trans>
-            </CategoryButton>
+              <CategoryButton
+                variant="filled"
+                onClick={() =>
+                  openModal({ type: "add_friend", client: client()! })
+                }
+                description={
+                  <Trans>
+                    Connect with someone by adding them as a friend.
+                  </Trans>
+                }
+                icon={<MdPersonAdd />}
+              >
+                <Trans>Add a Friend</Trans>
+              </CategoryButton>
             </div>
-            <div style={{"--md-sys-color-primary": "#27A163", "--md-sys-color-on-primary": "#05090F"}}>
-            <CategoryButton
-              variant="filled"
-              onClick={() => navigate("/discover")}
-              description={
-                <Trans>
-                  Find a community based on your hobbies or interests.
-                </Trans>
-              }
-              icon={<MdExplore />}
+            <div
+              style={{
+                "--md-sys-color-primary": "#27A163",
+                "--md-sys-color-on-primary": "#05090F",
+              }}
             >
-              <Trans>Discover Sloga</Trans>
-            </CategoryButton>
+              <CategoryButton
+                variant="filled"
+                onClick={() => navigate("/discover")}
+                description={
+                  <Trans>
+                    Find a community based on your hobbies or interests.
+                  </Trans>
+                }
+                icon={<MdExplore />}
+              >
+                <Trans>Discover Sloga</Trans>
+              </CategoryButton>
             </div>
             <Show when={client()!.user?.privileged}>
               <CategoryButton
@@ -517,19 +541,24 @@ export function HomePage() {
                 <Trans>Listing requests</Trans>
               </CategoryButton>
             </Show>
-            <div style={{"--md-sys-color-primary": "#00B2FF", "--md-sys-color-on-primary": "#05090F"}}>
-            <CategoryButton
-              variant="filled"
-              onClick={() => openModal({ type: "settings", config: "user" })}
-              description={
-                <Trans>
-                  You can also click the gear icon in the bottom left.
-                </Trans>
-              }
-              icon={<MdSettings />}
+            <div
+              style={{
+                "--md-sys-color-primary": "#00B2FF",
+                "--md-sys-color-on-primary": "#05090F",
+              }}
             >
-              <Trans>Open settings</Trans>
-            </CategoryButton>
+              <CategoryButton
+                variant="filled"
+                onClick={() => openModal({ type: "settings", config: "user" })}
+                description={
+                  <Trans>
+                    You can also click the gear icon in the bottom left.
+                  </Trans>
+                }
+                icon={<MdSettings />}
+              >
+                <Trans>Open settings</Trans>
+              </CategoryButton>
             </div>
           </SeparatedColumn>
         </Buttons>

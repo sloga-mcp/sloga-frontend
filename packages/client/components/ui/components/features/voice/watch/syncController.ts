@@ -118,14 +118,20 @@ export const SOFT_SEEK_HYSTERESIS_MS = 3000;
 export const POST_SEEK_HOLD_MS = 800;
 
 /** The sync contract, on the server clock. */
-export function expectedPosition(session: SyncSession, nowServerMs: number): number {
+export function expectedPosition(
+  session: SyncSession,
+  nowServerMs: number,
+): number {
   if (!session.playing) return session.positionMs;
   const elapsed = Math.max(0, nowServerMs - session.positionAt);
   return session.positionMs + (elapsed * session.ratePermille) / RATE_NORMAL;
 }
 
 /** Clamp a proportional nudge to the allowed band and quantize to permille. */
-export function nudgeRateFor(driftMs: number, baseRatePermille: number): number {
+export function nudgeRateFor(
+  driftMs: number,
+  baseRatePermille: number,
+): number {
   const raw = -driftMs * NUDGE_GAIN_PER_MS; // ahead (drift > 0) → slow down
   const factor = 1 + Math.max(-NUDGE_MAX, Math.min(NUDGE_MAX, raw));
   return Math.round(baseRatePermille * factor);
@@ -146,7 +152,10 @@ const NO_OPINION: ReadonlySet<ProviderState> = new Set([
   "buffering",
 ]);
 
-export function reconcile(snap: SyncSnapshot, prev: SyncState): ReconcileResult {
+export function reconcile(
+  snap: SyncSnapshot,
+  prev: SyncState,
+): ReconcileResult {
   const { session, provider, nowLocalMs, nowServerMs } = snap;
   const actions: SyncAction[] = [];
   const state: SyncState = { ...prev };
@@ -186,7 +195,8 @@ export function reconcile(snap: SyncSnapshot, prev: SyncState): ReconcileResult 
   const driftMs = provider.currentTimeMs - expectedMs;
   const abs = Math.abs(driftMs);
   const recentlySeeked =
-    state.lastSeekLocalMs != null && nowLocalMs - state.lastSeekLocalMs < POST_SEEK_HOLD_MS;
+    state.lastSeekLocalMs != null &&
+    nowLocalMs - state.lastSeekLocalMs < POST_SEEK_HOLD_MS;
 
   if (recentlySeeked) {
     // Let the provider report the landed position before judging again.
@@ -232,7 +242,11 @@ export function reconcile(snap: SyncSnapshot, prev: SyncState): ReconcileResult 
   }
 
   // --- Host rate (1.25× etc.) is session state, applied when not nudging ---
-  if (!state.nudging && provider.ratePermille !== session.ratePermille && !recentlySeeked) {
+  if (
+    !state.nudging &&
+    provider.ratePermille !== session.ratePermille &&
+    !recentlySeeked
+  ) {
     // Avoid duplicating a setRate already queued above.
     if (!actions.some((a) => a.type === "setRate")) {
       actions.push({ type: "setRate", permille: session.ratePermille });

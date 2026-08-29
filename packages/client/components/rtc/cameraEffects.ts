@@ -26,12 +26,12 @@
  * non-HW cameras rides IN the filter's ctx.filter chain (an improvement over
  * the background gap); HW brightness always targets the RAW source.
  */
+import { Capacitor } from "@capacitor/core";
 import {
-  BackgroundProcessor,
   type BackgroundProcessorWrapper,
+  BackgroundProcessor,
   supportsBackgroundProcessors,
 } from "@livekit/track-processors";
-import { Capacitor } from "@capacitor/core";
 import { LocalVideoTrack } from "livekit-client";
 
 import { CONFIGURATION } from "@revolt/common";
@@ -42,10 +42,10 @@ import type {
 } from "@revolt/state/stores/Voice";
 
 import { resolveBackgroundUrl } from "./cameraBackgrounds";
-import { pickSlotOccupant, type SlotOccupant } from "./faceFilterCatalog";
+import { type SlotOccupant, pickSlotOccupant } from "./faceFilterCatalog";
 import {
-  FaceFilterProcessor,
   type FaceFilterStatusReport,
+  FaceFilterProcessor,
 } from "./faceFilterProcessor";
 
 /**
