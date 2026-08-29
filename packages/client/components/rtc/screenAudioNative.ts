@@ -68,18 +68,20 @@ export type ScreenAudioFailure =
   /**
    * The E2EE transform was not attached to this publication.
    *
-   * `callWide` is the SCOPE, surveyed by the HOST at detection (it needs the
-   * Room; this module never touches one). True means every OTHER local sender
-   * was also missing the transform, which makes the whole local publication
-   * set plaintext rather than just this track.
-   *
-   * 🔴 False does NOT mean the rest of the call is fine — it means the scope
-   * is not knowable from here. `lk_e2ee` is stamped at sender construction,
-   * so a sender carrying it proves a transform was installed THEN, never that
-   * the worker is still alive now. The host's copy states the scope in the
-   * true case and keeps slice 3's hedge in the false one.
+   * 🔴 The SCOPE is deliberately not carried here, and the reason is a
+   * correction to §7 rather than a simplification. §7 (and slice 3a's first
+   * attempt) assumed a dead E2EE worker clears this flag call-wide, so the
+   * mic and screen video would be plaintext too. In the pinned
+   * livekit-client 2.15.13 that is FALSE: `this.worker` is assigned once
+   * (`:14060`) and never nulled, so a crashed or `terminate()`d worker is
+   * still truthy, `handleSender` runs past `!this.worker` (`:14385`), and
+   * `sender[E2EE_FLAG] = true` (`:14422`) still executes. The reachable
+   * cause is therefore a PER-SENDER fault — `handleSender` throwing between
+   * the guard and the stamp, or `setupE2EESender` early-returning on
+   * `!sender` — under which the other senders keep their flag. A "call-wide"
+   * verdict is not derivable from this signal, so the host's copy hedges.
    */
-  | { kind: "not-encrypted"; callWide: boolean }
+  | { kind: "not-encrypted" }
   /** The graph could not be built after the shell had already started. */
   | { kind: "graph" };
 
@@ -938,16 +940,27 @@ export function screenAudioSenderEncrypted(
  * Both fail LOUD. The caller does nothing but report; the state transition and
  * the teardown belong here so the two edges cannot drift apart.
  */
-export function screenAudioEncryptionFailed(callWide: boolean): void {
+export function screenAudioEncryptionFailed(): void {
   if (state === "STARTING") {
     // `die()` latches (so `beginScreenAudioPublish`/`finishScreenAudioPublish`
     // both refuse), discards the worklet queue, unpublishes if the publish was
     // already issued, tears down and reports.
-    die({ kind: "not-encrypted", callWide });
+    die({ kind: "not-encrypted" });
     return;
   }
   if (state === "LIVE") {
     const active = session;
+    // 🔴 Parity with `die()`'s own `!active` guard. `LIVE` without a session
+    // is not reachable today — every `session = undefined` is paired with a
+    // state write — but without this the machine would pin in `LIVE` forever:
+    // `teardownScreenAudio()` falls into its `!active` branch, which does not
+    // apply to `LIVE` and returns WITHOUT touching `state`, so
+    // `screenAudioActive()` stays true, every later share is refused, and the
+    // shell captures until its credit expires with nothing reported.
+    if (!active) {
+      state = "IDLE";
+      return;
+    }
     // 🔴 DISCARD FIRST, synchronously, BEFORE teardown's first `await`.
     //
     // `die()` opens the death branch with `discardWorkletQueue`; this edge
@@ -956,20 +969,35 @@ export function screenAudioEncryptionFailed(callWide: boolean): void {
     // an ordinary stop drains its tail rather than clipping it. That default
     // is wrong here and only here: the sender on the far end of that drain is
     // one we have just proven carries no transform, so every buffered frame
-    // it swallows is plaintext on the wire. Step 2 then awaits
-    // `settleWithin(unpublish, 2_000)`, which is how long the drain had.
+    // it swallows is plaintext on the wire.
+    //
+    // 🔴 Size it honestly: the WINDOW is step 2's
+    // `settleWithin(unpublish, 2_000)`, but the AUDIO is bounded by the
+    // worklet's queue depth, because step 0 already stopped refilling it. At
+    // `maxFrames` (2.5x the 100 ms target, `ScreenAudioWorklet.js`) that is
+    // ~250 ms, after which the worklet underruns to silence on its own. A
+    // quarter-second of the desktop mix through a sender known to carry no
+    // transform — worth closing, and not the two seconds the window suggests.
     //
     // Ordering matches `die()`'s (discard → stop ticks → release channel), so
     // both edges stop the source identically — which is what this function's
-    // docstring promises. The whole sequence is synchronous: step 0 has no
-    // suspension point, so no Channel frame can be forwarded in between.
-    if (active) discardWorkletQueue(active);
-    const host = active?.host;
+    // docstring promises. No Channel frame can be forwarded in between: step
+    // 0 has no suspension point, and `onFrame` early-returns once the state
+    // is `EXPECTED_STOP`.
+    //
+    // 🔴 "Synchronous" here means ON THE MAIN THREAD, not at the audio
+    // thread. `port.postMessage` is delivered to the worklet between render
+    // quanta, so up to one quantum of already-buffered audio can still render
+    // into the known-plaintext sender after this returns. That residual is
+    // ~2.7 ms at 48 kHz and is identical on `die()`'s path; it is named so
+    // nobody reads this as "the queue is empty on return".
+    discardWorkletQueue(active);
+    const host = active.host;
     // 🔴 UNPUBLISH BEFORE REPORTING. Teardown's step 2 is the unpublish and
     // step 0 disarms before it; reporting first would open a modal over a
     // publication that was still up.
     void teardownScreenAudio().finally(() =>
-      host?.report({ kind: "not-encrypted", callWide }),
+      host.report({ kind: "not-encrypted" }),
     );
   }
 }

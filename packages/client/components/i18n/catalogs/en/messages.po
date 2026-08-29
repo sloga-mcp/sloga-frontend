@@ -5709,10 +5709,6 @@ msgid "Screen audio stopped. The screen is still being shared."
 msgstr "Screen audio stopped. The screen is still being shared."
 
 #: components/rtc/state.tsx
-msgid "Screen audio was sent without encryption and has been stopped. Some of it may already have reached the server unencrypted, and everything else you are publishing in this call is unencrypted too. Leave the call if that matters to you."
-msgstr "Screen audio was sent without encryption and has been stopped. Some of it may already have reached the server unencrypted, and everything else you are publishing in this call is unencrypted too. Leave the call if that matters to you."
-
-#: components/rtc/state.tsx
 msgid "Screen audio was sent without encryption and has been stopped. Some of it may already have reached the server unencrypted, and other tracks in this call may be affected as well."
 msgstr "Screen audio was sent without encryption and has been stopped. Some of it may already have reached the server unencrypted, and other tracks in this call may be affected as well."
 
