@@ -175,6 +175,41 @@ export default {
       (import.meta.env.VITE_CFG_ENABLE_REMOTE_CONTROL as string) ?? ""
     ).toLowerCase() == "true",
   /**
+   * Windows desktop only: capture screen-share system audio NATIVELY, through
+   * the shell's WASAPI process-loopback client, instead of asking the browser
+   * for it.
+   *
+   * DEFAULT OFF. What it replaces is not merely worse — it is a MEASURED
+   * no-op: `restrictOwnAudio` is accepted by every current Windows engine we
+   * can reach, then reports `getSettings().restrictOwnAudio === false` and
+   * leaves the tone it is supposed to remove at +148 dB. So today a "share
+   * system audio" tick re-broadcasts the whole call — everyone else's voices —
+   * back into it.
+   *
+   * On the capable path this also REMOVES the WebView2 picker's audio
+   * checkbox (`audio: false` into getDisplayMedia), which is why it is keyed
+   * on CAPABILITY ALONE and never on whether the user currently wants audio: a
+   * capable user with the setting off would otherwise still see the checkbox,
+   * tick it, and resurrect the broken browser loopback on the exact shell this
+   * exists to fix.
+   *
+   * Read at `screenAudioSupported()` in `components/rtc/screenAudioNative.ts`,
+   * the single choke point — flag AND platform AND the shell's own probe.
+   * `SLOGA_NO_SCREEN_AUDIO=1` is the runtime escape below the flag and makes
+   * that probe answer false.
+   *
+   * Lighting additionally requires the live legs and at least one conclusive
+   * pass of the shell's runtime exclusion check; an inconclusive check blocks
+   * LIGHTING, not the share.
+   *
+   * Set `VITE_CFG_ENABLE_WIN_NATIVE_SCREEN_AUDIO=true` for builds that should
+   * have it.
+   */
+  ENABLE_WIN_NATIVE_SCREEN_AUDIO:
+    (
+      (import.meta.env.VITE_CFG_ENABLE_WIN_NATIVE_SCREEN_AUDIO as string) ?? ""
+    ).toLowerCase() == "true",
+  /**
    * Enable on-device call transcription (the Transcribe button and its panel).
    *
    * DEFAULT OFF, opt-in, for the reason recording taught us: call recording

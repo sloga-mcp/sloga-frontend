@@ -20,10 +20,12 @@ import {
 
 import {
   type AudioCaptureOptions,
+  type LocalTrackPublication,
   type TrackPublishOptions,
   type VideoCaptureOptions,
   ConnectionState,
   isE2EESupported,
+  LocalAudioTrack,
   LocalVideoTrack,
   Room,
   RoomEvent,
@@ -40,6 +42,16 @@ import { Capacitor, registerPlugin } from "@capacitor/core";
 import E2EEWorker from "livekit-client/e2ee-worker?worker";
 import { DenoiseTrackProcessor } from "livekit-rnnoise-processor";
 import { Channel, Message } from "stoat.js";
+
+import {
+  beginScreenAudioPublish,
+  captureScreenAudio,
+  finishScreenAudioPublish,
+  screenAudioActive,
+  screenAudioSenderEncrypted,
+  screenAudioSupported,
+  teardownScreenAudio,
+} from "./screenAudioNative";
 
 class GainTrackProcessor {
   name = "gain-processor";
@@ -1904,6 +1916,26 @@ class Voice {
     room.addListener("disconnected", () => {
       this.#setState("DISCONNECTED");
       nativeCallServiceStop();
+      // Native screen-share audio: a FULL teardown, extending this handler
+      // rather than adding a second `"disconnected"` listener — two handlers
+      // would disagree about what a disconnect means.
+      //
+      // 🔴 It has to be a full teardown, not a bare disown. A dropped
+      // websocket never self-recovers on this client, so without it the
+      // renderer sits owning nothing while the shell captures the user's
+      // whole desktop until the liveness credit expires. And a bare disown
+      // from a fully armed renderer means the shell's terminal sentinel
+      // arrives in LIVE — a false failure toast plus a death-branch teardown
+      // on every socket drop mid-share.
+      //
+      // Idempotent by contract: livekit also emits this from `pagehide`,
+      // `beforeunload` and the page-freeze handler, so it fires on paths
+      // where teardown has already run.
+      //
+      // It sits next to `nativeCallServiceStop()` above, which is here for the
+      // identical reason: the native side should not be left running while
+      // the renderer waits for an SFU timeout that never comes.
+      void teardownScreenAudio();
     });
 
     room.addListener("participantConnected", (participant) => {
@@ -1996,6 +2028,17 @@ class Voice {
     room.addListener("localTrackPublished", (pub) => {
       this.#setCallParticipantsVersion((v) => v + 1);
       if (this.#publishGate.size > 0) void this.#applyPublishGate(room);
+      // 🔴 Native screen audio: assert the E2EE transform on THIS publication,
+      // not once per share. livekit's full-reconnect `republishAllTracks`
+      // unpublishes and republishes ScreenShareAudio, constructing a NEW
+      // RTCRtpSender — and `handleSender` opens
+      // `if (E2EE_FLAG in sender || !this.worker) return`, so a fresh sender
+      // with a dead worker is skipped IN SILENCE. Binding here covers the
+      // first publish too: the event is emitted inside `publishTrack` and
+      // re-emitted by Room before its first `yield`.
+      if (pub.source === Track.Source.ScreenShareAudio) {
+        this.#assertScreenAudioEncrypted(room, pub);
+      }
       const track = pub.track;
       if (!track) return;
       track.on(TrackEvent.UpstreamResumed, () => {
@@ -2449,6 +2492,12 @@ class Voice {
       this.disposeTrackRoot = undefined;
       this.#stopPushToTalk();
       this.#stopVAD();
+      // Native screen-share audio: the backstop for call leave and every
+      // programmatic `disconnect()`. Those never fire the video track's
+      // `"ended"`, so without this the shell would keep capturing the whole
+      // desktop until its liveness credit expired. Idempotent — the
+      // `"disconnected"` handler usually got here first.
+      void teardownScreenAudio();
       this.#attenuation.detach();
       this.#watchDuck.detach();
 
@@ -4022,11 +4071,163 @@ class Voice {
     return qualities;
   }
 
+  /**
+   * Start the shell's native system-audio capture and publish it as
+   * `ScreenShareAudio`.
+   *
+   * Returns the publication so `toggleScreenshare` can rebind the binding the
+   * ask-modal closures capture; `undefined` means the share continues silent,
+   * which is always a degrade and never a failed share.
+   *
+   * Ordering here is not incidental — every step below is a rule from the
+   * design's §3.4/§3.6, and the review record shows each one was written
+   * because a reviewer found the failure.
+   */
+  async #publishNativeScreenAudio(
+    room: Room,
+  ): Promise<LocalTrackPublication | undefined> {
+    const capture = await captureScreenAudio({
+      mode: "system",
+      host: {
+        // Idempotent and non-throwing: this is called from a death path.
+        unpublish: async () => {
+          const pub = room.localParticipant.getTrackPublication(
+            Track.Source.ScreenShareAudio,
+          );
+          if (pub?.track) {
+            try {
+              await room.localParticipant.unpublishTrack(pub.track);
+            } catch (error) {
+              console.error("[screen-audio] unpublish failed", error);
+            }
+          }
+        },
+        toast: (message) => this.onErr(message),
+      },
+    });
+    if (!capture) return undefined;
+
+    // Stale-share guard: `captureScreenAudio` spans an IPC round trip plus a
+    // worklet module load, and the call can end underneath it.
+    if (this.room() !== room) {
+      await teardownScreenAudio();
+      return undefined;
+    }
+
+    // 🔴 Refuse a duplicate. livekit permits a second ScreenShareAudio
+    // publication with only an info log, and two of them means two captures
+    // and an invariant nobody enforces.
+    if (
+      room.localParticipant.getTrackPublication(Track.Source.ScreenShareAudio)
+    ) {
+      console.error(
+        "[screen-audio] a ScreenShareAudio publication already exists; refusing to publish a second",
+      );
+      await teardownScreenAudio();
+      return undefined;
+    }
+
+    // `userProvidedTrack: true` — the track is ours, from a
+    // MediaStreamAudioDestinationNode, and livekit must never try to
+    // "reacquire" it the way it would a gUM track.
+    const audioTrack = new LocalAudioTrack(capture.track, undefined, true);
+
+    // 🔴 No `await` between this and `publishTrack`. The two `STARTING` death
+    // rows differ by exactly whether the publish has been ISSUED — before it,
+    // the publish is REFUSED; after it, `negotiate()` has already put the
+    // track on the wire and the only correct action is to UNPUBLISH. Because
+    // there is no suspension point here, no death can land in between and the
+    // two cases stay distinguishable.
+    if (!beginScreenAudioPublish()) {
+      await teardownScreenAudio();
+      return undefined;
+    }
+
+    let publication: LocalTrackPublication;
+    try {
+      publication = await room.localParticipant.publishTrack(audioTrack, {
+        source: Track.Source.ScreenShareAudio,
+        // 🔴 `forceStereo`: livekit reads channel count from settings and
+        // constraints, and BOTH are empty on a synthetic worklet track — so
+        // without forcing it the track negotiates MONO and the implicit
+        // stereo dtx/red-off backstop never arms.
+        forceStereo: true,
+        // Stated explicitly rather than inherited from `forceStereo`: empty
+        // DTX frames bypass frame encryption, which is an activity-pattern
+        // leak on an E2EE call, and RED duplicates payload the frame cryptor
+        // has already sealed.
+        dtx: false,
+        red: false,
+      });
+    } catch (error) {
+      console.error("[screen-audio] publish failed", error);
+      await teardownScreenAudio();
+      return undefined;
+    }
+
+    // A death that landed during the publish window. There is no publish left
+    // to refuse, so returning early would strand a live ScreenShareAudio
+    // publication on the SFU against local state DEAD — encrypted silence
+    // both ends believe is live, on the one path where the frames may be
+    // other participants' voices.
+    if (!finishScreenAudioPublish()) {
+      try {
+        await room.localParticipant.unpublishTrack(audioTrack);
+      } catch (error) {
+        console.error("[screen-audio] late unpublish failed", error);
+      }
+      return undefined;
+    }
+
+    // 🔴 The E2EE transform assertion, on THIS publication. It is bound to
+    // `LocalTrackPublished` (below, in `connect`) so it re-arms on livekit's
+    // reconnect republish — but the FIRST publication's event is emitted
+    // INSIDE `publishTrack`, before this line runs, so the listener has
+    // already seen it. Asserting again here would be a second, redundant
+    // check on the same sender; instead the listener owns it and this
+    // records why there is nothing to do at the call site.
+    return publication;
+  }
+
+  /**
+   * The `lk_e2ee` assertion, per publication.
+   *
+   * Fails LOUD: a dead E2EE worker plus one publish sends the whole
+   * system-audio capture to the SFU as PLAINTEXT while the signaling still
+   * stamps GCM at participant level. Receivers fail-decrypt and drop, so the
+   * symptom is "the far end hears nothing" — indistinguishable from a quiet
+   * desktop, and server-visible plaintext media is the worst outcome in this
+   * feature's threat model.
+   */
+  #assertScreenAudioEncrypted(room: Room, pub: LocalTrackPublication) {
+    if (!screenAudioActive()) return;
+    if (!room.isE2EEEnabled) return;
+    if (screenAudioSenderEncrypted(pub.track?.sender)) return;
+    this.onErr("Screen audio could not be encrypted and was stopped.");
+    void (async () => {
+      // Unpublish FIRST, then tear down: the plaintext sender must stop
+      // before anything else, and teardown's own unpublish step is then a
+      // no-op.
+      try {
+        if (pub.track) await room.localParticipant.unpublishTrack(pub.track);
+      } catch (error) {
+        console.error("[screen-audio] unpublish after E2EE failure", error);
+      }
+      await teardownScreenAudio();
+    })();
+  }
+
   async toggleScreenshare() {
     const room = this.room();
     if (!room) throw "invalid state";
 
     if (this.screenshare()) {
+      // Before the unpublish: the native session, the AudioContext and the
+      // worklet are ours and `setScreenShareEnabled(false)` releases none of
+      // them. Its auto-unpublish of ScreenShareAudio stops the WRAPPED
+      // destination track and nothing else.
+      await teardownScreenAudio();
+
       await room.localParticipant.setScreenShareEnabled(false);
 
       // The track's stop() already tore the processor down; just drop the
@@ -4077,6 +4278,16 @@ class Voice {
           qualities[this.#settings.screenShareQuality || "low"] ||
           qualities.low!;
 
+        // 🔴 CAPABILITY, never preference. On a capable shell this removes
+        // the picker's "Also share system audio" checkbox entirely, and it
+        // must do so even when the user's stored setting says they do NOT
+        // want screen audio: otherwise a capable user with the setting off
+        // sees the checkbox, ticks it, and resurrects the measured-broken
+        // browser loopback on the exact shell this feature exists to fix.
+        // Whether the NATIVE capture then runs is the preference's business,
+        // below.
+        const nativeScreenAudio = await screenAudioSupported();
+
         const localTrack = await room.localParticipant.setScreenShareEnabled(
           true,
           {
@@ -4085,16 +4296,26 @@ class Voice {
             // loopback captures everything the machine plays — including the
             // other participants' voices coming out of this client — so a
             // plain `audio: true` share re-broadcast the call to everyone in
-            // it (self-echo, feedback with open mics). `restrictOwnAudio`
-            // (Chrome/Edge/WebView2 141+) filters audio produced by this
-            // document out of the capture; engines that predate it ignore
-            // the unknown constraint and behave as before. livekit passes
-            // this object verbatim into getDisplayMedia
-            // (screenCaptureToDisplayMediaStreamOptions), but its
+            // it (self-echo, feedback with open mics).
+            //
+            // On the CAPABLE path this is `false`: the shell captures the
+            // system mix natively, excluding our own WebView2 subtree, so
+            // there is nothing for the browser to be asked for. livekit
+            // passes the value straight into getDisplayMedia
+            // (`audio: options.audio ?? false`), so `false` removes the
+            // checkbox rather than merely unticking it.
+            //
+            // Everywhere else this stays `restrictOwnAudio` — MEASURED to be
+            // a complete no-op on every current Windows engine (accepted,
+            // `getSettings()` reports false, the tone stays at +148 dB), and
+            // kept only because it costs nothing and becomes a free
+            // improvement for web users the day upstream implements it.
+            // Nothing may call it a fix again until a leg shows
+            // `getSettings().restrictOwnAudio === true`. livekit's
             // AudioCaptureOptions type lags the spec, hence the cast.
-            audio: {
-              restrictOwnAudio: true,
-            } as AudioCaptureOptions,
+            audio: nativeScreenAudio
+              ? false
+              : ({ restrictOwnAudio: true } as AudioCaptureOptions),
           },
           {
             // MUST be screenShareEncoding: livekit-client silently ignores
@@ -4114,9 +4335,24 @@ class Voice {
           },
         );
 
-        const screenAudioTrack = room.localParticipant.getTrackPublication(
+        // 🔴 `let`, not `const`. The ask-modal's `audio:` prop, its untick
+        // closure and its resume closure all capture this binding, and on the
+        // capable path the publication does not exist yet — it is created by
+        // the native publish below. Capturing it before that point is how the
+        // modal ends up reporting "no audio" over a live native share.
+        let screenAudioTrack = room.localParticipant.getTrackPublication(
           Track.Source.ScreenShareAudio,
         );
+
+        // Native screen-share audio (capable Windows shells). The browser
+        // checkbox is gone on this path, so this is the ONLY source of system
+        // audio — and the stored preference governs whether it runs, exactly
+        // as it governs what the non-ask path passes to `callback` below.
+        if (nativeScreenAudio && this.#settings.screenShareAudio) {
+          await this.#publishNativeScreenAudio(room).then(
+            (pub) => (screenAudioTrack = pub ?? screenAudioTrack),
+          );
+        }
 
         this.#setScreenshare(room.localParticipant.isScreenShareEnabled);
 
@@ -4210,7 +4446,21 @@ class Voice {
                 .setDegradationPreference(quality.degradationPreference)
                 .catch(() => undefined);
               if (!audio && screenAudioTrack?.track) {
-                room.localParticipant.unpublishTrack(screenAudioTrack.track);
+                // 🔴 The native session outlives this unpublish. For a browser
+                // track the unpublish stops the capture via
+                // `stopLocalTrackOnUnpublish`; for the native one it stops the
+                // WRAPPED destination track and leaves the AudioContext, the
+                // worklet AND the shell-side capture running. The renderer
+                // teardown is the load-bearing half: the shell's supersede
+                // rule self-heals only the native session, while a leaked
+                // AudioContext has no supersede — Chromium caps them per page,
+                // so repeated share/untick cycles would eventually break ALL
+                // call audio, the voice pipeline included.
+                if (screenAudioActive()) {
+                  await teardownScreenAudio();
+                } else {
+                  room.localParticipant.unpublishTrack(screenAudioTrack.track);
+                }
               }
               this.sound.playSound("streamStart");
             }
@@ -4227,6 +4477,9 @@ class Voice {
               screenAudioTrack?.pauseUpstream();
               this.openModal({
                 onCancel: async () => {
+                  // Same reason as the untick branch: `setScreenShareEnabled
+                  // (false)` releases nothing the native path owns.
+                  await teardownScreenAudio();
                   await room.localParticipant.setScreenShareEnabled(false);
                   this.#setScreenshare(
                     room.localParticipant.isScreenShareEnabled,
