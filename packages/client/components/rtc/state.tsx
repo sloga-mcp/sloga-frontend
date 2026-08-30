@@ -504,33 +504,31 @@ class Voice {
   #e2eeWorker: Worker | undefined;
   /**
    * Native screen audio observed the E2EE transform MISSING on one of its own
-   * publications during this call. Set at detection in
-   * `#assertScreenAudioEncrypted`; `#publishNativeScreenAudio` refuses to
-   * re-arm while it is set; drives the chip red; cleared only in
-   * `disconnect()`.
+   * publications during this call, so this call's screen audio is dead. Set at
+   * detection in `#assertScreenAudioEncrypted`; `#publishNativeScreenAudio`
+   * refuses to re-arm while it is set; cleared only in `disconnect()`.
    *
-   * 🔴 A SIGNAL, and deliberately NOT `callEncryptionError`. Writing that
-   * signal was the obvious move and it is wrong: it is also
-   * `isTerminalLoud`'s input, and `mlsCallSession` sets the mode back to
-   * `negotiating` MID-CALL on the re-upgrade after a plaintext interlude
-   * (`mlsCallSession.ts:3115`). A latched `callEncryptionError` reddens the
-   * chip, and `not_encrypted` + `negotiating` makes `isTerminalLoud` true —
-   * so a screen-audio detection would later paint the whole-call downgrade
-   * banner, which says "your audio and video stay paused" (nothing here
-   * pauses them) and whose "Stay unencrypted" button no-ops, because
-   * `confirmPlaintext`'s `terminalEscape` requires the session's own
-   * `#loudLatched` (`mlsCallSession.ts:3263-3267`), which this path never
-   * sets. The user would be parked behind an undismissible strip whose only
-   * working control is "Leave call".
+   * 🔴 An AVAILABILITY latch, not a security one, and it drives NO indicator.
+   * That is the L15 result (design §7): with `encodedInsertableStreams` on —
+   * which livekit sets for every E2EE room — Chromium withholds RTP from a
+   * sender that has no transform ENTIRELY. Measured at zero bytes and zero
+   * packets in two Chromium versions bracketing the shipping WebView2
+   * runtime, against controls that sent normally. So when this fires, nothing
+   * went out in the clear; the share is simply silent.
    *
-   * So this drives the chip and nothing else. `callEncryptionError` keeps its
-   * meaning: a CONTROL-plane failure to secure. See `#encryptionChip`.
+   * 🔴 Which is why this is a plain field and not a signal, and why it must
+   * NOT reach `callEncryptionError`. Reddening the call's NOT-ENCRYPTED chip
+   * here would be a false alarm on a call whose confidentiality is intact,
+   * and a red lock on an encrypted call is worse than no lock — it teaches
+   * the user the indicator means nothing. (It would also have reached
+   * `isTerminalLoud`, whose banner claims a publish pause this path does not
+   * perform and offers an escape button that no-ops without the MLS session's
+   * own loud latch.)
    *
    * The lifetime reasoning is at the refusal site, next to the `if` it
    * governs.
    */
-  #screenAudioPlaintext: Accessor<boolean>;
-  #setScreenAudioPlaintext: Setter<boolean>;
+  #screenAudioPlaintext = false;
   /**
    * The shared web-audio context handed to livekit via
    * `webAudioMix: { audioContext }`. Owned HERE, not by the SDK — livekit
@@ -1017,10 +1015,6 @@ class Voice {
       createSignal<unknown>();
     this.callEncryptionError = callEncryptionError;
     this.#setCallEncryptionError = setCallEncryptionError;
-
-    const [screenAudioPlaintext, setScreenAudioPlaintext] = createSignal(false);
-    this.#screenAudioPlaintext = screenAudioPlaintext;
-    this.#setScreenAudioPlaintext = setScreenAudioPlaintext;
 
     const [recording, setRecording] = createSignal(false);
     this.recording = recording;
@@ -2449,9 +2443,9 @@ class Voice {
       this.#pinnedMicId = undefined;
       this.#setCallEncryptionError(undefined);
       // Clears with the call's other latched encryption state and nowhere
-      // else — a new call is the only thing that counts as re-secured for it
+      // else — a new call is the only thing that clears it
       // (see `#publishNativeScreenAudio`).
-      this.#setScreenAudioPlaintext(false);
+      this.#screenAudioPlaintext = false;
       this.#setCallNonEnrolled([]);
       // Reset the 6.5 signals so the next call's card never flashes this
       // call's latched mode/roster/attribution (FE-9a).
@@ -4147,7 +4141,7 @@ class Voice {
   async #publishNativeScreenAudio(
     room: Room,
   ): Promise<LocalTrackPublication | undefined> {
-    // 🔴 REFUSE to re-arm after this call has already published screen audio
+    // 🔴 REFUSE to re-arm after this call's screen audio was published
     // through a sender with no E2EE transform. Latched at detection, in
     // `#assertScreenAudioEncrypted`.
     //
@@ -4155,40 +4149,29 @@ class Voice {
     // machine returns to `IDLE`, the next share reaches this method again,
     // and the only gate in its way is `room.isE2EEEnabled` — which is set
     // from the worker's own reply to `enable` (`:25987`) and stays true. Each
-    // retry re-runs the same sender setup that just failed.
+    // retry re-runs the same sender setup that just failed, and produces
+    // another silent share and another modal.
     //
-    // 🔴 "Until the call is re-secured" resolves to "for the rest of this
-    // call", and the reason is that WE CANNOT ATTRIBUTE THE CAUSE — not that
-    // we know it to be permanent.
+    // 🔴 This is an AVAILABILITY refusal. L15 (design §7) measured that a
+    // transformless sender emits zero RTP, so a retry does not re-open a
+    // plaintext window — slice 3a argued exactly that and it was wrong. What
+    // a retry costs is the user's time and a second identical failure.
     //
-    // Slice 3a first argued this from the worker's lifetime: `handleSender`
-    // opens `if (E2EE_FLAG in sender || !this.worker) return`, and
-    // `this.worker` is assigned once (`livekit-client.esm.mjs:14060`) and
-    // never rebuilt. The single assignment is real, but the inference is
-    // wrong: `this.worker` is never NULLED either, so a worker that crashed
-    // or was terminated is still truthy, the guard passes, and
-    // `sender[E2EE_FLAG] = true` (`:14422`) still runs. A dead worker does
-    // not produce this symptom, and a Room with no worker could not satisfy
-    // the `room.isE2EEEnabled` guard above in the first place.
-    //
-    // What can produce it is a PER-SENDER fault between that guard and the
-    // stamp — `sender.createEncodedStreams()` throwing (`:14407`), or
-    // `setupE2EESender` early-returning on `!sender`. The `LocalSenderCreated`
-    // handler is an `__awaiter` (`:14152`), so such a throw becomes an
-    // unhandled rejection and `publishTrack` carries on: there is NO signal
-    // that says whether the condition has cleared. Retrying would be guessing
-    // with the user's desktop audio, and no in-call event exists that could
-    // license the guess. Refusing is the fail-closed answer, and the call is
-    // the natural scope because a new call is the next point at which
-    // anything is re-derived from scratch.
+    // 🔴 It is still scoped to the whole call, because the cause is
+    // UNATTRIBUTABLE from here. `handleSender` can fail between its
+    // `!this.worker` guard and `sender[E2EE_FLAG] = true` (`:14422`) —
+    // `sender.createEncodedStreams()` throwing (`:14407`), or
+    // `setupE2EESender` early-returning on `!sender` — and the
+    // `LocalSenderCreated` handler is an `__awaiter` (`:14152`), so the throw
+    // becomes an unhandled rejection nobody observes. There is NO signal that
+    // says whether the condition cleared, so there is nothing a retry could
+    // be conditioned on. A new call is the next point at which any of this is
+    // re-derived, which makes it the natural scope.
     //
     // The degrade is a silent share, the same one every other refusal here
-    // takes. The user was told loudly when it happened and the call chip
-    // stays not-encrypted for the rest of the call; a second share is not the
-    // place to re-litigate it. 🔴 What the user is NOT told is that this
-    // particular share was refused for a security reason — the modal renders
-    // the generic capture-failure copy. Owed in §9.
-    if (this.#screenAudioPlaintext()) {
+    // takes — and unlike them, the user was told: the `not-encrypted` modal
+    // says screen audio stays off for the rest of the call and to rejoin.
+    if (this.#screenAudioPlaintext) {
       console.error(
         "[screen-audio] refusing to re-arm: this call already published screen audio through a sender with no E2EE transform",
       );
@@ -4439,30 +4422,31 @@ class Voice {
         // machine in the clear, so they have no reason to treat it as a
         // disclosure. It has to say that some already did.
         //
-        // 🔴 And it must not confine the problem to screen audio. §7 records
-        // that the assertion cannot false-positive on a timing race, so when
-        // it fires the transform genuinely was not installed. Only this track
-        // is asserted on and only this track is torn down, so the copy hedges
-        // the scope rather than implying the rest of the call is fine.
+        // 🔴 This sentence says NOTHING LEAKED, and that is measured, not
+        // hoped. L15 (design §7): with `encodedInsertableStreams` — which
+        // livekit sets for every E2EE room — Chromium withholds RTP from a
+        // transformless sender entirely. Zero bytes, zero packets, in two
+        // Chromium versions bracketing the shipping WebView2 runtime, against
+        // controls that sent normally. Every reachable variant of the fault
+        // lands there: no streams created, or streams created and never
+        // piped, or streams handed to a worker that never writes them.
         //
-        // 🔴 Slice 3 justified that hedge with "the cause is a dead E2EE
-        // worker, which is call-wide", and slice 3a tried to turn it into a
-        // KNOWN scope by surveying the other local senders. BOTH rested on a
-        // premise the pinned livekit-client 2.15.13 contradicts: `this.worker`
-        // is assigned once (`:14060`) and never nulled, so a crashed or
-        // terminated worker is still truthy, `handleSender` runs past its
-        // guard, and `sender[E2EE_FLAG] = true` (`:14422`) still executes. A
-        // dead worker does not clear this flag on anything. The reachable
-        // cause is a PER-SENDER fault, under which the other senders keep
-        // their flag and the survey would always answer "not call-wide" — an
-        // unreachable branch carrying the strongest claim in the file, so it
-        // was reverted.
+        // 🔴 So the two earlier framings were both wrong. Slice 3 said the
+        // audio "was sent without encryption" and that other tracks "may be
+        // affected"; slice 3a kept that and added a call-level indicator. Both
+        // rested on "a dead E2EE worker leaves `lk_e2ee` unset call-wide",
+        // which the pinned livekit-client 2.15.13 does not do — `this.worker`
+        // is assigned once (`:14060`) and never nulled, so a crashed worker
+        // is still truthy and `sender[E2EE_FLAG] = true` (`:14422`) still
+        // runs. The reachable cause is a per-sender fault, and its effect is
+        // silence.
         //
-        // The hedge survives its original argument: the scope is genuinely
-        // unknown from here, which is exactly what "may be affected" says.
+        // What is left to tell the user is an availability failure plus the
+        // reason their next share will also be silent — the refusal in
+        // `#publishNativeScreenAudio` was previously unexplained to them.
         this.onErr(
           new Error(
-            t`Screen audio was sent without encryption and has been stopped. Some of it may already have reached the server unencrypted, and other tracks in this call may be affected as well.`,
+            t`Screen audio could not be encrypted, so nothing was sent in the clear. Your computer's sound has stopped reaching the call and stays off for the rest of it — rejoin to try again.`,
           ),
         );
         return;
@@ -4530,23 +4514,20 @@ class Voice {
       "[screen-audio] E2EE transform missing on publication",
       pub.trackSid,
     );
-    this.#setScreenAudioPlaintext(true);
+    this.#screenAudioPlaintext = true;
 
-    // 🔴 This drives the NOT-ENCRYPTED chip and nothing else. Until slice 3a
-    // the failure reached the user only as a dismissible per-track modal
-    // while the call's own lock stayed green; the chip is what fixes that.
-    // See the field's doc for why this is a separate signal rather than
-    // `callEncryptionError`, and `#encryptionChip` for where it lands.
+    // 🔴 Nothing call-level goes loud here, and that is the L15 result rather
+    // than a shortfall. Slice 3a first wrote `callEncryptionError` on this
+    // path so the NOT-ENCRYPTED chip would fire, on the premise that a
+    // missing transform meant the sharer's tracks were reaching the SFU in
+    // the clear. Measured (design §7, L15): a sender with no transform emits
+    // ZERO RTP under `encodedInsertableStreams`, in both Chromium versions
+    // bracketing the shipping runtime. Nothing leaks, so a red lock on this
+    // call would be a false alarm — and the same mechanism protects the mic
+    // and the screen video, which was the whole argument for going call-wide.
     //
-    // 🔴 It does NOT pause publishing, and that is a KNOWN GAP rather than a
-    // decision this change is entitled to make. The client now holds local
-    // evidence that a sender of its own carried no transform, while the mic
-    // and camera keep publishing — where ONE non-enrolled participant pauses
-    // all local publishing and shows a blocking banner. Closing that means a
-    // publish-gate reason plus a third banner state (the terminal-loud one is
-    // the wrong shape: its copy claims a pause that would not exist and its
-    // escape button is inert here). Raised to the lighting gate in §9 rather
-    // than bolted on beneath a screen-audio assertion.
+    // What is left is an availability failure: this share is silent. The
+    // latch above stops it repeating, and the modal below says so.
 
     // 🔴 The response differs by state — a failure during the publish window
     // must LATCH and refuse the pending publish, where one on a live
@@ -5068,27 +5049,6 @@ class Voice {
    * version so it re-runs when the SFU roster / published tracks change.
    */
   callEncryptionChip(): ChipState {
-    return this.#encryptionChip(true);
-  }
-
-  /**
-   * The chip, with the screen-audio media-plane latch either applied or not.
-   *
-   * 🔴 Two readings exist ON PURPOSE. The DISPLAYED chip must go red when
-   * this device has seen one of its own senders published with no E2EE
-   * transform. `isTerminalLoud` must NOT, because "the call failed to secure"
-   * is a control-plane verdict with a control-plane remedy: its banner tells
-   * the user their publishing is paused (this path pauses nothing) and offers
-   * a "Stay unencrypted" button that no-ops unless the MLS session latched
-   * loud itself. Feeding it a chip reddened by a media-plane latch is what
-   * turns a mid-call re-upgrade (`mlsCallSession.ts:3115` sets the mode back
-   * to `negotiating`) into an undismissible strip with no working control.
-   *
-   * `chipState` and `isTerminalLoud` are left exactly as they are — they are
-   * unit-tested policy and their tests still describe the truth. The split is
-   * here, at the one caller that has both questions.
-   */
-  #encryptionChip(includeScreenAudioLatch: boolean): ChipState {
     this.callParticipantsVersion(); // reactive dependency (FE-8/R2-3)
     const room = this.room();
     const session = this.#mlsSession;
@@ -5128,9 +5088,7 @@ class Voice {
       e2eeEnabled: mode?.kind === "e2ee",
       hasLocalKey: mode?.kind === "e2ee",
       resecuring: session?.state() === "resecuring",
-      latchedError:
-        this.callEncryptionError() !== undefined ||
-        (includeScreenAudioLatch && this.#screenAudioPlaintext()),
+      latchedError: this.callEncryptionError() !== undefined,
       publishingIdentities: publishing,
       observedEncrypted: observed,
       rosterVerified: this.callRoster().members.map((m) => m.user_verified),
@@ -5304,12 +5262,9 @@ class Voice {
    * which have their own banner.
    */
   callTerminalLoud(): boolean {
-    // 🔴 The chip WITHOUT the screen-audio latch — see `#encryptionChip`. A
-    // media-plane transform going missing must never manufacture the
-    // control-plane "failed to secure" verdict this banner acts on.
     return isTerminalLoud(
       this.callMode(),
-      this.#encryptionChip(false),
+      this.callEncryptionChip(),
       this.callEncryptionError() !== undefined,
     );
   }

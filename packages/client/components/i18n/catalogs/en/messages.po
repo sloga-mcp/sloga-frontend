@@ -5697,6 +5697,10 @@ msgstr "Scheduling does not support attachments yet"
 
 #: components/rtc/state.tsx
 #: components/rtc/state.tsx
+msgid "Screen audio could not be encrypted, so nothing was sent in the clear. Your computer's sound has stopped reaching the call and stays off for the rest of it — rejoin to try again."
+msgstr "Screen audio could not be encrypted, so nothing was sent in the clear. Your computer's sound has stopped reaching the call and stays off for the rest of it — rejoin to try again."
+
+#: components/rtc/state.tsx
 msgid "Screen audio could not start; sharing without it."
 msgstr "Screen audio could not start; sharing without it."
 
@@ -5707,10 +5711,6 @@ msgstr "Screen audio is unavailable in this window. If you are running a second 
 #: components/rtc/state.tsx
 msgid "Screen audio stopped. The screen is still being shared."
 msgstr "Screen audio stopped. The screen is still being shared."
-
-#: components/rtc/state.tsx
-msgid "Screen audio was sent without encryption and has been stopped. Some of it may already have reached the server unencrypted, and other tracks in this call may be affected as well."
-msgstr "Screen audio was sent without encryption and has been stopped. Some of it may already have reached the server unencrypted, and other tracks in this call may be affected as well."
 
 #: components/app/interface/settings/user/voice/OverlaySettings.tsx
 msgid "Screen position"

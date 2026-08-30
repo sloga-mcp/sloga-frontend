@@ -66,20 +66,24 @@ export type ScreenAudioFailure =
   /** The capture died mid-share. */
   | { kind: "died"; reason: string }
   /**
-   * The E2EE transform was not attached to this publication.
+   * The E2EE transform was not attached to this publication, so the share is
+   * silent and must be torn down.
    *
-   * 🔴 The SCOPE is deliberately not carried here, and the reason is a
-   * correction to §7 rather than a simplification. §7 (and slice 3a's first
-   * attempt) assumed a dead E2EE worker clears this flag call-wide, so the
-   * mic and screen video would be plaintext too. In the pinned
-   * livekit-client 2.15.13 that is FALSE: `this.worker` is assigned once
+   * 🔴 Despite the name, this is an AVAILABILITY failure. L15 (design §7,
+   * measured 2026-08-29): with `encodedInsertableStreams` — which livekit
+   * sets for every E2EE room — Chromium withholds RTP from a transformless
+   * sender entirely, at zero bytes and zero packets, in two Chromium versions
+   * bracketing the shipping WebView2 runtime. Nothing goes out in the clear.
+   * The host's copy says so; do not reintroduce a disclosure claim here or
+   * there.
+   *
+   * 🔴 No SCOPE field, for a second reason that outlived the first. §7 and
+   * slice 3a both assumed a dead E2EE worker clears this flag call-wide; in
+   * the pinned livekit-client 2.15.13 `this.worker` is assigned once
    * (`:14060`) and never nulled, so a crashed or `terminate()`d worker is
    * still truthy, `handleSender` runs past `!this.worker` (`:14385`), and
-   * `sender[E2EE_FLAG] = true` (`:14422`) still executes. The reachable
-   * cause is therefore a PER-SENDER fault — `handleSender` throwing between
-   * the guard and the stamp, or `setupE2EESender` early-returning on
-   * `!sender` — under which the other senders keep their flag. A "call-wide"
-   * verdict is not derivable from this signal, so the host's copy hedges.
+   * `sender[E2EE_FLAG] = true` (`:14422`) still executes. The reachable cause
+   * is a PER-SENDER fault, so a call-wide verdict is not derivable here.
    */
   | { kind: "not-encrypted" }
   /** The graph could not be built after the shell had already started. */
@@ -933,9 +937,9 @@ export function screenAudioSenderEncrypted(
  *   and the publish would go ahead: the whole system-audio capture on the wire
  *   as plaintext while the signaling still stamps GCM.
  * - In `LIVE` there is a live publication, so the correct act is to DISCARD
- *   the worklet's queue synchronously — the ordinary stop path does not, and
- *   this sender is known to carry no transform — then UNPUBLISH, and only
- *   then tear down and report.
+ *   the worklet's queue synchronously — matching `die()`, so the two edges
+ *   stop the source identically — then UNPUBLISH, and only then tear down
+ *   and report.
  *
  * Both fail LOUD. The caller does nothing but report; the state transition and
  * the teardown belong here so the two edges cannot drift apart.
@@ -967,17 +971,18 @@ export function screenAudioEncryptionFailed(): void {
     // goes through `teardownScreenAudio()` instead, whose step 0 stops the
     // ticks and releases the Channel but deliberately does NOT discard —
     // an ordinary stop drains its tail rather than clipping it. That default
-    // is wrong here and only here: the sender on the far end of that drain is
-    // one we have just proven carries no transform, so every buffered frame
-    // it swallows is plaintext on the wire.
+    // is wrong here: the sender on the far end of that drain is one we have
+    // just proven carries no transform and are about to unpublish, so the
+    // tail is work with nowhere to go.
     //
-    // 🔴 Size it honestly: the WINDOW is step 2's
-    // `settleWithin(unpublish, 2_000)`, but the AUDIO is bounded by the
-    // worklet's queue depth, because step 0 already stopped refilling it. At
-    // `maxFrames` (2.5x the 100 ms target, `ScreenAudioWorklet.js`) that is
-    // ~250 ms, after which the worklet underruns to silence on its own. A
-    // quarter-second of the desktop mix through a sender known to carry no
-    // transform — worth closing, and not the two seconds the window suggests.
+    // 🔴 It closes no leak, and slice 3a claimed it did. L15 (design §7)
+    // measured that a transformless sender emits zero RTP, so those buffered
+    // frames were never reaching the wire in the first place. What survives
+    // the correction is the coherence argument the design actually rests on:
+    // `die()` discards, this edge is the same kind of stop, and two edges
+    // that stop the source differently are two behaviors to keep in sync
+    // forever. Bounded either way by the worklet's `maxFrames` (~250 ms, not
+    // step 2's 2 s window, because step 0 already stopped refilling it).
     //
     // Ordering matches `die()`'s (discard → stop ticks → release channel), so
     // both edges stop the source identically — which is what this function's
