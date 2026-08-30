@@ -69,7 +69,10 @@ export function ActivityWorker() {
       ? user.edit({
           status: { activity: { name: target } },
         } as Parameters<typeof user.edit>[0])
-      : user.edit({ remove: ["StatusActivity"] } as Parameters<
+      : // `remove` is a real field on the route but absent from stoat-api's
+        // generated edit type, so this needs the two-step widening rather
+        // than a direct assertion.
+        user.edit({ remove: ["StatusActivity"] } as unknown as Parameters<
           typeof user.edit
         >[0])
     ).catch(() => {

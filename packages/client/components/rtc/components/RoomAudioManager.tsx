@@ -10,7 +10,11 @@ import {
 } from "livekit-client";
 
 import { useState } from "@revolt/state";
-import { participantUserId } from "@revolt/ui/components/features/voice/participantIdentity";
+import {
+  isScreenLeg,
+  participantUserId,
+  stripLeg,
+} from "@revolt/ui/components/features/voice/participantIdentity";
 
 import { TrackNormalizer, ensureNormalizerWorklet } from "../audioNormalizer";
 import { useVoice } from "../state";
@@ -78,7 +82,21 @@ export function RoomAudioManager() {
   });
 
   const filteredVideoTracks = createMemo(() =>
-    videoTracks().filter((track) => !isLocal(track.participant)),
+    videoTracks().filter((track) => {
+      if (isLocal(track.participant)) return false;
+      // The publishing phone never subscribes to its OWN screen leg (plan
+      // §0.9/§7.3a): the leg is a REMOTE participant here, so without this
+      // the sharer's device downloads its own full-rate stream just to show
+      // its screen showing its screen. By DEVICE, not user — another of our
+      // devices' legs is a genuine remote share.
+      const identity = track.participant.identity;
+      if (
+        isScreenLeg(identity) &&
+        stripLeg(identity) === voice.room()?.localParticipant.identity
+      )
+        return false;
+      return true;
+    }),
   );
 
   // ---- Incoming-voice normalization (rtc/audioNormalizer.ts) -------------

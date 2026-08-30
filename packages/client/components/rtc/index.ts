@@ -94,3 +94,5 @@ export type {
   CameraBackgroundKind,
   ResolvedBackground,
 } from "./cameraBackgrounds";
+
+export { nativeScreenShareAvailable } from "./androidScreenShare";

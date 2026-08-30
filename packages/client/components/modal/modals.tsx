@@ -6,6 +6,7 @@ import { type ActiveModal } from ".";
 import { AddBotModal } from "./modals/AddBot";
 import { AddFriendModal } from "./modals/AddFriend";
 import { AddMembersToGroupModal } from "./modals/AddMembersToGroup";
+import { AndroidScreenShareSheetModal } from "./modals/AndroidScreenShareSheet";
 import { BanMemberModal } from "./modals/BanMember";
 import { BanNonMemberModal } from "./modals/BanNonMember";
 import { ChangelogHistoryModal, ChangelogModal } from "./modals/Changelog";
@@ -276,6 +277,8 @@ export function RenderModal(props: ActiveModal & { onClose: () => void }) {
       return <ScreenSharePickerModal {...modalProps} />;
     case "camera_settings":
       return <CameraSettingsModal {...modalProps} />;
+    case "android_screen_share_sheet":
+      return <AndroidScreenShareSheetModal {...modalProps} />;
     default:
       console.error(
         "Failed to create modal for",

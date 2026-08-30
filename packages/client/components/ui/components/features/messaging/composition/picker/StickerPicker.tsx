@@ -7,11 +7,11 @@ import { CONFIGURATION } from "@revolt/common";
 import { useState } from "@revolt/state";
 import { Avatar, Ripple, TextField } from "@revolt/ui/components/design";
 
+import { useContext } from "solid-js";
 import {
   CompositionMediaPickerContext,
   compositionContent,
 } from "./CompositionMediaPicker";
-import { useContext } from "solid-js";
 
 interface Sticker {
   id: string;
@@ -110,7 +110,9 @@ export function StickerPicker() {
             when={filteredStickers().length > 0}
             fallback={
               <EmptyState>
-                <span>No stickers available. Add stickers to your servers!</span>
+                <span>
+                  No stickers available. Add stickers to your servers!
+                </span>
               </EmptyState>
             }
           >
@@ -127,7 +129,13 @@ export function StickerPicker() {
                       <ServerHeader>
                         <Avatar
                           size={20}
-                          src={(server as any).animatedIconURL}
+                          src={
+                            (
+                              server as typeof server & {
+                                animatedIconURL?: string;
+                              }
+                            ).animatedIconURL
+                          }
                           fallback={server.name}
                         />
                         <span>{server.name}</span>

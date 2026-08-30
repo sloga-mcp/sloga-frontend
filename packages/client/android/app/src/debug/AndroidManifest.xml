@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  DEBUG-ONLY manifest overlay (screen-leg plan §17.5). The `debug` source set
+  is not part of any release APK, so this cannot relax production: it only
+  points debug builds at the debug network-security config, which permits
+  cleartext to the emulator host alias and loopback ONLY (see
+  res/xml/network_security_config.xml for why the screen leg needs it).
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <application
+        android:networkSecurityConfig="@xml/network_security_config"
+        tools:replace="android:networkSecurityConfig" />
+</manifest>

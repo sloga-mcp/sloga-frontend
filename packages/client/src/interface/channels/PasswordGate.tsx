@@ -8,8 +8,8 @@ import { Button, Text } from "@revolt/ui";
 
 import MdLock from "@material-design-icons/svg/round/lock.svg?component-solid";
 
-import { hashPassword } from "../../lib/channelPassword";
 import { iconSize } from "@revolt/ui";
+import { hashPassword } from "../../lib/channelPassword";
 
 /**
  * Password gate for password-protected channels.
@@ -23,8 +23,7 @@ export function PasswordGate(props: {
 }) {
   const state = useState();
   const storageKey = () => `${props.channelId}-pw`;
-  const unlocked = () =>
-    state.layout.getSectionState(storageKey(), false);
+  const unlocked = () => state.layout.getSectionState(storageKey(), false);
 
   const [input, setInput] = createSignal("");
   const [error, setError] = createSignal(false);
@@ -78,9 +77,11 @@ export function PasswordGate(props: {
           }}
         />
         <Show when={error()}>
-          <Text class="body" style={{ color: "#E24B4A" }}>
-            <Trans>Incorrect password.</Trans>
-          </Text>
+          <span style={{ color: "#E24B4A" }}>
+            <Text class="body">
+              <Trans>Incorrect password.</Trans>
+            </Text>
+          </span>
         </Show>
         <Actions>
           <Button variant="text" onPress={() => history.back()}>

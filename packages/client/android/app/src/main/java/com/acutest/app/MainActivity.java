@@ -6,8 +6,31 @@ import android.os.Bundle;
 import com.getcapacitor.BridgeActivity;
 
 public class MainActivity extends BridgeActivity {
+    /**
+     * The live activity, so the Decline broadcast receiver can reach the
+     * WebView. Weak so a destroyed activity is never held alive.
+     */
+    private static java.lang.ref.WeakReference<MainActivity> INSTANCE;
+
+    /**
+     * Tell the web layer a ringing call was declined from the notification's
+     * action button. Cancelling the notification stops the system ringtone,
+     * but the in-app popup has no other way to learn the call is over. No-op
+     * when the app isn't running — there is no popup to dismiss then.
+     */
+    static void dispatchCallDeclined(String channelId) {
+        MainActivity activity = INSTANCE == null ? null : INSTANCE.get();
+        if (activity == null || activity.bridge == null) return;
+        activity.runOnUiThread(() -> activity.bridge.triggerWindowJSEvent(
+                "slogaNotificationAction",
+                "{\"declined\":true,\"channelId\":"
+                        + (channelId != null ? "\"" + channelId + "\"" : "null")
+                        + "}"));
+    }
+
     @Override
     public void onCreate(Bundle savedInstanceState) {
+        INSTANCE = new java.lang.ref.WeakReference<>(this);
         registerPlugin(VoiceCallServicePlugin.class);
         registerPlugin(PushTokenPlugin.class);
         registerPlugin(AppFlavorPlugin.class);
@@ -17,6 +40,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(SpeechToTextPlugin.class);
         registerPlugin(com.acutest.app.e2ee.E2eePlugin.class);
         registerPlugin(com.acutest.app.watch.JellyfinPlugin.class);
+        registerPlugin(com.acutest.app.screenshare.ScreenSharePlugin.class);
         super.onCreate(savedInstanceState);
         // One WebViewClient serves both native interceptors: decrypted E2EE
         // attachments (/_e2ee-att/, in the E2eeWebViewClient base) and
@@ -128,5 +152,13 @@ public class MainActivity extends BridgeActivity {
     public void onStop() {
         super.onStop();
         clearRingingWindowFlags();
+    }
+
+    // Declared public, not protected: BridgeActivity widens some lifecycle
+    // methods and a narrowing override fails to compile.
+    @Override
+    public void onDestroy() {
+        if (INSTANCE != null && INSTANCE.get() == this) INSTANCE = null;
+        super.onDestroy();
     }
 }

@@ -121,6 +121,18 @@ const Popup = styled("div", {
     padding: "var(--gap-md) var(--gap-lg)",
     maxWidth: "min(420px, calc(100vw - 2 * var(--gap-lg)))",
 
+    // Phone widths: the avatar and both buttons are flexShrink: 0, so all the
+    // shrinking landed on the caller's name, which collapsed to a single
+    // character ("P" over "I.") on a Galaxy S25 Ultra. Give the actions their
+    // own full-width row instead of squeezing everything onto one line — it
+    // also gives the ringing call the presence it should have on a phone.
+    "@media (max-width: 560px)": {
+      flexWrap: "wrap",
+      width: "calc(100vw - 2 * var(--gap-lg))",
+      maxWidth: "none",
+      rowGap: "var(--gap-md)",
+    },
+
     borderRadius: "var(--borderRadius-xl)",
     background: "var(--md-sys-color-surface-container-high)",
     color: "var(--md-sys-color-on-surface)",
@@ -145,6 +157,10 @@ const Details = styled("div", {
   base: {
     display: "flex",
     flexDirection: "column",
+    // `flex: 1` is the load-bearing half: minWidth 0 alone only grants
+    // PERMISSION to shrink past the content, and with both neighbours refusing
+    // to shrink this was the only element that could, so it took all of it.
+    flex: 1,
     minWidth: 0,
   },
 });
@@ -173,5 +189,14 @@ const Actions = styled("div", {
     display: "flex",
     gap: "var(--gap-sm)",
     flexShrink: 0,
+
+    // Wrapped onto their own row on phones: split the width evenly so Accept
+    // and Decline are full-size targets rather than two corner chips.
+    "@media (max-width: 560px)": {
+      flexBasis: "100%",
+      "& > *": {
+        flex: 1,
+      },
+    },
   },
 });

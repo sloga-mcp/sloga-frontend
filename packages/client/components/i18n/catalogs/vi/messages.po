@@ -715,6 +715,10 @@ msgstr "Tất cả tin nhắn"
 msgid "All servers"
 msgstr ""
 
+#: components/app/interface/settings/user/notifications/Notifications.tsx
+msgid "Allow full-screen call alerts"
+msgstr ""
+
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "Allow members to change name and avatar per-message"
 msgstr ""
@@ -774,6 +778,10 @@ msgstr ""
 
 #: components/auth/src/flows/FlowCreate.tsx
 msgid "and"
+msgstr ""
+
+#: components/modal/modals/AndroidScreenShareSheet.tsx
+msgid "Android will ask you to confirm every time you start sharing."
 msgstr ""
 
 #: components/modal/modals/CreateChannel.tsx
@@ -1284,6 +1292,7 @@ msgstr ""
 #: components/modal/modals/DeleteBot.tsx
 #: components/modal/modals/BanNonMember.tsx
 #: components/modal/modals/BanMember.tsx
+#: components/modal/modals/AndroidScreenShareSheet.tsx
 #: components/modal/modals/AddBot.tsx
 #: components/auth/src/flows/FlowOAuthCallback.tsx
 #: components/auth/src/flows/FlowLogin.tsx
@@ -1712,6 +1721,7 @@ msgstr ""
 
 #: components/modal/modals/MFAEnableTOTP.tsx
 #: components/modal/modals/LinkWarning.tsx
+#: components/modal/modals/AndroidScreenShareSheet.tsx
 msgid "Continue"
 msgstr "Tiếp tục"
 
@@ -2118,6 +2128,10 @@ msgstr ""
 
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Dark"
+msgstr ""
+
+#: components/modal/modals/AndroidScreenShareSheet.tsx
+msgid "Data saver"
 msgstr ""
 
 #. placeholder {0}: err.location
@@ -3200,6 +3214,11 @@ msgstr ""
 msgid "Hide"
 msgstr ""
 
+#: src/Interface.tsx
+#: src/Interface.tsx
+msgid "Hide banner"
+msgstr ""
+
 #: components/app/interface/settings/user/StreamerMode.tsx
 msgid "Hide invite links"
 msgstr ""
@@ -3226,6 +3245,10 @@ msgstr ""
 
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "High Contrast"
+msgstr ""
+
+#: components/modal/modals/AndroidScreenShareSheet.tsx
+msgid "High quality"
 msgstr ""
 
 #: components/auth/src/flows/FlowHome.tsx
@@ -3399,6 +3422,10 @@ msgstr ""
 
 #: components/app/interface/settings/user/notifications/Sounds.tsx
 msgid "Incoming Call Ringtone"
+msgstr ""
+
+#: components/app/interface/settings/user/notifications/Notifications.tsx
+msgid "Incoming calls ring, but cannot turn on your screen while it is locked. Open system settings to allow it."
 msgstr ""
 
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
@@ -6040,6 +6067,14 @@ msgstr ""
 msgid "Share screen"
 msgstr ""
 
+#: components/modal/modals/AndroidScreenShareSheet.tsx
+msgid "Share your screen"
+msgstr ""
+
+#: components/modal/modals/AndroidScreenShareSheet.tsx
+msgid "Sharing stops if the call stops being end-to-end encrypted or your connection changes."
+msgstr ""
+
 #: components/ui/components/features/voice/VoiceChannelPreview.tsx
 msgid "Sharing their screen — join to watch"
 msgstr ""
@@ -6092,8 +6127,16 @@ msgstr ""
 msgid "Show overlay during calls"
 msgstr ""
 
+#: components/app/interface/settings/user/StreamerMode.tsx
+msgid "Show reminder banner"
+msgstr ""
+
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Show send message button"
+msgstr ""
+
+#: components/app/interface/settings/user/StreamerMode.tsx
+msgid "Show the banner above the app while Streamer Mode is active. You can also hide it from the banner itself."
 msgstr ""
 
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
@@ -6321,6 +6364,10 @@ msgstr ""
 msgid "SSN"
 msgstr ""
 
+#: components/modal/modals/AndroidScreenShareSheet.tsx
+msgid "Standard"
+msgstr ""
+
 #: src/interface/Home.tsx
 msgid "Start a Chat Room/Server"
 msgstr ""
@@ -6430,6 +6477,7 @@ msgid "Stop recording"
 msgstr ""
 
 #: components/ui/components/features/voice/callCard/VoiceCallCardActions.tsx
+#: components/ui/components/features/voice/callCard/ParticipantTile.tsx
 msgid "Stop sharing"
 msgstr ""
 
@@ -7911,6 +7959,10 @@ msgstr ""
 
 #: components/i18n/errors.ts
 msgid "You're publishing too fast — up to {errMax} announcements can be published per hour."
+msgstr ""
+
+#: components/ui/components/features/voice/callCard/ParticipantTile.tsx
+msgid "You're sharing your screen"
 msgstr ""
 
 #: components/i18n/errors.ts

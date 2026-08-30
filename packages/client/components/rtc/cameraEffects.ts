@@ -26,12 +26,12 @@
  * non-HW cameras rides IN the filter's ctx.filter chain (an improvement over
  * the background gap); HW brightness always targets the RAW source.
  */
+import { Capacitor } from "@capacitor/core";
 import {
-  BackgroundProcessor,
   type BackgroundProcessorWrapper,
+  BackgroundProcessor,
   supportsBackgroundProcessors,
 } from "@livekit/track-processors";
-import { Capacitor } from "@capacitor/core";
 import { LocalVideoTrack } from "livekit-client";
 
 import { CONFIGURATION } from "@revolt/common";
@@ -42,10 +42,10 @@ import type {
 } from "@revolt/state/stores/Voice";
 
 import { resolveBackgroundUrl } from "./cameraBackgrounds";
-import { pickSlotOccupant, type SlotOccupant } from "./faceFilterCatalog";
+import { type SlotOccupant, pickSlotOccupant } from "./faceFilterCatalog";
 import {
-  FaceFilterProcessor,
   type FaceFilterStatusReport,
+  FaceFilterProcessor,
 } from "./faceFilterProcessor";
 
 /**
@@ -500,12 +500,22 @@ export class CameraEffectsController {
     } else {
       // Assign #bg ONLY after setProcessor resolves — a failed init must not
       // leave a dead wrapper that poisons later switchTo / brightness reads.
-      const proc = BackgroundProcessor({
-        mode: mode === "blur" ? "background-blur" : "virtual-background",
-        blurRadius,
-        imagePath,
-        assetPaths: SEGMENTATION_ASSET_PATHS,
-      });
+      // Built as a DISCRIMINATED union, matching the `switchTo` call above:
+      // a single object with a computed `mode` leaves `imagePath` optional on
+      // the virtual-background arm, which the option type refuses.
+      const proc = BackgroundProcessor(
+        mode === "blur"
+          ? {
+              mode: "background-blur",
+              blurRadius,
+              assetPaths: SEGMENTATION_ASSET_PATHS,
+            }
+          : {
+              mode: "virtual-background",
+              imagePath: imagePath!,
+              assetPaths: SEGMENTATION_ASSET_PATHS,
+            },
+      );
       try {
         await track.setProcessor(proc);
       } catch (e) {

@@ -67,6 +67,21 @@ export const ScreenShareQualityNames: ScreenShareQualityName[] = [
 ];
 
 /**
+ * The native Android screen-share tiers (screen-leg plan §7.4) — a SEPARATE,
+ * smaller ladder than the desktop one: the phone encodes a single VP8 layer
+ * next to a live call, so the desktop names would promise rungs the device
+ * cannot hold. The tier table itself lives in `rtc/androidScreenShare.ts`;
+ * this is only the persisted selection.
+ */
+export type AndroidScreenShareTierName = "dataSaver" | "default" | "high";
+
+export const AndroidScreenShareTierNames: AndroidScreenShareTierName[] = [
+  "dataSaver",
+  "default",
+  "high",
+];
+
+/**
  * Possible camera capture qualities. "auto" lets LiveKit decide; the rest cap
  * the capture resolution/framerate (always further clamped to the server's
  * video_resolution limit at apply time).
@@ -192,6 +207,8 @@ export interface TypeVoice extends TypeVoiceOverlay {
   screenShareAudio: boolean;
   /** Pixelate the OS-toast corner of monitor shares when something pops in. */
   screenShareShield: boolean;
+  /** Native Android screen-share tier (screen-leg plan §7.4). */
+  androidScreenShareTier: AndroidScreenShareTierName;
 
   microphoneGain: number;
   cameraBrightness: number;
@@ -311,6 +328,7 @@ export class Voice extends AbstractStore<"voice", TypeVoice> {
       screenShareQualityAsk: true,
       screenShareAudio: true,
       screenShareShield: false,
+      androidScreenShareTier: "default",
       microphoneGain: 100,
       cameraBrightness: 100,
       cameraQuality: "auto",
@@ -471,6 +489,13 @@ export class Voice extends AbstractStore<"voice", TypeVoice> {
 
     if (typeof input.screenShareShield === "boolean") {
       data.screenShareShield = input.screenShareShield;
+    }
+
+    if (
+      input.androidScreenShareTier &&
+      AndroidScreenShareTierNames.includes(input.androidScreenShareTier)
+    ) {
+      data.androidScreenShareTier = input.androidScreenShareTier;
     }
 
     if (typeof input.microphoneGain === "number") {
@@ -786,6 +811,11 @@ export class Voice extends AbstractStore<"voice", TypeVoice> {
     this.set("screenShareShield", value);
   }
 
+  /** Set the native Android screen-share tier */
+  set androidScreenShareTier(value: AndroidScreenShareTierName) {
+    this.set("androidScreenShareTier", value);
+  }
+
   set microphoneGain(value: number) {
     this.set("microphoneGain", value);
   }
@@ -1041,6 +1071,11 @@ export class Voice extends AbstractStore<"voice", TypeVoice> {
    * through a canvas, which is not free at high resolutions) */
   get screenShareShield(): boolean {
     return this.get().screenShareShield ?? false;
+  }
+
+  /** Get the native Android screen-share tier */
+  get androidScreenShareTier(): AndroidScreenShareTierName {
+    return this.get().androidScreenShareTier ?? "default";
   }
 
   get microphoneGain(): number {

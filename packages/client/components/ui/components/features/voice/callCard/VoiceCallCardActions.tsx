@@ -6,7 +6,7 @@ import { styled } from "styled-system/jsx";
 
 import { CONFIGURATION } from "@revolt/common";
 import { useModals } from "@revolt/modal";
-import { useVoice } from "@revolt/rtc";
+import { nativeScreenShareAvailable, useVoice } from "@revolt/rtc";
 import { useState } from "@revolt/state";
 import { Button, IconButton } from "@revolt/ui/components/design";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
@@ -31,12 +31,14 @@ export function VoiceCallCardActions(props: { size: "xs" | "sm" }) {
   // fit there. Secondary controls stay available on the full docked card.
   const compact = () => props.size === "xs";
 
-  // Screen sharing goes through getDisplayMedia on web/desktop. Android WebView
-  // has no getDisplayMedia (needs a native MediaProjection plugin), so gate the
-  // button on the capability actually being present instead of throwing.
-  const screenShareSupported =
-    typeof navigator !== "undefined" &&
-    typeof navigator.mediaDevices?.getDisplayMedia === "function";
+  // Screen sharing goes through getDisplayMedia on web/desktop, or the native
+  // MediaProjection screen leg on the Android shell (screen-leg plan §7.1).
+  // A FUNCTION, not a const: the native probe is async, so this must react
+  // when it lands rather than reading a stale false forever.
+  const screenShareSupported = () =>
+    (typeof navigator !== "undefined" &&
+      typeof navigator.mediaDevices?.getDisplayMedia === "function") ||
+    nativeScreenShareAvailable();
 
   // The docked bar keeps only the everyday controls visible — mic, camera,
   // camera settings, share (plus give-control while sharing), record, hang up.
@@ -137,29 +139,29 @@ export function VoiceCallCardActions(props: { size: "xs" | "sm" }) {
       <IconButton
         size={props.size}
         variant={
-          enableVideo && screenShareSupported && voice.screenshare()
+          enableVideo && screenShareSupported() && voice.screenshare()
             ? "filled"
             : "tonal"
         }
         onPress={() => {
-          if (enableVideo && screenShareSupported) voice.toggleScreenshare();
+          if (enableVideo && screenShareSupported()) voice.toggleScreenshare();
         }}
         use:floating={{
           tooltip: {
             placement: "top",
             content: !enableVideo
               ? t`Coming soon! 👀`
-              : !screenShareSupported
+              : !screenShareSupported()
                 ? t`Screen sharing isn't supported on this device`
                 : voice.screenshare()
                   ? t`Stop sharing`
                   : t`Share screen`,
           },
         }}
-        isDisabled={!enableVideo || !screenShareSupported}
+        isDisabled={!enableVideo || !screenShareSupported()}
       >
         <Show
-          when={!enableVideo || !screenShareSupported || voice.screenshare()}
+          when={!enableVideo || !screenShareSupported() || voice.screenshare()}
           fallback={<Symbol>screen_share</Symbol>}
         >
           <Symbol>stop_screen_share</Symbol>

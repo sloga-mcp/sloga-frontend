@@ -29,6 +29,21 @@ const BOB_LEG = `${BOB}:screen`;
 /** In `e2ee` mode with every named leg declaring encryption. */
 const keyed = (...legs: string[]) => ({ e2ee: true, encryptedLegs: legs });
 
+/**
+ * `keyed`, plus the set of identities actually sending PLAINTEXT. A graced
+ * primary keeps its window unless it is in there.
+ *
+ * Every grace spec below has to pass this — even as an empty list — because
+ * an absent input deliberately costs the grace. Publishing is NOT the
+ * disqualifier: the publish gate pauses upstream rather than unpublishing and
+ * a client's mic publish starts in its `connected` handler, so an ordinary
+ * joiner has publications long before its Add commits.
+ */
+const keyedWithPlaintext = (plaintext: string[], ...legs: string[]) => ({
+  ...keyed(...legs),
+  plaintextPublishers: plaintext,
+});
+
 test("a keyed leg whose owner is present is silent in both directions", () => {
   const result = reconcileRoster(
     [SELF, ALICE, ALICE_LEG],
@@ -164,6 +179,197 @@ test("the bare-primary grammar `user::screen` folds onto the bare user", () => {
     [bare],
     "the bare primary is the one non-enrolled participant, listed once",
   );
+});
+
+// ---- Admit-grace (Android plan §17.7 finding F3) ---------------------------
+// A mid-call joiner sits in the SFU seconds before its staggered Add commits;
+// declaring it non-enrolled in that window flips the call to `mixed`, pauses
+// the mic and one-way STOPS an Android screen leg (§0.4) on EVERY join. The
+// caller passes the identities it watched join within the admit window; they
+// are reported as `pending` — held out of the mix trigger but NOT consistent
+// (enable/resume still wait on the caller side).
+
+test("a pending-admit joiner is pending, not non-enrolled", () => {
+  const result = reconcileRoster(
+    [SELF, ALICE, BOB],
+    [SELF, ALICE],
+    SELF,
+    keyedWithPlaintext([]),
+    [BOB],
+  );
+  assert.deepEqual(result.nonEnrolled, []);
+  assert.deepEqual(result.pending, [BOB]);
+  assert.deepEqual(result.ghosts, []);
+});
+
+test("grace on one joiner never masks a different non-enrolled participant", () => {
+  const result = reconcileRoster(
+    [SELF, ALICE, BOB],
+    [SELF],
+    SELF,
+    keyedWithPlaintext([]),
+    [BOB],
+  );
+  assert.deepEqual(result.nonEnrolled, [ALICE]);
+  assert.deepEqual(result.pending, [BOB]);
+});
+
+test("🔴 an ORDINARY joiner keeps its grace while its publications are encrypted", () => {
+  // The F3 case, and the one a publication-COUNT test would break. A normal
+  // E2EE joiner publishes its mic in its `connected` handler, seconds before
+  // its staggered Add commits — and the publish gate pauses upstream rather
+  // than unpublishing, so the publication object is there throughout. Its
+  // tracks declare GCM, so it is not a plaintext publisher and keeps the
+  // window. Losing it here would flip the call to `mixed` and one-way STOP an
+  // in-progress Android screen leg on essentially every mid-call join.
+  const result = reconcileRoster(
+    [SELF, ALICE, BOB],
+    [SELF, ALICE],
+    SELF,
+    keyedWithPlaintext([]), // BOB is publishing, but all of it encrypted
+    [BOB],
+  );
+  assert.deepEqual(result.nonEnrolled, []);
+  assert.deepEqual(result.pending, [BOB]);
+});
+
+test("🔴 a graced joiner publishing PLAINTEXT is loud immediately, not pending", () => {
+  // The suppression hole: the grace was unconditional for primaries and the
+  // check ran only at expiry, so a plaintext client (web is excluded from
+  // call E2EE by design) could join an encrypted call, unmute, and have the
+  // mixed banner and the publish pause suppressed for the whole 10-60 s
+  // window while its audio played to everyone. Nothing else catches it:
+  // livekit disables the cryptor for a publication declaring
+  // `encryption === NONE`, so a plaintext sender raises no decrypt error.
+  const result = reconcileRoster(
+    [SELF, ALICE, BOB],
+    [SELF, ALICE],
+    SELF,
+    keyedWithPlaintext([BOB]),
+    [BOB],
+  );
+  assert.deepEqual(result.nonEnrolled, [BOB]);
+  assert.deepEqual(result.pending, []);
+});
+
+test("🔴 unknown plaintext state gives a graced primary NO grace", () => {
+  // `plaintextPublishers` omitted. The house rule for this function is that
+  // it may only ever OVER-warn, so an unwired caller must lose the grace,
+  // never gain a silent suppression.
+  const result = reconcileRoster([SELF, BOB], [SELF], SELF, keyed(), [BOB]);
+  assert.deepEqual(result.nonEnrolled, [BOB]);
+  assert.deepEqual(result.pending, []);
+});
+
+test("outside e2ee the plaintext test does not apply — every publication is NONE", () => {
+  // In a confirmed-plaintext call every publication legitimately declares
+  // NONE, so applying the disqualifier would strip the grace from everyone
+  // for no benefit: there is no encrypted state left to downgrade.
+  const result = reconcileRoster(
+    [SELF, BOB],
+    [SELF],
+    SELF,
+    { e2ee: false, encryptedLegs: [], plaintextPublishers: [BOB] },
+    [BOB],
+  );
+  assert.deepEqual(result.nonEnrolled, []);
+  assert.deepEqual(result.pending, [BOB]);
+});
+
+test("🔴 the admit-grace never covers an orphan or a published plaintext leg", () => {
+  // An unfolded leg with an actual publication is either the §5.4 orphan
+  // impostor or a plaintext publication in an e2ee call (rule 2(b)); both
+  // must stay instantly loud even if the caller graced the leg identity.
+  const orphan = reconcileRoster(
+    [SELF, ALICE_LEG],
+    [SELF, ALICE],
+    SELF,
+    keyed(ALICE_LEG),
+    [ALICE_LEG],
+  );
+  assert.deepEqual(orphan.nonEnrolled, [ALICE_LEG]);
+  assert.deepEqual(orphan.pending, []);
+
+  const plaintext = reconcileRoster(
+    [SELF, ALICE, ALICE_LEG],
+    [SELF, ALICE],
+    SELF,
+    { e2ee: true, encryptedLegs: [] },
+    [ALICE_LEG],
+  );
+  assert.deepEqual(plaintext.nonEnrolled, [ALICE_LEG]);
+  assert.deepEqual(plaintext.pending, []);
+});
+
+test("a graced UNPUBLISHED leg with its owner present is pending, not loud", () => {
+  // The join→publish window: the leg is in the SFU but has zero publications
+  // — it sends nothing (no frames exist) and its token cannot subscribe, so
+  // there is nothing to fail closed against. Before this rule, a reconcile
+  // landing in that window read the leg non-enrolled (rule 2(b) over-warn),
+  // fired `mixed`, and §0.4 one-way stopped the leg that had just connected
+  // — the share killed itself at birth under load.
+  const result = reconcileRoster(
+    [SELF, ALICE, ALICE_LEG],
+    [SELF, ALICE],
+    SELF,
+    { e2ee: true, encryptedLegs: [], unpublishedLegs: [ALICE_LEG] },
+    [ALICE_LEG],
+  );
+  assert.deepEqual(result.nonEnrolled, []);
+  assert.deepEqual(result.pending, [ALICE_LEG]);
+});
+
+test("🔴 a graced unpublished leg is still loud when its owner is ABSENT", () => {
+  // The §5.4 orphan direction wins over the join→publish grace: a
+  // server-minted leg under a departed identity is reported immediately,
+  // published or not.
+  const result = reconcileRoster(
+    [SELF, ALICE_LEG],
+    [SELF, ALICE],
+    SELF,
+    { e2ee: true, encryptedLegs: [], unpublishedLegs: [ALICE_LEG] },
+    [ALICE_LEG],
+  );
+  assert.deepEqual(result.nonEnrolled, [ALICE_LEG]);
+  assert.deepEqual(result.pending, []);
+});
+
+test("an UNGRACED unpublished leg still over-warns (the grace is the caller's call)", () => {
+  const result = reconcileRoster(
+    [SELF, ALICE, ALICE_LEG],
+    [SELF, ALICE],
+    SELF,
+    { e2ee: true, encryptedLegs: [], unpublishedLegs: [ALICE_LEG] },
+  );
+  assert.deepEqual(result.nonEnrolled, [ALICE_LEG]);
+  assert.deepEqual(result.pending, []);
+});
+
+test("an admitted identity still in the grace set is neither pending nor non-enrolled", () => {
+  const result = reconcileRoster([SELF, ALICE], [SELF, ALICE], SELF, keyed(), [
+    ALICE,
+  ]);
+  assert.deepEqual(result.nonEnrolled, []);
+  assert.deepEqual(result.pending, []);
+});
+
+test("a pending primary and its keyed leg collapse to ONE pending row", () => {
+  // Same dedupe rule as non-enrolled: the banner-side consumer names people.
+  const result = reconcileRoster(
+    [SELF, BOB, BOB_LEG],
+    [SELF],
+    SELF,
+    keyedWithPlaintext([], BOB_LEG),
+    [BOB],
+  );
+  assert.deepEqual(result.nonEnrolled, []);
+  assert.deepEqual(result.pending, [BOB]);
+});
+
+test("no pendingAdmits argument behaves exactly as before, with an empty pending", () => {
+  const result = reconcileRoster([SELF, ALICE], [SELF], SELF, keyed());
+  assert.deepEqual(result.nonEnrolled, [ALICE]);
+  assert.deepEqual(result.pending, []);
 });
 
 test("legs change nothing about ordinary non-enrolled and ghost detection", () => {

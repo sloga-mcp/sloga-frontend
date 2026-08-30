@@ -103,15 +103,41 @@ export function useNotifications() {
   };
 
   const enablePushSubscription = async () => {
-    settings.pushNotificationsState = "allowed";
+    // "allowed" only after the subscription actually registered — flipping it
+    // first left a session that looked subscribed but never was whenever the
+    // registration hung or the app was killed mid-flow.
     try {
       await setUpServiceWorkerSubscription(getClient());
+      settings.pushNotificationsState = "allowed";
     } catch (e) {
       console.error(e);
       snackbar.show({
         message: t`Failed to enable push notifications. Please try again later.`,
       });
       settings.pushNotificationsState = "default";
+    }
+  };
+
+  /**
+   * Re-register the native FCM subscription with the backend. Runs on every
+   * logged-in launch: a session's subscription can be lost with no signal to
+   * this device (the one-shot first-run flow failed or was interrupted, the
+   * backend dropped it, the token changed) and the first-run flow never
+   * retries — the session then silently misses every push, including
+   * incoming-call rings. /push/subscribe overwrites the session's
+   * subscription, so re-syncing is idempotent. No-op on web/desktop and when
+   * the user has disabled push.
+   */
+  const resyncPushSubscription = async (): Promise<boolean> => {
+    if (!PushTokenNative) return true;
+    if (settings.pushNotificationsState === "denied") return true;
+    try {
+      await setUpServiceWorkerSubscription(getClient());
+      settings.pushNotificationsState = "allowed";
+      return true;
+    } catch (e) {
+      console.error("Push subscription re-sync failed", e);
+      return false;
     }
   };
 
@@ -137,6 +163,7 @@ export function useNotifications() {
     toggleNotificationPermission,
     togglePushPermission,
     initNotifications,
+    resyncPushSubscription,
   };
 }
 
@@ -149,8 +176,42 @@ const PushTokenNative = Capacitor.isNativePlatform()
         sessionToken: string;
       }): Promise<void>;
       clearSubscription(): Promise<void>;
+      canUseFullScreenIntent(): Promise<{
+        allowed: boolean;
+        applicable: boolean;
+      }>;
+      openFullScreenIntentSettings(): Promise<void>;
     }>("PushToken")
   : undefined;
+
+/**
+ * Whether incoming calls are currently unable to light up a locked screen.
+ *
+ * Android 14 grants USE_FULL_SCREEN_INTENT only to apps it classifies as
+ * calling apps; for everyone else a full-screen intent is silently demoted to
+ * a heads-up notification, so a call rings but the screen stays dark. The
+ * toggle that fixes it is buried (and on some OEM skins effectively
+ * unfindable), so the app has to offer it.
+ *
+ * False on every other platform and on Android 13 and below, where the
+ * permission does not exist.
+ */
+export async function fullScreenCallAlertsBlocked(): Promise<boolean> {
+  if (!PushTokenNative) return false;
+  try {
+    const { allowed, applicable } =
+      await PushTokenNative.canUseFullScreenIntent();
+    return applicable && !allowed;
+  } catch {
+    // Older shell without the method
+    return false;
+  }
+}
+
+/** Deep-link to the system screen that grants the permission above */
+export function openFullScreenCallAlertSettings() {
+  PushTokenNative?.openFullScreenIntentSettings().catch(console.error);
+}
 
 async function setUpServiceWorkerSubscription(client: Client) {
   // Sloga Desktop: no service worker in the bundled shell (slice 6.2b) —

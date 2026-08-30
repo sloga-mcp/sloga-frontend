@@ -25,7 +25,10 @@ import { ProtocolV1 } from "stoat.js/lib/events/v1";
 
 import type { SettingsConfigurations } from "@revolt/app";
 import { CategoryData } from "@revolt/app/menus/CategoryContextMenu";
-import { ScreenShareQualityName } from "@revolt/state/stores/Voice";
+import {
+  AndroidScreenShareTierName,
+  ScreenShareQualityName,
+} from "@revolt/state/stores/Voice";
 
 import type { ChangelogResponse } from "./modals/Changelog";
 
@@ -555,4 +558,23 @@ export type Modals =
     }
   | {
       type: "camera_settings";
+    }
+  | {
+      /**
+       * Native Android screen-share sheet (screen-leg plan §7.6): the phone
+       * ladder is its own small table — `screen_share_settings` wants a live
+       * track for preview and `screen_share_picker` wants desktop sources,
+       * so neither reuses cleanly. Tier only in v1; the audio toggle arrives
+       * with slice 4 (system audio).
+       */
+      type: "android_screen_share_sheet";
+      tiers: readonly {
+        name: AndroidScreenShareTierName;
+        longSide: number;
+        fps: number;
+        maxBitrateKbps: number;
+      }[];
+      initialTier: AndroidScreenShareTierName;
+      callback: (tierName: AndroidScreenShareTierName) => void;
+      onCancel: () => void;
     };

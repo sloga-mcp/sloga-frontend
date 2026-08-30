@@ -7,7 +7,7 @@ import { useClient } from "@revolt/client";
 import { CONFIGURATION } from "@revolt/common";
 import { useModals } from "@revolt/modal";
 import { useSmartParams } from "@revolt/routing";
-import { useVoice } from "@revolt/rtc";
+import { nativeScreenShareAvailable, useVoice } from "@revolt/rtc";
 import { useState } from "@revolt/state";
 import { Slider, Text, useSnackbar } from "@revolt/ui";
 
@@ -144,11 +144,14 @@ export function UserContextMenu(props: {
     );
   }
 
-  // Screen sharing goes through getDisplayMedia on web/desktop; Android
-  // WebView has no getDisplayMedia, so hide the entry where it can't work.
-  const screenShareSupported =
-    typeof navigator !== "undefined" &&
-    typeof navigator.mediaDevices?.getDisplayMedia === "function";
+  // Screen sharing goes through getDisplayMedia on web/desktop, or the
+  // native MediaProjection screen leg on the Android shell (screen-leg plan
+  // §7.1). A function: the native probe is async, so the entry must react
+  // when it lands.
+  const screenShareSupported = () =>
+    (typeof navigator !== "undefined" &&
+      typeof navigator.mediaDevices?.getDisplayMedia === "function") ||
+    nativeScreenShareAvailable();
 
   /**
    * Delete channel
@@ -578,7 +581,7 @@ export function UserContextMenu(props: {
           <ContextMenuButton icon={MdVideocam} onClick={startVideoCall}>
             <Trans>Video Call</Trans>
           </ContextMenuButton>
-          <Show when={screenShareSupported}>
+          <Show when={screenShareSupported()}>
             <ContextMenuButton
               icon={MdScreenShare}
               onClick={startScreenShareCall}

@@ -715,6 +715,10 @@ msgstr "Todos los mensajes"
 msgid "All servers"
 msgstr ""
 
+#: components/app/interface/settings/user/notifications/Notifications.tsx
+msgid "Allow full-screen call alerts"
+msgstr ""
+
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "Allow members to change name and avatar per-message"
 msgstr "Permitir a los miembros cambiar el nombre y el avatar por mensaje"
@@ -775,6 +779,10 @@ msgstr "Se produjo un error interno. ({0})"
 #: components/auth/src/flows/FlowCreate.tsx
 msgid "and"
 msgstr "y"
+
+#: components/modal/modals/AndroidScreenShareSheet.tsx
+msgid "Android will ask you to confirm every time you start sharing."
+msgstr ""
 
 #: components/modal/modals/CreateChannel.tsx
 msgid "Announcement channel"
@@ -1284,6 +1292,7 @@ msgstr "Cámara no disponible: verifique los permisos y que ninguna otra aplicac
 #: components/modal/modals/DeleteBot.tsx
 #: components/modal/modals/BanNonMember.tsx
 #: components/modal/modals/BanMember.tsx
+#: components/modal/modals/AndroidScreenShareSheet.tsx
 #: components/modal/modals/AddBot.tsx
 #: components/auth/src/flows/FlowOAuthCallback.tsx
 #: components/auth/src/flows/FlowLogin.tsx
@@ -1712,6 +1721,7 @@ msgstr "Artículos impugnados"
 
 #: components/modal/modals/MFAEnableTOTP.tsx
 #: components/modal/modals/LinkWarning.tsx
+#: components/modal/modals/AndroidScreenShareSheet.tsx
 msgid "Continue"
 msgstr "Continuar"
 
@@ -2119,6 +2129,10 @@ msgstr "Diariamente"
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Dark"
 msgstr "oscuro"
+
+#: components/modal/modals/AndroidScreenShareSheet.tsx
+msgid "Data saver"
+msgstr ""
 
 #. placeholder {0}: err.location
 #: components/i18n/errors.ts
@@ -3200,6 +3214,11 @@ msgstr "Oculto por el modo Streamer"
 msgid "Hide"
 msgstr "Ocultar"
 
+#: src/Interface.tsx
+#: src/Interface.tsx
+msgid "Hide banner"
+msgstr ""
+
 #: components/app/interface/settings/user/StreamerMode.tsx
 msgid "Hide invite links"
 msgstr "Ocultar enlaces de invitación"
@@ -3227,6 +3246,10 @@ msgstr "Ocultar reservas hasta exportar (los líderes todavía las ven)"
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "High Contrast"
 msgstr "Alto contraste"
+
+#: components/modal/modals/AndroidScreenShareSheet.tsx
+msgid "High quality"
+msgstr ""
 
 #: components/auth/src/flows/FlowHome.tsx
 msgid "High quality voice chat"
@@ -3400,6 +3423,10 @@ msgstr "Llamada entrante"
 #: components/app/interface/settings/user/notifications/Sounds.tsx
 msgid "Incoming Call Ringtone"
 msgstr "Tono de llamada entrante"
+
+#: components/app/interface/settings/user/notifications/Notifications.tsx
+msgid "Incoming calls ring, but cannot turn on your screen while it is locked. Open system settings to allow it."
+msgstr ""
 
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
 msgid "Incoming Voices"
@@ -6040,6 +6067,14 @@ msgstr "Compartir actividad de juego"
 msgid "Share screen"
 msgstr "Compartir pantalla"
 
+#: components/modal/modals/AndroidScreenShareSheet.tsx
+msgid "Share your screen"
+msgstr ""
+
+#: components/modal/modals/AndroidScreenShareSheet.tsx
+msgid "Sharing stops if the call stops being end-to-end encrypted or your connection changes."
+msgstr ""
+
 #: components/ui/components/features/voice/VoiceChannelPreview.tsx
 msgid "Sharing their screen — join to watch"
 msgstr ""
@@ -6092,9 +6127,17 @@ msgstr "Mostrar otros"
 msgid "Show overlay during calls"
 msgstr "Mostrar superposición durante las llamadas"
 
+#: components/app/interface/settings/user/StreamerMode.tsx
+msgid "Show reminder banner"
+msgstr ""
+
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Show send message button"
 msgstr "Mostrar botón de enviar mensaje"
+
+#: components/app/interface/settings/user/StreamerMode.tsx
+msgid "Show the banner above the app while Streamer Mode is active. You can also hide it from the banner itself."
+msgstr ""
 
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Show usernames"
@@ -6321,6 +6364,10 @@ msgstr ""
 msgid "SSN"
 msgstr ""
 
+#: components/modal/modals/AndroidScreenShareSheet.tsx
+msgid "Standard"
+msgstr ""
+
 #: src/interface/Home.tsx
 msgid "Start a Chat Room/Server"
 msgstr "Iniciar una sala de chat/servidor"
@@ -6430,6 +6477,7 @@ msgid "Stop recording"
 msgstr "dejar de grabar"
 
 #: components/ui/components/features/voice/callCard/VoiceCallCardActions.tsx
+#: components/ui/components/features/voice/callCard/ParticipantTile.tsx
 msgid "Stop sharing"
 msgstr "dejar de compartir"
 
@@ -7912,6 +7960,10 @@ msgstr ""
 #: components/i18n/errors.ts
 msgid "You're publishing too fast — up to {errMax} announcements can be published per hour."
 msgstr "Estás publicando demasiado rápido: se pueden publicar hasta {errMax} anuncios por hora."
+
+#: components/ui/components/features/voice/callCard/ParticipantTile.tsx
+msgid "You're sharing your screen"
+msgstr ""
 
 #: components/i18n/errors.ts
 msgid "You've already sent a request to this user."

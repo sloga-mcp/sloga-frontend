@@ -272,6 +272,26 @@ export default {
       (import.meta.env.VITE_CFG_ENABLE_WATCH_TOGETHER as string) ?? ""
     ).toLowerCase() == "true",
   /**
+   * Native Android screen share (the "screen leg" publisher, screen-leg plan
+   * §7). DEFAULT OFF, baked at APK BUILD time — this is the `.env` worktree
+   * landmine (§0.8), NOT an `inject.js` runtime flag: verify the flag ON THE
+   * ARTIFACT, never the source tree.
+   *
+   * Read in `nativeScreenShareAvailable()` (rtc/androidScreenShare.ts), the
+   * single point the call-card button, the context-menu entry and
+   * `toggleScreenshare`'s Android branch all sit behind. The backend
+   * `Features.screen_leg` flag gates the token route independently — both
+   * must be lit for a share to start, and the client copy for the
+   * `FeatureDisabled` refusal assumes exactly that split.
+   *
+   * Set `VITE_CFG_ENABLE_ANDROID_SCREEN_SHARE=true` for Android builds that
+   * should have it.
+   */
+  ENABLE_ANDROID_SCREEN_SHARE:
+    (
+      (import.meta.env.VITE_CFG_ENABLE_ANDROID_SCREEN_SHARE as string) ?? ""
+    ).toLowerCase() == "true",
+  /**
    * Session ID to set during development.
    */
   DEVELOPMENT_SESSION_ID: import.meta.env.DEV

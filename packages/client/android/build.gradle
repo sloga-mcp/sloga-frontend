@@ -24,6 +24,10 @@ allprojects {
     repositories {
         google()
         mavenCentral()
+        // livekit-android's audioswitch transitive is built by JitPack from
+        // GitHub, pinned by commit sha — the build fails to resolve without
+        // this (screen-leg plan probe (a); supply-chain note recorded there).
+        maven { url "https://jitpack.io" }
     }
 
     // Espresso / androidx-test (and some Capacitor transitives) drag the legacy

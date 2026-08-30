@@ -1,5 +1,81 @@
 #!/usr/bin/env bash
-#MISE description="Check code formatting"
-set -e
+#MISE description="Check code formatting (files changed vs the base)"
 
-pnpm exec prettier --check 'packages/client/**/*.{ts,tsx,json}'
+# Scoped to CHANGED files on purpose. The whole-repo check has never passed:
+# ~129 files under packages/client are committed unformatted (several were
+# never prettier'd at all — src/interface/channels/text/Composition.tsx is
+# the worst), so `prettier --check` over everything is red on every commit
+# and gates nothing. Reformatting all of them at once is the one change most
+# likely to LOSE work: it collides with every in-flight branch across the
+# shared worktrees, and formatting conflicts get resolved carelessly.
+#
+# Checking what a change actually touches makes the gate enforceable, and it
+# is self-maintaining: the backlog shrinks as files are touched, with no
+# exemption list to rot.
+#
+# To go back to the strict repo-wide check after a dedicated reformat, drop
+# everything below and restore:
+#   pnpm exec prettier --check 'packages/client/**/*.{ts,tsx,json}'
+
+set -uo pipefail
+
+# Resolving the base is the whole correctness question here: pick the wrong
+# one and this passes having checked NOTHING, which is worse than no gate.
+# Three cases, in order:
+#
+#   1. FORMAT_BASE — an explicit base. CI passes the push event's "before"
+#      SHA, so a direct push to main is checked across ALL the commits it
+#      introduced rather than only the tip.
+#   2. A branch ahead of main (PRs, feature work) — the merge-base.
+#   3. We ARE main, or level with it, and no FORMAT_BASE was given: fall back
+#      to the parent commit. Without this the diff is empty and a direct push
+#      to main passes vacuously — which is exactly what made this gate
+#      useless before.
+#
+# If none resolve, FAIL rather than pass. A shallow checkout lands here, so
+# CI needs `fetch-depth: 0`.
+
+BASE=""
+HEAD_SHA=$(git rev-parse HEAD)
+
+if [ -n "${FORMAT_BASE:-}" ] &&
+  git rev-parse --verify --quiet "${FORMAT_BASE}^{commit}" > /dev/null; then
+  BASE=$(git rev-parse "${FORMAT_BASE}^{commit}")
+fi
+
+if [ -z "$BASE" ]; then
+  for candidate in origin/main main; do
+    git rev-parse --verify --quiet "${candidate}^{commit}" > /dev/null || continue
+    mb=$(git merge-base "$candidate" HEAD 2> /dev/null) || continue
+    # Level with main ⇒ this IS main; case 3 handles it.
+    [ "$mb" = "$HEAD_SHA" ] && continue
+    BASE="$mb"
+    break
+  done
+fi
+
+if [ -z "$BASE" ]; then
+  if git rev-parse --verify --quiet "HEAD~1^{commit}" > /dev/null; then
+    BASE=$(git rev-parse HEAD~1)
+  else
+    echo "format: no base commit to diff against (no FORMAT_BASE, no main, no parent)." >&2
+    echo "        In CI this means a shallow checkout — set fetch-depth: 0." >&2
+    echo "        Refusing to report success without checking anything." >&2
+    exit 1
+  fi
+fi
+
+# Only files prettier is configured for, and only ones that still exist.
+mapfile -t files < <(
+  git diff --name-only --diff-filter=ACMR "$BASE" HEAD -- \
+    'packages/client/***.ts' 'packages/client/***.tsx' 'packages/client/***.json' |
+    while IFS= read -r f; do [ -f "$f" ] && printf '%s\n' "$f"; done
+)
+
+if [ "${#files[@]}" -eq 0 ]; then
+  echo "format: no changed .ts/.tsx/.json under packages/client since ${BASE:0:12}"
+  exit 0
+fi
+
+echo "format: checking ${#files[@]} changed file(s) against ${BASE:0:12}"
+pnpm exec prettier --check "${files[@]}"

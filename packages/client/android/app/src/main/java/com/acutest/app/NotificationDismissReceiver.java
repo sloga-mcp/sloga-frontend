@@ -14,5 +14,9 @@ public class NotificationDismissReceiver extends BroadcastReceiver {
         if (id != -1) {
             NotificationManagerCompat.from(context).cancel(id);
         }
+        // Cancelling stops the notification's ringtone, but the running web
+        // layer still has the incoming-call popup up and does not otherwise
+        // find out the call was declined.
+        MainActivity.dispatchCallDeclined(intent.getStringExtra("sloga_channel_id"));
     }
 }

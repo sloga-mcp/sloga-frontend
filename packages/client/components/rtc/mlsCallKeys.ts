@@ -22,6 +22,8 @@ import { BaseKeyProvider } from "livekit-client";
 
 import type { MlsFrameKey, MlsFrameKeys } from "@revolt/client";
 
+import type { LegSendKey } from "./androidLegStartPolicy";
+
 /** Decode unpadded standard base64 (native emits `STANDARD_NO_PAD`). */
 function base64ToBytes(b64: string): Uint8Array {
   // `atob` is lenient about padding, but pad defensively for strict engines.
@@ -73,15 +75,20 @@ export function localInstallEntries(
   return frameKeys.keys.filter((k) => k.livekit_identity === localIdentity);
 }
 
-/** The send key handed to this device's native screen leg (§5.1/§5.2). */
-export interface LocalScreenKey {
-  /** 32 bytes of raw HKDF material, unpadded standard base64. */
-  keyB64: string;
-  /** LiveKit keyring index for the epoch (`epoch mod 16`). */
-  keyIndex: number;
-  /** The MLS epoch this key belongs to — the fence a stale push is caught by. */
-  epoch: number;
-}
+/**
+ * The send key handed to this device's native screen leg (§5.1/§5.2):
+ * `keyB64` (32 bytes of raw HKDF material, unpadded standard base64),
+ * `keyIndex` (the LiveKit keyring index, `epoch mod 16`), `epoch` (the fence
+ * a stale push is caught by) and `groupId` (the group the epoch counts
+ * under — epochs are only comparable within one group, so consumers must
+ * treat a cross-group key as unrelatable, neither newer nor older, and fail
+ * closed rather than compare).
+ *
+ * ONE canonical declaration, aliased from the policy leaf rather than
+ * restated: the bridge shape and the start policy derive from the same type,
+ * so a field added here cannot silently go un-fenced on the way to native.
+ */
+export type LocalScreenKey = LegSendKey;
 
 /**
  * This device's SCREEN LEG entry for the current epoch (Android plan §5.1).
@@ -282,6 +289,7 @@ export class MlsKeyProvider extends BaseKeyProvider {
       keyB64: entry.frame_key_b64,
       keyIndex: entry.key_index,
       epoch: entry.epoch,
+      groupId: frameKeys.group_id,
     };
     const previous = this.#lastLocalScreenKey;
     // Recorded BEFORE the push, and that is correct rather than optimistic:
@@ -295,6 +303,7 @@ export class MlsKeyProvider extends BaseKeyProvider {
     // re-keys the sender cryptor).
     if (
       previous &&
+      previous.groupId === key.groupId &&
       previous.epoch === key.epoch &&
       previous.keyIndex === key.keyIndex &&
       previous.keyB64 === key.keyB64

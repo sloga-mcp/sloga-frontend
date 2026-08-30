@@ -26,8 +26,8 @@ android {
         applicationId "gg.sloga.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 56
-        versionName "1.45.0"
+        versionCode 60
+        versionName "1.46.3"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -78,6 +78,13 @@ android {
             if (keystorePropertiesFile.exists()) {
                 signingConfig signingConfigs.release
             }
+            // livekit-android brings libwebrtc for every ABI (screen-leg plan
+            // §8): x86/x86_64 are dead weight in the shipped APK (+~35 MB) but
+            // load-bearing for WHPX-emulator testing, so the filter is
+            // RELEASE-ONLY — debug builds stay universal (probe (a)).
+            ndk {
+                abiFilters 'arm64-v8a', 'armeabi-v7a'
+            }
         }
     }
 }
@@ -97,6 +104,16 @@ dependencies {
     // JNA: FFI runtime for the uniffi-generated E2EE bindings
     // (loads libacutest_e2ee.so from jniLibs)
     implementation 'net.java.dev.jna:jna:5.15.0@aar'
+    // Native screen-leg publisher (screen-leg plan §4.1). Pinned where the
+    // raw-byte FrameCryptorKeyProvider surface is reachable (probe (a)).
+    // Transitively pulls its own libwebrtc (livekit.org.webrtc — never
+    // collides with another org.webrtc) and audioswitch FROM JITPACK (repo
+    // added in the root build.gradle).
+    implementation 'io.livekit:livekit-android:2.28.0'
+    // livekit.LivekitModels types (Encryption.Type in E2EEOptions' signature)
+    // need protobuf on the COMPILE classpath — the POM exposes it at runtime
+    // scope only (probe (a) integration fact 1).
+    compileOnly 'com.google.protobuf:protobuf-javalite:3.22.0'
     implementation platform('com.google.firebase:firebase-bom:33.7.0')
     implementation 'com.google.firebase:firebase-messaging'
     implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"

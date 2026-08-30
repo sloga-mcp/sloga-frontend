@@ -211,6 +211,8 @@ public class SlogaMessagingService extends FirebaseMessagingService {
 
         Intent decline = new Intent(this, NotificationDismissReceiver.class);
         decline.putExtra("notification_id", notificationId);
+        // Lets the receiver tell a running web layer which call was declined.
+        if (channelId != null) decline.putExtra("sloga_channel_id", channelId);
         PendingIntent declineIntent = PendingIntent.getBroadcast(
                 this, notificationId + 200000, decline,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);

@@ -157,7 +157,16 @@ export function ParticipantTile(props: TileProps) {
   const isOwnTile = () => participant.isLocal || isSelfLeg();
 
   const canAsk = () =>
-    isScreenShare() && !isOwnTile() && rcSupported() && !controlling();
+    isScreenShare() &&
+    !isOwnTile() &&
+    // Never on a phone-share tile (plan §7.8): a leg is minted
+    // `can_subscribe:false` and holds no session — it could neither see an
+    // offer nor accept control, and sharer-side RC is desktop-only by the
+    // release gate anyway. The identity IS the tell; no participant
+    // attribute needed.
+    !isScreenLeg(participant.identity) &&
+    rcSupported() &&
+    !controlling();
 
   async function askForTurn() {
     const sharerId = participantUserId(participant.identity);
@@ -297,8 +306,16 @@ export function ParticipantTile(props: TileProps) {
         // what VoiceStatsOverlay already reads.
         let candidatePair: number | undefined;
         let remoteInbound: number | undefined;
+        // The members below are real on the relevant stat types but absent
+        // from the base `RTCStats` DOM lib type; widen to exactly those
+        // rather than to `any`, so the typeof guards still mean something.
+        type RttStat = RTCStats & {
+          nominated?: boolean;
+          currentRoundTripTime?: number;
+          roundTripTime?: number;
+        };
         report.forEach((stat: RTCStats) => {
-          const r = stat as any;
+          const r = stat as RttStat;
           if (
             r.type === "candidate-pair" &&
             r.nominated &&
@@ -391,16 +408,41 @@ export function ParticipantTile(props: TileProps) {
         style={{ ...getHeight() }}
       >
         <Show
-          when={isVideo() || isScreenShare()}
+          when={(isVideo() || isScreenShare()) && !isSelfLeg()}
           fallback={
-            <AvatarOnly>
-              <Avatar
-                src={user().avatar}
-                fallback={user().username}
-                size={48}
-                interactive={false}
-              />
-            </AvatarOnly>
+            <Show
+              when={isSelfLeg()}
+              fallback={
+                <AvatarOnly>
+                  <Avatar
+                    src={user().avatar}
+                    fallback={user().username}
+                    size={48}
+                    interactive={false}
+                  />
+                </AvatarOnly>
+              }
+            >
+              {/* The sharer's own phone never mounts a <VideoTrack> for its
+                  own leg (plan §0.9/§7.3b): `manageSubscription` would
+                  subscribe and download the full-rate stream just to show
+                  the screen showing its screen. A placeholder with the stop
+                  affordance is the whole tile. */}
+              <SelfLegPlaceholder>
+                <Symbol size={32}>screen_share</Symbol>
+                <Trans>You're sharing your screen</Trans>
+                <StopShareButton
+                  onClick={(event: MouseEvent) => {
+                    // The tile's own click toggles focus — stopping the
+                    // share must not also rearrange the grid.
+                    event.stopPropagation();
+                    void voice.toggleScreenshare();
+                  }}
+                >
+                  <Trans>Stop sharing</Trans>
+                </StopShareButton>
+              </SelfLegPlaceholder>
+            </Show>
           }
         >
           <VideoTrack
@@ -710,6 +752,31 @@ export const tile = cva({
       },
     },
   ],
+});
+
+/** The sharer's own-leg tile (plan §7.3b): message + stop, no video. */
+const SelfLegPlaceholder = styled("div", {
+  base: {
+    gridArea: "1/1",
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: "var(--gap-md)",
+    overflow: "hidden",
+    textAlign: "center",
+    padding: "var(--gap-md)",
+  },
+});
+
+const StopShareButton = styled("button", {
+  base: {
+    cursor: "pointer",
+    padding: "var(--gap-sm) var(--gap-lg)",
+    borderRadius: "var(--borderRadius-lg)",
+    background: "var(--md-sys-color-error-container)",
+    color: "var(--md-sys-color-on-error-container)",
+  },
 });
 
 const AvatarOnly = styled("div", {

@@ -50,10 +50,8 @@ export function useError() {
         return t`This announcement channel has reached its follower limit (${errMax}).`;
       if (errType === "TooManyCrossposts")
         return t`You're publishing too fast — up to ${errMax} announcements can be published per hour.`;
-      if (errType === "DisallowedName")
-        return t`This name is not allowed.`;
-      if (errType === "ProfileIsPrivate")
-        return t`This profile is private.`;
+      if (errType === "DisallowedName") return t`This name is not allowed.`;
+      if (errType === "ProfileIsPrivate") return t`This profile is private.`;
       // Watch together (same lag pattern).
       if (errType === "WatchSessionExists")
         return t`Someone in this call is already watching together — stop that session first.`;
@@ -61,10 +59,13 @@ export function useError() {
         return t`Only the host (or a channel manager) can control playback.`;
       if (errType === "NotInVoiceChannel")
         return t`You need to be in the call to do that.`;
+      // Backend variant that stoat-api's generated union does not carry yet;
+      // it belongs on the string chain, not the typed switch, which cannot
+      // name a variant it has never been told about.
+      if (errType === "AccountDisabled")
+        return t`This account has been suspended. Contact a moderator if you believe this is a mistake.`;
 
       switch (err.type) {
-        case "AccountDisabled":
-          return t`This account has been suspended. Contact a moderator if you believe this is a mistake.`;
         case "AlreadyFriends":
           return t`Already friends with this user.`;
         case "AlreadyInGroup":

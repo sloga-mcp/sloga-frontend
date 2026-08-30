@@ -1,10 +1,17 @@
-import { createMemo, createSignal } from "solid-js";
+import { createMemo, createSignal, For } from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
 
-import { inviteUrl } from "@revolt/common";
 import { useClient } from "@revolt/client";
-import { Avatar, Checkbox, Column, Dialog, DialogProps, Row, TextField } from "@revolt/ui";
+import { inviteUrl } from "@revolt/common";
+import {
+  Avatar,
+  Checkbox,
+  Column,
+  Dialog,
+  DialogProps,
+  TextField,
+} from "@revolt/ui";
 
 import { useModals } from "..";
 import { Modals } from "../types";
@@ -107,30 +114,35 @@ export function InviteToServerModal(
           onKeyUp={(e) => setFilter(e.currentTarget.value)}
         />
         <Column>
-          {friends().map((user) => (
-            <a
-              style={{
-                display: "flex",
-                "align-items": "center",
-                gap: "var(--gap-md)",
-                padding: "8px 12px",
-                "border-radius": "var(--borderRadius-md)",
-                cursor: "pointer",
-                background: selected().includes(user.id)
-                  ? "var(--md-sys-color-secondary-container)"
-                  : "transparent",
-              }}
-              onClick={() => toggle(user.id)}
-            >
-              <Avatar
-                src={user.animatedAvatarURL}
-                fallback={user.displayName}
-                size={32}
-              />
-              <span style={{ flex: 1 }}>{user.displayName}</span>
-              <Checkbox checked={selected().includes(user.id)} />
-            </a>
-          ))}
+          {/* `friends()` is reactive and filtered by the search box above, so
+              this is the case the rule is actually about: with Array#map,
+              every keystroke rebuilds every row's DOM. */}
+          <For each={friends()}>
+            {(user) => (
+              <a
+                style={{
+                  display: "flex",
+                  "align-items": "center",
+                  gap: "var(--gap-md)",
+                  padding: "8px 12px",
+                  "border-radius": "var(--borderRadius-md)",
+                  cursor: "pointer",
+                  background: selected().includes(user.id)
+                    ? "var(--md-sys-color-secondary-container)"
+                    : "transparent",
+                }}
+                onClick={() => toggle(user.id)}
+              >
+                <Avatar
+                  src={user.animatedAvatarURL}
+                  fallback={user.displayName}
+                  size={32}
+                />
+                <span style={{ flex: 1 }}>{user.displayName}</span>
+                <Checkbox checked={selected().includes(user.id)} />
+              </a>
+            )}
+          </For>
         </Column>
       </Column>
     </Dialog>
