@@ -175,6 +175,25 @@ describe("overlayInCall", () => {
   it("stays true while connecting, so the window is up before the first frame", () => {
     assert.equal(overlayInCall(room, "CONNECTING"), true);
   });
+
+  it("stays true while RECONNECTING even though the room is gone", () => {
+    // The auto-rejoin loop re-enters through connect(), whose leading
+    // disconnect() clears room(). Gating on the room here would shut the
+    // overlay window and reopen it on every retry, over the user's game.
+    assert.equal(overlayInCall(undefined, "RECONNECTING"), true);
+  });
+
+  it("stays true while RECONNECTING with a room still attached", () => {
+    // The first tick after the drop, before the loop's teardown runs.
+    assert.equal(overlayInCall(room, "RECONNECTING"), true);
+  });
+
+  it("goes false once the rejoin loop gives up into DISCONNECTED", () => {
+    // What bounds the reconnecting window: MAX_REJOIN_ATTEMPTS exhausted
+    // leaves the channel asserted but the state DISCONNECTED, and the worker
+    // sends `bye` off this edge.
+    assert.equal(overlayInCall(undefined, "DISCONNECTED"), false);
+  });
 });
 
 describe("parseOverlayMsg", () => {

@@ -207,9 +207,10 @@ export function collapseParticipants(
  * BOTH halves are required and neither is redundant:
  *
  * - `room()` alone is wrong. LiveKit's drop path
- *   (`room.addListener("disconnected", …)`, state.tsx) only sets
- *   `state("DISCONNECTED")` and LEAVES `room()` set — only `disconnect()`
- *   clears it, and that runs on user actions and MLS auto-leave. So watching
+ *   (`room.addListener("disconnected", …)`, state.tsx) sets a state — for a
+ *   deliberate end, `state("DISCONNECTED")` — and LEAVES `room()` set; only
+ *   `disconnect()` clears it, and that runs on user actions, the auto-rejoin
+ *   loop's own attempts, and MLS auto-leave. So watching
  *   the room alone means a mid-game Wi-Fi drop leaves the publisher
  *   heartbeating a frozen snapshot forever: the overlay floats over the game
  *   and the staleness timers never engage, because the publisher is alive and
@@ -218,14 +219,25 @@ export function collapseParticipants(
  *   is indistinguishable from "idle, never joined" — `room()` is the cleaner
  *   edge for that direction.
  *
- * There is deliberately no `"RECONNECTING"` handling: no `#setState(
- * "RECONNECTING")` exists in state.tsx, so the state is unreachable today.
- * If reconnect handling ever lands, revisit this — a reconnecting call should
- * probably keep the overlay up.
+ * `"RECONNECTING"` is the one state that must IGNORE the `room()` half, and it
+ * is why this is not a one-liner. The auto-rejoin loop re-enters through the
+ * full `connect()` path, whose leading `disconnect()` clears `room()` — so the
+ * room is undefined for most of the sequence, and gating on it would slam the
+ * overlay window shut and reopen it on every single retry, over whatever the
+ * user is playing. The call has not ended, so the overlay stays up. What ends
+ * it is the loop's own bound: giving up sets `"DISCONNECTED"`, which falls
+ * through to the check below and sends `bye`.
+ *
+ * The frozen-snapshot risk from the first bullet does NOT return here, because
+ * this window is bounded by `MAX_REJOIN_ATTEMPTS` rather than open-ended. It
+ * does mean a reconnecting overlay shows the last known roster until the call
+ * is back; rendering that as "reconnecting" needs a protocol field and a
+ * renderer that understands it, which is deliberately not in this change.
  */
 export function overlayInCall(
   room: unknown | undefined,
   state: string,
 ): boolean {
+  if (state === "RECONNECTING") return true;
   return room !== undefined && state !== "DISCONNECTED";
 }
