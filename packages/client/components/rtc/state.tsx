@@ -24,7 +24,6 @@ import {
   type TrackPublishOptions,
   type VideoCaptureOptions,
   ConnectionState,
-  DisconnectReason,
   isE2EESupported,
   LocalVideoTrack,
   Room,
@@ -184,6 +183,11 @@ import {
   VAD_FFT_SIZE,
 } from "./vadLevel";
 import { voiceNodeForChannel } from "./voiceNode";
+import {
+  MAX_REJOIN_ATTEMPTS,
+  rejoinDelayMs,
+  shouldAutoRejoin,
+} from "./voiceRejoinPolicy";
 import { WatchDuck } from "./watchDuck";
 import { WatchTogether } from "./watchTogether";
 
@@ -316,44 +320,6 @@ const AUDIO_BLOCKED_HOLD_MS = 1_500;
  */
 const SHARE_UNAVAILABLE_NOW =
   "You can't share your screen right now — the call is re-securing or paused. Try again in a moment.";
-
-/**
- * Disconnect reasons that mean the call ended ON PURPOSE — hung up, removed,
- * superseded by a join from another device, or the room itself closed. Every
- * OTHER reason (state mismatch, signal close, server shutdown, migration,
- * timeout, unknown) is a transport death the user never asked for, and the
- * client auto-rejoins instead of stranding them: LiveKit's own recovery can
- * give up terminally — its connection reconcile hard-disconnects with
- * STATE_MISMATCH after 3 failed probes and never re-enters the retry policy
- * (observed live 2026-08-22: a websocket drop ~92 s after the window was
- * minimised left a dead "Disconnected" on a healthy network, forever).
- */
-const NO_REJOIN_DISCONNECT_REASONS = new Set<DisconnectReason>([
-  DisconnectReason.CLIENT_INITIATED,
-  DisconnectReason.DUPLICATE_IDENTITY,
-  DisconnectReason.PARTICIPANT_REMOVED,
-  DisconnectReason.ROOM_DELETED,
-  DisconnectReason.ROOM_CLOSED,
-  DisconnectReason.USER_UNAVAILABLE,
-  DisconnectReason.USER_REJECTED,
-  DisconnectReason.SIP_TRUNK_FAILURE,
-]);
-
-/**
- * Backoff between automatic rejoin attempts; the last value repeats. Each
- * attempt is a full REST join + room connect, so the tail is deliberately
- * slow — but a visibility/online edge short-circuits the wait (see
- * `#rejoinWait`), so a user coming back to a recovered network never sits
- * out a 30 s sleep.
- */
-const REJOIN_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 15_000, 30_000];
-
-/**
- * Stop auto-rejoining after this many consecutive failures (~1.5 min of
- * trying) and fall back to the actionable DISCONNECTED card (Rejoin button)
- * — a server that keeps refusing the join should not be hammered forever.
- */
-const MAX_REJOIN_ATTEMPTS = 8;
 
 type State =
   | "READY"
@@ -2078,10 +2044,7 @@ class Voice {
       // always recovered by hand, automated. Gated on CONNECTED so a
       // failing initial join (which also emits `disconnected`) keeps its
       // existing surface-the-error path in connect()'s catch.
-      if (
-        this.state() === "CONNECTED" &&
-        (reason === undefined || !NO_REJOIN_DISCONNECT_REASONS.has(reason))
-      ) {
+      if (shouldAutoRejoin({ state: this.state(), reason })) {
         this.#setState("RECONNECTING");
         void this.#autoRejoin(channel);
       } else {
@@ -2707,8 +2670,7 @@ class Voice {
   async #autoRejoin(channel: Channel) {
     const seq = ++this.#rejoinSeq;
     for (let attempt = 0; attempt < MAX_REJOIN_ATTEMPTS; attempt++) {
-      const delay =
-        REJOIN_DELAYS_MS[Math.min(attempt, REJOIN_DELAYS_MS.length - 1)];
+      const delay = rejoinDelayMs(attempt);
       await this.#rejoinWait(delay);
       if (seq !== this.#rejoinSeq) return;
       try {
