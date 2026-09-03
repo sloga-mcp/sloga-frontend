@@ -5,7 +5,7 @@
   "scripts": {
     "prepare": "panda codegen",
     "build:android": "vite build && node -e \"require('fs').rmSync('dist/mediapipe',{recursive:true,force:true})\" && cap sync android",
-    "capacitor:copy:after": "node scripts/injectAndroidCsp.mjs && bash scripts/stage-transcription-models.sh android/app/src/main/assets/public",
+    "capacitor:copy:after": "node scripts/capCopyAfter.mjs",
     "open:android": "cap open android"
   },
   "devDependencies": {
@@ -44,6 +44,7 @@
     "@capacitor/android": "^8.4.1",
     "@capacitor/cli": "^8.4.1",
     "@capacitor/core": "^8.4.1",
+    "@capacitor/ios": "^8.4.1",
     "@codemirror/autocomplete": "^6.19.0",
     "@codemirror/commands": "^6.8.1",
     "@codemirror/lang-markdown": "^6.3.4",

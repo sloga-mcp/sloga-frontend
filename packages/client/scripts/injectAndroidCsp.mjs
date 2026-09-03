@@ -91,16 +91,12 @@ const MARKER_START = "<!-- android-csp:start -->";
 const MARKER_END = "<!-- android-csp:end -->";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
-const target = join(
-  root,
-  "android",
-  "app",
-  "src",
-  "main",
-  "assets",
-  "public",
-  "index.html",
-);
+// Target = the platform's synced index.html. Passed explicitly by
+// scripts/capCopyAfter.mjs (android or ios); the bare-invocation default keeps
+// the Android path so older call sites stay correct.
+const target = process.argv[2]
+  ? join(root, process.argv[2])
+  : join(root, "android", "app", "src", "main", "assets", "public", "index.html");
 
 if (!existsSync(target)) {
   console.error(
