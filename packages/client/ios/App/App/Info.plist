@@ -47,5 +47,13 @@
 	</array>
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Sloga uses the microphone for voice chat and calls.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Sloga uses the camera for video calls and to attach photos.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Sloga accesses your photo library so you can attach images and videos to messages.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Sloga saves images you choose to download to your photo library.</string>
 </dict>
 </plist>
