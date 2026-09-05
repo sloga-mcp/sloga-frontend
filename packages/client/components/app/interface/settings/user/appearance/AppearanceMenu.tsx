@@ -32,6 +32,7 @@ import {
   MONOSPACE_FONT_KEYS,
   MonospaceFonts,
 } from "@revolt/ui/themes/fonts";
+import { RAIL_ACCENT_PRESETS } from "@revolt/ui/themes/railAccent";
 
 import MDPalette from "@material-design-icons/svg/outlined/palette.svg?component-solid";
 
@@ -46,6 +47,12 @@ export function AppearanceMenu() {
   const device = useDevice();
   const { t } = useLingui();
   const [pickerRef, setPickerRef] = createSignal<HTMLInputElement>();
+  const [railPickerRef, setRailPickerRef] = createSignal<HTMLInputElement>();
+
+  // Swatches compare case-insensitively: the native picker reports lowercase
+  // hex, the presets are written uppercase, and a user who picked a preset
+  // through the picker should still see it lit.
+  const railAccent = () => state.theme.railAccent.toLowerCase();
 
   const contentWidth = () =>
     state.settings.getValue("appearance:content_width") ?? "full";
@@ -316,6 +323,55 @@ export function AppearanceMenu() {
             </Button>
           </Row>
         </Show>
+
+        <Text class="label">
+          <Trans>Sidebar highlight</Trans>
+        </Text>
+        <Text class="label" size="small">
+          <Trans>
+            Used for unread channels, online members and the voice channel you
+            are in. Sloga orange is the default.
+          </Trans>
+        </Text>
+        <Row align justify wrap>
+          <IconButton
+            variant="filled"
+            shape="square"
+            size="md"
+            onPress={() => railPickerRef()?.click()}
+          >
+            <MDPalette />
+          </IconButton>
+          <input
+            ref={setRailPickerRef}
+            type="color"
+            value={state.theme.railAccent}
+            onInput={(e) =>
+              state.theme.setRailAccent(
+                (e.currentTarget as HTMLInputElement).value,
+              )
+            }
+            style={{
+              position: "absolute",
+              opacity: 0,
+              width: "0px",
+              height: "0px",
+              padding: 0,
+              border: "none",
+            }}
+          />
+          <For each={RAIL_ACCENT_PRESETS}>
+            {(colour) => (
+              <Button
+                size="md"
+                bg={colour}
+                group="standard"
+                groupActive={railAccent() === colour.toLowerCase()}
+                onPress={() => state.theme.setRailAccent(colour)}
+              />
+            )}
+          </For>
+        </Row>
 
         {/* A rendering effect of the theme, so it sits with the theme rather
             than among the message options it used to head. */}

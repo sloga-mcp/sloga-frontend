@@ -6276,6 +6276,10 @@ msgstr "Show who is talking on top of your game during a call. Works in borderle
 msgid "Shown on the sheet card"
 msgstr "Shown on the sheet card"
 
+#: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
+msgid "Sidebar highlight"
+msgstr "Sidebar highlight"
+
 #: components/ui/components/features/voice/watch/JellyfinConnect.tsx
 msgid "Sign in"
 msgstr "Sign in"
@@ -7478,6 +7482,10 @@ msgstr "Use Soundboard"
 #: components/app/interface/settings/user/Native.tsx
 msgid "Use the graphics card to improve performance."
 msgstr "Use the graphics card to improve performance."
+
+#: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
+msgid "Used for unread channels, online members and the voice channel you are in. Sloga orange is the default."
+msgstr "Used for unread channels, online members and the voice channel you are in. Sloga orange is the default."
 
 #: components/app/interface/settings/server/bans/ListBans.tsx
 msgid "User"

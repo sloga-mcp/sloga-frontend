@@ -207,7 +207,10 @@ const base = cva({
         },
       },
       active: {
-        "--color": "#FF8A00",
+        // Set by LoadTheme from the appearance menu; the fallback is the
+        // brand orange this used to pin, for anything that renders before
+        // the theme is mounted.
+        "--color": "var(--sloga-rail-accent, #FF8A00)",
         background: "transparent",
       },
       selected: {

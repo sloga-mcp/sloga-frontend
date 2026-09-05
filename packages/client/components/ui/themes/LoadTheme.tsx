@@ -51,6 +51,10 @@ export function LoadTheme() {
       // per-mode. --sloga-highlight stays because it is a brand constant with
       // no Material role behind it.
       "--sloga-highlight": "#FF8A00",
+      // The sidebar call-out colour (unread channel, online member, joined
+      // voice channel). User-chosen, so it is read off the store directly
+      // rather than folded into the generated scheme.
+      "--sloga-rail-accent": state.theme.railAccent,
     })) {
       // Mounted on <html>, not <body>: styles.css paints the page canvas from
       // `html:root` (it has to — iOS Safari draws overscroll from <html>), and
