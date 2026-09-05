@@ -6,10 +6,11 @@ import {
   MONOSPACE_FONT_KEYS,
   MonospaceFonts,
 } from "@revolt/ui/themes/fonts";
+import { BRAND_ACCENT, BRAND_VARIANT } from "@revolt/ui/themes/materialTheme";
 import {
-  BRAND_ACCENT,
-  BRAND_VARIANT,
-} from "@revolt/ui/themes/materialTheme";
+  RAIL_ACCENT_DEFAULT,
+  RAIL_ACCENT_PATTERN,
+} from "@revolt/ui/themes/railAccent";
 
 import { State } from "..";
 
@@ -68,6 +69,13 @@ export type TypeTheme = {
    * Whether to permit blurry surfaces
    */
   blur: boolean;
+
+  /**
+   * Colour of called-out sidebar rows: unread channels, online members, the
+   * joined voice channel. Independent of the preset, so it survives a switch
+   * between Sloga and Material You.
+   */
+  railAccent: string;
 
   /**
    * Interface font
@@ -165,6 +173,7 @@ export class Theme extends AbstractStore<"theme", TypeTheme> {
       monospaceFont: "Fira Code",
 
       blur: true,
+      railAccent: RAIL_ACCENT_DEFAULT,
       messageSize: 14,
       messageGroupSpacing: 12,
       messageAvatarSize: 36,
@@ -231,6 +240,13 @@ export class Theme extends AbstractStore<"theme", TypeTheme> {
 
     if (typeof input.blur === "boolean") {
       data.blur = input.blur;
+    }
+
+    if (
+      typeof input.railAccent === "string" &&
+      RAIL_ACCENT_PATTERN.test(input.railAccent)
+    ) {
+      data.railAccent = input.railAccent;
     }
 
     if (typeof input.messageSize === "number") {
@@ -392,6 +408,21 @@ export class Theme extends AbstractStore<"theme", TypeTheme> {
    */
   toggleBlur() {
     this.set("blur", !this.blur);
+  }
+
+  /**
+   * Get the sidebar highlight colour
+   */
+  get railAccent() {
+    return this.get().railAccent;
+  }
+
+  /**
+   * Set the sidebar highlight colour
+   * @param colour Hex colour
+   */
+  setRailAccent(colour: string) {
+    this.set("railAccent", colour);
   }
 
   /**
