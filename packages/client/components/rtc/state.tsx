@@ -208,6 +208,7 @@ import {
   screenAudioSupported,
   stopScreenAudio,
 } from "./screenAudioNative";
+import { isScreenShareCancel } from "./screenShareCancel";
 import { ScreenShieldProcessor } from "./screenShieldProcessor";
 import { SoundboardPlayback } from "./soundboardPlayback";
 import { WhisperController } from "./whisper";
@@ -4721,7 +4722,10 @@ class Voice {
           }
         }
       } catch (e) {
-        this.onErr(e);
+        // Backing out of a picker — the browser's NotAllowedError or the
+        // Electron shell's AbortError "Error starting capture" — is not an
+        // error to the user who just cancelled; everything else surfaces.
+        if (!isScreenShareCancel(e)) this.onErr(e);
       }
     }
   }
