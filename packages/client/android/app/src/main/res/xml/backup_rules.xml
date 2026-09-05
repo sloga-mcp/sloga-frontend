@@ -18,4 +18,9 @@
 <full-backup-content>
     <exclude domain="file" path="e2ee" />
     <exclude domain="root" path="app_webview" />
+    <!-- 3. sloga_push.xml holds a LIVE bearer session token (and the API URL);
+         sloga_ipc.xml holds the per-install Intent nonce. Neither may leave
+         the device: a restored backup would carry a replayable session. -->
+    <exclude domain="sharedpref" path="sloga_push.xml" />
+    <exclude domain="sharedpref" path="sloga_ipc.xml" />
 </full-backup-content>

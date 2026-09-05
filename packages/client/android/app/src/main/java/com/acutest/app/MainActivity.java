@@ -45,11 +45,18 @@ public class MainActivity extends BridgeActivity {
     static void dispatchCallDeclined(String channelId) {
         MainActivity activity = INSTANCE == null ? null : INSTANCE.get();
         if (activity == null || activity.bridge == null) return;
+        org.json.JSONObject detail = new org.json.JSONObject();
+        try {
+            detail.put("declined", true);
+            detail.put(
+                    "channelId",
+                    channelId == null ? org.json.JSONObject.NULL : channelId);
+        } catch (org.json.JSONException e) {
+            return;
+        }
+        final String payload = detail.toString();
         activity.runOnUiThread(() -> activity.bridge.triggerWindowJSEvent(
-                "slogaNotificationAction",
-                "{\"declined\":true,\"channelId\":"
-                        + (channelId != null ? "\"" + channelId + "\"" : "null")
-                        + "}"));
+                "slogaNotificationAction", payload));
     }
 
     @Override
@@ -98,12 +105,29 @@ public class MainActivity extends BridgeActivity {
         if (intent == null) return;
         String path = intent.getStringExtra("sloga_path");
         if (path == null) return;
+
+        // This activity is exported, so anything on the device can start it
+        // with crafted extras. Only Intents Sloga minted itself carry the
+        // per-install nonce, so everything else is dropped before a single
+        // field reaches the web layer. This is what stops a zero-permission
+        // app from driving the WebView -- or from forcing a mic-live call
+        // join by handing us sloga_answer_call.
+        if (!IntentNonce.matches(this, intent.getStringExtra(IntentNonce.EXTRA))) {
+            intent.removeExtra("sloga_path");
+            intent.removeExtra("sloga_ring_call");
+            intent.removeExtra("sloga_answer_call");
+            intent.removeExtra("sloga_caller_id");
+            return;
+        }
+
         boolean answer = intent.getBooleanExtra("sloga_answer_call", false);
         boolean ring = intent.getBooleanExtra("sloga_ring_call", false);
         String callerId = intent.getStringExtra("sloga_caller_id");
         intent.removeExtra("sloga_path");
         intent.removeExtra("sloga_ring_call");
         intent.removeExtra("sloga_answer_call");
+        intent.removeExtra("sloga_caller_id");
+        intent.removeExtra(IntentNonce.EXTRA);
 
         // Action-button taps don't auto-dismiss notifications — clear the
         // call notification once we're handling the answer.
@@ -123,12 +147,32 @@ public class MainActivity extends BridgeActivity {
         if (bridge != null) {
             bridge.triggerWindowJSEvent(
                     "slogaNotificationAction",
-                    "{\"path\":\"" + path + "\",\"answer\":" + answer
-                            + ",\"ring\":" + ring
-                            + ",\"callerId\":"
-                            + (callerId != null ? "\"" + callerId + "\"" : "null")
-                            + "}");
+                    notificationActionPayload(path, answer, ring, callerId));
         }
+    }
+
+    /**
+     * Build the event detail as JSON rather than by concatenation. Capacitor
+     * inlines this string into the JS source it hands to evaluateJavascript,
+     * so a bare quote in any field used to escape straight into executable
+     * code. JSON escaping makes that impossible; the nonce gate above decides
+     * WHETHER we are called, and this decides that what we pass can only ever
+     * be read as data.
+     */
+    private static String notificationActionPayload(
+            String path, boolean answer, boolean ring, String callerId) {
+        org.json.JSONObject detail = new org.json.JSONObject();
+        try {
+            detail.put("path", path);
+            detail.put("answer", answer);
+            detail.put("ring", ring);
+            detail.put(
+                    "callerId",
+                    callerId == null ? org.json.JSONObject.NULL : callerId);
+        } catch (org.json.JSONException e) {
+            return "{}";
+        }
+        return detail.toString();
     }
 
     /** Turn the screen on and show over the lockscreen while a call is ringing. */

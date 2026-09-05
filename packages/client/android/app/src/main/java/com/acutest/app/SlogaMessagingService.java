@@ -205,6 +205,8 @@ public class SlogaMessagingService extends FirebaseMessagingService {
         if (path != null) ring.putExtra("sloga_path", path);
         ring.putExtra("sloga_ring_call", true);
         if (callerId != null) ring.putExtra("sloga_caller_id", callerId);
+        // Proves to the exported MainActivity that Sloga minted this Intent.
+        ring.putExtra(IntentNonce.EXTRA, IntentNonce.get(this));
         PendingIntent ringIntent = PendingIntent.getActivity(
                 this, notificationId + 300000, ring,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
@@ -214,6 +216,7 @@ public class SlogaMessagingService extends FirebaseMessagingService {
         answer.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
         if (path != null) answer.putExtra("sloga_path", path);
         answer.putExtra("sloga_answer_call", true);
+        answer.putExtra(IntentNonce.EXTRA, IntentNonce.get(this));
         PendingIntent answerIntent = PendingIntent.getActivity(
                 this, notificationId + 100000, answer,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
@@ -253,6 +256,7 @@ public class SlogaMessagingService extends FirebaseMessagingService {
         Intent launch = new Intent(this, MainActivity.class);
         launch.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
         if (path != null) launch.putExtra("sloga_path", path);
+        launch.putExtra(IntentNonce.EXTRA, IntentNonce.get(this));
         PendingIntent contentIntent = PendingIntent.getActivity(
                 this, notificationId, launch,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
