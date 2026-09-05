@@ -8,6 +8,37 @@ import type { ChangelogResponse } from "./Changelog";
  * the newest entry once, automatically, next time they open the app.
  */
 export const CHANGELOGS: ChangelogResponse[] = [
+  // Sidebar highlight (web-only at publish, 2026-09-05). Copy constraints,
+  // load-bearing:
+  // - The setting recolors ONLY what MenuButton paints in its `active` state:
+  //   unread channels and threads, online members, the voice channel you are
+  //   in, ringing and unread DMs. It does not touch the theme accent, message
+  //   text or role colors. Do not widen it.
+  // - Presets are the brand orange (default), white and the six other colors
+  //   of the O mark; the picker takes anything. Say "colors from the Sloga
+  //   logo", never list hex values.
+  // - Theme settings are NOT in the synced store list (Sync.ts): the choice
+  //   is per device, and the copy says so.
+  // - The Windows, Linux and Android apps still bundle 0.57.0 without it; the
+  //   closing line self-resolves at the next shell sweep, as on 08-26.
+  // - The version string stays 0.57.0 (no bump), so the heading carries no
+  //   version number. `web_version` matches what Settings prints.
+  // - EXCLUDED: the sign-out-leaves-call fix went out in the same web deploy
+  //   with no live leg (the error path is uncovered), so it is not announced.
+  {
+    id: "sloga-2026-09-05",
+    title: "Patch Notes",
+    published_at: "2026-09-05T17:00:00.000Z",
+    web_version: "0.57.0",
+    markdown_content: `## Pick your own sidebar highlight color
+
+### 🎨 The orange is now yours to change
+- **Settings → Appearance has a new Sidebar highlight option.** It sets the color that calls things out in the sidebar: unread channels, members who are online, the voice channel you are in, and DMs that are ringing or unread.
+- Sloga orange stays the default. Pick white, one of the colors from the Sloga logo, or open the color picker for any color you like.
+- It works with both the Sloga theme and Material You, and switching between them keeps your choice. Like the rest of Appearance, it is saved on this device.
+- Live on the web today. The Windows, Linux and Android apps get it with their next update.
+`,
+  },
   // v0.57.0: the voice shaper + the microphone-access sweep. Copy constraints,
   // load-bearing:
   // - The shaper is EQ/compression presets on the LOCAL mic only. It is not a
