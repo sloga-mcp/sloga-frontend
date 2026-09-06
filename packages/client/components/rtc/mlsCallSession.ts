@@ -95,6 +95,7 @@ import {
   callModeTransition,
   classifyEncryptionError,
   loudModeFallback,
+  mixDetectedAction,
   parseCtlPayload,
   rotationWindowMs,
 } from "./mlsCallModePolicy";
@@ -3780,14 +3781,24 @@ export class MlsCallSession {
 
     if (!consistent) {
       // A live participant we cannot encrypt to ⇒ mixed call ⇒ pause (never
-      // publish plaintext). In a confirmed interlude the pause is not
-      // reasserted (the user authorized plaintext), but any pending
-      // re-upgrade is cancelled so we don't resume-encrypt while a mix
-      // persists (T4/turnover, ME-16).
-      if (inInterlude) {
-        this.#applyMode({ type: "mix_detected" });
-      } else if (this.#e2eeEnabled) {
-        this.#onMixDetected();
+      // publish plaintext) + banner. By mode (`mixDetectedAction`): declared
+      // from `e2ee` (T1) AND from `negotiating` (T0c — a joiner into a call
+      // that already holds a non-enrolled participant; enable waits for a
+      // consistent roster, so gating this on `#e2eeEnabled` parked such a
+      // joiner in negotiating for good: paused by the negotiating gate, chip
+      // amber, no banner, no way to consent to plaintext). In a confirmed
+      // interlude the pause is not reasserted (the user authorized
+      // plaintext), but any pending re-upgrade is cancelled so we don't
+      // resume-encrypt while a mix persists (T4/turnover, ME-16).
+      switch (mixDetectedAction(this.#callMode)) {
+        case "declare":
+          this.#onMixDetected();
+          break;
+        case "transition":
+          this.#applyMode({ type: "mix_detected" });
+          break;
+        case "ignore":
+          break;
       }
       return;
     }
@@ -3798,10 +3809,14 @@ export class MlsCallSession {
       this.#applyMode({ type: "mix_cleared" });
       return;
     }
-    if (this.#hasLocalKey && !this.#e2eeEnabled) {
+    if (this.#mixPaused) {
+      // T2 after the hysteresis. Checked BEFORE the enable branch: a mix
+      // declared while still negotiating (T0c) has `#mixPaused` with E2EE
+      // never enabled, and its exit is the same bounce-proof hysteresis —
+      // the re-upgrade timer enables first instead of warm-resuming.
+      this.#applyMode({ type: "mix_cleared" });
+    } else if (this.#hasLocalKey && !this.#e2eeEnabled) {
       void this.#enable();
-    } else if (this.#mixPaused) {
-      this.#applyMode({ type: "mix_cleared" }); // T2 warm resume
     }
   }
 
@@ -3819,6 +3834,15 @@ export class MlsCallSession {
       await media.pausePublishing?.("enable-window");
       await media.setEncryptionEnabled?.(true);
       await media.resumePublishing?.("enable-window");
+      // A `mixed` pause that predates this enable is released only NOW, after
+      // the flip, so no plaintext frame escapes in between: a mix declared
+      // while still negotiating (T0c) reaches its first enable from the T2
+      // timer with the reason still held, and a mix that cleared across a
+      // re-establish leaves the reason held after #resetEnableState dropped
+      // the flag. Enable runs only on a consistent roster (its callers'
+      // precondition), so nothing is left to keep the pause for. Releasing
+      // an un-held reason is a no-op.
+      await media.resumePublishing?.("mixed");
       this.#mixPaused = false;
       this.#setModeChained({ kind: "e2ee" }); // T0b (LOW-3: serialize the label)
     } catch (error) {
@@ -3830,10 +3854,14 @@ export class MlsCallSession {
   }
 
   /**
-   * A non-enrolled participant appeared in an encrypted call: PAUSE local
-   * publishing (fail-closed — never open a plaintext path without the native
-   * confirm). Sets the §3.4 `mixed` mode — the 6.5 banner + confirm flow read
-   * it. `onRosterReconciled` already carried the non-enrolled set for the UI.
+   * A non-enrolled participant is present in an encrypted call (T1), or in the
+   * call a still-negotiating joiner has just been admitted to (T0c): PAUSE
+   * local publishing under the `mixed` reason (fail-closed — never open a
+   * plaintext path without the native confirm) and set the §3.4 `mixed` mode
+   * — the 6.5 banner + confirm flow read it. From negotiating, #setMode's
+   * lockstep then releases the negotiating reason; `mixed` is already held,
+   * so publishing never resumes in between. `onRosterReconciled` already
+   * carried the non-enrolled set for the UI.
    */
   #onMixDetected(): void {
     this.#cancelReupgrade();
@@ -3885,6 +3913,14 @@ export class MlsCallSession {
           this.#scheduleGroupAction(() =>
             this.#rejoinFresh("re-upgrade after plaintext interlude"),
           );
+        } else if (!this.#e2eeEnabled) {
+          // The mix was declared BEFORE the first enable (T0c): the plain
+          // warm resume below would lift the pause with Room E2EE still off.
+          // Enable instead — #enable pauses through the flip and releases
+          // the `mixed` reason only after it. Without a local key yet there
+          // is nothing to enable with: the install kicks a reconcile, which
+          // re-drives T2.
+          if (this.#hasLocalKey) await this.#enable();
         } else {
           await this.#media?.resumePublishing?.("mixed");
           this.#mixPaused = false;

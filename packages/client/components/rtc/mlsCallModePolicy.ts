@@ -558,3 +558,38 @@ export function rotationWindowMs(
 export function loudModeFallback(mode: CallMode): CallMode | null {
   return mode.kind === "e2ee" ? { kind: "negotiating" } : null;
 }
+
+/**
+ * What the session does when a FRESH reconcile reports a non-enrolled
+ * participant (the roster is not consistent), by the current mode:
+ *
+ *  - `declare` — declare the mix: assert the `mixed` publish pause and set
+ *    the `mixed` label (the 6.4 `#onMixDetected` mechanics), so the banner
+ *    names the participant and offers the native-confirmed downgrade. From
+ *    `e2ee` this is T1. From `negotiating` it is T0c — a JOINER that lands in
+ *    a call which already holds a non-enrolled participant. That case used to
+ *    be gated on "E2EE already enabled", which a joiner never is (enable
+ *    waits for a consistent roster), so it sat in `negotiating` forever:
+ *    publishing paused by the negotiating gate, chip amber, no banner, no
+ *    way to consent to plaintext — parked muted behind a chip. From `mixed`
+ *    it re-declares (idempotent).
+ *  - `transition` — run `mix_detected` through the machine: in an interlude
+ *    the mode does not change and only a pending re-upgrade is cancelled.
+ *  - `ignore` — `off` (a plain voice call has no group to be consistent
+ *    with) and `call_full` (terminal, auto-leaving).
+ */
+export function mixDetectedAction(
+  mode: CallMode,
+): "declare" | "transition" | "ignore" {
+  switch (mode.kind) {
+    case "negotiating":
+    case "e2ee":
+    case "mixed":
+      return "declare";
+    case "interlude":
+      return "transition";
+    case "off":
+    case "call_full":
+      return "ignore";
+  }
+}
