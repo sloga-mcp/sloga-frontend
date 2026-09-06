@@ -74,6 +74,28 @@ export default function ChannelOverview(props: ChannelSettingsProps) {
     }
   }
 
+  const [callsSaving, setCallsSaving] = createSignal(false);
+
+  /**
+   * Turn this group's voice and video calling on or off. Group calling is
+   * owner opt-in server-side — `Channel::voice()` is empty until the owner
+   * sends voice information — and the client had no control that sent it, so
+   * every group offered a call card whose join was refused with
+   * `NotAVoiceChannel`. `disabled` keeps any saved limit while calling is
+   * off; stoat-api predates the field, so the payload passes through
+   * verbatim. `isVoice` reads the server's answer back after the update.
+   */
+  async function toggleCalls() {
+    setCallsSaving(true);
+    try {
+      await props.channel.edit({
+        voice: { disabled: props.channel.isVoice },
+      } as never);
+    } finally {
+      setCallsSaving(false);
+    }
+  }
+
   // Follower list (source-side): refetched on the source-topic
   // channelFollowersUpdate signal and on any follow deletion.
   const [followers, { refetch: refetchFollowers }] = createResource(
@@ -387,6 +409,29 @@ export default function ChannelOverview(props: ChannelSettingsProps) {
               <Switch fallback={<Trans>Mark as Spoiler</Trans>}>
                 <Match when={props.channel.isSpoiler}>
                   <Trans>Remove Spoiler Mark</Trans>
+                </Match>
+              </Switch>
+            </Button>
+          </div>
+        </Column>
+      </Show>
+
+      <Show when={props.channel.type === "Group" && canManageChannel()}>
+        <Column>
+          <Text class="label">
+            <Trans>Voice and Video Calls</Trans>
+          </Text>
+          <Text>
+            <Trans>
+              Group calls are off by default. Turn them on to let members start
+              and join voice and video calls here.
+            </Trans>
+          </Text>
+          <div>
+            <Button onPress={toggleCalls} isDisabled={callsSaving()}>
+              <Switch fallback={<Trans>Turn on calls</Trans>}>
+                <Match when={props.channel.isVoice}>
+                  <Trans>Turn off calls</Trans>
                 </Match>
               </Switch>
             </Button>

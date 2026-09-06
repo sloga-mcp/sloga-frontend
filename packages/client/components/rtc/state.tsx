@@ -2495,6 +2495,23 @@ class Voice {
         // resources (session, native listener, worker — gate MEDIUM), which
         // an inline cleanup here used to do by hand.
         this.disconnect();
+        // The server has no voice for this channel: a group whose owner has
+        // not turned calling on (owner opt-in server-side), or a channel that
+        // simply is not a voice channel. Terminal and actionable, in the
+        // same modal every other call failure uses — a retry cannot change
+        // the server's answer, and the raw `NotAVoiceChannel` body used to
+        // reach the caller as an unhandled rejection with nothing to tell
+        // the user. Measured live 2026-09-06 on a fresh group DM.
+        if ((error as { type?: string } | null)?.type === "NotAVoiceChannel") {
+          this.onErr(
+            new Error(
+              channel.type === "Group"
+                ? t`Calls are turned off for this group. The group owner can turn them on in the group settings.`
+                : t`Calls aren't available in this channel.`,
+            ),
+          );
+          return false;
+        }
         throw error;
       }
       // Doomed: whoever bumped the token already tore down the shared state
@@ -2554,7 +2571,19 @@ class Voice {
       this.#mlsSession?.dispose();
       this.#mlsSession = undefined;
       this.#setCallSessionState(undefined); // no session ⇒ no state (§4.5)
-      this.#unlistenCallKeys?.();
+      // Tauri 2.11's injected unlisten reads `listeners[id].handlerId`
+      // without checking that the entry exists (tauri `src/event/mod.rs`,
+      // `unlisten_js_script`), so an unlisten landing outside the entry's
+      // lifetime rejects — seen as an uncaught "reading 'handlerId'" on
+      // every failed group join. The listener is being abandoned either
+      // way: it must not surface as an error, and if the bridge's unlisten
+      // ever throws synchronously it must not abort this teardown.
+      try {
+        const pending = this.#unlistenCallKeys?.() as unknown;
+        if (pending instanceof Promise) pending.catch(() => undefined);
+      } catch {
+        /* see above */
+      }
       this.#unlistenCallKeys = undefined;
       this.#e2eeWorker?.terminate();
       this.#e2eeWorker = undefined;
