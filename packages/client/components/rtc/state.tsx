@@ -2152,11 +2152,11 @@ class Voice {
       //    until then fails closed as non-enrolled (§5.3 rule 2(b), see
       //    `encryptedLegs`), so publishing is what CLEARS a legitimate
       //    share's mixed banner;
-      //  - a graced PRIMARY holds its admit-grace only while it is
-      //    publication-silent, so publishing is what makes an un-enrolled
-      //    joiner go LOUD. Waiting for the periodic tick here would leave a
-      //    plaintext client's media playing under a suppressed warning for up
-      //    to a full tick beyond the moment it became detectable.
+      //  - a PRIMARY's publication changes the chip's media-plane gate and,
+      //    for a bare (device-less) identity, is the moment its plaintext
+      //    media becomes audible — the roster already reports it non-enrolled
+      //    on sight, but the reconcile keeps the pause/banner state fresh
+      //    rather than waiting up to a full tick.
       void this.#mlsSession?.reconcileNow();
       if (pub.source === Track.Source.ScreenShare) {
         pub.once("subscribed", (track) => {
@@ -2755,27 +2755,15 @@ class Voice {
             (p) => isScreenLeg(p.identity) && p.trackPublications.size === 0,
           )
           .map((p) => p.identity),
-      // Publication-silent remotes: an expiring admit-grace re-arms while its
-      // joiner is here (an enrolling client's own negotiating gate publishes
-      // nothing; a plaintext client's mic shows up within seconds).
-      unpublishedParticipants: () =>
-        [...room.remoteParticipants.values()]
-          .filter((p) => p.trackPublications.size === 0)
-          .map((p) => p.identity),
-      // Remotes actually sending plaintext: at least one publication declares
-      // `encryption === NONE`. Disqualifies a graced primary from the
-      // admit-grace, and it is the ENCRYPTION declaration rather than the
-      // publication count for the reason spelled out on
-      // `RosterLegInputs.plaintextPublishers` — the publish gate pauses
-      // upstream instead of unpublishing, so a normal E2EE joiner has a
-      // publication almost immediately and counting them would strip the
-      // grace from nearly every legitimate join. `isEncrypted` is
-      // `size > 0 && every(encrypted)`, so this is "has published, and not
-      // all of it is encrypted".
-      plaintextPublishers: () =>
-        [...room.remoteParticipants.values()]
-          .filter((p) => p.trackPublications.size > 0 && !p.isEncrypted)
-          .map((p) => p.identity),
+      // No publication-derived inputs for PRIMARIES here on purpose. A
+      // remote's publications say nothing about whether it is enrolling:
+      // livekit stamps `encryption: NONE` on every publication until that
+      // participant's own `setE2EEEnabled(true)` republishes it as GCM, which
+      // an E2EE joiner does only after its Welcome + first key — so for the
+      // whole admit beat an enrolling joiner is NONE-declared and
+      // upstream-paused, indistinguishable on the wire from a plaintext
+      // client. The roster policy classifies primaries by whether their SFU
+      // identity names a device (`isDeviceQualified`) instead.
       onEncryptionState: (state, error) => {
         // Latch a loud media-plane failure into the existing structured signal
         // (6.5 classifies RE-SECURING vs NOT-ENCRYPTED from callEncryption +

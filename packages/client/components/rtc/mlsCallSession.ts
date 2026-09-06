@@ -91,9 +91,12 @@ import {
 import {
   type CallMode,
   type CallModeEvent,
+  type RotationWindowOpener,
   callModeTransition,
   classifyEncryptionError,
+  loudModeFallback,
   parseCtlPayload,
+  rotationWindowMs,
 } from "./mlsCallModePolicy";
 import {
   drainAction,
@@ -110,6 +113,7 @@ import {
 import {
   type RosterLegInputs,
   type RosterReconcileResult,
+  isDeviceQualified,
   reconcileRoster,
 } from "./mlsRosterPolicy";
 
@@ -559,27 +563,6 @@ export interface MlsMediaBinding {
    * sends nothing and its token cannot subscribe.
    */
   unpublishedLegs?(): string[];
-  /**
-   * ALL remote SFU identities with ZERO publications. Used only by the
-   * admit-grace RE-ARM at expiry: a joiner that has put nothing on the wire
-   * has not yet cost anyone anything, so its window may extend to the hard
-   * deadline.
-   *
-   * 🔴 NOT a safe test for "still enrolling" — the publish gate pauses
-   * upstream rather than unpublishing, so an ordinary joiner has a
-   * publication within milliseconds of connecting. `plaintextPublishers` is
-   * the discriminator that decides the grace itself.
-   */
-  unpublishedParticipants?(): string[];
-  /**
-   * Remote identities with at least one publication declaring
-   * `encryption === NONE`. Disqualifies a graced primary from the
-   * admit-grace: a joiner mid-admit may legitimately be publishing, but one
-   * publishing PLAINTEXT into an encrypted call is the loud case and nothing
-   * on the media plane will report it (livekit disables the cryptor for a
-   * NONE publication, so no decrypt error ever fires).
-   */
-  plaintextPublishers?(): string[];
   /** Surface the media-plane state for the 6.5 chip / callEncryptionError. */
   onEncryptionState?(state: MediaEncryptionState, error?: unknown): void;
   /**
@@ -2339,6 +2322,15 @@ export class MlsCallSession {
         return;
       }
       this.#staged = { epoch: commit.epoch, kind };
+      // Epoch N+1 is now being decided, and its keys are not installed here
+      // whoever wins it. Open the §4.4 window BEFORE the round trip: on a
+      // Lost, the winner (a Remove switches its send key the instant it
+      // wins) is already sending new-index frames while our copy of its
+      // commit waits behind this very lock, and the install-opened windows
+      // can only start after that commit is processed — too late for the
+      // first frame, which is the one LiveKit reports. See
+      // `RotationWindowOpener` for the live failure this closes.
+      this.#openRotationWindow("arbitration");
 
       let res: MlsHttpResult<ResponseSubmitMlsCommit>;
       const submitStart = performance.now();
@@ -3189,17 +3181,27 @@ export class MlsCallSession {
     this.#media?.onEncryptionState?.("clear");
   }
 
-  /** Open (or refresh) the §4.4 rotation window used to classify errors. */
-  #openRotationWindow(timing: LocalKeyInstall): void {
+  /**
+   * Open (or refresh) the §4.4 rotation window used to classify errors. The
+   * length depends on what opened it (`rotationWindowMs`): grace rotations
+   * stay "known" through the grace + a propagation settle; immediate ones
+   * just through the settle (receivers still need the commit to propagate
+   * before they can decrypt the new index); a submitted commit awaiting
+   * arbitration through the submit bound + the settle. A later opener always
+   * REPLACES the timer, so the install that ends an arbitration shortens its
+   * window to the ordinary settle.
+   */
+  #openRotationWindow(opened: RotationWindowOpener): void {
     this.#rotationWindow = true;
     if (this.#rotationWindowTimer) {
       clearTimeout(this.#rotationWindowTimer);
       this.#timers.delete(this.#rotationWindowTimer);
     }
-    // Grace rotations stay "known" through the grace + a propagation settle;
-    // immediate ones just through the settle (receivers still need the commit
-    // to propagate before they can decrypt the new index).
-    const ms = (timing === "grace" ? ADD_GRACE_MS : 0) + ROTATION_SETTLE_MS;
+    const ms = rotationWindowMs(opened, {
+      addGraceMs: ADD_GRACE_MS,
+      settleMs: ROTATION_SETTLE_MS,
+      submitTimeoutMs: SUBMIT_TIMEOUT_MS,
+    });
     const timer = setTimeout(() => {
       this.#rotationWindowTimer = null;
       this.#timers.delete(timer);
@@ -3214,6 +3216,15 @@ export class MlsCallSession {
     this.#loudLatched = true;
     this.#clearResecureTimer();
     this.#media?.onEncryptionState?.("loud", error);
+    // A loud verdict after the mode reached `e2ee` used to leave the chip red
+    // with NO banner and no escape: `isTerminalLoud` and `confirmPlaintext`
+    // both key on `negotiating`. Fold it into that shape (`loudModeFallback`)
+    // — serialized on the mode chain so an in-flight transition cannot
+    // clobber it — which re-asserts the negotiating publish gate in lockstep
+    // (fail-closed: the banner says publishing is paused, and it is) and
+    // offers the same Leave / Stay-unencrypted choice as a failed negotiation.
+    const fallback = loudModeFallback(this.#callMode);
+    if (fallback) this.#setModeChained(fallback);
   }
 
   #clearResecureTimer(): void {
@@ -3284,6 +3295,11 @@ export class MlsCallSession {
     // stopped. Window sizing: see `ADMIT_GRACE_BASE_MS`.
     if (
       identity !== this.#media?.localIdentity() &&
+      // A bare identity has no E2EE device and can never be admitted: the
+      // roster policy reports it non-enrolled on sight (I3 — the enrolled
+      // sides pause before it has published a frame), so a window here would
+      // only feed the expiry re-arm and the per-call budget for nothing.
+      isDeviceQualified(identity) &&
       !this.#admitGrace.has(identity)
     ) {
       // Whatever this identity has NOT already spent in grace during this
@@ -3424,10 +3440,6 @@ export class MlsCallSession {
         e2ee: this.#callMode.kind === "e2ee",
         encryptedLegs: media.encryptedLegs?.() ?? [],
         unpublishedLegs: media.unpublishedLegs?.() ?? [],
-        // A graced PRIMARY loses its window the moment it publishes
-        // PLAINTEXT. Publishing as such is normal mid-admit, so the
-        // declaration is the discriminator, not the publication count.
-        plaintextPublishers: media.plaintextPublishers?.() ?? [],
       },
       [...this.#admitGrace.keys()],
     );
@@ -3646,23 +3658,46 @@ export class MlsCallSession {
 
   /**
    * An admit-grace window ran out. Before letting the joiner fall through to
-   * non-enrolled (and the call to `mixed`), re-arm the window while the
-   * joiner is still PUBLICATION-SILENT and the hard deadline permits: an
-   * E2EE-capable joiner's own `negotiating` gate keeps it from publishing
-   * anything until it is enrolled, and its first observable MLS activity can
-   * arrive later than any fixed initial window on a slow device — while a
-   * silent joiner also sends nothing that could need the loud warning yet. A
-   * joiner that HAS published (a plaintext client's mic appears within
-   * seconds) expires here and goes loud exactly as before; a silent
-   * never-enroller goes loud at the `deadline` ceiling.
+   * non-enrolled (and the call to `mixed`), re-arm the window while its
+   * admission is observably STILL IN PROGRESS on this member — an admit
+   * scheduled or ledgered for it, or a rejoin serve in flight — and the hard
+   * deadline permits: a staggered Add or the admit re-drive ladder can
+   * legitimately outlast any fixed initial window on a slow device. A joiner
+   * nothing here is working on expires and goes loud exactly as before; one
+   * that never enrolls goes loud at the `deadline` ceiling at the latest.
+   *
+   * The test used to be "publication-silent", on the belief that an E2EE
+   * joiner's negotiating gate keeps it from publishing until enrolled. It
+   * does not: the gate pauses upstream, the mic publication is created in
+   * the joiner's `connected` handler within milliseconds, and it is
+   * NONE-declared until the joiner enables E2EE — so a real joiner was never
+   * silent and never re-armed, while a mic-muted browser (no publications,
+   * no E2EE device, nothing to wait for) was re-armed for up to a minute
+   * with the enrolled sides still publishing ciphertext into its decoder.
    */
   #onAdmitGraceExpiry(identity: string): void {
     const entry = this.#admitGrace.get(identity);
     if (!entry) return; // cleared concurrently
-    if (this.#rearmAdmitGrace(identity, entry)) return;
+    if (this.#rearmAdmitGrace(identity, entry, this.#admitInProgress(identity)))
+      return;
     this.#closeAdmitGrace(identity, entry);
     this.#admitGrace.delete(identity);
     void this.reconcileNow();
+  }
+
+  /**
+   * Whether this member's own admit machinery is still working on the
+   * identity: an Add scheduled or ledgered for re-drive, or a rejoin serve
+   * (stale-leaf removal) in flight. Every member receives every join
+   * request, so even when a lower leaf will do the actual Add, the entry
+   * lives here until our stagger fires and finds the leaf already present.
+   */
+  #admitInProgress(identity: string): boolean {
+    return (
+      this.#scheduledAdmits.has(identity) ||
+      this.#pendingAdmits.has(identity) ||
+      this.#scheduledAdmits.has(`rejoin:${identity}`)
+    );
   }
 
   /**
@@ -3671,33 +3706,32 @@ export class MlsCallSession {
    * driving an attempt for it. Admits legitimately outlast the initial window
    * on slow devices (stagger + the joiner's 10 s re-broadcast cadence +
    * admitter re-drives), and expiring mid-admit would re-fire the exact
-   * mixed→leg-stop this grace exists to prevent. The bounds are exactly the
-   * expiry re-arm's (`#rearmAdmitGrace`): only an OPEN window refreshes (once
+   * mixed→leg-stop this grace exists to prevent. The bounds are the expiry
+   * re-arm's (`#rearmAdmitGrace`): only an OPEN window refreshes (once
    * expired, the declared mix stands until the admit itself completes and
-   * clears it — activity never un-declares loud), only while the joiner is
-   * still publication-silent (activity from something already publishing must
-   * not out-extend what its own expiry would grant), and never past the
+   * clears it — activity never un-declares loud), and never past the
    * identity's hard `deadline`, so a joiner that spams join requests forever
-   * still goes loud.
+   * still goes loud. The caller's event IS the enrolment evidence, so no
+   * further check is applied; what the joiner has published says nothing
+   * (see `#onAdmitGraceExpiry`).
    */
   #refreshAdmitGrace(identity: string): void {
     const entry = this.#admitGrace.get(identity);
     if (!entry) return;
-    this.#rearmAdmitGrace(identity, entry);
+    this.#rearmAdmitGrace(identity, entry, true);
   }
 
   /**
-   * Re-arm one open window's timer if the deadline permits AND the identity
-   * is still publication-silent. Returns false when the window must lapse.
+   * Re-arm one open window's timer if the deadline permits AND the joiner is
+   * still observably enrolling. Returns false when the window must lapse.
    */
   #rearmAdmitGrace(
     identity: string,
     entry: { timer: ReturnType<typeof setTimeout>; deadline: number },
+    stillEnrolling: boolean,
   ): boolean {
     const remaining = entry.deadline - Date.now();
-    const silent =
-      this.#media?.unpublishedParticipants?.().includes(identity) ?? false;
-    if (remaining <= 0 || !silent) return false;
+    if (remaining <= 0 || !stillEnrolling) return false;
     clearTimeout(entry.timer);
     this.#timers.delete(entry.timer);
     const timer = setTimeout(

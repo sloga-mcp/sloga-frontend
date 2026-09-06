@@ -391,6 +391,12 @@ export function chipState(inputs: ChipInputs): ChipState {
  * install it was built for. The latched-error requirement keeps this off
  * web/plaintext calls: their chip also reads not_encrypted (open-group
  * attribution, no session), but nothing ever latches there.
+ *
+ * A loud verdict that lands AFTER the mode reached `e2ee` is folded into the
+ * first shape by the session, not widened here: `loudModeFallback` drops the
+ * mode back to `negotiating` (re-asserting the negotiating publish gate in
+ * lockstep), so the same banner, the same "Stay unencrypted" / Leave escape
+ * and the same `confirmPlaintext` guard serve it.
  */
 export function isTerminalLoud(
   mode: CallMode | undefined,
@@ -474,4 +480,81 @@ export function classifyEncryptionError(
   awaitingFirstKey: boolean,
 ): "resecuring" | "loud" {
   return inRotationWindow || awaitingFirstKey ? "resecuring" : "loud";
+}
+
+/**
+ * What opened a §4.4 rotation window, which decides how long it stays
+ * "known" (`rotationWindowMs`):
+ *  - `grace` — an Add-driven local key install: the sender keeps the old key
+ *    for the Add-grace, then everyone needs the commit to propagate;
+ *  - `immediate` — a Remove-driven / first / fail-safe install: only the
+ *    propagation settle;
+ *  - `arbitration` — this member just SUBMITTED a commit for epoch N+1 and
+ *    is awaiting the DS verdict. Whoever wins that epoch, its keys are not
+ *    installed here yet, and if the winner is another member's Remove it
+ *    switches its send key IMMEDIATELY on winning while OUR copy of the
+ *    winning commit sits queued behind the per-group lock until our own
+ *    submit returns 409 Lost. The loser therefore eats the winner's
+ *    new-index frames BEFORE it can have processed the commit — and the two
+ *    windows above are opened by that very processing, so they can never
+ *    cover it. Measured live 2026-09-06 on a three-party call with member
+ *    churn: the member that lost three leave-grace Remove races latched a
+ *    terminal NOT-ENCRYPTED chip with no error of its own, while it kept
+ *    decrypting everyone and everyone kept decrypting it.
+ */
+export type RotationWindowOpener = "grace" | "immediate" | "arbitration";
+
+export interface RotationWindowBounds {
+  /** The Add-grace the sender holds the old key for (`ADD_GRACE_MS`). */
+  addGraceMs: number;
+  /** Commit-propagation settle past any grace (`ROTATION_SETTLE_MS`). */
+  settleMs: number;
+  /** The bound on one submit round trip (`SUBMIT_TIMEOUT_MS`). */
+  submitTimeoutMs: number;
+}
+
+/**
+ * How long a rotation window stays known, by what opened it. An
+ * `arbitration` window must outlast the submit round trip plus the inline
+ * rebase that follows a Lost, so it is sized to the submit bound plus the
+ * settle; the install that ends the rotation re-opens the window with its
+ * own (shorter) `grace`/`immediate` length, so the long window never
+ * outlives the rotation it covers by more than the settle.
+ */
+export function rotationWindowMs(
+  opened: RotationWindowOpener,
+  bounds: RotationWindowBounds,
+): number {
+  switch (opened) {
+    case "grace":
+      return bounds.addGraceMs + bounds.settleMs;
+    case "immediate":
+      return bounds.settleMs;
+    case "arbitration":
+      return bounds.submitTimeoutMs + bounds.settleMs;
+  }
+}
+
+/**
+ * The mode a session drops to when a LOUD verdict latches, or null to keep
+ * the current mode.
+ *
+ * Only `e2ee` moves: a loud latch there (a failed commit, a media-plane
+ * missing key outside every window, a destroyed envelope, a failed
+ * self-enrolment re-check) left the chip red with NO banner and no way out —
+ * `isTerminalLoud` renders the Leave / Stay-unencrypted banner for
+ * `negotiating` (or no verdict yet) only, and `confirmPlaintext` guards its
+ * terminal escape on `negotiating` too. Dropping to `negotiating` through the
+ * session's `#setMode` also re-asserts the negotiating publish gate, so the
+ * banner's "your audio and video stay paused" is true (fail-closed, I3): a
+ * session that can no longer vouch for the group must not keep publishing as
+ * if it could.
+ *
+ * Every other mode keeps: `negotiating`/`undefined` already render the
+ * terminal banner; `mixed` and `interlude` carry their own banners whose
+ * buttons run the same native-confirmed plaintext path; `off` is a plain
+ * voice call and `call_full` is terminal.
+ */
+export function loudModeFallback(mode: CallMode): CallMode | null {
+  return mode.kind === "e2ee" ? { kind: "negotiating" } : null;
 }

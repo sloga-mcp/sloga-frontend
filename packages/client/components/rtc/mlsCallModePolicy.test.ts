@@ -14,7 +14,9 @@ import {
   chipState,
   classifyEncryptionError,
   isTerminalLoud,
+  loudModeFallback,
   parseCtlPayload,
+  rotationWindowMs,
 } from "./mlsCallModePolicy.ts";
 
 const NEGOTIATING: CallMode = { kind: "negotiating" };
@@ -496,4 +498,53 @@ test("encryptionError with keys installed and no window is immediately loud", ()
 
 test("both windows open still resecuring (no double-count to loud)", () => {
   assert.equal(classifyEncryptionError(true, true), "resecuring");
+});
+
+// ---- rotation-window length by opener (§4.4; the lost-arbitration race) -----
+
+const BOUNDS = { addGraceMs: 2_000, settleMs: 2_000, submitTimeoutMs: 10_000 };
+
+test("rotation window: an Add-grace install stays known through grace + settle", () => {
+  assert.equal(rotationWindowMs("grace", BOUNDS), 4_000);
+});
+
+test("rotation window: an immediate install stays known through the settle only", () => {
+  assert.equal(rotationWindowMs("immediate", BOUNDS), 2_000);
+});
+
+test("🔴 rotation window: a submitted commit is a known rotation for the whole round trip", () => {
+  // The loser of a Remove race eats the winner's new-index frames while its
+  // own submit is still in flight (its copy of the winning commit is queued
+  // behind the same lock), so the window must already be open at submit and
+  // outlast the submit bound — the install-opened windows start too late.
+  assert.equal(rotationWindowMs("arbitration", BOUNDS), 12_000);
+  assert.ok(
+    rotationWindowMs("arbitration", BOUNDS) > rotationWindowMs("grace", BOUNDS),
+  );
+});
+
+// ---- loud after e2ee: fold into the terminal-loud shape ---------------------
+
+test("🔴 a loud latch in e2ee drops the mode to negotiating (banner + escape hatch)", () => {
+  // The known gap "loud after mode reached e2ee → red chip, no banner, no
+  // way out": isTerminalLoud and confirmPlaintext both key on negotiating.
+  const fallback = loudModeFallback(E2EE);
+  assert.deepEqual(fallback, NEGOTIATING);
+  assert.equal(isTerminalLoud(fallback!, "not_encrypted", true), true);
+});
+
+test("a loud latch anywhere else keeps the mode", () => {
+  // negotiating already renders the terminal banner; mixed/interlude carry
+  // their own banners with the same native-confirmed escape; off is a plain
+  // call; call_full is terminal.
+  const keep: CallMode[] = [
+    NEGOTIATING,
+    MIXED,
+    INTERLUDE_UNCONF,
+    INTERLUDE_CONF,
+    { kind: "off" },
+    { kind: "call_full" },
+  ];
+  for (const mode of keep)
+    assert.equal(loudModeFallback(mode), null, mode.kind);
 });
