@@ -74,36 +74,26 @@ export interface RosterLegInputs {
    * publication (measured live: ~1.6 s apart under emulator load).
    */
   unpublishedLegs?: readonly string[];
-  /**
-   * PRIMARY identities with at least one publication declaring
-   * `encryption === NONE` — i.e. actually sending plaintext.
-   *
-   * What disqualifies a graced primary. The admit-grace covers a joiner whose
-   * staggered Add is still in flight; it must not cover one that is already
-   * putting readable media on the wire, because nothing else will catch that:
-   * livekit-client DISABLES the cryptor for a publication declaring NONE, so
-   * a plaintext sender raises no decrypt error and the media plane stays
-   * silent. Before this, the grace was unconditional for primaries and the
-   * check ran only when the window EXPIRED, so a plaintext client (a web
-   * client — excluded from call E2EE by design) could join an encrypted call,
-   * unmute, and have the mixed banner and the publish pause suppressed for
-   * the whole 10-60 s while its audio played to the room.
-   *
-   * 🔴 This is deliberately NOT "has no publications". A publication object
-   * existing does not mean media is flowing: the publish gate pauses UPSTREAM
-   * (`pauseUpstream` is `replaceTrack(null)`), it never unpublishes, and a
-   * client's mic publish is initiated in its `connected` handler — so a
-   * perfectly ordinary E2EE joiner has a publication within milliseconds,
-   * long before its Add commits. Keying on publication COUNT therefore
-   * disqualifies almost every legitimate joiner, which re-fires §0.4 and
-   * one-way stops an in-progress Android screen leg on essentially every
-   * mid-call join. An E2EE joiner's publications declare GCM even while
-   * upstream-paused; only a genuinely plaintext sender declares NONE.
-   *
-   * Server-attested, like `encryptedLegs` — a hostile SFU can misreport a
-   * publication's encryption. The per-identity grace budget bounds that.
-   */
-  plaintextPublishers?: readonly string[];
+}
+
+/**
+ * Whether an SFU identity names a DEVICE — `{user_id}:{device_id}` (or that
+ * device's `:screen` leg) — as opposed to a bare `{user_id}` (or the bare
+ * leg grammar `{user_id}::screen`).
+ *
+ * This is the one fact about a participant that settles whether it can EVER
+ * be in the MLS group. The join route mints the `:device` suffix only for a
+ * caller that presents a registered E2EE device bound to its session
+ * (`voice_client.rs` builds the identity from `device_id`; `voice_join.rs`
+ * asserts the binding), the client requests it only when it is media-E2EE
+ * capable, and every MLS leaf is keyed `user:device`. A bare identity is
+ * therefore a client that joined without call encryption — a web browser, a
+ * shell that never provisioned E2EE, a pre-E2EE build — and no admit, grace
+ * or retry can change that.
+ */
+export function isDeviceQualified(identity: string): boolean {
+  const segments = stripLeg(identity).split(":");
+  return segments.length === 2 && segments[0] !== "" && segments[1] !== "";
 }
 
 /**
@@ -139,11 +129,15 @@ export interface RosterLegInputs {
  * A would-be non-enrolled identity in this set is reported as `pending`
  * instead of `nonEnrolled`, so a mid-call joiner whose staggered Add is still
  * in flight does not flip the call to `mixed` — which would pause the mic and
- * one-way STOP an Android screen leg (§0.4) on EVERY join. Three guards keep
+ * one-way STOP an Android screen leg (§0.4) on EVERY join. Four guards keep
  * this from weakening the mix detection:
  *  - it only ever applies to identities the caller watched join; the initial
  *    SFU set at enable time gets no grace, so the hostile-DS T-15 backstop
  *    (`rosterConsistent` before enable/publish) is untouched;
+ *  - it never applies to a BARE identity (`isDeviceQualified` false): such a
+ *    participant has no E2EE device and can never be admitted, so it is
+ *    non-enrolled on sight — the enrolled sides pause before it has published
+ *    a frame;
  *  - a SCREEN LEG is pending ONLY in its join→publish window (owner present
  *    AND zero publications — see `unpublishedLegs`, which is inert by
  *    construction): the §5.4 orphan impostor and a leg with any actual
@@ -182,7 +176,6 @@ export function reconcileRoster(
 
   const graced = new Set(pendingAdmits);
   const unpublished = new Set(legs.unpublishedLegs ?? []);
-  const plaintextPublishers = new Set(legs.plaintextPublishers ?? []);
   const nonEnrolled: string[] = [];
   const pending: string[] = [];
   const seen = new Set<string>();
@@ -192,30 +185,44 @@ export function reconcileRoster(
     // two rows for the same person.
     if (id === localIdentity || mls.has(id) || seen.has(id)) continue;
     seen.add(id);
-    // Admit-grace: a freshly-joined primary is pending, not non-enrolled,
+    // A BARE identity can never hold an MLS leaf (see `isDeviceQualified`), so
+    // there is no admit to wait for: it is non-enrolled the moment it is in
+    // the SFU, grace or not. This is the earliest honest signal that a
+    // plaintext client joined — before it publishes anything, before any
+    // consent UI — and it is what lets the enrolled sides pause publishing
+    // first (EL4 design I3/I4). Before this rule such a joiner was graced
+    // like any other, and the re-arm at expiry kept a mic-muted browser
+    // "pending" for tens of seconds while the enrolled sides kept publishing
+    // ciphertext straight into its decoder.
+    if (!isDeviceQualified(id)) {
+      nonEnrolled.push(id);
+      continue;
+    }
+    // Admit-grace: a freshly-joined DEVICE is pending, not non-enrolled,
     // until the caller's window expires. An UNFOLDED leg gets the grace only
     // in its inert join→publish window AND with its owner present — the §5.4
     // orphan and any leg with an actual publication failing rule 2(b) stay
     // instantly loud.
+    //
+    // A graced PRIMARY keeps its window whatever its publications declare.
+    // Its publications are NOT evidence either way: livekit-client stamps
+    // `encryption: NONE` on every publication until the participant's own
+    // `setE2EEEnabled(true)` republishes them as GCM, and an E2EE joiner
+    // only enables after its Welcome lands and its first key installs — so
+    // from the far end an ENROLLING joiner looks exactly like a plaintext
+    // publisher (NONE-declared, upstream paused by its own negotiating gate)
+    // for the whole admit beat. Disqualifying on that declaration flipped
+    // the call to `mixed` — pause, red banner, a "Turn off encryption"
+    // button — on every single join, and resumed only after the 15 s
+    // re-upgrade hysteresis. The genuinely plaintext client is caught above
+    // by its bare identity instead; a device-qualified client that somehow
+    // sends plaintext inside the window is bounded by the caller's grace
+    // budget, and an announced downgrade reaches every member through the
+    // ctl path regardless.
     let inGrace = false;
     if (graced.has(id)) {
       if (!isScreenLeg(id)) {
-        // A graced PRIMARY keeps its window unless it is actually sending
-        // plaintext. Publishing is normal for a joiner mid-admit — the gate
-        // pauses upstream rather than unpublishing — so the disqualifier is
-        // the ENCRYPTION DECLARATION, not the existence of a publication.
-        if (!legs.e2ee) {
-          // Confirmed-plaintext call: every publication legitimately declares
-          // NONE, so the test would disqualify everyone and there is no
-          // downgrade to warn about anyway. Same reasoning as rule 2(b).
-          inGrace = true;
-        } else if (legs.plaintextPublishers === undefined) {
-          // Unwired caller ⇒ no grace. This function may only ever over-warn,
-          // so an absent input must cost the suppression, never grant it.
-          inGrace = false;
-        } else {
-          inGrace = !plaintextPublishers.has(id);
-        }
+        inGrace = true;
       } else {
         const owner = stripLeg(id);
         inGrace =
