@@ -91,9 +91,12 @@ import {
 import {
   type CallMode,
   type CallModeEvent,
+  type RotationWindowOpener,
   callModeTransition,
   classifyEncryptionError,
+  loudModeFallback,
   parseCtlPayload,
+  rotationWindowMs,
 } from "./mlsCallModePolicy";
 import {
   drainAction,
@@ -2319,6 +2322,15 @@ export class MlsCallSession {
         return;
       }
       this.#staged = { epoch: commit.epoch, kind };
+      // Epoch N+1 is now being decided, and its keys are not installed here
+      // whoever wins it. Open the §4.4 window BEFORE the round trip: on a
+      // Lost, the winner (a Remove switches its send key the instant it
+      // wins) is already sending new-index frames while our copy of its
+      // commit waits behind this very lock, and the install-opened windows
+      // can only start after that commit is processed — too late for the
+      // first frame, which is the one LiveKit reports. See
+      // `RotationWindowOpener` for the live failure this closes.
+      this.#openRotationWindow("arbitration");
 
       let res: MlsHttpResult<ResponseSubmitMlsCommit>;
       const submitStart = performance.now();
@@ -3169,17 +3181,27 @@ export class MlsCallSession {
     this.#media?.onEncryptionState?.("clear");
   }
 
-  /** Open (or refresh) the §4.4 rotation window used to classify errors. */
-  #openRotationWindow(timing: LocalKeyInstall): void {
+  /**
+   * Open (or refresh) the §4.4 rotation window used to classify errors. The
+   * length depends on what opened it (`rotationWindowMs`): grace rotations
+   * stay "known" through the grace + a propagation settle; immediate ones
+   * just through the settle (receivers still need the commit to propagate
+   * before they can decrypt the new index); a submitted commit awaiting
+   * arbitration through the submit bound + the settle. A later opener always
+   * REPLACES the timer, so the install that ends an arbitration shortens its
+   * window to the ordinary settle.
+   */
+  #openRotationWindow(opened: RotationWindowOpener): void {
     this.#rotationWindow = true;
     if (this.#rotationWindowTimer) {
       clearTimeout(this.#rotationWindowTimer);
       this.#timers.delete(this.#rotationWindowTimer);
     }
-    // Grace rotations stay "known" through the grace + a propagation settle;
-    // immediate ones just through the settle (receivers still need the commit
-    // to propagate before they can decrypt the new index).
-    const ms = (timing === "grace" ? ADD_GRACE_MS : 0) + ROTATION_SETTLE_MS;
+    const ms = rotationWindowMs(opened, {
+      addGraceMs: ADD_GRACE_MS,
+      settleMs: ROTATION_SETTLE_MS,
+      submitTimeoutMs: SUBMIT_TIMEOUT_MS,
+    });
     const timer = setTimeout(() => {
       this.#rotationWindowTimer = null;
       this.#timers.delete(timer);
@@ -3194,6 +3216,15 @@ export class MlsCallSession {
     this.#loudLatched = true;
     this.#clearResecureTimer();
     this.#media?.onEncryptionState?.("loud", error);
+    // A loud verdict after the mode reached `e2ee` used to leave the chip red
+    // with NO banner and no escape: `isTerminalLoud` and `confirmPlaintext`
+    // both key on `negotiating`. Fold it into that shape (`loudModeFallback`)
+    // — serialized on the mode chain so an in-flight transition cannot
+    // clobber it — which re-asserts the negotiating publish gate in lockstep
+    // (fail-closed: the banner says publishing is paused, and it is) and
+    // offers the same Leave / Stay-unencrypted choice as a failed negotiation.
+    const fallback = loudModeFallback(this.#callMode);
+    if (fallback) this.#setModeChained(fallback);
   }
 
   #clearResecureTimer(): void {
