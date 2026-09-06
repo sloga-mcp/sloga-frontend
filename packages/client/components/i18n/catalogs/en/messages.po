@@ -1240,6 +1240,14 @@ msgstr "Call transcription language"
 msgid "Calls are end-to-end encrypted"
 msgstr "Calls are end-to-end encrypted"
 
+#: components/rtc/state.tsx
+msgid "Calls are turned off for this group. The group owner can turn them on in the group settings."
+msgstr "Calls are turned off for this group. The group owner can turn them on in the group settings."
+
+#: components/rtc/state.tsx
+msgid "Calls aren't available in this channel."
+msgstr "Calls aren't available in this channel."
+
 #: components/ui/components/features/voice/callCard/VoiceDeviceSelector.tsx
 #: components/modal/modals/CameraSettings.tsx
 #: components/app/interface/settings/user/voice/VideoSettings.tsx
@@ -3207,6 +3215,10 @@ msgstr "Good"
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsOverview.tsx
 msgid "Grants {0} permissions and denies {1} permissions"
 msgstr "Grants {0} permissions and denies {1} permissions"
+
+#: components/app/interface/settings/channel/Overview.tsx
+msgid "Group calls are off by default. Turn them on to let members start and join voice and video calls here."
+msgstr "Group calls are off by default. Turn them on to let members start and join voice and video calls here."
 
 #: components/modal/modals/CreateGroup.tsx
 msgid "Group Name"
@@ -7274,6 +7286,10 @@ msgstr "Turn length"
 msgid "Turn off"
 msgstr "Turn off"
 
+#: components/app/interface/settings/channel/Overview.tsx
+msgid "Turn off calls"
+msgstr "Turn off calls"
+
 #: components/modal/modals/E2EEDisable.tsx
 msgid "Turn off encrypted direct messages"
 msgstr "Turn off encrypted direct messages"
@@ -7297,6 +7313,10 @@ msgstr "Turn off live captions"
 #: components/modal/modals/E2EEEnable.tsx
 msgid "Turn on"
 msgstr "Turn on"
+
+#: components/app/interface/settings/channel/Overview.tsx
+msgid "Turn on calls"
+msgstr "Turn on calls"
 
 #: components/modal/modals/E2EEEnable.tsx
 msgid "Turn on encrypted direct messages"
@@ -7667,6 +7687,10 @@ msgstr "Voice"
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
 msgid "Voice Activity Detection"
 msgstr "Voice Activity Detection"
+
+#: components/app/interface/settings/channel/Overview.tsx
+msgid "Voice and Video Calls"
+msgstr "Voice and Video Calls"
 
 #: src/interface/ServerEvents.tsx
 msgid "Voice channel"

@@ -74,6 +74,28 @@ export default function ChannelOverview(props: ChannelSettingsProps) {
     }
   }
 
+  const [callsSaving, setCallsSaving] = createSignal(false);
+
+  /**
+   * Turn this group's voice and video calling on or off. Group calling is
+   * owner opt-in server-side — `Channel::voice()` is empty until the owner
+   * sends voice information — and the client had no control that sent it, so
+   * every group offered a call card whose join was refused with
+   * `NotAVoiceChannel`. `disabled` keeps any saved limit while calling is
+   * off; stoat-api predates the field, so the payload passes through
+   * verbatim. `isVoice` reads the server's answer back after the update.
+   */
+  async function toggleCalls() {
+    setCallsSaving(true);
+    try {
+      await props.channel.edit({
+        voice: { disabled: props.channel.isVoice },
+      } as never);
+    } finally {
+      setCallsSaving(false);
+    }
+  }
+
   // Follower list (source-side): refetched on the source-topic
   // channelFollowersUpdate signal and on any follow deletion.
   const [followers, { refetch: refetchFollowers }] = createResource(
@@ -117,12 +139,15 @@ export default function ChannelOverview(props: ChannelSettingsProps) {
     return t`Another server`;
   }
 
-  const { cleanDescription, passwordHash: existingHash } =
-    parseChannelPassword(props.channel.description);
+  const { cleanDescription, passwordHash: existingHash } = parseChannelPassword(
+    props.channel.description,
+  );
 
   const [pwInput, setPwInput] = createSignal("");
   const [pwSaving, setPwSaving] = createSignal(false);
-  const [pwStatus, setPwStatus] = createSignal<"idle" | "saved" | "removed">("idle");
+  const [pwStatus, setPwStatus] = createSignal<"idle" | "saved" | "removed">(
+    "idle",
+  );
 
   async function setChannelPassword() {
     const pw = pwInput().trim();
@@ -131,7 +156,10 @@ export default function ChannelOverview(props: ChannelSettingsProps) {
     const newDesc = hash
       ? buildDescriptionWithHash(cleanDescription, hash)
       : cleanDescription;
-    await props.channel.edit({ description: newDesc || undefined, remove: newDesc ? [] : ["Description"] });
+    await props.channel.edit({
+      description: newDesc || undefined,
+      remove: newDesc ? [] : ["Description"],
+    });
     setPwInput("");
     setPwStatus(pw ? "saved" : "removed");
     setPwSaving(false);
@@ -299,16 +327,33 @@ export default function ChannelOverview(props: ChannelSettingsProps) {
           <Trans>Channel Password</Trans>
         </Text>
         <Text>
-          <Show when={existingHash} fallback={
-            <Trans>Set a password that users must enter before viewing this channel.</Trans>
-          }>
+          <Show
+            when={existingHash}
+            fallback={
+              <Trans>
+                Set a password that users must enter before viewing this
+                channel.
+              </Trans>
+            }
+          >
             <Trans>This channel is currently password protected.</Trans>
           </Show>
         </Text>
-        <div style={{ display: "flex", gap: "8px", "align-items": "center", "flex-wrap": "wrap" }}>
+        <div
+          style={{
+            display: "flex",
+            gap: "8px",
+            "align-items": "center",
+            "flex-wrap": "wrap",
+          }}
+        >
           <input
             type="password"
-            placeholder={existingHash ? "New password (leave blank to remove)" : "Set password..."}
+            placeholder={
+              existingHash
+                ? "New password (leave blank to remove)"
+                : "Set password..."
+            }
             value={pwInput()}
             onInput={(e) => setPwInput(e.currentTarget.value)}
             style={{
@@ -326,15 +371,30 @@ export default function ChannelOverview(props: ChannelSettingsProps) {
             onPress={setChannelPassword}
             isDisabled={pwSaving() || (!pwInput().trim() && !existingHash)}
           >
-            <Switch fallback={<Trans>{existingHash ? "Update Password" : "Set Password"}</Trans>}>
-              <Match when={pwSaving()}><Trans>Saving...</Trans></Match>
-              <Match when={pwStatus() === "saved"}><Trans>Password set!</Trans></Match>
-              <Match when={pwStatus() === "removed"}><Trans>Password removed!</Trans></Match>
+            <Switch
+              fallback={
+                <Trans>
+                  {existingHash ? "Update Password" : "Set Password"}
+                </Trans>
+              }
+            >
+              <Match when={pwSaving()}>
+                <Trans>Saving...</Trans>
+              </Match>
+              <Match when={pwStatus() === "saved"}>
+                <Trans>Password set!</Trans>
+              </Match>
+              <Match when={pwStatus() === "removed"}>
+                <Trans>Password removed!</Trans>
+              </Match>
             </Switch>
           </Button>
           <Show when={existingHash}>
             <Button
-              onPress={() => { setPwInput(""); setChannelPassword(); }}
+              onPress={() => {
+                setPwInput("");
+                setChannelPassword();
+              }}
               isDisabled={pwSaving()}
             >
               <Trans>Remove Password</Trans>
@@ -350,8 +410,8 @@ export default function ChannelOverview(props: ChannelSettingsProps) {
           </Text>
           <Text>
             <Trans>
-              Announcement channels can be followed by other servers, and
-              their messages published into those servers' channels.
+              Announcement channels can be followed by other servers, and their
+              messages published into those servers' channels.
             </Trans>
           </Text>
           <div>
@@ -359,9 +419,7 @@ export default function ChannelOverview(props: ChannelSettingsProps) {
               onPress={toggleAnnouncement}
               isDisabled={announcementSaving()}
             >
-              <Switch
-                fallback={<Trans>Make Announcement Channel</Trans>}
-              >
+              <Switch fallback={<Trans>Make Announcement Channel</Trans>}>
                 <Match when={props.channel.isAnnouncement}>
                   <Trans>Stop being an Announcement Channel</Trans>
                 </Match>
@@ -387,6 +445,29 @@ export default function ChannelOverview(props: ChannelSettingsProps) {
               <Switch fallback={<Trans>Mark as Spoiler</Trans>}>
                 <Match when={props.channel.isSpoiler}>
                   <Trans>Remove Spoiler Mark</Trans>
+                </Match>
+              </Switch>
+            </Button>
+          </div>
+        </Column>
+      </Show>
+
+      <Show when={props.channel.type === "Group" && canManageChannel()}>
+        <Column>
+          <Text class="label">
+            <Trans>Voice and Video Calls</Trans>
+          </Text>
+          <Text>
+            <Trans>
+              Group calls are off by default. Turn them on to let members start
+              and join voice and video calls here.
+            </Trans>
+          </Text>
+          <div>
+            <Button onPress={toggleCalls} isDisabled={callsSaving()}>
+              <Switch fallback={<Trans>Turn on calls</Trans>}>
+                <Match when={props.channel.isVoice}>
+                  <Trans>Turn off calls</Trans>
                 </Match>
               </Switch>
             </Button>
