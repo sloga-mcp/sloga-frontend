@@ -107,6 +107,14 @@ import {
 import { Attenuation } from "./attenuation";
 import { CaptureClaim } from "./captureClaim";
 import { entranceSoundFor } from "./entranceSound";
+import {
+  type JoinBlockedReason,
+  type JoinRefusalLatch,
+  type JoinRefusalReason,
+  classifyJoinRefusal,
+  JOIN_REFUSAL_HOLD_MS,
+  joinBlockedReason,
+} from "./joinRefusalPolicy";
 import { watchLocalUserId } from "./localUserIdentity";
 import { isPermissionDeniedError } from "./mediaAccessPolicy";
 import { RemoteControl } from "./remoteControl";
@@ -400,6 +408,31 @@ class Voice {
 
   state: Accessor<State>;
   #setState: Setter<State>;
+
+  /**
+   * Channel id of a `connect()` that has started and not settled. The join
+   * affordances go inert on it so a second press cannot restart the join
+   * (joinRefusalPolicy); `disconnect()` clears it, so a hang-up always
+   * re-enables joining even after an attempt that hung.
+   */
+  joinPending: Accessor<string | undefined>;
+  #setJoinPending: Setter<string | undefined>;
+  #joinPendingSeq = 0;
+
+  /**
+   * Terminal `join_call` refusals by channel id (joinRefusalPolicy).
+   * Replaced wholesale on change so readers are reactive; a latch leaves on
+   * the channel's next update event or on its hold timer.
+   */
+  #joinRefusals: Accessor<ReadonlyMap<string, JoinRefusalLatch>>;
+  #setJoinRefusals: Setter<ReadonlyMap<string, JoinRefusalLatch>>;
+  #joinRefusalTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /**
+   * Update counter per LATCHED channel (tracked only while a latch exists):
+   * `channelUpdate` / `voiceChannelLeave` bump it, which is the pure rule's
+   * release condition, and the latch is dropped in the same step.
+   */
+  #channelVersions = new Map<string, number>();
 
   /**
    * TRUE while the browser refuses to play the call's audio (autoplay
@@ -989,6 +1022,16 @@ class Voice {
     this.state = state;
     this.#setState = setState;
 
+    const [joinPending, setJoinPending] = createSignal<string>();
+    this.joinPending = joinPending;
+    this.#setJoinPending = setJoinPending;
+
+    const [joinRefusals, setJoinRefusals] = createSignal<
+      ReadonlyMap<string, JoinRefusalLatch>
+    >(new Map());
+    this.#joinRefusals = joinRefusals;
+    this.#setJoinRefusals = setJoinRefusals;
+
     const [audioPlaybackBlocked, setAudioPlaybackBlocked] = createSignal(false);
     this.audioPlaybackBlocked = audioPlaybackBlocked;
     this.#setAudioPlaybackBlocked = setAudioPlaybackBlocked;
@@ -1297,6 +1340,24 @@ class Voice {
       }) => this.#soundboard.handleTrigger(detail);
       client.addListener("soundboardSound", handler);
       onCleanup(() => client.removeListener("soundboardSound", handler));
+    });
+
+    // Release a join-refusal latch on the events that can change the
+    // server's answer (joinRefusalPolicy): the owner turning calls on or a
+    // permission change arrive as `channelUpdate`, a seat freeing up in a
+    // full call as `voiceChannelLeave`. App-lifetime, like the soundboard
+    // subscription above; re-bound if the client instance changes.
+    createEffect(() => {
+      const client = this.getClient();
+      if (!client) return;
+      const onChannelChanged = (channel: Channel) =>
+        this.#bumpChannelVersion(channel.id);
+      client.addListener("channelUpdate", onChannelChanged);
+      client.addListener("voiceChannelLeave", onChannelChanged);
+      onCleanup(() => {
+        client.removeListener("channelUpdate", onChannelChanged);
+        client.removeListener("voiceChannelLeave", onChannelChanged);
+      });
     });
 
     // Live captions relayed by the server. Same app-lifetime shape as the
@@ -1696,7 +1757,39 @@ class Voice {
     channel: Channel,
     auth?: { url: string; token: string },
   ): Promise<boolean> {
+    // A terminal refusal the server already gave for this channel and that
+    // a retry cannot change (joinRefusalPolicy): answer from the latch —
+    // the same dialog, no request, and no `disconnect()`: the 2026-09-06
+    // storm's first attempt tore down the call the user was in before the
+    // server had said no. Every driver lands here, so a notification
+    // "Answer", a profile "Call" or an event "Join" is covered as well as
+    // the card and header buttons that also render the latch. An attempt
+    // already in flight is NOT coalesced here: a later connect() superseding
+    // an earlier one is the designed semantics (the `#connectGen` token),
+    // and the affordances disable on `joinPending` so a press cannot
+    // reach it anyway.
+    const refusal = this.#joinRefusals().get(channel.id);
+    if (refusal && this.joinBlocked(channel) === "refused") {
+      this.onErr(new Error(this.#joinRefusalText(channel, refusal.reason)));
+      return false;
+    }
     this.disconnect();
+    const pendingToken = ++this.#joinPendingSeq;
+    this.#setJoinPending(channel.id);
+    try {
+      return await this.#connectAttempt(channel, auth);
+    } finally {
+      // Only the newest attempt owns the flag: a superseded attempt settling
+      // late must not clear what its successor set.
+      if (this.#joinPendingSeq === pendingToken) this.#setJoinPending();
+    }
+  }
+
+  /** The body of `connect()`; the previous call has already been left. */
+  async #connectAttempt(
+    channel: Channel,
+    auth?: { url: string; token: string },
+  ): Promise<boolean> {
     // Supersession token: a later connect() runs disconnect() first and bumps
     // this, so a stale invocation resuming after an await can detect it lost
     // and bail (gate HIGH — async-registration race).
@@ -2227,6 +2320,11 @@ class Voice {
       });
     });
 
+    // Set only by the `join_call` step below, so the catch can tell the
+    // server's answer to THIS join apart from a same-typed error thrown by
+    // any other step in the try (joinRefusalPolicy classifies only the
+    // former).
+    let joinCallError: unknown;
     try {
       // --- Media E2EE wiring (slice 6.3/6.4) --------------------------
       // The frame-key path + the media-plane observers are wired here; the
@@ -2302,14 +2400,19 @@ class Voice {
         // decisive for the room's first joiner — the server pins a channel
         // to the node that opened it.
         const node = await voiceNodeForChannel(this.getClient(), channel);
-        auth = await channel.joinCall(
-          node,
-          true,
-          undefined,
-          // `device_id` is nullable on the status record; the route takes
-          // "absent", not "explicitly null".
-          e2eeDeviceId ?? undefined,
-        );
+        try {
+          auth = await channel.joinCall(
+            node,
+            true,
+            undefined,
+            // `device_id` is nullable on the status record; the route takes
+            // "absent", not "explicitly null".
+            e2eeDeviceId ?? undefined,
+          );
+        } catch (error) {
+          joinCallError = error;
+          throw error;
+        }
       }
       // Superseded during joinCall → abandon this Room, leave the newer
       // connect()'s shared state intact.
@@ -2495,21 +2598,21 @@ class Voice {
         // resources (session, native listener, worker — gate MEDIUM), which
         // an inline cleanup here used to do by hand.
         this.disconnect();
-        // The server has no voice for this channel: a group whose owner has
-        // not turned calling on (owner opt-in server-side), or a channel that
-        // simply is not a voice channel. Terminal and actionable, in the
-        // same modal every other call failure uses — a retry cannot change
-        // the server's answer, and the raw `NotAVoiceChannel` body used to
-        // reach the caller as an unhandled rejection with nothing to tell
-        // the user. Measured live 2026-09-06 on a fresh group DM.
-        if ((error as { type?: string } | null)?.type === "NotAVoiceChannel") {
-          this.onErr(
-            new Error(
-              channel.type === "Group"
-                ? t`Calls are turned off for this group. The group owner can turn them on in the group settings.`
-                : t`Calls aren't available in this channel.`,
-            ),
-          );
+        // The server refused THIS join with an answer a retry cannot change
+        // (joinRefusalPolicy): no voice on the channel (a group whose owner
+        // has not turned calling on — owner opt-in server-side), no Connect
+        // permission, a full call. Terminal and actionable, in the same
+        // modal every other call failure uses, and latched so every join
+        // affordance stays inert until the channel changes: the raw
+        // `NotAVoiceChannel` body used to reach the caller as an unhandled
+        // rejection with nothing to tell the user, and each press started
+        // another attempt — dozens measured live 2026-09-06 on a fresh
+        // group DM. Only `join_call`'s own answer is classified.
+        const refusal =
+          error === joinCallError ? classifyJoinRefusal(error) : undefined;
+        if (refusal) {
+          this.#recordJoinRefusal(channel, refusal);
+          this.onErr(new Error(this.#joinRefusalText(channel, refusal)));
           return false;
         }
         throw error;
@@ -2542,6 +2645,9 @@ class Voice {
       // join still supersedes cleanly: connect()'s own leading disconnect()
       // is followed by its own bump.)
       this.#connectGen++;
+      // Whatever attempt was pending is over (doomed by the bump above): the
+      // join affordances must come back, even after an attempt that hung.
+      this.#setJoinPending();
       // The caller hanging up before anyone answered must silence the
       // outgoing ring NOW — the VoiceChannelLeave echo also stops it, but
       // that round-trips the websocket (and never arrives if the socket is
@@ -5590,6 +5696,108 @@ class Voice {
     );
   }
 
+  /**
+   * Why a join affordance for `channel` must be inert right now, if it must
+   * (joinRefusalPolicy): an attempt for it is in flight, or the server's
+   * last answer for it was a terminal refusal that still holds. Reactive:
+   * re-evaluates on the attempt settling, on a new refusal and on the
+   * latch's release (channel event or hold timer).
+   */
+  joinBlocked(channel: Channel): JoinBlockedReason | undefined {
+    return joinBlockedReason({
+      channelId: channel.id,
+      now: Date.now(),
+      channelVersion: this.#channelVersions.get(channel.id) ?? 0,
+      inFlightChannelId: this.joinPending(),
+      latch: this.#joinRefusals().get(channel.id),
+    });
+  }
+
+  /**
+   * The user-facing reason behind a holding refusal for `channel` — what the
+   * dialog said, for the affordance to keep showing. Undefined when no
+   * refusal holds (an in-flight attempt is `joinBlocked`'s business).
+   */
+  joinRefusalMessage(channel: Channel): string | undefined {
+    if (this.joinBlocked(channel) !== "refused") return undefined;
+    const latch = this.#joinRefusals().get(channel.id);
+    return latch && this.#joinRefusalText(channel, latch.reason);
+  }
+
+  #joinRefusalText(channel: Channel, reason: JoinRefusalReason): string {
+    switch (reason) {
+      case "NotAVoiceChannel":
+        return channel.type === "Group"
+          ? t`Calls are turned off for this group. The group owner can turn them on in the group settings.`
+          : t`Calls aren't available in this channel.`;
+      case "MissingPermission":
+        return t`You don't have permission to join calls in this channel.`;
+      case "CannotJoinCall":
+        return t`The call is full. Try again when someone leaves.`;
+      default:
+        // IsBot / FailedValidation / UnknownNode: nothing the user can act
+        // on from here; the latch still stops the press-storm.
+        return t`The call couldn't be started right now.`;
+    }
+  }
+
+  /** Latch a terminal refusal for `channel` (joinRefusalPolicy). */
+  #recordJoinRefusal(channel: Channel, reason: JoinRefusalReason) {
+    const channelVersion = this.#channelVersions.get(channel.id) ?? 0;
+    this.#channelVersions.set(channel.id, channelVersion);
+    const next = new Map(this.#joinRefusals());
+    next.set(channel.id, {
+      channelId: channel.id,
+      reason,
+      at: Date.now(),
+      channelVersion,
+    });
+    this.#setJoinRefusals(next);
+    clearTimeout(this.#joinRefusalTimers.get(channel.id));
+    this.#joinRefusalTimers.set(
+      channel.id,
+      setTimeout(
+        () => this.#releaseJoinRefusal(channel.id),
+        JOIN_REFUSAL_HOLD_MS,
+      ),
+    );
+  }
+
+  /** Drop a latch (channel event or hold timer); no-op without one. */
+  #releaseJoinRefusal(channelId: string) {
+    clearTimeout(this.#joinRefusalTimers.get(channelId));
+    this.#joinRefusalTimers.delete(channelId);
+    this.#channelVersions.delete(channelId);
+    if (!this.#joinRefusals().has(channelId)) return;
+    const next = new Map(this.#joinRefusals());
+    next.delete(channelId);
+    this.#setJoinRefusals(next);
+  }
+
+  /**
+   * A channel event that can change the server's join answer: bump the
+   * latched channel's version (the pure rule's release condition) and drop
+   * the latch in the same step so the affordances react at once. Channels
+   * without a latch are not tracked at all.
+   */
+  #bumpChannelVersion(channelId: string) {
+    const version = this.#channelVersions.get(channelId);
+    if (version === undefined) return;
+    this.#channelVersions.set(channelId, version + 1);
+    this.#releaseJoinRefusal(channelId);
+  }
+
+  /**
+   * Forget every latch. A refusal is a verdict about the user who asked, so
+   * on sign-out it must not answer for whoever signs in next — and the
+   * release subscription was bound to the client that just went away.
+   */
+  forgetJoinRefusals() {
+    for (const channelId of [...this.#joinRefusals().keys()]) {
+      this.#releaseJoinRefusal(channelId);
+    }
+  }
+
   get listenPermission() {
     const channel = this.channel();
     if (!channel) return false;
@@ -6163,7 +6371,14 @@ export function VoiceContext(props: { children: JSX.Element }) {
   // one teardown choke point (native call service, screen legs, screen
   // audio, MLS session, worker, room) and a no-op when idle.
   const { lifecycle } = useClientLifecycle();
-  onCleanup(lifecycle.onSignOut(() => voice.disconnect()));
+  onCleanup(
+    lifecycle.onSignOut(() => {
+      voice.disconnect();
+      // A join refusal is a verdict about the user who just signed out; it
+      // must not answer for whoever signs in next (joinRefusalPolicy).
+      voice.forgetJoinRefusals();
+    }),
+  );
 
   return (
     <voiceContext.Provider value={voice}>

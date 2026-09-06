@@ -56,9 +56,21 @@ export function VoiceCallCardPreview(props: { channel: Channel }) {
     return names.length ? t`With ${names.join(", ")}` : t`Start the call`;
   }
 
+  // Inert while a join for this channel is in flight or while the server's
+  // last answer for it was a terminal refusal (joinRefusalPolicy). The
+  // 2026-09-06 storm was one attempt per press on an affordance that
+  // re-rendered as if nothing had happened; a refused card says why instead.
+  const blocked = () => voice.joinBlocked(props.channel);
+
   return (
-    <Preview onClick={() => voice.connect(props.channel)}>
-      <Ripple />
+    <Preview
+      blocked={!!blocked()}
+      aria-disabled={!!blocked()}
+      onClick={() => {
+        if (!blocked()) voice.connect(props.channel);
+      }}
+    >
+      <Ripple disabled={!!blocked()} />
       <Row>
         <For
           each={users()}
@@ -81,7 +93,9 @@ export function VoiceCallCardPreview(props: { channel: Channel }) {
           <Trans>Join the voice channel</Trans>
         </Show>
       </Text>
-      <Text class="body">{subtext()}</Text>
+      <Text class="body">
+        {voice.joinRefusalMessage(props.channel) ?? subtext()}
+      </Text>
       {/* Warn BEFORE the click that joins. Placed above the encryption badge
           because it is the more consequential fact: an encrypted call that is
           being recorded is still being recorded. */}
@@ -194,5 +208,17 @@ const Preview = styled("div", {
     padding: "var(--gap-lg)",
 
     color: "var(--md-sys-color-on-surface)",
+  },
+  variants: {
+    blocked: {
+      true: {
+        cursor: "not-allowed",
+        opacity: 0.7,
+      },
+      false: {},
+    },
+  },
+  defaultVariants: {
+    blocked: false,
   },
 });

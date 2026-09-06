@@ -13,6 +13,18 @@ msgstr ""
 "Language-Team: \n"
 "Plural-Forms: \n"
 
+#: components/rtc/state.tsx
+msgid "The call couldn't be started right now."
+msgstr "The call couldn't be started right now."
+
+#: components/rtc/state.tsx
+msgid "The call is full. Try again when someone leaves."
+msgstr "The call is full. Try again when someone leaves."
+
+#: components/rtc/state.tsx
+msgid "You don't have permission to join calls in this channel."
+msgstr "You don't have permission to join calls in this channel."
+
 #. js-lingui-explicit-id
 #: components/i18n/dayjs.tsx
 msgid "[Yesterday at] LT"
