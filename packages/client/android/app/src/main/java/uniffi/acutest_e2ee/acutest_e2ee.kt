@@ -884,6 +884,8 @@ internal open class UniffiVTableCallbackInterfaceKeyProtector(
 
 
 
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -984,6 +986,8 @@ fun uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_call_heartbeat(
 fun uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_call_join_intent(
 ): Short
 fun uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_call_leave_cleanup(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_call_local_groups(
 ): Short
 fun uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_call_mark_downgrade_confirmed(
 ): Short
@@ -1183,6 +1187,8 @@ fun uniffi_acutest_e2ee_fn_method_e2eeengine_mls_call_join_intent(`ptr`: Pointer
 ): RustBuffer.ByValue
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_mls_call_leave_cleanup(`ptr`: Pointer,`groupId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_mls_call_local_groups(`ptr`: Pointer,`channelId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_mls_call_mark_downgrade_confirmed(`ptr`: Pointer,`groupId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_mls_call_non_enrolled(`ptr`: Pointer,`groupId`: RustBuffer.ByValue,`sfuParticipants`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -1496,6 +1502,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_call_leave_cleanup() != 28121.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_call_local_groups() != 22934.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_call_mark_downgrade_confirmed() != 62795.toShort()) {
@@ -2332,6 +2341,18 @@ public interface E2eeEngineInterface {
      * the channel's last group (core-side logic).
      */
     fun `mlsCallLeaveCleanup`(`groupId`: kotlin.String)
+    
+    /**
+     * JSON `Vec<String>`: the LOCAL call-group ids stored for a channel — the
+     * rejoin plan's startup existence probe, desktop `e2ee_call_local_groups`
+     * parity. Existence by existence, never readability: a group
+     * `mls_call_state` would refuse to load still lists here, and that is
+     * exactly the state the startup wipe most needs to reach. Keyed on the
+     * caller's channel id so no server-supplied value can steer the
+     * destructive sweep this feeds. Without this op the Android shell skipped
+     * the wipe, and a rejoin over surviving local state degraded loud.
+     */
+    fun `mlsCallLocalGroups`(`channelId`: kotlin.String): kotlin.String
     
     /**
      * Arm the native announce gate after the user confirmed the whole-call
@@ -3398,6 +3419,29 @@ open class E2eeEngine: Disposable, AutoCloseable, E2eeEngineInterface
 }
     }
     
+    
+
+    
+    /**
+     * JSON `Vec<String>`: the LOCAL call-group ids stored for a channel — the
+     * rejoin plan's startup existence probe, desktop `e2ee_call_local_groups`
+     * parity. Existence by existence, never readability: a group
+     * `mls_call_state` would refuse to load still lists here, and that is
+     * exactly the state the startup wipe most needs to reach. Keyed on the
+     * caller's channel id so no server-supplied value can steer the
+     * destructive sweep this feeds. Without this op the Android shell skipped
+     * the wipe, and a rejoin over surviving local state degraded loud.
+     */
+    @Throws(E2eeException::class)override fun `mlsCallLocalGroups`(`channelId`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_mls_call_local_groups(
+        it, FfiConverterString.lower(`channelId`),_status)
+}
+    }
+    )
+    }
     
 
     

@@ -456,6 +456,16 @@ class E2eePlugin : Plugin() {
                     engine.mlsCallLeaveCleanup(requireString(call, "groupId"))
                     resolveJson(call, "null")
                 }
+                "e2ee_call_local_groups" ->
+                    // The rejoin plan's startup existence probe (desktop
+                    // `e2ee_call_local_groups` parity). Without this arm the
+                    // webview's probe was rejected as an unknown command, the
+                    // startup fresh-rejoin wipe was skipped, and a rejoin over
+                    // surviving local group state degraded loud on every try.
+                    resolveJson(
+                        call,
+                        engine.mlsCallLocalGroups(requireString(call, "channelId")),
+                    )
                 "e2ee_call_heartbeat" ->
                     resolveJson(call, engine.mlsCallHeartbeat(requireString(call, "groupId")))
                 "e2ee_call_remove" ->
