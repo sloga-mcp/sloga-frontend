@@ -15,6 +15,7 @@ import {
   classifyEncryptionError,
   isTerminalLoud,
   loudModeFallback,
+  mixDetectedAction,
   parseCtlPayload,
   rotationWindowMs,
 } from "./mlsCallModePolicy.ts";
@@ -547,4 +548,29 @@ test("a loud latch anywhere else keeps the mode", () => {
   ];
   for (const mode of keep)
     assert.equal(loudModeFallback(mode), null, mode.kind);
+});
+
+// ---- mix detected: what the session does, by mode ---------------------------
+
+test("🔴 a mix found while still negotiating is DECLARED (T0c — the joiner into a mixed call)", () => {
+  // A joiner lands in a call that already holds a plaintext participant.
+  // Enable waits for a consistent roster, so gating the declaration on
+  // "E2EE enabled" left it in negotiating forever: paused, amber, no banner,
+  // no way to consent to plaintext.
+  assert.equal(mixDetectedAction(NEGOTIATING), "declare");
+});
+
+test("a mix found in e2ee (T1) or while already mixed is declared", () => {
+  assert.equal(mixDetectedAction(E2EE), "declare");
+  assert.equal(mixDetectedAction(MIXED), "declare");
+});
+
+test("a mix found in an interlude only runs the machine (re-upgrade cancel)", () => {
+  assert.equal(mixDetectedAction(INTERLUDE_UNCONF), "transition");
+  assert.equal(mixDetectedAction(INTERLUDE_CONF), "transition");
+});
+
+test("a mix is ignored on a plain call and after call_full", () => {
+  assert.equal(mixDetectedAction({ kind: "off" }), "ignore");
+  assert.equal(mixDetectedAction({ kind: "call_full" }), "ignore");
 });
