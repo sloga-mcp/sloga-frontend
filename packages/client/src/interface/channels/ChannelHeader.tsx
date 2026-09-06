@@ -223,26 +223,37 @@ export function ChannelHeader(props: Props) {
         </IconButton>
       </Show>
 
+      {/* Inert while a join is in flight or after a terminal refusal for
+          this channel (joinRefusalPolicy): these buttons re-render the
+          instant a failed attempt ends, which is how one refusal became
+          dozens of attempts on 2026-09-06. The tooltip carries the refusal
+          so the disabled state explains itself. */}
       <Show when={props.channel.isVoice && !voice.showCard(props.channel)}>
         <IconButton
+          isDisabled={!!voice.joinBlocked(props.channel)}
           onPress={() => voice.connect(props.channel)}
           use:floating={{
             tooltip: {
               placement: "bottom",
-              content: t`Join the voice channel`,
+              content:
+                voice.joinRefusalMessage(props.channel) ??
+                t`Join the voice channel`,
             },
           }}
         >
           <Symbol>call</Symbol>
         </IconButton>
         <IconButton
+          isDisabled={!!voice.joinBlocked(props.channel)}
           onPress={async () => {
             if (await voice.connect(props.channel)) await voice.toggleCamera();
           }}
           use:floating={{
             tooltip: {
               placement: "bottom",
-              content: t`Start a video call`,
+              content:
+                voice.joinRefusalMessage(props.channel) ??
+                t`Start a video call`,
             },
           }}
         >
