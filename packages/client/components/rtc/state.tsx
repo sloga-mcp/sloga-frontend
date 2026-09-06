@@ -5787,6 +5787,17 @@ class Voice {
     this.#releaseJoinRefusal(channelId);
   }
 
+  /**
+   * Forget every latch. A refusal is a verdict about the user who asked, so
+   * on sign-out it must not answer for whoever signs in next — and the
+   * release subscription was bound to the client that just went away.
+   */
+  forgetJoinRefusals() {
+    for (const channelId of [...this.#joinRefusals().keys()]) {
+      this.#releaseJoinRefusal(channelId);
+    }
+  }
+
   get listenPermission() {
     const channel = this.channel();
     if (!channel) return false;
@@ -6360,7 +6371,14 @@ export function VoiceContext(props: { children: JSX.Element }) {
   // one teardown choke point (native call service, screen legs, screen
   // audio, MLS session, worker, room) and a no-op when idle.
   const { lifecycle } = useClientLifecycle();
-  onCleanup(lifecycle.onSignOut(() => voice.disconnect()));
+  onCleanup(
+    lifecycle.onSignOut(() => {
+      voice.disconnect();
+      // A join refusal is a verdict about the user who just signed out; it
+      // must not answer for whoever signs in next (joinRefusalPolicy).
+      voice.forgetJoinRefusals();
+    }),
+  );
 
   return (
     <voiceContext.Provider value={voice}>
