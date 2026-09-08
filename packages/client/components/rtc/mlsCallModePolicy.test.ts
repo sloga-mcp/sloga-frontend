@@ -17,7 +17,6 @@ import {
   chipState,
   classifyEncryptionError,
   classifyMediaError,
-  droppedPairs,
   isTerminalLoud,
   keyPairId,
   latestPresentAddedAt,
@@ -1178,22 +1177,4 @@ test("summarizeDecodeWitness: an empty window is available and clean", () => {
   const w = summarizeDecodeWitness([]);
   assert.deepEqual(w, { available: true, dropping: [], live: [] });
   assert.equal(chipState(baseChip({ decodeWitness: w })), "e2ee");
-});
-
-test("droppedPairs names the exact identity@index, which is what may arm a verdict", () => {
-  // The scope rule: a verdict about a key index may only be created by
-  // evidence about that same key index. This is the only thing the witness
-  // exposes that is index-scoped, and the only thing allowed to create one.
-  assert.deepEqual(
-    droppedPairs([
-      {
-        identity: "bob:d1",
-        indexes: [
-          { keyIndex: 2, seen: 5, dropped: 5 },
-          { keyIndex: 3, seen: 25, dropped: 0 },
-        ],
-      },
-    ]),
-    [keyPairId("bob:d1", 2)],
-  );
 });

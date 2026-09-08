@@ -288,13 +288,18 @@ export interface DecodeWitness {
   /**
    * A sample arrived recently enough to judge on.
    *
-   * 🔴 FALSE IS AMBER, and that is the whole inversion. The worker posts this
-   * every second whether or not it has anything to report, so its ARRIVAL is
-   * what proves the witness is wired at all. A build that lost the patch, a
-   * worker that died, a sampler that was never armed — each stops the
-   * heartbeat, and the chip degrades to amber instead of quietly losing the
-   * gate. Exempting on "no evidence" is the reasoning that produced the silent
-   * green six review rounds kept finding in a new place.
+   * 🔴 FALSE IS AMBER, and that is the whole inversion. A build that lost the
+   * patch, a worker that died, a listener that was never armed — each stops
+   * the heartbeat, and the chip degrades to amber instead of quietly losing
+   * the gate. Exempting on "no evidence" is the reasoning that produced the
+   * silent green six review rounds kept finding in a new place.
+   *
+   * 🔴 What it does NOT prove. The worker posts on an interval at module
+   * scope, before `init` and independently of whether any transform is
+   * installed or any frame has ever been seen. `available: true` therefore
+   * means "the patched worker is in this bundle" and nothing more — never
+   * "this peer is being witnessed". Only a non-empty `dropping` is positive
+   * evidence of anything, and only about the senders it names.
    */
   available: boolean;
   /**
@@ -338,30 +343,6 @@ export function summarizeDecodeWitness(
     if (ok) live.push(participant.identity);
   }
   return { available: true, dropping, live };
-}
-
-/**
- * The exact `identity@index` pairs frames are being dropped at right now.
- *
- * This is the only thing that may CREATE a verdict from the witness, and the
- * reason it may: a verdict about a key index must be created by evidence about
- * that same key index. The participant-scoped alternative — "this peer is not
- * decoding" — was rejected in review precisely because it would arm an
- * index-scoped hold from evidence that names no index, turning an ordinary
- * Welcome into a guaranteed false red.
- */
-export function droppedPairs(
-  participants: readonly DecodeWitnessSample[],
-): string[] {
-  const pairs: string[] = [];
-  for (const participant of participants) {
-    for (const tally of participant.indexes) {
-      if (tally.dropped > 0) {
-        pairs.push(keyPairId(participant.identity, tally.keyIndex));
-      }
-    }
-  }
-  return pairs;
 }
 
 /** A snapshot of everything the chip derivation reads. */
@@ -495,7 +476,15 @@ export function chipState(inputs: ChipInputs): ChipState {
     (identity) => inputs.observedEncrypted.get(identity) === true,
   );
   // Media-plane gate (d): a FRESH worker sample, in which no sender's frames
-  // are being dropped at an index this device silenced.
+  // are being discarded by the decode path.
+  //
+  // 🔴 Scope, stated where the gate is. RECEIVE-SIDE only: it witnesses frames
+  // arriving at this device, so a local send-index regression (the `getKeys()`
+  // replay past the key-ring wrap) is invisible here — every peer goes amber
+  // and the sender stays green. It covers only senders CURRENTLY sending: a
+  // muted, unsubscribed, or SFU-withheld peer owes no witness and is exempt by
+  // construction. It is a positive measurement of discards, not a proof of
+  // authenticated decryption.
   //
   // This is the gate that inverts the default. Gates (a)-(c) are all read from
   // objects whose absence means "fine": a verdict that was destroyed without

@@ -245,6 +245,12 @@ import { WhisperController } from "./whisper";
 const DECODE_WITNESS_STALE_MS = 3_000;
 
 /**
+ * How often that threshold is CHECKED. Polling at the threshold would make
+ * detection latency up to twice it.
+ */
+const DECODE_WITNESS_CHECK_MS = 1_000;
+
+/**
  * A dice-roll result shown briefly over the call's video (e.g. "Jeff rolled
  * a 20"). Pushed when a DiceRoll-flagged message lands in the channel we're
  * currently in a call for, and auto-removed after {@link DICE_TOAST_MS}.
@@ -1186,7 +1192,18 @@ class Voice {
     // Starts UNAVAILABLE, so a call that never arms the witness reads amber
     // rather than green (gate d is fail-closed by construction).
     const [callDecodeWitness, setCallDecodeWitness] =
-      createSignal<DecodeWitness>(DECODE_WITNESS_UNAVAILABLE);
+      createSignal<DecodeWitness>(DECODE_WITNESS_UNAVAILABLE, {
+        // The worker posts a NEW object every second, and Solid's default
+        // equality is reference identity — so without this the chip, which
+        // walks every participant and every publication, re-ran once a second
+        // for the life of every call, defeating the `callParticipantsVersion`
+        // dependency that exists to stop exactly that. Only a change in what
+        // the witness SAYS is a change.
+        equals: (a, b) =>
+          a.available === b.available &&
+          a.dropping.length === b.dropping.length &&
+          a.dropping.every((id, i) => id === b.dropping[i]),
+      });
     this.callDecodeWitness = callDecodeWitness;
     this.#setCallDecodeWitness = setCallDecodeWitness;
     this.#setCallMediaHold = setCallMediaHold;
@@ -6146,7 +6163,9 @@ class Voice {
       this.#setCallDecodeWitness(summarizeDecodeWitness(participants));
     };
     worker.addEventListener("message", onMessage);
-    // Three missed beats, so one late post under load is not a flap.
+    // A three-beat threshold, CHECKED once a second. Polling at the threshold
+    // instead would make detection latency up to twice it — several seconds of
+    // green over a witness that had already stopped.
     const stale = setInterval(() => {
       if (performance.now() - lastAt <= DECODE_WITNESS_STALE_MS) return;
       if (!warned) {
@@ -6157,7 +6176,7 @@ class Voice {
         );
       }
       this.#setCallDecodeWitness(DECODE_WITNESS_UNAVAILABLE);
-    }, DECODE_WITNESS_STALE_MS);
+    }, DECODE_WITNESS_CHECK_MS);
     this.#decodeWitnessStop = () => {
       worker.removeEventListener("message", onMessage);
       clearInterval(stale);

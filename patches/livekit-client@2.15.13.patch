@@ -1,29 +1,36 @@
 diff --git a/dist/livekit-client.e2ee.worker.mjs b/dist/livekit-client.e2ee.worker.mjs
 --- a/dist/livekit-client.e2ee.worker.mjs
 +++ b/dist/livekit-client.e2ee.worker.mjs
-@@ -1468,6 +1468,55 @@
+@@ -1468,6 +1468,63 @@
    H264KeyFrame2x2IDR: 'faffc26b68a2fc09096fa20f3351e706398b6f838a7500c8063472c2e476e90d',
    OpusSilenceFrame: 'aad8d31fc56b2802ca500e58c2fb9d0b29ad71bb7cb52cd6530251eade188988'
  };
 +// --- Sloga: the decode witness (media-E2EE chip gate (d)) --------------------
-+// Per SENDER, the key indexes frames actually ARRIVED at in the last window and
-+// how many of those this worker threw away because it had already marked that
-+// index invalid. Flushed to the main thread once a second.
++// Per SENDER, how many frames ARRIVED at each key index in the last window and
++// how many of those never reached the decoder. Flushed to the main thread once
++// a second.
 +//
 +// Why it lives HERE and not in `RTCRtpReceiver.getStats()`. The chip's green was
-+// the DEFAULT: it went amber only while a verdict OBJECT happened to exist, so a
-+// verdict destroyed without evidence -- or never created -- read as green over
-+// frames this worker was silently dropping. Six review rounds each found that
-+// posture in a different place. Inverting it needs a POSITIVE witness, and a
-+// getStats one does not work: `framesDecoded` and
-+// `totalSamplesReceived - concealedSamples` are counted AFTER the SIF
-+// passthrough below, so SFU-injected blank/silence frames advance them for a
-+// participant whose real frames are being dropped. This tally is read only once
-+// that passthrough has already returned, so an injected frame never reaches it.
++// the DEFAULT: it went amber only while a verdict OBJECT existed, so a verdict
++// destroyed without evidence -- or never created -- read as green over frames
++// this worker was silently dropping. A getStats witness cannot fix that:
++// `framesDecoded` and `totalSamplesReceived - concealedSamples` are counted
++// AFTER the SIF passthrough, so SFU-injected blank/silence frames advance them
++// for a participant whose real frames are being discarded.
 +//
-+// It is also INDEX-scoped, which a getStats witness is not: it names the exact
-+// key index a sender is using right now. A verdict about an index may only be
-+// created by evidence about that index.
++// `dropped` counts NOT ENQUEUED, measured at the exit of `decodeFunction`.
++// The first cut counted one branch -- `hasInvalidKeyAtIndex` -- and there are
++// five ways out of that function that discard a frame: the SIF-reject arm, a
++// missing key set, a decrypt that throws a CryptorError, a decrypt that throws
++// anything ELSE (an AV1 payload makes `getUnencryptedBytes` throw a plain
++// Error, which marks no index invalid and emits nothing), and a decrypt that
++// resolves falsy. Four of the five were being tallied as healthy traffic.
++//
++// 🔴 `keyIndex` is the frame's last byte, which is the key index ONLY for a
++// frame that reached the cryptor. For a SIF-rejected frame those bytes are
++// trailer, and for an empty DTX frame there is none (-1). The DROP is exact on
++// every path; the INDEX is advisory, so nothing may derive a per-index verdict
++// from this tally without re-establishing the index another way.
 +const slogaWitness = new Map();
 +function slogaNoteDecode(participantIdentity, keyIndex, dropped) {
 +  if (participantIdentity === undefined) return;
@@ -37,10 +44,11 @@ diff --git a/dist/livekit-client.e2ee.worker.mjs b/dist/livekit-client.e2ee.work
 +  if (dropped) tally.dropped += 1;
 +  byIndex.set(keyIndex, tally);
 +}
-+// Posted unconditionally every second, even with nothing to report: its ARRIVAL
-+// is what tells the main thread the patch is present at all. A build that lost
-+// the patch stops sending it, and the chip fails closed to amber and says so,
-+// instead of quietly losing the gate.
++// Posted every second whether or not there is traffic. 🔴 Its arrival proves
++// the PATCH is present in this bundle -- nothing more. It does not prove a
++// transform is installed, that a call is up, or that any frame has been seen:
++// this interval runs at module scope, before `init`. Gate (d) treats its
++// ABSENCE as amber; it must not read its presence as evidence of witnessing.
 +setInterval(() => {
 +  const participants = [];
 +  slogaWitness.forEach((byIndex, identity) => {
@@ -57,17 +65,60 @@ diff --git a/dist/livekit-client.e2ee.worker.mjs b/dist/livekit-client.e2ee.work
  /**
   * Check if a byte array matches any of the known SIF payload frame types using secure crypto hashes
   */
-@@ -1713,7 +1762,12 @@
-       }
-       const data = new Uint8Array(encodedFrame.data);
-       const keyIndex = data[encodedFrame.data.byteLength - 1];
--      if (this.keys.hasInvalidKeyAtIndex(keyIndex)) {
-+      // Sloga decode witness: record the index this frame actually arrived at,
-+      // and whether we threw it away. Reached only past the SIF passthrough
-+      // above, so an injected frame can never manufacture liveness here.
-+      const slogaDropped = this.keys.hasInvalidKeyAtIndex(keyIndex);
-+      slogaNoteDecode(this.participantIdentity, keyIndex, slogaDropped);
-+      if (slogaDropped) {
-         // drop frame
-         return;
-       }
+@@ -1695,6 +1752,56 @@
+    * @param {TransformStreamDefaultController} controller - TransportStreamController.
+    */
+   decodeFunction(encodedFrame, controller) {
++    // Sloga decode witness. Every exit of the decode path that does NOT enqueue
++    // is a discarded frame, whatever the reason -- an invalid index, a missing
++    // key set, a rejected SIF payload, a decrypt that threw (including the AV1
++    // TypeError, which marks nothing invalid and emits no error), or one that
++    // resolved falsy. Counting the exit is the only way to see all of them.
++    const slogaIdentity = this.participantIdentity;
++    let slogaIndex = -1;
++    try {
++      const slogaLen = encodedFrame.data.byteLength;
++      if (slogaLen > 0) slogaIndex = new Uint8Array(encodedFrame.data)[slogaLen - 1];
++    } catch (e) {
++      // An unreadable frame still counts; its index stays unknown.
++    }
++    let slogaEnqueued = false;
++    const slogaController = {
++      enqueue: (f) => {
++        slogaEnqueued = true;
++        return controller.enqueue(f);
++      },
++      error: (e) => controller.error(e),
++      terminate: () => controller.terminate(),
++      get desiredSize() {
++        return controller.desiredSize;
++      },
++    };
++    const slogaDone = () =>
++      slogaNoteDecode(slogaIdentity, slogaIndex, !slogaEnqueued);
++    let slogaOut;
++    try {
++      slogaOut = this.slogaInnerDecode(encodedFrame, slogaController);
++    } catch (err) {
++      slogaDone();
++      throw err;
++    }
++    if (slogaOut && typeof slogaOut.then === 'function') {
++      return slogaOut.then(
++        (v) => {
++          slogaDone();
++          return v;
++        },
++        (err) => {
++          slogaDone();
++          throw err;
++        },
++      );
++    }
++    slogaDone();
++    return slogaOut;
++  }
++  slogaInnerDecode(encodedFrame, controller) {
+     return __awaiter(this, void 0, void 0, function* () {
+       if (!this.isEnabled() ||
+       // skip for decryption for empty dtx frames

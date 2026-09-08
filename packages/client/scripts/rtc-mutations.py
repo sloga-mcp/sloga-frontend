@@ -385,13 +385,6 @@ MUTATIONS += [
     if (ok) live.push(participant.identity);""",
     ),
     Mutation(
-        id="dropped-pairs-participant-scoped",
-        what="droppedPairs names the participant instead of the exact index",
-        file=POLICY,
-        search="""        pairs.push(keyPairId(participant.identity, tally.keyIndex));""",
-        replace="""        pairs.push(participant.identity);""",
-    ),
-    Mutation(
         id="witness-arms-a-verdict",
         what="gate (d) is allowed to produce a red instead of only withholding green",
         file=POLICY,
