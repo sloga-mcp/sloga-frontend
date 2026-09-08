@@ -105,6 +105,30 @@ export function classifyJoinRefusal(
 }
 
 /**
+ * Whether a corroborated device verdict has overtaken this latch.
+ *
+ * The claim that proves the device is refused lands a beat after the join that
+ * was refused for it, and the next attempt withholds the very device id the
+ * server rejected — so the server's answer WILL differ, and holding the user
+ * for the rest of the hold punishes them for a race a cold start into a call
+ * loses every time.
+ *
+ * 🔴 Only a latch the verdict PRECEDED. "The verdict is up" is also true of
+ * the next refusal and the one after, so an unscoped release re-arms the
+ * affordance on every press — the press-storm the latch exists to stop, back
+ * under server control for one reason code, since a server can raise the
+ * verdict and then keep answering `FailedValidation`. Nothing here trusts the
+ * refusal itself: `verdictAt` is state the CLIENT corroborated.
+ */
+export function refusalSuperseded(
+  latch: JoinRefusalLatch | undefined,
+  verdictAt: number | undefined,
+): boolean {
+  if (latch?.reason !== "DeviceNotRegistered") return false;
+  return verdictAt !== undefined && latch.at < verdictAt;
+}
+
+/**
  * How long a terminal refusal keeps a channel's join affordances inert when
  * no channel event releases it first. Long enough that no storm is possible,
  * short enough that a missed `channelUpdate` costs the user one wait.

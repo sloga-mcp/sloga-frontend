@@ -13,6 +13,7 @@ import {
   JOIN_REFUSAL_HOLD_MS,
   joinBlockedReason,
   refusalHolds,
+  refusalSuperseded,
 } from "./joinRefusalPolicy.ts";
 
 test("the join_call answers a retry cannot change are terminal", () => {
@@ -282,4 +283,28 @@ test("a media-E2EE-off deployment refuses terminally instead of throwing at the 
     undefined,
   );
   assert.equal(classifyJoinRefusal({ type: "FeatureDisabled" }), undefined);
+});
+
+test("🔴 supersession covers the latch the verdict PRECEDED, and no other", () => {
+  // Unscoped, "the verdict is up" is also true of the next refusal and the one
+  // after — so a server that raises the verdict and then keeps answering
+  // `FailedValidation` re-arms the affordance on every press, which is the
+  // press-storm the latch exists to stop (media-e2ee-reviewer round 4).
+  const at = (t: number) => ({
+    channelId: "c",
+    reason: "DeviceNotRegistered" as const,
+    at: t,
+    channelVersion: 3,
+  });
+  assert.equal(refusalSuperseded(at(100), 200), true); // verdict landed after
+  assert.equal(refusalSuperseded(at(300), 200), false); // refused since
+  assert.equal(refusalSuperseded(at(200), 200), false); // same instant holds
+  assert.equal(refusalSuperseded(at(100), undefined), false); // no verdict
+  assert.equal(refusalSuperseded(undefined, 200), false);
+  // Only this reason: every other refusal is the server's own verdict about
+  // the channel, which nothing the client corroborated can overtake.
+  assert.equal(
+    refusalSuperseded({ ...at(100), reason: "CannotJoinCall" }, 200),
+    false,
+  );
 });

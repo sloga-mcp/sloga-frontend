@@ -12,6 +12,7 @@ import {
   type CallMode,
   type ChipInputs,
   type LoudHealInputs,
+  bannerParksFloat,
   callBannerState,
   callModeTransition,
   chipState,
@@ -951,6 +952,24 @@ test("🔴 INVARIANT: every NOT-ENCRYPTED chip carries a banner (exhaustive)", (
                         }
   // A sweep that found no red chips would pass vacuously.
   assert.ok(red > 1000, `expected a large red-chip sample, got ${red}`);
+});
+
+test("🔴 only a banner the user can clear parks the Watch Together player", () => {
+  // The player host floats above the card, so a banner the user must act on
+  // has to displace it — and each §3.4 state has an in-call control that
+  // clears it, so the park is transient by construction.
+  for (const kind of ["mixed", "interlude", "terminal_loud"] as const)
+    assert.equal(bannerParksFloat(kind), true, kind);
+  // The DEVICE banners describe the device; NOTHING in the call clears them,
+  // so parking on one un-anchors the video for the whole call with no control
+  // that brings it back and no copy that says why.
+  for (const kind of [
+    "device_not_set_up",
+    "device_unsupported",
+    "unencrypted_notice",
+    "none",
+  ] as const)
+    assert.equal(bannerParksFloat(kind), false, kind);
 });
 
 // ---- ctl parser (default-closed) -------------------------------------------

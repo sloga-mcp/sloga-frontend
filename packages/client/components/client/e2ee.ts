@@ -1233,7 +1233,7 @@ export class E2EEBridge implements E2EEAdapter {
    * the `e2ee_store_owner` accessor that would make any of this locally
    * anchored (media-e2ee-reviewer, HIGH-3).
    */
-  readonly deviceOwnedElsewhere = new ReactiveMap<"state", boolean>();
+  readonly deviceOwnedElsewhere = new ReactiveMap<"state", number>();
 
   constructor(client: Client) {
     this.#client = client;
@@ -1248,10 +1248,22 @@ export class E2EEBridge implements E2EEAdapter {
    * means: "missing" ⇒ the server will refuse a device-qualified call join,
    * "present" ⇒ it will not. `"unknown"` (the fetch failed) changes nothing —
    * a blip must neither raise the verdict nor clear a standing one.
+   *
+   * The stored value is WHEN the verdict was first raised, not a bare `true`:
+   * the join-refusal latch is released only for a refusal the verdict
+   * preceded, and a timestamp stamped by whoever happened to read the flag
+   * first would make that comparison depend on who looked rather than on what
+   * happened (media-e2ee-reviewer round 5, LOW). Re-raising keeps the original
+   * instant, so a standing verdict does not creep forward.
    */
   #noteDevicePresence(presence: "present" | "missing" | "unknown"): void {
-    if (presence === "missing") this.deviceOwnedElsewhere.set("state", true);
-    else if (presence === "present") this.deviceOwnedElsewhere.delete("state");
+    if (presence === "missing") {
+      if (!this.deviceOwnedElsewhere.has("state")) {
+        this.deviceOwnedElsewhere.set("state", Date.now());
+      }
+    } else if (presence === "present") {
+      this.deviceOwnedElsewhere.delete("state");
+    }
   }
 
   /**

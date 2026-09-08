@@ -18,7 +18,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { isDeviceQualified, reconcileRoster } from "./mlsRosterPolicy.ts";
+import {
+  anyPeerCouldEncrypt,
+  isDeviceQualified,
+  reconcileRoster,
+} from "./mlsRosterPolicy.ts";
 
 const SELF = "01SELF:devS";
 const ALICE = "01ALICE:devA";
@@ -413,4 +417,26 @@ test("legs change nothing about ordinary non-enrolled and ghost detection", () =
   // Default leg inputs (no argument) behave as a plain, leg-free call.
   const legacy = reconcileRoster([SELF, ALICE], [SELF, BOB], SELF);
   assert.deepEqual(legacy, result);
+});
+
+test("🔴 a peer can encrypt only if its identity names a DEVICE — a colon is not one", () => {
+  // The chip's local "not set up on this device" arm speaks only when someone
+  // else here can encrypt, so that an install which never enabled encryption
+  // is not told about it on every plain call it ever makes.
+  assert.equal(anyPeerCouldEncrypt([ALICE], SELF), true);
+  assert.equal(anyPeerCouldEncrypt([ALICE_LEG], SELF), true);
+  // 🔴 The bare leg grammar contains a colon and proves the OPPOSITE.
+  assert.equal(anyPeerCouldEncrypt(["01CAROL::screen"], SELF), false);
+  assert.equal(anyPeerCouldEncrypt(["01CAROL"], SELF), false);
+  assert.equal(anyPeerCouldEncrypt([], SELF), false);
+});
+
+test("🔴 ...and our OWN screen leg is a remote participant that must not count", () => {
+  // `remoteParticipants` contains our leg. Without the exclusion a device that
+  // merely started a share would light its own chip and raise a banner about
+  // itself (media-e2ee-reviewer round 4, MEDIUM).
+  assert.equal(anyPeerCouldEncrypt([`${SELF}:screen`], SELF), false);
+  assert.equal(anyPeerCouldEncrypt([`${SELF}:screen`, ALICE], SELF), true);
+  // Another of our USER's devices is a legitimate peer.
+  assert.equal(anyPeerCouldEncrypt(["01SELF:devOther"], SELF), true);
 });

@@ -97,6 +97,35 @@ export function isDeviceQualified(identity: string): boolean {
 }
 
 /**
+ * Whether any OTHER participant on the SFU can encrypt — i.e. someone here is
+ * or could be in the MLS group.
+ *
+ * The chip's local "this device is not set up" arm speaks only when this is
+ * true, so that an install which never enabled encryption is not told about it
+ * on every plain call it ever makes. `isDeviceQualified` is the whole test:
+ * delta mints the `:device` suffix only for a caller presenting a registered
+ * device bound to its session, so its presence is proof, and its absence —
+ * including the bare leg grammar `{user}::screen`, which contains a colon and
+ * proves the OPPOSITE — is proof of the negative.
+ *
+ * 🔴 Our own screen leg is a REMOTE participant on the SFU and must not count:
+ * without the exclusion a device that merely started a share would light its
+ * own chip. Compared through `stripLeg`, like the chip's own publisher loop.
+ * Under-counting is the safe direction — it only mutes this device's own
+ * setup notice, while enrolled peers still go loud about us through
+ * `reconcileRoster`'s bare-identity rule.
+ */
+export function anyPeerCouldEncrypt(
+  remoteIdentities: readonly string[],
+  localIdentity: string,
+): boolean {
+  return remoteIdentities.some(
+    (identity) =>
+      isDeviceQualified(identity) && stripLeg(identity) !== localIdentity,
+  );
+}
+
+/**
  * Diff the SFU participant set against the MLS roster, both directions (§1.4).
  * `localIdentity` is excluded from BOTH sides: we are always in our own call and
  * driving our own group, so a transient self-asymmetry during join/leave must

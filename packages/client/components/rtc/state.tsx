@@ -114,10 +114,11 @@ import {
   classifyJoinRefusal,
   JOIN_REFUSAL_HOLD_MS,
   joinBlockedReason,
+  refusalSuperseded,
 } from "./joinRefusalPolicy";
 import { watchLocalUserId } from "./localUserIdentity";
 import { isPermissionDeniedError } from "./mediaAccessPolicy";
-import { isDeviceQualified } from "./mlsRosterPolicy";
+import { anyPeerCouldEncrypt } from "./mlsRosterPolicy";
 import { RemoteControl } from "./remoteControl";
 import {
   type RemoteControlQueue,
@@ -1950,7 +1951,7 @@ class Voice {
       // bridge raises this durably from a rejected device claim with an
       // absent server row; the join refusal below is the backstop for the
       // very first call after the switch.
-      deviceOwnedElsewhere: bridge?.deviceOwnedElsewhere.get("state") === true,
+      deviceOwnedElsewhere: bridge?.deviceOwnedElsewhere.has("state") === true,
     });
     const e2eeCapable = callEncryptionCapable(readiness);
     if (e2eeCapable) {
@@ -6041,41 +6042,30 @@ class Voice {
       // every single time without this (media-e2ee-reviewer round 3,
       // finding 4). Nothing here trusts the refusal itself: the release is
       // driven by state the CLIENT corroborated.
-      //
-      // 🔴 Only a latch the verdict OVERTOOK. "The verdict is up" is also true
-      // of the next refusal and the one after, so an unscoped release re-arms
-      // the affordance on every press — the 2026-09-06 press-storm, back under
-      // server control for one reason code, since a server can raise the
-      // verdict and then keep answering `FailedValidation` (round 4, MEDIUM).
-      superseded:
-        latch?.reason === "DeviceNotRegistered" &&
-        this.#deviceRefusedByServer() &&
-        latch.at < (this.#deviceRefusedAt ?? Infinity),
+      // The scoping — only a latch the verdict PRECEDED — lives in
+      // `refusalSuperseded` with its own spec; this is the wiring.
+      superseded: refusalSuperseded(latch, this.#deviceRefusedAt()),
     });
   }
 
   /**
-   * The corroborated "the server does not accept this device" verdict, and the
-   * user-facing reason behind a holding refusal for `channel` — what the
+   * WHEN the corroborated "the server does not accept this device" verdict was
+   * raised (`deviceOwnedElsewhere`), or undefined while it is not. Reactive —
+   * a `ReactiveMap` read — so everything derived from it re-runs when the
+   * device claim settles. The instant belongs to the VERDICT, stamped where it
+   * is written; a time stamped on first observation would make the
+   * refusal-supersession comparison depend on who happened to look.
+   */
+  #deviceRefusedAt(): number | undefined {
+    const bridge = this.getClient()?.e2ee as E2EEBridge | undefined;
+    return bridge?.deviceOwnedElsewhere.get("state");
+  }
+
+  /**
+   * The user-facing reason behind a holding refusal for `channel` — what the
    * dialog said, for the affordance to keep showing. Undefined when no
    * refusal holds (an in-flight attempt is `joinBlocked`'s business).
    */
-  /**
-   * The corroborated "the server does not accept this device" verdict from the
-   * E2EE bridge (`deviceOwnedElsewhere`). Reactive — a `ReactiveMap` read — so
-   * everything derived from it re-runs when the device claim settles.
-   */
-  #deviceRefusedByServer(): boolean {
-    const bridge = this.getClient()?.e2ee as E2EEBridge | undefined;
-    const refused = bridge?.deviceOwnedElsewhere.get("state") === true;
-    // WHEN we first saw it, so a refusal can be told from one the verdict
-    // overtook. Memoised here rather than tracked in an effect because the
-    // reactive dependency is the flag itself, which every reader already has.
-    if (refused) this.#deviceRefusedAt ??= Date.now();
-    else this.#deviceRefusedAt = undefined;
-    return refused;
-  }
-
   joinRefusalMessage(channel: Channel): string | undefined {
     if (this.joinBlocked(channel) !== "refused") return undefined;
     const latch = this.#joinRefusals().get(channel.id);
@@ -6103,7 +6093,7 @@ class Voice {
         // (media-e2ee-reviewer round 3, finding 3). Uncorroborated, we report
         // the server's answer and nothing more; the corroborated case
         // resolves itself within a reconnect anyway.
-        return this.#deviceRefusedByServer()
+        return this.#deviceRefusedAt() !== undefined
           ? t`Encryption on this device isn't registered to your account, so calls can't be joined here. Open Settings → Encryption to fix it.`
           : t`The call server wouldn't accept this device's encryption.`;
       case "MediaE2EEDisabled":
@@ -6114,12 +6104,6 @@ class Voice {
         return t`The call couldn't be started right now.`;
     }
   }
-
-  /**
-   * `Date.now()` when `deviceOwnedElsewhere` was first observed set, or
-   * undefined while it is not. Only `#deviceRefusedByServer` writes it.
-   */
-  #deviceRefusedAt: number | undefined;
 
   /** Latch a terminal refusal for `channel` (joinRefusalPolicy). */
   #recordJoinRefusal(channel: Channel, reason: JoinRefusalReason) {
@@ -6290,10 +6274,9 @@ class Voice {
       // a device that merely started a screen share would light its own chip
       // (media-e2ee-reviewer round 4, MEDIUM).
       peerCouldEncrypt: room
-        ? [...room.remoteParticipants.values()].some(
-            (p) =>
-              isDeviceQualified(p.identity) &&
-              stripLeg(p.identity) !== room.localParticipant.identity,
+        ? anyPeerCouldEncrypt(
+            [...room.remoteParticipants.values()].map((p) => p.identity),
+            room.localParticipant.identity,
           )
         : false,
     });
@@ -6506,8 +6489,10 @@ class Voice {
   }
 
   /**
-   * Whether the Room for THIS call was actually built with the `e2ee` option:
-   * capability AND both pieces it needs.
+   * Whether the Room for THIS call was actually built with the `e2ee` option —
+   * i.e. both pieces it needs are present. Capability is not re-tested here
+   * because neither field is ever constructed outside the `if (e2eeCapable)`
+   * block that builds them.
    *
    * `callE2EECapable()` used to imply this — a provider or worker that failed
    * to construct dropped capability with it. It no longer does: that failure

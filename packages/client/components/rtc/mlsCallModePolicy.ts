@@ -575,6 +575,26 @@ export function callBannerState(inputs: CallBannerInputs): CallBannerKind {
 }
 
 /**
+ * Whether a banner must park the Float-level Watch Together player host.
+ *
+ * The card banner sits at z5 INSIDE the call card and the player host floats
+ * above the card, so a banner the user is meant to read and act on has to
+ * displace it. That is true of the three §3.4 states — each has an in-call
+ * control that clears it, so the park is transient by construction.
+ *
+ * 🔴 It is NOT true of the device banners. `device_not_set_up`,
+ * `device_unsupported` and `unencrypted_notice` describe the DEVICE, and
+ * nothing in the call clears them: parking on those un-anchors the player for
+ * the entire call, with no control that brings it back and no copy that says
+ * why. Testing `!== "none"` did exactly that and is how this rule earned a name
+ * (media-e2ee-reviewer round 5, MEDIUM). They still need a z-order that beats
+ * the player; that is a layout fix, not a reason to hide the video.
+ */
+export function bannerParksFloat(kind: CallBannerKind): boolean {
+  return kind === "mixed" || kind === "interlude" || kind === "terminal_loud";
+}
+
+/**
  * Whether the banner's plaintext release would release anything.
  *
  * With a session the session owns it (`confirmPlaintext`). Without one it is
