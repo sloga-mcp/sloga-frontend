@@ -684,6 +684,15 @@ export interface MlsMediaBinding {
    */
   participantTrackSids?(identity: string): string[];
   /**
+   * Whether the SFU signalling is CONNECTED right now (not reconnecting).
+   * During a full LiveKit reconnect the Room drops every remote participant
+   * before the new join response, so `sfuParticipants()` reads everyone as
+   * absent; the heal probe refuses to judge in that window instead of
+   * reading "every witness left" (re-review of de4879c2, M2). Absent
+   * accessor ⇒ assumed connected (the pre-existing behavior).
+   */
+  sfuConnected?(): boolean;
+  /**
    * Surface the media-plane state for the 6.5 chip / callEncryptionError.
    * `"loud"` carries the error to latch; `"clear"` WITH an error asks the UI
    * to forget exactly that latched object (heal / re-establish), `"clear"`
@@ -3451,7 +3460,7 @@ export class MlsCallSession {
   ): void {
     this.#installSeq++;
     this.#lastInstallAt = installRef;
-    this.#mediaErrors.noteInstalled(entries);
+    this.#mediaErrors.noteInstalled(entries, performance.now());
     // A new epoch's keys under a MEDIA latch: the group re-keyed past the
     // failure (the latch recorded the counter BEFORE this increment, so the
     // "advanced" witness holds by construction here). Give the media plane
@@ -3769,10 +3778,15 @@ export class MlsCallSession {
     if (!this.#loudLatched) return;
     const result = this.#state === "active" ? await this.reconcileNow() : null;
     if (generation !== this.#healGeneration || !this.#loudLatched) return;
-    if (this.#state !== "active" || !result) {
-      // Could not judge (a transient roster fetch failure, or the session is
-      // mid-re-establish): one bounded re-arm per install, then wait for the
-      // next epoch — exactly the flaky path the heal exists for.
+    if (
+      this.#state !== "active" ||
+      !result ||
+      this.#media?.sfuConnected?.() === false
+    ) {
+      // Could not judge (a transient roster fetch failure, the session
+      // mid-re-establish, or the Room mid-reconnect with every remote read
+      // as absent): one bounded re-arm per install, then wait for the next
+      // epoch — exactly the flaky path the heal exists for.
       if (!this.#healRetried) {
         this.#healRetried = true;
         this.#armHealProbe();
@@ -3832,8 +3846,10 @@ export class MlsCallSession {
     if (verdict !== "heal") {
       // A held latch leaves a trace too: a live leg that stays red must be
       // attributable to the witness that held it.
+      const devices = [...this.#loudPeers.keys()];
       console.info("[mls] loud latch held", {
         ...inputs,
+        peers: peers.map((peer, i) => ({ device: devices[i], ...peer })),
         uncoveredMissingKeys: this.#mediaErrors.uncoveredPairs(),
       });
       return;

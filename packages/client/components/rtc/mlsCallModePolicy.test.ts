@@ -832,17 +832,19 @@ test("🔴 a hard error landing DURING the install counts against a reference ta
   const ledger = new MediaErrorLedger();
   const installRef = 1_000;
   ledger.noteError(INVALID, 1_005); // between the installer's awaits
-  ledger.noteInstalled([entry(13)]); // the install resolves at ~1_010
+  ledger.noteInstalled([entry(13)], 1_010); // the install resolves
   assert.equal(ledger.errorSince(installRef), true);
   // An error strictly before the reference is the latch's own, not since.
   const older = new MediaErrorLedger();
   older.noteError(INVALID, 999);
-  older.noteInstalled([entry(13)]);
+  older.noteInstalled([entry(13)], 1_010);
   assert.equal(older.errorSince(installRef), false);
   // At the reference itself: since (conservative).
   const same = new MediaErrorLedger();
   same.noteError(INVALID, installRef);
   assert.equal(same.errorSince(installRef), true);
+  // No error ever: not "since" even a reference of 0.
+  assert.equal(new MediaErrorLedger().errorSince(0), false);
 });
 
 test("a missing key for a pair the install covers is superseded, whichever lands first", () => {
@@ -850,19 +852,34 @@ test("a missing key for a pair the install covers is superseded, whichever lands
   // message reached it, so the setKey resets the index afterwards.
   const before = new MediaErrorLedger();
   before.noteError(MISSING(13), 1_005);
-  before.noteInstalled([entry(13)]);
+  before.noteInstalled([entry(13)], 1_010);
   assert.equal(before.errorSince(1_000), false);
   assert.deepEqual(before.uncoveredPairs(), []);
-  // The error reaches the main thread after the install resolved.
-  const after = new MediaErrorLedger();
-  after.noteInstalled([entry(13)]);
-  after.noteError(MISSING(13), 1_020);
-  assert.equal(after.errorSince(1_000), false);
   // Previous-epoch entries count as installed too.
   const prev = new MediaErrorLedger();
   prev.noteError(MISSING(12), 900);
-  prev.noteInstalled([entry(12), entry(13)]);
+  prev.noteInstalled([entry(12), entry(13)], 1_010);
   assert.equal(prev.errorSince(1_000), false);
+});
+
+test("🔴 a missing key that lands AFTER the sender's install completed is a withheld commit, and stands until the next install (M1)", () => {
+  // Re-review of de4879c2: the DS withholds a roster-neutral Remove + re-Add
+  // of P from this member only; P's new session sends at an index this side
+  // never got. The one MissingKey is the only local sign — it must hold.
+  const ledger = new MediaErrorLedger();
+  ledger.noteInstalled([entry(2)], 1_010); // P installed at epoch 2
+  ledger.noteError(MISSING(4), 5_000); // P sends at 4; this side never got 3, 4
+  assert.equal(ledger.errorSince(1_000), true);
+  assert.deepEqual(ledger.uncoveredPairs(), [keyPairId(PEER, 4)]);
+  // A later install of P (any index) proves this side caught up.
+  ledger.noteInstalled([entry(5)], 9_000);
+  assert.equal(ledger.errorSince(1_000), false);
+  // The same shape where the error merely reached the main thread after the
+  // install it raced: superseded only by a LATER install — conservative.
+  const late = new MediaErrorLedger();
+  late.noteInstalled([entry(13)], 1_010);
+  late.noteError(MISSING(13), 1_020);
+  assert.equal(late.errorSince(1_000), true);
 });
 
 test("🔴 a missing key for a sender NO install covers holds while that sender is present, regardless of when it landed", () => {
@@ -871,7 +888,7 @@ test("🔴 a missing key for a sender NO install covers holds while that sender 
   const OTHER = "01KWHY6P2RPHWNJADM59F97JGE:bee76df73dbf46725e328509842750b4";
   const ledger = new MediaErrorLedger();
   ledger.noteError(MISSING(14, OTHER), 500); // before the reference
-  ledger.noteInstalled([entry(13)]); // PEER installed, OTHER never
+  ledger.noteInstalled([entry(13)], 1_010); // PEER installed, OTHER never
   assert.equal(ledger.errorSince(1_000), true);
   assert.deepEqual(ledger.uncoveredPairs(), [keyPairId(OTHER, 14)]);
   // Gone from the SFU: its frames are gone with it (review of e2163ead, H1a).
@@ -881,7 +898,7 @@ test("🔴 a missing key for a sender NO install covers holds while that sender 
   );
   // Back, still uncovered: holds again. An install of that sender answers it.
   assert.equal(ledger.errorSince(1_000), true);
-  ledger.noteInstalled([entry(14, OTHER)]);
+  ledger.noteInstalled([entry(14, OTHER)], 2_000);
   assert.equal(ledger.errorSince(1_000), false);
 });
 
@@ -892,12 +909,9 @@ test("🔴 a Welcome joiner's pre-Welcome missing key is superseded by the sende
   // installed; superseding by sender keeps the heal alive for the joiner.
   const ledger = new MediaErrorLedger();
   ledger.noteError(MISSING(4), 100); // P@4, before the Welcome
-  ledger.noteInstalled([entry(5)]); // first install: P@5 only
+  ledger.noteInstalled([entry(5)], 1_010); // first install: P@5 only
   assert.equal(ledger.errorSince(1_000), false);
   assert.deepEqual(ledger.uncoveredPairs(), []);
-  // And a later missing key for an installed sender is not recorded at all.
-  ledger.noteError(MISSING(3), 2_000);
-  assert.equal(ledger.errorSince(1_000), false);
 });
 
 test("forgetHardError keeps the uncovered senders; reset forgets the replaced group", () => {
@@ -913,7 +927,7 @@ test("forgetHardError keeps the uncovered senders; reset forgets the replaced gr
   // a missing key for it is a real hold until the new group installs it.
   ledger.noteError(MISSING(0), 2_000);
   assert.equal(ledger.errorSince(1_500), true);
-  ledger.noteInstalled([entry(0)]);
+  ledger.noteInstalled([entry(0)], 2_500);
   assert.equal(ledger.errorSince(1_500), false);
 });
 
@@ -935,18 +949,18 @@ test("🔴 leg 9 ordering: the rejoiner's first new-key frame fails inside the s
   // Leg 9: the key withheld and never released.
   const leg9 = new MediaErrorLedger();
   leg9.noteError(INVALID, 100); // the latch's own error
-  leg9.noteInstalled([entry(12)]); // Remove epoch at 1_000
+  leg9.noteInstalled([entry(12)], 1_010); // Remove epoch at 1_000
   leg9.noteError(MISSING(13), 2_005); // join-race frame during the Add install
-  leg9.noteInstalled([entry(13)]); // Add epoch at 2_000, supersedes it
+  leg9.noteInstalled([entry(13)], 2_010); // Add epoch at 2_000, supersedes it
   assert.equal(judge(leg9, 2_000), "heal"); // nothing since — so far
   leg9.noteError(INVALID, 2_400); // first frame under the new key fails
   assert.equal(judge(leg9, 2_000), "hold");
   // Leg 7: released before the rejoin; the new-key frames decrypt.
   const leg7 = new MediaErrorLedger();
   leg7.noteError(INVALID, 100);
-  leg7.noteInstalled([entry(12)]);
+  leg7.noteInstalled([entry(12)], 1_010);
   leg7.noteError(MISSING(13), 2_005);
-  leg7.noteInstalled([entry(13)]);
+  leg7.noteInstalled([entry(13)], 2_010);
   assert.equal(judge(leg7, 2_000), "heal");
 });
 

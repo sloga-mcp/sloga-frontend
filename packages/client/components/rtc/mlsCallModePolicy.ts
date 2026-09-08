@@ -798,21 +798,25 @@ export function classifyMediaError(error: unknown): MediaErrorClass {
  *    install, every error during it counts — conservative by construction.
  *    Stamps and reference come from one MONOTONIC clock (`performance.now`):
  *    a wall clock stepping back between the two would re-open the window.
- *  - A MISSING key names its sender and is superseded by any later install
- *    of that SENDER, whichever reaches the main thread first: the worker
- *    processed the frame before the `setKey` message or it would not have
- *    raised MissingKey, and the `setKey` resets the index. Superseding by
- *    identity rather than by exact pair is deliberate: a device joined by
- *    Welcome hears the members' frames at epoch E before it holds any key
- *    and installs E+1 first (native snapshots `previous` only across a commit
- *    it applied itself), so `P@E` would never be covered and every later
- *    latch on that device would hold for the life of the group — the R2 heal
- *    inert on exactly the receiver role the live legs use (review of
- *    e2163ead, H1). The install proves this side holds the sender's current
- *    index; whether its older-index frames were lost is the SID witness's
- *    question. A missing key for a sender this side NEVER installed is one at
- *    an index it does not hold, its index silenced after the one error: it
- *    holds the heal while the sender is still in the SFU (`errorSince`'s
+ *  - A MISSING key names its sender and is superseded by the next install of
+ *    that SENDER that COMPLETES after it was observed: the worker processed
+ *    the frame before the `setKey` message or it would not have raised
+ *    MissingKey, and the `setKey` resets the index. Superseding by identity
+ *    rather than by exact pair is deliberate: a device joined by Welcome
+ *    hears the members' frames at epoch E before it holds any key and
+ *    installs E+1 first (native snapshots `previous` only across a commit it
+ *    applied itself), so `P@E` would never be covered and every later latch
+ *    on that device would hold for the life of the group — the R2 heal inert
+ *    on exactly the receiver role the live legs use (review of e2163ead,
+ *    H1). The install proves this side holds the sender's current index;
+ *    whether its older-index frames were lost is the SID witness's question.
+ *    Time-ordered, not "ever installed": a missing key that lands AFTER the
+ *    sender's install completed names an index this side never got — the one
+ *    local sign that a commit was withheld from it (re-review, M1) — and
+ *    stands until the next install of that sender proves it caught up. A
+ *    missing key for a sender never installed at all is one at an index this
+ *    side does not hold, its index silenced after the one error: it holds
+ *    the heal while the sender is still in the SFU (`errorSince`'s
  *    `present`), regardless of when it landed, and stops mattering once the
  *    sender is gone.
  *  - The worker holds no ack for `setKey`: a `deriveKeys` failure inside the
@@ -822,29 +826,44 @@ export function classifyMediaError(error: unknown): MediaErrorClass {
  *    that acknowledges `setKey` should gate `noteInstalled` on the ack.
  */
 export class MediaErrorLedger {
-  #hardErrorAt = 0;
+  /** `-Infinity` until an error lands: "no error yet" must never read as at-or-after a reference of 0. */
+  #hardErrorAt = -Infinity;
   /** Missing-key pairs no install has covered yet, by the time observed. */
   #missing = new Map<string, { identity: string; at: number }>();
-  /** Every sender identity pushed to the worker since the last `reset`. */
-  #installed = new Set<string>();
+  /** When each sender's latest install COMPLETED, since the last `reset`. */
+  #installed = new Map<string, number>();
 
   /** Record a media-plane error observed at `now` (monotonic clock). */
   noteError(error: unknown, now: number): MediaErrorClass {
     const cls = classifyMediaError(error);
     if (cls.kind === "hard") this.#hardErrorAt = now;
-    else if (!this.#installed.has(cls.identity)) {
-      this.#missing.set(cls.pair, { identity: cls.identity, at: now });
+    else {
+      const installedAt = this.#installed.get(cls.identity);
+      // Observed before the sender's install completed ⇒ the join race that
+      // install answered. Observed after ⇒ an index this side never got.
+      if (installedAt === undefined || now > installedAt) {
+        this.#missing.set(cls.pair, { identity: cls.identity, at: now });
+      }
     }
     return cls;
   }
 
-  /** Record the entries an install pushed to the worker. */
+  /**
+   * Record the entries an install pushed to the worker, completing at
+   * `completedAt` (the same monotonic clock as the error stamps).
+   */
   noteInstalled(
     entries: readonly { livekit_identity: string; key_index: number }[],
+    completedAt: number,
   ): void {
-    for (const entry of entries) this.#installed.add(entry.livekit_identity);
+    for (const entry of entries) {
+      this.#installed.set(entry.livekit_identity, completedAt);
+    }
     for (const [pair, record] of this.#missing) {
-      if (this.#installed.has(record.identity)) this.#missing.delete(pair);
+      const installedAt = this.#installed.get(record.identity);
+      if (installedAt !== undefined && record.at <= installedAt) {
+        this.#missing.delete(pair);
+      }
     }
   }
 
@@ -871,12 +890,12 @@ export class MediaErrorLedger {
 
   /** Forget the hard-error stamp (a healed latch). */
   forgetHardError(): void {
-    this.#hardErrorAt = 0;
+    this.#hardErrorAt = -Infinity;
   }
 
   /** Forget everything: the group, and with it every key index, is replaced. */
   reset(): void {
-    this.#hardErrorAt = 0;
+    this.#hardErrorAt = -Infinity;
     this.#missing.clear();
     this.#installed.clear();
   }

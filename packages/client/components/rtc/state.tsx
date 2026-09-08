@@ -3062,6 +3062,9 @@ class Voice {
           ? [...p.trackPublications.values()].map((pub) => pub.trackSid)
           : [];
       },
+      // A full reconnect empties `remoteParticipants` until the new join
+      // response; the heal probe must not read that as "everyone left".
+      sfuConnected: () => room.state === ConnectionState.Connected,
       onEncryptionState: (state, error) => {
         // Latch a loud media-plane failure into the existing structured signal
         // (6.5 classifies RE-SECURING vs NOT-ENCRYPTED from callEncryption +
