@@ -174,6 +174,45 @@ test("a membership churn that does not heal the latch keeps the gate held", asyn
   }
 });
 
+test("an unproven pause latches a loud the user can actually act on", async (t) => {
+  const world = newWorld(t, "creator", "chan-fr6");
+  await bringUpCreator(t, world);
+  assert.equal(world.publishing(), true);
+  assert.equal(world.terminalLoud(), false);
+
+  // `state.tsx` swept the publish gate, could not prove the wire quiet, and
+  // confirmed it with a bounded re-sweep. This is the far end of that.
+  world.session.noteUnprovenPause(["microphone/TR_1"]);
+  await flush();
+
+  assertGateHeld(world, "an unproven pause");
+  // The whole reason this goes through the session rather than straight into
+  // `callEncryptionError`: only `#latchLoud` folds `e2ee` → `negotiating`, and
+  // without that fold this is a red chip with NO banner and no way out.
+  assert.equal(world.chip(), "not_encrypted");
+  assertMe10(world, "an unproven pause");
+
+  // And the banner's "Stay unencrypted" must not be inert. `confirmPlaintext`
+  // returns silently unless its precondition holds, which `#loudLatched`
+  // supplies — a latch written straight into the UI signal does not.
+  await world.session.confirmPlaintext({});
+  await flush();
+  assert.ok(
+    world.bridgeCalls.includes("callConfirmDowngrade"),
+    "the escape never reached the blocking native confirm",
+  );
+  assert.equal(
+    world.session.callMode().kind,
+    "interlude",
+    "the confirmed downgrade never took effect",
+  );
+  assert.equal(
+    world.publishing(),
+    true,
+    "the user consented to plaintext and is still muted",
+  );
+});
+
 test("a joiner whose enrolment never proves keeps the pre-connect gate", async (t) => {
   const world = newWorld(t, "joiner", "chan-fr5");
   void world.session.start();

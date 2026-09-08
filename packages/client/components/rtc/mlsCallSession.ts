@@ -3855,6 +3855,37 @@ export class MlsCallSession {
    * RE-SECURING before it escalates. `state.tsx` calls this (step 6); a loud
    * latch stays until the session re-establishes the group.
    */
+  /**
+   * `state.tsx` swept the publish gate, could not prove the wire quiet, and
+   * CONFIRMED that with a bounded re-sweep. Publishing is escaping a gate every
+   * layer above believes is closed — the false-pause half of the 2026-09-08
+   * join-race legs — so this is loud.
+   *
+   * Routed through the session rather than written straight into
+   * `callEncryptionError`, because the signal alone is not the behaviour. Only
+   * `#latchLoud` sets `#loudLatched`, and that flag is what makes the ME-10
+   * banner reachable (`loudModeFallback` folds `e2ee` → `negotiating`, so a
+   * failure while the mode was `e2ee` is not a red chip with no banner) AND
+   * what makes its "Stay unencrypted" button work (`confirmPlaintext`'s
+   * `terminalEscape` reads it). A latch written directly into the UI signal
+   * gave the user a red they could not act on and an error nothing could ever
+   * clear — the documented MED-B dead end, by a new route.
+   *
+   * `control` origin: this is a statement about OUR OWN send path, which no
+   * later epoch can disprove, so it must not be healed by `loudHealVerdict`.
+   */
+  noteUnprovenPause(publications: readonly string[]): void {
+    if (this.#terminal()) return;
+    const error = new Error(
+      "Publishing could not be paused, so this call may still be sending " +
+        `audio or video (${publications.length} publication(s)).`,
+    );
+    console.error("[mls] publish gate could not prove the wire quiet", {
+      publications,
+    });
+    this.#latchLoud(error, "control");
+  }
+
   noteEncryptionRecovered(): void {
     if (this.#loudLatched) return; // loud is terminal until re-establish
     // 6.7b MEDIUM-1: this fires on ANY participant's `encrypted=true`

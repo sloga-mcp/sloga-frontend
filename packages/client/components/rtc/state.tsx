@@ -209,6 +209,7 @@ import {
   type MlsMediaBinding,
   type MlsRosterMember,
   type MlsSessionState,
+  type PublishGateReason,
   MlsCallSession,
 } from "./mlsCallSession";
 import {
@@ -216,7 +217,11 @@ import {
   e2eeProvenOff,
   sessionSetupDecision,
 } from "./mlsSessionSetupPolicy";
-import { type GatedPublication, applyPublishGate } from "./publishGate";
+import {
+  type GatedPublication,
+  type UpstreamState,
+  applyPublishGate,
+} from "./publishGate";
 import {
   SCREEN_AUDIO_WATCH_MS,
   screenAudioDeviceGone,
@@ -1006,7 +1011,7 @@ class Voice {
    * UpstreamResumed/TrackProcessorUpdate re-asserts the gate so a late
    * publication or livekit's unconditional resumes can never bypass it.
    */
-  #publishGate = new Set<string>();
+  #publishGate = new Set<PublishGateReason>();
   /**
    * Open-group probe lifecycle for the CURRENT call, read by the session via
    * `channelHasOpenGroup`. It no longer decides anything about the publish
@@ -2337,17 +2342,18 @@ class Voice {
     // worth naming, because they are why the flag alone cannot be trusted:
     //  (a) `setMediaStreamTrack` (device switch / unmute-restart / reconnect)
     //      ends in an unconditional `resumeUpstream()` — `_isUpstreamPaused`
-    //      goes false and `UpstreamResumed` fires, so a bare `pauseUpstream()`
-    //      re-asserts cleanly.
+    //      goes false and `UpstreamResumed` fires.
     //  (b) `setProcessor` (denoise/gain/camera-effects attach) calls
     //      `sender.replaceTrack(processedTrack)` DIRECTLY without touching
     //      `_isUpstreamPaused` and emits only `TrackProcessorUpdate` — the
     //      flag stays stale-true, so a bare `pauseUpstream()` would no-op on
     //      its own idempotency guard while real RTP flows. The re-assert for
     //      this path is resume-then-pause (the resume resets the flag; its
-    //      nested `UpstreamResumed` triggers arm (a), whose bare pause
-    //      serializes behind livekit's per-track lock and early-returns —
-    //      bounded, no loop; verified against the pinned 2.15.13 source).
+    //      nested `UpstreamResumed` re-enters the sweep, which by then reads
+    //      a CLEARED flag over a live wire and issues a plain pause that
+    //      serializes behind livekit's per-track lock — bounded at two levels,
+    //      no recursion, and convergent because the later-reserved lock slot is
+    //      always the pause. Verified against the pinned 2.15.13 source.)
     //  (c) `republishAllTracks` — `unpublishTrack` then
     //      `publishOrRepublishTrack` onto a NEW sender carrying the live
     //      track, with `_isUpstreamPaused` untouched: the same stale-true flag
@@ -2513,13 +2519,14 @@ class Voice {
         // judge, so give it a fresh settle once the Room is back.
         room.addListener("reconnected", () => {
           this.#mlsSession?.noteSfuReconnected();
-          // And re-assert the gate. A RESUMED reconnect keeps the same
-          // PeerConnection and republishes nothing, so neither
-          // `localTrackPublished` nor `UpstreamResumed` fires — but a
-          // transport that was `closed` (and so skipped by livekit's own
-          // `replaceTrack` guard, leaving the pause flag stale-true over a
-          // live sender) is connected again. This is the only sweep that
-          // window gets.
+          // And re-assert the gate. NOT because a closed transport reopens —
+          // `closed` is terminal in `RTCDtlsTransportState`. The two real
+          // cases: a FULL reconnect whose `republishAllTracks` threw (livekit
+          // catches and logs it, leaving some tracks unrepublished, and still
+          // emits `reconnected`), and a mic that muted/unmuted across the
+          // outage. A RESUMED reconnect republishes nothing, so neither
+          // `localTrackPublished` nor `UpstreamResumed` fires and this is the
+          // only sweep that window gets.
           if (this.#publishGate.size > 0 && this.room() === room)
             void this.#applyPublishGate(room);
         });
@@ -3211,7 +3218,7 @@ class Voice {
    * the gate, so a device switch, unmute-restart, or processor attach can never
    * bypass it while a reason is held.
    */
-  async #pauseGate(room: Room, reason: string): Promise<void> {
+  async #pauseGate(room: Room, reason: PublishGateReason): Promise<void> {
     // Stale-writer guard: a binding built for a PREVIOUS call must not add
     // reasons to the gate it shares with the current one — its session is
     // disposed, so nothing would ever release them and every new publication
@@ -3232,7 +3239,7 @@ class Voice {
     await this.#applyPublishGate(room);
   }
 
-  async #resumeGate(room: Room, reason: string): Promise<void> {
+  async #resumeGate(room: Room, reason: PublishGateReason): Promise<void> {
     // Same stale-writer guard, for the inverse hazard: a stale resume must
     // not release a reason the CURRENT call's session is still relying on.
     if (this.room() !== room) return;
@@ -3253,7 +3260,7 @@ class Voice {
    * do silently) is what turns one failed pause into a permanent false "your
    * audio and video stay paused".
    */
-  async #applyPublishGate(room: Room): Promise<void> {
+  async #applyPublishGate(room: Room, confirming = false): Promise<void> {
     const gated: GatedPublication[] = [];
     for (const pub of room.localParticipant.trackPublications.values()) {
       const track = pub.track;
@@ -3264,12 +3271,17 @@ class Voice {
         get upstreamPaused() {
           return track.isUpstreamPaused;
         },
-        // The same observation livekit's own guards make. No sender, no track
-        // on it, or a closed transport ⇒ nothing can leave.
-        onTheWire: () => {
+        // The same reads livekit's own guards make. Three-valued because a
+        // sender with no track is ambiguous — see `UpstreamState`.
+        upstream: (): UpstreamState => {
           const sender = track.sender;
-          if (!sender?.track) return false;
-          return sender.transport?.state !== "closed";
+          if (!sender) return "unpublished";
+          if (!sender.track) return "quiet";
+          // `new` / `connecting` / `failed` and an absent transport all read as
+          // live: the conservative direction, and `replaceTrack(null)` still
+          // succeeds on a failed transport. Only `closed` (terminal) is quiet,
+          // which is livekit's own test.
+          return sender.transport?.state === "closed" ? "quiet" : "live";
         },
         pauseUpstream: () => pub.pauseUpstream(),
         resumeUpstream: () => pub.resumeUpstream(),
@@ -3281,13 +3293,30 @@ class Voice {
     );
     if (unproven.length === 0) return;
     // Stale-writer guard, as on `#pauseGate`: a sweep for a PREVIOUS call must
-    // not latch into the current one's chip.
+    // not report against the current one.
     if (this.room() !== room) return;
-    const reason =
-      `Publishing could not be paused (${unproven.join(", ")}) — this call's ` +
-      `audio or video may still be sending.`;
-    console.error("[rtc] publish gate could not prove the wire quiet:", reason);
-    this.#setCallEncryptionError((prev) => prev ?? new Error(reason));
+    if (!confirming) {
+      // ONE bounded re-sweep, on a macrotask so every queued `replaceTrack`
+      // task has run. A livekit op in flight legitimately leaves the wire live
+      // for a few microtasks, and the verdict this feeds is terminal for the
+      // call — a transient must never raise it.
+      setTimeout(() => {
+        if (this.#publishGate.size > 0 && this.room() === room)
+          void this.#applyPublishGate(room, true);
+      }, 0);
+      return;
+    }
+    // Still live after the confirming sweep. The session owns the verdict: it
+    // is the only thing that can make the banner reachable and its escape
+    // work. Without a session there is nothing to latch through — the gate is
+    // still held, so this is logged and nothing more.
+    if (this.#mlsSession) this.#mlsSession.noteUnprovenPause(unproven);
+    else
+      console.error(
+        "[mls] publish gate could not prove the wire quiet, and there is no " +
+          "session to report it through",
+        { publications: unproven },
+      );
   }
 
   /**
@@ -3295,8 +3324,10 @@ class Voice {
    * reference, so `localTrackPublished` can `off` before `on` (see there), and
    * both events it serves now want exactly the same thing: another sweep,
    * which observes the wire rather than trusting what the event implies.
-   * Reads the room from the signal, so a handler still attached to a previous
-   * call's track cannot sweep the current one.
+   * Reads the room from the SIGNAL, not a captured one, so a handler left on a
+   * previous call's track sweeps the CURRENT room — which is the safe
+   * direction: the sweep is idempotent and judges each publication on its own
+   * wire, whereas capturing the old room would sweep a disposed one.
    */
   #reassertPublishGate = (): void => {
     const room = this.room();
