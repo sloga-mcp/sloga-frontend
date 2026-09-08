@@ -3695,10 +3695,17 @@ export class MlsCallSession {
     // the bound is real.
     if (
       cls.kind === "missing_key" &&
-      (this.#rotationWindow || this.#membershipChangeObserved()) &&
-      this.#holdJoinRace(cls.pair, cls.identity, error)
+      (this.#rotationWindow || this.#membershipChangeObserved())
     ) {
-      this.#resolveJoinRaceHolds(); // answered already if we hold that index
+      if (this.#holdJoinRace(cls.pair, cls.identity, error)) {
+        this.#resolveJoinRaceHolds(); // answered already if we hold that index
+      } else {
+        // The binding cannot render the amber, so there is no honest way to
+        // stay open: take the strict verdict rather than fall through to the
+        // rotation arm, whose bound the SFU's echo cancels and whose state
+        // this binding would not show either.
+        this.#latchLoud(error, "media");
+      }
       return;
     }
     if (classifyEncryptionError(this.#rotationWindow, false) === "resecuring") {

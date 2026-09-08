@@ -238,6 +238,24 @@ test("🔴 a binding that cannot render the amber gets the strict verdict, not a
   assert.deepEqual(world.holds, []);
 });
 
+test("🔴 ...including inside a rotation window, where falling through would reach the cancellable arm", async (t) => {
+  // The fall-through case: with a rotation window open, a missing key that
+  // cannot be held would otherwise land in `#armResecureEscalation` — whose
+  // bound the SFU's echo cancels, and whose state this binding cannot render
+  // either. There is no honest way to stay open, so the strict verdict wins.
+  const world = await threeParty(t, "ch-nohold-window", (w) => {
+    w.holdsSupported = false;
+  });
+  await world.commit(1); // opens a rotation window (the install settle)
+  await flush();
+  const before = world.states.length;
+  const error = world.missingKey(THIRD_ID, 2);
+  world.session.noteEncryptionError(error);
+  await flush();
+  assert.deepEqual(world.loudSince(before), [{ state: "loud", error }]);
+  assert.equal(world.session.callMode().kind, "negotiating");
+});
+
 test("the deadline runs from the FIRST error: a stream of missing keys cannot walk the bound forward", async (t) => {
   const world = await threeParty(t, "ch-stream");
   const before = world.states.length;
