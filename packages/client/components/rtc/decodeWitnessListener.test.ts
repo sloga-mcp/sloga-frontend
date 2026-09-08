@@ -61,7 +61,7 @@ interface Rig {
   current: { value: boolean };
 }
 
-function rig(options: { staleMs?: number } = {}): Rig {
+function rig(options: { staleMs?: number; checkMs?: number } = {}): Rig {
   let clock = 1_000;
   const written: DecodeWitness[] = [];
   const warns: string[] = [];
@@ -387,11 +387,24 @@ test("🔴 the threshold is three of the worker's beats, checked once a beat", (
 });
 
 test("the staleness threshold is overridable and the default is not hardcoded twice", () => {
-  const r = rig({ staleMs: 50 });
+  const r = rig({ staleMs: 50, checkMs: 20 });
   r.listener.onMessage(sample());
   r.advance(51);
   r.listener.tick();
   assert.equal(latest(r).available, false);
+});
+
+test("🔴 a sweep slower than half the threshold is refused at construction", () => {
+  // `checkMs: 60_000` against the default 3 s threshold held a dead worker's
+  // green for 57 seconds, and passed every spec, every mutation AND the gate's
+  // source-text assertion — the line that starts the interval is byte-identical
+  // either way. Detection latency is bounded by the sweep, so the threshold has
+  // to be worth at least two of them.
+  assert.throws(() => rig({ checkMs: 60_000 }), /at least two check intervals/);
+  assert.throws(() => rig({ staleMs: 1_000, checkMs: 1_000 }), RangeError);
+  // The defaults satisfy it, and so does an equal-and-doubled pair.
+  assert.doesNotThrow(() => rig());
+  assert.doesNotThrow(() => rig({ staleMs: 2_000, checkMs: 1_000 }));
 });
 
 // --- teardown ---------------------------------------------------------------
@@ -458,6 +471,33 @@ test("🔴 stop() is terminal: a later sample cannot promote the witness again",
   r.listener.onMessage(sample());
   assert.equal(latest(r).available, false);
   assert.equal(r.written.length, 2);
+});
+
+test("🔴 stop() latches only AFTER the write actually happened", () => {
+  // Latching first treats an undelivered UNAVAILABLE as delivered and leaves
+  // the listener permanently inert having never written the amber it exists to
+  // write — the mirror of the clock-credit defect in onMessage, introduced by
+  // the very commit that fixed that one.
+  const clock = 1_000;
+  const written: DecodeWitness[] = [];
+  let explode = true;
+  const listener = createDecodeWitnessListener({
+    now: () => clock,
+    onWitness: (witness) => {
+      if (explode) throw new Error("chip derivation threw");
+      written.push(witness);
+    },
+    isCurrentSession: () => true,
+    log: { warn: () => {}, info: () => {} },
+  });
+
+  assert.throws(() => listener.stop());
+  assert.deepEqual(written, []);
+
+  // Not latched by a write that never landed: the retry still writes amber.
+  explode = false;
+  listener.stop();
+  assert.deepEqual(written, [{ available: false, dropping: [], live: [] }]);
 });
 
 test("🔴 stop() is idempotent, and tick() is inert after it", () => {

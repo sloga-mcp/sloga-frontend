@@ -145,6 +145,8 @@ export function parseDecodeWitnessMessage(
   data: unknown,
 ): readonly DecodeWitnessSample[] | null {
   if (!isDecodeWitnessKind(data)) return null;
+  // Narrowing only — `isDecodeWitnessKind` already established this, but its
+  // `boolean` return does not carry the narrowing out. Not defense in depth.
   if (!isRecord(data)) return null;
   const body = data.data;
   if (!isRecord(body)) return null;
@@ -194,6 +196,21 @@ export function createDecodeWitnessListener(
     checkMs = DECODE_WITNESS_CHECK_MS,
     log = console,
   } = options;
+
+  // 🔴 The sweep interval and the staleness threshold were independently
+  // injectable with no relationship between them, so `checkMs: 60_000` against
+  // the default 3 s threshold held a dead worker's green for 57 seconds — and
+  // passed every spec, every mutation and the gate's source-text assertion,
+  // because the line that starts the interval is byte-identical either way.
+  // Detection latency is bounded by checkMs, so the threshold has to be worth
+  // at least two sweeps.
+  if (!(staleMs >= 2 * checkMs)) {
+    throw new RangeError(
+      `decode witness: staleMs (${staleMs}) must be at least two check ` +
+        `intervals (2 x ${checkMs}), or a dead worker holds its green for ` +
+        `most of the threshold`,
+    );
+  }
 
   let lastAt = now();
   /** Gates the console noise ONLY. The witness write below is unconditional. */
@@ -265,10 +282,18 @@ export function createDecodeWitnessListener(
 
     stop(): void {
       if (stopped) return;
-      stopped = true;
       // The listener is being detached, so no further sample can arrive and
       // the last one must not keep standing as live evidence.
+      //
+      // 🔴 WRITE FIRST, LATCH AFTER. Latching first treats an undelivered
+      // UNAVAILABLE as delivered: `onWitness` is a Solid setter that can throw
+      // out of the chip derivation, and the listener would then be permanently
+      // inert having never written the amber it exists to write. That is the
+      // exact mirror of the clock-credit defect in `onMessage` above — and it
+      // was introduced by the commit that fixed that one, which is this
+      // branch's whole documented failure mode.
       onWitness(DECODE_WITNESS_UNAVAILABLE);
+      stopped = true;
     },
   };
 }

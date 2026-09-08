@@ -447,11 +447,11 @@ MUTATIONS += [
         id="witness-teardown-keeps-standing",
         what="teardown leaves the last sample standing instead of writing UNAVAILABLE",
         file=WITNESS,
-        search="""      // The listener is being detached, so no further sample can arrive and
-      // the last one must not keep standing as live evidence.
-      onWitness(DECODE_WITNESS_UNAVAILABLE);""",
-        replace="""      // The listener is being detached, so no further sample can arrive and
-      // the last one must not keep standing as live evidence.""",
+        search="""      onWitness(DECODE_WITNESS_UNAVAILABLE);
+      stopped = true;
+    },""",
+        replace="""      stopped = true;
+    },""",
         specs=[WITNESS_SPEC],
     ),
     Mutation(
@@ -548,6 +548,27 @@ MUTATIONS += [
         file=WITNESS,
         search="""      if (!isRecord(tally)) return null;""",
         replace="""      if (!isRecord(tally)) continue;""",
+        specs=[WITNESS_SPEC],
+    ),
+    # ---- round 5: the two defects round 4's own fixes introduced -----------
+    Mutation(
+        id="witness-stop-latches-before-write",
+        what="stop() latches before its write, so an undelivered UNAVAILABLE leaves the listener permanently inert",
+        file=WITNESS,
+        search="""      onWitness(DECODE_WITNESS_UNAVAILABLE);
+      stopped = true;
+    },""",
+        replace="""      stopped = true;
+      onWitness(DECODE_WITNESS_UNAVAILABLE);
+    },""",
+        specs=[WITNESS_SPEC],
+    ),
+    Mutation(
+        id="witness-sweep-invariant-removed",
+        what="the sweep interval may be slower than the staleness threshold, so a dead worker holds its green for most of it",
+        file=WITNESS,
+        search="""  if (!(staleMs >= 2 * checkMs)) {""",
+        replace="""  if (false) {""",
         specs=[WITNESS_SPEC],
     ),
     Mutation(

@@ -312,11 +312,16 @@ export interface DecodeWitness {
 }
 
 /** No sample: gate (d) cannot judge, so it holds the chip amber. */
-export const DECODE_WITNESS_UNAVAILABLE: DecodeWitness = {
+// Frozen: this exact object is the signal's initial value, is re-handed on
+// every stale tick and on teardown, and is aliased by DECODE_WITNESS_INITIAL.
+// One consumer mutating `dropping` in place would poison the amber sentinel
+// for the life of the process. Nothing does today; freezing keeps it that way
+// loudly rather than by convention.
+export const DECODE_WITNESS_UNAVAILABLE: DecodeWitness = Object.freeze({
   available: false,
-  dropping: [],
-  live: [],
-};
+  dropping: Object.freeze([]),
+  live: Object.freeze([]),
+});
 
 /**
  * Reduce a window of worker tallies to gate (d)'s input.
