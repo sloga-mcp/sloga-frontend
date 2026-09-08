@@ -819,8 +819,10 @@ export function classifyMediaError(error: unknown): MediaErrorClass {
  *    Time-ordered, not "ever installed": a missing key that lands AFTER the
  *    sender's install completed and names an index that install did NOT set
  *    is an index this side never got — the one local sign that a commit was
- *    withheld from it (re-review, M1) — and stands until the next install of
- *    that sender proves it caught up. One that names a pair the sender's
+ *    withheld from it (re-review, M1) — and stands until an install of that
+ *    sender that ADVANCES us (fills a slot we did not hold) proves we caught
+ *    up. A replay of keys we already hold, which LiveKit performs on every
+ *    worker `enable` ack, is not catching up and supersedes nothing. One that names a pair the sender's
  *    latest install DID set is the join race whenever it lands: the worker
  *    raises MissingKey only while the slot is empty, `setKey` fills it and
  *    no path ever empties a slot again for the life of the worker, so the
@@ -842,19 +844,27 @@ export class MediaErrorLedger {
   /** Missing-key pairs no install has covered yet, by the time observed. */
   #missing = new Map<string, { identity: string; at: number }>();
   /**
-   * Each sender's LATEST install since the last `reset`: when it completed
-   * and the pairs it set.
+   * Per sender since the last `reset`: every key pair this side has pushed to
+   * the worker (which mirrors the worker's FILLED ring slots — `setKeySet`
+   * only ever assigns, the auto-ratchet is off at `ratchetWindowSize: 0`, and
+   * nothing empties a slot), and when it last filled a slot it did not
+   * already hold.
    */
-  #installed = new Map<string, { completedAt: number; pairs: Set<string> }>();
+  #installed = new Map<string, { advancedAt: number; pairs: Set<string> }>();
 
-  /** Whether `pair` from `identity` is answered by that sender's latest install. */
+  /** Whether `pair` from `identity` is answered by an install since. */
   #superseded(identity: string, pair: string, at: number): boolean {
-    const latest = this.#installed.get(identity);
-    if (!latest) return false;
-    // A pair the install set: the slot has been full since, so the worker
-    // judged the frame before that setKey. Any pair observed before the
-    // install completed: the join race it answered.
-    return latest.pairs.has(pair) || at <= latest.completedAt;
+    const rec = this.#installed.get(identity);
+    if (!rec) return false;
+    // A pair we have pushed: that ring slot has been full ever since, and the
+    // worker raises MissingKey only for an EMPTY slot, so the frame was judged
+    // before it processed that setKey.
+    if (rec.pairs.has(pair)) return true;
+    // Otherwise only an install that ADVANCED us — filled a slot we did not
+    // hold — proves we caught up with the sender. LiveKit re-pushes every key
+    // it already knows on each worker `enable` ack; such a replay changes
+    // nothing about the index that was missing and must not supersede it.
+    return at <= rec.advancedAt;
   }
 
   /** Record a media-plane error observed at `now` (monotonic clock). */
@@ -882,7 +892,19 @@ export class MediaErrorLedger {
       bySender.set(entry.livekit_identity, pairs);
     }
     for (const [identity, pairs] of bySender) {
-      this.#installed.set(identity, { completedAt, pairs });
+      const rec = this.#installed.get(identity) ?? {
+        advancedAt: -Infinity,
+        pairs: new Set<string>(),
+      };
+      let advanced = false;
+      for (const pair of pairs) {
+        if (!rec.pairs.has(pair)) {
+          rec.pairs.add(pair);
+          advanced = true;
+        }
+      }
+      if (advanced) rec.advancedAt = completedAt;
+      this.#installed.set(identity, rec);
     }
     for (const [pair, record] of this.#missing) {
       if (this.#superseded(record.identity, pair, record.at)) {
