@@ -44,18 +44,32 @@ run() { # run <label> <tail-lines> <cmd...>
   fi
 }
 
+# An unmatched glob stays literal in bash, and `[ -e "$f" ] || continue` would
+# then skip it and report a clean gate with ZERO specs run — the same silent
+# pass this script exists to kill.
+shopt -s nullglob
 SPECS=("$@")
 if [ ${#SPECS[@]} -eq 0 ]; then
   SPECS=(components/rtc/mlsCall*.test.ts)
 fi
+if [ ${#SPECS[@]} -eq 0 ]; then
+  echo ">>> GATE FAIL: no spec files matched — refusing to report a pass"
+  exit 98
+fi
 
 FILES=(components/rtc/mlsCallSession.ts components/rtc/mlsCallModePolicy.ts
   components/rtc/state.tsx components/rtc/mlsCallSession.harness.ts)
+ran=0
 for f in "${SPECS[@]}"; do
   [ -e "$f" ] || continue
   run "node --test $f" 12 node --test --conditions=browser "$f"
   FILES+=("$f")
+  ran=$((ran + 1))
 done
+if [ $ran -eq 0 ]; then
+  echo ">>> GATE FAIL: no spec file existed — refusing to report a pass"
+  exit 98
+fi
 
 run "tsc --noEmit" 25 "$ROOT/node_modules/.pnpm/node_modules/.bin/tsc" --noEmit
 # --check, never --write: reformatting a tracked file sweeps up code this

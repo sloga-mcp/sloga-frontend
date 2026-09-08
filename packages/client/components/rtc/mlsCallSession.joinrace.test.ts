@@ -200,18 +200,20 @@ test("🔴 a missing key raised INSIDE a rotation window takes the same bound, n
   assert.equal(world.session.callMode().kind, "negotiating");
 });
 
-test("🔴 a local key install for another sender cannot cancel the bound either", async (t) => {
+test("🔴 a local key install and the SFU echo TOGETHER still do not answer a hold", async (t) => {
+  // The two things that cancel `#resecureTimer`, applied at once. A local key
+  // install runs `#onLocalKeyInstalled` and `#clearResecureTimer` with it, and
+  // the echo is the signal that made the reverted attempt unsound. Neither is
+  // evidence about the index THIRD is actually sending at, and their sum is
+  // not either.
   const world = await threeParty(t, "ch-otherinstall");
   const before = world.states.length;
-  const error = await bystanderRaceAfterRejoin(world, 1);
+  const error = await bystanderRaceAfterRejoin(world, 2); // THIRD at index 2
   assert.deepEqual(world.holds, [true]);
 
-  // An epoch whose keys cover PEER but never THIRD: `#onLocalKeyInstalled`
-  // runs, `#clearResecureTimer` runs with it, and the ledger advances for
-  // PEER only. None of that is evidence about the index THIRD is sending at.
   await advance(t, 1_000);
-  world.roster = world.roster.filter((m) => m !== THIRD);
-  await world.commit(1);
+  await world.commit(1); // installs index 1 for everyone; index 2 untouched
+  world.session.noteEncryptionRecovered();
   await flush();
   assert.deepEqual(world.loudSince(before), [], "it latched early");
 
@@ -219,7 +221,7 @@ test("🔴 a local key install for another sender cannot cancel the bound either
   assert.deepEqual(
     world.loudSince(before),
     [{ state: "loud", error }],
-    "an unrelated sender's install answered the hold",
+    "an install plus an echo answered the hold",
   );
   assert.equal(world.session.callMode().kind, "negotiating");
 });
@@ -357,26 +359,186 @@ test("🔴 a sender leaving SUSPENDS its hold; coming back with the index still 
   await flush();
   assert.deepEqual(world.holds, [true]);
 
-  // Now THIRD genuinely leaves the call: no frames of its are at risk, so the
-  // deadline is SUSPENDED — the chip stays amber, nothing goes loud, and the
-  // record of the index it never filled is kept.
+  // Now THIRD drops off the SFU while STILL holding its leaf: no frames of
+  // its are at risk, so the deadline is SUSPENDED — the chip stays amber and
+  // nothing goes loud, however long it stays away.
   world.sfu = world.sfu.filter((id) => id !== THIRD_ID);
-  world.roster = world.roster.filter((m) => m !== THIRD);
   await world.session.reconcileNow();
   await flush();
-  await advance(t, JOIN_RACE_DEFER_MS * 2);
+  await advance(t, JOIN_RACE_DEFER_MS + 5_000);
   assert.deepEqual(world.loudSince(before), [], "a suspended hold still fired");
   assert.deepEqual(world.holds, [true], "a departure resolved the hold");
 
   // THIRD returns, still sending at an index we never filled: the deadline is
-  // re-armed from here and reaches its honest verdict.
+  // re-armed and reaches its honest verdict.
   world.sfu = [...world.sfu, THIRD_ID];
-  world.roster = [...world.roster, THIRD];
   await world.session.reconcileNow();
   await flush();
   assert.deepEqual(world.loudSince(before), [], "it latched on re-arm");
   await advance(t, JOIN_RACE_DEFER_MS + 1_000);
   assert.deepEqual(world.loudSince(before), [{ state: "loud", error }]);
+});
+
+test("🔴 flapping presence cannot walk the bound: a re-arm gets the REMAINING budget", async (t) => {
+  // Suspension parks the deadline, so a peer whose connection flaps faster
+  // than the bound — or a hostile SFU minting departures — would keep the
+  // loud verdict permanently deniable if each re-arm started a fresh window.
+  // Five cycles of 6 s armed is 30 s of exposure against a 20 s bound.
+  const world = await threeParty(t, "ch-flap");
+  const before = world.states.length;
+  const error = await bystanderRaceAfterRejoin(world, 1);
+  assert.deepEqual(world.holds, [true]);
+
+  for (let i = 0; i < 5 && world.loudSince(before).length === 0; i++) {
+    await advance(t, 6_000); // armed
+    world.sfu = world.sfu.filter((id) => id !== THIRD_ID);
+    await world.session.reconcileNow(); // suspend, banking the remainder
+    await flush();
+    world.sfu = [...world.sfu, THIRD_ID];
+    await world.session.reconcileNow(); // re-arm on what is LEFT
+    await flush();
+  }
+  assert.deepEqual(
+    world.loudSince(before),
+    [{ state: "loud", error }],
+    "each re-arm refreshed the bound instead of continuing it",
+  );
+});
+
+test("a sender removed from the GROUP resolves its hold: that index can never be filled", async (t) => {
+  // The mirror of the bug being fixed. A device with no leaf holds no key of
+  // this group and gets no future one, so a hold on it has no verdict left to
+  // reach — and left suspended it would pin the chip amber for the rest of an
+  // otherwise healthy call. Judged on the verified roster, not the SFU set.
+  const world = await threeParty(t, "ch-removed");
+  const before = world.states.length;
+  await bystanderRaceAfterRejoin(world, 1);
+  assert.deepEqual(world.holds, [true]);
+
+  world.sfu = world.sfu.filter((id) => id !== THIRD_ID);
+  world.roster = world.roster.filter((m) => m !== THIRD);
+  await world.commit(1, [THIRD]); // the Remove epoch lands
+  await world.session.reconcileNow();
+  await flush();
+  assert.deepEqual(world.holds, [true, false], "the hold outlived the Remove");
+  await advance(t, JOIN_RACE_DEFER_MS * 2);
+  assert.deepEqual(world.loudSince(before), []);
+  assert.equal(world.session.callMode().kind, "e2ee");
+});
+
+test("🔴 the heal does not clear while the named peer has moved on to another unfilled index", async (t) => {
+  // The defect the media-E2EE review of `ae15b2db` found. `errorSinceInstall`
+  // cannot see that peer: the ledger's advance rule forgives the later pair
+  // the moment an install advances us for that sender, and the worker emits
+  // nothing more once it has silenced an index. Re-validating the index the
+  // LATCH named is then no witness at all — the peer is two epochs ahead and
+  // its every frame is being dropped.
+  const world = await threeParty(t, "ch-heal-movedon");
+  const before = world.states.length;
+  const error = world.missingKey(THIRD_ID, 1); // THIRD at epoch 1
+  world.session.noteEncryptionError(error); // no window: latches at once
+  await flush();
+  assert.deepEqual(world.loudSince(before), [{ state: "loud", error }]);
+  // THIRD moves on to epoch 2 while we are still behind.
+  world.session.noteEncryptionError(world.missingKey(THIRD_ID, 2));
+  await flush();
+
+  // Our copy of commit 1 lands: it fills index 1 (the one the latch named) and
+  // sweeps the index-2 record through the advance rule.
+  await advance(t, 1_000);
+  await world.commit(1);
+  await advance(t, JOIN_RACE_DEFER_MS * 2);
+  assert.deepEqual(
+    world.clearsSince(before),
+    [],
+    "healed to green while that peer's frames were dropped at index 2",
+  );
+  assert.equal(world.session.callMode().kind, "negotiating");
+});
+
+test("🔴 a HARD error inside a rotation window is not the SFU's to clear either", async (t) => {
+  // The other half of the shadowing problem. Missing keys now always take the
+  // hold, but an `InvalidKey` raised inside a rotation window still goes to
+  // `#armResecureEscalation` — and that timer was cancellable by
+  // `noteEncryptionRecovered()`, i.e. by ANY participant's SFU-declared
+  // encryption status. One echo turned a hard failure into a green chip over
+  // an index the worker had marked invalid: the reverted attempt's posture,
+  // reached without touching a missing key at all. A hard error reports a key
+  // that STAYS wrong until the next epoch, so only a local install may end it.
+  const world = await threeParty(t, "ch-hard-inwindow");
+  await world.commit(1); // an Add rotation: grace + settle = a 4 s window
+  // Past the 2 s Add-grace, so the DEFERRED local install has already run and
+  // cannot clear the escalation later — that clear is legitimate and local,
+  // and would mask what this spec is about — but still inside the window.
+  await advance(t, 2_500);
+  const before = world.states.length;
+  const error = new Error("InvalidKey: Decryption failed: x");
+  world.session.noteEncryptionError(error);
+  await flush();
+  assert.deepEqual(world.loudSince(before), []);
+  assert.deepEqual(world.holds, [true], "the chip was not driven amber");
+
+  for (let i = 0; i < 13; i++) {
+    world.session.noteEncryptionRecovered();
+    await advance(t, 1_000);
+  }
+  assert.deepEqual(
+    world.loudSince(before),
+    [{ state: "loud", error }],
+    "the echo cleared a media-plane escalation",
+  );
+  assert.equal(world.session.callMode().kind, "negotiating");
+});
+
+test("🔴 the loud verdict is REPORTED before the amber is dropped", async (t) => {
+  // `state.tsx` writes `callMediaHold` and `callEncryptionError` unbatched, so
+  // dropping the amber first leaves an intermediate state with neither set,
+  // in which `chipState` computes a green. No paint happens between them, but
+  // an effect or a live-leg sampler can read it.
+  const world = await threeParty(t, "ch-order");
+  await bystanderRaceAfterRejoin(world, 1);
+  const from = world.events.length;
+  await advance(t, JOIN_RACE_DEFER_MS + 1_000);
+  const tail = world.events.slice(from);
+  assert.ok(tail.includes("state:loud"), `no loud in ${tail.join(",")}`);
+  assert.ok(tail.includes("hold:false"), `no amber drop in ${tail.join(",")}`);
+  assert.ok(
+    tail.indexOf("state:loud") < tail.indexOf("hold:false"),
+    `the amber was dropped before the loud landed: ${tail.join(",")}`,
+  );
+});
+
+test("🔴 past the key-ring wrap the pair witnesses are refused, and a hold ends loud", async (t) => {
+  // `key_index = epoch mod 16`, so from epoch 16 on every index has been
+  // filled before and `pairFilledAtSeq` answers "yes" for a slot whose current
+  // occupant is a generation old. Both witnesses that could turn this green
+  // stop discriminating there, so both are refused and the verdict falls back
+  // to the honest red. (The identity-carrying MissingKey itself also stops
+  // appearing once a sender's ring is full — it becomes an InvalidKey, which
+  // is `hard` and latches at once — but a sender whose ring is not yet full
+  // can still raise one, which is the case this pins.)
+  const world = await threeParty(t, "ch-wrap");
+  for (let e = 1; e <= 16; e++) await world.commit(e);
+  await flush();
+  const before = world.states.length;
+  // Index 1 = epoch 17's slot, and also epoch 1's, which we filled long ago.
+  const error = await bystanderRaceAfterRejoin(world, 17);
+  assert.deepEqual(world.holds, [true], "no hold past the wrap");
+  assert.deepEqual(world.loudSince(before), []);
+
+  // Epoch 17 lands and fills index 1 — which `pairFilledAtSeq` would read as
+  // an answer, though it says nothing about the generation that failed.
+  await advance(t, 1_000);
+  await world.commit(17);
+  await flush();
+  assert.deepEqual(world.loudSince(before), [], "it latched before the bound");
+  await advance(t, JOIN_RACE_DEFER_MS);
+  assert.deepEqual(
+    world.loudSince(before),
+    [{ state: "loud", error }],
+    "a stale-generation slot answered the hold past the wrap",
+  );
+  assert.equal(world.session.callMode().kind, "negotiating");
 });
 
 test("a loud latch from another cause supersedes every open hold", async (t) => {

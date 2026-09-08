@@ -114,6 +114,15 @@ export class World {
   states: EncryptionStateCall[] = [];
   /** Every `onMediaHold` edge, in order — the chip's amber while a hold is open. */
   holds: boolean[] = [];
+  /**
+   * The media-plane state changes and the amber edges INTERLEAVED, in the
+   * order the session emitted them. `state.tsx` writes `callEncryptionError`
+   * and `callMediaHold` in separate, unbatched Solid setters, so the order
+   * matters: between dropping the amber and reporting loud the chip has
+   * neither and computes a green, which an effect or a live-leg sampler can
+   * read even though no paint happens between them.
+   */
+  events: string[] = [];
   modes: string[] = [];
   bridgeCalls: string[] = [];
   /** Injected by the fake installer between its two awaits, once. */
@@ -264,9 +273,17 @@ function fakeMedia(world: World): MlsMediaBinding {
     sfuParticipants: () => [...world.sfu],
     participantTrackSids: (identity) => world.sids.get(identity) ?? [],
     sfuConnected: () => world.connected,
-    onEncryptionState: (state, error) => world.states.push({ state, error }),
+    onEncryptionState: (state, error) => {
+      world.states.push({ state, error });
+      world.events.push(`state:${state}`);
+    },
     ...(world.holdsSupported
-      ? { onMediaHold: (active: boolean) => world.holds.push(active) }
+      ? {
+          onMediaHold: (active: boolean) => {
+            world.holds.push(active);
+            world.events.push(`hold:${active}`);
+          },
+        }
       : {}),
     onCallModeChanged: (mode) => world.modes.push(mode.kind),
     setEncryptionEnabled: async () => {},
@@ -352,6 +369,17 @@ function bridgeFor(world: World): E2EEBridge {
       },
     ),
     ackEnvelopes: record("ackEnvelopes", () => {}),
+    // The ghost-divergence timer fires 30 s after a member is seen in the MLS
+    // roster but not in the SFU set, and stages a Remove. Specs that run past
+    // that (a suspended hold outliving its bound) would otherwise die on an
+    // unstubbed method. `mls_group_not_found` is the shape the session already
+    // treats as a benign no-op — another member's Remove won the race — so the
+    // ghost path runs to completion without deciding anything.
+    callRemove: record("callRemove", async () => {
+      throw Object.assign(new Error("mls_group_not_found"), {
+        type: "mls_group_not_found",
+      });
+    }),
   };
   return fakeBridge(stubs);
 }

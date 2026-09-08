@@ -104,6 +104,7 @@ import {
   type LoudLatchOrigin,
   type RotationWindowOpener,
   MediaErrorLedger,
+  WORKER_KEYRING_SIZE,
   callModeTransition,
   classifyEncryptionError,
   classifyMediaError,
@@ -1253,6 +1254,10 @@ export class MlsCallSession {
       error: unknown;
       /** Null while SUSPENDED — the sender is gone, so no frame is at risk. */
       timer: ReturnType<typeof setTimeout> | null;
+      /** Budget left on the ORIGINAL bound; banked whenever the hold suspends. */
+      remainingMs: number;
+      /** When the live deadline was (re-)armed, to bank against on suspend. */
+      armedAt: number;
     }
   >();
   /**
@@ -3760,6 +3765,19 @@ export class MlsCallSession {
     // rotation-window resecuring (where #hasLocalKey is already true) clears
     // here as before.
     if (!this.#hasLocalKey) return;
+    // ...and a MEDIA-plane escalation is not this signal's to cancel at all.
+    // It fires on ANY participant's SFU-declared encryption status, which
+    // witnesses nothing about whether THIS device can decrypt: an `InvalidKey`
+    // raised inside a rotation window was softened to `resecuring` and then
+    // cleared by one echo, leaving the chip green over an index the worker had
+    // marked invalid — the same posture the 2026-09-08 attempt was reverted
+    // for, reachable without touching a missing key. A hard error reports a
+    // key that STAYS wrong until the next epoch, so the only honest ends are
+    // the local install that replaces it (`#onLocalKeyInstalled` →
+    // `#clearResecureTimer`) and the escalation itself (media-E2EE review,
+    // 2026-09-08). Control-plane escalations keep the old behavior.
+    if (this.#resecureTimer !== null && this.#resecureOrigin === "media")
+      return;
     this.#clearResecureTimer();
     this.#media?.onEncryptionState?.("clear");
   }
@@ -3803,21 +3821,23 @@ export class MlsCallSession {
    */
   #noteMembershipObserved(key: string): void {
     if (this.#terminal()) return;
-    // Pruned on WRITE as well as on read: every inbound commit stamps an
+    // Pruned on WRITE as well as on read: every roster transition stamps an
     // entry, and nothing reads the map unless a missing key lands, so a long
-    // quiet call would otherwise accumulate one per commit for the whole call.
+    // quiet call would otherwise accumulate one per change for the whole call.
     this.#pruneMembershipObserved();
-    this.#membershipObserved.set(key, Date.now());
+    this.#membershipObserved.set(key, performance.now());
   }
 
   /**
-   * Drop observations that have lapsed, and any stamped AHEAD of now — a wall
-   * clock stepping back must not pin the window open (the D-M6 shape).
+   * Drop observations that have lapsed. Stamped on the MONOTONIC clock, like
+   * every other media-plane stamp (`MediaErrorLedger`): a wall clock stepping
+   * BACK would pin the window open, and one jumping FORWARD would close it
+   * under a legitimate join race and hand the error to the immediate-loud arm.
    */
   #pruneMembershipObserved(): void {
-    const now = Date.now();
+    const now = performance.now();
     for (const [key, at] of this.#membershipObserved) {
-      if (at > now || now - at > MEMBERSHIP_OBSERVED_MS) {
+      if (now - at > MEMBERSHIP_OBSERVED_MS) {
         this.#membershipObserved.delete(key);
       }
     }
@@ -3870,7 +3890,9 @@ export class MlsCallSession {
     this.#joinRaceHolds.set(pair, {
       identity,
       error,
-      timer: this.#armHoldDeadline(pair, error),
+      timer: this.#armHoldDeadline(pair, error, JOIN_RACE_DEFER_MS),
+      remainingMs: JOIN_RACE_DEFER_MS,
+      armedAt: Date.now(),
     });
     this.#media.onEncryptionState?.("resecuring", error);
     console.info(`[mls] join-race hold armed for ${pair}`);
@@ -3906,6 +3928,7 @@ export class MlsCallSession {
       const present = new Set(readable ? media.sfuParticipants() : []);
       for (const [pair, hold] of [...this.#joinRaceHolds]) {
         if (
+          !this.#keyRingWrapped() &&
           this.#mediaErrors.pairFilledAtSeq(hold.identity, pair) !== undefined
         ) {
           this.#cancelHoldTimer(hold);
@@ -3916,28 +3939,62 @@ export class MlsCallSession {
           );
           continue;
         }
-        // The sender is gone: its frames are gone with it, so the deadline
-        // has nothing to judge — SUSPEND it rather than resolve it. The
-        // worker never prunes a participant's key handler, so the index it
-        // marked invalid is still invalid when that identity returns, and a
-        // hostile SFU can mint a departure at will; a resolution here would
-        // be a green chip over an index nothing re-validated (media-E2EE
-        // review, 2026-09-08). Re-armed below if it comes back unanswered.
+        // Out of the GROUP, not merely out of the SFU: a device with no leaf
+        // holds no key of this group and gets no future one, so the index it
+        // failed at can never be filled and the hold has no verdict left to
+        // reach. Judged on the verified roster diff (`#lastRosterIdentities`),
+        // which is natively verified group state rather than an SFU claim —
+        // without it a hold whose sender is Removed pins the chip amber for
+        // the rest of an otherwise healthy call (media-E2EE review,
+        // 2026-09-08).
+        if (
+          this.#lastRosterIdentities.size > 0 &&
+          !this.#lastRosterIdentities.has(stripLeg(hold.identity))
+        ) {
+          this.#cancelHoldTimer(hold);
+          this.#joinRaceHolds.delete(pair);
+          console.info(
+            `[mls] join-race hold resolved for ${pair}: the sender is no ` +
+              `longer in the group, so that index can never be filled`,
+          );
+          continue;
+        }
+        // Still a member, but gone from the SFU: its frames are gone with it,
+        // so the deadline has nothing to judge — SUSPEND it rather than
+        // resolve it. The worker never prunes a participant's key handler, so
+        // the index it marked invalid is still invalid when that identity
+        // returns, and a hostile SFU can mint a departure at will; a
+        // resolution here would be a green chip over an index nothing
+        // re-validated. The REMAINING budget is banked, never refreshed.
         const gone = readable && !present.has(hold.identity);
         if (gone) {
           if (hold.timer) {
+            hold.remainingMs = Math.max(
+              0,
+              hold.remainingMs - (Date.now() - hold.armedAt),
+            );
             this.#cancelHoldTimer(hold);
             hold.timer = null;
             console.info(
               `[mls] join-race hold suspended for ${pair}: the sender left ` +
-                `the SFU with that index still unfilled`,
+                `the SFU with that index still unfilled ` +
+                `(${hold.remainingMs}ms of the bound left)`,
             );
           }
-        } else if (!hold.timer) {
-          hold.timer = this.#armHoldDeadline(pair, hold.error);
+        } else if (!hold.timer && readable) {
+          // Only on POSITIVE evidence that the sender is back: mid-reconnect
+          // the SFU set is not readable at all, and re-arming there would
+          // eventually latch loud naming a sender that genuinely left.
+          hold.armedAt = Date.now();
+          hold.timer = this.#armHoldDeadline(
+            pair,
+            hold.error,
+            hold.remainingMs,
+          );
           console.info(
             `[mls] join-race hold re-armed for ${pair}: the sender is back ` +
-              `and that index is still unfilled`,
+              `and that index is still unfilled ` +
+              `(${hold.remainingMs}ms of the bound left)`,
           );
         }
       }
@@ -3954,21 +4011,32 @@ export class MlsCallSession {
     this.#timers.delete(hold.timer);
   }
 
-  /** The private deadline that latches `error` loud if nothing answers it. */
+  /**
+   * The private deadline that latches `error` loud if nothing answers it.
+   * `budgetMs` is what is LEFT of the original bound, never a fresh one: a
+   * hold suspends and re-arms on SFU presence, so refreshing it here would let
+   * a peer whose connection flaps faster than the bound — or a hostile SFU
+   * minting departures — keep the loud verdict permanently deniable
+   * (media-E2EE review, 2026-09-08).
+   */
   #armHoldDeadline(
     pair: string,
     error: unknown,
+    budgetMs: number,
   ): ReturnType<typeof setTimeout> {
-    const timer = setTimeout(() => {
-      this.#timers.delete(timer);
-      this.#joinRaceHolds.delete(pair);
-      if (this.#terminal()) return;
-      console.warn(
-        `[mls] join-race hold expired for ${pair}: no install filled that ` +
-          `index within ${JOIN_RACE_DEFER_MS}ms`,
-      );
-      this.#latchLoud(error, "media");
-    }, JOIN_RACE_DEFER_MS);
+    const timer = setTimeout(
+      () => {
+        this.#timers.delete(timer);
+        this.#joinRaceHolds.delete(pair);
+        if (this.#terminal()) return;
+        console.warn(
+          `[mls] join-race hold expired for ${pair}: no install filled that ` +
+            `index within ${JOIN_RACE_DEFER_MS}ms`,
+        );
+        this.#latchLoud(error, "media");
+      },
+      Math.max(0, budgetMs),
+    );
     this.#timers.add(timer);
     return timer;
   }
@@ -4003,6 +4071,28 @@ export class MlsCallSession {
    * so a loser sits inside a 12 s `arbitration` window across exactly the
    * join race (media-E2EE review, 2026-09-08).
    */
+  /**
+   * Whether this group has run past the worker's key ring, after which a pair
+   * id no longer identifies one epoch's slot.
+   *
+   * `key_index = epoch mod 16`, so from epoch 16 on every index has been
+   * filled before and `pairFilledAtSeq` answers "yes" for a slot whose CURRENT
+   * occupant is a generation old. Both witnesses that turn a deferred verdict
+   * or a bystander latch green read that as proof and stop discriminating, so
+   * past the wrap they are refused outright: a hold can then only resolve by
+   * its sender leaving the group, and a latch only by the peer witness. That
+   * is the pre-fix behavior — an honest, possibly-early red — and it is the
+   * fail-closed direction.
+   *
+   * The real fix is a pair id qualified by ring generation, which belongs with
+   * the `getKeys()` replay HIGH at this same boundary (§8): that one already
+   * has to decide what LiveKit may re-push once the ring comes round, and the
+   * two must agree. Recorded rather than half-built here.
+   */
+  #keyRingWrapped(): boolean {
+    return this.#installEpoch >= WORKER_KEYRING_SIZE;
+  }
+
   #refreshMediaHold(): void {
     const active = this.#joinRaceHolds.size > 0 || this.#resecureTimer !== null;
     if (this.#mediaHoldSurfaced === active) return;
@@ -4064,13 +4154,15 @@ export class MlsCallSession {
         ? { identity: originating.identity, pair: originating.pair }
         : null;
     this.#clearHealProbe();
+    // Loud FIRST, then drop the amber. `state.tsx` writes `callMediaHold` and
+    // `callEncryptionError` in separate, unbatched Solid setters, so clearing
+    // the holds first leaves an intermediate state where neither is set and
+    // `chipState` computes a green — no paint happens between them, but any
+    // effect or memo consumer (a live-leg sampler) can read it.
+    this.#media?.onEncryptionState?.("loud", error);
     // The strictest reading has now been taken: nothing is left to defer.
-    // Ordered AFTER the latch flag and BEFORE the loud report so the chip
-    // never renders a frame with the amber gone and the error not yet set
-    // (`state.tsx` writes the two signals unbatched).
     this.#clearJoinRaceHolds();
     this.#clearResecureTimer();
-    this.#media?.onEncryptionState?.("loud", error);
     // A loud verdict after the mode reached `e2ee` used to leave the chip red
     // with NO banner and no escape: `isTerminalLoud` and `confirmPlaintext`
     // both key on `negotiating`. Fold it into that shape (`loudModeFallback`)
@@ -4231,11 +4323,19 @@ export class MlsCallSession {
       // true at latch time (the reverted attempt's mistake — the worker
       // raises the error precisely because our `setKey` had not landed).
       originatingPairRefilled:
+        !this.#keyRingWrapped() &&
         this.#loudOriginatingPair !== null &&
         (this.#mediaErrors.pairFilledAtSeq(
           this.#loudOriginatingPair.identity,
           this.#loudOriginatingPair.pair,
-        ) ?? -1) > this.#loudLatchedInstallSeq,
+        ) ?? -1) > this.#loudLatchedInstallSeq &&
+        // ...and that sender has no OTHER index still unfilled. Re-validating
+        // the one the latch named proves nothing if the sender has since moved
+        // on to an index we never got: `errorSinceInstall` cannot see it (the
+        // ledger's advance rule forgives the later pair) and the worker emits
+        // nothing more once it has silenced an index.
+        this.#mediaErrors.unfilledPairs(this.#loudOriginatingPair.identity)
+          .length === 0,
     };
     const verdict = loudHealVerdict(inputs);
     if (verdict !== "heal") {

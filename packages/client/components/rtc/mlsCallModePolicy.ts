@@ -682,6 +682,15 @@ export interface LoudHealInputs {
    * posts — and the worker raises a missing key precisely BECAUSE that
    * `setKey` had not been processed yet, so the clause was already true at
    * latch time and healed the latch it was meant to judge.
+   *
+   * It ALSO requires that the sender has no OTHER index still unfilled
+   * (`MediaErrorLedger.unfilledPairs`). Re-validating the index the latch
+   * named proves nothing if the sender has since moved on to another we never
+   * got: `errorSinceInstall` cannot see that peer, because the ledger's
+   * advance rule forgives the later pair, and the worker emits nothing more
+   * after silencing an index. Without that second half this clause substitutes
+   * for the peer witness in exactly the case the peer witness exists for
+   * (media-E2EE review, 2026-09-08).
    */
   originatingPairRefilled?: boolean;
 }
@@ -875,6 +884,21 @@ export class MediaErrorLedger {
     string,
     { advancedAt: number; pairs: Map<string, number> }
   >();
+  /**
+   * Every missing-key pair EVER observed, by sender — never swept by the
+   * advance rule, so `unfilledPairs` can answer "is this sender still sending
+   * at an index we do not hold?" exactly.
+   *
+   * `#missing` cannot answer it. Its supersession forgives a pair once an
+   * install ADVANCED us for that sender (`at <= advancedAt`), which exists for
+   * the Welcome joiner that heard `P@E` before holding any key and can never
+   * fill that slot (H1) — but it also forgives the index a sender is
+   * CURRENTLY using when we are two epochs behind it. Then `errorSince` reads
+   * clean while the worker drops that peer's every frame at an index it
+   * marked invalid, which is precisely the silent drop the heal's peer
+   * witness exists to catch (media-E2EE review, 2026-09-08).
+   */
+  #everMissing = new Map<string, Set<string>>();
 
   /** Whether `pair` from `identity` is answered by an install since. */
   #superseded(identity: string, pair: string, at: number): boolean {
@@ -895,8 +919,13 @@ export class MediaErrorLedger {
   noteError(error: unknown, now: number): MediaErrorClass {
     const cls = classifyMediaError(error);
     if (cls.kind === "hard") this.#hardErrorAt = now;
-    else if (!this.#superseded(cls.identity, cls.pair, now)) {
-      this.#missing.set(cls.pair, { identity: cls.identity, at: now });
+    else {
+      const seen = this.#everMissing.get(cls.identity) ?? new Set<string>();
+      seen.add(cls.pair);
+      this.#everMissing.set(cls.identity, seen);
+      if (!this.#superseded(cls.identity, cls.pair, now)) {
+        this.#missing.set(cls.pair, { identity: cls.identity, at: now });
+      }
     }
     return cls;
   }
@@ -974,6 +1003,21 @@ export class MediaErrorLedger {
     return this.#installed.get(identity)?.pairs.get(pair);
   }
 
+  /**
+   * Pairs this sender has failed at that this side has STILL not filled —
+   * indexes the worker marked invalid and that only a `setKey` for that exact
+   * index re-validates. Non-empty means the sender may be sending into one of
+   * them right now, silently dropped, with no further error to prove it.
+   *
+   * Deliberately not derived from `#missing`: see `#everMissing`.
+   */
+  unfilledPairs(identity: string): string[] {
+    const seen = this.#everMissing.get(identity);
+    if (!seen) return [];
+    const filled = this.#installed.get(identity)?.pairs;
+    return [...seen].filter((pair) => !filled?.has(pair));
+  }
+
   /** The missing-key pairs still uncovered by an install (diagnostics). */
   uncoveredPairs(): string[] {
     return [...this.#missing.keys()];
@@ -989,6 +1033,7 @@ export class MediaErrorLedger {
     this.#hardErrorAt = -Infinity;
     this.#missing.clear();
     this.#installed.clear();
+    this.#everMissing.clear();
   }
 }
 
