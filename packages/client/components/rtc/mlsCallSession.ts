@@ -254,6 +254,35 @@ const LAG_DESYNC_THRESHOLD = 12;
  */
 const LEAVE_GRACE_MS = 10_000;
 /**
+ * How long a call-membership change this device OBSERVED counts as possibly
+ * still landing (`#membershipChangeObserved`): the leave-grace every member
+ * waits out before staging a Remove, plus one submit round trip — the longest
+ * a departure this device watched can legitimately take to reach it as a
+ * commit it applies.
+ *
+ * The window only decides whether a decode missing key gets a DEFERRED
+ * verdict or an immediate loud one; it suppresses nothing by itself, because
+ * the hold it gates carries its own deadline and ends loud. Breadth is
+ * therefore the safe direction: an over-open window costs at most one
+ * `JOIN_RACE_DEFER_MS` of amber before an honest red, while one that closes
+ * too early costs a permanently red chip on a call that is fine (leg 3a).
+ */
+const MEMBERSHIP_OBSERVED_MS = LEAVE_GRACE_MS + SUBMIT_TIMEOUT_MS;
+/**
+ * The bound on a join-race hold: how long a decode missing key raised during
+ * an observed membership change may wait for the install that answers it
+ * before it latches loud after all.
+ *
+ * Same length as the rotation-window escalation — both bound "a re-securing
+ * that must resolve or go loud" — but a SEPARATE, dedicated timer per pair,
+ * because `#resecureTimer` is not a bound at all: `noteEncryptionRecovered()`
+ * (wired to ANY participant's `participantEncryptionStatusChanged`, an
+ * SFU-declared echo, which fired 97 ms after the error in the leg-3a trace)
+ * and `#onLocalKeyInstalled()` both cancel it unconditionally. A hold is
+ * answered ONLY by local evidence — see `#resolveJoinRaceHolds`.
+ */
+const JOIN_RACE_DEFER_MS = RESECURE_ESCALATE_MS;
+/**
  * Admit-grace — the JOIN-direction mirror of the leave-grace. A participant we
  * watched join the SFU counts as `pending` (not non-enrolled) for its grace
  * window, so a mid-call join does not instantly flip the call to `mixed` —
@@ -699,6 +728,17 @@ export interface MlsMediaBinding {
    * without one only ends a transient re-securing.
    */
   onEncryptionState?(state: MediaEncryptionState, error?: unknown): void;
+  /**
+   * Whether a join-race hold is open — a decode missing key whose verdict is
+   * DEFERRED while the install that would answer it is still expected
+   * (`#holdJoinRace`). The §4.4 chip must read AMBER for as long as this is
+   * true: a hold means this device cannot currently vouch for one peer's
+   * frames, and the chip's own `resecuring` input is wired to the session
+   * LIFECYCLE state only, so a media-plane re-securing never reached it. A
+   * deferred verdict that read green would be the silent-green posture this
+   * feature cannot take.
+   */
+  onMediaHold?(active: boolean): void;
   /**
    * Surface the latest roster reconciliation (step 5). `state.tsx` renders the
    * mixed-call loud state + drives pause-publish (step 6) from `nonEnrolled`,
@@ -1173,6 +1213,37 @@ export class MlsCallSession {
    * heal probe against `#lastInstallAt` — see `MediaErrorLedger`.
    */
   #mediaErrors = new MediaErrorLedger();
+  /**
+   * Call-membership changes this device OBSERVED ITSELF — an SFU
+   * connect/disconnect, a Remove it staged, an inbound commit it queued —
+   * stamped by key (`Date.now()`). Read only by
+   * `#membershipChangeObserved`, which prunes lapsed entries.
+   *
+   * Keyed on the observed event rather than on `#leaveGrace` /
+   * `#scheduledAdmits` / `#rejoinServed` (rejoin plan §8): the leave-grace
+   * timer DELETES its entry before calling `#removeMember`, so the whole
+   * Remove — stage, submit, propagate, apply — used to run with that flag
+   * already gone, and `#rejoinServed` is stamped from the LOCAL roster diff,
+   * i.e. only once this device has applied the very commit it is behind on.
+   * Neither covers the seat that actually races.
+   *
+   * Deliberately NOT cleared when an epoch's keys apply: a 3+ party call can
+   * hold a second departure behind the first, and closing the window on the
+   * first commit is the same too-narrow predicate this map replaces. Entries
+   * lapse on their own.
+   */
+  #membershipObserved = new Map<string, number>();
+  /**
+   * Deferred verdicts on decode missing-key errors raised during an observed
+   * membership change, by key pair (`identity@index`) — see `#holdJoinRace`.
+   * Each entry owns a private deadline that latches loud.
+   */
+  #joinRaceHolds = new Map<
+    string,
+    { identity: string; error: unknown; timer: ReturnType<typeof setTimeout> }
+  >();
+  /** Whether the binding has been told a hold is open (edge-triggered). */
+  #mediaHoldSurfaced = false;
   /**
    * When each DEVICE was last observed ADDED to the MLS roster by the roster
    * diff of `#reconcileOnce` — a transition in natively verified group state
@@ -1656,6 +1727,11 @@ export class MlsCallSession {
     this.#welcomeWait?.resolve(false);
     this.#welcomeWait = undefined;
     this.#inbound = [];
+    // Every hold timer is in `#timers`, already cleared above; drop the
+    // bookkeeping so a disposed session surfaces no hold.
+    this.#joinRaceHolds.clear();
+    this.#membershipObserved.clear();
+    this.#setMediaHold(false);
 
     const groupId = this.#groupId;
     this.#groupId = null;
@@ -2432,6 +2508,7 @@ export class MlsCallSession {
     this.#pendingAdmits.delete(
       `rejoin:${request.user_id}:${request.device_id}`,
     );
+    this.#noteMembershipObserved(`${request.user_id}:${request.device_id}`);
     if (
       this.#terminal() ||
       this.#state !== "active" ||
@@ -2781,6 +2858,13 @@ export class MlsCallSession {
   /** Queue an inbound envelope and kick the (single-flight) drain pump. */
   #enqueue(envelope: MlsEnvelope): void {
     this.#inbound.push(envelope);
+    // Seen but not applied: whatever roster change it carries is already live
+    // on the member that committed it. (Usually LATE for the join race — the
+    // SFU beats the DS, which is the whole shape — but it is the one opener
+    // that covers a commit no local SFU event preceded.)
+    if (envelope.content_type === "mls_commit") {
+      this.#noteMembershipObserved(`commit:${envelope.id}`);
+    }
     // R-2 mailbox pressure (§7.3): our receive-queue depth + bytes vs the
     // server's per-recipient 512 / 32 MiB budgets (it silently skips over them,
     // recovered by gap-refetch — so we measure pressure, not "zero drops").
@@ -3461,6 +3545,9 @@ export class MlsCallSession {
     this.#installSeq++;
     this.#lastInstallAt = installRef;
     this.#mediaErrors.noteInstalled(entries, performance.now());
+    // The one local fact a join-race hold waits for: this install either
+    // filled the slot a held missing key named, or advanced past it.
+    this.#resolveJoinRaceHolds();
     // A new epoch's keys under a MEDIA latch: the group re-keyed past the
     // failure (the latch recorded the counter BEFORE this increment, so the
     // "advanced" witness holds by construction here). Give the media plane
@@ -3564,7 +3651,7 @@ export class MlsCallSession {
     // Ledgered BEFORE the latched early-return: the heal probe needs to see
     // errors that arrive under the latch (a failure that survives a re-key
     // re-emits once per freshly installed key index).
-    this.#mediaErrors.noteError(error, performance.now());
+    const cls = this.#mediaErrors.noteError(error, performance.now());
     const media = this.#media;
     if (!media || this.#terminal() || this.#loudLatched) return;
 
@@ -3574,6 +3661,14 @@ export class MlsCallSession {
     ) {
       media.onEncryptionState?.("resecuring", error);
       this.#armResecureEscalation(error, "media");
+    } else if (cls.kind === "missing_key" && this.#membershipChangeObserved()) {
+      // Not classifiable yet: a missing key during a membership change this
+      // device watched is either the join race or a withheld commit, and
+      // nothing available HERE tells them apart. Defer the verdict under its
+      // own bound rather than guess (`#holdJoinRace`), then answer it at once
+      // if the ledger already covers the pair.
+      this.#holdJoinRace(cls.pair, cls.identity, error);
+      this.#resolveJoinRaceHolds();
     } else {
       this.#latchLoud(error, "media");
     }
@@ -3655,6 +3750,150 @@ export class MlsCallSession {
     this.#timers.add(timer);
   }
 
+  // ---- The join race: a missing key this device is merely BEHIND on ---------
+
+  /**
+   * Record a call-membership change this device OBSERVED (never one it was
+   * merely told about): an SFU participant connect/disconnect, a Remove it
+   * staged, or an inbound commit it queued but has not applied.
+   */
+  #noteMembershipObserved(key: string): void {
+    if (this.#terminal()) return;
+    this.#membershipObserved.set(key, Date.now());
+  }
+
+  /**
+   * Whether a membership change this device observed could still be landing.
+   * Prunes lapsed entries, and any stamped AHEAD of now, so a wall clock
+   * stepping back cannot pin the window open (the D-M6 shape).
+   */
+  #membershipChangeObserved(): boolean {
+    const now = Date.now();
+    for (const [key, at] of this.#membershipObserved) {
+      if (at > now || now - at > MEMBERSHIP_OBSERVED_MS) {
+        this.#membershipObserved.delete(key);
+      }
+    }
+    return this.#membershipObserved.size > 0;
+  }
+
+  /**
+   * DEFER the verdict on a decode missing key raised while a membership
+   * change this device observed could still be landing.
+   *
+   * The error says the worker judged a frame at a key index this side does
+   * not hold. During an epoch change that is the join race: the member that
+   * SERVES the change commits and installs first, so every non-serving member
+   * can hear the new index before its own copy of that commit is applied (leg
+   * 3a, 2026-09-07 — the receiver stayed red for the rest of the call while
+   * that peer's frames decrypted again 3.6 s later, and because a missing key
+   * NAMES its participant the heal's only witness was a bystander that never
+   * churns). Outside one it means a commit was withheld from this device and
+   * its media is being dropped. The two are indistinguishable AT THE ERROR;
+   * exactly one local fact separates them afterwards — whether the install
+   * that fills the named slot ever arrives.
+   *
+   * So neither verdict is taken here. The error is HELD, the chip is driven
+   * amber (`#setMediaHold` — never green: a hold is precisely "this device
+   * cannot vouch for that peer's frames right now"), and a private deadline
+   * latches it loud with the ORIGINAL error unless local evidence answers it
+   * first. The deadline is taken from the FIRST error for a pair and never
+   * refreshed, so a stream of failures cannot walk the bound forward.
+   *
+   * 🔴 This must never become a `classifyEncryptionError` arm again. The
+   * 2026-09-08 attempt classified the same error as RE-SECURING and cited
+   * `RESECURE_ESCALATE_MS` as its bound; that bound does not exist
+   * (`#resecureTimer` is cancelled by `noteEncryptionRecovered()`, which fires
+   * on ANY participant's SFU-declared encryption status, and by
+   * `#onLocalKeyInstalled()`), and the media-plane `resecuring` state never
+   * reached the chip — so the suppressed error read as a SILENT GREEN over
+   * dropped frames, and it was reverted for being worse than the bug.
+   */
+  #holdJoinRace(pair: string, identity: string, error: unknown): void {
+    if (this.#joinRaceHolds.has(pair)) return; // the first deadline stands
+    const timer = setTimeout(() => {
+      this.#timers.delete(timer);
+      this.#joinRaceHolds.delete(pair);
+      if (this.#terminal()) return;
+      console.warn(
+        `[mls] join-race hold expired for ${pair}: no install answered it ` +
+          `within ${JOIN_RACE_DEFER_MS}ms`,
+      );
+      this.#latchLoud(error, "media");
+    }, JOIN_RACE_DEFER_MS);
+    this.#joinRaceHolds.set(pair, { identity, error, timer });
+    this.#timers.add(timer);
+    this.#media?.onEncryptionState?.("resecuring", error);
+    console.info(`[mls] join-race hold armed for ${pair}`);
+  }
+
+  /**
+   * Answer every open join-race hold that local evidence now settles.
+   *
+   * EXACTLY TWO facts resolve a hold, both local:
+   *  - the `MediaErrorLedger` no longer counts the pair uncovered — an
+   *    install THIS device performed pushed that pair, or advanced past it by
+   *    filling a slot it did not already hold. (Only an advancing install
+   *    counts: LiveKit re-pushes every key it already holds on each worker
+   *    `enable` ack, and that replay proves nothing.) The key material comes
+   *    from a natively verified commit, so a hostile DS cannot mint it;
+   *  - the named sender is gone from a CONNECTED SFU: it is sending nothing
+   *    this device could be silently dropping. Gated on `sfuConnected()`,
+   *    because a full LiveKit reconnect empties `remoteParticipants` and would
+   *    otherwise read every sender as absent — the same guard `errorSince`
+   *    and the heal probe already take.
+   *
+   * Nothing else. In particular NOT `noteEncryptionRecovered()`, NOT
+   * `#onLocalKeyInstalled()`, NOT `#clearResecureTimer()`, and no DS or SFU
+   * message: a hold no install answers goes loud on its own deadline.
+   */
+  #resolveJoinRaceHolds(): void {
+    if (this.#joinRaceHolds.size > 0) {
+      const media = this.#media;
+      const connected = media?.sfuConnected?.() !== false;
+      const present = new Set(
+        connected ? (media?.sfuParticipants() ?? []) : [],
+      );
+      for (const [pair, hold] of [...this.#joinRaceHolds]) {
+        const answered = !this.#mediaErrors.isUncovered(pair);
+        const gone = connected && !present.has(hold.identity);
+        if (!answered && !gone) continue;
+        clearTimeout(hold.timer);
+        this.#timers.delete(hold.timer);
+        this.#joinRaceHolds.delete(pair);
+        console.info(
+          `[mls] join-race hold resolved for ${pair}: ` +
+            (answered
+              ? "the install that fills it landed"
+              : "the sender left the SFU"),
+        );
+      }
+    }
+    this.#setMediaHold(this.#joinRaceHolds.size > 0);
+  }
+
+  /**
+   * Drop every open hold without a verdict: a loud latch supersedes them (it
+   * is already the strictest reading), and a re-establish replaces the group
+   * and every key index a hold could still be waiting for.
+   */
+  #clearJoinRaceHolds(): void {
+    for (const hold of this.#joinRaceHolds.values()) {
+      clearTimeout(hold.timer);
+      this.#timers.delete(hold.timer);
+    }
+    this.#joinRaceHolds.clear();
+    this.#membershipObserved.clear();
+    this.#setMediaHold(false);
+  }
+
+  /** Surface the hold to the chip (edge-triggered). */
+  #setMediaHold(active: boolean): void {
+    if (this.#mediaHoldSurfaced === active) return;
+    this.#mediaHoldSurfaced = active;
+    this.#media?.onMediaHold?.(active);
+  }
+
   /**
    * Latch loud. `origin` decides whether the latch can ever heal short of a
    * re-establish: only a `media` latch (a LiveKit `encryptionError` or a
@@ -3670,6 +3909,8 @@ export class MlsCallSession {
     // the encryption-error signal this would otherwise re-latch into the
     // NEXT call's chip.
     if (this.#state === "closed") return;
+    // The strictest reading has now been taken: nothing is left to defer.
+    this.#clearJoinRaceHolds();
     this.#loudLatched = true;
     this.#loudOrigin = origin;
     this.#loudError = error;
@@ -3909,6 +4150,7 @@ export class MlsCallSession {
       this.#rotationWindowTimer = null;
     }
     this.#clearResecureTimer();
+    this.#clearJoinRaceHolds();
     this.#rotationWindow = false;
     // A re-establish is the terminus a loud latch waits for: the group is
     // being replaced, the mode has dropped to `negotiating` (gate held) and
@@ -3944,6 +4186,7 @@ export class MlsCallSession {
    */
   onParticipantJoined(identity: string): void {
     if (this.#terminal()) return;
+    this.#noteMembershipObserved(identity);
     this.#clearLeaveGrace(identity);
     this.#clearGhostTimer(identity);
     // Open the admit-grace window (never for self): until it expires, the
@@ -4045,6 +4288,13 @@ export class MlsCallSession {
   onParticipantLeft(identity: string): void {
     if (this.#terminal() || this.#state !== "active") return;
     if (identity === this.#media?.localIdentity()) return; // never remove self
+    // A departure THIS device watched: the membership change that resolves it
+    // is now in flight on every member, and this one may be behind it. Stamped
+    // before the leave-grace early-return and independently of the grace
+    // timer, which deletes its own entry BEFORE calling `#removeMember` — so
+    // the whole Remove used to run with nothing marking it in flight, which is
+    // exactly the seat leg 3a failed in.
+    this.#noteMembershipObserved(identity);
     this.#clearAdmitGrace(identity); // a leaver holds no admit window
     this.#rejoinServed.delete(identity); // nor a pending re-Add
     if (this.#leaveGrace.has(identity)) return; // already pending
@@ -4171,6 +4421,9 @@ export class MlsCallSession {
       }
       this.#lastRosterIdentities = roster;
     }
+    // A held missing key whose sender has left the SFU is moot: it is sending
+    // nothing this device could be silently dropping.
+    this.#resolveJoinRaceHolds();
 
     const result = reconcileRoster(
       media.sfuParticipants(),
@@ -4281,6 +4534,7 @@ export class MlsCallSession {
     if (this.#terminal() || this.#state !== "active" || !this.#groupId) return;
 
     console.warn(`[mls] removing ${identity}: ${reason}`);
+    this.#noteMembershipObserved(identity);
     const target = member;
     await this.#stageAndSubmit(
       () =>

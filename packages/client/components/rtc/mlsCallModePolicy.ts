@@ -929,6 +929,22 @@ export class MediaErrorLedger {
     return false;
   }
 
+  /**
+   * Whether this exact pair is still counted as an uncovered missing key: no
+   * install has pushed it, and none has advanced past it by filling a slot
+   * this side did not already hold.
+   *
+   * The join-race hold reads it to decide whether its DEFERRED verdict has
+   * been answered. An install that fills the named slot is the one local fact
+   * that separates the two readings of a missing key raised during a
+   * membership change — the frame was judged before our `setKey` reached the
+   * worker (the race), or the commit carrying that key was withheld from this
+   * device (the failure the latch exists for).
+   */
+  isUncovered(pair: string): boolean {
+    return this.#missing.has(pair);
+  }
+
   /** The missing-key pairs still uncovered by an install (diagnostics). */
   uncoveredPairs(): string[] {
     return [...this.#missing.keys()];

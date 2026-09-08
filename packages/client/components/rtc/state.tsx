@@ -779,6 +779,21 @@ class Voice {
   callEncryptionError: Accessor<unknown>;
   #setCallEncryptionError: Setter<unknown>;
   /**
+   * A media-plane join-race hold is open: the session has DEFERRED its verdict
+   * on a decode missing key while the install that would answer it is still
+   * expected (`MlsCallSession.#holdJoinRace`), and cannot vouch for one peer's
+   * frames until it resolves either way.
+   *
+   * The §4.4 chip's own `resecuring` input reads the session LIFECYCLE state,
+   * so a media-plane re-securing never reached it — an error suppressed on
+   * that plane read as a green chip while the worker dropped that peer's
+   * frames at an index it had marked invalid (the reverted 2026-09-08
+   * join-race attempt). A hold gets its own reactive signal so the chip goes
+   * AMBER for exactly as long as the verdict is open.
+   */
+  callMediaHold: Accessor<boolean>;
+  #setCallMediaHold: Setter<boolean>;
+  /**
    * Non-enrolled participant identities in the current call (slice 6.4 §3.4) —
    * empty ⇒ every SFU participant is in the MLS group. The state signal where
    * 6.4's roster-reconciliation DETECTION meets 6.5's mixed-call banner + the
@@ -1145,6 +1160,10 @@ class Voice {
       createSignal<unknown>();
     this.callEncryptionError = callEncryptionError;
     this.#setCallEncryptionError = setCallEncryptionError;
+
+    const [callMediaHold, setCallMediaHold] = createSignal(false);
+    this.callMediaHold = callMediaHold;
+    this.#setCallMediaHold = setCallMediaHold;
 
     const [recording, setRecording] = createSignal(false);
     this.recording = recording;
@@ -2874,6 +2893,7 @@ class Voice {
       this.#publishGate.clear();
       this.#pinnedMicId = undefined;
       this.#setCallEncryptionError(undefined);
+      this.#setCallMediaHold(false);
       this.#setCallNonEnrolled([]);
       // Reset the 6.5 signals so the next call's card never flashes this
       // call's latched mode/roster/attribution (FE-9a).
@@ -3092,6 +3112,9 @@ class Voice {
           );
         }
       },
+      // A deferred missing-key verdict is open (or has just closed): the chip
+      // must read amber throughout, never green.
+      onMediaHold: (active) => this.#setCallMediaHold(active),
       onRosterReconciled: (result) => {
         // 6.4 DETECTION → the state signal where 6.5's mixed-call banner + pause
         // UX plug in. The session has ALREADY paused local publishing whenever
@@ -6091,7 +6114,7 @@ class Voice {
       mode,
       e2eeEnabled: mode?.kind === "e2ee",
       hasLocalKey: mode?.kind === "e2ee",
-      resecuring: sessionState === "resecuring",
+      resecuring: sessionState === "resecuring" || this.callMediaHold(),
       latchedError: this.callEncryptionError() !== undefined,
       publishingIdentities: publishing,
       observedEncrypted: observed,
