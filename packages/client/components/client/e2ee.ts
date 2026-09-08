@@ -1243,6 +1243,18 @@ export class E2EEBridge implements E2EEAdapter {
   }
 
   /**
+   * Record what the signed-in account's device directory says about THIS
+   * install's device, which is the entirety of what `deviceOwnedElsewhere`
+   * means: "missing" ⇒ the server will refuse a device-qualified call join,
+   * "present" ⇒ it will not. `"unknown"` (the fetch failed) changes nothing —
+   * a blip must neither raise the verdict nor clear a standing one.
+   */
+  #noteDevicePresence(presence: "present" | "missing" | "unknown"): void {
+    if (presence === "missing") this.deviceOwnedElsewhere.set("state", true);
+    else if (presence === "present") this.deviceOwnedElsewhere.delete("state");
+  }
+
+  /**
    * Inject the "Encrypt my calls" accessor (slice 6.5 §0.2 #9) from the local
    * Voice store. Gates the media-E2EE KeyPackage pre-publish; fail-closed until
    * wired (ME-14). Idempotent.
@@ -1654,12 +1666,13 @@ export class E2EEBridge implements E2EEAdapter {
       // against the server directory before prompting re-enroll.
       if (this.#pendingRestoreRepublish) {
         const presence = await this.#ownDevicePresence();
-        // A directory that DOES list this device is positive evidence against
-        // a standing inherited-store verdict — clear it wherever we learn it,
-        // so a wrong verdict costs one reconnect rather than the app run. Both
-        // presence checks, because this branch returns before the other one
-        // (media-e2ee-reviewer, MEDIUM-4).
-        if (presence === "present") this.deviceOwnedElsewhere.delete("state");
+        // The directory is the whole of what this flag means, so record it
+        // wherever we learn it — on BOTH branches, since this one returns
+        // before the other (media-e2ee-reviewer, MEDIUM-4), and on the
+        // re-enroll arms as well as the dead ends: until a re-enroll actually
+        // publishes, the server does not accept this device, and a call that
+        // offers it a device-qualified join is refused outright.
+        this.#noteDevicePresence(presence);
         if (presence === "missing") {
           console.warn(
             "[e2ee] post-restore claim rejected — device row revoked; " +
@@ -1710,7 +1723,7 @@ export class E2EEBridge implements E2EEAdapter {
       // NOT this case (see `#ownDevicePresence`) — fall through to the honest
       // error so a transient reject or a hostile server can't churn re-derives.
       const presence = await this.#ownDevicePresence();
-      if (presence === "present") this.deviceOwnedElsewhere.delete("state");
+      this.#noteDevicePresence(presence);
       if (presence === "missing") {
         try {
           this.#pendingRestoreRepublish = await this.#invoke<Record<
@@ -1735,18 +1748,16 @@ export class E2EEBridge implements E2EEAdapter {
         // A rejected claim, an absent server row, and NOTHING to re-enroll:
         // this store was not restored here, so it was enrolled here — by a
         // different account. Signing out leaves it behind, and the next
-        // account inherits a device the server will not accept for it:
-        // every MLS call fails and every device-qualified call join is
-        // refused outright. That was previously indistinguishable from any
-        // other rejected claim and reached nothing but the console line
-        // below. Raise it so the call path can stop offering encryption
-        // this device cannot deliver, and say so in the UI.
+        // account inherits a device the server will not accept for it: every
+        // MLS call fails and every device-qualified call join is refused
+        // outright. Previously indistinguishable from any other rejected
+        // claim, and it reached nothing but a bare console line. The flag is
+        // already set above; this says which of its causes we are in.
         console.error(
           "[e2ee] this install's E2EE device is not registered to the " +
             "signed-in account — encrypted calls are unavailable here until " +
             "it is reset or the owning account signs in",
         );
-        this.deviceOwnedElsewhere.set("state", true);
         return;
       }
 
