@@ -2725,6 +2725,10 @@ msgstr "Encryption is off for this device. New direct messages are no longer end
 msgid "Encryption on this device is set up for a different account, so calls here cannot be encrypted. Resetting clears this device's encryption — including encrypted messages stored on it — and sets it up again for the account you are signed in as."
 msgstr "Encryption on this device is set up for a different account, so calls here cannot be encrypted. Resetting clears this device's encryption — including encrypted messages stored on it — and sets it up again for the account you are signed in as."
 
+#: components/rtc/state.tsx
+msgid "Encryption on this device isn't set up for this account, so calls can't be joined here. Open Settings → Encryption to set it up again."
+msgstr "Encryption on this device isn't set up for this account, so calls can't be joined here. Open Settings → Encryption to set it up again."
+
 #: src/interface/channels/text/Composition.tsx
 #: src/interface/channels/text/Composition.tsx
 #: components/app/interface/channels/text/MessageComponents.tsx
@@ -7003,6 +7007,14 @@ msgstr "This bot is private and can only be added by the creator."
 msgid "This call could not be secured. Your audio and video stay paused — leave, or continue without encryption."
 msgstr "This call could not be secured. Your audio and video stay paused — leave, or continue without encryption."
 
+#: components/ui/components/features/voice/callCard/VoiceCallDowngradeBanner.tsx
+msgid "This call could not be secured. Your audio and video stay paused."
+msgstr "This call could not be secured. Your audio and video stay paused."
+
+#: components/ui/components/features/voice/callCard/VoiceCallDowngradeBanner.tsx
+msgid "This call is not encrypted."
+msgstr "This call is not encrypted."
+
 #: components/app/interface/settings/channel/Overview.tsx
 msgid "This channel is about..."
 msgstr "This channel is about..."
@@ -7052,8 +7064,8 @@ msgid "This device was logged out remotely, so it needs to be re-registered befo
 msgstr "This device was logged out remotely, so it needs to be re-registered before it can send and receive encrypted messages again. Confirm your identity to finish."
 
 #: components/ui/components/features/voice/callCard/VoiceCallDowngradeBanner.tsx
-msgid "This device's encryption isn't registered to your account, so this call can't be encrypted. Your audio and video stay paused — reset encryption on this device, continue without it, or leave."
-msgstr "This device's encryption isn't registered to your account, so this call can't be encrypted. Your audio and video stay paused — reset encryption on this device, continue without it, or leave."
+msgid "This device's encryption isn't registered to your account, so this call can't be encrypted. Your audio and video stay paused — set encryption up again on this device, continue without it, or leave."
+msgstr "This device's encryption isn't registered to your account, so this call can't be encrypted. Your audio and video stay paused — set encryption up again on this device, continue without it, or leave."
 
 #: components/modal/modals/CreateSoftRes.tsx
 msgid "This event already has a soft-reserve sheet — each event can only have one."
