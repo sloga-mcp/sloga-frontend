@@ -86,9 +86,21 @@ function rig(options: { staleMs?: number } = {}): Rig {
   };
 }
 
-/** The witness the chip would be reading right now. */
-const latest = (r: Rig): DecodeWitness =>
-  r.written.at(-1) ?? DECODE_WITNESS_INITIAL;
+/**
+ * The witness the chip would be reading right now.
+ *
+ * 🔴 It ASSERTS rather than falling back to `DECODE_WITNESS_INITIAL`. The
+ * fallback made four specs pass through the rig's own copy of what
+ * `state.tsx` seeds `createSignal` with — so they caught a mutation of the
+ * constant while proving nothing about the call site, which is the only place
+ * it matters. Whether `state.tsx` actually seeds from the constant is checked
+ * by `rtc-gate.sh`, which can assert about a file it cannot load.
+ */
+const latest = (r: Rig): DecodeWitness => {
+  const last = r.written.at(-1);
+  assert.ok(last, "expected a witness to have been written");
+  return last;
+};
 
 // --- the initial value ------------------------------------------------------
 
@@ -103,7 +115,6 @@ test("🔴 the witness signal's initial value is UNAVAILABLE", () => {
 test("a freshly built listener has not promoted anything", () => {
   const r = rig();
   assert.deepEqual(r.written, []);
-  assert.equal(latest(r).available, false);
 });
 
 test("a fresh listener is not stale yet, so an early tick writes nothing", () => {
@@ -157,7 +168,6 @@ test("🔴 a foreign message kind is ignored even when it carries a payload", ()
     data: { participants: [{ identity: "jeff", indexes: [] }] },
   });
   assert.deepEqual(r.written, []);
-  assert.equal(latest(r).available, false);
 });
 
 test("non-object and empty messages are ignored", () => {
@@ -199,7 +209,6 @@ test("🔴 a sample with NO participants field does not throw and does not promo
     r.listener.onMessage({ kind: DECODE_WITNESS_KIND, data: {} }),
   );
   assert.deepEqual(r.written, []);
-  assert.equal(latest(r).available, false);
 });
 
 test("🔴 a NON-ARRAY participants field does not throw and does not promote", () => {
@@ -208,7 +217,6 @@ test("🔴 a NON-ARRAY participants field does not throw and does not promote", 
     assert.doesNotThrow(() => r.listener.onMessage(sample(participants)));
   }
   assert.deepEqual(r.written, []);
-  assert.equal(latest(r).available, false);
 });
 
 test("🔴 a participant entry missing `indexes` does not throw and does not promote", () => {
@@ -223,6 +231,40 @@ test("🔴 a participant entry missing `indexes` does not throw and does not pro
   );
   assert.doesNotThrow(() => r.listener.onMessage(sample([null])));
   assert.doesNotThrow(() => r.listener.onMessage(sample([{ indexes: [] }])));
+  assert.deepEqual(r.written, []);
+});
+
+test("🔴 a tally with negative or fractional counts does not promote", () => {
+  // `{seen: -10, dropped: -10}` used to parse and summarize to available with
+  // no drops — a CLEAN read manufactured out of garbage.
+  const r = rig();
+  for (const indexes of [
+    [{ keyIndex: 1, seen: -10, dropped: -10 }],
+    [{ keyIndex: 1, seen: 10, dropped: -1 }],
+    [{ keyIndex: 1, seen: 1.5, dropped: 0 }],
+    // More thrown away than ever arrived is not a window we can read.
+    [{ keyIndex: 1, seen: 2, dropped: 3 }],
+  ]) {
+    r.listener.onMessage(sample([{ identity: "jeff", indexes }]));
+  }
+  assert.deepEqual(r.written, []);
+});
+
+test("a keyIndex of -1 is the worker's 'no index on this frame', not garbage", () => {
+  const r = rig();
+  r.listener.onMessage(
+    sample([
+      { identity: "jeff", indexes: [{ keyIndex: -1, seen: 4, dropped: 4 }] },
+    ]),
+  );
+  assert.deepEqual(latest(r).dropping, ["jeff"]);
+});
+
+test("🔴 a tally that is not an object at all does not promote", () => {
+  const r = rig();
+  for (const indexes of [[null], ["1:30:0"], [7]]) {
+    r.listener.onMessage(sample([{ identity: "jeff", indexes }]));
+  }
   assert.deepEqual(r.written, []);
 });
 
@@ -320,6 +362,21 @@ test("a recovery that was never preceded by a warning stays silent", () => {
   assert.deepEqual(r.infos, []);
 });
 
+test("🔴 a witness three seconds old is fresh; three seconds and a millisecond is not", () => {
+  // Hardcoded on purpose. Every other staleness spec advances by
+  // `DECODE_WITNESS_STALE_MS + 1`, which SCALES with the constant — widen the
+  // threshold to a minute and they all stay green while detection latency
+  // blows out. This one is the only assertion about wall-clock time.
+  const r = rig();
+  r.listener.onMessage(sample());
+  r.advance(3_000);
+  r.listener.tick();
+  assert.equal(latest(r).available, true);
+  r.advance(1);
+  r.listener.tick();
+  assert.equal(latest(r).available, false);
+});
+
 test("🔴 the threshold is three of the worker's beats, checked once a beat", () => {
   // Polling AT the threshold would make detection latency up to twice it —
   // several seconds of green over a witness that had already stopped.
@@ -352,6 +409,96 @@ test("🔴 stop() writes UNAVAILABLE even when no sample ever arrived", () => {
   r.listener.stop();
   assert.equal(r.written.length, 1);
   assert.equal(latest(r).available, false);
+});
+
+// --- an undelivered witness is not a heartbeat (F2) -------------------------
+
+test("🔴 a witness that could NOT be delivered does not refresh the clock", () => {
+  // `onWitness` is a Solid setter, and it synchronously drives the chip
+  // derivation, which walks the SFU's participants and publications. One throw
+  // out of a half-disposed room used to refresh the clock anyway — so `tick`
+  // never fired and the last green stood for the life of the call, once a
+  // second, forever.
+  let clock = 1_000;
+  const written: DecodeWitness[] = [];
+  let explode = false;
+  const listener = createDecodeWitnessListener({
+    now: () => clock,
+    onWitness: (witness) => {
+      if (explode) throw new Error("chip derivation threw");
+      written.push(witness);
+    },
+    isCurrentSession: () => true,
+    log: { warn: () => {}, info: () => {} },
+  });
+  listener.onMessage(sample());
+  assert.equal(written.at(-1)?.available, true);
+
+  explode = true;
+  for (let beat = 0; beat < 10; beat += 1) {
+    clock += DECODE_WITNESS_CHECK_MS;
+    assert.throws(() => listener.onMessage(sample()));
+  }
+
+  explode = false;
+  clock += 1;
+  listener.tick();
+  assert.equal(written.at(-1)?.available, false);
+});
+
+// --- teardown is terminal (F7) ----------------------------------------------
+
+test("🔴 stop() is terminal: a later sample cannot promote the witness again", () => {
+  // `state.tsx` removes the event listener before calling stop(), so this is
+  // unreachable there today. The guarantee must not rest on one caller's
+  // statement ordering.
+  const r = rig();
+  r.listener.onMessage(sample());
+  r.listener.stop();
+  r.listener.onMessage(sample());
+  assert.equal(latest(r).available, false);
+  assert.equal(r.written.length, 2);
+});
+
+test("🔴 stop() is idempotent, and tick() is inert after it", () => {
+  const r = rig();
+  r.listener.stop();
+  r.listener.stop();
+  r.advance(10 * DECODE_WITNESS_STALE_MS);
+  r.listener.tick();
+  assert.equal(r.written.length, 1);
+});
+
+// --- the skew warning names the right cause (F10) ---------------------------
+
+test("🔴 an unreadable witness warns about SKEW, not about a missing patch", () => {
+  const r = rig();
+  r.listener.onMessage(sample("not-an-array"));
+  assert.equal(r.warns.length, 1);
+  assert.match(r.warns[0], /version skew/);
+  // The staleness warning asks whether the patch is applied. That is the wrong
+  // diagnosis for a worker that is present and posting once a second.
+  assert.doesNotMatch(r.warns[0], /patch applied in this build/);
+
+  // Once, not once a second.
+  r.listener.onMessage(sample(7));
+  assert.equal(r.warns.length, 1);
+  assert.deepEqual(r.written, []);
+});
+
+test("a foreign kind does not trip the skew warning", () => {
+  const r = rig();
+  r.listener.onMessage({ kind: "cryptorError", data: { participants: 3 } });
+  assert.deepEqual(r.warns, []);
+});
+
+test("a readable sample after a skew clears the skew warning", () => {
+  const r = rig();
+  r.listener.onMessage(sample("not-an-array"));
+  r.listener.onMessage(sample());
+  assert.equal(r.infos.length, 1);
+  r.listener.onMessage(sample(null));
+  assert.equal(r.warns.length, 2);
 });
 
 // --- the parser on its own --------------------------------------------------

@@ -101,14 +101,20 @@ export interface DecodeWitnessListener {
   onMessage(data: unknown): void;
   /** Run every {@link DecodeWitnessListener.checkMs} — the staleness sweep. */
   tick(): void;
-  /** Teardown: the witness is gone, so the chip must stop reading it. */
+  /**
+   * Teardown: the witness is gone, so the chip must stop reading it. Terminal
+   * and idempotent — after it, `onMessage` and `tick` do nothing.
+   */
   stop(): void;
   /** The interval the caller must run {@link DecodeWitnessListener.tick} at. */
   checkMs: number;
 }
 
-const isFiniteNumber = (value: unknown): value is number =>
-  typeof value === "number" && Number.isFinite(value);
+const isInteger = (value: unknown): value is number =>
+  typeof value === "number" && Number.isInteger(value);
+
+const isCount = (value: unknown): value is number =>
+  isInteger(value) && value >= 0;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
@@ -131,11 +137,15 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
  * window, and it promotes exactly as before, because the worker posts on its
  * interval whether or not any frame arrived.
  */
+export function isDecodeWitnessKind(data: unknown): boolean {
+  return isRecord(data) && data.kind === DECODE_WITNESS_KIND;
+}
+
 export function parseDecodeWitnessMessage(
   data: unknown,
 ): readonly DecodeWitnessSample[] | null {
+  if (!isDecodeWitnessKind(data)) return null;
   if (!isRecord(data)) return null;
-  if (data.kind !== DECODE_WITNESS_KIND) return null;
   const body = data.data;
   if (!isRecord(body)) return null;
   const participants = body.participants;
@@ -151,9 +161,14 @@ export function parseDecodeWitnessMessage(
     for (const tally of indexes) {
       if (!isRecord(tally)) return null;
       const { keyIndex, seen, dropped } = tally;
-      if (!isFiniteNumber(keyIndex)) return null;
-      if (!isFiniteNumber(seen)) return null;
-      if (!isFiniteNumber(dropped)) return null;
+      // 🔴 Counts, not just numbers. `{seen: -10, dropped: -10}` used to parse
+      // and summarize to available/no-drops — a CLEAN read out of garbage,
+      // which is the posture this gate exists to delete. `keyIndex` is left
+      // signed on purpose: the worker posts -1 for "no index on this frame".
+      if (!isCount(seen)) return null;
+      if (!isCount(dropped)) return null;
+      if (dropped > seen) return null;
+      if (!isInteger(keyIndex)) return null;
       tallies.push({ keyIndex, seen, dropped });
     }
     samples.push({ identity, indexes: tallies });
@@ -183,23 +198,58 @@ export function createDecodeWitnessListener(
   let lastAt = now();
   /** Gates the console noise ONLY. The witness write below is unconditional. */
   let warned = false;
+  /** Same, for the worker-skew warning, which names a different cause. */
+  let skewWarned = false;
+  /**
+   * 🔴 Terminal. `stop()` is the caller saying the witness is gone, and a
+   * listener that keeps promoting after that is a green outliving its
+   * evidence. `state.tsx` happens to remove the event listener before calling
+   * stop(), so this is unreachable there today — but the guarantee must not
+   * rest on one caller's statement ordering, which is how three of the six
+   * defects on this branch were introduced.
+   */
+  let stopped = false;
 
   return {
     checkMs,
 
     onMessage(data: unknown): void {
+      if (stopped) return;
       const participants = parseDecodeWitnessMessage(data);
-      if (participants === null) return;
+      if (participants === null) {
+        // Ours by kind, unreadable by shape — a worker/client version skew.
+        // Without this the only signal is the staleness warning three beats
+        // later, which asks whether the patch is applied: the wrong diagnosis
+        // for a worker that is present and posting once a second.
+        if (isDecodeWitnessKind(data) && !skewWarned) {
+          skewWarned = true;
+          log.warn(
+            "[mls] the e2ee worker is posting a decode witness this build " +
+              "cannot read — a worker/client version skew. The chip cannot " +
+              "go green.",
+          );
+        }
+        return;
+      }
       if (!isCurrentSession()) return;
+      onWitness(summarizeDecodeWitness(participants));
+      // 🔴 Credited AFTER the write, never before it. `onWitness` is a Solid
+      // setter that synchronously drives the chip derivation, and that walks
+      // the SFU's participants and publications — one throw out of a
+      // half-disposed room and a `lastAt` credited up front would refresh the
+      // clock forever on a witness the chip never received, holding the last
+      // green for the life of the call. An undelivered witness is not a
+      // heartbeat, for the same reason an unreadable one is not.
       lastAt = now();
-      if (warned) {
+      if (warned || skewWarned) {
         warned = false;
+        skewWarned = false;
         log.info("[mls] decode witness is reporting again");
       }
-      onWitness(summarizeDecodeWitness(participants));
     },
 
     tick(): void {
+      if (stopped) return;
       if (now() - lastAt <= staleMs) return;
       if (!warned) {
         warned = true;
@@ -214,6 +264,8 @@ export function createDecodeWitnessListener(
     },
 
     stop(): void {
+      if (stopped) return;
+      stopped = true;
       // The listener is being detached, so no further sample can arrive and
       // the last one must not keep standing as live evidence.
       onWitness(DECODE_WITNESS_UNAVAILABLE);

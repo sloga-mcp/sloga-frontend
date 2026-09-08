@@ -458,8 +458,8 @@ MUTATIONS += [
         id="witness-kind-guard-presence-only",
         what="the message-kind guard checks that a kind is PRESENT, not that it is ours — livekit's own worker posts are read as witnesses",
         file=WITNESS,
-        search="""  if (data.kind !== DECODE_WITNESS_KIND) return null;""",
-        replace="""  if (data.kind === undefined) return null;""",
+        search="""  return isRecord(data) && data.kind === DECODE_WITNESS_KIND;""",
+        replace="""  return isRecord(data) && data.kind !== undefined;""",
         specs=[WITNESS_SPEC],
     ),
     Mutation(
@@ -468,6 +468,94 @@ MUTATIONS += [
         file=WITNESS,
         search="""  if (!Array.isArray(participants)) return null;""",
         replace="""  if (!Array.isArray(participants)) return [];""",
+        specs=[WITNESS_SPEC],
+    ),
+    # ---- round 4: the holes round 3 measured as unmutated ------------------
+    Mutation(
+        id="witness-clock-credited-before-write",
+        what="the staleness clock is credited on message ARRIVAL, so a witness the chip never received still counts as a heartbeat",
+        file=WITNESS,
+        search="""      onWitness(summarizeDecodeWitness(participants));
+      // 🔴 Credited AFTER the write, never before it.""",
+        replace="""      lastAt = now();
+      onWitness(summarizeDecodeWitness(participants));
+      // 🔴 Credited AFTER the write, never before it.""",
+        specs=[WITNESS_SPEC],
+    ),
+    Mutation(
+        id="witness-stop-not-terminal",
+        what="a sample arriving after teardown promotes the witness again",
+        file=WITNESS,
+        search="""    onMessage(data: unknown): void {
+      if (stopped) return;""",
+        replace="""    onMessage(data: unknown): void {""",
+        specs=[WITNESS_SPEC],
+    ),
+    Mutation(
+        id="witness-tick-not-terminal",
+        what="the staleness sweep keeps writing after teardown",
+        file=WITNESS,
+        search="""    tick(): void {
+      if (stopped) return;""",
+        replace="""    tick(): void {""",
+        specs=[WITNESS_SPEC],
+    ),
+    Mutation(
+        id="witness-counts-may-be-negative",
+        what="tally counts are merely finite, so {seen:-10, dropped:-10} summarizes to a CLEAN read",
+        file=WITNESS,
+        search="""const isCount = (value: unknown): value is number =>
+  isInteger(value) && value >= 0;""",
+        replace="""const isCount = (value: unknown): value is number =>
+  typeof value === "number" && Number.isFinite(value);""",
+        specs=[WITNESS_SPEC],
+    ),
+    Mutation(
+        id="witness-drops-may-exceed-arrivals",
+        what="a window claiming more frames thrown away than ever arrived is accepted",
+        file=WITNESS,
+        search="""      if (dropped > seen) return null;""",
+        replace="""      if (false) return null;""",
+        specs=[WITNESS_SPEC],
+    ),
+    Mutation(
+        id="witness-bad-entry-skipped",
+        what="a malformed participant entry is SKIPPED rather than disqualifying the window, so garbage summarizes clean",
+        file=WITNESS,
+        search="""    if (!isRecord(entry)) return null;""",
+        replace="""    if (!isRecord(entry)) continue;""",
+        specs=[WITNESS_SPEC],
+    ),
+    Mutation(
+        id="witness-identity-unchecked",
+        what="an entry with no identity is skipped instead of disqualifying the window",
+        file=WITNESS,
+        search="""    if (typeof identity !== "string") return null;""",
+        replace="""    if (typeof identity !== "string") continue;""",
+        specs=[WITNESS_SPEC],
+    ),
+    Mutation(
+        id="witness-indexes-unchecked",
+        what="an entry with no indexes array is skipped instead of disqualifying the window",
+        file=WITNESS,
+        search="""    if (!Array.isArray(indexes)) return null;""",
+        replace="""    if (!Array.isArray(indexes)) continue;""",
+        specs=[WITNESS_SPEC],
+    ),
+    Mutation(
+        id="witness-bad-tally-skipped",
+        what="a tally that is not an object is skipped, so a sender's real drops can be summarized away",
+        file=WITNESS,
+        search="""      if (!isRecord(tally)) return null;""",
+        replace="""      if (!isRecord(tally)) continue;""",
+        specs=[WITNESS_SPEC],
+    ),
+    Mutation(
+        id="witness-skew-warning-silent",
+        what="a worker posting a shape this build cannot read says nothing, and the staleness warning then blames the missing patch",
+        file=WITNESS,
+        search="""        if (isDecodeWitnessKind(data) && !skewWarned) {""",
+        replace="""        if (false && !skewWarned) {""",
         specs=[WITNESS_SPEC],
     ),
     Mutation(
