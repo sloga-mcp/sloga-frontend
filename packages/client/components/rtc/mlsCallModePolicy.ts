@@ -421,6 +421,92 @@ export function isTerminalLoud(
   return mode === undefined && latchedError;
 }
 
+// ---- Which banner a chip must carry (the no-dead-end invariant) ------------
+
+/**
+ * The banner the call card renders, or `none`.
+ *
+ * - `mixed` / `interlude` — the §3.4 downgrade states. Publishing is paused
+ *   (mixed) or explicitly resumed in plaintext (interlude); the escape is
+ *   "Turn off encryption" / "Resume unencrypted".
+ * - `terminal_loud` — ME-10: the call FAILED to secure. Publishing is held by
+ *   the `negotiating` gate; the escape is Leave / Stay unencrypted (plus Reset
+ *   encryption on a store-owner mismatch).
+ * - `device_not_set_up` — this shell COULD encrypt calls but this install is
+ *   not set up for the signed-in account: never enrolled, wiped, or enrolled
+ *   by a different account. Nothing is paused and nothing failed — there was
+ *   no attempt. The escape is a route to device setup, and Leave.
+ * - `device_unsupported` — this shell can never encrypt calls (a browser, an
+ *   unaudited build). Nothing to set up; the escape is Leave.
+ */
+export type CallBannerKind =
+  | "none"
+  | "mixed"
+  | "interlude"
+  | "terminal_loud"
+  | "device_not_set_up"
+  | "device_unsupported";
+
+export interface CallBannerInputs {
+  /** The §4.4 chip, from `chipState`. */
+  chip: ChipState;
+  /** The §3.4 call mode (undefined before any verdict). */
+  mode: CallMode | undefined;
+  /** A structured call-encryption error is latched. */
+  latchedError: boolean;
+  /** An MLS call session exists. */
+  hasSession: boolean;
+  /**
+   * This shell could encrypt calls if the install were set up for it —
+   * `encryptionSetupAvailable(readiness)`. Decides which of the two
+   * device-level banners the no-session red chip gets; it is NOT what makes
+   * one appear.
+   */
+  deviceCanBeSetUp: boolean;
+}
+
+/**
+ * THE INVARIANT: `chipState(x) === "not_encrypted"` implies
+ * `callBannerState(...) !== "none"`. A red chip always carries a banner and an
+ * escape — enforced by an exhaustive spec over the chip's whole input space,
+ * not by inspection.
+ *
+ * It did not hold before. `isTerminalLoud` requires a latched error, and the
+ * chip's two NO-SESSION branches (ME-7 "capable, no session, open group" and
+ * the §0.2 #9 toggle-off self-attribution) latch nothing — nobody attempted
+ * encryption, so nothing could fail. Those were read as attribution rather
+ * than failure and deliberately given no banner. For a browser that reading is
+ * right; for a desktop install that could encrypt and simply is not set up it
+ * is a downgrade with a one-click remedy the user is never shown, which is the
+ * §7.4 observation this closes. So the state keeps its own identity — its own
+ * wording, its own action, no false "your audio and video stay paused" — and
+ * stops being a dead end.
+ *
+ * Precedence runs most-specific first. `mixed`/`interlude` are the modes'
+ * own banners; `terminal_loud` covers every latched failure INCLUDING the
+ * capable-but-sessionless R2-4 hold (which does latch, and whose publishing
+ * really is paused); the device arms take what is left of a red chip with no
+ * session; and the final arm is a backstop so no future chip state can return
+ * red with nothing to act on.
+ */
+export function callBannerState(inputs: CallBannerInputs): CallBannerKind {
+  const mode = inputs.mode?.kind;
+  if (mode === "mixed") return "mixed";
+  if (mode === "interlude") return "interlude";
+  if (isTerminalLoud(inputs.mode, inputs.chip, inputs.latchedError)) {
+    return "terminal_loud";
+  }
+  if (inputs.chip !== "not_encrypted") return "none";
+  if (!inputs.hasSession) {
+    return inputs.deviceCanBeSetUp ? "device_not_set_up" : "device_unsupported";
+  }
+  // Backstop: a session-bound red chip that none of the arms above claimed
+  // (today only `call_full`, which auto-leaves). Never leave it silent — the
+  // Leave / Stay-unencrypted banner is the honest floor for "this call is not
+  // encrypted and something went wrong".
+  return "terminal_loud";
+}
+
 // ---- ctl-announce payload parsing (default-closed forward-compat) ----------
 
 /** The one recognised ctl semantics: a mode change to plaintext (§3.4). */

@@ -8,9 +8,11 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  type CallBannerInputs,
   type CallMode,
   type ChipInputs,
   type LoudHealInputs,
+  callBannerState,
   callModeTransition,
   chipState,
   classifyEncryptionError,
@@ -473,10 +475,12 @@ test("terminal-loud: refusal inside establish() — failed before ANY mode verdi
   assert.equal(isTerminalLoud(undefined, "not_encrypted", true), true);
 });
 
-test("terminal-loud: attribution chips without a latched error never raise the banner", () => {
+test("terminal-loud: attribution chips without a latched error are not a LOUD failure", () => {
   // chipState reads not_encrypted with NO session for the ME-7/§0.2#9
-  // branches (web participant, toggle-off self). Without a latched error
-  // that is attribution, not a failure — no banner.
+  // branches (web participant, a device with no encryption set up). Nothing
+  // was attempted, so nothing latched and nothing is paused — the loud
+  // banner's copy and its "Stay unencrypted" release would both be wrong.
+  // They are NOT bannerless: `callBannerState` gives them the device arms.
   assert.equal(isTerminalLoud(undefined, "not_encrypted", false), false);
 });
 
@@ -489,6 +493,159 @@ test("terminal-loud: any emitted mode verdict other than negotiating is not term
 test("terminal-loud: requires the loud chip", () => {
   assert.equal(isTerminalLoud(NEGOTIATING, "resecuring", true), false);
   assert.equal(isTerminalLoud(undefined, "none", true), false);
+});
+
+// ---- Which banner a chip carries (the no-dead-end invariant) ----------------
+
+const baseBanner = (over: Partial<CallBannerInputs>): CallBannerInputs => ({
+  chip: "not_encrypted",
+  mode: undefined,
+  latchedError: false,
+  hasSession: false,
+  deviceCanBeSetUp: true,
+  ...over,
+});
+
+test("banner: the §3.4 downgrade modes keep their own banners", () => {
+  assert.equal(
+    callBannerState(baseBanner({ mode: MIXED, hasSession: true })),
+    "mixed",
+  );
+  assert.equal(
+    callBannerState(baseBanner({ mode: INTERLUDE_CONF, hasSession: true })),
+    "interlude",
+  );
+  assert.equal(
+    callBannerState(baseBanner({ mode: INTERLUDE_UNCONF, hasSession: true })),
+    "interlude",
+  );
+});
+
+test("banner: a latched failure is terminal-loud, with a session or without", () => {
+  assert.equal(
+    callBannerState(
+      baseBanner({ mode: NEGOTIATING, hasSession: true, latchedError: true }),
+    ),
+    "terminal_loud",
+  );
+  // The capable-but-sessionless R2-4 hold: `negotiating` is still in the
+  // publish gate and the error IS latched, so "your audio and video stay
+  // paused" is true. It must keep the loud banner, never the device one.
+  assert.equal(
+    callBannerState(baseBanner({ hasSession: false, latchedError: true })),
+    "terminal_loud",
+  );
+});
+
+test("banner: ME-7 — a capable shell with no session is offered device setup, not a latch", () => {
+  // Nothing was attempted, so nothing latched and nothing is paused: the
+  // loud copy would be a lie and "Stay unencrypted" a no-op. This is the
+  // §7.4 red-chip-with-no-banner state.
+  assert.equal(
+    callBannerState(baseBanner({ hasSession: false, deviceCanBeSetUp: true })),
+    "device_not_set_up",
+  );
+});
+
+test("banner: a shell that can never encrypt says so instead of offering setup", () => {
+  assert.equal(
+    callBannerState(baseBanner({ hasSession: false, deviceCanBeSetUp: false })),
+    "device_unsupported",
+  );
+});
+
+test("banner: nothing to say on a green, amber or chrome-less chip", () => {
+  for (const chip of ["e2ee", "e2ee_unverified", "resecuring", "none"] as const)
+    assert.equal(
+      callBannerState(baseBanner({ chip, mode: E2EE, hasSession: true })),
+      "none",
+    );
+});
+
+test("🔴 INVARIANT: every NOT-ENCRYPTED chip carries a banner (exhaustive)", () => {
+  // The design rule this whole change exists to make checkable: a red chip is
+  // never a dead end. Swept over the chip's entire input space rather than the
+  // handful of shapes anyone thought to write down — that is how the ME-7 and
+  // §0.2 #9 no-session branches sat bannerless through five reviews.
+  const MODES: (CallMode | undefined)[] = [
+    undefined,
+    NEGOTIATING,
+    { kind: "off" },
+    E2EE,
+    MIXED,
+    INTERLUDE_UNCONF,
+    INTERLUDE_CONF,
+    { kind: "call_full" },
+  ];
+  const STATES: ChipInputs["sessionState"][] = [
+    undefined,
+    "starting",
+    "active",
+    "plaintext",
+    "resecuring",
+    "failed",
+    "closed",
+  ];
+  const BOOLS = [false, true];
+  const PUBLISHERS: { p: string[]; o: Map<string, boolean> }[] = [
+    { p: [], o: new Map() },
+    { p: ["u:d"], o: new Map([["u:d", true]]) },
+    { p: ["u:d"], o: new Map() },
+  ];
+
+  let red = 0;
+  for (const hasSession of BOOLS)
+    for (const sessionState of STATES)
+      for (const mode of MODES)
+        for (const e2eeEnabled of BOOLS)
+          for (const hasLocalKey of BOOLS)
+            for (const resecuring of BOOLS)
+              for (const latchedError of BOOLS)
+                for (const channelHasOpenGroup of BOOLS)
+                  for (const capableAndEnabled of BOOLS)
+                    for (const localPublicationsEncrypted of BOOLS)
+                      for (const rosterVerified of [[], [true], [false]])
+                        for (const pub of PUBLISHERS) {
+                          const inputs: ChipInputs = {
+                            hasSession,
+                            sessionState,
+                            mode,
+                            e2eeEnabled,
+                            hasLocalKey,
+                            resecuring,
+                            latchedError,
+                            publishingIdentities: pub.p,
+                            observedEncrypted: pub.o,
+                            localPublicationsEncrypted,
+                            rosterVerified,
+                            channelHasOpenGroup,
+                            capableAndEnabled,
+                          };
+                          if (chipState(inputs) !== "not_encrypted") continue;
+                          red++;
+                          for (const deviceCanBeSetUp of BOOLS)
+                            assert.notEqual(
+                              callBannerState({
+                                chip: "not_encrypted",
+                                mode,
+                                latchedError,
+                                hasSession,
+                                deviceCanBeSetUp,
+                              }),
+                              "none",
+                              `red chip with no banner: ${JSON.stringify({
+                                hasSession,
+                                sessionState,
+                                mode,
+                                latchedError,
+                                channelHasOpenGroup,
+                                capableAndEnabled,
+                                deviceCanBeSetUp,
+                              })}`,
+                            );
+                        }
+  // A sweep that found no red chips would pass vacuously.
+  assert.ok(red > 1000, `expected a large red-chip sample, got ${red}`);
 });
 
 // ---- ctl parser (default-closed) -------------------------------------------

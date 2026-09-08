@@ -1193,11 +1193,50 @@ export class E2EEBridge implements E2EEAdapter {
    */
   readonly reenrollNeeded = new ReactiveMap<"state", boolean>();
 
+  /**
+   * Reactive signal: this install's E2EE device does not belong to the
+   * signed-in account.
+   *
+   * Signing out does not wipe the E2EE store — `account` is a single row
+   * with no owner column and `mls_signature_key` is a single row bound to
+   * whoever enrolled it — so a second account on the same install meets a
+   * device the server has registered to somebody else. Set true when a
+   * device claim is REJECTED and the signed-in account's device directory
+   * does not list this device, with no §6.4 restore to re-enroll: that
+   * combination has exactly one meaning, and until now it reached nothing
+   * but a `console.error`.
+   *
+   * What reads it: the call path (`e2eeDeviceReadiness`), which stops
+   * offering a device-qualified join the server will refuse and lets the
+   * call chrome say the device needs setting up instead of publishing
+   * plaintext under a red chip with no banner. Cleared by the next accepted
+   * claim — signing back in as the owner fixes it with no further action,
+   * which is the cheap remedy the store-owner work already documents.
+   *
+   * NOT a security gate: it never grants anything. Everything it guards is
+   * already enforced server-side (the device claim, `assert_bound_session`)
+   * and natively (`MlsStoreOwnedByAnotherAccount`); a hostile server that
+   * lied about it could only make this device stop attempting encryption
+   * LOUDLY — red chip, banner, no key material anywhere near it.
+   */
+  readonly deviceOwnedElsewhere = new ReactiveMap<"state", boolean>();
+
   constructor(client: Client) {
     this.#client = client;
     this.#transport = createNativeTransport();
 
     client.on("ready", () => void this.#onReady());
+  }
+
+  /**
+   * Record that delta refused a device-qualified call join for this
+   * install's device (`joining device is not registered`). Same fact as the
+   * claim rejection below and the same flag — this is the path that catches
+   * it on the FIRST call after an account switch, before any reconnect has
+   * run a challenge. Idempotent.
+   */
+  noteDeviceNotRegistered(): void {
+    this.deviceOwnedElsewhere.set("state", true);
   }
 
   /**
@@ -1661,7 +1700,8 @@ export class E2EEBridge implements E2EEAdapter {
       // which is what makes the recovery durable. A "present"/"unknown" row is
       // NOT this case (see `#ownDevicePresence`) — fall through to the honest
       // error so a transient reject or a hostile server can't churn re-derives.
-      if ((await this.#ownDevicePresence()) === "missing") {
+      const presence = await this.#ownDevicePresence();
+      if (presence === "missing") {
         try {
           this.#pendingRestoreRepublish = await this.#invoke<Record<
             string,
@@ -1682,6 +1722,22 @@ export class E2EEBridge implements E2EEAdapter {
           this.reenrollNeeded.set("state", true);
           return;
         }
+        // A rejected claim, an absent server row, and NOTHING to re-enroll:
+        // this store was not restored here, so it was enrolled here — by a
+        // different account. Signing out leaves it behind, and the next
+        // account inherits a device the server will not accept for it:
+        // every MLS call fails and every device-qualified call join is
+        // refused outright. That was previously indistinguishable from any
+        // other rejected claim and reached nothing but the console line
+        // below. Raise it so the call path can stop offering encryption
+        // this device cannot deliver, and say so in the UI.
+        console.error(
+          "[e2ee] this install's E2EE device is not registered to the " +
+            "signed-in account — encrypted calls are unavailable here until " +
+            "it is reset or the owning account signs in",
+        );
+        this.deviceOwnedElsewhere.set("state", true);
+        return;
       }
 
       console.error(
@@ -1695,6 +1751,10 @@ export class E2EEBridge implements E2EEAdapter {
     // MFA, and reset the one-shot reclaim guard.
     this.reenrollNeeded.delete("state");
     this.#restoreReclaimTried = false;
+    // The server accepted a claim for this device under the signed-in
+    // account, so it is ours: clear any inherited-store verdict (signing
+    // back in as the owner is the no-op remedy).
+    this.deviceOwnedElsewhere.delete("state");
 
     // A RESTORE stashes a fresh-OTK republish that must EVICT the stale
     // server-side keys (design §6.3). It is deferred to here — the restored
