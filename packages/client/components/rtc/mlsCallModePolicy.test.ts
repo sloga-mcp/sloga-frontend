@@ -691,7 +691,6 @@ const HEAL_OK: LoudHealInputs = {
   latchedInstallSeq: 3,
   installSeq: 4,
   errorSinceInstall: false,
-  originatingMissingKeyInstalled: false,
   settleElapsed: true,
   rosterConsistent: true,
   peers: [LEFT],
@@ -780,112 +779,6 @@ test("the heal settle runs from the latest re-Add of a PRESENT witness only", ()
   // Never re-added / no witness: nothing later than the install.
   assert.equal(latestPresentAddedAt([{ present: true }]), 0);
   assert.equal(latestPresentAddedAt([]), 0);
-});
-
-// ---- the 3-party join race (§7.4 leg 3a) -----------------------------------
-
-test("a missing key raised while a membership change is in flight is RE-SECURING, not loud", () => {
-  // The bystander half of the joiner window: the peer that served the change
-  // installed first and the SFU carries its new-index frames at once, so a
-  // member whose commit has not arrived raises MissingKey for an index it
-  // does not hold. Outside every window this used to latch loud and, because
-  // a MissingKey names its participant, pinned the heal on a peer that never
-  // churns — red for the rest of the call.
-  assert.equal(classifyEncryptionError(false, false, true), "resecuring");
-  // The other two arms are unchanged, and all three compose.
-  assert.equal(classifyEncryptionError(true, false, false), "resecuring");
-  assert.equal(classifyEncryptionError(false, true, false), "resecuring");
-  assert.equal(classifyEncryptionError(false, false, false), "loud");
-  // Default-closed: the parameter is optional and absent means loud.
-  assert.equal(classifyEncryptionError(false, false), "loud");
-});
-
-test("🔴 the new arm is for MISSING keys only — an InvalidKey mid-change still latches at once", () => {
-  // Legs 9 and 11: the key we hold is WRONG. The caller passes the third arm
-  // only for `classifyMediaError(...).kind === "missing_key"`, so the decoy
-  // case is unaffected by a membership change being in flight.
-  assert.equal(classifyMediaError(INVALID).kind, "hard");
-  assert.equal(classifyEncryptionError(false, false, false), "loud");
-});
-
-test("a latch whose originating missing key has since been installed heals without the peer churning", () => {
-  // The install's setKey re-validates that index, so the silent-drop trap the
-  // peer witness guards against does not apply: no error since the install
-  // means the frames decrypt or are not being sent.
-  const stuck = { present: true, readdedAfterLatch: false, sidsAllNew: false };
-  assert.equal(loudHealVerdict({ ...HEAL_OK, peers: [stuck] }), "hold");
-  assert.equal(
-    loudHealVerdict({
-      ...HEAL_OK,
-      peers: [stuck],
-      originatingMissingKeyInstalled: true,
-    }),
-    "heal",
-  );
-});
-
-test("🔴 the originating-missing-key clause never bypasses the other witnesses", () => {
-  const over: Partial<LoudHealInputs>[] = [
-    { origin: "control" },
-    { installSeq: 3 }, // no new epoch since the latch
-    { errorSinceInstall: true }, // something failed after the install
-    { settleElapsed: false },
-    { rosterConsistent: false },
-  ];
-  for (const o of over)
-    assert.equal(
-      loudHealVerdict({
-        ...HEAL_OK,
-        peers: [{ present: true, readdedAfterLatch: false, sidsAllNew: false }],
-        originatingMissingKeyInstalled: true,
-        ...o,
-      }),
-      "hold",
-      JSON.stringify(o),
-    );
-});
-
-test("the ledger reports whether a key pair has been pushed for a sender", () => {
-  // `pairs` mirrors the worker's FILLED ring slots: a setKey fills a slot and
-  // nothing ever empties one, so a pushed pair stays installed for the life of
-  // the group. That is what makes it a heal witness — the index it names was
-  // re-validated (`resetKeyStatus`) and cannot be silently invalid again
-  // without a fresh error.
-  const ledger = new MediaErrorLedger();
-  assert.equal(ledger.pairInstalled(PEER, keyPairId(PEER, 8)), false);
-  ledger.noteInstalled([entry(7), entry(8)], 1_000);
-  assert.equal(ledger.pairInstalled(PEER, keyPairId(PEER, 8)), true);
-  assert.equal(ledger.pairInstalled(PEER, keyPairId(PEER, 9)), false);
-  // A later install ADDS to the set rather than replacing it, and is scoped
-  // to its own sender.
-  ledger.noteInstalled([entry(9)], 2_000);
-  assert.equal(ledger.pairInstalled(PEER, keyPairId(PEER, 8)), true);
-  assert.equal(ledger.pairInstalled(PEER, keyPairId(PEER, 9)), true);
-  assert.equal(ledger.pairInstalled("someone:else", keyPairId(PEER, 9)), false);
-  assert.deepEqual(ledger.installedPairs(PEER).sort(), [
-    keyPairId(PEER, 7),
-    keyPairId(PEER, 8),
-    keyPairId(PEER, 9),
-  ]);
-  // The group and its ring are replaced together.
-  ledger.reset();
-  assert.equal(ledger.pairInstalled(PEER, keyPairId(PEER, 9)), false);
-  assert.deepEqual(ledger.installedPairs(PEER), []);
-});
-
-test("🔴 a REPLAY of keys we already hold supersedes nothing (LiveKit re-pushes on every enable ack)", () => {
-  // The fold that introduced time-ordered supersession let any later install
-  // clear an uncovered missing key; LiveKit's replay of a key it already holds
-  // is not catching up, and treating it as such threw away the withheld-commit
-  // signal. Only an install that fills a slot we did not hold advances us.
-  const ledger = new MediaErrorLedger();
-  ledger.noteInstalled([entry(13)], 1_010);
-  ledger.noteError(MISSING(14), 1_030);
-  assert.equal(ledger.errorSince(1_000), true);
-  ledger.noteInstalled([entry(13)], 1_500); // the replay
-  assert.equal(ledger.errorSince(1_000), true);
-  ledger.noteInstalled([entry(13), entry(15)], 2_000); // a real advance
-  assert.equal(ledger.errorSince(1_000), false);
 });
 
 // ---- media-plane errors vs. the install reference ---------------------------
@@ -1066,7 +959,6 @@ test("🔴 leg 9 ordering: the rejoiner's first new-key frame fails inside the s
       latchedInstallSeq: 3,
       installSeq: 5,
       errorSinceInstall: ledger.errorSince(installRef),
-      originatingMissingKeyInstalled: false,
       settleElapsed: true,
       rosterConsistent: true,
       peers: [witness],
