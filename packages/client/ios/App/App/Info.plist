@@ -2,12 +2,12 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CAPACITOR_DEBUG</key>
+	<key>CAPACITOR_DEBUG</key>
 	<string>$(CAPACITOR_DEBUG)</string>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
-        <string>Sloga</string>
+	<string>Sloga</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -22,8 +22,18 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>Sloga uses the camera for video calls and to attach photos.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Sloga uses the microphone for voice chat and calls.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Sloga saves images you choose to download to your photo library.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Sloga accesses your photo library so you can attach images and videos to messages.</string>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>
@@ -47,13 +57,5 @@
 	</array>
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<true/>
-	<key>NSMicrophoneUsageDescription</key>
-	<string>Sloga uses the microphone for voice chat and calls.</string>
-	<key>NSCameraUsageDescription</key>
-	<string>Sloga uses the camera for video calls and to attach photos.</string>
-	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Sloga accesses your photo library so you can attach images and videos to messages.</string>
-	<key>NSPhotoLibraryAddUsageDescription</key>
-	<string>Sloga saves images you choose to download to your photo library.</string>
 </dict>
 </plist>

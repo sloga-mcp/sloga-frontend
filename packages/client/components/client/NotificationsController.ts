@@ -119,7 +119,8 @@ export function useNotifications() {
   };
 
   /**
-   * Re-register the native FCM subscription with the backend. Runs on every
+   * Re-register the native push subscription (FCM on Android, APNs on iOS)
+   * with the backend. Runs on every
    * logged-in launch: a session's subscription can be lost with no signal to
    * this device (the one-shot first-run flow failed or was interrupted, the
    * backend dropped it, the token changed) and the first-run flow never
@@ -129,7 +130,7 @@ export function useNotifications() {
    * the user has disabled push.
    */
   const resyncPushSubscription = async (): Promise<boolean> => {
-    if (!PushTokenNative) return true;
+    if (!PushTokenNative && !IS_IOS_NATIVE) return true;
     if (settings.pushNotificationsState === "denied") return true;
     try {
       await setUpServiceWorkerSubscription(getClient());
@@ -167,8 +168,20 @@ export function useNotifications() {
   };
 }
 
-/** Native bridge to fetch the FCM device token (Android app only) */
-const PushTokenNative = Capacitor.isNativePlatform()
+/** True in the native iOS shell, where push is APNs rather than FCM or web push */
+const IS_IOS_NATIVE =
+  Capacitor.isNativePlatform() && Capacitor.getPlatform() === "ios";
+
+/** How long to wait for APNs to hand back a device token before giving up */
+const APNS_TOKEN_TIMEOUT = 30_000;
+
+/**
+ * Native bridge to fetch the FCM device token (Android app only).
+ *
+ * Gated on the platform, not on `isNativePlatform()`: this plugin does not
+ * exist in the iOS shell, so every method there rejects with UNIMPLEMENTED.
+ */
+const PushTokenNative = Capacitor.getPlatform() === "android"
   ? registerPlugin<{
       getToken(): Promise<{ token: string }>;
       saveSubscription(opts: {
@@ -213,12 +226,81 @@ export function openFullScreenCallAlertSettings() {
   PushTokenNative?.openFullScreenIntentSettings().catch(console.error);
 }
 
+/**
+ * Register with APNs and resolve the device token.
+ *
+ * `register()` does not return the token — it arrives asynchronously on the
+ * `registration` listener. Racing that against a timeout matters because the
+ * two ways this is normally broken (an AppDelegate that never forwards
+ * `didRegisterForRemoteNotificationsWithDeviceToken`, or a build signed
+ * without the aps-environment entitlement) both present as neither event ever
+ * firing. Without the timeout that is an unresolved promise, so the settings
+ * toggle spins forever instead of reporting a failure.
+ */
+async function registerForApns(): Promise<string> {
+  const { PushNotifications } = await import("@capacitor/push-notifications");
+
+  let status = await PushNotifications.checkPermissions();
+  if (
+    status.receive === "prompt" ||
+    status.receive === "prompt-with-rationale"
+  ) {
+    status = await PushNotifications.requestPermissions();
+  }
+  if (status.receive !== "granted") {
+    throw "Notification permission was not granted";
+  }
+
+  let onToken!: (value: string) => void;
+  let onError!: (reason: unknown) => void;
+  const token = new Promise<string>((resolve, reject) => {
+    onToken = resolve;
+    onError = reject;
+  });
+
+  // Listener handles are kept so only these two are removed on the way out —
+  // removeAllListeners() would also drop any tap handler registered elsewhere.
+  const handles = await Promise.all([
+    PushNotifications.addListener("registration", (t) => onToken(t.value)),
+    PushNotifications.addListener("registrationError", (e) => onError(e.error)),
+  ]);
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject("Timed out waiting for an APNs device token"),
+      APNS_TOKEN_TIMEOUT,
+    );
+  });
+
+  try {
+    await PushNotifications.register();
+    return await Promise.race([token, timeout]);
+  } finally {
+    clearTimeout(timer);
+    await Promise.all(handles.map((h) => h.remove()));
+  }
+}
+
 async function setUpServiceWorkerSubscription(client: Client) {
   // Sloga Desktop: no service worker in the bundled shell (slice 6.2b) —
   // push rides the WebSocket + native notifications instead. Throwing routes
   // the manual settings toggle into the existing failure snackbar/reset.
   if ("__TAURI__" in window) {
     throw "Web push is not supported in the desktop app";
+  }
+
+  // Native iOS app: WKWebView has no service worker and no FCM — register
+  // with APNs and hand that device token to the same endpoint. `endpoint`
+  // is what pushd routes on, so "apn" is load-bearing, not a label.
+  if (IS_IOS_NATIVE) {
+    const token = await registerForApns();
+    await client.api.post("/push/subscribe", {
+      endpoint: "apn",
+      p256dh: "",
+      auth: token,
+    });
+    return;
   }
 
   // Native Android app: web push is unavailable in the WebView — register
@@ -298,6 +380,15 @@ export async function killServiceWorkerSubscription(
   client: Client,
   loggingOut?: boolean,
 ) {
+  if (IS_IOS_NATIVE) {
+    const { PushNotifications } = await import("@capacitor/push-notifications");
+    // Best-effort: a failed unregister must not strand the caller in a state
+    // where the server still believes this session is subscribed.
+    await PushNotifications.unregister().catch(console.error);
+    if (!loggingOut) await client.api.post("/push/unsubscribe");
+    return;
+  }
+
   if (PushTokenNative) {
     if (!loggingOut) await client.api.post("/push/unsubscribe");
     // Drop stored credentials so a later token rotation can't re-register this

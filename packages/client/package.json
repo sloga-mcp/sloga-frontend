@@ -6,7 +6,8 @@
     "prepare": "panda codegen",
     "build:android": "vite build && node -e \"require('fs').rmSync('dist/mediapipe',{recursive:true,force:true})\" && cap sync android",
     "capacitor:copy:after": "node scripts/capCopyAfter.mjs",
-    "open:android": "cap open android"
+    "open:android": "cap open android",
+    "build:ios": "vite build && node -e \"require('fs').rmSync('dist/mediapipe',{recursive:true,force:true})\" && cap sync ios"
   },
   "devDependencies": {
     "@chromatic-com/storybook": "^2.0.2",
@@ -45,6 +46,7 @@
     "@capacitor/cli": "^8.4.1",
     "@capacitor/core": "^8.4.1",
     "@capacitor/ios": "^8.4.1",
+    "@capacitor/push-notifications": "^8.1.2",
     "@codemirror/autocomplete": "^6.19.0",
     "@codemirror/commands": "^6.8.1",
     "@codemirror/lang-markdown": "^6.3.4",
