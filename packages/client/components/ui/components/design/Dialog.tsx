@@ -232,6 +232,13 @@ const Actions = styled("div", {
   base: {
     gap: "8px",
     display: "flex",
+    // Buttons carry flexShrink: 0, so a row that does not fit cannot squash --
+    // without wrapping it overflows, and because the row is end-justified the
+    // overflow runs off the START edge, clipping the FIRST action rather than
+    // the last. On a phone "Start a Chat Room or Server" lost the left half of
+    // "Chat Room" that way. Wrapping is also what M3 specifies for actions
+    // too wide for one line; each wrapped line stays end-justified.
+    flexWrap: "wrap",
     justifyContent: "end",
     marginBlockStart: "24px",
   },
