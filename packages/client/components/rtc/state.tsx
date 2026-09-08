@@ -1951,7 +1951,13 @@ class Voice {
       // bridge raises this durably from a rejected device claim with an
       // absent server row; the join refusal below is the backstop for the
       // very first call after the switch.
-      deviceOwnedElsewhere: bridge?.deviceOwnedElsewhere.has("state") === true,
+      // Either verdict is enough, and they are deliberately separate facts:
+      // the first is the server's (a rejected claim plus an absent directory
+      // row), the second is this disk's (`mls_signature_key.user_id` via the
+      // native accessor). The local one is the only unforgeable half.
+      deviceOwnedElsewhere:
+        bridge?.deviceOwnedElsewhere.has("state") === true ||
+        bridge?.storeOwnedByAnotherAccount.has("state") === true,
     });
     const e2eeCapable = callEncryptionCapable(readiness);
     if (e2eeCapable) {

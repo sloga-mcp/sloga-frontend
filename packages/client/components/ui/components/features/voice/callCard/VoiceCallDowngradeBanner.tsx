@@ -110,6 +110,13 @@ export function VoiceCallDowngradeBanner() {
   const { mfaFlow, showError, openModal } = useModals();
   // The native refusal, which KNOWS the store's owner because it read the row.
   const ownerMismatch = () => storeOwnerMismatch(voice.callEncryptionError());
+  // The same fact, read straight off this disk by the store-owner accessor
+  // rather than waiting for a crypto call to fail. Local and unforgeable by a
+  // server, which is what qualifies it — like `ownerMismatch` and unlike the
+  // server-assembled verdict — to offer the destructive reset.
+  const storeIsAnotherAccounts = () =>
+    !!e2ee?.storeOwnedByAnotherAccount.has("state");
+  const provenNotOurs = () => !!ownerMismatch() || storeIsAnotherAccounts();
   // The same fault seen from outside: the server would not accept this
   // device's identity. Deliberately does NOT claim another account owns it —
   // a hard-revoked device of the signed-in account lands here too.
@@ -201,7 +208,11 @@ export function VoiceCallDowngradeBanner() {
                 see that.
               </Trans>
             </Match>
-            <Match when={ownerMismatch()}>
+            {/* Widened from the native refusal alone: with LOCAL proof the
+                definite sentence is honest, and it is the one that explains
+                the Reset button beside it. Without either, the hedged arm
+                below names the server's answer and nothing more. */}
+            <Match when={provenNotOurs()}>
               <Trans>
                 Encryption on this device is set up for a different account, so
                 calls here cannot be encrypted. Resetting clears this device's
@@ -267,7 +278,7 @@ export function VoiceCallDowngradeBanner() {
         <Actions>
           {/* Offered, never forced: this destroys local E2EE state, so it sits
               alongside "Stay unencrypted" rather than replacing it. */}
-          <Show when={!!ownerMismatch() && !!e2ee}>
+          <Show when={provenNotOurs() && !!e2ee}>
             <Button
               size="sm"
               variant="text"
@@ -282,9 +293,15 @@ export function VoiceCallDowngradeBanner() {
               for a server-asserted refusal. The Encryption page serves both:
               an unenrolled device gets the enable flow, a provisioned one the
               disable-then-enrol flow, each behind its own gates. */}
+          {/* Not alongside Reset: where the store is PROVEN another account's,
+              Reset is the specific remedy and a second button to the same page
+              is clutter. This is for the cases with no local proof — never
+              enrolled, or only the server saying so. */}
           <Show
             when={
-              readiness() === "needs_setup" || readiness() === "owned_elsewhere"
+              !provenNotOurs() &&
+              (readiness() === "needs_setup" ||
+                readiness() === "owned_elsewhere")
             }
           >
             <Button size="sm" variant="text" onPress={openEncryptionSettings}>

@@ -1235,6 +1235,30 @@ export class E2EEBridge implements E2EEAdapter {
    */
   readonly deviceOwnedElsewhere = new ReactiveMap<"state", number>();
 
+  /**
+   * Reactive LOCAL proof that this install's E2EE store belongs to a different
+   * account — the owner's user id, read straight from
+   * `mls_signature_key.user_id` by the native `e2ee_store_owner` accessor.
+   *
+   * Distinct from `deviceOwnedElsewhere` because the PROVENANCE is what makes
+   * it worth having. That flag is assembled from three server answers, one of
+   * which delta also emits for a plain database error; this one is a row on
+   * this disk. A hostile server cannot raise it, cannot clear it, and cannot
+   * make it disagree with itself — which is why it, and not the server-derived
+   * flag, is what may offer the DESTRUCTIVE reset.
+   *
+   * 🔴 One-way with respect to the other flag: a local match never clears a
+   * server verdict (a device can be genuinely revoked while its store is
+   * rightfully ours), and a local mismatch is never cleared by the directory
+   * saying the device is present (the store is still not ours). Each is
+   * cleared only by evidence of its own kind.
+   *
+   * Absent means UNKNOWN, never an all-clear: the MLS row is created lazily on
+   * first use, so an enrolled device that has never placed a call has none —
+   * and a shell without the accessor has none either.
+   */
+  readonly storeOwnedByAnotherAccount = new ReactiveMap<"state", string>();
+
   constructor(client: Client) {
     this.#client = client;
     this.#transport = createNativeTransport();
@@ -1412,6 +1436,48 @@ export class E2EEBridge implements E2EEAdapter {
     return this.#invoke<boolean>("e2ee_is_provisioned");
   }
 
+  /**
+   * Compare the store's own owner against the signed-in account.
+   *
+   * Runs on every connect, before anything asks the server. Read-only and
+   * never-provisioning natively, so it is safe here — the restore-first
+   * contract that gates `refreshStatus` is untouched.
+   *
+   * Failure is UNKNOWN, not an all-clear, on both axes: a shell without the
+   * accessor throws (web, and any desktop build older than it), and a device
+   * that has never done MLS has no row. Either way the server-side signals
+   * still run and nothing here says the store is fine.
+   */
+  async #checkStoreOwner(): Promise<void> {
+    const userId = this.#client.user?.id;
+    if (!userId) return;
+
+    let owner: string | null;
+    try {
+      owner = await this.#invoke<string | null>("e2ee_store_owner");
+    } catch {
+      return; // no accessor on this shell — the server-side signals stand
+    }
+    if (!owner) return; // no MLS row yet: UNKNOWN
+
+    if (owner === userId) {
+      // Local evidence in the other direction, and authoritative for exactly
+      // what it claims. It does NOT touch `deviceOwnedElsewhere`: a device can
+      // be rightfully ours and still revoked server-side.
+      this.storeOwnedByAnotherAccount.delete("state");
+      return;
+    }
+
+    if (!this.storeOwnedByAnotherAccount.has("state")) {
+      console.error(
+        "[e2ee] this install's E2EE store belongs to a different account — " +
+          "encrypted calls and messages are unavailable here until it is " +
+          "reset or the owning account signs in",
+      );
+    }
+    this.storeOwnedByAnotherAccount.set("state", owner);
+  }
+
   async #onReady(): Promise<void> {
     try {
       // A fresh/unprovisioned device must NOT open the engine on connect:
@@ -1444,6 +1510,11 @@ export class E2EEBridge implements E2EEAdapter {
         }
         return;
       }
+
+      // Before anything asks the server: does this store even belong to us?
+      // Cheap, local, and the answer the whole account-switch story used to
+      // have to infer from three server round trips.
+      await this.#checkStoreOwner();
 
       const status = await this.refreshStatus();
       if (status.enabled && status.published && status.device_id) {
