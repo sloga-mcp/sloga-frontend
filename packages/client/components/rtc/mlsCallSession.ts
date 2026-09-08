@@ -65,6 +65,7 @@ import type {
   MlsClaimedKeyPackage,
   MlsCommitInfo,
   MlsEnvelope,
+  MlsFrameKey,
   MlsFrameKeys,
   MlsHttpResult,
   MlsJoinRequest,
@@ -102,6 +103,7 @@ import {
   type CallModeEvent,
   type LoudLatchOrigin,
   type RotationWindowOpener,
+  MediaErrorLedger,
   callModeTransition,
   classifyEncryptionError,
   latestPresentAddedAt,
@@ -364,6 +366,21 @@ const LOUD_HEAL_SETTLE_MS = RESECURE_ESCALATE_MS;
  * while a decoy/withheld key fails as `InvalidKey: Decryption failed: …` with
  * no identity. A property is honored too, should a later worker forward it.
  */
+/**
+ * The pairs an install pushes to the worker: current + previous-epoch entries,
+ * minus this device's own when the local send key is deferred (Add-grace).
+ * The heal ledger supersedes missing-key errors for exactly these.
+ */
+function installEntries(
+  frameKeys: MlsFrameKeys,
+  exceptLocal?: string,
+): MlsFrameKey[] {
+  const all = [...frameKeys.keys, ...(frameKeys.previous ?? [])];
+  return exceptLocal === undefined
+    ? all
+    : all.filter((k) => k.livekit_identity !== exceptLocal);
+}
+
 function cryptorErrorParticipant(error: unknown): string | undefined {
   if (typeof error !== "object" || error === null) return undefined;
   const identity = (error as { participantIdentity?: unknown })
@@ -1126,12 +1143,17 @@ export class MlsCallSession {
   /**
    * Monotonic count of epochs whose keys were APPLIED on the receive side
    * (`#onEpochKeysApplied`; epochs restart across groups, this does not), and
-   * when the latest was — the heal probe's "since the re-key" reference.
+   * when the latest install STARTED — the heal probe's "since the re-key"
+   * reference, taken before the installer ran so that an error landing
+   * between its per-entry awaits counts as since the install.
    */
   #installSeq = 0;
   #lastInstallAt = 0;
-  /** When a media-plane error was last surfaced (stamped even under the latch). */
-  #lastMediaErrorAt = 0;
+  /**
+   * Media-plane errors by kind (stamped even under the latch), judged by the
+   * heal probe against `#lastInstallAt` — see `MediaErrorLedger`.
+   */
+  #mediaErrors = new MediaErrorLedger();
   /**
    * When each DEVICE was last observed ADDED to the MLS roster by the roster
    * diff of `#reconcileOnce` — a transition in natively verified group state
@@ -3356,11 +3378,15 @@ export class MlsCallSession {
         this.#lastOwnWon.kind === "remove") ||
       (this.#lastInbound?.epoch === epoch && this.#lastInbound.removed);
     const installStart = performance.now();
+    // The heal probe's reference, taken BEFORE the installer runs: it posts
+    // each entry to the worker and awaits `importKey` between entries, so an
+    // error landing mid-install must read as "since this install".
+    const installRef = Date.now();
 
     try {
       if (timing === "immediate") {
         await media.installer.applyKeys(frameKeys, identity);
-        this.#onEpochKeysApplied();
+        this.#onEpochKeysApplied(installRef, installEntries(frameKeys));
         this.#metrics.recordReceiveGap(
           isRemove,
           performance.now() - installStart,
@@ -3371,7 +3397,10 @@ export class MlsCallSession {
         // epoch-fenced (NEW-1). We keep publishing on the OLD local key
         // meanwhile (already installed from the previous epoch).
         await media.installer.applyRemoteKeys(frameKeys, identity);
-        this.#onEpochKeysApplied();
+        this.#onEpochKeysApplied(
+          installRef,
+          installEntries(frameKeys, identity),
+        );
         this.#metrics.recordReceiveGap(
           isRemove,
           performance.now() - installStart,
@@ -3392,10 +3421,23 @@ export class MlsCallSession {
    * local install instead left up to `ADD_GRACE_MS` in which such an error was
    * stamped BEFORE the reference, the index went silent, and a probe would
    * have healed over dead air (diff review, 2026-09-07).
+   *
+   * `installRef` was taken before the installer ran (review of `9e5fa880`,
+   * MED): the installer awaits `importKey` per entry after each post, and an
+   * InvalidKey landing between those awaits was stamped before a reference
+   * taken here, after it resolved — the index silent, the probe healing over
+   * it. `entries` are the pairs the install pushed; a missing-key error for
+   * any of them is superseded (`MediaErrorLedger`), which is what keeps a
+   * hold caused only by the join-race MissingKey inside the install from
+   * outliving the install that answered it.
    */
-  #onEpochKeysApplied(): void {
+  #onEpochKeysApplied(
+    installRef: number,
+    entries: readonly MlsFrameKey[],
+  ): void {
     this.#installSeq++;
-    this.#lastInstallAt = Date.now();
+    this.#lastInstallAt = installRef;
+    this.#mediaErrors.noteInstalled(entries);
     // A new epoch's keys under a MEDIA latch: the group re-keyed past the
     // failure (the latch recorded the counter BEFORE this increment, so the
     // "advanced" witness holds by construction here). Give the media plane
@@ -3480,10 +3522,10 @@ export class MlsCallSession {
    * (via `noteEncryptionRecovered`) instead of sticking the chip loud.
    */
   #surfaceError(error: unknown): void {
-    // Stamped BEFORE the latched early-return: the heal probe needs to see
+    // Ledgered BEFORE the latched early-return: the heal probe needs to see
     // errors that arrive under the latch (a failure that survives a re-key
     // re-emits once per freshly installed key index).
-    this.#lastMediaErrorAt = Date.now();
+    this.#mediaErrors.noteError(error, Date.now());
     const media = this.#media;
     if (!media || this.#terminal() || this.#loudLatched) return;
 
@@ -3652,7 +3694,7 @@ export class MlsCallSession {
     this.#healRetried = false;
     this.#loudLatchedAt = 0;
     this.#loudLatchedInstallSeq = -1;
-    this.#lastMediaErrorAt = 0;
+    this.#mediaErrors.forgetHardError();
   }
 
   /**
@@ -3762,7 +3804,7 @@ export class MlsCallSession {
       origin: this.#loudOrigin,
       latchedInstallSeq: this.#loudLatchedInstallSeq,
       installSeq: this.#installSeq,
-      errorSinceInstall: this.#lastMediaErrorAt >= this.#lastInstallAt,
+      errorSinceInstall: this.#mediaErrors.errorSince(this.#lastInstallAt),
       settleElapsed,
       rosterConsistent:
         result.nonEnrolled.length === 0 && result.pending.length === 0,
@@ -3820,6 +3862,10 @@ export class MlsCallSession {
       this.#media?.onEncryptionState?.("clear", this.#loudError);
     }
     this.#clearLoudLatch();
+    // The group and its key indexes are being replaced: a missing-key record
+    // for one of the old group's pairs would otherwise hold every later latch
+    // until an install that can never come.
+    this.#mediaErrors.reset();
     this.#installEpoch = -1;
     this.#hasLocalKey = false;
     this.#lastOwnWon = null;

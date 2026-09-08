@@ -642,7 +642,12 @@ export interface LoudHealInputs {
   latchedInstallSeq: number;
   /** The same counter now — a strictly larger value means a new epoch's keys. */
   installSeq: number;
-  /** Any media-plane error (LiveKit or native key path) since that install. */
+  /**
+   * A media-plane error the install did not supersede: a hard error (the key
+   * itself wrong) at or after the reference taken BEFORE the installer ran,
+   * or a missing key for a pair no install has covered
+   * (`MediaErrorLedger.errorSince`).
+   */
   errorSinceInstall: boolean;
   /**
    * The settle has run since BOTH the last key install and the latest
@@ -721,6 +726,124 @@ export function loudHealVerdict(inputs: LoudHealInputs): "heal" | "hold" {
   )
     ? "heal"
     : "hold";
+}
+
+// ---- media-plane errors vs. the heal's install reference --------------------
+
+/**
+ * The key-pair id `<livekit identity>@<key index>` a frame key or a worker
+ * error refers to. A screen leg is its own pair: native emits a `:screen`
+ * entry for every member (`mlsCallKeys.ts`) and the worker keys a leg's
+ * cryptor under the leg's identity.
+ */
+export function keyPairId(identity: string, keyIndex: number): string {
+  return `${identity}@${keyIndex}`;
+}
+
+/**
+ * What a media-plane error says about the key it failed at. The worker posts
+ * `${reason}: ${message}` as a plain `Error` (`setupCryptorErrorEvents`); the
+ * decode path's MissingKey — `missing key at index N for participant X` — is
+ * the one shape that names both halves of the pair. The worker raises it only
+ * while it holds NO key at that index, and the pair's `setKey` resets the
+ * index's failure count (`resetKeyStatus`), so an install of that pair
+ * provably supersedes it. Everything else — InvalidKey (the key it holds is
+ * wrong), the encode path's missing key, a native key-path failure — reports
+ * a key that stays wrong until the next epoch: `hard`.
+ */
+export type MediaErrorClass =
+  | { kind: "missing_key"; pair: string }
+  | { kind: "hard" };
+
+export function classifyMediaError(error: unknown): MediaErrorClass {
+  const message =
+    typeof error === "object" && error !== null
+      ? (error as { message?: unknown }).message
+      : undefined;
+  const missing =
+    typeof message === "string"
+      ? /^MissingKey: missing key at index (\d+) for participant (\S+)/.exec(
+          message,
+        )
+      : null;
+  return missing
+    ? { kind: "missing_key", pair: keyPairId(missing[2], Number(missing[1])) }
+    : { kind: "hard" };
+}
+
+/**
+ * The media-plane error record the heal probe judges against its install
+ * reference (`errorSinceInstall`). Two ledgers, because the worker's two
+ * failure shapes mean different things after a re-key:
+ *
+ *  - A HARD error marks its key index invalid — one error, then silent drops
+ *    (failureTolerance 0) — and only the next epoch's `setKey` re-validates
+ *    it. Its stamp is compared against a reference taken BEFORE the installer
+ *    runs. `MlsKeyProvider.#install` awaits `importKey` per entry after each
+ *    `onSetEncryptionKey` post, and an InvalidKey landing between those
+ *    awaits used to be stamped before a reference taken after the install
+ *    resolved: the index went silent and the probe healed over it 10 s later
+ *    (media-E2EE review of `9e5fa880`). With the reference ahead of the
+ *    install, every error during it counts — conservative by construction.
+ *  - A MISSING key names its pair and is superseded by any install of that
+ *    pair, whichever reaches the main thread first: the worker processed the
+ *    frame before the `setKey` message or it would not have raised
+ *    MissingKey, and the `setKey` resets the index. A missing key for a pair
+ *    NEVER installed is a sender at an index this side does not hold; its
+ *    index is silenced after the one error, so it holds the heal until an
+ *    install of that pair, regardless of when it landed.
+ */
+export class MediaErrorLedger {
+  #hardErrorAt = 0;
+  /** Missing-key pairs no install has covered yet, by the time observed. */
+  #missing = new Map<string, number>();
+  /** Every pair pushed to the worker since the last `reset`. */
+  #installed = new Set<string>();
+
+  /** Record a media-plane error observed at `now`. */
+  noteError(error: unknown, now: number): MediaErrorClass {
+    const cls = classifyMediaError(error);
+    if (cls.kind === "hard") this.#hardErrorAt = now;
+    else if (!this.#installed.has(cls.pair)) this.#missing.set(cls.pair, now);
+    return cls;
+  }
+
+  /** Record the pairs an install pushed to the worker. */
+  noteInstalled(
+    entries: readonly { livekit_identity: string; key_index: number }[],
+  ): void {
+    for (const entry of entries) {
+      const pair = keyPairId(entry.livekit_identity, entry.key_index);
+      this.#installed.add(pair);
+      this.#missing.delete(pair);
+    }
+  }
+
+  /**
+   * Whether an error the install at `installRef` did not supersede stands: a
+   * hard error at or after the reference, or a missing key for a pair no
+   * install has covered.
+   */
+  errorSince(installRef: number): boolean {
+    return this.#hardErrorAt >= installRef || this.#missing.size > 0;
+  }
+
+  /** The missing-key pairs still uncovered (diagnostics). */
+  uncoveredPairs(): string[] {
+    return [...this.#missing.keys()];
+  }
+
+  /** Forget the hard-error stamp (a healed latch). */
+  forgetHardError(): void {
+    this.#hardErrorAt = 0;
+  }
+
+  /** Forget everything: the group, and with it every key index, is replaced. */
+  reset(): void {
+    this.#hardErrorAt = 0;
+    this.#missing.clear();
+    this.#installed.clear();
+  }
 }
 
 /**
