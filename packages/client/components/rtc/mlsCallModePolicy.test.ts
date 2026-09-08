@@ -799,12 +799,18 @@ const entry = (index: number, identity = PEER) => ({
 test("only the decode path's MissingKey names a key pair; everything else is hard", () => {
   assert.deepEqual(classifyMediaError(MISSING(13)), {
     kind: "missing_key",
+    identity: PEER,
     pair: keyPairId(PEER, 13),
   });
   assert.deepEqual(classifyMediaError(MISSING(2, `${PEER}:screen`)), {
     kind: "missing_key",
+    identity: `${PEER}:screen`,
     pair: `${PEER}:screen@2`,
   });
+  // An index outside the worker's ring is a plaintext frame's last byte, not
+  // a key pair (its failure count is NaN and it re-emits every frame).
+  assert.deepEqual(classifyMediaError(MISSING(16)), { kind: "hard" });
+  assert.deepEqual(classifyMediaError(MISSING(200)), { kind: "hard" });
   // The decoy / withheld key (leg 9): the key it holds is wrong.
   assert.deepEqual(classifyMediaError(INVALID), { kind: "hard" });
   // The encode path's missing key names no decode pair.
@@ -859,28 +865,51 @@ test("a missing key for a pair the install covers is superseded, whichever lands
   assert.equal(prev.errorSince(1_000), false);
 });
 
-test("🔴 a missing key for a pair NO install covers holds regardless of when it landed", () => {
+test("🔴 a missing key for a sender NO install covers holds while that sender is present, regardless of when it landed", () => {
   // A sender at an index this side does not hold: its index is silenced after
   // the one error (failureTolerance 0), so silence proves nothing.
+  const OTHER = "01KWHY6P2RPHWNJADM59F97JGE:bee76df73dbf46725e328509842750b4";
   const ledger = new MediaErrorLedger();
-  ledger.noteError(MISSING(14), 500); // before the reference
-  ledger.noteInstalled([entry(13)]);
+  ledger.noteError(MISSING(14, OTHER), 500); // before the reference
+  ledger.noteInstalled([entry(13)]); // PEER installed, OTHER never
   assert.equal(ledger.errorSince(1_000), true);
-  assert.deepEqual(ledger.uncoveredPairs(), [keyPairId(PEER, 14)]);
-  // Only an install of that pair answers it.
-  ledger.noteInstalled([entry(14)]);
+  assert.deepEqual(ledger.uncoveredPairs(), [keyPairId(OTHER, 14)]);
+  // Gone from the SFU: its frames are gone with it (review of e2163ead, H1a).
+  assert.equal(
+    ledger.errorSince(1_000, (identity) => identity !== OTHER),
+    false,
+  );
+  // Back, still uncovered: holds again. An install of that sender answers it.
+  assert.equal(ledger.errorSince(1_000), true);
+  ledger.noteInstalled([entry(14, OTHER)]);
   assert.equal(ledger.errorSince(1_000), false);
 });
 
-test("forgetHardError keeps the uncovered pairs; reset forgets the replaced group's indexes", () => {
+test("🔴 a Welcome joiner's pre-Welcome missing key is superseded by the sender's FIRST install (H1)", () => {
+  // Review of e2163ead: a device joined by Welcome hears P's frames at epoch
+  // E before it holds any key, then installs E+1 with `previous: []` (native
+  // snapshots previous only across a commit it applied). P@E is never
+  // installed; superseding by sender keeps the heal alive for the joiner.
+  const ledger = new MediaErrorLedger();
+  ledger.noteError(MISSING(4), 100); // P@4, before the Welcome
+  ledger.noteInstalled([entry(5)]); // first install: P@5 only
+  assert.equal(ledger.errorSince(1_000), false);
+  assert.deepEqual(ledger.uncoveredPairs(), []);
+  // And a later missing key for an installed sender is not recorded at all.
+  ledger.noteError(MISSING(3), 2_000);
+  assert.equal(ledger.errorSince(1_000), false);
+});
+
+test("forgetHardError keeps the uncovered senders; reset forgets the replaced group", () => {
+  const OTHER = "01KWHY6P2RPHWNJADM59F97JGE:bee76df73dbf46725e328509842750b4";
   const ledger = new MediaErrorLedger();
   ledger.noteError(INVALID, 1_005);
-  ledger.noteError(MISSING(14), 1_006);
+  ledger.noteError(MISSING(14, OTHER), 1_006);
   ledger.forgetHardError(); // a healed latch
-  assert.equal(ledger.errorSince(1_000), true); // pair 14 still uncovered
-  ledger.reset(); // group re-established: new indexes
+  assert.equal(ledger.errorSince(1_000), true); // OTHER still uncovered
+  ledger.reset(); // group re-established
   assert.equal(ledger.errorSince(1_000), false);
-  // After a reset a pair installed under the old group is unknown again, so
+  // After a reset a sender installed under the old group is unknown again, so
   // a missing key for it is a real hold until the new group installs it.
   ledger.noteError(MISSING(0), 2_000);
   assert.equal(ledger.errorSince(1_500), true);

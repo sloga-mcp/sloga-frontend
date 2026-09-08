@@ -367,18 +367,27 @@ const LOUD_HEAL_SETTLE_MS = RESECURE_ESCALATE_MS;
  * no identity. A property is honored too, should a later worker forward it.
  */
 /**
- * The pairs an install pushes to the worker: current + previous-epoch entries,
- * minus this device's own when the local send key is deferred (Add-grace).
- * The heal ledger supersedes missing-key errors for exactly these.
+ * The entries an install pushes to the worker, mirroring the installer
+ * (`remoteInstallEntries` + `localInstallEntries` in mlsCallKeys.ts): every
+ * remote's previous + current entry, plus this device's CURRENT entry on the
+ * immediate path only (the Add-grace path defers the local send key; the
+ * local previous entry is never re-installed). The heal ledger supersedes
+ * missing-key errors for exactly these senders.
  */
 function installEntries(
   frameKeys: MlsFrameKeys,
-  exceptLocal?: string,
+  localIdentity: string,
+  includeLocal: boolean,
 ): MlsFrameKey[] {
-  const all = [...frameKeys.keys, ...(frameKeys.previous ?? [])];
-  return exceptLocal === undefined
-    ? all
-    : all.filter((k) => k.livekit_identity !== exceptLocal);
+  const remotes = [...(frameKeys.previous ?? []), ...frameKeys.keys].filter(
+    (k) => k.livekit_identity !== localIdentity,
+  );
+  return includeLocal
+    ? [
+        ...remotes,
+        ...frameKeys.keys.filter((k) => k.livekit_identity === localIdentity),
+      ]
+    : remotes;
 }
 
 function cryptorErrorParticipant(error: unknown): string | undefined {
@@ -1143,7 +1152,8 @@ export class MlsCallSession {
   /**
    * Monotonic count of epochs whose keys were APPLIED on the receive side
    * (`#onEpochKeysApplied`; epochs restart across groups, this does not), and
-   * when the latest install STARTED — the heal probe's "since the re-key"
+   * when the latest install STARTED (`performance.now()`, the same monotonic
+   * clock the error ledger stamps with) — the heal probe's "since the re-key"
    * reference, taken before the installer ran so that an error landing
    * between its per-entry awaits counts as since the install.
    */
@@ -3380,13 +3390,17 @@ export class MlsCallSession {
     const installStart = performance.now();
     // The heal probe's reference, taken BEFORE the installer runs: it posts
     // each entry to the worker and awaits `importKey` between entries, so an
-    // error landing mid-install must read as "since this install".
-    const installRef = Date.now();
+    // error landing mid-install must read as "since this install". Monotonic
+    // clock, shared with the error ledger's stamps.
+    const installRef = performance.now();
 
     try {
       if (timing === "immediate") {
         await media.installer.applyKeys(frameKeys, identity);
-        this.#onEpochKeysApplied(installRef, installEntries(frameKeys));
+        this.#onEpochKeysApplied(
+          installRef,
+          installEntries(frameKeys, identity, true),
+        );
         this.#metrics.recordReceiveGap(
           isRemove,
           performance.now() - installStart,
@@ -3399,7 +3413,7 @@ export class MlsCallSession {
         await media.installer.applyRemoteKeys(frameKeys, identity);
         this.#onEpochKeysApplied(
           installRef,
-          installEntries(frameKeys, identity),
+          installEntries(frameKeys, identity, false),
         );
         this.#metrics.recordReceiveGap(
           isRemove,
@@ -3525,7 +3539,7 @@ export class MlsCallSession {
     // Ledgered BEFORE the latched early-return: the heal probe needs to see
     // errors that arrive under the latch (a failure that survives a re-key
     // re-emits once per freshly installed key index).
-    this.#mediaErrors.noteError(error, Date.now());
+    this.#mediaErrors.noteError(error, performance.now());
     const media = this.#media;
     if (!media || this.#terminal() || this.#loudLatched) return;
 
@@ -3800,17 +3814,30 @@ export class MlsCallSession {
       };
     });
     const settleElapsed = latestPresentAddedAt(peers) <= this.#healArmedAt;
-    const verdict = loudHealVerdict({
+    const sfuIdentities = new Set(media.sfuParticipants());
+    const inputs = {
       origin: this.#loudOrigin,
       latchedInstallSeq: this.#loudLatchedInstallSeq,
       installSeq: this.#installSeq,
-      errorSinceInstall: this.#mediaErrors.errorSince(this.#lastInstallAt),
+      errorSinceInstall: this.#mediaErrors.errorSince(
+        this.#lastInstallAt,
+        (identity) => sfuIdentities.has(identity),
+      ),
       settleElapsed,
       rosterConsistent:
         result.nonEnrolled.length === 0 && result.pending.length === 0,
       peers,
-    });
-    if (verdict !== "heal") return;
+    };
+    const verdict = loudHealVerdict(inputs);
+    if (verdict !== "heal") {
+      // A held latch leaves a trace too: a live leg that stays red must be
+      // attributable to the witness that held it.
+      console.info("[mls] loud latch held", {
+        ...inputs,
+        uncoveredMissingKeys: this.#mediaErrors.uncoveredPairs(),
+      });
+      return;
+    }
     console.info(
       `[mls] loud latch healed: the group re-keyed past the failure and ` +
         `every device it could have come from left or re-published under ` +

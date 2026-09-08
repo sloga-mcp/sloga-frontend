@@ -740,6 +740,9 @@ export function keyPairId(identity: string, keyIndex: number): string {
   return `${identity}@${keyIndex}`;
 }
 
+/** The worker's key ring (livekit-client default `keyringSize`). */
+export const WORKER_KEYRING_SIZE = 16;
+
 /**
  * What a media-plane error says about the key it failed at. The worker posts
  * `${reason}: ${message}` as a plain `Error` (`setupCryptorErrorEvents`); the
@@ -749,10 +752,13 @@ export function keyPairId(identity: string, keyIndex: number): string {
  * index's failure count (`resetKeyStatus`), so an install of that pair
  * provably supersedes it. Everything else — InvalidKey (the key it holds is
  * wrong), the encode path's missing key, a native key-path failure — reports
- * a key that stays wrong until the next epoch: `hard`.
+ * a key that stays wrong until the next epoch: `hard`. An index outside the
+ * ring is not a key pair at all (a plaintext frame's last byte read as an
+ * index; the worker's failure count for it is `NaN`, so it re-emits every
+ * frame): `hard` too.
  */
 export type MediaErrorClass =
-  | { kind: "missing_key"; pair: string }
+  | { kind: "missing_key"; identity: string; pair: string }
   | { kind: "hard" };
 
 export function classifyMediaError(error: unknown): MediaErrorClass {
@@ -766,9 +772,14 @@ export function classifyMediaError(error: unknown): MediaErrorClass {
           message,
         )
       : null;
-  return missing
-    ? { kind: "missing_key", pair: keyPairId(missing[2], Number(missing[1])) }
-    : { kind: "hard" };
+  if (!missing) return { kind: "hard" };
+  const index = Number(missing[1]);
+  if (index >= WORKER_KEYRING_SIZE) return { kind: "hard" };
+  return {
+    kind: "missing_key",
+    identity: missing[2],
+    pair: keyPairId(missing[2], index),
+  };
 }
 
 /**
@@ -785,50 +796,75 @@ export function classifyMediaError(error: unknown): MediaErrorClass {
  *    resolved: the index went silent and the probe healed over it 10 s later
  *    (media-E2EE review of `9e5fa880`). With the reference ahead of the
  *    install, every error during it counts — conservative by construction.
- *  - A MISSING key names its pair and is superseded by any install of that
- *    pair, whichever reaches the main thread first: the worker processed the
- *    frame before the `setKey` message or it would not have raised
- *    MissingKey, and the `setKey` resets the index. A missing key for a pair
- *    NEVER installed is a sender at an index this side does not hold; its
- *    index is silenced after the one error, so it holds the heal until an
- *    install of that pair, regardless of when it landed.
+ *    Stamps and reference come from one MONOTONIC clock (`performance.now`):
+ *    a wall clock stepping back between the two would re-open the window.
+ *  - A MISSING key names its sender and is superseded by any later install
+ *    of that SENDER, whichever reaches the main thread first: the worker
+ *    processed the frame before the `setKey` message or it would not have
+ *    raised MissingKey, and the `setKey` resets the index. Superseding by
+ *    identity rather than by exact pair is deliberate: a device joined by
+ *    Welcome hears the members' frames at epoch E before it holds any key
+ *    and installs E+1 first (native snapshots `previous` only across a commit
+ *    it applied itself), so `P@E` would never be covered and every later
+ *    latch on that device would hold for the life of the group — the R2 heal
+ *    inert on exactly the receiver role the live legs use (review of
+ *    e2163ead, H1). The install proves this side holds the sender's current
+ *    index; whether its older-index frames were lost is the SID witness's
+ *    question. A missing key for a sender this side NEVER installed is one at
+ *    an index it does not hold, its index silenced after the one error: it
+ *    holds the heal while the sender is still in the SFU (`errorSince`'s
+ *    `present`), regardless of when it landed, and stops mattering once the
+ *    sender is gone.
+ *  - The worker holds no ack for `setKey`: a `deriveKeys` failure inside the
+ *    worker leaves the slot empty with nothing posted, and the one MissingKey
+ *    it would have answered is treated as superseded here. Only malformed key
+ *    material reaches that path (the §4.2 HKDF import guards it); a worker
+ *    that acknowledges `setKey` should gate `noteInstalled` on the ack.
  */
 export class MediaErrorLedger {
   #hardErrorAt = 0;
   /** Missing-key pairs no install has covered yet, by the time observed. */
-  #missing = new Map<string, number>();
-  /** Every pair pushed to the worker since the last `reset`. */
+  #missing = new Map<string, { identity: string; at: number }>();
+  /** Every sender identity pushed to the worker since the last `reset`. */
   #installed = new Set<string>();
 
-  /** Record a media-plane error observed at `now`. */
+  /** Record a media-plane error observed at `now` (monotonic clock). */
   noteError(error: unknown, now: number): MediaErrorClass {
     const cls = classifyMediaError(error);
     if (cls.kind === "hard") this.#hardErrorAt = now;
-    else if (!this.#installed.has(cls.pair)) this.#missing.set(cls.pair, now);
+    else if (!this.#installed.has(cls.identity)) {
+      this.#missing.set(cls.pair, { identity: cls.identity, at: now });
+    }
     return cls;
   }
 
-  /** Record the pairs an install pushed to the worker. */
+  /** Record the entries an install pushed to the worker. */
   noteInstalled(
     entries: readonly { livekit_identity: string; key_index: number }[],
   ): void {
-    for (const entry of entries) {
-      const pair = keyPairId(entry.livekit_identity, entry.key_index);
-      this.#installed.add(pair);
-      this.#missing.delete(pair);
+    for (const entry of entries) this.#installed.add(entry.livekit_identity);
+    for (const [pair, record] of this.#missing) {
+      if (this.#installed.has(record.identity)) this.#missing.delete(pair);
     }
   }
 
   /**
    * Whether an error the install at `installRef` did not supersede stands: a
-   * hard error at or after the reference, or a missing key for a pair no
-   * install has covered.
+   * hard error at or after the reference, or a missing key for a sender no
+   * install has covered that is still `present` in the SFU.
    */
-  errorSince(installRef: number): boolean {
-    return this.#hardErrorAt >= installRef || this.#missing.size > 0;
+  errorSince(
+    installRef: number,
+    present: (identity: string) => boolean = () => true,
+  ): boolean {
+    if (this.#hardErrorAt >= installRef) return true;
+    for (const record of this.#missing.values()) {
+      if (present(record.identity)) return true;
+    }
+    return false;
   }
 
-  /** The missing-key pairs still uncovered (diagnostics). */
+  /** The missing-key pairs still uncovered by an install (diagnostics). */
   uncoveredPairs(): string[] {
     return [...this.#missing.keys()];
   }
