@@ -17,8 +17,12 @@
  *     (per-participant keys), `ratchetWindowSize:0` + `failureTolerance:0`
  *     (LiveKit's sframe self-ratchet disabled) so a "ratcheted" key can never
  *     diverge from MLS-derived truth (§1.5).
+ *  3. `getKeys()` is OVERRIDDEN to serve only the current install set, because
+ *     LiveKit replays it into the worker behind our back and the base class's
+ *     answer goes stale after sixteen epochs. See the override for the full
+ *     account — it is a send-path invariant, not a tidiness measure.
  */
-import { BaseKeyProvider } from "livekit-client";
+import { type KeyInfo, BaseKeyProvider } from "livekit-client";
 
 import type { MlsFrameKey, MlsFrameKeys } from "@revolt/client";
 
@@ -134,6 +138,20 @@ export class MlsKeyProvider extends BaseKeyProvider {
   #applied = new Set<string>();
 
   /**
+   * The current epoch's REMOTE install set, in `orderForInstall` order, kept
+   * verbatim as the `KeyInfo` records handed to LiveKit. Replaced wholesale on
+   * every `applyRemoteKeys`, which is what drops a since-removed sender.
+   */
+  #replayRemotes: KeyInfo[] = [];
+
+  /**
+   * The LOCAL send key currently in force — the one the encoder is publishing
+   * under. Replaced only by `applyLocalKey`, so it survives an Add-grace
+   * `applyRemoteKeys` (during which we ARE still sending on the old key).
+   */
+  #replayLocal: KeyInfo[] = [];
+
+  /**
    * This device's current screen-leg send key (Android plan §5.2).
    *
    * THE ONLY place leg key material is held in JS. It is kept here rather than
@@ -177,9 +195,16 @@ export class MlsKeyProvider extends BaseKeyProvider {
     return this.#lastLocalScreenKey;
   }
 
-  /** Import one entry's raw HKDF material and push it to the worker. */
-  async #install(entries: MlsFrameKey[]): Promise<string[]> {
-    const installed: string[] = [];
+  /**
+   * Import one entry's raw HKDF material and push it to the worker, returning
+   * the `KeyInfo` records exactly as LiveKit received them. Those records are
+   * what `getKeys()` serves back on replay, so they are captured HERE — at the
+   * single point that talks to the worker — rather than rebuilt later from a
+   * `MlsFrameKeys` a caller still holds. Nothing can then install a key the
+   * replay does not know about, or replay one that was never installed.
+   */
+  async #install(entries: MlsFrameKey[]): Promise<KeyInfo[]> {
+    const installed: KeyInfo[] = [];
     for (const entry of entries) {
       const material = await crypto.subtle.importKey(
         "raw",
@@ -194,9 +219,55 @@ export class MlsKeyProvider extends BaseKeyProvider {
         entry.livekit_identity,
         entry.key_index,
       );
-      installed.push(entry.livekit_identity);
+      installed.push({
+        key: material,
+        participantIdentity: entry.livekit_identity,
+        keyIndex: entry.key_index,
+      });
     }
     return installed;
+  }
+
+  /**
+   * The key set LiveKit is allowed to replay into the worker — ALWAYS the
+   * CURRENT install set, never a sixteen-epoch history.
+   *
+   * 🔴 This override is a send-path invariant. `E2EEManager` re-posts
+   * `keyProvider.getKeys()` into the worker on its own schedule, with no way
+   * for us to veto it: on the `initAck`, on EVERY `enable` ack (and an
+   * `enable` is posted for every remote `TrackPublished` and for every remote
+   * publication on each `ConnectionState.Connected`), and on every
+   * `SignalConnected`. So a peer unmuting, a screenshare starting, or any
+   * reconnect re-runs the whole list through `setKey`.
+   *
+   * Each replayed `setKey` for OUR identity runs `setKeyFromMaterial`, which
+   * assigns `currentKeyIndex = keyIndex`, and the encoder encrypts under
+   * `cryptoKeyRing[currentKeyIndex]`. The LAST local entry in this list
+   * therefore decides which key this device publishes under.
+   *
+   * `BaseKeyProvider` cannot be trusted to order that list. It stores into a
+   * `Map` keyed `` `${identity}-${keyIndex}` ``, and `Map.set` on an existing
+   * key keeps the ORIGINAL insertion position. Once the 16-slot keyring has
+   * wrapped (epoch >= 16) the local identity's entries are frozen at
+   * `local-0 … local-15`, so `super.getKeys()` ends on `local-15` forever —
+   * epoch 15's material. From epoch 16 on, the first replay would drop this
+   * device back onto that key: a member removed at epoch 16-30 still holds it
+   * and could read the media (locked decision 7), while a member added after
+   * epoch 15 never had it and goes loud with `MissingKey ... at index 15`. The
+   * removed member's side is the silent one, which is the dangerous direction.
+   *
+   * Serving the current set instead fixes both halves at once: the local key
+   * is LAST and current (matching `orderForInstall`, so a replay lands exactly
+   * where a fresh install would), and a since-removed sender is simply absent
+   * — the old replay re-installed those too (part of the §7.2 residual) and
+   * reset every stale index's failure count along the way.
+   *
+   * The `override` keyword is deliberate: if a LiveKit upgrade renames or
+   * drops `getKeys`, `tsc` fails here instead of silently restoring the
+   * replay.
+   */
+  override getKeys(): KeyInfo[] {
+    return [...this.#replayRemotes, ...this.#replayLocal];
   }
 
   /**
@@ -220,9 +291,13 @@ export class MlsKeyProvider extends BaseKeyProvider {
    * native returns, never an older set; (b) never reassert a since-removed
    * sender's key (it simply is not in the native set); (c) never re-install our
    * OWN previous-epoch key (excluded from `remoteInstallEntries`), so a
-   * Remove-immediate can never transiently regress our send index; (d) the RTC
-   * layer re-invokes native for the CURRENT set on reconnect rather than
-   * trusting LiveKit's stale `getKeys()` replay (invariant 7 edge).
+   * Remove-immediate can never transiently regress our send index; (d) never
+   * let LiveKit's own `getKeys()` replay reinstate an older epoch behind our
+   * back — `getKeys()` is overridden to serve the CURRENT set only (invariant
+   * 7 edge). Nothing re-invokes native on reconnect: the sole driver of an
+   * install is the native epoch-change push (`state.tsx`'s
+   * `onCallKeysChanged` → `mlsCallSession.onLocalKeysChanged`), so the
+   * override is what covers the reconnect path, not a re-fetch.
    */
   async applyKeys(
     frameKeys: MlsFrameKeys,
@@ -243,10 +318,12 @@ export class MlsKeyProvider extends BaseKeyProvider {
     frameKeys: MlsFrameKeys,
     localIdentity: string,
   ): Promise<void> {
-    const installed = await this.#install(
-      remoteInstallEntries(frameKeys, localIdentity),
-    );
-    const live = new Set(installed);
+    const entries = remoteInstallEntries(frameKeys, localIdentity);
+    // Replace the remote replay set wholesale rather than merging: a sender
+    // removed at this epoch is absent from `entries`, and that absence is
+    // exactly what must stop LiveKit re-installing their key on the next ack.
+    this.#replayRemotes = await this.#install(entries);
+    const live = new Set(entries.map((entry) => entry.livekit_identity));
     // Keep the record of an already-installed local key: during an Add-grace we
     // are still publishing on it — it is live, just not re-installed here.
     if (this.#applied.has(localIdentity)) live.add(localIdentity);
@@ -265,7 +342,14 @@ export class MlsKeyProvider extends BaseKeyProvider {
     const installed = await this.#install(
       localInstallEntries(frameKeys, localIdentity),
     );
-    if (installed.length) this.#applied.add(localIdentity);
+    if (installed.length) {
+      // Only ADVANCE the replay's local key, never blank it. An epoch that
+      // carries no local entry is anomalous, and the worker is still holding
+      // the key we last installed — the replay has to mirror what the encoder
+      // is actually publishing under, not what native last failed to say.
+      this.#replayLocal = installed;
+      this.#applied.add(localIdentity);
+    }
     await this.#applyLocalScreenKey(frameKeys, localIdentity);
   }
 
