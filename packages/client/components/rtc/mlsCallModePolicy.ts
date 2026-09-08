@@ -252,6 +252,118 @@ export type ChipState =
   | "resecuring"
   | "not_encrypted";
 
+// ---- Gate (d): the decode witness ------------------------------------------
+
+/**
+ * One sender's arrival tally at one key index, as the E2EE worker reports it.
+ *
+ * The worker reads the key index off EVERY arriving frame before it decides
+ * whether to drop it, so this is the one witness that is both a LOCAL fact and
+ * INDEX-scoped. `RTCRtpReceiver.getStats()` is neither: `framesDecoded` and
+ * `totalSamplesReceived - concealedSamples` are counted after the worker's
+ * server-injected-frame passthrough, so SFU-injected blank and Opus-silence
+ * frames advance them for a participant whose real frames are being dropped
+ * (M10), and they name a participant rather than an index.
+ */
+export interface DecodeIndexTally {
+  keyIndex: number;
+  /** Frames that ARRIVED at this index during the window. */
+  seen: number;
+  /**
+   * Of those, how many the worker threw away because it had marked that index
+   * invalid. Non-zero is not an absence of evidence — it is the failure
+   * itself, measured: this device is being sent frames it silently discards.
+   */
+  dropped: number;
+}
+
+/** One sender's tallies in one window. */
+export interface DecodeWitnessSample {
+  identity: string;
+  indexes: readonly DecodeIndexTally[];
+}
+
+/** Gate (d)'s input: the latest window the worker reported. */
+export interface DecodeWitness {
+  /**
+   * A sample arrived recently enough to judge on.
+   *
+   * 🔴 FALSE IS AMBER, and that is the whole inversion. The worker posts this
+   * every second whether or not it has anything to report, so its ARRIVAL is
+   * what proves the witness is wired at all. A build that lost the patch, a
+   * worker that died, a sampler that was never armed — each stops the
+   * heartbeat, and the chip degrades to amber instead of quietly losing the
+   * gate. Exempting on "no evidence" is the reasoning that produced the silent
+   * green six review rounds kept finding in a new place.
+   */
+  available: boolean;
+  /**
+   * Senders whose frames ARRIVED and were DROPPED at an index this device
+   * silenced — "the sender is still using an index we cannot read".
+   */
+  dropping: readonly string[];
+  /** Senders whose frames arrived and got through. Diagnostic, not a gate. */
+  live: readonly string[];
+}
+
+/** No sample: gate (d) cannot judge, so it holds the chip amber. */
+export const DECODE_WITNESS_UNAVAILABLE: DecodeWitness = {
+  available: false,
+  dropping: [],
+  live: [],
+};
+
+/**
+ * Reduce a window of worker tallies to gate (d)'s input.
+ *
+ * A sender counts as `dropping` if ANY of its indexes lost a frame, and as
+ * `live` if any index got one through. Both can be true at once — a sender
+ * mid-rotation is briefly sending at two indexes — and `dropping` is what the
+ * gate reads, because a sender whose new index we can read is still having its
+ * old-index frames discarded until it stops using that index.
+ */
+export function summarizeDecodeWitness(
+  participants: readonly DecodeWitnessSample[],
+): DecodeWitness {
+  const dropping: string[] = [];
+  const live: string[] = [];
+  for (const participant of participants) {
+    let drop = false;
+    let ok = false;
+    for (const tally of participant.indexes) {
+      if (tally.dropped > 0) drop = true;
+      if (tally.seen > tally.dropped) ok = true;
+    }
+    if (drop) dropping.push(participant.identity);
+    if (ok) live.push(participant.identity);
+  }
+  return { available: true, dropping, live };
+}
+
+/**
+ * The exact `identity@index` pairs frames are being dropped at right now.
+ *
+ * This is the only thing that may CREATE a verdict from the witness, and the
+ * reason it may: a verdict about a key index must be created by evidence about
+ * that same key index. The participant-scoped alternative — "this peer is not
+ * decoding" — was rejected in review precisely because it would arm an
+ * index-scoped hold from evidence that names no index, turning an ordinary
+ * Welcome into a guaranteed false red.
+ */
+export function droppedPairs(
+  participants: readonly DecodeWitnessSample[],
+): string[] {
+  const pairs: string[] = [];
+  for (const participant of participants) {
+    for (const tally of participant.indexes) {
+      if (tally.dropped > 0) {
+        pairs.push(keyPairId(participant.identity, tally.keyIndex));
+      }
+    }
+  }
+  return pairs;
+}
+
 /** A snapshot of everything the chip derivation reads. */
 export interface ChipInputs {
   /** No session at all (non-capable shell / never constructed). */
@@ -298,6 +410,12 @@ export interface ChipInputs {
   channelHasOpenGroup: boolean;
   /** This shell can do media E2EE (capable + toggle on). */
   capableAndEnabled: boolean;
+  /**
+   * Gate (d) — the worker's decode witness. Required, never optional: a
+   * permissive default would restore green-by-default at the one place this
+   * whole change exists to remove it.
+   */
+  decodeWitness: DecodeWitness;
 }
 
 /**
@@ -376,7 +494,24 @@ export function chipState(inputs: ChipInputs): ChipState {
   const mediaObserved = inputs.publishingIdentities.every(
     (identity) => inputs.observedEncrypted.get(identity) === true,
   );
-  if (!mediaObserved || !inputs.localPublicationsEncrypted) {
+  // Media-plane gate (d): a FRESH worker sample, in which no sender's frames
+  // are being dropped at an index this device silenced.
+  //
+  // This is the gate that inverts the default. Gates (a)-(c) are all read from
+  // objects whose absence means "fine": a verdict that was destroyed without
+  // evidence, or never created, reads as green through every one of them, which
+  // is how six review rounds each found the same silent green in a different
+  // place. This one needs a positive measurement, refreshed every second, of
+  // the frames actually arriving. It can only ever withhold a green — it never
+  // latches, never clears, and never promotes.
+  const decodeWitnessed =
+    inputs.decodeWitness.available &&
+    inputs.decodeWitness.dropping.length === 0;
+  if (
+    !mediaObserved ||
+    !inputs.localPublicationsEncrypted ||
+    !decodeWitnessed
+  ) {
     // (a) holds but (b) not yet satisfied for a publishing participant, or
     // one of OUR OWN publications is not on record as GCM — bounded amber
     // (the session arms the 10 s escalation → loud, R2-2, and republishes

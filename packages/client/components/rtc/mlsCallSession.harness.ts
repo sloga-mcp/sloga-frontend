@@ -38,7 +38,11 @@ import {
   ENCRYPTION_TYPE_GCM,
   localPublicationsEncrypted,
 } from "./localPublicationEncryption.ts";
-import { type ChipState, chipState } from "./mlsCallModePolicy.ts";
+import {
+  type ChipState,
+  type DecodeWitness,
+  chipState,
+} from "./mlsCallModePolicy.ts";
 import type {
   KeyInstaller,
   MediaEncryptionState,
@@ -174,6 +178,44 @@ export class World {
    * only thing separating a deferral from an invisible green.
    */
   holdsSupported = true;
+
+  /**
+   * Gate (d) — the senders whose frames the worker is currently DROPPING at an
+   * index this device silenced. Empty by default: an ordinary healthy call has
+   * nothing being discarded, and a spec that wants gate (d) to bite says so
+   * with `dropFrames()`.
+   *
+   * The opposite default to `observedEncrypted`, which is modelled all-true
+   * because it is the SFU's DECLARATION and structurally cannot witness this
+   * class. The decode witness is a LOCAL measurement of frames that actually
+   * arrived, so for a healthy call it genuinely holds.
+   */
+  #dropping: string[] = [];
+  /** Whether the worker's heartbeat is arriving at all (fail-closed when not). */
+  witnessAvailable = true;
+
+  /** The worker is dropping these senders' frames at a silenced index. */
+  dropFrames(...identities: string[]): void {
+    this.#dropping = identities;
+  }
+
+  /** The worker's heartbeat stopped — the patch is missing, or the worker died. */
+  loseWitness(): void {
+    this.witnessAvailable = false;
+  }
+
+  /** Gate (d)'s input as `state.tsx` would assemble it from a worker sample. */
+  decodeWitness(): DecodeWitness {
+    if (!this.witnessAvailable) {
+      return { available: false, dropping: [], live: [] };
+    }
+    const remotes = this.sfu.filter((id) => id !== SELF_ID);
+    return {
+      available: true,
+      dropping: [...this.#dropping],
+      live: remotes.filter((id) => !this.#dropping.includes(id)),
+    };
+  }
   session!: MlsCallSession;
 
   readonly role: "creator" | "joiner";
@@ -310,6 +352,7 @@ export class World {
       rosterVerified: this.roster.map(() => true),
       channelHasOpenGroup: true,
       capableAndEnabled: true,
+      decodeWitness: this.decodeWitness(),
     });
   }
 

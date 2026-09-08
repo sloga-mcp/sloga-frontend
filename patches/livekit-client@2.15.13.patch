@@ -1,0 +1,73 @@
+diff --git a/dist/livekit-client.e2ee.worker.mjs b/dist/livekit-client.e2ee.worker.mjs
+--- a/dist/livekit-client.e2ee.worker.mjs
++++ b/dist/livekit-client.e2ee.worker.mjs
+@@ -1468,6 +1468,55 @@
+   H264KeyFrame2x2IDR: 'faffc26b68a2fc09096fa20f3351e706398b6f838a7500c8063472c2e476e90d',
+   OpusSilenceFrame: 'aad8d31fc56b2802ca500e58c2fb9d0b29ad71bb7cb52cd6530251eade188988'
+ };
++// --- Sloga: the decode witness (media-E2EE chip gate (d)) --------------------
++// Per SENDER, the key indexes frames actually ARRIVED at in the last window and
++// how many of those this worker threw away because it had already marked that
++// index invalid. Flushed to the main thread once a second.
++//
++// Why it lives HERE and not in `RTCRtpReceiver.getStats()`. The chip's green was
++// the DEFAULT: it went amber only while a verdict OBJECT happened to exist, so a
++// verdict destroyed without evidence -- or never created -- read as green over
++// frames this worker was silently dropping. Six review rounds each found that
++// posture in a different place. Inverting it needs a POSITIVE witness, and a
++// getStats one does not work: `framesDecoded` and
++// `totalSamplesReceived - concealedSamples` are counted AFTER the SIF
++// passthrough below, so SFU-injected blank/silence frames advance them for a
++// participant whose real frames are being dropped. This tally is read only once
++// that passthrough has already returned, so an injected frame never reaches it.
++//
++// It is also INDEX-scoped, which a getStats witness is not: it names the exact
++// key index a sender is using right now. A verdict about an index may only be
++// created by evidence about that index.
++const slogaWitness = new Map();
++function slogaNoteDecode(participantIdentity, keyIndex, dropped) {
++  if (participantIdentity === undefined) return;
++  let byIndex = slogaWitness.get(participantIdentity);
++  if (!byIndex) {
++    byIndex = new Map();
++    slogaWitness.set(participantIdentity, byIndex);
++  }
++  const tally = byIndex.get(keyIndex) || { seen: 0, dropped: 0 };
++  tally.seen += 1;
++  if (dropped) tally.dropped += 1;
++  byIndex.set(keyIndex, tally);
++}
++// Posted unconditionally every second, even with nothing to report: its ARRIVAL
++// is what tells the main thread the patch is present at all. A build that lost
++// the patch stops sending it, and the chip fails closed to amber and says so,
++// instead of quietly losing the gate.
++setInterval(() => {
++  const participants = [];
++  slogaWitness.forEach((byIndex, identity) => {
++    const indexes = [];
++    byIndex.forEach((tally, keyIndex) => {
++      indexes.push({ keyIndex: keyIndex, seen: tally.seen, dropped: tally.dropped });
++    });
++    participants.push({ identity: identity, indexes: indexes });
++  });
++  slogaWitness.clear();
++  postMessage({ kind: 'slogaDecodeWitness', data: { participants: participants } });
++}, 1000);
++
+ /**
+  * Check if a byte array matches any of the known SIF payload frame types using secure crypto hashes
+  */
+@@ -1713,7 +1762,12 @@
+       }
+       const data = new Uint8Array(encodedFrame.data);
+       const keyIndex = data[encodedFrame.data.byteLength - 1];
+-      if (this.keys.hasInvalidKeyAtIndex(keyIndex)) {
++      // Sloga decode witness: record the index this frame actually arrived at,
++      // and whether we threw it away. Reached only past the SIF passthrough
++      // above, so an injected frame can never manufacture liveness here.
++      const slogaDropped = this.keys.hasInvalidKeyAtIndex(keyIndex);
++      slogaNoteDecode(this.participantIdentity, keyIndex, slogaDropped);
++      if (slogaDropped) {
+         // drop frame
+         return;
+       }

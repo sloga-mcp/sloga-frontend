@@ -202,8 +202,11 @@ import { MlsKeyProvider } from "./mlsCallKeys";
 import {
   type CallMode,
   type ChipState,
+  type DecodeWitness,
   chipState,
+  DECODE_WITNESS_UNAVAILABLE,
   isTerminalLoud,
+  summarizeDecodeWitness,
 } from "./mlsCallModePolicy";
 import {
   type MlsMediaBinding,
@@ -233,6 +236,13 @@ import { isScreenShareCancel } from "./screenShareCancel";
 import { ScreenShieldProcessor } from "./screenShieldProcessor";
 import { SoundboardPlayback } from "./soundboardPlayback";
 import { WhisperController } from "./whisper";
+
+/**
+ * Gate (d): how long without a worker heartbeat before the decode witness is
+ * treated as absent. Three of the worker's one-second posts, so a single late
+ * flush under load does not flap the chip.
+ */
+const DECODE_WITNESS_STALE_MS = 3_000;
 
 /**
  * A dice-roll result shown briefly over the call's video (e.g. "Jeff rolled
@@ -582,6 +592,9 @@ class Voice {
   // undefined on unsupported/web shells (treated as non-enrolled).
   #mlsKeyProvider: MlsKeyProvider | undefined;
   #e2eeWorker: Worker | undefined;
+  /** Tear down the decode-witness listener + staleness timer (gate d). */
+  #decodeWitnessStop: (() => void) | undefined;
+  #setCallDecodeWitness!: Setter<DecodeWitness>;
   /**
    * The shared web-audio context handed to livekit via
    * `webAudioMix: { audioContext }`. Owned HERE, not by the SDK — livekit
@@ -792,6 +805,13 @@ class Voice {
    * AMBER for exactly as long as the verdict is open.
    */
   callMediaHold: Accessor<boolean>;
+  /**
+   * Gate (d): the E2EE worker's decode witness for the current window — which
+   * senders' frames are arriving and being DROPPED at an index this device
+   * silenced. `available: false` while no heartbeat is arriving, which the chip
+   * reads as amber.
+   */
+  callDecodeWitness: Accessor<DecodeWitness>;
   #setCallMediaHold: Setter<boolean>;
   /**
    * Non-enrolled participant identities in the current call (slice 6.4 §3.4) —
@@ -1163,6 +1183,12 @@ class Voice {
 
     const [callMediaHold, setCallMediaHold] = createSignal(false);
     this.callMediaHold = callMediaHold;
+    // Starts UNAVAILABLE, so a call that never arms the witness reads amber
+    // rather than green (gate d is fail-closed by construction).
+    const [callDecodeWitness, setCallDecodeWitness] =
+      createSignal<DecodeWitness>(DECODE_WITNESS_UNAVAILABLE);
+    this.callDecodeWitness = callDecodeWitness;
+    this.#setCallDecodeWitness = setCallDecodeWitness;
     this.#setCallMediaHold = setCallMediaHold;
 
     const [recording, setRecording] = createSignal(false);
@@ -2011,11 +2037,15 @@ class Voice {
     const callAudioContext = webAudioMix ? new AudioContext() : undefined;
     this.#callAudioContext = callAudioContext;
 
+    const e2eeRoom = !!(
+      e2eeCapable &&
+      this.#mlsKeyProvider &&
+      this.#e2eeWorker
+    );
     const room = new Room({
-      e2ee:
-        e2eeCapable && this.#mlsKeyProvider && this.#e2eeWorker
-          ? { keyProvider: this.#mlsKeyProvider, worker: this.#e2eeWorker }
-          : undefined,
+      e2ee: e2eeRoom
+        ? { keyProvider: this.#mlsKeyProvider!, worker: this.#e2eeWorker! }
+        : undefined,
       // Stop pushing upstream for tracks nobody is subscribed to — trims
       // wasted bitrate on the (relayed) publisher path. Safe with the manual
       // autoSubscribe:false flow below. adaptiveStream is intentionally left
@@ -2739,6 +2769,7 @@ class Voice {
         session.bindMedia(this.#buildMediaBinding(room, this.#mlsKeyProvider));
         this.#mlsSession = session;
         this.#setCallSessionState(session.state());
+        this.#armDecodeWitness(session);
         void session.start();
       } else if (e2eeCapable) {
         // Capable shell, no session — R2-4, withdrawn 2026-09-06 under the
@@ -2866,6 +2897,7 @@ class Voice {
         /* see above */
       }
       this.#unlistenCallKeys = undefined;
+      this.#disarmDecodeWitness();
       this.#e2eeWorker?.terminate();
       this.#e2eeWorker = undefined;
       this.#mlsKeyProvider = undefined;
@@ -6052,6 +6084,75 @@ class Voice {
   }
 
   /**
+   * Gate (d): listen for the E2EE worker's decode witness.
+   *
+   * The patched worker posts `slogaDecodeWitness` once a second, whether or not
+   * it has anything to report, naming per sender the key indexes frames
+   * ARRIVED at and how many it threw away for an index it had marked invalid.
+   * We attach with `addEventListener`, so livekit's own `worker.onmessage`
+   * handler keeps running untouched; the worker ignores message kinds it does
+   * not know, and we ignore its.
+   *
+   * 🔴 The heartbeat is the point. `available` goes false as soon as one stops
+   * arriving, and the chip reads that as amber. A build that lost the pnpm
+   * patch, a worker that died, a listener that was never armed — each of them
+   * silences the witness, and each must degrade the chip rather than quietly
+   * remove the gate. That is the whole inversion: gates (a)-(c) all read
+   * objects whose ABSENCE means "fine", which is how a destroyed or
+   * never-created verdict read green through every one of them.
+   *
+   * 🔴 ONE-WAY. This may withhold a green. It never resolves a hold, cancels an
+   * escalation, clears a latch or promotes anything.
+   */
+  #armDecodeWitness(session: MlsCallSession): void {
+    this.#disarmDecodeWitness();
+    const worker = this.#e2eeWorker;
+    if (!worker) return;
+    let lastAt = performance.now();
+    let warned = false;
+    const onMessage = (ev: MessageEvent) => {
+      const data = ev.data as
+        | { kind?: string; data?: { participants?: unknown } }
+        | undefined;
+      if (data?.kind !== "slogaDecodeWitness") return;
+      if (this.#mlsSession !== session) return;
+      lastAt = performance.now();
+      const participants = Array.isArray(data.data?.participants)
+        ? data.data.participants
+        : [];
+      if (warned) {
+        warned = false;
+        console.info("[mls] decode witness is reporting again");
+      }
+      this.#setCallDecodeWitness(summarizeDecodeWitness(participants));
+    };
+    worker.addEventListener("message", onMessage);
+    // Three missed beats, so one late post under load is not a flap.
+    const stale = setInterval(() => {
+      if (performance.now() - lastAt <= DECODE_WITNESS_STALE_MS) return;
+      if (!warned) {
+        warned = true;
+        console.warn(
+          "[mls] no decode witness from the e2ee worker — the chip cannot go " +
+            "green. Is the livekit-client patch applied in this build?",
+        );
+      }
+      this.#setCallDecodeWitness(DECODE_WITNESS_UNAVAILABLE);
+    }, DECODE_WITNESS_STALE_MS);
+    this.#decodeWitnessStop = () => {
+      worker.removeEventListener("message", onMessage);
+      clearInterval(stale);
+      this.#setCallDecodeWitness(DECODE_WITNESS_UNAVAILABLE);
+    };
+  }
+
+  #disarmDecodeWitness(): void {
+    const stop = this.#decodeWitnessStop;
+    this.#decodeWitnessStop = undefined;
+    stop?.();
+  }
+
+  /**
    * The §4.4 dual-gated encryption chip state (slice 6.5). Derived from the
    * session mode/state, LiveKit's observed per-participant encryption, the
    * verified MLS roster, the latched error, and the open-group probe — via the
@@ -6122,6 +6223,7 @@ class Voice {
       rosterVerified: this.callRoster().members.map((m) => m.user_verified),
       channelHasOpenGroup: this.callChannelHasOpenGroup(),
       capableAndEnabled: this.#settings.e2eeCallsEnabled,
+      decodeWitness: this.callDecodeWitness(),
     });
   }
 
