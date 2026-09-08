@@ -918,7 +918,7 @@ export class MediaErrorLedger {
    * marked invalid, which is precisely the silent drop the heal's peer
    * witness exists to catch (media-E2EE review, 2026-09-08).
    */
-  #everMissing = new Map<string, Map<string, number>>();
+  #everMissing = new Map<string, Map<string, boolean>>();
 
   /** Whether `pair` from `identity` is answered by an install since. */
   #superseded(identity: string, pair: string, at: number): boolean {
@@ -936,13 +936,17 @@ export class MediaErrorLedger {
   }
 
   /** Record a media-plane error observed at `now` (monotonic clock). */
-  noteError(error: unknown, now: number, installSeq = 0): MediaErrorClass {
+  noteError(
+    error: unknown,
+    now: number,
+    beforeFirstKey = false,
+  ): MediaErrorClass {
     const cls = classifyMediaError(error);
     if (cls.kind === "hard") this.#hardErrorAt = now;
     else {
       const seen =
-        this.#everMissing.get(cls.identity) ?? new Map<string, number>();
-      if (!seen.has(cls.pair)) seen.set(cls.pair, installSeq);
+        this.#everMissing.get(cls.identity) ?? new Map<string, boolean>();
+      if (!seen.has(cls.pair)) seen.set(cls.pair, beforeFirstKey);
       this.#everMissing.set(cls.identity, seen);
       if (!this.#superseded(cls.identity, cls.pair, now)) {
         this.#missing.set(cls.pair, { identity: cls.identity, at: now });
@@ -973,10 +977,14 @@ export class MediaErrorLedger {
       };
       let advanced = false;
       for (const pair of pairs) {
-        if (!rec.pairs.has(pair)) {
-          rec.pairs.set(pair, installSeq);
-          advanced = true;
-        }
+        // `advanced` is a FIRST-fill fact (it dates the supersession rule);
+        // the sequence stamp is the LATEST fill, because the ring reuses an
+        // index every 16 epochs and a stamp frozen at the epoch-3 fill would
+        // make `pairFilledAtSeq > latchedInstallSeq` false forever from
+        // epoch 16 on — the bystander heal expiring silently on any long
+        // call (media-E2EE review, 2026-09-08).
+        if (!rec.pairs.has(pair)) advanced = true;
+        rec.pairs.set(pair, installSeq);
       }
       if (advanced) rec.advancedAt = completedAt;
       this.#installed.set(identity, rec);
@@ -1031,19 +1039,22 @@ export class MediaErrorLedger {
    * index re-validates. Non-empty means the sender may be sending into one of
    * them right now, silently dropped, with no further error to prove it.
    *
-   * Deliberately not derived from `#missing`: see `#everMissing`. `sinceSeq`
-   * scopes it to failures observed at or after some install: a device joined
-   * by Welcome hears members' frames before it holds any key, and native
-   * snapshots `previous` only across a commit it applied, so those pre-Welcome
-   * pairs can NEVER be filled — unscoped they would read as a permanent
-   * failure for the life of the group (the H1 shape `#missing` exempts).
+   * Deliberately not derived from `#missing`: see `#everMissing`. Pairs heard
+   * BEFORE this device held any key of the group are exempt and nothing else
+   * is: a device joined by Welcome hears members' frames first, and native
+   * snapshots `previous` only across a commit it applied, so those pairs can
+   * never be filled and would otherwise read as a permanent failure for the
+   * life of the group (the H1 shape `#missing` exempts too). Scoping this to
+   * "before the LATCH" instead was far wider and let the heal clear over an
+   * index the sender failed at earlier in the same call and is still using
+   * (media-E2EE review, 2026-09-08).
    */
-  unfilledPairs(identity: string, sinceSeq = -Infinity): string[] {
+  unfilledPairs(identity: string): string[] {
     const seen = this.#everMissing.get(identity);
     if (!seen) return [];
     const filled = this.#installed.get(identity)?.pairs;
     return [...seen]
-      .filter(([pair, seq]) => seq >= sinceSeq && !filled?.has(pair))
+      .filter(([pair, beforeFirstKey]) => !beforeFirstKey && !filled?.has(pair))
       .map(([pair]) => pair);
   }
 

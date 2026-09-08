@@ -33,6 +33,10 @@ import type {
   ResponseCreateMlsGroup,
 } from "@revolt/client";
 
+import {
+  type LocalPublicationEncryption,
+  ENCRYPTION_TYPE_GCM,
+} from "./localPublicationEncryption.ts";
 import type {
   KeyInstaller,
   MediaEncryptionState,
@@ -129,6 +133,34 @@ export class World {
   midInstallError: Error | null = null;
   /** The Room's `Connected` state as the binding reports it. */
   connected = true;
+  /**
+   * Local publications as the SFU has them on record — the LOCAL-DECLARATION
+   * seam (`#assertLocalDeclarations`). Without it that whole path is vacuous,
+   * so no spec could arm a `control` escalation, which is exactly how a
+   * control-token defect reached a fourth review unnoticed.
+   */
+  localPublications: LocalPublicationEncryption[] = [];
+  /** Track SIDs the session asked to be republished, in order. */
+  republished: string[][] = [];
+  /**
+   * When set, the fake republish awaits this before flipping to GCM — the
+   * window in which a `control` escalation is PENDING, which is where the
+   * escalation's cancel token has to hold.
+   */
+  republishGate: Promise<void> | null = null;
+  /** Open that window; the returned function closes it. */
+  holdRepublish(): () => void {
+    let release!: () => void;
+    this.republishGate = new Promise<void>((r) => (release = r));
+    return () => {
+      this.republishGate = null;
+      release();
+    };
+  }
+  /** Declare one local publication to the SFU as NONE (the unmute shape). */
+  declarePlaintext(trackSid = "TR_local"): void {
+    this.localPublications = [{ trackSid, encryption: 0 }];
+  }
   /**
    * Whether the binding implements `onMediaHold` — the chip's amber. A
    * binding without it must never get a deferred verdict: the amber is the
@@ -273,6 +305,18 @@ function fakeMedia(world: World): MlsMediaBinding {
     sfuParticipants: () => [...world.sfu],
     participantTrackSids: (identity) => world.sids.get(identity) ?? [],
     sfuConnected: () => world.connected,
+    localPublications: () => [...world.localPublications],
+    republishLocalPublications: async (trackSids) => {
+      world.republished.push([...trackSids]);
+      if (world.republishGate) await world.republishGate;
+      // The republish comes up GCM, as the real seam's does.
+      world.localPublications = world.localPublications.map((p) =>
+        trackSids.includes(p.trackSid)
+          ? { ...p, encryption: ENCRYPTION_TYPE_GCM }
+          : p,
+      );
+    },
+    resumePublishing: async () => {},
     onEncryptionState: (state, error) => {
       world.states.push({ state, error });
       world.events.push(`state:${state}`);

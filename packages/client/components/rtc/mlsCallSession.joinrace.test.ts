@@ -31,6 +31,7 @@ import {
   newWorld,
   PEER,
   PEER_ID,
+  SELF,
   SELF_ID,
   THIRD,
   THIRD_ID,
@@ -665,6 +666,110 @@ test("the heal clears a bystander latch once this side installs the exact index 
   assert.equal(world.session.callMode().kind, "e2ee");
 });
 
+test("🔴 a control escalation cannot swallow a peer's decrypt failure", async (t) => {
+  // The fourth silent-green route, and it needed no attacker. One shared
+  // escalation timer meant the reuse guard decided which cancel token a
+  // pending escalation carried: a routine unmute arms `control` and awaits its
+  // republish, a peer's failure lands in that window and gets no escalation of
+  // its own, and the republish's correction — evidence about OUR publications
+  // only — then cancelled it. Separate escalations per reason cannot be traded
+  // for each other.
+  const world = await threeParty(t, "ch-control-swallow");
+  await world.commit(1); // an Add rotation: a 4 s window
+  await advance(t, 2_500); // past the grace, so its own install is done
+
+  // The unmute: a publication lands NONE-declared, and the republish is held
+  // open so the `control` escalation is genuinely pending.
+  const release = world.holdRepublish();
+  world.declarePlaintext();
+  world.session.noteLocalPublicationsChanged();
+  await flush();
+  const before = world.states.length;
+
+  // A peer's hard decrypt failure, inside the rotation window.
+  const error = new Error("InvalidKey: Decryption failed: x");
+  world.session.noteEncryptionError(error);
+  await flush();
+
+  release(); // the republish lands GCM and corrects the declaration
+  await flush();
+  assert.deepEqual(world.loudSince(before), [], "it latched early");
+
+  await advance(t, 13_000);
+  assert.deepEqual(
+    world.loudSince(before),
+    [{ state: "loud", error }],
+    "the declaration correction cancelled a peer's escalation",
+  );
+  assert.equal(world.session.callMode().kind, "negotiating");
+});
+
+test("🔴 ...and a control escalation cannot make a media latch unhealable either", async (t) => {
+  // The mirror ordering. The old shared `#resecureOrigin` upgraded to
+  // `control` the moment a control arm fired, so a media error that latched
+  // afterwards was recorded as a control latch — and `loudHealVerdict` refuses
+  // to heal those. One routine unmute overlapping a rotation turned a
+  // recoverable red into a permanent one.
+  const world = await threeParty(t, "ch-origin-poison");
+  await world.commit(1);
+  await advance(t, 2_500);
+  const before = world.states.length;
+
+  // The media escalation first...
+  const error = new Error("InvalidKey: Decryption failed: x");
+  world.session.noteEncryptionError(error);
+  await flush();
+  // ...then the unmute arms `control` on top of it.
+  const release = world.holdRepublish();
+  world.declarePlaintext();
+  world.session.noteLocalPublicationsChanged();
+  await flush();
+  release();
+  await flush();
+
+  await advance(t, 13_000);
+  assert.deepEqual(world.loudSince(before), [{ state: "loud", error }]);
+
+  // The latch must still be a MEDIA latch: the peers leaving are a witness
+  // the heal can act on. An InvalidKey names nobody, so the witness set is
+  // EVERY remote that was present — both of them have to go.
+  await advance(t, 1_000);
+  world.sfu = [SELF_ID];
+  world.roster = [SELF];
+  await world.commit(2, [PEER, THIRD]);
+  await advance(t, JOIN_RACE_DEFER_MS * 2);
+  // The declaration correction also reports a bare clear; what matters is
+  // that the LATCH's own error was cleared, which only a media latch can do.
+  assert.ok(
+    world.clearsSince(before).some((c) => c.error === error),
+    "the latch was recorded as control and could never heal",
+  );
+  assert.equal(world.session.callMode().kind, "e2ee");
+});
+
+test("a pair RE-PUSHED after the latch is a witness, even though it was filled before", async (t) => {
+  // Every install carries the previous epoch's keys as well, and a `setKey`
+  // for an index calls `resetKeyStatus` on it — so re-pushing a slot genuinely
+  // re-validates it. The ledger therefore stamps a pair with its LATEST fill,
+  // not its first: a stamp frozen at the first fill would make this witness
+  // false forever from epoch 16 on, once the ring starts reusing indexes, and
+  // the bystander heal would expire silently on any long call (media-E2EE
+  // review, 2026-09-08).
+  const world = await threeParty(t, "ch-heal-repush");
+  const before = world.states.length;
+  const error = world.missingKey(THIRD_ID, 0); // index 0 was filled at epoch 0
+  world.session.noteEncryptionError(error);
+  await flush();
+  assert.deepEqual(world.loudSince(before), [{ state: "loud", error }]);
+
+  // Epoch 1's install carries epoch 0 as `previous`, re-pushing index 0.
+  await advance(t, 1_000);
+  await world.commit(1);
+  await advance(t, JOIN_RACE_DEFER_MS * 2);
+  assert.deepEqual(world.clearsSince(before), [{ state: "clear", error }]);
+  assert.equal(world.session.callMode().kind, "e2ee");
+});
+
 test("...but a pair filled BEFORE the latch is no witness at all", async (t) => {
   // The negative control, and the reverted attempt's exact mistake: it asked
   // whether the pair had EVER been pushed, which is true from the moment the
@@ -672,17 +777,21 @@ test("...but a pair filled BEFORE the latch is no witness at all", async (t) => 
   // `setKey` had not been processed yet, so the clause was already true at
   // latch time and healed the latch it was meant to judge.
   const world = await threeParty(t, "ch-heal-prefill");
+  // Epoch 1's install carries epoch 0 as `previous`, so it re-pushes index 0
+  // — a genuine re-validation. Latch AFTER it, so the pair's newest fill is
+  // strictly BEFORE the latch.
+  await world.commit(1);
+  await advance(t, 5_000); // past the grace AND the settle: no window open
   const before = world.states.length;
-  // Index 0 is the epoch this call has been running on all along.
   const error = world.missingKey(THIRD_ID, 0);
   world.session.noteEncryptionError(error);
   await flush();
   assert.deepEqual(world.loudSince(before), [{ state: "loud", error }]);
 
-  // A later epoch re-keys everyone, but nothing re-fills index 0 and THIRD
-  // never churns, so the latch has no witness and must hold.
+  // Epoch 2 carries epoch 1 as `previous`, so it touches indexes 2 and 1 and
+  // never index 0. THIRD never churns, so the latch has no witness at all.
   await advance(t, 1_000);
-  await world.commit(1);
+  await world.commit(2);
   await advance(t, JOIN_RACE_DEFER_MS * 2);
   assert.deepEqual(world.clearsSince(before), []);
   assert.equal(world.session.callMode().kind, "negotiating");

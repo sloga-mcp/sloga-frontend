@@ -17,9 +17,16 @@ if (import.meta.env.PROD && import.meta.env.VITE_SENTRY_DSN) {
     beforeBreadcrumb: (breadcrumb) => {
       if (breadcrumb.category !== "console") return breadcrumb;
       const message = breadcrumb.message;
-      return typeof message === "string" && message.startsWith("[mls]")
-        ? null
-        : breadcrumb;
+      if (typeof message !== "string") return breadcrumb;
+      // Our own lines...
+      if (message.startsWith("[mls]")) return null;
+      // ...and livekit-client's, which reach the console UNPREFIXED via
+      // `E2eeManager.onWorkerMessage` → loglevel: "MissingKey: missing key at
+      // index N for participant X" and "InvalidKey: valid key missing for
+      // participant X" carry the same pair. Matched on shape, because a
+      // prefix filter cannot see them.
+      if (/^(MissingKey|InvalidKey):/.test(message)) return null;
+      return breadcrumb;
     },
     // tracing:
     // integrations: [Sentry.browserTracingIntegration()],
