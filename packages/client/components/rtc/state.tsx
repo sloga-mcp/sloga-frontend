@@ -6454,6 +6454,27 @@ class Voice {
   }
 
   /**
+   * Whether the Room for THIS call was actually built with the `e2ee` option:
+   * capability AND both pieces it needs.
+   *
+   * `callE2EECapable()` used to imply this — a provider or worker that failed
+   * to construct dropped capability with it. It no longer does: that failure
+   * is a loud HOLD now (see `connect()`), so a capable call can have no
+   * provider and no worker, and the Room is built without the option. The one
+   * reader that depends on the equivalence is `RoomAudioManager`'s
+   * missing-manager probe, which uses it to tell a benign absence from an SDK
+   * rename that would leave the arming transform installed and unreachable —
+   * a warning that must stay meaningful.
+   *
+   * Deliberately not reactive: both fields are set once during `connect()`,
+   * before anything that reads this runs, and every reader is inside an
+   * event-driven sweep rather than a tracked scope.
+   */
+  callE2EERoomArmed(): boolean {
+    return this.#mlsKeyProvider !== undefined && this.#e2eeWorker !== undefined;
+  }
+
+  /**
    * Which banner the call card owes this call — the single derivation the
    * banner component switches on, so the invariant it enforces (a red chip
    * is never a dead end) is decided in one unit-tested place.

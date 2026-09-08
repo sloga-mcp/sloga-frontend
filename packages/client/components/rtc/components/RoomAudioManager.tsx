@@ -310,12 +310,16 @@ export function RoomAudioManager() {
     const probe = resolveCryptorControl(room);
     if (probe.kind === "no-manager") {
       // A Room built without the `e2ee` option has no manager, no transform,
-      // and nothing to disarm — benign. But when connect() SNAPSHOTTED this
-      // call as E2EE-capable, the option was passed and a manager must
-      // exist: its absence means an SDK bump renamed the @internal field,
-      // and the arming transform is likely still installed with no way to
-      // reach it. That must be loud, not the benign branch.
-      if (voice.callE2EECapable() && !cryptorManagerMissingWarned) {
+      // and nothing to disarm — benign. But when the option WAS passed a
+      // manager must exist: its absence means an SDK bump renamed the
+      // @internal field, and the arming transform is likely still installed
+      // with no way to reach it. That must be loud, not the benign branch.
+      //
+      // `callE2EERoomArmed()`, not `callE2EECapable()`: those stopped being
+      // the same thing when a provider/worker construction failure became a
+      // loud hold rather than a capability drop, and reading the wrong one
+      // fires an "SDK renamed the field" alarm at a call whose SDK is fine.
+      if (voice.callE2EERoomArmed() && !cryptorManagerMissingWarned) {
         cryptorManagerMissingWarned = true;
         console.warn(
           "[rtc] Room was built E2EE-capable but no e2eeManager was found; cannot disarm the frame cryptor for plaintext publishers — their audio/video may not decode",
