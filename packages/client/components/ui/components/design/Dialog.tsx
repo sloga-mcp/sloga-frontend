@@ -233,13 +233,17 @@ const Actions = styled("div", {
     gap: "8px",
     display: "flex",
     // Buttons carry flexShrink: 0, so a row that does not fit cannot squash --
-    // without wrapping it overflows, and because the row is end-justified the
-    // overflow runs off the START edge, clipping the FIRST action rather than
-    // the last. On a phone "Start a Chat Room or Server" lost the left half of
-    // "Chat Room" that way. Wrapping is also what M3 specifies for actions
-    // too wide for one line; each wrapped line stays end-justified.
+    // without wrapping it overflows, and because the row used to be
+    // end-justified the overflow ran off the START edge, clipping the FIRST
+    // action rather than the last. On a phone "Start a Chat Room or Server"
+    // lost the left half of "Chat Room" that way.
     flexWrap: "wrap",
-    justifyContent: "end",
+    // Centred rather than M3's end-alignment: once actions wrap, a trailing
+    // line holding one button sits alone against the right edge and reads as
+    // a mistake. Centring keeps both lines balanced, and applies to every
+    // dialog so a two-action row does not shift alignment when a third is
+    // added.
+    justifyContent: "center",
     marginBlockStart: "24px",
   },
 });
