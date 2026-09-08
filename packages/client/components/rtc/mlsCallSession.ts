@@ -106,6 +106,7 @@ import {
   MediaErrorLedger,
   callModeTransition,
   classifyEncryptionError,
+  classifyMediaError,
   latestPresentAddedAt,
   loudHealVerdict,
   loudModeFallback,
@@ -1173,6 +1174,19 @@ export class MlsCallSession {
    * heal probe against `#lastInstallAt` — see `MediaErrorLedger`.
    */
   #mediaErrors = new MediaErrorLedger();
+  /**
+   * The key pair the latch's ORIGINATING error named, when that error was a
+   * decode `MissingKey`. The heal reads it: once the pair is installed the
+   * index is re-validated, which answers the latch without the failing peer
+   * having to churn (§7.4 leg 3a).
+   */
+  #loudMissingPair: { identity: string; pair: string } | null = null;
+  /**
+   * The pending re-securing escalation was armed for a missing key raised
+   * during a membership change. The install that covers it is the resolution,
+   * so `#onEpochKeysApplied` clears the timer instead of letting it escalate.
+   */
+  #resecureFromPendingEpoch = false;
   /**
    * When each DEVICE was last observed ADDED to the MLS roster by the roster
    * diff of `#reconcileOnce` — a transition in natively verified group state
@@ -3461,6 +3475,19 @@ export class MlsCallSession {
     this.#installSeq++;
     this.#lastInstallAt = installRef;
     this.#mediaErrors.noteInstalled(entries, performance.now());
+    // The install IS the resolution of a missing key raised while we waited
+    // for this epoch (§7.4 leg 3a): the pairs are pushed, their indexes
+    // re-validated. Clear that escalation rather than letting it escalate to
+    // loud — but only when the ledger holds nothing uncovered for a sender
+    // still in the call, so a genuinely unreadable peer still goes loud.
+    if (this.#resecureFromPendingEpoch && !this.#loudLatched) {
+      const sfu = new Set(this.#media?.sfuParticipants() ?? []);
+      if (!this.#mediaErrors.errorSince(installRef, (id) => sfu.has(id))) {
+        this.#resecureFromPendingEpoch = false;
+        this.#clearResecureTimer();
+        this.#media?.onEncryptionState?.("clear");
+      }
+    }
     // A new epoch's keys under a MEDIA latch: the group re-keyed past the
     // failure (the latch recorded the counter BEFORE this increment, so the
     // "advanced" witness holds by construction here). Give the media plane
@@ -3564,19 +3591,53 @@ export class MlsCallSession {
     // Ledgered BEFORE the latched early-return: the heal probe needs to see
     // errors that arrive under the latch (a failure that survives a re-key
     // re-emits once per freshly installed key index).
-    this.#mediaErrors.noteError(error, performance.now());
+    const cls = this.#mediaErrors.noteError(error, performance.now());
     const media = this.#media;
     if (!media || this.#terminal() || this.#loudLatched) return;
 
+    // §7.4 leg 3a: a decode MissingKey while a membership change we observed
+    // is in flight is the bystander half of the joiner window — our commit
+    // for the epoch the peer already sends at has not arrived yet. Bounded by
+    // the escalation timer exactly like the other two arms.
+    const pendingEpoch =
+      cls.kind === "missing_key" && this.#membershipChangeInFlight();
     if (
-      classifyEncryptionError(this.#rotationWindow, !this.#hasLocalKey) ===
-      "resecuring"
+      classifyEncryptionError(
+        this.#rotationWindow,
+        !this.#hasLocalKey,
+        pendingEpoch,
+      ) === "resecuring"
     ) {
+      if (pendingEpoch && !this.#resecureTimer) {
+        this.#resecureFromPendingEpoch = true;
+      }
       media.onEncryptionState?.("resecuring", error);
       this.#armResecureEscalation(error, "media");
     } else {
       this.#latchLoud(error, "media");
     }
+  }
+
+  /**
+   * Whether a membership change THIS device has observed is still in flight:
+   * an admit scheduled or ledgered (including a rejoin serve, under its own
+   * key namespace), a rejoin serve we watched land through the roster diff
+   * (stamped on EVERY member, not just the one whose Remove won — §4.1a), or
+   * a leave-grace holding a departed member's leaf. Any of these means an
+   * epoch change is coming that we have not processed, which is exactly when
+   * a peer's frames can reach an index we do not hold yet.
+   */
+  #membershipChangeInFlight(): boolean {
+    if (this.#leaveGrace.size > 0) return true;
+    if (this.#scheduledAdmits.size > 0 || this.#pendingAdmits.size > 0) {
+      return true;
+    }
+    const now = Date.now();
+    for (const servedAt of this.#rejoinServed.values()) {
+      const elapsed = now - servedAt;
+      if (elapsed >= 0 && elapsed < REJOIN_REINTENT_WINDOW_MS) return true;
+    }
+    return false;
   }
 
   /**
@@ -3675,6 +3736,14 @@ export class MlsCallSession {
     this.#loudError = error;
     this.#loudLatchedAt = Date.now();
     this.#loudLatchedInstallSeq = this.#installSeq;
+    this.#resecureFromPendingEpoch = false;
+    // A decode MissingKey names the pair it failed at; installing that pair
+    // re-validates the index and answers the latch (see `loudHealVerdict`).
+    const originating = origin === "media" ? classifyMediaError(error) : null;
+    this.#loudMissingPair =
+      originating?.kind === "missing_key"
+        ? { identity: originating.identity, pair: originating.pair }
+        : null;
     // The heal witness set, keyed by DEVICE (a `:screen` leg shares its
     // owner's MLS member key, so a withheld key fails both and the leg's
     // error may land first; witnessing the owner — present = any SFU identity
@@ -3733,6 +3802,7 @@ export class MlsCallSession {
     this.#healRetried = false;
     this.#loudLatchedAt = 0;
     this.#loudLatchedInstallSeq = -1;
+    this.#loudMissingPair = null;
     this.#mediaErrors.forgetHardError();
   }
 
@@ -3853,6 +3923,12 @@ export class MlsCallSession {
         this.#lastInstallAt,
         (identity) => sfuIdentities.has(identity),
       ),
+      originatingMissingKeyInstalled:
+        this.#loudMissingPair !== null &&
+        this.#mediaErrors.pairInstalled(
+          this.#loudMissingPair.identity,
+          this.#loudMissingPair.pair,
+        ),
       settleElapsed,
       rosterConsistent:
         result.nonEnrolled.length === 0 && result.pending.length === 0,
@@ -3921,6 +3997,7 @@ export class MlsCallSession {
       this.#media?.onEncryptionState?.("clear", this.#loudError);
     }
     this.#clearLoudLatch();
+    this.#resecureFromPendingEpoch = false;
     // The group and its key indexes are being replaced: a missing-key record
     // for one of the old group's pairs would otherwise hold every later latch
     // until an install that can never come.

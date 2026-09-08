@@ -487,12 +487,35 @@ export function parseCtlPayload(raw: string): CtlModeAnnounce | null {
  * goes loud; the chip stays amber throughout (never green — chip gate (a)
  * requires the first local key) and the publish gate holds (no plaintext can
  * escape while re-securing).
+ *
+ * `missingKeyDuringMembershipChange` (2026-09-08, plan §7.4 leg 3a) is that
+ * same joiner argument applied to the OTHER end of a membership change. A
+ * device that already holds a key is protected by neither arm above, yet a
+ * bystander in a 3+ party call is in exactly the joiner's position whenever
+ * someone joins or rejoins: the peer that SERVED the change commits the epoch
+ * and installs first, the SFU carries its new-index frames to everyone
+ * immediately, and a member whose commit has not arrived yet raises
+ * `MissingKey` for an index it does not hold. Live, that latched a stayer
+ * loud and — because a MissingKey NAMES its participant — pinned the heal's
+ * witness on a bystander that never churns, so the chip stayed red for the
+ * rest of the call while that peer's media decrypted again seconds later.
+ * The caller passes this ONLY for a decode `MissingKey` (never `InvalidKey`,
+ * where the key we hold is wrong and legs 9/11 must keep latching at once)
+ * and only while an admit, a rejoin serve or a leave-grace it observed is
+ * actually in flight — the same facts `#admitInProgress` reads, bounded by
+ * the same per-identity admit budget, and still escalating to loud on the
+ * `RESECURE_ESCALATE_MS` timer if the epoch never arrives.
  */
 export function classifyEncryptionError(
   inRotationWindow: boolean,
   awaitingFirstKey: boolean,
+  missingKeyDuringMembershipChange = false,
 ): "resecuring" | "loud" {
-  return inRotationWindow || awaitingFirstKey ? "resecuring" : "loud";
+  return inRotationWindow ||
+    awaitingFirstKey ||
+    missingKeyDuringMembershipChange
+    ? "resecuring"
+    : "loud";
 }
 
 /**
@@ -650,6 +673,16 @@ export interface LoudHealInputs {
    */
   errorSinceInstall: boolean;
   /**
+   * The latch's ORIGINATING error was a decode `MissingKey` whose pair the
+   * ledger has since seen installed. That install's `setKey` re-validates the
+   * index (`resetKeyStatus`), so the "one error then silent drops" trap the
+   * peer witness exists for does not apply to it: after the install the index
+   * is live again, and `errorSinceInstall` false therefore means the frames
+   * either decrypt or are not being sent. An alternative to the peer clause,
+   * never a replacement for the rest (plan §7.4 leg 3a).
+   */
+  originatingMissingKeyInstalled: boolean;
+  /**
    * The settle has run since BOTH the last key install and the latest
    * observed re-Add of a PRESENT witness (`latestPresentAddedAt`). Leg 9 of
    * the 2026-09-07 sitting: a probe armed by the Remove epoch's install fired
@@ -720,6 +753,11 @@ export function loudHealVerdict(inputs: LoudHealInputs): "heal" | "hold" {
   if (inputs.errorSinceInstall) return "hold";
   if (!inputs.settleElapsed) return "hold";
   if (!inputs.rosterConsistent) return "hold";
+  // The originating missing key has been installed and nothing failed since:
+  // the index is re-validated, so this latch is answered without needing the
+  // failing peer to churn (§7.4 leg 3a — otherwise a bystander that never
+  // leaves holds a red chip for the rest of the call).
+  if (inputs.originatingMissingKeyInstalled) return "heal";
   if (inputs.peers.length === 0) return "hold";
   return inputs.peers.every(
     (peer) => !peer.present || (peer.readdedAfterLatch && peer.sidsAllNew),
@@ -819,8 +857,10 @@ export function classifyMediaError(error: unknown): MediaErrorClass {
  *    Time-ordered, not "ever installed": a missing key that lands AFTER the
  *    sender's install completed and names an index that install did NOT set
  *    is an index this side never got — the one local sign that a commit was
- *    withheld from it (re-review, M1) — and stands until the next install of
- *    that sender proves it caught up. One that names a pair the sender's
+ *    withheld from it (re-review, M1) — and stands until an install of that
+ *    sender that ADVANCES us (fills a slot we did not hold) proves we caught
+ *    up. A replay of keys we already hold, which LiveKit performs on every
+ *    worker `enable` ack, is not catching up and supersedes nothing. One that names a pair the sender's
  *    latest install DID set is the join race whenever it lands: the worker
  *    raises MissingKey only while the slot is empty, `setKey` fills it and
  *    no path ever empties a slot again for the life of the worker, so the
@@ -842,19 +882,25 @@ export class MediaErrorLedger {
   /** Missing-key pairs no install has covered yet, by the time observed. */
   #missing = new Map<string, { identity: string; at: number }>();
   /**
-   * Each sender's LATEST install since the last `reset`: when it completed
-   * and the pairs it set.
+   * Per sender since the last `reset`: every key pair this side has pushed to
+   * the worker (which mirrors the worker's FILLED ring slots — nothing ever
+   * empties one), and when it last filled a slot it did not already hold.
    */
-  #installed = new Map<string, { completedAt: number; pairs: Set<string> }>();
+  #installed = new Map<string, { advancedAt: number; pairs: Set<string> }>();
 
-  /** Whether `pair` from `identity` is answered by that sender's latest install. */
+  /** Whether `pair` from `identity` is answered by an install since. */
   #superseded(identity: string, pair: string, at: number): boolean {
-    const latest = this.#installed.get(identity);
-    if (!latest) return false;
-    // A pair the install set: the slot has been full since, so the worker
-    // judged the frame before that setKey. Any pair observed before the
-    // install completed: the join race it answered.
-    return latest.pairs.has(pair) || at <= latest.completedAt;
+    const rec = this.#installed.get(identity);
+    if (!rec) return false;
+    // A pair we have pushed: that ring slot has been full ever since, and the
+    // worker raises MissingKey only for an EMPTY slot, so the frame was judged
+    // before it processed that setKey.
+    if (rec.pairs.has(pair)) return true;
+    // Otherwise only an install that ADVANCED us — filled a slot we did not
+    // hold — proves we caught up with the sender. LiveKit re-pushes every key
+    // it already knows on each worker `enable` ack; such a replay changes
+    // nothing about the index that was missing and must not supersede it.
+    return at <= rec.advancedAt;
   }
 
   /** Record a media-plane error observed at `now` (monotonic clock). */
@@ -882,7 +928,19 @@ export class MediaErrorLedger {
       bySender.set(entry.livekit_identity, pairs);
     }
     for (const [identity, pairs] of bySender) {
-      this.#installed.set(identity, { completedAt, pairs });
+      const rec = this.#installed.get(identity) ?? {
+        advancedAt: -Infinity,
+        pairs: new Set<string>(),
+      };
+      let advanced = false;
+      for (const pair of pairs) {
+        if (!rec.pairs.has(pair)) {
+          rec.pairs.add(pair);
+          advanced = true;
+        }
+      }
+      if (advanced) rec.advancedAt = completedAt;
+      this.#installed.set(identity, rec);
     }
     for (const [pair, record] of this.#missing) {
       if (this.#superseded(record.identity, pair, record.at)) {
@@ -910,6 +968,20 @@ export class MediaErrorLedger {
   /** The missing-key pairs still uncovered by an install (diagnostics). */
   uncoveredPairs(): string[] {
     return [...this.#missing.keys()];
+  }
+
+  /**
+   * Whether the sender's latest install covered `pair` — i.e. that key index
+   * has been pushed to the worker, which re-validates it. Read by the heal
+   * for the latch's originating missing key.
+   */
+  pairInstalled(identity: string, pair: string): boolean {
+    return this.#installed.get(identity)?.pairs.has(pair) === true;
+  }
+
+  /** The key pairs pushed for `identity` since the last `reset` (diagnostics). */
+  installedPairs(identity: string): string[] {
+    return [...(this.#installed.get(identity)?.pairs ?? [])];
   }
 
   /** Forget the hard-error stamp (a healed latch). */
