@@ -42,9 +42,10 @@ import { KeyProviderEvent } from "livekit-client";
 
 import {
   type InstalledKey,
+  MissingLocalFrameKeyError,
   MlsKeyProvider,
   orderForInstall,
-  retainedKeyMap,
+  retainedKeyIds,
 } from "./mlsCallKeys.ts";
 
 const LOCAL = "alice:dev-a";
@@ -265,6 +266,56 @@ async function rotateThrough(
   return tag;
 }
 
+/**
+ * Hold `crypto.subtle.importKey` open on demand.
+ *
+ * The provider checks its fence twice — on entry AND across the `#import`
+ * await — and only the second check covers an install that is overtaken while
+ * it is deriving. Racing two real installs and hoping the slow one lands last
+ * would be a coin flip (`importKey` resolves off the threadpool), so instead
+ * this parks the FIRST install inside its await window and lets the second run
+ * to completion underneath it, deterministically.
+ */
+function importGate() {
+  const real = crypto.subtle.importKey.bind(crypto.subtle);
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => (release = resolve));
+  let arming = false;
+  const patched = async (...args: unknown[]) => {
+    const wait = arming;
+    if (wait) await held;
+    return (real as (...a: unknown[]) => Promise<CryptoKey>)(...args);
+  };
+  Object.defineProperty(crypto.subtle, "importKey", {
+    value: patched,
+    configurable: true,
+    writable: true,
+  });
+  return {
+    /** The next import parks until `release()`. */
+    arm() {
+      arming = true;
+    },
+    /** Later imports run normally again. */
+    disarm() {
+      arming = false;
+    },
+    async release() {
+      release();
+      // Two turns: one to resume `#import`, one for the caller's continuation.
+      await Promise.resolve();
+      await Promise.resolve();
+    },
+    restore() {
+      Object.defineProperty(crypto.subtle, "importKey", {
+        value: real,
+        configurable: true,
+        writable: true,
+      });
+    },
+  };
+}
+
 const replayIds = (provider: MlsKeyProvider) =>
   provider
     .getKeys()
@@ -458,7 +509,9 @@ test("an epoch that carries no local key FAILS LOUD and leaves the replay mirror
   const headless = frameKeys(18, [BOB], [LOCAL, BOB]);
   await assert.rejects(
     () => tag.during(headless, () => provider.applyLocalKey(headless, LOCAL)),
-    /no entry for this device at epoch 18/,
+    // The TYPE is load-bearing: the session routes only this error past the
+    // re-securing debounce to a paused, non-clearable terminus.
+    MissingLocalFrameKeyError,
   );
 
   // …and the replay still describes what the worker actually holds: blanking
@@ -542,7 +595,6 @@ test("resetForGroup drops every key, so a replay during a re-establish installs 
   provider.resetForGroup();
 
   assert.deepEqual(provider.getKeys(), []);
-  assert.deepEqual([...provider.appliedIdentities()], []);
   assert.equal(provider.lastLocalScreenKey(), undefined);
 
   const worker = new FakeWorker();
@@ -560,11 +612,10 @@ test("resetForGroup drops every key, so a replay during a re-establish installs 
 
 test("the base class's retained key map is pruned to exactly what is replayable", async () => {
   const provider = new MlsKeyProvider();
-  const retained = retainedKeyMap(provider);
   // If a LiveKit upgrade renames the private field, the prune silently becomes
   // a no-op — this is the assertion that turns that silence into a failure.
   assert.ok(
-    retained,
+    retainedKeyIds(provider),
     "BaseKeyProvider's retained key map is no longer reachable — #pruneRetainedKeys is dead",
   );
 
@@ -573,11 +624,13 @@ test("the base class's retained key map is pruned to exactly what is replayable"
   // Without pruning this would hold every (identity, index) pair ever used:
   // 3 identities x 16 indices = 48 CryptoKeys, on the main thread, for the
   // life of the call.
-  assert.equal(retained.size, provider.getKeys().length);
-  assert.deepEqual([...retained.keys()].sort(), replayIds(provider).sort());
+  assert.deepEqual(
+    retainedKeyIds(provider)?.sort(),
+    replayIds(provider).sort(),
+  );
 
   provider.resetForGroup();
-  assert.equal(retained.size, 0);
+  assert.deepEqual(retainedKeyIds(provider), []);
 });
 
 test("an entry that fails to import installs nothing at all", async () => {
@@ -627,6 +680,132 @@ test("a replay resets the failure count on the current indices, and no longer on
   // behavior change: the old 16-epoch replay reset every index of every
   // identity on every ack.
   assert.equal(bob.hasInvalidKeyAtIndex(7), true);
+});
+
+test("a keyless epoch reached through applyKeys leaves the remotes installed and the fence stamped", async () => {
+  // The composite path, not just `applyLocalKey` on its own: `applyRemoteKeys`
+  // has already succeeded and stamped epoch 18 by the time the local half
+  // throws, so this pins the whole end state the session is left holding.
+  const provider = new MlsKeyProvider();
+  const tag = await rotateThrough(provider, 17);
+
+  const headless = frameKeys(18, [BOB], [LOCAL, BOB]);
+  await assert.rejects(
+    () => tag.during(headless, () => provider.applyKeys(headless, LOCAL)),
+    MissingLocalFrameKeyError,
+  );
+
+  const worker = new FakeWorker();
+  worker.replay(provider);
+  // Remotes advanced; our send key did NOT, and still mirrors the worker.
+  assert.equal(tag.of(worker.handler(BOB).sending()), `${BOB}@e18`);
+  assert.equal(tag.of(worker.handler(LOCAL).sending()), `${LOCAL}@e17`);
+
+  // The fence is stamped at 18 by the remote half, so the equal-epoch retry
+  // still gets in rather than being refused as superseded.
+  const fixed = frameKeys(18, [LOCAL, BOB], [LOCAL, BOB]);
+  await tag.during(fixed, () => provider.applyLocalKey(fixed, LOCAL));
+  worker.replay(provider);
+  assert.equal(tag.of(worker.handler(LOCAL).sending()), `${LOCAL}@e18`);
+});
+
+test("a REMOTE install overtaken inside its import window cannot land", async () => {
+  const provider = new MlsKeyProvider();
+  const tag = await rotateThrough(provider, 17);
+  const gate = importGate();
+  try {
+    // Epoch 18 is admitted on entry (the fence is at 17), then parks.
+    gate.arm();
+    const inFlight = provider.applyRemoteKeys(
+      frameKeys(18, [LOCAL, BOB, CAROL]),
+      LOCAL,
+    );
+    await Promise.resolve();
+    gate.disarm();
+
+    // 19 completes underneath it and moves the fence.
+    const removeAt19 = frameKeys(19, [LOCAL, BOB], [LOCAL, BOB]);
+    await tag.during(removeAt19, () => provider.applyKeys(removeAt19, LOCAL));
+
+    await gate.release();
+    await inFlight;
+  } finally {
+    gate.restore();
+  }
+
+  assert.deepEqual(
+    provider.getKeys().filter((info) => info.participantIdentity === CAROL),
+    [],
+    "the overtaken install must not re-admit a member 19 removed",
+  );
+  const worker = new FakeWorker();
+  worker.replay(provider);
+  assert.equal(tag.of(worker.handler(LOCAL).sending()), `${LOCAL}@e19`);
+});
+
+test("a LOCAL install overtaken inside its import window cannot regress the send index", async () => {
+  const provider = new MlsKeyProvider();
+  const tag = await rotateThrough(provider, 17);
+  const gate = importGate();
+  try {
+    gate.arm();
+    const inFlight = provider.applyLocalKey(frameKeys(18, [LOCAL, BOB]), LOCAL);
+    await Promise.resolve();
+    gate.disarm();
+
+    const removeAt19 = frameKeys(19, [LOCAL, BOB], [LOCAL, BOB]);
+    await tag.during(removeAt19, () => provider.applyKeys(removeAt19, LOCAL));
+
+    await gate.release();
+    await inFlight;
+  } finally {
+    gate.restore();
+  }
+
+  // Epoch 18's local key is the one the member 19 removed still holds.
+  const worker = new FakeWorker();
+  worker.replay(provider);
+  assert.equal(tag.of(worker.handler(LOCAL).sending()), `${LOCAL}@e19`);
+  assert.equal(worker.handler(LOCAL).currentKeyIndex, 19 % KEYRING_SIZE);
+});
+
+test("an entry with no LiveKit identity is refused before anything is published", async () => {
+  // `onSetEncryptionKey` throws on a keyless identity under `sharedKey:false`,
+  // and it throws from inside `#publish` — after the replay slot is assigned.
+  // Catching it in `#import` is what keeps `#publish` unable to fail, so the
+  // replay set can never advertise keys the worker never received.
+  const provider = new MlsKeyProvider();
+  const worker = new FakeWorker().attach(provider);
+  await rotateThrough(provider, 4);
+  const beforeIndices = worker.indices();
+  const beforeReplay = replayIds(provider);
+
+  const broken = frameKeys(5, [LOCAL, BOB]);
+  broken.previous[1].livekit_identity = "";
+
+  await assert.rejects(
+    () => provider.applyKeys(broken, LOCAL),
+    /carried no LiveKit identity/,
+  );
+  assert.deepEqual(worker.indices(), beforeIndices);
+  assert.deepEqual(replayIds(provider), beforeReplay);
+});
+
+test("an egress with no usable epoch fails closed rather than turning the fence off", async () => {
+  const provider = new MlsKeyProvider();
+  await rotateThrough(provider, 20);
+
+  const malformed = frameKeys(20, [LOCAL, BOB]);
+  (malformed as { epoch: unknown }).epoch = undefined;
+
+  // Admitting it unfenced would leave the fence parked on 20 while every LATER
+  // superseded install sailed through — the field would switch the fence off
+  // rather than pass through it.
+  await assert.rejects(
+    () => provider.applyKeys(malformed, LOCAL),
+    /no usable epoch/,
+  );
+  assert.equal(provider.getKeys().length, 3);
 });
 
 // ---------------------------------------------------------------------------

@@ -97,6 +97,7 @@ import {
   enrolmentVerdict,
   isAdmitTargetRefusal,
 } from "./mlsAdmitPolicy";
+import { MissingLocalFrameKeyError } from "./mlsCallKeys";
 import {
   type CallMode,
   type CallModeEvent,
@@ -606,11 +607,8 @@ export interface KeyInstaller {
   ): Promise<void>;
   /** Install the local send key — the deferred Add-grace switch. */
   applyLocalKey(frameKeys: MlsFrameKeys, localIdentity: string): Promise<void>;
-  /**
-   * Drop every key held for the group being REPLACED. Optional so a fake can
-   * omit it; `MlsKeyProvider` implements it.
-   */
-  resetForGroup?(): void;
+  /** Drop every key held for the group being REPLACED. */
+  resetForGroup(): void;
 }
 
 /** The media-plane loud-state the session surfaces for the 6.5 chip. */
@@ -1104,6 +1102,16 @@ export class MlsCallSession {
   #installEpoch = -1;
   /** Whether a LOCAL send key is installed for the CURRENT group yet (first-key). */
   #hasLocalKey = false;
+  /**
+   * The epoch the installed LOCAL send key is for — i.e. what this device is
+   * actually publishing under, as against `#installEpoch`, which is the newest
+   * epoch we have STARTED installing. They diverge for the length of an
+   * Add-grace, and they stay diverged whenever a local install failed or was
+   * cancelled with nothing to replace it. That gap is the one state a remote's
+   * `encrypted=true` cannot speak to, so `noteEncryptionRecovered` refuses to
+   * clear an escalation while it is open.
+   */
+  #localKeyEpoch = -1;
   /** Outstanding epoch-fenced Add-grace local-install timer (NEW-1). */
   #graceTimer: ReturnType<typeof setTimeout> | null = null;
   /** True while a rotation is "known" for the §4.4 loud-state debounce. */
@@ -3321,11 +3329,15 @@ export class MlsCallSession {
     // (an equal epoch is an idempotent reconnect re-assert, allowed).
     if (epoch < this.#installEpoch) return;
 
+    // NEW-1: a newer epoch supersedes any pending Add-grace local install.
+    // BEFORE the identity guard below: a push we drop must still retire the
+    // pending grace, or that timer survives with `#installEpoch` still on the
+    // OLD epoch, passes its own fence, and installs a superseded local send
+    // key — the very regression the fence exists to stop.
+    this.#cancelGrace();
+
     const identity = media.localIdentity();
     if (!identity) return; // token identity not yet minted — cannot match local-last
-
-    // NEW-1: a newer epoch supersedes any pending Add-grace local install.
-    this.#cancelGrace();
 
     // Classify + open the §4.4 rotation window BEFORE fetching keys: we are
     // mid-rotation the moment keys-changed fires, so a transient error on the
@@ -3381,7 +3393,7 @@ export class MlsCallSession {
           isRemove,
           performance.now() - installStart,
         );
-        this.#onLocalKeyInstalled();
+        this.#onLocalKeyInstalled(epoch);
       } else {
         // Add-grace: remotes now; the local send-key switch is deferred and
         // epoch-fenced (NEW-1). We keep publishing on the OLD local key
@@ -3395,8 +3407,39 @@ export class MlsCallSession {
         this.#scheduleGraceLocal(frameKeys, identity, epoch);
       }
     } catch (error) {
-      this.#onMediaError(error);
+      this.#onRotationError(error);
     }
+  }
+
+  /**
+   * Route a failure on the rotation install path.
+   *
+   * Everything transient takes the §4.4 re-securing debounce — a fetch blip
+   * inside a rotation window must not stick the chip loud. ONE failure does
+   * not: an egress with no frame key for this device is native affirmatively
+   * saying we are not a sender at this epoch, which is the shape a REMOVED leaf
+   * takes. Retrying cannot change that answer, and the debounce would be wrong
+   * twice over — `noteEncryptionRecovered` clears an amber on ANY remote's
+   * encrypted status (a remote publishing a track is enough, and the same
+   * `enable` ack replays our keys), and amber keeps publishing meanwhile, under
+   * the PREVIOUS epoch's key that the removing members hold.
+   *
+   * So it goes straight to the terminus: `#dropModeToNegotiating` re-asserts
+   * the negotiating publish gate in lockstep (nothing more goes out under the
+   * superseded key) and the latch takes a CONTROL origin, which the heal never
+   * clears. Both together are what `isTerminalLoud` needs to render the
+   * Leave / "Stay unencrypted" banner, so this is a terminus the user can act
+   * on rather than a hang.
+   */
+  #onRotationError(error: unknown): void {
+    if (!(error instanceof MissingLocalFrameKeyError)) {
+      this.#onMediaError(error);
+      return;
+    }
+    console.error("[mls] no local frame key for the current epoch", error);
+    this.#lastError = error;
+    this.#dropModeToNegotiating();
+    this.#latchLoud(error, "control");
   }
 
   /**
@@ -3428,8 +3471,9 @@ export class MlsCallSession {
    * reconcile so the enable gate (step 6) fires promptly once the first key is
    * ready (the periodic tick would otherwise take up to a full interval).
    */
-  #onLocalKeyInstalled(): void {
+  #onLocalKeyInstalled(epoch: number): void {
     this.#hasLocalKey = true;
+    this.#localKeyEpoch = epoch;
     // 6.7b MEDIUM-1: installing the FIRST local key is the genuine recovery
     // that closes the joiner window (`!#hasLocalKey` — see #surfaceError /
     // classifyEncryptionError). Clear the awaiting-first-key escalation HERE,
@@ -3457,9 +3501,9 @@ export class MlsCallSession {
       if (this.#terminal() || this.#installEpoch !== epoch) return;
       try {
         await this.#media?.installer.applyLocalKey(frameKeys, identity);
-        this.#onLocalKeyInstalled();
+        this.#onLocalKeyInstalled(epoch);
       } catch (error) {
-        this.#onMediaError(error);
+        this.#onRotationError(error);
       }
     }, ADD_GRACE_MS);
     this.#graceTimer = timer;
@@ -3556,6 +3600,15 @@ export class MlsCallSession {
     // rotation-window resecuring (where #hasLocalKey is already true) clears
     // here as before.
     if (!this.#hasLocalKey) return;
+    // …and by the same argument it does not witness our key being CURRENT. If
+    // the epoch advanced but our local install never landed (the fetch threw,
+    // a grace was cancelled with nothing to replace it), we are still
+    // publishing under the previous epoch's key — which, on a Remove-driven
+    // epoch, the removed member holds. A remote's `encrypted=true` says
+    // nothing about that, so it must not cancel the escalation that is the
+    // only thing left to catch it. The Add-grace deliberately sits in this
+    // state for <= ADD_GRACE_MS, well inside RESECURE_ESCALATE_MS.
+    if (this.#localKeyEpoch !== this.#installEpoch) return;
     this.#clearResecureTimer();
     this.#media?.onEncryptionState?.("clear");
   }
@@ -3841,9 +3894,10 @@ export class MlsCallSession {
     // — the one the members who removed us hold — and every LiveKit `enable`
     // ack re-arms the encoder onto it for the whole negotiating window. The
     // publish gate stands in front of that; not holding the key is stronger.
-    this.#media?.installer.resetForGroup?.();
+    this.#media?.installer.resetForGroup();
     this.#installEpoch = -1;
     this.#hasLocalKey = false;
+    this.#localKeyEpoch = -1;
     this.#lastOwnWon = null;
     this.#lastInbound = null;
     this.#stopReconcile();

@@ -155,6 +155,31 @@ function retainedId(info: InstalledKey): string {
 }
 
 /**
+ * Native returned an epoch with no frame key for THIS device.
+ *
+ * Typed rather than a bare `Error` because the session treats it differently
+ * from every other failure on the rotation path: it is not transient and not
+ * worth retrying — native has affirmatively said this device is not a sender
+ * at this epoch, which is the shape a REMOVED leaf takes — so it terminates
+ * the call's encrypted mode instead of taking the re-securing debounce.
+ */
+export class MissingLocalFrameKeyError extends Error {
+  readonly epoch: number;
+
+  readonly groupId: string;
+
+  constructor(groupId: string, epoch: number) {
+    super(
+      `MLS frame keys carried no entry for this device at epoch ${epoch} ` +
+        `(group ${groupId}) — refusing to report the local send key installed`,
+    );
+    this.name = "MissingLocalFrameKeyError";
+    this.groupId = groupId;
+    this.epoch = epoch;
+  }
+}
+
+/**
  * `BaseKeyProvider`'s retained key map — TypeScript-`private`, but plainly
  * reachable at runtime — reached through this ONE accessor.
  *
@@ -163,16 +188,28 @@ function retainedId(info: InstalledKey): string {
  * overridden (nothing else reads it), so pruning it changes no behavior; what
  * it buys is that a call's older epochs stop sitting in main-thread memory as
  * `deriveKey`-capable `CryptoKey`s whose derivation salt is a public constant.
- *
- * Exported for the spec, which asserts the map really does shrink: if a LiveKit
- * upgrade renames the field this returns `undefined`, the prune silently
- * becomes a no-op, and that spec is what turns the silence into a CI failure.
  */
-export function retainedKeyMap(
+function retainedKeyMap(
   provider: BaseKeyProvider,
 ): Map<string, KeyInfo> | undefined {
   const map = (provider as unknown as { keyInfoMap?: unknown }).keyInfoMap;
   return map instanceof Map ? (map as Map<string, KeyInfo>) : undefined;
+}
+
+/**
+ * The ids the base class is still retaining, or `undefined` if its map is no
+ * longer reachable. Ids only — a handle on the live map would hand every
+ * importer a mutable grip on the `CryptoKey`s the prune exists to shed.
+ *
+ * Exported for the spec, which asserts the map really does shrink: if a LiveKit
+ * upgrade renames the field, the prune silently becomes a no-op, and that spec
+ * is what turns the silence into a CI failure.
+ */
+export function retainedKeyIds(
+  provider: BaseKeyProvider,
+): string[] | undefined {
+  const map = retainedKeyMap(provider);
+  return map ? [...map.keys()] : undefined;
 }
 
 export class MlsKeyProvider extends BaseKeyProvider {
@@ -262,6 +299,17 @@ export class MlsKeyProvider extends BaseKeyProvider {
   async #import(entries: MlsFrameKey[]): Promise<InstalledKey[]> {
     const imported: InstalledKey[] = [];
     for (const entry of entries) {
+      if (!entry.livekit_identity) {
+        // Checked HERE, where nothing has been published yet. The base class
+        // throws on a keyless identity under `sharedKey:false`, and it throws
+        // from inside `onSetEncryptionKey` — i.e. from the middle of
+        // `#publish`, after the replay slot has been assigned, which is the one
+        // way `#publish` could leave the replay set describing keys the worker
+        // never got.
+        throw new Error(
+          `MLS frame key at index ${entry.key_index} carried no LiveKit identity`,
+        );
+      }
       const material = await crypto.subtle.importKey(
         "raw",
         base64ToBytes(entry.frame_key_b64),
@@ -319,34 +367,57 @@ export class MlsKeyProvider extends BaseKeyProvider {
   }
 
   /**
+   * The egress's epoch, or a fail-closed throw.
+   *
+   * An egress with no usable epoch cannot be fenced, and admitting it unfenced
+   * would be worse than refusing it: the fence would stay parked on the older
+   * epoch, so every LATER superseded install would be admitted too — a
+   * malformed field would switch the fence off rather than pass through it.
+   * Native types this as a required number and `#applyLocalScreenKey` already
+   * trusts the per-entry copy of it, so a missing one is a broken bridge, and
+   * the session's re-securing debounce is where a broken bridge belongs.
+   */
+  #epochOf(frameKeys: MlsFrameKeys): number {
+    if (!Number.isFinite(frameKeys.epoch)) {
+      throw new Error(
+        `MLS frame keys carried no usable epoch (${String(frameKeys.epoch)}) ` +
+          `for group ${frameKeys.group_id}`,
+      );
+    }
+    return frameKeys.epoch;
+  }
+
+  /**
    * Whether an install may proceed, given what is already in force.
    *
-   * A DIFFERENT group resets rather than compares: epochs only count within one
-   * group, so a cross-group number is neither newer nor older and the old
-   * group's keys must simply go. Within one group the rule is monotonic —
-   * an equal epoch is an idempotent re-assert (the Add-grace's deferred local
-   * install rides one), a lower one has been superseded and must do nothing.
+   * Within one group the rule is monotonic: an equal epoch is an idempotent
+   * re-assert (the Add-grace's deferred local install rides one), a lower one
+   * has been superseded and must do nothing.
    *
-   * An egress with no usable epoch is ADMITTED, not refused: this fence is
-   * defense in depth behind the session's own `#installEpoch` check, and a
-   * fence that wedged rotation on a malformed field would be worse than the
-   * race it guards.
+   * 🔴 The GROUP half is deliberately weaker, and the session owns it. A
+   * different group resets rather than compares, because epochs only count
+   * within one group and a cross-group number is neither newer nor older — but
+   * that means the provider trusts ARRIVAL ORDER to say which group is
+   * current, so a late install for an abandoned group would replace a live
+   * one's keys. Nothing can reach that today: the session re-checks
+   * `groupId !== this.#groupId` after its fetch, and `#resetRotationState`
+   * cancels the grace timer before any group swap. A caller that wants the
+   * provider to enforce it must hand it the authoritative group id; this fence
+   * restates the EPOCH invariant only.
    */
-  #admits(frameKeys: MlsFrameKeys): boolean {
+  #admits(groupId: string, epoch: number): boolean {
     const fence = this.#fence;
     if (!fence) return true;
-    if (fence.groupId !== frameKeys.group_id) {
+    if (fence.groupId !== groupId) {
       this.resetForGroup();
       return true;
     }
-    if (!Number.isFinite(frameKeys.epoch)) return true;
-    return frameKeys.epoch >= fence.epoch;
+    return epoch >= fence.epoch;
   }
 
   /** Record the epoch now in force (see `#admits`). */
-  #stamp(frameKeys: MlsFrameKeys): void {
-    if (!Number.isFinite(frameKeys.epoch)) return;
-    this.#fence = { groupId: frameKeys.group_id, epoch: frameKeys.epoch };
+  #stamp(groupId: string, epoch: number): void {
+    this.#fence = { groupId, epoch };
   }
 
   /**
@@ -466,18 +537,19 @@ export class MlsKeyProvider extends BaseKeyProvider {
     frameKeys: MlsFrameKeys,
     localIdentity: string,
   ): Promise<void> {
-    if (!this.#admits(frameKeys)) return;
+    const epoch = this.#epochOf(frameKeys);
+    if (!this.#admits(frameKeys.group_id, epoch)) return;
     const imported = await this.#import(
       remoteInstallEntries(frameKeys, localIdentity),
     );
     // Re-check across the import: `#import` awaits, so a newer epoch may have
     // installed while we were deriving this one.
-    if (!this.#admits(frameKeys)) return;
+    if (!this.#admits(frameKeys.group_id, epoch)) return;
     // Replace the remote replay set wholesale rather than merging: a sender
     // removed at this epoch is absent from the imported set, and that absence
     // is exactly what stops LiveKit re-installing their key on the next ack.
     this.#publish(imported, "remotes");
-    this.#stamp(frameKeys);
+    this.#stamp(frameKeys.group_id, epoch);
   }
 
   /**
@@ -489,27 +561,29 @@ export class MlsKeyProvider extends BaseKeyProvider {
     frameKeys: MlsFrameKeys,
     localIdentity: string,
   ): Promise<void> {
-    if (!this.#admits(frameKeys)) return;
+    const epoch = this.#epochOf(frameKeys);
+    if (!this.#admits(frameKeys.group_id, epoch)) return;
     const entries = localInstallEntries(frameKeys, localIdentity);
     if (entries.length === 0) {
-      // 🔴 FAIL LOUD. An egress with no entry for us means native does not
-      // count this device as a sender in the current epoch — the shape a
-      // removed leaf takes. Resolving here would report the send key installed
-      // (`#onLocalKeyInstalled` → `#hasLocalKey = true`, re-secure escalation
-      // cancelled, chip green) while the worker keeps publishing under the
-      // PREVIOUS epoch's key — the one every member of the group that just
-      // removed us holds. Throwing routes to the session's `#onMediaError`,
-      // the fail-closed path (§4.2), and leaves `#replayLocal` untouched so the
-      // replay keeps mirroring what the worker actually has.
-      throw new Error(
-        "MLS frame keys carried no entry for this device at epoch " +
-          `${frameKeys.epoch} — refusing to report the local send key installed`,
-      );
+      // 🔴 FAIL LOUD, TERMINALLY. An egress with no entry for us means native
+      // does not count this device as a sender in the current epoch — the shape
+      // a removed leaf takes. Resolving here would report the send key
+      // installed (`#onLocalKeyInstalled` → `#hasLocalKey = true`, re-secure
+      // escalation cancelled, chip green) while the worker keeps publishing
+      // under the PREVIOUS epoch's key — the one every member of the group that
+      // just removed us holds.
+      //
+      // The TYPE matters as much as the throw: the session routes this one
+      // error past the re-securing debounce (which any remote's encrypted
+      // status would clear inside 10 s, and which keeps publishing meanwhile)
+      // to a paused, non-clearable terminus. `#replayLocal` is left untouched
+      // so the replay keeps mirroring what the worker actually has.
+      throw new MissingLocalFrameKeyError(frameKeys.group_id, epoch);
     }
     const imported = await this.#import(entries);
-    if (!this.#admits(frameKeys)) return;
+    if (!this.#admits(frameKeys.group_id, epoch)) return;
     this.#publish(imported, "local");
-    this.#stamp(frameKeys);
+    this.#stamp(frameKeys.group_id, epoch);
     await this.#applyLocalScreenKey(frameKeys, localIdentity);
   }
 
@@ -555,15 +629,5 @@ export class MlsKeyProvider extends BaseKeyProvider {
       return;
     }
     await this.onLocalScreenKey?.(key);
-  }
-
-  /**
-   * Identities currently keyed (current + previous epoch senders) — DERIVED
-   * from the replay set rather than tracked alongside it. Two independent
-   * records of "what the worker holds" is the exact shape of the bug the
-   * `getKeys()` override exists to fix.
-   */
-  appliedIdentities(): ReadonlySet<string> {
-    return new Set(this.getKeys().map((info) => info.participantIdentity));
   }
 }
