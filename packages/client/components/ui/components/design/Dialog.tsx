@@ -79,9 +79,7 @@ export function Dialog(props: Props) {
                   <Icon>{props.icon}</Icon>
                 </Show>
                 <Show when={props.title}>
-                  <Title withIcon={typeof props.icon !== "undefined"}>
-                    {props.title}
-                  </Title>
+                  <Title>{props.title}</Title>
                 </Show>
                 <Content class={typography()}>{props.children}</Content>
                 <Show when={props.actions}>
@@ -209,22 +207,14 @@ const Title = styled("span", {
   base: {
     ...typography.raw({ class: "headline", size: "small" }),
     marginBlockEnd: "16px",
-  },
-  variants: {
-    withIcon: {
-      true: {
-        textAlign: "center",
-      },
-    },
-  },
-  defaultVariants: {
-    withIcon: false,
+    textAlign: "center",
   },
 });
 
 const Content = styled("div", {
   base: {
     color: "var(--md-sys-color-on-surface-variant)",
+    textAlign: "center",
   },
 });
 
@@ -238,11 +228,9 @@ const Actions = styled("div", {
     // action rather than the last. On a phone "Start a Chat Room or Server"
     // lost the left half of "Chat Room" that way.
     flexWrap: "wrap",
-    // Centred rather than M3's end-alignment: once actions wrap, a trailing
-    // line holding one button sits alone against the right edge and reads as
-    // a mistake. Centring keeps both lines balanced, and applies to every
-    // dialog so a two-action row does not shift alignment when a third is
-    // added.
+    // Centred rather than M3's end-alignment, matching the title and content
+    // above: dialogs share ONE centre axis, so every element lines up. Mixing
+    // the two (left-aligned text over centred buttons) is what read as broken.
     justifyContent: "center",
     marginBlockStart: "24px",
   },
