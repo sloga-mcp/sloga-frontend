@@ -2046,6 +2046,25 @@ class Voice {
       e2ee: e2eeRoom
         ? { keyProvider: this.#mlsKeyProvider!, worker: this.#e2eeWorker! }
         : undefined,
+      publishDefaults: {
+        // E2EE INVARIANT, not a bandwidth knob — the same rule the
+        // ScreenShareAudio publish states at its own call site (§7/E5), which
+        // the microphone was never given. Empty DTX frames take the
+        // zero-length passthrough in the worker (`encodedFrame.data.byteLength
+        // === 0` returns before both the encrypt and decrypt paths), so they
+        // are never encrypted: per-participant speech/silence timing rides on
+        // the wire in cleartext for the whole call.
+        //
+        // livekit already forces `disableRed` whenever E2EE is on
+        // (`LocalParticipant`: `disableRed: this.isE2EEEnabled || ...`) but
+        // applies no such rule to DTX (`disableDtx` reads `opts.dtx` alone,
+        // default true), so RED is handled for us and DTX has to be set here.
+        // Setting `red: false` as well would only degrade PLAINTEXT calls.
+        //
+        // Scoped to E2EE-capable calls: on a plain voice call there is no
+        // timing to protect and DTX is exactly the saving it is meant to be.
+        ...(e2eeRoom ? { dtx: false } : {}),
+      },
       // Stop pushing upstream for tracks nobody is subscribed to — trims
       // wasted bitrate on the (relayed) publisher path. Safe with the manual
       // autoSubscribe:false flow below. adaptiveStream is intentionally left
