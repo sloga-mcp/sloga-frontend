@@ -6064,7 +6064,17 @@ class Voice {
    */
   #deviceRefusedAt(): number | undefined {
     const bridge = this.getClient()?.e2ee as E2EEBridge | undefined;
-    return bridge?.deviceOwnedElsewhere.get("state");
+    // BOTH verdicts, earliest first. Only the server-derived one was read
+    // before, so a server that keeps answering the device directory "present"
+    // held `refusalSuperseded` off while the LOCAL verdict stood — and the
+    // client really does withhold the device id on the next attempt, so the
+    // user ate the full 30 s punish window on every join for an answer we
+    // already knew had changed (media-e2ee-reviewer, MEDIUM-7).
+    const times = [
+      bridge?.deviceOwnedElsewhere.get("state"),
+      bridge?.storeOwnedByAnotherAccount.get("state"),
+    ].filter((at): at is number => at !== undefined);
+    return times.length ? Math.min(...times) : undefined;
   }
 
   /**

@@ -69,9 +69,12 @@ export interface CallEncryptionReadinessInput {
    */
   status: E2EEStatusSnapshot | undefined | null;
   /**
-   * This install's E2EE device is not registered to the signed-in account —
-   * the durable bridge flag raised by a rejected device claim whose server row
-   * is absent, or by delta refusing a device-qualified call join.
+   * This install's E2EE device is not usable for the signed-in account. EITHER
+   * durable bridge verdict raises it: the SERVER-derived one (a rejected
+   * device claim whose directory row is absent) or the LOCAL one (the native
+   * store-owner accessor finding `mls_signature_key.user_id` names someone
+   * else). They are separate flags, cleared by separate evidence, and this
+   * rule does not care which — the consequence is the same.
    */
   deviceOwnedElsewhere: boolean;
 }
