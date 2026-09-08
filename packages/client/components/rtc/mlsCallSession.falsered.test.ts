@@ -113,12 +113,22 @@ test("a mix cycle under a latch never empties the gate", async (t) => {
   world.sids.delete("dave");
   await world.session.reconcileNow();
   await flush();
+  const before = world.gateLog.length;
   await advance(t, 20_000); // REUPGRADE_HYSTERESIS_MS
   assertBannerHonest(world, "the T2 re-upgrade under a latch");
   assert.deepEqual(
     [...world.gate],
     ["negotiating"],
     "the T2 path left a stale reason behind",
+  );
+  // The ORDER, not just the resting state: a settled `{negotiating}` looks
+  // identical whether the fold ran before the release or a microtask after it,
+  // and only the first keeps the promise for the whole interval. No spec can
+  // observe a gap it does not look for.
+  assert.deepEqual(
+    world.gateLog.slice(before),
+    ["+negotiating", "-mixed"],
+    "the gate emptied between releasing `mixed` and folding to `negotiating`",
   );
 });
 
