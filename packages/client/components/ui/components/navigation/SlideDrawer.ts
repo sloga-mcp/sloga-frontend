@@ -28,6 +28,29 @@ type TrackTouch = {
   vOfs?: number;
 };
 
+/**
+ * Number of gestures currently claimed by something that is not a drawer.
+ *
+ * A drag-to-reorder is the only claimant today. Its finger travels sideways as
+ * well as up and down, so without this the drawer reads the sideways part as an
+ * ordinary swipe and slides the whole page out from under the row being moved.
+ */
+let claims = 0;
+
+/**
+ * Take the current gesture away from every drawer until the returned function
+ * is called. Safe to release more than once.
+ */
+export function claimSlideGesture() {
+  claims++;
+  let held = true;
+  return () => {
+    if (!held) return;
+    held = false;
+    claims--;
+  };
+}
+
 export enum SlideState {
   HIDDEN = 1,
   SHOWN,
@@ -81,7 +104,7 @@ export class SlideDrawer {
   private start(e: TouchEvent) {
     //Cancel if more than one finger
     if (e.touches.length > 1) return this.endTouch();
-    if (this.touch || !this.eGet()) return;
+    if (this.touch || !this.eGet() || claims) return;
 
     //Leave the gesture to any ancestor that actually scrolls horizontally
     //(e.g. the composer action bar) — otherwise the drawer steals the swipe
@@ -108,6 +131,14 @@ export class SlideDrawer {
 
   private move(e: TouchEvent) {
     if (!this.touch) return;
+
+    //Something claimed the gesture mid-touch; hand it over, and put the drawer
+    //back where it was if it had already started following the finger
+    if (claims) {
+      if (this.touch.trig) this.tfTimer(true, this.ofs !== 0);
+      return this.endTouch();
+    }
+
     const isEnd = e.type === "touchend";
     let t, tNew;
     for (t of e.changedTouches)
