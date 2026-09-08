@@ -811,14 +811,19 @@ export function classifyMediaError(error: unknown): MediaErrorClass {
  *    H1). The install proves this side holds the sender's current index;
  *    whether its older-index frames were lost is the SID witness's question.
  *    Time-ordered, not "ever installed": a missing key that lands AFTER the
- *    sender's install completed names an index this side never got — the one
- *    local sign that a commit was withheld from it (re-review, M1) — and
- *    stands until the next install of that sender proves it caught up. A
- *    missing key for a sender never installed at all is one at an index this
- *    side does not hold, its index silenced after the one error: it holds
- *    the heal while the sender is still in the SFU (`errorSince`'s
- *    `present`), regardless of when it landed, and stops mattering once the
- *    sender is gone.
+ *    sender's install completed and names an index that install did NOT set
+ *    is an index this side never got — the one local sign that a commit was
+ *    withheld from it (re-review, M1) — and stands until the next install of
+ *    that sender proves it caught up. One that names a pair the sender's
+ *    latest install DID set is the join race whenever it lands: the worker
+ *    raises MissingKey only while the slot is empty, `setKey` fills it and
+ *    no path ever empties a slot again for the life of the worker, so the
+ *    frame was judged before the worker processed that `setKey` — superseded
+ *    (second re-review, the exact discriminator). A missing key for a sender
+ *    never installed at all is one at an index this side does not hold, its
+ *    index silenced after the one error: it holds the heal while the sender
+ *    is still in the SFU (`errorSince`'s `present`), regardless of when it
+ *    landed, and stops mattering once the sender is gone.
  *  - The worker holds no ack for `setKey`: a `deriveKeys` failure inside the
  *    worker leaves the slot empty with nothing posted, and the one MissingKey
  *    it would have answered is treated as superseded here. Only malformed key
@@ -830,20 +835,28 @@ export class MediaErrorLedger {
   #hardErrorAt = -Infinity;
   /** Missing-key pairs no install has covered yet, by the time observed. */
   #missing = new Map<string, { identity: string; at: number }>();
-  /** When each sender's latest install COMPLETED, since the last `reset`. */
-  #installed = new Map<string, number>();
+  /**
+   * Each sender's LATEST install since the last `reset`: when it completed
+   * and the pairs it set.
+   */
+  #installed = new Map<string, { completedAt: number; pairs: Set<string> }>();
+
+  /** Whether `pair` from `identity` is answered by that sender's latest install. */
+  #superseded(identity: string, pair: string, at: number): boolean {
+    const latest = this.#installed.get(identity);
+    if (!latest) return false;
+    // A pair the install set: the slot has been full since, so the worker
+    // judged the frame before that setKey. Any pair observed before the
+    // install completed: the join race it answered.
+    return latest.pairs.has(pair) || at <= latest.completedAt;
+  }
 
   /** Record a media-plane error observed at `now` (monotonic clock). */
   noteError(error: unknown, now: number): MediaErrorClass {
     const cls = classifyMediaError(error);
     if (cls.kind === "hard") this.#hardErrorAt = now;
-    else {
-      const installedAt = this.#installed.get(cls.identity);
-      // Observed before the sender's install completed ⇒ the join race that
-      // install answered. Observed after ⇒ an index this side never got.
-      if (installedAt === undefined || now > installedAt) {
-        this.#missing.set(cls.pair, { identity: cls.identity, at: now });
-      }
+    else if (!this.#superseded(cls.identity, cls.pair, now)) {
+      this.#missing.set(cls.pair, { identity: cls.identity, at: now });
     }
     return cls;
   }
@@ -856,12 +869,17 @@ export class MediaErrorLedger {
     entries: readonly { livekit_identity: string; key_index: number }[],
     completedAt: number,
   ): void {
+    const bySender = new Map<string, Set<string>>();
     for (const entry of entries) {
-      this.#installed.set(entry.livekit_identity, completedAt);
+      const pairs = bySender.get(entry.livekit_identity) ?? new Set<string>();
+      pairs.add(keyPairId(entry.livekit_identity, entry.key_index));
+      bySender.set(entry.livekit_identity, pairs);
+    }
+    for (const [identity, pairs] of bySender) {
+      this.#installed.set(identity, { completedAt, pairs });
     }
     for (const [pair, record] of this.#missing) {
-      const installedAt = this.#installed.get(record.identity);
-      if (installedAt !== undefined && record.at <= installedAt) {
+      if (this.#superseded(record.identity, pair, record.at)) {
         this.#missing.delete(pair);
       }
     }

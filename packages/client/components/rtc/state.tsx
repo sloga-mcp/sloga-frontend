@@ -2479,6 +2479,12 @@ class Voice {
         room.addListener("encryptionError", (error) => {
           this.#mlsSession?.noteEncryptionError(error);
         });
+        // A full reconnect empties the remote set until the new join
+        // response; a heal probe that fired inside that window could not
+        // judge, so give it a fresh settle once the Room is back.
+        room.addListener("reconnected", () => {
+          this.#mlsSession?.noteSfuReconnected();
+        });
       }
 
       if (!auth) {

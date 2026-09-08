@@ -3538,6 +3538,22 @@ export class MlsCallSession {
   }
 
   /**
+   * The Room came back to `Connected` after a reconnect. A heal probe that
+   * fired during the reconnect could not judge (`sfuConnected()` false —
+   * every remote reads as absent) and its one bounded retry may have fired
+   * in the same window; nothing else re-arms it when the reconnect outlasts
+   * both, and a latch would stay red until the next epoch (second re-review
+   * of the ledger). Under a media latch, arm a fresh settle from here.
+   */
+  noteSfuReconnected(): void {
+    if (this.#terminal() || !this.#media) return;
+    if (this.#loudLatched && this.#loudOrigin === "media") {
+      this.#healRetried = false;
+      this.#armHealProbe();
+    }
+  }
+
+  /**
    * Route a media-plane error through the §4.4 debounce: inside a known
    * rotation window ⇒ RE-SECURING with a bounded escalation to loud; outside ⇒
    * immediately loud. Shared by the LiveKit `encryptionError` path and the

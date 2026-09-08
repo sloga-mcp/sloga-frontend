@@ -108,6 +108,8 @@ class World {
   bridgeCalls: string[] = [];
   /** Injected by the fake installer between its two awaits, once. */
   midInstallError: Error | null = null;
+  /** The Room's `Connected` state as the binding reports it. */
+  connected = true;
   session!: MlsCallSession;
 
   readonly role: "creator" | "joiner";
@@ -221,6 +223,7 @@ function fakeMedia(world: World): MlsMediaBinding {
     localIdentity: () => SELF_ID,
     sfuParticipants: () => [...world.sfu],
     participantTrackSids: (identity) => world.sids.get(identity) ?? [],
+    sfuConnected: () => world.connected,
     onEncryptionState: (state, error) => world.states.push({ state, error }),
     onCallModeChanged: (mode) => world.modes.push(mode.kind),
     setEncryptionEnabled: async () => {},
@@ -523,5 +526,30 @@ test("joiner (H1): the superseded missing key does not hold a later rejoin heal 
   });
   const { latched, clears } = await rejoinAfterLatch(t, world, 6, false);
   assert.deepEqual(clears, [{ state: "clear", error: latched }]);
+  assert.equal(world.session.callMode().kind, "e2ee");
+});
+
+test("creator: a reconnect spanning both probe firings holds, and the Room coming back re-arms the heal", async (t) => {
+  const world = newWorld(t, "creator", "ch-reconnect");
+  await bringUpCreator(t, world);
+  const latched = await latchLoud(t, world);
+  const sinceLatch = world.states.length;
+  await advance(t, 1_000);
+  await peerLeaves(world, 1); // the absent-peer heal is armed (10 s settle)
+  // The Room drops into a reconnect before the settle fires and stays there
+  // through the probe AND its one bounded retry: nothing may be judged while
+  // every remote reads as absent.
+  world.connected = false;
+  await advance(t, HEAL_SETTLE_MS * 3);
+  assert.deepEqual(world.clearsSince(sinceLatch), []);
+  assert.equal(world.session.callMode().kind, "negotiating");
+  // Back to Connected: without the re-arm the latch would stay red until
+  // the next epoch (second re-review of the ledger).
+  world.connected = true;
+  world.session.noteSfuReconnected();
+  await advance(t, HEAL_SETTLE_MS + 1_000);
+  assert.deepEqual(world.clearsSince(sinceLatch), [
+    { state: "clear", error: latched },
+  ]);
   assert.equal(world.session.callMode().kind, "e2ee");
 });

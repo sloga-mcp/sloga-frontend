@@ -874,12 +874,21 @@ test("🔴 a missing key that lands AFTER the sender's install completed is a wi
   // A later install of P (any index) proves this side caught up.
   ledger.noteInstalled([entry(5)], 9_000);
   assert.equal(ledger.errorSince(1_000), false);
-  // The same shape where the error merely reached the main thread after the
-  // install it raced: superseded only by a LATER install — conservative.
+  // The join race whose error merely reached the main thread after the
+  // install completed: the pair that install SET can only have been judged
+  // before the worker processed the setKey (no path empties a slot), so it
+  // is superseded whenever it lands — not a hold.
   const late = new MediaErrorLedger();
   late.noteInstalled([entry(13)], 1_010);
   late.noteError(MISSING(13), 1_020);
+  assert.equal(late.errorSince(1_000), false);
+  // ...while a pair that install did NOT set, landing after it, holds.
+  late.noteError(MISSING(14), 1_030);
   assert.equal(late.errorSince(1_000), true);
+  assert.deepEqual(late.uncoveredPairs(), [keyPairId(PEER, 14)]);
+  // The sender's next install supersedes it whatever indexes it sets.
+  late.noteInstalled([entry(15)], 2_000);
+  assert.equal(late.errorSince(1_000), false);
 });
 
 test("🔴 a missing key for a sender NO install covers holds while that sender is present, regardless of when it landed", () => {
