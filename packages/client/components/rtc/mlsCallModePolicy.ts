@@ -788,8 +788,14 @@ export function classifyMediaError(error: unknown): MediaErrorClass {
  * failure shapes mean different things after a re-key:
  *
  *  - A HARD error marks its key index invalid — one error, then silent drops
- *    (failureTolerance 0) — and only the next epoch's `setKey` re-validates
- *    it. Its stamp is compared against a reference taken BEFORE the installer
+ *    (failureTolerance 0) — until a `setKey` for that index re-validates it:
+ *    the next epoch's install, or LiveKit's own replay of every key it knows
+ *    on each worker `enable` ack (a remote publish, a reconnect). Either
+ *    way a peer still failing there re-emits on its next frame, which lands
+ *    after the reference and holds — fail-closed for this ledger, and a
+ *    re-set of an already-set pair changes no missing-key record (the slot
+ *    was never empty). Its stamp is compared against a reference taken
+ *    BEFORE the installer
  *    runs. `MlsKeyProvider.#install` awaits `importKey` per entry after each
  *    `onSetEncryptionKey` post, and an InvalidKey landing between those
  *    awaits used to be stamped before a reference taken after the install

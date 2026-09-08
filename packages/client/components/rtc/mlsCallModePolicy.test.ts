@@ -889,6 +889,14 @@ test("🔴 a missing key that lands AFTER the sender's install completed is a wi
   // The sender's next install supersedes it whatever indexes it sets.
   late.noteInstalled([entry(15)], 2_000);
   assert.equal(late.errorSince(1_000), false);
+  // LiveKit re-sets every known pair on each worker enable ack: a re-set of
+  // an already-set pair records nothing and changes no verdict.
+  const reset = new MediaErrorLedger();
+  reset.noteInstalled([entry(13)], 1_010);
+  reset.noteError(MISSING(14), 1_030); // foreign index: holds
+  reset.noteInstalled([entry(13)], 1_500); // the replay, same pair
+  assert.equal(reset.errorSince(1_000), true);
+  assert.deepEqual(reset.uncoveredPairs(), [keyPairId(PEER, 14)]);
 });
 
 test("🔴 a missing key for a sender NO install covers holds while that sender is present, regardless of when it landed", () => {
