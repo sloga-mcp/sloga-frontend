@@ -143,7 +143,10 @@ export function sessionSetupDecision(
   // fall into with an unrelated reason: the caller deliberately withholds the
   // device id once the server has refused it, so "not available yet" would be
   // both wrong and unactionable. This is the account-switch / revoked-device
-  // hold, and the banner reads the reason to offer a reset.
+  // hold. 🔴 The banner does NOT offer a reset for it — the verdict is
+  // assembled from server answers, and a destructive control may not be
+  // summoned by those; it routes to Settings → Encryption instead. Reset stays
+  // on the NATIVE `MlsStoreOwnedByAnotherAccount`, which read the store's row.
   if (input.deviceOwnedElsewhere) {
     return {
       action: "hold_loud",

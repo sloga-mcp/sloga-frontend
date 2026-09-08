@@ -50,12 +50,16 @@ export type JoinRefusalReason =
   | "FailedValidation"
   | "UnknownNode"
   /**
-   * `require_media_e2ee_enabled` refused the device-qualified join because the
-   * deployment has media E2EE off. Terminal for this channel until the server
-   * config changes, and previously not classified at all — so an enrolled
-   * client on such a deployment got an unhandled rejection and no dialog.
+   * SYNTHETIC, like the one above: `require_media_e2ee_enabled` refused the
+   * device-qualified join because the deployment has media E2EE off.
+   * Previously not classified at all, so an enrolled client on such a
+   * deployment got an unhandled rejection and no dialog.
+   *
+   * Matched on the `feature` discriminant, never the bare type: delta uses
+   * `FeatureDisabled` right across the product, and classifying all of them
+   * would put unrelated refusals behind copy that names encryption.
    */
-  | "FeatureDisabled"
+  | "MediaE2EEDisabled"
   /**
    * SYNTHETIC, not a server type: the `FailedValidation` whose message is
    * delta's `joining device is not registered`. Split out only so the user
@@ -75,7 +79,6 @@ const TERMINAL_JOIN_REFUSALS: ReadonlySet<string> = new Set<JoinRefusalReason>([
   "IsBot",
   "FailedValidation",
   "UnknownNode",
-  "FeatureDisabled",
 ]);
 
 /**
@@ -88,6 +91,13 @@ export function classifyJoinRefusal(
 ): JoinRefusalReason | undefined {
   // Same terminal verdict, a name the user can be told something about.
   if (isDeviceNotRegisteredRefusal(error)) return "DeviceNotRegistered";
+  const body = error as
+    | { type?: unknown; feature?: unknown }
+    | null
+    | undefined;
+  if (body?.type === "FeatureDisabled" && body.feature === "media_e2ee") {
+    return "MediaE2EEDisabled";
+  }
   const type = (error as { type?: unknown } | null | undefined)?.type;
   return typeof type === "string" && TERMINAL_JOIN_REFUSALS.has(type)
     ? (type as JoinRefusalReason)

@@ -72,10 +72,11 @@ export function WatchOverlay() {
   // A BLOCKING card banner (the E2EE downgrade / terminal-loud banner, z5
   // inside the card) must stay on top; the player host sits at Float level
   // ABOVE the card, so park it (audio continues) while one is showing.
-  const blockingBanner = () => {
-    const kind = voice.callMode()?.kind;
-    return kind === "mixed" || kind === "interlude" || voice.callTerminalLoud();
-  };
+  // `callBannerState()`, not a third copy of the rule: the device banners
+  // (`device_not_set_up`, `device_unsupported`, `unencrypted_notice`) are
+  // invisible to the old three-term test, so the player host would sit on top
+  // of them (media-e2ee-reviewer round 4, LOW).
+  const blockingBanner = () => voice.callBannerState() !== "none";
 
   // Anchor the player host to the slot whenever the slot exists.
   const [slot, setSlot] = createSignal<HTMLDivElement>();
@@ -94,7 +95,11 @@ export function WatchOverlay() {
     const s = watch.session();
     if (!s) return "";
     if (s.media.provider === "youtube")
-      return s.media.title ?? watch.providerStatus()?.title ?? `YouTube ${s.media.video_id}`;
+      return (
+        s.media.title ??
+        watch.providerStatus()?.title ??
+        `YouTube ${s.media.video_id}`
+      );
     return s.media.item_name;
   };
 
@@ -192,7 +197,11 @@ export function WatchOverlay() {
               <Symbol size={18}>movie</Symbol>
               {t`Watch together`}
             </HeaderTitle>
-            <IconButton size="xs" variant="tonal" onPress={() => watch.setPickerOpen(false)}>
+            <IconButton
+              size="xs"
+              variant="tonal"
+              onPress={() => watch.setPickerOpen(false)}
+            >
               <Symbol>close</Symbol>
             </IconButton>
           </Header>
@@ -207,7 +216,10 @@ export function WatchOverlay() {
               <span>{title()}</span>
             </HeaderTitle>
             <HeaderMeta>
-              <Show when={watch.isHost()} fallback={<HostedBy name={hostName()} />}>
+              <Show
+                when={watch.isHost()}
+                fallback={<HostedBy name={hostName()} />}
+              >
                 {t`You're hosting`}
               </Show>
             </HeaderMeta>
@@ -217,7 +229,10 @@ export function WatchOverlay() {
                 variant={stripPref() ? "filled" : "tonal"}
                 onPress={toggleStrip}
                 use:floating={{
-                  tooltip: { placement: "top", content: t`Show cameras beside the video` },
+                  tooltip: {
+                    placement: "top",
+                    content: t`Show cameras beside the video`,
+                  },
                 }}
               >
                 <Symbol>view_sidebar</Symbol>
@@ -240,7 +255,9 @@ export function WatchOverlay() {
               size="xs"
               variant={showStats() ? "filled" : "tonal"}
               onPress={toggleStats}
-              use:floating={{ tooltip: { placement: "top", content: t`Sync stats` } }}
+              use:floating={{
+                tooltip: { placement: "top", content: t`Sync stats` },
+              }}
             >
               <Symbol>insights</Symbol>
             </IconButton>
@@ -250,7 +267,12 @@ export function WatchOverlay() {
                 variant={handoffOpen() ? "filled" : "tonal"}
                 isDisabled={watch.busy()}
                 onPress={() => setHandoffOpen((v) => !v)}
-                use:floating={{ tooltip: { placement: "top", content: t`Make someone else the host` } }}
+                use:floating={{
+                  tooltip: {
+                    placement: "top",
+                    content: t`Make someone else the host`,
+                  },
+                }}
               >
                 <Symbol>switch_account</Symbol>
               </IconButton>
@@ -261,7 +283,12 @@ export function WatchOverlay() {
                 variant="tonal"
                 isDisabled={watch.busy()}
                 onPress={() => void watch.end()}
-                use:floating={{ tooltip: { placement: "top", content: t`Stop watching together` } }}
+                use:floating={{
+                  tooltip: {
+                    placement: "top",
+                    content: t`Stop watching together`,
+                  },
+                }}
               >
                 <Symbol>stop_circle</Symbol>
               </IconButton>
@@ -288,53 +315,56 @@ export function WatchOverlay() {
             </HandoffRow>
           </Show>
           <BodyRow>
-          <PlayerSlot ref={setSlot}>
-            {/* The iframe is positioned over this slot by the store. These
+            <PlayerSlot ref={setSlot}>
+              {/* The iframe is positioned over this slot by the store. These
                 are the states where the slot itself needs to say something. */}
-            <Show when={watch.providerStatus()?.state === "error"}>
-              <SlotMessage>{watch.providerStatus()?.error}</SlotMessage>
-            </Show>
-            <Show when={watch.needsJellyfinSignin()}>
-              {(info) => (
-                <SlotSignin>
-                  <SlotMessage>{t`This session is playing from ${info().serverUrl}. Sign in to that Jellyfin to watch along.`}</SlotMessage>
-                  <Show
-                    when={signinOpen()}
-                    fallback={
-                      <Button variant="filled" onPress={() => setSigninOpen(true)}>
-                        <Symbol>login</Symbol>
-                        {t`Sign in to watch`}
-                      </Button>
-                    }
-                  >
-                    <JellyfinConnect
-                      prefillUrl={info().serverUrl}
-                      onCancel={() => setSigninOpen(false)}
-                      onDone={() => {
-                        setSigninOpen(false);
-                        watch.retryJellyfin();
-                      }}
-                    />
-                  </Show>
-                </SlotSignin>
-              )}
-            </Show>
-          </PlayerSlot>
-          <Show when={stripVisible()}>
-            {/* The anchor mechanism resizes the player to whatever rect
+              <Show when={watch.providerStatus()?.state === "error"}>
+                <SlotMessage>{watch.providerStatus()?.error}</SlotMessage>
+              </Show>
+              <Show when={watch.needsJellyfinSignin()}>
+                {(info) => (
+                  <SlotSignin>
+                    <SlotMessage>{t`This session is playing from ${info().serverUrl}. Sign in to that Jellyfin to watch along.`}</SlotMessage>
+                    <Show
+                      when={signinOpen()}
+                      fallback={
+                        <Button
+                          variant="filled"
+                          onPress={() => setSigninOpen(true)}
+                        >
+                          <Symbol>login</Symbol>
+                          {t`Sign in to watch`}
+                        </Button>
+                      }
+                    >
+                      <JellyfinConnect
+                        prefillUrl={info().serverUrl}
+                        onCancel={() => setSigninOpen(false)}
+                        onDone={() => {
+                          setSigninOpen(false);
+                          watch.retryJellyfin();
+                        }}
+                      />
+                    </Show>
+                  </SlotSignin>
+                )}
+              </Show>
+            </PlayerSlot>
+            <Show when={stripVisible()}>
+              {/* The anchor mechanism resizes the player to whatever rect
                 PlayerSlot ends up with — the strip just takes its column. */}
-            <StripCol style={{ "--vc-tile-width": "160px" }}>
-              <InRoom>
-                <TrackLoop tracks={stripTracks}>
-                  {() => (
-                    <StripTile>
-                      <ParticipantTile />
-                    </StripTile>
-                  )}
-                </TrackLoop>
-              </InRoom>
-            </StripCol>
-          </Show>
+              <StripCol style={{ "--vc-tile-width": "160px" }}>
+                <InRoom>
+                  <TrackLoop tracks={stripTracks}>
+                    {() => (
+                      <StripTile>
+                        <ParticipantTile />
+                      </StripTile>
+                    )}
+                  </TrackLoop>
+                </InRoom>
+              </StripCol>
+            </Show>
           </BodyRow>
           <Show when={watch.needsTap()}>
             <TapRow>
@@ -419,7 +449,10 @@ function Controls() {
         type="range"
         min={0}
         max={Math.max(1, Math.round(duration()))}
-        value={Math.min(Math.round(positionMs()), Math.max(1, Math.round(duration())))}
+        value={Math.min(
+          Math.round(positionMs()),
+          Math.max(1, Math.round(duration())),
+        )}
         disabled={!watch.isHost()}
         onPointerDown={() => setDragging(true)}
         onPointerUp={() => setDragging(false)}
@@ -439,7 +472,13 @@ function Controls() {
           onChange={(e) => watch.hostSetRate(Number(e.currentTarget.value))}
           aria-label={t`Playback speed`}
         >
-          <For each={RATES}>{(r) => <option value={r}>{(r / 1000).toFixed(2).replace(/\.?0+$/, "")}×</option>}</For>
+          <For each={RATES}>
+            {(r) => (
+              <option value={r}>
+                {(r / 1000).toFixed(2).replace(/\.?0+$/, "")}×
+              </option>
+            )}
+          </For>
         </RateSelect>
       </Show>
       <Spacer />
@@ -448,12 +487,19 @@ function Controls() {
         variant={watch.duckEnabled() ? "filled" : "tonal"}
         onPress={() => watch.setDuckEnabled(!watch.duckEnabled())}
         use:floating={{
-          tooltip: { placement: "top", content: t`Lower the movie while people talk` },
+          tooltip: {
+            placement: "top",
+            content: t`Lower the movie while people talk`,
+          },
         }}
       >
         <Symbol>volume_down</Symbol>
       </IconButton>
-      <IconButton size="xs" variant="tonal" onPress={() => watch.setMuted(!watch.muted())}>
+      <IconButton
+        size="xs"
+        variant="tonal"
+        onPress={() => watch.setMuted(!watch.muted())}
+      >
         <Symbol>{watch.muted() ? "volume_off" : "volume_up"}</Symbol>
       </IconButton>
       <Volume
@@ -500,11 +546,17 @@ function Picker() {
   return (
     <PickerBox>
       <Tabs>
-        <Tab data-active={tab() === "youtube"} onClick={() => setTab("youtube")}>
+        <Tab
+          data-active={tab() === "youtube"}
+          onClick={() => setTab("youtube")}
+        >
           <Symbol size={16}>smart_display</Symbol>
           {t`YouTube`}
         </Tab>
-        <Tab data-active={tab() === "jellyfin"} onClick={() => setTab("jellyfin")}>
+        <Tab
+          data-active={tab() === "jellyfin"}
+          onClick={() => setTab("jellyfin")}
+        >
           <Symbol size={16}>dns</Symbol>
           {t`Jellyfin`}
         </Tab>
@@ -513,36 +565,36 @@ function Picker() {
         <JellyfinBrowser />
       </Show>
       <Show when={tab() === "youtube"}>
-      <PickerText>
-        {t`Paste a YouTube link. Everyone in the call watches it in sync, each from YouTube directly — Sloga never touches the video.`}
-      </PickerText>
-      <PickerRow>
-        <PickerInput
-          type="url"
-          placeholder="https://youtu.be/…"
-          value={raw()}
-          onInput={(e) => setRaw(e.currentTarget.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") submit();
-          }}
-          autofocus
-        />
-        <Button variant="filled" isDisabled={watch.busy()} onPress={submit}>
-          {t`Watch`}
-        </Button>
-      </PickerRow>
-      <Show when={bad() === "not-youtube"}>
-        <Notice>{t`That doesn't look like a YouTube link or video id.`}</Notice>
-      </Show>
-      <Show when={bad() === "bare-list"}>
-        <Notice>{t`That's a playlist link without a video. Open the first video of the playlist on YouTube and paste that link — the playlist rides along and advances for everyone.`}</Notice>
-      </Show>
-      <Show when={watch.error()}>
-        <Notice>{translateError({ type: watch.error() })}</Notice>
-      </Show>
-      <PickerHint>
-        {t`Loads from youtube-nocookie.com. The server sees what you watch — also in encrypted calls. Videos with embedding disabled won't play. Headphones recommended: an open mic will carry the movie into the call.`}
-      </PickerHint>
+        <PickerText>
+          {t`Paste a YouTube link. Everyone in the call watches it in sync, each from YouTube directly — Sloga never touches the video.`}
+        </PickerText>
+        <PickerRow>
+          <PickerInput
+            type="url"
+            placeholder="https://youtu.be/…"
+            value={raw()}
+            onInput={(e) => setRaw(e.currentTarget.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") submit();
+            }}
+            autofocus
+          />
+          <Button variant="filled" isDisabled={watch.busy()} onPress={submit}>
+            {t`Watch`}
+          </Button>
+        </PickerRow>
+        <Show when={bad() === "not-youtube"}>
+          <Notice>{t`That doesn't look like a YouTube link or video id.`}</Notice>
+        </Show>
+        <Show when={bad() === "bare-list"}>
+          <Notice>{t`That's a playlist link without a video. Open the first video of the playlist on YouTube and paste that link — the playlist rides along and advances for everyone.`}</Notice>
+        </Show>
+        <Show when={watch.error()}>
+          <Notice>{translateError({ type: watch.error() })}</Notice>
+        </Show>
+        <PickerHint>
+          {t`Loads from youtube-nocookie.com. The server sees what you watch — also in encrypted calls. Videos with embedding disabled won't play. Headphones recommended: an open mic will carry the movie into the call.`}
+        </PickerHint>
       </Show>
     </PickerBox>
   );
@@ -560,7 +612,9 @@ function Stats() {
           {`${st().providerState} · cur ${fmt(st().currentMs ?? 0)} · exp ${fmt(st().expectedMs)} · drift ${
             st().driftMs == null ? "—" : `${st().driftMs} ms`
           } · rate ${st().nudgeRate} · off ${st().offsetMs} ms · seq ${st().seq} · hb ${
-            st().heartbeatAgeMs == null ? "—" : `${Math.round(st().heartbeatAgeMs! / 1000)}s`
+            st().heartbeatAgeMs == null
+              ? "—"
+              : `${Math.round(st().heartbeatAgeMs! / 1000)}s`
           } · wr ${st().writesLastMin}/m${transcode() ? ` · ${transcode()}` : ""}`}
         </StatsLine>
       )}
@@ -599,7 +653,12 @@ const Overlay = styled("div", {
 });
 
 const Header = styled("div", {
-  base: { display: "flex", alignItems: "center", gap: "var(--gap-sm)", minHeight: "32px" },
+  base: {
+    display: "flex",
+    alignItems: "center",
+    gap: "var(--gap-sm)",
+    minHeight: "32px",
+  },
 });
 const HeaderTitle = styled("div", {
   base: {
@@ -616,7 +675,11 @@ const HeaderTitle = styled("div", {
   },
 });
 const HeaderMeta = styled("span", {
-  base: { fontSize: "12px", color: "var(--md-sys-color-on-surface-variant)", whiteSpace: "nowrap" },
+  base: {
+    fontSize: "12px",
+    color: "var(--md-sys-color-on-surface-variant)",
+    whiteSpace: "nowrap",
+  },
 });
 const BodyRow = styled("div", {
   base: {
@@ -697,13 +760,27 @@ const Notice = styled("div", {
   },
 });
 const ControlsRow = styled("div", {
-  base: { display: "flex", alignItems: "center", gap: "var(--gap-sm)", minHeight: "32px" },
+  base: {
+    display: "flex",
+    alignItems: "center",
+    gap: "var(--gap-sm)",
+    minHeight: "32px",
+  },
 });
 const Time = styled("span", {
-  base: { fontSize: "12px", fontVariantNumeric: "tabular-nums", minWidth: "5ch", textAlign: "center" },
+  base: {
+    fontSize: "12px",
+    fontVariantNumeric: "tabular-nums",
+    minWidth: "5ch",
+    textAlign: "center",
+  },
 });
 const Seek = styled("input", {
-  base: { flex: "1 1 auto", minWidth: "60px", accentColor: "var(--md-sys-color-primary)" },
+  base: {
+    flex: "1 1 auto",
+    minWidth: "60px",
+    accentColor: "var(--md-sys-color-primary)",
+  },
 });
 const Volume = styled("input", {
   base: { width: "90px", accentColor: "var(--md-sys-color-primary)" },
@@ -730,14 +807,32 @@ const StatsLine = styled("div", {
   },
 });
 const PickerBox = styled("div", {
-  base: { display: "flex", flexDirection: "column", gap: "var(--gap-md)", width: "100%", maxWidth: "60ch", margin: "auto", minHeight: 0 },
+  base: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "var(--gap-md)",
+    width: "100%",
+    maxWidth: "60ch",
+    margin: "auto",
+    minHeight: 0,
+  },
 });
-const Tabs = styled("div", { base: { display: "flex", gap: "var(--gap-sm)", justifyContent: "center" } });
+const Tabs = styled("div", {
+  base: { display: "flex", gap: "var(--gap-sm)", justifyContent: "center" },
+});
 const Tab = styled("button", {
   base: {
-    display: "flex", alignItems: "center", gap: "6px", padding: "6px 14px", borderRadius: "999px",
-    border: "1px solid var(--md-sys-color-outline-variant)", background: "transparent",
-    color: "var(--md-sys-color-on-surface-variant)", cursor: "pointer", fontSize: "13px", fontWeight: 500,
+    display: "flex",
+    alignItems: "center",
+    gap: "6px",
+    padding: "6px 14px",
+    borderRadius: "999px",
+    border: "1px solid var(--md-sys-color-outline-variant)",
+    background: "transparent",
+    color: "var(--md-sys-color-on-surface-variant)",
+    cursor: "pointer",
+    fontSize: "13px",
+    fontWeight: 500,
     "&[data-active='true']": {
       background: "var(--md-sys-color-secondary-container)",
       color: "var(--md-sys-color-on-secondary-container)",
@@ -746,13 +841,23 @@ const Tab = styled("button", {
   },
 });
 const SlotSignin = styled("div", {
-  base: { display: "flex", flexDirection: "column", gap: "var(--gap-md)", alignItems: "center", padding: "var(--gap-md)", maxWidth: "48ch", width: "100%" },
+  base: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "var(--gap-md)",
+    alignItems: "center",
+    padding: "var(--gap-md)",
+    maxWidth: "48ch",
+    width: "100%",
+  },
 });
 const PickerText = styled("p", { base: { fontSize: "14px" } });
 const PickerHint = styled("p", {
   base: { fontSize: "12px", color: "var(--md-sys-color-on-surface-variant)" },
 });
-const PickerRow = styled("div", { base: { display: "flex", gap: "var(--gap-sm)" } });
+const PickerRow = styled("div", {
+  base: { display: "flex", gap: "var(--gap-sm)" },
+});
 const PickerInput = styled("input", {
   base: {
     flex: "1 1 auto",

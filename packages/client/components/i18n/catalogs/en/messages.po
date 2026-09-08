@@ -26,8 +26,8 @@ msgid "Encryption on this device isn't registered to your account, so calls can'
 msgstr "Encryption on this device isn't registered to your account, so calls can't be joined here. Open Settings → Encryption to fix it."
 
 #: components/rtc/state.tsx
-msgid "The call server wouldn't accept this device's encryption. Try again in a moment."
-msgstr "The call server wouldn't accept this device's encryption. Try again in a moment."
+msgid "The call server wouldn't accept this device's encryption."
+msgstr "The call server wouldn't accept this device's encryption."
 
 #: components/rtc/state.tsx
 msgid "Encrypted calls are turned off on this server right now."

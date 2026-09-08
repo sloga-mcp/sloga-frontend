@@ -271,6 +271,15 @@ test("a media-E2EE-off deployment refuses terminally instead of throwing at the 
   // deployment used to get an unhandled rejection and no dialog at all.
   assert.equal(
     classifyJoinRefusal({ type: "FeatureDisabled", feature: "media_e2ee" }),
-    "FeatureDisabled",
+    "MediaE2EEDisabled",
   );
+  // 🔴 The discriminant, never the bare type: delta uses `FeatureDisabled`
+  // right across the product (Android screen share, the /mls routes), and
+  // classifying all of them would put unrelated refusals behind copy that
+  // names encryption — and would newly latch channels for 30 s on them.
+  assert.equal(
+    classifyJoinRefusal({ type: "FeatureDisabled", feature: "screen_share" }),
+    undefined,
+  );
+  assert.equal(classifyJoinRefusal({ type: "FeatureDisabled" }), undefined);
 });

@@ -117,6 +117,7 @@ import {
 } from "./joinRefusalPolicy";
 import { watchLocalUserId } from "./localUserIdentity";
 import { isPermissionDeniedError } from "./mediaAccessPolicy";
+import { isDeviceQualified } from "./mlsRosterPolicy";
 import { RemoteControl } from "./remoteControl";
 import {
   type RemoteControlQueue,
@@ -1887,9 +1888,10 @@ class Voice {
     //
     // Fail-safe (gate HIGH): a worker/provider that cannot construct — e.g.
     // the bundled `?worker` asset blocked by a `worker-src`-less CSP — must
-    // NOT break the call. Degrade to a NON-E2EE-capable Room (the same
-    // loud-non-enrolled path as an unsupported shell, never a silent plaintext
-    // lock) so voice still works.
+    // NOT break the call. It no longer DEGRADES to a non-E2EE-capable Room,
+    // which was a silent-plaintext hole (see the catch below): the call still
+    // connects and audio is held rather than lost, and one explicit press
+    // releases it.
     //
     // Fail-CLOSED on a no-key-push shell (slice 6.4 step 7, audit H3/NEW-4):
     // `nativeE2EEAvailable()` is TRUE on the Capacitor Android shell, but that
@@ -2041,8 +2043,17 @@ class Voice {
     // Withheld once the corroborated verdict says the server will refuse it:
     // sending it would fail the join outright, and the whole point is that
     // this device joins, unqualified and loud, rather than losing voice.
+    //
+    // Also withheld when the provider or worker failed to construct. That hold
+    // can never resolve, and a device-qualified identity makes every peer read
+    // us as `pending` and spend their admit grace on a member that will never
+    // arrive; bare, they classify us non-enrolled at once and go loud on their
+    // own side immediately (round 4, LOW).
     const e2eeDeviceId =
-      e2eeCapable && readiness !== "owned_elsewhere"
+      e2eeCapable &&
+      readiness !== "owned_elsewhere" &&
+      this.#mlsKeyProvider !== undefined &&
+      this.#e2eeWorker !== undefined
         ? bridge?.status.get("state")?.device_id
         : undefined;
 
@@ -2183,6 +2194,17 @@ class Voice {
 
     room.addListener("connected", () => {
       this.#setState("CONNECTED");
+      // 🔴 The participants already in the call when we joined never bump this
+      // otherwise. livekit routes `ParticipantConnected` through
+      // `emitWhenConnected`, which DROPS it unless the room is already
+      // connected, so the JoinResponse roster arrives silently — and `#setRoom`
+      // ran before `room.connect()`, so `room()` does not change either. Every
+      // chip term derived from `remoteParticipants` (`peerCouldEncrypt`, gate
+      // (b)'s publisher set) therefore read an empty roster for the whole call
+      // if nobody joined, left or published after us: a device that cannot
+      // encrypt, joining a call an enrolled peer was already in, stayed on
+      // chip `none` with no banner (media-e2ee-reviewer round 4, HIGH).
+      this.#setCallParticipantsVersion((v) => v + 1);
       nativeCallServiceStart();
       // Captions relay through the SERVER, not a LiveKit data channel: the
       // voice token is minted `can_publish_data: false`, so the SFU silently
@@ -6019,14 +6041,22 @@ class Voice {
       // every single time without this (media-e2ee-reviewer round 3,
       // finding 4). Nothing here trusts the refusal itself: the release is
       // driven by state the CLIENT corroborated.
+      //
+      // 🔴 Only a latch the verdict OVERTOOK. "The verdict is up" is also true
+      // of the next refusal and the one after, so an unscoped release re-arms
+      // the affordance on every press — the 2026-09-06 press-storm, back under
+      // server control for one reason code, since a server can raise the
+      // verdict and then keep answering `FailedValidation` (round 4, MEDIUM).
       superseded:
         latch?.reason === "DeviceNotRegistered" &&
-        this.#deviceRefusedByServer(),
+        this.#deviceRefusedByServer() &&
+        latch.at < (this.#deviceRefusedAt ?? Infinity),
     });
   }
 
   /**
-   * The user-facing reason behind a holding refusal for `channel` — what the
+   * The corroborated "the server does not accept this device" verdict, and the
+   * user-facing reason behind a holding refusal for `channel` — what the
    * dialog said, for the affordance to keep showing. Undefined when no
    * refusal holds (an in-flight attempt is `joinBlocked`'s business).
    */
@@ -6037,7 +6067,13 @@ class Voice {
    */
   #deviceRefusedByServer(): boolean {
     const bridge = this.getClient()?.e2ee as E2EEBridge | undefined;
-    return bridge?.deviceOwnedElsewhere.get("state") === true;
+    const refused = bridge?.deviceOwnedElsewhere.get("state") === true;
+    // WHEN we first saw it, so a refusal can be told from one the verdict
+    // overtook. Memoised here rather than tracked in an effect because the
+    // reactive dependency is the flag itself, which every reader already has.
+    if (refused) this.#deviceRefusedAt ??= Date.now();
+    else this.#deviceRefusedAt = undefined;
+    return refused;
   }
 
   joinRefusalMessage(channel: Channel): string | undefined {
@@ -6069,8 +6105,8 @@ class Voice {
         // resolves itself within a reconnect anyway.
         return this.#deviceRefusedByServer()
           ? t`Encryption on this device isn't registered to your account, so calls can't be joined here. Open Settings → Encryption to fix it.`
-          : t`The call server wouldn't accept this device's encryption. Try again in a moment.`;
-      case "FeatureDisabled":
+          : t`The call server wouldn't accept this device's encryption.`;
+      case "MediaE2EEDisabled":
         return t`Encrypted calls are turned off on this server right now.`;
       default:
         // IsBot / FailedValidation / UnknownNode: nothing the user can act
@@ -6078,6 +6114,12 @@ class Voice {
         return t`The call couldn't be started right now.`;
     }
   }
+
+  /**
+   * `Date.now()` when `deviceOwnedElsewhere` was first observed set, or
+   * undefined while it is not. Only `#deviceRefusedByServer` writes it.
+   */
+  #deviceRefusedAt: number | undefined;
 
   /** Latch a terminal refusal for `channel` (joinRefusalPolicy). */
   #recordJoinRefusal(channel: Channel, reason: JoinRefusalReason) {
@@ -6239,9 +6281,19 @@ class Voice {
       // after resolving that device for that user — so its presence is proof
       // someone here can encrypt. Screen legs are their owner's device and
       // count the same.
+      //
+      // 🔴 `isDeviceQualified`, not `includes(":")`: the leg grammar is always
+      // three segments, so a NON-device-qualified peer's leg is `"{user}::
+      // screen"` and contains a colon while proving the opposite. And the
+      // OWN-leg exclusion matters for the same reason it does in the publisher
+      // loop above — `remoteParticipants` contains our own leg, so without it
+      // a device that merely started a screen share would light its own chip
+      // (media-e2ee-reviewer round 4, MEDIUM).
       peerCouldEncrypt: room
-        ? [...room.remoteParticipants.values()].some((p) =>
-            p.identity.includes(":"),
+        ? [...room.remoteParticipants.values()].some(
+            (p) =>
+              isDeviceQualified(p.identity) &&
+              stripLeg(p.identity) !== room.localParticipant.identity,
           )
         : false,
     });
