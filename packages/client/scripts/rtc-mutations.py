@@ -339,28 +339,28 @@ MUTATIONS += [
 
 # --- The false-red / false-pause fix (join-race legs, 2026-09-08) ------------
 #
-# `publishGate.ts` + `mlsCallSession.falsered.test.ts`. The first three are the
-# defect itself and its two nearest wrong fixes; the rest pin the session-level
-# invariant "the ME-10 banner renders only over a held gate" and the harness
-# fidelity the invariant rests on.
+# `publishGate.ts` + `mlsCallSession.falsered.test.ts`. The first group is the
+# pure decision, the second is the sweep BODY (only reachable as mutations
+# because the executor is injectable — `publishGate.test.ts` drives the real one
+# against a fake of livekit's bookkeeping rather than re-implementing it), the
+# third pins the session-level invariant and the harness fidelity it rests on.
 
 MUTATIONS += [
+    # ---- the decision ------------------------------------------------------
     Mutation(
         id="gate-trusts-stale-pause-flag",
-        what="the sweep trusts livekit's isUpstreamPaused over a rebuilt sender (the defect)",
+        what="a live sender whose pause FLAG says paused is left alone (the defect)",
         file=GATE,
-        search="""  return inputs.senderRebuilt ? "repause" : "none";""",
-        replace="""  return "none";""",
+        search="""  return inputs.upstreamPaused ? "repause" : "pause";""",
+        replace="""  return inputs.upstreamPaused ? "none" : "pause";""",
         specs=[GATE_SPEC],
     ),
     Mutation(
-        id="repause-sweeps-untouched-publications",
-        what="every paused publication takes the resume-first repause, not just the rebuilt one",
+        id="gate-assumes-quiet-instead-of-observing",
+        what="the sweep infers quiet from livekit's flag instead of reading the wire",
         file=GATE,
-        search="""  if (!inputs.upstreamPaused) return "pause";
-  return inputs.senderRebuilt ? "repause" : "none";""",
-        replace="""  if (!inputs.upstreamPaused) return "pause";
-  return "repause";""",
+        search="""  if (!inputs.onTheWire) return "none";""",
+        replace="""  if (inputs.upstreamPaused) return "none";""",
         specs=[GATE_SPEC],
     ),
     Mutation(
@@ -371,6 +371,64 @@ MUTATIONS += [
         replace="""  if (inputs.gateHeld) return "resume";""",
         specs=[GATE_SPEC],
     ),
+    # ---- the sweep body ----------------------------------------------------
+    Mutation(
+        id="repause-order-inverted",
+        what="repause resumes twice instead of resume-then-pause, leaving the sender live",
+        file=GATE,
+        search="""        if (!gateHeld()) return null;
+        await publication.pauseUpstream();
+        break;
+      }""",
+        replace="""        if (!gateHeld()) return null;
+        await publication.resumeUpstream();
+        break;
+      }""",
+        specs=[GATE_SPEC],
+    ),
+    Mutation(
+        id="repause-drops-the-gate-recheck",
+        what="repause pauses even after the gate emptied, muting a healthy call with nothing left to resume it",
+        file=GATE,
+        search="""        if (!gateHeld()) return null;
+        await publication.pauseUpstream();""",
+        replace="""        await publication.pauseUpstream();""",
+        specs=[GATE_SPEC],
+    ),
+    Mutation(
+        id="sweep-swallows-a-failed-pause",
+        what="a pause that THREW is discarded, so one failure becomes a permanent silent false pause",
+        file=GATE,
+        search="""    return publication.name;
+  }""",
+        replace="""    return null;
+  }""",
+        specs=[GATE_SPEC],
+    ),
+    Mutation(
+        id="sweep-skips-the-post-condition",
+        what="the sweep reports success without re-reading the wire",
+        file=GATE,
+        search="""  return publication.onTheWire() ? publication.name : null;""",
+        replace="""  return null;""",
+        specs=[GATE_SPEC],
+    ),
+    Mutation(
+        id="sweep-awaits-inside-its-loop",
+        what="ops are no longer all issued before the first await, so livekit's FIFO lock no longer reflects issue order",
+        file=GATE,
+        search="""  const pending: Promise<string | null>[] = [];
+  for (const publication of publications) {
+    pending.push(
+      runOne(""",
+        replace="""  const pending: Promise<string | null>[] = [];
+  for (const publication of publications) {
+    await Promise.resolve();
+    pending.push(
+      runOne(""",
+        specs=[GATE_SPEC],
+    ),
+    # ---- the session-level invariant ---------------------------------------
     Mutation(
         id="latch-skips-the-negotiating-fold",
         what="a loud verdict after the mode reached e2ee never folds back to negotiating, so the banner promises a pause over an empty gate",
@@ -411,22 +469,28 @@ MUTATIONS += [
         replace="""  gate = new Set<PublishGateReason>();""",
         specs=[FALSERED_SPEC],
     ),
+    # ---- the residual, recorded rather than hidden -------------------------
     Mutation(
-        id="wiring-drops-the-rebuilt-track",
-        what="state.tsx stops naming the rebuilt publication, so the sweep is bare again",
+        id="wiring-onthewire-always-false",
+        what="state.tsx's GatedPublication adapter reports every publication quiet",
         file=STATE,
-        search="""      if (this.#publishGate.size > 0)
-        void this.#applyPublishGate(room, pub.track);""",
-        replace="""      if (this.#publishGate.size > 0) void this.#applyPublishGate(room);""",
+        search="""          const sender = track.sender;
+          if (!sender?.track) return false;""",
+        replace="""          const sender = track.sender;
+          if (sender) return false;""",
         specs=[GATE_SPEC, FALSERED_SPEC],
         expect="green",
         why_green=(
             "state.tsx has no spec harness — the session specs replace the whole "
-            "media binding, and `publishGate.ts` is reached only through it. So the "
-            "DECISION is covered and the WIRING is not: which call site names the "
-            "rebuilt publication is verified by reading it against the pinned "
-            "livekit-client 2.15.13 source, and would otherwise need a live leg. "
-            "Recorded rather than hidden: this is the one un-asserted seam in the fix."
+            "media binding, and the sweep is reached only through it. The DECISION "
+            "and the sweep BODY are now covered (the eight mutations above), which "
+            "leaves only the ~10-line `GatedPublication` adapter: the `name`, the "
+            "`upstreamPaused` getter, the `onTheWire` read and the two op "
+            "forwardings. Those are verified by reading them against the pinned "
+            "livekit-client 2.15.13 source (`LocalTrack.sender`, `sender.track`, "
+            "`sender.transport?.state`, the same triple livekit's own guards read) "
+            "and would otherwise need a live leg on a packaged shell, which has no "
+            "renderer console by design. This is the ONE un-asserted seam left."
         ),
     ),
 ]

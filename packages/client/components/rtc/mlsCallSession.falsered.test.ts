@@ -10,10 +10,14 @@
 // The legs then produced the mirror of the failure this feature chases — not a
 // false green but a FALSE RED with a false pause claim: a Linux seat showing
 // ME-10 while the other seat recorded its publication as GCM and decrypted its
-// frames for 24 minutes. So each spec here drives one way to reach the banner
-// and asserts the same two things at once: the banner is up, AND the gate that
-// the banner is describing is held. `publishGate.test.ts` covers the second
-// half of the same promise — that a held gate actually reaches the wire.
+// frames for 24 minutes. So each spec here drives one way into a
+// pause-promising state and asserts the session held the gate through it.
+//
+// Scope, stated so the next reader does not over-read these: this file pins the
+// SESSION's half — the reason set and the order of its edges. Whether a held
+// gate reaches the wire is `publishGate.test.ts`. Whether the RED itself is
+// warranted is the second, unfixed defect from the same legs, and
+// `assertMe10`'s comment says why it is pinned for one shape only.
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -29,17 +33,33 @@ import {
 } from "./mlsCallSession.harness.ts";
 
 /**
- * The invariant: whenever the ME-10 banner renders, publishing is gated. A
- * banner that promises a pause over an empty reason set is the defect,
- * regardless of which path put it there.
+ * The invariant these specs exist for: while the call is in a state that
+ * promises a pause, the session is holding the gate. Deliberately says nothing
+ * about WHICH banner renders.
  */
-function assertBannerHonest(world: World, where: string): void {
-  assert.equal(world.terminalLoud(), true, `no ME-10 banner at ${where}`);
+function assertGateHeld(world: World, where: string): void {
   assert.equal(
     world.publishing(),
     false,
-    `the banner promised a pause at ${where} with the gate empty`,
+    `the gate was empty at ${where}, over a banner promising a pause`,
   );
+}
+
+/**
+ * That the ME-10 banner renders at all — asserted ONLY where a media-plane
+ * verdict makes a red correct.
+ *
+ * Deliberately NOT asserted for the control-origin latches below. A control
+ * verdict has no media-plane input and cannot heal, so it currently paints
+ * "This call could not be secured" over a plane that may be provably keyed —
+ * the second, unfixed half of the 2026-09-08 legs. Pinning that here would make
+ * this file go red, and read as a regression, the day someone splits
+ * control-origin red from media-origin red. The gate assertion holds either
+ * way: a device that cannot prove who is in the call must not send, whatever
+ * the banner ends up saying.
+ */
+function assertMe10(world: World, where: string): void {
+  assert.equal(world.terminalLoud(), true, `no ME-10 banner at ${where}`);
 }
 
 test("a media latch after the mode reached e2ee re-asserts the gate", async (t) => {
@@ -50,7 +70,8 @@ test("a media latch after the mode reached e2ee re-asserts the gate", async (t) 
   assert.equal(world.terminalLoud(), false);
 
   await latchLoud(t, world);
-  assertBannerHonest(world, "the media latch");
+  assertMe10(world, "the media latch");
+  assertGateHeld(world, "the media latch");
   assert.deepEqual([...world.gate], ["negotiating"]);
 });
 
@@ -74,23 +95,20 @@ test("a control latch on the local-declaration seam re-asserts the gate", async 
   );
 
   await advance(t, 11_000); // past RESECURE_ESCALATE_MS
-  assertBannerHonest(world, "the control escalation");
+  assertGateHeld(world, "the control escalation");
 
   release();
   await flush();
   // The republish landed GCM, so `enable-window` is released — but the latch
   // is terminal, so `negotiating` stays held and the banner stays true.
-  assertBannerHonest(
-    world,
-    "the republish landing under a latched control verdict",
-  );
+  assertGateHeld(world, "the republish landing under a latched verdict");
 });
 
 test("a mix cycle under a latch never empties the gate", async (t) => {
   const world = newWorld(t, "creator", "chan-fr3", (w) => w.withThird());
   await bringUpCreator(t, world);
   await latchLoud(t, world);
-  assertBannerHonest(world, "the latch");
+  assertGateHeld(world, "the latch");
 
   // A bare (device-less) identity publishing in the SFU set is non-enrolled on
   // sight: T1 `mixed`. The label leaves `negotiating`, so the lockstep
@@ -115,7 +133,8 @@ test("a mix cycle under a latch never empties the gate", async (t) => {
   await flush();
   const before = world.gateLog.length;
   await advance(t, 20_000); // REUPGRADE_HYSTERESIS_MS
-  assertBannerHonest(world, "the T2 re-upgrade under a latch");
+  assertMe10(world, "the T2 re-upgrade under a media latch");
+  assertGateHeld(world, "the T2 re-upgrade under a latch");
   assert.deepEqual(
     [...world.gate],
     ["negotiating"],
@@ -143,7 +162,7 @@ test("a membership churn that does not heal the latch keeps the gate held", asyn
   await peerRejoins(world, 2, ["TR_new"]);
   await advance(t, 11_000); // past the heal settle
   if (world.terminalLoud()) {
-    assertBannerHonest(world, "the un-healed latch after a rejoin");
+    assertGateHeld(world, "the un-healed latch after a rejoin");
   } else {
     // Healed: the chip is honest again, so publishing MUST come back — an
     // unreleased reason is silent outgoing death behind a green chip.
@@ -167,5 +186,5 @@ test("a joiner whose enrolment never proves keeps the pre-connect gate", async (
 
   // The Welcome never lands; `SELF_ENROLMENT_DEADLINE_MS` (240 s) latches.
   await advance(t, 250_000);
-  assertBannerHonest(world, "the self-enrolment assertion");
+  assertGateHeld(world, "the self-enrolment assertion");
 });

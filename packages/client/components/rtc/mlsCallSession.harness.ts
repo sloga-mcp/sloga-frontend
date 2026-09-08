@@ -301,11 +301,14 @@ export class World {
    * this and why the media plane has to.
    */
   /**
-   * Whether ANY local media can leave this device right now: `state.tsx`
-   * resumes every publication only when the reason set is empty, and
-   * `pauseUpstream()` (which is what a held gate applies) does
-   * `sender.replaceTrack(null)` — so a held gate stops an ALREADY-PUBLISHED
-   * mic, not merely the next publish.
+   * Whether the session is HOLDING the publish gate — literally
+   * `gate.size === 0`, and nothing more.
+   *
+   * 🔴 Not "whether media can leave this device". During the 2026-09-08 legs
+   * the reason set was non-empty and the wire was not quiet, so no assertion
+   * over this model can fail for the leg's reason; whether a held gate reaches
+   * the wire is `publishGate.test.ts`'s job, against a fake of livekit's own
+   * bookkeeping. Read this as "the session kept its side of the promise".
    */
   publishing(): boolean {
     return this.gate.size === 0;
