@@ -21,6 +21,20 @@ allowBuilds:
   tesseract.js: false
 nodeLinker: isolated
 
+# The e2ee worker carries the media-E2EE decode witness (chip gate (d)): a
+# per-sender tally of frames that arrived and frames the decode path discarded,
+# posted to the main thread once a second.
+#
+# 🔴 Declared HERE, not under a "pnpm" key in package.json — pnpm ignores that
+# key from v10 on, warns once, and installs an UNPATCHED worker. The chip then
+# fails closed to amber for every call, which is the safe direction but silently
+# removes the gate.
+#
+# 🔴 Version-exact on purpose: a livekit bump makes the patch unmatched and the
+# install fails, rather than quietly shipping a worker with no witness.
+patchedDependencies:
+  livekit-client@2.15.13: patches/livekit-client@2.15.13.patch
+
 # Override prettier because some of the submodules have ancient prettiers required
 # Having multiple prettiers makes the vscode extension unpredictable
 overrides:
