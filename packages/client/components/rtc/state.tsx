@@ -195,6 +195,10 @@ import { CaptionPublisher } from "./components/CaptionPublisher";
 import { CaptionSpeaker } from "./components/CaptionSpeaker";
 import { InRoom } from "./components/InRoom";
 import { RoomAudioManager } from "./components/RoomAudioManager";
+import {
+  createDecodeWitnessListener,
+  DECODE_WITNESS_INITIAL,
+} from "./decodeWitnessListener.ts";
 import { isDiceRollMessage, summariseDiceRoll } from "./diceRoll";
 import { faceSettingsActive } from "./faceFilterCatalog";
 import { localPublicationsEncrypted } from "./localPublicationEncryption";
@@ -204,9 +208,7 @@ import {
   type ChipState,
   type DecodeWitness,
   chipState,
-  DECODE_WITNESS_UNAVAILABLE,
   isTerminalLoud,
-  summarizeDecodeWitness,
 } from "./mlsCallModePolicy";
 import {
   type MlsMediaBinding,
@@ -236,19 +238,6 @@ import { isScreenShareCancel } from "./screenShareCancel";
 import { ScreenShieldProcessor } from "./screenShieldProcessor";
 import { SoundboardPlayback } from "./soundboardPlayback";
 import { WhisperController } from "./whisper";
-
-/**
- * Gate (d): how long without a worker heartbeat before the decode witness is
- * treated as absent. Three of the worker's one-second posts, so a single late
- * flush under load does not flap the chip.
- */
-const DECODE_WITNESS_STALE_MS = 3_000;
-
-/**
- * How often that threshold is CHECKED. Polling at the threshold would make
- * detection latency up to twice it.
- */
-const DECODE_WITNESS_CHECK_MS = 1_000;
 
 /**
  * A dice-roll result shown briefly over the call's video (e.g. "Jeff rolled
@@ -1190,9 +1179,11 @@ class Voice {
     const [callMediaHold, setCallMediaHold] = createSignal(false);
     this.callMediaHold = callMediaHold;
     // Starts UNAVAILABLE, so a call that never arms the witness reads amber
-    // rather than green (gate d is fail-closed by construction).
+    // rather than green (gate d is fail-closed by construction). The value is
+    // imported rather than written here because THIS file has no spec: a
+    // reviewer flipped it to an available witness and every spec stayed green.
     const [callDecodeWitness, setCallDecodeWitness] =
-      createSignal<DecodeWitness>(DECODE_WITNESS_UNAVAILABLE, {
+      createSignal<DecodeWitness>(DECODE_WITNESS_INITIAL, {
         // The worker posts a NEW object every second, and Solid's default
         // equality is reference identity — so without this the chip, which
         // walks every participant and every publication, re-ran once a second
@@ -6122,20 +6113,15 @@ class Voice {
   /**
    * Gate (d): listen for the E2EE worker's decode witness.
    *
-   * The patched worker posts `slogaDecodeWitness` once a second, whether or not
-   * it has anything to report, naming per sender the key indexes frames
-   * ARRIVED at and how many it threw away for an index it had marked invalid.
-   * We attach with `addEventListener`, so livekit's own `worker.onmessage`
-   * handler keeps running untouched; the worker ignores message kinds it does
-   * not know, and we ignore its.
-   *
-   * 🔴 The heartbeat is the point. `available` goes false as soon as one stops
-   * arriving, and the chip reads that as amber. A build that lost the pnpm
-   * patch, a worker that died, a listener that was never armed — each of them
-   * silences the witness, and each must degrade the chip rather than quietly
-   * remove the gate. That is the whole inversion: gates (a)-(c) all read
-   * objects whose ABSENCE means "fine", which is how a destroyed or
-   * never-created verdict read green through every one of them.
+   * All of the judgement — the message-kind and session guards, the sample
+   * parse, the three-beat staleness threshold, the one-time console warn and
+   * the recovery line — lives in `decodeWitnessListener.ts`, which is pure and
+   * loadable by `node --test`. This method is only the wiring that has to
+   * touch a `Worker`, a timer and a Solid setter, because a reviewer showed
+   * that anything left in THIS file is unspecced and unmutated: gate (d)'s
+   * initial value was flipped to an available witness — green by default, the
+   * posture the gate exists to remove — with every spec and every mutation
+   * still passing.
    *
    * 🔴 ONE-WAY. This may withhold a green. It never resolves a hold, cancels an
    * escalation, clears a latch or promotes anything.
@@ -6144,43 +6130,20 @@ class Voice {
     this.#disarmDecodeWitness();
     const worker = this.#e2eeWorker;
     if (!worker) return;
-    let lastAt = performance.now();
-    let warned = false;
-    const onMessage = (ev: MessageEvent) => {
-      const data = ev.data as
-        | { kind?: string; data?: { participants?: unknown } }
-        | undefined;
-      if (data?.kind !== "slogaDecodeWitness") return;
-      if (this.#mlsSession !== session) return;
-      lastAt = performance.now();
-      const participants = Array.isArray(data.data?.participants)
-        ? data.data.participants
-        : [];
-      if (warned) {
-        warned = false;
-        console.info("[mls] decode witness is reporting again");
-      }
-      this.#setCallDecodeWitness(summarizeDecodeWitness(participants));
-    };
+    const listener = createDecodeWitnessListener({
+      now: () => performance.now(),
+      onWitness: (witness) => this.#setCallDecodeWitness(witness),
+      // Guarded by session identity so a disposed session's queued post can
+      // never clobber a newer call's witness.
+      isCurrentSession: () => this.#mlsSession === session,
+    });
+    const onMessage = (ev: MessageEvent) => listener.onMessage(ev.data);
     worker.addEventListener("message", onMessage);
-    // A three-beat threshold, CHECKED once a second. Polling at the threshold
-    // instead would make detection latency up to twice it — several seconds of
-    // green over a witness that had already stopped.
-    const stale = setInterval(() => {
-      if (performance.now() - lastAt <= DECODE_WITNESS_STALE_MS) return;
-      if (!warned) {
-        warned = true;
-        console.warn(
-          "[mls] no decode witness from the e2ee worker — the chip cannot go " +
-            "green. Is the livekit-client patch applied in this build?",
-        );
-      }
-      this.#setCallDecodeWitness(DECODE_WITNESS_UNAVAILABLE);
-    }, DECODE_WITNESS_CHECK_MS);
+    const stale = setInterval(() => listener.tick(), listener.checkMs);
     this.#decodeWitnessStop = () => {
       worker.removeEventListener("message", onMessage);
       clearInterval(stale);
-      this.#setCallDecodeWitness(DECODE_WITNESS_UNAVAILABLE);
+      listener.stop();
     };
   }
 

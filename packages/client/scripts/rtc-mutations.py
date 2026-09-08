@@ -37,10 +37,12 @@ SESSION = "mlsCallSession.ts"
 POLICY = "mlsCallModePolicy.ts"
 HARNESS = "mlsCallSession.harness.ts"
 STATE = "state.tsx"
+WITNESS = "decodeWitnessListener.ts"
 
 JOINRACE_SPEC = "components/rtc/mlsCallSession.joinrace.test.ts"
 HEAL_SPEC = "components/rtc/mlsCallSession.heal.test.ts"
 POLICY_SPEC = "components/rtc/mlsCallModePolicy.test.ts"
+WITNESS_SPEC = "components/rtc/decodeWitnessListener.test.ts"
 ALL_SPECS = [POLICY_SPEC, HEAL_SPEC, JOINRACE_SPEC]
 
 
@@ -395,6 +397,86 @@ MUTATIONS += [
     inputs.decodeWitness.available &&
     inputs.decodeWitness.dropping.length === 0;
   if (inputs.decodeWitness.dropping.length > 0) return "not_encrypted";""",
+    ),
+]
+
+# --- Gate (d): the listener that FEEDS the witness ---------------------------
+#
+# Everything above mutates the POLICY that reads the witness. These mutate the
+# listener that produces it, and they exist because a `media-e2ee-reviewer`
+# round found the producer unreachable: it lived in `state.tsx`, which has no
+# spec file and which `node --test` cannot load, so the listener, the staleness
+# path and the signal's initial value were all unmutated. Flipping the initial
+# value to an AVAILABLE witness restored green-by-default — the exact posture
+# gate (d) exists to remove — with all 13 spec files green and all 24 mutations
+# still red. Each of these re-introduces one of the holes that hid there.
+#
+# Scoped to WITNESS_SPEC on purpose: it is the only spec that loads this
+# module, so running the others would be time spent proving nothing.
+
+MUTATIONS += [
+    Mutation(
+        id="witness-initial-available",
+        what="the chip's witness signal starts AVAILABLE, so a call that never armed the witness reads green",
+        file=WITNESS,
+        search="""export const DECODE_WITNESS_INITIAL: DecodeWitness = DECODE_WITNESS_UNAVAILABLE;""",
+        replace="""export const DECODE_WITNESS_INITIAL: DecodeWitness = {
+  available: true,
+  dropping: [],
+  live: [],
+};""",
+        specs=[WITNESS_SPEC],
+    ),
+    Mutation(
+        id="witness-never-goes-stale",
+        what="the staleness comparison has its operands the wrong way round, so the witness never expires",
+        file=WITNESS,
+        search="""      if (now() - lastAt <= staleMs) return;""",
+        replace="""      if (lastAt - now() <= staleMs) return;""",
+        specs=[WITNESS_SPEC],
+    ),
+    Mutation(
+        id="witness-stale-threshold-widened",
+        what="the staleness threshold is a hundred times the three-beat bound, so a dead worker holds its green for minutes",
+        file=WITNESS,
+        search="""export const DECODE_WITNESS_STALE_MS = 3 * DECODE_WITNESS_CHECK_MS;""",
+        replace="""export const DECODE_WITNESS_STALE_MS = 300 * DECODE_WITNESS_CHECK_MS;""",
+        specs=[WITNESS_SPEC],
+    ),
+    Mutation(
+        id="witness-teardown-keeps-standing",
+        what="teardown leaves the last sample standing instead of writing UNAVAILABLE",
+        file=WITNESS,
+        search="""      // The listener is being detached, so no further sample can arrive and
+      // the last one must not keep standing as live evidence.
+      onWitness(DECODE_WITNESS_UNAVAILABLE);""",
+        replace="""      // The listener is being detached, so no further sample can arrive and
+      // the last one must not keep standing as live evidence.""",
+        specs=[WITNESS_SPEC],
+    ),
+    Mutation(
+        id="witness-kind-guard-presence-only",
+        what="the message-kind guard checks that a kind is PRESENT, not that it is ours — livekit's own worker posts are read as witnesses",
+        file=WITNESS,
+        search="""  if (data.kind !== DECODE_WITNESS_KIND) return null;""",
+        replace="""  if (data.kind === undefined) return null;""",
+        specs=[WITNESS_SPEC],
+    ),
+    Mutation(
+        id="witness-malformed-promotes",
+        what="a malformed sample is coerced to an EMPTY window, and summarizing an empty window returns available:true",
+        file=WITNESS,
+        search="""  if (!Array.isArray(participants)) return null;""",
+        replace="""  if (!Array.isArray(participants)) return [];""",
+        specs=[WITNESS_SPEC],
+    ),
+    Mutation(
+        id="witness-session-guard-removed",
+        what="a disposed session's queued post writes the newer call's witness",
+        file=WITNESS,
+        search="""      if (!isCurrentSession()) return;""",
+        replace="""      isCurrentSession();""",
+        specs=[WITNESS_SPEC],
     ),
 ]
 
