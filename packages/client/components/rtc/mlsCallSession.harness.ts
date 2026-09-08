@@ -68,8 +68,8 @@ export const THIRD: MlsMemberDevice = { user_id: "carol", device_id: "devC" };
 export const GROUP = "group-1";
 /** The heal settle (`LOUD_HEAL_SETTLE_MS` = `RESECURE_ESCALATE_MS`). */
 export const HEAL_SETTLE_MS = 10_000;
-/** The join-race hold's bound (`JOIN_RACE_DEFER_MS`). */
-export const JOIN_RACE_DEFER_MS = 10_000;
+/** The join-race hold's bound (`JOIN_RACE_DEFER_MS` = `MEMBERSHIP_OBSERVED_MS`). */
+export const JOIN_RACE_DEFER_MS = 20_000;
 /** `LEAVE_GRACE_MS` — after this the grace entry is DELETED and the Remove runs. */
 export const LEAVE_GRACE_MS = 10_000;
 
@@ -120,6 +120,12 @@ export class World {
   midInstallError: Error | null = null;
   /** The Room's `Connected` state as the binding reports it. */
   connected = true;
+  /**
+   * Whether the binding implements `onMediaHold` — the chip's amber. A
+   * binding without it must never get a deferred verdict: the amber is the
+   * only thing separating a deferral from an invisible green.
+   */
+  holdsSupported = true;
   session!: MlsCallSession;
 
   readonly role: "creator" | "joiner";
@@ -259,7 +265,9 @@ function fakeMedia(world: World): MlsMediaBinding {
     participantTrackSids: (identity) => world.sids.get(identity) ?? [],
     sfuConnected: () => world.connected,
     onEncryptionState: (state, error) => world.states.push({ state, error }),
-    onMediaHold: (active) => world.holds.push(active),
+    ...(world.holdsSupported
+      ? { onMediaHold: (active: boolean) => world.holds.push(active) }
+      : {}),
     onCallModeChanged: (mode) => world.modes.push(mode.kind),
     setEncryptionEnabled: async () => {},
   };

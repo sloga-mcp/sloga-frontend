@@ -665,6 +665,25 @@ export interface LoudHealInputs {
    * has no witness at all (no remote was present) and must hold.
    */
   peers: readonly LoudHealPeer[];
+  /**
+   * The latch's ORIGINATING error was a decode missing key, and this side has
+   * since pushed that exact pair to the worker in an install STRICTLY AFTER
+   * the latch (`pairFilledAtSeq > latchedInstallSeq`).
+   *
+   * That `setKey` calls `resetKeyStatus` for the index the failure named, so
+   * the index is live again and any surviving failure re-emits inside the
+   * settle — which `errorSinceInstall` catches above. It is the one witness a
+   * BYSTANDER latch can ever produce: a missing key names its participant, so
+   * `peers` is the device that raised it, and a bystander never leaves and
+   * never re-publishes, which is why leg 3a stayed red for the whole call.
+   *
+   * Strictly-after is what the reverted attempt got wrong: it asked whether
+   * the pair had EVER been pushed, which is true from the moment the install
+   * posts — and the worker raises a missing key precisely BECAUSE that
+   * `setKey` had not been processed yet, so the clause was already true at
+   * latch time and healed the latch it was meant to judge.
+   */
+  originatingPairRefilled?: boolean;
 }
 
 /**
@@ -721,6 +740,8 @@ export function loudHealVerdict(inputs: LoudHealInputs): "heal" | "hold" {
   if (!inputs.settleElapsed) return "hold";
   if (!inputs.rosterConsistent) return "hold";
   if (inputs.peers.length === 0) return "hold";
+  // Behind the empty-witness hold, never in front of it.
+  if (inputs.originatingPairRefilled) return "heal";
   return inputs.peers.every(
     (peer) => !peer.present || (peer.readdedAfterLatch && peer.sidsAllNew),
   )
@@ -850,7 +871,10 @@ export class MediaErrorLedger {
    * nothing empties a slot), and when it last filled a slot it did not
    * already hold.
    */
-  #installed = new Map<string, { advancedAt: number; pairs: Set<string> }>();
+  #installed = new Map<
+    string,
+    { advancedAt: number; pairs: Map<string, number> }
+  >();
 
   /** Whether `pair` from `identity` is answered by an install since. */
   #superseded(identity: string, pair: string, at: number): boolean {
@@ -884,6 +908,7 @@ export class MediaErrorLedger {
   noteInstalled(
     entries: readonly { livekit_identity: string; key_index: number }[],
     completedAt: number,
+    installSeq = 0,
   ): void {
     const bySender = new Map<string, Set<string>>();
     for (const entry of entries) {
@@ -894,12 +919,12 @@ export class MediaErrorLedger {
     for (const [identity, pairs] of bySender) {
       const rec = this.#installed.get(identity) ?? {
         advancedAt: -Infinity,
-        pairs: new Set<string>(),
+        pairs: new Map<string, number>(),
       };
       let advanced = false;
       for (const pair of pairs) {
         if (!rec.pairs.has(pair)) {
-          rec.pairs.add(pair);
+          rec.pairs.set(pair, installSeq);
           advanced = true;
         }
       }
@@ -930,19 +955,23 @@ export class MediaErrorLedger {
   }
 
   /**
-   * Whether this exact pair is still counted as an uncovered missing key: no
-   * install has pushed it, and none has advanced past it by filling a slot
-   * this side did not already hold.
+   * Whether this side has pushed this EXACT pair to the worker, and the
+   * install sequence at which it first did (`undefined` if never).
    *
-   * The join-race hold reads it to decide whether its DEFERRED verdict has
-   * been answered. An install that fills the named slot is the one local fact
-   * that separates the two readings of a missing key raised during a
-   * membership change — the frame was judged before our `setKey` reached the
-   * worker (the race), or the commit carrying that key was withheld from this
-   * device (the failure the latch exists for).
+   * This is the only fact that answers a missing key at that index, and it is
+   * deliberately narrower than `#superseded`: that rule also accepts an
+   * install which merely ADVANCED us past the index (`at <= advancedAt`),
+   * which is right for `errorSince` — where `loudHealVerdict`'s peer witness
+   * still has to clear — and WRONG anywhere it is the only test. The worker
+   * marks an index invalid after one failure (`failureTolerance: 0`) and
+   * drops every later frame at it SILENTLY; only a `setKey` for that exact
+   * index calls `resetKeyStatus` and re-validates it, and with the ring at 16
+   * slots nothing rewrites it for sixteen epochs. A sender two epochs ahead
+   * of us therefore satisfies `advancedAt` while its frames keep being
+   * dropped at an index we never filled (media-E2EE review, 2026-09-08).
    */
-  isUncovered(pair: string): boolean {
-    return this.#missing.has(pair);
+  pairFilledAtSeq(identity: string, pair: string): number | undefined {
+    return this.#installed.get(identity)?.pairs.get(pair);
   }
 
   /** The missing-key pairs still uncovered by an install (diagnostics). */

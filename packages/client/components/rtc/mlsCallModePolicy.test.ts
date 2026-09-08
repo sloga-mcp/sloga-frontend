@@ -740,6 +740,63 @@ test("🔴 with no named device EVERY remote present at the latch must be gone o
   );
 });
 
+test("a bystander latch heals once this side installed the exact index it named", () => {
+  // A missing key NAMES its participant, so the witness set is the bystander
+  // that raised it — and a bystander never leaves and never re-publishes,
+  // which is why leg 3a (2026-09-07) stayed red for the whole call. Filling
+  // that index is the one witness such a latch can produce: `setKey` calls
+  // `resetKeyStatus` for it, so a surviving failure re-emits inside the
+  // settle and `errorSinceInstall` catches it.
+  const stuck = { present: true, readdedAfterLatch: false, sidsAllNew: false };
+  assert.equal(loudHealVerdict({ ...HEAL_OK, peers: [stuck] }), "hold");
+  assert.equal(
+    loudHealVerdict({
+      ...HEAL_OK,
+      peers: [stuck],
+      originatingPairRefilled: true,
+    }),
+    "heal",
+  );
+});
+
+test("🔴 the refilled-pair witness sits BEHIND the empty-witness hold, never in front", () => {
+  // No device the failure could have come from means no witness at all, and
+  // the latch holds whatever else is true. Ordering the refill clause ahead
+  // of that check would let a latch with nothing to judge heal itself.
+  assert.equal(
+    loudHealVerdict({
+      ...HEAL_OK,
+      peers: [],
+      originatingPairRefilled: true,
+    }),
+    "hold",
+  );
+});
+
+test("🔴 the refilled-pair witness never substitutes for the other gates", () => {
+  // It answers "was the failing index re-validated", nothing else: a hard
+  // error since the install, an unsettled probe, a divergent roster and a
+  // control-plane latch all still hold with it set.
+  const holds: Partial<LoudHealInputs>[] = [
+    { origin: "control" },
+    { installSeq: 3 },
+    { errorSinceInstall: true },
+    { settleElapsed: false },
+    { rosterConsistent: false },
+  ];
+  for (const over of holds)
+    assert.equal(
+      loudHealVerdict({
+        ...HEAL_OK,
+        peers: [{ present: true, readdedAfterLatch: false, sidsAllNew: false }],
+        originatingPairRefilled: true,
+        ...over,
+      }),
+      "hold",
+      JSON.stringify(over),
+    );
+});
+
 test("🔴 every other missing witness holds", () => {
   const holds: Partial<LoudHealInputs>[] = [
     { origin: "control" },
