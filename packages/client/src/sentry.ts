@@ -25,7 +25,7 @@ if (import.meta.env.PROD && import.meta.env.VITE_SENTRY_DSN) {
       // index N for participant X" and "InvalidKey: valid key missing for
       // participant X" carry the same pair. Matched on shape, because a
       // prefix filter cannot see them.
-      if (/^(MissingKey|InvalidKey):/.test(message)) return null;
+      if (/^(MissingKey|InvalidKey|InternalError):/.test(message)) return null;
       return breadcrumb;
     },
     // tracing:

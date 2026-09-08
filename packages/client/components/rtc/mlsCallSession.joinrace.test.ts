@@ -626,6 +626,58 @@ test("🔴 a Welcome joiner's pre-Welcome missing keys do not disable its heal",
   assert.equal(world.session.callMode().kind, "e2ee");
 });
 
+test("🔴 a media latch does not subsume the CONTROL escalation, which still reaches its own deadline", async (t) => {
+  // `#latchLoud` force-cleared every pending escalation, so a media verdict
+  // destroyed the bound on correcting our OWN publication declaration: the SFU
+  // kept that publication on record as NONE — every receiver disarms its
+  // cryptor for us — with nothing left to escalate, and the documented
+  // "a control failure never heals" upgrade became unreachable from the timer
+  // that was supposed to trigger it (media-E2EE review, 2026-09-08).
+  const world = await threeParty(t, "ch-control-survives");
+  await world.commit(1);
+  await advance(t, 2_500);
+  const before = world.states.length;
+
+  // A peer's hard failure arms the media escalation...
+  const error = new Error("InvalidKey: Decryption failed: x");
+  world.session.noteEncryptionError(error);
+  await flush();
+  // ...then an unmute arms `control`, with the republish held open so it
+  // cannot correct itself.
+  await advance(t, 1_000);
+  const release = world.holdRepublish();
+  world.declarePlaintext();
+  world.session.noteLocalPublicationsChanged();
+  await flush();
+
+  // The media escalation reaches its deadline first: a MEDIA latch.
+  await advance(t, 9_500);
+  assert.deepEqual(world.loudSince(before), [{ state: "loud", error }]);
+
+  // The control escalation must still be pending, and reach its own deadline.
+  await advance(t, 2_000);
+  const control = world
+    .loudSince(before)
+    .map((s) => s.error)
+    .find((e) => e !== error && e !== undefined);
+  assert.ok(control, "the media latch swallowed the control escalation");
+
+  // ...and the upgraded latch never heals, however the peers churn. (The
+  // upgrade itself reports a clear for the SUPERSEDED media error, so the
+  // question is whether the CONTROL error is ever cleared.)
+  const sinceUpgrade = world.states.length;
+  world.sfu = [SELF_ID];
+  world.roster = [SELF];
+  await world.commit(2, [PEER, THIRD]);
+  await advance(t, JOIN_RACE_DEFER_MS * 2);
+  assert.ok(
+    !world.clearsSince(sinceUpgrade).some((c) => c.error === control),
+    "a control-upgraded latch healed",
+  );
+  assert.equal(world.session.callMode().kind, "negotiating");
+  release();
+});
+
 test("a loud latch from another cause supersedes every open hold", async (t) => {
   const world = await threeParty(t, "ch-supersede");
   await bystanderRaceAfterRejoin(world, 1);

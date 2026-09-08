@@ -1039,15 +1039,25 @@ export class MediaErrorLedger {
    * index re-validates. Non-empty means the sender may be sending into one of
    * them right now, silently dropped, with no further error to prove it.
    *
-   * Deliberately not derived from `#missing`: see `#everMissing`. Pairs heard
-   * BEFORE this device held any key of the group are exempt and nothing else
-   * is: a device joined by Welcome hears members' frames first, and native
-   * snapshots `previous` only across a commit it applied, so those pairs can
-   * never be filled and would otherwise read as a permanent failure for the
-   * life of the group (the H1 shape `#missing` exempts too). Scoping this to
-   * "before the LATCH" instead was far wider and let the heal clear over an
-   * index the sender failed at earlier in the same call and is still using
-   * (media-E2EE review, 2026-09-08).
+   * Deliberately not derived from `#missing`. Exactly one exemption: pairs
+   * heard BEFORE this device held any key of the group. A device joined by
+   * Welcome hears the members' frames first and native snapshots `previous`
+   * only across a commit it applied, so an index they were using at an epoch
+   * older than our admission can never be filled here and would otherwise read
+   * as a permanent failure for the life of the group (the H1 shape `#missing`
+   * exempts too).
+   *
+   * 🔴 The exemption is NOT sound in one case, and this is a blind spot `main`
+   * shares rather than one this branch introduces: if such a pair is an index
+   * the sender is STILL using — it advanced while we were joining and the
+   * commit that would give us that key is withheld — the exemption hides an
+   * invalid index for the life of the group. It cannot be told apart locally
+   * from the ordinary stale-index case, because the worker emits one error per
+   * index and then drops silently. Scoping it to "before the latch" instead
+   * was wider still, and giving those pairs a bounded verdict turns the
+   * ordinary Welcome into a guaranteed false red. It wants the worker `setKey`
+   * ack, or a per-index re-check that re-arms on the sender's next epoch —
+   * its own piece of work (media-E2EE reviews, 2026-09-08).
    */
   unfilledPairs(identity: string): string[] {
     const seen = this.#everMissing.get(identity);
@@ -1055,6 +1065,16 @@ export class MediaErrorLedger {
     const filled = this.#installed.get(identity)?.pairs;
     return [...seen]
       .filter(([pair, beforeFirstKey]) => !beforeFirstKey && !filled?.has(pair))
+      .map(([pair]) => pair);
+  }
+
+  /** Pre-first-key pairs the first install did not fill (diagnostics only). */
+  unansweredJoinWindowPairs(identity: string): string[] {
+    const seen = this.#everMissing.get(identity);
+    if (!seen) return [];
+    const filled = this.#installed.get(identity)?.pairs;
+    return [...seen]
+      .filter(([pair, beforeFirstKey]) => beforeFirstKey && !filled?.has(pair))
       .map(([pair]) => pair);
   }
 

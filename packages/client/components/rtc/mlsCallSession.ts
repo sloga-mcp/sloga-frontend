@@ -1281,6 +1281,29 @@ export class MlsCallSession {
    * membership change, by key pair (`identity@index`) — see `#holdJoinRace`.
    * Each entry owns a private deadline that latches loud.
    */
+  /**
+   * Decode missing keys raised while this device held NO key of the group, by
+   * key pair. They are NOT a verdict — every index is missing before the first
+   * install, by construction — but they are not nothing either, and the
+   * `joiner` escalation must not swallow them: it is cancelled by
+   * `#onLocalKeyInstalled`, which is evidence about OUR send key and says
+   * nothing about a REMOTE peer's ring slot. That is the same un-evidenced
+   * cancel this branch removed from `media`, surviving under the one token
+   * nobody attacked (media-E2EE review, 2026-09-08).
+   *
+   * 🔴 They are also NOT covered, and this branch deliberately stops trying to
+   * cover them. Giving them a bounded verdict at the first install turns the
+   * ordinary Welcome — a sender that has since moved on from a stale index
+   * nothing will ever re-fill — into a guaranteed false red; exempting them
+   * hides a live invalid index when the sender advanced while we were joining
+   * and its commit is withheld. The two are indistinguishable locally, because
+   * the worker emits one error per index and then drops silently. `main` has
+   * the same blind spot. `#reviewJoinerWindowMisses` logs the unanswered pairs
+   * so a live leg can at least see them; closing it wants the worker `setKey`
+   * ack or a per-index re-check on the sender's next epoch, which is its own
+   * piece of work (media-E2EE reviews, 2026-09-08).
+   */
+  #joinerWindowMisses = new Map<string, { identity: string; error: unknown }>();
   #joinRaceHolds = new Map<
     string,
     {
@@ -1788,6 +1811,7 @@ export class MlsCallSession {
     // Every hold timer is in `#timers`, already cleared above; drop the
     // bookkeeping so a disposed session surfaces no hold.
     this.#joinRaceHolds.clear();
+    this.#joinerWindowMisses.clear();
     this.#membershipObserved.clear();
     this.#refreshMediaHold();
 
@@ -3436,7 +3460,6 @@ export class MlsCallSession {
         return;
       }
       this.#groupId = outcome.group_id;
-      if (!this.#resetDiscardedVerdict) this.#reestablishes = 0;
       this.#joinedGeneration = this.#establishGeneration;
       this.#toActive();
       if (verdict.resolveWait) this.#welcomeWait?.resolve(true);
@@ -3603,6 +3626,18 @@ export class MlsCallSession {
     // The one local fact a join-race hold waits for: this install either
     // filled the slot a held missing key named, or advanced past it.
     this.#resolveJoinRaceHolds();
+    // A replacement group that reaches a working epoch with nothing
+    // outstanding retires the discarded-verdict flag, and with it the
+    // re-establish budget freeze.
+    if (
+      this.#resetDiscardedVerdict &&
+      !this.#loudLatched &&
+      this.#joinRaceHolds.size === 0 &&
+      !this.#resecure.has("media")
+    ) {
+      this.#resetDiscardedVerdict = false;
+      this.#reestablishes = 0;
+    }
     // A new epoch's keys under a MEDIA latch: the group re-keyed past the
     // failure (the latch recorded the counter BEFORE this increment, so the
     // "advanced" witness holds by construction here). Give the media plane
@@ -3629,8 +3664,10 @@ export class MlsCallSession {
     // no longer has to (it fires on ANY participant's encrypted status,
     // including a remote's, which does NOT witness our local key).
     // ONLY the joiner escalation: our own first key is no evidence at all
-    // about a peer's wrong key (media-E2EE review, 2026-09-08).
+    // about a peer's wrong key (media-E2EE review, 2026-09-08)...
     this.#clearResecureTimer("joiner");
+    // ...and the errors it covered are re-judged now that we hold keys.
+    this.#reviewJoinerWindowMisses();
     if (!this.#e2eeEnabled) void this.reconcileNow();
   }
 
@@ -3724,6 +3761,17 @@ export class MlsCallSession {
     // it (6.7b, and run 2 of the 2026-09-07 sitting: four missing keys, no
     // latch, correct).
     if (!this.#hasLocalKey) {
+      // Kept for review at the first install rather than discarded with the
+      // escalation — see `#joinerWindowMisses`.
+      if (
+        cls.kind === "missing_key" &&
+        !this.#joinerWindowMisses.has(cls.pair)
+      ) {
+        this.#joinerWindowMisses.set(cls.pair, {
+          identity: cls.identity,
+          error,
+        });
+      }
       media.onEncryptionState?.("resecuring", error);
       this.#armResecureEscalation(error, "media", "joiner");
       this.#refreshMediaHold();
@@ -4090,6 +4138,36 @@ export class MlsCallSession {
     this.#refreshMediaHold();
   }
 
+  /**
+   * Re-judge every missing key heard before this device held any key of the
+   * group, now that the first install has landed.
+   *
+   * The install carries the epoch we were admitted into (and, past a Welcome,
+   * its `previous`), so in the ordinary case it fills exactly the indexes the
+   * members were sending at while we joined and every one of these is
+   * answered here. A pair it did NOT fill is an index this side still cannot
+   * decrypt: the sender moved on while we were joining — in which case our
+   * copy of that commit lands within the bound and answers it — or the commit
+   * was withheld, in which case the hold reaches its deadline and goes loud.
+   * Either way it gets a verdict instead of being discarded with the joiner
+   * escalation.
+   */
+  #reviewJoinerWindowMisses(): void {
+    if (this.#joinerWindowMisses.size === 0) return;
+    const pending = [...this.#joinerWindowMisses];
+    this.#joinerWindowMisses.clear();
+    const unanswered = pending.filter(
+      ([pair, { identity }]) =>
+        this.#mediaErrors.pairFilledAtSeq(identity, pair) === undefined,
+    );
+    if (unanswered.length > 0) {
+      console.warn(
+        "[mls] join-window misses the first install did not answer",
+        unanswered.map(([pair]) => pair),
+      );
+    }
+  }
+
   /** Stop a hold's deadline without deciding anything. */
   #cancelHoldTimer(hold: {
     timer: ReturnType<typeof setTimeout> | null;
@@ -4184,6 +4262,14 @@ export class MlsCallSession {
       if (origin === "control" && this.#loudOrigin === "media") {
         this.#loudOrigin = "control";
         this.#loudOriginatingPair = null;
+        // The banner and the UI's clear protocol both key on the latched
+        // object, so the control error has to become it.
+        const previous = this.#loudError;
+        this.#loudError = error;
+        this.#media?.onEncryptionState?.("loud", error);
+        if (previous !== undefined) {
+          this.#media?.onEncryptionState?.("clear", previous);
+        }
         this.#clearHealProbe();
         console.warn(
           "[mls] loud latch upgraded to control: a control-plane verdict " +
@@ -4242,9 +4328,16 @@ export class MlsCallSession {
     // `chipState` computes a green — no paint happens between them, but any
     // effect or memo consumer (a live-leg sampler) can read it.
     this.#media?.onEncryptionState?.("loud", error);
-    // The strictest reading has now been taken: nothing is left to defer.
+    // The strictest reading has now been taken about the MEDIA plane, so
+    // nothing there is left to defer. The `control` escalation is NOT
+    // subsumed: it bounds the correction of our OWN declaration, which this
+    // verdict says nothing about, and force-clearing it left a publication the
+    // SFU still records as NONE with no bound on fixing it — and made the
+    // evidence-based upgrade below unreachable from the timer that was
+    // supposed to trigger it (media-E2EE review, 2026-09-08).
     this.#clearJoinRaceHolds();
-    this.#clearResecureTimer();
+    this.#clearResecureTimer("joiner");
+    this.#clearResecureTimer("media");
     // A loud verdict after the mode reached `e2ee` used to leave the chip red
     // with NO banner and no escape: `isTerminalLoud` and `confirmPlaintext`
     // both key on `negotiating`. Fold it into that shape (`loudModeFallback`)
@@ -4510,6 +4603,7 @@ export class MlsCallSession {
     }
     this.#clearResecureTimer();
     this.#clearJoinRaceHolds();
+    this.#joinerWindowMisses.clear();
     this.#membershipObserved.clear();
     this.#rotationWindow = false;
     // A re-establish is the terminus a loud latch waits for: the group is
@@ -5821,7 +5915,13 @@ export class MlsCallSession {
   }
 
   #toActive(): void {
-    this.#reestablishes = 0;
+    // Refunded only by a re-establish that discarded nothing. `#rejoinFresh`
+    // is DS-drivable, so a blanket refund here handed the server an unbounded
+    // "cancel any media verdict" primitive; the flag is cleared once the new
+    // group has actually applied an epoch with a clean media plane
+    // (`#onEpochKeysApplied`), which a DS cannot fake without delivering keys
+    // that work.
+    if (!this.#resetDiscardedVerdict) this.#reestablishes = 0;
     this.#setState("active");
     // Opportunistically PROVE enrolment rather than assume it: reaching
     // "active" is exactly the belief that was wrong in the silent failure, so
