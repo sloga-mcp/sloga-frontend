@@ -50,20 +50,31 @@ run() { # run <label> <tail-lines> <cmd...>
 shopt -s nullglob
 SPECS=("$@")
 if [ ${#SPECS[@]} -eq 0 ]; then
-  SPECS=(components/rtc/mlsCall*.test.ts)
+  # Wider than the files this branch edits: a change to the session's error
+  # classification reaches the admit, rejoin, roster and publication-encryption
+  # policies too, and two reviewed defects ran through exactly those.
+  SPECS=(components/rtc/mls*.test.ts components/rtc/rosterReconcile.test.ts
+    components/rtc/localPublicationEncryption.test.ts
+    components/rtc/plaintextCryptorPolicy.test.ts)
 fi
 if [ ${#SPECS[@]} -eq 0 ]; then
   echo ">>> GATE FAIL: no spec files matched — refusing to report a pass"
   exit 98
 fi
 
+# The specs are RUN wide, but prettier/eslint are scoped to what this work
+# owns. Formatting a tracked file this branch never touched sweeps up code it
+# has no business changing, and several existing specs predate the current
+# prettier config.
 FILES=(components/rtc/mlsCallSession.ts components/rtc/mlsCallModePolicy.ts
-  components/rtc/state.tsx components/rtc/mlsCallSession.harness.ts)
+  components/rtc/state.tsx components/rtc/mlsCallSession.harness.ts
+  components/rtc/mlsCallSession.heal.test.ts
+  components/rtc/mlsCallSession.joinrace.test.ts
+  components/rtc/mlsCallModePolicy.test.ts src/sentry.ts)
 ran=0
 for f in "${SPECS[@]}"; do
   [ -e "$f" ] || continue
   run "node --test $f" 12 node --test --conditions=browser "$f"
-  FILES+=("$f")
   ran=$((ran + 1))
 done
 if [ $ran -eq 0 ]; then

@@ -614,6 +614,26 @@ export function modeUnderLoudLatch(
 export type LoudLatchOrigin = "media" | "control";
 
 /**
+ * The CANCEL TOKEN on a pending re-securing escalation: only a clearer that
+ * presents the same token may cancel it.
+ *
+ *  - `joiner` — raised before this device holds any key of the group, where
+ *    every index is missing by construction. Its genuine recovery is our own
+ *    first key.
+ *  - `media` — a decrypt failure after that. The key it names stays wrong
+ *    until the next epoch, so nothing cancels it: it escalates, and
+ *    `loudHealVerdict` — which has the witnesses — decides afterwards.
+ *  - `control` — the local-declaration seam, cleared by that declaration
+ *    being corrected.
+ *
+ * One timer serves the whole media plane and five sites used to clear it
+ * unconditionally; three successive reviews each found a silent green at a
+ * DIFFERENT one of them, because the structure could not say who was entitled
+ * to cancel (media-E2EE reviews, 2026-09-08).
+ */
+export type ResecureReason = "joiner" | "media" | "control";
+
+/**
  * What the session knows NOW about one device whose frames the latch could
  * have come from: the device the error named when the worker's message
  * carried one, else every remote device that was in the call at latch time
@@ -898,7 +918,7 @@ export class MediaErrorLedger {
    * marked invalid, which is precisely the silent drop the heal's peer
    * witness exists to catch (media-E2EE review, 2026-09-08).
    */
-  #everMissing = new Map<string, Set<string>>();
+  #everMissing = new Map<string, Map<string, number>>();
 
   /** Whether `pair` from `identity` is answered by an install since. */
   #superseded(identity: string, pair: string, at: number): boolean {
@@ -916,12 +936,13 @@ export class MediaErrorLedger {
   }
 
   /** Record a media-plane error observed at `now` (monotonic clock). */
-  noteError(error: unknown, now: number): MediaErrorClass {
+  noteError(error: unknown, now: number, installSeq = 0): MediaErrorClass {
     const cls = classifyMediaError(error);
     if (cls.kind === "hard") this.#hardErrorAt = now;
     else {
-      const seen = this.#everMissing.get(cls.identity) ?? new Set<string>();
-      seen.add(cls.pair);
+      const seen =
+        this.#everMissing.get(cls.identity) ?? new Map<string, number>();
+      if (!seen.has(cls.pair)) seen.set(cls.pair, installSeq);
       this.#everMissing.set(cls.identity, seen);
       if (!this.#superseded(cls.identity, cls.pair, now)) {
         this.#missing.set(cls.pair, { identity: cls.identity, at: now });
@@ -1004,18 +1025,26 @@ export class MediaErrorLedger {
   }
 
   /**
-   * Pairs this sender has failed at that this side has STILL not filled —
+   * Pairs this sender has failed at SINCE `sinceSeq` that this side has STILL
+   * not filled —
    * indexes the worker marked invalid and that only a `setKey` for that exact
    * index re-validates. Non-empty means the sender may be sending into one of
    * them right now, silently dropped, with no further error to prove it.
    *
-   * Deliberately not derived from `#missing`: see `#everMissing`.
+   * Deliberately not derived from `#missing`: see `#everMissing`. `sinceSeq`
+   * scopes it to failures observed at or after some install: a device joined
+   * by Welcome hears members' frames before it holds any key, and native
+   * snapshots `previous` only across a commit it applied, so those pre-Welcome
+   * pairs can NEVER be filled — unscoped they would read as a permanent
+   * failure for the life of the group (the H1 shape `#missing` exempts).
    */
-  unfilledPairs(identity: string): string[] {
+  unfilledPairs(identity: string, sinceSeq = -Infinity): string[] {
     const seen = this.#everMissing.get(identity);
     if (!seen) return [];
     const filled = this.#installed.get(identity)?.pairs;
-    return [...seen].filter((pair) => !filled?.has(pair));
+    return [...seen]
+      .filter(([pair, seq]) => seq >= sinceSeq && !filled?.has(pair))
+      .map(([pair]) => pair);
   }
 
   /** The missing-key pairs still uncovered by an install (diagnostics). */

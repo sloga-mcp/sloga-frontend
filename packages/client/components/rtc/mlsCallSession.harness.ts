@@ -410,9 +410,15 @@ export async function advance(t: TestContext, ms: number): Promise<void> {
  */
 function fakePerformanceNow(t: TestContext): void {
   const original = performance.now;
-  let clock = 0;
+  // Tracks the FAKE timer clock (which mocks `Date`), plus a strictly
+  // increasing sub-millisecond tiebreaker so two reads in one tick still
+  // order — the ledger's install reference depends on that. Returning a bare
+  // counter instead would make every elapsed-time measurement read as zero,
+  // and the hold's banked budget is one.
+  const base = Date.now();
+  let tick = 0;
   Object.defineProperty(performance, "now", {
-    value: () => ++clock,
+    value: () => Date.now() - base + ++tick * 1e-6,
     configurable: true,
     writable: true,
   });

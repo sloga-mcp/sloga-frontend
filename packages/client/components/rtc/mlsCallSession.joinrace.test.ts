@@ -24,6 +24,7 @@ import {
   type World,
   advance,
   bringUpCreator,
+  bringUpJoiner,
   flush,
   JOIN_RACE_DEFER_MS,
   LEAVE_GRACE_MS,
@@ -508,37 +509,120 @@ test("🔴 the loud verdict is REPORTED before the amber is dropped", async (t) 
   );
 });
 
-test("🔴 past the key-ring wrap the pair witnesses are refused, and a hold ends loud", async (t) => {
-  // `key_index = epoch mod 16`, so from epoch 16 on every index has been
-  // filled before and `pairFilledAtSeq` answers "yes" for a slot whose current
-  // occupant is a generation old. Both witnesses that could turn this green
-  // stop discriminating there, so both are refused and the verdict falls back
-  // to the honest red. (The identity-carrying MissingKey itself also stops
-  // appearing once a sender's ring is full — it becomes an InvalidKey, which
-  // is `hard` and latches at once — but a sender whose ring is not yet full
-  // can still raise one, which is the case this pins.)
-  const world = await threeParty(t, "ch-wrap");
-  for (let e = 1; e <= 16; e++) await world.commit(e);
+test("🔴 a device Welcomed into a call PAST epoch 16 still resolves its hold", async (t) => {
+  // An earlier cut gated the pair witnesses on `#installEpoch >=
+  // WORKER_KEYRING_SIZE` — the GROUP's epoch, not this worker's ring
+  // occupancy. A device Welcomed at epoch 20 has filled ONE slot and nothing
+  // of its is stale, yet the guard disabled the fix from its first install and
+  // turned every join race into a guaranteed loud latch, on exactly the
+  // receiver role the live legs use. The worker raises a decode missing key
+  // only for an EMPTY slot and no path ever empties one, so a pair this side
+  // has since filled cannot be a stale generation's: the epoch never enters.
+  const world = newWorld(t, "joiner", "ch-late-join", (w) => w.withThird());
+  await bringUpJoiner(t, world, 20);
+  await world.session.reconcileNow();
   await flush();
+  await advance(t, 5_000);
   const before = world.states.length;
-  // Index 1 = epoch 17's slot, and also epoch 1's, which we filled long ago.
-  const error = await bystanderRaceAfterRejoin(world, 17);
-  assert.deepEqual(world.holds, [true], "no hold past the wrap");
-  assert.deepEqual(world.loudSince(before), []);
+  await bystanderRaceAfterRejoin(world, 21); // index 21 mod 16 = 5
+  assert.deepEqual(world.holds, [true]);
 
-  // Epoch 17 lands and fills index 1 — which `pairFilledAtSeq` would read as
-  // an answer, though it says nothing about the generation that failed.
   await advance(t, 1_000);
-  await world.commit(17);
+  await world.commit(21); // fills index 5 for every sender
   await flush();
-  assert.deepEqual(world.loudSince(before), [], "it latched before the bound");
+  assert.deepEqual(world.holds, [true, false], "the hold never resolved");
+  await advance(t, JOIN_RACE_DEFER_MS * 2);
+  assert.deepEqual(world.loudSince(before), []);
+  assert.equal(world.session.callMode().kind, "e2ee");
+});
+
+test("🔴 an ex-member that is STILL PUBLISHING does not resolve its hold", async (t) => {
+  // A roster departure resolves a hold because a device with no leaf gets no
+  // future key, so the index it failed at can never be filled. That is only
+  // true once its frames are gone too: a device whose leaf was removed while
+  // it stays connected is still sending into an index the worker marked
+  // invalid, and resolving there was a green chip over exactly that — and
+  // DS-schedulable, by relaying any Remove for the bystander (media-E2EE
+  // review, 2026-09-08).
+  const world = await threeParty(t, "ch-exmember-live");
+  const before = world.states.length;
+  const error = await bystanderRaceAfterRejoin(world, 1);
+  assert.deepEqual(world.holds, [true]);
+
+  // THIRD loses its leaf but keeps its SFU connection and its tracks.
+  world.roster = world.roster.filter((m) => m !== THIRD);
+  await world.session.reconcileNow();
+  await flush();
+  assert.deepEqual(world.holds, [true], "an SFU-present ex-member resolved it");
+
   await advance(t, JOIN_RACE_DEFER_MS);
   assert.deepEqual(
     world.loudSince(before),
     [{ state: "loud", error }],
-    "a stale-generation slot answered the hold past the wrap",
+    "the hold was resolved instead of reaching its verdict",
   );
-  assert.equal(world.session.callMode().kind, "negotiating");
+});
+
+test("🔴 a media escalation is not cancelled by a later LOCAL key install", async (t) => {
+  // `#clearResecureTimer` used to cancel whatever timer was pending, whoever
+  // asked. Our own key install is no evidence at all about a peer's wrong key,
+  // and neither is a correction to our own publication declaration — the two
+  // other callers. The escalation now carries a cancel token fixed at the arm,
+  // and only a clearer presenting the same token may cancel it.
+  const world = await threeParty(t, "ch-token");
+  await world.commit(1); // an Add rotation: grace + settle = a 4 s window
+  await advance(t, 2_500); // past the grace, so its own install is done
+  const before = world.states.length;
+  const error = new Error("InvalidKey: Decryption failed: x");
+  world.session.noteEncryptionError(error);
+  await flush();
+  assert.deepEqual(world.holds, [true]);
+
+  // A whole new epoch installs — `#onLocalKeyInstalled` runs with it.
+  await advance(t, 1_000);
+  await world.commit(2);
+  await flush();
+  assert.deepEqual(world.loudSince(before), [], "it latched early");
+  await advance(t, 12_000);
+  assert.deepEqual(
+    world.loudSince(before),
+    [{ state: "loud", error }],
+    "a local key install cancelled a peer's media escalation",
+  );
+});
+
+test("🔴 a Welcome joiner's pre-Welcome missing keys do not disable its heal", async (t) => {
+  // A device joined by Welcome hears the members' frames before it holds any
+  // key, and native snapshots `previous` only across a commit it applied, so
+  // those pairs can NEVER be filled. Counting them as "this sender still has
+  // an unfilled index" pinned the bystander heal off for the life of the
+  // group — on exactly the receiver role leg 3a used, turning the fix into a
+  // permanent red there (media-E2EE review, 2026-09-08). `#missing` carries
+  // the same H1 exemption.
+  const world = newWorld(t, "joiner", "ch-joiner-heal", (w) => w.withThird());
+  await bringUpJoiner(t, world, 5, () => {
+    // Heard at epoch 4, before our first key: unfillable forever.
+    world.session.noteEncryptionError(world.missingKey(THIRD_ID, 4));
+  });
+  await world.session.reconcileNow();
+  await flush();
+  await advance(t, 5_000);
+
+  const before = world.states.length;
+  const error = world.missingKey(THIRD_ID, 6);
+  world.session.noteEncryptionError(error); // no window: latches at once
+  await flush();
+  assert.deepEqual(world.loudSince(before), [{ state: "loud", error }]);
+
+  await advance(t, 1_000);
+  await world.commit(6); // fills index 6 — the index the latch named
+  await advance(t, JOIN_RACE_DEFER_MS * 2);
+  assert.deepEqual(
+    world.clearsSince(before),
+    [{ state: "clear", error }],
+    "an unfillable pre-Welcome pair held the heal off",
+  );
+  assert.equal(world.session.callMode().kind, "e2ee");
 });
 
 test("a loud latch from another cause supersedes every open hold", async (t) => {

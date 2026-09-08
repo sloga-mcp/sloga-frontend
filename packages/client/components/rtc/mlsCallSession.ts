@@ -102,9 +102,9 @@ import {
   type CallMode,
   type CallModeEvent,
   type LoudLatchOrigin,
+  type ResecureReason,
   type RotationWindowOpener,
   MediaErrorLedger,
-  WORKER_KEYRING_SIZE,
   callModeTransition,
   classifyEncryptionError,
   classifyMediaError,
@@ -1190,6 +1190,8 @@ export class MlsCallSession {
   #rotationWindowTimer: ReturnType<typeof setTimeout> | null = null;
   /** RE-SECURING → loud escalation timer (armed on the first in-window error). */
   #resecureTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The pending escalation's CANCEL TOKEN — see `#armResecureEscalation`. */
+  #resecureReason: ResecureReason | null = null;
   /** Origin the pending escalation would latch with (`control` wins). */
   #resecureOrigin: LoudLatchOrigin = "media";
   /** Loud NOT-ENCRYPTED latched (terminal for the media chip until re-establish). */
@@ -3594,7 +3596,9 @@ export class MlsCallSession {
     // false-latch loud at RESECURE_ESCALATE_MS — and so noteEncryptionRecovered
     // no longer has to (it fires on ANY participant's encrypted status,
     // including a remote's, which does NOT witness our local key).
-    this.#clearResecureTimer();
+    // ONLY the joiner escalation: our own first key is no evidence at all
+    // about a peer's wrong key (media-E2EE review, 2026-09-08).
+    this.#clearResecureTimer("joiner");
     if (!this.#e2eeEnabled) void this.reconcileNow();
   }
 
@@ -3672,7 +3676,11 @@ export class MlsCallSession {
     // Ledgered BEFORE the latched early-return: the heal probe needs to see
     // errors that arrive under the latch (a failure that survives a re-key
     // re-emits once per freshly installed key index).
-    const cls = this.#mediaErrors.noteError(error, performance.now());
+    const cls = this.#mediaErrors.noteError(
+      error,
+      performance.now(),
+      this.#installSeq,
+    );
     const media = this.#media;
     if (!media || this.#terminal() || this.#loudLatched) return;
 
@@ -3685,7 +3693,7 @@ export class MlsCallSession {
     // latch, correct).
     if (!this.#hasLocalKey) {
       media.onEncryptionState?.("resecuring", error);
-      this.#armResecureEscalation(error, "media");
+      this.#armResecureEscalation(error, "media", "joiner");
       this.#refreshMediaHold();
       return;
     }
@@ -3715,7 +3723,7 @@ export class MlsCallSession {
     }
     if (classifyEncryptionError(this.#rotationWindow, false) === "resecuring") {
       media.onEncryptionState?.("resecuring", error);
-      this.#armResecureEscalation(error, "media");
+      this.#armResecureEscalation(error, "media", "media");
       this.#refreshMediaHold();
     } else {
       this.#latchLoud(error, "media");
@@ -3724,20 +3732,46 @@ export class MlsCallSession {
 
   /**
    * Escalate to loud if a RE-SECURING does not resolve within the bound.
-   * Armed once; refreshed only by a genuine recovery
-   * (`noteEncryptionRecovered`, the first local key, a corrected local
-   * declaration).
+   *
+   * `reason` is the escalation's CANCEL TOKEN, fixed at the arm and never
+   * mutated while the timer is pending: only a clearer that presents the same
+   * token may cancel it (`#clearResecureTimer`). There is one timer for the
+   * whole media plane and five places that used to clear it unconditionally,
+   * and three successive reviews each found the silent-green posture at a
+   * DIFFERENT one of them — the structure could not express who was entitled
+   * to cancel, so hardening one site only moved the defect. The tokens are:
+   *
+   *  - `joiner` — errors raised before this device holds ANY key of the group.
+   *    Its genuine recovery is our own first key, so only `#onLocalKeyInstalled`
+   *    clears it.
+   *  - `media` — a decrypt failure after that. NOTHING clears it: the key it
+   *    names stays wrong until the next epoch, so the honest ends are the
+   *    escalation itself and then `loudHealVerdict`, which has the witnesses
+   *    to judge a re-key. An SFU-declared status is not one of them, and
+   *    neither is a correction to OUR OWN publication declaration.
+   *  - `control` — the local-declaration seam. Cleared by the declaration
+   *    being corrected, and by `noteEncryptionRecovered`, as before.
+   *
+   * `#resecureOrigin` is separate and still upgrades to `control` on a control
+   * arm (a control latch never heals). That upgrade is safe now precisely
+   * because it no longer decides who may cancel: it feeds `#latchLoud` only.
    */
-  #armResecureEscalation(error: unknown, origin: LoudLatchOrigin): void {
+  #armResecureEscalation(
+    error: unknown,
+    origin: LoudLatchOrigin,
+    reason: ResecureReason,
+  ): void {
     // A control arm landing while a media timer is pending UPGRADES the
     // pending latch's origin (a control latch never heals); the reverse
-    // never downgrades.
+    // never downgrades. It does NOT touch the cancel token.
     if (origin === "control") this.#resecureOrigin = "control";
     if (this.#resecureTimer) return;
     this.#resecureOrigin = origin;
+    this.#resecureReason = reason;
     const timer = setTimeout(() => {
       this.#resecureTimer = null;
       this.#timers.delete(timer);
+      this.#resecureReason = null;
       if (this.#terminal()) return;
       this.#latchLoud(error, this.#resecureOrigin);
     }, RESECURE_ESCALATE_MS);
@@ -3776,10 +3810,9 @@ export class MlsCallSession {
     // the local install that replaces it (`#onLocalKeyInstalled` →
     // `#clearResecureTimer`) and the escalation itself (media-E2EE review,
     // 2026-09-08). Control-plane escalations keep the old behavior.
-    if (this.#resecureTimer !== null && this.#resecureOrigin === "media")
-      return;
-    this.#clearResecureTimer();
-    this.#media?.onEncryptionState?.("clear");
+    if (this.#clearResecureTimer("control")) {
+      this.#media?.onEncryptionState?.("clear");
+    }
   }
 
   /**
@@ -3885,14 +3918,16 @@ export class MlsCallSession {
     // Fail closed: the amber is the whole reason a deferral is not the
     // reverted attempt's silent green, so a binding that cannot render it
     // gets the strict verdict instead of an invisible one.
-    if (!this.#media?.onMediaHold) return false;
+    if (!this.#media?.onMediaHold || !this.#media.onEncryptionState) {
+      return false;
+    }
     if (this.#joinRaceHolds.has(pair)) return true; // the first deadline stands
     this.#joinRaceHolds.set(pair, {
       identity,
       error,
       timer: this.#armHoldDeadline(pair, error, JOIN_RACE_DEFER_MS),
       remainingMs: JOIN_RACE_DEFER_MS,
-      armedAt: Date.now(),
+      armedAt: performance.now(),
     });
     this.#media.onEncryptionState?.("resecuring", error);
     console.info(`[mls] join-race hold armed for ${pair}`);
@@ -3927,8 +3962,16 @@ export class MlsCallSession {
       const readable = !!media && media.sfuConnected?.() !== false;
       const present = new Set(readable ? media.sfuParticipants() : []);
       for (const [pair, hold] of [...this.#joinRaceHolds]) {
+        // The worker raises a decode missing key ONLY for an EMPTY ring slot,
+        // and no path ever empties one for the life of a worker, so a pair
+        // this side has since filled cannot be a stale generation's — the
+        // question the epoch never has to enter. (An earlier cut gated this on
+        // `#installEpoch >= WORKER_KEYRING_SIZE`, which is the GROUP's epoch
+        // rather than this worker's ring occupancy: a device Welcomed into a
+        // call at epoch 20 has filled ONE slot, and the guard disabled the fix
+        // from its first install — a guaranteed loud latch on the exact role
+        // the live legs use. Removed, media-E2EE review 2026-09-08.)
         if (
-          !this.#keyRingWrapped() &&
           this.#mediaErrors.pairFilledAtSeq(hold.identity, pair) !== undefined
         ) {
           this.#cancelHoldTimer(hold);
@@ -3947,7 +3990,17 @@ export class MlsCallSession {
         // without it a hold whose sender is Removed pins the chip amber for
         // the rest of an otherwise healthy call (media-E2EE review,
         // 2026-09-08).
+        // ...and only for a sender that is ALSO gone from a readable SFU.
+        // A device whose leaf was removed while it stays connected and keeps
+        // publishing is still sending into the index the worker marked
+        // invalid; resolving there was a green chip over exactly that, and it
+        // is DS-schedulable (relay any Remove for the bystander, or wait out
+        // a ghost-divergence). That device belongs to the non-enrolled
+        // `mixed` path, which is the honest red (media-E2EE review,
+        // 2026-09-08).
         if (
+          readable &&
+          !present.has(hold.identity) &&
           this.#lastRosterIdentities.size > 0 &&
           !this.#lastRosterIdentities.has(stripLeg(hold.identity))
         ) {
@@ -3969,9 +4022,13 @@ export class MlsCallSession {
         const gone = readable && !present.has(hold.identity);
         if (gone) {
           if (hold.timer) {
+            // Monotonic, like every other media-plane stamp: a wall clock
+            // stepping FORWARD (a resume, an NTP correction) would clamp the
+            // budget to zero and latch loud on a healthy sender, and one
+            // stepping BACK would grow it past its original bound.
             hold.remainingMs = Math.max(
               0,
-              hold.remainingMs - (Date.now() - hold.armedAt),
+              hold.remainingMs - (performance.now() - hold.armedAt),
             );
             this.#cancelHoldTimer(hold);
             hold.timer = null;
@@ -3985,7 +4042,7 @@ export class MlsCallSession {
           // Only on POSITIVE evidence that the sender is back: mid-reconnect
           // the SFU set is not readable at all, and re-arming there would
           // eventually latch loud naming a sender that genuinely left.
-          hold.armedAt = Date.now();
+          hold.armedAt = performance.now();
           hold.timer = this.#armHoldDeadline(
             pair,
             hold.error,
@@ -4071,28 +4128,6 @@ export class MlsCallSession {
    * so a loser sits inside a 12 s `arbitration` window across exactly the
    * join race (media-E2EE review, 2026-09-08).
    */
-  /**
-   * Whether this group has run past the worker's key ring, after which a pair
-   * id no longer identifies one epoch's slot.
-   *
-   * `key_index = epoch mod 16`, so from epoch 16 on every index has been
-   * filled before and `pairFilledAtSeq` answers "yes" for a slot whose CURRENT
-   * occupant is a generation old. Both witnesses that turn a deferred verdict
-   * or a bystander latch green read that as proof and stop discriminating, so
-   * past the wrap they are refused outright: a hold can then only resolve by
-   * its sender leaving the group, and a latch only by the peer witness. That
-   * is the pre-fix behavior — an honest, possibly-early red — and it is the
-   * fail-closed direction.
-   *
-   * The real fix is a pair id qualified by ring generation, which belongs with
-   * the `getKeys()` replay HIGH at this same boundary (§8): that one already
-   * has to decide what LiveKit may re-push once the ring comes round, and the
-   * two must agree. Recorded rather than half-built here.
-   */
-  #keyRingWrapped(): boolean {
-    return this.#installEpoch >= WORKER_KEYRING_SIZE;
-  }
-
   #refreshMediaHold(): void {
     const active = this.#joinRaceHolds.size > 0 || this.#resecureTimer !== null;
     if (this.#mediaHoldSurfaced === active) return;
@@ -4174,13 +4209,22 @@ export class MlsCallSession {
     if (fallback) this.#setModeChained(fallback);
   }
 
-  #clearResecureTimer(): void {
-    if (this.#resecureTimer) {
-      clearTimeout(this.#resecureTimer);
-      this.#timers.delete(this.#resecureTimer);
-      this.#resecureTimer = null;
-    }
+  /**
+   * Cancel a pending escalation, but only one this caller is evidence FOR.
+   * `reason` omitted is a force-clear, reserved for the two places that end
+   * the escalation's whole world: a loud latch (the strictest reading is
+   * already taken) and a group re-establish (the keys it was waiting on no
+   * longer exist). Returns whether anything was cancelled.
+   */
+  #clearResecureTimer(reason?: ResecureReason): boolean {
+    if (!this.#resecureTimer) return false;
+    if (reason !== undefined && this.#resecureReason !== reason) return false;
+    clearTimeout(this.#resecureTimer);
+    this.#timers.delete(this.#resecureTimer);
+    this.#resecureTimer = null;
+    this.#resecureReason = null;
     this.#refreshMediaHold();
+    return true;
   }
 
   /** Forget a loud latch and everything the heal probe recorded for it. */
@@ -4323,7 +4367,6 @@ export class MlsCallSession {
       // true at latch time (the reverted attempt's mistake — the worker
       // raises the error precisely because our `setKey` had not landed).
       originatingPairRefilled:
-        !this.#keyRingWrapped() &&
         this.#loudOriginatingPair !== null &&
         (this.#mediaErrors.pairFilledAtSeq(
           this.#loudOriginatingPair.identity,
@@ -4334,8 +4377,17 @@ export class MlsCallSession {
         // on to an index we never got: `errorSinceInstall` cannot see it (the
         // ledger's advance rule forgives the later pair) and the worker emits
         // nothing more once it has silenced an index.
-        this.#mediaErrors.unfilledPairs(this.#loudOriginatingPair.identity)
-          .length === 0,
+        // Scoped to failures observed at or after the latch. A device joined
+        // by Welcome hears the members' frames before it holds any key, and
+        // native snapshots `previous` only across a commit it applied, so
+        // those pre-Welcome pairs can NEVER be filled — unscoped, they pinned
+        // the heal off for the life of the group on exactly the receiver role
+        // leg 3a used (media-E2EE review, 2026-09-08). `#missing` carries the
+        // same H1 exemption.
+        this.#mediaErrors.unfilledPairs(
+          this.#loudOriginatingPair.identity,
+          this.#loudLatchedInstallSeq,
+        ).length === 0,
     };
     const verdict = loudHealVerdict(inputs);
     if (verdict !== "heal") {
@@ -5192,7 +5244,8 @@ export class MlsCallSession {
     if (plain.length === 0) {
       if (this.#localDeclarationPlain) {
         this.#localDeclarationPlain = false;
-        this.#clearResecureTimer();
+        // The declaration seam is evidence about OUR publications only.
+        this.#clearResecureTimer("control");
         media.onEncryptionState?.("clear");
         console.info("[mls] local publications re-declared encrypted");
       }
@@ -5212,7 +5265,7 @@ export class MlsCallSession {
     media.onEncryptionState?.("resecuring", error);
     // A CONTROL latch if it escalates: what the SFU records for our own
     // publications is nothing a later epoch could disprove.
-    this.#armResecureEscalation(error, "control");
+    this.#armResecureEscalation(error, "control", "control");
     const ownsWindow = via === "publish";
     try {
       if (ownsWindow) await media.pausePublishing?.("enable-window");
@@ -5238,7 +5291,7 @@ export class MlsCallSession {
         return false;
       }
       this.#localDeclarationPlain = false;
-      this.#clearResecureTimer();
+      this.#clearResecureTimer("control");
       media.onEncryptionState?.("clear");
       console.info("[mls] local publications re-declared encrypted", plain);
       if (ownsWindow) await media.resumePublishing?.("enable-window");
