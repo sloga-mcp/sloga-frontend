@@ -303,18 +303,29 @@ export interface ChipInputs {
    * term below.
    */
   channelHasOpenGroup: boolean;
-  /** This shell can do media E2EE (capable + toggle on). */
-  capableAndEnabled: boolean;
   /**
    * This shell COULD encrypt calls and this install is not set up for it —
-   * `encryptionSetupAvailable(readiness)`. A LOCAL fact, so unlike the probe it
-   * is always current, and a device in this state is not encrypting whoever
-   * else is in the call. Without it a never-enrolled desktop that joined
+   * `encryptionSetupAvailable(readiness)`. A LOCAL fact, so unlike the probe
+   * it is always current. Without it a never-enrolled desktop that joined
    * before the group opened stayed on chip `none` for the whole call — silent
    * on the side whose media is in the clear, while every peer paused behind
    * the mixed banner naming it (media-e2ee-reviewer, HIGH-4).
    */
   deviceNeedsSetup: boolean;
+  /**
+   * At least one OTHER participant is device-qualified on the SFU, i.e.
+   * someone here can encrypt. LIVE — re-read on every participants-version
+   * bump — which is what makes it usable where the open-group probe is not.
+   *
+   * It is what keeps `deviceNeedsSetup` from shouting on a call where nobody
+   * is encrypting: `shellSupported` is true on every Tauri desktop and every
+   * native Android build, not just the platforms media E2EE has shipped on,
+   * so an unqualified local term would have put a red chip and an
+   * undismissable strip on EVERY call for every install that never turned
+   * encryption on — including plain calls with nothing to downgrade
+   * (media-e2ee-reviewer round 3, finding 2).
+   */
+  peerCouldEncrypt: boolean;
 }
 
 /**
@@ -344,14 +355,19 @@ export function chipState(inputs: ChipInputs): ChipState {
   //  (a) the channel HAS an open group — someone is encrypting and we are not.
   //      Covers ME-7/R2-4 (a capable shell whose session failed to construct,
   //      a downgrade the user can't see) and the §0.2 #9 self-attribution for
-  //      a shell that can never encrypt. `capableAndEnabled` no longer splits
-  //      these: both always returned the same chip, and the BANNER is what
-  //      needs them told apart (`callBannerState` reads the readiness).
-  //  (b) this device could encrypt and simply is not set up here. A local
-  //      fact, so it does not inherit the probe's staleness — see the field.
+  //      a shell that can never encrypt. The old `capableAndEnabled` split of
+  //      this arm is gone: both halves always returned the same chip, and the
+  //      BANNER is what needs them told apart (`callBannerState` reads the
+  //      readiness).
+  //  (b) this device could encrypt, is not set up here, and someone else in
+  //      the call CAN encrypt. Local and live, so unlike (a) it cannot go
+  //      stale when the group opens after the probe answered — and unlike an
+  //      unqualified local term it says nothing on a call where there is no
+  //      encryption to be left out of.
   if (
     !inputs.hasSession &&
-    (inputs.channelHasOpenGroup || inputs.deviceNeedsSetup)
+    (inputs.channelHasOpenGroup ||
+      (inputs.deviceNeedsSetup && inputs.peerCouldEncrypt))
   ) {
     return "not_encrypted";
   }
@@ -586,8 +602,21 @@ export interface PlaintextReleaseInputs {
 export function plaintextReleaseAvailable(
   inputs: PlaintextReleaseInputs,
 ): boolean {
-  if (inputs.mode?.kind === "call_full") return false;
-  if (inputs.hasSession) return true;
+  const mode = inputs.mode?.kind;
+  if (mode === "call_full") return false;
+  if (inputs.hasSession) {
+    // With a session the session owns the release — but only where it has
+    // something to release. `mixed` and `interlude` are its own downgrade
+    // states and `negotiating` holds the gate; anything else needs the latch
+    // that proves a gate is held, or `confirmPlaintext` returns immediately
+    // and the button is the silent no-op this rule exists to prevent.
+    return (
+      mode === "mixed" ||
+      mode === "interlude" ||
+      mode === "negotiating" ||
+      inputs.latchedError
+    );
+  }
   return inputs.e2eeCapable && inputs.latchedError;
 }
 

@@ -50,6 +50,13 @@ export type JoinRefusalReason =
   | "FailedValidation"
   | "UnknownNode"
   /**
+   * `require_media_e2ee_enabled` refused the device-qualified join because the
+   * deployment has media E2EE off. Terminal for this channel until the server
+   * config changes, and previously not classified at all — so an enrolled
+   * client on such a deployment got an unhandled rejection and no dialog.
+   */
+  | "FeatureDisabled"
+  /**
    * SYNTHETIC, not a server type: the `FailedValidation` whose message is
    * delta's `joining device is not registered`. Split out only so the user
    * gets told what actually happened — an account switch on an enrolled
@@ -68,6 +75,7 @@ const TERMINAL_JOIN_REFUSALS: ReadonlySet<string> = new Set<JoinRefusalReason>([
   "IsBot",
   "FailedValidation",
   "UnknownNode",
+  "FeatureDisabled",
 ]);
 
 /**
@@ -113,8 +121,16 @@ export interface JoinRefusalLatch {
  */
 export function refusalHolds(
   latch: JoinRefusalLatch,
-  current: { now: number; channelVersion: number },
+  current: { now: number; channelVersion: number; superseded?: boolean },
 ): boolean {
+  // Something the CLIENT learned since has made the server's answer stale —
+  // today only the corroborated device verdict landing after a
+  // `DeviceNotRegistered` refusal, which is exactly the state that makes the
+  // next attempt succeed (it withholds the device id the server rejected).
+  // Without this the user waits out the full hold for an answer we already
+  // know has changed, and a cold start straight into a call — a push
+  // notification's Answer button — loses its first 30 s every time.
+  if (current.superseded) return false;
   if (current.channelVersion !== latch.channelVersion) return false;
   return current.now - latch.at < JOIN_REFUSAL_HOLD_MS;
 }
@@ -138,6 +154,8 @@ export function joinBlockedReason(input: {
   inFlightChannelId: string | undefined;
   /** The latch recorded for THIS channel, if any. */
   latch: JoinRefusalLatch | undefined;
+  /** The client has since learned the answer would differ — see `refusalHolds`. */
+  superseded?: boolean;
 }): JoinBlockedReason | undefined {
   if (input.inFlightChannelId === input.channelId) return "in-flight";
   if (

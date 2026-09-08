@@ -234,3 +234,43 @@ test("🔴 the device-not-registered refusal is named, and is still TERMINAL", (
     "refused",
   );
 });
+
+test("🔴 a corroborated device verdict supersedes its own refusal latch", () => {
+  // The claim that proves the device is refused lands a beat after the join
+  // that was refused for it, and the next attempt withholds the device id the
+  // server rejected — so the server's answer WILL differ. Holding the user for
+  // the rest of the 30 s punishes them for a race that a cold start into a
+  // call loses every time (media-e2ee-reviewer round 3, finding 4).
+  const latch = {
+    channelId: "c",
+    reason: "DeviceNotRegistered" as const,
+    at: 0,
+    channelVersion: 3,
+  };
+  assert.equal(refusalHolds(latch, { now: 1_000, channelVersion: 3 }), true);
+  assert.equal(
+    refusalHolds(latch, { now: 1_000, channelVersion: 3, superseded: true }),
+    false,
+  );
+  assert.equal(
+    joinBlockedReason({
+      channelId: "c",
+      now: 1_000,
+      channelVersion: 3,
+      inFlightChannelId: undefined,
+      latch,
+      superseded: true,
+    }),
+    undefined,
+  );
+});
+
+test("a media-E2EE-off deployment refuses terminally instead of throwing at the caller", () => {
+  // `require_media_e2ee_enabled` runs BEFORE the device check in
+  // `voice_join.rs`, so any enrolled client that sends a device id on such a
+  // deployment used to get an unhandled rejection and no dialog at all.
+  assert.equal(
+    classifyJoinRefusal({ type: "FeatureDisabled", feature: "media_e2ee" }),
+    "FeatureDisabled",
+  );
+});
