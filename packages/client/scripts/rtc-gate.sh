@@ -55,7 +55,8 @@ if [ ${#SPECS[@]} -eq 0 ]; then
   # policies too, and two reviewed defects ran through exactly those.
   SPECS=(components/rtc/mls*.test.ts components/rtc/rosterReconcile.test.ts
     components/rtc/localPublicationEncryption.test.ts
-    components/rtc/plaintextCryptorPolicy.test.ts)
+    components/rtc/plaintextCryptorPolicy.test.ts
+    components/rtc/publishGate.test.ts)
 fi
 if [ ${#SPECS[@]} -eq 0 ]; then
   echo ">>> GATE FAIL: no spec files matched — refusing to report a pass"
@@ -70,6 +71,8 @@ FILES=(components/rtc/mlsCallSession.ts components/rtc/mlsCallModePolicy.ts
   components/rtc/state.tsx components/rtc/mlsCallSession.harness.ts
   components/rtc/mlsCallSession.heal.test.ts
   components/rtc/mlsCallSession.joinrace.test.ts
+  components/rtc/mlsCallSession.falsered.test.ts
+  components/rtc/publishGate.ts components/rtc/publishGate.test.ts
   components/rtc/mlsCallModePolicy.test.ts src/sentry.ts)
 ran=0
 for f in "${SPECS[@]}"; do

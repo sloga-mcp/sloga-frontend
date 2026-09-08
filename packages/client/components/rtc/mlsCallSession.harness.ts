@@ -38,12 +38,17 @@ import {
   ENCRYPTION_TYPE_GCM,
   localPublicationsEncrypted,
 } from "./localPublicationEncryption.ts";
-import { type ChipState, chipState } from "./mlsCallModePolicy.ts";
+import {
+  type ChipState,
+  chipState,
+  isTerminalLoud,
+} from "./mlsCallModePolicy.ts";
 import type {
   KeyInstaller,
   MediaEncryptionState,
   MlsCallSession,
   MlsMediaBinding,
+  PublishGateReason,
 } from "./mlsCallSession.ts";
 
 // The session imports its siblings without extensions (Vite resolves them);
@@ -135,6 +140,22 @@ export class World {
     | { kind: "hold"; active: boolean }
   )[] = [];
   modes: string[] = [];
+  /**
+   * `state.tsx`'s publish gate — a REASON SET, not a boolean: publishing flows
+   * only while it is EMPTY, and it is SEEDED with the `negotiating` reason
+   * `connect()` adds before `room.connect`. Without that seed a spec starts
+   * from a state the app never has (publishing open through the negotiation
+   * window) and every pause/release edge afterwards reads one step off.
+   *
+   * The binding used to leave `pausePublishing` unimplemented and stub
+   * `resumePublishing` as a no-op, so the gate was invisible to every
+   * session-level spec — which is how the ME-10 banner's central promise
+   * ("your audio and video stay paused") went six review rounds without one
+   * assertion behind it.
+   */
+  gate = new Set<PublishGateReason>(["negotiating"]);
+  /** Every gate edge in order (`+reason` / `-reason`) — kept out of `events`. */
+  gateLog: string[] = [];
   bridgeCalls: string[] = [];
   /** Injected by the fake installer between its two awaits, once. */
   midInstallError: Error | null = null;
@@ -279,7 +300,31 @@ export class World {
    * still reports encrypted, which is exactly why gate (b) cannot see any of
    * this and why the media plane has to.
    */
-  chip(): ChipState {
+  /**
+   * Whether ANY local media can leave this device right now: `state.tsx`
+   * resumes every publication only when the reason set is empty, and
+   * `pauseUpstream()` (which is what a held gate applies) does
+   * `sender.replaceTrack(null)` — so a held gate stops an ALREADY-PUBLISHED
+   * mic, not merely the next publish.
+   */
+  publishing(): boolean {
+    return this.gate.size === 0;
+  }
+
+  /**
+   * `state.tsx`'s `callTerminalLoud()` — the ONE condition the ME-10 banner
+   * renders on, and with it the sentence "Your audio and video stay paused".
+   */
+  terminalLoud(): boolean {
+    return isTerminalLoud(
+      this.session.callMode(),
+      this.chip(),
+      this.#replay().latchedError !== undefined,
+    );
+  }
+
+  /** `state.tsx`'s latch protocol over the media-plane callbacks, replayed. */
+  #replay(): { latchedError: unknown; mediaHold: boolean } {
     let latchedError: unknown;
     let mediaHold = false;
     for (const entry of this.journal) {
@@ -291,6 +336,11 @@ export class World {
         if (latchedError === entry.error) latchedError = undefined;
       }
     }
+    return { latchedError, mediaHold };
+  }
+
+  chip(): ChipState {
+    const { latchedError, mediaHold } = this.#replay();
     const mode = this.session.callMode();
     const sessionState = this.session.state();
     const publishing = this.sfu.filter((id) => id !== SELF_ID);
@@ -373,7 +423,14 @@ function fakeMedia(world: World): MlsMediaBinding {
           : p,
       );
     },
-    resumePublishing: async () => {},
+    pausePublishing: async (reason) => {
+      world.gate.add(reason);
+      world.gateLog.push(`+${reason}`);
+    },
+    resumePublishing: async (reason) => {
+      world.gate.delete(reason);
+      world.gateLog.push(`-${reason}`);
+    },
     onEncryptionState: (state, error) => {
       world.states.push({ state, error });
       world.events.push(`state:${state}`);

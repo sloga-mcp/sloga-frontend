@@ -20,6 +20,7 @@ import {
 
 import {
   type AudioCaptureOptions,
+  type LocalTrack,
   type TrackPublishOptions,
   type VideoCaptureOptions,
   ConnectionState,
@@ -216,6 +217,7 @@ import {
   e2eeProvenOff,
   sessionSetupDecision,
 } from "./mlsSessionSetupPolicy";
+import { publishGateOp } from "./publishGate";
 import {
   SCREEN_AUDIO_WATCH_MS,
   screenAudioDeviceGone,
@@ -2344,9 +2346,26 @@ class Voice {
     //      nested `UpstreamResumed` triggers arm (a), whose bare pause
     //      serializes behind livekit's per-track lock and early-returns —
     //      bounded, no loop; verified against the pinned 2.15.13 source).
+    //  (c) `republishAllTracks` — `unpublishTrack` then
+    //      `publishOrRepublishTrack` onto a NEW sender carrying the live
+    //      track, with `_isUpstreamPaused` untouched: the same stale-true flag
+    //      as (b), reached through `localTrackPublished` instead. Not an edge
+    //      case — `setE2EEEnabled()` IS this call, so the session's own
+    //      enable flip performs it INSIDE its `enable-window` pause, and the
+    //      signal-reconnect republish performs it for every track it skips
+    //      `restartTrack()` on (muted, screen-share, screen-share-audio).
+    //      Missing it is what let a seat show ME-10 ("your audio and video
+    //      stay paused") while the other seat decrypted its frames throughout
+    //      (join-race legs, 2026-09-08).
+    // (b) and (c) share one remedy: `#applyPublishGate`'s `repause`.
     room.addListener("localTrackPublished", (pub) => {
       this.#setCallParticipantsVersion((v) => v + 1);
-      if (this.#publishGate.size > 0) void this.#applyPublishGate(room);
+      // `pub` is the REBUILT publication: `republishAllTracks` (the E2EE flip
+      // and the signal-reconnect republish) lands here on a brand-new sender
+      // with livekit's pause flag left stale-true, so the sweep has to be told
+      // which track that is.
+      if (this.#publishGate.size > 0)
+        void this.#applyPublishGate(room, pub.track);
       // A publish that was in flight across the session's E2EE flip lands
       // here declared NONE (livekit stamps the type when it builds the
       // request, and the flip republishes only what was registered). The
@@ -2360,25 +2379,11 @@ class Voice {
         if (this.#publishGate.size > 0) void this.#applyPublishGate(room);
       });
       track.on(TrackEvent.TrackProcessorUpdate, () => {
-        if (this.#publishGate.size === 0) return;
-        void (async () => {
-          try {
-            await track.resumeUpstream(); // reset the stale pause flag
-          } catch {
-            /* unsupported/edge — the pause below still applies */
-          }
-          // The gate may have EMPTIED while we serialized behind livekit's
-          // per-track lock (e.g. the session settled plaintext and released
-          // `negotiating` mid-sequence) — re-check before the trailing pause,
-          // or a healthy call ends silently muted with nothing left to resume
-          // it (re-verify MED-A).
-          if (this.#publishGate.size === 0) return;
-          try {
-            await track.pauseUpstream();
-          } catch {
-            /* torn-down track */
-          }
-        })();
+        // Path (b): the same stale-flag shape as a republish, so the same
+        // resume-first remedy — now the sweep's `repause`, not a second copy
+        // of it here.
+        if (this.#publishGate.size > 0)
+          void this.#applyPublishGate(room, track);
       });
     });
 
@@ -3221,17 +3226,53 @@ class Voice {
     await this.#applyPublishGate(room);
   }
 
-  /** Sweep every local publication to match the gate (empty ⇒ resume all). */
-  async #applyPublishGate(room: Room): Promise<void> {
-    const paused = this.#publishGate.size > 0;
+  /**
+   * Sweep every local publication to match the gate (empty ⇒ resume all).
+   *
+   * `rebuilt` is the track this sweep is running FOR when something has just
+   * replaced its sender — a republish (`localTrackPublished`) or a direct
+   * `sender.replaceTrack` (`TrackProcessorUpdate`). livekit leaves
+   * `_isUpstreamPaused` stale-TRUE across both, so a bare `pauseUpstream()`
+   * returns on its own idempotency guard while the new sender streams; only
+   * the named track takes the resume-first `repause`, because running that
+   * over publications nothing rebuilt would re-attach tracks the gate has
+   * correctly paused. See `publishGate.ts` for the livekit paths and the leg
+   * this came from.
+   */
+  async #applyPublishGate(room: Room, rebuilt?: LocalTrack): Promise<void> {
+    const gateHeld = this.#publishGate.size > 0;
     const ops: Promise<void>[] = [];
     for (const pub of room.localParticipant.trackPublications.values()) {
-      if (!pub.track) continue;
-      // Re-assert unconditionally: `pauseUpstream` is idempotent, and a
-      // resume must only happen when the gate is truly empty.
-      ops.push(paused ? pub.pauseUpstream() : pub.resumeUpstream());
+      const track = pub.track;
+      if (!track) continue;
+      const op = publishGateOp({
+        gateHeld,
+        upstreamPaused: track.isUpstreamPaused,
+        senderRebuilt: track === rebuilt,
+      });
+      if (op === "pause") ops.push(pub.pauseUpstream());
+      else if (op === "repause") ops.push(this.#repauseUpstream(track));
+      else if (op === "resume") ops.push(pub.resumeUpstream());
     }
     await Promise.allSettled(ops);
+  }
+
+  /**
+   * Clear livekit's stale pause flag, then pause the sender it was left on.
+   * Not a leak: the rebuilt sender is ALREADY sending, so the resume changes
+   * nothing on the wire and only the trailing pause does. The gate may empty
+   * while we serialize behind livekit's per-track lock (the session settling
+   * plaintext, say) — re-check, or a healthy call ends silently muted with
+   * nothing left to resume it (re-verify MED-A).
+   */
+  async #repauseUpstream(track: LocalTrack): Promise<void> {
+    try {
+      await track.resumeUpstream();
+    } catch {
+      /* unsupported/edge — the pause below still applies */
+    }
+    if (this.#publishGate.size === 0) return;
+    await track.pauseUpstream();
   }
 
   /**
