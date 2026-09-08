@@ -606,6 +606,11 @@ export interface KeyInstaller {
   ): Promise<void>;
   /** Install the local send key — the deferred Add-grace switch. */
   applyLocalKey(frameKeys: MlsFrameKeys, localIdentity: string): Promise<void>;
+  /**
+   * Drop every key held for the group being REPLACED. Optional so a fake can
+   * omit it; `MlsKeyProvider` implements it.
+   */
+  resetForGroup?(): void;
 }
 
 /** The media-plane loud-state the session surfaces for the 6.5 chip. */
@@ -3346,6 +3351,17 @@ export class MlsCallSession {
     }
     // Re-check across the await: a group transition / dispose may have raced.
     if (this.#terminal() || groupId !== this.#groupId) return;
+    // …and so may a NEWER EPOCH. This method is driven fire-and-forget from the
+    // native push and is not serialized, so two pushes (an Add at N+1, a Remove
+    // at N+2) each await `callFrameKeys` independently and their replies can
+    // land out of order. Installing a superseded egress here would walk the
+    // send index BACK onto an epoch the member N+2 removed still holds — the
+    // same regression the provider's `getKeys()` override closes on the replay
+    // side, arriving by a different door. `#installEpoch` has already moved to
+    // the newest epoch seen (set before the await), so it is the fence. The
+    // Add-grace path double-guards on the same value in `#scheduleGraceLocal`;
+    // the immediate path used to have nothing.
+    if (this.#installEpoch !== epoch) return;
 
     // R-1 receive-gap (§7.3): time to install the REMOTE keys is when THIS
     // client becomes able to decrypt peers' new-epoch frames — the observable
@@ -3820,6 +3836,12 @@ export class MlsCallSession {
       this.#media?.onEncryptionState?.("clear", this.#loudError);
     }
     this.#clearLoudLatch();
+    // The group is being REPLACED, so the provider must stop holding its keys:
+    // otherwise `getKeys()` keeps serving the outgoing group's local send key
+    // — the one the members who removed us hold — and every LiveKit `enable`
+    // ack re-arms the encoder onto it for the whole negotiating window. The
+    // publish gate stands in front of that; not holding the key is stronger.
+    this.#media?.installer.resetForGroup?.();
     this.#installEpoch = -1;
     this.#hasLocalKey = false;
     this.#lastOwnWon = null;

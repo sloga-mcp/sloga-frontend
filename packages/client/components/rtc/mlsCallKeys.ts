@@ -21,6 +21,10 @@
  *     LiveKit replays it into the worker behind our back and the base class's
  *     answer goes stale after sixteen epochs. See the override for the full
  *     account — it is a send-path invariant, not a tidiness measure.
+ *  4. Every path that could leave this device publishing under a key it should
+ *     not is LOUD, never silent: an epoch with no entry for us throws rather
+ *     than reporting the send key installed, and an install the group has
+ *     already moved past is refused by the `(group, epoch)` fence.
  */
 import { type KeyInfo, BaseKeyProvider } from "livekit-client";
 
@@ -133,23 +137,72 @@ export function orderForInstall(
   ];
 }
 
-export class MlsKeyProvider extends BaseKeyProvider {
-  /** Identities that currently hold a key (reconnect / test hygiene). */
-  #applied = new Set<string>();
+/**
+ * A key this provider actually installed. `KeyInfo` makes `participantIdentity`
+ * and `keyIndex` optional because the base class also serves a `sharedKey`
+ * provider; we run `sharedKey:false`, where the worker treats a keyless entry
+ * as a hard error (`e2ee.worker.ts` — "no participant Id was provided"). Naming
+ * that in the TYPE means `tsc` carries the invariant instead of a spec.
+ */
+export type InstalledKey = KeyInfo & {
+  participantIdentity: string;
+  keyIndex: number;
+};
 
+/** The base class's map key for an installed entry (`KeyProvider.ts:37`). */
+function retainedId(info: InstalledKey): string {
+  return `${info.participantIdentity}-${info.keyIndex}`;
+}
+
+/**
+ * `BaseKeyProvider`'s retained key map — TypeScript-`private`, but plainly
+ * reachable at runtime — reached through this ONE accessor.
+ *
+ * It exists so `#pruneRetainedKeys` can drop material the provider no longer
+ * serves. The map is write-only from the library's side once `getKeys()` is
+ * overridden (nothing else reads it), so pruning it changes no behavior; what
+ * it buys is that a call's older epochs stop sitting in main-thread memory as
+ * `deriveKey`-capable `CryptoKey`s whose derivation salt is a public constant.
+ *
+ * Exported for the spec, which asserts the map really does shrink: if a LiveKit
+ * upgrade renames the field this returns `undefined`, the prune silently
+ * becomes a no-op, and that spec is what turns the silence into a CI failure.
+ */
+export function retainedKeyMap(
+  provider: BaseKeyProvider,
+): Map<string, KeyInfo> | undefined {
+  const map = (provider as unknown as { keyInfoMap?: unknown }).keyInfoMap;
+  return map instanceof Map ? (map as Map<string, KeyInfo>) : undefined;
+}
+
+export class MlsKeyProvider extends BaseKeyProvider {
   /**
    * The current epoch's REMOTE install set, in `orderForInstall` order, kept
    * verbatim as the `KeyInfo` records handed to LiveKit. Replaced wholesale on
    * every `applyRemoteKeys`, which is what drops a since-removed sender.
    */
-  #replayRemotes: KeyInfo[] = [];
+  #replayRemotes: InstalledKey[] = [];
 
   /**
    * The LOCAL send key currently in force — the one the encoder is publishing
    * under. Replaced only by `applyLocalKey`, so it survives an Add-grace
    * `applyRemoteKeys` (during which we ARE still sending on the old key).
    */
-  #replayLocal: KeyInfo[] = [];
+  #replayLocal: InstalledKey[] = [];
+
+  /**
+   * `(group, epoch)` of the newest install in force — the monotonic fence.
+   *
+   * `onLocalKeysChanged` is driven fire-and-forget from the native push and is
+   * not serialized, and it awaits `callFrameKeys` before installing. Two pushes
+   * in quick succession (an Add at N+1, a Remove at N+2) can therefore have
+   * their IPC replies land out of order, and N+1's continuation would then
+   * install AFTER N+2 — walking the send index back onto an epoch the member
+   * N+2 removed still holds. The session fences this at its own end too; this
+   * is the invariant restated where the keys actually change hands, so no
+   * future caller can reintroduce it.
+   */
+  #fence: { groupId: string; epoch: number } | undefined;
 
   /**
    * This device's current screen-leg send key (Android plan §5.2).
@@ -158,7 +211,7 @@ export class MlsKeyProvider extends BaseKeyProvider {
    * in `rtc/state.tsx` because this is the one layer that sees `MlsFrameKeys`
    * at all — and, more importantly, because every rule that decides WHEN the
    * local send key becomes current (the ≤2 s Add-grace deferral, the NEW-1
-   * epoch fence, the Remove-immediate switch, the reconnect re-assert) already
+   * epoch fence, the Remove-immediate switch, an equal-epoch re-assert) already
    * terminates in `applyLocalKey`. Reading the leg key anywhere else means
    * re-deriving those rules, and getting them wrong means the phone encrypts
    * under a key a just-removed member still holds.
@@ -196,15 +249,18 @@ export class MlsKeyProvider extends BaseKeyProvider {
   }
 
   /**
-   * Import one entry's raw HKDF material and push it to the worker, returning
-   * the `KeyInfo` records exactly as LiveKit received them. Those records are
-   * what `getKeys()` serves back on replay, so they are captured HERE — at the
-   * single point that talks to the worker — rather than rebuilt later from a
-   * `MlsFrameKeys` a caller still holds. Nothing can then install a key the
-   * replay does not know about, or replay one that was never installed.
+   * Import each entry's raw HKDF material. Touches NOTHING else — no key
+   * reaches the worker here.
+   *
+   * Importing the whole set before publishing any of it is deliberate.
+   * `importKey` yields to the event loop, so posting inside this loop would
+   * leave the worker holding keys the replay set does not list yet, and a
+   * replay landing in that gap would re-post the PREVIOUS set on top of them.
+   * It also makes an install atomic: an entry that fails to import means the
+   * worker took none of them, rather than a half-keyed epoch nobody records.
    */
-  async #install(entries: MlsFrameKey[]): Promise<KeyInfo[]> {
-    const installed: KeyInfo[] = [];
+  async #import(entries: MlsFrameKey[]): Promise<InstalledKey[]> {
+    const imported: InstalledKey[] = [];
     for (const entry of entries) {
       const material = await crypto.subtle.importKey(
         "raw",
@@ -213,19 +269,104 @@ export class MlsKeyProvider extends BaseKeyProvider {
         false,
         ["deriveBits", "deriveKey"],
       );
-      // BaseKeyProvider.onSetEncryptionKey(keyMaterial, identity, keyIndex).
-      this.onSetEncryptionKey(
-        material,
-        entry.livekit_identity,
-        entry.key_index,
-      );
-      installed.push({
+      imported.push({
         key: material,
         participantIdentity: entry.livekit_identity,
         keyIndex: entry.key_index,
       });
     }
-    return installed;
+    return imported;
+  }
+
+  /**
+   * Hand an imported set to LiveKit and record it as the replayable one — ONE
+   * synchronous block, so `getKeys()` can never describe a worker state that
+   * has not happened yet, or miss one that has.
+   *
+   * `onSetEncryptionKey` reaches the worker synchronously (the base class emits
+   * `SetKey`, which `E2EEManager` turns straight into a `postMessage`), and a
+   * worker message is a macrotask; nothing between these statements yields, so
+   * no replay can observe the two halves disagreeing.
+   */
+  #publish(infos: InstalledKey[], slot: "remotes" | "local"): void {
+    if (slot === "remotes") this.#replayRemotes = infos;
+    else this.#replayLocal = infos;
+    for (const info of infos) {
+      // BaseKeyProvider.onSetEncryptionKey(keyMaterial, identity, keyIndex).
+      this.onSetEncryptionKey(
+        info.key,
+        info.participantIdentity,
+        info.keyIndex,
+      );
+    }
+    this.#pruneRetainedKeys();
+  }
+
+  /**
+   * Drop everything the base class retained that `getKeys()` no longer serves
+   * (§7.2 residual). The worker's own keyring cannot be pruned — LiveKit
+   * exposes no deletion API and never destroys a `ParticipantKeyHandler` — but
+   * the main-thread copy can be, and after the `getKeys()` override nothing
+   * reads it, so keeping a since-removed sender's material there buys nothing.
+   */
+  #pruneRetainedKeys(): void {
+    const retained = retainedKeyMap(this);
+    if (!retained) return;
+    const live = new Set(this.getKeys().map(retainedId));
+    for (const id of [...retained.keys()]) {
+      if (!live.has(id)) retained.delete(id);
+    }
+  }
+
+  /**
+   * Whether an install may proceed, given what is already in force.
+   *
+   * A DIFFERENT group resets rather than compares: epochs only count within one
+   * group, so a cross-group number is neither newer nor older and the old
+   * group's keys must simply go. Within one group the rule is monotonic —
+   * an equal epoch is an idempotent re-assert (the Add-grace's deferred local
+   * install rides one), a lower one has been superseded and must do nothing.
+   *
+   * An egress with no usable epoch is ADMITTED, not refused: this fence is
+   * defense in depth behind the session's own `#installEpoch` check, and a
+   * fence that wedged rotation on a malformed field would be worse than the
+   * race it guards.
+   */
+  #admits(frameKeys: MlsFrameKeys): boolean {
+    const fence = this.#fence;
+    if (!fence) return true;
+    if (fence.groupId !== frameKeys.group_id) {
+      this.resetForGroup();
+      return true;
+    }
+    if (!Number.isFinite(frameKeys.epoch)) return true;
+    return frameKeys.epoch >= fence.epoch;
+  }
+
+  /** Record the epoch now in force (see `#admits`). */
+  #stamp(frameKeys: MlsFrameKeys): void {
+    if (!Number.isFinite(frameKeys.epoch)) return;
+    this.#fence = { groupId: frameKeys.group_id, epoch: frameKeys.epoch };
+  }
+
+  /**
+   * Drop every key held for the OUTGOING group — called when the group is
+   * being REPLACED (`#resetRotationState`: a re-establish, a poisoned
+   * successor, a removed-self rejoin), and from `#admits` when an install
+   * arrives for a different group.
+   *
+   * Without this the provider outlives the group it describes: through the
+   * whole negotiating window `getKeys()` would keep serving the old group's
+   * local send key — the one the members who just removed us hold — and every
+   * `enable` ack would re-arm the encoder onto it. The publish gate stands in
+   * front of that, but not holding the key is the stronger control.
+   */
+  resetForGroup(): void {
+    this.#replayRemotes = [];
+    this.#replayLocal = [];
+    this.#fence = undefined;
+    this.#lastLocalScreenKey = undefined;
+    this.#pruneRetainedKeys();
   }
 
   /**
@@ -234,11 +375,14 @@ export class MlsKeyProvider extends BaseKeyProvider {
    *
    * 🔴 This override is a send-path invariant. `E2EEManager` re-posts
    * `keyProvider.getKeys()` into the worker on its own schedule, with no way
-   * for us to veto it: on the `initAck`, on EVERY `enable` ack (and an
-   * `enable` is posted for every remote `TrackPublished` and for every remote
-   * publication on each `ConnectionState.Connected`), and on every
-   * `SignalConnected`. So a peer unmuting, a screenshare starting, or any
-   * reconnect re-runs the whole list through `setKey`.
+   * for us to veto it: on EVERY worker `enable` ack (and an `enable` is posted
+   * for every remote `TrackPublished` and for every remote publication on each
+   * `ConnectionState.Connected`), and on every `SignalConnected`. So a peer
+   * unmuting, a screenshare starting, or any reconnect re-runs the whole list
+   * through `setKey`. (There is a third site, the `initAck` replay, which is
+   * dead in 2.15.13 — it is gated on a worker flag that is declared `false`
+   * and never assigned. Treat the list as "at least these", not exhaustive:
+   * the override has to hold whatever a future version adds.)
    *
    * Each replayed `setKey` for OUR identity runs `setKeyFromMaterial`, which
    * assigns `currentKeyIndex = keyIndex`, and the encoder encrypts under
@@ -266,7 +410,7 @@ export class MlsKeyProvider extends BaseKeyProvider {
    * drops `getKeys`, `tsc` fails here instead of silently restoring the
    * replay.
    */
-  override getKeys(): KeyInfo[] {
+  override getKeys(): InstalledKey[] {
     return [...this.#replayRemotes, ...this.#replayLocal];
   }
 
@@ -279,7 +423,8 @@ export class MlsKeyProvider extends BaseKeyProvider {
    *
    * This is the IMMEDIATE install mode (§1.5): Remove-driven rotations (switch
    * the send key at once so a removed member is locked out), the FIRST key of a
-   * group, the fail-safe on an unclassifiable epoch, and reconnect re-assert.
+   * group, the fail-safe on an unclassifiable epoch, and the equal-epoch
+   * re-assert the session allows.
    * An Add-driven rotation instead uses `applyRemoteKeys` now + a deferred
    * `applyLocalKey` after the Add-grace (the session owns that timing — slice
    * 6.4 step 4; the provider only exposes the two halves).
@@ -297,7 +442,10 @@ export class MlsKeyProvider extends BaseKeyProvider {
    * 7 edge). Nothing re-invokes native on reconnect: the sole driver of an
    * install is the native epoch-change push (`state.tsx`'s
    * `onCallKeysChanged` → `mlsCallSession.onLocalKeysChanged`), so the
-   * override is what covers the reconnect path, not a re-fetch.
+   * override is what covers the reconnect path, not a re-fetch; (e) never
+   * install an epoch the group has moved past, nor keep a replaced group's
+   * keys (`#admits` / `resetForGroup`); (f) drop the base class's retained
+   * copy of everything no longer served (`#pruneRetainedKeys`).
    */
   async applyKeys(
     frameKeys: MlsFrameKeys,
@@ -318,16 +466,18 @@ export class MlsKeyProvider extends BaseKeyProvider {
     frameKeys: MlsFrameKeys,
     localIdentity: string,
   ): Promise<void> {
-    const entries = remoteInstallEntries(frameKeys, localIdentity);
+    if (!this.#admits(frameKeys)) return;
+    const imported = await this.#import(
+      remoteInstallEntries(frameKeys, localIdentity),
+    );
+    // Re-check across the import: `#import` awaits, so a newer epoch may have
+    // installed while we were deriving this one.
+    if (!this.#admits(frameKeys)) return;
     // Replace the remote replay set wholesale rather than merging: a sender
-    // removed at this epoch is absent from `entries`, and that absence is
-    // exactly what must stop LiveKit re-installing their key on the next ack.
-    this.#replayRemotes = await this.#install(entries);
-    const live = new Set(entries.map((entry) => entry.livekit_identity));
-    // Keep the record of an already-installed local key: during an Add-grace we
-    // are still publishing on it — it is live, just not re-installed here.
-    if (this.#applied.has(localIdentity)) live.add(localIdentity);
-    this.#applied = live;
+    // removed at this epoch is absent from the imported set, and that absence
+    // is exactly what stops LiveKit re-installing their key on the next ack.
+    this.#publish(imported, "remotes");
+    this.#stamp(frameKeys);
   }
 
   /**
@@ -339,17 +489,27 @@ export class MlsKeyProvider extends BaseKeyProvider {
     frameKeys: MlsFrameKeys,
     localIdentity: string,
   ): Promise<void> {
-    const installed = await this.#install(
-      localInstallEntries(frameKeys, localIdentity),
-    );
-    if (installed.length) {
-      // Only ADVANCE the replay's local key, never blank it. An epoch that
-      // carries no local entry is anomalous, and the worker is still holding
-      // the key we last installed — the replay has to mirror what the encoder
-      // is actually publishing under, not what native last failed to say.
-      this.#replayLocal = installed;
-      this.#applied.add(localIdentity);
+    if (!this.#admits(frameKeys)) return;
+    const entries = localInstallEntries(frameKeys, localIdentity);
+    if (entries.length === 0) {
+      // 🔴 FAIL LOUD. An egress with no entry for us means native does not
+      // count this device as a sender in the current epoch — the shape a
+      // removed leaf takes. Resolving here would report the send key installed
+      // (`#onLocalKeyInstalled` → `#hasLocalKey = true`, re-secure escalation
+      // cancelled, chip green) while the worker keeps publishing under the
+      // PREVIOUS epoch's key — the one every member of the group that just
+      // removed us holds. Throwing routes to the session's `#onMediaError`,
+      // the fail-closed path (§4.2), and leaves `#replayLocal` untouched so the
+      // replay keeps mirroring what the worker actually has.
+      throw new Error(
+        "MLS frame keys carried no entry for this device at epoch " +
+          `${frameKeys.epoch} — refusing to report the local send key installed`,
+      );
     }
+    const imported = await this.#import(entries);
+    if (!this.#admits(frameKeys)) return;
+    this.#publish(imported, "local");
+    this.#stamp(frameKeys);
     await this.#applyLocalScreenKey(frameKeys, localIdentity);
   }
 
@@ -382,9 +542,9 @@ export class MlsKeyProvider extends BaseKeyProvider {
     // listener stops the leg, so nothing is running under the stale key — and
     // a leg started afterwards must be handed THIS key, not the old one.
     this.#lastLocalScreenKey = key;
-    // Idempotent: a reconnect re-assert at the same epoch re-installs the
-    // primary but must not churn the bridge (each push crosses into native and
-    // re-keys the sender cryptor).
+    // Idempotent: an equal-epoch re-assert re-installs the primary but must
+    // not churn the bridge (each push crosses into native and re-keys the
+    // sender cryptor).
     if (
       previous &&
       previous.groupId === key.groupId &&
@@ -397,8 +557,13 @@ export class MlsKeyProvider extends BaseKeyProvider {
     await this.onLocalScreenKey?.(key);
   }
 
-  /** Identities currently keyed (current + previous epoch senders). */
+  /**
+   * Identities currently keyed (current + previous epoch senders) — DERIVED
+   * from the replay set rather than tracked alongside it. Two independent
+   * records of "what the worker holds" is the exact shape of the bug the
+   * `getKeys()` override exists to fix.
+   */
   appliedIdentities(): ReadonlySet<string> {
-    return this.#applied;
+    return new Set(this.getKeys().map((info) => info.participantIdentity));
   }
 }

@@ -5,7 +5,10 @@
 // These drive the REAL `MlsKeyProvider` against the REAL `BaseKeyProvider`
 // (livekit-client 2.15.13 instantiates headless, and Node's WebCrypto imports
 // raw HKDF material), so the base class's storage order is under test here,
-// not a stand-in for it.
+// not a stand-in for it. `FakeWorker` models BOTH channels a key can reach the
+// worker by — the install (`KeyProviderEvent.SetKey`) and the replay
+// (`getKeys()`) — so a divergence between what we installed and what we would
+// replay is visible to these specs rather than only to a live call.
 //
 // The hole they pin — a local send-index regression that only appears after
 // the 16-slot keyring wraps:
@@ -16,12 +19,11 @@
 //   entries are frozen at `local-0 … local-15`, so the base `getKeys()` ends
 //   on `local-15` — epoch 15's material — forever.
 //
-//   `E2EEManager` replays `getKeys()` into the worker on the `initAck`, on
-//   every `enable` ack (posted for every remote `TrackPublished` and for every
-//   remote publication on each `ConnectionState.Connected`) and on every
-//   `SignalConnected`. Each replayed `setKey` moves the recipient's
-//   `currentKeyIndex`, and the encoder publishes under
-//   `cryptoKeyRing[currentKeyIndex]`.
+//   `E2EEManager` replays `getKeys()` into the worker on every `enable` ack
+//   (posted for every remote `TrackPublished` and for every remote publication
+//   on each `ConnectionState.Connected`) and on every `SignalConnected`. Each
+//   replayed `setKey` moves the recipient's `currentKeyIndex`, and the encoder
+//   publishes under `cryptoKeyRing[currentKeyIndex]`.
 //
 //   So at epoch >= 16, one peer unmuting was enough to drop this device back
 //   onto epoch 15's key: a member removed at epoch 16-30 still holds it and
@@ -29,19 +31,26 @@
 //   15 raises `MissingKey ... at index 15`. The loud side is the SAFE one; the
 //   removed member's side is silent.
 //
-// The fix is the `getKeys()` override, so every assertion below is about what
-// a REPLAY does — never about what a fresh install does.
+// Everything below is about what a REPLAY does, or about the two ways this
+// device can end up publishing under a key it should not: an epoch that
+// carries no entry for us, and an install the group has already moved past.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { KeyInfo } from "livekit-client";
 import { KeyProviderEvent } from "livekit-client";
 
-import { MlsKeyProvider, orderForInstall } from "./mlsCallKeys.ts";
+import {
+  type InstalledKey,
+  MlsKeyProvider,
+  orderForInstall,
+  retainedKeyMap,
+} from "./mlsCallKeys.ts";
 
 const LOCAL = "alice:dev-a";
 const BOB = "bob:dev-b";
 const CAROL = "carol:dev-c";
+const GROUP = "group-1";
 
 /** `KEY_PROVIDER_DEFAULTS.keyringSize` — livekit-client e2ee/constants.ts:39. */
 const KEYRING_SIZE = 16;
@@ -73,9 +82,14 @@ function key(identity: string, epoch: number) {
 }
 
 /** The §7.2 egress for one epoch: current roster + the previous epoch's. */
-function frameKeys(epoch: number, roster: string[], previousRoster = roster) {
+function frameKeys(
+  epoch: number,
+  roster: string[],
+  previousRoster = roster,
+  groupId = GROUP,
+) {
   return {
-    group_id: "group-1",
+    group_id: groupId,
     epoch,
     keys: roster.map((id) => key(id, epoch)),
     previous: epoch > 0 ? previousRoster.map((id) => key(id, epoch - 1)) : [],
@@ -101,7 +115,6 @@ function labelled(provider: MlsKeyProvider) {
     );
   });
   return {
-    labels,
     /** Run one install with the source epoch in scope for labelling. */
     async during<T>(
       keys: ReturnType<typeof frameKeys>,
@@ -114,8 +127,8 @@ function labelled(provider: MlsKeyProvider) {
         applying = undefined;
       }
     },
-    of(key: CryptoKey | undefined) {
-      return key === undefined ? undefined : labels.get(key);
+    of(material: CryptoKey | undefined) {
+      return material === undefined ? undefined : labels.get(material);
     },
   };
 }
@@ -126,6 +139,10 @@ function labelled(provider: MlsKeyProvider) {
 
 /**
  * `ParticipantKeyHandler` (livekit-client e2ee/worker/ParticipantKeyHandler.ts):
+ *
+ *   setKey (:157-160)
+ *     await this.setKeyFromMaterial(material, keyIndex);
+ *     this.resetKeyStatus(keyIndex);           // clears that index's failures
  *
  *   setKeyFromMaterial (:168-182)
  *     const newIndex = keyIndex >= 0 ? keyIndex % this.cryptoKeyRing.length
@@ -138,6 +155,11 @@ function labelled(provider: MlsKeyProvider) {
  * and `FrameCryptor.encodeFunction` (:246) encrypts under `getKeySet()` with no
  * index — i.e. `cryptoKeyRing[currentKeyIndex]`. That last line is why the
  * ORDER of a replay decides what this device publishes under.
+ *
+ * Failure counts are modelled too: we run `failureTolerance: 0`, so ONE
+ * decryption failure invalidates an index until something calls `setKey` for
+ * that exact `(identity, index)` again. Which indices a replay resets is a
+ * live behavior change of the override, so it is pinned rather than incidental.
  */
 class FakeKeyHandler {
   readonly ring: (CryptoKey | undefined)[] = new Array(KEYRING_SIZE).fill(
@@ -146,11 +168,28 @@ class FakeKeyHandler {
 
   currentKeyIndex = 0;
 
-  setKey(key: CryptoKey, keyIndex = 0) {
+  readonly failures = new Map<number, number>();
+
+  setKey(material: CryptoKey, keyIndex = 0) {
     const newIndex =
       keyIndex >= 0 ? keyIndex % KEYRING_SIZE : this.currentKeyIndex;
-    this.ring[newIndex] = key;
+    this.ring[newIndex] = material;
     this.currentKeyIndex = newIndex;
+    this.resetKeyStatus(newIndex);
+  }
+
+  resetKeyStatus(keyIndex: number) {
+    this.failures.set(keyIndex % KEYRING_SIZE, 0);
+  }
+
+  /** One decryption failure — with `failureTolerance: 0`, enough to latch. */
+  markFailure(keyIndex: number) {
+    const at = keyIndex % KEYRING_SIZE;
+    this.failures.set(at, (this.failures.get(at) ?? 0) + 1);
+  }
+
+  hasInvalidKeyAtIndex(keyIndex: number) {
+    return (this.failures.get(keyIndex % KEYRING_SIZE) ?? 0) > 0;
   }
 
   /** The key the encoder would use for the next frame. */
@@ -160,11 +199,19 @@ class FakeKeyHandler {
 }
 
 /**
- * `E2EEManager`'s replay: on `initAck` / every `enable` ack / every
- * `SignalConnected` it walks `keyProvider.getKeys()` and `postKey`s each entry
- * (E2eeManager.ts:151-153, :159-161, :257-259), which the worker routes to
- * `getParticipantKeyHandler(identity).setKey(key, keyIndex)`
- * (e2ee.worker.ts:131-142).
+ * The worker's two inbound channels for a key.
+ *
+ *  - INSTALL: `BaseKeyProvider.onSetEncryptionKey` emits `KeyProviderEvent
+ *    .SetKey`, which `E2EEManager` turns straight into a `setKey` postMessage
+ *    (E2eeManager.ts:287-288). Attached once, like production.
+ *  - REPLAY: on `initAck` / every `enable` ack / every `SignalConnected`,
+ *    `E2EEManager` walks `keyProvider.getKeys()` and `postKey`s each entry
+ *    (E2eeManager.ts:151-153, :159-161, :257-259).
+ *
+ * Both land at `getParticipantKeyHandler(identity).setKey(key, keyIndex)`
+ * (e2ee.worker.ts:131-142). Modelling them synchronously is faithful: the
+ * worker serializes every message on a FIFO mutex, so postMessage order is
+ * preserved end to end.
  */
 class FakeWorker {
   readonly handlers = new Map<string, FakeKeyHandler>();
@@ -178,16 +225,29 @@ class FakeWorker {
     return existing;
   }
 
-  replay(provider: MlsKeyProvider): void {
-    for (const info of provider.getKeys()) {
-      // `sharedKey:false`, so the base class rejects a keyless identity —
-      // an entry without one would be a bug in the provider, not the worker.
+  /** Wire the install channel — every `onSetEncryptionKey` reaches us. */
+  attach(provider: MlsKeyProvider): this {
+    provider.on(KeyProviderEvent.SetKey, (info: KeyInfo) => {
       assert.ok(
         info.participantIdentity,
-        "every replayed KeyInfo must carry an identity",
+        "sharedKey is off — every installed key must carry an identity",
       );
       this.handler(info.participantIdentity).setKey(info.key, info.keyIndex);
+    });
+    return this;
+  }
+
+  replay(provider: MlsKeyProvider): void {
+    for (const info of provider.getKeys()) {
+      this.handler(info.participantIdentity).setKey(info.key, info.keyIndex);
     }
+  }
+
+  /** `identity -> currentKeyIndex`, for comparing two workers. */
+  indices(): Record<string, number> {
+    return Object.fromEntries(
+      [...this.handlers].map(([id, h]) => [id, h.currentKeyIndex]),
+    );
   }
 }
 
@@ -204,6 +264,11 @@ async function rotateThrough(
   }
   return tag;
 }
+
+const replayIds = (provider: MlsKeyProvider) =>
+  provider
+    .getKeys()
+    .map((i: InstalledKey) => `${i.participantIdentity}-${i.keyIndex}`);
 
 // ---------------------------------------------------------------------------
 // The regression
@@ -242,17 +307,14 @@ test("the replay set is the current install order, not a sixteen-epoch history",
   const provider = new MlsKeyProvider();
   await rotateThrough(provider, 20);
 
-  const replayed = provider
-    .getKeys()
-    .map((info) => `${info.participantIdentity}-${info.keyIndex}`);
   const expected = orderForInstall(frameKeys(20, [LOCAL, BOB]), LOCAL).map(
     (entry) => `${entry.livekit_identity}-${entry.key_index}`,
   );
 
   // previous(remote) + current(remote) + current(local) — three entries, not
   // the 32 the base class had accumulated by epoch 20.
-  assert.deepEqual(replayed, expected);
-  assert.equal(replayed.length, 3);
+  assert.deepEqual(replayIds(provider), expected);
+  assert.equal(expected.length, 3);
 });
 
 test("the LOCAL key is last in the replay, so the send-index switch stays final", async () => {
@@ -278,6 +340,20 @@ test("repeated enable acks are idempotent — the send index does not drift", as
   const local = worker.handler(LOCAL);
   assert.equal(local.currentKeyIndex, 19 % KEYRING_SIZE);
   assert.equal(tag.of(local.sending()), `${LOCAL}@e19`);
+});
+
+test("the install channel and the replay channel never disagree", async () => {
+  // The install path (SetKey -> postKey) and the replay path (getKeys ->
+  // postKey) are separate; this is the spec that would catch them drifting.
+  const installed = new FakeWorker();
+  const provider = new MlsKeyProvider();
+  installed.attach(provider);
+  await rotateThrough(provider, 21, [LOCAL, BOB, CAROL]);
+
+  const replayed = new FakeWorker();
+  replayed.replay(provider);
+
+  assert.deepEqual(replayed.indices(), installed.indices());
 });
 
 // ---------------------------------------------------------------------------
@@ -363,27 +439,194 @@ test("during an Add-grace the replay keeps us on the OLD local key", async () =>
   // Remotes are already at the new epoch — that is what the grace is for.
   assert.equal(tag.of(worker.handler(BOB).sending()), `${BOB}@e20`);
 
-  // …and the deferred local install completes the switch.
+  // …and the deferred local install completes the switch. The provider's epoch
+  // fence must admit it: it carries the SAME epoch the remotes were keyed at.
   await tag.during(next, () => provider.applyLocalKey(next, LOCAL));
   worker.replay(provider);
   assert.equal(tag.of(worker.handler(LOCAL).sending()), `${LOCAL}@e20`);
   assert.equal(worker.handler(LOCAL).currentKeyIndex, 20 % KEYRING_SIZE);
 });
 
-test("an epoch that carries no local key does not blank the replay's send key", async () => {
+test("an epoch that carries no local key FAILS LOUD and leaves the replay mirroring the worker", async () => {
   const provider = new MlsKeyProvider();
   const tag = await rotateThrough(provider, 17);
 
-  // Anomalous egress: native returned an epoch with no entry for us. The
-  // worker is still holding epoch 17's key, so the replay has to say so —
-  // blanking it would hand LiveKit an empty local set and leave the encoder's
-  // `currentKeyIndex` wherever the last remote entry put it.
+  // An egress with no entry for us is the shape a REMOVED leaf takes. Resolving
+  // quietly here would report the send key installed while the worker keeps
+  // publishing under epoch 17's key — which every member of the group that just
+  // removed us holds. It has to reach the session's fail-closed path instead.
   const headless = frameKeys(18, [BOB], [LOCAL, BOB]);
-  await tag.during(headless, () => provider.applyLocalKey(headless, LOCAL));
+  await assert.rejects(
+    () => tag.during(headless, () => provider.applyLocalKey(headless, LOCAL)),
+    /no entry for this device at epoch 18/,
+  );
 
+  // …and the replay still describes what the worker actually holds: blanking
+  // it would leave the encoder's index wherever the last remote entry put it.
   const worker = new FakeWorker();
   worker.replay(provider);
   assert.equal(tag.of(worker.handler(LOCAL).sending()), `${LOCAL}@e17`);
+
+  // The failed epoch was never stamped, so the correct epoch-18 egress still
+  // installs rather than being refused as superseded.
+  const fixed = frameKeys(18, [LOCAL, BOB], [LOCAL, BOB]);
+  await tag.during(fixed, () => provider.applyLocalKey(fixed, LOCAL));
+  worker.replay(provider);
+  assert.equal(tag.of(worker.handler(LOCAL).sending()), `${LOCAL}@e18`);
+});
+
+// ---------------------------------------------------------------------------
+// The (group, epoch) fence
+// ---------------------------------------------------------------------------
+
+test("a superseded install is refused — an out-of-order reply cannot regress the send index", async () => {
+  const provider = new MlsKeyProvider();
+  const tag = await rotateThrough(provider, 17, [LOCAL, BOB, CAROL]);
+
+  // Two native pushes race: the Remove at 19 wins the IPC and installs first…
+  const removeAt19 = frameKeys(19, [LOCAL, BOB], [LOCAL, BOB]);
+  await tag.during(removeAt19, () => provider.applyKeys(removeAt19, LOCAL));
+
+  // …and the Add at 18's continuation lands afterwards, carrying carol and
+  // epoch 18's local key. Installing it would hand carol readable media.
+  const addAt18 = frameKeys(18, [LOCAL, BOB, CAROL]);
+  await tag.during(addAt18, () => provider.applyKeys(addAt18, LOCAL));
+
+  assert.equal(tag.of(provider.getKeys().at(-1)?.key), `${LOCAL}@e19`);
+  assert.deepEqual(
+    provider.getKeys().filter((info) => info.participantIdentity === CAROL),
+    [],
+    "the superseded egress must not re-admit carol",
+  );
+
+  const worker = new FakeWorker();
+  worker.replay(provider);
+  assert.equal(tag.of(worker.handler(LOCAL).sending()), `${LOCAL}@e19`);
+  assert.equal(worker.handler(LOCAL).currentKeyIndex, 19 % KEYRING_SIZE);
+});
+
+test("an equal epoch is admitted — the deferred and the re-asserted install both ride one", async () => {
+  const provider = new MlsKeyProvider();
+  const tag = await rotateThrough(provider, 20);
+
+  // Same epoch again (the session allows an equal-epoch re-assert).
+  const same = frameKeys(20, [LOCAL, BOB]);
+  await tag.during(same, () => provider.applyKeys(same, LOCAL));
+
+  const worker = new FakeWorker();
+  worker.replay(provider);
+  assert.equal(tag.of(worker.handler(LOCAL).sending()), `${LOCAL}@e20`);
+});
+
+test("a different group RESETS the fence rather than comparing epochs against it", async () => {
+  const provider = new MlsKeyProvider();
+  const tag = await rotateThrough(provider, 20);
+
+  // A re-establish mints a new group whose epochs start over. Epochs are only
+  // comparable within one group, so 3 here is not "older than 20".
+  const fresh = frameKeys(3, [LOCAL, BOB], [LOCAL, BOB], "group-2");
+  await tag.during(fresh, () => provider.applyKeys(fresh, LOCAL));
+
+  const worker = new FakeWorker();
+  worker.replay(provider);
+  assert.equal(tag.of(worker.handler(LOCAL).sending()), `${LOCAL}@e3`);
+  assert.equal(worker.handler(LOCAL).currentKeyIndex, 3);
+  // Nothing from the old group survives into what LiveKit can replay.
+  assert.equal(provider.getKeys().length, 3);
+});
+
+test("resetForGroup drops every key, so a replay during a re-establish installs nothing", async () => {
+  const provider = new MlsKeyProvider();
+  await rotateThrough(provider, 20, [LOCAL, BOB, CAROL]);
+
+  provider.resetForGroup();
+
+  assert.deepEqual(provider.getKeys(), []);
+  assert.deepEqual([...provider.appliedIdentities()], []);
+  assert.equal(provider.lastLocalScreenKey(), undefined);
+
+  const worker = new FakeWorker();
+  worker.replay(provider);
+  assert.equal(
+    worker.handlers.size,
+    0,
+    "the outgoing group's send key must not survive into the negotiating window",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Retention + atomicity
+// ---------------------------------------------------------------------------
+
+test("the base class's retained key map is pruned to exactly what is replayable", async () => {
+  const provider = new MlsKeyProvider();
+  const retained = retainedKeyMap(provider);
+  // If a LiveKit upgrade renames the private field, the prune silently becomes
+  // a no-op — this is the assertion that turns that silence into a failure.
+  assert.ok(
+    retained,
+    "BaseKeyProvider's retained key map is no longer reachable — #pruneRetainedKeys is dead",
+  );
+
+  await rotateThrough(provider, 20, [LOCAL, BOB, CAROL]);
+
+  // Without pruning this would hold every (identity, index) pair ever used:
+  // 3 identities x 16 indices = 48 CryptoKeys, on the main thread, for the
+  // life of the call.
+  assert.equal(retained.size, provider.getKeys().length);
+  assert.deepEqual([...retained.keys()].sort(), replayIds(provider).sort());
+
+  provider.resetForGroup();
+  assert.equal(retained.size, 0);
+});
+
+test("an entry that fails to import installs nothing at all", async () => {
+  const provider = new MlsKeyProvider();
+  const worker = new FakeWorker().attach(provider);
+  await rotateThrough(provider, 5);
+  const beforeIndices = worker.indices();
+  const beforeReplay = replayIds(provider);
+
+  // A malformed egress: the third entry's material is not base64. CAROL is new
+  // at this epoch, so a partial install would both key a fresh handler and
+  // leave the earlier entries in the worker unrecorded.
+  const broken = frameKeys(6, [LOCAL, BOB, CAROL]);
+  broken.keys[2].frame_key_b64 = "!!!!not base64!!!!";
+
+  await assert.rejects(() => provider.applyKeys(broken, LOCAL));
+
+  // Importing the whole set before publishing any of it is what makes this
+  // atomic: a half-keyed epoch nobody recorded is exactly the divergence
+  // between worker and replay set that the override exists to prevent.
+  assert.deepEqual(worker.indices(), beforeIndices);
+  assert.deepEqual(replayIds(provider), beforeReplay);
+  assert.equal(worker.handlers.has(CAROL), false);
+});
+
+test("a replay resets the failure count on the current indices, and no longer on stale ones", async () => {
+  const provider = new MlsKeyProvider();
+  await rotateThrough(provider, 20);
+
+  const worker = new FakeWorker();
+  worker.replay(provider);
+  const bob = worker.handler(BOB);
+
+  // With `failureTolerance: 0` one failure invalidates an index until a
+  // `setKey` for that exact pair lands. Latch the CURRENT index and a stale one.
+  bob.markFailure(20 % KEYRING_SIZE);
+  bob.markFailure(7);
+  assert.equal(bob.hasInvalidKeyAtIndex(20 % KEYRING_SIZE), true);
+  assert.equal(bob.hasInvalidKeyAtIndex(7), true);
+
+  worker.replay(provider);
+
+  // The current epoch's index still heals — that is the path a rotation-skew
+  // latch recovers by, and it must survive the narrowing.
+  assert.equal(bob.hasInvalidKeyAtIndex(20 % KEYRING_SIZE), false);
+  // A stale index is no longer swept clean as a side effect. This IS a
+  // behavior change: the old 16-epoch replay reset every index of every
+  // identity on every ack.
+  assert.equal(bob.hasInvalidKeyAtIndex(7), true);
 });
 
 // ---------------------------------------------------------------------------
