@@ -34,6 +34,8 @@
  *    for a channel.
  */
 
+import { isDeviceNotRegisteredRefusal } from "./e2eeDeviceReadiness.ts";
+
 /**
  * `join_call` error types (delta `routes/channels/voice_join.rs`) whose answer
  * a retry cannot change. NOT here on purpose: `LiveKitUnavailable` (a server
@@ -46,7 +48,18 @@ export type JoinRefusalReason =
   | "CannotJoinCall"
   | "IsBot"
   | "FailedValidation"
-  | "UnknownNode";
+  | "UnknownNode"
+  /**
+   * SYNTHETIC, not a server type: the `FailedValidation` whose message is
+   * delta's `joining device is not registered`. Split out only so the user
+   * gets told what actually happened — an account switch on an enrolled
+   * desktop otherwise loses voice entirely behind "The call couldn't be
+   * started right now", which never mentions encryption. It is deliberately
+   * NOT used to change what the client DOES: the route builds that message
+   * with a catch-all `map_err` over `fetch_e2ee_identity`, so a database blip
+   * says the same thing, and no client behaviour may turn on it.
+   */
+  | "DeviceNotRegistered";
 
 const TERMINAL_JOIN_REFUSALS: ReadonlySet<string> = new Set<JoinRefusalReason>([
   "NotAVoiceChannel",
@@ -65,6 +78,8 @@ const TERMINAL_JOIN_REFUSALS: ReadonlySet<string> = new Set<JoinRefusalReason>([
 export function classifyJoinRefusal(
   error: unknown,
 ): JoinRefusalReason | undefined {
+  // Same terminal verdict, a name the user can be told something about.
+  if (isDeviceNotRegisteredRefusal(error)) return "DeviceNotRegistered";
   const type = (error as { type?: unknown } | null | undefined)?.type;
   return typeof type === "string" && TERMINAL_JOIN_REFUSALS.has(type)
     ? (type as JoinRefusalReason)

@@ -1221,11 +1221,17 @@ export class E2EEBridge implements E2EEAdapter {
    * that does list us, so a false verdict costs one reconnect rather than the
    * app run.
    *
-   * NOT a security gate: it never grants anything. Everything it guards is
-   * already enforced server-side (the device claim, `assert_bound_session`)
-   * and natively (`MlsStoreOwnedByAnotherAccount`); a hostile server that
-   * lied about it could only make this device stop attempting encryption
-   * LOUDLY — red chip, banner, no key material anywhere near it.
+   * NOT a security gate: it never grants anything, and no key material is
+   * anywhere near it. But it is not free either, and the honest statement of
+   * what a lying server buys with it is: this device stops attempting
+   * encryption (LOUDLY — red chip, banner, publishing held), and the user is
+   * offered a plaintext release they would not otherwise have been offered.
+   * It does NOT summon the destructive reset: that stays on the native
+   * `MlsStoreOwnedByAnotherAccount`, which is produced by reading the store's
+   * own row. Presence is also read from an UNSIGNED `/e2ee/devices/{user}`
+   * rather than the natively reconciled listing — recorded as owed, along with
+   * the `e2ee_store_owner` accessor that would make any of this locally
+   * anchored (media-e2ee-reviewer, HIGH-3).
    */
   readonly deviceOwnedElsewhere = new ReactiveMap<"state", boolean>();
 
@@ -1648,6 +1654,12 @@ export class E2EEBridge implements E2EEAdapter {
       // against the server directory before prompting re-enroll.
       if (this.#pendingRestoreRepublish) {
         const presence = await this.#ownDevicePresence();
+        // A directory that DOES list this device is positive evidence against
+        // a standing inherited-store verdict — clear it wherever we learn it,
+        // so a wrong verdict costs one reconnect rather than the app run. Both
+        // presence checks, because this branch returns before the other one
+        // (media-e2ee-reviewer, MEDIUM-4).
+        if (presence === "present") this.deviceOwnedElsewhere.delete("state");
         if (presence === "missing") {
           console.warn(
             "[e2ee] post-restore claim rejected — device row revoked; " +
@@ -1698,9 +1710,6 @@ export class E2EEBridge implements E2EEAdapter {
       // NOT this case (see `#ownDevicePresence`) — fall through to the honest
       // error so a transient reject or a hostile server can't churn re-derives.
       const presence = await this.#ownDevicePresence();
-      // A directory that DOES list this device is positive evidence against a
-      // standing inherited-store verdict — clear it here rather than waiting
-      // for an accepted claim, so a wrong one costs a reconnect, not a run.
       if (presence === "present") this.deviceOwnedElsewhere.delete("state");
       if (presence === "missing") {
         try {

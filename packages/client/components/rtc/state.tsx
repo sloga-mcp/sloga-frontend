@@ -200,7 +200,7 @@ import {
   type CallEncryptionReadiness,
   callEncryptionCapable,
   callEncryptionReadiness,
-  isDeviceNotRegisteredRefusal,
+  encryptionSetupAvailable,
 } from "./e2eeDeviceReadiness";
 import { faceSettingsActive } from "./faceFilterCatalog";
 import { localPublicationsEncrypted } from "./localPublicationEncryption";
@@ -212,6 +212,7 @@ import {
   callBannerState,
   chipState,
   isTerminalLoud,
+  plaintextReleaseAvailable,
 } from "./mlsCallModePolicy";
 import {
   type MlsMediaBinding,
@@ -1924,6 +1925,11 @@ class Voice {
       // "Encrypt my calls" (§0.2 #9): with it OFF we negotiate plaintext —
       // no session, no E2EE Room — and appear non-enrolled to E2EE peers
       // (their loud downgrade attributes it to us). LOCAL per-device toggle.
+      // 🔴 Folded into the SHELL term, so an install with it off would be told
+      // "encrypted calls aren't available on this device" — a lie about the
+      // shell. Harmless only because the accessor hard-returns true today
+      // (media E2EE is mandatory); whoever makes that toggle real must give it
+      // its own readiness reason first.
       this.#settings.e2eeCallsEnabled;
     // The DEVICE terms. E2EE proven OFF here is the same class as the
     // toggle: no identity, no session, not an E2EE call — a plain voice call
@@ -1995,7 +2001,19 @@ class Voice {
         this.#e2eeWorker?.terminate();
         this.#mlsKeyProvider = undefined;
         this.#e2eeWorker = undefined;
-        e2eeCapable = false;
+        // 🔴 Move the READINESS, not just the boolean. Everything downstream —
+        // the chip's `deviceNeedsSetup`, which banner renders, whether the
+        // banner may claim publishing is paused — is derived from `readiness`,
+        // and a `readiness` that still said `ready` (or `owned_elsewhere`)
+        // while capability had gone false put a red strip promising a pause
+        // over a live, ungated mic, and in the `owned_elsewhere` case dropped
+        // the whole call to silent plaintext (media-e2ee-reviewer, HIGH-1).
+        // The shell genuinely cannot encrypt THIS call once the worker or the
+        // provider failed to construct, so that is what it now says — and
+        // `e2eeCapable` is re-derived rather than assigned, so the two cannot
+        // disagree again.
+        readiness = "unsupported";
+        e2eeCapable = callEncryptionCapable(readiness);
         this.onErr(error);
       }
     }
@@ -2012,7 +2030,10 @@ class Voice {
     // exact identity. Undefined ⇒ we request no qualified identity (non-E2EE
     // / not-yet-provisioned), and the identity assertion below is skipped.
     const selfUserId = this.getClient()?.user?.id;
-    let e2eeDeviceId =
+    // Withheld once the corroborated verdict says the server will refuse it:
+    // sending it would fail the join outright, and the whole point is that
+    // this device joins, unqualified and loud, rather than losing voice.
+    const e2eeDeviceId =
       e2eeCapable && readiness !== "owned_elsewhere"
         ? bridge?.status.get("state")?.device_id
         : undefined;
@@ -2536,48 +2557,32 @@ class Voice {
             e2eeDeviceId ?? undefined,
           );
         } catch (error) {
-          // delta refuses a device-qualified join whose device it will not
-          // resolve for the signed-in account (`assert_device_bound_session`).
-          // The commonest cause is this install's E2EE store belonging to a
-          // DIFFERENT account — sign-out does not wipe it — and today that
-          // costs the user VOICE ENTIRELY: `FailedValidation` is a terminal
-          // join refusal, so every join affordance for the channel goes inert
-          // for 30 s behind "The call couldn't be started right now", which
-          // says nothing about encryption.
+          // 🔴 Deliberately NOT recovered here. delta refuses a device-qualified
+          // join it cannot resolve for the signed-in account
+          // (`assert_device_bound_session`), and the commonest cause is this
+          // install's E2EE store belonging to a DIFFERENT account — sign-out
+          // does not wipe it. Re-joining UNQUALIFIED would rescue the call, and
+          // a first cut did exactly that; it hands a hostile or compromised
+          // server a lever it does not otherwise have. One `FailedValidation`
+          // reply would put this client on a BARE identity, which every peer
+          // classifies as instantly non-enrolled (`mlsRosterPolicy`) — so the
+          // whole call drops to `mixed` and everyone else is offered "Turn off
+          // encryption" — and would raise a destructive "Reset encryption"
+          // prompt here, on nothing but that server's say-so. The route builds
+          // that message with a catch-all `map_err`, so a database error says
+          // it too (media-e2ee-reviewer, HIGH-2).
           //
-          // So re-join UNQUALIFIED — but stay E2EE-CAPABLE. Dropping capability
-          // here is what a first cut did, and it is a silent-plaintext hole:
-          // a non-capable shell asserts no publish gate and latches nothing,
-          // and the chip's no-session branches only fire when the open-group
-          // probe says the channel HAS a group, so a device alone in a fresh
-          // channel published plaintext under NO chip and NO banner. Capable
-          // keeps the R2-5 gate, `sessionSetupDecision` holds it loud on the
-          // `deviceOwnedElsewhere` arm, the error latches, and the user's
-          // explicit "Stay unencrypted" is the only thing that lets a frame
-          // out. One retry, only for this exact refusal.
-          //
-          // Nothing durable is written: the route builds that message with a
-          // catch-all `map_err`, so a database blip is byte-identical to a real
-          // mismatch. `readiness` is this call's verdict only; the durable flag
-          // stays with the corroborated claim path in `E2EEBridge`.
-          if (e2eeDeviceId && isDeviceNotRegisteredRefusal(error)) {
-            console.error(
-              "[rtc] the call server would not accept this device's E2EE " +
-                "identity — holding this call unencrypted and loud",
-              error,
-            );
-            readiness = "owned_elsewhere";
-            e2eeDeviceId = undefined;
-            try {
-              auth = await channel.joinCall(node, true, undefined, undefined);
-            } catch (retryError) {
-              joinCallError = retryError;
-              throw retryError;
-            }
-          } else {
-            joinCallError = error;
-            throw error;
-          }
+          // The account-switch case is recovered on the CORROBORATED path
+          // instead: `E2EEBridge.#onClaimResult` (a rejected device claim plus
+          // an absent device-directory row plus no §6.4 restore) raises
+          // `deviceOwnedElsewhere`, `readiness` reads `owned_elsewhere` before
+          // this join, and the device id is withheld above — so the call joins
+          // unqualified, holds the gate loud, and never reaches this catch.
+          // What the refusal earns is a name (`classifyJoinRefusal` →
+          // `DeviceNotRegistered`) so the latched refusal can say what
+          // happened instead of "The call couldn't be started right now".
+          joinCallError = error;
+          throw error;
         }
       }
       // Superseded during joinCall → abandon this Room, leave the newer
@@ -2587,13 +2592,6 @@ class Voice {
         room.disconnect();
         return false;
       }
-      // Only now may the join's verdict reach shared state: the refusal above
-      // is handled inside a `catch` that runs before any ownership check, and
-      // writing there would let a superseded attempt tell a LIVE encrypted
-      // call that its device belongs to someone else (and flip the caption
-      // fail-closed gate open on it). Re-publishing the unchanged value on
-      // every other join costs nothing.
-      this.#setCallEncryptionReadiness(readiness);
 
       // Assert the `negotiating` publish gate BEFORE connect (R2-5): a plain
       // mic publish is initiated in the `connected` handler, which races
@@ -6026,6 +6024,13 @@ class Voice {
         return t`You don't have permission to join calls in this channel.`;
       case "CannotJoinCall":
         return t`The call is full. Try again when someone leaves.`;
+      case "DeviceNotRegistered":
+        // An account switch on an enrolled desktop, most often: the store is
+        // the previous owner's and the server will not accept its device.
+        // Recovered automatically once the device claim confirms it (see the
+        // join catch), so this is what the user sees in the window before
+        // that, and it names the one place that fixes it for good.
+        return t`Encryption on this device isn't set up for this account, so calls can't be joined here. Open Settings → Encryption to set it up again.`;
       default:
         // IsBot / FailedValidation / UnknownNode: nothing the user can act
         // on from here; the latch still stops the press-storm.
@@ -6183,6 +6188,13 @@ class Voice {
       // "capable shell, failed construction" arm. Both return not_encrypted,
       // so the chip never moved; the banner now has to tell them apart.
       capableAndEnabled: this.callE2EECapable(),
+      // A LOCAL fact, so unlike the open-group probe it cannot go stale: this
+      // device could encrypt calls and is not set up to. Without it a
+      // never-enrolled desktop that joined before the group opened stayed on
+      // chip `none` for the whole call.
+      deviceNeedsSetup: encryptionSetupAvailable(
+        this.callEncryptionReadiness(),
+      ),
     });
   }
 
@@ -6407,25 +6419,16 @@ class Voice {
   }
 
   /**
-   * Whether the banner's plaintext release would release anything.
-   *
-   * With a session, the session owns it (`confirmPlaintext`). Without one it
-   * is the R2-4 hold, and `canConfirmNoSessionPlaintext`'s four terms move
-   * together: the hold latches the error and asserts the `negotiating` gate in
-   * the same step, and the only thing that empties the gate is
-   * `#confirmNoSessionPlaintext`, which flips the mode to a confirmed
-   * interlude — a different banner. So the two SIGNALS below stand in for all
-   * four, and the read stays reactive.
-   *
-   * This is what keeps "Stay unencrypted" off the banners where nothing is
-   * paused — a never-enrolled device, an unsupported shell — on which the
-   * press is a silent no-op, and off `call_full`, which is terminal in the
-   * session and returns immediately.
+   * Whether the banner's plaintext release would release anything — the pure
+   * `plaintextReleaseAvailable` rule, which owns the reasoning and the spec.
    */
   callCanStayUnencrypted(): boolean {
-    if (this.callMode()?.kind === "call_full") return false;
-    if (this.#mlsSession !== undefined) return true;
-    return this.callE2EECapable() && this.callEncryptionError() !== undefined;
+    return plaintextReleaseAvailable({
+      mode: this.callMode(),
+      hasSession: this.#mlsSession !== undefined,
+      e2eeCapable: this.callE2EECapable(),
+      latchedError: this.callEncryptionError() !== undefined,
+    });
   }
 
   /**

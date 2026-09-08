@@ -30,9 +30,10 @@ const READY: SessionSetupInput = {
   deviceId: true,
   identityOk: true,
   keysListenerBound: true,
+  deviceOwnedElsewhere: false,
 };
 
-/** Every input the function can be given (2^7 = 128 shapes). */
+/** Every input the function can be given (2^8 = 256 shapes). */
 function* everyInput(): Generator<SessionSetupInput> {
   for (const e2eeCapable of BOOLS)
     for (const bridge of BOOLS)
@@ -41,15 +42,17 @@ function* everyInput(): Generator<SessionSetupInput> {
           for (const deviceId of BOOLS)
             for (const identityOk of BOOLS)
               for (const keysListenerBound of BOOLS)
-                yield {
-                  e2eeCapable,
-                  bridge,
-                  keyProvider,
-                  userId,
-                  deviceId,
-                  identityOk,
-                  keysListenerBound,
-                };
+                for (const deviceOwnedElsewhere of BOOLS)
+                  yield {
+                    e2eeCapable,
+                    bridge,
+                    keyProvider,
+                    userId,
+                    deviceId,
+                    identityOk,
+                    keysListenerBound,
+                    deviceOwnedElsewhere,
+                  };
 }
 
 test("a capable shell with every precondition met builds the session", () => {
@@ -101,6 +104,7 @@ test("non-capable shell → plain call, no gate — whatever else is missing", (
       deviceId: false,
       identityOk: false,
       keysListenerBound: false,
+      deviceOwnedElsewhere: false,
     }),
     { action: "plain" },
   );
@@ -118,6 +122,7 @@ test("PROOF: no capable input yields plain; only the fully-met input yields sess
     }
     assert.notEqual(decision.action, "plain", JSON.stringify(input));
     const allMet =
+      !input.deviceOwnedElsewhere &&
       input.bridge &&
       input.keyProvider &&
       input.userId &&
@@ -311,6 +316,7 @@ test("the refused-device arm is inert unless it is set", () => {
     deviceId: true,
     identityOk: true,
     keysListenerBound: true,
+    deviceOwnedElsewhere: false,
   });
   assert.deepEqual(d, { action: "session" });
 });

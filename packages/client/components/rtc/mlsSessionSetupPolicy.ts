@@ -104,8 +104,12 @@ export interface SessionSetupInput {
    * The server will not accept this install's E2EE device for the signed-in
    * account (`e2eeDeviceReadiness` = `owned_elsewhere`). Capable, provisioned,
    * and refused — so it is a HOLD, never a `plain`.
+   *
+   * REQUIRED, like every other term here: an optional safety input defaults to
+   * "no hold" when a caller forgets it, and the compiler is the right place to
+   * enforce a decision of this shape.
    */
-  deviceOwnedElsewhere?: boolean;
+  deviceOwnedElsewhere: boolean;
 }
 
 export type SessionSetupDecision =

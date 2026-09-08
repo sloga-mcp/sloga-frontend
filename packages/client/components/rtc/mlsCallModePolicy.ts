@@ -297,10 +297,24 @@ export interface ChipInputs {
   localPublicationsEncrypted: boolean;
   /** The VERIFIED MLS roster: every member's `user_verified` flag. */
   rosterVerified: readonly boolean[];
-  /** The channel has an open MLS group (the probe result — FE-7). */
+  /**
+   * The channel has an open MLS group — the FE-7 probe, answered ONCE at
+   * connect and never re-asked. That staleness is why it cannot be the only
+   * term below.
+   */
   channelHasOpenGroup: boolean;
   /** This shell can do media E2EE (capable + toggle on). */
   capableAndEnabled: boolean;
+  /**
+   * This shell COULD encrypt calls and this install is not set up for it —
+   * `encryptionSetupAvailable(readiness)`. A LOCAL fact, so unlike the probe it
+   * is always current, and a device in this state is not encrypting whoever
+   * else is in the call. Without it a never-enrolled desktop that joined
+   * before the group opened stayed on chip `none` for the whole call — silent
+   * on the side whose media is in the clear, while every peer paused behind
+   * the mixed banner naming it (media-e2ee-reviewer, HIGH-4).
+   */
+  deviceNeedsSetup: boolean;
 }
 
 /**
@@ -324,23 +338,20 @@ export function chipState(inputs: ChipInputs): ChipState {
   ) {
     return "not_encrypted";
   }
-  // Capable-but-failed construction in an E2EE-known call (ME-7/R2-4): a
-  // toggle-on capable shell with NO session but a channel that HAS an open
-  // group must not read as a quiet plain call — it is a downgrade the user
-  // can't see. (The session-present latched-error case is caught above.)
+  // NO SESSION. Two independent reasons this is a downgrade rather than a
+  // quiet plain call, and either is enough:
+  //
+  //  (a) the channel HAS an open group — someone is encrypting and we are not.
+  //      Covers ME-7/R2-4 (a capable shell whose session failed to construct,
+  //      a downgrade the user can't see) and the §0.2 #9 self-attribution for
+  //      a shell that can never encrypt. `capableAndEnabled` no longer splits
+  //      these: both always returned the same chip, and the BANNER is what
+  //      needs them told apart (`callBannerState` reads the readiness).
+  //  (b) this device could encrypt and simply is not set up here. A local
+  //      fact, so it does not inherit the probe's staleness — see the field.
   if (
     !inputs.hasSession &&
-    inputs.capableAndEnabled &&
-    inputs.channelHasOpenGroup
-  ) {
-    return "not_encrypted";
-  }
-  // Toggle-OFF self in a channel whose call IS E2EE (§0.2 #9 self-attribution):
-  // no session (we didn't attempt), capable shell present but calls disabled.
-  if (
-    !inputs.hasSession &&
-    !inputs.capableAndEnabled &&
-    inputs.channelHasOpenGroup
+    (inputs.channelHasOpenGroup || inputs.deviceNeedsSetup)
   ) {
     return "not_encrypted";
   }
@@ -442,8 +453,13 @@ export function isTerminalLoud(
  *   unaudited build). Nothing to set up; the escape is Leave.
  * - `terminal_loud` — ME-10: the DEVICE is fine and the CALL failed to secure.
  *   Publishing is held by the `negotiating` gate; the escape is Leave / Stay
- *   unencrypted (plus Reset encryption on a store-owner mismatch). Also the
- *   backstop for any other red chip, so none can be silent.
+ *   unencrypted (plus Reset encryption on a store-owner mismatch). Requires a
+ *   LATCHED error, because that is what makes its copy — "your audio and video
+ *   stay paused" — true.
+ * - `unencrypted_notice` — the honest floor: a red chip nothing above claimed,
+ *   with nothing latched, so no pause may be promised and no release offered.
+ *   Unreachable today (every red chip on a `ready` device latches); it exists
+ *   so the backstop cannot lie the way the previous one did.
  */
 export type CallBannerKind =
   | "none"
@@ -451,14 +467,24 @@ export type CallBannerKind =
   | "interlude"
   | "terminal_loud"
   | "device_not_set_up"
-  | "device_unsupported";
+  | "device_unsupported"
+  | "unencrypted_notice";
 
 export interface CallBannerInputs {
   /** The §4.4 chip, from `chipState`. */
   chip: ChipState;
   /** The §3.4 call mode (undefined before any verdict). */
   mode: CallMode | undefined;
-  /** A structured call-encryption error is latched. */
+  /**
+   * A structured call-encryption error is latched.
+   *
+   * Load-bearing, not decoration: on every reachable path the latch and the
+   * held `negotiating` gate are asserted together (`sessionSetupDecision`'s
+   * `hold_loud`, `#onLoud`), so it is the term that decides whether a banner
+   * may claim publishing is paused. It was accepted and ignored once, which
+   * is exactly how a red strip came to promise a pause over a live mic
+   * (media-e2ee-reviewer, MEDIUM-1).
+   */
   latchedError: boolean;
   /**
    * WHY this device is or is not encrypting, from `e2eeDeviceReadiness` —
@@ -523,7 +549,46 @@ export function callBannerState(inputs: CallBannerInputs): CallBannerKind {
   // red state a future change invents — so nothing can return `none` from here
   // by omission. `isTerminalLoud` is still the name for the two shapes it
   // always covered (`callTerminalLoud`), not the gate for this.
-  return "terminal_loud";
+  //
+  // The latch is what makes the loud copy true. Every reachable red chip on a
+  // `ready` device has one: `sessionSetupDecision` latches on every
+  // capable-but-sessionless arm, `#onLoud` latches before `call_full`, and a
+  // session that reached `failed` came through `#onLoud`. An unlatched one
+  // would mean no gate is held, so it gets the floor instead of a promise.
+  return inputs.latchedError ? "terminal_loud" : "unencrypted_notice";
+}
+
+/**
+ * Whether the banner's plaintext release would release anything.
+ *
+ * With a session the session owns it (`confirmPlaintext`). Without one it is
+ * the R2-4 hold, whose terms `canConfirmNoSessionPlaintext` checks; the two
+ * here stand in for all of them, because the hold latches the error and
+ * asserts the `negotiating` gate in the same step and the only thing that
+ * empties the gate is `#confirmNoSessionPlaintext`, which flips the mode to a
+ * confirmed interlude — a different banner.
+ *
+ * Keeps the button off the banners where nothing is paused (a never-enrolled
+ * device, a shell that cannot encrypt), where pressing it is a silent no-op,
+ * and off `call_full`, which is terminal in the session so `confirmPlaintext`
+ * returns immediately. Lives here rather than on `Voice` because it is the
+ * rule that decides whether a user is offered a plaintext downgrade, and the
+ * Voice class cannot be loaded under `node --test`.
+ */
+export interface PlaintextReleaseInputs {
+  mode: CallMode | undefined;
+  hasSession: boolean;
+  /** The call's connect-time capability snapshot. */
+  e2eeCapable: boolean;
+  latchedError: boolean;
+}
+
+export function plaintextReleaseAvailable(
+  inputs: PlaintextReleaseInputs,
+): boolean {
+  if (inputs.mode?.kind === "call_full") return false;
+  if (inputs.hasSession) return true;
+  return inputs.e2eeCapable && inputs.latchedError;
 }
 
 // ---- ctl-announce payload parsing (default-closed forward-compat) ----------

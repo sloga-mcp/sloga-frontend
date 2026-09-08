@@ -112,9 +112,17 @@ export function VoiceCallDowngradeBanner() {
   const ownerMismatch = () => storeOwnerMismatch(voice.callEncryptionError());
   // The same fault seen from outside: the server would not accept this
   // device's identity. Deliberately does NOT claim another account owns it —
-  // a hard-revoked device of the signed-in account lands here too, and delta
-  // answers the same way for a plain database error. Reset is still the
-  // remedy, so the offer is the same; only the sentence is careful.
+  // a hard-revoked device of the signed-in account lands here too.
+  //
+  // 🔴 It also does NOT get the Reset button. That control wipes local E2EE
+  // state including stored encrypted messages, and this verdict is assembled
+  // entirely from SERVER answers (a rejected claim, an absent directory row);
+  // letting it summon a destructive prompt inside a call hands a hostile or
+  // compromised server a lever it should not have (media-e2ee-reviewer,
+  // HIGH-3). Reset stays on `ownerMismatch`, which native produced by READING
+  // the store's own row. Here the user is routed to Settings → Encryption
+  // instead, where the same remedy sits behind the same MFA and native
+  // confirm, with the whole picture in front of them.
   const deviceRefused = () => readiness() === "owned_elsewhere";
 
   const [resetting, setResetting] = createSignal(false);
@@ -173,6 +181,7 @@ export function VoiceCallDowngradeBanner() {
         // its publishing really is held.
         notice={
           banner() === "device_unsupported" ||
+          banner() === "unencrypted_notice" ||
           (banner() === "device_not_set_up" && !deviceRefused())
         }
       >
@@ -204,7 +213,8 @@ export function VoiceCallDowngradeBanner() {
               <Trans>
                 This device's encryption isn't registered to your account, so
                 this call can't be encrypted. Your audio and video stay paused —
-                reset encryption on this device, continue without it, or leave.
+                set encryption up again on this device, continue without it, or
+                leave.
               </Trans>
             </Match>
             <Match when={banner() === "device_not_set_up"}>
@@ -221,11 +231,24 @@ export function VoiceCallDowngradeBanner() {
                 this call.
               </Trans>
             </Match>
+            <Match when={mode()?.kind === "call_full"}>
+              {/* Terminal in the session, so the plaintext release is hidden
+                  (`plaintextReleaseAvailable`) — the copy must not offer it. */}
+              <Trans>
+                This call could not be secured. Your audio and video stay
+                paused.
+              </Trans>
+            </Match>
             <Match when={banner() === "terminal_loud"}>
               <Trans>
                 This call could not be secured. Your audio and video stay paused
                 — leave, or continue without encryption.
               </Trans>
+            </Match>
+            <Match when={banner() === "unencrypted_notice"}>
+              {/* The honest floor: nothing is latched, so nothing is paused
+                  and there is nothing to promise. */}
+              <Trans>This call is not encrypted.</Trans>
             </Match>
             <Match when={banner() === "interlude" && voice.callAnnouncedBy()}>
               <Trans>
@@ -244,7 +267,7 @@ export function VoiceCallDowngradeBanner() {
         <Actions>
           {/* Offered, never forced: this destroys local E2EE state, so it sits
               alongside "Stay unencrypted" rather than replacing it. */}
-          <Show when={!!ownerMismatch() || deviceRefused()}>
+          <Show when={!!ownerMismatch() && !!e2ee}>
             <Button
               size="sm"
               variant="text"
@@ -254,10 +277,16 @@ export function VoiceCallDowngradeBanner() {
               <Trans>Reset encryption</Trans>
             </Button>
           </Show>
-          {/* The route to device setup — the escape the ME-7 dead end lacked.
-              Only for a device that was never set up: the enable flow refuses
-              a provisioned store, so a refused device gets Reset instead. */}
-          <Show when={readiness() === "needs_setup"}>
+          {/* The route to device setup — the escape the ME-7 dead end lacked,
+              and (per the `deviceRefused` note above) the ONLY remedy offered
+              for a server-asserted refusal. The Encryption page serves both:
+              an unenrolled device gets the enable flow, a provisioned one the
+              disable-then-enrol flow, each behind its own gates. */}
+          <Show
+            when={
+              readiness() === "needs_setup" || readiness() === "owned_elsewhere"
+            }
+          >
             <Button size="sm" variant="text" onPress={openEncryptionSettings}>
               <Trans>Set up encryption</Trans>
             </Button>

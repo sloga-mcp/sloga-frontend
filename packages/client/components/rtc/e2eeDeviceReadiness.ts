@@ -92,6 +92,20 @@ export function callEncryptionReadiness(
 }
 
 /**
+ * Whether the user could fix this from Settings on this device. False for
+ * `unsupported` (nothing to set up) and `ready` (nothing wrong).
+ *
+ * Also the chip's `deviceNeedsSetup` term, which is what makes a device that
+ * cannot encrypt say so WITHOUT waiting on the open-group probe — see
+ * `chipState`.
+ */
+export function encryptionSetupAvailable(
+  readiness: CallEncryptionReadiness,
+): boolean {
+  return readiness === "needs_setup" || readiness === "owned_elsewhere";
+}
+
+/**
  * The `e2eeCapable` boolean `connect()` still branches on.
  *
  * 🔴 `owned_elsewhere` IS CAPABLE. It is tempting to read "the server will not

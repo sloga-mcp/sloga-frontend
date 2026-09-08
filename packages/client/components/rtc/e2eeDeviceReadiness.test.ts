@@ -11,6 +11,7 @@ import { test } from "node:test";
 import {
   callEncryptionCapable,
   callEncryptionReadiness,
+  encryptionSetupAvailable,
   isDeviceNotRegisteredRefusal,
 } from "./e2eeDeviceReadiness.ts";
 
@@ -123,4 +124,15 @@ test("nothing else is that refusal — a reworded backend degrades to today", ()
     { error: "joining device is not registered" },
   ])
     assert.equal(isDeviceNotRegisteredRefusal(error), false);
+});
+
+test("🔴 setup-available is the chip's LOCAL term, and it is exactly the two fixable reasons", () => {
+  // It decides `chipState`'s `deviceNeedsSetup`, i.e. whether a device that
+  // cannot encrypt says so WITHOUT waiting on the open-group probe (which is
+  // answered once at connect and never re-asked). `unsupported` must stay out:
+  // there is nothing to set up, so speaking on every call would be noise.
+  assert.equal(encryptionSetupAvailable("needs_setup"), true);
+  assert.equal(encryptionSetupAvailable("owned_elsewhere"), true);
+  assert.equal(encryptionSetupAvailable("unsupported"), false);
+  assert.equal(encryptionSetupAvailable("ready"), false);
 });

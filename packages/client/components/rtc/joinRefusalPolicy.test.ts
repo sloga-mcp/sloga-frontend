@@ -194,3 +194,43 @@ test("in flight wins over refused when both would apply", () => {
     "in-flight",
   );
 });
+
+test("🔴 the device-not-registered refusal is named, and is still TERMINAL", () => {
+  // An account switch on an enrolled desktop hits this, and the generic
+  // `FailedValidation` copy ("The call couldn't be started right now") never
+  // mentions encryption — so the user loses voice with no way to learn why.
+  // Naming it changes NOTHING about what the client does: the join stays
+  // refused, because delta builds that message with a catch-all `map_err` and
+  // a database error says it too.
+  assert.equal(
+    classifyJoinRefusal({
+      type: "FailedValidation",
+      error: "joining device is not registered",
+    }),
+    "DeviceNotRegistered",
+  );
+  // Any other FailedValidation keeps the generic name.
+  assert.equal(
+    classifyJoinRefusal({
+      type: "FailedValidation",
+      error: "invalid bundle encoding",
+    }),
+    "FailedValidation",
+  );
+  // And it must still block a press-storm exactly as before.
+  assert.equal(
+    joinBlockedReason({
+      channelId: "c",
+      now: 1_000,
+      channelVersion: 3,
+      inFlightChannelId: undefined,
+      latch: {
+        channelId: "c",
+        reason: "DeviceNotRegistered",
+        at: 0,
+        channelVersion: 3,
+      },
+    }),
+    "refused",
+  );
+});
