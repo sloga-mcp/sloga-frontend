@@ -3,7 +3,8 @@
  * payload parser — the PURE, session-independent core of slice 6.5's downgrade
  * UX, extracted from `mlsCallSession`/`state.tsx` so every transition and the
  * chip precedence table are unit-testable in isolation (the house no-vitest
- * split; this module must stay dependency-free so `node --test` can load it).
+ * split; this module must stay dependency-free so `node --test` can load it —
+ * the one import below is TYPE-ONLY and is erased, so nothing is loaded).
  *
  * Nothing here performs I/O or touches a Room: `callModeTransition` returns the
  * NEXT mode + the EFFECTS the session must run; `chipState` derives the visible
@@ -11,6 +12,8 @@
  * ctl-announce (default-closed forward-compat). The session owns the imperative
  * glue (native confirm dialog, pause gate, announce courier, timers).
  */
+
+import type { CallEncryptionReadiness } from "./e2eeDeviceReadiness.ts";
 
 // ---- Call mode (the §3.4 state machine) ------------------------------------
 
@@ -429,15 +432,18 @@ export function isTerminalLoud(
  * - `mixed` / `interlude` — the §3.4 downgrade states. Publishing is paused
  *   (mixed) or explicitly resumed in plaintext (interlude); the escape is
  *   "Turn off encryption" / "Resume unencrypted".
- * - `terminal_loud` — ME-10: the call FAILED to secure. Publishing is held by
- *   the `negotiating` gate; the escape is Leave / Stay unencrypted (plus Reset
- *   encryption on a store-owner mismatch).
  * - `device_not_set_up` — this shell COULD encrypt calls but this install is
- *   not set up for the signed-in account: never enrolled, wiped, or enrolled
- *   by a different account. Nothing is paused and nothing failed — there was
- *   no attempt. The escape is a route to device setup, and Leave.
+ *   not set up for the signed-in account: never enrolled, wiped, or holding a
+ *   device the server refuses. The cause and the remedy are the DEVICE's, so
+ *   it does not borrow the call-failure copy. Whether publishing is paused
+ *   differs by cause (see `callEncryptionCapable`), which is why the caller —
+ *   not this rule — decides whether to offer the plaintext release.
  * - `device_unsupported` — this shell can never encrypt calls (a browser, an
  *   unaudited build). Nothing to set up; the escape is Leave.
+ * - `terminal_loud` — ME-10: the DEVICE is fine and the CALL failed to secure.
+ *   Publishing is held by the `negotiating` gate; the escape is Leave / Stay
+ *   unencrypted (plus Reset encryption on a store-owner mismatch). Also the
+ *   backstop for any other red chip, so none can be silent.
  */
 export type CallBannerKind =
   | "none"
@@ -454,56 +460,69 @@ export interface CallBannerInputs {
   mode: CallMode | undefined;
   /** A structured call-encryption error is latched. */
   latchedError: boolean;
-  /** An MLS call session exists. */
-  hasSession: boolean;
   /**
-   * This shell could encrypt calls if the install were set up for it —
-   * `encryptionSetupAvailable(readiness)`. Decides which of the two
-   * device-level banners the no-session red chip gets; it is NOT what makes
-   * one appear.
+   * WHY this device is or is not encrypting, from `e2eeDeviceReadiness` —
+   * the whole four-valued reason, deliberately not a boolean. Collapsing it
+   * made `unsupported` ("this app can't encrypt calls", a POSITIVE fact) the
+   * fallback for "we don't know", which is the most reassuring and least
+   * actionable thing to say to someone whose call just failed
+   * (media-e2ee-reviewer, F4).
    */
-  deviceCanBeSetUp: boolean;
+  readiness: CallEncryptionReadiness;
 }
 
 /**
  * THE INVARIANT: `chipState(x) === "not_encrypted"` implies
- * `callBannerState(...) !== "none"`. A red chip always carries a banner and an
- * escape — enforced by an exhaustive spec over the chip's whole input space,
- * not by inspection.
+ * `callBannerState(...) !== "none"`, for every readiness. A red chip always
+ * carries a banner and an escape — enforced by an exhaustive spec over the
+ * chip's whole input space, not by inspection.
  *
  * It did not hold before. `isTerminalLoud` requires a latched error, and the
  * chip's two NO-SESSION branches (ME-7 "capable, no session, open group" and
- * the §0.2 #9 toggle-off self-attribution) latch nothing — nobody attempted
- * encryption, so nothing could fail. Those were read as attribution rather
- * than failure and deliberately given no banner. For a browser that reading is
- * right; for a desktop install that could encrypt and simply is not set up it
- * is a downgrade with a one-click remedy the user is never shown, which is the
- * §7.4 observation this closes. So the state keeps its own identity — its own
- * wording, its own action, no false "your audio and video stay paused" — and
- * stops being a dead end.
+ * the §0.2 #9 self-attribution) latch nothing — nobody attempted encryption,
+ * so nothing could fail. Those were read as attribution rather than failure and
+ * deliberately given no banner. For a browser that reading is right; for a
+ * desktop install that could encrypt and simply is not set up it is a downgrade
+ * with a one-click remedy the user is never shown, which is the §7.4
+ * observation this closes.
  *
- * Precedence runs most-specific first. `mixed`/`interlude` are the modes'
- * own banners; `terminal_loud` covers every latched failure INCLUDING the
- * capable-but-sessionless R2-4 hold (which does latch, and whose publishing
- * really is paused); the device arms take what is left of a red chip with no
- * session; and the final arm is a backstop so no future chip state can return
- * red with nothing to act on.
+ * 🔴 The invariant is about the chip, and the chip is not the whole story: both
+ * no-session branches are gated on `channelHasOpenGroup`, a server probe run
+ * ONCE at connect. A device that cannot encrypt, alone in a channel with no
+ * group yet, gets chip `none` and therefore no banner from this rule — so a
+ * device that must not go quiet has to stay E2EE-CAPABLE and latch, which puts
+ * its chip red through `latchedError` with no probe involved. That is what
+ * `callEncryptionCapable` does for `owned_elsewhere`, and it is the reason it
+ * is not simply "not an E2EE call". The remaining case — a never-enrolled
+ * install (`needs_setup`) in a channel whose group opens after the probe
+ * answered — is pre-existing on main and recorded as a follow-up, with a spec
+ * below that pins the gap rather than letting it hide.
  */
 export function callBannerState(inputs: CallBannerInputs): CallBannerKind {
   const mode = inputs.mode?.kind;
   if (mode === "mixed") return "mixed";
   if (mode === "interlude") return "interlude";
-  if (isTerminalLoud(inputs.mode, inputs.chip, inputs.latchedError)) {
-    return "terminal_loud";
-  }
   if (inputs.chip !== "not_encrypted") return "none";
-  if (!inputs.hasSession) {
-    return inputs.deviceCanBeSetUp ? "device_not_set_up" : "device_unsupported";
+
+  // The device arms outrank the loud one: when the reason this call is not
+  // encrypted is the device, saying "this call could not be secured" and
+  // offering only a per-call escape sends the user round the loop again on
+  // their next call.
+  switch (inputs.readiness) {
+    case "unsupported":
+      return "device_unsupported";
+    case "needs_setup":
+    case "owned_elsewhere":
+      return "device_not_set_up";
+    case "ready":
+      break;
   }
-  // Backstop: a session-bound red chip that none of the arms above claimed
-  // (today only `call_full`, which auto-leaves). Never leave it silent — the
-  // Leave / Stay-unencrypted banner is the honest floor for "this call is not
-  // encrypted and something went wrong".
+
+  // A `ready` device with a red chip is a CALL failure. Everything left lands
+  // here — the two `isTerminalLoud` shapes, the `call_full` auto-leave, and any
+  // red state a future change invents — so nothing can return `none` from here
+  // by omission. `isTerminalLoud` is still the name for the two shapes it
+  // always covered (`callTerminalLoud`), not the gate for this.
   return "terminal_loud";
 }
 

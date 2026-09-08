@@ -278,3 +278,39 @@ test("PROOF: the escape needs all four terms — any single missing term refuses
           );
         }
 });
+
+test("🔴 a device the server refuses HOLDS LOUD — it never falls through to plain", () => {
+  // `owned_elsewhere` stays E2EE-capable on purpose (see
+  // `callEncryptionCapable`), so it must land on a hold with a reason of its
+  // own: the caller withholds the refused device id, which without this arm
+  // would read as "this device's E2EE identity is not available yet" — wrong,
+  // and nothing the user can act on.
+  const d = sessionSetupDecision({
+    e2eeCapable: true,
+    bridge: true,
+    keyProvider: true,
+    userId: true,
+    deviceId: false,
+    identityOk: false,
+    keysListenerBound: true,
+    deviceOwnedElsewhere: true,
+  });
+  assert.equal(d.action, "hold_loud");
+  assert.match(
+    (d as { reason: string }).reason,
+    /not registered to the account you are signed in as/,
+  );
+});
+
+test("the refused-device arm is inert unless it is set", () => {
+  const d = sessionSetupDecision({
+    e2eeCapable: true,
+    bridge: true,
+    keyProvider: true,
+    userId: true,
+    deviceId: true,
+    identityOk: true,
+    keysListenerBound: true,
+  });
+  assert.deepEqual(d, { action: "session" });
+});

@@ -11,7 +11,6 @@ import { test } from "node:test";
 import {
   callEncryptionCapable,
   callEncryptionReadiness,
-  encryptionSetupAvailable,
   isDeviceNotRegisteredRefusal,
 } from "./e2eeDeviceReadiness.ts";
 
@@ -24,7 +23,6 @@ const base = {
 test("an enrolled device on a supported shell is ready", () => {
   assert.equal(callEncryptionReadiness(base), "ready");
   assert.equal(callEncryptionCapable("ready"), true);
-  assert.equal(encryptionSetupAvailable("ready"), false);
 });
 
 test("an UNRESOLVED status stays ready — R2-4 fail-closed, unchanged", () => {
@@ -46,16 +44,14 @@ test("a proven-off device needs setup — the fresh-install default", () => {
   const r = callEncryptionReadiness({ ...base, status: { enabled: false } });
   assert.equal(r, "needs_setup");
   assert.equal(callEncryptionCapable(r), false);
-  assert.equal(encryptionSetupAvailable(r), true);
 });
 
-test("a store owned by another account outranks 'needs setup'", () => {
+test("a store the server refuses outranks 'needs setup'", () => {
   // Both are "not set up for you here", but only this one has a store to
   // clear; sending the user into the enable flow would fail on
   // `AlreadyEnabled` and teach them nothing.
   const r = callEncryptionReadiness({ ...base, deviceOwnedElsewhere: true });
   assert.equal(r, "owned_elsewhere");
-  assert.equal(encryptionSetupAvailable(r), true);
   // Even with the store simultaneously proven off.
   assert.equal(
     callEncryptionReadiness({
@@ -65,6 +61,23 @@ test("a store owned by another account outranks 'needs setup'", () => {
     }),
     "owned_elsewhere",
   );
+});
+
+test("🔴 a REFUSED device stays CAPABLE — it is a failure, not a non-capability", () => {
+  // The hole the first cut of this fix opened (reviewer F1, CRITICAL).
+  // Non-capable means no publish gate, no session and no latched error, and
+  // `chipState`'s no-session branches only fire when the open-group probe says
+  // the channel HAS a group — so a refused device alone in a fresh channel
+  // published plaintext with no chip and no banner at all. Capable keeps the
+  // R2-5 gate asserted, `sessionSetupDecision` holds it loud, and the chip is
+  // red through `latchedError` with no probe in the path.
+  assert.equal(callEncryptionCapable("owned_elsewhere"), true);
+  // ...while a device that was never set up here has no identity to attempt
+  // anything with, and holding every fresh install's first call behind a
+  // consent press is not this rule's call to make.
+  assert.equal(callEncryptionCapable("needs_setup"), false);
+  assert.equal(callEncryptionCapable("unsupported"), false);
+  assert.equal(callEncryptionCapable("ready"), true);
 });
 
 test("an unsupported shell outranks everything — there is nothing to set up", () => {
@@ -79,7 +92,6 @@ test("an unsupported shell outranks everything — there is nothing to set up", 
       ...over,
     });
     assert.equal(r, "unsupported");
-    assert.equal(encryptionSetupAvailable(r), false);
     assert.equal(callEncryptionCapable(r), false);
   }
 });

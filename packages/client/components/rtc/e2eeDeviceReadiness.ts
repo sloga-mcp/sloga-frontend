@@ -36,11 +36,13 @@ import {
  *   store is unprovisioned until the user enrols or restores, so calls are
  *   plaintext by default and nothing says so.
  * - `owned_elsewhere` — the shell CAN encrypt and this install IS provisioned,
- *   but the device it holds does not belong to the signed-in account. Sign-out
- *   does not wipe the E2EE store (`account` has no owner column;
- *   `mls_signature_key` is a single row bound to whoever enrolled it), so
- *   signing in as a second account lands here. Same remedy as `needs_setup`
- *   plus a reset — see `e2eeStoreOwner`.
+ *   but the server will not accept the device it holds for the signed-in
+ *   account. Sign-out does not wipe the E2EE store (`account` has no owner
+ *   column; `mls_signature_key` is a single row bound to whoever enrolled it),
+ *   so signing in as a second account lands here — but so does a device of
+ *   YOUR OWN account that was hard-revoked, and the client cannot tell those
+ *   apart, which is why the copy for it names neither. Still CAPABLE: see
+ *   `callEncryptionCapable`. Remedy is a reset — see `e2eeStoreOwner`.
  * - `unsupported` — this shell can never encrypt calls (a browser, an
  *   unaudited Electron build, a shell with no native key-push channel). There
  *   is nothing for the user to set up.
@@ -89,21 +91,34 @@ export function callEncryptionReadiness(
   return "ready";
 }
 
-/** The `e2eeCapable` boolean `connect()` still branches on. */
+/**
+ * The `e2eeCapable` boolean `connect()` still branches on.
+ *
+ * 🔴 `owned_elsewhere` IS CAPABLE. It is tempting to read "the server will not
+ * accept this device" as "not an E2EE call" and take the quiet plaintext path,
+ * and that is exactly the hole: a non-capable shell asserts no publish gate and
+ * builds no session, and `chipState`'s no-session branches are gated on
+ * `channelHasOpenGroup` — so a device alone in a channel with no open group
+ * yet gets chip `none`, no banner, and publishes plaintext with NO chrome at
+ * all. That is the 2026-09-08 "while it sat alone" shape, reproduced by the
+ * fix meant to close it (media-e2ee-reviewer, F1 CRITICAL).
+ *
+ * The store here is PROVISIONED — the device exists, it simply is not this
+ * account's — so this is a FAILURE, and failures stay capable: the R2-5
+ * `negotiating` gate is asserted, `sessionSetupDecision` returns `hold_loud`,
+ * the structured error latches, and the chip is red through `latchedError`
+ * with no dependence on any server probe. The user's explicit "Stay
+ * unencrypted" press is then the only thing that releases a frame.
+ *
+ * `needs_setup` is genuinely NOT capable and stays that way: a never-enrolled
+ * install has no identity to attempt anything with, and holding every fresh
+ * desktop's first call behind a consent press is a product change this rule
+ * has no business making.
+ */
 export function callEncryptionCapable(
   readiness: CallEncryptionReadiness,
 ): boolean {
-  return readiness === "ready";
-}
-
-/**
- * Whether the user could fix this from settings on this device. False for
- * `unsupported` (nothing to set up) and for `ready` (nothing wrong).
- */
-export function encryptionSetupAvailable(
-  readiness: CallEncryptionReadiness,
-): boolean {
-  return readiness === "needs_setup" || readiness === "owned_elsewhere";
+  return readiness === "ready" || readiness === "owned_elsewhere";
 }
 
 /**
@@ -119,6 +134,16 @@ export function encryptionSetupAvailable(
  * away entirely, with nothing said about encryption. A backend that reworded
  * this string degrades to exactly that pre-existing behaviour; it never
  * degrades to joining unencrypted by accident.
+ *
+ * 🔴 THIS STRING IS NOT PROOF OF OWNERSHIP. The route builds it with
+ * `.map_err(|_| …)` over `fetch_e2ee_identity`, which returns `NotFound` for a
+ * missing row AND propagates any `DatabaseError` — so a Mongo failover answers
+ * byte-identically to a genuine mismatch (media-e2ee-reviewer, F2 HIGH). The
+ * caller must therefore treat a match as a fact about THIS CALL only: it may
+ * drop the device-qualified identity and hold the call loud, and it must NOT
+ * write anything durable. The durable verdict needs the corroboration
+ * `#onClaimResult` has (a rejected claim plus an absent device directory row),
+ * and properly needs the owed native `e2ee_store_owner` accessor.
  */
 const DEVICE_NOT_REGISTERED = "joining device is not registered";
 

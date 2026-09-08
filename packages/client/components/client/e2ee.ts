@@ -1200,18 +1200,26 @@ export class E2EEBridge implements E2EEAdapter {
    * Signing out does not wipe the E2EE store — `account` is a single row
    * with no owner column and `mls_signature_key` is a single row bound to
    * whoever enrolled it — so a second account on the same install meets a
-   * device the server has registered to somebody else. Set true when a
+   * device the server has registered to somebody else. Set true ONLY when a
    * device claim is REJECTED and the signed-in account's device directory
-   * does not list this device, with no §6.4 restore to re-enroll: that
-   * combination has exactly one meaning, and until now it reached nothing
-   * but a `console.error`.
+   * does not list this device, with no §6.4 restore to re-enroll.
    *
-   * What reads it: the call path (`e2eeDeviceReadiness`), which stops
-   * offering a device-qualified join the server will refuse and lets the
-   * call chrome say the device needs setting up instead of publishing
-   * plaintext under a red chip with no banner. Cleared by the next accepted
-   * claim — signing back in as the owner fixes it with no further action,
-   * which is the cheap remedy the store-owner work already documents.
+   * 🔴 Two facts about that inference. It is three SERVER-supplied answers, so
+   * it is not proof; and it also covers a device of your OWN account that was
+   * hard-revoked, which is why nothing that renders it names an account. The
+   * one refusal that is NOT allowed to write it is delta's
+   * `joining device is not registered` — that route collapses `NotFound` and
+   * any database error into the same string, so a Mongo blip would otherwise
+   * latch this for the whole app run (media-e2ee-reviewer, F2 HIGH). That path
+   * scopes its verdict to the call it is joining. The honest local anchor is
+   * the owed native `e2ee_store_owner` accessor.
+   *
+   * What reads it: the call path (`e2eeDeviceReadiness`), which stops offering
+   * a device-qualified join the server will refuse — but stays E2EE-CAPABLE,
+   * so the call holds the publish gate loud rather than going quietly
+   * plaintext. Cleared by the next accepted claim, and by a device directory
+   * that does list us, so a false verdict costs one reconnect rather than the
+   * app run.
    *
    * NOT a security gate: it never grants anything. Everything it guards is
    * already enforced server-side (the device claim, `assert_bound_session`)
@@ -1226,17 +1234,6 @@ export class E2EEBridge implements E2EEAdapter {
     this.#transport = createNativeTransport();
 
     client.on("ready", () => void this.#onReady());
-  }
-
-  /**
-   * Record that delta refused a device-qualified call join for this
-   * install's device (`joining device is not registered`). Same fact as the
-   * claim rejection below and the same flag — this is the path that catches
-   * it on the FIRST call after an account switch, before any reconnect has
-   * run a challenge. Idempotent.
-   */
-  noteDeviceNotRegistered(): void {
-    this.deviceOwnedElsewhere.set("state", true);
   }
 
   /**
@@ -1701,6 +1698,10 @@ export class E2EEBridge implements E2EEAdapter {
       // NOT this case (see `#ownDevicePresence`) — fall through to the honest
       // error so a transient reject or a hostile server can't churn re-derives.
       const presence = await this.#ownDevicePresence();
+      // A directory that DOES list this device is positive evidence against a
+      // standing inherited-store verdict — clear it here rather than waiting
+      // for an accepted claim, so a wrong one costs a reconnect, not a run.
+      if (presence === "present") this.deviceOwnedElsewhere.delete("state");
       if (presence === "missing") {
         try {
           this.#pendingRestoreRepublish = await this.#invoke<Record<

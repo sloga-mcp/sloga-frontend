@@ -100,6 +100,12 @@ export interface SessionSetupInput {
   identityOk: boolean;
   /** The native `e2ee:call-keys-changed` listener registered in time. */
   keysListenerBound: boolean;
+  /**
+   * The server will not accept this install's E2EE device for the signed-in
+   * account (`e2eeDeviceReadiness` = `owned_elsewhere`). Capable, provisioned,
+   * and refused — so it is a HOLD, never a `plain`.
+   */
+  deviceOwnedElsewhere?: boolean;
 }
 
 export type SessionSetupDecision =
@@ -129,6 +135,17 @@ export function sessionSetupDecision(
   input: SessionSetupInput,
 ): SessionSetupDecision {
   if (!input.e2eeCapable) return { action: "plain" };
+  // Checked before the missing-device-id arm below, which it would otherwise
+  // fall into with an unrelated reason: the caller deliberately withholds the
+  // device id once the server has refused it, so "not available yet" would be
+  // both wrong and unactionable. This is the account-switch / revoked-device
+  // hold, and the banner reads the reason to offer a reset.
+  if (input.deviceOwnedElsewhere) {
+    return {
+      action: "hold_loud",
+      reason: `${HOLD_PREFIX}this device's encryption is not registered to the account you are signed in as`,
+    };
+  }
   if (!input.bridge) {
     return {
       action: "hold_loud",

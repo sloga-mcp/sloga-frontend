@@ -34,17 +34,22 @@ import { participantUserId } from "../participantIdentity";
  * the R2-4 setup hold in state.tsx), and a confirmed interlude gets its own
  * copy so the promise is withdrawn the moment publishing resumes.
  *
- * It ALSO carries the two device-level states, which are not downgrades of
- * this call and must not borrow the loud copy: this install could encrypt
- * calls but has no encryption set up (or holds another account's store), and
- * this shell can never encrypt. Nothing is paused in either — nothing was
- * attempted — so they render as a NOTICE, with the remedy rather than a
- * "stay unencrypted" release that would be a no-op. They exist because a red
- * NOT-ENCRYPTED chip used to be a dead end there: no banner, no explanation,
- * and (for a device that simply needs setting up) a one-click fix the user
- * was never shown. Which banner applies is decided once, in
+ * It ALSO carries the two DEVICE-level states, whose cause and remedy are not
+ * this call's: this install could encrypt calls but is not set up for the
+ * signed-in account, and this shell can never encrypt. They exist because a
+ * red NOT-ENCRYPTED chip used to be a dead end there — no banner, no
+ * explanation, and (for a device that simply needs setting up) a one-click fix
+ * the user was never shown. Which banner applies is decided once, in
  * `mlsCallModePolicy.callBannerState`, under a spec that asserts no red chip
  * can reach `none`.
+ *
+ * The two device states are NOT interchangeable, and the copy tracks the
+ * difference rather than the label: a never-enrolled device never attempted
+ * anything, so nothing is paused and there is nothing to "stay" unencrypted
+ * from; a device the server refuses stays E2EE-capable, so its publishing IS
+ * held by the `negotiating` gate and the release is the only way to be heard.
+ * `voice.callCanStayUnencrypted()` is the single term that decides which,
+ * instead of a per-arm guess.
  *
  * First paint is debounced by `MIX_BANNER_DEBOUNCE_MS` (judgment call 5) so a
  * cap-refused joiner's brief in/out never flashes the banner — the fail-closed
@@ -58,6 +63,7 @@ export function VoiceCallDowngradeBanner() {
 
   const mode = () => voice.callMode();
   const banner = () => voice.callBannerState();
+  const readiness = () => voice.callEncryptionReadiness();
   const isDowngrade = () => banner() !== "none";
 
   // Debounce first paint: only show once the downgrade state has persisted.
@@ -102,12 +108,14 @@ export function VoiceCallDowngradeBanner() {
   const e2ee = useE2EE();
   const client = useClient();
   const { mfaFlow, showError, openModal } = useModals();
+  // The native refusal, which KNOWS the store's owner because it read the row.
   const ownerMismatch = () => storeOwnerMismatch(voice.callEncryptionError());
-  // The same install-level fault reached the other way: the device this store
-  // holds is not registered to the signed-in account, so nothing was ever
-  // attempted and no native refusal exists to read. Reset is still the remedy.
-  const inheritedStore = () =>
-    voice.callEncryptionReadiness() === "owned_elsewhere";
+  // The same fault seen from outside: the server would not accept this
+  // device's identity. Deliberately does NOT claim another account owns it —
+  // a hard-revoked device of the signed-in account lands here too, and delta
+  // answers the same way for a plain database error. Reset is still the
+  // remedy, so the offer is the same; only the sentence is careful.
+  const deviceRefused = () => readiness() === "owned_elsewhere";
 
   const [resetting, setResetting] = createSignal(false);
 
@@ -159,8 +167,13 @@ export function VoiceCallDowngradeBanner() {
     <Show when={visible()}>
       <Banner
         interlude={banner() === "interlude"}
+        // A NOTICE, not a failure, only where nothing is paused and nothing
+        // failed: a shell that can never encrypt, and a device that was never
+        // set up here. A device the server REFUSED keeps the error colour —
+        // its publishing really is held.
         notice={
-          banner() === "device_not_set_up" || banner() === "device_unsupported"
+          banner() === "device_unsupported" ||
+          (banner() === "device_not_set_up" && !deviceRefused())
         }
       >
         <Text>
@@ -174,23 +187,9 @@ export function VoiceCallDowngradeBanner() {
           >
             <Match when={banner() === "device_unsupported"}>
               <Trans>
-                This app can't encrypt calls, so your audio and video are not
-                encrypted here. Everyone else in this call can see that.
-              </Trans>
-            </Match>
-            <Match when={banner() === "device_not_set_up" && inheritedStore()}>
-              <Trans>
-                Encryption on this device is set up for a different account, so
-                calls here can't be encrypted. Resetting clears this device's
-                encryption — including encrypted messages stored on it — and
-                sets it up again for the account you are signed in as.
-              </Trans>
-            </Match>
-            <Match when={banner() === "device_not_set_up"}>
-              <Trans>
-                Encrypted calls aren't set up on this device, so your audio and
-                video are not encrypted here. Set encryption up to encrypt your
-                next call.
+                Encrypted calls aren't available on this device, so your audio
+                and video are not encrypted here. Everyone else in this call can
+                see that.
               </Trans>
             </Match>
             <Match when={ownerMismatch()}>
@@ -199,6 +198,20 @@ export function VoiceCallDowngradeBanner() {
                 calls here cannot be encrypted. Resetting clears this device's
                 encryption — including encrypted messages stored on it — and
                 sets it up again for the account you are signed in as.
+              </Trans>
+            </Match>
+            <Match when={banner() === "device_not_set_up" && deviceRefused()}>
+              <Trans>
+                This device's encryption isn't registered to your account, so
+                this call can't be encrypted. Your audio and video stay paused —
+                reset encryption on this device, continue without it, or leave.
+              </Trans>
+            </Match>
+            <Match when={banner() === "device_not_set_up"}>
+              <Trans>
+                Encrypted calls aren't set up on this device, so your audio and
+                video are not encrypted here. Set encryption up to encrypt your
+                next call.
               </Trans>
             </Match>
             <Match when={localConfirmed()}>
@@ -231,12 +244,7 @@ export function VoiceCallDowngradeBanner() {
         <Actions>
           {/* Offered, never forced: this destroys local E2EE state, so it sits
               alongside "Stay unencrypted" rather than replacing it. */}
-          <Show
-            when={
-              ownerMismatch() ||
-              (banner() === "device_not_set_up" && inheritedStore())
-            }
-          >
+          <Show when={!!ownerMismatch() || deviceRefused()}>
             <Button
               size="sm"
               variant="text"
@@ -247,24 +255,19 @@ export function VoiceCallDowngradeBanner() {
             </Button>
           </Show>
           {/* The route to device setup — the escape the ME-7 dead end lacked.
-              Not offered when the blocker is another account's store: the
-              enable flow refuses a provisioned store, so Reset is the step. */}
-          <Show when={banner() === "device_not_set_up" && !inheritedStore()}>
+              Only for a device that was never set up: the enable flow refuses
+              a provisioned store, so a refused device gets Reset instead. */}
+          <Show when={readiness() === "needs_setup"}>
             <Button size="sm" variant="text" onPress={openEncryptionSettings}>
               <Trans>Set up encryption</Trans>
             </Button>
           </Show>
-          {/* No plaintext release on the device banners: nothing is paused
-              there, so there is nothing to resume — pressing it would be a
-              silent no-op (`canConfirmNoSessionPlaintext` requires a latched
-              error and a held gate, and neither exists). */}
-          <Show
-            when={
-              !localConfirmed() &&
-              banner() !== "device_not_set_up" &&
-              banner() !== "device_unsupported"
-            }
-          >
+          {/* Shown only where it would do something: `callCanStayUnencrypted`
+              is false with no session and no hold (a never-enrolled device, an
+              unsupported shell — nothing is paused, so the press is a silent
+              no-op) and for the terminal `call_full`, where the session
+              returns immediately. */}
+          <Show when={!localConfirmed() && voice.callCanStayUnencrypted()}>
             <Button
               size="sm"
               variant="text"
@@ -273,7 +276,8 @@ export function VoiceCallDowngradeBanner() {
               <Show
                 when={mode()?.kind === "interlude"}
                 fallback={
-                  banner() === "terminal_loud"
+                  banner() === "terminal_loud" ||
+                  banner() === "device_not_set_up"
                     ? t`Stay unencrypted`
                     : t`Turn off encryption`
                 }
@@ -316,10 +320,10 @@ const Banner = styled("div", {
         color: "var(--md-sys-color-on-tertiary-container)",
       },
     },
-    // The device-level states: this call did not fail and nothing is paused,
-    // so they must not wear the failure colour. The chip stays red — that is
-    // the fail-closed statement about the media — while the strip explains and
-    // offers the remedy.
+    // Device states where nothing is paused and nothing failed: they must not
+    // wear the failure colour. The chip stays red — that is the fail-closed
+    // statement about the media — while the strip explains and offers the
+    // remedy.
     notice: {
       true: {
         background: "var(--md-sys-color-secondary-container)",
