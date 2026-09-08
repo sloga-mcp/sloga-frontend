@@ -36,7 +36,9 @@ import type {
 import {
   type LocalPublicationEncryption,
   ENCRYPTION_TYPE_GCM,
+  localPublicationsEncrypted,
 } from "./localPublicationEncryption.ts";
+import { type ChipState, chipState } from "./mlsCallModePolicy.ts";
 import type {
   KeyInstaller,
   MediaEncryptionState,
@@ -127,6 +129,11 @@ export class World {
    * read even though no paint happens between them.
    */
   events: string[] = [];
+  /** The same stream WITH payloads, for `chip()`. */
+  journal: (
+    | { kind: "state"; state: MediaEncryptionState; error: unknown }
+    | { kind: "hold"; active: boolean }
+  )[] = [];
   modes: string[] = [];
   bridgeCalls: string[] = [];
   /** Injected by the fake installer between its two awaits, once. */
@@ -256,6 +263,56 @@ export class World {
     await flush();
   }
 
+  /**
+   * The chip the USER reads — `state.tsx`'s latch protocol replayed over the
+   * media-plane callbacks, then the real `chipState`.
+   *
+   * Every other accessor here reports what the session SAID. Five of the six
+   * defects six review rounds found lived in the gap between that and what the
+   * chip shows, and none of them was visible to a spec asserting on the
+   * callback stream: `state.tsx` latches `prev ?? error` and clears on object
+   * IDENTITY, so a `loud` under an existing latch is a no-op and a following
+   * `clear` of the superseded error wipes the signal outright.
+   *
+   * `observedEncrypted` is modelled as ALL TRUE on purpose. It is the SFU's
+   * declaration, not a decrypt: a peer whose frames this device cannot decrypt
+   * still reports encrypted, which is exactly why gate (b) cannot see any of
+   * this and why the media plane has to.
+   */
+  chip(): ChipState {
+    let latchedError: unknown;
+    let mediaHold = false;
+    for (const entry of this.journal) {
+      if (entry.kind === "hold") {
+        mediaHold = entry.active;
+      } else if (entry.state === "loud" && entry.error !== undefined) {
+        latchedError = latchedError ?? entry.error;
+      } else if (entry.state === "clear" && entry.error !== undefined) {
+        if (latchedError === entry.error) latchedError = undefined;
+      }
+    }
+    const mode = this.session.callMode();
+    const sessionState = this.session.state();
+    const publishing = this.sfu.filter((id) => id !== SELF_ID);
+    return chipState({
+      hasSession: true,
+      sessionState,
+      mode,
+      e2eeEnabled: mode.kind === "e2ee",
+      hasLocalKey: mode.kind === "e2ee",
+      resecuring: sessionState === "resecuring" || mediaHold,
+      latchedError: latchedError !== undefined,
+      publishingIdentities: publishing,
+      observedEncrypted: new Map(publishing.map((id) => [id, true])),
+      localPublicationsEncrypted: localPublicationsEncrypted(
+        this.localPublications,
+      ),
+      rosterVerified: this.roster.map(() => true),
+      channelHasOpenGroup: true,
+      capableAndEnabled: true,
+    });
+  }
+
   clearsSince(index: number): EncryptionStateCall[] {
     return this.states.slice(index).filter((s) => s.state === "clear");
   }
@@ -320,12 +377,14 @@ function fakeMedia(world: World): MlsMediaBinding {
     onEncryptionState: (state, error) => {
       world.states.push({ state, error });
       world.events.push(`state:${state}`);
+      world.journal.push({ kind: "state", state, error });
     },
     ...(world.holdsSupported
       ? {
           onMediaHold: (active: boolean) => {
             world.holds.push(active);
             world.events.push(`hold:${active}`);
+            world.journal.push({ kind: "hold", active });
           },
         }
       : {}),

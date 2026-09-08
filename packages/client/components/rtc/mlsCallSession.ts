@@ -1148,17 +1148,6 @@ export class MlsCallSession {
   /** Bound on successive re-establishes (rejoin/successor). */
   #reestablishes = 0;
   /**
-   * A group re-establish discarded an outstanding MEDIA verdict — an open
-   * join-race hold, a pending media escalation, or a held media latch —
-   * without reaching it. `#rejoinFresh` is DS-drivable (a far-ahead
-   * `current_epoch` on a commit fetch, a park overflow, a poisoned
-   * successor), so refunding the re-establish budget on the Welcome that
-   * follows would hand the server an unbounded "cancel any media verdict"
-   * primitive. The budget is refunded only by a re-establish that discarded
-   * nothing (media-E2EE review, 2026-09-08).
-   */
-  #resetDiscardedVerdict = false;
-  /**
    * Monotonic establish generation (§4.2), bumped by EVERY `#establish` entry
    * — `start()`'s, `#rejoinFresh`'s, `#poisonedSuccessor`'s. Scheduled group
    * work and the Welcome wait capture it and abort when stale, so a
@@ -1304,6 +1293,17 @@ export class MlsCallSession {
    * piece of work (media-E2EE reviews, 2026-09-08).
    */
   #joinerWindowMisses = new Map<string, { identity: string; error: unknown }>();
+  /**
+   * This call has completed one establish. `#resetRotationState` sets
+   * `#hasLocalKey = false` and wipes the error ledger, so without this the
+   * pre-first-key exemption (`#surfaceError`) re-opened on EVERY group
+   * replacement — and `#rejoinFresh` is DS-drivable, which made an exemption
+   * meant to cover one join window into an on-demand primitive: force a
+   * re-establish and every missing key raised in the resulting window is
+   * exempt from every verdict. Deliberately NOT reset by
+   * `#resetRotationState` (media-E2EE review, 2026-09-08).
+   */
+  #firstEstablishDone = false;
   #joinRaceHolds = new Map<
     string,
     {
@@ -1812,6 +1812,7 @@ export class MlsCallSession {
     // bookkeeping so a disposed session surfaces no hold.
     this.#joinRaceHolds.clear();
     this.#joinerWindowMisses.clear();
+    this.#resecure.clear();
     this.#membershipObserved.clear();
     this.#refreshMediaHold();
 
@@ -3626,18 +3627,6 @@ export class MlsCallSession {
     // The one local fact a join-race hold waits for: this install either
     // filled the slot a held missing key named, or advanced past it.
     this.#resolveJoinRaceHolds();
-    // A replacement group that reaches a working epoch with nothing
-    // outstanding retires the discarded-verdict flag, and with it the
-    // re-establish budget freeze.
-    if (
-      this.#resetDiscardedVerdict &&
-      !this.#loudLatched &&
-      this.#joinRaceHolds.size === 0 &&
-      !this.#resecure.has("media")
-    ) {
-      this.#resetDiscardedVerdict = false;
-      this.#reestablishes = 0;
-    }
     // A new epoch's keys under a MEDIA latch: the group re-keyed past the
     // failure (the latch recorded the counter BEFORE this increment, so the
     // "advanced" witness holds by construction here). Give the media plane
@@ -3668,6 +3657,7 @@ export class MlsCallSession {
     this.#clearResecureTimer("joiner");
     // ...and the errors it covered are re-judged now that we hold keys.
     this.#reviewJoinerWindowMisses();
+    this.#firstEstablishDone = true;
     if (!this.#e2eeEnabled) void this.reconcileNow();
   }
 
@@ -3748,7 +3738,7 @@ export class MlsCallSession {
     const cls = this.#mediaErrors.noteError(
       error,
       performance.now(),
-      !this.#hasLocalKey,
+      !this.#hasLocalKey && !this.#firstEstablishDone,
     );
     const media = this.#media;
     if (!media || this.#terminal() || this.#loudLatched) return;
@@ -3889,9 +3879,13 @@ export class MlsCallSession {
     // the local install that replaces it (`#onLocalKeyInstalled` →
     // `#clearResecureTimer`) and the escalation itself (media-E2EE review,
     // 2026-09-08). Control-plane escalations keep the old behavior.
-    if (this.#clearResecureTimer("control")) {
-      this.#media?.onEncryptionState?.("clear");
-    }
+    // ...and it clears NOTHING. Every token now has an evidence-bearing
+    // clearer of its own — `joiner` the first local key, `control` the
+    // declaration seam, `media` none at all — and this signal is a REMOTE
+    // peer's SFU-declared status, which witnesses none of them. It was the
+    // last un-evidenced cancel in the file: one peer reporting `encrypted`
+    // used to destroy the bound on correcting OUR OWN publication that the
+    // SFU still had on record as NONE (media-E2EE review, 2026-09-08).
   }
 
   /**
@@ -4263,13 +4257,21 @@ export class MlsCallSession {
         this.#loudOrigin = "control";
         this.#loudOriginatingPair = null;
         // The banner and the UI's clear protocol both key on the latched
-        // object, so the control error has to become it.
+        // object, so the control error has to become it — and the ORDER
+        // matters, because `state.tsx`'s latch is idempotent-first
+        // (`prev ?? error`) and its clear is identity-matched
+        // (`prev === error ? undefined : prev`). Latching first made the new
+        // `loud` a no-op and the following `clear` then wiped the signal
+        // outright: red chip with a banner became AMBER with no banner and no
+        // escape, while the session stayed terminally latched — the exact
+        // "parked behind a chip" state `modeUnderLoudLatch` exists to prevent
+        // (media-E2EE review, 2026-09-08).
         const previous = this.#loudError;
         this.#loudError = error;
-        this.#media?.onEncryptionState?.("loud", error);
         if (previous !== undefined) {
           this.#media?.onEncryptionState?.("clear", previous);
         }
+        this.#media?.onEncryptionState?.("loud", error);
         this.#clearHealProbe();
         console.warn(
           "[mls] loud latch upgraded to control: a control-plane verdict " +
@@ -4351,10 +4353,10 @@ export class MlsCallSession {
 
   /**
    * Cancel a pending escalation, but only one this caller is evidence FOR.
-   * `reason` omitted is a force-clear, reserved for the two places that end
-   * the escalation's whole world: a loud latch (the strictest reading is
-   * already taken) and a group re-establish (the keys it was waiting on no
-   * longer exist). Returns whether anything was cancelled.
+   * `reason` omitted is a force-clear, and after the media latch stopped
+   * subsuming the control seam there is exactly ONE caller left entitled to
+   * it: a group re-establish, which replaces every key those escalations were
+   * waiting on. Returns whether anything was cancelled.
    */
   #clearResecureTimer(reason?: ResecureReason): boolean {
     const reasons: ResecureReason[] =
@@ -4511,6 +4513,13 @@ export class MlsCallSession {
       // install this latch did not already contain, or the clause would be
       // true at latch time (the reverted attempt's mistake — the worker
       // raises the error precisely because our `setKey` had not landed).
+      // Any PRESENT sender with an index we never filled holds the heal, not
+      // just the latch's own: a different peer silenced earlier is invisible
+      // to `errorSinceInstall`, because the ledger's advance rule forgives its
+      // pair once any install advances us for that sender.
+      unfilledElsewhere: [...sfuIdentities].some(
+        (identity) => this.#mediaErrors.unfilledPairs(identity).length > 0,
+      ),
       originatingPairRefilled:
         this.#loudOriginatingPair !== null &&
         (this.#mediaErrors.pairFilledAtSeq(
@@ -4591,7 +4600,6 @@ export class MlsCallSession {
       this.#resecure.has("media") ||
       (this.#loudLatched && this.#loudOrigin === "media")
     ) {
-      this.#resetDiscardedVerdict = true;
       console.warn(
         "[mls] re-establish discarded an outstanding media verdict",
         {
@@ -5915,13 +5923,7 @@ export class MlsCallSession {
   }
 
   #toActive(): void {
-    // Refunded only by a re-establish that discarded nothing. `#rejoinFresh`
-    // is DS-drivable, so a blanket refund here handed the server an unbounded
-    // "cancel any media verdict" primitive; the flag is cleared once the new
-    // group has actually applied an epoch with a clean media plane
-    // (`#onEpochKeysApplied`), which a DS cannot fake without delivering keys
-    // that work.
-    if (!this.#resetDiscardedVerdict) this.#reestablishes = 0;
+    this.#reestablishes = 0;
     this.#setState("active");
     // Opportunistically PROVE enrolment rather than assume it: reaching
     // "active" is exactly the belief that was wrong in the silent failure, so

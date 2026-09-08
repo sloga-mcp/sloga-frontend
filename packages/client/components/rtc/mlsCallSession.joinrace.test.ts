@@ -94,6 +94,11 @@ test("leg 3a: a bystander's missing key during an observed rejoin is HELD, not l
   // ...and the chip is driven AMBER for as long as it is open. Without this
   // the deferral is the reverted attempt's silent green.
   assert.deepEqual(world.holds, [true], "the chip was not driven amber");
+  assert.equal(
+    world.chip(),
+    "resecuring",
+    "the chip the user reads went green",
+  );
   assert.deepEqual(world.states.slice(before), [
     { state: "resecuring", error },
   ]);
@@ -106,6 +111,7 @@ test("leg 3a: a bystander's missing key during an observed rejoin is HELD, not l
   assert.deepEqual(world.holds, [true, false], "the hold never resolved");
   assert.deepEqual(world.loudSince(before), []);
   assert.equal(world.session.callMode().kind, "e2ee");
+  assert.equal(world.chip(), "e2ee", "the chip did not come back");
 
   // And it stays resolved past the bound — the deadline was cancelled, not
   // merely outrun.
@@ -176,6 +182,11 @@ test("🔴 the SFU's recovery echo cannot cancel the bound: a withheld commit st
   );
   assert.equal(world.session.callMode().kind, "negotiating");
   assert.deepEqual(world.holds, [true, false]);
+  assert.equal(
+    world.chip(),
+    "not_encrypted",
+    "the chip the user reads is not red",
+  );
 });
 
 test("🔴 a missing key raised INSIDE a rotation window takes the same bound, not the cancellable escalation", async (t) => {
@@ -675,7 +686,68 @@ test("🔴 a media latch does not subsume the CONTROL escalation, which still re
     "a control-upgraded latch healed",
   );
   assert.equal(world.session.callMode().kind, "negotiating");
+  // 🔴 The upgrade must not cost the user the banner. `state.tsx` latches
+  // `prev ?? error` and clears on identity, so latching the control error
+  // BEFORE clearing the superseded media one made the latch a no-op and the
+  // clear then wiped the signal: red chip with a Leave / Stay-unencrypted
+  // banner became amber with neither, while the session stayed latched.
+  assert.equal(world.chip(), "not_encrypted", "the upgrade wiped the UI latch");
   release();
+});
+
+test("🔴 a remote peer's SFU-declared status does not cancel the bound on OUR declaration", async (t) => {
+  // The last un-evidenced cancel in the file. `noteEncryptionRecovered` fires
+  // on ANY participant's `participantEncryptionStatusChanged(encrypted=true)`
+  // and used to clear the `control` escalation — so one peer reporting itself
+  // encrypted destroyed the bound on correcting a publication the SFU still
+  // had on record as NONE, which every receiver disarms its cryptor for.
+  const world = await threeParty(t, "ch-control-echo");
+  const before = world.states.length;
+  const release = world.holdRepublish();
+  world.declarePlaintext();
+  world.session.noteLocalPublicationsChanged();
+  await flush();
+  assert.deepEqual(world.holds, [true], "no control escalation was armed");
+
+  for (let i = 0; i < 13; i++) {
+    world.session.noteEncryptionRecovered();
+    await advance(t, 1_000);
+  }
+  assert.equal(
+    world.loudSince(before).length,
+    1,
+    "a peer's declared status cancelled the control bound",
+  );
+  assert.equal(world.chip(), "not_encrypted");
+  release();
+});
+
+test("🔴 the heal holds while ANOTHER present peer still has an index we never filled", async (t) => {
+  // `originatingPairRefilled` answers a question about the latch's own sender.
+  // A different present peer silenced earlier is invisible to
+  // `errorSinceInstall`, because the ledger's advance rule forgives its pair
+  // the moment any install advances us for that sender — so the heal could go
+  // green while that peer's frames were still being dropped.
+  const world = await threeParty(t, "ch-unfilled-elsewhere");
+  const before = world.states.length;
+  const error = world.missingKey(THIRD_ID, 1);
+  world.session.noteEncryptionError(error); // no window: latches at once
+  await flush();
+  assert.deepEqual(world.loudSince(before), [{ state: "loud", error }]);
+  // PEER is silenced at an index nothing in this call will ever fill.
+  world.session.noteEncryptionError(world.missingKey(PEER_ID, 9));
+  await flush();
+
+  // Epoch 1 fills index 1 for everyone, so the LATCH's own pair is answered.
+  await advance(t, 1_000);
+  await world.commit(1);
+  await advance(t, JOIN_RACE_DEFER_MS * 2);
+  assert.deepEqual(
+    world.clearsSince(before),
+    [],
+    "healed while another present peer was still being dropped",
+  );
+  assert.equal(world.chip(), "not_encrypted");
 });
 
 test("a loud latch from another cause supersedes every open hold", async (t) => {

@@ -713,6 +713,16 @@ export interface LoudHealInputs {
    * (media-E2EE review, 2026-09-08).
    */
   originatingPairRefilled?: boolean;
+  /**
+   * Any sender PRESENT in the SFU still has an index this side failed at and
+   * has not filled. The refilled-pair witness answers a question about the
+   * latch's own sender; a different present peer silenced earlier is invisible
+   * to `errorSinceInstall`, because the ledger's advance rule forgives its
+   * pair once any install advances us for it — so the heal could clear while
+   * that peer's frames were still being dropped (media-E2EE review,
+   * 2026-09-08).
+   */
+  unfilledElsewhere?: boolean;
 }
 
 /**
@@ -769,6 +779,7 @@ export function loudHealVerdict(inputs: LoudHealInputs): "heal" | "hold" {
   if (!inputs.settleElapsed) return "hold";
   if (!inputs.rosterConsistent) return "hold";
   if (inputs.peers.length === 0) return "hold";
+  if (inputs.unfilledElsewhere) return "hold";
   // Behind the empty-witness hold, never in front of it.
   if (inputs.originatingPairRefilled) return "heal";
   return inputs.peers.every(
@@ -1065,16 +1076,6 @@ export class MediaErrorLedger {
     const filled = this.#installed.get(identity)?.pairs;
     return [...seen]
       .filter(([pair, beforeFirstKey]) => !beforeFirstKey && !filled?.has(pair))
-      .map(([pair]) => pair);
-  }
-
-  /** Pre-first-key pairs the first install did not fill (diagnostics only). */
-  unansweredJoinWindowPairs(identity: string): string[] {
-    const seen = this.#everMissing.get(identity);
-    if (!seen) return [];
-    const filled = this.#installed.get(identity)?.pairs;
-    return [...seen]
-      .filter(([pair, beforeFirstKey]) => beforeFirstKey && !filled?.has(pair))
       .map(([pair]) => pair);
   }
 
