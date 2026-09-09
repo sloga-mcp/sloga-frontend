@@ -1039,6 +1039,8 @@ class Voice {
   #gateConfirmScheduled = false;
   /** Set by the confirming timer; consumed by the sweeper's next pass. */
   #gateConfirmPass = false;
+  /** The sweeper's cap ended a drive with a trigger still pending. */
+  #gateSweepDropped = false;
   /**
    * Open-group probe lifecycle for the CURRENT call, read by the session via
    * `channelHasOpenGroup`. It no longer decides anything about the publish
@@ -2603,6 +2605,8 @@ class Voice {
       this.#gateSweeper = undefined;
       this.#gateRepauseSpent.clear();
       this.#gateConfirmScheduled = false;
+      this.#gateConfirmPass = false;
+      this.#gateSweepDropped = false;
       this.#setCallPauseDisproved(false);
 
       await room.connect(auth.url, auth.token, {
@@ -2957,6 +2961,8 @@ class Voice {
       this.#gateSweeper = undefined;
       this.#gateRepauseSpent.clear();
       this.#gateConfirmScheduled = false;
+      this.#gateConfirmPass = false;
+      this.#gateSweepDropped = false;
       this.#setCallPauseDisproved(false);
       this.#pinnedMicId = undefined;
       this.#setCallEncryptionError(undefined);
@@ -3318,13 +3324,22 @@ class Voice {
    */
   async #applyPublishGate(room: Room): Promise<void> {
     if (this.room() !== room) return;
-    this.#gateSweeper ??= coalescingSweeper(() => {
-      // The confirming pass goes through the SAME serialized path, so it can
-      // never nest with a sweep a livekit event started in the meantime.
-      const confirming = this.#gateConfirmPass;
-      this.#gateConfirmPass = false;
-      return this.#sweepPublishGate(room, confirming);
-    });
+    this.#gateSweeper ??= coalescingSweeper(
+      () => {
+        // The confirming pass goes through the SAME serialized path, so it can
+        // never nest with a sweep a livekit event started in the meantime.
+        const confirming = this.#gateConfirmPass;
+        this.#gateConfirmPass = false;
+        return this.#sweepPublishGate(room, confirming);
+      },
+      undefined,
+      // A dropped trailing pass is a sweep something asked for and did not get.
+      // Recorded so the pass that observes it does not report a clean bill —
+      // `#enable()` awaits its pause and then flips E2EE on.
+      () => {
+        this.#gateSweepDropped = true;
+      },
+    );
     await this.#gateSweeper.sweep();
   }
 
@@ -3355,11 +3370,14 @@ class Voice {
         resumeUpstream: () => pub.resumeUpstream(),
       });
     }
-    const { unproven, failed } = await applyPublishGate(
+    const { unproven, failed, repauseFailed, proven } = await applyPublishGate(
       gated,
       () => this.#publishGate.size > 0,
       { repauseSpent: this.#gateRepauseSpent },
     );
+    // Un-spend anything observed quiet: a repause that failed once must not be
+    // a life sentence when the wire later settles on its own.
+    for (const name of proven) this.#gateRepauseSpent.delete(name);
     // Stale-writer guard, as on `#pauseGate`: a sweep for a PREVIOUS call must
     // not report against the current one — including the resume channel, whose
     // whole value is that it is trustworthy.
@@ -3372,32 +3390,33 @@ class Voice {
       console.error("[mls] publish gate could not resume publishing", {
         publications: failed,
       });
-    if (unproven.length === 0) return;
-    // A repause that did not leave the wire quiet is spent for this episode:
-    // retrying cannot help, and its resume would re-attach the sender and
-    // re-enter the sweep. This is the other half of the live-lock bound.
-    for (const name of unproven) this.#gateRepauseSpent.add(name);
-    if (!confirming) {
-      // ONE bounded re-sweep, on a macrotask so every queued `replaceTrack`
-      // task has run. A livekit op in flight legitimately leaves the wire live
-      // for a few microtasks, so a single observation is not a verdict. At most
-      // one outstanding per episode — every pass would otherwise schedule
-      // another.
-      if (this.#gateConfirmScheduled) return;
-      this.#gateConfirmScheduled = true;
-      setTimeout(() => {
-        this.#gateConfirmScheduled = false;
-        if (this.#publishGate.size === 0 || this.room() !== room) return;
-        this.#gateConfirmPass = true;
-        void this.#applyPublishGate(room);
-      }, 0);
+    if (unproven.length === 0) {
+      // Everything a held gate could see is quiet — unless the cap dropped a
+      // pass, in which case this sweep did not see everything.
+      if (this.#gateSweepDropped) {
+        this.#gateSweepDropped = false;
+        this.#scheduleGateConfirm(room);
+        return;
+      }
+      // Nothing is on the wire, so the banner's pause promise is true again.
+      if (this.#publishGate.size > 0) this.#setCallPauseDisproved(false);
       return;
     }
-    // Confirmed: the gate is held and the wire is still live. Publishing is
-    // escaping a gate every layer above believes is closed. The banner stops
-    // promising a pause from here (`callPauseDisproved`) — that is a withdrawal
-    // of a false claim, which needs none of the machinery the four dead ends
-    // below rule out.
+    if (!confirming) {
+      this.#scheduleGateConfirm(room);
+      return;
+    }
+    // Confirmed. A repause that ran here and STILL left the wire live is spent
+    // for this episode: retrying cannot help and its resume would re-attach the
+    // sender and re-enter the sweep. Only `repauseFailed`, and only on this
+    // pass — marking a publication spent on any other `unproven`, or on the
+    // unconfirmed observation, disarms the gate for it over a failure a retry
+    // could have fixed (media-E2EE review, fifth pass).
+    for (const name of repauseFailed) this.#gateRepauseSpent.add(name);
+    // The gate is held and the wire is still live. Publishing is escaping a
+    // gate every layer above believes is closed. The banner stops promising a
+    // pause from here (`callPauseDisproved`) — that is a withdrawal of a false
+    // claim, which needs none of the machinery the dead ends below rule out.
     this.#setCallPauseDisproved(true);
     //
     // 🔴 Deliberately LOG-ONLY — this does not touch the chip or the banner, and
@@ -3425,14 +3444,37 @@ class Voice {
     //    renders; and `canConfirmNoSessionPlaintext` is satisfied, so the
     //    escape works. What rules it out is the copy, not the machinery.
     //
-    // Making it visible needs its own slice: copy that does not claim a pause,
-    // a chip precedence, an affordance that works with no session and no group,
-    // and a path around the banner's 3 s debounce. Until then a wrong or inert
-    // signal would be worse than the log (media-E2EE review, 2026-09-08).
+    // `callPauseDisproved` withdraws the false claim wherever the banner is
+    // ALREADY up, which needs none of that. But note the scope honestly: the
+    // banner renders only for `mixed` / `interlude` / terminal-loud, so through
+    // plain `negotiating` — the R2-5 pre-connect gate, the enable window, a
+    // stuck `#assertLocalDeclarations` — there is no banner to correct and this
+    // is log-only for the MAJORITY of held-gate time, not just the ME-10
+    // corner. RAISING a surface there needs its own slice: a chip precedence,
+    // an affordance that works with no session and no group, and a path around
+    // the banner's 3 s debounce. Until then a wrong or inert signal would be
+    // worse than the log (media-E2EE reviews, 2026-09-08/09).
     console.error("[mls] publish gate could not prove the wire quiet", {
       publications: unproven,
       reasons: [...this.#publishGate],
     });
+  }
+
+  /**
+   * ONE bounded re-sweep, on a macrotask so every queued `replaceTrack` task has
+   * run. A livekit op in flight legitimately leaves the wire live for a few
+   * microtasks, so a single observation is not a verdict. At most one
+   * outstanding per episode — every pass would otherwise schedule another.
+   */
+  #scheduleGateConfirm(room: Room): void {
+    if (this.#gateConfirmScheduled) return;
+    this.#gateConfirmScheduled = true;
+    setTimeout(() => {
+      this.#gateConfirmScheduled = false;
+      if (this.#publishGate.size === 0 || this.room() !== room) return;
+      this.#gateConfirmPass = true;
+      void this.#applyPublishGate(room);
+    }, 0);
   }
 
   /**

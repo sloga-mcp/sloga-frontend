@@ -256,6 +256,18 @@ function gated(
 const held = () => true;
 const empty = () => false;
 
+/** Nothing to report: a held gate proved every publication quiet. */
+function assertClean(result: {
+  unproven: string[];
+  failed: string[];
+  repauseFailed: string[];
+}): void {
+  assert.deepEqual(
+    { unproven: result.unproven, failed: result.failed },
+    { unproven: [], failed: [] },
+  );
+}
+
 /** Let every queued `replaceTrack` task and lock continuation run. */
 const settle = async () => {
   for (let i = 0; i < 20; i++) await Promise.resolve();
@@ -284,19 +296,13 @@ test("the enable flip's republish defeats a BARE re-pause", async () => {
 
 test("the sweep closes it, and reports nothing left over", async () => {
   const track = new FakeLocalTrack();
-  assert.deepEqual(await applyPublishGate([gated(track)], held), {
-    unproven: [],
-    failed: [],
-  });
+  assertClean(await applyPublishGate([gated(track)], held));
   assert.equal(track.upstream(), "quiet");
 
   track.republish();
   assert.equal(track.upstream(), "live");
 
-  assert.deepEqual(await applyPublishGate([gated(track)], held), {
-    unproven: [],
-    failed: [],
-  });
+  assertClean(await applyPublishGate([gated(track)], held));
   assert.equal(track.upstream(), "quiet", "a held gate left the mic live");
 });
 
@@ -432,10 +438,7 @@ test("a rejecting detach recovers on the next sweep instead of wedging", async (
   await applyPublishGate([gated(track)], held);
   track.sender!.rejectDetach = false;
   // `none` would leave it live forever. The observation makes it `repause`.
-  assert.deepEqual(await applyPublishGate([gated(track)], held), {
-    unproven: [],
-    failed: [],
-  });
+  assertClean(await applyPublishGate([gated(track)], held));
   assert.equal(track.upstream(), "quiet");
 });
 
@@ -486,19 +489,14 @@ test("a resume that throws is reported on its OWN channel", async () => {
     ],
     empty,
   );
-  assert.deepEqual(result, {
-    unproven: [],
-    failed: ["microphone/TR_1"],
-  });
+  assert.deepEqual(result.unproven, []);
+  assert.deepEqual(result.failed, ["microphone/TR_1"]);
 });
 
 test("a closed transport counts as quiet, and does not go loud", async () => {
   const track = new FakeLocalTrack();
   track.sender!.transportState = "closed";
-  assert.deepEqual(await applyPublishGate([gated(track)], held), {
-    unproven: [],
-    failed: [],
-  });
+  assertClean(await applyPublishGate([gated(track)], held));
 });
 
 test("a FAILED transport still counts as live, so the pause is attempted", async () => {
@@ -508,10 +506,7 @@ test("a FAILED transport still counts as live, so the pause is attempted", async
   const track = new FakeLocalTrack();
   track.sender!.transportState = "failed";
   assert.equal(track.upstream(), "live");
-  assert.deepEqual(await applyPublishGate([gated(track)], held), {
-    unproven: [],
-    failed: [],
-  });
+  assertClean(await applyPublishGate([gated(track)], held));
   assert.equal(track.upstream(), "quiet");
 });
 
@@ -746,4 +741,144 @@ test("a held-gate detach in flight reads live, and the pause still lands", async
   await settle();
   assert.deepEqual(result.unproven, []);
   assert.equal(track.upstream(), "quiet");
+});
+
+// ---- What may mark a publication SPENT (fifth review) ----------------------
+
+test("a failed PAUSE is not a failed repause, and must not spend the publication", async () => {
+  // The distinction that matters: `repauseSpent` disarms the gate for a
+  // publication, so only a repause that RAN and still left the wire live may
+  // feed it. Marking on any `unproven` turns one transient detach failure into
+  // a publication the gate never touches again — the 2026-09-08 defect re-armed.
+  const track = new FakeLocalTrack();
+  track.sender!.rejectDetach = true;
+  const result = await applyPublishGate([gated(track)], held);
+  assert.deepEqual(result.unproven, ["microphone/TR_1"]);
+  assert.deepEqual(
+    result.repauseFailed,
+    [],
+    "a plain pause failure was reported as a repause failure",
+  );
+});
+
+test("a failed REPAUSE is reported as one", async () => {
+  const track = new FakeLocalTrack();
+  await applyPublishGate([gated(track)], held);
+  track.republish(); // stale-true flag over a live sender ⇒ repause
+  track.sender!.rejectDetach = true;
+  const result = await applyPublishGate([gated(track)], held);
+  assert.deepEqual(result.repauseFailed, ["microphone/TR_1"]);
+});
+
+test("a held gate reports what it PROVED quiet, so a spend can be lifted", async () => {
+  const track = new FakeLocalTrack();
+  const result = await applyPublishGate([gated(track)], held);
+  assert.deepEqual(result.proven, ["microphone/TR_1"]);
+  // An empty gate proves nothing about quiet — it wants the opposite.
+  const resumed = await applyPublishGate([gated(track)], empty);
+  assert.deepEqual(resumed.proven, []);
+});
+
+test("the recovery path works under the options production actually passes", async () => {
+  // The earlier version of this spec called `applyPublishGate` with no
+  // `repauseSpent`, a configuration production never uses — so it asserted
+  // recovery while the real wiring could not recover.
+  const track = new FakeLocalTrack();
+  await applyPublishGate([gated(track)], held);
+  track.republish();
+  track.sender!.rejectDetach = true;
+  const spent = new Set<string>();
+  const first = await applyPublishGate([gated(track)], held, {
+    repauseSpent: spent,
+  });
+  for (const name of first.repauseFailed) spent.add(name);
+  assert.deepEqual([...spent], ["microphone/TR_1"]);
+
+  // The detach starts working again. The publication is spent, so this sweep
+  // issues nothing — but it must still REPORT, and the caller lifts the spend
+  // as soon as any sweep proves it quiet.
+  track.sender!.rejectDetach = false;
+  const second = await applyPublishGate([gated(track)], held, {
+    repauseSpent: spent,
+  });
+  assert.deepEqual(second.unproven, ["microphone/TR_1"]);
+  for (const name of second.proven) spent.delete(name);
+
+  // A device switch clears livekit's flag; now a plain `pause` lands.
+  track.paused = false;
+  const third = await applyPublishGate([gated(track)], held, {
+    repauseSpent: spent,
+  });
+  assert.deepEqual(third.unproven, []);
+  assert.deepEqual(third.proven, ["microphone/TR_1"]);
+  for (const name of third.proven) spent.delete(name);
+  assert.deepEqual([...spent], [], "the spend was never lifted");
+  assert.equal(track.upstream(), "quiet");
+});
+
+// ---- One publication must not cancel the sweep (fifth review) -------------
+
+test("a throwing PRE-read costs one publication, not the whole sweep", async () => {
+  // The adapter reads `track.sender` / `sender.track` off a livekit LocalTrack
+  // that can be torn down between the `trackPublications` snapshot and the
+  // read. Reading outside the try let one such publication reject the whole
+  // sweep — every other publication unswept, and an unhandled rejection at four
+  // `void`ed call sites.
+  const healthy = new FakeLocalTrack("mic");
+  const torn: GatedPublication = {
+    name: "screen/TR_2",
+    get upstreamPaused(): boolean {
+      throw new Error("track torn down");
+    },
+    upstream: () => "live",
+    pauseUpstream: async () => {},
+    resumeUpstream: async () => {},
+  };
+  const result = await applyPublishGate(
+    [torn, gated(healthy, "microphone/TR_1")],
+    held,
+  );
+  assert.deepEqual(result.unproven, ["screen/TR_2"]);
+  assert.equal(
+    healthy.upstream(),
+    "quiet",
+    "the healthy publication was never swept",
+  );
+});
+
+// ---- A dropped trailing pass is not a clean bill (fifth review) -----------
+
+test("the cap reports the pass it dropped", async () => {
+  let runs = 0;
+  let dropped = 0;
+  const sweeper = coalescingSweeper(
+    async () => {
+      runs++;
+      if (runs < 20) void sweeper.sweep();
+      await Promise.resolve();
+    },
+    4,
+    () => dropped++,
+  );
+  await sweeper.sweep();
+  assert.equal(runs, 4);
+  assert.equal(dropped, 1, "a dropped sweep was discarded silently");
+});
+
+test("a drive that settles reports no drop", async () => {
+  let burst = true;
+  let dropped = 0;
+  const sweeper = coalescingSweeper(
+    async () => {
+      if (burst) {
+        burst = false;
+        void sweeper.sweep();
+      }
+      await Promise.resolve();
+    },
+    4,
+    () => dropped++,
+  );
+  await sweeper.sweep();
+  assert.equal(dropped, 0);
 });

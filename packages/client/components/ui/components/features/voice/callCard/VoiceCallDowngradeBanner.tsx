@@ -136,10 +136,10 @@ export function VoiceCallDowngradeBanner() {
       <Banner interlude={mode()?.kind === "interlude"}>
         <Text>
           <Show
-            when={voice.callPauseDisproved()}
+            when={ownerMismatch()}
             fallback={
               <Show
-                when={ownerMismatch()}
+                when={voice.callPauseDisproved()}
                 fallback={
                   <Show
                     when={localConfirmed()}
@@ -195,18 +195,17 @@ export function VoiceCallDowngradeBanner() {
                 }
               >
                 <Trans>
-                  Encryption on this device is set up for a different account,
-                  so calls here cannot be encrypted. Resetting clears this
-                  device's encryption — including encrypted messages stored on
-                  it — and sets it up again for the account you are signed in
-                  as.
+                  This call could not be secured, and your audio and video may
+                  still be sending. Leave the call to stop them.
                 </Trans>
               </Show>
             }
           >
             <Trans>
-              This call could not be secured, and your audio and video may still
-              be sending. Leave the call to stop them.
+              Encryption on this device is set up for a different account, so
+              calls here cannot be encrypted. Resetting clears this device's
+              encryption — including encrypted messages stored on it — and sets
+              it up again for the account you are signed in as.
             </Trans>
           </Show>
         </Text>

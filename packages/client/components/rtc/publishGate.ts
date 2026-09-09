@@ -258,6 +258,24 @@ export interface PublishGateSweep {
    * entirely: silently muted, no telemetry.
    */
   failed: string[];
+  /**
+   * The subset of `unproven` whose op was actually a `repause` — i.e. the
+   * resume-then-pause ran and STILL did not leave the wire quiet.
+   *
+   * 🔴 This, and only this, may feed {@link PublishGateOptions.repauseSpent}.
+   * Marking a publication spent on any other `unproven` disarms the gate for it
+   * over a failure a retry could have fixed: the next sweep computes `repause`,
+   * sees it spent, issues nothing, and the sender stays live for the rest of the
+   * episode — the 2026-09-08 defect re-armed under a narrower precondition
+   * (media-E2EE review, fifth pass).
+   */
+  repauseFailed: string[];
+  /**
+   * Publications a HELD gate ended this sweep having OBSERVED quiet. The
+   * caller uses it to un-spend: a repause that failed once must not be a life
+   * sentence when the wire later goes quiet on its own.
+   */
+  proven: string[];
 }
 
 /**
@@ -273,8 +291,15 @@ export interface PublishGateSweep {
  * loop would let a later publication's op take the lock ahead of an earlier
  * one's.
  */
-/** What one publication's sweep concluded. `null` = nothing to report. */
-type OneResult = { kind: "unproven" | "failed"; name: string } | null;
+/**
+ * What one publication's sweep concluded. `proven` is only emitted under a HELD
+ * gate — an empty gate proves nothing about quiet, it wants the opposite.
+ */
+type OneResult = {
+  kind: "unproven" | "failed" | "proven";
+  name: string;
+  op: PublishGateOp;
+} | null;
 
 export async function applyPublishGate(
   publications: Iterable<GatedPublication>,
@@ -284,34 +309,48 @@ export async function applyPublishGate(
   const held = gateHeld();
   const pending: Promise<OneResult>[] = [];
   for (const publication of publications) {
+    // NB `runOne` reads `upstreamPaused` / `upstream()` itself, inside its own
+    // try. Both go through an adapter over a livekit `LocalTrack` that can be
+    // torn down between the `trackPublications` snapshot and the read, and
+    // reading them HERE let one throwing publication reject the whole sweep —
+    // cancelling every other publication's op and, because the call sites are
+    // `void`ed, surfacing as an unhandled rejection with no report at all.
     pending.push(
       runOne(
-        publishGateOp({
-          gateHeld: held,
-          upstreamPaused: publication.upstreamPaused,
-          upstream: publication.upstream(),
-        }),
         publication,
+        held,
         gateHeld,
         options.repauseSpent?.has(publication.name) ?? false,
       ),
     );
   }
   const settled = await Promise.all(pending);
+  const named = (kind: string) =>
+    settled.filter((r) => r?.kind === kind).map((r) => r!.name);
   return {
-    unproven: settled.filter((r) => r?.kind === "unproven").map((r) => r!.name),
-    failed: settled.filter((r) => r?.kind === "failed").map((r) => r!.name),
+    unproven: named("unproven"),
+    failed: named("failed"),
+    repauseFailed: settled
+      .filter((r) => r?.kind === "unproven" && r.op === "repause")
+      .map((r) => r!.name),
+    proven: named("proven"),
   };
 }
 
-/** Apply one op and verify it. */
+/** Read the publication, decide, apply, and verify — all inside one try. */
 async function runOne(
-  op: PublishGateOp,
   publication: GatedPublication,
+  held: boolean,
   gateHeld: () => boolean,
   repauseSpent: boolean,
 ): Promise<OneResult> {
+  let op: PublishGateOp = "none";
   try {
+    op = publishGateOp({
+      gateHeld: held,
+      upstreamPaused: publication.upstreamPaused,
+      upstream: publication.upstream(),
+    });
     switch (op) {
       case "resume":
         // An empty gate wants this live, so the proof runs the other way — and
@@ -324,12 +363,12 @@ async function runOne(
         try {
           await publication.resumeUpstream();
         } catch {
-          return { kind: "failed", name: publication.name };
+          return { kind: "failed", name: publication.name, op };
         }
         if (gateHeld()) return null; // the gate refilled under us
         // `unpublished` is not a failure: there is nothing to put back.
         return publication.upstream() === "quiet"
-          ? { kind: "failed", name: publication.name }
+          ? { kind: "failed", name: publication.name, op }
           : null;
       case "repause": {
         // Already tried and failed this episode: verify and report, but issue
@@ -364,14 +403,18 @@ async function runOne(
     // The gate emptied under us: whatever the wire says now, this sweep is not
     // the one making a promise about it.
     if (!gateHeld()) return null;
-    if (publication.upstream() !== "live") return null;
-    return { kind: "unproven", name: publication.name };
+    if (publication.upstream() !== "live") {
+      return { kind: "proven", name: publication.name, op };
+    }
+    return { kind: "unproven", name: publication.name, op };
   } catch {
     // A pause that THREW left livekit's flag true over a sender it never
     // detached; a post-condition read that threw tells us nothing. Reported,
     // never swallowed — this is the seam that turns a one-off failure into a
-    // permanent silent false pause.
-    return { kind: "unproven", name: publication.name };
+    // permanent silent false pause. A read that threw lands here too, which is
+    // why the reads live inside this try: one torn-down publication must cost
+    // its own report, not the whole sweep.
+    return { kind: "unproven", name: publication.name, op };
   }
 }
 
@@ -394,6 +437,14 @@ async function runOne(
 export function coalescingSweeper(
   run: () => Promise<void>,
   maxPasses = 4,
+  /**
+   * Called when the cap ends a drive with a trigger still pending — i.e. a
+   * sweep that something asked for was DROPPED. Silently discarding it is the
+   * same shape as the flag that started all this: the caller's `await` resolves
+   * and it is told the work completed. `#enable()` awaits its pause and then
+   * flips E2EE on, so it has to be able to find out.
+   */
+  onDropped: () => void = () => {},
 ): { sweep(): Promise<void>; passes(): number } {
   let active: Promise<void> | null = null;
   let pending = false;
@@ -407,6 +458,7 @@ export function coalescingSweeper(
         passes++;
         await run();
       } while (pending && --budget > 0);
+      if (pending) onDropped();
     } finally {
       pending = false;
       active = null;

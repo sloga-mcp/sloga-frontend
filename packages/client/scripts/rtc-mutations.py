@@ -69,8 +69,12 @@ MUTATIONS: list[Mutation] = []
 # A mutant that HANGS is not a result. `node --test`'s own `--test-timeout`
 # cannot fire on a loop that never yields to the event loop (a runaway
 # `while`/`do-while` over awaited microtasks), so the only reliable bound is
-# wall-clock on the process. Sized well above the slowest honest spec file
-# (~15 s) and well below anything a human would sit through.
+# wall-clock on the process. Sized well above the slowest honest spec file —
+# measured 2026-09-09: `mlsCallSession.joinrace.test.ts` at 1.7 s wall, next
+# falsered 1.0 s — and well below anything a human would sit through. The whole
+# suite is ~55 s. Keep these numbers honest: a stale runtime estimate is how a
+# suite stops getting run (an earlier version of this comment guessed 15 s and
+# "20+ minutes", both wrong by an order of magnitude).
 SPEC_TIMEOUT_S = 120
 
 
@@ -95,6 +99,26 @@ def run_specs(specs: list[str]) -> bool:
             return False
         if proc.returncode != 0:
             return False
+    return True
+
+
+def baseline_green(mutations: list[Mutation]) -> bool:
+    """Every spec file any mutation relies on must pass on the UNMUTATED tree.
+
+    Without this the run is vacuous in the dangerous direction: all but one
+    mutation expects RED, so a spec set already failing — for a reason having
+    nothing to do with any mutation — makes every one of them report OK. The
+    single `expect="green"` entry is not a sufficient canary either: it names
+    only two spec files, so a broken third would still print "N run, 0
+    unexpected". Same silent-pass class `rtc-gate.sh` exists to kill.
+    """
+    specs = sorted({spec for m in mutations for spec in m.specs})
+    print(f"=============== baseline: {len(specs)} spec file(s) ===============")
+    for spec in specs:
+        if not run_specs([spec]):
+            print(f">>> BASELINE FAIL: {spec} is not green before any mutation")
+            return False
+    print(">>> BASELINE OK: every spec green on the unmutated tree")
     return True
 
 
@@ -138,6 +162,10 @@ def main() -> int:
             raise SystemExit(f"no such mutation(s): {', '.join(sorted(missing))}")
     if not selected:
         raise SystemExit("no mutations selected — refusing to report a pass")
+
+    if not baseline_green(selected):
+        print("################ MUTATIONS: refusing to run ################")
+        return 97
 
     failures: list[str] = []
     for i, m in enumerate(selected, 1):
@@ -426,7 +454,7 @@ MUTATIONS += [
         id="sweep-swallows-a-failed-pause",
         what="a pause that THREW is discarded, so one failure becomes a permanent silent false pause",
         file=GATE,
-        search="""    return { kind: "unproven", name: publication.name };
+        search="""    return { kind: "unproven", name: publication.name, op };
   }
 }""",
         replace="""    return null;
@@ -438,8 +466,10 @@ MUTATIONS += [
         id="sweep-skips-the-post-condition",
         what="the sweep reports success without re-reading the wire",
         file=GATE,
-        search="""    if (publication.upstream() !== "live") return null;
-    return { kind: "unproven", name: publication.name };""",
+        search="""    if (publication.upstream() !== "live") {
+      return { kind: "proven", name: publication.name, op };
+    }
+    return { kind: "unproven", name: publication.name, op };""",
         replace="""    return null;""",
         specs=[GATE_SPEC],
     ),
@@ -447,13 +477,15 @@ MUTATIONS += [
         id="sweep-awaits-inside-its-loop",
         what="ops are no longer all issued before the first await, so livekit's FIFO lock no longer reflects issue order",
         file=GATE,
-        search="""  const pending: Promise<OneResult>[] = [];
-  for (const publication of publications) {
-    pending.push(""",
-        replace="""  const pending: Promise<OneResult>[] = [];
-  for (const publication of publications) {
-    await Promise.resolve();
-    pending.push(""",
+        search="""    pending.push(
+      runOne(
+        publication,
+        held,""",
+        replace="""    await Promise.resolve();
+    pending.push(
+      runOne(
+        publication,
+        held,""",
         specs=[GATE_SPEC],
     ),
     Mutation(
@@ -463,12 +495,12 @@ MUTATIONS += [
         search="""        try {
           await publication.resumeUpstream();
         } catch {
-          return { kind: "failed", name: publication.name };
+          return { kind: "failed", name: publication.name, op };
         }
         if (gateHeld()) return null; // the gate refilled under us
         // `unpublished` is not a failure: there is nothing to put back.
         return publication.upstream() === "quiet"
-          ? { kind: "failed", name: publication.name }
+          ? { kind: "failed", name: publication.name, op }
           : null;""",
         replace="""        await publication.resumeUpstream();
         return null;""",
@@ -506,6 +538,54 @@ MUTATIONS += [
         file=GATE,
         search="""        if (repauseSpent) break;""",
         replace="""        if (false && repauseSpent) break;""",
+        specs=[GATE_SPEC],
+    ),
+    # ---- what may spend a publication, and what may cancel a sweep --------
+    Mutation(
+        id="any-unproven-spends-the-publication",
+        what="a plain failed PAUSE marks the publication spent, so the gate never touches it again this episode — the 2026-09-08 defect re-armed",
+        file=GATE,
+        search="""    repauseFailed: settled
+      .filter((r) => r?.kind === "unproven" && r.op === "repause")
+      .map((r) => r!.name),""",
+        replace="""    repauseFailed: named("unproven"),""",
+        specs=[GATE_SPEC],
+    ),
+    Mutation(
+        id="held-gate-proves-nothing",
+        what="a held-gate sweep stops reporting what it observed quiet, so a spent publication can never be un-spent",
+        file=GATE,
+        search="""    if (publication.upstream() !== "live") {
+      return { kind: "proven", name: publication.name, op };
+    }""",
+        replace="""    if (publication.upstream() !== "live") return null;""",
+        specs=[GATE_SPEC],
+    ),
+    Mutation(
+        id="pre-read-outside-the-try",
+        what="the publication's state is read before runOne's try, so one torn-down track rejects the whole sweep and every other publication goes unswept",
+        file=GATE,
+        search="""  let op: PublishGateOp = "none";
+  try {
+    op = publishGateOp({
+      gateHeld: held,
+      upstreamPaused: publication.upstreamPaused,
+      upstream: publication.upstream(),
+    });""",
+        replace="""  const op: PublishGateOp = publishGateOp({
+    gateHeld: held,
+    upstreamPaused: publication.upstreamPaused,
+    upstream: publication.upstream(),
+  });
+  try {""",
+        specs=[GATE_SPEC],
+    ),
+    Mutation(
+        id="dropped-pass-is-silent",
+        what="the cap discards a pending sweep without telling anyone, so the awaiting caller is told the work completed",
+        file=GATE,
+        search="""      if (pending) onDropped();""",
+        replace="""""",
         specs=[GATE_SPEC],
     ),
     # ---- the session-level invariant ---------------------------------------
@@ -563,9 +643,17 @@ MUTATIONS += [
         why_green=(
             "state.tsx has no spec harness — the session specs replace the whole "
             "media binding, and the sweep is reached only through it. COVERED: the "
-            "decision and the whole sweep body (the nine mutations above). NOT "
-            "covered: the ~12-line `GatedPublication` adapter and the "
-            "confirm-then-report re-sweep. Read the mechanism carefully — pinning "
+            "decision and the whole sweep body (the mutations above). NOT "
+            "covered: the ~12-line `GatedPublication` adapter, the "
+            "confirm-then-report "
+            "re-sweep, four episode flags (`#gateConfirmPass`, "
+            "`#gateConfirmScheduled`, `#gateSweepDropped`, "
+            "`#gateRepauseSpent`), the rule that populates the spent set, and "
+            "`callPauseDisproved`'s lifecycle — this region GREW in rounds four "
+            "and five, and TWO fifth-review findings lived in it where no "
+            "mutation could reach them. A `state.tsx`-level harness is now the "
+            "highest-value missing evidence on this branch. "
+            "Read the mechanism carefully — pinning "
             "`upstream()` to `quiet` does NOT make every op `none` (a cleared "
             "flag over a quiet wire still yields `pause`), but it silences BOTH "
             "the stale-flag rebuild case — exactly the 2026-09-08 defect — and "
