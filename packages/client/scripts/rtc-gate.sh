@@ -182,14 +182,44 @@ fi
 # grep reads each file DIRECTLY. Never `cat "$f" | grep -q`: under `pipefail`
 # grep -q exits on the first match, the writer takes SIGPIPE, and the pipeline
 # reports failure BECAUSE the assertion matched.
+# Count occurrences of a literal in LIVE code: line comments are skipped, and
+# two occurrences on one line count as two.
+#
+# 🔴 Both properties were bugs. A review defeated every assertion below by
+# commenting the required line out and putting the fake one under it —
+# `grep -qF` matched the comment and the gate printed `ok:`. And `require_count`
+# used `grep -cF`, a LINE count, while its own comment and the commit message
+# both said occurrences.
+#
+# 🔴 What this still does NOT catch: a dead guard. `if (false) this.#arm...();`
+# is live code by this definition and counts. That is not fixable by reading
+# source text, and it is the reason the real answer is to move this assembly
+# into a module a spec can load rather than to keep adding assertions here.
+#
+# awk in one pass: no pipeline, so there is no `grep -q` closing a pipe early
+# and no `$?` belonging to the wrong command.
+count_live() { # count_live <file> <literal>
+  awk -v needle="$2" '
+    { stripped = $0
+      sub(/^[[:space:]]*/, "", stripped)
+      if (stripped ~ /^\/\// || stripped ~ /^\*/ || stripped ~ /^\/\*/) next
+      s = $0
+      while ((i = index(s, needle)) > 0) {
+        total++
+        s = substr(s, i + length(needle))
+      }
+    }
+    END { print total+0 }' "$1"
+}
+
 check_witness_call_site() {
   local f=components/rtc/state.tsx rc=0
   require() { # require <exact source text> <what it guarantees>
-    if grep -qF "$1" "$f"; then
+    if [ "$(count_live "$f" "$1")" -ge 1 ]; then
       echo "ok:   $2"
     else
       echo "FAIL: $2"
-      echo "      $f no longer contains: $1"
+      echo "      $f has no LIVE occurrence of: $1"
       rc=1
     fi
   }
@@ -198,9 +228,9 @@ check_witness_call_site() {
   # and `#disarmDecodeWitness` CALLS while every definition-shaped assertion
   # here still printed `ok:`. An assertion that reports a guarantee it does not
   # check is worse than no assertion.
-  require_count() { # require_count <exact source text> <n> <what it guarantees>
+  require_count() { # require_count <what it guarantees> <exact source text> <n>
     local n
-    n=$(grep -cF "$2" "$f")
+    n=$(count_live "$f" "$2")
     if [ "$n" -eq "$3" ]; then
       echo "ok:   $1"
     else
@@ -233,32 +263,17 @@ check_witness_call_site() {
 }
 run "gate (d) call site in state.tsx" 12 check_witness_call_site
 
-# 🔴 The gate (d) evidence chain is worth nothing if the shipped worker never
-# posts a witness. `pnpm-workspace.yaml` declaring the patch is NOT the same as
-# the resolved package carrying it — the package.json key was ignored from pnpm
-# 10 on, and moving the declaration does not re-resolve an already-installed
-# store entry. A build from an unpatched tree pins gate (d) AMBER for every
-# call, for every user, and looks exactly like a working gate that is
-# withholding. This is the only check that can tell those apart.
-check_e2ee_worker_patch() {
-  local w=node_modules/livekit-client/dist/livekit-client.e2ee.worker.mjs
-  if [ ! -f "$w" ]; then
-    echo "FAIL: $w does not exist — cannot tell whether the witness ships"
-    return 1
-  fi
-  if grep -qF 'slogaDecodeWitness' "$w"; then
-    echo "ok:   the resolved e2ee worker posts the decode witness"
-    return 0
-  fi
-  echo "FAIL: the RESOLVED livekit e2ee worker contains no decode witness."
-  echo "      resolved: $(readlink -f "$w")"
-  echo "      The patch is declared in pnpm-workspace.yaml but this store entry"
-  echo "      predates it. Every build from this tree ships a worker that never"
-  echo "      posts slogaDecodeWitness, so gate (d) is pinned AMBER — and no"
-  echo "      live leg has ever exercised the witness."
-  return 1
-}
-run "e2ee worker carries the witness" 12 check_e2ee_worker_patch
+# 🔴 The e2ee-worker patch check does NOT live here — see
+# scripts/rtc-build-preflight.sh, and run it before any build or live leg.
+#
+# It was here for one round and that was wrong. This gate judges TREE state:
+# every check it runs can be made to pass by editing the commit. Whether the
+# shared node_modules resolved a patched package is ENVIRONMENT state, which no
+# commit can fix — so parking it here made the gate permanently exit 1 on the
+# only box that runs it, and a gate that is always red teaches everyone to read
+# "1 failing check" as "the worker thing" and skip past a real second failure.
+# That is the same learned-blindness this script's header exists to prevent,
+# arrived at from the other direction.
 
 run "tsc --noEmit" 25 "$ROOT/node_modules/.pnpm/node_modules/.bin/tsc" --noEmit
 # --check, never --write: reformatting a tracked file sweeps up code this
@@ -269,4 +284,9 @@ run "eslint" 30 "$ROOT/node_modules/.bin/eslint" "${FILES[@]}"
 
 echo
 echo "################ GATE SUMMARY: $fails failing check(s) ################"
+# Printed unconditionally, pass or fail: this gate cannot see whether the build
+# would actually carry the decode witness, and a green tree over an unpatched
+# worker is gate (d) silently absent.
+echo "NOTE: tree state only. Before any build or live leg, also run:"
+echo "      bash scripts/rtc-build-preflight.sh"
 exit $fails
