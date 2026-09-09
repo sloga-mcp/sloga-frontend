@@ -1002,6 +1002,23 @@ test("gate (d) is independent of the join-race hold: a resolved hold still needs
   assert.equal(world.chip(), "e2ee");
 });
 
+test("🔴 gate (b): a publisher LiveKit has NOT vouched for holds the chip amber", async (t) => {
+  // Our OWN publication, which is the case that shipped green in desktop
+  // 0.57.0: the worker says the cryptor is on, the SFU's record says nothing,
+  // and every receiver arms from the SFU's record. This harness could not
+  // state it until the chip assembly was shared — its copy excluded SELF from
+  // the publishers gate (b) judges, so gate (b) was modelled over remotes only.
+  const world = await threeParty(t, "ch-unobserved");
+  assert.equal(world.chip(), "e2ee");
+
+  world.markUnobserved(SELF_ID);
+  assert.equal(
+    world.chip(),
+    "resecuring",
+    "a publisher with no observed status was vouched for anyway",
+  );
+});
+
 test("🔴 gate (c): an unverified roster member holds the lock open", async (t) => {
   // Not a media-plane ladder — it is here because this harness could not
   // EXPRESS it until the chip assembly was shared. It hardcoded every member

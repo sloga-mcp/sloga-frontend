@@ -32,6 +32,7 @@ import {
   DECODE_WITNESS_STALE_MS,
   createDecodeWitnessListener,
   parseDecodeWitnessMessage,
+  sameWitness,
 } from "./decodeWitnessListener.ts";
 import { type DecodeWitness } from "./mlsCallModePolicy.ts";
 
@@ -539,6 +540,64 @@ test("a readable sample after a skew clears the skew warning", () => {
   assert.equal(r.infos.length, 1);
   r.listener.onMessage(sample(null));
   assert.equal(r.warns.length, 2);
+});
+
+// --- the signal's equality (Solid SKIPS the write when this is true) --------
+
+test("🔴 a witness that starts DROPPING a sender is not 'the same'", () => {
+  // The whole hazard in one assertion. Solid skips the write when this returns
+  // true, so treating this transition as equal freezes the accessor on the
+  // stale clean object and the chip stays GREEN for the rest of the call while
+  // the worker discards that peer's frames.
+  const clean = { available: true, dropping: [], live: ["bob"] };
+  const dropping = { available: true, dropping: ["bob"], live: [] };
+  assert.equal(sameWitness(clean, dropping), false);
+  assert.equal(sameWitness(dropping, clean), false);
+});
+
+test("🔴 losing the heartbeat is not 'the same'", () => {
+  assert.equal(
+    sameWitness(
+      { available: true, dropping: [], live: [] },
+      { available: false, dropping: [], live: [] },
+    ),
+    false,
+  );
+});
+
+test("🔴 a DIFFERENT sender dropping is not 'the same'", () => {
+  // Same length, different contents — a comparator that only checked
+  // `dropping.length` would freeze the chip on the wrong peer's name.
+  assert.equal(
+    sameWitness(
+      { available: true, dropping: ["bob"], live: [] },
+      { available: true, dropping: ["carol"], live: [] },
+    ),
+    false,
+  );
+});
+
+test("an identical report IS the same, so the chip does not re-run once a second", () => {
+  // The reason the comparator exists: the worker posts a NEW object every
+  // second and the chip walks every participant and every publication.
+  assert.equal(
+    sameWitness(
+      { available: true, dropping: ["bob"], live: ["carol"] },
+      { available: true, dropping: ["bob"], live: ["carol"] },
+    ),
+    true,
+  );
+});
+
+test("`live` is deliberately NOT compared", () => {
+  // Nothing reads it, and comparing it would defeat the comparator entirely.
+  assert.equal(
+    sameWitness(
+      { available: true, dropping: [], live: ["bob"] },
+      { available: true, dropping: [], live: [] },
+    ),
+    true,
+  );
 });
 
 // --- the parser on its own --------------------------------------------------

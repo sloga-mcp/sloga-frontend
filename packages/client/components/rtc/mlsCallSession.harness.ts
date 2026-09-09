@@ -197,6 +197,15 @@ export class World {
 
   /** The worker is dropping these senders' frames at a silenced index. */
   dropFrames(...identities: string[]): void {
+    for (const identity of identities) {
+      // The witness is built from the SFU set, so naming somebody who is not
+      // in it would silently model NO drops — a spec that reads green for the
+      // wrong reason.
+      assert.ok(
+        this.sfu.includes(identity),
+        `dropFrames(${identity}): not in the SFU set, so it owes no witness`,
+      );
+    }
     this.#dropping = identities;
   }
 
@@ -237,6 +246,27 @@ export class World {
   /** Mark roster members unverified for gate (c). */
   markUnverified(...identities: string[]): void {
     for (const identity of identities) this.unverified.add(identity);
+  }
+
+  /**
+   * Participants LiveKit has reported no encryption status for (gate b).
+   *
+   * 🔴 Empty by default, and `observedEncryption` otherwise answers TRUE for
+   * everyone, because that is the SFU's DECLARATION and a peer whose frames
+   * this device cannot decrypt still reports encrypted — which is exactly why
+   * gate (b) cannot see the media plane and gate (d) exists.
+   *
+   * It is an axis at all because routing the harness through the real
+   * assembly was only half the fix: the assembly now includes SELF in
+   * `publishingIdentities` as production does, but with every identity
+   * hardcoded observed-true, "our own publication is not observed encrypted"
+   * — the desktop 0.57.0 defect — was still inexpressible here.
+   */
+  unobserved = new Set<string>();
+
+  /** LiveKit has vouched for nothing about these identities. */
+  markUnobserved(...identities: string[]): void {
+    for (const identity of identities) this.unobserved.add(identity);
   }
   session!: MlsCallSession;
 
@@ -376,7 +406,8 @@ export class World {
       channelHasOpenGroup: () => true,
       capableAndEnabled: () => true,
       decodeWitness: () => this.decodeWitness(),
-      observedEncryption: () => true,
+      observedEncryption: (identity) =>
+        this.unobserved.has(identity) ? undefined : true,
       // Every SFU participant publishes one track, INCLUDING self. The
       // production assembly excludes only our own screen leg, and these
       // ladders have none.

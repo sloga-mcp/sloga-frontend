@@ -282,6 +282,12 @@ check_witness_call_site() {
   }
   require 'createSignal<DecodeWitness>(DECODE_WITNESS_INITIAL, {' \
     "the witness signal is seeded UNAVAILABLE, from the spec'd constant"
+  # 🔴 Solid SKIPS the write when the comparator returns true, so a loosened
+  # one freezes the chip on its last value — green, over a peer whose frames
+  # are being discarded. Pinned by NAME so the implementation stays in a file
+  # a spec can load.
+  require 'equals: sameWitness,' \
+    "the witness signal's equality is the spec'd comparator"
   # 🔴 The seed is not the read. A round-4 review replaced the chip's read of
   # the signal with an available literal and the gate, every mutation, tsc,
   # eslint and prettier stayed green. Round 5 then measured EIGHT more one-line

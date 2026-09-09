@@ -62,6 +62,17 @@ class Mutation:
     #:           reason: the mutation is a UX/behaviour choice, not a posture)
     expect: str = "red"
     why_green: str = ""
+    #: Specs that must go red INDIVIDUALLY, each checked on its own.
+    #:
+    #: 🔴 `specs` above is judged as a whole and `run_specs` returns on the
+    #: FIRST failure, so a spec listed there is invisible to the verdict
+    #: whenever an earlier one already fails. A claim about a SPECIFIC spec —
+    #: "this mutation proves the session harness runs the real assembly" —
+    #: is therefore unprovable through `specs` and belongs here. Round 7
+    #: learned this the expensive way: it pinned three mutations to
+    #: JOINRACE_SPEC alongside a CHIP_SPEC that always reddens, and the pin
+    #: was measured inert.
+    must_red: list[str] = field(default_factory=list)
 
 
 MUTATIONS: list[Mutation] = []
@@ -130,11 +141,24 @@ def main() -> int:
         original = apply(m)
         try:
             passed = run_specs(m.specs)
+            # Each `must_red` spec on its own — see the field's comment.
+            # 🔴 INSIDE the try, while the mutation is still applied. Evaluating
+            # it after the `finally` runs the specs against the RESTORED tree,
+            # where they are green by construction, so every pin reads as
+            # "stayed green" and the check is worse than useless.
+            stayed_green = [s for s in m.must_red if run_specs([s])]
         finally:
             path.write_text(original, encoding="utf-8")
         got = "green" if passed else "red"
         ok = got == m.expect
+        if stayed_green:
+            ok = False
         print(f">>> {'OK  ' if ok else 'FAIL'}: expected {m.expect}, specs went {got}")
+        for spec in stayed_green:
+            print(
+                f"    >>> but {spec} stayed GREEN, and this mutation asserts "
+                f"that it must not"
+            )
         if not ok:
             failures.append(m.id)
 
@@ -591,6 +615,24 @@ MUTATIONS += [
         specs=[WITNESS_SPEC],
     ),
     Mutation(
+        id="witness-equality-ignores-drops",
+        what="the signal comparator ignores WHO is dropping, so Solid skips the write and the chip freezes green",
+        file=WITNESS,
+        search="""    a.available === b.available &&
+    a.dropping.length === b.dropping.length &&
+    a.dropping.every((id, i) => id === b.dropping[i])""",
+        replace="""    a.available === b.available""",
+        specs=[WITNESS_SPEC],
+    ),
+    Mutation(
+        id="witness-equality-ignores-identity",
+        what="the comparator checks only the COUNT of dropping senders, not which ones",
+        file=WITNESS,
+        search="""    a.dropping.every((id, i) => id === b.dropping[i])""",
+        replace="""    true""",
+        specs=[WITNESS_SPEC],
+    ),
+    Mutation(
         id="witness-session-guard-removed",
         what="a disposed session's queued post writes the newer call's witness",
         file=WITNESS,
@@ -618,7 +660,12 @@ MUTATIONS += [
         file=CHIP,
         search="""  if (!room) return [];""",
         replace="""  if (room) return [];""",
-        specs=[CHIP_SPEC],
+        # Gate (b) is reachable from the session suite now that the
+        # harness can express an unvouched-for publisher. `must_red`
+        # so the claim is checked on its own rather than masked by
+        # CHIP_SPEC, which reddens for this unconditionally.
+        specs=[CHIP_SPEC, JOINRACE_SPEC],
+        must_red=[JOINRACE_SPEC],
     ),
     Mutation(
         id="chip-own-screen-leg-judged",
@@ -646,7 +693,12 @@ MUTATIONS += [
         file=CHIP,
         search="""    if (status !== undefined) observed.set(identity, status);""",
         replace="""    observed.set(identity, status ?? true);""",
-        specs=[CHIP_SPEC],
+        # Gate (b) is reachable from the session suite now that the
+        # harness can express an unvouched-for publisher. `must_red`
+        # so the claim is checked on its own rather than masked by
+        # CHIP_SPEC, which reddens for this unconditionally.
+        specs=[CHIP_SPEC, JOINRACE_SPEC],
+        must_red=[JOINRACE_SPEC],
     ),
     Mutation(
         id="chip-local-declaration-assumed",
@@ -670,6 +722,7 @@ MUTATIONS += [
         # a hand-built literal this stops turning that suite red, and
         # the runner reports the unexpected "green" as a hard failure.
         specs=[CHIP_SPEC, JOINRACE_SPEC],
+        must_red=[JOINRACE_SPEC],
     ),
     Mutation(
         id="chip-witness-literal",
@@ -683,6 +736,7 @@ MUTATIONS += [
         # a hand-built literal this stops turning that suite red, and
         # the runner reports the unexpected "green" as a hard failure.
         specs=[CHIP_SPEC, JOINRACE_SPEC],
+        must_red=[JOINRACE_SPEC],
     ),
     Mutation(
         id="chip-media-hold-ignored",
@@ -696,6 +750,7 @@ MUTATIONS += [
         # a hand-built literal this stops turning that suite red, and
         # the runner reports the unexpected "green" as a hard failure.
         specs=[CHIP_SPEC, JOINRACE_SPEC],
+        must_red=[JOINRACE_SPEC],
     ),
     Mutation(
         id="chip-latched-error-ignored",

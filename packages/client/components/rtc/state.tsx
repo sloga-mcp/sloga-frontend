@@ -199,6 +199,7 @@ import { RoomAudioManager } from "./components/RoomAudioManager";
 import {
   createDecodeWitnessListener,
   DECODE_WITNESS_INITIAL,
+  sameWitness,
 } from "./decodeWitnessListener.ts";
 import { isDiceRollMessage, summariseDiceRoll } from "./diceRoll";
 import { faceSettingsActive } from "./faceFilterCatalog";
@@ -1189,10 +1190,12 @@ class Voice {
         // for the life of every call, defeating the `callParticipantsVersion`
         // dependency that exists to stop exactly that. Only a change in what
         // the witness SAYS is a change.
-        equals: (a, b) =>
-          a.available === b.available &&
-          a.dropping.length === b.dropping.length &&
-          a.dropping.every((id, i) => id === b.dropping[i]),
+        //
+        // 🔴 The comparator itself is in `decodeWitnessListener.ts`, where a
+        // spec can load it: Solid SKIPS the write when it returns true, so
+        // loosening it freezes the chip green over a peer whose frames are
+        // being discarded.
+        equals: sameWitness,
       });
     this.callDecodeWitness = callDecodeWitness;
     this.#setCallDecodeWitness = setCallDecodeWitness;
@@ -2304,10 +2307,20 @@ class Voice {
       // over a call that is no longer connected, refreshed once a second for
       // as long as it lasts. Gate (d) exists to stop a green outliving its
       // evidence, so it must be disarmed here even though the session is not.
-      try {
-        this.#disarmDecodeWitness();
-      } catch {
-        /* teardown must not be abortable by a chip-derivation throw */
+      //
+      // 🔴 Guarded by the connect generation. LiveKit emits `disconnected`
+      // asynchronously (after an awaited `sendLeave()`), so a SUPERSEDED
+      // room's late event can land during the next call — and since
+      // `#armDecodeWitness` runs once per call and nothing re-arms, an
+      // unguarded disarm here would pin the NEW call's chip amber for its
+      // whole life. `#setState("DISCONNECTED")` above is unguarded too, but
+      // its effect is transient and pre-existing; this one is not.
+      if (gen === this.#connectGen) {
+        try {
+          this.#disarmDecodeWitness();
+        } catch {
+          /* teardown must not be abortable by a chip-derivation throw */
+        }
       }
       nativeCallServiceStop();
       // Kick / `force_disconnect`: the server will remove the leg anyway

@@ -70,6 +70,29 @@ export const DECODE_WITNESS_STALE_MS = 3 * DECODE_WITNESS_CHECK_MS;
  */
 export const DECODE_WITNESS_INITIAL: DecodeWitness = DECODE_WITNESS_UNAVAILABLE;
 
+/**
+ * Whether two witnesses SAY the same thing — the signal's equality.
+ *
+ * 🔴 It lives here, not inline at the `createSignal` call, because Solid skips
+ * the write ENTIRELY when this returns true. Simplify it to
+ * `a.available === b.available` — a plausible tidy-up — and a transition from
+ * `dropping: []` to `dropping: [peer]` counts as no change: the accessor keeps
+ * handing out the stale clean object and the chip stays GREEN for the rest of
+ * the call while the worker discards that peer's frames. Inline in `state.tsx`
+ * that was unspecced, unmutated, and asserted only up to the opening brace.
+ *
+ * `live` is deliberately not compared: nothing reads it, and the worker posts
+ * a new object every second, so including it would defeat the whole point of
+ * the comparator.
+ */
+export function sameWitness(a: DecodeWitness, b: DecodeWitness): boolean {
+  return (
+    a.available === b.available &&
+    a.dropping.length === b.dropping.length &&
+    a.dropping.every((id, i) => id === b.dropping[i])
+  );
+}
+
 /** Just the two console levels the listener uses, so specs can observe them. */
 export interface DecodeWitnessLog {
   warn(message: string): void;
