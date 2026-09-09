@@ -664,7 +664,12 @@ MUTATIONS += [
         file=CHIP,
         search="""    rosterVerified: sources.rosterVerified(),""",
         replace="""    rosterVerified: [],""",
-        specs=[CHIP_SPEC],
+        # JOINRACE too: measurably reachable from the session suite,
+        # which is the standing proof that the harness runs the REAL
+        # assembly rather than a copy of it. If it is ever reverted to
+        # a hand-built literal this stops turning that suite red, and
+        # the runner reports the unexpected "green" as a hard failure.
+        specs=[CHIP_SPEC, JOINRACE_SPEC],
     ),
     Mutation(
         id="chip-witness-literal",
@@ -672,7 +677,12 @@ MUTATIONS += [
         file=CHIP,
         search="""    decodeWitness: sources.decodeWitness(),""",
         replace="""    decodeWitness: { available: true, dropping: [], live: [] },""",
-        specs=[CHIP_SPEC],
+        # JOINRACE too: measurably reachable from the session suite,
+        # which is the standing proof that the harness runs the REAL
+        # assembly rather than a copy of it. If it is ever reverted to
+        # a hand-built literal this stops turning that suite red, and
+        # the runner reports the unexpected "green" as a hard failure.
+        specs=[CHIP_SPEC, JOINRACE_SPEC],
     ),
     Mutation(
         id="chip-media-hold-ignored",
@@ -680,7 +690,12 @@ MUTATIONS += [
         file=CHIP,
         search="""    resecuring: sessionState === "resecuring" || sources.mediaHold(),""",
         replace="""    resecuring: sessionState === "resecuring",""",
-        specs=[CHIP_SPEC],
+        # JOINRACE too: measurably reachable from the session suite,
+        # which is the standing proof that the harness runs the REAL
+        # assembly rather than a copy of it. If it is ever reverted to
+        # a hand-built literal this stops turning that suite red, and
+        # the runner reports the unexpected "green" as a hard failure.
+        specs=[CHIP_SPEC, JOINRACE_SPEC],
     ),
     Mutation(
         id="chip-latched-error-ignored",

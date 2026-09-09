@@ -1001,3 +1001,29 @@ test("gate (d) is independent of the join-race hold: a resolved hold still needs
   world.dropFrames();
   assert.equal(world.chip(), "e2ee");
 });
+
+test("🔴 gate (c): an unverified roster member holds the lock open", async (t) => {
+  // Not a media-plane ladder — it is here because this harness could not
+  // EXPRESS it until the chip assembly was shared. It hardcoded every member
+  // verified, so every green these suites assert was taken with gate (c)
+  // pre-satisfied, and a regression that dropped the verification read would
+  // have been invisible to all of them.
+  const world = await threeParty(t, "ch-unverified");
+  assert.equal(world.chip(), "e2ee");
+
+  world.markUnverified(THIRD_ID);
+  assert.equal(
+    world.chip(),
+    "e2ee_unverified",
+    "an unverified member did not hold the verified lock open",
+  );
+
+  // ...and gate (c) only withholds the VERIFIED claim; the media plane's amber
+  // still outranks it.
+  world.dropFrames(THIRD_ID);
+  assert.equal(
+    world.chip(),
+    "resecuring",
+    "the media plane's amber must still win over an unverified lock",
+  );
+});
