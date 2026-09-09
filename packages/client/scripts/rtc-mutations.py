@@ -66,15 +66,33 @@ class Mutation:
 MUTATIONS: list[Mutation] = []
 
 
+# A mutant that HANGS is not a result. `node --test`'s own `--test-timeout`
+# cannot fire on a loop that never yields to the event loop (a runaway
+# `while`/`do-while` over awaited microtasks), so the only reliable bound is
+# wall-clock on the process. Sized well above the slowest honest spec file
+# (~15 s) and well below anything a human would sit through.
+SPEC_TIMEOUT_S = 120
+
+
 def run_specs(specs: list[str]) -> bool:
-    """True when every named spec file passes. The runner's OWN exit status."""
+    """True when every named spec file passes. The runner's OWN exit status.
+
+    A timeout counts as FAILING, deliberately: under a mutation a hang means the
+    mutant broke termination, which is a defect the specs caught; on a clean
+    tree it means something is wrong that must not be reported as a pass.
+    """
     for spec in specs:
-        proc = subprocess.run(
-            [NODE, "--test", "--conditions=browser", spec],
-            cwd=CLIENT,
-            capture_output=True,
-            text=True,
-        )
+        try:
+            proc = subprocess.run(
+                [NODE, "--test", "--conditions=browser", spec],
+                cwd=CLIENT,
+                capture_output=True,
+                text=True,
+                timeout=SPEC_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired:
+            print(f"    (spec {spec} timed out after {SPEC_TIMEOUT_S}s)")
+            return False
         if proc.returncode != 0:
             return False
     return True
@@ -447,9 +465,47 @@ MUTATIONS += [
         } catch {
           return { kind: "failed", name: publication.name };
         }
-        return null;""",
+        if (gateHeld()) return null; // the gate refilled under us
+        // `unpublished` is not a failure: there is nothing to put back.
+        return publication.upstream() === "quiet"
+          ? { kind: "failed", name: publication.name }
+          : null;""",
         replace="""        await publication.resumeUpstream();
         return null;""",
+        specs=[GATE_SPEC],
+    ),
+    # ---- the live-lock bound (fourth review) -------------------------------
+    Mutation(
+        id="sweeper-nests-on-re-entry",
+        what="the coalescing sweeper assigns its promise AFTER starting the run, so a re-entrant trigger sees no sweep in flight and starts its own — 3060 nested passes in 28 ms when this was first written",
+        file=GATE,
+        search="""      let settle!: () => void;
+      let fail!: (error: unknown) => void;
+      const done = new Promise<void>((resolve, reject) => {
+        settle = resolve;
+        fail = reject;
+      });
+      active = done;
+      drive().then(settle, fail);
+      return done;""",
+        replace="""      active = drive();
+      return active;""",
+        specs=[GATE_SPEC],
+    ),
+    Mutation(
+        id="sweeper-pass-cap-removed",
+        what="a run whose every pass re-triggers is unbounded",
+        file=GATE,
+        search="""      } while (pending && --budget > 0);""",
+        replace="""      } while (pending);""",
+        specs=[GATE_SPEC],
+    ),
+    Mutation(
+        id="spent-repause-retried-forever",
+        what="a repause that already failed is attempted again on every pass, re-attaching the sender each time — the live-lock's energy source",
+        file=GATE,
+        search="""        if (repauseSpent) break;""",
+        replace="""        if (false && repauseSpent) break;""",
         specs=[GATE_SPEC],
     ),
     # ---- the session-level invariant ---------------------------------------
@@ -510,10 +566,13 @@ MUTATIONS += [
             "decision and the whole sweep body (the nine mutations above). NOT "
             "covered: the ~12-line `GatedPublication` adapter and the "
             "confirm-then-report re-sweep. Read the mechanism carefully — pinning "
-            "`upstream()` to `quiet` does NOT make every op `none`, because a "
-            "cleared flag over a quiet wire still yields `pause`; it silences only "
-            "the stale-flag rebuild case, which is exactly the 2026-09-08 defect, "
-            "and it does so with the whole suite green. The three reads it breaks "
+            "`upstream()` to `quiet` does NOT make every op `none` (a cleared "
+            "flag over a quiet wire still yields `pause`), but it silences BOTH "
+            "the stale-flag rebuild case — exactly the 2026-09-08 defect — and "
+            "the ENTIRE post-condition, since `upstream() === 'live'` becomes "
+            "universally false: the rejecting detach, the pause that resolved "
+            "over a re-attached wire, all of it. And it does so with the whole "
+            "suite green. The three reads it breaks "
             "(`sender`, `sender.track`, `sender.transport?.state`) are the same "
             "triple livekit's own guards use, verified against the pinned "
             "livekit-client 2.15.13 source. Closing this needs a live leg on a "

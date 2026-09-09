@@ -21,11 +21,19 @@ import { participantUserId } from "../participantIdentity";
  * "Turn off encryption" → the session's native confirm dialog (T3/T5); an
  * announce (T4) never resumes on its own.
  *
- * Copy and gate agree by construction: every state that renders "your audio
- * and video stay paused" holds the `negotiating` / `mixed` reason (the
+ * Copy and gate agree by construction — ALMOST. Every state that renders "your
+ * audio and video stay paused" holds the `negotiating` / `mixed` reason (the
  * session until its verdict or loud fallback; a call with no session through
  * the R2-4 setup hold in state.tsx), and a confirmed interlude gets its own
  * copy so the promise is withdrawn the moment publishing resumes.
+ *
+ * 🔴 But holding the REASON is not the wire being quiet, which is what the
+ * 2026-09-08 join-race legs proved: a seat showed this banner while the other
+ * seat decrypted its frames for 24 minutes. So when the publish gate's sweep
+ * CONFIRMS local media is still on the wire (`callPauseDisproved`), every arm
+ * below is replaced by copy that does not claim a pause. That is a WITHDRAWAL,
+ * not a new state — this signal never raises the banner on its own, and it
+ * therefore needs no chip precedence and no new affordance.
  *
  * First paint is debounced by `MIX_BANNER_DEBOUNCE_MS` (judgment call 5) so a
  * cap-refused joiner's brief in/out never flashes the banner — the fail-closed
@@ -128,66 +136,77 @@ export function VoiceCallDowngradeBanner() {
       <Banner interlude={mode()?.kind === "interlude"}>
         <Text>
           <Show
-            when={ownerMismatch()}
+            when={voice.callPauseDisproved()}
             fallback={
               <Show
-                when={localConfirmed()}
+                when={ownerMismatch()}
                 fallback={
                   <Show
-                    when={voice.callTerminalLoud()}
+                    when={localConfirmed()}
                     fallback={
                       <Show
-                        when={
-                          mode()?.kind === "interlude" &&
-                          voice.callAnnouncedBy()
-                        }
+                        when={voice.callTerminalLoud()}
                         fallback={
                           <Show
-                            when={names().length}
+                            when={
+                              mode()?.kind === "interlude" &&
+                              voice.callAnnouncedBy()
+                            }
                             fallback={
-                              <Trans>
-                                Someone in this call is not using encrypted
-                                calls. Your audio and video stay paused until
-                                you turn off encryption.
-                              </Trans>
+                              <Show
+                                when={names().length}
+                                fallback={
+                                  <Trans>
+                                    Someone in this call is not using encrypted
+                                    calls. Your audio and video stay paused
+                                    until you turn off encryption.
+                                  </Trans>
+                                }
+                              >
+                                <Trans>
+                                  {names().join(", ")} is not using encrypted
+                                  calls. Your audio and video stay paused until
+                                  you turn off encryption.
+                                </Trans>
+                              </Show>
                             }
                           >
                             <Trans>
-                              {names().join(", ")} is not using encrypted calls.
-                              Your audio and video stay paused until you turn
-                              off encryption.
+                              A participant turned off encryption for this call.
+                              Resume to be heard — the server will be able to
+                              read this call.
                             </Trans>
                           </Show>
                         }
                       >
                         <Trans>
-                          A participant turned off encryption for this call.
-                          Resume to be heard — the server will be able to read
-                          this call.
+                          This call could not be secured. Your audio and video
+                          stay paused — leave, or continue without encryption.
                         </Trans>
                       </Show>
                     }
                   >
                     <Trans>
-                      This call could not be secured. Your audio and video stay
-                      paused — leave, or continue without encryption.
+                      You turned off encryption for this call. Your audio and
+                      video are being sent unencrypted — the server will be able
+                      to read this call.
                     </Trans>
                   </Show>
                 }
               >
                 <Trans>
-                  You turned off encryption for this call. Your audio and video
-                  are being sent unencrypted — the server will be able to read
-                  this call.
+                  Encryption on this device is set up for a different account,
+                  so calls here cannot be encrypted. Resetting clears this
+                  device's encryption — including encrypted messages stored on
+                  it — and sets it up again for the account you are signed in
+                  as.
                 </Trans>
               </Show>
             }
           >
             <Trans>
-              Encryption on this device is set up for a different account, so
-              calls here cannot be encrypted. Resetting clears this device's
-              encryption — including encrypted messages stored on it — and sets
-              it up again for the account you are signed in as.
+              This call could not be secured, and your audio and video may still
+              be sending. Leave the call to stop them.
             </Trans>
           </Show>
         </Text>

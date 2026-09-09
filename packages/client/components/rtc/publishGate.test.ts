@@ -20,6 +20,7 @@ import {
   type GatedPublication,
   type UpstreamState,
   applyPublishGate,
+  coalescingSweeper,
   publishGateOp,
 } from "./publishGate.ts";
 
@@ -101,6 +102,8 @@ class FakeSender {
   rejectDetach = false;
   /** When set, an ATTACH blocks here — the in-flight `replaceTrack` window. */
   #attachHeld: Promise<void> | null = null;
+  /** The same for a DETACH: the mirror window the residual reasons about. */
+  #detachHeld: Promise<void> | null = null;
 
   constructor(track: string | null) {
     this.track = track;
@@ -116,6 +119,16 @@ class FakeSender {
     };
   }
 
+  /** Hold the next detach open. The returned function lets it complete. */
+  holdDetach(): () => void {
+    let release!: () => void;
+    this.#detachHeld = new Promise<void>((resolve) => (release = resolve));
+    return () => {
+      this.#detachHeld = null;
+      release();
+    };
+  }
+
   /**
    * WebRTC 1.0 §5.2: the promise settles only after a queued task sets
    * `[[SenderTrack]]`. So `sender.track` lags the call, and during that lag
@@ -127,6 +140,7 @@ class FakeSender {
       throw new Error("InvalidStateError: sender is closed");
     }
     if (track !== null && this.#attachHeld) await this.#attachHeld;
+    if (track === null && this.#detachHeld) await this.#detachHeld;
     await Promise.resolve();
     this.writes.push(track);
     this.track = track;
@@ -142,6 +156,16 @@ class FakeLocalTrack {
   /** How many times the sweep called into livekit at all. */
   pauseCalls = 0;
   readonly #lock = new FifoMutex();
+  /** `TrackEvent.UpstreamResumed` / `UpstreamPaused` listeners. */
+  readonly #listeners = new Map<string, (() => void)[]>();
+
+  on(event: "UpstreamResumed" | "UpstreamPaused", fn: () => void): void {
+    this.#listeners.set(event, [...(this.#listeners.get(event) ?? []), fn]);
+  }
+
+  #emit(event: string): void {
+    for (const fn of this.#listeners.get(event) ?? []) fn();
+  }
 
   constructor(raw = "mic") {
     this.raw = raw;
@@ -171,6 +195,7 @@ class FakeLocalTrack {
       if (this.paused === true) return;
       if (!this.sender) return;
       this.paused = true;
+      this.#emit("UpstreamPaused");
       if (this.sender.transportState !== "closed") {
         await this.sender.replaceTrack(null);
       }
@@ -186,6 +211,7 @@ class FakeLocalTrack {
       if (!this.sender) return;
       // Flag cleared and `UpstreamResumed` emitted BEFORE the attach lands.
       this.paused = false;
+      this.#emit("UpstreamResumed");
       if (this.sender.transportState !== "closed") {
         await this.sender.replaceTrack(this.mediaStreamTrack);
       }
@@ -586,4 +612,138 @@ test("a post-condition read that throws is reported, not an unhandled rejection"
     held,
   );
   assert.deepEqual(result.unproven, ["microphone/TR_1"]);
+});
+
+// ---- The confirm/reassert loop ---------------------------------------------
+
+test("the coalescing sweeper never nests, and collapses a burst into one pass", async () => {
+  const order: string[] = [];
+  let burst = true;
+  const sweeper = coalescingSweeper(async () => {
+    order.push("start");
+    if (burst) {
+      // A sweep's own ops re-enter through `UpstreamResumed` — three events in
+      // one pass, from three publications, must not become three sweeps.
+      burst = false;
+      void sweeper.sweep();
+      void sweeper.sweep();
+      void sweeper.sweep();
+    }
+    await Promise.resolve();
+    order.push("end");
+  });
+  await sweeper.sweep();
+  // Two passes: the original, plus ONE trailing pass for the whole burst.
+  assert.deepEqual(order, ["start", "end", "start", "end"]);
+  assert.equal(sweeper.passes(), 2);
+});
+
+test("every caller of a coalesced sweep awaits the work in flight", async () => {
+  // `#enable()` awaits its pause before flipping E2EE on, so a re-entrant
+  // caller receiving an already-resolved promise would break that guard.
+  let done = false;
+  const sweeper = coalescingSweeper(async () => {
+    await Promise.resolve();
+    done = true;
+  });
+  const first = sweeper.sweep();
+  const second = sweeper.sweep();
+  await second;
+  assert.equal(done, true);
+  await first;
+});
+
+test("the sweeper's pass cap stops a run whose every pass re-triggers", async () => {
+  let runs = 0;
+  // The re-trigger stops at 20 so this spec TERMINATES whether or not the cap
+  // works: relying on the production cap to end the loop meant the mutation
+  // that removes the cap hung the suite instead of failing it, and a hang is a
+  // non-result — neither red nor green — which is the whole thing `rtc-gate.sh`
+  // exists to prevent.
+  const sweeper = coalescingSweeper(async () => {
+    runs++;
+    if (runs < 20) void sweeper.sweep();
+    await Promise.resolve();
+  }, 4);
+  await sweeper.sweep();
+  assert.equal(runs, 4, "the cap is a hard stop, not a heuristic");
+});
+
+test("a persistently failing detach does not live-lock the sweep", async () => {
+  // The scenario the post-condition exists for, and the one the fourth review
+  // found spinning: `repause` resumes, its `UpstreamResumed` re-enters the
+  // sweep, the pause throws, and the wire is live again — forever, re-attaching
+  // the sender on every pass.
+  const track = new FakeLocalTrack();
+  await applyPublishGate([gated(track)], held);
+  track.republish(); // stale-true flag over a live sender
+  track.sender!.rejectDetach = true; // the detach will never land
+
+  const repauseSpent = new Set<string>();
+  let reports = 0;
+  const sweeper = coalescingSweeper(async () => {
+    const { unproven } = await applyPublishGate([gated(track)], held, {
+      repauseSpent,
+    });
+    if (unproven.length > 0) {
+      reports++;
+      for (const name of unproven) repauseSpent.add(name);
+    }
+  });
+  // livekit's event, wired the way `state.tsx` wires it.
+  track.on("UpstreamResumed", () => void sweeper.sweep());
+
+  await sweeper.sweep();
+  await settle();
+
+  assert.ok(
+    sweeper.passes() <= 4,
+    `the sweep spun: ${sweeper.passes()} passes`,
+  );
+  assert.ok(reports >= 1, "the failure must still be reported");
+  // And the crucial part: it stopped re-attaching. One repause attempt, then
+  // report-only — otherwise every pass puts the sender back on the wire.
+  const attaches = track.sender!.writes.filter((w) => w !== null).length;
+  assert.ok(
+    attaches <= 1,
+    `the sweep re-attached the sender ${attaches} times while gated`,
+  );
+});
+
+test("a spent repause still reports, and still issues nothing", async () => {
+  const track = new FakeLocalTrack();
+  await applyPublishGate([gated(track)], held);
+  track.republish();
+  const before = track.pauseCalls;
+  const result = await applyPublishGate([gated(track)], held, {
+    repauseSpent: new Set(["microphone/TR_1"]),
+  });
+  assert.deepEqual(result.unproven, ["microphone/TR_1"]);
+  assert.equal(track.pauseCalls, before, "a spent repause called into livekit");
+  assert.equal(track.upstream(), "live", "and it did not touch the wire");
+});
+
+test("a held-gate detach in flight reads live, and the pause still lands", async () => {
+  // The mirror window the residual reasons about, now pinned rather than prose:
+  // livekit sets the flag before awaiting the detach, so mid-detach the state is
+  // {flag: true, live}. The policy calls that `repause`, whose resume queues
+  // behind the detach on the FIFO lock — so the wire ends quiet either way.
+  const track = new FakeLocalTrack();
+  const release = track.sender!.holdDetach();
+  const pausing = track.pauseUpstream();
+  await settle();
+  assert.equal(
+    track.isUpstreamPaused,
+    true,
+    "flag set before the detach lands",
+  );
+  assert.equal(track.upstream(), "live", "the wire has not caught up");
+
+  const sweeping = applyPublishGate([gated(track)], held);
+  release();
+  const result = await sweeping;
+  await pausing;
+  await settle();
+  assert.deepEqual(result.unproven, []);
+  assert.equal(track.upstream(), "quiet");
 });

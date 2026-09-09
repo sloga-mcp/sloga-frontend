@@ -77,10 +77,15 @@
  * `pauseUpstreamLock` and leaving the flag untouched, so both reads agree on
  * "settled pause" while an attach is pending. It is a transient lie, not a hole:
  * both emit (`TrackProcessorUpdate` / `UpstreamResumed`) after the attach lands,
- * and `#reassertPublishGate` sweeps on either. But it is reachable on a normal
- * join — `#syncMicPipeline` runs inside the `negotiating` gate for anyone with
- * denoise, non-unity gain or a tone preset — and the fake cannot express it, so
- * it is prose, not a spec.
+ * and `#reassertPublishGate` sweeps on either.
+ *
+ * It is reachable on a normal join — `#syncMicPipeline` runs inside the
+ * `negotiating` gate for anyone with denoise, non-unity gain or a tone preset —
+ * and that reachability is itself an unimplemented contract clause, not a limit
+ * of the observation. R2-1 in the 6.5 breakdown specifies TWO halves: re-assert
+ * on the events (done), AND defer effect attachment while the gate is held
+ * (never built — `#syncMicPipeline` has no gate check). Closing half (ii) would
+ * remove the window rather than race it.
  *
  * Two residuals, stated rather than hidden:
  *
@@ -101,7 +106,7 @@
  *    because each `repause` now reliably spawns a re-entrant pause.
  *  - `LocalVideoTrack.pauseUpstream`/`resumeUpstream` run their
  *    `simulcastCodecs` loops OUTSIDE the flag guard, so an op this policy skips
- *    also skips livekit's unconditional backup-codec detach, and `onTheWire`
+ *    also skips livekit's unconditional backup-codec detach, and `upstream()`
  *    cannot see those senders (`simulcastCodecs` is not on the public type).
  *    PRECONDITION: `simulcastCodecs` is empty. It is — `videoCodec` is vp8 and
  *    `publishAdditionalCodecForTrack` refuses when `encryptionType !== NONE` —
@@ -112,6 +117,20 @@
  * Found as the false-red half of the 2026-09-08 join-race sitting: a seat
  * showing ME-10 ("Your audio and video stay paused") whose encrypted frames the
  * other seat decrypted throughout.
+ *
+ * 🔴 AND WHY THE SWEEP MUST NOT SPIN. `repause`'s `resumeUpstream()` emits
+ * `UpstreamResumed` synchronously, BEFORE awaiting its attach, and `state.tsx`
+ * re-asserts the gate on that event. So a sweep's own remedy re-enters the
+ * sweep. While the detach eventually lands that is bounded and convergent, but
+ * when it persistently does NOT — a rejecting `replaceTrack(null)`, which is
+ * exactly the case the post-condition exists for — every pass re-attaches the
+ * sender and schedules another pass: a renderer live-lock that keeps media on
+ * the wire, found by the fourth media-E2EE review with a probe of the real
+ * wiring. Two things bound it, and both live here so a spec can drive them:
+ * {@link coalescingSweeper} (re-entrant triggers collapse into ONE trailing
+ * pass, never a nested one) and {@link PublishGateOptions.repauseSpent} (a
+ * publication whose repause already failed is reported, never resumed again —
+ * retrying cannot help and each retry re-attaches).
  *
  * WHY THE POST-CONDITION IS MANDATORY, not defensive. Two clauses of
  * `docs/e2ee-media-mls-plan.md` are unqualified absolutes — §1.4: a desynced
@@ -205,6 +224,18 @@ export interface GatedPublication {
   resumeUpstream(): Promise<void>;
 }
 
+export interface PublishGateOptions {
+  /**
+   * Publications whose `repause` has ALREADY failed to leave the wire quiet
+   * during this held-gate episode, by name. They are re-checked and reported,
+   * but never resumed again: the resume exists only to clear livekit's flag so
+   * the pause can proceed, so once the pause is known to fail the resume is pure
+   * harm — it re-attaches the sender the gate is trying to detach, and its
+   * `UpstreamResumed` is what feeds the loop. Cleared when the gate empties.
+   */
+  repauseSpent?: ReadonlySet<string>;
+}
+
 export interface PublishGateSweep {
   /**
    * Publications a HELD gate could not prove quiet, by name — a pause that
@@ -248,6 +279,7 @@ type OneResult = { kind: "unproven" | "failed"; name: string } | null;
 export async function applyPublishGate(
   publications: Iterable<GatedPublication>,
   gateHeld: () => boolean,
+  options: PublishGateOptions = {},
 ): Promise<PublishGateSweep> {
   const held = gateHeld();
   const pending: Promise<OneResult>[] = [];
@@ -261,6 +293,7 @@ export async function applyPublishGate(
         }),
         publication,
         gateHeld,
+        options.repauseSpent?.has(publication.name) ?? false,
       ),
     );
   }
@@ -276,19 +309,33 @@ async function runOne(
   op: PublishGateOp,
   publication: GatedPublication,
   gateHeld: () => boolean,
+  repauseSpent: boolean,
 ): Promise<OneResult> {
   try {
     switch (op) {
       case "resume":
-        // Nothing to PROVE — an empty gate wants it live — but a throw here is
-        // its own failure, reported on its own channel.
+        // An empty gate wants this live, so the proof runs the other way — and
+        // it needs one for the same reason the pause does. `resumeUpstream`
+        // clears `_isUpstreamPaused` BEFORE awaiting its attach and guards on
+        // `if (this._isUpstreamPaused === false) return;`, so an attach that
+        // rejects leaves {flag: false, wire quiet} — after which every later
+        // resume early-returns and the track is muted upstream for the rest of
+        // the call. Only a `setMediaStreamTrack` (a device switch) recovers it.
         try {
           await publication.resumeUpstream();
         } catch {
           return { kind: "failed", name: publication.name };
         }
-        return null;
+        if (gateHeld()) return null; // the gate refilled under us
+        // `unpublished` is not a failure: there is nothing to put back.
+        return publication.upstream() === "quiet"
+          ? { kind: "failed", name: publication.name }
+          : null;
       case "repause": {
+        // Already tried and failed this episode: verify and report, but issue
+        // nothing. Retrying cannot help, and the resume would re-attach the
+        // sender and re-enter this sweep through `UpstreamResumed`.
+        if (repauseSpent) break;
         // Issued before any await, so it takes livekit's lock in turn.
         const resumed = publication.resumeUpstream();
         try {
@@ -326,4 +373,71 @@ async function runOne(
     // permanent silent false pause.
     return { kind: "unproven", name: publication.name };
   }
+}
+
+/**
+ * Serialize sweeps and collapse re-entrant triggers.
+ *
+ * A sweep's own livekit ops emit events that `state.tsx` re-asserts the gate on,
+ * so a trigger can arrive WHILE a sweep is running. Nesting there is what turns
+ * one failing detach into a live-lock (see the module comment), and dropping the
+ * trigger outright would miss a genuine change that landed mid-sweep. So: one
+ * pass at a time, at most one TRAILING pass no matter how many triggers arrive
+ * during it, and every caller gets a promise covering the work in flight —
+ * `#enable()` awaits its pause before flipping E2EE on, so the await has to mean
+ * something.
+ *
+ * `maxPasses` is the backstop for a pathological run where each trailing pass
+ * triggers another: a hard cap, not a heuristic, because the alternative is a
+ * renderer that cannot be hung up.
+ */
+export function coalescingSweeper(
+  run: () => Promise<void>,
+  maxPasses = 4,
+): { sweep(): Promise<void>; passes(): number } {
+  let active: Promise<void> | null = null;
+  let pending = false;
+  let passes = 0;
+
+  const drive = async (): Promise<void> => {
+    try {
+      let budget = maxPasses;
+      do {
+        pending = false;
+        passes++;
+        await run();
+      } while (pending && --budget > 0);
+    } finally {
+      pending = false;
+      active = null;
+    }
+  };
+
+  return {
+    sweep(): Promise<void> {
+      if (active) {
+        pending = true;
+        return active;
+      }
+      // The promise has to EXIST before `drive()` is invoked. `run()` executes
+      // synchronously up to its first await and re-enters this method from
+      // there, so `active = drive()` would still be unassigned at that point —
+      // the re-entrant call would see no sweep in flight and start its own,
+      // which is the very live-lock this function exists to stop. (Measured:
+      // 3060 nested passes in 28 ms before this was a deferred promise.)
+      let settle!: () => void;
+      let fail!: (error: unknown) => void;
+      const done = new Promise<void>((resolve, reject) => {
+        settle = resolve;
+        fail = reject;
+      });
+      active = done;
+      drive().then(settle, fail);
+      return done;
+    },
+    /** Total passes run, for specs and for the cap's own assertions. */
+    passes(): number {
+      return passes;
+    },
+  };
 }

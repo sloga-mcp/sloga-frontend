@@ -538,12 +538,6 @@ function bridgeFor(world: World): E2EEBridge {
     // unstubbed method. `mls_group_not_found` is the shape the session already
     // treats as a benign no-op — another member's Remove won the race — so the
     // ghost path runs to completion without deciding anything.
-    // The BLOCKING native downgrade confirm behind the banner's "Stay
-    // unencrypted", stubbed as ACCEPTED: `confirmPlaintext` returns silently
-    // when its preconditions fail, so a spec asserting the escape works has to
-    // be able to see it reach this call.
-    callConfirmDowngrade: record("callConfirmDowngrade", async () => {}),
-
     callRemove: record("callRemove", async () => {
       throw Object.assign(new Error("mls_group_not_found"), {
         type: "mls_group_not_found",

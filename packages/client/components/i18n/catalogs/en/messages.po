@@ -6988,6 +6988,10 @@ msgid "This bot is private and can only be added by the creator."
 msgstr "This bot is private and can only be added by the creator."
 
 #: components/ui/components/features/voice/callCard/VoiceCallDowngradeBanner.tsx
+msgid "This call could not be secured, and your audio and video may still be sending. Leave the call to stop them."
+msgstr "This call could not be secured, and your audio and video may still be sending. Leave the call to stop them."
+
+#: components/ui/components/features/voice/callCard/VoiceCallDowngradeBanner.tsx
 msgid "This call could not be secured. Your audio and video stay paused — leave, or continue without encryption."
 msgstr "This call could not be secured. Your audio and video stay paused — leave, or continue without encryption."
 
