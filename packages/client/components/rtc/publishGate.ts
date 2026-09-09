@@ -67,10 +67,20 @@
  * `pauseUpstreamLock` behind the resume and wins.
  *
  * Hence {@link UpstreamState} is three-valued, and a quiet wire is trusted only
- * when livekit's flag AGREES that it is paused. A quiet wire under a CLEARED
- * flag is that in-flight window (nothing else produces it) and takes a pause —
- * harmless, because `pauseUpstream` on an already-detached sender just sets the
- * flag and `replaceTrack(null)` is idempotent.
+ * when livekit's flag AGREES that it is paused. A quiet wire under a CLEARED flag
+ * takes a pause — harmless, because `pauseUpstream` on an already-detached sender
+ * just sets the flag and `replaceTrack(null)` is idempotent.
+ *
+ * That leaves the MIRROR window, which this policy does NOT close: `{flag: true,
+ * quiet}` while a non-`pauseUpstream` attach is in flight. `setProcessor` and
+ * `setMediaStreamTrack` both `await sender.replaceTrack(…)` directly, bypassing
+ * `pauseUpstreamLock` and leaving the flag untouched, so both reads agree on
+ * "settled pause" while an attach is pending. It is a transient lie, not a hole:
+ * both emit (`TrackProcessorUpdate` / `UpstreamResumed`) after the attach lands,
+ * and `#reassertPublishGate` sweeps on either. But it is reachable on a normal
+ * join — `#syncMicPipeline` runs inside the `negotiating` gate for anyone with
+ * denoise, non-unity gain or a tone preset — and the fake cannot express it, so
+ * it is prose, not a spec.
  *
  * Two residuals, stated rather than hidden:
  *
@@ -81,6 +91,14 @@
  *    end). So no sweep can even see a survivor until the window closes — the
  *    observation bounds it, it does not close it. Closing it needs a
  *    `LocalSenderCreated` hook or a publish path that never publishes unpaused.
+ *  - `repause`'s resume can re-attach a sender that a `pauseUpstream` already
+ *    in flight was about to detach: a `debouncedTrackMuteHandler` pause (5 s
+ *    debounce) sets the flag true BEFORE its await, so this policy reads
+ *    `{flag: true, live}` and resumes after that detach lands. Bounded to the
+ *    length of the resume-then-pause, over frames the gate is holding for
+ *    anyway, and every interleaving settles quiet — but the number of brief
+ *    re-attach windows went UP with the `{flag: false, quiet} → pause` rule,
+ *    because each `repause` now reliably spawns a re-entrant pause.
  *  - `LocalVideoTrack.pauseUpstream`/`resumeUpstream` run their
  *    `simulcastCodecs` loops OUTSIDE the flag guard, so an op this policy skips
  *    also skips livekit's unconditional backup-codec detach, and `onTheWire`
@@ -94,6 +112,19 @@
  * Found as the false-red half of the 2026-09-08 join-race sitting: a seat
  * showing ME-10 ("Your audio and video stay paused") whose encrypted frames the
  * other seat decrypted throughout.
+ *
+ * WHY THE POST-CONDITION IS MANDATORY, not defensive. Two clauses of
+ * `docs/e2ee-media-mls-plan.md` are unqualified absolutes — §1.4: a desynced
+ * member "publishes nothing (its old frame keys are stale)", and: "this device
+ * must never publish under a key it should no longer hold". Both are implemented
+ * by ONE mechanism: `#resetEnableState` asserting `pausePublishing`. So a pause
+ * that silently fails to land is not an accuracy defect, it is that invariant
+ * broken — this device publishing under keys a re-establish has rotated away,
+ * with the gate believing it is held. And before the observation was added, a
+ * single swallowed failure left livekit's flag lying for the rest of the call,
+ * so EVERY later gate reason from ANY caller no-oped on it too. That is what the
+ * post-condition exists to catch, and why a survivor may be logged or surfaced
+ * but never dropped.
  */
 
 /** What to apply to ONE local publication to make its upstream match the gate. */
@@ -188,6 +219,14 @@ export interface PublishGateSweep {
    * unfalsifiable.
    */
   unproven: string[];
+  /**
+   * Publications whose RESUME threw, under an empty gate. The opposite failure
+   * — a call that should be publishing and may be stuck muted — and kept
+   * separate because it wants the opposite response. Folding it into `unproven`
+   * meant a caller that (correctly) only acts on a held gate discarded it
+   * entirely: silently muted, no telemetry.
+   */
+  failed: string[];
 }
 
 /**
@@ -203,12 +242,15 @@ export interface PublishGateSweep {
  * loop would let a later publication's op take the lock ahead of an earlier
  * one's.
  */
+/** What one publication's sweep concluded. `null` = nothing to report. */
+type OneResult = { kind: "unproven" | "failed"; name: string } | null;
+
 export async function applyPublishGate(
   publications: Iterable<GatedPublication>,
   gateHeld: () => boolean,
 ): Promise<PublishGateSweep> {
   const held = gateHeld();
-  const pending: Promise<string | null>[] = [];
+  const pending: Promise<OneResult>[] = [];
   for (const publication of publications) {
     pending.push(
       runOne(
@@ -223,20 +265,29 @@ export async function applyPublishGate(
     );
   }
   const settled = await Promise.all(pending);
-  return { unproven: settled.filter((name): name is string => name !== null) };
+  return {
+    unproven: settled.filter((r) => r?.kind === "unproven").map((r) => r!.name),
+    failed: settled.filter((r) => r?.kind === "failed").map((r) => r!.name),
+  };
 }
 
-/** Apply one op and verify it. Resolves to the publication's name if unproven. */
+/** Apply one op and verify it. */
 async function runOne(
   op: PublishGateOp,
   publication: GatedPublication,
   gateHeld: () => boolean,
-): Promise<string | null> {
+): Promise<OneResult> {
   try {
     switch (op) {
       case "resume":
-        await publication.resumeUpstream();
-        return null; // nothing to prove: an empty gate wants it live
+        // Nothing to PROVE — an empty gate wants it live — but a throw here is
+        // its own failure, reported on its own channel.
+        try {
+          await publication.resumeUpstream();
+        } catch {
+          return { kind: "failed", name: publication.name };
+        }
+        return null;
       case "repause": {
         // Issued before any await, so it takes livekit's lock in turn.
         const resumed = publication.resumeUpstream();
@@ -266,12 +317,13 @@ async function runOne(
     // The gate emptied under us: whatever the wire says now, this sweep is not
     // the one making a promise about it.
     if (!gateHeld()) return null;
-    return publication.upstream() === "live" ? publication.name : null;
+    if (publication.upstream() !== "live") return null;
+    return { kind: "unproven", name: publication.name };
   } catch {
     // A pause that THREW left livekit's flag true over a sender it never
     // detached; a post-condition read that threw tells us nothing. Reported,
     // never swallowed — this is the seam that turns a one-off failure into a
     // permanent silent false pause.
-    return publication.name;
+    return { kind: "unproven", name: publication.name };
   }
 }

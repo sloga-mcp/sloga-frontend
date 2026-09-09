@@ -2391,7 +2391,8 @@ class Voice {
       // instance and `unpublishTrack` removes only livekit's own handlers, so
       // without this a pair accumulates per republish — every enable flip,
       // re-secure and signal reconnect — and one event then fans out into k
-      // concurrent sweeps. `Room.setMaxListeners(100)` keeps that silent.
+      // concurrent sweeps. `Track`'s own `setMaxListeners(100)` keeps that
+      // silent — the listeners are on the track, not the Room.
       track.off(TrackEvent.UpstreamResumed, this.#reassertPublishGate);
       track.off(TrackEvent.TrackProcessorUpdate, this.#reassertPublishGate);
       track.on(TrackEvent.UpstreamResumed, this.#reassertPublishGate);
@@ -3287,10 +3288,17 @@ class Voice {
         resumeUpstream: () => pub.resumeUpstream(),
       });
     }
-    const { unproven } = await applyPublishGate(
+    const { unproven, failed } = await applyPublishGate(
       gated,
       () => this.#publishGate.size > 0,
     );
+    // A resume that threw is the OPPOSITE failure — a call that should be
+    // publishing and may be stuck muted. Nothing recovers it automatically, so
+    // at least make it findable.
+    if (failed.length > 0)
+      console.error("[mls] publish gate could not resume publishing", {
+        publications: failed,
+      });
     if (unproven.length === 0) return;
     // Stale-writer guard, as on `#pauseGate`: a sweep for a PREVIOUS call must
     // not report against the current one.
@@ -3298,25 +3306,43 @@ class Voice {
     if (!confirming) {
       // ONE bounded re-sweep, on a macrotask so every queued `replaceTrack`
       // task has run. A livekit op in flight legitimately leaves the wire live
-      // for a few microtasks, and the verdict this feeds is terminal for the
-      // call — a transient must never raise it.
+      // for a few microtasks, so a single observation is not a verdict.
       setTimeout(() => {
         if (this.#publishGate.size > 0 && this.room() === room)
           void this.#applyPublishGate(room, true);
       }, 0);
       return;
     }
-    // Still live after the confirming sweep. The session owns the verdict: it
-    // is the only thing that can make the banner reachable and its escape
-    // work. Without a session there is nothing to latch through — the gate is
-    // still held, so this is logged and nothing more.
-    if (this.#mlsSession) this.#mlsSession.noteUnprovenPause(unproven);
-    else
-      console.error(
-        "[mls] publish gate could not prove the wire quiet, and there is no " +
-          "session to report it through",
-        { publications: unproven },
-      );
+    // Confirmed: the gate is held and the wire is still live. Publishing is
+    // escaping a gate every layer above believes is closed.
+    //
+    // 🔴 Deliberately LOG-ONLY — this does not touch the chip or the banner, and
+    // that is a scoping decision, not an oversight. Every user-facing arm
+    // reachable from here today is either wrong or inert:
+    //
+    //  - ME-10's sentence is "Your audio and video stay paused", which is the
+    //    exact OPPOSITE of what this sweep just proved. Showing it here tells a
+    //    user their mic is off at the moment we established it is on.
+    //  - Latching through the session (`#latchLoud`) makes that banner render,
+    //    but `confirmPlaintext` returns early while `#groupId` is null — the
+    //    whole 409-join stretch, which is when the first mic publishes — so the
+    //    only escape it offers is inert.
+    //  - Writing `callEncryptionError` directly reddens the chip without
+    //    `#loudLatched`, so the banner never renders at all when the mode is
+    //    `e2ee`, and it MASKS a later store-owner error (`prev ?? error`),
+    //    removing the only in-call "Reset encryption" control.
+    //  - This can fire BEFORE `#mlsSession` exists (the connect sweep, with an
+    //    `await room.switchActiveDevice` before the session is assigned), where
+    //    `chipState` reads `none` and there is no session to latch through.
+    //
+    // Making it visible needs its own slice: copy that does not claim a pause,
+    // a chip precedence, an affordance that works with no session and no group,
+    // and a path around the banner's 3 s debounce. Until then a wrong or inert
+    // signal would be worse than the log (media-E2EE review, 2026-09-08).
+    console.error("[mls] publish gate could not prove the wire quiet", {
+      publications: unproven,
+      reasons: [...this.#publishGate],
+    });
   }
 
   /**

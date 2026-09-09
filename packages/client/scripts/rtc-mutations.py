@@ -408,7 +408,7 @@ MUTATIONS += [
         id="sweep-swallows-a-failed-pause",
         what="a pause that THREW is discarded, so one failure becomes a permanent silent false pause",
         file=GATE,
-        search="""    return publication.name;
+        search="""    return { kind: "unproven", name: publication.name };
   }
 }""",
         replace="""    return null;
@@ -420,7 +420,8 @@ MUTATIONS += [
         id="sweep-skips-the-post-condition",
         what="the sweep reports success without re-reading the wire",
         file=GATE,
-        search="""    return publication.upstream() === "live" ? publication.name : null;""",
+        search="""    if (publication.upstream() !== "live") return null;
+    return { kind: "unproven", name: publication.name };""",
         replace="""    return null;""",
         specs=[GATE_SPEC],
     ),
@@ -428,23 +429,28 @@ MUTATIONS += [
         id="sweep-awaits-inside-its-loop",
         what="ops are no longer all issued before the first await, so livekit's FIFO lock no longer reflects issue order",
         file=GATE,
-        search="""  const pending: Promise<string | null>[] = [];
+        search="""  const pending: Promise<OneResult>[] = [];
   for (const publication of publications) {
     pending.push(""",
-        replace="""  const pending: Promise<string | null>[] = [];
+        replace="""  const pending: Promise<OneResult>[] = [];
   for (const publication of publications) {
     await Promise.resolve();
     pending.push(""",
         specs=[GATE_SPEC],
     ),
-    # ---- the loud's own reachability ---------------------------------------
     Mutation(
-        id="unproven-pause-bypasses-the-latch",
-        what="an unproven pause is written straight into the UI signal instead of through #latchLoud — red chip, no fold, and a dead Stay-unencrypted button (documented MED-B, by a new route)",
-        file=SESSION,
-        search="""    this.#latchLoud(error, "control");""",
-        replace="""    this.#media?.onEncryptionState?.("loud", error);""",
-        specs=[FALSERED_SPEC],
+        id="resume-failure-folded-into-unproven",
+        what="a resume that threw is reported as an unproven PAUSE, so a caller acting only on a held gate discards it — silently muted, no telemetry",
+        file=GATE,
+        search="""        try {
+          await publication.resumeUpstream();
+        } catch {
+          return { kind: "failed", name: publication.name };
+        }
+        return null;""",
+        replace="""        await publication.resumeUpstream();
+        return null;""",
+        specs=[GATE_SPEC],
     ),
     # ---- the session-level invariant ---------------------------------------
     Mutation(
@@ -500,19 +506,18 @@ MUTATIONS += [
         expect="green",
         why_green=(
             "state.tsx has no spec harness — the session specs replace the whole "
-            "media binding, and the sweep is reached only through it. What is "
-            "covered: the DECISION, the sweep BODY (the eight mutations above) and "
-            "the far end of the report (`unproven-pause-bypasses-the-latch` drives "
-            "`noteUnprovenPause` through the session and proves the banner and its "
-            "escape). What is NOT: the ~12-line `GatedPublication` adapter, the "
-            "confirm-then-report re-sweep, and the state.tsx-to-session hop. Note "
-            "this mutation is worse than it looks — every op becomes `none`, which "
-            "both re-opens the leg's defect and silences the new loud, with the "
-            "whole suite green. The three reads it breaks (`sender`, `sender.track`, "
-            "`sender.transport?.state`) are verified against the pinned "
-            "livekit-client 2.15.13 source, where they are the same triple livekit's "
-            "own guards use. Closing this needs a live leg on a packaged shell, "
-            "which has no renderer console by design."
+            "media binding, and the sweep is reached only through it. COVERED: the "
+            "decision and the whole sweep body (the nine mutations above). NOT "
+            "covered: the ~12-line `GatedPublication` adapter and the "
+            "confirm-then-report re-sweep. Read the mechanism carefully — pinning "
+            "`upstream()` to `quiet` does NOT make every op `none`, because a "
+            "cleared flag over a quiet wire still yields `pause`; it silences only "
+            "the stale-flag rebuild case, which is exactly the 2026-09-08 defect, "
+            "and it does so with the whole suite green. The three reads it breaks "
+            "(`sender`, `sender.track`, `sender.transport?.state`) are the same "
+            "triple livekit's own guards use, verified against the pinned "
+            "livekit-client 2.15.13 source. Closing this needs a live leg on a "
+            "packaged shell, which has no renderer console by design."
         ),
     ),
 ]

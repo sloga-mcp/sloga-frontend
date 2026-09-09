@@ -260,6 +260,7 @@ test("the sweep closes it, and reports nothing left over", async () => {
   const track = new FakeLocalTrack();
   assert.deepEqual(await applyPublishGate([gated(track)], held), {
     unproven: [],
+    failed: [],
   });
   assert.equal(track.upstream(), "quiet");
 
@@ -268,6 +269,7 @@ test("the sweep closes it, and reports nothing left over", async () => {
 
   assert.deepEqual(await applyPublishGate([gated(track)], held), {
     unproven: [],
+    failed: [],
   });
   assert.equal(track.upstream(), "quiet", "a held gate left the mic live");
 });
@@ -406,6 +408,7 @@ test("a rejecting detach recovers on the next sweep instead of wedging", async (
   // `none` would leave it live forever. The observation makes it `repause`.
   assert.deepEqual(await applyPublishGate([gated(track)], held), {
     unproven: [],
+    failed: [],
   });
   assert.equal(track.upstream(), "quiet");
 });
@@ -440,11 +443,35 @@ test("a pause that RESOLVES over a re-attached wire is still reported", async ()
   assert.equal(track.upstream(), "live");
 });
 
+test("a resume that throws is reported on its OWN channel", async () => {
+  // The opposite failure: an EMPTY gate wants this publishing and it did not
+  // come back. Folding it into `unproven` meant a caller that (correctly) only
+  // acts while the gate is held discarded it — silently muted, no telemetry.
+  const track = new FakeLocalTrack();
+  await applyPublishGate([gated(track)], held);
+  const result = await applyPublishGate(
+    [
+      {
+        ...gated(track),
+        resumeUpstream: async () => {
+          throw new Error("OverconstrainedError");
+        },
+      },
+    ],
+    empty,
+  );
+  assert.deepEqual(result, {
+    unproven: [],
+    failed: ["microphone/TR_1"],
+  });
+});
+
 test("a closed transport counts as quiet, and does not go loud", async () => {
   const track = new FakeLocalTrack();
   track.sender!.transportState = "closed";
   assert.deepEqual(await applyPublishGate([gated(track)], held), {
     unproven: [],
+    failed: [],
   });
 });
 
@@ -457,6 +484,7 @@ test("a FAILED transport still counts as live, so the pause is attempted", async
   assert.equal(track.upstream(), "live");
   assert.deepEqual(await applyPublishGate([gated(track)], held), {
     unproven: [],
+    failed: [],
   });
   assert.equal(track.upstream(), "quiet");
 });
