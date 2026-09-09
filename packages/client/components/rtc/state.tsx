@@ -191,6 +191,7 @@ import {
 } from "./cameraEffects";
 import { createCaptionEngine } from "./captions/captionEngine";
 import { LiveCaptions } from "./captions/liveCaptions";
+import { chipInputsFrom } from "./chipInputs.ts";
 import { CaptionPublisher } from "./components/CaptionPublisher";
 import { CaptionSpeaker } from "./components/CaptionSpeaker";
 import { InRoom } from "./components/InRoom";
@@ -201,7 +202,6 @@ import {
 } from "./decodeWitnessListener.ts";
 import { isDiceRollMessage, summariseDiceRoll } from "./diceRoll";
 import { faceSettingsActive } from "./faceFilterCatalog";
-import { localPublicationsEncrypted } from "./localPublicationEncryption";
 import { MlsKeyProvider } from "./mlsCallKeys";
 import {
   type CallMode,
@@ -6164,68 +6164,61 @@ class Voice {
     this.callParticipantsVersion(); // reactive dependency (FE-8/R2-3)
     const room = this.room();
     const session = this.#mlsSession;
-    const mode = this.callMode();
-    // Rejoin plan §4.5: the session state via its SIGNAL (driven by
-    // `onStateChange`), so a resecuring/failed flip re-runs this — a bare
-    // `session.state()` read is non-reactive and left the chip stale.
-    const sessionState = this.callSessionState() ?? session?.state();
-    const publishing: string[] = [];
-    if (room) {
-      const localIdentity = room.localParticipant.identity;
-      for (const [identity, p] of [
-        [localIdentity, room.localParticipant] as const,
-        ...[...room.remoteParticipants.values()].map(
-          (p) => [p.identity, p] as const,
-        ),
-      ]) {
-        // Our OWN screen leg is excluded (plan §6.7). This device minted the
-        // leg's key and does not subscribe to it (§0.9), so LiveKit never
-        // reports an encryption status for it — leaving it in `publishing`
-        // with nothing in `observed` reads as "a publisher we cannot vouch
-        // for" and pins the sharer's own phone at amber "re-securing" for the
-        // whole share. Compared by DEVICE, not user: another of our devices'
-        // legs is a genuine remote publisher we DO observe.
-        if (isScreenLeg(identity) && stripLeg(identity) === localIdentity)
-          continue;
-        // Only participants with ≥1 published track ever report an encryption
-        // status (FE-2); trackless listeners are covered by MLS membership.
-        if (p.trackPublications.size > 0) publishing.push(identity);
-      }
-    }
-    const observed = new Map<string, boolean>();
-    for (const identity of publishing) {
-      const v = this.callEncryption.get(identity);
-      if (v !== undefined) observed.set(identity, v);
-    }
-    // The worker's "encrypted" status for OUR identity says the cryptor is
-    // on, not what the SFU was told; the declaration receivers arm from is
-    // `trackInfo.encryption` on our own publications. Re-read on every
-    // participants-version bump (a republish registers a new publication).
-    const localDeclared = room
-      ? localPublicationsEncrypted(
-          [...room.localParticipant.trackPublications.values()].map((pub) => ({
-            trackSid: pub.trackSid,
-            source: pub.source,
-            encryption: pub.trackInfo?.encryption,
-          })),
-        )
-      : true;
-    return chipState({
-      hasSession: !!session,
-      sessionState,
-      mode,
-      e2eeEnabled: mode?.kind === "e2ee",
-      hasLocalKey: mode?.kind === "e2ee",
-      resecuring: sessionState === "resecuring" || this.callMediaHold(),
-      latchedError: this.callEncryptionError() !== undefined,
-      publishingIdentities: publishing,
-      observedEncrypted: observed,
-      localPublicationsEncrypted: localDeclared,
-      rosterVerified: this.callRoster().members.map((m) => m.user_verified),
-      channelHasOpenGroup: this.callChannelHasOpenGroup(),
-      capableAndEnabled: this.#settings.e2eeCallsEnabled,
-      decodeWitness: this.callDecodeWitness(),
-    });
+    // 🔴 BINDINGS ONLY — nothing is derived here any more. The screen-leg
+    // exclusion, the FE-2 publication filter, the observed map, the local
+    // declaration and the resecuring disjunction all moved to `chipInputs.ts`,
+    // where `node --test` can load them and `rtc-mutations.py` can break them.
+    // Three consecutive review rounds found the same defect one line further
+    // down the object literal that used to sit here, because nothing in this
+    // file is reachable by a spec; the derivation is no longer in it.
+    //
+    // Accessors rather than values so every signal read still happens inside
+    // this memo's tracking scope, exactly where it did when this was inline.
+    return chipState(
+      chipInputsFrom({
+        hasSession: () => !!session,
+        // Rejoin plan §4.5: the session state via its SIGNAL (driven by
+        // `onStateChange`), so a resecuring/failed flip re-runs this — a bare
+        // `session.state()` read is non-reactive and left the chip stale.
+        sessionState: () => this.callSessionState() ?? session?.state(),
+        mode: () => this.callMode(),
+        mediaHold: () => this.callMediaHold(),
+        latchedError: () => this.callEncryptionError() !== undefined,
+        rosterVerified: () =>
+          this.callRoster().members.map((m) => m.user_verified),
+        channelHasOpenGroup: () => this.callChannelHasOpenGroup(),
+        capableAndEnabled: () => this.#settings.e2eeCallsEnabled,
+        decodeWitness: () => this.callDecodeWitness(),
+        observedEncryption: (identity) => this.callEncryption.get(identity),
+        // Re-read on every participants-version bump above: a republish
+        // registers a new publication, and `trackInfo.encryption` is the
+        // declaration receivers arm their cryptors from.
+        room: () =>
+          room
+            ? {
+                localIdentity: room.localParticipant.identity,
+                participants: [
+                  {
+                    identity: room.localParticipant.identity,
+                    publicationCount:
+                      room.localParticipant.trackPublications.size,
+                  },
+                  ...[...room.remoteParticipants.values()].map((p) => ({
+                    identity: p.identity,
+                    publicationCount: p.trackPublications.size,
+                  })),
+                ],
+                localPublications: [
+                  ...room.localParticipant.trackPublications.values(),
+                ].map((pub) => ({
+                  trackSid: pub.trackSid,
+                  source: pub.source,
+                  encryption: pub.trackInfo?.encryption,
+                })),
+              }
+            : undefined,
+      }),
+    );
   }
 
   /**

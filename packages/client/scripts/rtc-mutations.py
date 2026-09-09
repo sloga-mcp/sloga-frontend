@@ -38,11 +38,13 @@ POLICY = "mlsCallModePolicy.ts"
 HARNESS = "mlsCallSession.harness.ts"
 STATE = "state.tsx"
 WITNESS = "decodeWitnessListener.ts"
+CHIP = "chipInputs.ts"
 
 JOINRACE_SPEC = "components/rtc/mlsCallSession.joinrace.test.ts"
 HEAL_SPEC = "components/rtc/mlsCallSession.heal.test.ts"
 POLICY_SPEC = "components/rtc/mlsCallModePolicy.test.ts"
 WITNESS_SPEC = "components/rtc/decodeWitnessListener.test.ts"
+CHIP_SPEC = "components/rtc/chipInputs.test.ts"
 ALL_SPECS = [POLICY_SPEC, HEAL_SPEC, JOINRACE_SPEC]
 
 
@@ -586,6 +588,107 @@ MUTATIONS += [
         search="""      if (!isCurrentSession()) return;""",
         replace="""      isCurrentSession();""",
         specs=[WITNESS_SPEC],
+    ),
+]
+
+# --- The chip's INPUT ASSEMBLY ----------------------------------------------
+#
+# Rounds 3, 4 and 5 each found the same defect one line further down the object
+# literal that used to sit inline in `state.tsx`, and round 5 measured NINE
+# one-line edits there that each turned an honest amber or red into green. None
+# was reachable: no spec can load `state.tsx`, and `STATE` has never had a
+# single mutation. The derivation now lives in `chipInputs.ts`, and these are
+# those nine holes, each re-introduced where a spec can see it.
+#
+# Scoped to CHIP_SPEC: it is the only spec that loads the module.
+
+MUTATIONS += [
+    Mutation(
+        id="chip-no-publishers-judged",
+        what="gate (b) judges nobody, so a publisher LiveKit never vouched for reads green",
+        file=CHIP,
+        search="""  if (!room) return [];""",
+        replace="""  if (room) return [];""",
+        specs=[CHIP_SPEC],
+    ),
+    Mutation(
+        id="chip-own-screen-leg-judged",
+        what="our own screen leg is judged, pinning the sharer's own device amber for the whole share",
+        file=CHIP,
+        search="""    ) {
+      continue;
+    }""",
+        replace="""    ) {
+      publishing.push(participant.identity);
+    }""",
+        specs=[CHIP_SPEC],
+    ),
+    Mutation(
+        id="chip-trackless-listener-judged",
+        what="a participant publishing nothing is judged, though it never reports a status (FE-2)",
+        file=CHIP,
+        search="""    if (participant.publicationCount > 0) publishing.push(participant.identity);""",
+        replace="""    publishing.push(participant.identity);""",
+        specs=[CHIP_SPEC],
+    ),
+    Mutation(
+        id="chip-missing-status-defaults-encrypted",
+        what="a publisher with no observed status is entered as ENCRYPTED — an absence read as a pass",
+        file=CHIP,
+        search="""    if (status !== undefined) observed.set(identity, status);""",
+        replace="""    observed.set(identity, status ?? true);""",
+        specs=[CHIP_SPEC],
+    ),
+    Mutation(
+        id="chip-local-declaration-assumed",
+        what="our own publications are assumed declared GCM instead of being read from the SFU's record",
+        file=CHIP,
+        search="""    localPublicationsEncrypted: room
+      ? localPublicationsEncrypted(room.localPublications)
+      : true,""",
+        replace="""    localPublicationsEncrypted: true,""",
+        specs=[CHIP_SPEC],
+    ),
+    Mutation(
+        id="chip-roster-emptied",
+        what="the verified roster is read as EMPTY, and [].every(v => v) manufactures a verified lock",
+        file=CHIP,
+        search="""    rosterVerified: sources.rosterVerified(),""",
+        replace="""    rosterVerified: [],""",
+        specs=[CHIP_SPEC],
+    ),
+    Mutation(
+        id="chip-witness-literal",
+        what="gate (d) is handed an available literal instead of the witness — round 4's CRITICAL, now reachable",
+        file=CHIP,
+        search="""    decodeWitness: sources.decodeWitness(),""",
+        replace="""    decodeWitness: { available: true, dropping: [], live: [] },""",
+        specs=[CHIP_SPEC],
+    ),
+    Mutation(
+        id="chip-media-hold-ignored",
+        what="a rotation-window media hold does not reach the chip",
+        file=CHIP,
+        search="""    resecuring: sessionState === "resecuring" || sources.mediaHold(),""",
+        replace="""    resecuring: sessionState === "resecuring",""",
+        specs=[CHIP_SPEC],
+    ),
+    Mutation(
+        id="chip-latched-error-ignored",
+        what="a latched structured error does not reach the chip",
+        file=CHIP,
+        search="""    latchedError: sources.latchedError(),""",
+        replace="""    latchedError: false,""",
+        specs=[CHIP_SPEC],
+    ),
+    Mutation(
+        id="chip-session-state-assumed-active",
+        what="the session state is assumed ACTIVE, so a FAILED session reads green",
+        file=CHIP,
+        search="""  const sessionState = sources.sessionState();""",
+        replace="""  const sessionState = "active" as const;
+  void sources.sessionState;""",
+        specs=[CHIP_SPEC],
     ),
 ]
 

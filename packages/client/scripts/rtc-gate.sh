@@ -112,7 +112,8 @@ shopt -s nullglob
 SPECS=(components/rtc/mls*.test.ts components/rtc/rosterReconcile.test.ts
   components/rtc/localPublicationEncryption.test.ts
   components/rtc/plaintextCryptorPolicy.test.ts
-  components/rtc/decodeWitnessListener.test.ts)
+  components/rtc/decodeWitnessListener.test.ts
+  components/rtc/chipInputs.test.ts)
 # 🔴 Arguments ADD to that set; they do not replace it. They used to replace
 # it, so the natural invocation for this branch —
 #   rtc-gate.sh components/rtc/mls*.test.ts
@@ -152,7 +153,9 @@ FILES=(components/rtc/mlsCallSession.ts components/rtc/mlsCallModePolicy.ts
   components/rtc/mlsCallSession.joinrace.test.ts
   components/rtc/mlsCallModePolicy.test.ts
   components/rtc/decodeWitnessListener.ts
-  components/rtc/decodeWitnessListener.test.ts src/sentry.ts)
+  components/rtc/decodeWitnessListener.test.ts
+  components/rtc/chipInputs.ts
+  components/rtc/chipInputs.test.ts src/sentry.ts)
 ran=0
 for f in "${SPECS[@]}"; do
   [ -e "$f" ] || continue
@@ -242,13 +245,26 @@ check_witness_call_site() {
   }
   require 'createSignal<DecodeWitness>(DECODE_WITNESS_INITIAL, {' \
     "the witness signal is seeded UNAVAILABLE, from the spec'd constant"
-  # 🔴 The seed is not the read. A round-4 review replaced this line with an
-  # available literal and the gate, all 41 mutations, tsc, eslint and prettier
-  # stayed green — green-by-default restored, one line below the line the gate
-  # was watching. This is a BACKSTOP: the real fix is to move the chip's input
-  # assembly into a module a spec can load.
-  require 'decodeWitness: this.callDecodeWitness(),' \
-    "the chip READS the witness signal rather than a literal"
+  # 🔴 The seed is not the read. A round-4 review replaced the chip's read of
+  # the signal with an available literal and the gate, every mutation, tsc,
+  # eslint and prettier stayed green. Round 5 then measured EIGHT more one-line
+  # edits in the same literal that each turned an honest amber or red green.
+  #
+  # That literal is gone: the derivation now lives in `chipInputs.ts`, which
+  # `node --test` loads and `rtc-mutations.py` breaks. What is left in this
+  # file is one binding per field with nothing computed among them, so these
+  # two assertions are what remains of the six — the assembly is actually used,
+  # and gate (d)'s field is bound to the signal.
+  #
+  # 🔴 NOT closed, and not claimed to be: a lying binding (`rosterVerified:
+  # () => []`) is still unreachable by any spec. Taking accessors makes that a
+  # function somebody has to write rather than a literal they type, and the
+  # surface is 14 one-line bindings instead of 45 lines of derivation — but it
+  # is a smaller last mile, not no last mile.
+  require_count "the chip's inputs come from the spec'd assembly" \
+    'chipInputsFrom({' 1
+  require 'decodeWitness: () => this.callDecodeWitness(),' \
+    "gate (d)'s input is bound to the witness signal, not to a literal"
   require 'const stale = setInterval(() => listener.tick(), listener.checkMs);' \
     "the staleness sweep is started, at the listener's own interval"
   require 'listener.stop();' \
