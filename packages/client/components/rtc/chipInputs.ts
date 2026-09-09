@@ -47,7 +47,9 @@ import {
 import {
   type CallMode,
   type ChipInputs,
+  type ChipState,
   type DecodeWitness,
+  chipState,
 } from "./mlsCallModePolicy.ts";
 
 /**
@@ -155,6 +157,29 @@ export function observedEncryptionMap(
   return observed;
 }
 
+/**
+ * Assemble the chip's inputs AND judge them.
+ *
+ * 🔴 This exists so `state.tsx` never holds a `ChipInputs` value. For exactly
+ * one commit it did, and the gate asserted that the assembly was CALLED while
+ * asserting nothing about what happened to the result. So this:
+ *
+ *     return chipState({
+ *       ...chipInputsFrom({ ...every binding honest... }),
+ *       decodeWitness: { available: true, dropping: [], live: [] },
+ *       rosterVerified: [],
+ *     });
+ *
+ * type-checked, formatted, passed all seven source-text assertions and every
+ * mutation — a green VERIFIED lock with gate (d) satisfied by a literal. The
+ * seam was created by the refactor meant to remove this class of hole, which
+ * is the fifth time on this branch that a fix moved the defect one line down.
+ * There is no intermediate value left to intercept.
+ */
+export function chipStateFrom(sources: ChipSources): ChipState {
+  return chipState(chipInputsFrom(sources));
+}
+
 /** Assemble the chip's inputs. Every accessor is called exactly once. */
 export function chipInputsFrom(sources: ChipSources): ChipInputs {
   const room = sources.room();
@@ -173,9 +198,12 @@ export function chipInputsFrom(sources: ChipSources): ChipInputs {
     resecuring: sessionState === "resecuring" || sources.mediaHold(),
     latchedError: sources.latchedError(),
     publishingIdentities: publishing,
-    observedEncrypted: observedEncryptionMap(
-      publishing,
-      sources.observedEncryption,
+    // Called THROUGH `sources`, not passed as a bare property value: every
+    // other accessor is invoked as `sources.foo()`, and handing this one over
+    // detached silently loses `this` for any implementation that is not an
+    // arrow function.
+    observedEncrypted: observedEncryptionMap(publishing, (identity) =>
+      sources.observedEncryption(identity),
     ),
     // 🔴 The worker's "encrypted" status for OUR identity says the cryptor is
     // on, not what the SFU was told; the declaration receivers arm from is

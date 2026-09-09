@@ -514,7 +514,23 @@ export function chipState(inputs: ChipInputs): ChipState {
   }
 
   // Verification gate (c).
-  const allVerified = inputs.rosterVerified.every((v) => v);
+  //
+  // 🔴 A non-empty roster is REQUIRED, not incidental. `[].every(v => v)` is
+  // `true`, so an empty read used to promote `e2ee_unverified` straight to
+  // `e2ee` — a VERIFIED lock, the strongest claim the product makes, resting
+  // on nobody having been verified. It is reachable in a legitimate call:
+  // `callRoster` is seeded empty and is only written by `#reconcileOnce`,
+  // which returns early unless the session is `active`, so there is a window
+  // on every call before the first native `callState()` round-trip resolves —
+  // and if that bridge call keeps throwing (store-owner mismatch, a native
+  // panic, a lost group id) it is swallowed and the roster stays empty for the
+  // life of the call while the session stays active.
+  //
+  // §4.4 requires "all leaf bindings verified" for green. An unloaded roster
+  // has verified no leaf bindings, so it cannot vouch. A healthy MLS group
+  // always contains at least our own leaf.
+  const allVerified =
+    inputs.rosterVerified.length > 0 && inputs.rosterVerified.every((v) => v);
   return allVerified ? "e2ee" : "e2ee_unverified";
 }
 

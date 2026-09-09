@@ -26,6 +26,7 @@ import {
   type ChipRoom,
   type ChipSources,
   chipInputsFrom,
+  chipStateFrom,
   observedEncryptionMap,
   publishingIdentities,
 } from "./chipInputs.ts";
@@ -63,7 +64,23 @@ const sources = (over: Partial<ChipSources> = {}): ChipSources => ({
 
 /** The chip a real `chipState` produces from an assembled set of sources. */
 const chip = (over: Partial<ChipSources> = {}): ChipState =>
-  chipState(chipInputsFrom(sources(over)));
+  chipStateFrom(sources(over));
+
+/**
+ * ME-7 / R2-4, the silent-fail guard: an E2EE-CAPABLE shell whose session
+ * construction failed, in a channel that HAS an open MLS group. No verdict can
+ * ever come, so the chip must be LOUD rather than quietly plain — a downgrade
+ * the user cannot see is the thing this guard exists to prevent.
+ */
+const noSession = (over: Partial<ChipSources> = {}): ChipState =>
+  chip({
+    hasSession: () => false,
+    sessionState: () => undefined,
+    mode: () => undefined,
+    rosterVerified: () => [],
+    room: () => undefined,
+    ...over,
+  });
 
 // --- the control -------------------------------------------------------------
 
@@ -108,25 +125,20 @@ test("🔴 (c) one unverified roster member holds the lock open", () => {
   );
 });
 
-test("🔴 OPEN: an EMPTY roster reads GREEN — `[].every(v => v)` is true", () => {
-  // 🔴 THIS PINS CURRENT BEHAVIOUR AND DOES NOT ENDORSE IT.
+test("🔴 (c) an EMPTY roster CANNOT vouch — it is not 'all verified'", () => {
+  // `[].every(v => v)` is `true`, so this used to promote e2ee_unverified
+  // straight to e2ee: a VERIFIED lock, the strongest claim the product makes,
+  // resting on nobody having been verified.
   //
-  // Round 5 measured that emptying the roster read promotes e2ee_unverified
-  // straight to e2ee: a verified lock over participants nobody verified. The
-  // fix belongs in `chipState`, not here — an empty `rosterVerified` should
-  // arguably read as "cannot vouch" rather than "all vouched", which is the
-  // same absence-means-fine shape gate (d) exists to delete.
-  //
-  // It is NOT changed as part of this extraction, deliberately: `chipState`
-  // carries 80 specs and its own review history, this commit is meant to be
-  // behaviour-preserving, and it is not established that an empty roster is
-  // unreachable in a legitimate call (a roster that has not loaded yet, a
-  // non-E2EE call). Raised for its own reviewed change.
-  //
-  // What the extraction DOES buy here: the assembly can no longer be the thing
-  // that empties it, because "one unverified member" above is now spec'd and
-  // mutated.
-  assert.equal(chip({ rosterVerified: () => [] }), "e2ee");
+  // It is reachable in a legitimate call, which is why it was fixed rather
+  // than documented: `callRoster` is seeded empty and only written by
+  // `#reconcileOnce`, which returns early unless the session is `active` — so
+  // there is a window on every call before the first native `callState()`
+  // round-trip resolves, and if that bridge call keeps throwing it is
+  // swallowed and the roster stays empty for the life of the call while the
+  // session stays active. §4.4 requires all leaf bindings verified for green;
+  // an unloaded roster has verified none.
+  assert.equal(chip({ rosterVerified: () => [] }), "e2ee_unverified");
 });
 
 test("the assembly passes the roster through exactly as given", () => {
@@ -167,6 +179,82 @@ test("🔴 a latched structured error is NOT_ENCRYPTED", () => {
 
 test("🔴 a FAILED session is NOT_ENCRYPTED", () => {
   assert.equal(chip({ sessionState: () => "failed" }), "not_encrypted");
+});
+
+// --- the five fields that had no spec at all ---------------------------------
+//
+// Round 6 extracted the derivation but covered only nine of the fourteen
+// fields. These are the other five, and two of them turn the loudest state in
+// the product into amber or into nothing at all.
+
+test("🔴 ME-7: a capable shell with an open group and NO session is LOUD", () => {
+  assert.equal(noSession(), "not_encrypted");
+});
+
+test("🔴 ME-7: faking hasSession turns that loud into a silent amber", () => {
+  // No banner, no Leave/Stay, forever — the exact silent downgrade the guard
+  // exists to prevent.
+  assert.equal(noSession({ hasSession: () => true }), "resecuring");
+});
+
+test("🔴 ME-7: faking channelHasOpenGroup HIDES the chip entirely", () => {
+  // `none` renders no encryption chrome at all on an E2EE call.
+  assert.equal(noSession({ channelHasOpenGroup: () => false }), "none");
+});
+
+test("🔴 a call with no MODE cannot be green", () => {
+  assert.equal(chip({ mode: () => undefined }), "resecuring");
+});
+
+test("🔴 e2eeEnabled and hasLocalKey are DERIVED from the mode, not assumed", () => {
+  // Both are `mode?.kind === "e2ee"`. A mode that is not e2ee must not yield
+  // an enabled, keyed call.
+  const negotiating = chipInputsFrom(
+    sources({ mode: () => ({ kind: "negotiating" }) }),
+  );
+  assert.equal(negotiating.e2eeEnabled, false);
+  assert.equal(negotiating.hasLocalKey, false);
+  const e2ee = chipInputsFrom(sources());
+  assert.equal(e2ee.e2eeEnabled, true);
+  assert.equal(e2ee.hasLocalKey, true);
+});
+
+test("capableAndEnabled is passed through unchanged", () => {
+  // `chipState` deliberately returns not_encrypted for BOTH values in the
+  // no-session case (§0.2 #9 self-attribution), so there is no scenario in
+  // which the outcome discriminates it. Pin the pass-through instead, which
+  // still catches an assembly that hardcodes it.
+  assert.equal(
+    chipInputsFrom(sources({ capableAndEnabled: () => false }))
+      .capableAndEnabled,
+    false,
+  );
+  assert.equal(
+    chipInputsFrom(sources({ capableAndEnabled: () => true }))
+      .capableAndEnabled,
+    true,
+  );
+});
+
+test("hasSession and channelHasOpenGroup are passed through unchanged", () => {
+  const inputs = chipInputsFrom(
+    sources({ hasSession: () => false, channelHasOpenGroup: () => false }),
+  );
+  assert.equal(inputs.hasSession, false);
+  assert.equal(inputs.channelHasOpenGroup, false);
+});
+
+// --- the seam ----------------------------------------------------------------
+
+test("🔴 chipStateFrom assembles AND judges, so no ChipInputs escapes", () => {
+  // The caller must never hold the assembled object: spreading it into a
+  // literal that overrides one field passed every source-text assertion and
+  // every mutation for exactly one commit.
+  const s = sources({
+    decodeWitness: () => ({ available: false, dropping: [], live: [] }),
+  });
+  assert.equal(chipStateFrom(s), chipState(chipInputsFrom(s)));
+  assert.equal(chipStateFrom(s), "resecuring");
 });
 
 // --- the derivation the literal used to hide ---------------------------------

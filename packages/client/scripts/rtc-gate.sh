@@ -199,20 +199,57 @@ fi
 # source text, and it is the reason the real answer is to move this assembly
 # into a module a spec can load rather than to keep adding assertions here.
 #
-# awk in one pass: no pipeline, so there is no `grep -q` closing a pipe early
-# and no `$?` belonging to the wrong command.
+# 🔴 This was awk, and awk cannot lex JavaScript. It skipped a line whose
+# FIRST non-space characters were `//`, which caught exactly one of the three
+# comment placements — a review defeated it with a trailing `//` on a live line
+# and again with a block comment whose interior lines are not `*`-prefixed. It
+# also skipped LIVE continuation lines beginning with `*`.
+#
+# Node is already a hard dependency of this gate (it runs every spec), so use
+# it: blank out comments with a scanner that understands strings, template
+# literals and regex-free JS well enough not to be fooled by `//` inside a
+# string, then count occurrences in what is left.
 count_live() { # count_live <file> <literal>
-  awk -v needle="$2" '
-    { stripped = $0
-      sub(/^[[:space:]]*/, "", stripped)
-      if (stripped ~ /^\/\// || stripped ~ /^\*/ || stripped ~ /^\/\*/) next
-      s = $0
-      while ((i = index(s, needle)) > 0) {
-        total++
-        s = substr(s, i + length(needle))
+  node -e '
+    const src = require("fs").readFileSync(process.argv[1], "utf8");
+    const needle = process.argv[2];
+    let out = "";
+    let i = 0;
+    while (i < src.length) {
+      const two = src.slice(i, i + 2);
+      if (two === "//") {
+        while (i < src.length && src[i] !== "\n") i++;
+        continue;
       }
+      if (two === "/*") {
+        i += 2;
+        while (i < src.length && src.slice(i, i + 2) !== "*/") {
+          if (src[i] === "\n") out += "\n";
+          i++;
+        }
+        i += 2;
+        continue;
+      }
+      const q = src[i];
+      if (q === "\"" || q === "\x27" || q === "`") {
+        i++;
+        while (i < src.length && src[i] !== q) {
+          if (src[i] === "\\") i++;
+          i++;
+        }
+        i++;
+        continue;
+      }
+      out += src[i++];
     }
-    END { print total+0 }' "$1"
+    let n = 0;
+    let at = out.indexOf(needle);
+    while (at !== -1) {
+      n++;
+      at = out.indexOf(needle, at + needle.length);
+    }
+    console.log(n);
+  ' "$1" "$2"
 }
 
 check_witness_call_site() {
@@ -261,8 +298,13 @@ check_witness_call_site() {
   # function somebody has to write rather than a literal they type, and the
   # surface is 14 one-line bindings instead of 45 lines of derivation — but it
   # is a smaller last mile, not no last mile.
-  require_count "the chip's inputs come from the spec'd assembly" \
-    'chipInputsFrom({' 1
+  # 🔴 The composition, not just the call. Asserting `chipInputsFrom({` left
+  # the returned object unwatched, and spreading it into a literal that
+  # overrode `decodeWitness` and `rosterVerified` passed every assertion here.
+  # `chipStateFrom` assembles and judges in one call, so this one literal
+  # covers both halves and there is no value in `state.tsx` to intercept.
+  require_count "the chip is assembled AND judged by the spec'd module" \
+    'return chipStateFrom({' 1
   require 'decodeWitness: () => this.callDecodeWitness(),' \
     "gate (d)'s input is bound to the witness signal, not to a literal"
   require 'const stale = setInterval(() => listener.tick(), listener.checkMs);' \
@@ -271,10 +313,13 @@ check_witness_call_site() {
     "teardown tells the listener, so the last sample stops standing"
   require_count "the listener is ARMED when a session is created" \
     'this.#armDecodeWitness(session);' 1
-  # Twice: once in disconnect(), once at the head of #armDecodeWitness. Deleting
-  # the disconnect() one leaves the definition-shaped assertions above happy.
-  require_count "teardown AND re-arm both DISARM the witness" \
-    'this.#disarmDecodeWitness();' 2
+  # THREE sites: the head of #armDecodeWitness, disconnect(), and the room's
+  # "disconnected" listener — the last because the SFU dropping us does not run
+  # disconnect(), and the witness would otherwise keep refreshing a green over
+  # a dead room. Deleting any one of them leaves every definition-shaped
+  # assertion above happy, which is why this is a count.
+  require_count "re-arm, disconnect() and the SFU drop all DISARM the witness" \
+    'this.#disarmDecodeWitness();' 3
   return $rc
 }
 run "gate (d) call site in state.tsx" 12 check_witness_call_site

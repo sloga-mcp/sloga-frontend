@@ -373,6 +373,15 @@ MUTATIONS += [
         replace="""  const decodeWitnessed = inputs.decodeWitness.available;""",
     ),
     Mutation(
+        id="empty-roster-vouches",
+        what="an EMPTY verified roster reads as all-verified, manufacturing a green lock nobody verified",
+        file=POLICY,
+        search="""  const allVerified =
+    inputs.rosterVerified.length > 0 && inputs.rosterVerified.every((v) => v);""",
+        replace="""  const allVerified = inputs.rosterVerified.every((v) => v);""",
+        specs=[POLICY_SPEC, CHIP_SPEC],
+    ),
+    Mutation(
         id="summarize-ignores-drops",
         what="summarizeDecodeWitness never reports a sender as dropping",
         file=POLICY,
@@ -679,6 +688,64 @@ MUTATIONS += [
         file=CHIP,
         search="""    latchedError: sources.latchedError(),""",
         replace="""    latchedError: false,""",
+        specs=[CHIP_SPEC],
+    ),
+    Mutation(
+        id="chip-has-session-assumed",
+        what="a session is assumed to exist, so the ME-7 silent-fail guard degrades to a quiet amber",
+        file=CHIP,
+        search="""    hasSession: sources.hasSession(),""",
+        replace="""    hasSession: true,""",
+        specs=[CHIP_SPEC],
+    ),
+    Mutation(
+        id="chip-open-group-assumed-absent",
+        what="the open-group probe is read as false, HIDING the chip entirely on a failed E2EE call",
+        file=CHIP,
+        search="""    channelHasOpenGroup: sources.channelHasOpenGroup(),""",
+        replace="""    channelHasOpenGroup: false,""",
+        specs=[CHIP_SPEC],
+    ),
+    Mutation(
+        id="chip-capable-assumed",
+        what="the capable+enabled flag is hardcoded rather than read",
+        file=CHIP,
+        search="""    capableAndEnabled: sources.capableAndEnabled(),""",
+        replace="""    capableAndEnabled: true,""",
+        specs=[CHIP_SPEC],
+    ),
+    Mutation(
+        id="chip-mode-assumed-e2ee",
+        what="the call mode is assumed e2ee, so a negotiating call reads enabled and keyed",
+        file=CHIP,
+        search="""  const mode = sources.mode();""",
+        replace="""  const mode = { kind: "e2ee" } as const;
+  void sources.mode;""",
+        specs=[CHIP_SPEC],
+    ),
+    Mutation(
+        id="chip-seam-reopened",
+        what="the assembled inputs escape to the caller, which can then override any field",
+        file=CHIP,
+        search="""export function chipStateFrom(sources: ChipSources): ChipState {
+  return chipState(chipInputsFrom(sources));
+}""",
+        replace="""export function chipStateFrom(sources: ChipSources): ChipState {
+  return chipState({
+    ...chipInputsFrom(sources),
+    decodeWitness: { available: true, dropping: [], live: [] },
+  });
+}""",
+        specs=[CHIP_SPEC],
+    ),
+    Mutation(
+        id="chip-observed-accessor-detached",
+        what="the observed-status accessor is passed detached, losing its receiver",
+        file=CHIP,
+        search="""    observedEncrypted: observedEncryptionMap(publishing, (identity) =>
+      sources.observedEncryption(identity),
+    ),""",
+        replace="""    observedEncrypted: observedEncryptionMap(publishing, () => true),""",
         specs=[CHIP_SPEC],
     ),
     Mutation(

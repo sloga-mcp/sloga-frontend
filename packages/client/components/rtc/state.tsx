@@ -191,7 +191,7 @@ import {
 } from "./cameraEffects";
 import { createCaptionEngine } from "./captions/captionEngine";
 import { LiveCaptions } from "./captions/liveCaptions";
-import { chipInputsFrom } from "./chipInputs.ts";
+import { chipStateFrom } from "./chipInputs.ts";
 import { CaptionPublisher } from "./components/CaptionPublisher";
 import { CaptionSpeaker } from "./components/CaptionSpeaker";
 import { InRoom } from "./components/InRoom";
@@ -207,7 +207,6 @@ import {
   type CallMode,
   type ChipState,
   type DecodeWitness,
-  chipState,
   isTerminalLoud,
 } from "./mlsCallModePolicy";
 import {
@@ -2295,6 +2294,21 @@ class Voice {
 
     room.addListener("disconnected", () => {
       this.#setState("DISCONNECTED");
+      // 🔴 The SFU dropped us, and this path does NOT run `disconnect()`. The
+      // patched worker's heartbeat is a module-scope interval that keeps
+      // posting `{participants: []}` regardless, and an empty window
+      // summarizes to `available: true`; LiveKit meanwhile clears the remote
+      // participants and unpublishes our tracks, so gate (b) goes vacuous and
+      // the local declaration vacuously true. The roster stays populated and
+      // verified and the session stays `active`. Net: a green VERIFIED lock
+      // over a call that is no longer connected, refreshed once a second for
+      // as long as it lasts. Gate (d) exists to stop a green outliving its
+      // evidence, so it must be disarmed here even though the session is not.
+      try {
+        this.#disarmDecodeWitness();
+      } catch {
+        /* teardown must not be abortable by a chip-derivation throw */
+      }
       nativeCallServiceStop();
       // Kick / `force_disconnect`: the server will remove the leg anyway
       // (ingress primary-left), but the native side should not wait for the
@@ -2924,7 +2938,19 @@ class Voice {
         /* see above */
       }
       this.#unlistenCallKeys = undefined;
-      this.#disarmDecodeWitness();
+      // 🔴 Guarded for the same reason as the unlisten above. Disarming writes
+      // UNAVAILABLE through a Solid setter, which synchronously re-runs the
+      // chip derivation over the SFU's participants and publications. A throw
+      // out of a half-disposed room would land in this method's single catch
+      // and skip everything below — the worker would survive with its
+      // per-participant key sets (the §7.2 bound this teardown exists to
+      // enforce), and `room.disconnect()` would never run, so hanging up would
+      // not actually hang up.
+      try {
+        this.#disarmDecodeWitness();
+      } catch {
+        /* see above */
+      }
       this.#e2eeWorker?.terminate();
       this.#e2eeWorker = undefined;
       this.#mlsKeyProvider = undefined;
@@ -6174,51 +6200,53 @@ class Voice {
     //
     // Accessors rather than values so every signal read still happens inside
     // this memo's tracking scope, exactly where it did when this was inline.
-    return chipState(
-      chipInputsFrom({
-        hasSession: () => !!session,
-        // Rejoin plan §4.5: the session state via its SIGNAL (driven by
-        // `onStateChange`), so a resecuring/failed flip re-runs this — a bare
-        // `session.state()` read is non-reactive and left the chip stale.
-        sessionState: () => this.callSessionState() ?? session?.state(),
-        mode: () => this.callMode(),
-        mediaHold: () => this.callMediaHold(),
-        latchedError: () => this.callEncryptionError() !== undefined,
-        rosterVerified: () =>
-          this.callRoster().members.map((m) => m.user_verified),
-        channelHasOpenGroup: () => this.callChannelHasOpenGroup(),
-        capableAndEnabled: () => this.#settings.e2eeCallsEnabled,
-        decodeWitness: () => this.callDecodeWitness(),
-        observedEncryption: (identity) => this.callEncryption.get(identity),
-        // Re-read on every participants-version bump above: a republish
-        // registers a new publication, and `trackInfo.encryption` is the
-        // declaration receivers arm their cryptors from.
-        room: () =>
-          room
-            ? {
-                localIdentity: room.localParticipant.identity,
-                participants: [
-                  {
-                    identity: room.localParticipant.identity,
-                    publicationCount:
-                      room.localParticipant.trackPublications.size,
-                  },
-                  ...[...room.remoteParticipants.values()].map((p) => ({
-                    identity: p.identity,
-                    publicationCount: p.trackPublications.size,
-                  })),
-                ],
-                localPublications: [
-                  ...room.localParticipant.trackPublications.values(),
-                ].map((pub) => ({
-                  trackSid: pub.trackSid,
-                  source: pub.source,
-                  encryption: pub.trackInfo?.encryption,
+    // 🔴 ONE call, no intermediate value. `chipStateFrom` assembles AND
+    // judges, because a `chipInputsFrom(...)` result held here could be spread
+    // into a literal that overrides any field — which passed every assertion
+    // and every mutation for exactly one commit.
+    return chipStateFrom({
+      hasSession: () => !!session,
+      // Rejoin plan §4.5: the session state via its SIGNAL (driven by
+      // `onStateChange`), so a resecuring/failed flip re-runs this — a bare
+      // `session.state()` read is non-reactive and left the chip stale.
+      sessionState: () => this.callSessionState() ?? session?.state(),
+      mode: () => this.callMode(),
+      mediaHold: () => this.callMediaHold(),
+      latchedError: () => this.callEncryptionError() !== undefined,
+      rosterVerified: () =>
+        this.callRoster().members.map((m) => m.user_verified),
+      channelHasOpenGroup: () => this.callChannelHasOpenGroup(),
+      capableAndEnabled: () => this.#settings.e2eeCallsEnabled,
+      decodeWitness: () => this.callDecodeWitness(),
+      observedEncryption: (identity) => this.callEncryption.get(identity),
+      // Re-read on every participants-version bump above: a republish
+      // registers a new publication, and `trackInfo.encryption` is the
+      // declaration receivers arm their cryptors from.
+      room: () =>
+        room
+          ? {
+              localIdentity: room.localParticipant.identity,
+              participants: [
+                {
+                  identity: room.localParticipant.identity,
+                  publicationCount:
+                    room.localParticipant.trackPublications.size,
+                },
+                ...[...room.remoteParticipants.values()].map((p) => ({
+                  identity: p.identity,
+                  publicationCount: p.trackPublications.size,
                 })),
-              }
-            : undefined,
-      }),
-    );
+              ],
+              localPublications: [
+                ...room.localParticipant.trackPublications.values(),
+              ].map((pub) => ({
+                trackSid: pub.trackSid,
+                source: pub.source,
+                encryption: pub.trackInfo?.encryption,
+              })),
+            }
+          : undefined,
+    });
   }
 
   /**

@@ -44,11 +44,16 @@ case "$RESOLVED" in
     echo "ok:   pnpm resolved a PATCHED store entry"
     ;;
   *)
-    echo "FAIL: the resolved store entry carries no patch_hash segment, so pnpm"
-    echo "      has applied NO patch to livekit-client. pnpm-workspace.yaml"
-    echo "      declaring patchedDependencies is not the same as an install"
-    echo "      having applied it: moving that declaration does not re-resolve"
-    echo "      an entry that is already on disk."
+    echo "FAIL: the resolved store entry carries no patch_hash segment, so the"
+    echo "      INSTALL applied no patch to livekit-client."
+    echo
+    echo "      This repo's pnpm-lock.yaml DOES declare it (patchedDependencies"
+    echo "      plus a patch_hash in every livekit-client resolution). What is"
+    echo "      stale is node_modules: on the shared-worktree box it symlinks"
+    echo "      into another checkout whose lockfile predates the declaration,"
+    echo "      so nothing has re-resolved. Declaring a patch is not applying"
+    echo "      one, and moving the declaration does not re-resolve an entry"
+    echo "      already on disk."
     fails=$((fails + 1))
     ;;
 esac
