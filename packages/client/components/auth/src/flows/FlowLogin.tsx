@@ -21,28 +21,39 @@ import { CONFIGURATION } from "@revolt/common";
 import { useState } from "@revolt/state";
 import { FlowTitle } from "./Flow";
 import { Fields, Form } from "./Form";
+import {
+  AppleSignInButton,
+  GoogleSignInButton,
+  OAuthDivider,
+} from "./OAuthButtons";
 import hopOnSloga from "./hop-on-sloga.mp4";
 
 /**
- * Whether the server offers Google OAuth login.
+ * Which third-party sign-ins the server offers.
  *
- * Hidden inside the Tauri/Capacitor webviews: Google rejects OAuth from
- * embedded webviews (disallowed_useragent), so the button is web-only
- * until a deep-link flow exists.
+ * Both are hidden inside the Tauri/Capacitor webviews, for two different
+ * reasons: Google rejects OAuth from embedded webviews outright
+ * (disallowed_useragent), while Apple's page would load but its redirect
+ * lands on app.sloga.gg rather than back inside the shell. Showing either
+ * there needs a deep-link handler (or, on iOS, native ASAuthorization).
  */
-async function fetchOauthGoogleEnabled() {
+async function fetchOauthProviders() {
   const win = window as {
     __TAURI__?: unknown;
     Capacitor?: { isNativePlatform?: () => boolean };
   };
-  if (win.__TAURI__ || win.Capacitor?.isNativePlatform?.()) return false;
+  if (win.__TAURI__ || win.Capacitor?.isNativePlatform?.())
+    return { google: false, apple: false };
 
   try {
     const response = await fetch(`${CONFIGURATION.DEFAULT_API_URL}/`);
     const config = await response.json();
-    return Boolean(config?.features?.oauth_google);
+    return {
+      google: Boolean(config?.features?.oauth_google),
+      apple: Boolean(config?.features?.oauth_apple),
+    };
   } catch {
-    return false;
+    return { google: false, apple: false };
   }
 }
 
@@ -55,7 +66,20 @@ export default function FlowLogin() {
   const { lifecycle, isLoggedIn, login, selectUsername } = useClientLifecycle();
 
   const [keepLoggedIn, setKeepLoggedIn] = createSignal(true);
-  const [oauthGoogle] = createResource(fetchOauthGoogleEnabled);
+  const [oauth] = createResource(fetchOauthProviders);
+
+  /**
+   * Hand off to a provider's authorize endpoint
+   * @param provider Provider slug, matching the backend route
+   */
+  function beginOauth(provider: "google" | "apple") {
+    state.auth.setRemember(keepLoggedIn());
+    // Full-page navigation — the SPA router would otherwise swallow this
+    // same-origin URL
+    window.location.assign(
+      `${CONFIGURATION.DEFAULT_API_URL}/auth/oauth/${provider}`,
+    );
+  }
 
   /**
    * Log into account
@@ -104,7 +128,7 @@ export default function FlowLogin() {
               preload="auto"
               aria-label="Hop on Sloga"
               style={{
-                "width": "100%",
+                width: "100%",
                 "mix-blend-mode": "lighten",
                 "pointer-events": "none",
                 "margin-block": "-12px",
@@ -127,63 +151,73 @@ export default function FlowLogin() {
             {/* The pinned orange does not follow light/dark, so its label must
                 not either: inheriting the theme's on-primary gave white on
                 #FF8A00 in light mode, 2.36:1. Pinned dark is 8.44:1 in both. */}
-            <div style={{"--md-sys-color-primary": "#FF8A00", "--mdui-color-primary": "255, 138, 0", "--md-sys-color-on-primary": "#05090F", "--mdui-color-on-primary": "5, 9, 15", "display": "contents"}}>
-            <Form onSubmit={performLogin}>
-              <Fields fields={["email", "password"]} />
-              <div
-                style={{
-                  "display": "flex",
-                  "align-items": "center",
-                  "justify-content": "space-between",
-                  "gap": "var(--gap-md)",
-                  "width": "100%",
-                }}
-              >
-                <Checkbox
-                  checked={keepLoggedIn()}
-                  onChange={(event) =>
-                    setKeepLoggedIn(event.currentTarget.checked)
-                  }
+            <div
+              style={{
+                "--md-sys-color-primary": "#FF8A00",
+                "--mdui-color-primary": "255, 138, 0",
+                "--md-sys-color-on-primary": "#05090F",
+                "--mdui-color-on-primary": "5, 9, 15",
+                display: "contents",
+              }}
+            >
+              <Form onSubmit={performLogin}>
+                <Fields fields={["email", "password"]} />
+                <div
+                  style={{
+                    display: "flex",
+                    "align-items": "center",
+                    "justify-content": "space-between",
+                    gap: "var(--gap-md)",
+                    width: "100%",
+                  }}
                 >
-                  <Trans>Keep me logged in</Trans>
-                </Checkbox>
-                <a href="/login/reset">
-                  <Button variant="text">
-                    <Trans>Reset password</Trans>
-                  </Button>
-                </a>
-              </div>
-              <div style={{"display": "flex", "flex-direction": "column", "gap": "inherit", "width": "100%"}}>
-                <Show when={oauthGoogle()}>
-                  <Row align justify>
-                    <Button
-                      size="md"
-                      bg="#3BB8ED"
-                      onPress={() => {
-                        state.auth.setRemember(keepLoggedIn());
-                        // Full-page navigation — the SPA router would
-                        // otherwise swallow this same-origin URL
-                        window.location.assign(
-                          `${CONFIGURATION.DEFAULT_API_URL}/auth/oauth/google`,
-                        );
-                      }}
-                    >
-                      <Trans>Continue with Google</Trans>
-                    </Button>
-                  </Row>
-                </Show>
-                <Row align justify>
-                  <a href="..">
+                  <Checkbox
+                    checked={keepLoggedIn()}
+                    onChange={(event) =>
+                      setKeepLoggedIn(event.currentTarget.checked)
+                    }
+                  >
+                    <Trans>Keep me logged in</Trans>
+                  </Checkbox>
+                  <a href="/login/reset">
                     <Button variant="text">
-                      <MdArrowBack {...iconSize("1.2em")} /> <Trans>Back</Trans>
+                      <Trans>Reset password</Trans>
                     </Button>
                   </a>
-                  <Button type="submit" bg="#FF8A00">
-                    <Trans>Login</Trans>
-                  </Button>
-                </Row>
-              </div>
-            </Form>
+                </div>
+                <div
+                  style={{
+                    display: "flex",
+                    "flex-direction": "column",
+                    gap: "inherit",
+                    width: "100%",
+                  }}
+                >
+                  {/* Apple first: its guidelines ask that Sign in with Apple
+                    be no less prominent than the alternatives, and leading
+                    with it costs nothing when both are the same size. */}
+                  <Show when={oauth()?.apple || oauth()?.google}>
+                    <OAuthDivider />
+                  </Show>
+                  <Show when={oauth()?.apple}>
+                    <AppleSignInButton onPress={() => beginOauth("apple")} />
+                  </Show>
+                  <Show when={oauth()?.google}>
+                    <GoogleSignInButton onPress={() => beginOauth("google")} />
+                  </Show>
+                  <Row align justify>
+                    <a href="..">
+                      <Button variant="text">
+                        <MdArrowBack {...iconSize("1.2em")} />{" "}
+                        <Trans>Back</Trans>
+                      </Button>
+                    </a>
+                    <Button type="submit" bg="#FF8A00">
+                      <Trans>Login</Trans>
+                    </Button>
+                  </Row>
+                </div>
+              </Form>
             </div>
           </>
         }

@@ -3,6 +3,7 @@ import { Match, Switch, createSignal, onMount } from "solid-js";
 import { Trans } from "@lingui-solid/solid/macro";
 
 import { useClientLifecycle } from "@revolt/client";
+import type { OAuthProvider } from "@revolt/client/Controller";
 import { State, TransitionType } from "@revolt/client/Controller";
 import { useModals } from "@revolt/modal";
 import { Navigate } from "@revolt/routing";
@@ -22,7 +23,7 @@ import { FlowTitle } from "./Flow";
 import { Fields, Form } from "./Form";
 
 /**
- * Landing page for OAuth redirects (/login/oauth?code=...)
+ * Landing page for OAuth redirects (/login/oauth?code=...&provider=...)
  *
  * Swaps the one-time handoff code from the backend for a session and
  * then follows the same lifecycle as a password login (including MFA
@@ -36,8 +37,16 @@ export default function FlowOAuthCallback() {
 
   const [error, setError] = createSignal<string>();
 
+  // Read once — the query string cannot change without a fresh page load,
+  // and the failure copy below needs the provider as much as the exchange
+  // does. Anything but a known slug is treated as Google rather than
+  // pasted into a request path.
+  const params = new URLSearchParams(window.location.search);
+  const provider: OAuthProvider =
+    params.get("provider") === "apple" ? "apple" : "google";
+  const providerName = provider === "apple" ? "Apple" : "Google";
+
   onMount(async () => {
-    const params = new URLSearchParams(window.location.search);
     const serverError = params.get("error");
     const code = params.get("code");
 
@@ -49,7 +58,7 @@ export default function FlowOAuthCallback() {
     state.auth.setRemember(true);
 
     try {
-      await completeOauth(code, modals);
+      await completeOauth(code, modals, provider);
     } catch (err) {
       console.error("OAuth login failed:", err);
       setError("login_failed");
@@ -87,17 +96,17 @@ export default function FlowOAuthCallback() {
           <Switch
             fallback={
               <Trans>
-                Something went wrong while signing you in with Google. Please
-                try again.
+                Something went wrong while signing you in with {providerName}.
+                Please try again.
               </Trans>
             }
           >
             <Match when={error() === "cancelled"}>
-              <Trans>The Google sign-in was canceled.</Trans>
+              <Trans>The {providerName} sign-in was canceled.</Trans>
             </Match>
             <Match when={error() === "email_unverified"}>
               <Trans>
-                Your Google account's email address is not verified.
+                Your {providerName} account's email address is not verified.
               </Trans>
             </Match>
             <Match when={error() === "disabled_account"}>
@@ -108,7 +117,8 @@ export default function FlowOAuthCallback() {
         <Row align justify>
           <a href="/login/auth">
             <Button variant="text">
-              <MdArrowBack {...iconSize("1.2em")} /> <Trans>Back to login</Trans>
+              <MdArrowBack {...iconSize("1.2em")} />{" "}
+              <Trans>Back to login</Trans>
             </Button>
           </a>
         </Row>
@@ -120,8 +130,8 @@ export default function FlowOAuthCallback() {
 
         <Text>
           <Trans>
-            Pick a username that you want people to be able to find you by.
-            This can be changed later in your user settings.
+            Pick a username that you want people to be able to find you by. This
+            can be changed later in your user settings.
           </Trans>
         </Text>
 

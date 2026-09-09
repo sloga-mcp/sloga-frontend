@@ -13,6 +13,12 @@ import { E2EEBridge, nativeE2EEAvailable } from "./e2ee";
 import { IS_OVERLAY_WINDOW } from "./popout";
 import { createSignOutHooks } from "./signOutHooks";
 
+/**
+ * Third-party sign-in providers the backend exposes under
+ * /auth/oauth/<provider>. The slug IS the route segment.
+ */
+export type OAuthProvider = "google" | "apple";
+
 export enum State {
   Ready = "Ready",
   LoggingIn = "Logging In",
@@ -624,14 +630,24 @@ export default class ClientController {
 
   /**
    * Complete an OAuth login using the one-time handoff code from the
-   * OAuth redirect (e.g. /login/oauth?code=...)
+   * OAuth redirect (e.g. /login/oauth?code=...&provider=apple)
+   *
+   * The backend namespaces the handoff code per provider
+   * (`oauth:<provider>:handoff:<code>` in Redis), so completing against
+   * the wrong one is not a no-op — it comes back as InvalidToken and is
+   * indistinguishable from an expired code.
    * @param code One-time handoff code
+   * @param provider Provider that issued the code
    */
-  async completeOauth(code: string, modals: ModalControllerExtended) {
+  async completeOauth(
+    code: string,
+    modals: ModalControllerExtended,
+    provider: OAuthProvider = "google",
+  ) {
     // Plain fetch: stoat-api drops the body for routes missing from its
     // generated OpenAPI schema (they arrive as `{}` and Rocket 422s)
     const response = await fetch(
-      `${CONFIGURATION.DEFAULT_API_URL}/auth/oauth/google/complete`,
+      `${CONFIGURATION.DEFAULT_API_URL}/auth/oauth/${provider}/complete`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
