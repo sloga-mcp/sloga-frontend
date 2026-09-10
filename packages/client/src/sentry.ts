@@ -20,6 +20,18 @@ if (import.meta.env.PROD && import.meta.env.VITE_SENTRY_DSN) {
       if (typeof message !== "string") return breadcrumb;
       // Our own lines...
       if (message.startsWith("[mls]")) return null;
+      // ...including wave-0's `[gate-trace]` publish-gate seams, which carry
+      // the same churn class: call-mode kinds, `localConfirmed`,
+      // `reestablishes`, gate reasons, trackSids and gate generations, once
+      // per gate edge. The prefix catches both emission forms, because the
+      // console integration builds `message` as `safeJoin(args, " ")` — the
+      // two-argument `console.error("[gate-trace]", payload)` and the
+      // pre-stringified `console.error("[gate-trace] " + json)` alike. It
+      // also keeps the raw objects in `data.arguments`, so dropping the whole
+      // crumb is what suppresses them. Temporary: these seams were added in
+      // 88e43742 and are reverted in a named commit before wave 1 merges, so
+      // this line goes with them.
+      if (message.startsWith("[gate-trace]")) return null;
       // ...and livekit-client's, which reach the console UNPREFIXED via
       // `E2eeManager.onWorkerMessage` → loglevel: "MissingKey: missing key at
       // index N for participant X" and "InvalidKey: valid key missing for

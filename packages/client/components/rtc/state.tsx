@@ -1150,6 +1150,21 @@ class Voice {
    */
   #gateHeld = (): boolean => this.#publishGate.size > 0;
   /**
+   * [gate-trace] wave-0 (rejoin-leak plan 2.3, B6). WHICH caller is running
+   * `disconnect()`: `"connect-leading"` only for the teardown `connect()`
+   * performs on itself before joining the next call, `"user"` for every
+   * other caller — a real hang-up, the auto-leave, the failed-join
+   * teardown. Without it seam 2 fires on every rejoin press on BOTH arms and
+   * measurement M2 cannot tell a real leave from an in-place re-establish.
+   *
+   * TRACE ONLY: nothing but the seam-2 record reads it, and no branch
+   * anywhere depends on it. `disconnect()` CONSUMES it (reads it, resets it
+   * to `"user"`) in its very first statement, before anything that can
+   * throw, so a `disconnect()` that dies mid-teardown can never strand
+   * `"connect-leading"` for the next, genuine leave.
+   */
+  #gateTraceDisconnectVia: "connect-leading" | "user" = "user";
+  /**
    * Every flag a held-gate episode carries — the permanent spend set, the
    * DRIVE-scoped pending set, the confirm dedupe, the confirming-pass phase
    * and the dropped pass — and every rule over them.
@@ -2142,6 +2157,12 @@ class Voice {
       this.onErr(new Error(this.#joinRefusalText(channel, refusal.reason)));
       return false;
     }
+    // [gate-trace] wave-0 (rejoin-leak plan 2.3, B6): connect()'s own leading
+    // teardown and a real hang-up both land in `disconnect()`, so seam 2
+    // could not tell a leave from an in-place re-establish. The flag names
+    // this caller and is consumed by `disconnect()`'s first statement — no
+    // signature change, no branch, nothing but the record reads it.
+    this.#gateTraceDisconnectVia = "connect-leading";
     this.disconnect();
     const pendingToken = ++this.#joinPendingSeq;
     this.#setJoinPending(channel.id);
@@ -2707,7 +2728,17 @@ class Voice {
       // track, so `not-gated` for a present publication is itself a datum,
       // and it names entries `${source}/${trackSid}` -- the key
       // `repauseSpent` / `repausePending` are keyed by.
-      const gateTraceCensus: string[] = [];
+      const gateTraceCensus: {
+        name: string;
+        source: string;
+        trackSid: string;
+        upstreamPaused: boolean | null;
+        hasSender: boolean;
+        senderHasTrack: boolean;
+        transportState: string | null;
+        upstream: string;
+        op: string;
+      }[] = [];
       for (const gtPub of room.localParticipant.trackPublications.values()) {
         const gtGated = gatedPublicationsFrom([gtPub])[0];
         const gtTrack = gtPub.track;
@@ -2719,27 +2750,39 @@ class Voice {
               upstream: gtGated.upstream(),
             })
           : null;
-        gateTraceCensus.push(
-          `${gtPub.source}/${gtPub.trackSid} paused=${gtTrack?.isUpstreamPaused ?? "no-track"} sender=${!!gtTrack?.sender} senderTrack=${!!gtTrack?.sender?.track} transport=${gtTrack?.sender?.transport?.state ?? "none"} upstream=${gtUpstream ?? "not-gated"} op=${gtOp ?? "not-gated"}`,
-        );
+        gateTraceCensus.push({
+          name: `${gtPub.source}/${gtPub.trackSid}`,
+          source: gtPub.source,
+          trackSid: gtPub.trackSid,
+          upstreamPaused: gtTrack?.isUpstreamPaused ?? null,
+          hasSender: !!gtTrack?.sender,
+          senderHasTrack: !!gtTrack?.sender?.track,
+          transportState: gtTrack?.sender?.transport?.state ?? null,
+          upstream: gtUpstream ?? "not-gated",
+          op: gtOp ?? "not-gated",
+        });
       }
-      console.error("[gate-trace]", {
-        t: Date.now(),
-        p: performance.now(),
-        at: "localTrackPublished.entry",
-        subject: `${pub.source}/${pub.trackSid}`,
-        subjectInPublications: room.localParticipant.trackPublications.has(
-          pub.trackSid,
-        ),
-        publicationCount: room.localParticipant.trackPublications.size,
-        gate: [...this.#publishGate],
-        gateSize: this.#publishGate.size,
-        gateHeld: this.#gateHeld(),
-        gateGen: this.#gateGen,
-        passes: this.#gateSweeper?.passes() ?? null,
-        currentRoom: this.room() === room,
-        publications: gateTraceCensus,
-      });
+      console.error(
+        "[gate-trace] " +
+          JSON.stringify({
+            t: Date.now(),
+            p: performance.now(),
+            at: "localTrackPublished.entry",
+            subject: `${pub.source}/${pub.trackSid}`,
+            subjectSidPresent: room.localParticipant.trackPublications.has(
+              pub.trackSid,
+            ),
+            publicationCount: room.localParticipant.trackPublications.size,
+            publications: gateTraceCensus,
+            gate: [...this.#publishGate],
+            gateSize: this.#publishGate.size,
+            gateHeld: this.#gateHeld(),
+            gateGen: this.#gateGen,
+            connectGen: this.#connectGen,
+            passes: this.#gateSweeper?.passes() ?? null,
+            currentRoom: this.room() === room,
+          }),
+      );
       this.#setCallParticipantsVersion((v) => v + 1);
       // A republish (the E2EE flip, the signal-reconnect republish, the
       // declaration seam) lands here on a brand-new sender with livekit's
@@ -2770,13 +2813,15 @@ class Voice {
       // listeners, following the `off` BEFORE `on` idiom above and keyed
       // on listener IDENTITY for the same reason -- `republishAllTracks`
       // reuses the SAME `LocalTrack`, and an inline arrow could never be
-      // removed. They are separate from `#reassertPublishGate` because
-      // that one returns early on an empty gate (the case under test) and
-      // cannot say which of the two events fired. OBSERVATION ONLY.
-      track.off(TrackEvent.UpstreamResumed, this.#traceUpstreamResumed);
-      track.off(TrackEvent.TrackProcessorUpdate, this.#traceProcessorUpdate);
-      track.on(TrackEvent.UpstreamResumed, this.#traceUpstreamResumed);
-      track.on(TrackEvent.TrackProcessorUpdate, this.#traceProcessorUpdate);
+      // removed, so the pair is MEMOIZED per track. They are separate from
+      // `#reassertPublishGate` because that one returns early on an empty
+      // gate (the case under test) and cannot say which of the two events
+      // fired. OBSERVATION ONLY.
+      const gtTrace = this.#gateTraceListenersFor(track);
+      track.off(TrackEvent.UpstreamResumed, gtTrace.resumed);
+      track.off(TrackEvent.TrackProcessorUpdate, gtTrace.processor);
+      track.on(TrackEvent.UpstreamResumed, gtTrace.resumed);
+      track.on(TrackEvent.TrackProcessorUpdate, gtTrace.processor);
     });
 
     // [gate-trace] wave-0 seam 7 (rejoin-leak plan 2.3): the ONLY seam
@@ -2794,26 +2839,32 @@ class Voice {
       ParticipantEvent.LocalSenderCreated,
       (sender, track) => {
         const gtSid = track.sid ?? null;
-        console.error("[gate-trace]", {
-          t: Date.now(),
-          p: performance.now(),
-          at: "localSenderCreated",
-          source: track.source,
-          sid: gtSid,
-          sidInPublications:
-            gtSid !== null &&
-            room.localParticipant.trackPublications.has(gtSid),
-          publicationCount: room.localParticipant.trackPublications.size,
-          upstreamPaused: isLocalTrack(track) ? track.isUpstreamPaused : null,
-          senderTrack: !!sender.track,
-          transport: sender.transport?.state ?? null,
-          gate: [...this.#publishGate],
-          gateSize: this.#publishGate.size,
-          gateHeld: this.#gateHeld(),
-          gateGen: this.#gateGen,
-          passes: this.#gateSweeper?.passes() ?? null,
-          currentRoom: this.room() === room,
-        });
+        console.error(
+          "[gate-trace] " +
+            JSON.stringify({
+              t: Date.now(),
+              p: performance.now(),
+              at: "localSenderCreated",
+              subject: `${track.source}/${gtSid ?? "no-sid"}`,
+              subjectSidPresent:
+                gtSid !== null &&
+                room.localParticipant.trackPublications.has(gtSid),
+              publicationCount: room.localParticipant.trackPublications.size,
+              upstreamPaused: isLocalTrack(track)
+                ? track.isUpstreamPaused
+                : null,
+              hasSender: !!sender,
+              senderHasTrack: !!sender.track,
+              transportState: sender.transport?.state ?? null,
+              gate: [...this.#publishGate],
+              gateSize: this.#publishGate.size,
+              gateHeld: this.#gateHeld(),
+              gateGen: this.#gateGen,
+              connectGen: this.#connectGen,
+              passes: this.#gateSweeper?.passes() ?? null,
+              currentRoom: this.room() === room,
+            }),
+        );
       },
     );
 
@@ -2988,17 +3039,22 @@ class Voice {
       if (e2eeCapable) this.#publishGate.add("negotiating");
       // [gate-trace] wave-0 seam 1 (rejoin-leak plan 2.3). OBSERVATION
       // ONLY: reads, no state change, no pause.
-      console.error("[gate-trace]", {
-        t: Date.now(),
-        p: performance.now(),
-        at: "connect.add",
-        e2eeCapable,
-        connectGen: this.#connectGen,
-        gateGen: this.#gateGen,
-        gate: [...this.#publishGate],
-        gateSize: this.#publishGate.size,
-        passes: this.#gateSweeper?.passes() ?? null,
-      });
+      console.error(
+        "[gate-trace] " +
+          JSON.stringify({
+            t: Date.now(),
+            p: performance.now(),
+            at: "connect.add",
+            e2eeCapable,
+            gate: [...this.#publishGate],
+            gateSize: this.#publishGate.size,
+            gateHeld: this.#gateHeld(),
+            gateGen: this.#gateGen,
+            connectGen: this.#connectGen,
+            passes: this.#gateSweeper?.passes() ?? null,
+            currentRoom: this.room() === room,
+          }),
+      );
       // Fresh sweeper per call: its in-flight/pending state must never cross
       // from a disposed Room to this one. The gen bump is what KILLS the old
       // sweeper — a sweep of it still parked on an awaited livekit op resumes
@@ -3282,6 +3338,13 @@ class Voice {
   }
 
   disconnect() {
+    // [gate-trace] wave-0 seam 2 (rejoin-leak plan 2.3, B6): CONSUME the
+    // caller discriminator FIRST — read it and reset it to the default in
+    // the same unconditional, throw-free pair of statements, above the
+    // `try`. A teardown that throws before the record below therefore cannot
+    // leave `"connect-leading"` set for the next, genuine leave.
+    const gateTraceVia = this.#gateTraceDisconnectVia;
+    this.#gateTraceDisconnectVia = "user";
     try {
       // Doom any in-flight connect() FIRST: every await in connect() re-checks
       // this token and bails with its own room teardown. Without the bump a
@@ -3365,16 +3428,21 @@ class Voice {
       // is observed by nothing today, and M2 needs a POSITIVE witness for
       // the real-leave arm rather than an inference from silence.
       // OBSERVATION ONLY.
-      console.error("[gate-trace]", {
-        t: Date.now(),
-        p: performance.now(),
-        at: "disconnect.preclear",
-        gate: [...this.#publishGate],
-        gateSize: this.#publishGate.size,
-        connectGen: this.#connectGen,
-        gateGen: this.#gateGen,
-        passes: this.#gateSweeper?.passes() ?? null,
-      });
+      console.error(
+        "[gate-trace] " +
+          JSON.stringify({
+            t: Date.now(),
+            p: performance.now(),
+            at: "disconnect.preclear",
+            via: gateTraceVia,
+            gate: [...this.#publishGate],
+            gateSize: this.#publishGate.size,
+            gateHeld: this.#gateHeld(),
+            gateGen: this.#gateGen,
+            connectGen: this.#connectGen,
+            passes: this.#gateSweeper?.passes() ?? null,
+          }),
+      );
       this.#publishGate.clear();
       // Same gen bump as at connect: every sweep of the sweeper being dropped
       // here is refused from now on, including the ones still parked on an
@@ -3696,16 +3764,23 @@ class Voice {
     // exactly as interesting as one that lands. OBSERVATION ONLY.
     const gateTraceSizeBefore = this.#publishGate.size;
     if (this.room() !== room)
-      console.error("[gate-trace]", {
-        t: Date.now(),
-        p: performance.now(),
-        at: "pauseGate.staleRoom",
-        reason,
-        gate: [...this.#publishGate],
-        gateSize: gateTraceSizeBefore,
-        gateGen: this.#gateGen,
-        passes: this.#gateSweeper?.passes() ?? null,
-      });
+      console.error(
+        "[gate-trace] " +
+          JSON.stringify({
+            t: Date.now(),
+            p: performance.now(),
+            at: "pauseGate.staleRoom",
+            reason,
+            staleRoom: true,
+            gate: [...this.#publishGate],
+            gateSize: this.#publishGate.size,
+            gateHeld: this.#gateHeld(),
+            gateGen: this.#gateGen,
+            connectGen: this.#connectGen,
+            passes: this.#gateSweeper?.passes() ?? null,
+            currentRoom: this.room() === room,
+          }),
+      );
     // Stale-writer guard: a binding built for a PREVIOUS call must not add
     // reasons to the gate it shares with the current one — its session is
     // disposed, so nothing would ever release them and every new publication
@@ -3716,19 +3791,24 @@ class Voice {
     if (this.#publishGate.size === 0) this.#gateEpisode.beginEpisode();
     this.#publishGate.add(reason);
     // [gate-trace] wave-0 seam 3: the edge and the resulting set.
-    console.error("[gate-trace]", {
-      t: Date.now(),
-      p: performance.now(),
-      at: "pauseGate",
-      reason,
-      staleRoom: false,
-      sizeBefore: gateTraceSizeBefore,
-      edge: gateTraceSizeBefore === 0,
-      gate: [...this.#publishGate],
-      gateSize: this.#publishGate.size,
-      gateGen: this.#gateGen,
-      passes: this.#gateSweeper?.passes() ?? null,
-    });
+    console.error(
+      "[gate-trace] " +
+        JSON.stringify({
+          t: Date.now(),
+          p: performance.now(),
+          at: "pauseGate",
+          reason,
+          edge: gateTraceSizeBefore === 0,
+          staleRoom: false,
+          gate: [...this.#publishGate],
+          gateSize: this.#publishGate.size,
+          gateHeld: this.#gateHeld(),
+          gateGen: this.#gateGen,
+          connectGen: this.#connectGen,
+          passes: this.#gateSweeper?.passes() ?? null,
+          currentRoom: this.room() === room,
+        }),
+    );
     // The Android leg STOPS (never pauses) the instant the primary pauses
     // (§0.4) — on reason ADD, before awaiting the WebView pause ops, and
     // deliberately NOT in #applyPublishGate, which re-runs on every
@@ -3748,21 +3828,25 @@ class Voice {
     // seam 3. The stale return is recorded under the SAME `at` literal
     // with `staleRoom: true` -- the pinned cross-lane `at` list carries no
     // `resumeGate.staleRoom` and no lane invents one. OBSERVATION ONLY.
-    const gateTraceSizeBefore = this.#publishGate.size;
     if (this.room() !== room)
-      console.error("[gate-trace]", {
-        t: Date.now(),
-        p: performance.now(),
-        at: "resumeGate",
-        reason,
-        staleRoom: true,
-        sizeBefore: gateTraceSizeBefore,
-        gate: [...this.#publishGate],
-        gateSize: gateTraceSizeBefore,
-        emptied: false,
-        gateGen: this.#gateGen,
-        passes: this.#gateSweeper?.passes() ?? null,
-      });
+      console.error(
+        "[gate-trace] " +
+          JSON.stringify({
+            t: Date.now(),
+            p: performance.now(),
+            at: "resumeGate",
+            reason,
+            emptied: false,
+            staleRoom: true,
+            gate: [...this.#publishGate],
+            gateSize: this.#publishGate.size,
+            gateHeld: this.#gateHeld(),
+            gateGen: this.#gateGen,
+            connectGen: this.#connectGen,
+            passes: this.#gateSweeper?.passes() ?? null,
+            currentRoom: this.room() === room,
+          }),
+      );
     // Same stale-writer guard, for the inverse hazard: a stale resume must
     // not release a reason the CURRENT call's session is still relying on.
     if (this.room() !== room) return;
@@ -3773,19 +3857,24 @@ class Voice {
     if (this.#publishGate.size === 0) this.#gateEpisode.endEpisode();
     // [gate-trace] wave-0 seam 4: the edge, the resulting set, and whether
     // the set reached size 0.
-    console.error("[gate-trace]", {
-      t: Date.now(),
-      p: performance.now(),
-      at: "resumeGate",
-      reason,
-      staleRoom: false,
-      sizeBefore: gateTraceSizeBefore,
-      gate: [...this.#publishGate],
-      gateSize: this.#publishGate.size,
-      emptied: this.#publishGate.size === 0,
-      gateGen: this.#gateGen,
-      passes: this.#gateSweeper?.passes() ?? null,
-    });
+    console.error(
+      "[gate-trace] " +
+        JSON.stringify({
+          t: Date.now(),
+          p: performance.now(),
+          at: "resumeGate",
+          reason,
+          emptied: this.#publishGate.size === 0,
+          staleRoom: false,
+          gate: [...this.#publishGate],
+          gateSize: this.#publishGate.size,
+          gateHeld: this.#gateHeld(),
+          gateGen: this.#gateGen,
+          connectGen: this.#connectGen,
+          passes: this.#gateSweeper?.passes() ?? null,
+          currentRoom: this.room() === room,
+        }),
+    );
     await this.#applyPublishGate(room);
   }
 
@@ -3840,17 +3929,23 @@ class Voice {
           // the stale-writer guard is exactly as interesting as one that
           // lands. The guarded statement below is unchanged, and
           // `stillCurrent` is a pure predicate. OBSERVATION ONLY.
-          console.error("[gate-trace]", {
-            t: Date.now(),
-            p: performance.now(),
-            at: "sweeper.dropped",
-            stillCurrent: stillCurrent(),
-            gate: [...this.#publishGate],
-            gateSize: this.#publishGate.size,
-            sweeperGen: gen,
-            gateGen: this.#gateGen,
-            passes: this.#gateSweeper?.passes() ?? null,
-          });
+          console.error(
+            "[gate-trace] " +
+              JSON.stringify({
+                t: Date.now(),
+                p: performance.now(),
+                at: "sweeper.dropped",
+                stillCurrent: stillCurrent(),
+                sweeperGen: gen,
+                gate: [...this.#publishGate],
+                gateSize: this.#publishGate.size,
+                gateHeld: this.#gateHeld(),
+                gateGen: this.#gateGen,
+                connectGen: this.#connectGen,
+                passes: this.#gateSweeper?.passes() ?? null,
+                currentRoom: this.room() === room,
+              }),
+          );
           if (stillCurrent()) this.#gateEpisode.noteDropped();
         },
         // 🔴 The DRIVE boundary, and the reason this argument may not be
@@ -3962,41 +4057,77 @@ class Voice {
 
   /**
    * [gate-trace] wave-0 seam 10 (rejoin-leak plan 2.3). TWO log-only
-   * listeners, one per event, as STABLE instance arrow-properties so
-   * `localTrackPublished` can `off` before `on` keyed on identity.
+   * listeners, one per event, MEMOIZED PER TRACK so `localTrackPublished`
+   * can `off` before `on` keyed on listener IDENTITY: the same `LocalTrack`
+   * always gets the same pair back, which is the only thing that makes the
+   * `off` remove anything. `republishAllTracks` reuses the same track, so an
+   * inline arrow would accumulate a pair per republish.
+   *
+   * Per TRACK rather than one pair per Voice because each record must name
+   * its `subject`, and `TrackProcessorUpdate` carries only the processor
+   * (`emit(TrackEvent.TrackProcessorUpdate, this.processor)` in the pinned
+   * 2.15.13) — there is no track argument to read a subject off. The subject
+   * is read at FIRE time, so a sid assigned after registration is still
+   * named correctly.
    *
    * Separate from `#reassertPublishGate`, which cannot serve: it returns
-   * early on an empty gate -- the exact case under test -- and both of its
+   * early on an empty gate — the exact case under test — and both of its
    * registrations share one arrow, so it cannot say which event fired.
    *
-   * OBSERVATION ONLY: neither of these sweeps, pauses or mutates anything.
+   * OBSERVATION ONLY: neither listener sweeps, pauses or mutates anything,
+   * and the map holds trace listeners and nothing else.
    */
-  #traceUpstreamResumed = (): void => {
-    console.error("[gate-trace]", {
-      t: Date.now(),
-      p: performance.now(),
-      at: "track.upstreamResumed",
-      gate: [...this.#publishGate],
-      gateSize: this.#publishGate.size,
-      gateHeld: this.#gateHeld(),
-      gateGen: this.#gateGen,
-      passes: this.#gateSweeper?.passes() ?? null,
-    });
-  };
+  #gateTraceTrackListeners = new WeakMap<
+    Track,
+    { resumed: () => void; processor: () => void }
+  >();
 
-  /** See {@link Voice.#traceUpstreamResumed}. */
-  #traceProcessorUpdate = (): void => {
-    console.error("[gate-trace]", {
-      t: Date.now(),
-      p: performance.now(),
-      at: "track.processorUpdate",
-      gate: [...this.#publishGate],
-      gateSize: this.#publishGate.size,
-      gateHeld: this.#gateHeld(),
-      gateGen: this.#gateGen,
-      passes: this.#gateSweeper?.passes() ?? null,
-    });
-  };
+  /** See {@link Voice.#gateTraceTrackListeners}. OBSERVATION ONLY. */
+  #gateTraceListenersFor(track: Track): {
+    resumed: () => void;
+    processor: () => void;
+  } {
+    const existing = this.#gateTraceTrackListeners.get(track);
+    if (existing) return existing;
+    const made = {
+      resumed: (): void => {
+        console.error(
+          "[gate-trace] " +
+            JSON.stringify({
+              t: Date.now(),
+              p: performance.now(),
+              at: "track.upstreamResumed",
+              subject: `${track.source}/${track.sid ?? "no-sid"}`,
+              gate: [...this.#publishGate],
+              gateSize: this.#publishGate.size,
+              gateHeld: this.#gateHeld(),
+              gateGen: this.#gateGen,
+              connectGen: this.#connectGen,
+              passes: this.#gateSweeper?.passes() ?? null,
+            }),
+        );
+      },
+      processor: (): void => {
+        console.error(
+          "[gate-trace] " +
+            JSON.stringify({
+              t: Date.now(),
+              p: performance.now(),
+              at: "track.processorUpdate",
+              subject: `${track.source}/${track.sid ?? "no-sid"}`,
+              gate: [...this.#publishGate],
+              gateSize: this.#publishGate.size,
+              gateHeld: this.#gateHeld(),
+              gateGen: this.#gateGen,
+              connectGen: this.#connectGen,
+              passes: this.#gateSweeper?.passes() ?? null,
+            }),
+        );
+      },
+    };
+    this.#gateTraceTrackListeners.set(track, made);
+    return made;
+  }
 
   /**
    * Every mic enable goes through here: `setMicrophoneEnabled` plus the

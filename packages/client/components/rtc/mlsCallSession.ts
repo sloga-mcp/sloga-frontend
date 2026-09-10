@@ -1148,6 +1148,13 @@ export class MlsCallSession {
   /** Bound on successive re-establishes (rejoin/successor). */
   #reestablishes = 0;
   /**
+   * wave-0b instrumentation (M4), trace-only: the TWO `[gate-trace]`
+   * `rejoinFresh` records of ONE `#rejoinFresh` call carry the same `seq`, so
+   * the reducer counts re-establish EVENTS rather than records (wave 0 counted
+   * the pair twice). Nothing reads it and no behaviour depends on it.
+   */
+  #rejoinTraceSeq = 0;
+  /**
    * Monotonic establish generation (§4.2), bumped by EVERY `#establish` entry
    * — `start()`'s, `#rejoinFresh`'s, `#poisonedSuccessor`'s. Scheduled group
    * work and the Welcome wait capture it and abort when stale, so a
@@ -3333,18 +3340,26 @@ export class MlsCallSession {
     // wave-0 instrumentation (seam 8): the IN-PLACE re-establish arm. Emitted
     // at entry, unconditionally and before any await, so M2 has a POSITIVE
     // witness on this arm instead of inferring it from a missing line.
+    // wave 0b (B7/M4): ONE pre-serialized STRING, because Chromium's log
+    // renders an object argument as "[object Object]"; and `seq` pairs this
+    // record with the `afterDrop` one below so the reducer counts EVENTS.
     const traceModeBefore = this.#callMode.kind;
-    console.error("[gate-trace]", {
-      t: Date.now(),
-      p: performance.now(),
-      at: "rejoinFresh",
-      modeBefore: traceModeBefore,
-      modeAfter: traceModeBefore,
-      reestablishes: this.#reestablishes,
-      state: this.state(),
-      reason,
-      phase: "enter",
-    });
+    const traceSeq = ++this.#rejoinTraceSeq;
+    console.error(
+      "[gate-trace] " +
+        JSON.stringify({
+          t: Date.now(),
+          p: performance.now(),
+          at: "rejoinFresh",
+          phase: "enter",
+          reason,
+          modeBefore: traceModeBefore,
+          modeAfter: traceModeBefore,
+          reestablishes: this.#reestablishes,
+          state: this.state(),
+          seq: traceSeq,
+        }),
+    );
     const old = this.#groupId;
     this.#groupId = null;
     this.#resetGroupBuffers();
@@ -3361,17 +3376,21 @@ export class MlsCallSession {
     this.#dropModeToNegotiating();
     // wave-0 instrumentation (seam 8): the same arm after the mode drop, so
     // `#callMode` before and after are both on record for this call.
-    console.error("[gate-trace]", {
-      t: Date.now(),
-      p: performance.now(),
-      at: "rejoinFresh",
-      modeBefore: traceModeBefore,
-      modeAfter: this.#callMode.kind,
-      reestablishes: this.#reestablishes,
-      state: this.state(),
-      reason,
-      phase: "afterDrop",
-    });
+    console.error(
+      "[gate-trace] " +
+        JSON.stringify({
+          t: Date.now(),
+          p: performance.now(),
+          at: "rejoinFresh",
+          phase: "afterDrop",
+          reason,
+          modeBefore: traceModeBefore,
+          modeAfter: this.#callMode.kind,
+          reestablishes: this.#reestablishes,
+          state: this.state(),
+          seq: traceSeq,
+        }),
+    );
 
     if (this.#reestablishes >= MAX_REESTABLISH) {
       this.#onLoud(new Error(`re-establish limit reached: ${reason}`));
@@ -3406,16 +3425,19 @@ export class MlsCallSession {
       traceRan = true;
       this.#setMode({ kind: "negotiating" });
     }
-    console.error("[gate-trace]", {
-      t: Date.now(),
-      p: performance.now(),
-      at: "dropModeToNegotiating",
-      confirmedInterlude,
-      modeBefore: traceModeBefore,
-      modeAfter: this.#callMode.kind,
-      state: this.state(),
-      ran: traceRan,
-    });
+    console.error(
+      "[gate-trace] " +
+        JSON.stringify({
+          t: Date.now(),
+          p: performance.now(),
+          at: "dropModeToNegotiating",
+          confirmedInterlude,
+          modeBefore: traceModeBefore,
+          modeAfter: this.#callMode.kind,
+          state: this.state(),
+          ran: traceRan,
+        }),
+    );
   }
 
   async #poisonedSuccessor(): Promise<void> {
@@ -5627,21 +5649,24 @@ export class MlsCallSession {
       // wave-0 instrumentation (seam 5), observation only: the terminal
       // short-circuit is recorded rather than left as a silent no-op, so a
       // missing `setMode` record can never be read as "the call never came".
-      console.error("[gate-trace]", {
-        t: Date.now(),
-        p: performance.now(),
-        at: "setMode",
-        wasNegotiating: this.#callMode.kind === "negotiating",
-        incoming: mode.kind,
-        latched: this.#loudLatched,
-        mode: this.#callMode.kind,
-        localConfirmed:
-          this.#callMode.kind === "interlude"
-            ? this.#callMode.localConfirmed
-            : null,
-        hasMedia: !!this.#media,
-        branch: "closed",
-      });
+      console.error(
+        "[gate-trace] " +
+          JSON.stringify({
+            t: Date.now(),
+            p: performance.now(),
+            at: "setMode",
+            branch: "closed",
+            wasNegotiating: this.#callMode.kind === "negotiating",
+            incoming: mode.kind,
+            mode: this.#callMode.kind,
+            latched: this.#loudLatched,
+            localConfirmed:
+              this.#callMode.kind === "interlude"
+                ? this.#callMode.localConfirmed
+                : null,
+            hasMedia: !!this.#media,
+          }),
+      );
       return;
     }
     // Under a loud latch `e2ee` is unreachable and folds to `negotiating`
@@ -5672,18 +5697,22 @@ export class MlsCallSession {
       void this.#media?.resumePublishing?.("negotiating");
       traceBranch = "resume";
     }
-    console.error("[gate-trace]", {
-      t: Date.now(),
-      p: performance.now(),
-      at: "setMode",
-      wasNegotiating,
-      incoming: traceIncoming,
-      latched: this.#loudLatched,
-      mode: mode.kind,
-      localConfirmed: mode.kind === "interlude" ? mode.localConfirmed : null,
-      hasMedia: !!this.#media,
-      branch: traceBranch,
-    });
+    console.error(
+      "[gate-trace] " +
+        JSON.stringify({
+          t: Date.now(),
+          p: performance.now(),
+          at: "setMode",
+          branch: traceBranch,
+          wasNegotiating,
+          incoming: traceIncoming,
+          mode: mode.kind,
+          latched: this.#loudLatched,
+          localConfirmed:
+            mode.kind === "interlude" ? mode.localConfirmed : null,
+          hasMedia: !!this.#media,
+        }),
+    );
     this.#media?.onCallModeChanged?.(mode, {
       nonEnrolled: this.#nonEnrolled,
       announcedBy: this.#announcedBy,
@@ -5745,19 +5774,22 @@ export class MlsCallSession {
           // wave-0 instrumentation (seam 5): one record per effect, emitted
           // synchronously BEFORE the effect runs. No await is introduced and
           // no effect is added, removed or reordered.
-          console.error("[gate-trace]", {
-            t: Date.now(),
-            p: performance.now(),
-            at: "applyMode.effect",
-            event: event.type,
-            next: mode.kind,
-            enabled: effect.do === "set_e2ee" ? effect.enabled : null,
-            reason:
-              effect.do === "pause" || effect.do === "resume"
-                ? effect.reason
-                : null,
-            do: effect.do,
-          });
+          console.error(
+            "[gate-trace] " +
+              JSON.stringify({
+                t: Date.now(),
+                p: performance.now(),
+                at: "applyMode.effect",
+                event: event.type,
+                next: mode.kind,
+                do: effect.do,
+                enabled: effect.do === "set_e2ee" ? effect.enabled : null,
+                reason:
+                  effect.do === "pause" || effect.do === "resume"
+                    ? effect.reason
+                    : null,
+              }),
+          );
           switch (effect.do) {
             case "pause":
               await this.#media?.pausePublishing?.(effect.reason);
