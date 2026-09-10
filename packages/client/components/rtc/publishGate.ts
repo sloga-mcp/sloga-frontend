@@ -132,6 +132,94 @@
  * publication whose repause already failed is reported, never resumed again —
  * retrying cannot help and each retry re-attaches).
  *
+ * THREE, in fact, because those two were MEASURED insufficient. The entire
+ * re-entrant burst is MICROTASKS and the caller's confirm is a MACROTASK:
+ * `resumeUpstream` emits `UpstreamResumed` synchronously before its await,
+ * `state.tsx#reassertPublishGate` sweeps on it, and {@link coalescingSweeper}'s
+ * `while (pending && --budget > 0)` re-loops on a microtask, while
+ * `#scheduleGateConfirm` is a `setTimeout(0)`. So the burst is over before a
+ * confirming pass exists, and NO policy keyed on the confirm — which is where
+ * the spend is decided — can bound the re-attaches inside it. Measured against
+ * this module through the production caller shape, under a persistently
+ * rejecting `replaceTrack(null)`: 7 passes, 5 re-attaches, 2 reports and a
+ * DROPPED pass on a microtask wire; 4 / 3 / 2 / no drop on a macrotask wire.
+ * Hence {@link PublishGateOptions.repausePending} — the same suppression as
+ * `repauseSpent` at a strictly weaker trigger and a strictly smaller scope.
+ *
+ * 🔴 AND THE SCOPE IS THE WHOLE MECHANISM. `repausePending` is scoped to ONE
+ * DRIVE of {@link coalescingSweeper} — the caller clears it from the
+ * `onDriveStart` hook. An EPISODE-scoped pending set is not a smaller version
+ * of this: it is mechanically identical to `repauseSpent` at a weaker trigger,
+ * i.e. a permanent per-name disarm, because a suppression is
+ * unreachable-to-lift. Once a name is suppressed and its wire is live no pause
+ * is issued, so nothing can ever be `proven`, so the un-spend never fires.
+ * Measured ON THE MICROTASK-WIRE MODEL: episode scope turns the mirror window
+ * above from `wire=quiet` into `wire=live`, with the name latched for the rest
+ * of the call. The axis matters and is not averaged over: on a MACROTASK wire
+ * that scenario cannot even produce the failing repause, because the competing
+ * attach cannot land inside the microtask gap between the detach resolving and
+ * the post-condition read — so it is the microtask model that discriminates
+ * this, and `publishGate.test.ts` says so per axis. Drive scope keeps the
+ * disarm inside the burst that caused it, and the confirm — a NEW drive —
+ * re-arms it.
+ *
+ * The property that makes that work, and that a refactor must preserve:
+ * {@link applyPublishGate} re-reads BOTH option sets on every pass, against the
+ * live `Set` the caller re-supplies by reference, so the caller can arm the
+ * NEXT pass from this pass's report; while WITHIN one pass every publication is
+ * decided against one pre-await snapshot taken in the synchronous issue loop.
+ * Per-pass freshness, per-pass consistency.
+ *
+ * 🔴 WHAT MAY BE SPENT: ONLY A DETACH THAT THREW. A spend is a PERMANENT
+ * per-episode disarm, for the reason just given, so the only failure that may
+ * feed it is one a retry CANNOT fix — `pauseUpstream()` itself rejecting
+ * ({@link PublishGateSweep.repauseThrew}). A pause that RESOLVED over a wire
+ * the post-condition reads live means something else re-attached the sender
+ * (`setProcessor`, `setMediaStreamTrack`, `handleTrackUnmuteEvent`); a retry
+ * CAN help, so it is never in `repauseThrew`, and it keeps being swept exactly
+ * as before.
+ *
+ * INVARIANT, not an implementation detail: `threw` is only ever read AND-ed
+ * with `op === "repause"`. Loosening it to "any op that threw" would let a
+ * plain `pause` failure spend the publication — the 2026-09-08 defect re-armed
+ * under a narrower precondition, and the thing `publishGate.test.ts`'s "a
+ * failed PAUSE is not a failed repause" exists to stop.
+ *
+ * And the THIRD event the single outer catch used to fold into those two: a
+ * READ that threw ({@link OneResult.unreadable}). A `pauseUpstream()` that
+ * RESOLVED followed by a `publication.upstream()` that threw says nothing
+ * whatsoever about the wire, so it feeds neither set. `repauseFailed` means "an
+ * issued repause did not end quiet", NOT "the op failed" — which is why it is
+ * safe to feed a DRIVE-scoped suppression and not safe to feed anything
+ * permanent. The disarm would outlive the read failure, and durably: a name is
+ * `${source}/${trackSid}` and every re-attacher preserves `trackSid`.
+ *
+ * 🔴 AND A FOURTH, which is why the attribution is no longer a REGION FLAG.
+ * `pauseUpstream()` can fail in two ways that a flag spanning the call cannot
+ * tell apart, and only one of them may be permanent:
+ *
+ *  - the promise livekit returned REJECTED — flag set, `UpstreamPaused`
+ *    emitted, `replaceTrack(null)` rejected. `threw`. Permanent.
+ *  - `publication.pauseUpstream()` threw SYNCHRONOUSLY. livekit's method is
+ *    `async` and cannot; this is `state.tsx`'s adapter over a `LocalTrack`
+ *    torn down since the `trackPublications` snapshot. Nothing was written, no
+ *    later pause early-returns, a retry can help. NOT `threw`.
+ *
+ * The region flag also mis-attributed the `gateHeld()` re-check that sits
+ * between the resume and the pause: it reported `repauseThrew` for a detach
+ * that was never even called. That was unreachable only because `state.tsx`
+ * passes `() => this.#publishGate.size > 0` TODAY; the 6.5 breakdown has wave 1
+ * replace it with `EpisodeDeps.gateHeld()`. So the arm catches its own detach,
+ * twice, and the module has exactly ONE site that assigns `threw`.
+ *
+ * One pre-existing oddity, recorded so the next review does not re-find it: in
+ * the `resume` arm (an EMPTY gate) a post-condition read that throws is
+ * reported as `unproven`, not `failed`, because it lands in the same outer
+ * catch — and `unproven` is documented as "publications a HELD gate could not
+ * prove quiet". Harmless, because every consumer of `unproven` acts only on a
+ * held gate or on `op === "repause"` and this carries neither, but it is a
+ * mis-labelled report rather than a designed one.
+ *
  * WHY THE POST-CONDITION IS MANDATORY, not defensive. Two clauses of
  * `docs/e2ee-media-mls-plan.md` are unqualified absolutes — §1.4: a desynced
  * member "publishes nothing (its old frame keys are stale)", and: "this device
@@ -232,8 +320,27 @@ export interface PublishGateOptions {
    * the pause can proceed, so once the pause is known to fail the resume is pure
    * harm — it re-attaches the sender the gate is trying to detach, and its
    * `UpstreamResumed` is what feeds the loop. Cleared when the gate empties.
+   *
+   * 🔴 May be fed ONLY from {@link PublishGateSweep.repauseThrew}: this is a
+   * permanent per-episode disarm and its lift is unreachable while the wire is
+   * live, so a failure a retry could have fixed must never reach it.
    */
   repauseSpent?: ReadonlySet<string>;
+  /**
+   * Publications whose issued `repause` already failed inside THIS DRIVE of
+   * {@link coalescingSweeper}, by name. Treated exactly as
+   * {@link repauseSpent} at the op-issue point — verify and report, issue
+   * nothing — and existing for the timing reason in the module comment: the
+   * re-entrant burst is microtasks and the confirm is a macrotask, so the
+   * spend cannot bound the re-attaches inside a burst and this does.
+   *
+   * 🔴 DRIVE-scoped, never episode-scoped. The caller clears it from
+   * {@link coalescingSweeper}'s `onDriveStart`. An episode-scoped population is
+   * a permanent per-name disarm — see the module comment; it is forbidden, and
+   * it regresses the mirror window from a converging `quiet` to a latched
+   * `live`.
+   */
+  repausePending?: ReadonlySet<string>;
 }
 
 export interface PublishGateSweep {
@@ -259,17 +366,38 @@ export interface PublishGateSweep {
    */
   failed: string[];
   /**
-   * The subset of `unproven` whose op was actually a `repause` — i.e. the
-   * resume-then-pause ran and STILL did not leave the wire quiet.
+   * The subset of `unproven` whose op was an ISSUED `repause` — i.e. the
+   * resume-then-pause actually ran and STILL did not leave the wire quiet.
    *
-   * 🔴 This, and only this, may feed {@link PublishGateOptions.repauseSpent}.
-   * Marking a publication spent on any other `unproven` disarms the gate for it
-   * over a failure a retry could have fixed: the next sweep computes `repause`,
-   * sees it spent, issues nothing, and the sender stays live for the rest of the
-   * episode — the 2026-09-08 defect re-armed under a narrower precondition
-   * (media-E2EE review, fifth pass).
+   * 🔴 This, and only this, may feed {@link PublishGateOptions.repausePending}.
+   * Marking a publication on any other `unproven` disarms the gate for it over
+   * a failure a retry could have fixed: the next pass computes `repause`, sees
+   * it suppressed, issues nothing, and the sender stays live — the 2026-09-08
+   * defect re-armed under a narrower precondition (media-E2EE review, fifth
+   * pass). A repause SUPPRESSED by `repauseSpent` / `repausePending` is
+   * excluded here by construction (`issued`), so a suppression can never feed
+   * itself; so is a verdict reached by a READ that threw
+   * ({@link OneResult.unreadable}), which knows nothing about the wire.
+   *
+   * What it may NOT feed is the permanent {@link
+   * PublishGateOptions.repauseSpent} — that takes {@link repauseThrew} only.
    */
   repauseFailed: string[];
+  /**
+   * The subset of `repauseFailed` whose `pauseUpstream()` itself REJECTED —
+   * the narrowest of the events the sweep's outer catch used to conflate, and
+   * the only one a PERMANENT disarm may be built on: livekit's flag is true
+   * over a sender it never detached, and every later pause on that track
+   * early-returns on the flag, so a retry cannot help.
+   *
+   * 🔴 This, and only this, may feed {@link PublishGateOptions.repauseSpent}.
+   * Three things are deliberately absent because a retry CAN help and they
+   * keep being swept: a pause that RESOLVED over a re-attached wire; a
+   * `pauseUpstream()` that threw SYNCHRONOUSLY, i.e. before livekit's `async`
+   * body ran, so its flag was never written; and a `gateHeld()` re-check that
+   * threw, where no detach was even attempted.
+   */
+  repauseThrew: string[];
   /**
    * Publications a HELD gate ended this sweep having OBSERVED quiet. The
    * caller uses it to un-spend: a repause that failed once must not be a life
@@ -299,7 +427,52 @@ type OneResult = {
   kind: "unproven" | "failed" | "proven";
   name: string;
   op: PublishGateOp;
+  /**
+   * An op actually reached livekit for this publication. FALSE when the
+   * `repause` arm was suppressed by {@link PublishGateOptions.repauseSpent} or
+   * {@link PublishGateOptions.repausePending} — which is what keeps a
+   * SUPPRESSED publication out of {@link PublishGateSweep.repauseFailed} by
+   * construction rather than by every caller remembering to.
+   */
+  issued?: boolean;
+  /**
+   * The promise `pauseUpstream()` RETURNED rejected. Not "the wire still reads
+   * live", not "a read threw", and not "`pauseUpstream()` threw synchronously"
+   * — livekit's is `async` and cannot, so that is the adapter over a torn-down
+   * track, with livekit's body never entered and a retry still able to help.
+   *
+   * Set at exactly ONE point in this file, from a catch wrapped around exactly
+   * one awaited promise, because it is the only input to a PERMANENT per-name
+   * disarm ({@link PublishGateSweep.repauseThrew}). It was previously derived
+   * from a region flag that also spanned the `gateHeld()` re-check.
+   */
+  threw?: boolean;
+  /**
+   * A READ threw — the pre-read, either `gateHeld()`, or the post-condition.
+   * This verdict says nothing at all about the wire, so it feeds neither
+   * {@link PublishGateSweep.repauseThrew} nor
+   * {@link PublishGateSweep.repauseFailed}.
+   */
+  unreadable?: boolean;
 } | null;
+
+// All three are OPTIONAL, and the absent value is the never-a-PERMANENT-disarm
+// direction — which is narrower than "never a disarm", and the difference is
+// worth stating because a review round asserted the wider claim:
+//
+//  - `threw` and `issued` are filtered `=== true`, so absence EXCLUDES. A
+//    verdict that forgets either can never reach `repauseThrew`, and
+//    `repauseThrew` is the only input to the permanent per-episode spend.
+//  - `unreadable` is filtered `!== true`, so absence INCLUDES. A future
+//    `unproven` return in the repause arm that omits it gets the DRIVE-scoped
+//    `repauseFailed`, i.e. a suppression lifted at the next `onDriveStart`.
+//    That is deliberate for the one such path there is — a `pauseUpstream()`
+//    that threw synchronously, where livekit never ran and the wire is still
+//    live — but it does mean the safe direction here is "sweep it again next
+//    drive", not "sweep it again next pass".
+//
+// A `failed` (empty-gate) or `proven` verdict carries none of the three;
+// neither has a repause to attribute.
 
 export async function applyPublishGate(
   publications: Iterable<GatedPublication>,
@@ -321,6 +494,7 @@ export async function applyPublishGate(
         held,
         gateHeld,
         options.repauseSpent?.has(publication.name) ?? false,
+        options.repausePending?.has(publication.name) ?? false,
       ),
     );
   }
@@ -331,7 +505,22 @@ export async function applyPublishGate(
     unproven: named("unproven"),
     failed: named("failed"),
     repauseFailed: settled
-      .filter((r) => r?.kind === "unproven" && r.op === "repause")
+      .filter(
+        (r) =>
+          r?.kind === "unproven" &&
+          r.op === "repause" &&
+          r.issued === true &&
+          r.unreadable !== true,
+      )
+      .map((r) => r!.name),
+    repauseThrew: settled
+      .filter(
+        (r) =>
+          r?.kind === "unproven" &&
+          r.op === "repause" &&
+          r.issued === true &&
+          r.threw === true,
+      )
       .map((r) => r!.name),
     proven: named("proven"),
   };
@@ -343,7 +532,10 @@ async function runOne(
   held: boolean,
   gateHeld: () => boolean,
   repauseSpent: boolean,
+  repausePending: boolean,
 ): Promise<OneResult> {
+  /** An op reached livekit. See {@link OneResult.issued}. */
+  let issued = false;
   let op: PublishGateOp = "none";
   try {
     op = publishGateOp({
@@ -360,6 +552,7 @@ async function runOne(
         // rejects leaves {flag: false, wire quiet} — after which every later
         // resume early-returns and the track is muted upstream for the rest of
         // the call. Only a `setMediaStreamTrack` (a device switch) recovers it.
+        issued = true;
         try {
           await publication.resumeUpstream();
         } catch {
@@ -375,8 +568,15 @@ async function runOne(
         // nothing. Retrying cannot help, and the resume would re-attach the
         // sender and re-enter this sweep through `UpstreamResumed`.
         if (repauseSpent) break;
+        // Already tried and failed inside THIS DRIVE of the sweeper: the same
+        // reasoning at a weaker trigger and a smaller scope, and the one bound
+        // that acts INSIDE a re-entrant burst. `issued` stays false, so a
+        // suppressed publication is reported and never fed back into either
+        // set — a suppression that fed itself would be a permanent disarm.
+        if (repausePending) break;
         // Issued before any await, so it takes livekit's lock in turn.
         const resumed = publication.resumeUpstream();
+        issued = true;
         try {
           await resumed;
         } catch {
@@ -384,11 +584,65 @@ async function runOne(
           // and the post-condition decides whether it worked.
         }
         if (!gateHeld()) return null;
-        await publication.pauseUpstream();
+        // 🔴 THE ONE SITE THAT MAY PRODUCE `threw`, and why it is two
+        // statements and two catches rather than one region flag spanning
+        // them. `threw` is the sole input to a PERMANENT per-name disarm, so
+        // it must be provably the DETACH's own rejection and nothing else.
+        //
+        // A previous version set a `pausing` flag BEFORE the `gateHeld()`
+        // re-check and reported `threw: pausing` from the single outer catch.
+        // That flag is a REGION, not the call: a `gateHeld()` that threw was
+        // reported as a failed detach — `repauseThrew` populated with
+        // `pauseUpstream()` never having been called at all — and the whole
+        // justification for permanence ("livekit's flag is true over a sender
+        // it never detached, so every later pause early-returns") is then
+        // false, over a failure a retry could have fixed. Unreachable while
+        // `state.tsx` passes `() => this.#publishGate.size > 0`; reachable the
+        // moment wave 1 passes `EpisodeDeps.gateHeld()`. An invariant held by
+        // prose across a wave boundary is not held.
+        //
+        // The split is NOT cosmetic either. livekit's `pauseUpstream` is
+        // `async`, so it cannot throw synchronously; a synchronous throw here
+        // is `state.tsx`'s ADAPTER over a `LocalTrack` torn down since the
+        // `trackPublications` snapshot. livekit's body never ran,
+        // `_isUpstreamPaused` was never written, no later pause early-returns,
+        // and a retry CAN help — so it is a `repauseFailed` (drive-scoped,
+        // lifted at the next drive) and must never be a `repauseThrew`.
+        let detaching: Promise<void>;
+        try {
+          detaching = publication.pauseUpstream();
+        } catch {
+          return { kind: "unproven", name: publication.name, op, issued };
+        }
+        try {
+          await detaching;
+        } catch {
+          // The only failure a retry cannot fix: livekit set the flag, emitted
+          // `UpstreamPaused`, and THEN its `replaceTrack(null)` rejected.
+          return {
+            kind: "unproven",
+            name: publication.name,
+            op,
+            issued,
+            threw: true,
+          };
+        }
         break;
       }
       case "pause":
-        await publication.pauseUpstream();
+        issued = true;
+        try {
+          await publication.pauseUpstream();
+        } catch {
+          // Caught here, but deliberately with NO attribution and no split
+          // into sync-throw vs rejection: `threw` is only ever read AND-ed
+          // with `op === "repause"`, so nothing a `pause` failure could carry
+          // would ever be read, and inventing a field for it is how a later
+          // reader talks themselves into loosening the AND. The catch exists
+          // only so this failure is not mis-labelled `unreadable` by the outer
+          // one — it is not a read, and the outer catch says so.
+          return { kind: "unproven", name: publication.name, op, issued };
+        }
         break;
       case "none":
         break;
@@ -400,21 +654,37 @@ async function runOne(
         return exhaustive;
       }
     }
+    // Everything from here down is OBSERVATION, so a rejection below is a read
+    // that threw and not the op — see {@link OneResult.unreadable}.
+
     // The gate emptied under us: whatever the wire says now, this sweep is not
     // the one making a promise about it.
     if (!gateHeld()) return null;
     if (publication.upstream() !== "live") {
       return { kind: "proven", name: publication.name, op };
     }
-    return { kind: "unproven", name: publication.name, op };
+    return { kind: "unproven", name: publication.name, op, issued };
   } catch {
-    // A pause that THREW left livekit's flag true over a sender it never
-    // detached; a post-condition read that threw tells us nothing. Reported,
-    // never swallowed — this is the seam that turns a one-off failure into a
-    // permanent silent false pause. A read that threw lands here too, which is
-    // why the reads live inside this try: one torn-down publication must cost
-    // its own report, not the whole sweep.
-    return { kind: "unproven", name: publication.name, op };
+    // WHAT REACHES HERE, exhaustively, now that both pausing arms catch their
+    // own detach: a READ — `upstreamPaused`, `upstream()`, or either
+    // `gateHeld()` — or a `resumeUpstream()` that threw SYNCHRONOUSLY in the
+    // repause arm (which carries `issued: false`, and is excluded from both
+    // narrow sets by that). No detach failure reaches here from any arm. So
+    // `unreadable` is unconditional, and `threw` is unreachable from this
+    // catch: the module has exactly ONE site that assigns `threw`, and it is a
+    // catch wrapped around exactly one awaited `pauseUpstream()` promise.
+    //
+    // Reported, never swallowed — this is the seam that turns a one-off failure
+    // into a permanent silent false pause. The reads live inside this try so
+    // that one torn-down publication costs its own report, not the whole
+    // sweep.
+    return {
+      kind: "unproven",
+      name: publication.name,
+      op,
+      issued,
+      unreadable: true,
+    };
   }
 }
 
@@ -445,6 +715,17 @@ export function coalescingSweeper(
    * flips E2EE on, so it has to be able to find out.
    */
   onDropped: () => void = () => {},
+  /**
+   * Called once at the START of each drive, before its first pass — i.e. at
+   * every boundary between one re-entrant burst and the next. The seam
+   * {@link PublishGateOptions.repausePending} is scoped by: the caller clears
+   * the set here, so a repause suppressed inside a burst is re-armed for the
+   * next drive rather than for the rest of the call. Clearing it anywhere
+   * coarser (per episode) is a permanent per-name disarm — see the module
+   * comment. It runs INSIDE the drive's try, so a throwing hook cannot strand
+   * `active` and wedge every later sweep.
+   */
+  onDriveStart: () => void = () => {},
 ): { sweep(): Promise<void>; passes(): number } {
   let active: Promise<void> | null = null;
   let pending = false;
@@ -452,6 +733,7 @@ export function coalescingSweeper(
 
   const drive = async (): Promise<void> => {
     try {
+      onDriveStart();
       let budget = maxPasses;
       do {
         pending = false;
