@@ -28,7 +28,8 @@
 # EXPECTED) that its own run must reproduce exactly — read out of the captured
 # LOG FILE, never out of the 12-line tail, and never out of a `grep test(` of
 # the source (nested `t.test`, `describe` and loop-generated tests all break
-# that: `publishGate.test.ts` declares 40 top-level `test(` and executes 50).
+# that: `publishGate.test.ts` declares 42 top-level `test(`
+# — `grep -c '^test(' components/rtc/publishGate.test.ts` — and EXECUTES 50).
 set -uo pipefail
 
 ARGC=$# # captured before anything can shift it
@@ -108,7 +109,8 @@ EXPECTED=(
   "components/rtc/localPublicationEncryption.test.ts 10 0"
   "components/rtc/plaintextCryptorPolicy.test.ts 12 0"
   "components/rtc/publishGate.test.ts 50 0"
-  "components/rtc/publishGateEpisode.test.ts 51 0"
+  "components/rtc/publishGateEpisode.test.ts 59 0"
+  "components/rtc/pauseVerdict.test.ts 10 0"
 )
 
 counter() { # counter <log> <name> — the runner's own summary counter, or ""
@@ -189,7 +191,8 @@ if [ ${#SPECS[@]} -eq 0 ]; then
     components/rtc/localPublicationEncryption.test.ts
     components/rtc/plaintextCryptorPolicy.test.ts
     components/rtc/publishGate.test.ts
-    components/rtc/publishGateEpisode.test.ts)
+    components/rtc/publishGateEpisode.test.ts
+    components/rtc/pauseVerdict.test.ts)
 fi
 if [ ${#SPECS[@]} -eq 0 ]; then
   echo ">>> GATE FAIL: no spec files matched — refusing to report a pass"
@@ -208,7 +211,9 @@ FILES=(components/rtc/mlsCallSession.ts components/rtc/mlsCallModePolicy.ts
   components/rtc/publishGate.ts components/rtc/publishGate.test.ts
   components/rtc/publishGateEpisode.ts
   components/rtc/publishGateEpisode.test.ts
-  components/rtc/mlsCallModePolicy.test.ts src/sentry.ts)
+  components/rtc/pauseVerdict.ts components/rtc/pauseVerdict.test.ts
+  components/rtc/mlsCallModePolicy.test.ts src/sentry.ts
+  components/ui/components/features/voice/callCard/VoiceCallDowngradeBanner.tsx)
 ran=0
 RAN_SPECS=()
 for f in "${SPECS[@]}"; do
@@ -249,7 +254,21 @@ run "tsc --noEmit" 25 "$ROOT/node_modules/.pnpm/node_modules/.bin/tsc" --noEmit
 # --check, never --write: reformatting a tracked file sweeps up code this
 # branch did not touch.
 run "prettier --check" 12 "$ROOT/node_modules/.bin/prettier" --check "${FILES[@]}"
-# 0 errors required; the solid/reactivity warning in state.tsx is pre-existing.
+# 0 errors required. THREE solid/reactivity warnings are expected: two in
+# state.tsx (one pre-existing, one on the `pauseVerdictReaders(pauseVerdict)`
+# call, a false positive — the readers are arrow closures invoked inside
+# `createMemo`, so the accessor IS read in a tracked scope) and one in
+# VoiceCallDowngradeBanner.tsx, pre-existing and newly VISIBLE because that
+# file was only enrolled in FILES after an audit found this branch modifies it
+# while nothing linted or formatted it. All left unsuppressed on purpose:
+# neither file carries an eslint-disable and a suppression would hide the next
+# real one.
+#
+# 🔴 This gate reads eslint's EXIT STATUS and eslint exits 0 on warnings, so
+# this step is WARNING-BLIND by construction. Do not read the count above as
+# something enforced — nothing checks it. If you add --max-warnings, three is
+# the baseline; until then, this comment is prose and goes stale like all the
+# others this file has carried.
 run "eslint" 30 "$ROOT/node_modules/.bin/eslint" "${FILES[@]}"
 
 echo

@@ -30,10 +30,23 @@ import { participantUserId } from "../participantIdentity";
  * 🔴 But holding the REASON is not the wire being quiet, which is what the
  * 2026-09-08 join-race legs proved: a seat showed this banner while the other
  * seat decrypted its frames for 24 minutes. So when the publish gate's sweep
- * CONFIRMS local media is still on the wire (`callPauseDisproved`), every arm
- * below is replaced by copy that does not claim a pause. That is a WITHDRAWAL,
- * not a new state — this signal never raises the banner on its own, and it
- * therefore needs no chip precedence and no new affordance.
+ * FAILS TO PROVE the wire quiet under a held gate (`callPauseDisproved`),
+ * every arm below is replaced by copy that does not claim a pause.
+ *
+ * 🔴 `callPauseDisproved` is a ONE-DIRECTIONAL ALARM, and this file reads
+ * it as one. TRUE is "a held gate could not prove the wire quiet" — it is NOT
+ * a confirmation that local media IS on the wire, which the signal cannot say.
+ * FALSE is "no live disproof" and nothing more: it is equally what every
+ * episode start, every 1→0 transition and every empty gate leave behind, so it
+ * never means "proven paused". An earlier version of this comment read the
+ * signal as a CONFIRMATION that media is on the wire; that was the same
+ * over-claim already retracted from state.tsx, and it is not what either
+ * writing path establishes.
+ *
+ * The arm below is therefore a WITHDRAWAL, not a new state — this signal never
+ * raises the banner on its own (visibility is `visible()` ← `isDowngrade()`,
+ * which does not read it), and it therefore needs no chip precedence and no
+ * new affordance.
  *
  * First paint is debounced by `MIX_BANNER_DEBOUNCE_MS` (judgment call 5) so a
  * cap-refused joiner's brief in/out never flashes the banner — the fail-closed
@@ -138,6 +151,30 @@ export function VoiceCallDowngradeBanner() {
           <Show
             when={ownerMismatch()}
             fallback={
+              // 🔴 CONFIDENCE IS DELIBERATELY NOT READ HERE. The companion
+              // accessor `callPauseDisproofConfirmed()` grades this TRUE:
+              // confirmed means a confirming re-sweep ACTUALLY RAN, a macrotask
+              // after the first look, while FALSE — where a disproof exists at
+              // all — means the episode's consecutive-confirm budget was
+              // exhausted and a SINGLE unconfirmed observation was promoted to
+              // the verdict. This consumer treats the two alike: either one
+              // swaps in the withdrawal copy below, so a `confirmed: false`
+              // verdict carries exactly the weight of a confirmed one.
+              //
+              // That is safe TODAY only because the direction of error is a
+              // WITHDRAWAL. Acting on the weaker verdict retracts a "stays
+              // paused" promise this banner can no longer stand behind and
+              // points at Leave; it cannot raise the banner, cannot claim a
+              // pause, and cannot turn a green into a red. An over-eager
+              // withdrawal costs a too-cautious sentence, never a false red.
+              //
+              // 🔴 It stops being safe the moment this arm gains any
+              // ESCALATING effect — raising the banner itself, reddening the
+              // chip, or adding an affordance. Whoever does that must split
+              // the two verdicts here FIRST: giving a budget-exhausted single
+              // observation the weight of a confirmed disproof is the
+              // 2026-09-08 false-red class one level up. Wiring that read is
+              // its own slice, with its own audit, and is not done here.
               <Show
                 when={voice.callPauseDisproved()}
                 fallback={

@@ -217,8 +217,10 @@ import {
   e2eeProvenOff,
   sessionSetupDecision,
 } from "./mlsSessionSetupPolicy";
+import { pauseVerdictReaders } from "./pauseVerdict";
 import { applyPublishGate, coalescingSweeper } from "./publishGate";
 import {
+  type PauseDisproofVerdict,
   gatedPublicationsFrom,
   PublishGateEpisode,
 } from "./publishGateEpisode";
@@ -800,16 +802,85 @@ class Voice {
   callMediaHold: Accessor<boolean>;
   #setCallMediaHold: Setter<boolean>;
   /**
-   * The publish gate is held and a CONFIRMED sweep found local media still on
-   * the wire. Read by the downgrade banner, which otherwise asserts "your audio
-   * and video stay paused" — the sentence the 2026-09-08 legs disproved.
+   * The ONLY writer of the one signal behind {@link callPauseDisproved} and
+   * {@link callPauseDisproofConfirmed}. The signal itself is a constructor
+   * local (`pauseVerdict`); both public readers are memos over it and neither
+   * has a setter of its own, so no code anywhere in this class can write one
+   * of them without the other.
+   *
+   * 🔴 That is a defect class, not tidiness. The alarm and its confidence
+   * used to be two `Setter<boolean>`s written from one positionally-typed dep
+   * call. Transposing them typechecked, linted, formatted and passed the whole
+   * suite — and this file cannot be imported under `node --test` and carries
+   * no mutation entries, so nothing in the repo would have caught it. A
+   * transposed pair makes a budget-exhausted verdict on a genuinely live wire
+   * present as a CONFIRMED disproof: chip green, media on the wire. One field
+   * per verdict, written whole, leaves nothing to transpose.
+   *
+   * Tearing was never the hazard — Solid's `writeSignal` assigns `node.value`
+   * synchronously and `batch` only defers the observer flush, so two adjacent
+   * setter calls were never observably half-applied. The hazard was the two
+   * values disagreeing about WHICH verdict they describe, which one object
+   * makes unrepresentable.
+   */
+  #setPauseVerdict: Setter<PauseDisproofVerdict>;
+  /**
+   * The publish gate is held and a sweep found local media still on the wire.
+   * Read by the downgrade banner, which otherwise asserts "your audio and video
+   * stay paused" — the sentence the 2026-09-08 legs disproved.
+   *
+   * 🔴 A ONE-DIRECTIONAL ALARM. TRUE is "a held gate could not prove the wire
+   * quiet". FALSE is "no live disproof" and NOTHING MORE: it is also what
+   * every episode start, every 1→0 transition and every empty gate leave
+   * behind. It never means "proven paused".
    *
    * It does NOT raise the banner on its own: that needs a chip precedence and
    * an affordance this signal has no opinion about (the honest-visibility
    * slice). It withdraws a claim the banner is already making.
+   *
+   * 🔴 Its CONFIDENCE is {@link callPauseDisproofConfirmed}, and this signal
+   * alone is not enough to act on. An earlier version of this comment said "a
+   * CONFIRMED sweep found local media still on the wire"; that was only ever
+   * true of one of the two paths that write TRUE here (W2-3).
+   *
+   * DERIVED off the one `pauseVerdict` signal — written only through
+   * `#setPauseVerdict` — and not a signal of its own: there is no setter here,
+   * and so no way to write this apart from its confidence.
    */
   callPauseDisproved: Accessor<boolean>;
-  #setCallPauseDisproved: Setter<boolean>;
+  /**
+   * How much evidence {@link callPauseDisproved}'s current TRUE rests on
+   * (W2-3). Read off the SAME signal as it, so there is no pair to tear and
+   * none to transpose.
+   *
+   *  - TRUE — the disproof was reached after a confirming re-sweep ACTUALLY
+   *    RAN: a second look at the same wire, a macrotask after the first.
+   *    `PublishGateEpisode` schedules that re-sweep precisely because a
+   *    livekit op in flight legitimately leaves the wire live for a few
+   *    microtasks, so one observation is not a verdict.
+   *  - FALSE — EITHER there is no live disproof at all, OR the episode's
+   *    consecutive-confirm budget was exhausted and a SINGLE unconfirmed
+   *    observation was promoted to the verdict.
+   *
+   * 🔴 READ IT ONLY WHERE {@link callPauseDisproved} IS TRUE, and never as a
+   * statement about the pause. FALSE here is NOT "the pause is confirmed" and
+   * NOT "the wire is confirmed quiet" — this grades a DISPROOF and has nothing
+   * to say when there is none. The name keeps `Disproof` in it for exactly
+   * that reason: `!callPauseDisproofConfirmed()` reads "the disproof is not
+   * confirmed", which is what it means, rather than "the pause is confirmed",
+   * which it never means.
+   *
+   * 🔴 It does NOT decide the chip. WHICH confidence may redden or downgrade,
+   * and at what precedence, is wave 2's rule and is audited on its own terms.
+   * All this seam owes wave 2 is that the distinction exists and travels with
+   * the value, instead of dying in a `console.error` `detail` field where the
+   * two verdicts are indistinguishable to any consumer.
+   *
+   * DERIVED off the same `pauseVerdict` signal as {@link callPauseDisproved}
+   * — not a signal of its own — so the two can never come to describe
+   * different verdicts.
+   */
+  callPauseDisproofConfirmed: Accessor<boolean>;
   /**
    * Non-enrolled participant identities in the current call (slice 6.4 §3.4) —
    * empty ⇒ every SFU participant is in the MLS group. The state signal where
@@ -1079,9 +1150,12 @@ class Voice {
    *
    * They live in `publishGateEpisode.ts` rather than here because this file
    * cannot be imported under `node --test`, so a rule left in it is a rule no
-   * spec and no mutation can reach: `wiring-upstream-always-quiet` is
-   * `expect="green"` for exactly that reason, and two reviewed defects lived
-   * inside the region it declares uncovered (D6).
+   * spec and no mutation can reach. `wiring-upstream-always-quiet` CARRIED an
+   * `expect="green"` admission for exactly that reason, while the adapter it
+   * mutates still lived in this file; wave 1's extraction is what let it
+   * become an ordinary red-expecting entry against `publishGateEpisode.ts`,
+   * and two reviewed defects had lived inside the region it used to declare
+   * uncovered (D6).
    */
   #gateEpisode = new PublishGateEpisode({
     gateHeld: this.#gateHeld,
@@ -1131,11 +1205,33 @@ class Voice {
       }, 0);
     },
     /**
-     * The PRODUCER side of `callPauseDisproved`. The signal itself stays here
-     * — the chip and the banner read it — and keeps its identity; only who
-     * writes it moved.
+     * The PRODUCER side of `callPauseDisproved` and of its confidence sibling
+     * `callPauseDisproofConfirmed`. The signal stays here — the chip and the
+     * banner read it — and both accessors keep their names and their shapes;
+     * only who writes them moved.
+     *
+     * 🔴 ONE object into ONE signal, and that is the whole point. The alarm
+     * and its confidence are not two things that have to be kept in step;
+     * they are one verdict, and `PauseDisproofVerdict` carries them across the
+     * module boundary as one. A previous version took them as two positional
+     * `boolean`s and fanned them out to two setters: transposing the pair
+     * typechecked, linted, formatted and passed every spec, and this file
+     * cannot be imported under `node --test`, so no gate in the repo could
+     * have caught it. A transposed pair presents a budget-exhausted guess as a
+     * CONFIRMED disproof — the silent downgrade this slice exists to kill,
+     * sitting at the one seam with no coverage.
+     *
+     * Fanning the object out to two signals HERE would move that seam one
+     * layer down rather than close it, so there is exactly one signal behind
+     * both readers and no pair to write apart.
+     *
+     * That also retires the `batch()` this replaces, whose justification named
+     * a residual that does not exist: Solid's `writeSignal` assigns
+     * `node.value` synchronously and `batch` only defers the observer FLUSH,
+     * and no user code ran between the two setter calls, so the pair was never
+     * observably torn. What `batch` never guarded was the swap.
      */
-    setPauseDisproved: (v) => this.#setCallPauseDisproved(v),
+    setPauseDisproved: (verdict) => this.#setPauseVerdict(verdict),
     /**
      * The two console reports, and the only part of the verdict this file
      * still owns.
@@ -1353,9 +1449,45 @@ class Voice {
     const [callMediaHold, setCallMediaHold] = createSignal(false);
     this.callMediaHold = callMediaHold;
     this.#setCallMediaHold = setCallMediaHold;
-    const [callPauseDisproved, setCallPauseDisproved] = createSignal(false);
-    this.callPauseDisproved = callPauseDisproved;
-    this.#setCallPauseDisproved = setCallPauseDisproved;
+    // ONE signal for the whole verdict. Both public readers are derived off
+    // it, so the alarm and its confidence are written together or not at all.
+    const [pauseVerdict, setPauseVerdict] = createSignal<PauseDisproofVerdict>({
+      value: false,
+      confirmed: false,
+    });
+    this.#setPauseVerdict = setPauseVerdict;
+    // The DERIVATION lives in `pauseVerdict.ts`, where a spec and a mutation
+    // entry can reach it. This file cannot be imported under `node --test`
+    // (Solid, livekit, `@revolt/client`) and carries no mutation entries, so
+    // for as long as the two reader bodies were written out here, swapping
+    // them was checked by nothing: a completion audit transposed them and
+    // `tsc`, `prettier`, `eslint`, every spec and both scripts stayed green,
+    // while in production that swap turns a budget-exhausted single
+    // observation on a genuinely live wire into `callPauseDisproved() ===
+    // false` and leaves the banner promising "your audio and video stay
+    // paused".
+    //
+    // 🔴 That is NOT now a compile error, and nothing here should say it
+    // is. `disproved` and `disproofConfirmed` are two same-typed accessors and
+    // transpose exactly as silently as the two positional booleans they
+    // replaced. What moving the derivation buys is COVERAGE, not enforcement:
+    // the uncovered surface shrinks from the derivation to the two assignment
+    // lines below, which are still two same-typed `Accessor<boolean>` writes
+    // that would swap without complaint from any check in this repo.
+    //
+    // The memo wrapping STAYS here, for two reasons. `createMemo`'s `===`
+    // equality preserves the notification shape the two original boolean
+    // signals had, so a fresh verdict object whose `.value` did not change
+    // does not churn the banner's `<Show>`; and `pauseVerdict.ts` has to stay
+    // free of Solid to remain loadable under `node --test`. Both memos are
+    // created in this constructor, which `VoiceContext` runs inside its own
+    // component owner, so they are disposed with it.
+    //
+    // Names, types and arity are unchanged — `VoiceCallDowngradeBanner` reads
+    // `callPauseDisproved()` as a live `<Show>` discriminator.
+    const readers = pauseVerdictReaders(pauseVerdict);
+    this.callPauseDisproved = createMemo(readers.disproved);
+    this.callPauseDisproofConfirmed = createMemo(readers.disproofConfirmed);
 
     const [recording, setRecording] = createSignal(false);
     this.recording = recording;
@@ -3523,12 +3655,30 @@ class Voice {
         // lifecycle boundaries.
         //
         // Deliberately NOT wrapped in `stillCurrent()` like the two hooks
-        // above. `onDriveStart` runs once at the head of a drive, and a drive
-        // only ever starts from `sweep()` on the LIVE `#gateSweeper` field
-        // (`#applyPublishGate` has already re-checked the room by then), so it
-        // is unreachable while stale. Putting a predicate in front of the one
-        // call that DEFINES drive scope trades an unreachable stale clear for
-        // a false negative that collapses that scope — the measured mic-live
+        // above, and NOT because a stale call here is impossible. What the
+        // code actually establishes is narrower: `onDriveStart` runs
+        // synchronously as `drive()`'s first statement, `drive()` is invoked
+        // synchronously by `sweep()`, and the only `sweep()` call is at the
+        // tail of `#applyPublishGate` — the same synchronous turn as its
+        // `this.room() !== room` re-check, so no teardown can interleave
+        // between that check and this hook. Every `#gateGen` bump nulls
+        // `#gateSweeper` in the same breath, so the live field never carries a
+        // superseded gen either.
+        //
+        // What it does NOT establish is the sweeper's CAPTURED room: the
+        // re-check reads the ARGUMENT room, and the two coincide only while
+        // every path that reassigns `this.room()` also drops the sweeper — an
+        // invariant spread over three sites with awaits between them, not
+        // something this hook verifies.
+        //
+        // 🔴 It is unguarded because a stale call is HARMLESS here, which is
+        // the real reason and the one that does not depend on that invariant:
+        // `beginDrive` clears the drive-scoped pending set and nothing else,
+        // so a spurious one RE-ARMS repauses — the fail-closed direction. The
+        // two hooks above mutate spend and confirm state, where a stale call
+        // corrupts the LIVE episode. Putting a predicate in front of the one
+        // call that DEFINES drive scope trades that harmless clear for a
+        // false negative that collapses the scope — the measured mic-live
         // regression the paragraph above is about.
         () => this.#gateEpisode.beginDrive(),
       );

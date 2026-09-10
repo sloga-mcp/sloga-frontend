@@ -1,13 +1,22 @@
 // The publish gate's EPISODE state — the region that had no spec at all.
 //
 // `state.tsx` cannot be imported under `node --test` (Solid, livekit,
-// `@revolt/client`), so every rule that spans passes lived where no spec and no
-// mutation could reach it: `scripts/rtc-mutations.py`'s
-// `wiring-upstream-always-quiet` entry is carried `expect="green"` with a
+// `@revolt/client`), so every rule that spans passes USED TO live where no spec
+// and no mutation could reach it: `scripts/rtc-mutations.py`'s
+// `wiring-upstream-always-quiet` entry WAS carried `expect="green"` with a
 // `why_green` naming exactly what was uncovered — the `GatedPublication`
 // adapter, the confirm-then-report re-sweep, four episode flags and
 // `callPauseDisproved`'s whole lifecycle — and TWO fifth-review findings lived
 // in it.
+//
+// 🔴 PAST TENSE, and the tense is the point. Wave 1 extracted this module,
+// that entry now runs against `file=EPISODE` and is expected RED like every
+// other one — `expect` defaults to `"red"` and no entry in that table
+// overrides it. The sentence above stood in the present tense until this wave,
+// describing a mechanism the code had already replaced: a comment that reads as
+// a live measurement while measuring nothing is the wave-0 failure class, and
+// it is worse in a spec file than anywhere else. `publishGateEpisode.ts`'s own
+// header says "was" for the same reason.
 //
 // These specs drive the extracted module. Where a rule is about the SWEEP they
 // drive the real `applyPublishGate` through the real `gatedPublicationsFrom`,
@@ -32,6 +41,7 @@ import {
 } from "./publishGate.ts";
 import {
   type LocalPublicationLike,
+  type PauseDisproofVerdict,
   CONFIRM_BUDGET,
   PublishGateEpisode,
   gatedPublicationsFrom,
@@ -133,7 +143,7 @@ function makeEpisode(options: { gateHeld?: boolean } = {}) {
   const state = {
     gateHeld: options.gateHeld ?? true,
     stillCurrent: true,
-    disproved: [] as boolean[],
+    disproved: [] as PauseDisproofVerdict[],
     reports: [] as { kind: string; detail: Record<string, unknown> }[],
     deferred: [] as (() => void)[],
   };
@@ -143,8 +153,23 @@ function makeEpisode(options: { gateHeld?: boolean } = {}) {
     scheduleConfirm: (run) => {
       state.deferred.push(run);
     },
-    setPauseDisproved: (v) => {
-      state.disproved.push(v);
+    // 🔴 THE WHOLE VERDICT, recorded as one object and read back by NAME.
+    // A harness that kept only `value` would let every assertion below stay
+    // green while the confidence was hard-coded either way — the exact failure
+    // W2-3 closes, one level down in the spec instead of in the module. The
+    // pair used to arrive as two positional booleans, where a transposed
+    // recorder or a transposed assertion still typechecked. One object of two
+    // named `boolean` fields makes the POSITIONAL form a compile error — but
+    // NOT a transposition of the named fields, which still typechecks. That is
+    // why the assertions below read the verdict back BY NAME: this spec, not
+    // the compiler, is the wall on the producer side.
+    //
+    // Recorded as a COPY, not by reference, so a module that ever reused one
+    // verdict object could not rewrite this file's own history behind the
+    // assertions. The spread keeps any EXTRA field, so a shape that drifts
+    // still reddens the `deepEqual`s below rather than being silently ignored.
+    setPauseDisproved: (verdict) => {
+      state.disproved.push({ ...verdict });
     },
     report: (kind, detail) => {
       state.reports.push({ kind, detail: detail as Record<string, unknown> });
@@ -273,7 +298,7 @@ test("the confirming sweep disproves the pause and reports", () => {
   h.fireConfirm();
   assert.deepEqual(h.episode.beginPass(), { confirming: true });
   h.episode.consume(sweepOf({ unproven: ["microphone/TR_1"] }));
-  assert.deepEqual(h.state.disproved, [true]);
+  assert.deepEqual(h.state.disproved, [{ value: true, confirmed: true }]);
   assert.deepEqual(h.state.reports, [
     { kind: "unproven", detail: { publications: ["microphone/TR_1"] } },
   ]);
@@ -286,7 +311,7 @@ test("a confirming sweep that finds nothing unproven RESTORES the claim", () => 
   h.fireConfirm();
   h.episode.beginPass();
   h.episode.consume(sweepOf({ proven: ["microphone/TR_1"] }));
-  assert.deepEqual(h.state.disproved, [false]);
+  assert.deepEqual(h.state.disproved, [{ value: false, confirmed: false }]);
   assert.deepEqual(h.state.reports, []);
 });
 
@@ -355,7 +380,7 @@ test("…and a held gate still gets the verdict on the same input", () => {
       repauseThrew: ["microphone/TR_1"],
     }),
   );
-  assert.deepEqual(h.state.disproved, [true]);
+  assert.deepEqual(h.state.disproved, [{ value: true, confirmed: true }]);
   assert.deepEqual([...h.episode.repauseSpent()], ["microphone/TR_1"]);
 });
 
@@ -454,7 +479,7 @@ test("sweepDropped is consumed on EVERY exit path, not only the quiet one", () =
   // schedule instead of restoring the claim.
   h.episode.beginPass();
   h.episode.consume(sweepOf());
-  assert.deepEqual(h.state.disproved, [false]);
+  assert.deepEqual(h.state.disproved, [{ value: false, confirmed: false }]);
 });
 
 test("a quiet sweep over a DROPPED pass is not a clean bill", () => {
@@ -472,7 +497,7 @@ test("a quiet sweep over a DROPPED pass is not a clean bill", () => {
   h.fireConfirm();
   h.episode.beginPass();
   h.episode.consume(sweepOf());
-  assert.deepEqual(h.state.disproved, [false]);
+  assert.deepEqual(h.state.disproved, [{ value: false, confirmed: false }]);
 });
 
 // ---- What may be spent, and for how long -----------------------------------
@@ -753,12 +778,12 @@ test("endEpisode also withdraws the pause claim, and NOT sweepDropped", () => {
   h.episode.endEpisode();
   assert.deepEqual([...h.episode.repauseSpent()], []);
   assert.deepEqual([...h.episode.repausePending()], []);
-  assert.deepEqual(h.state.disproved, [false]);
+  assert.deepEqual(h.state.disproved, [{ value: false, confirmed: false }]);
   h.episode.beginPass();
   h.episode.consume(sweepOf());
   assert.deepEqual(
     h.state.disproved,
-    [false],
+    [{ value: false, confirmed: false }],
     "a dropped pass was cleared at the episode boundary",
   );
   assert.equal(h.state.deferred.length, 1, "it must confirm instead");
@@ -769,12 +794,15 @@ test("resetForCall clears EVERYTHING, including what the two others keep", () =>
   h.episode.resetForCall();
   assert.deepEqual([...h.episode.repauseSpent()], []);
   assert.deepEqual([...h.episode.repausePending()], []);
-  assert.deepEqual(h.state.disproved, [false]);
+  assert.deepEqual(h.state.disproved, [{ value: false, confirmed: false }]);
   h.episode.beginPass();
   h.episode.consume(sweepOf());
   assert.deepEqual(
     h.state.disproved,
-    [false, false],
+    [
+      { value: false, confirmed: false },
+      { value: false, confirmed: false },
+    ],
     "the dropped-pass flag crossed the call boundary",
   );
 });
@@ -944,7 +972,7 @@ test("…but a confirming pass with NO boundary under it still spends and verdic
   );
 
   assert.deepEqual([...h.episode.repauseSpent()], ["microphone/TR_1"]);
-  assert.deepEqual(h.state.disproved, [true]);
+  assert.deepEqual(h.state.disproved, [{ value: true, confirmed: true }]);
   assert.deepEqual(h.state.reports, [
     { kind: "unproven", detail: { publications: ["microphone/TR_1"] } },
   ]);
@@ -1095,9 +1123,13 @@ test("an exhausted budget promotes the observation to a LOUD verdict", () => {
   // Never a silent return: the pass that finds the budget gone reports and
   // withdraws the pause claim rather than asking for a confirm it cannot get.
   const run = driveConfirmChain(20);
-  assert.equal(
+  assert.deepEqual(
     run.state.disproved.at(-1),
-    true,
+    // 🔴 UNCONFIRMED, and the pair is asserted together. This verdict rests on
+    // ONE observation: the confirming re-sweep it would otherwise have asked
+    // for is the thing the spent budget refuses. A consumer that reads only
+    // `value` cannot tell it from the confirmed verdict three specs above.
+    { value: true, confirmed: false },
     "the banner kept promising a pause the sweep could not prove",
   );
   const last = run.state.reports.at(-1);
@@ -1109,6 +1141,134 @@ test("an exhausted budget promotes the observation to a LOUD verdict", () => {
     },
   });
   assert.equal(run.state.deferred.length, 0, "it asked for another confirm");
+});
+
+// ---- W2-3: the verdict's CONFIDENCE ----------------------------------------
+//
+// `callPauseDisproved` is one bit carrying two confidence levels: a verdict
+// reached after a confirming re-sweep actually ran, and a verdict reached
+// because `#requestConfirm()` returned false (the budget is spent, i.e. a
+// single unconfirmed observation) both write `{ value: true }`. Until
+// wave 1's completion re-audit the discriminator went only into `detail`, whose
+// only consumer is `console.error` — so wave 2, which promotes the signal to a
+// `chipState` input, would have reddened off the guess with the disproof's
+// weight: the 2026-09-08 false red one level up.
+//
+// 🔴 THESE COME IN PAIRS ON PURPOSE. Hard-code `confirmed` true and the
+// unconfirmed specs go red; hard-code it false and the confirmed ones do. A
+// suite that only ever asserts one direction is satisfied by a constant.
+
+test("a verdict after a confirming re-sweep is marked CONFIRMED", () => {
+  const h = makeEpisode();
+  h.episode.beginPass();
+  h.episode.consume(sweepOf({ unproven: ["microphone/TR_1"] }));
+  assert.equal(h.fireConfirm(), true, "no confirm was deferred to fire");
+  assert.deepEqual(
+    h.episode.beginPass(),
+    { confirming: true },
+    "the pass that reaches the verdict is not the confirming one",
+  );
+  h.episode.consume(sweepOf({ unproven: ["microphone/TR_1"] }));
+  assert.deepEqual(
+    h.state.disproved,
+    [{ value: true, confirmed: true }],
+    "a re-sweep a macrotask later saw the wire live and it was graded a guess",
+  );
+});
+
+test("a verdict off a spent budget is marked UNCONFIRMED", () => {
+  // The SAME script as above, run until the budget is gone: the pass that
+  // reaches the verdict is then a plain event-driven one, with no re-sweep
+  // under it. Same `value`, different confidence — which is the whole point.
+  const h = makeEpisode();
+  for (let i = 0; i < CONFIRM_BUDGET; i++) {
+    h.episode.beginPass();
+    h.episode.consume(sweepOf({ unproven: ["microphone/TR_1"] }));
+    assert.equal(h.fireConfirm(), true);
+    h.episode.beginPass();
+    h.episode.consume(sweepOf({ unproven: ["microphone/TR_1"] }));
+  }
+  h.state.disproved.length = 0;
+  h.state.reports.length = 0;
+
+  assert.deepEqual(
+    h.episode.beginPass(),
+    { confirming: false },
+    "the budget is spent, so nothing may have deferred another confirm",
+  );
+  h.episode.consume(sweepOf({ unproven: ["microphone/TR_1"] }));
+  assert.deepEqual(
+    h.state.disproved,
+    [{ value: true, confirmed: false }],
+    "a single unconfirmed observation was graded a confirmed disproof",
+  );
+  assert.equal(h.state.deferred.length, 0, "it asked for another confirm");
+});
+
+test("the confidence never disagrees with the log's confirmBudgetExhausted", () => {
+  // They are written from one expression, and this is what holds them there.
+  // `detail` is where the discriminator used to live ALONE; if the two ever
+  // drift, the console and the signal describe different verdicts.
+  const h = makeEpisode();
+  const seen: { confirmed: boolean; exhausted: boolean }[] = [];
+  const record = (): void => {
+    const last = h.state.disproved.at(-1);
+    const report = h.state.reports.at(-1);
+    if (!last || !last.value || !report) return;
+    seen.push({
+      confirmed: last.confirmed,
+      exhausted: report.detail.confirmBudgetExhausted === true,
+    });
+  };
+
+  // Round 1..CONFIRM_BUDGET reach the verdict through the confirming pass.
+  for (let i = 0; i < CONFIRM_BUDGET; i++) {
+    h.episode.beginPass();
+    h.episode.consume(sweepOf({ unproven: ["microphone/TR_1"] }));
+    assert.equal(h.fireConfirm(), true);
+    h.episode.beginPass();
+    h.episode.consume(sweepOf({ unproven: ["microphone/TR_1"] }));
+    record();
+  }
+  // …and the next one reaches it through the spent budget.
+  h.episode.beginPass();
+  h.episode.consume(sweepOf({ unproven: ["microphone/TR_1"] }));
+  record();
+
+  assert.equal(seen.length, CONFIRM_BUDGET + 1, "no verdict was observed");
+  for (const [i, s] of seen.entries())
+    assert.equal(
+      s.confirmed,
+      !s.exhausted,
+      `verdict ${i}: the signal and the log disagree (${JSON.stringify(s)})`,
+    );
+  // 🔴 ANTI-VACUITY: the loop above is satisfied by a run in which every
+  // verdict took the same path. Both must actually occur.
+  assert.deepEqual(
+    [seen[0]?.confirmed, seen.at(-1)?.confirmed],
+    [true, false],
+    "both verdict paths were not exercised, so the agreement is vacuous",
+  );
+});
+
+test("a WITHDRAWAL carries no confidence, on every path that writes one", () => {
+  // 🔴 FALSE/FALSE is "no live disproof", never "a confirmed pause". Nothing
+  // may write `false` with `confirmed: true` — there is no claim to grade, and
+  // a consumer reading the pair backwards is the failure mode the accessor's
+  // name and this spec exist to block.
+  const h = makeEpisode();
+  // (a) the quiet arm, under a held gate
+  h.episode.beginPass();
+  h.episode.consume(sweepOf());
+  // (b) the 1→0 boundary
+  h.episode.endEpisode();
+  // (c) the call boundary
+  h.episode.resetForCall();
+  assert.deepEqual(h.state.disproved, [
+    { value: false, confirmed: false },
+    { value: false, confirmed: false },
+    { value: false, confirmed: false },
+  ]);
 });
 
 test("a sweep that proves quiet RESTORES the budget", () => {
@@ -1243,6 +1403,192 @@ test("a SPENT name over a live wire may not burn the confirm budget", () => {
   );
   assert.deepEqual(h.state.disproved, []);
   assert.deepEqual(h.state.reports, []);
+});
+
+/**
+ * The same live-lock as {@link driveConfirmChain}, over a publication that is
+ * already SPENT — which is the one shape the consecutive-confirm budget cannot
+ * bound, because a spent name is `unproven` on every pass and `actionable` on
+ * none, so the actionable-based reset fires on EVERY pass and `#confirmRounds`
+ * can never reach {@link CONFIRM_BUDGET}.
+ *
+ * The two passes per round are the same two the sibling drives and mean the
+ * same things: the deferral arms the confirming pass, and the re-attacher's own
+ * `UpstreamResumed` sweep follows it. That second pass is what re-arms the next
+ * confirm, which is what makes the chain SELF-DRIVEN rather than something an
+ * external event has to keep feeding.
+ *
+ * `harnessCap` is the HARNESS's terminator and is NOT in the design: without it
+ * an unbounded chain would spin until the suite was killed, and a hang is a
+ * non-result — neither red nor green. Every count below is therefore capped by
+ * a number the design does not know about, which is exactly why the specs vary
+ * it and compare.
+ */
+function driveSpentConfirmChain(harnessCap: number) {
+  const h = makeEpisode();
+  // Only a detach that THREW spends a publication, and only from a pass that
+  // reaches the verdict — so getting into this state costs one real confirm.
+  const spending = sweepOf({
+    unproven: ["a/1"],
+    repauseFailed: ["a/1"],
+    repauseThrew: ["a/1"],
+  });
+  h.episode.beginPass();
+  h.episode.consume(spending);
+  h.fireConfirm();
+  h.episode.beginPass();
+  h.episode.consume(spending);
+  const spent = [...h.episode.repauseSpent()];
+
+  const live = sweepOf({ unproven: ["a/1"] });
+  let confirmingPasses = 0;
+  const pass = (): void => {
+    if (h.episode.beginPass().confirming) confirmingPasses++;
+    h.episode.consume(live);
+  };
+  pass(); // the event-driven sweep that finds the wire live
+  let fired = 0;
+  while (h.state.deferred.length > 0 && fired < harnessCap) {
+    fired++;
+    h.fireConfirm(); // the deferral arms the flag…
+    pass(); // …and the caller then sweeps: the confirming pass
+    pass(); // the re-attacher's own `UpstreamResumed` sweep
+  }
+  return {
+    h,
+    spent,
+    fired,
+    confirmingPasses,
+    reports: h.state.reports.length,
+    verdicts: h.state.disproved.length,
+    /** Drive n further caller-driven passes, firing whatever they defer. */
+    driveMore(n: number): void {
+      for (let i = 0; i < n; i++) {
+        pass();
+        h.fireConfirm();
+      }
+    },
+  };
+}
+
+test("the self-driven confirm chain TERMINATES over a spent name", () => {
+  // 🔴 THE ASSERTION THIS FILE WAS MISSING, and the gap an unbounded confirm
+  // chain shipped through: the spec above drives `CONFIRM_BUDGET * 2` rounds
+  // over a spent name and asserts only that the budget was not BURNED. Nothing
+  // asserted that the chain ever stops, so a chain that never stops was green.
+  //
+  // The consecutive-confirm budget is the wrong instrument here by
+  // construction, and deliberately so: it exists for the attach live-lock and
+  // its reset must stay. What bounds THIS is an unconditional per-episode
+  // ceiling on self-driven confirm rounds.
+  const run = driveSpentConfirmChain(64);
+  // Anti-vacuity, both ends. A run that never spent anything, or one whose
+  // chain never turned over, would satisfy "it stopped" by never starting.
+  assert.deepEqual(
+    run.spent,
+    ["a/1"],
+    "nothing was spent, so this is the ordinary chain and not the unbounded one",
+  );
+  assert.ok(
+    run.confirmingPasses >= 2,
+    `the chain never turned over (${run.confirmingPasses} confirming passes), so it stopped by never starting`,
+  );
+  assert.ok(
+    run.fired < 64,
+    `the chain ran until the HARNESS stopped it (${run.fired} deferrals over a SPENT name), so nothing in the design bounds it`,
+  );
+  assert.equal(
+    run.h.state.deferred.length,
+    0,
+    "a confirm is still outstanding, so the chain is paused and not stopped",
+  );
+});
+
+test("the spent-name chain's cost does not follow the harness's cap", () => {
+  // The sibling of "the cost does not follow the harness's confirm cap", at the
+  // shape that one cannot reach. Comparing two caps is what tells a DESIGN
+  // bound from the harness's: if every count moves with the cap, the only thing
+  // stopping the chain is the number this file made up.
+  //
+  // 🔴 Both caps are far above any per-episode ceiling this module could
+  // reasonably carry (`CONFIRM_BUDGET` is 4). If this reddens with `fired`
+  // equal to the cap on BOTH sides, the ceiling is above 64 self-driven confirm
+  // rounds, and that is the finding rather than a mis-tuned spec.
+  const small = driveSpentConfirmChain(64);
+  const large = driveSpentConfirmChain(256);
+  assert.deepEqual(
+    {
+      fired: small.fired,
+      confirmingPasses: small.confirmingPasses,
+      reports: small.reports,
+      verdicts: small.verdicts,
+    },
+    {
+      fired: large.fired,
+      confirmingPasses: large.confirmingPasses,
+      reports: large.reports,
+      verdicts: large.verdicts,
+    },
+    `the chain followed the harness cap (${small.fired} deferrals at 64, ${large.fired} at 256), so nothing in the DESIGN bounds it`,
+  );
+});
+
+test("past the bound the report stops arriving once per macrotask", () => {
+  // Stopping the self-driving is half of it. The other half is that the
+  // observation keeps arriving as a CONSOLE LINE PER MACROTASK for the rest of
+  // the episode: every later pass still finds the wire live, still finds the
+  // confirm refused, and still falls through to the verdict. A bound that only
+  // stopped the deferrals would trade an unbounded chain of sweeps for an
+  // unbounded chain of reports.
+  //
+  // 🔴 Deliberately shape-agnostic about HOW it is rate-limited — once per
+  // episode, once per n passes, anything. What it refuses is one report per
+  // macrotask, which is the property that matters and the only one a reader of
+  // the console can tell apart. It does NOT assert the report goes away: this
+  // module's posture is loud and never silent, so `reports` is asserted
+  // non-zero over the run as a whole.
+  const run = driveSpentConfirmChain(64);
+  assert.ok(
+    run.reports > 0,
+    "the observation was swallowed outright — this module reports, never hides",
+  );
+  const before = run.h.state.reports.length;
+  const PASSES = 200;
+  run.driveMore(PASSES);
+  const growth = run.h.state.reports.length - before;
+  assert.ok(
+    growth < PASSES,
+    `one console line per macrotask past the bound (${growth} reports over ${PASSES} passes)`,
+  );
+});
+
+test("the per-episode ceiling is restored at endEpisode, like the budget", () => {
+  // 🔴 A ceiling that is not reset is a ceiling that DISABLES the confirming
+  // re-sweep for the rest of the call. Every later transient window would then
+  // be verdicted off a single unconfirmed observation — the 2026-09-08 false
+  // red, re-armed one level up, which is the outcome the whole confirm phase
+  // exists to prevent. So the bound has to be per EPISODE and not per call.
+  //
+  // "endEpisode restores the budget too" is the same shape for `#confirmRounds`.
+  // `beginEpisode` is deliberately NOT called here: if it were, it and not
+  // `endEpisode` could be the thing doing the restoring.
+  const run = driveSpentConfirmChain(64);
+  const h = run.h;
+  h.state.deferred.length = 0;
+  // The gate is empty from here: that is what `endEpisode` means.
+  h.state.gateHeld = false;
+  h.episode.endEpisode();
+  h.state.gateHeld = true;
+  h.state.disproved.length = 0;
+  h.state.reports.length = 0;
+
+  h.episode.beginPass();
+  h.episode.consume(sweepOf({ unproven: ["b/2"] }));
+  assert.equal(
+    h.state.deferred.length,
+    1,
+    "the new episode could not confirm at all: one episode's live-lock spent the ceiling for the rest of the call",
+  );
 });
 
 test("the DRIVE-scoped set does not restore the budget the way a spend does", () => {

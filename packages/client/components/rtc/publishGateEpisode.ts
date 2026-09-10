@@ -78,14 +78,29 @@
  * LOUD throughout (`pauseDisproved` latches true, so the banner withdraws its
  * pause claim), so it is a resource and telemetry live-lock rather than silent
  * plaintext — which is the only reason it was allowed to ship out of wave 0
- * with the obligation named instead of fixed.
+ * with the obligation NAMED instead of fixed. This is where it is fixed, and
+ * it took TWO bounds on the chain rather than one.
  *
- * {@link CONFIRM_BUDGET} is that bound, and it is deliberately a bound on
+ * {@link CONFIRM_BUDGET} is the first bound, and it is deliberately a bound on
  * CONSECUTIVE failing confirm rounds, reset by any sweep that SAW EVERYTHING
  * IT COULD ACT ON. A plain per-episode counter of all confirms would exhaust
  * itself over a long healthy episode with four transient windows in it, and
  * the fifth transient window would then be reported as a verdict off a SINGLE
  * unconfirmed observation — the 2026-09-08 false red, re-armed one level up.
+ *
+ * 🔴 AND ON ITS OWN IT BOUNDS NOTHING IN THE STATE THIS SLICE IS ABOUT, which
+ * is why {@link EPISODE_CONFIRM_CEILING} exists beside it. The reset above is
+ * conditioned on ACTIONABLE unproven names, and a SPENT name over a live wire
+ * is unproven on every pass and actionable on none — so the moment every
+ * unproven name is spent, the reset fires on every pass and
+ * `#confirmRounds >= CONFIRM_BUDGET` is only ever tested against a counter
+ * something has just zeroed. The budget is unreachable, and the episode then
+ * runs one deferred confirm, one drive, one confirming pass and one VERDICT
+ * per macrotask — a `setPauseDisproved` write and a `console.error` each time
+ * — for the rest of the episode, which under `negotiating` is the rest of the
+ * call. Splitting the two bounds keeps the reset, which the attach live-lock
+ * needs, and still terminates: the ceiling is monotone within the episode, so
+ * no sweep result can restore it.
  *
  * 🔴 "Saw everything it could act on" is NOT "found nothing unproven", and
  * writing the reset the second way put the same false red back one level down.
@@ -99,11 +114,53 @@
  * excludes spent names; see {@link PublishGateEpisode.consume} for why it does
  * NOT also exclude the drive-scoped set.
  *
- * Exhausting it never makes anything quieter. The gate keeps sweeping on every
- * livekit event and every reason change exactly as before; what stops is the
- * self-driven confirm chain, and the pass that finds the budget gone is
- * promoted to a VERDICT (`pauseDisproved(true)` plus a report carrying
- * `confirmBudgetExhausted`) rather than returning with nothing said.
+ * Exhausting EITHER bound never makes anything quieter. The gate keeps
+ * sweeping on every livekit event and every reason change exactly as before;
+ * what stops is the SELF-DRIVEN confirm chain, and the pass that finds no
+ * confirm available is promoted to a VERDICT
+ * (`setPauseDisproved({ value: true, confirmed: false })` plus a report
+ * carrying `confirmBudgetExhausted`) rather than returning with nothing said.
+ *
+ * 🔴 AND A THIRD BOUND, on the CONSOLE rather than on the chain:
+ * {@link UNPROVEN_REPORT_BUDGET} caps the `"unproven"` reports one episode may
+ * emit from the VERDICT and EMPTY-GATE sites, and the one past the cap is
+ * replaced by a report carrying `reportsSuppressed: true` so the log says why
+ * it stopped. It bounds the log line and NOT the signal:
+ * {@link EpisodeDeps.setPauseDisproved} is written on every verdict whether or
+ * not the report is emitted.
+ *
+ * 🔴 AND THAT VERDICT IS NOT THE SAME EVIDENCE as a confirmed one, which is
+ * why {@link EpisodeDeps.setPauseDisproved} takes a {@link
+ * PauseDisproofVerdict} rather than a bare boolean (W2-3). One reached after a
+ * confirming re-sweep actually ran rests on two observations a macrotask
+ * apart; one reached because a confirm bound was gone rests on a single
+ * unconfirmed observation. Both write the same `value: true`. The
+ * discriminator used to live only in `detail`, whose only consumer is
+ * `console.error` — so wave 2, which promotes `callPauseDisproved` to a
+ * `chipState` input, would have reddened off a budget-exhausted guess with a
+ * confirmed disproof's weight: the 2026-09-08 false red, one level up. The
+ * confidence therefore travels WITH the value.
+ *
+ * 🔴 AND IT TRAVELS IN NAMED FIELDS, never as a positional pair, which is the
+ * whole reason {@link PauseDisproofVerdict} is a type and not two parameters.
+ * The two booleans reached `state.tsx` positionally and were handed to two
+ * `Setter<boolean>`s there; transposing them typechecks, lints, formats and
+ * passes the entire suite, and `state.tsx` has no spec, no mutation entry and
+ * no import that loads under `node --test`. A transposition presents a
+ * budget-exhausted verdict on a genuinely live wire as `disproved === false`:
+ * chip green, media on the wire. `{ value, confirmed }` makes the POSITIONAL
+ * form a compile error (`TS2554`).
+ *
+ * 🔴 It does not make every transposition one. Two same-typed named fields
+ * transpose as silently as two parameters did — `{ value: confirmed,
+ * confirmed: value }` here, or a swap of the two derived accessors in
+ * `state.tsx`, both compile and pass the whole suite. What guards THIS module
+ * is its spec and its mutation entries. Nothing guards the `state.tsx` side.
+ *
+ * 🔴 What this module does NOT decide is what a consumer may do with either
+ * confidence. The chip precedence is wave 2's rule; this module's obligation
+ * is only that the distinction exists, is honest, and is not reachable only
+ * through a log line.
  */
 import type {
   GatedPublication,
@@ -130,6 +187,108 @@ import type {
  * escalation was unreachable.
  */
 export const CONFIRM_BUDGET = 4;
+
+/**
+ * How many confirming rounds ONE EPISODE may drive in TOTAL, whatever its
+ * sweeps report. Reset at the three lifecycle boundaries and by nothing inside
+ * the episode — that is the whole difference between this and
+ * {@link CONFIRM_BUDGET}, and it is what makes it a bound.
+ *
+ * 🔴 It exists because {@link CONFIRM_BUDGET}'s reset makes
+ * {@link CONFIRM_BUDGET} UNREACHABLE in the state this module is about. A
+ * SPENT name over a live wire lands in `unproven` on every pass and in
+ * `actionable` on none, so once every unproven name is spent the reset in
+ * {@link PublishGateEpisode.consume} fires on every pass and the
+ * `>= CONFIRM_BUDGET` test in `#requestConfirm` is only ever read against a
+ * counter that was just zeroed. What ran instead, per MACROTASK and for the
+ * rest of the episode: deferred confirm, drive, confirming pass, verdict,
+ * `setPauseDisproved({ value: true, confirmed: true })`, `console.error`.
+ *
+ * 8 × {@link CONFIRM_BUDGET}, i.e. 32. Eight independent transient windows may
+ * each burn a whole consecutive budget before this bites, so a healthy episode
+ * does not reach it. Reaching it is itself evidence of a live-lock.
+ *
+ * 🔴 A SPEC SITS ONE ROUND BELOW IT. Re-measured after wave 2's remediation:
+ * `driveSpentConfirmChain` — the scenario behind three of the four terminating
+ * tests in `publishGateEpisode.test.ts` — drives **31** confirming rounds
+ * against this ceiling of 32. An earlier version of this paragraph claimed the
+ * longest legitimate chain was nine and cleared the ceiling "with margin";
+ * that was written before those tests landed in the same wave and was wrong.
+ * The margin is ONE round. Lower this constant and that spec goes red; raise
+ * it and `run.fired < 64` in "the spent-name chain's cost does not follow the
+ * harness's cap" goes red instead. It is load-bearing for a file this module
+ * does not own — change it and re-run the spec, do not reason about it.
+ *
+ * 🔴 PER EPISODE, like every other counter here, so a gate whose reason set
+ * churns 1→0→1 restores it. Deliberate — a new episode is a new question about
+ * a new set of publications, and {@link PublishGateEpisode.endEpisode} resets
+ * every other per-episode counter at the same boundary — but it does mean this
+ * is NOT a per-call bound, and a churning gate can spend it once per episode.
+ */
+export const EPISODE_CONFIRM_CEILING = CONFIRM_BUDGET * 8;
+
+/**
+ * How many `"unproven"` reports one episode may emit from the VERDICT site and
+ * the EMPTY-GATE site before the console channel goes quiet. The one PAST the
+ * cap is replaced by a report carrying `reportsSuppressed: true`, so the log
+ * ends with the reason rather than simply ending.
+ *
+ * 🔴 A bound on the LOG, never on the signal.
+ * {@link EpisodeDeps.setPauseDisproved} is written on every verdict whether or
+ * not the report is emitted, and it is the only thing a user-facing surface
+ * reads. Suppressing the alarm here would be a fail-QUIET change against a
+ * module whose posture where a write must be withheld is "still LOUD: the
+ * observation is reported, never swallowed"; dropping a seventeenth identical
+ * `console.error` in one episode is not.
+ *
+ * 🔴 The DROPPED-PASS report is deliberately NOT routed through this — see
+ * {@link PublishGateEpisode.consume}. It is on the `unproven.length === 0`
+ * path, so it is not what a held gate over a live wire emits, and nothing
+ * self-drives it once a confirm bound is spent.
+ *
+ * 16, and far below what a held gate would emit over a call.
+ *
+ * 🔴 THE CAP FIRES INSIDE THE SUITE — it is not headroom. Re-measured after
+ * wave 2's remediation: `driveSpentConfirmChain` emits **17** reports in one
+ * episode, so the suppression path runs, and "past the bound the report stops
+ * arriving once per macrotask" DEPENDS on it running. An earlier version of
+ * this line claimed 16 was above the most any spec drives (nine); that was
+ * written before those tests landed in the same wave and was wrong.
+ */
+export const UNPROVEN_REPORT_BUDGET = 16;
+
+/**
+ * One write of `callPauseDisproved`: the alarm and the confidence it rests on,
+ * as ONE object with NAMED fields.
+ *
+ * 🔴 The shape is the point. These two booleans used to be two positional
+ * parameters of {@link EpisodeDeps.setPauseDisproved}, forwarded positionally
+ * into two `Setter<boolean>`s in `state.tsx` — a file with no spec, no
+ * mutation entry and no import that loads under `node --test`. Transposing
+ * them typechecked, linted, formatted and passed the whole suite, and it
+ * presents a budget-exhausted verdict on a genuinely live wire as
+ * `disproved === false`: chip green, media on the wire. As one object, no
+ * POSITIONAL pair survives anywhere in the chain — that call is `TS2554`.
+ *
+ * 🔴 The named fields themselves still transpose silently. Measured: both
+ * `{ value: confirmed, confirmed: true }` here and a swap of the two derived
+ * accessors in `state.tsx` compile, lint and pass every test. The wall on
+ * this side is the spec and the mutation table, not the compiler.
+ */
+export interface PauseDisproofVerdict {
+  /**
+   * The one-directional alarm. TRUE ⇒ this module just DISPROVED the banner's
+   * pause claim. FALSE is "no live disproof" and nothing more — never "proven
+   * paused".
+   */
+  readonly value: boolean;
+  /**
+   * How much evidence a TRUE rests on. Only meaningful when
+   * {@link value} is TRUE; every FALSE is written `confirmed: false`, because
+   * there is no claim to grade. See {@link EpisodeDeps.setPauseDisproved}.
+   */
+  readonly confirmed: boolean;
+}
 
 /**
  * Everything the episode needs from `state.tsx`, as thunks so a spec can drive
@@ -189,6 +348,12 @@ export interface EpisodeDeps {
    * stay paused" claim. Only ever a withdrawal of a claim this module just
    * disproved, never a claim of its own.
    *
+   * 🔴 A ONE-DIRECTIONAL ALARM, and `confirmed` does not change that. TRUE is
+   * "a held gate could not prove the wire quiet"; FALSE is "no live disproof"
+   * and nothing more — it is also what every episode start, every 1→0
+   * transition and every empty gate leaves behind. NEITHER field, in any
+   * combination, ever means "proven paused".
+   *
    * 🔴 PRECONDITION, stated because wave 2 makes this a `chipState` input:
    * TRUE is only ever written while {@link gateHeld} is true, and is only
    * MEANINGFUL while the gate is held. An empty gate makes no pause claim, so
@@ -196,8 +361,28 @@ export interface EpisodeDeps {
    * false under one either (`endEpisode` fires on a 1→0 transition that has
    * already happened, and the quiet arm is itself `gateHeld()`-conditioned),
    * so a TRUE written under an empty gate is a latch, not a reading.
+   *
+   * @param verdict ONE object, never a positional pair — see
+   * {@link PauseDisproofVerdict} for why the shape is load-bearing.
+   * `verdict.value` is the alarm; `verdict.confirmed` is how much evidence a
+   * TRUE rests on, carried WITH it rather than only in {@link report}'s
+   * `detail` (W2-3):
+   *
+   *  - TRUE — the verdict was reached after a confirming re-sweep ACTUALLY
+   *    RAN, i.e. two observations of the same wire a macrotask apart.
+   *  - FALSE — the verdict was reached because no confirm was available:
+   *    {@link CONFIRM_BUDGET} or {@link EPISODE_CONFIRM_CEILING} was spent, so
+   *    it rests on a SINGLE unconfirmed observation. A livekit op in flight
+   *    legitimately leaves the wire live for a few microtasks, which is the
+   *    whole reason the confirming re-sweep exists, so this is a weaker claim
+   *    and a consumer that weights it the same re-creates the 2026-09-08 false
+   *    red one level up.
+   *
+   * 🔴 When `value` is FALSE there is no claim to qualify, and every such call
+   * site passes `confirmed: false` and says so. `{ value: false, confirmed:
+   * false }` is "no disproof", NEVER "a confirmed pause".
    */
-  setPauseDisproved(v: boolean): void;
+  setPauseDisproved(verdict: PauseDisproofVerdict): void;
   /**
    * The two console channels, kept separate because they want opposite
    * responses: `"failed"` is a call that should be publishing and may be stuck
@@ -294,29 +479,57 @@ export function gatedPublicationsFrom(
 /**
  * The state one held-gate episode carries across passes, drives and sweeps.
  *
- * Wiring, which is the half a green suite cannot check — `state.tsx` must pass
- * `beginDrive` as {@link coalescingSweeper}'s FOURTH positional argument. The
- * three-argument call still compiles, and drive scope then silently degrades
- * to no scope at all.
+ * Wiring, which is the half a green suite cannot check. Reproduced below in
+ * `state.tsx`'s REAL shape rather than a simplification of it: the previous
+ * version of this recipe showed the confirming phase passed to the sweep as an
+ * argument and showed `noteDropped` and `consume` unguarded, and an agent
+ * following it would have dropped the per-sweeper stale-writer guard from all
+ * three call sites.
  *
  * ```ts
  * const episode = new PublishGateEpisode(deps);
+ * // `gen` and `room` are captured ONCE per sweeper and never re-read, so this
+ * // keeps answering for THIS call however long one of its sweeps is parked on
+ * // an awaited livekit op. {@link EpisodeDeps.stillCurrent} cannot replace it:
+ * // that one can only say "some sweeper for this call is current".
+ * const gen = ++this.#gateGen;
+ * const stillCurrent = (): boolean =>
+ *   gen === this.#gateGen && this.room() === room;
  * const sweeper = coalescingSweeper(
- *   () => this.#sweepPublishGate(room, episode.beginPass().confirming),
+ *   () => {
+ *     // A MUTATION of the live episode, so a pass this sweeper runs after its
+ *     // own call ended must not make it. The returned phase is NOT passed to
+ *     // the sweep — it reaches `consume` through the episode's own field.
+ *     if (stillCurrent()) episode.beginPass();
+ *     return this.#sweepPublishGate(room, stillCurrent);
+ *   },
  *   undefined,
- *   () => episode.noteDropped(),
+ *   () => {
+ *     if (stillCurrent()) episode.noteDropped();
+ *   },
+ *   // 🔴 The FOURTH positional argument, and it may not be left off: the
+ *   // three-argument call still compiles and drive scope then silently
+ *   // degrades to no scope at all. Deliberately NOT behind `stillCurrent()`
+ *   // like the two hooks above — a drive only ever starts from the LIVE
+ *   // sweeper, so a predicate in front of the one call that DEFINES drive
+ *   // scope buys an unreachable stale clear at the price of a false negative
+ *   // that collapses the scope.
  *   () => episode.beginDrive(),
  * );
- * // …and inside #sweepPublishGate:
- * const result = await applyPublishGate(
+ * // …and inside #sweepPublishGate(room, stillCurrent):
+ * const sweep = await applyPublishGate(
  *   gatedPublicationsFrom(room.localParticipant.trackPublications.values()),
- *   () => this.#publishGate.size > 0,
+ *   this.#gateHeld,
  *   {
  *     repauseSpent: episode.repauseSpent(),
  *     repausePending: episode.repausePending(),
  *   },
  * );
- * episode.consume(result);
+ * // THIS sweep's own captured identity, re-checked after the await that is
+ * // what makes staleness possible at all. `consume`'s own `stillCurrent()`
+ * // does not subsume it.
+ * if (!stillCurrent()) return;
+ * episode.consume(sweep);
  * ```
  */
 export class PublishGateEpisode {
@@ -346,6 +559,18 @@ export class PublishGateEpisode {
   #sweepDropped = false;
   /** Consecutive confirming rounds since the last sweep that proved quiet. */
   #confirmRounds = 0;
+  /**
+   * Confirming rounds this EPISODE has run in total. Nothing inside the
+   * episode resets it, which is the only reason the confirm chain terminates
+   * once every unproven name is spent — see {@link EPISODE_CONFIRM_CEILING}.
+   */
+  #episodeConfirmRounds = 0;
+  /**
+   * `"unproven"` reports this episode has ASKED the verdict and empty-gate
+   * sites for, counting the ones suppressed. See
+   * {@link UNPROVEN_REPORT_BUDGET}.
+   */
+  #unprovenReports = 0;
 
   constructor(deps: EpisodeDeps) {
     this.#deps = deps;
@@ -385,6 +610,10 @@ export class PublishGateEpisode {
     if (confirming) {
       this.#confirmScheduled = false;
       this.#confirmRounds++;
+      // The per-episode ceiling counts the SAME rounds and is reset by nothing
+      // inside the episode, so the chain still terminates in the state where
+      // every pass zeroes the consecutive counter above.
+      this.#episodeConfirmRounds++;
     }
     this.#confirming = confirming;
     return { confirming };
@@ -481,7 +710,10 @@ export class PublishGateEpisode {
       // purpose and the budget is whole again.
       this.#confirmRounds = 0;
       // Nothing is on the wire, so the banner's pause promise is true again.
-      if (this.#deps.gateHeld()) this.#deps.setPauseDisproved(false);
+      // `confirmed: false` because there is no claim here to qualify: the
+      // field grades a DISPROOF, and this WITHDRAWS one rather than making one.
+      if (this.#deps.gateHeld())
+        this.#deps.setPauseDisproved({ value: false, confirmed: false });
       return;
     }
 
@@ -491,6 +723,15 @@ export class PublishGateEpisode {
     // never issued cannot feed it, so it may not burn it either. `dropped`
     // still forbids the reset, for the same reason as in the arm above: a pass
     // the cap cut short did not see everything, full stop.
+    //
+    // 🔴 AND THIS RESET IS EXACTLY WHY `CONFIRM_BUDGET` ALONE BOUNDS NOTHING
+    // once a name is spent. A spent name is unproven on every pass and
+    // actionable on none, so when the spent names are the ONLY unproven ones
+    // this line fires on every pass and `#requestConfirm`'s
+    // `>= CONFIRM_BUDGET` test is only ever read against a counter something
+    // just zeroed. The reset stays, because the attach live-lock is what it is
+    // for; {@link EPISODE_CONFIRM_CEILING}, counted in `beginPass` and reset
+    // only at a lifecycle boundary, is the bound that survives it.
     if (actionable.length === 0 && !dropped) this.#confirmRounds = 0;
 
     // A single observation is not a verdict: livekit ops legitimately leave the
@@ -499,9 +740,32 @@ export class PublishGateEpisode {
     // case the observation IS the verdict and falls through.
     if (!confirming && this.#requestConfirm()) return;
 
+    // 🔴 THE VERDICT'S CONFIDENCE, and the reason a `PauseDisproofVerdict`
+    // carries a `confirmed` field at all (W2-3). This point is reachable TWO
+    // ways and they are not the same evidence:
+    //
+    //   `confirming === true`  — the confirming re-sweep RAN, a macrotask
+    //     after the observation that asked for it, and found the wire still
+    //     live. Two observations either side of that boundary.
+    //   `confirming === false` — `#requestConfirm()` just above returned
+    //     false, which it does when EITHER confirm bound is spent: this
+    //     episode's consecutive budget (`CONFIRM_BUDGET`) or its per-episode
+    //     ceiling (`EPISODE_CONFIRM_CEILING`). So a SINGLE unconfirmed
+    //     observation is being promoted to the verdict, taken microtasks after
+    //     a livekit op that may simply not have landed yet.
+    //
+    // Both write `{ value: true }`; only the first is a confirmed disproof.
+    // Carrying the discriminator in `detail` ALONE put it where the
+    // only consumer is `console.error`, so wave 2 — which promotes
+    // `callPauseDisproved` to a `chipState` input — would have reddened off
+    // the guess with the same weight as the disproof.
+    //
+    // ONE expression feeds both consumers so they cannot drift apart: the log's
+    // `confirmBudgetExhausted` is exactly `!confirmed`, always.
+    const confirmed = confirming;
     const detail = {
       publications: [...result.unproven],
-      ...(confirming ? {} : { confirmBudgetExhausted: true }),
+      ...(confirmed ? {} : { confirmBudgetExhausted: true }),
     };
     // 🔴 THE VERDICT'S PRECONDITION, checked and not assumed. This block is
     // reachable with the gate ALREADY EMPTIED: a confirm deferred under a held
@@ -520,7 +784,7 @@ export class PublishGateEpisode {
       // Still LOUD: the observation is reported, never swallowed. What an
       // empty gate may not do is write this episode's PERMANENT disarm, or a
       // signal only a held gate gives meaning to.
-      this.#deps.report("unproven", detail);
+      this.#reportUnproven(detail);
       return;
     }
 
@@ -536,8 +800,8 @@ export class PublishGateEpisode {
     // The gate is held and the wire is still live. Publishing is escaping a
     // gate every layer above believes is closed, so the banner stops promising
     // a pause. That is a WITHDRAWAL of a false claim, not a new claim.
-    this.#deps.setPauseDisproved(true);
-    this.#deps.report("unproven", detail);
+    this.#deps.setPauseDisproved({ value: true, confirmed });
+    this.#reportUnproven(detail);
   }
 
   /**
@@ -560,11 +824,11 @@ export class PublishGateEpisode {
   }
 
   /**
-   * The gate went 0→1: a new episode. Clears the two disarm sets, restores the
-   * confirm budget, takes back any outstanding confirm request, and DEMOTES
-   * the pass already in flight. Whatever failed last episode is not evidence
-   * about this one — including a confirm the last one asked for, and including
-   * the sweep it already had in the air.
+   * The gate went 0→1: a new episode. Clears the two disarm sets, restores
+   * both confirm bounds and the report budget, takes back any outstanding
+   * confirm request, and DEMOTES the pass already in flight. Whatever failed
+   * last episode is not evidence about this one — including a confirm the last
+   * one asked for, and including the sweep it already had in the air.
    *
    * 🔴 The `#confirming` clear is the IN-FLIGHT sibling of the `#cancelConfirm`
    * one, not a tidy-up. `#cancelConfirm` closes the DEFERRED path across this
@@ -574,9 +838,10 @@ export class PublishGateEpisode {
    * here. Nothing else stops it: {@link EpisodeDeps.stillCurrent} is per-CALL
    * in both of its forms so it passes, the pass still reads as confirming so
    * `consume` SKIPS the confirm arm, and the gate is held again so the
-   * `gateHeld()` check does not stop it either. The result was `#spent` populated (a PERMANENT per-episode disarm)
-   * and `setPauseDisproved(true)`, both in a brand-new episode, off the
-   * previous episode's single observation. Wave 2 promotes
+   * `gateHeld()` check does not stop it either. The result was `#spent`
+   * populated (a PERMANENT per-episode disarm) and
+   * `setPauseDisproved({ value: true, confirmed: true })`, both in a brand-new
+   * episode, off the previous episode's single observation. Wave 2 promotes
    * `callPauseDisproved` to a `chipState` input: that is a wrong chip in a
    * call that is fine.
    *
@@ -593,10 +858,21 @@ export class PublishGateEpisode {
    * much larger behaviour change than the defect asks for, in the fail-QUIET
    * direction, against a module whose stated posture where a write must be
    * withheld is "still LOUD: the observation is reported, never swallowed".
-   * Demotion withholds exactly the two writes an episode owns — the spend and
-   * the verdict — and turns the straddling pass into a REQUEST for a fresh
-   * look inside the new episode, which is the escalation discipline the
-   * confirm exists for.
+   *
+   * 🔴 WHAT DEMOTION ACTUALLY WITHHOLDS, restated because "exactly the two
+   * writes an episode owns — the spend and the verdict" was an over-claim in
+   * both directions. A demoted pass takes the confirm-REQUEST arm in
+   * {@link consume}, which `return`s, so it withholds THREE things and not
+   * two: the spend, the verdict, and that pass's own `"unproven"` report,
+   * which is deferred to the confirming pass the request arms. It withholds
+   * NONE of the writes above that arm — the `"failed"` report, the `proven`
+   * un-spend, the `repauseFailed` adds and the quiet arm's withdrawal all
+   * still happen, and that is the point of demoting rather than refusing. And
+   * when a confirm bound is already spent it withholds NOTHING AT ALL:
+   * `#requestConfirm()` returns false and the demoted pass verdicts anyway, on
+   * its own single observation. What demotion buys, whenever a confirm is
+   * still available, is a fresh look inside the NEW episode — the escalation
+   * discipline the confirm exists for.
    *
    * 🔴 AND IT IS `beginEpisode` ALONE, unlike `#cancelConfirm`, which all three
    * boundaries call. `endEpisode` has no next episode to protect: a confirming
@@ -614,12 +890,19 @@ export class PublishGateEpisode {
     this.#cancelConfirm();
     this.#confirming = false;
     this.#confirmRounds = 0;
+    this.#episodeConfirmRounds = 0;
+    this.#unprovenReports = 0;
   }
 
   /**
    * The gate went 1→0. Clears the same two sets, takes back any outstanding
-   * confirm request, restores the confirm budget, and withdraws the pause
-   * claim — nothing promises a pause any more.
+   * confirm request, restores both confirm bounds and the report budget, and
+   * withdraws the pause claim — nothing promises a pause any more.
+   *
+   * 🔴 That withdrawal is written `confirmed: false`, like every other FALSE:
+   * {@link PauseDisproofVerdict.confirmed} grades a DISPROOF, and a boundary
+   * makes none. `{ value: false, confirmed: false }` is "no live disproof",
+   * never "a confirmed pause" (W2-3).
    *
    * 🔴 Deliberately does NOT clear `sweepDropped`: a pass that was dropped
    * still was not run, and the next episode's first sweep must not report a
@@ -632,13 +915,20 @@ export class PublishGateEpisode {
     // Consistent with both siblings: the resume sweep this boundary drives
     // must not run on the previous episode's counter.
     this.#confirmRounds = 0;
-    this.#deps.setPauseDisproved(false);
+    // Per-episode, exactly like `#confirmRounds`: a new episode is a new
+    // question, and neither counter may charge it for the last one.
+    this.#episodeConfirmRounds = 0;
+    this.#unprovenReports = 0;
+    this.#deps.setPauseDisproved({ value: false, confirmed: false });
   }
 
   /**
    * Connect and disconnect. EVERYTHING, including the flags the two episode
    * boundaries deliberately leave alone: none of this state may cross from a
    * disposed Room into a new call.
+   *
+   * The pause claim is withdrawn `confirmed: false` here for the same reason
+   * as at {@link endEpisode}: a boundary grades no disproof.
    */
   resetForCall(): void {
     this.#spent.clear();
@@ -654,7 +944,9 @@ export class PublishGateEpisode {
     this.#confirming = false;
     this.#sweepDropped = false;
     this.#confirmRounds = 0;
-    this.#deps.setPauseDisproved(false);
+    this.#episodeConfirmRounds = 0;
+    this.#unprovenReports = 0;
+    this.#deps.setPauseDisproved({ value: false, confirmed: false });
   }
 
   /**
@@ -680,14 +972,22 @@ export class PublishGateEpisode {
 
   /**
    * Ask for one confirming re-sweep. Returns whether one is coming — FALSE
-   * only when this episode has spent {@link CONFIRM_BUDGET} consecutive
-   * confirming rounds without a sweep proving quiet, which is the caller's cue
-   * to treat the observation it has as the verdict.
+   * when EITHER bound is spent, which is the caller's cue to treat the
+   * observation it has as the verdict.
+   *
+   * 🔴 TWO bounds, and neither is redundant. {@link CONFIRM_BUDGET} counts
+   * CONSECUTIVE failing rounds and is restored by any sweep that saw
+   * everything it could act on, so a long healthy episode is not charged for
+   * its own transient windows. {@link EPISODE_CONFIRM_CEILING} counts every
+   * round this episode ran and is restored by nothing inside it, so the chain
+   * terminates even where the reset above fires on every pass — which is what
+   * it does once the spent names are the only unproven ones.
    */
   #requestConfirm(): boolean {
     // At most one outstanding: every pass would otherwise schedule another.
     if (this.#confirmScheduled) return true;
     if (this.#confirmRounds >= CONFIRM_BUDGET) return false;
+    if (this.#episodeConfirmRounds >= EPISODE_CONFIRM_CEILING) return false;
     this.#confirmScheduled = true;
     this.#deps.scheduleConfirm(() => {
       // A lifecycle boundary cleared the request while it was deferred.
@@ -702,5 +1002,31 @@ export class PublishGateEpisode {
       this.#confirmPass = true;
     });
     return true;
+  }
+
+  /**
+   * Report one `"unproven"` observation, at most
+   * {@link UNPROVEN_REPORT_BUDGET} times per episode.
+   *
+   * 🔴 A bound on the CONSOLE and never on the signal. Every caller of this
+   * has already written {@link EpisodeDeps.setPauseDisproved} or has
+   * deliberately withheld it (the empty-gate arm), so suppression here costs a
+   * duplicate log line and no part of the alarm. Without it a held gate over a
+   * live wire emits one `console.error` per sweep for the whole call, which is
+   * the telemetry half of the live-lock {@link EPISODE_CONFIRM_CEILING} bounds
+   * the other half of.
+   *
+   * The report PAST the cap is emitted with `reportsSuppressed: true` rather
+   * than dropped, so the channel ends with its own reason. Counted per
+   * episode, reset with the two confirm counters at all three boundaries.
+   */
+  #reportUnproven(detail: object): void {
+    this.#unprovenReports++;
+    if (this.#unprovenReports <= UNPROVEN_REPORT_BUDGET) {
+      this.#deps.report("unproven", detail);
+      return;
+    }
+    if (this.#unprovenReports === UNPROVEN_REPORT_BUDGET + 1)
+      this.#deps.report("unproven", { ...detail, reportsSuppressed: true });
   }
 }

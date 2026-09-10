@@ -17,16 +17,47 @@ as "uncaught", which is the same silent pass `rtc-gate.sh` exists to kill.
 Judged on the runner's OWN exit status — never a grep of its summary, never
 through a pipe (`cmd | tail` makes `$?` tail's).
 
-Exit 0 iff every mutation marked `expect="red"` turned its specs red and every
-mutation marked `expect="green"` left them green.
+🔴 AND AN EXIT STATUS IS NOT ENOUGH ON ITS OWN, exactly as in `rtc-gate.sh`.
+Until 2026-09-10 `run_specs` returned `proc.returncode != 0` and nothing else,
+so this runner could not tell "the specs caught the defect" from "the mutated
+file no longer LOADS". Demonstrated by the wave-1 audit: a syntax error
+injected into a sandboxed module gives `exit=1, tests 1, fail 1`, which the old
+runner printed as `OK: expected red, specs went red`. A future retarget landing
+a `replace` that is not valid TS, or that renames an export the spec imports,
+would have reported OK forever while asserting nothing — in the file that is
+this branch's primary evidence device. So every mutant run is now also read for
+its COUNTERS: the executed `tests` (and `skipped`) must equal the count the
+same spec produced on the UNMUTATED tree, `pass + fail + skipped` must account
+for all of them, and a red must carry `fail > 0`. Anything else is a PROBLEM —
+never a catch. See `judge()`.
+
+The baseline counts are MEASURED at the start of every run, not committed here:
+a pinned number in this file would be a second thing to keep in sync with
+`rtc-gate.sh`'s EXPECTED table, and the property wanted is "the mutant ran the
+same suite as the baseline", which only the live baseline can state.
+
+Exit 0 iff every mutation marked `expect="red"` turned its specs red ON
+ASSERTIONS with the full suite executing, and every mutation marked
+`expect="green"` left them green the same way.
+
+Exit 96 if another run of this script is already mutating the same worktree —
+it REFUSES rather than queues; see `exclusive_run_lock`.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
+import hashlib
+import os
+import re
 import subprocess
 import sys
+import tempfile
+import time
+from collections.abc import Iterator
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 CLIENT = Path(__file__).resolve().parent.parent
@@ -37,8 +68,10 @@ SESSION = "mlsCallSession.ts"
 POLICY = "mlsCallModePolicy.ts"
 HARNESS = "mlsCallSession.harness.ts"
 #: No entry targets `state.tsx` any more — wave 1 moved everything a mutation
-#: could reach into `publishGateEpisode.ts`. What is LEFT in `state.tsx` is
-#: WIRING, and it is still unreachable here: that `beginDrive` is passed as
+#: could reach into `publishGateEpisode.ts`, and the seam wave moved the
+#: verdict DERIVATION into `pauseVerdict.ts` (see `VERDICT` below). What is
+#: LEFT in `state.tsx` is WIRING, and it is still unreachable here: that
+#: `beginDrive` is passed as
 #: `coalescingSweeper`'s FOURTH positional argument (a three-argument call
 #: still compiles and silently degrades drive scope to no scope), that the
 #: `EpisodeDeps` thunks are bound to the right room, and that `scheduleConfirm`
@@ -58,9 +91,24 @@ HARNESS = "mlsCallSession.harness.ts"
 #: source-text assertion: a `grep -qF` over a file no runner can load does not
 #: converge — one comment line defeats it. Closing this needs a further
 #: extraction or a live leg, not another entry here.
+#:
+#: 🔴 AND THE TWO VERDICT-READER ASSIGNMENTS, which is the residue the seam
+#: wave did NOT close and must not be read as covered:
+#:     this.callPauseDisproved = createMemo(readers.disproved);
+#:     this.callPauseDisproofConfirmed = createMemo(readers.disproofConfirmed);
+#: `pause-verdict-readers-transposed` pins the DERIVATION inside
+#: `pauseVerdict.ts`; it cannot see these two writes. They are two same-typed
+#: `Accessor<boolean>`s, transposable in one keystroke, and a swap was MEASURED
+#: to pass the entire bare gate — tsc, prettier, eslint, every spec and both
+#: scripts, exit 0 — while inverting `{value: true, confirmed: false}` so the
+#: banner keeps promising a pause over a live wire. Worse, nothing consumes
+#: `callPauseDisproofConfirmed` at runtime yet, so the swap's only observable
+#: effect is the harmful half. Closing it needs ONE write instead of two, not
+#: another entry here.
 STATE = "state.tsx"
 GATE = "publishGate.ts"
 EPISODE = "publishGateEpisode.ts"
+VERDICT = "pauseVerdict.ts"
 
 JOINRACE_SPEC = "components/rtc/mlsCallSession.joinrace.test.ts"
 HEAL_SPEC = "components/rtc/mlsCallSession.heal.test.ts"
@@ -68,6 +116,7 @@ POLICY_SPEC = "components/rtc/mlsCallModePolicy.test.ts"
 FALSERED_SPEC = "components/rtc/mlsCallSession.falsered.test.ts"
 GATE_SPEC = "components/rtc/publishGate.test.ts"
 EPISODE_SPEC = "components/rtc/publishGateEpisode.test.ts"
+VERDICT_SPEC = "components/rtc/pauseVerdict.test.ts"
 ALL_SPECS = [POLICY_SPEC, HEAL_SPEC, JOINRACE_SPEC]
 
 
@@ -94,36 +143,155 @@ MUTATIONS: list[Mutation] = []
 # cannot fire on a loop that never yields to the event loop (a runaway
 # `while`/`do-while` over awaited microtasks), so the only reliable bound is
 # wall-clock on the process. Sized well above the slowest honest spec file —
-# measured 2026-09-09: `mlsCallSession.joinrace.test.ts` at 1.7 s wall, next
-# falsered 1.0 s — and well below anything a human would sit through. The whole
-# suite is ~55 s. Keep these numbers honest: a stale runtime estimate is how a
-# suite stops getting run (an earlier version of this comment guessed 15 s and
-# "20+ minutes", both wrong by an order of magnitude).
+# re-measured 2026-09-10: `mlsCallSession.joinrace.test.ts` at 1.6 s wall, next
+# falsered 0.8 s — and well below anything a human would sit through.
+#
+# 🔴 NO ENTRY COUNT AND NO TOTAL RUNTIME ARE RECORDED HERE, deliberately. Every
+# prose count this file has carried has been wrong within days: "15 s" and
+# "20+ minutes" were out by an order of magnitude, "~55 s" was measured at a
+# smaller table, and the "64 entries / 99 s" that replaced THAT was corrected
+# to "66 / 107 s" in the very edit that appended two more entries and made it
+# 68. A wave dispatched to purge stale counts shipped one. The run PRINTS its
+# own entry count and wall time at the end, and `--list` derives the count from
+# the table itself — read those, and do not re-add a number here.
 SPEC_TIMEOUT_S = 120
 
 
-def run_specs(specs: list[str]) -> bool:
-    """True when every named spec file passes. The runner's OWN exit status.
+#: The three things a spec run under a mutation can mean. `PROBLEM` is the one
+#: this runner used to be unable to say, and it is NOT a catch: it is "this
+#: mutation measured nothing, and the OK it would have printed is a lie".
+GREEN = "green"
+RED = "red"
+PROBLEM = "problem"
 
-    A timeout counts as FAILING, deliberately: under a mutation a hang means the
-    mutant broke termination, which is a defect the specs caught; on a clean
-    tree it means something is wrong that must not be reported as a pass.
+
+def counter(out: str, name: str) -> int | None:
+    """node:test's own summary counter, or None when it printed no summary.
+
+    Same shape as `rtc-gate.sh`'s `counter()`, deliberately: the reporter's
+    leading glyph is not ASCII and differs between reporters, so match "any run
+    of non-alphanumerics" and anchor the number at end of line. Take the LAST
+    match so nothing printed earlier can shadow the summary block.
+    """
+    found = re.findall(rf"^[^A-Za-z0-9]*{name} ([0-9]+)$", out, re.MULTILINE)
+    return int(found[-1]) if found else None
+
+
+@dataclass
+class SpecResult:
+    """One `node --test` run, read for BOTH its status and its counters."""
+
+    spec: str
+    returncode: int | None = None
+    tests: int | None = None
+    passed: int | None = None
+    failed: int | None = None
+    skipped: int | None = None
+    timed_out: bool = False
+
+
+def run_spec(spec: str) -> SpecResult:
+    """Run one spec file. Never raises; a timeout is a result, not an error."""
+    try:
+        proc = subprocess.run(
+            [NODE, "--test", "--conditions=browser", spec],
+            cwd=CLIENT,
+            capture_output=True,
+            text=True,
+            timeout=SPEC_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        return SpecResult(spec, timed_out=True)
+    out = f"{proc.stdout}\n{proc.stderr}"
+    return SpecResult(
+        spec,
+        returncode=proc.returncode,
+        tests=counter(out, "tests"),
+        passed=counter(out, "pass"),
+        failed=counter(out, "fail"),
+        skipped=counter(out, "skipped"),
+    )
+
+
+#: spec path -> (tests, skipped) as measured on the unmutated tree, filled by
+#: `baseline_green` before any mutation is applied. Every mutant run must
+#: reproduce both numbers exactly; see `judge`.
+BASELINE: dict[str, tuple[int, int]] = {}
+
+
+def judge(specs: list[str]) -> tuple[str, str]:
+    """GREEN / RED / PROBLEM for one mutant, with the sentence that says why.
+
+    🔴 THIS IS THE HOLE THE WAVE-1 AUDIT FOUND. `proc.returncode != 0` alone
+    cannot tell an assertion failure from a module that would not load, and a
+    mutant that fails to load is the one shape that reads as a catch while
+    asserting NOTHING. So a red is only a red when:
+
+      * the run printed a summary at all (no summary means it died before the
+        reporter, i.e. almost always a parse/import failure);
+      * it EXECUTED the same number of tests as the baseline, and the same
+        number of skips — fewer tests means the mutant stopped part of the
+        suite from running, which is a broken mutation, not a caught defect;
+      * `pass + fail + skipped` accounts for every executed test; and
+      * `fail > 0`, i.e. an ASSERTION failed. A non-zero exit with `fail 0` is
+        a process-level death dressed as a catch.
+
+    Anything else is PROBLEM, which the caller counts as unexpected, exactly
+    like a mutation that went green when it should have gone red.
+
+    A spec set is walked in order and the first non-green spec decides, so a
+    genuine catch still costs one spec run rather than all of them.
     """
     for spec in specs:
-        try:
-            proc = subprocess.run(
-                [NODE, "--test", "--conditions=browser", spec],
-                cwd=CLIENT,
-                capture_output=True,
-                text=True,
-                timeout=SPEC_TIMEOUT_S,
+        want = BASELINE.get(spec)
+        if want is None:  # only reachable if a caller skipped baseline_green
+            return (PROBLEM, f"{spec} has no baseline count — refusing to judge")
+        want_tests, want_skipped = want
+        r = run_spec(spec)
+        if r.timed_out:
+            # Kept as a RED on purpose, and it is the one red not backed by an
+            # assertion: a mutant that never terminates broke termination,
+            # which no counter can describe and which no honest run can call
+            # green. Said out loud rather than folded in silently.
+            return (
+                RED,
+                f"{spec} TIMED OUT after {SPEC_TIMEOUT_S}s — the mutant broke "
+                f"termination. Counted as caught, but NOT by an assertion.",
             )
-        except subprocess.TimeoutExpired:
-            print(f"    (spec {spec} timed out after {SPEC_TIMEOUT_S}s)")
-            return False
-        if proc.returncode != 0:
-            return False
-    return True
+        if r.tests is None or r.passed is None or r.failed is None or r.skipped is None:
+            return (
+                PROBLEM,
+                f"{spec} printed no summary counters (exit {r.returncode}) — "
+                f"the mutant almost certainly did not LOAD, so this entry "
+                f"measured nothing.",
+            )
+        if r.tests != want_tests or r.skipped != want_skipped:
+            return (
+                PROBLEM,
+                f"{spec} executed {r.tests} test(s)/{r.skipped} skipped, "
+                f"baseline {want_tests}/{want_skipped} — the mutant did not "
+                f"run the same suite, so a red here is not evidence.",
+            )
+        if r.passed + r.failed + r.skipped != r.tests:
+            return (
+                PROBLEM,
+                f"{spec}: pass {r.passed} + fail {r.failed} + skipped "
+                f"{r.skipped} != tests {r.tests} — the run did not account for "
+                f"every test.",
+            )
+        if r.failed > 0:
+            return (
+                RED,
+                f"{spec}: {r.failed} failing assertion(s) with all {r.tests} "
+                f"test(s) executed",
+            )
+        if r.returncode != 0:
+            return (
+                PROBLEM,
+                f"{spec} exited {r.returncode} with fail 0 — red without a "
+                f"failing assertion, so it is not a catch.",
+            )
+    return (GREEN, f"all {len(specs)} spec file(s) green at full baseline counts")
 
 
 def baseline_green(mutations: list[Mutation]) -> bool:
@@ -138,15 +306,106 @@ def baseline_green(mutations: list[Mutation]) -> bool:
     There is no green entry any more (wave 1 flipped the last one), so this
     function is now the ONLY thing standing between a broken spec file and a
     completely vacuous green run. Do not weaken it.
+
+    It also RECORDS what it measured. `BASELINE` is what makes a mutant's own
+    counters readable: without a number to compare against, "the specs went
+    red" cannot be separated from "the file stopped loading". The numbers are
+    measured here rather than committed, so there is nothing in this file to go
+    stale against `rtc-gate.sh`'s EXPECTED table.
     """
     specs = sorted({spec for m in mutations for spec in m.specs})
     print(f"=============== baseline: {len(specs)} spec file(s) ===============")
     for spec in specs:
-        if not run_specs([spec]):
-            print(f">>> BASELINE FAIL: {spec} is not green before any mutation")
+        r = run_spec(spec)
+        if r.timed_out:
+            print(f">>> BASELINE FAIL: {spec} timed out after {SPEC_TIMEOUT_S}s")
             return False
+        if r.tests is None or r.passed is None or r.failed is None or r.skipped is None:
+            print(
+                f">>> BASELINE FAIL: {spec} printed no summary counters "
+                f"(exit {r.returncode}) — refusing to run against an "
+                f"unreadable baseline"
+            )
+            return False
+        # `node --test` exits 0 on ZERO tests and an EMPTY spec file reports
+        # `pass 1`, so the status alone would bless a suite that ran nothing.
+        if r.tests == 0:
+            print(f">>> BASELINE FAIL: {spec} EXECUTED ZERO TESTS (and exited 0)")
+            return False
+        if r.returncode != 0 or r.failed != 0:
+            print(
+                f">>> BASELINE FAIL: {spec} is not green before any mutation "
+                f"(exit {r.returncode}, fail {r.failed})"
+            )
+            return False
+        BASELINE[spec] = (r.tests, r.skipped)
+        print(
+            f"    {spec}: tests {r.tests} skipped {r.skipped} "
+            f"— the pin every mutant must reproduce"
+        )
     print(">>> BASELINE OK: every spec green on the unmutated tree")
     return True
+
+
+@contextlib.contextmanager
+def exclusive_run_lock() -> Iterator[None]:
+    """Refuse to run while another run is mutating THIS worktree. Never waits.
+
+    🔴 The second hole the wave-1 audit found: this script mutates SHARED
+    SOURCE in the live worktree with no lock at all. Two concurrent runs
+    interleave — run A applies its mutation, run B reads that mutated text as
+    "original", reverts to it after its own mutation, and both then score
+    someone else's defect as their own catch, or write a mutation back into the
+    tree permanently. Every result from such a pair is unusable, and nothing in
+    the output says so.
+
+    REFUSES rather than queues, which is the whole point. Waiting would make
+    the second run's baseline wrong in a way it cannot see (it would measure a
+    tree the first run is busy mutating), and a run that silently sat for
+    twenty minutes is a run somebody kills — which is the failure mode that
+    leaves the worktree MUTATED. A refusal is loud, immediate and costs
+    nothing.
+
+    The lockfile lives in the system temp dir, keyed by the worktree path,
+    NOT in the worktree: a lock inside the tree would show up as untracked dirt
+    in exactly the `git status` this script's users are told to check after a
+    run.
+
+    A STALE lock is not cleaned up automatically, and that is deliberate too.
+    This process removes its own lock on every exit path Python can see,
+    Ctrl-C included, so a lock left behind means a run was killed OUTRIGHT
+    mid-mutation — which is precisely the case where the worktree still holds
+    somebody's mutation. Being made to look before deleting it is the point.
+    """
+    key = hashlib.sha1(str(CLIENT).encode("utf-8")).hexdigest()[:12]
+    lock = Path(tempfile.gettempdir()) / f"rtc-mutations-{key}.lock"
+    try:
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    except FileExistsError:
+        try:
+            held = lock.read_text(encoding="utf-8").strip()
+        except OSError:
+            held = "(unreadable)"
+        print("################ MUTATIONS: REFUSING TO RUN ################")
+        print(f"    another run holds {lock}")
+        print(f"    {held}")
+        print("    This script mutates shared source in the live worktree, so")
+        print("    two runs would score one another's mutations. It refuses")
+        print("    rather than waits.")
+        print("    If that run is gone it was killed MID-MUTATION: check")
+        print(f"    `git -C {CLIENT} status` and `git diff` for leftover")
+        print("    mutated source FIRST, then delete the lockfile.")
+        raise SystemExit(96)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(
+            f"pid {os.getpid()} started {datetime.now(timezone.utc).isoformat()} "
+            f"worktree {CLIENT}\n"
+        )
+    try:
+        yield
+    finally:
+        with contextlib.suppress(OSError):
+            lock.unlink()
 
 
 def apply(mutation: Mutation) -> str:
@@ -179,6 +438,19 @@ def main() -> int:
     if args.list:
         for m in MUTATIONS:
             print(f"{m.id:<28} [{m.expect:>5}] {m.what}")
+        # 🔴 DERIVED, and deliberately not written down in the prose above.
+        # Every number this pair of scripts has committed to prose has gone
+        # stale at least once — the runtime estimate twice, and `rtc-gate.sh`'s
+        # worked example of "declares N top-level `test(`" once — while a tally
+        # recomputed on every invocation cannot. If a count belongs in a
+        # commit, it belongs in `rtc-gate.sh`'s EXPECTED table, where going
+        # stale turns the gate RED instead of just misinforming a reader.
+        tally: dict[str, int] = {}
+        for m in MUTATIONS:
+            tally[m.file] = tally.get(m.file, 0) + 1
+        by_file = ", ".join(f"{n} {f}" for f, n in sorted(tally.items()))
+        print()
+        print(f"{len(MUTATIONS)} entries: {by_file}")
         return 0
 
     wanted = {s for s in args.only.split(",") if s}
@@ -190,31 +462,47 @@ def main() -> int:
     if not selected:
         raise SystemExit("no mutations selected — refusing to report a pass")
 
-    if not baseline_green(selected):
-        print("################ MUTATIONS: refusing to run ################")
-        return 97
+    started = time.monotonic()
+    # The lock covers the BASELINE too: a concurrent run that is mid-mutation
+    # makes this run's baseline a measurement of somebody else's defect.
+    with exclusive_run_lock():
+        if not baseline_green(selected):
+            print("################ MUTATIONS: refusing to run ################")
+            return 97
 
-    failures: list[str] = []
-    for i, m in enumerate(selected, 1):
-        print(f"=============== [{i}/{len(selected)}] {m.id} ===============")
-        print(f"    {m.what}")
-        path = RTC / m.file
-        original = apply(m)
-        try:
-            passed = run_specs(m.specs)
-        finally:
-            path.write_text(original, encoding="utf-8")
-        got = "green" if passed else "red"
-        ok = got == m.expect
-        print(f">>> {'OK  ' if ok else 'FAIL'}: expected {m.expect}, specs went {got}")
-        if not ok:
-            failures.append(m.id)
+        failures: list[str] = []
+        for i, m in enumerate(selected, 1):
+            print(f"=============== [{i}/{len(selected)}] {m.id} ===============")
+            print(f"    {m.what}")
+            path = RTC / m.file
+            original = apply(m)
+            try:
+                got, why = judge(m.specs)
+            finally:
+                path.write_text(original, encoding="utf-8")
+            print(f"    {why}")
+            if got == PROBLEM:
+                # NOT a catch, and deliberately not phrased as one: the entry
+                # measured nothing, which is worse than a mutation that went
+                # green, because it would have printed OK forever.
+                print(f">>> PROBLEM: {m.id} measured nothing — see the line above")
+                failures.append(f"{m.id} (PROBLEM: the mutant never ran the suite)")
+                continue
+            ok = got == m.expect
+            print(f">>> {'OK  ' if ok else 'FAIL'}: expected {m.expect}, specs went {got}")
+            if not ok:
+                failures.append(m.id)
 
+    elapsed = time.monotonic() - started
     print()
     print(f"################ MUTATIONS: {len(selected)} run, "
           f"{len(failures)} unexpected ################")
     for f in failures:
         print(f"    unexpected: {f}")
+    # Printed so the runtime estimate at SPEC_TIMEOUT_S can be re-derived
+    # instead of guessed at; two earlier guesses were wrong by an order of
+    # magnitude.
+    print(f"    ({elapsed:.0f}s wall for {len(selected)} mutation(s))")
     return 1 if failures else 0
 
 
@@ -905,13 +1193,19 @@ MUTATIONS += [
         id="episode-endepisode-keeps-a-deferred-confirm",
         what="endEpisode stops taking back an outstanding confirm, so a request made under the gate that just drained stays outstanding — and blocks every later confirm in the call, since `#confirmScheduled` is the one-outstanding dedupe",
         file=EPISODE,
-        search="""    this.#cancelConfirm();
-    // Consistent with both siblings: the resume sweep this boundary drives
-    // must not run on the previous episode's counter.
-    this.#confirmRounds = 0;
-    this.#deps.setPauseDisproved(false);""",
-        replace="""    this.#confirmRounds = 0;
-    this.#deps.setPauseDisproved(false);""",
+        # Retargeted 2026-09-10 (wave 2): `setPauseDisproved` grew a second
+        # argument, which broke this anchor's last line. Re-anchored on the
+        # METHOD SIGNATURE instead, which is both comment-free and free of any
+        # call this module makes — the two things that have broken it so far.
+        # `this.#cancelConfirm();` alone matches all THREE lifecycle
+        # boundaries, so the signature is what disambiguates.
+        search="""  endEpisode(): void {
+    this.#spent.clear();
+    this.#pending.clear();
+    this.#cancelConfirm();""",
+        replace="""  endEpisode(): void {
+    this.#spent.clear();
+    this.#pending.clear();""",
         specs=[EPISODE_SPEC],
     ),
     Mutation(
@@ -975,17 +1269,132 @@ MUTATIONS += [
         id="episode-endepisode-keeps-a-spent-budget",
         what="endEpisode leaves `#confirmRounds` where the last episode left it, so the resume sweep this very boundary drives runs on the PREVIOUS episode's exhausted counter and takes its first observation as a verdict",
         file=EPISODE,
+        # Retargeted 2026-09-10 (wave 2), same cause as the sibling above.
+        # 🔴 NO comment-free anchor exists here and the window was shrunk
+        # instead. `this.#confirmRounds = 0;` followed by the withdrawal write
+        # and a closing brace was BYTE-FOR-BYTE identical in `endEpisode` and
+        # in `resetForCall` when this entry was written. It no longer is: wave
+        # 2 inserted a two-line `// Per-episode, exactly like #confirmRounds…`
+        # comment between them in `endEpisode`, and both sites gained
+        # `#episodeConfirmRounds` and `#unprovenReports` clears. The shrink is
+        # kept anyway — the shorter three-line window IS still identical at the
+        # two sites (verified: 2 matches), so the comment lines remain the only
+        # text that tells them apart —
+        # dropping them would make this a hard error (2 matches), not a
+        # mutation. What the shrink does buy: the window no longer reaches the
+        # `setPauseDisproved` call at all, so the next change to that signature
+        # cannot break it again.
         search="""    this.#cancelConfirm();
     // Consistent with both siblings: the resume sweep this boundary drives
     // must not run on the previous episode's counter.
-    this.#confirmRounds = 0;
-    this.#deps.setPauseDisproved(false);
-  }""",
-        replace="""    this.#cancelConfirm();
-    this.#deps.setPauseDisproved(false);
-  }""",
+    this.#confirmRounds = 0;""",
+        replace="""    this.#cancelConfirm();""",
         specs=[EPISODE_SPEC],
     ),
+    # ---- the verdict's CONFIDENCE (wave-2 W2-3) -----------------------------
+    #
+    # `setPauseDisproved` carries a SECOND argument because `true` is reachable
+    # two ways that are not the same evidence: after a confirming re-sweep
+    # actually ran (two observations a macrotask apart), and because the
+    # consecutive-confirm budget was spent (ONE observation, taken microtasks
+    # after a livekit op that may simply not have landed). Wave 2 promotes
+    # `callPauseDisproved` to a `chipState` input, so a consumer that cannot
+    # tell them apart reddens off the guess with the disproof's weight: the
+    # 2026-09-08 false red one level up.
+    #
+    # 🔴 THE FIRST TWO ENTRIES ARE A PAIR, IN OPPOSITE DIRECTIONS, and the
+    # second is the reason the pair exists. A suite that only ever asserts
+    # "unconfirmed here" is satisfied by hard-coding the flag false; one that
+    # only ever asserts "confirmed here" is satisfied by hard-coding it true.
+    # Both walls have to be pinned or the flag is decorative.
+    Mutation(
+        id="episode-budget-exhausted-verdict-claims-confirmed",
+        what="the verdict reached because the confirm budget was SPENT claims `confirmed: true`, so a verdict off ONE unconfirmed observation reaches the chip with a confirmed disproof's weight — the 2026-09-08 false red one level up",
+        file=EPISODE,
+        # Mutates the CALL and not `const confirmed = confirming;`, on purpose:
+        # this way `detail.confirmBudgetExhausted` still says "guess" while the
+        # signal says "confirmed", which is exactly the drift the two consumers
+        # are meant to be unable to have.
+        search="""    this.#deps.setPauseDisproved({ value: true, confirmed });""",
+        replace="""    this.#deps.setPauseDisproved({ value: true, confirmed: true });""",
+        specs=[EPISODE_SPEC],
+    ),
+    Mutation(
+        id="episode-confirmed-verdict-claims-unconfirmed",
+        what="the POSITIVE counterpart: a verdict reached after a confirming re-sweep RAN claims `confirmed: false`. Without this entry the flag could be hard-coded false and every 'unconfirmed' assertion in the suite would stay green",
+        file=EPISODE,
+        search="""    this.#deps.setPauseDisproved({ value: true, confirmed });""",
+        replace="""    this.#deps.setPauseDisproved({ value: true, confirmed: false });""",
+        specs=[EPISODE_SPEC],
+    ),
+    # A WITHDRAWAL grades nothing — there is no claim to qualify — so FALSE is
+    # always written FALSE/FALSE. FALSE/TRUE would read to a consumer as "a
+    # CONFIRMED pause", which is the one thing this signal must never say: it
+    # is a one-directional alarm, and "no live disproof" is not evidence of a
+    # pause. One entry per call site, because each is separately gettable
+    # wrong.
+    Mutation(
+        id="episode-quiet-arm-withdrawal-claims-confirmed",
+        what="the quiet arm withdraws the disproof as `confirmed: true`, i.e. a proven-quiet wire is reported as a CONFIRMED pause rather than as the absence of a disproof",
+        file=EPISODE,
+        search="""      if (this.#deps.gateHeld())
+        this.#deps.setPauseDisproved({ value: false, confirmed: false });""",
+        replace="""      if (this.#deps.gateHeld())
+        this.#deps.setPauseDisproved({ value: false, confirmed: true });""",
+        specs=[EPISODE_SPEC],
+    ),
+    Mutation(
+        id="episode-resetforcall-withdrawal-claims-confirmed",
+        what="the CALL boundary withdraws the disproof as `confirmed: true`, so a brand-new call starts out asserting a confirmed pause nothing has observed",
+        file=EPISODE,
+        search="""    this.#sweepDropped = false;
+    this.#confirmRounds = 0;
+    this.#episodeConfirmRounds = 0;
+    this.#unprovenReports = 0;
+    this.#deps.setPauseDisproved({ value: false, confirmed: false });""",
+        replace="""    this.#sweepDropped = false;
+    this.#confirmRounds = 0;
+    this.#episodeConfirmRounds = 0;
+    this.#unprovenReports = 0;
+    this.#deps.setPauseDisproved({ value: false, confirmed: true });""",
+        specs=[EPISODE_SPEC],
+    ),
+    # 🔴 The two F3 bounds. Wave 0 shipped `CONFIRM_BUDGET` as "the" bound on
+    # the self-driven confirm chain, and it bounds NOTHING once every unproven
+    # name is spent: `actionable` filters out `#spent`, so `actionable.length
+    # === 0` resets `#confirmRounds` on every pass BEFORE `#requestConfirm()`
+    # is reached. Measured at 7d80b2d9: 201 confirming rounds with
+    # CONFIRM_BUDGET = 4 in force, stopped only by the driver's own cap.
+    # These two entries exist so a future edit cannot quietly restore that.
+    Mutation(
+        id="episode-confirm-ceiling-never-fires",
+        what="the per-episode confirm ceiling is raised out of reach, restoring the unbounded self-driven confirm chain over a SPENT name that wave 0 shipped — the live-lock `CONFIRM_BUDGET` cannot bound because a spend resets it on every pass",
+        file=EPISODE,
+        search="""    if (this.#episodeConfirmRounds >= EPISODE_CONFIRM_CEILING) return false;""",
+        replace="""    if (this.#episodeConfirmRounds >= Number.MAX_SAFE_INTEGER) return false;""",
+        specs=[EPISODE_SPEC],
+    ),
+    Mutation(
+        id="episode-unproven-report-budget-never-fires",
+        what="the telemetry rate-limit is raised out of reach, so a held gate over a live wire emits one `console.error` per macrotask for the whole call — the half of the live-lock the ceiling does not cover",
+        file=EPISODE,
+        search="""    if (this.#unprovenReports <= UNPROVEN_REPORT_BUDGET) {""",
+        replace="""    if (this.#unprovenReports <= Number.MAX_SAFE_INTEGER) {""",
+        specs=[EPISODE_SPEC],
+    ),
+    # 🔴 NOT MUTATED, and recorded rather than hidden: `endEpisode`'s
+    # withdrawal — the THIRD site writing the `{ value: false, confirmed:
+    # false }` withdrawal. Its
+    # three lines are byte-for-byte identical to `resetForCall`'s, so the only
+    # text that could anchor it uniquely is the two-line body comment above it,
+    # and this table already depends on that comment once
+    # (`episode-endepisode-keeps-a-spent-budget`). The 1->0 site IS asserted by
+    # the specs — "a WITHDRAWAL carries no confidence, on every path that
+    # writes one" walks all three — so what is missing is a mutation proving
+    # that assertion is live, not the assertion. Closing it needs the two sites
+    # to stop being textually identical, which is a source change and not this
+    # file's to make.
+
     # ---- the livekit adapter ------------------------------------------------
     Mutation(
         id="episode-adapter-snapshots-the-wire",
@@ -1004,6 +1413,43 @@ MUTATIONS += [
         search="""    if (!track) continue;""",
         replace="""    if (!track && false) continue;""",
         specs=[EPISODE_SPEC],
+    ),
+
+    # ---- the verdict readers -----------------------------------------------
+    # 🔴 This module exists because of a MEASURED defect, not a hypothesis. The
+    # remediation completion audit swapped the two derived accessors in
+    # `state.tsx` and ran the whole bare gate: tsc, prettier, eslint, all specs
+    # and both scripts returned exit 0 with zero failing checks. In production
+    # that swap inverts exactly one of the four verdict states, and it is the
+    # one the slice is for -- `{value: true, confirmed: false}`, a disproof off
+    # a single budget-exhausted observation on a live wire, reads as
+    # `callPauseDisproved() === false`, so the banner goes on promising a
+    # pause. `state.tsx` can carry no spec and no entry; extracting the
+    # derivation here is what lets these two exist at all.
+    Mutation(
+        id="pause-verdict-readers-transposed",
+        what="the two verdict readers are swapped — an UNCONFIRMED disproof on a live wire reads `callPauseDisproved() === false`, so the banner keeps promising a pause it cannot honour",
+        file=VERDICT,
+        search="""    disproved: () => verdict().value,
+    disproofConfirmed: () => verdict().confirmed,""",
+        replace="""    disproved: () => verdict().confirmed,
+    disproofConfirmed: () => verdict().value,""",
+        specs=[VERDICT_SPEC],
+    ),
+    Mutation(
+        id="pause-verdict-readers-eager",
+        what="the readers snapshot the verdict at construction, so `state.tsx`'s memos read once outside any reactive scope and the banner freezes on the initial all-false verdict — a state-only spec would not catch this",
+        file=VERDICT,
+        search="""  return {
+    disproved: () => verdict().value,
+    disproofConfirmed: () => verdict().confirmed,
+  };""",
+        replace="""  const snapshot = verdict();
+  return {
+    disproved: () => snapshot.value,
+    disproofConfirmed: () => snapshot.confirmed,
+  };""",
+        specs=[VERDICT_SPEC],
     ),
 ]
 
