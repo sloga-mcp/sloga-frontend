@@ -36,14 +36,38 @@ NODE = "node"
 SESSION = "mlsCallSession.ts"
 POLICY = "mlsCallModePolicy.ts"
 HARNESS = "mlsCallSession.harness.ts"
+#: No entry targets `state.tsx` any more — wave 1 moved everything a mutation
+#: could reach into `publishGateEpisode.ts`. What is LEFT in `state.tsx` is
+#: WIRING, and it is still unreachable here: that `beginDrive` is passed as
+#: `coalescingSweeper`'s FOURTH positional argument (a three-argument call
+#: still compiles and silently degrades drive scope to no scope), that the
+#: `EpisodeDeps` thunks are bound to the right room, and that `scheduleConfirm`
+#: is a `setTimeout` rather than a microtask. A mutation cannot reach any of
+#: it, because `node --test` cannot import the file. Recorded here rather than
+#: as an `expect="green"` entry, which would be an admission dressed as a
+#: measurement.
+#:
+#: 🔴 ZERO entries carry `file=STATE`, and the wave-1 fix round ADDED to what
+#: that leaves unmeasured. `#gateGen` plus the per-sweeper `stillCurrent`
+#: closure (`gen === this.#gateGen && this.room() === room`, captured when the
+#: sweeper is BUILT) is now the only thing keeping a sweep parked on an awaited
+#: livekit op from spending publications in the NEXT call's episode. The
+#: `publishGateEpisode.ts` specs pin what the episode DOES when `stillCurrent()`
+#: answers false; nothing pins that the closure ANSWERS false for a disposed
+#: sweeper, and nothing in this table can. Do not paper over it with a
+#: source-text assertion: a `grep -qF` over a file no runner can load does not
+#: converge — one comment line defeats it. Closing this needs a further
+#: extraction or a live leg, not another entry here.
 STATE = "state.tsx"
 GATE = "publishGate.ts"
+EPISODE = "publishGateEpisode.ts"
 
 JOINRACE_SPEC = "components/rtc/mlsCallSession.joinrace.test.ts"
 HEAL_SPEC = "components/rtc/mlsCallSession.heal.test.ts"
 POLICY_SPEC = "components/rtc/mlsCallModePolicy.test.ts"
 FALSERED_SPEC = "components/rtc/mlsCallSession.falsered.test.ts"
 GATE_SPEC = "components/rtc/publishGate.test.ts"
+EPISODE_SPEC = "components/rtc/publishGateEpisode.test.ts"
 ALL_SPECS = [POLICY_SPEC, HEAL_SPEC, JOINRACE_SPEC]
 
 
@@ -105,12 +129,15 @@ def run_specs(specs: list[str]) -> bool:
 def baseline_green(mutations: list[Mutation]) -> bool:
     """Every spec file any mutation relies on must pass on the UNMUTATED tree.
 
-    Without this the run is vacuous in the dangerous direction: all but one
-    mutation expects RED, so a spec set already failing — for a reason having
-    nothing to do with any mutation — makes every one of them report OK. The
-    single `expect="green"` entry is not a sufficient canary either: it names
-    only two spec files, so a broken third would still print "N run, 0
-    unexpected". Same silent-pass class `rtc-gate.sh` exists to kill.
+    Without this the run is vacuous in the dangerous direction: EVERY mutation
+    expects RED, so a spec set already failing — for a reason having nothing to
+    do with any mutation — makes every one of them report OK and the run prints
+    "N run, 0 unexpected". Same silent-pass class `rtc-gate.sh` exists to kill.
+
+    This used to lean partly on the one `expect="green"` entry as a canary.
+    There is no green entry any more (wave 1 flipped the last one), so this
+    function is now the ONLY thing standing between a broken spec file and a
+    completely vacuous green run. Do not weaken it.
     """
     specs = sorted({spec for m in mutations for spec in m.specs})
     print(f"=============== baseline: {len(specs)} spec file(s) ===============")
@@ -431,30 +458,44 @@ MUTATIONS += [
         id="repause-order-inverted",
         what="repause resumes twice instead of resume-then-pause, leaving the sender live",
         file=GATE,
-        search="""        if (!gateHeld()) return null;
-        await publication.pauseUpstream();
-        break;
-      }""",
-        replace="""        if (!gateHeld()) return null;
-        await publication.resumeUpstream();
-        break;
-      }""",
+        # Retargeted 2026-09-09 (wave 1): the repause arm's detach is now a
+        # named promise with its own two catches, so the old
+        # `await publication.pauseUpstream();` line no longer exists. Same
+        # site, same defect — `detaching` is now fed by a RESUME.
+        search="""        detaching = publication.pauseUpstream();""",
+        replace="""        detaching = publication.resumeUpstream();""",
         specs=[GATE_SPEC],
     ),
     Mutation(
         id="repause-drops-the-gate-recheck",
         what="repause pauses even after the gate emptied, muting a healthy call with nothing left to resume it",
         file=GATE,
+        # Retargeted 2026-09-09 (wave 1). `if (!gateHeld()) return null;` now
+        # occurs twice in the file, so it cannot anchor on its own; the
+        # comment banner immediately below it is the unique discriminator and
+        # is itself load-bearing prose about this exact re-check.
         search="""        if (!gateHeld()) return null;
-        await publication.pauseUpstream();""",
-        replace="""        await publication.pauseUpstream();""",
+        // \U0001f534 THE ONE SITE""",
+        replace="""        // \U0001f534 THE ONE SITE""",
         specs=[GATE_SPEC],
     ),
     Mutation(
         id="sweep-swallows-a-failed-pause",
-        what="a pause that THREW is discarded, so one failure becomes a permanent silent false pause",
+        what="the outer catch discards a read that threw, so a publication nothing could observe is reported as swept",
         file=GATE,
-        search="""    return { kind: "unproven", name: publication.name, op };
+        # Retargeted 2026-09-09 (wave 1) at the SAME site — runOne's outer
+        # catch — whose return grew the `issued` / `unreadable` fields. The
+        # `what` is narrowed to match what wave 0 left reaching this catch:
+        # both pausing arms now catch their own detach, so a failed pause no
+        # longer lands here. Discarding it is still the same fail-open shape
+        # (a publication that could not be observed reported as fine).
+        search="""    return {
+      kind: "unproven",
+      name: publication.name,
+      op,
+      issued,
+      unreadable: true,
+    };
   }
 }""",
         replace="""    return null;
@@ -466,10 +507,11 @@ MUTATIONS += [
         id="sweep-skips-the-post-condition",
         what="the sweep reports success without re-reading the wire",
         file=GATE,
+        # Retargeted 2026-09-09 (wave 1): the unproven return grew `issued`.
         search="""    if (publication.upstream() !== "live") {
       return { kind: "proven", name: publication.name, op };
     }
-    return { kind: "unproven", name: publication.name, op };""",
+    return { kind: "unproven", name: publication.name, op, issued };""",
         replace="""    return null;""",
         specs=[GATE_SPEC],
     ),
@@ -543,12 +585,43 @@ MUTATIONS += [
     # ---- what may spend a publication, and what may cancel a sweep --------
     Mutation(
         id="any-unproven-spends-the-publication",
-        what="a plain failed PAUSE marks the publication spent, so the gate never touches it again this episode — the 2026-09-08 defect re-armed",
+        what="a plain failed PAUSE lands in repauseFailed, so a publication the gate must keep sweeping is suppressed for the rest of the drive",
         file=GATE,
+        # Retargeted 2026-09-09 (wave 1): the filter grew the `issued` and
+        # `unreadable` conjuncts, and `repauseFailed` now feeds the
+        # DRIVE-scoped `repausePending` rather than the permanent spend. The
+        # permanent spend moved to `repauseThrew`, which is the entry below.
         search="""    repauseFailed: settled
-      .filter((r) => r?.kind === "unproven" && r.op === "repause")
+      .filter(
+        (r) =>
+          r?.kind === "unproven" &&
+          r.op === "repause" &&
+          r.issued === true &&
+          r.unreadable !== true,
+      )
       .map((r) => r!.name),""",
         replace="""    repauseFailed: named("unproven"),""",
+        specs=[GATE_SPEC],
+    ),
+    Mutation(
+        id="any-unproven-threw-spends-the-publication",
+        what="a plain failed PAUSE marks the publication SPENT — a permanent per-episode disarm — so the gate never touches it again this episode: the 2026-09-08 defect re-armed at its new site",
+        file=GATE,
+        # New 2026-09-09 (wave 1). `repauseThrew` is the sole input to the
+        # PERMANENT spend, so this — not `repauseFailed` above — is where the
+        # 2026-09-08 fail-open now lives. Loosening the filter to "any
+        # unproven" is exactly the "any op that threw" loosening the module
+        # comment names as the invariant that must not be relaxed.
+        search="""    repauseThrew: settled
+      .filter(
+        (r) =>
+          r?.kind === "unproven" &&
+          r.op === "repause" &&
+          r.issued === true &&
+          r.threw === true,
+      )
+      .map((r) => r!.name),""",
+        replace="""    repauseThrew: named("unproven"),""",
         specs=[GATE_SPEC],
     ),
     Mutation(
@@ -579,6 +652,27 @@ MUTATIONS += [
   });
   try {""",
         specs=[GATE_SPEC],
+    ),
+    Mutation(
+        id="drive-start-outside-the-try",
+        what="`onDriveStart` runs before the drive's try, so a hook that throws leaves `active` set forever and every later sweep returns a promise that never settles — the gate stops sweeping and nothing says so",
+        file=GATE,
+        # New 2026-09-09 (wave 1). Recorded as a KNOWN GAP by the wave-0 audit
+        # (this mutation was green then); `publishGateEpisode.test.ts`'s
+        # extraction gave `beginDrive` a real caller and wave 1 specs the wedge,
+        # so it is a measurement now rather than an admission.
+        search="""  const drive = async (): Promise<void> => {
+    try {
+      onDriveStart();""",
+        replace="""  const drive = async (): Promise<void> => {
+    onDriveStart();
+    try {""",
+        # EPISODE_SPEC and not GATE_SPEC: measured 2026-09-09, the gate spec
+        # stays 50/50 green under this mutation and only the episode spec's
+        # "a throwing onDriveStart does not strand `active`" catches it. Naming
+        # a spec that cannot reach a mutation is how an entry reports a vacuous
+        # green, so the list says where the evidence actually is.
+        specs=[EPISODE_SPEC],
     ),
     Mutation(
         id="dropped-pass-is-silent",
@@ -629,43 +723,287 @@ MUTATIONS += [
         replace="""  gate = new Set<PublishGateReason>();""",
         specs=[FALSERED_SPEC],
     ),
-    # ---- the residual, recorded rather than hidden -------------------------
+    # ---- the residual, no longer a residual --------------------------------
+    #
+    # This entry was carried `expect="green"` with a `why_green` that was an
+    # admission rather than a reason: the `GatedPublication` adapter lived
+    # inline in `state.tsx`, which `node --test` cannot import (Solid, livekit,
+    # `@revolt/client`), so no mutation could reach it — and TWO fifth-review
+    # findings lived in exactly that region. Wave 1 extracted the adapter and
+    # the whole episode state into `publishGateEpisode.ts`, which loads under
+    # `node --test`. The flip to `expect="red"` below IS the measurement that
+    # the blind spot closed; the admission is deleted rather than reworded.
     Mutation(
         id="wiring-upstream-always-quiet",
-        what="state.tsx's GatedPublication adapter reports every sender detached, which re-creates the 2026-09-08 defect AND disables the fail-closed report",
-        file=STATE,
-        search="""          if (!sender) return "unpublished";
-          if (!sender.track) return "quiet";""",
-        replace="""          if (!sender) return "unpublished";
-          return "quiet";""",
-        specs=[GATE_SPEC, FALSERED_SPEC],
-        expect="green",
-        why_green=(
-            "state.tsx has no spec harness — the session specs replace the whole "
-            "media binding, and the sweep is reached only through it. COVERED: the "
-            "decision and the whole sweep body (the mutations above). NOT "
-            "covered: the ~12-line `GatedPublication` adapter, the "
-            "confirm-then-report "
-            "re-sweep, four episode flags (`#gateConfirmPass`, "
-            "`#gateConfirmScheduled`, `#gateSweepDropped`, "
-            "`#gateRepauseSpent`), the rule that populates the spent set, and "
-            "`callPauseDisproved`'s lifecycle — this region GREW in rounds four "
-            "and five, and TWO fifth-review findings lived in it where no "
-            "mutation could reach them. A `state.tsx`-level harness is now the "
-            "highest-value missing evidence on this branch. "
-            "Read the mechanism carefully — pinning "
-            "`upstream()` to `quiet` does NOT make every op `none` (a cleared "
-            "flag over a quiet wire still yields `pause`), but it silences BOTH "
-            "the stale-flag rebuild case — exactly the 2026-09-08 defect — and "
-            "the ENTIRE post-condition, since `upstream() === 'live'` becomes "
-            "universally false: the rejecting detach, the pause that resolved "
-            "over a re-attached wire, all of it. And it does so with the whole "
-            "suite green. The three reads it breaks "
-            "(`sender`, `sender.track`, `sender.transport?.state`) are the same "
-            "triple livekit's own guards use, verified against the pinned "
-            "livekit-client 2.15.13 source. Closing this needs a live leg on a "
-            "packaged shell, which has no renderer console by design."
-        ),
+        what="the GatedPublication adapter reports every sender detached, which re-creates the 2026-09-08 defect AND disables the fail-closed report entirely (`upstream() === 'live'` becomes universally false, so the post-condition can never fire)",
+        file=EPISODE,
+        search="""        if (!sender) return "unpublished";
+        if (!sender.track) return "quiet";""",
+        replace="""        if (!sender) return "unpublished";
+        return "quiet";""",
+        specs=[EPISODE_SPEC],
+    ),
+]
+
+# --- The extracted episode (banner-honesty wave 1) ---------------------------
+#
+# `publishGateEpisode.ts` + `publishGateEpisode.test.ts`. Everything here was
+# unreachable by any mutation until wave 1 moved it out of `state.tsx`: the
+# livekit adapter, the confirm-then-report re-sweep, the four episode flags,
+# the rule that populates the spend set, `callPauseDisproved`'s lifecycle, and
+# the four scopes (drive / episode-start / episode-end / call) whose collapse
+# has already shipped once in each direction.
+
+MUTATIONS += [
+    # ---- the four scopes ----------------------------------------------------
+    Mutation(
+        id="episode-pending-is-episode-scoped",
+        what="`repausePending` is cleared at beginEpisode instead of beginDrive — the REJECTED design: mechanically a permanent per-name disarm, measured to leave the mic live and the name latched through the mirror window for the rest of the call",
+        file=EPISODE,
+        search="""  beginDrive(): void {
+    this.#pending.clear();
+  }""",
+        replace="""  beginDrive(): void {
+    // (cleared at beginEpisode instead)
+  }""",
+        specs=[EPISODE_SPEC],
+    ),
+    Mutation(
+        id="episode-endepisode-forgets-a-dropped-pass",
+        what="endEpisode also clears `sweepDropped`, so the next episode's first sweep reports a clean bill over a pass that never ran",
+        file=EPISODE,
+        search="""  endEpisode(): void {
+    this.#spent.clear();
+    this.#pending.clear();
+    this.#cancelConfirm();""",
+        replace="""  endEpisode(): void {
+    this.#spent.clear();
+    this.#pending.clear();
+    this.#sweepDropped = false;
+    this.#cancelConfirm();""",
+        specs=[EPISODE_SPEC],
+    ),
+    # ---- what may be spent, and for how long -------------------------------
+    Mutation(
+        id="episode-spends-from-repause-failed",
+        what="the PERMANENT per-episode spend is fed from `repauseFailed` instead of `repauseThrew`, disarming the gate over a failure a retry could have fixed — `state.tsx:3415`, the fifth-review finding this module exists to make unwritable",
+        file=EPISODE,
+        search="""    for (const name of result.repauseThrew) {
+      this.#spent.add(name);""",
+        replace="""    for (const name of result.repauseFailed) {
+      this.#spent.add(name);""",
+        specs=[EPISODE_SPEC],
+    ),
+    Mutation(
+        id="episode-never-unspends",
+        what="the `proven` un-spend is dropped, so one failed repause disarms the publication for the rest of the episode even after the wire settles quiet on its own",
+        file=EPISODE,
+        search="""    for (const name of result.proven) {
+      this.#spent.delete(name);
+      this.#pending.delete(name);
+    }""",
+        replace="""    void result.proven;""",
+        specs=[EPISODE_SPEC],
+    ),
+    # ---- confirm before verdict --------------------------------------------
+    Mutation(
+        id="episode-reports-without-confirming",
+        what="the FIRST unproven sweep withdraws the banner's pause claim and spends, with no confirming re-sweep — a verdict off a single observation taken microtasks after the op, i.e. the 2026-09-08 false red",
+        file=EPISODE,
+        search="""    if (!confirming && this.#requestConfirm()) return;""",
+        replace="""    if (false && this.#requestConfirm()) return;""",
+        specs=[EPISODE_SPEC],
+    ),
+    Mutation(
+        id="episode-dropped-pass-clears",
+        what="a quiet sweep that ran over a DROPPED pass is treated as a clean bill — it restores the pause claim instead of re-scheduling, reporting on work that never ran",
+        file=EPISODE,
+        search="""      if (dropped) {
+        // This sweep did not see everything, so it is not a clean bill.
+        if (!this.#requestConfirm())
+          this.#deps.report("unproven", {
+            publications: [],
+            droppedPass: true,
+            confirmBudgetExhausted: true,
+          });
+        return;
+      }
+""",
+        replace="""""",
+        specs=[EPISODE_SPEC],
+    ),
+    Mutation(
+        id="episode-confirm-budget-never-restored",
+        what="a sweep that proves quiet does not restore the consecutive-confirm budget, so a long healthy episode exhausts it and the next transient window is reported as a verdict off ONE unconfirmed observation",
+        file=EPISODE,
+        search="""      // Everything this pass saw is quiet, so the confirm chain has served its
+      // purpose and the budget is whole again.
+      this.#confirmRounds = 0;""",
+        replace="""      // (budget not restored)""",
+        specs=[EPISODE_SPEC],
+    ),
+    # ---- the stale-room guard ----------------------------------------------
+    Mutation(
+        id="episode-ignores-stillcurrent",
+        what="`consume` acts on a sweep belonging to a DISPOSED call: it mutates the live episode's disarm sets and reports into the live UI",
+        file=EPISODE,
+        search="""    if (!this.#deps.stillCurrent()) return;
+""",
+        replace="""""",
+        specs=[EPISODE_SPEC],
+    ),
+    Mutation(
+        id="episode-unspends-before-the-room-check",
+        what="the room check sits BELOW the `proven` un-spend, so an in-flight sweep for a disposed call un-spends in the live episode — `state.tsx:3380` exactly",
+        file=EPISODE,
+        search="""    if (!this.#deps.stillCurrent()) return;
+
+    const confirming = this.#confirming;""",
+        replace="""    for (const name of result.proven) {
+      this.#spent.delete(name);
+      this.#pending.delete(name);
+    }
+    if (!this.#deps.stillCurrent()) return;
+
+    const confirming = this.#confirming;""",
+        specs=[EPISODE_SPEC],
+    ),
+    # ---- the deferred confirm across a lifecycle boundary (wave-1 FIX A) ----
+    #
+    # `#requestConfirm`'s deferred closure justifies its first guard with "a
+    # lifecycle boundary cleared the request while it was deferred". Only
+    # `resetForCall` honoured that until the fix round: a confirm deferred in
+    # episode 1 survived a 1→0 and a 0→1, passed both of the closure's landing
+    # guards (the gate is held again, the call is unchanged) and armed the NEXT
+    # episode's FIRST pass as confirming — which skips the confirm arm in
+    # `consume` entirely. The measured consequence is a verdict AND a permanent
+    # per-episode spend off ONE unconfirmed observation, which is the 2026-09-08
+    # false red re-armed at the episode boundary. One entry per boundary,
+    # because each boundary is a separate call site that can be dropped alone.
+    #
+    # 🔴 The third entry below is the IN-FLIGHT sibling, and it deliberately
+    # shares its `search` window with the first: `beginEpisode` closes the
+    # deferred path (`#cancelConfirm`) and the sweep path (`#confirming =
+    # false`) with two adjacent statements, and each has to be droppable on its
+    # own for the pair to be measured. Same window, different `replace`; both
+    # still match exactly once, which `apply()` enforces. The window is the
+    # three contiguous statements rather than the whole method body because
+    # `this.#cancelConfirm();` alone occurs at all THREE lifecycle boundaries —
+    # the ambiguity that would make this a hard error instead of a mutation.
+    Mutation(
+        id="episode-beginepisode-keeps-a-deferred-confirm",
+        what="beginEpisode stops taking back an outstanding confirm, so a confirm deferred in the LAST episode arms this one's first pass as confirming — verdict and permanent spend off one unconfirmed observation",
+        file=EPISODE,
+        search="""    this.#cancelConfirm();
+    this.#confirming = false;
+    this.#confirmRounds = 0;""",
+        replace="""    this.#confirming = false;
+    this.#confirmRounds = 0;""",
+        specs=[EPISODE_SPEC],
+    ),
+    Mutation(
+        id="episode-endepisode-keeps-a-deferred-confirm",
+        what="endEpisode stops taking back an outstanding confirm, so a request made under the gate that just drained stays outstanding — and blocks every later confirm in the call, since `#confirmScheduled` is the one-outstanding dedupe",
+        file=EPISODE,
+        search="""    this.#cancelConfirm();
+    // Consistent with both siblings: the resume sweep this boundary drives
+    // must not run on the previous episode's counter.
+    this.#confirmRounds = 0;
+    this.#deps.setPauseDisproved(false);""",
+        replace="""    this.#confirmRounds = 0;
+    this.#deps.setPauseDisproved(false);""",
+        specs=[EPISODE_SPEC],
+    ),
+    Mutation(
+        id="episode-beginepisode-keeps-the-inflight-confirming-pass",
+        what="beginEpisode stops DEMOTING the sweep already in flight, so a pass that armed `#confirming` in the LAST episode skips the confirm arm and verdicts in THIS one — the deferred-confirm defect's in-flight sibling, which `#cancelConfirm` alone does not close",
+        file=EPISODE,
+        search="""    this.#cancelConfirm();
+    this.#confirming = false;
+    this.#confirmRounds = 0;""",
+        replace="""    this.#cancelConfirm();
+    this.#confirmRounds = 0;""",
+        specs=[EPISODE_SPEC],
+    ),
+    # ---- what restores the confirm budget (wave-1 FIX B) --------------------
+    #
+    # TWO entries, in opposite directions, because this line has exactly two
+    # ways to be wrong and the specs must hold both walls:
+    #
+    #   too narrow — `result.unproven.length === 0`, the pre-fix condition. A
+    #     spent publication is issued nothing, reads `live` at its
+    #     post-condition and lands in `unproven` on every later pass, so the
+    #     moment anything is spent that reset is UNREACHABLE: four rounds burn
+    #     and a brand-new transient window on a DIFFERENT publication is
+    #     verdicted off a single observation.
+    #
+    #   too wide — also excluding `#pending`. That set is DRIVE-scoped, so a
+    #     trailing pass inside the very drive a live-lock is feeding would
+    #     restore the bound that drive is burning: the unbounded confirm chain,
+    #     verbatim. This one is the REJECTED alternative, and pinning a
+    #     rejected design is worth more than pinning the accepted one — nothing
+    #     else in the tree stops the next reader "simplifying" the asymmetry.
+    Mutation(
+        id="episode-budget-reset-ignores-a-spend",
+        what="the consecutive-confirm budget resets on `unproven.length === 0` again instead of on ACTIONABLE unproven, which a single spend makes permanently unreachable",
+        file=EPISODE,
+        search="""    if (actionable.length === 0 && !dropped) this.#confirmRounds = 0;""",
+        replace="""    if (result.unproven.length === 0 && !dropped) this.#confirmRounds = 0;""",
+        specs=[EPISODE_SPEC],
+    ),
+    Mutation(
+        id="episode-budget-reset-excludes-the-drive-set",
+        what="the REJECTED widening: `#pending` is excluded from `actionable` too, so a trailing pass inside a live-locked drive restores the bound that drive is burning — the unbounded confirm chain back",
+        file=EPISODE,
+        search="""    const actionable = result.unproven.filter((n) => !this.#spent.has(n));""",
+        replace="""    const actionable = result.unproven.filter(
+      (n) => !this.#spent.has(n) && !this.#pending.has(n),
+    );""",
+        specs=[EPISODE_SPEC],
+    ),
+    # ---- the verdict's precondition (wave-1 FIX C) --------------------------
+    Mutation(
+        id="episode-verdict-fires-under-an-empty-gate",
+        what="the `gateHeld()` guard before the verdict is bypassed, so a confirm deferred under a held gate that lands after the gate DRAINED writes `callPauseDisproved` true — where it latches, because every path back to false is itself gate- or boundary-conditioned",
+        file=EPISODE,
+        search="""    if (!this.#deps.gateHeld()) {""",
+        replace="""    if (false) {""",
+        specs=[EPISODE_SPEC],
+    ),
+    # ---- the budget at the episode boundary (wave-1 FIX D) ------------------
+    Mutation(
+        id="episode-endepisode-keeps-a-spent-budget",
+        what="endEpisode leaves `#confirmRounds` where the last episode left it, so the resume sweep this very boundary drives runs on the PREVIOUS episode's exhausted counter and takes its first observation as a verdict",
+        file=EPISODE,
+        search="""    this.#cancelConfirm();
+    // Consistent with both siblings: the resume sweep this boundary drives
+    // must not run on the previous episode's counter.
+    this.#confirmRounds = 0;
+    this.#deps.setPauseDisproved(false);
+  }""",
+        replace="""    this.#cancelConfirm();
+    this.#deps.setPauseDisproved(false);
+  }""",
+        specs=[EPISODE_SPEC],
+    ),
+    # ---- the livekit adapter ------------------------------------------------
+    Mutation(
+        id="episode-adapter-snapshots-the-wire",
+        what="`gatedPublicationsFrom` SNAPSHOTS the pause flag instead of exposing a getter, so the sweep's post-condition re-asserts its own pre-condition — deleting the only read in the stack that observes what the op actually did",
+        file=EPISODE,
+        search="""      get upstreamPaused() {
+        return track.isUpstreamPaused;
+      },""",
+        replace="""      upstreamPaused: track.isUpstreamPaused,""",
+        specs=[EPISODE_SPEC],
+    ),
+    Mutation(
+        id="episode-adapter-keeps-a-trackless-publication",
+        what="a publication mid-republish (no `track`) is presented to the sweep anyway, so every read in the adapter dereferences undefined and one republish costs the whole sweep",
+        file=EPISODE,
+        search="""    if (!track) continue;""",
+        replace="""    if (!track && false) continue;""",
+        specs=[EPISODE_SPEC],
     ),
 ]
 
