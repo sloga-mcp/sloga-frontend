@@ -24,8 +24,10 @@ import {
   type VideoCaptureOptions,
   ConnectionState,
   isE2EESupported,
+  isLocalTrack,
   LocalAudioTrack,
   LocalVideoTrack,
+  ParticipantEvent,
   Room,
   RoomEvent,
   ScreenSharePresets,
@@ -218,7 +220,11 @@ import {
   sessionSetupDecision,
 } from "./mlsSessionSetupPolicy";
 import { pauseVerdictReaders } from "./pauseVerdict";
-import { applyPublishGate, coalescingSweeper } from "./publishGate";
+import {
+  applyPublishGate,
+  coalescingSweeper,
+  publishGateOp,
+} from "./publishGate";
 import {
   type PauseDisproofVerdict,
   gatedPublicationsFrom,
@@ -1099,7 +1105,7 @@ class Voice {
    * livekit ops produce (`coalescingSweeper` explains why nesting there is a
    * live-lock). Rebuilt per connect, so an episode's state never crosses calls.
    */
-  #gateSweeper: { sweep(): Promise<void> } | undefined;
+  #gateSweeper: { sweep(): Promise<void>; passes(): number } | undefined;
   /**
    * The Room `#gateSweeper` was built for. Its ONE consumer is
    * `scheduleConfirm`, which has to capture a Room when a confirm is ARMED
@@ -2689,6 +2695,51 @@ class Voice {
     // or is skipped over a closing transport, which no enumeration could have
     // caught.
     room.addListener("localTrackPublished", (pub) => {
+      // [gate-trace] wave-0 seam 6 (rejoin-leak plan 2.3): the publication
+      // CENSUS at handler ENTRY, before the sweep kick below. OBSERVATION
+      // ONLY -- every read is a getter and nothing here pauses.
+      //
+      // 🔴 `upstream` is derived through the SAME `gatedPublicationsFrom`
+      // adapter the sweep uses, never from the two booleans:
+      // `UpstreamState` is three-valued and the live/quiet split reads the
+      // TRANSPORT, so a closed-transport sender would print `pause` where
+      // the sweep answers `none`. The adapter SKIPS a publication with no
+      // track, so `not-gated` for a present publication is itself a datum,
+      // and it names entries `${source}/${trackSid}` -- the key
+      // `repauseSpent` / `repausePending` are keyed by.
+      const gateTraceCensus: string[] = [];
+      for (const gtPub of room.localParticipant.trackPublications.values()) {
+        const gtGated = gatedPublicationsFrom([gtPub])[0];
+        const gtTrack = gtPub.track;
+        const gtUpstream = gtGated ? gtGated.upstream() : null;
+        const gtOp = gtGated
+          ? publishGateOp({
+              gateHeld: this.#gateHeld(),
+              upstreamPaused: gtGated.upstreamPaused,
+              upstream: gtGated.upstream(),
+            })
+          : null;
+        gateTraceCensus.push(
+          `${gtPub.source}/${gtPub.trackSid} paused=${gtTrack?.isUpstreamPaused ?? "no-track"} sender=${!!gtTrack?.sender} senderTrack=${!!gtTrack?.sender?.track} transport=${gtTrack?.sender?.transport?.state ?? "none"} upstream=${gtUpstream ?? "not-gated"} op=${gtOp ?? "not-gated"}`,
+        );
+      }
+      console.error("[gate-trace]", {
+        t: Date.now(),
+        p: performance.now(),
+        at: "localTrackPublished.entry",
+        subject: `${pub.source}/${pub.trackSid}`,
+        subjectInPublications: room.localParticipant.trackPublications.has(
+          pub.trackSid,
+        ),
+        publicationCount: room.localParticipant.trackPublications.size,
+        gate: [...this.#publishGate],
+        gateSize: this.#publishGate.size,
+        gateHeld: this.#gateHeld(),
+        gateGen: this.#gateGen,
+        passes: this.#gateSweeper?.passes() ?? null,
+        currentRoom: this.room() === room,
+        publications: gateTraceCensus,
+      });
       this.#setCallParticipantsVersion((v) => v + 1);
       // A republish (the E2EE flip, the signal-reconnect republish, the
       // declaration seam) lands here on a brand-new sender with livekit's
@@ -2715,7 +2766,56 @@ class Voice {
       track.off(TrackEvent.TrackProcessorUpdate, this.#reassertPublishGate);
       track.on(TrackEvent.UpstreamResumed, this.#reassertPublishGate);
       track.on(TrackEvent.TrackProcessorUpdate, this.#reassertPublishGate);
+      // [gate-trace] wave-0 seam 10 (rejoin-leak plan 2.3): TWO log-only
+      // listeners, following the `off` BEFORE `on` idiom above and keyed
+      // on listener IDENTITY for the same reason -- `republishAllTracks`
+      // reuses the SAME `LocalTrack`, and an inline arrow could never be
+      // removed. They are separate from `#reassertPublishGate` because
+      // that one returns early on an empty gate (the case under test) and
+      // cannot say which of the two events fired. OBSERVATION ONLY.
+      track.off(TrackEvent.UpstreamResumed, this.#traceUpstreamResumed);
+      track.off(TrackEvent.TrackProcessorUpdate, this.#traceProcessorUpdate);
+      track.on(TrackEvent.UpstreamResumed, this.#traceUpstreamResumed);
+      track.on(TrackEvent.TrackProcessorUpdate, this.#traceProcessorUpdate);
     });
+
+    // [gate-trace] wave-0 seam 7 (rejoin-leak plan 2.3): the ONLY seam
+    // inside the republish window. Between `emit(LocalSenderCreated)` and
+    // the `LocalTrackPublished` that triggers a sweep sits one
+    // offer/answer, and the publication is ABSENT from
+    // `trackPublications` for all of it -- so no sweep can see the new
+    // sender, and without the census HERE the plan's C0 row is inferred
+    // rather than measured.
+    //
+    // 🔴 OBSERVATION ONLY. This event is exactly where a wave-1 fix would
+    // land; wave 0 does not pause here, and a lane that 'just also pauses'
+    // here has run wave 1 inside wave 0.
+    room.localParticipant.on(
+      ParticipantEvent.LocalSenderCreated,
+      (sender, track) => {
+        const gtSid = track.sid ?? null;
+        console.error("[gate-trace]", {
+          t: Date.now(),
+          p: performance.now(),
+          at: "localSenderCreated",
+          source: track.source,
+          sid: gtSid,
+          sidInPublications:
+            gtSid !== null &&
+            room.localParticipant.trackPublications.has(gtSid),
+          publicationCount: room.localParticipant.trackPublications.size,
+          upstreamPaused: isLocalTrack(track) ? track.isUpstreamPaused : null,
+          senderTrack: !!sender.track,
+          transport: sender.transport?.state ?? null,
+          gate: [...this.#publishGate],
+          gateSize: this.#publishGate.size,
+          gateHeld: this.#gateHeld(),
+          gateGen: this.#gateGen,
+          passes: this.#gateSweeper?.passes() ?? null,
+          currentRoom: this.room() === room,
+        });
+      },
+    );
 
     // Set only by the `join_call` step below, so the catch can tell the
     // server's answer to THIS join apart from a same-typed error thrown by
@@ -2886,6 +2986,19 @@ class Voice {
       // this reason once bound (releases it on its verdict). Only for E2EE-
       // capable shells (an unsupported shell is a normal plaintext call).
       if (e2eeCapable) this.#publishGate.add("negotiating");
+      // [gate-trace] wave-0 seam 1 (rejoin-leak plan 2.3). OBSERVATION
+      // ONLY: reads, no state change, no pause.
+      console.error("[gate-trace]", {
+        t: Date.now(),
+        p: performance.now(),
+        at: "connect.add",
+        e2eeCapable,
+        connectGen: this.#connectGen,
+        gateGen: this.#gateGen,
+        gate: [...this.#publishGate],
+        gateSize: this.#publishGate.size,
+        passes: this.#gateSweeper?.passes() ?? null,
+      });
       // Fresh sweeper per call: its in-flight/pending state must never cross
       // from a disposed Room to this one. The gen bump is what KILLS the old
       // sweeper — a sweep of it still parked on an awaited livekit op resumes
@@ -3248,6 +3361,20 @@ class Voice {
       this.remoteControl.detach();
       this.#clearDiceToasts();
       this.callEncryption.clear();
+      // [gate-trace] wave-0 seam 2 (rejoin-leak plan 2.3): the leave half
+      // is observed by nothing today, and M2 needs a POSITIVE witness for
+      // the real-leave arm rather than an inference from silence.
+      // OBSERVATION ONLY.
+      console.error("[gate-trace]", {
+        t: Date.now(),
+        p: performance.now(),
+        at: "disconnect.preclear",
+        gate: [...this.#publishGate],
+        gateSize: this.#publishGate.size,
+        connectGen: this.#connectGen,
+        gateGen: this.#gateGen,
+        passes: this.#gateSweeper?.passes() ?? null,
+      });
       this.#publishGate.clear();
       // Same gen bump as at connect: every sweep of the sweeper being dropped
       // here is refused from now on, including the ones still parked on an
@@ -3562,6 +3689,23 @@ class Voice {
    * bypass it while a reason is held.
    */
   async #pauseGate(room: Room, reason: PublishGateReason): Promise<void> {
+    // [gate-trace] wave-0 seam 3 (rejoin-leak plan 2.3). Read BEFORE the
+    // guard so the guard line and its comment stay byte-identical; the
+    // duplicated predicate is the same pure signal read. A pause the
+    // stale-writer guard DROPS is invisible today, and a dropped pause is
+    // exactly as interesting as one that lands. OBSERVATION ONLY.
+    const gateTraceSizeBefore = this.#publishGate.size;
+    if (this.room() !== room)
+      console.error("[gate-trace]", {
+        t: Date.now(),
+        p: performance.now(),
+        at: "pauseGate.staleRoom",
+        reason,
+        gate: [...this.#publishGate],
+        gateSize: gateTraceSizeBefore,
+        gateGen: this.#gateGen,
+        passes: this.#gateSweeper?.passes() ?? null,
+      });
     // Stale-writer guard: a binding built for a PREVIOUS call must not add
     // reasons to the gate it shares with the current one — its session is
     // disposed, so nothing would ever release them and every new publication
@@ -3571,6 +3715,20 @@ class Voice {
     // last time is not evidence about this one.
     if (this.#publishGate.size === 0) this.#gateEpisode.beginEpisode();
     this.#publishGate.add(reason);
+    // [gate-trace] wave-0 seam 3: the edge and the resulting set.
+    console.error("[gate-trace]", {
+      t: Date.now(),
+      p: performance.now(),
+      at: "pauseGate",
+      reason,
+      staleRoom: false,
+      sizeBefore: gateTraceSizeBefore,
+      edge: gateTraceSizeBefore === 0,
+      gate: [...this.#publishGate],
+      gateSize: this.#publishGate.size,
+      gateGen: this.#gateGen,
+      passes: this.#gateSweeper?.passes() ?? null,
+    });
     // The Android leg STOPS (never pauses) the instant the primary pauses
     // (§0.4) — on reason ADD, before awaiting the WebView pause ops, and
     // deliberately NOT in #applyPublishGate, which re-runs on every
@@ -3586,6 +3744,25 @@ class Voice {
   }
 
   async #resumeGate(room: Room, reason: PublishGateReason): Promise<void> {
+    // [gate-trace] wave-0 seam 4 (rejoin-leak plan 2.3), same shape as
+    // seam 3. The stale return is recorded under the SAME `at` literal
+    // with `staleRoom: true` -- the pinned cross-lane `at` list carries no
+    // `resumeGate.staleRoom` and no lane invents one. OBSERVATION ONLY.
+    const gateTraceSizeBefore = this.#publishGate.size;
+    if (this.room() !== room)
+      console.error("[gate-trace]", {
+        t: Date.now(),
+        p: performance.now(),
+        at: "resumeGate",
+        reason,
+        staleRoom: true,
+        sizeBefore: gateTraceSizeBefore,
+        gate: [...this.#publishGate],
+        gateSize: gateTraceSizeBefore,
+        emptied: false,
+        gateGen: this.#gateGen,
+        passes: this.#gateSweeper?.passes() ?? null,
+      });
     // Same stale-writer guard, for the inverse hazard: a stale resume must
     // not release a reason the CURRENT call's session is still relying on.
     if (this.room() !== room) return;
@@ -3594,6 +3771,21 @@ class Voice {
     // `endEpisode` clears `callPauseDisproved` along with the spend sets, and
     // deliberately NOT the dropped-pass flag.
     if (this.#publishGate.size === 0) this.#gateEpisode.endEpisode();
+    // [gate-trace] wave-0 seam 4: the edge, the resulting set, and whether
+    // the set reached size 0.
+    console.error("[gate-trace]", {
+      t: Date.now(),
+      p: performance.now(),
+      at: "resumeGate",
+      reason,
+      staleRoom: false,
+      sizeBefore: gateTraceSizeBefore,
+      gate: [...this.#publishGate],
+      gateSize: this.#publishGate.size,
+      emptied: this.#publishGate.size === 0,
+      gateGen: this.#gateGen,
+      passes: this.#gateSweeper?.passes() ?? null,
+    });
     await this.#applyPublishGate(room);
   }
 
@@ -3643,6 +3835,22 @@ class Voice {
         // disposed call marks the live episode's next clean sweep unclean and
         // re-arms its confirm.
         () => {
+          // [gate-trace] wave-0 seam 9 (rejoin-leak plan 2.3). Logged
+          // WHETHER OR NOT `stillCurrent()` holds -- a drop discarded by
+          // the stale-writer guard is exactly as interesting as one that
+          // lands. The guarded statement below is unchanged, and
+          // `stillCurrent` is a pure predicate. OBSERVATION ONLY.
+          console.error("[gate-trace]", {
+            t: Date.now(),
+            p: performance.now(),
+            at: "sweeper.dropped",
+            stillCurrent: stillCurrent(),
+            gate: [...this.#publishGate],
+            gateSize: this.#publishGate.size,
+            sweeperGen: gen,
+            gateGen: this.#gateGen,
+            passes: this.#gateSweeper?.passes() ?? null,
+          });
           if (stillCurrent()) this.#gateEpisode.noteDropped();
         },
         // 🔴 The DRIVE boundary, and the reason this argument may not be
@@ -3750,6 +3958,44 @@ class Voice {
     const room = this.room();
     if (!room || this.#publishGate.size === 0) return;
     void this.#applyPublishGate(room);
+  };
+
+  /**
+   * [gate-trace] wave-0 seam 10 (rejoin-leak plan 2.3). TWO log-only
+   * listeners, one per event, as STABLE instance arrow-properties so
+   * `localTrackPublished` can `off` before `on` keyed on identity.
+   *
+   * Separate from `#reassertPublishGate`, which cannot serve: it returns
+   * early on an empty gate -- the exact case under test -- and both of its
+   * registrations share one arrow, so it cannot say which event fired.
+   *
+   * OBSERVATION ONLY: neither of these sweeps, pauses or mutates anything.
+   */
+  #traceUpstreamResumed = (): void => {
+    console.error("[gate-trace]", {
+      t: Date.now(),
+      p: performance.now(),
+      at: "track.upstreamResumed",
+      gate: [...this.#publishGate],
+      gateSize: this.#publishGate.size,
+      gateHeld: this.#gateHeld(),
+      gateGen: this.#gateGen,
+      passes: this.#gateSweeper?.passes() ?? null,
+    });
+  };
+
+  /** See {@link Voice.#traceUpstreamResumed}. */
+  #traceProcessorUpdate = (): void => {
+    console.error("[gate-trace]", {
+      t: Date.now(),
+      p: performance.now(),
+      at: "track.processorUpdate",
+      gate: [...this.#publishGate],
+      gateSize: this.#publishGate.size,
+      gateHeld: this.#gateHeld(),
+      gateGen: this.#gateGen,
+      passes: this.#gateSweeper?.passes() ?? null,
+    });
   };
 
   /**
