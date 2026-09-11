@@ -77,13 +77,12 @@ export default function ChannelOverview(props: ChannelSettingsProps) {
   const [callsSaving, setCallsSaving] = createSignal(false);
 
   /**
-   * Turn this group's voice and video calling on or off. Group calling is
-   * owner opt-in server-side — `Channel::voice()` is empty until the owner
-   * sends voice information — and the client had no control that sent it, so
-   * every group offered a call card whose join was refused with
-   * `NotAVoiceChannel`. `disabled` keeps any saved limit while calling is
-   * off; stoat-api predates the field, so the payload passes through
-   * verbatim. `isVoice` reads the server's answer back after the update.
+   * Turn this group's voice and video calling on or off. Group calling is on
+   * by default server-side, and every group carries a `voice` object; calling
+   * is off only while it holds `disabled: true`. This replaces the whole
+   * object, so a saved `max_users` is not kept. stoat-api predates the field,
+   * so the payload passes through verbatim. `isVoice` reads the server's
+   * answer back after the update.
    */
   async function toggleCalls() {
     setCallsSaving(true);
@@ -459,8 +458,8 @@ export default function ChannelOverview(props: ChannelSettingsProps) {
           </Text>
           <Text>
             <Trans>
-              Group calls are off by default. Turn them on to let members start
-              and join voice and video calls here.
+              Group calls are on by default. Turn them off to stop anyone from
+              starting or joining voice and video calls here.
             </Trans>
           </Text>
           <div>

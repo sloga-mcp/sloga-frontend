@@ -3237,8 +3237,8 @@ msgid "Grants {0} permissions and denies {1} permissions"
 msgstr "Grants {0} permissions and denies {1} permissions"
 
 #: components/app/interface/settings/channel/Overview.tsx
-msgid "Group calls are off by default. Turn them on to let members start and join voice and video calls here."
-msgstr "Group calls are off by default. Turn them on to let members start and join voice and video calls here."
+msgid "Group calls are on by default. Turn them off to stop anyone from starting or joining voice and video calls here."
+msgstr "Group calls are on by default. Turn them off to stop anyone from starting or joining voice and video calls here."
 
 #: components/modal/modals/CreateGroup.tsx
 msgid "Group Name"
