@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" fill="none">
+  <title>Founding Streamer</title>
+  <g stroke="#8B5CF6" stroke-width="5" stroke-linecap="round" fill="none">
+    <path d="M14 10.55A28 28 0 0 0 14 53.45"/>
+    <path d="M21.07 18.98A17 17 0 0 0 21.07 45.02"/>
+    <path d="M42.93 18.98A17 17 0 0 1 42.93 45.02"/>
+    <path d="M50 10.55A28 28 0 0 1 50 53.45"/>
+  </g>
+  <circle cx="32" cy="32" r="7.5" fill="#8B5CF6"/>
+</svg>

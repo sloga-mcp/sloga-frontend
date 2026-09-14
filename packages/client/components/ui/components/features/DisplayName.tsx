@@ -10,6 +10,10 @@ import {
 import { useState } from "@revolt/state";
 
 import { ColouredText } from "../utils/ColouredText";
+import {
+  FOUNDING_STREAMER_COLOUR,
+  isFoundingStreamer,
+} from "../utils/foundingStreamer";
 
 /**
  * Sloga brand palette, in wordmark order (S l • g a)
@@ -21,8 +25,8 @@ const BRAND_COLOURS = ["#3BB8ED", "#F5870D", "#27A163", "#CF2A27", "#C05FC8"];
  *
  * Precedence: a masquerade shows the name in its own color (if any) with
  * nothing personal; staff get the brand letters; otherwise the role color
- * wins over the user's own color. Font and effect apply everywhere except
- * under a masquerade.
+ * wins over the user's own color, and a Founding Streamer with neither gets
+ * the violet. Font and effect apply everywhere except under a masquerade.
  *
  * The user's name style is trusted as sent: the server only includes the
  * parts their perks allow, and `User.perks` is not known for anyone but the
@@ -74,6 +78,9 @@ export function DisplayName(props: {
       brand: props.brand,
       roleColour: props.member?.roleColour,
       style: permittedNameStyle(props.user?.nameStyle),
+      fallbackColour: isFoundingStreamer(props.user)
+        ? FOUNDING_STREAMER_COLOUR
+        : undefined,
     }),
   );
 

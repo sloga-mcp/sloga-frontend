@@ -3,6 +3,10 @@ export { ContextMenuGuard } from "./ContextMenuGuard";
 export { Deferred } from "./Deferred";
 export { Draggable } from "./Draggable";
 export { Form2 } from "./Form2";
+export {
+  FOUNDING_STREAMER_COLOUR,
+  isFoundingStreamer,
+} from "./foundingStreamer";
 export { iconSize, symbolSize } from "./iconSize";
 export { Initials } from "./Initials";
 export { ListView } from "./ListView";

@@ -18,17 +18,23 @@ export type NameLayers = {
 
 /**
  * Decide how a name renders: masquerade > brand > role color > personal
- * color. Font and effect are kept at every level except masquerade, where the
- * message is presented as someone else and nothing personal may leak through.
+ * color > fallback color. Font and effect are kept at every level except
+ * masquerade, where the message is presented as someone else and nothing
+ * personal may leak through.
  *
  * `style` is trusted as-is: the server only sends the parts the user's perks
  * allow, so no perk check happens here.
+ *
+ * `fallbackColour` is a badge color (the Founding Streamer violet): it never
+ * beats a role or a color the user picked, and a masquerade or the staff
+ * brand ignores it.
  */
 export function resolveNameLayers(input: {
   masquerade?: boolean;
   brand?: boolean;
   roleColour?: string | null;
   style?: NameStyle;
+  fallbackColour?: string;
 }): NameLayers {
   if (input.masquerade) return { mode: "plain" };
 
@@ -42,7 +48,8 @@ export function resolveNameLayers(input: {
   }
 
   const layers: NameLayers = { mode: "styled" };
-  const colour = input.roleColour || input.style?.colour;
+  const colour =
+    input.roleColour || input.style?.colour || input.fallbackColour;
   if (colour) layers.colour = colour;
   if (hasStyle) layers.style = style;
   return layers;

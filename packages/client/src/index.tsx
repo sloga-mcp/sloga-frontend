@@ -62,6 +62,7 @@ import Interface from "./Interface";
 import "./index.css";
 import { DevelopmentPage } from "./interface/Development";
 import { Discover } from "./interface/Discover";
+import { FoundingStreamers } from "./interface/FoundingStreamers";
 import { Friends } from "./interface/Friends";
 import { FriendsPopout } from "./interface/FriendsPopout";
 import { HomePage } from "./interface/Home";
@@ -361,6 +362,18 @@ render(
               component={Discover}
             />
             <Route path="/discover/server/:id" component={DiscoverRedirect} />
+            {/* Child of `Interface`: the page needs an authenticated client
+                for avatar URLs (`avatarUrl` returns undefined without one,
+                so cards fall back to initials) and for the app chrome,
+                and `Interface` redirects logged-out visitors to `/login`
+                (src/Interface.tsx:149-152). The underlying
+                `GET /discover/streamers` route is anonymous by design; the
+                page is not.
+
+                Sitting above the `/*` catch-all is NOT what protects this
+                route -- @solidjs/router sorts branches by specificity,
+                not source order (dist/routing.js:282). */}
+            <Route path="/streamers" component={FoundingStreamers} />
             <Route path="/settings" component={SettingsRedirect} />
             <Route path="/invite/:code" component={InviteRedirect} />
             <Route path="/bot/:code" component={BotRedirect} />

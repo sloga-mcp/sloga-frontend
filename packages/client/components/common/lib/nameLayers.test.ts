@@ -54,6 +54,40 @@ test("personal color applies when there is no role color", () => {
   }
 });
 
+test("fallback color loses to role and personal color", () => {
+  const VIOLET = "#8B5CF6";
+  assert.equal(
+    resolveNameLayers({ roleColour: ROLE, style: FULL, fallbackColour: VIOLET })
+      .colour,
+    ROLE,
+  );
+  assert.equal(
+    resolveNameLayers({ style: FULL, fallbackColour: VIOLET }).colour,
+    "#ff00aa",
+  );
+  for (const roleColour of [undefined, null, ""]) {
+    assert.deepEqual(
+      resolveNameLayers({
+        roleColour,
+        style: { font: "Serif" },
+        fallbackColour: VIOLET,
+      }),
+      { mode: "styled", colour: VIOLET, style: { font: "Serif" } },
+    );
+  }
+});
+
+test("masquerade and brand ignore the fallback color", () => {
+  assert.deepEqual(
+    resolveNameLayers({ masquerade: true, fallbackColour: "#8B5CF6" }),
+    { mode: "plain" },
+  );
+  assert.deepEqual(
+    resolveNameLayers({ brand: true, fallbackColour: "#8B5CF6" }),
+    { mode: "brand" },
+  );
+});
+
 test("role color alone, with no personal style", () => {
   assert.deepEqual(resolveNameLayers({ roleColour: ROLE }), {
     mode: "styled",
