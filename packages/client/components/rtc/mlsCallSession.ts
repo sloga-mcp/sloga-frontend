@@ -132,6 +132,11 @@ import {
   negotiatingFailsafeReason,
 } from "./mlsNegotiatingFailsafe";
 import {
+  WELCOME_CURRENCY_BACKOFF_MS,
+  classifyRefetchFailure,
+  welcomeCurrencyVerdict,
+} from "./mlsRefetchPolicy";
+import {
   admitInProgressVerdict,
   rejoinReintentWindowMs,
   rejoinServeAction,
@@ -156,6 +161,18 @@ const JOINER_RETRY_MS = 10_000;
 const MAX_JOINER_RETRIES = 3;
 /** Bound on the whole locked submit critical section (H1) — no hung wedge. */
 const SUBMIT_TIMEOUT_MS = 10_000;
+/**
+ * Bound on the whole Welcome currency check (LDP-M3): the fetch, every
+ * `WELCOME_CURRENCY_BACKOFF_MS` retry and the catch-up. Keeping
+ * `#joinedGeneration` at the adopt disarms the enrolment backstop for the
+ * join, so this deadline is what bounds a check the DS never answers.
+ */
+const WELCOME_CURRENCY_DEADLINE_MS = SUBMIT_TIMEOUT_MS;
+/**
+ * The curated error every late-drain latch carries (LDP-n2). Never the raw
+ * transport error: its message names the group id.
+ */
+const ENCRYPTION_UNCONFIRMED = "This call's encryption could not be confirmed";
 /** Park/gap-refetch attempts before escalating to desync → rejoin (M4). */
 const MAX_PARK_ATTEMPTS = 8;
 /** Per-envelope transient-error retries before ack+drop-as-poison (item 4). */
@@ -1077,6 +1094,25 @@ interface StagedCommit {
   kind: StagedCommitKind;
 }
 
+/** A Welcome adopted at `epoch`, awaiting its DS currency check (W2-M2). */
+interface WelcomeCurrencyPending {
+  groupId: string;
+  epoch: number;
+  generation: number;
+}
+
+/** One run of the Welcome currency check. */
+interface WelcomeCurrencyCheck {
+  pending: WelcomeCurrencyPending;
+  /**
+   * Set by the check's deadline or by a re-secure raised while it runs:
+   * every continuation after it acts on nothing.
+   */
+  expired: boolean;
+  /** Cuts a backoff wait short (the deadline fired). */
+  wake: (() => void) | null;
+}
+
 /**
  * Once-per-page-lifetime-PER-CHANNEL tokens for the §4.1 startup
  * fresh-rejoin wipe. State surviving from before this page (a reload /
@@ -1195,6 +1231,20 @@ export class MlsCallSession {
   /** Whether `#establish` is currently running (suppresses the F3 alarm). */
   #establishInFlight = false;
   /**
+   * A Welcome adopted but not yet confirmed current by the DS (W2-M2). Set
+   * by `#onEpochAdvanced`'s welcome arm in place of `#toActive`; `#pump`
+   * runs the check under the lock right after the `#consume` that set it,
+   * and clears it when the check settles. Until then the session stays
+   * non-active, which is what holds the publish gate.
+   */
+  #welcomeCurrency: WelcomeCurrencyPending | null = null;
+  /**
+   * The currency check in flight: set for exactly the lifetime of its
+   * promise, cleared in a `finally`. An OWNER for the re-securing backstop
+   * (`#resecuringHasOwner`) — a pending record alone is not.
+   */
+  #welcomeCurrencyCheck: WelcomeCurrencyCheck | null = null;
+  /**
    * When each identity (`user:device`) was last observed being ADDED to the
    * MLS roster — our own admit reaching the DS, a racing admitter's win, or a
    * reconcile watching it appear. Read by the §4.8 rejoin-serve staleness
@@ -1235,6 +1285,15 @@ export class MlsCallSession {
   #hasLocalKey = false;
   /** Outstanding epoch-fenced Add-grace local-install timer (NEW-1). */
   #graceTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * The epoch of the LOCAL send key actually installed for the current group
+   * (-1: none). Set only once an install that switches it resolved — the
+   * immediate path's `applyKeys`, the Add-grace fire's `applyLocalKey` — and
+   * only while that epoch is still `#installEpoch`, so a group reset or a
+   * newer push during the await leaves it lower, never higher. A fact, where
+   * `#graceTimer` is only an intent (LDA-M1).
+   */
+  #ownSendKeyEpoch = -1;
   /** True while a rotation is "known" for the §4.4 loud-state debounce. */
   #rotationWindow = false;
   #rotationWindowTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1899,6 +1958,10 @@ export class MlsCallSession {
     this.#cancelReupgrade();
     for (const timer of this.#timers) clearTimeout(timer);
     this.#timers.clear();
+    // LDA-n1: a Welcome currency check in a backoff wait just lost its timer.
+    // Wake it, or its pump continuation never settles; it then sees the
+    // closed session and acts on nothing.
+    this.#welcomeCurrencyCheck?.wake?.();
     for (const timer of this.#scheduledAdmits.values())
       if (timer) clearTimeout(timer);
     this.#scheduledAdmits.clear();
@@ -3372,7 +3435,18 @@ export class MlsCallSession {
               );
               continue;
             }
-            await this.#consume(env);
+            try {
+              await this.#consume(env);
+            } catch (error) {
+              // Backstop (LD-D4): one throwing step never escapes the pump
+              // as an unhandled rejection, and never stops the batch.
+              this.#onDrainStepThrew(env, error);
+            }
+            // Still under the lock: nothing else of the adopted group applies
+            // before the DS has said whether the Welcome is current.
+            if (this.#welcomeCurrency && !this.#welcomeCurrencyCheck) {
+              await this.#runWelcomeCurrencyCheck();
+            }
           }
         } finally {
           release();
@@ -3516,7 +3590,8 @@ export class MlsCallSession {
         this.#parkAttempts++;
         this.#metrics.recordPark();
         this.#metrics.recordGapRefetch();
-        await this.#gapRefetchInline(action.fromEpoch);
+        if (await this.#gapRefetchFailed(envelope, action.fromEpoch))
+          this.#scheduleRetry(envelope);
         return;
       }
       case "escalate_desync":
@@ -3643,17 +3718,44 @@ export class MlsCallSession {
     }
   }
 
+  /**
+   * Fetch the commits from `fromEpoch` and apply them INLINE (the caller holds
+   * the lock). Returns when caught up, when the answer was handed to a
+   * transition (a 404 → re-securing + a scheduled fresh rejoin, receiver lag
+   * → a scheduled fresh rejoin, `feature_disabled` → plaintext), or when the
+   * group changed or the session ended under an await (moot). THROWS when the
+   * refetch failed — a transient error, or an answer that stops short of
+   * `current_epoch` (LDP-m3): the drain arm turns that into a bounded retry
+   * of its mailbox envelope (`#gapRefetchFailed`), and `#rebaseInline`'s
+   * caller catches it into re-securing, as before.
+   */
   async #gapRefetchInline(fromEpoch: number): Promise<void> {
-    if (!this.#groupId || this.#terminal()) return;
-    const res = await this.#deps.bridge.mlsFetchCommits(
-      this.#groupId,
-      fromEpoch,
-    );
+    // Captured before the await: every continuation checks it (LDP-M2).
+    const groupId = this.#groupId;
+    if (!groupId || this.#terminal()) return;
+    let res: Awaited<ReturnType<E2EEBridge["mlsFetchCommits"]>>;
+    try {
+      res = await this.#deps.bridge.mlsFetchCommits(groupId, fromEpoch);
+    } catch (error) {
+      if (this.#terminal() || this.#groupId !== groupId) return;
+      if (classifyRefetchFailure(error) === "transient") throw error;
+      // LD-D2: a 404 is the DS saying this device is not in the group. It is
+      // unauthenticated, so not `#onRemovedSelf`: re-secure now (the gate
+      // holds) and rejoin fresh, as the join-intent 404 and receiver lag do.
+      console.warn("[mls] gap refetch: not a member of the call group");
+      this.#resecureAndRejoin(
+        "gap refetch: the delivery service does not list this device",
+        "rejoin_fresh:refetch_not_member",
+      );
+      return;
+    }
+    if (this.#terminal() || this.#groupId !== groupId) return;
     if (res.kind === "feature_disabled") {
       this.#toPlaintext();
       return;
     }
-    if (res.kind !== "ok") return; // never a conflict on this route
+    // Never a conflict on this route; anything but `ok` is a failed refetch.
+    if (res.kind !== "ok") throw new Error(`gap refetch answered ${res.kind}`);
 
     // Lag / wraparound guard (§1.5): if the group has advanced far past the
     // epoch we are missing from, don't grind a huge backlog through the drain —
@@ -3671,9 +3773,338 @@ export class MlsCallSession {
       console.warn(`[mls] receiver lag ${lag.lag} approaching desync`);
 
     for (const info of res.body.commits) {
-      if (this.#terminal()) return;
+      if (this.#terminal() || this.#groupId !== groupId) return;
       await this.#consume(this.#synthEnvelope(info)); // INLINE (we hold the lock)
     }
+    if (this.#terminal() || this.#groupId !== groupId) return;
+    // LDP-m3: an `ok` that leaves this group short of `current_epoch` is a
+    // failed refetch, not a caught-up one. A commit's `epoch` is the epoch it
+    // produces, so an empty page reaches `fromEpoch - 1`.
+    const ours = res.body.commits.filter((info) => info.group_id === groupId);
+    const reached = ours.length ? ours[ours.length - 1].epoch : fromEpoch - 1;
+    if (reached < res.body.current_epoch) {
+      throw new Error(
+        `gap refetch stopped at epoch ${reached} of ${res.body.current_epoch}`,
+      );
+    }
+  }
+
+  /**
+   * The drain arm's gap refetch (LD-D3): true when it FAILED, so the mailbox
+   * envelope stays unacked and is retried (the park bound escalates). A
+   * synthetic envelope (`mls-synth:`, see `#synthEnvelope`) is never
+   * re-queued: its failure goes back to the inline caller that fed it — the
+   * rebase's catch, an outer refetch, or the Welcome currency check (LDP-M6).
+   */
+  async #gapRefetchFailed(
+    envelope: MlsEnvelope,
+    fromEpoch: number,
+  ): Promise<boolean> {
+    try {
+      await this.#gapRefetchInline(fromEpoch);
+      return false;
+    } catch (error) {
+      if (envelope.id.startsWith("mls-synth:")) throw error;
+      console.warn(
+        "[mls] gap refetch failed — the envelope stays unacked and is retried",
+        error,
+      );
+      return true;
+    }
+  }
+
+  /**
+   * `#pump`'s per-envelope backstop (LD-D4). The envelope is never acked or
+   * marked seen here:
+   *  - its ack already ran (`#seen` has it, LDP-M4): what followed the ack
+   *    cannot be replayed, so latch loud NOW;
+   *  - otherwise it counts against `MAX_ENVELOPE_RETRIES` and re-drains after
+   *    the usual backoff; at the cap it latches loud and stays unacked.
+   * The latched error is curated: the thrown one can name the group (LDP-n2).
+   */
+  #onDrainStepThrew(envelope: MlsEnvelope, error: unknown): void {
+    console.error(
+      "[mls] drain step threw",
+      { contentType: envelope.content_type, epoch: envelope.epoch },
+      error,
+    );
+    if (this.#terminal()) return;
+    if (this.#seen.has(envelope.id)) {
+      this.#latchLoud(new Error(ENCRYPTION_UNCONFIRMED), "control");
+      return;
+    }
+    const retries = (this.#retries.get(envelope.id) ?? 0) + 1;
+    this.#retries.set(envelope.id, retries);
+    if (retries >= MAX_ENVELOPE_RETRIES) {
+      this.#latchLoud(new Error(ENCRYPTION_UNCONFIRMED), "control");
+      return;
+    }
+    this.#scheduleRetry(envelope);
+  }
+
+  /**
+   * Re-secure now and rejoin fresh (LD-D2, LDP-M2). Called with the lock held
+   * (the drain, the inline rebase, the currency check), so the rejoin is
+   * SCHEDULED, never awaited: an inline `#rejoinFresh` waits for a Welcome the
+   * held pump could never drain. It is scheduled one task later, once the
+   * group action that delivered a Welcome (the establish whose wait it just
+   * resolved) has returned — `#scheduleGroupAction` would otherwise drop it —
+   * and only if nothing replaced the group meanwhile. A dropped schedule still
+   * holds the gate (re-securing, `negotiating`), and the re-securing backstop
+   * ends it loud.
+   */
+  #resecureAndRejoin(reason: string, kind: string): void {
+    const groupId = this.#groupId;
+    const generation = this.#establishGeneration;
+    // A currency check in flight (this came from it, or from a commit its
+    // catch-up applied) acts on nothing further: no `#toActive` after this.
+    if (this.#welcomeCurrencyCheck) this.#welcomeCurrencyCheck.expired = true;
+    this.#toResecuring(reason);
+    this.#dropModeToNegotiating();
+    const timer = setTimeout(() => {
+      this.#timers.delete(timer);
+      if (this.#terminal()) return;
+      if (
+        this.#groupId !== groupId ||
+        this.#establishGeneration !== generation
+      ) {
+        console.info("[mls] rejoin superseded before it was scheduled", {
+          kind,
+        });
+        return;
+      }
+      this.#scheduleGroupAction(() => this.#rejoinFresh(reason), kind);
+    }, 0);
+    this.#timers.add(timer);
+  }
+
+  /**
+   * The Welcome currency check (W2-M2; LD-D5 as amended by LDP-M2…M6, m2,
+   * n2). A Welcome native accepted can be stale — sealed to an earlier
+   * intent and drained late — so enrolment only counts once the DS confirms
+   * the group is still at the Welcome's epoch, or the commits since are
+   * applied and native agrees. Runs from `#pump` with the lock HELD, bounded
+   * by `WELCOME_CURRENCY_DEADLINE_MS`, and never throws. The session stays
+   * non-active until it answers, which holds the publish gate.
+   */
+  async #runWelcomeCurrencyCheck(): Promise<void> {
+    const pending = this.#welcomeCurrency;
+    if (!pending) return;
+    const check: WelcomeCurrencyCheck = { pending, expired: false, wake: null };
+    this.#welcomeCurrencyCheck = check;
+    const deadline = setTimeout(() => {
+      this.#timers.delete(deadline);
+      if (this.#welcomeCurrencyCheck !== check) return;
+      if (!this.#welcomeCurrencyLive(check)) return; // moot, not unconfirmed
+      check.expired = true;
+      check.wake?.();
+      this.#welcomeCurrencyLoud("the check reached its deadline");
+    }, WELCOME_CURRENCY_DEADLINE_MS);
+    this.#timers.add(deadline);
+    try {
+      await this.#confirmWelcomeCurrency(check);
+    } catch (error) {
+      console.error("[mls] welcome currency check threw", error);
+      if (this.#welcomeCurrencyLive(check)) {
+        this.#welcomeCurrencyLoud("the check threw");
+      }
+    } finally {
+      clearTimeout(deadline);
+      this.#timers.delete(deadline);
+      if (this.#welcomeCurrencyCheck === check) {
+        this.#welcomeCurrencyCheck = null;
+      }
+      if (this.#welcomeCurrency === pending) this.#welcomeCurrency = null;
+    }
+  }
+
+  async #confirmWelcomeCurrency(check: WelcomeCurrencyCheck): Promise<void> {
+    const { groupId, epoch } = check.pending;
+    const res = await this.#fetchWelcomeCurrency(check);
+    if (!res || !this.#welcomeCurrencyLive(check)) return;
+    if (res.kind !== "ok") {
+      // LDP-m2: `feature_disabled` is NOT plaintext from here — the adopted
+      // group is what is in doubt, so the create path decides.
+      this.#welcomeCurrencyRejoin(`the delivery service answered ${res.kind}`);
+      return;
+    }
+    const currentEpoch = res.body.current_epoch;
+    const commits = res.body.commits.filter(
+      (info) => info.group_id === groupId,
+    );
+    const verdict = welcomeCurrencyVerdict({
+      welcomeEpoch: epoch,
+      currentEpoch,
+      commits,
+      lagLimit: LAG_DESYNC_THRESHOLD,
+    });
+    if (verdict === "rejoin") {
+      this.#welcomeCurrencyRejoin(
+        `adopted at epoch ${epoch}, the group is at ${currentEpoch}`,
+      );
+      return;
+    }
+    if (verdict === "catch_up") {
+      // LDP-M6: the same inline path `#gapRefetchInline` uses. A
+      // `removed_self` in here is handled by `#consume`'s own arm; the
+      // native check below then fails, and the rejoin it asks for is
+      // dropped or superseded.
+      for (const info of commits) {
+        await this.#consume(this.#synthEnvelope(info)); // INLINE (lock held)
+        if (!this.#welcomeCurrencyLive(check)) return;
+      }
+      // `#consume` reports nothing on main, so native decides: self present
+      // at the DS's current epoch.
+      let caughtUp = false;
+      try {
+        const state = await this.#deps.bridge.callState(groupId);
+        caughtUp =
+          state.epoch === currentEpoch &&
+          state.members.some(
+            (m) =>
+              m.user_id === this.#deps.userId &&
+              m.device_id === this.#deps.deviceId,
+          );
+      } catch (error) {
+        console.warn("[mls] welcome currency: native state unreadable", error);
+      }
+      if (!this.#welcomeCurrencyLive(check)) return;
+      if (!caughtUp) {
+        this.#welcomeCurrencyRejoin(
+          `catch-up to epoch ${currentEpoch} did not land natively`,
+        );
+        return;
+      }
+      // Locked decision 3: the catch-up may have applied a Remove, and the
+      // installed send key is still the Welcome epoch's, which the removed
+      // member holds. Install the confirmed epoch's keys BEFORE `#toActive`
+      // lets the enable open the gate.
+      const installed = await this.#installCaughtUpKeys(groupId, currentEpoch);
+      if (!this.#welcomeCurrencyLive(check)) return;
+      if (!installed) {
+        this.#welcomeCurrencyLoud("the caught-up keys did not install");
+        return;
+      }
+    }
+    console.info("[mls] welcome confirmed current", {
+      epoch: currentEpoch,
+      caughtUp: commits.length,
+    });
+    this.#toActive();
+    // The first key installed while the check held `active` back, and the
+    // reconcile it kicked was refused by `#evaluateEnable` (not active).
+    if (this.#hasLocalKey && !this.#e2eeEnabled) void this.reconcileNow();
+  }
+
+  /**
+   * The currency fetch, from the epoch after the Welcome's. Null when the
+   * failure was handled here: a 404 → a scheduled fresh rejoin; a transient
+   * failure → the `WELCOME_CURRENCY_BACKOFF_MS` retries, then LOUD (LDP-M5 —
+   * never a rejoin, which adds intent + claim + commit load to a DS that is
+   * already failing); or the check went moot under an await.
+   */
+  async #fetchWelcomeCurrency(
+    check: WelcomeCurrencyCheck,
+  ): Promise<Awaited<ReturnType<E2EEBridge["mlsFetchCommits"]>> | null> {
+    const { groupId, epoch } = check.pending;
+    for (let attempt = 0; ; attempt++) {
+      if (!this.#welcomeCurrencyLive(check)) return null;
+      try {
+        return await this.#deps.bridge.mlsFetchCommits(groupId, epoch + 1);
+      } catch (error) {
+        if (!this.#welcomeCurrencyLive(check)) return null;
+        if (classifyRefetchFailure(error) === "not_member") {
+          this.#welcomeCurrencyRejoin(
+            "the delivery service does not list this device",
+          );
+          return null;
+        }
+        const wait = WELCOME_CURRENCY_BACKOFF_MS[attempt];
+        if (wait === undefined) {
+          this.#welcomeCurrencyLoud("the delivery service did not answer");
+          return null;
+        }
+        console.warn(
+          "[mls] welcome currency check failed — retrying",
+          { attempt: attempt + 1, retryInMs: wait },
+          error,
+        );
+        await this.#welcomeCurrencyBackoff(check, wait);
+      }
+    }
+  }
+
+  /**
+   * Install `epoch`'s keys, the LOCAL send key included, now. Awaited under
+   * the lock: `onLocalKeysChanged` never takes it and never waits on the
+   * pump. `#lastInbound` names only the last commit the catch-up applied, not
+   * the jump from the installed key, which spans the whole catch-up and may
+   * span a Remove; cleared, the classifier falls to its fail-safe (C1):
+   * Remove-immediate, never an Add-grace that keeps the old send key.
+   *
+   * True when nothing can publish under an older key: the install landed (the
+   * counter moved, the fence is still `epoch`, and OUR send key is `epoch`'s
+   * — `#ownSendKeyEpoch`, a fact), or no key was ever installed and none can
+   * be yet. Not "no Add-grace timer pending" (LDA-M1): native's keys-changed
+   * push for the same epoch can land after the catch-up's last commit (an
+   * Add) and schedule a grace AFTER this install, which already put `epoch`'s
+   * send key in place. The counter alone is no proof either: that push's
+   * remote-only install moves it while our local half may have failed.
+   */
+  async #installCaughtUpKeys(groupId: string, epoch: number): Promise<boolean> {
+    if (!this.#media?.localIdentity()) return !this.#hasLocalKey;
+    const before = this.#installSeq;
+    this.#lastInbound = null;
+    await this.onLocalKeysChanged(groupId, epoch);
+    return (
+      this.#installSeq > before &&
+      this.#installEpoch === epoch &&
+      this.#ownSendKeyEpoch === epoch
+    );
+  }
+
+  /** Whether `check` may still act: not expired, and nothing moved under it. */
+  #welcomeCurrencyLive(check: WelcomeCurrencyCheck): boolean {
+    return (
+      !check.expired &&
+      !this.#terminal() &&
+      this.#state !== "failed" &&
+      this.#groupId === check.pending.groupId &&
+      this.#establishGeneration === check.pending.generation
+    );
+  }
+
+  /** A retry wait the check's deadline can cut short (`check.wake`). */
+  #welcomeCurrencyBackoff(
+    check: WelcomeCurrencyCheck,
+    ms: number,
+  ): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        this.#timers.delete(timer);
+        check.wake = null;
+        resolve();
+      };
+      const timer = setTimeout(done, ms);
+      this.#timers.add(timer);
+      check.wake = done;
+    });
+  }
+
+  /** Not current: discard the adoption and rejoin fresh (scheduled). */
+  #welcomeCurrencyRejoin(detail: string): void {
+    console.warn("[mls] welcome currency: rejoining fresh —", detail);
+    this.#resecureAndRejoin(
+      "the adopted Welcome is not current",
+      "rejoin_fresh:welcome_currency",
+    );
+  }
+
+  /** Unconfirmable: latch loud with the curated error (LDP-M3/M5, n2). */
+  #welcomeCurrencyLoud(detail: string): void {
+    console.error("[mls] welcome currency not confirmed —", detail);
+    this.#latchLoud(new Error(ENCRYPTION_UNCONFIRMED), "control");
   }
 
   #synthEnvelope(info: MlsCommitInfo): MlsEnvelope {
@@ -3940,7 +4371,15 @@ export class MlsCallSession {
       this.#joinTimeline?.stamp("welcomeAdopted");
       this.#groupId = outcome.group_id;
       this.#joinedGeneration = this.#establishGeneration;
-      this.#toActive();
+      // W2-M2: NOT `#toActive` yet. Native accepts a Welcome sealed to any
+      // held KeyPackage for any intent on the group, so a late-drained one
+      // can adopt a stale epoch. `#pump` asks the DS right after this
+      // envelope, under the lock, and only its answer goes active.
+      this.#welcomeCurrency = {
+        groupId: outcome.group_id,
+        epoch: outcome.epoch,
+        generation: this.#establishGeneration,
+      };
       if (verdict.resolveWait) this.#welcomeWait?.resolve(true);
     }
     // Every applied commit of OUR group reaches here: live pushes, the 409
@@ -4080,6 +4519,7 @@ export class MlsCallSession {
     try {
       if (timing === "immediate") {
         await media.installer.applyKeys(frameKeys, identity);
+        if (this.#installEpoch === epoch) this.#ownSendKeyEpoch = epoch;
         this.#onEpochKeysApplied(
           installRef,
           installEntries(frameKeys, identity, true),
@@ -4228,6 +4668,7 @@ export class MlsCallSession {
       if (this.#terminal() || this.#installEpoch !== epoch) return;
       try {
         await this.#media?.installer.applyLocalKey(frameKeys, identity);
+        if (this.#installEpoch === epoch) this.#ownSendKeyEpoch = epoch;
         this.#onLocalKeyInstalled();
       } catch (error) {
         this.#onRotationError(error);
@@ -5213,6 +5654,7 @@ export class MlsCallSession {
     // publish gate stands in front of that; not holding the key is stronger.
     this.#media?.installer.resetForGroup();
     this.#installEpoch = -1;
+    this.#ownSendKeyEpoch = -1;
     this.#hasLocalKey = false;
     this.#lastOwnWon = null;
     this.#lastInbound = null;
@@ -6702,8 +7144,11 @@ export class MlsCallSession {
    *    would outlive the create that follows and leave an encrypted call red
    *    for good. Its requests ride the same deadline; a legacy MFA prompt is
    *    user-driven, and the 240 s self-enrolment assertion ends that loud.
+   *  - a Welcome currency check IN FLIGHT (not merely pending), bounded by
+   *    `WELCOME_CURRENCY_DEADLINE_MS` and ending active, rejoining or loud.
    */
   #resecuringHasOwner(): boolean {
+    if (this.#welcomeCurrencyCheck !== null) return true;
     return (
       this.#establishInFlight ||
       this.#groupActionPending ||

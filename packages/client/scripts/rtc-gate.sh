@@ -97,6 +97,11 @@ EXPECTED=(
   "components/rtc/mlsAdmitPolicy.test.ts 15 0"
   "components/rtc/mlsCallKeys.test.ts 23 0"
   "components/rtc/mlsCallModePolicy.test.ts 117 0"
+  "components/rtc/mlsCallSession.drainfail.test.ts 33 0"
+  # Out of alphabetical order on purpose: its sorted slot abuts the
+  # `mlsRejoinPolicy` row the rejoin-resume branch bumps, and adjacent edits
+  # conflict on merge. Kept beside the late-drain guard's other spec instead.
+  "components/rtc/mlsRefetchPolicy.test.ts 39 0"
   "components/rtc/mlsCallSession.escape.test.ts 17 0"
   "components/rtc/mlsCallSession.falsered.test.ts 11 0"
   "components/rtc/mlsCallSession.fleet.test.ts 31 0"
@@ -286,6 +291,11 @@ FILES=(components/rtc/mlsCallSession.ts components/rtc/mlsCallModePolicy.ts
   components/rtc/mlsCallSession.fleet.test.ts
   components/rtc/mlsCallSession.groupscope.test.ts
   components/rtc/mlsCallSession.serveguard.test.ts
+  # Enrolled because all three are clean: `prettier --check` and eslint each
+  # exit 0 on them, with no warnings (measured when the late-drain guard added
+  # the refetch policy, its spec and the session's drain-failure spec).
+  components/rtc/mlsRefetchPolicy.ts components/rtc/mlsRefetchPolicy.test.ts
+  components/rtc/mlsCallSession.drainfail.test.ts
   # Enrolled because both are clean: `prettier --check` and eslint each exit
   # 0 on them, with no warnings (measured when the rejoin-resume plan's wave
   # 1.5 added `serveTargetStillStale` and its cases).

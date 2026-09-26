@@ -2119,11 +2119,22 @@ MUTATIONS += [
         # a late Welcome enters, while one in `#toActive` would also run on the
         # creator path and on every honest join, and so redden the suite for
         # reasons that have nothing to do with a late Welcome.
+        #
+        # Re-anchored 2026-09-26 (late-drain guard, W2-M2). The adopt block
+        # no longer calls `#toActive()`: it records a pending Welcome currency
+        # check instead, and `#confirmWelcomeCurrency` goes active only on the
+        # DS's answer. So the old two-line window matches nothing. The
+        # insertion stays in the ADOPT block, right after the
+        # `#joinedGeneration` write (a line that occurs once in the file), for
+        # the reason above: it is where a late Welcome enters, while the
+        # `#toActive()` that now follows the currency check runs on every
+        # honest Welcome join as well. Same defect, same one-line insertion.
+        # Measured after the re-anchor: resecure 5b and 3 go red (2 of 23).
         search="""      this.#joinedGeneration = this.#establishGeneration;
-      this.#toActive();""",
+""",
         replace="""      this.#joinedGeneration = this.#establishGeneration;
       this.#resetRotationState();
-      this.#toActive();""",
+""",
         specs=[RESECURE_SPEC],
     ),
     Mutation(
@@ -3274,6 +3285,493 @@ MUTATIONS += [
         replace="",
         specs=[SESSION_TIMELINE_SPEC],
         must_red=[SESSION_TIMELINE_SPEC],
+    ),
+]
+
+
+# --- The late-drain guard (fix/mls-late-drain-guard, 2026-09-26) -------------
+#
+# L14c: a restarted page wipes its group and re-intents, and its mailbox drains
+# LATE. Two defects rode that drain. W2-M1: a gap refetch the DS answered 404
+# threw out of `#consume` and `#pump` as an unhandled rejection — the envelope
+# never acked, retried or escalated, and the group id in Sentry. W2-M2: a stale
+# Welcome, sealed to the earlier intent, was adopted at an old epoch and went
+# green there. The fix is a pure policy (`mlsRefetchPolicy.ts`: the failure
+# classification and the Welcome currency verdict) plus call-site edits in
+# `mlsCallSession.ts`: `#gapRefetchInline` classifies its own failure, the
+# `gap_refetch` arm retries a failed refetch, `#pump` catches per envelope,
+# and the Welcome adopt block records a pending currency check that `#pump`
+# runs under the lock before anything goes active.
+#
+# Placed HERE, mid-file and ahead of every rejoin-resume block, on purpose:
+# that branch appends its blocks at the end of this file and adds constants to
+# the list at the top, so this block and its own constants below stay out of
+# both merge windows.
+#
+# Each entry is `must_red` on the ONE spec that owns the case that kills it.
+# Almost all of them are the session's `mlsCallSession.drainfail.test.ts`;
+# the three LD1 rule entries are `mlsRefetchPolicy.test.ts`. The case named on
+# each entry is the one MEASURED red under it.
+#
+# 🔴 KNOWN NON-ENTRIES, recorded rather than silently absent:
+#   (a) deleting `if (currentEpoch < welcomeEpoch) return "rejoin";` outright
+#       is EQUIVALENT — `lag` goes negative, no page has a negative length,
+#       and the contiguity rule rejoins anyway. The entry below makes the
+#       line answer `"current"` instead, which is the defect it guards.
+#   (b) the `welcomeEpoch`, `currentEpoch` and per-commit finiteness terms of
+#       `welcomeCurrencyVerdict` are equivalent too (NaN arithmetic already
+#       fails every later comparison into `"rejoin"`); only the `lagLimit`
+#       term is live, and it has no entry here.
+
+REFETCH_POLICY = "mlsRefetchPolicy.ts"
+REFETCH_POLICY_SPEC = "components/rtc/mlsRefetchPolicy.test.ts"
+DRAINFAIL_SPEC = "components/rtc/mlsCallSession.drainfail.test.ts"
+
+MUTATIONS += [
+    # ---- the gap refetch (W2-M1, LD-D2 / LD-D3) ------------------------------
+    Mutation(
+        id="refetch-catch-removed",
+        what="`#gapRefetchInline` no longer catches its own fetch, so a DS 404 is never read as 'not a member': it falls through as a transient failure and the device keeps parking against a group the DS says it is not in, instead of re-securing and rejoining fresh",
+        file=SESSION,
+        # Re-measured 2026-09-26 (fix pass 1): killed by A1, A4b, A5, C9 and
+        # E1 (5 of 33).
+        search="""    let res: Awaited<ReturnType<E2EEBridge["mlsFetchCommits"]>>;
+    try {
+      res = await this.#deps.bridge.mlsFetchCommits(groupId, fromEpoch);
+    } catch (error) {
+      if (this.#terminal() || this.#groupId !== groupId) return;
+      if (classifyRefetchFailure(error) === "transient") throw error;
+      // LD-D2: a 404 is the DS saying this device is not in the group. It is
+      // unauthenticated, so not `#onRemovedSelf`: re-secure now (the gate
+      // holds) and rejoin fresh, as the join-intent 404 and receiver lag do.
+      console.warn("[mls] gap refetch: not a member of the call group");
+      this.#resecureAndRejoin(
+        "gap refetch: the delivery service does not list this device",
+        "rejoin_fresh:refetch_not_member",
+      );
+      return;
+    }
+""",
+        replace="""    const res = await this.#deps.bridge.mlsFetchCommits(groupId, fromEpoch);
+""",
+        specs=[DRAINFAIL_SPEC],
+        must_red=[DRAINFAIL_SPEC],
+    ),
+    Mutation(
+        id="refetch-404-as-caught-up",
+        what="a gap refetch the DS answered 404 returns as if caught up: nothing re-secures, nothing rejoins, and the envelope is dropped from the drain unacked — the device goes on publishing at an epoch the group has left",
+        file=SESSION,
+        # Re-measured 2026-09-26 (fix pass 1): killed by A1, A4b, C9 and E1
+        # (4 of 33).
+        search="""      console.warn("[mls] gap refetch: not a member of the call group");
+      this.#resecureAndRejoin(
+        "gap refetch: the delivery service does not list this device",
+        "rejoin_fresh:refetch_not_member",
+      );
+      return;
+""",
+        replace="""      return;
+""",
+        specs=[DRAINFAIL_SPEC],
+        must_red=[DRAINFAIL_SPEC],
+    ),
+    Mutation(
+        id="refetch-failure-uncounted",
+        what="the `gap_refetch` arm ignores a FAILED refetch: the mailbox envelope is neither acked nor re-queued, so it sits until something else happens to drain, and the park bound it should count against never escalates",
+        file=SESSION,
+        # Re-measured 2026-09-26 (fix pass 1): killed by A2 and A3 (2 of 33).
+        search="""        if (await this.#gapRefetchFailed(envelope, action.fromEpoch))
+          this.#scheduleRetry(envelope);
+""",
+        replace="""        await this.#gapRefetchFailed(envelope, action.fromEpoch);
+""",
+        specs=[DRAINFAIL_SPEC],
+        must_red=[DRAINFAIL_SPEC],
+    ),
+    Mutation(
+        id="refetch-short-ok-as-caught-up",
+        what="an `ok` refetch whose page stops short of `current_epoch` is taken as caught up (LDP-m3), so the envelope that asked for it is dropped from the drain with the group still ahead",
+        file=SESSION,
+        # Re-measured 2026-09-26 (fix pass 1): killed by A3 (1 of 33): its
+        # short-`ok` leg.
+        search="""    if (reached < res.body.current_epoch) {""",
+        replace="""    if (false && reached < res.body.current_epoch) {""",
+        specs=[DRAINFAIL_SPEC],
+        must_red=[DRAINFAIL_SPEC],
+    ),
+    Mutation(
+        id="refetch-group-capture-removed",
+        what="`#gapRefetchInline` re-reads nothing after its awaits: a refetch that settles after its group was replaced acts on the NEW group — its failure retries the old group's envelope into the new one, and its commits and verdicts land there",
+        file=SESSION,
+        # Re-measured 2026-09-26 (fix pass 1): killed by A5 alone (1 of 33).
+        # All four post-await group checks, each reduced to its terminal
+        # check — i.e. the capture is gone. The two 4-space copies are
+        # identical, so each is matched with a neighbouring CODE line.
+        # 🔴 A5 drives the CATCH's check (a failure settling after the group
+        # was replaced). The three checks on the `ok` path are dropped with
+        # it but have no case of their own: not measured separately.
+        search="""    } catch (error) {
+      if (this.#terminal() || this.#groupId !== groupId) return;
+      if (classifyRefetchFailure(error) === "transient") throw error;""",
+        replace="""    } catch (error) {
+      if (this.#terminal()) return;
+      if (classifyRefetchFailure(error) === "transient") throw error;""",
+        also=[
+            (
+                """    if (this.#terminal() || this.#groupId !== groupId) return;
+    if (res.kind === "feature_disabled") {""",
+                """    if (this.#terminal()) return;
+    if (res.kind === "feature_disabled") {""",
+            ),
+            (
+                """      if (this.#terminal() || this.#groupId !== groupId) return;
+      await this.#consume(this.#synthEnvelope(info)); // INLINE (we hold the lock)
+    }
+    if (this.#terminal() || this.#groupId !== groupId) return;""",
+                """      if (this.#terminal()) return;
+      await this.#consume(this.#synthEnvelope(info)); // INLINE (we hold the lock)
+    }
+    if (this.#terminal()) return;""",
+            ),
+        ],
+        specs=[DRAINFAIL_SPEC],
+        must_red=[DRAINFAIL_SPEC],
+    ),
+    # ---- the drain's backstop (LD-D4, LDP-M4) ---------------------------------
+    Mutation(
+        id="pump-catch-removed",
+        what="`#pump` has no per-envelope catch again: one throwing drain step escapes as an unhandled rejection (group id and all, into Sentry), and the rest of the batch waits for the next enqueue",
+        file=SESSION,
+        # Re-measured 2026-09-26 (fix pass 1): killed by B1, B2 and B3 (3 of
+        # 33), each on the escaped rejection.
+        search="""            try {
+              await this.#consume(env);
+            } catch (error) {
+              // Backstop (LD-D4): one throwing step never escapes the pump
+              // as an unhandled rejection, and never stops the batch.
+              this.#onDrainStepThrew(env, error);
+            }
+""",
+        replace="""            await this.#consume(env);
+""",
+        specs=[DRAINFAIL_SPEC],
+        must_red=[DRAINFAIL_SPEC],
+    ),
+    Mutation(
+        id="pump-catch-breaks-batch",
+        what="the per-envelope catch ends the pump instead of moving on, so one throwing step strands every envelope queued behind it until something else enqueues",
+        file=SESSION,
+        # Re-measured 2026-09-26 (fix pass 1): killed by B1 and B3 (2 of 33).
+        # `return`, not `break`: a `break` leaves only the inner loop, and the
+        # outer one re-takes the lock and drains on — which is not the defect.
+        search="""              this.#onDrainStepThrew(env, error);
+""",
+        replace="""              this.#onDrainStepThrew(env, error);
+              return;
+""",
+        specs=[DRAINFAIL_SPEC],
+        must_red=[DRAINFAIL_SPEC],
+    ),
+    Mutation(
+        id="pump-catch-retries-after-ack",
+        what="a step that threw AFTER its envelope was acked is retried like any other (LDP-M4): the ack's side effects are not replayable, so the retry acts on a half-applied envelope instead of latching loud at once",
+        file=SESSION,
+        # Re-measured 2026-09-26 (fix pass 1): killed by B3 alone (1 of 33).
+        search="""    if (this.#seen.has(envelope.id)) {
+      this.#latchLoud(new Error(ENCRYPTION_UNCONFIRMED), "control");
+      return;
+    }
+""",
+        replace="",
+        specs=[DRAINFAIL_SPEC],
+        must_red=[DRAINFAIL_SPEC],
+    ),
+    Mutation(
+        id="drain-retry-cap-removed",
+        what="a drain step that keeps throwing is retried forever: `MAX_ENVELOPE_RETRIES` never latches, so the call sits in whatever state the throw left it, with nothing loud",
+        file=SESSION,
+        # Re-measured 2026-09-26 (fix pass 1): killed by B2 alone (1 of 33).
+        search="""    if (retries >= MAX_ENVELOPE_RETRIES) {
+      this.#latchLoud(new Error(ENCRYPTION_UNCONFIRMED), "control");""",
+        replace="""    if (false && retries >= MAX_ENVELOPE_RETRIES) {
+      this.#latchLoud(new Error(ENCRYPTION_UNCONFIRMED), "control");""",
+        specs=[DRAINFAIL_SPEC],
+        must_red=[DRAINFAIL_SPEC],
+    ),
+    # ---- the Welcome currency check (W2-M2, LD-D5 as folded) ------------------
+    Mutation(
+        id="welcome-currency-skipped",
+        what="the adopt block goes active on the Welcome alone and records no currency check — the pre-fix code: a late-drained Welcome sealed to an earlier intent is green at its stale epoch (L14c)",
+        file=SESSION,
+        # Re-measured 2026-09-26 (fix pass 1): killed by 24 of 33: B3, C1,
+        # C1b, C1r, C2, C2b, C3, C3b, C4, C6, C7, C7b, C8, C9, D1, and all
+        # nine fix-pass cases (R1a, R1b, R1c, C1r+, E1, E2, E3, E4, N1).
+        search="""      this.#welcomeCurrency = {
+        groupId: outcome.group_id,
+        epoch: outcome.epoch,
+        generation: this.#establishGeneration,
+      };""",
+        replace="""      this.#toActive();""",
+        specs=[DRAINFAIL_SPEC],
+        must_red=[DRAINFAIL_SPEC],
+    ),
+    Mutation(
+        id="welcome-active-before-currency",
+        what="the adopt block goes active AND records the check, so the session is green — and the enable can empty the gate — before the DS has said whether the Welcome is current",
+        file=SESSION,
+        # Re-measured 2026-09-26 (fix pass 1): killed by 17 of 33: C1, C1r, C3,
+        # C3b, C4, C6, C7, C8, C9, R1a, R1b, R1c, C1r+, E1, E2, E3 and E4.
+        search="""      this.#welcomeCurrency = {
+        groupId: outcome.group_id,
+        epoch: outcome.epoch,
+        generation: this.#establishGeneration,
+      };""",
+        replace="""      this.#toActive();
+      this.#welcomeCurrency = {
+        groupId: outcome.group_id,
+        epoch: outcome.epoch,
+        generation: this.#establishGeneration,
+      };""",
+        specs=[DRAINFAIL_SPEC],
+        must_red=[DRAINFAIL_SPEC],
+    ),
+    Mutation(
+        id="welcome-currency-404-kept",
+        what="a currency check the DS answers 404 keeps the adoption and goes green, instead of discarding it and rejoining fresh",
+        file=SESSION,
+        # Re-measured 2026-09-26 (fix pass 1): killed by C2 and D1 (2 of 33).
+        search="""        if (classifyRefetchFailure(error) === "not_member") {
+          this.#welcomeCurrencyRejoin(
+            "the delivery service does not list this device",
+          );
+          return null;
+        }""",
+        replace="""        if (classifyRefetchFailure(error) === "not_member") {
+          this.#toActive();
+          return null;
+        }""",
+        specs=[DRAINFAIL_SPEC],
+        must_red=[DRAINFAIL_SPEC],
+    ),
+    Mutation(
+        id="currency-transient-rejoins",
+        what="a currency check whose transient failures outlast the backoff REJOINS instead of latching loud (LDP-M5): intent + claim + commits added to a DS that is already failing — the 2026-09-06 429 storm's shape",
+        file=SESSION,
+        # Re-measured 2026-09-26 (fix pass 1): killed by C3b alone (1 of 33).
+        search="""        if (wait === undefined) {
+          this.#welcomeCurrencyLoud("the delivery service did not answer");""",
+        replace="""        if (wait === undefined) {
+          this.#welcomeCurrencyRejoin("the delivery service did not answer");""",
+        specs=[DRAINFAIL_SPEC],
+        must_red=[DRAINFAIL_SPEC],
+    ),
+    Mutation(
+        id="currency-deadline-removed",
+        what="the currency check's own deadline does nothing (LDP-M3): a check the DS never answers holds the session non-active for good, and since `#joinedGeneration` disarmed the enrolment backstop, nothing ends it loud",
+        file=SESSION,
+        # Re-measured 2026-09-26 (fix pass 1): killed by C6 alone (1 of 33).
+        search="""      check.expired = true;
+      check.wake?.();
+      this.#welcomeCurrencyLoud("the check reached its deadline");""",
+        replace="""      void check;""",
+        specs=[DRAINFAIL_SPEC],
+        must_red=[DRAINFAIL_SPEC],
+    ),
+    Mutation(
+        id="currency-record-not-cleared",
+        what="the pending currency record outlives its check (LDP-M3), so `#pump` re-runs the check after every later envelope — a GET per commit for the rest of the call, each one able to re-secure a healthy session",
+        file=SESSION,
+        # Re-measured 2026-09-26 (fix pass 1): killed by 7 of 33: A1, A2, A3,
+        # B3, C4, C9 and D1.
+        search="""      if (this.#welcomeCurrency === pending) this.#welcomeCurrency = null;
+""",
+        replace="",
+        specs=[DRAINFAIL_SPEC],
+        must_red=[DRAINFAIL_SPEC],
+    ),
+    Mutation(
+        id="currency-generation-unchecked",
+        what="a currency check whose establish generation was superseded under it still acts: its late verdict goes active, rejoins or latches against the NEW generation's join",
+        file=SESSION,
+        # Re-measured 2026-09-26 (fix pass 1): killed by C8 alone (1 of 33).
+        search="""      this.#groupId === check.pending.groupId &&
+      this.#establishGeneration === check.pending.generation
+    );""",
+        replace="""      this.#groupId === check.pending.groupId
+    );""",
+        specs=[DRAINFAIL_SPEC],
+        must_red=[DRAINFAIL_SPEC],
+    ),
+    Mutation(
+        id="currency-native-verdict-skipped",
+        what="a catch-up is taken as landed without asking native (LDP-M6): commits the drain applied short, or not at all, still go green at the DS's epoch",
+        file=SESSION,
+        # Re-measured 2026-09-26 (fix pass 1): killed by C1b alone (1 of 33).
+        search="""        caughtUp =
+          state.epoch === currentEpoch &&""",
+        replace="""        caughtUp =
+          true ||
+          state.epoch === currentEpoch &&""",
+        specs=[DRAINFAIL_SPEC],
+        must_red=[DRAINFAIL_SPEC],
+    ),
+    Mutation(
+        id="currency-not-owner",
+        what="a currency check in flight no longer owns a re-securing, so the backstop latches loud at its first bound while the check is still waiting on the DS — a false red over a join about to go green",
+        file=SESSION,
+        # Re-measured 2026-09-26 (fix pass 1): killed by C9 alone (1 of 33).
+        search="""    if (this.#welcomeCurrencyCheck !== null) return true;
+""",
+        replace="",
+        specs=[DRAINFAIL_SPEC],
+        must_red=[DRAINFAIL_SPEC],
+    ),
+    # ---- LD3-R1: the caught-up key before the enable --------------------------
+    Mutation(
+        id="catchup-activates-before-key-install",
+        what="a catch-up goes active and kicks the enable with no install of the confirmed epoch's keys (the code LD5 stopped on), so when the catch-up applied a Remove the gate empties under the Welcome epoch's send key — one the removed member still holds (locked decision 3) — and the caught-up keys arrive only after",
+        file=SESSION,
+        # Measured at LD7 (24 cases): C1r alone, at its sampled gate monitor
+        # (`staleGreens`). Re-measured 2026-09-26 (fix pass 1): killed by 6 of
+        # 33: C1r, R1a, R1b, R1c, C1r+ and E2.
+        # Kept beside `catchup-install-reorder` below rather than replaced by
+        # it: this is the install SKIPPED outright, that one the install run
+        # AFTER going active — two defects, each with its own kill.
+        # 🔴 One other form was MEASURED and is not an entry: dropping the
+        # `#lastInbound` memo clear in `#installCaughtUpKeys`. At LD7 it was
+        # killed by C1 and C1r on the LOUD path (the install takes Add-grace,
+        # `installed` reads false, the check latches — fail-closed, not this
+        # defect). Re-measured at fix pass 1: killed by 7 of 33 (C1, C1r, R1a,
+        # R1b, R1c, C1r+, E2); the path was not re-diagnosed.
+        search="""      const installed = await this.#installCaughtUpKeys(groupId, currentEpoch);""",
+        replace="""      const installed = true;""",
+        specs=[DRAINFAIL_SPEC],
+        must_red=[DRAINFAIL_SPEC],
+    ),
+    # ---- fix pass 1: LDA-M1, LDA-m1, LDA-m2, LDA-n1 ---------------------------
+    #
+    # Each entry below was SURVIVING (or had no case) at the audit; the drain
+    # spec's R1*/C1r+/E*/N1 cases were written to kill it, and each count is
+    # measured, not inferred.
+    #
+    # 🔴 KNOWN NON-ENTRY: the `#ownSendKeyEpoch` assignment in the Add-grace
+    # timer's fire (`#scheduleGraceLocal`). Dropping it can only make
+    # `#installCaughtUpKeys` read false and latch LOUD: a false red, never a
+    # stale-key green. Measured 2026-09-26: the drain spec stays 33/33 green
+    # under it (LDF3 proved it vacuous the same way). A must-red entry on it
+    # would pin a failure mode that fails closed, so there is none.
+    Mutation(
+        id="catchup-install-reorder",
+        what="a catch-up goes active BEFORE the confirmed epoch's keys install (LDA-m1): the install still runs, but while it is pending the session is green and the enable can empty the gate under the Welcome epoch's send key — one a member the catch-up removed still holds (locked decision 3)",
+        file=SESSION,
+        # At LD7 this form SURVIVED (the install landed before the kicked
+        # enable). The harness's `holdKeyInstall` now keeps it pending.
+        # Measured 2026-09-26 (fix pass 1): killed by 4 of 33: R1b, R1c,
+        # C1r+ and E2.
+        search="""      const installed = await this.#installCaughtUpKeys(groupId, currentEpoch);""",
+        replace="""      this.#toActive();
+      const installed = await this.#installCaughtUpKeys(groupId, currentEpoch);""",
+        specs=[DRAINFAIL_SPEC],
+        must_red=[DRAINFAIL_SPEC],
+    ),
+    Mutation(
+        id="own-send-key-epoch-unchecked",
+        what="the caught-up install is judged on the install counter and the fence alone, not on OUR send key's epoch (LDA-M1): an install that left our send key on the older epoch still reads as installed, and the session goes green publishing under a key a removed member holds",
+        file=SESSION,
+        # Measured 2026-09-26 (fix pass 1): killed by E2 alone (1 of 33).
+        search="""      this.#installEpoch === epoch &&
+      this.#ownSendKeyEpoch === epoch
+    );""",
+        replace="""      this.#installEpoch === epoch
+    );""",
+        specs=[DRAINFAIL_SPEC],
+        must_red=[DRAINFAIL_SPEC],
+    ),
+    Mutation(
+        id="currency-expired-flag-dropped",
+        what="a re-secure started from inside a currency check (its own catch-up hit a 404) no longer expires the check (LDA-m2), so the check resumes after the rejoin was scheduled and goes active on the discarded adoption",
+        file=SESSION,
+        # Measured 2026-09-26 (fix pass 1): killed by E1 alone (1 of 33).
+        search="""    if (this.#welcomeCurrencyCheck) this.#welcomeCurrencyCheck.expired = true;
+""",
+        replace="",
+        specs=[DRAINFAIL_SPEC],
+        must_red=[DRAINFAIL_SPEC],
+    ),
+    Mutation(
+        id="currency-failed-term-dropped",
+        what="a currency check on a `failed` session may still act (LDA-m2): a Welcome from an earlier intent, adopted late after the session failed, runs its check and can revive the failed session",
+        file=SESSION,
+        # Measured 2026-09-26 (fix pass 1): killed by E3 alone (1 of 33).
+        search="""      !this.#terminal() &&
+      this.#state !== "failed" &&
+""",
+        replace="""      !this.#terminal() &&
+""",
+        specs=[DRAINFAIL_SPEC],
+        must_red=[DRAINFAIL_SPEC],
+    ),
+    Mutation(
+        id="synthetic-retry-guard-dropped",
+        what="a synthetic envelope's failed refetch is re-queued like a mailbox envelope (LDA-m2) instead of going back to the inline caller that fed it (the currency check's catch-up), which then never learns its catch-up failed and does not end loud",
+        file=SESSION,
+        # Measured 2026-09-26 (fix pass 1): killed by E4 alone (1 of 33).
+        search="""      if (envelope.id.startsWith("mls-synth:")) throw error;
+""",
+        replace="",
+        specs=[DRAINFAIL_SPEC],
+        must_red=[DRAINFAIL_SPEC],
+    ),
+    Mutation(
+        id="dispose-wake-dropped",
+        what="`dispose` no longer wakes a currency check in its backoff wait (LDA-n1): the wait's timer is cleared, so the pump continuation never settles on a closed session",
+        file=SESSION,
+        # Measured 2026-09-26 (fix pass 1): killed by N1 alone (1 of 33).
+        # 🔴 N1 is a PROXY: it observes that the check's deadline timer is
+        # cleared after dispose, not the never-settling pump promise itself,
+        # which the harness cannot see.
+        search="""    this.#welcomeCurrencyCheck?.wake?.();
+""",
+        replace="",
+        specs=[DRAINFAIL_SPEC],
+        must_red=[DRAINFAIL_SPEC],
+    ),
+    # ---- the pure rules (LD1), one entry per rule -----------------------------
+    Mutation(
+        id="refetch-404-anchor-dropped",
+        what="the 404 match is unanchored, so any refetch failure whose message merely CONTAINS 404 — a group id, an epoch, a 5xx body — is read as 'not a member' and tears the call down into a fresh rejoin",
+        file=REFETCH_POLICY,
+        # Measured 2026-09-26: killed by 4 of 39: the three anchor cases and the
+        # non-MLS transport's 404.
+        search=r"""const NOT_MEMBER_MESSAGE = /^E2EE MLS \S+ \S+ failed: 404$/;""",
+        replace=r"""const NOT_MEMBER_MESSAGE = /404/;""",
+        specs=[REFETCH_POLICY_SPEC],
+        must_red=[REFETCH_POLICY_SPEC],
+    ),
+    Mutation(
+        id="currency-contiguity-dropped",
+        what="a currency page is accepted on its LENGTH alone, so a page with a gap or a duplicate epoch reads `catch_up` and the session applies a history that does not lead to the DS's epoch",
+        file=REFETCH_POLICY,
+        # Measured 2026-09-26: killed by 4 of 39: the duplicate, gap,
+        # out-of-order and starts-at-the-Welcome cases.
+        search="""    commits.length === lag &&
+    commits.every((commit, index) => commit.epoch === welcomeEpoch + 1 + index)""",
+        replace="""    commits.length === lag""",
+        specs=[REFETCH_POLICY_SPEC],
+        must_red=[REFETCH_POLICY_SPEC],
+    ),
+    Mutation(
+        id="currency-stale-welcome-as-current",
+        what="a Welcome AHEAD of the DS's current epoch (`currentEpoch < welcomeEpoch`) reads `current`, so an adoption the DS has no history for goes green",
+        file=REFETCH_POLICY,
+        # Measured 2026-09-26: killed by 2 of 39: the two DS-behind-the-Welcome
+        # cases.
+        # Not a deletion: deleting the line is equivalent (non-entry (a) in
+        # the block note).
+        search="""  if (currentEpoch < welcomeEpoch) return "rejoin";""",
+        replace="""  if (currentEpoch < welcomeEpoch) return "current";""",
+        specs=[REFETCH_POLICY_SPEC],
+        must_red=[REFETCH_POLICY_SPEC],
     ),
 ]
 
