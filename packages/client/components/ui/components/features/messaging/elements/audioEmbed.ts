@@ -26,11 +26,15 @@ export type AudioEmbedLike = Pick<
 >;
 
 /**
- * C0/DEL controls and every bidi mark, embedding, override and isolate
+ * C0, DEL and C1 controls (U+0000-U+001F, U+007F-U+009F) and every bidi mark,
+ * embedding, override and isolate
+ *
+ * The same set January strips server-side (Rust's `char::is_control` plus
+ * its bidi list), so a name reads the same whichever side produced it.
  */
 const UNSAFE_NAME_CHARS =
   // eslint-disable-next-line no-control-regex -- matching controls is the point
-  /[\u0000-\u001F\u007F\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/g;
+  /[\u0000-\u001F\u007F-\u009F\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/g;
 
 /**
  * Name to display for an audio embed

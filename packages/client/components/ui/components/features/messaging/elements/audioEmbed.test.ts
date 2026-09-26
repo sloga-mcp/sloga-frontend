@@ -120,7 +120,10 @@ describe("audioEmbedFilename", () => {
  * Prevents: a name that reorders itself on screen. Bidi isolation on the
  * rendered name keeps an override from flipping the surrounding UI, but not
  * from reversing the name's own tail, so `song<U+202E>3pm.exe` would display
- * as `songexe.mp3`. The controls are written as escapes here on purpose: a
+ * as `songexe.mp3`. Also prevents the card showing a different name from the
+ * server's: January strips every Unicode control (C0, DEL and C1, the
+ * U+0080-U+009F range included) plus the same bidi set, so the client must
+ * strip no less. The controls are written as escapes here on purpose: a
  * literal one in this file would reorder the source itself.
  */
 describe("audioEmbedFilename strips bidi and control characters", () => {
@@ -135,6 +138,27 @@ describe("audioEmbedFilename strips bidi and control characters", () => {
     assert.equal(
       audioEmbedFilename(embed({ url: "https://h/song%E2%80%AE3pm.exe" })),
       "song3pm.exe",
+    );
+  });
+
+  it("removes C1 controls from the server-supplied filename", () => {
+    assert.equal(
+      audioEmbedFilename(embed({ filename: "a\u0085b\u009Bc.mp3" })),
+      "abc.mp3",
+    );
+  });
+
+  it("removes percent-encoded C1 controls from the URL path segment", () => {
+    assert.equal(
+      audioEmbedFilename(embed({ url: "https://h/a%C2%85b%C2%9Bc.mp3" })),
+      "abc.mp3",
+    );
+  });
+
+  it("strips the whole C1 range (U+0080-U+009F) but keeps U+00A0", () => {
+    assert.equal(
+      audioEmbedFilename(embed({ filename: "a\u0080b\u009Fc\u00A0d.mp3" })),
+      "abc\u00A0d.mp3",
     );
   });
 
