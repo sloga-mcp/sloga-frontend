@@ -6,6 +6,7 @@ import type { ReferralReward, ReferralSummary, ReferralTier } from "stoat.js";
 
 import { allowsDonationLinks, useClient } from "@revolt/client";
 import { useError } from "@revolt/i18n";
+import { useState } from "@revolt/state";
 import {
   Button,
   CategoryButton,
@@ -180,13 +181,13 @@ function ReferralOverview(props: { summary: ReferralSummary }) {
           <Trans>Your referrals</Trans>
         </Text>
         <Row wrap gap="xl">
-          <Count value={props.summary.qualified}>
+          <Count value={props.summary.qualified} color={SLOGA_GREEN}>
             <Trans>Qualified</Trans>
           </Count>
-          <Count value={props.summary.pending}>
+          <Count value={props.summary.pending} color={SLOGA_YELLOW}>
             <Trans>Pending</Trans>
           </Count>
-          <Count value={props.summary.expired}>
+          <Count value={props.summary.expired} color={SLOGA_RED}>
             <Trans>Expired</Trans>
           </Count>
         </Row>
@@ -214,11 +215,28 @@ function ReferralOverview(props: { summary: ReferralSummary }) {
 }
 
 /**
- * One referral count with its label
+ * Sloga logo colors (sampled from assets/web/sloga-icon.png, same values as
+ * the slogaball minigame), fixed so they do not shift with the theme
  */
-function Count(props: { value: number; children: JSX.Element }) {
+const SLOGA_GREEN = "#27A163";
+const SLOGA_YELLOW = "#E3CF1B";
+const SLOGA_RED = "#CF2A27";
+
+/**
+ * One referral count with its label, tinted in a logo color
+ */
+function Count(props: { value: number; color: string; children: JSX.Element }) {
+  const state = useState();
+
+  // The logo yellow is unreadable on white (about 1.4:1), so light mode
+  // darkens every tint to keep the labels above 4.5:1
+  const color = () =>
+    state.theme.activeTheme.darkMode
+      ? props.color
+      : `color-mix(in srgb, ${props.color} 55%, black)`;
+
   return (
-    <Column gap="none">
+    <Column gap="none" style={{ color: color() }}>
       <Text class="headline" size="small">
         {props.value}
       </Text>
