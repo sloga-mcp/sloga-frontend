@@ -1,6 +1,7 @@
-import { Match, Switch } from "solid-js";
+import { Match, Show, Switch, createMemo, createSignal } from "solid-js";
 
 import {
+  AudioEmbed,
   ImageEmbed,
   MessageEmbed,
   TextEmbed as TextEmbedClass,
@@ -12,6 +13,9 @@ import { css } from "styled-system/css";
 import { useModals } from "@revolt/modal";
 import { SizedContent } from "@revolt/ui/components/utils";
 
+import { AttachmentContainer } from "./Attachment";
+import { shouldRenderAudioPlayer } from "./audioEmbed";
+import { FileInfo } from "./FileInfo";
 import { TextEmbed } from "./TextEmbed";
 
 /**
@@ -45,6 +49,28 @@ export function Embed(props: { embed: MessageEmbed }) {
     (props.embed.type === "Image"
       ? (props.embed as ImageEmbed)
       : isGIF() && (props.embed as WebsiteEmbed).image) || undefined;
+
+  /**
+   * The embed as an audio link (only read under the Audio match)
+   */
+  const audio = () => props.embed as AudioEmbed;
+
+  /**
+   * Whether to mount a player for an audio link, decided once per embed
+   */
+  const playable = createMemo(
+    () =>
+      props.embed.type === "Audio" &&
+      shouldRenderAudioPlayer(audio(), (type) =>
+        document.createElement("audio").canPlayType(type),
+      ),
+  );
+
+  /**
+   * Whether the player failed to load; the card and its link stay, only the
+   * player goes
+   */
+  const [errored, setErrored] = createSignal(false);
 
   return (
     <Switch fallback={`Could not render ${props.embed.type}!`}>
@@ -90,6 +116,23 @@ export function Embed(props: { embed: MessageEmbed }) {
         when={props.embed.type === "Website" || props.embed.type === "Text"}
       >
         <TextEmbed embed={props.embed as WebsiteEmbed | TextEmbedClass} />
+      </Match>
+      <Match when={props.embed.type === "Audio"}>
+        <AttachmentContainer>
+          <FileInfo embed={props.embed} />
+          <Show when={playable() && !errored()}>
+            <SizedContent width={360} height={48}>
+              <audio
+                controls
+                preload="none"
+                // proxied only: the raw url would leak every reader's IP to
+                // the poster's link
+                src={audio().proxiedURL}
+                onError={() => setErrored(true)}
+              />
+            </SizedContent>
+          </Show>
+        </AttachmentContainer>
       </Match>
       <Match when={props.embed.type === "None"}> </Match>
     </Switch>

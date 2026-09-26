@@ -7,13 +7,15 @@ import {
 } from "solid-icons/bi";
 import { Match, Show, Switch } from "solid-js";
 
-import { File, MessageEmbed } from "stoat.js";
+import { AudioEmbed, File, MessageEmbed } from "stoat.js";
 import { styled } from "styled-system/jsx";
 
 import { IconButton, Text } from "@revolt/ui/components/design";
 import { Column, Row } from "@revolt/ui/components/layout";
 import { humanFileSize } from "@revolt/ui/components/utils";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
+
+import { audioEmbedFilename } from "./audioEmbed";
 
 /**
  * Base container
@@ -46,10 +48,18 @@ const Details = styled(Column, {
  * which is why `screen-2026-09-19.mp4` wrapped and looked fine while
  * `Screencast_20260920_121354.webm` did not — nothing breaks at an
  * underscore, so the unbroken run pushed the button out.
+ *
+ * `unicodeBidi: "isolate"` (with `dir="auto"` on the element): an audio link's
+ * name comes from a URL anyone can type, and a right-to-left override inside
+ * it would otherwise reorder the text around it. Isolating keeps any bidi
+ * control inside the name. `dir="auto"` also flips `start` alignment for a
+ * right-to-left name, so `match-parent` keeps it aligned with the size below.
  */
 const Filename = styled("span", {
   base: {
     overflowWrap: "anywhere",
+    unicodeBidi: "isolate",
+    textAlign: "match-parent",
   },
 });
 
@@ -93,6 +103,29 @@ interface Props {
  * Information about a given attachment or embed
  */
 export function FileInfo(props: Props) {
+  /**
+   * The embed, if it is a pasted audio link
+   */
+  const audio = () =>
+    props.embed?.type === "Audio" ? (props.embed as AudioEmbed) : undefined;
+
+  /**
+   * Name to show: an upload keeps its own filename, an audio link gets one
+   * derived from the embed
+   */
+  const name = () => {
+    const embed = audio();
+    return props.file || !embed
+      ? props.file?.filename
+      : audioEmbedFilename(embed);
+  };
+
+  /**
+   * Size in bytes, when known (january omits it for an audio link whose host
+   * sends no length)
+   */
+  const size = () => (props.file ? props.file.size : audio()?.size);
+
   return (
     <Base align>
       <Switch fallback={<BiSolidFile size={24} />}>
@@ -112,7 +145,12 @@ export function FileInfo(props: Props) {
         >
           <BiSolidVideo size={24} />
         </Match>
-        <Match when={props.file?.metadata.type === "Audio"}>
+        <Match
+          when={
+            props.file?.metadata.type === "Audio" ||
+            props.embed?.type === "Audio"
+          }
+        >
           <BiRegularHeadphone size={24} />
         </Match>
         <Match when={props.file?.metadata.type === "Text"}>
@@ -120,10 +158,10 @@ export function FileInfo(props: Props) {
         </Match>
       </Switch>
       <Details grow>
-        <Filename>{props.file?.filename}</Filename>
-        <Show when={props.file?.size}>
+        <Filename dir="auto">{name()}</Filename>
+        <Show when={size()}>
           <Text class="label" size="small">
-            {humanFileSize(props.file!.size!)}
+            {humanFileSize(size()!)}
           </Text>
         </Show>
       </Details>
@@ -137,6 +175,25 @@ export function FileInfo(props: Props) {
             <Symbol>download</Symbol>
           </IconButton>
         </DownloadLink>
+      </Show>
+      {/*
+       * An audio link opens the original in a new tab rather than downloading:
+       * the file lives on a third-party host, where `download` is ignored
+       * cross-origin anyway, and `noopener noreferrer` keeps that host from
+       * getting a handle on this window or learning which page linked it.
+       */}
+      <Show when={audio()}>
+        {(embed) => (
+          <DownloadLink
+            target="_blank"
+            rel="noopener noreferrer"
+            href={embed().url}
+          >
+            <IconButton>
+              <Symbol>open_in_new</Symbol>
+            </IconButton>
+          </DownloadLink>
+        )}
       </Show>
     </Base>
   );
