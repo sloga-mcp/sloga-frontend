@@ -7,6 +7,7 @@ import { styled } from "styled-system/jsx";
 
 import { useClient } from "@revolt/client";
 import { useDevice } from "@revolt/common";
+import { channelNounOf } from "@revolt/common/lib/channelNoun";
 import { TextWithEmoji } from "@revolt/markdown";
 import { useModals } from "@revolt/modal";
 import { useVoice } from "@revolt/rtc";
@@ -316,7 +317,13 @@ export function ChannelHeader(props: Props) {
           use:floating={{
             tooltip: {
               placement: "bottom",
-              content: t`Channel Settings`,
+              // one literal per noun; the accessor is read on hover
+              content:
+                channelNounOf(props.channel) === "post"
+                  ? t`Post Settings`
+                  : channelNounOf(props.channel) === "thread"
+                    ? t`Thread Settings`
+                    : t`Channel Settings`,
             },
           }}
         >

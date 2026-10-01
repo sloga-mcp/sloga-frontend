@@ -31,6 +31,23 @@ export const BRAND_ACCENT = "#00B2FF";
 export const BRAND_VARIANT: TypeTheme["m3Variant"] = "tonal_spot";
 
 /**
+ * Whether picking an accent changes anything under the given preset and
+ * variant. The appearance menu greys out the accent swatches when it does not.
+ *
+ * Material You's Monochrome scheme ignores the accent entirely: it builds every
+ * role from greys, so every accent gives the same colours. The Sloga preset
+ * ignores the stored `m3Variant` instead — it always generates from
+ * `BRAND_VARIANT` (see `activeTheme` in Theme.ts) — so a stale "monochrome"
+ * left over from Material You must not lock the Sloga swatches.
+ */
+export function accentHasEffect(
+  preset: TypeTheme["preset"],
+  variant: TypeTheme["m3Variant"],
+): boolean {
+  return preset === "stoat" || variant !== "monochrome";
+}
+
+/**
  * Sloga's hand-tuned palette, applied over a generated scheme rather than
  * replacing it: every role these tables do not name — error, outline, inverse,
  * the fixed roles — still comes from Material, so the result stays internally

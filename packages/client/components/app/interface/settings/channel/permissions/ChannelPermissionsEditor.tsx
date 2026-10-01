@@ -1,4 +1,14 @@
-import { For, Match, Show, Switch, createSignal } from "solid-js";
+import {
+  For,
+  Match,
+  Show,
+  Switch,
+  createEffect,
+  createMemo,
+  createSignal,
+  on,
+  onCleanup,
+} from "solid-js";
 
 import { useLingui } from "@lingui-solid/solid/macro";
 import {
@@ -12,12 +22,16 @@ import { styled } from "styled-system/jsx";
 
 import { Button, Checkbox2, OverrideSwitch, Row, Text } from "@revolt/ui";
 
-type Props =
+type Props = (
   | { type: "server_default"; context: Server }
   | { type: "server_role"; context: Server; roleId: string }
   | { type: "channel_default"; context: Channel }
   | { type: "channel_role"; context: Channel; roleId: string }
-  | { type: "group"; context: Channel };
+  | { type: "group"; context: Channel }
+) & {
+  /** Called with true while the grid has unsaved changes, false once saved/reset or on unmount */
+  onUnsavedChange?: (unsaved: boolean) => void;
+};
 
 // stoat-api's generated union predates threads; widen it locally. Threads
 // carry no own overrides (permissions are edited on the parent), so "Thread"
@@ -81,6 +95,18 @@ export function ChannelPermissionsEditor(props: Props) {
 
     return a1 !== b1 || a2 !== b2;
   }
+
+  /**
+   * Tell the parent when the dirty state flips (initial value included), so a
+   * page-level action such as Duplicate role can wait for these edits. Same
+   * condition that enables Save below; it clears when the server's update
+   * event lands, not when Save is pressed. The memo only notifies on a real
+   * flip, and `on` reads the callback untracked, so a parent re-render cannot
+   * loop back into this effect.
+   */
+  const dirty = createMemo(unsavedChanges);
+  createEffect(on(dirty, (unsaved) => props.onUnsavedChange?.(unsaved)));
+  onCleanup(() => props.onUnsavedChange?.(false));
 
   /**
    * Reset to the current value

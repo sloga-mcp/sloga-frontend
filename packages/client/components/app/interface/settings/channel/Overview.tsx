@@ -28,6 +28,7 @@ import {
 
 import { useClient } from "@revolt/client";
 import { CONFIGURATION } from "@revolt/common";
+import { channelNounOf } from "@revolt/common/lib/channelNoun";
 import { useModals } from "@revolt/modal";
 import { isAfkChannel } from "@revolt/rtc/afkPolicy";
 import {
@@ -51,6 +52,16 @@ export default function ChannelOverview(props: ChannelSettingsProps) {
   const { openModal, showError } = useModals();
 
   const canManageChannel = () => props.channel.havePermission("ManageChannel");
+
+  /** What this channel is called in the labels below: post, thread or channel. */
+  const noun = () => channelNounOf(props.channel);
+
+  /**
+   * Threads (forum posts included) do not get their own password or mature
+   * check: once the parent is loaded, both resolve to the parent channel
+   * (`gateSource` in `channelGates.ts`), so the controls would do nothing here.
+   */
+  const isThread = () => props.channel.type === "Thread";
 
   /**
    * 🔴 The AFK gate is ManageServer, NOT `canManageChannel()`.
@@ -440,7 +451,14 @@ export default function ChannelOverview(props: ChannelSettingsProps) {
       <form onSubmit={submit}>
         <Column>
           <Text class="label">
-            <Trans>Channel Info</Trans>
+            <Switch fallback={<Trans>Channel Info</Trans>}>
+              <Match when={noun() === "post"}>
+                <Trans>Post Info</Trans>
+              </Match>
+              <Match when={noun() === "thread"}>
+                <Trans>Thread Info</Trans>
+              </Match>
+            </Switch>
           </Text>
           <Form2.FileInput control={editGroup.controls.icon} accept="image/*" />
           <Form2.TextField
@@ -449,7 +467,13 @@ export default function ChannelOverview(props: ChannelSettingsProps) {
             counter
             name="name"
             control={editGroup.controls.name}
-            label={t`Channel Name`}
+            label={
+              noun() === "post"
+                ? t`Title`
+                : noun() === "thread"
+                  ? t`Thread Name`
+                  : t`Channel Name`
+            }
           />
           <Form2.TextField
             autosize
@@ -458,8 +482,20 @@ export default function ChannelOverview(props: ChannelSettingsProps) {
             counter
             name="description"
             control={editGroup.controls.description}
-            label={t`Channel Description`}
-            placeholder={t`This channel is about...`}
+            label={
+              noun() === "post"
+                ? t`Post Description`
+                : noun() === "thread"
+                  ? t`Thread Description`
+                  : t`Channel Description`
+            }
+            placeholder={
+              noun() === "post"
+                ? t`This post is about...`
+                : noun() === "thread"
+                  ? t`This thread is about...`
+                  : t`This channel is about...`
+            }
           />
           <Show when={props.channel.type === "TextChannel"}>
             <Form2.Select
@@ -512,103 +548,105 @@ export default function ChannelOverview(props: ChannelSettingsProps) {
           </Row>
         </Column>
       </form>
-      <Column>
-        <Text class="label">
-          <Trans>Channel Password</Trans>
-        </Text>
-        <Text>
-          <Show
-            when={existingHash}
-            fallback={
-              <Trans>
-                Set a password that users must enter before viewing this
-                channel.
-              </Trans>
-            }
-          >
-            <Trans>This channel is currently password protected.</Trans>
-          </Show>
-        </Text>
-        <div
-          style={{
-            display: "flex",
-            gap: "8px",
-            "align-items": "center",
-            "flex-wrap": "wrap",
-          }}
-        >
-          <input
-            type="password"
-            placeholder={
-              existingHash
-                ? "New password (leave blank to remove)"
-                : "Set password..."
-            }
-            value={pwInput()}
-            onInput={(e) => setPwInput(e.currentTarget.value)}
-            style={{
-              padding: "8px 12px",
-              "border-radius": "8px",
-              border: "1.5px solid var(--md-sys-color-outline)",
-              background: "var(--md-sys-color-surface-container)",
-              color: "var(--md-sys-color-on-surface)",
-              "font-size": "0.9rem",
-              width: "220px",
-              outline: "none",
-            }}
-          />
-          <Button
-            onPress={setChannelPassword}
-            isDisabled={
-              pwSaving() ||
-              (!pwInput().trim() && !existingHash) ||
-              (!!pwInput().trim() && afkBlocksGate(hasPassword()))
-            }
-          >
-            <Switch
+      <Show when={!isThread()}>
+        <Column>
+          <Text class="label">
+            <Trans>Channel Password</Trans>
+          </Text>
+          <Text>
+            <Show
+              when={existingHash}
               fallback={
                 <Trans>
-                  {existingHash ? "Update Password" : "Set Password"}
+                  Set a password that users must enter before viewing this
+                  channel.
                 </Trans>
               }
             >
-              <Match when={pwSaving()}>
-                <Trans>Saving...</Trans>
-              </Match>
-              <Match when={pwStatus() === "saved"}>
-                <Trans>Password set!</Trans>
-              </Match>
-              <Match when={pwStatus() === "removed"}>
-                <Trans>Password removed!</Trans>
-              </Match>
-            </Switch>
-          </Button>
-          <Show when={existingHash}>
-            <Button
-              onPress={() => {
-                setPwInput("");
-                setChannelPassword();
+              <Trans>This channel is currently password protected.</Trans>
+            </Show>
+          </Text>
+          <div
+            style={{
+              display: "flex",
+              gap: "8px",
+              "align-items": "center",
+              "flex-wrap": "wrap",
+            }}
+          >
+            <input
+              type="password"
+              placeholder={
+                existingHash
+                  ? "New password (leave blank to remove)"
+                  : "Set password..."
+              }
+              value={pwInput()}
+              onInput={(e) => setPwInput(e.currentTarget.value)}
+              style={{
+                padding: "8px 12px",
+                "border-radius": "8px",
+                border: "1.5px solid var(--md-sys-color-outline)",
+                background: "var(--md-sys-color-surface-container)",
+                color: "var(--md-sys-color-on-surface)",
+                "font-size": "0.9rem",
+                width: "220px",
+                outline: "none",
               }}
-              isDisabled={pwSaving()}
+            />
+            <Button
+              onPress={setChannelPassword}
+              isDisabled={
+                pwSaving() ||
+                (!pwInput().trim() && !existingHash) ||
+                (!!pwInput().trim() && afkBlocksGate(hasPassword()))
+              }
             >
-              <Trans>Remove Password</Trans>
+              <Switch
+                fallback={
+                  <Trans>
+                    {existingHash ? "Update Password" : "Set Password"}
+                  </Trans>
+                }
+              >
+                <Match when={pwSaving()}>
+                  <Trans>Saving...</Trans>
+                </Match>
+                <Match when={pwStatus() === "saved"}>
+                  <Trans>Password set!</Trans>
+                </Match>
+                <Match when={pwStatus() === "removed"}>
+                  <Trans>Password removed!</Trans>
+                </Match>
+              </Switch>
             </Button>
+            <Show when={existingHash}>
+              <Button
+                onPress={() => {
+                  setPwInput("");
+                  setChannelPassword();
+                }}
+                isDisabled={pwSaving()}
+              >
+                <Trans>Remove Password</Trans>
+              </Button>
+            </Show>
+          </div>
+          <Show when={afkBlocksGate(hasPassword())}>
+            <Text>
+              <Trans>
+                This is the server's AFK channel, so it can't have an age,
+                password or spoiler check. Choose another AFK channel first.
+              </Trans>
+            </Text>
           </Show>
-        </div>
-        <Show when={afkBlocksGate(hasPassword())}>
-          <Text>
-            <Trans>
-              This is the server's AFK channel, so it can't have an age,
-              password or spoiler check. Choose another AFK channel first.
-            </Trans>
-          </Text>
-        </Show>
-        <Show when={pwFailed()}>
-          <Text>
-            <Trans>That change was not saved.</Trans>
-          </Text>
-        </Show>
-      </Column>
+          <Show when={pwFailed()}>
+            <Text>
+              <Trans>That change was not saved.</Trans>
+            </Text>
+          </Show>
+        </Column>
+      </Show>
 
       <Show when={props.channel.type === "TextChannel" && canManageChannel()}>
         <Column>
@@ -746,42 +784,44 @@ export default function ChannelOverview(props: ChannelSettingsProps) {
         </Column>
       </Show>
 
-      <Column>
-        <Text class="label">
-          <Trans>Mark as Mature</Trans>
-        </Text>
-        <Text>
-          <Trans>
-            Users will be asked to confirm their age before opening this
-            channel.
-          </Trans>
-        </Text>
-        <div>
-          <Button
-            onPress={() =>
-              openModal({
-                type: "channel_toggle_mature",
-                channel: props.channel,
-              })
-            }
-            isDisabled={afkBlocksGate(props.channel.mature)}
-          >
-            <Switch fallback={<Trans>Mark as Mature</Trans>}>
-              <Match when={props.channel.mature}>
-                <Trans>Unmark as Mature</Trans>
-              </Match>
-            </Switch>
-          </Button>
-        </div>
-        <Show when={afkBlocksGate(props.channel.mature)}>
+      <Show when={!isThread()}>
+        <Column>
+          <Text class="label">
+            <Trans>Mark as Mature</Trans>
+          </Text>
           <Text>
             <Trans>
-              This is the server's AFK channel, so it can't have an age,
-              password or spoiler check. Choose another AFK channel first.
+              Users will be asked to confirm their age before opening this
+              channel.
             </Trans>
           </Text>
-        </Show>
-      </Column>
+          <div>
+            <Button
+              onPress={() =>
+                openModal({
+                  type: "channel_toggle_mature",
+                  channel: props.channel,
+                })
+              }
+              isDisabled={afkBlocksGate(props.channel.mature)}
+            >
+              <Switch fallback={<Trans>Mark as Mature</Trans>}>
+                <Match when={props.channel.mature}>
+                  <Trans>Unmark as Mature</Trans>
+                </Match>
+              </Switch>
+            </Button>
+          </div>
+          <Show when={afkBlocksGate(props.channel.mature)}>
+            <Text>
+              <Trans>
+                This is the server's AFK channel, so it can't have an age,
+                password or spoiler check. Choose another AFK channel first.
+              </Trans>
+            </Text>
+          </Show>
+        </Column>
+      </Show>
 
       <Show when={canConfigureAfk()}>
         <Column>

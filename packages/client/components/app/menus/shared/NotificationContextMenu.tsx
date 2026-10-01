@@ -4,6 +4,7 @@ import { Trans } from "@lingui-solid/solid/macro";
 import dayjs from "dayjs";
 import { Channel } from "stoat.js";
 
+import { channelNounOf } from "@revolt/common/lib/channelNoun";
 import { useState } from "@revolt/state";
 import { Column, Text, Time } from "@revolt/ui";
 
@@ -22,6 +23,12 @@ import { ContextMenuButton, ContextMenuSubMenu } from "../ContextMenu";
 export function NotificationContextMenu(props: { channel: Channel }) {
   const state = useState();
 
+  /**
+   * Noun the channel goes by in the mute labels; DMs, groups and server
+   * channels resolve to "channel" and keep the original strings
+   */
+  const noun = () => channelNounOf(props.channel);
+
   return (
     <>
       <Show
@@ -35,7 +42,14 @@ export function NotificationContextMenu(props: { channel: Channel }) {
             _titleCase={false}
           >
             <Column gap="none">
-              <Trans>Unmute Channel</Trans>
+              <Switch fallback={<Trans>Unmute Channel</Trans>}>
+                <Match when={noun() === "post"}>
+                  <Trans>Unmute Post</Trans>
+                </Match>
+                <Match when={noun() === "thread"}>
+                  <Trans>Unmute Thread</Trans>
+                </Match>
+              </Switch>
               <Show
                 when={state.notifications.getChannelMute(props.channel)?.until}
               >
@@ -57,7 +71,16 @@ export function NotificationContextMenu(props: { channel: Channel }) {
       >
         <ContextMenuSubMenu
           onClick={() => state.notifications.setChannelMute(props.channel, {})}
-          buttonContent={<Trans>Mute Channel</Trans>}
+          buttonContent={
+            <Switch fallback={<Trans>Mute Channel</Trans>}>
+              <Match when={noun() === "post"}>
+                <Trans>Mute Post</Trans>
+              </Match>
+              <Match when={noun() === "thread"}>
+                <Trans>Mute Thread</Trans>
+              </Match>
+            </Switch>
+          }
           symbol={MdDoNotDisturbOn}
         >
           <For

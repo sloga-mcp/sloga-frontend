@@ -3,11 +3,14 @@ import { Match, Show, Switch, createSignal } from "solid-js";
 import { createFormControl, createFormGroup } from "solid-forms";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
+import { styled } from "styled-system/jsx";
 
+import { useClient } from "@revolt/client";
 import { resolvePostDefault } from "@revolt/common";
 import { useNavigate } from "@revolt/routing";
 import { Column, Dialog, DialogProps, Form2 } from "@revolt/ui";
 import { AutoArchiveMenuItems } from "@revolt/ui/components/utils/AutoArchiveMenuItems";
+import { useSearchSpace } from "@revolt/ui/components/utils/autoComplete";
 
 import { useModals } from "..";
 import { Modals } from "../types";
@@ -23,6 +26,11 @@ export function CreateForumPostModal(
   const { t } = useLingui();
   const navigate = useNavigate();
   const { showError } = useModals();
+  const client = useClient();
+
+  // The forum's server members, channels and roles, so the body suggests
+  // mentions, channel links and emoji the way the chat composer does.
+  const searchSpace = useSearchSpace(() => props.channel, client);
 
   const [selectedTags, setSelectedTags] = createSignal<string[]>([]);
 
@@ -108,18 +116,18 @@ export function CreateForumPostModal(
             label={t`Title`}
           />
 
-          {/* Multi-line, so Enter starts a new line the way the chat
-              composer does. As a single-line field, Enter (and Shift+Enter)
-              submitted the whole post from the first line, on every
-              platform; reported from Android 2026-09-11. */}
-          <Form2.TextField
-            autosize
-            min-rows={3}
-            max-rows={12}
-            name="content"
-            control={group.controls.content}
-            label={t`Message`}
-          />
+          {/* The composer's editor, for its suggestions. No `onComplete`,
+              so Enter starts a new line instead of submitting: as a
+              single-line field, Enter (and Shift+Enter) submitted the whole
+              post from the first line, on every platform; reported from
+              Android 2026-09-11. Enter with suggestions open accepts one. */}
+          <PostBody>
+            <Form2.TextEditor
+              control={group.controls.content}
+              placeholder={t`Message`}
+              autoCompleteSearchSpace={searchSpace}
+            />
+          </PostBody>
 
           <Show when={availableTags().length}>
             <Column gap="sm">
@@ -190,3 +198,16 @@ export function CreateForumPostModal(
     </Dialog>
   );
 }
+
+/**
+ * Caps the post body's height; the editor's own scroller takes the overflow.
+ * No `overflow` here: it would clip the suggestion popup, which CodeMirror
+ * positions absolutely when the dialog's animation leaves a transform.
+ */
+const PostBody = styled("div", {
+  base: {
+    "& .cm-scroller": {
+      maxHeight: "40vh",
+    },
+  },
+});

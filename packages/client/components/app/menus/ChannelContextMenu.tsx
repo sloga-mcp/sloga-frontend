@@ -4,6 +4,7 @@ import { Trans } from "@lingui-solid/solid/macro";
 import { Channel } from "stoat.js";
 
 import { useDevice } from "@revolt/common";
+import { channelNounOf } from "@revolt/common/lib/channelNoun";
 import { useModals } from "@revolt/modal";
 import { useState } from "@revolt/state";
 
@@ -37,6 +38,21 @@ export function ChannelContextMenu(props: { channel: Channel }) {
   const state = useState();
   const { openModal } = useModals();
   const { isMobile } = useDevice();
+
+  /**
+   * What this channel goes by in the menu copy: post, thread or channel
+   */
+  const noun = () => channelNounOf(props.channel);
+
+  /**
+   * Whether to offer the server-level channel actions (create, move to
+   * category, rearrange). Threads and forum posts are not listed in the
+   * server's channel list, so none of these apply to them: a move would be a
+   * silent no-op on the server.
+   */
+  const showServerChannelActions = () =>
+    props.channel.server?.havePermission("ManageChannel") &&
+    props.channel.type !== "Thread";
 
   /**
    * Mark channel as read
@@ -197,7 +213,7 @@ export function ChannelContextMenu(props: { channel: Channel }) {
 
       <ContextMenuDivider />
 
-      <Show when={props.channel.server?.havePermission("ManageChannel")}>
+      <Show when={showServerChannelActions()}>
         <ContextMenuButton icon={MdLibraryAdd} onClick={createChannel}>
           <Trans>Create channel</Trans>
         </ContextMenuButton>
@@ -239,7 +255,14 @@ export function ChannelContextMenu(props: { channel: Channel }) {
       </Show>
       <Show when={props.channel.havePermission("ManageChannel")}>
         <ContextMenuButton icon={MdSettings} onClick={editChannel}>
-          <Trans>Open channel settings</Trans>
+          <Switch fallback={<Trans>Open channel settings</Trans>}>
+            <Match when={noun() === "post"}>
+              <Trans>Open post settings</Trans>
+            </Match>
+            <Match when={noun() === "thread"}>
+              <Trans>Open thread settings</Trans>
+            </Match>
+          </Switch>
         </ContextMenuButton>
         <Show when={props.channel.type === "TextChannel"}>
           <ContextMenuButton icon={MdLock} onClick={setPassword}>
@@ -255,13 +278,22 @@ export function ChannelContextMenu(props: { channel: Channel }) {
             <Match when={props.channel.type === "Group"}>
               <Trans>Leave group</Trans>
             </Match>
+            <Match when={noun() === "post"}>
+              <Trans>Delete post</Trans>
+            </Match>
+            <Match when={noun() === "thread"}>
+              <Trans>Delete thread</Trans>
+            </Match>
           </Switch>
         </ContextMenuButton>
       </Show>
 
+      {/* Closes the action section above, so it must only render when that
+          section rendered something; otherwise it would sit directly under
+          the divider after the notification menu. */}
       <Show
         when={
-          props.channel.server?.havePermission("ManageChannel") ||
+          showServerChannelActions() ||
           props.channel.havePermission("ManageChannel")
         }
       >
@@ -273,7 +305,14 @@ export function ChannelContextMenu(props: { channel: Channel }) {
       </ContextMenuButton>
       <Show when={state.settings.getValue("advanced:copy_id")}>
         <ContextMenuButton icon={MdBadge} onClick={copyId}>
-          <Trans>Copy channel ID</Trans>
+          <Switch fallback={<Trans>Copy channel ID</Trans>}>
+            <Match when={noun() === "post"}>
+              <Trans>Copy post ID</Trans>
+            </Match>
+            <Match when={noun() === "thread"}>
+              <Trans>Copy thread ID</Trans>
+            </Match>
+          </Switch>
         </ContextMenuButton>
       </Show>
     </ContextMenu>
