@@ -445,6 +445,9 @@ export type Modals =
       type: "sign_out_sessions";
       client: Client;
     }
+  | {
+      type: "support_sloga";
+    }
   // unimplemented: (modals.tsx#L58)
   | {
       type: "report_success";

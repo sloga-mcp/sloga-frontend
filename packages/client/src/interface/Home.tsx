@@ -14,7 +14,7 @@ import { PublicChannelInvite } from "stoat.js";
 import { cva } from "styled-system/css";
 import { styled } from "styled-system/jsx";
 
-import { allowsDonationLinks, KOFI_PAGE_URL, useClient } from "@revolt/client";
+import { allowsDonationLinks, useClient } from "@revolt/client";
 import { CONFIGURATION } from "@revolt/common";
 import { useModals } from "@revolt/modal";
 import { useNavigate } from "@revolt/routing";
@@ -429,10 +429,11 @@ export function HomePage() {
                 </CategoryButton>
               </Match>
             </Switch>
-            {/* Opens Ko-fi to donate. Hidden in Play and App Store builds:
-                both stores restrict linking out to payments outside their
-                own billing, and Sloga is not a registered nonprofit. Web,
-                desktop and the sloga.gg APK still show it. */}
+            {/* Hands out the supporter code, then opens Ko-fi. Hidden in Play
+                and App Store builds: both stores restrict linking out to
+                payments outside their own billing, and Sloga is not a
+                registered nonprofit. Web, desktop and the sloga.gg APK still
+                show it. */}
             <Show when={allowsDonationLinks()}>
               <div
                 style={{
@@ -442,7 +443,7 @@ export function HomePage() {
               >
                 <CategoryButton
                   variant="filled"
-                  onClick={() => window.open(KOFI_PAGE_URL, "_blank")}
+                  onClick={() => openModal({ type: "support_sloga" })}
                   description={<Trans>Support the project - thank you!</Trans>}
                   // Inverted on the orange button: dark bag, orange $.
                   icon={<SupportSlogaIcon bag="#05090F" sign="#FF8A00" />}

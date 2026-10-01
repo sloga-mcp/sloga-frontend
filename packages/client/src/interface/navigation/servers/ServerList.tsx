@@ -5,7 +5,7 @@ import { Channel, Server, User } from "stoat.js";
 import { cva } from "styled-system/css";
 import { styled } from "styled-system/jsx";
 
-import { KOFI_PAGE_URL, allowsDonationLinks } from "@revolt/client";
+import { allowsDonationLinks } from "@revolt/client";
 import { useDevice } from "@revolt/common";
 import { KeybindAction, createKeybind } from "@revolt/keybinds";
 import { useModals } from "@revolt/modal";
@@ -557,13 +557,13 @@ export const ServerList = (props: Props) => {
             </Show>
           </a>
         </Tooltip>
-        {/* Straight to Ko-fi. Hidden in Play and App Store builds, which may
-            not link out to other payment methods. */}
+        {/* Hands out the supporter code, then opens Ko-fi. Hidden in Play and
+            App Store builds, which may not link out to other payment methods. */}
         <Show when={allowsDonationLinks()}>
           <Tooltip placement="right" content={"Support Sloga on Ko-fi"}>
             <a
               class={entryContainer({ expanded: railExpanded() })}
-              onClick={() => window.open(KOFI_PAGE_URL, "_blank")}
+              onClick={() => openModal({ type: "support_sloga" })}
             >
               <SupportBubble>
                 <SupportSlogaIcon size={30} />

@@ -5,7 +5,6 @@ import { Server } from "stoat.js";
 import { css } from "styled-system/css";
 
 import {
-  KOFI_PAGE_URL,
   allowsDonationLinks,
   nativeE2EEAvailable,
   useClient,
@@ -436,8 +435,8 @@ const Config: SettingsConfiguration<{ server: Server }> = {
           entries: [
             {
               id: "donate",
-              // Goes straight to Ko-fi to donate. The perks and the supporter
-              // code live on the Account section's Supporter page.
+              // Hands out the supporter code, then opens Ko-fi to donate. The
+              // perks live on the Account section's Supporter page.
               // Google Play treats linking out to donations as a payments-policy
               // gray area and Sloga is not a registered nonprofit, and the App
               // Store only allows in-app purchase, so this is hidden in Play and
@@ -454,7 +453,9 @@ const Config: SettingsConfiguration<{ server: Server }> = {
                   <Trans>Support Sloga</Trans>
                 </ColouredText>
               ),
-              href: KOFI_PAGE_URL,
+              onClick() {
+                openModal({ type: "support_sloga" });
+              },
             },
             {
               id: "changelog",
