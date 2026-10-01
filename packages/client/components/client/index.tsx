@@ -30,6 +30,7 @@ export {
   allowsDonationLinks,
   allowsSelfUpdate,
   distributionChannel,
+  KOFI_PAGE_URL,
 } from "./distribution";
 export type { DistributionChannel } from "./distribution";
 export {

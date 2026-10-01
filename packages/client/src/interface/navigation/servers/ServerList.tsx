@@ -5,6 +5,7 @@ import { Channel, Server, User } from "stoat.js";
 import { cva } from "styled-system/css";
 import { styled } from "styled-system/jsx";
 
+import { KOFI_PAGE_URL, allowsDonationLinks } from "@revolt/client";
 import { useDevice } from "@revolt/common";
 import { KeybindAction, createKeybind } from "@revolt/keybinds";
 import { useModals } from "@revolt/modal";
@@ -17,6 +18,7 @@ import {
 import {
   Avatar,
   Column,
+  SupportSlogaIcon,
   Text,
   Time,
   Unreads,
@@ -555,6 +557,23 @@ export const ServerList = (props: Props) => {
             </Show>
           </a>
         </Tooltip>
+        {/* Straight to Ko-fi. Hidden in Play and App Store builds, which may
+            not link out to other payment methods. */}
+        <Show when={allowsDonationLinks()}>
+          <Tooltip placement="right" content={"Support Sloga on Ko-fi"}>
+            <a
+              class={entryContainer({ expanded: railExpanded() })}
+              onClick={() => window.open(KOFI_PAGE_URL, "_blank")}
+            >
+              <SupportBubble>
+                <SupportSlogaIcon size={30} />
+              </SupportBubble>
+              <Show when={railExpanded()}>
+                <RailLabel tone="support">Support Sloga</RailLabel>
+              </Show>
+            </a>
+          </Tooltip>
+        </Show>
       </div>
       <Shadow>
         <div />
@@ -770,6 +789,36 @@ const RailLabel = styled("span", {
     fontSize: "14px",
     fontWeight: 500,
     color: "var(--md-sys-color-on-surface)",
+  },
+  variants: {
+    tone: {
+      // Brand orange, like the Support Sloga row in settings
+      support: {
+        color: "#FF8A00",
+      },
+    },
+  },
+});
+
+/**
+ * Orange-ringed circle behind the Support Sloga icon, the same size as an
+ * avatar, so the entry stands out from the plain grey buttons above it
+ */
+const SupportBubble = styled("div", {
+  base: {
+    flexShrink: 0,
+    display: "grid",
+    placeItems: "center",
+    width: "42px",
+    height: "42px",
+    borderRadius: "50%",
+    background: "color-mix(in srgb, #FF8A00 16%, transparent)",
+    boxShadow: "inset 0 0 0 1.5px color-mix(in srgb, #FF8A00 55%, transparent)",
+    transition: "background var(--transitions-fast)",
+
+    "a:hover > &": {
+      background: "color-mix(in srgb, #FF8A00 28%, transparent)",
+    },
   },
 });
 

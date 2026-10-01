@@ -14,7 +14,7 @@ import { PublicChannelInvite } from "stoat.js";
 import { cva } from "styled-system/css";
 import { styled } from "styled-system/jsx";
 
-import { allowsDonationLinks, useClient } from "@revolt/client";
+import { allowsDonationLinks, KOFI_PAGE_URL, useClient } from "@revolt/client";
 import { CONFIGURATION } from "@revolt/common";
 import { useModals } from "@revolt/modal";
 import { useNavigate } from "@revolt/routing";
@@ -25,13 +25,13 @@ import {
   iconSize,
   main,
   slogaBurstKeyframes,
+  SupportSlogaIcon,
 } from "@revolt/ui";
 
 import MdAddCircle from "@material-design-icons/svg/filled/add_circle.svg?component-solid";
 import MdExplore from "@material-design-icons/svg/filled/explore.svg?component-solid";
 import MdGroups3 from "@material-design-icons/svg/filled/groups_3.svg?component-solid";
 import MdHome from "@material-design-icons/svg/filled/home.svg?component-solid";
-import MdPayments from "@material-design-icons/svg/filled/payments.svg?component-solid";
 import MdPersonAdd from "@material-design-icons/svg/filled/person_add.svg?component-solid";
 import MdReport from "@material-design-icons/svg/filled/report.svg?component-solid";
 import MdSettings from "@material-design-icons/svg/filled/settings.svg?component-solid";
@@ -429,11 +429,10 @@ export function HomePage() {
                 </CategoryButton>
               </Match>
             </Switch>
-            {/* Opens the in-app Supporter page rather than Ko-fi directly.
-                Hidden in Play and App Store builds, under the same gate as
-                that page: both stores restrict linking out to payments
-                outside their own billing, and Sloga is not a registered
-                nonprofit. Web, desktop and the sloga.gg APK still show it. */}
+            {/* Opens Ko-fi to donate. Hidden in Play and App Store builds:
+                both stores restrict linking out to payments outside their
+                own billing, and Sloga is not a registered nonprofit. Web,
+                desktop and the sloga.gg APK still show it. */}
             <Show when={allowsDonationLinks()}>
               <div
                 style={{
@@ -443,15 +442,10 @@ export function HomePage() {
               >
                 <CategoryButton
                   variant="filled"
-                  onClick={() =>
-                    openModal({
-                      type: "settings",
-                      config: "user",
-                      context: { page: "supporter" },
-                    })
-                  }
+                  onClick={() => window.open(KOFI_PAGE_URL, "_blank")}
                   description={<Trans>Support the project - thank you!</Trans>}
-                  icon={<MdPayments />}
+                  // Inverted on the orange button: dark bag, orange $.
+                  icon={<SupportSlogaIcon bag="#05090F" sign="#FF8A00" />}
                 >
                   <Trans>Support Sloga</Trans>
                 </CategoryButton>
