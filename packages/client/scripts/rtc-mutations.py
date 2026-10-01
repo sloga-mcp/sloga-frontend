@@ -7330,5 +7330,697 @@ function isGatedFor(
 ]
 
 
+# --- The Android screen-share flip: leg lifecycle, leg grace, leg keys -------
+#
+# Wave 2 of the screen-share flip (G2). Four groups, one namespace each:
+#
+#  - `leg-*`: the leg lifecycle leaf `androidLegStartPolicy.ts` (stop
+#    coalescing, the "not stopped" reading of a failed or hung native stop,
+#    the connect generation, the JS-side group binding, FX1's stop on a key
+#    cleared mid-connect) and the SOURCE PINS that hold the plugin wrapper
+#    `androidScreenShare.ts` to delegating to it. A `file=ANDROID_SHARE`
+#    entry is killed by the pin spec ("holds no live copy of the
+#    lifecycle"), not by running the wrapper, which `node --test` cannot
+#    load; the pins strip comments, so the same text in dead code would
+#    still satisfy them.
+#  - `grace-*`: the admit-grace decisions in `mlsAdmitGracePolicy.ts`
+#    (`legOwnerPresent` with FX2's empty-owner guard, `admitGraceLedgerResets`,
+#    `shouldRearmAdmitGrace`). Where the session spec also notices, it is
+#    listed in `must_red` as MEASURED, not assumed: every `grace-*` entry was
+#    run with `mlsCallSession.leggrace.test.ts` pinned, and the six that list
+#    only the policy spec left it GREEN (the FX2 guard, the dropped
+#    localIdentity, the suffix slice, the reset ignoring isLeg, the re-arm
+#    ignoring legPublished, the re-arm honoring admitInProgress). The session
+#    spec does not drive those shapes; the policy spec alone holds them.
+#  - `session-*`: the call sites in `mlsCallSession.ts` (the settle loop's
+#    bill THEN reset, the fail-closed `seenPublished`, the expiry's re-arm
+#    inputs). Every one is pinned on `mlsCallSession.leggrace.test.ts`, which
+#    holds them by source pins AND by behavior through the session harness.
+#    None keys on `const isLeg = isScreenLeg(identity);` or the billing line
+#    alone: both occur twice in the file.
+#  - `keys-*`: F7's clear of the stale leg key on a legless epoch in
+#    `mlsCallKeys.ts`.
+#
+# Nothing here keys on `state.tsx`, whose "different group" wording is stale.
+
+#: Relative to `RTC`, like every other target (`apply` reads
+#: `RTC / mutation.file`).
+LEG_POLICY = "androidLegStartPolicy.ts"
+ANDROID_SHARE = "androidScreenShare.ts"
+ADMIT_GRACE_POLICY = "mlsAdmitGracePolicy.ts"
+CALL_KEYS = "mlsCallKeys.ts"
+LEG_POLICY_SPEC = "components/rtc/androidLegStartPolicy.test.ts"
+ADMIT_GRACE_SPEC = "components/rtc/mlsAdmitGracePolicy.test.ts"
+LEGGRACE_SPEC = "components/rtc/mlsCallSession.leggrace.test.ts"
+CALL_KEYS_SPEC = "components/rtc/mlsCallKeys.test.ts"
+
+MUTATIONS += [
+    # ---- the leg lifecycle leaf ---------------------------------------------
+    Mutation(
+        id="leg-1a",
+        what="concurrent leg stops no longer coalesce onto the one in flight, so each caller drives its own bridge stop",
+        file=LEG_POLICY,
+        search="""    if (this.#stopPromise) return this.#stopPromise;
+""",
+        replace="""    if (false) return this.#stopPromise;
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-1b",
+        what="a settled leg stop stays memoized, so every later stop returns the old result and never reaches the bridge",
+        file=LEG_POLICY,
+        search="""    const attempt = this.#doStop().finally(() => {
+      this.#stopPromise = undefined;
+    });
+""",
+        replace="""    const attempt = this.#doStop();
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-2a",
+        what="a rejected or hung native stop marks the leg down, so a share still on the wire reads as stopped",
+        file=LEG_POLICY,
+        search="""    } catch {
+""",
+        replace="""    } catch {
+      this.#active = false;
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-2b",
+        what="the native stop loses its timeout, so a stop that never settles hangs the caller forever",
+        file=LEG_POLICY,
+        search="""      await withTimeout(
+        this.#bridge.stop(),
+        this.#stopTimeoutMs,
+        "screen share stop timed out",
+      );
+""",
+        replace="""      await this.#bridge.stop();
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-3a-stale-check",
+        what="a connect resolving after its share was stopped still marks the leg active",
+        file=LEG_POLICY,
+        search="""    if (generation !== this.#connectGeneration) return;
+    this.#active = true;
+""",
+        replace="""    this.#active = true;
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-3a-nativeStopped-bump",
+        what="a native stopped event no longer orphans the connect in flight, so its resolution resurrects active()",
+        file=LEG_POLICY,
+        search="""    const wasActive = this.#active;
+    this.#active = false;
+    // Definitively down: orphan any connect still in flight so its
+    // resolution cannot flip `#active` back on.
+    this.#connectGeneration++;
+""",
+        replace="""    const wasActive = this.#active;
+    this.#active = false;
+    // Definitively down: orphan any connect still in flight so its
+    // resolution cannot flip `#active` back on.
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-3b",
+        what="a completed stop() no longer orphans the connect in flight, so its resolution brings the leg back up",
+        file=LEG_POLICY,
+        search="""    if (generation !== this.#connectGeneration) return;
+    // Definitively down (native resolved the stop): orphan any connect still
+    // in flight, as [nativeStopped] does.
+    this.#connectGeneration++;
+""",
+        replace="""    if (generation !== this.#connectGeneration) return;
+    // Definitively down (native resolved the stop): orphan any connect still
+    // in flight, as [nativeStopped] does.
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-3c",
+        what="a stale stop resolution is no longer generation-checked, so it stops the NEXT share",
+        file=LEG_POLICY,
+        search="""    if (generation !== this.#connectGeneration) return;
+    // Definitively down (native resolved the stop): orphan any connect still
+    // in flight, as [nativeStopped] does.
+    this.#connectGeneration++;
+""",
+        replace="""    // Definitively down (native resolved the stop): orphan any connect still
+    // in flight, as [nativeStopped] does.
+    this.#connectGeneration++;
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-3d",
+        what="a native stopped event announces even when the leg was already down, so the stop event and the stop resolution announce twice",
+        file=LEG_POLICY,
+        search="""    if (wasActive) this.#announce.stopped(reason ?? "error");
+""",
+        replace="""    if (true) this.#announce.stopped(reason ?? "error");
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-3d-x-doStop-active",
+        what="a stop on an inactive leg still runs the active-leg teardown, so a stale connect is not orphaned and announces a user stop",
+        file=LEG_POLICY,
+        search="""    if (this.#active) {
+      this.#active = false;
+      this.#announce.stopped("user");
+""",
+        replace="""    if (true) {
+      this.#active = false;
+      this.#announce.stopped("user");
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-4a",
+        what="a key from another MLS group is pushed to the leg instead of refused",
+        file=LEG_POLICY,
+        search="""    if (key.groupId !== this.#e2eeGroupId)
+""",
+        replace="""    if (false)
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-4b",
+        what="a plaintext share keeps the previous share's group binding, so it accepts the old group's key",
+        file=LEG_POLICY,
+        search="""    this.#e2eeGroupId = e2ee?.groupId;
+""",
+        replace="""    if (e2ee) this.#e2eeGroupId = e2ee.groupId;
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-4c",
+        what="the leg's group is bound only AFTER connect resolves, so a key pushed during connect is checked against the wrong group",
+        file=LEG_POLICY,
+        search="""    this.#e2eeGroupId = e2ee?.groupId;
+    const generation = ++this.#connectGeneration;
+    await publish(
+      e2ee && {
+        keyB64: e2ee.keyB64,
+        keyIndex: e2ee.keyIndex,
+        epoch: e2ee.epoch,
+      },
+    );
+""",
+        replace="""    const generation = ++this.#connectGeneration;
+    await publish(
+      e2ee && {
+        keyB64: e2ee.keyB64,
+        keyIndex: e2ee.keyIndex,
+        epoch: e2ee.epoch,
+      },
+    );
+    this.#e2eeGroupId = e2ee?.groupId;
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-4d",
+        what="setFrameKey hands the whole key, groupId included, across the bridge",
+        file=LEG_POLICY,
+        search="""    await this.#bridge.setFrameKey({
+      keyB64: key.keyB64,
+      keyIndex: key.keyIndex,
+      epoch: key.epoch,
+    });
+""",
+        replace="""    await this.#bridge.setFrameKey(key);
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-4d-x-publish-arg",
+        what="the connect hands the whole key, groupId included, to publish",
+        file=LEG_POLICY,
+        search="""      e2ee && {
+        keyB64: e2ee.keyB64,
+        keyIndex: e2ee.keyIndex,
+        epoch: e2ee.epoch,
+      },
+""",
+        replace="""      e2ee,
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-c1-inactive-noop",
+        what="a key pushed to an inactive leg reaches the bridge instead of being a silent no-op",
+        file=LEG_POLICY,
+        search="""    if (!this.#active) return;
+""",
+        replace="",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-c1-missing-reason-error",
+        what="a native stopped event with no reason announces a user stop instead of an error",
+        file=LEG_POLICY,
+        search="""    if (wasActive) this.#announce.stopped(reason ?? "error");
+""",
+        replace="""    if (wasActive) this.#announce.stopped(reason ?? "user");
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-fx1-cleared-key-stops",
+        what="an E2EE leg whose key was cleared during connect is left running under a key nothing current backs (FX1)",
+        file=LEG_POLICY,
+        search="""  if (!current) return { kind: "stop" };
+""",
+        replace="""  if (!current) return { kind: "none" };
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # ---- the plugin wrapper, held to delegating by source pins ---------------
+    Mutation(
+        id="leg-pin-stopPromise-field",
+        what="the wrapper grows its own stop memo beside the leaf's",
+        file=ANDROID_SHARE,
+        search="""  #listeners: { remove: () => Promise<void> }[] = [];
+""",
+        replace="""  #stopPromise: Promise<void> | undefined;
+  #listeners: { remove: () => Promise<void> }[] = [];
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-pin-x-active-field",
+        what="the wrapper grows its own active flag beside the leaf's",
+        file=ANDROID_SHARE,
+        search="""  #ready: Promise<void>;
+""",
+        replace="""  #ready: Promise<void>;
+  #active = false;
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-pin-x-eager-announcer",
+        what="the started announcer binds `onStarted` at construction, so a handler set later is never called",
+        file=ANDROID_SHARE,
+        search="""      started: () => this.onStarted?.(),
+""",
+        replace="""      started: this.onStarted ?? (() => {}),
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-pin-x-stop-bypass",
+        what="the wrapper's stop() resolves without asking the leaf, so nothing stops",
+        file=ANDROID_SHARE,
+        search="""    return this.#core.stop();
+""",
+        replace="""    return Promise.resolve();
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-pin-x-reason-dropped",
+        what="the native stopped listener drops the plugin's reason",
+        file=ANDROID_SHARE,
+        search="""        this.#core.nativeStopped(data.reason);
+""",
+        replace="""        this.#core.nativeStopped(undefined);
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-pin-x-bridge-stop-stub",
+        what="the bridge handed to the leaf stubs the native stop, so the projection never ends",
+        file=ANDROID_SHARE,
+        search="""      stop: () => plugin!.stop(),
+""",
+        replace="""      stop: () => Promise.resolve(),
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-pin-x-full-key-to-plugin",
+        what="the plugin connect is handed the caller's full key, groupId included, instead of the bridge-shaped one",
+        file=ANDROID_SHARE,
+        search="""        audio: false,
+        e2ee,
+""",
+        replace="""        audio: false,
+        e2ee: options.e2ee,
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # ---- the admit-grace decisions ------------------------------------------
+    Mutation(
+        id="grace-fx2-empty-owner-guard-removed",
+        what="a malformed `::screen` leg (empty owner) reads as present against an empty localIdentity (FX2)",
+        file=ADMIT_GRACE_POLICY,
+        search="""  return owner !== "" && (sfu.includes(owner) || owner === localIdentity);
+""",
+        replace="""  return sfu.includes(owner) || owner === localIdentity;
+""",
+        specs=[ADMIT_GRACE_SPEC],
+        must_red=[ADMIT_GRACE_SPEC],
+    ),
+    Mutation(
+        id="grace-owner-local-identity-dropped",
+        what="the sharer's OWN leg reads as an orphan, so this device's leg loses its grace first",
+        file=ADMIT_GRACE_POLICY,
+        search="""  return owner !== "" && (sfu.includes(owner) || owner === localIdentity);
+""",
+        replace="""  return owner !== "" && sfu.includes(owner);
+""",
+        specs=[ADMIT_GRACE_SPEC],
+        must_red=[ADMIT_GRACE_SPEC],
+    ),
+    Mutation(
+        id="grace-owner-presence-always-true",
+        what="every well-formed leg reads as owner-present, so an orphan leg keeps re-arming",
+        file=ADMIT_GRACE_POLICY,
+        search="""  return owner !== "" && (sfu.includes(owner) || owner === localIdentity);
+""",
+        replace="""  return owner !== "";
+""",
+        specs=[ADMIT_GRACE_SPEC],
+        must_red=[ADMIT_GRACE_SPEC, LEGGRACE_SPEC],
+    ),
+    Mutation(
+        id="grace-owner-is-raw-leg",
+        what="the owner is the leg identity itself, so no leg ever finds its owner",
+        file=ADMIT_GRACE_POLICY,
+        search="""  const owner = stripLeg(leg);
+""",
+        replace="""  const owner = leg;
+""",
+        specs=[ADMIT_GRACE_SPEC],
+        must_red=[ADMIT_GRACE_SPEC, LEGGRACE_SPEC],
+    ),
+    Mutation(
+        id="grace-owner-naive-suffix-slice",
+        what="the owner is a suffix slice instead of the identity grammar, so a device leg's owner is misread",
+        file=ADMIT_GRACE_POLICY,
+        search="""  const owner = stripLeg(leg);
+""",
+        replace="""  const owner = leg.slice(0, -":screen".length);
+""",
+        specs=[ADMIT_GRACE_SPEC],
+        must_red=[ADMIT_GRACE_SPEC],
+    ),
+    Mutation(
+        id="grace-reset-ignores-isLeg",
+        what="the published-leg ledger reset applies to primaries too",
+        file=ADMIT_GRACE_POLICY,
+        search="""  return i.isLeg && i.legPublished;
+""",
+        replace="""  return i.legPublished;
+""",
+        specs=[ADMIT_GRACE_SPEC],
+        must_red=[ADMIT_GRACE_SPEC],
+    ),
+    Mutation(
+        id="grace-reset-ignores-legPublished",
+        what="every leg's ledger resets, published or not, so a churned leg never exhausts",
+        file=ADMIT_GRACE_POLICY,
+        search="""  return i.isLeg && i.legPublished;
+""",
+        replace="""  return i.isLeg;
+""",
+        specs=[ADMIT_GRACE_SPEC],
+        must_red=[ADMIT_GRACE_SPEC, LEGGRACE_SPEC],
+    ),
+    Mutation(
+        id="grace-reset-never",
+        what="no ledger ever resets, so a phone that shares over and over runs out of grace (E2-2)",
+        file=ADMIT_GRACE_POLICY,
+        search="""  return i.isLeg && i.legPublished;
+""",
+        replace="""  return false;
+""",
+        specs=[ADMIT_GRACE_SPEC],
+        must_red=[ADMIT_GRACE_SPEC, LEGGRACE_SPEC],
+    ),
+    Mutation(
+        id="grace-rearm-leg-branch-removed",
+        what="a leg re-arms on the primary-only admit signal, which is always false for it, so a slow leg lapses (E2-3)",
+        file=ADMIT_GRACE_POLICY,
+        search="""  if (i.isLeg) return !i.legPublished && i.legOwnerPresent;
+""",
+        replace="",
+        specs=[ADMIT_GRACE_SPEC],
+        must_red=[ADMIT_GRACE_SPEC, LEGGRACE_SPEC],
+    ),
+    Mutation(
+        id="grace-rearm-leg-ignores-legPublished",
+        what="a published leg keeps re-arming while its owner is present",
+        file=ADMIT_GRACE_POLICY,
+        search="""  if (i.isLeg) return !i.legPublished && i.legOwnerPresent;
+""",
+        replace="""  if (i.isLeg) return i.legOwnerPresent;
+""",
+        specs=[ADMIT_GRACE_SPEC],
+        must_red=[ADMIT_GRACE_SPEC],
+    ),
+    Mutation(
+        id="grace-rearm-leg-ignores-owner",
+        what="an orphan unpublished leg keeps re-arming",
+        file=ADMIT_GRACE_POLICY,
+        search="""  if (i.isLeg) return !i.legPublished && i.legOwnerPresent;
+""",
+        replace="""  if (i.isLeg) return !i.legPublished;
+""",
+        specs=[ADMIT_GRACE_SPEC],
+        must_red=[ADMIT_GRACE_SPEC, LEGGRACE_SPEC],
+    ),
+    Mutation(
+        id="grace-rearm-leg-honors-admitInProgress",
+        what="a leg also re-arms on the admit signal, so a published or orphan leg can be held open by it",
+        file=ADMIT_GRACE_POLICY,
+        search="""  if (i.isLeg) return !i.legPublished && i.legOwnerPresent;
+""",
+        replace="""  if (i.isLeg) return (!i.legPublished && i.legOwnerPresent) || i.admitInProgress;
+""",
+        specs=[ADMIT_GRACE_SPEC],
+        must_red=[ADMIT_GRACE_SPEC],
+    ),
+    Mutation(
+        id="grace-rearm-leg-rule-for-primaries",
+        what="a primary is judged by the leg rule, so its admit signal is ignored",
+        file=ADMIT_GRACE_POLICY,
+        search="""  if (i.isLeg) return !i.legPublished && i.legOwnerPresent;
+""",
+        replace="""  if (true) return !i.legPublished && i.legOwnerPresent;
+""",
+        specs=[ADMIT_GRACE_SPEC],
+        must_red=[ADMIT_GRACE_SPEC, LEGGRACE_SPEC],
+    ),
+    # ---- the session's call sites -------------------------------------------
+    Mutation(
+        id="session-ca-reset-before-bill",
+        what="the settle loop resets the ledger BEFORE billing, so the stretch just billed survives the reset (C-a)",
+        file=SESSION,
+        search="""        if (settled.billMs > 0) this.#billAdmitGrace(identity, settled.billMs);
+        entry.pendingSince = settled.pendingSince;
+        // Bill THEN reset:""",
+        replace="""        // Bill THEN reset:""",
+        also=[
+            (
+                """        if (admitGraceLedgerResets({ isLeg, legPublished: seenPublished }))
+          this.#admitGraceUsed.delete(identity);
+      }
+    }
+""",
+                """        if (admitGraceLedgerResets({ isLeg, legPublished: seenPublished }))
+          this.#admitGraceUsed.delete(identity);
+        if (settled.billMs > 0) this.#billAdmitGrace(identity, settled.billMs);
+        entry.pendingSince = settled.pendingSince;
+      }
+    }
+""",
+            ),
+        ],
+        specs=[LEGGRACE_SPEC],
+        must_red=[LEGGRACE_SPEC],
+    ),
+    Mutation(
+        id="session-m3-absent-reads-published",
+        what="an absent unpublishedLegs accessor reads as \"nothing unpublished\", so the reset fails open (C-b, M3)",
+        file=SESSION,
+        search="""      const unpublishedLegs = media.unpublishedLegs?.();""",
+        replace="""      const unpublishedLegs = media.unpublishedLegs?.() ?? [];""",
+        specs=[LEGGRACE_SPEC],
+        must_red=[LEGGRACE_SPEC],
+    ),
+    Mutation(
+        id="session-leg-takes-admit-signal",
+        what="the expiry feeds a leg the primary-only admit signal",
+        file=SESSION,
+        search="""      admitInProgress: isLeg ? false : this.#admitInProgress(identity),""",
+        replace="""      admitInProgress: this.#admitInProgress(identity),""",
+        specs=[LEGGRACE_SPEC],
+        must_red=[LEGGRACE_SPEC],
+    ),
+    Mutation(
+        id="session-old-rearm-restored",
+        what="the expiry re-arms on the old primary-only admit signal instead of the leg-aware decision",
+        file=SESSION,
+        search="""    if (this.#rearmAdmitGrace(identity, entry, stillEnrolling)) return;""",
+        replace="""    if (this.#rearmAdmitGrace(identity, entry, this.#admitInProgress(identity)))
+      return;""",
+        specs=[LEGGRACE_SPEC],
+        must_red=[LEGGRACE_SPEC],
+    ),
+    Mutation(
+        id="session-owner-always-present",
+        what="every leg reads as owner-present at the expiry, so an orphan leg keeps re-arming",
+        file=SESSION,
+        search="""      legOwnerPresent:
+        isLeg &&
+        media !== null &&""",
+        replace="""      legOwnerPresent:
+        isLeg ||
+        media !== null &&""",
+        specs=[LEGGRACE_SPEC],
+        must_red=[LEGGRACE_SPEC],
+    ),
+    Mutation(
+        id="session-primary-never-rearms",
+        what="the expiry feeds every identity a false admit signal, so a primary mid-admit lapses (C-e)",
+        file=SESSION,
+        search="""      admitInProgress: isLeg ? false : this.#admitInProgress(identity),""",
+        replace="""      admitInProgress: false,""",
+        specs=[LEGGRACE_SPEC],
+        must_red=[LEGGRACE_SPEC],
+    ),
+    Mutation(
+        id="session-primary-always-rearms",
+        what="the expiry feeds every primary a true admit signal, so a primary nothing is admitting re-arms (C-e)",
+        file=SESSION,
+        search="""      admitInProgress: isLeg ? false : this.#admitInProgress(identity),""",
+        replace="""      admitInProgress: !isLeg,""",
+        specs=[LEGGRACE_SPEC],
+        must_red=[LEGGRACE_SPEC],
+    ),
+    Mutation(
+        id="session-m1-e2ee-witness-dropped",
+        what="in an e2ee call a leg nothing witnessed encrypted still resets its ledger (C-b, M1)",
+        file=SESSION,
+        search="""          !unpublishedLegs.includes(identity) &&
+          (!e2ee || encryptedLegs.has(identity));""",
+        replace="""          !unpublishedLegs.includes(identity);""",
+        specs=[LEGGRACE_SPEC],
+        must_red=[LEGGRACE_SPEC],
+    ),
+    Mutation(
+        id="session-m4-sfu-presence-dropped",
+        what="a leg already gone from the SFU set still resets its ledger (C-b, M4)",
+        file=SESSION,
+        search="""          sfuNow.has(identity) &&
+""",
+        replace="",
+        specs=[LEGGRACE_SPEC],
+        must_red=[LEGGRACE_SPEC],
+    ),
+    Mutation(
+        id="session-reset-dropped",
+        what="the settle loop never forgives a published leg's spent grace (E2-2)",
+        file=SESSION,
+        search="""          this.#admitGraceUsed.delete(identity);""",
+        replace="""          void identity;""",
+        specs=[LEGGRACE_SPEC],
+        must_red=[LEGGRACE_SPEC],
+    ),
+    Mutation(
+        id="session-local-identity-dropped",
+        what="the expiry's owner check ignores this device, so the sharer's own leg reads as an orphan",
+        file=SESSION,
+        search="""          media.localIdentity() ?? "",""",
+        replace="""          "",""",
+        specs=[LEGGRACE_SPEC],
+        must_red=[LEGGRACE_SPEC],
+    ),
+    Mutation(
+        id="session-m7-e2ee-const-false",
+        what="the settle loop treats every call as plaintext, so an unwitnessed leg resets in an e2ee call (C-b, M7)",
+        file=SESSION,
+        search="""      const e2ee = this.#callMode.kind === "e2ee";""",
+        replace="""      const e2ee = false;""",
+        specs=[LEGGRACE_SPEC],
+        must_red=[LEGGRACE_SPEC],
+    ),
+    Mutation(
+        id="session-expiry-legpublished-inverted",
+        what="the expiry hands the re-arm decision `legPublished` inverted, so a published leg re-arms and an unpublished one lapses",
+        file=SESSION,
+        search="""      legPublished: !unpublished,""",
+        replace="""      legPublished: unpublished,""",
+        specs=[LEGGRACE_SPEC],
+        must_red=[LEGGRACE_SPEC],
+    ),
+    Mutation(
+        id="session-expiry-absent-accessor-reads-unpublished",
+        what="at the expiry an absent unpublishedLegs accessor reads every leg as unpublished, so a binding with no accessor re-arms legs (fails open)",
+        file=SESSION,
+        search="""      isLeg && (media?.unpublishedLegs?.() ?? []).includes(identity);""",
+        replace="""      isLeg && (media?.unpublishedLegs?.() ?? [identity]).includes(identity);""",
+        specs=[LEGGRACE_SPEC],
+        must_red=[LEGGRACE_SPEC],
+    ),
+    # ---- the leg key on a legless epoch (F7) --------------------------------
+    Mutation(
+        id="keys-legless-clear",
+        what="an epoch with no screen-leg entry keeps the superseded leg key instead of clearing it (F7)",
+        file=CALL_KEYS,
+        search="""    if (!entry) {
+      // Clear the stale key so a later start refuses on "no key".
+      this.#lastLocalScreenKey = undefined;
+""",
+        replace="""    if (!entry) {
+      // Clear the stale key so a later start refuses on "no key".
+""",
+        specs=[CALL_KEYS_SPEC],
+        must_red=[CALL_KEYS_SPEC],
+    ),
+]
+
+
+
 if __name__ == "__main__":
     sys.exit(main())
