@@ -606,6 +606,36 @@ test("resetForGroup drops every key, so a replay during a re-establish installs 
   );
 });
 
+test("an epoch with no screen-leg entry clears the leg key instead of keeping the superseded one", async () => {
+  const LEG = `${LOCAL}:screen`;
+  const provider = new MlsKeyProvider();
+  const pushed: number[] = [];
+  provider.onLocalScreenKey = (k) => {
+    pushed.push(k.epoch);
+  };
+  await rotateThrough(provider, 17, [LOCAL, BOB, LEG]);
+  assert.equal(provider.lastLocalScreenKey()?.epoch, 17);
+  assert.equal(pushed.at(-1), 17);
+
+  // Epoch 18 carries our send key but no leg entry. Keeping epoch 17's leg key
+  // would hand a share started now a superseded key; it must read as no key.
+  const legless = frameKeys(18, [LOCAL, BOB], [LOCAL, BOB, LEG]);
+  const before = pushed.length;
+  await provider.applyKeys(legless, LOCAL);
+  assert.equal(provider.lastLocalScreenKey(), undefined);
+  assert.equal(
+    pushed.length,
+    before,
+    "no leg key may be pushed for an epoch that carries none",
+  );
+
+  // The next epoch that does carry the entry records and pushes it again.
+  const restored = frameKeys(19, [LOCAL, BOB, LEG], [LOCAL, BOB]);
+  await provider.applyKeys(restored, LOCAL);
+  assert.equal(provider.lastLocalScreenKey()?.epoch, 19);
+  assert.equal(pushed.at(-1), 19);
+});
+
 // ---------------------------------------------------------------------------
 // Retention + atomicity
 // ---------------------------------------------------------------------------
