@@ -123,6 +123,56 @@ jobs:
           path: packages/client/playwright-report/
           retention-days: 30
 
+  # Compiles the Kotlin and the Java of packages/client/android for every
+  # flavor; no JS gate covers them. Deliberately no `paths:` filter: a
+  # required check whose job never runs stays "pending" forever.
+  android-compile:
+    name: Android Compile
+    runs-on: ubuntu-latest
+
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Mise
+        uses: immich-app/devtools/actions/use-mise@7b8610a904d57da241e4ddba17fa62b62b15aed4 # use-mise-action-v2.0.2
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - run: mise install:frozen
+      - run: mise build:deps
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          # packages/client/android/app/build.gradle sets jvmToolchain(21).
+          java-version: "21"
+
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@ed408507eac070d1f99cc633dbcf757c94c7933a # v4.4.3
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4.4.3
+        with:
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+
+      # compileSdkVersion in packages/client/android/variables.gradle.
+      # Idempotent: a no-op when the runner image already has the platform.
+      - name: Install Android SDK platform
+        shell: bash
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "platforms;android-36"
+
+      # The job's status IS the script's exit status (gradle's own on a
+      # compile failure). The script resolves the repo root itself.
+      - name: Compile Android (Kotlin + Java)
+        shell: bash
+        run: bash packages/client/scripts/android-compile-gate.sh
+
   # deploy:
   #   name: Deploy
   #   runs-on: ubuntu-latest
