@@ -13,7 +13,10 @@ import { Channel, HydratedChannel } from "stoat.js";
 import { styled } from "styled-system/jsx";
 
 import { useClient } from "@revolt/client";
-import { cachedChannels } from "@revolt/common/lib/channelListQueries";
+import {
+  cachedChannels,
+  threadsQueryKey,
+} from "@revolt/common/lib/channelListQueries";
 import { useModals } from "@revolt/modal";
 import { Button, CircularProgress, Row, Text } from "@revolt/ui";
 import { Time } from "@revolt/ui/components/utils";
@@ -28,7 +31,7 @@ export function ThreadsListSidebar(props: { channel: Channel }) {
   const [archived, setArchived] = createSignal(false);
 
   const query = useQuery(() => ({
-    queryKey: ["threads", props.channel.id, archived()],
+    queryKey: threadsQueryKey(props.channel.id, archived()),
     queryFn: () => props.channel.fetchThreads({ archived: archived() }),
   }));
 

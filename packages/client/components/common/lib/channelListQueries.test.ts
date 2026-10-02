@@ -14,7 +14,9 @@ import { test } from "node:test";
 import {
   CHANNEL_LIST_QUERY_ROOTS,
   cachedChannels,
+  forumPostsQueryKey,
   isServerChannelListQuery,
+  threadsQueryKey,
 } from "./channelListQueries.ts";
 
 /**
@@ -102,22 +104,35 @@ test("forum post and thread lists under the server's channels are selected", () 
   };
   const serverOf = (id: string) => servers[id];
 
+  // Built the way ForumChannel and ThreadsListSidebar build them
   assert.equal(
     isServerChannelListQuery(
-      ["forum_posts", "forum", "alphabetical", undefined, false, true],
+      forumPostsQueryKey("forum", "alphabetical", undefined, false, true),
       "S1",
       serverOf,
     ),
     true,
   );
   assert.equal(
-    isServerChannelListQuery(["threads", "text", false], "S1", serverOf),
+    isServerChannelListQuery(threadsQueryKey("text", false), "S1", serverOf),
     true,
   );
   assert.equal(
-    isServerChannelListQuery(["threads", "text", true], "S1", serverOf),
+    isServerChannelListQuery(threadsQueryKey("text", true), "S1", serverOf),
     true,
   );
+});
+
+test("the key builders put the parent id second, under a known root", () => {
+  assert.deepEqual(
+    forumPostsQueryKey("forum", "latest_activity", "tag", true, false),
+    ["forum_posts", "forum", "latest_activity", "tag", true, false],
+  );
+  assert.deepEqual(threadsQueryKey("text", true), ["threads", "text", true]);
+
+  for (const key of [forumPostsQueryKey("x"), threadsQueryKey("x", false)]) {
+    assert.ok(CHANNEL_LIST_QUERY_ROOTS.has(key[0] as string), String(key[0]));
+  }
 });
 
 test("lists under another server, a DM or an uncached channel are kept", () => {

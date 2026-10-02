@@ -9,6 +9,28 @@ export const CHANNEL_LIST_QUERY_ROOTS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Key of a forum's post list query. The forum id comes second, where
+ * `isServerChannelListQuery` looks for it.
+ * @param forumId Forum channel
+ * @param params Filters, sort and layout the list was fetched with
+ * @returns Query key
+ */
+export function forumPostsQueryKey(forumId: string, ...params: unknown[]) {
+  return ["forum_posts", forumId, ...params];
+}
+
+/**
+ * Key of a channel's thread list query. The parent id comes second, where
+ * `isServerChannelListQuery` looks for it.
+ * @param parentId Channel the threads were created under
+ * @param archived Whether the list holds archived threads
+ * @returns Query key
+ */
+export function threadsQueryKey(parentId: string, archived: boolean) {
+  return ["threads", parentId, archived];
+}
+
+/**
  * Keep only the channels that are still in the client's channel store.
  *
  * Leaving or losing a server sweeps its threads and forum posts out of

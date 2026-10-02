@@ -18,7 +18,10 @@ import { Channel, HydratedChannel, Message } from "stoat.js";
 import { styled } from "styled-system/jsx";
 
 import { useClient } from "@revolt/client";
-import { cachedChannels } from "@revolt/common/lib/channelListQueries";
+import {
+  cachedChannels,
+  forumPostsQueryKey,
+} from "@revolt/common/lib/channelListQueries";
 import {
   ForumLayout,
   isForumLayout,
@@ -264,14 +267,13 @@ export function ForumChannel(props: ChannelPageProps) {
   );
 
   const query = useQuery(() => ({
-    queryKey: [
-      "forum_posts",
+    queryKey: forumPostsQueryKey(
       props.channel.id,
       sort(),
       tag(),
       archived(),
       withStats(),
-    ],
+    ),
     queryFn: () =>
       props.channel.fetchPosts({
         sort: sort(),
@@ -384,8 +386,12 @@ export function ForumChannel(props: ChannelPageProps) {
     }
   }
 
+  // "Load more" pages from the last post on screen, so with every post
+  // filtered out as swept there is nothing to page from.
   const mayHaveMore = () =>
-    !exhausted() && (query.data?.posts.length ?? 0) >= PAGE_SIZE;
+    posts().length > 0 &&
+    !exhausted() &&
+    (query.data?.posts.length ?? 0) >= PAGE_SIZE;
 
   // Viewing the browse view reads the forum: acknowledge it so the sidebar
   // unread dot clears (posts keep their own per-thread unread state).
