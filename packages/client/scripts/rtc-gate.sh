@@ -97,7 +97,7 @@ run() { # run <label> <tail-lines> <cmd...>
 EXPECTED=(
   "components/rtc/mlsAdmitGracePolicy.test.ts 36 0"
   "components/rtc/mlsAdmitPolicy.test.ts 15 0"
-  "components/rtc/mlsCallKeys.test.ts 24 0"
+  "components/rtc/mlsCallKeys.test.ts 32 0"
   "components/rtc/mlsCallModePolicy.test.ts 117 0"
   "components/rtc/mlsCallSession.drainfail.test.ts 33 0"
   # Out of alphabetical order on purpose: its sorted slot abuts the
@@ -110,7 +110,7 @@ EXPECTED=(
   "components/rtc/mlsCallSession.groupscope.test.ts 19 0"
   "components/rtc/mlsCallSession.heal.test.ts 7 0"
   "components/rtc/mlsCallSession.joinrace.test.ts 37 0"
-  "components/rtc/mlsCallSession.leggrace.test.ts 21 0"
+  "components/rtc/mlsCallSession.leggrace.test.ts 25 0"
   "components/rtc/mlsCallSession.mailbox.test.ts 13 0"
   "components/rtc/mlsCallSession.resecure.test.ts 23 0"
   "components/rtc/mlsCallSession.resume.test.ts 75 0"
@@ -122,7 +122,7 @@ EXPECTED=(
   "components/rtc/mlsNegotiatingFailsafe.test.ts 13 0"
   "components/rtc/mlsRejoinPolicy.test.ts 54 0"
   "components/rtc/mlsSessionSetupPolicy.test.ts 19 0"
-  "components/rtc/rosterReconcile.test.ts 27 0"
+  "components/rtc/rosterReconcile.test.ts 34 0"
   "components/rtc/localPublicationEncryption.test.ts 10 0"
   "components/rtc/plaintextCryptorPolicy.test.ts 12 0"
   "components/rtc/publishGate.test.ts 70 0"
@@ -151,7 +151,7 @@ EXPECTED=(
   "components/ui/components/features/voice/callCard/callTileSelection.test.ts 23 0"
   # Source pins over the state.tsx wiring of member moves and the chip's
   # publication read (wave 7): no spec can load state.tsx itself.
-  "components/rtc/stateWiring.test.ts 21 0"
+  "components/rtc/stateWiring.test.ts 42 0"
   # The AFK channel and its merge with member moves (FE-2). Before it this
   # gate ran NO AFK spec, and none of the ladder that decides whether a
   # client follows a move. memberGate's opt-in skip is not in its row: see
@@ -165,7 +165,7 @@ EXPECTED=(
   "src/lib/afkChannelSettings.test.ts 51 0"
   # The Android screen-share leg: when a leg may start, and the share tiers.
   # Neither spec ran anywhere before these rows.
-  "components/rtc/androidLegStartPolicy.test.ts 32 0"
+  "components/rtc/androidLegStartPolicy.test.ts 54 0"
   "components/rtc/androidScreenShareTiers.test.ts 3 0"
 )
 
@@ -516,7 +516,12 @@ FILES=(components/rtc/mlsCallSession.ts components/rtc/mlsCallModePolicy.ts
   components/rtc/mlsAdmitGracePolicy.ts
   components/rtc/mlsAdmitGracePolicy.test.ts
   components/rtc/mlsCallKeys.ts components/rtc/mlsCallKeys.test.ts
-  components/rtc/mlsCallSession.leggrace.test.ts)
+  components/rtc/mlsCallSession.leggrace.test.ts
+  # The roster policy and its spec, edited by the leg plan's wave 4 (an
+  # unfolded leg with zero publications is inert). Enrolled because both are
+  # clean: `prettier --check` and `eslint --max-warnings 0` both exit 0 on
+  # each, one file at a time (measured in wave 4c-ii).
+  components/rtc/mlsRosterPolicy.ts components/rtc/rosterReconcile.test.ts)
 # 🔴 NOT in FILES: components/app/interface/settings/channel/Overview.tsx.
 # FE-2 edits it (the AFK channel's check rules), but eslint reports two
 # pre-existing solid/reactivity warnings on it, present before that edit in

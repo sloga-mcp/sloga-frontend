@@ -1389,6 +1389,45 @@ test("source pin (C9): #legPlaintextAuthorized is whole, and asked only by the b
   );
 });
 
+// 🔴 SECURITY (E2EE fix-wave review). `#legPlaintextAuthorized` answers true
+// for `undefined`, and the binding read above asks it of the mode as it is
+// right before `connect()`. That is safe only because the stale exit after the
+// token mint (which refuses a held gate, a `negotiating` pulse included, and a
+// changed room) runs IMMEDIATELY before the read: nothing in between, so no
+// await can let the world move between the check and the read. An `await`
+// slipped in there passed every other pin. Nothing awaits from the read to
+// `connect()` save the two refusals' stops: `LEG_KEY_READ + LEG_CONNECT_TAIL`
+// is pinned contiguous to the try's end above, so this pin extends that span
+// back to the mint.
+const LEG_MINT_STALE_EXIT = `const auth = await channel.joinScreenLeg(deviceId);
+  if (this.#androidLegStale(generation, room)) {
+    await this.#exitStaleAndroidLegStart(generation, room);
+    return;
+  }`;
+
+test("source pin (C9): the stale exit after the token mint is immediately followed by the binding mode read", () => {
+  const start = androidLegStart();
+  const adjacency = `${LEG_MINT_STALE_EXIT}
+    const modeAtConnect = this.callMode();`;
+  assertWired("the mint's stale exit, then the mode read", adjacency);
+  assert.equal(countWired(start, adjacency), 1, "in the leg start");
+  // The live copy, not a dead one: the try ends with the mint, its stale
+  // exit, the binding read, connect and the sync, contiguous.
+  const tryHead = `try {`;
+  const tryAt = firstAt("#toggleAndroidScreenShare", start, tryHead);
+  const tryEnd = closerOf(start, tryAt + codeOf(tryHead).length - 1);
+  const body = start.slice(tryAt + codeOf(tryHead).length, tryEnd);
+  assert.ok(
+    body.endsWith(
+      codeOf(LEG_MINT_STALE_EXIT + LEG_KEY_READ + LEG_CONNECT_TAIL).replace(
+        /;$/,
+        "",
+      ),
+    ),
+    "the try ends: the mint, its stale exit, the key read, connect, the sync",
+  );
+});
+
 // 🔴 SECURITY (wave-4b-fix4). The leg start reads the call's mode three
 // times, in order: at the tap, once the tier sheet closes, and right before
 // `connect()`. The tap-time `mode` only drives the refusal before the sheet

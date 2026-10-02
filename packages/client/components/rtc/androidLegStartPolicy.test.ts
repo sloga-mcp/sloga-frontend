@@ -175,6 +175,18 @@ test("an epoch move alone still re-keys", () => {
   );
 });
 
+test("🔴 changed key INDEX alone (same material, epoch, group) re-keys", () => {
+  // The index rides to native with the material and is part of which key the
+  // sender encrypts under. Every other push case moves the material or the
+  // epoch, so a reconcile that stopped comparing indices would still push
+  // there; here only the index differs, and skipping the push would leave the
+  // leg on the index it connected with.
+  assert.deepEqual(keyActionAfterConnect(key("AAA", 1), key("AAA", 2)), {
+    kind: "push",
+    key: key("AAA", 2),
+  });
+});
+
 test("a key from a different group STOPS the leg instead of re-keying", () => {
   // A group re-establish raced the connect. Epochs are only comparable
   // within one group, so the native fence cannot order these two keys — the
