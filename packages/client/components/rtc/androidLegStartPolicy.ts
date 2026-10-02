@@ -9,12 +9,23 @@
  * logic lives inside a class that needs a live Room, a client and a native
  * bridge to construct.
  *
- * The start-attempt checks serve one rule: an attempt owns the leg only until
- * something else claims it. Until `connect()` resolves the leg is not
- * `active()`, so the §7.4 stop hooks cannot see it — which is precisely why
- * the attempt has to keep checking whether it is still the current one.
- * [AndroidLegLifecycle] is the leg's state machine behind an injected bridge
- * and announcer; `androidScreenShare.ts` wires it to the plugin.
+ * What this leaf decides:
+ *
+ * - Whether a start attempt still owns the leg ([startAttemptStale],
+ *   [startAttemptCancelled]). One rule: an attempt owns the leg only until
+ *   something else claims it. Until `connect()` resolves the leg is not
+ *   `active()`, so the §7.4 stop hooks cannot see it — which is precisely
+ *   why the attempt has to keep checking whether it is still the current one.
+ * - Which key the leg must use once `connect()` resolves
+ *   ([keyActionAfterConnect]).
+ * - Which notice, if any, an ended share deserves ([LegStopNotice]): a
+ *   native stop by its reason ([nativeStopNotice]), a publish-gate pulse
+ *   that stopped a starting or live leg ([gateStopNotice]), and a start
+ *   attempt abandoned under a gate that was already held when it claimed
+ *   ([staleExitNotice]). `state.tsx` maps the kind to copy; nothing here
+ *   holds a string the user reads.
+ * - The leg's state machine ([AndroidLegLifecycle]), behind an injected
+ *   bridge and announcer; `androidScreenShare.ts` wires it to the plugin.
  */
 
 /** A leg send key with its full provenance — §5.2's `LocalScreenKey`. */
@@ -59,13 +70,39 @@ export function startAttemptCancelled(world: StartAttemptWorld): boolean {
  * than merely return: past that point the OS is capturing and the leg is
  * publishing, so "give up quietly" is how a share outlives its own call.
  *
- * A held publish gate makes an attempt stale WITHOUT making it cancelled:
- * the leg must stop either way (§0.4), but nobody asked for this share to
- * end, so a genuine failure racing a transient gate pulse still deserves its
- * error message.
+ * As a predicate, a held publish gate makes an attempt stale WITHOUT making
+ * it cancelled: the leg must stop either way (§0.4). In practice which of
+ * the two a gate is depends on WHEN its reason was added:
+ *
+ * - DURING the attempt (after the claim): `#pauseGate` stops the leg through
+ *   `#stopAndroidLeg`, which bumps the generation, so the pulse IS a
+ *   cancellation — the attempt exits quietly, and a failure racing it is not
+ *   toasted. The user hears about it from [gateStopNotice], which
+ *   `#pauseGate` consults.
+ * - BEFORE the claim (e.g. while the tier sheet was open): that stop bumped
+ *   a generation this attempt had not taken yet, so nothing cancels it; it
+ *   is stale but not cancelled at its first stale check while the reason is
+ *   still held, and [staleExitNotice] reports it. [gateStopNotice] saw no
+ *   starting attempt then, so the user is told once, not twice.
  */
 export function startAttemptStale(world: StartAttemptWorld): boolean {
   return startAttemptCancelled(world) || world.publishGateSize > 0;
+}
+
+/**
+ * The notice for a start attempt that exits at a stale check.
+ *
+ * Stale but NOT cancelled means a publish-gate reason was already held when
+ * this attempt claimed the leg (see [startAttemptStale]): nobody asked for
+ * the share to end and no stop hook announced anything, so the user is told
+ * the share could not start. A cancelled attempt was ended by something that
+ * speaks for itself (a tap, a hang-up, [gateStopNotice]); a fresh one is not
+ * exiting at all.
+ */
+export function staleExitNotice(world: StartAttemptWorld): LegStopNotice {
+  return startAttemptStale(world) && !startAttemptCancelled(world)
+    ? "gate-start"
+    : "none";
 }
 
 /** What `#syncLegKeyAfterConnect` must do once `connect()` resolves. */
@@ -136,7 +173,118 @@ export function keyActionAfterConnect(
  * already holds. */
 export type NativeFrameKey = Omit<LegSendKey, "groupId">;
 
-export type NativeStopReason = "user" | "system" | "disconnected" | "error";
+/** Why native ended the leg, as carried by its `stopped` event. `"revoked"`
+ * is the SERVER ending it: the leg's publish permission was taken away (a
+ * Video revoke, an AFK move), not anything this device asked for. */
+export type NativeStopReason =
+  | "user"
+  | "system"
+  | "disconnected"
+  | "error"
+  | "revoked";
+
+/**
+ * Which notice, if any, an ended (or never-started) share deserves. A KIND,
+ * not copy: `state.tsx` maps each one to its message. `"none"` means stay
+ * quiet — the user asked for the stop, or something else already says why.
+ */
+export type LegStopNotice =
+  | "none"
+  | "connection"
+  | "encryption"
+  | "revoked"
+  | "gate-start"
+  | "gate-share";
+
+/**
+ * The notice for a native `stopped` event.
+ *
+ * `user` and `system` are stops taken on this device (our own stop; the
+ * system chip, the notification's Stop, or the OS ending the projection):
+ * no notice. `disconnected` is the leg losing its connection; `error` is a
+ * sender that can no longer be trusted to encrypt (and the reading of a
+ * `stopped` with no reason — see [AndroidLegLifecycle.nativeStopped]).
+ *
+ * `revoked` is the server ending the share. It is QUIET when the loss is
+ * primary-wide: the primary's own afk-publish / moderator-mute toast already
+ * explains it, and a second toast for the leg would say the same thing
+ * worse. `inAfkChannel` is read as well as `canPublish` because the two
+ * revokes are pushed separately and the leg's can land FIRST — at that
+ * moment the primary may still report `canPublish` true, but it is already
+ * in the AFK channel. `canPublish` undefined (not yet known) is not a
+ * primary-wide loss, so the leg's notice stands.
+ *
+ * Any reason outside the union — a newer native build ahead of this JS —
+ * reads as `none`: an unknown stop is not worth a misleading message.
+ */
+export function nativeStopNotice(
+  reason: NativeStopReason,
+  primary: { canPublish: boolean | undefined; inAfkChannel: boolean },
+): LegStopNotice {
+  switch (reason) {
+    case "user":
+    case "system":
+      return "none";
+    case "disconnected":
+      return "connection";
+    case "error":
+      return "encryption";
+    case "revoked":
+      return primary.canPublish === false || primary.inAfkChannel
+        ? "none"
+        : "revoked";
+    default: {
+      // Compile-time: a reason added to the union without an arm here fails
+      // to type-check. Runtime: whatever native sent that is not in it.
+      const unknownReason: never = reason;
+      void unknownReason;
+      return "none";
+    }
+  }
+}
+
+/** What [gateStopNotice] reads, sampled by `#pauseGate` BEFORE its stop
+ * bumps the generation. */
+export interface GateStopWorld {
+  /** The generation of the start attempt between `prepare()` and its own
+   * settlement (`#androidLegStartingFor`), or undefined when none is. */
+  startingFor: number | undefined;
+  /** The start-attempt generation now (`#androidLegGeneration`). */
+  currentGeneration: number;
+  /** The leg's [AndroidLegLifecycle.active]. */
+  active: boolean;
+  /** The leg's [AndroidLegLifecycle.stopping]: a teardown already under way. */
+  stopInFlight: boolean;
+  /** Whether the call room is still connected. */
+  roomConnected: boolean;
+}
+
+/**
+ * The notice for a publish-gate pulse that stops the leg — which it does,
+ * through `#stopAndroidLeg`, on every reason ADD (§0.4). Without one the
+ * share ends, or never arrives, with no word to the user.
+ *
+ * - A room that is no longer connected is a call ending, which explains
+ *   itself: none.
+ * - A LIVE leg the gate takes down: `gate-share`. Not when a stop is already
+ *   in flight — that teardown was asked for by something else (a tap, a
+ *   hook), and the gate merely coalesces onto it.
+ * - A STARTING leg (not yet `active()`) whose attempt still owns the
+ *   generation: `gate-start` — the stop is about to cancel it, so its own
+ *   stale check will exit quietly. An owner whose generation was already
+ *   bumped (a cancelling tap got there first) was ended by that tap: none.
+ */
+export function gateStopNotice(w: GateStopWorld): LegStopNotice {
+  if (!w.roomConnected) return "none";
+  if (w.active && !w.stopInFlight) return "gate-share";
+  if (
+    !w.active &&
+    w.startingFor !== undefined &&
+    w.startingFor === w.currentGeneration
+  )
+    return "gate-start";
+  return "none";
+}
 
 /** Ceiling on a native `stop()`. The Kotlin side settles in a `finally`, so
  * a lost settlement is already remote — but the in-flight stop clears only
@@ -212,6 +360,13 @@ export class AndroidLegLifecycle {
 
   active(): boolean {
     return this.#active;
+  }
+
+  /** True while a [stop] is in flight — its memoized teardown has not
+   * settled — and false otherwise. Lets [gateStopNotice] tell a gate that
+   * ends the share from one that coalesces onto a stop already asked for. */
+  stopping(): boolean {
+    return this.#stopPromise !== undefined;
   }
 
   /** The native `started` event. */

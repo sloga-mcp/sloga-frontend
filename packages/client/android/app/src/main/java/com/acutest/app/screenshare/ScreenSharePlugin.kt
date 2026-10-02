@@ -39,6 +39,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import livekit.org.webrtc.FrameCryptor
 import livekit.org.webrtc.RtpParameters
@@ -109,6 +110,18 @@ class ScreenSharePlugin : Plugin() {
      * Main-dispatcher confined, like every other field here.
      */
     private var connectGeneration = 0
+
+    /**
+     * The [connectGeneration] that a `tearDown("revoked")` cancelled, so the
+     * cancelled attempt rejects with `connect_failed: revoked` instead of
+     * `connect_failed: cancelled`. A revoke during connect is a moderator's
+     * decision, not a superseded attempt, and JS shows the revoke toast only
+     * off that exact text. Keyed by generation rather than "the last
+     * teardown's reason": a later stop or a successor connect must not
+     * relabel an attempt that something else cancelled. Stamps start at 1,
+     * so -1 never matches.
+     */
+    private var revokedGeneration = -1
 
     /**
      * The MLS epoch of the key the sender currently encrypts under. Frame-key
@@ -213,7 +226,15 @@ class ScreenSharePlugin : Plugin() {
                 // whether `disconnect()` aborts an in-flight `connect()` is
                 // not a documented lk-android guarantee.
                 if (generation != connectGeneration) {
-                    call.reject("connect_failed: cancelled")
+                    // Only the rejection TEXT depends on who cancelled; the
+                    // ownership rule above is identical for a revoke. The
+                    // revoking tearDown has already emitted
+                    // `stopped{"revoked"}` by the time this runs.
+                    if (generation == revokedGeneration) {
+                        call.reject("connect_failed: revoked")
+                    } else {
+                        call.reject("connect_failed: cancelled")
+                    }
                 } else {
                     // Still the current attempt: this failure is ours to
                     // clean up. The consent survives a failed connect (probe
@@ -605,6 +626,83 @@ class ScreenSharePlugin : Plugin() {
                     notifyListeners("muted", data)
                 }
             }
+            is RoomEvent.ParticipantPermissionsChanged -> {
+                // A moderator revoked Video, or AFK-designated the sharer: the
+                // backend pushes the leg `canPublish = false` with an empty
+                // source list, the SFU force-unpublishes the track, and the SDK
+                // stops the capture on its own. The leg itself stays
+                // CONNECTED, so no Disconnected ever follows. Without this
+                // branch the leg sat in the room with zero publications while
+                // JS still showed a live share.
+                //
+                // An EMPTY `canPublishSources` is LiveKit's "no restriction",
+                // never a revoke on its own. The backend only sends it
+                // alongside `canPublish = false`, so only a NON-empty list
+                // that lacks SCREEN_SHARE counts.
+                //
+                // `newPermissions` is @Nullable in 2.28.0; a null carries no
+                // decision and is ignored. The reason is "revoked", not
+                // "disconnected": the user must learn that a moderator ended
+                // the share. A disconnect toast would invite a re-share that
+                // the same grant refuses.
+                val p = event.newPermissions
+                if (event.participant === room.localParticipant && !stopping && p != null) {
+                    val screenAllowed = p.canPublishSources.isEmpty() ||
+                        Track.Source.SCREEN_SHARE in p.canPublishSources
+                    if (!p.canPublish || !screenAllowed) {
+                        // Only if THIS share is still the live one when the
+                        // launch runs. Two events handled back to back would
+                        // otherwise each queue a teardown, and the second
+                        // (finding `room` already null) would emit a second
+                        // `stopped`.
+                        scope.launch {
+                            if (this@ScreenSharePlugin.room === room) tearDown("revoked")
+                        }
+                    }
+                }
+            }
+            is RoomEvent.TrackUnpublished -> {
+                // Second liveness bound for a revoke, independent of the
+                // permission event above. livekit-android 2.28.0 DOES re-emit a
+                // LOCAL unpublish as this RoomEvent
+                // (`LocalParticipant.unpublishTrack` -> its internal listener,
+                // which is the Room -> `Room.onTrackUnpublished(Local...)`;
+                // checked in the .aar bytecode), including the SFU-forced one
+                // (`handleLocalTrackUnpublished`).
+                //
+                // The forced unpublish is not the only local one, though. The
+                // SDK also unpublishes on a full reconnect
+                // (`prepareForFullReconnect`, state already RECONNECTING;
+                // Reconnected decides that case), in disconnect cleanup (state
+                // already DISCONNECTED), and when MediaProjection stops (BEFORE
+                // it calls our onStop, which reports "system"). The first two
+                // are excluded HERE, by requiring CONNECTED when the event
+                // arrives: checking it only after the wait would let a full
+                // reconnect that completes inside the grace pass as a revoke.
+                // The system stop happens while CONNECTED, so it cannot be
+                // told apart on the spot; the grace period covers it, and the
+                // re-check after the wait reports "revoked" only for a leg that
+                // is still THIS share, still CONNECTED, and still has no screen
+                // publication. The wait sits in the launched coroutine, never
+                // inside tearDown (see its invariant).
+                if (event.participant === room.localParticipant &&
+                    event.publication.source == Track.Source.SCREEN_SHARE &&
+                    !stopping &&
+                    room.state == Room.State.CONNECTED
+                ) {
+                    scope.launch {
+                        delay(UNPUBLISH_GRACE_MS)
+                        if (this@ScreenSharePlugin.room === room &&
+                            !stopping &&
+                            room.state == Room.State.CONNECTED &&
+                            room.localParticipant
+                                .getTrackPublication(Track.Source.SCREEN_SHARE) == null
+                        ) {
+                            tearDown("revoked")
+                        }
+                    }
+                }
+            }
             is RoomEvent.Disconnected -> {
                 // Server-side removal: primary left (ingress removes the leg),
                 // moderator kick, orphan eject. tearDown is a no-op when this
@@ -674,6 +772,11 @@ class ScreenSharePlugin : Plugin() {
         // Cancel any in-flight connect FIRST — even a re-entrant tearDown
         // that returns at the guard below must orphan it (see
         // [ensureConnectCurrent]); the bump is idempotent and harmless.
+        // A revoke records the generation it is about to cancel first, so an
+        // in-flight attempt can tell JS why it died (see [revokedGeneration]).
+        // If no attempt is in flight, the stamp names one that has already
+        // settled and is never read.
+        if (reason == "revoked") revokedGeneration = connectGeneration
         connectGeneration++
         if (stopping) return
         stopping = true
@@ -859,6 +962,20 @@ class ScreenSharePlugin : Plugin() {
     companion object {
         private const val NOTIFICATION_ID = 4243
         private const val CHANNEL_ID = "sloga_screenshare"
+
+        /** How long a local screen unpublish, seen while the leg is
+         *  CONNECTED, waits before it is reported as a revoke. Of the three
+         *  non-revoke unpublishes, only the MediaProjection system stop needs
+         *  it: the SDK unpublishes and then calls our onStop, whose
+         *  tearDown("system") runs within milliseconds and clears `room`, so
+         *  the post-wait same-Room check fails. A full reconnect (state
+         *  RECONNECTING) and disconnect cleanup (state DISCONNECTED) are not
+         *  covered by this wait at all; the CONNECTED check at event arrival
+         *  excludes them, and the post-wait CONNECTED check is a second
+         *  guard. A permission-event revoke that tears down first also clears
+         *  `room`. The capture is already stopped, so the wait only delays
+         *  the toast. */
+        private const val UNPUBLISH_GRACE_MS = 1_000L
 
         private var webRtcLoaded = false
 
