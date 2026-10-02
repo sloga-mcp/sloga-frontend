@@ -1,16 +1,22 @@
-// The screen leg's admit grace, as `mlsCallSession.ts` wires it — run with
-// Node's built-in runner, from packages/client:
+// The screen leg in the E2EE call roster, as `mlsCallSession.ts` wires it —
+// run with Node's built-in runner, from packages/client:
 //   node --test --conditions=browser components/rtc/mlsCallSession.leggrace.test.ts
 //
-// A leg is billed against the per-call admit-grace ledger like any joiner,
-// but it never sends a join request. So before this fix a phone that shared
-// enough times ran out of budget (each share start billed its own
-// connect→publish gap against a ledger that lives for the whole call), and a
-// leg slower than one window to publish lapsed straight into non-enrolled.
-// Either way the share self-stopped and every viewer went red. The decisions
-// live in `mlsAdmitGracePolicy.ts` (`admitGraceLedgerResets`,
+// A screen leg (`<user>:<device>:screen`) never sends a join request. The
+// session still opens an admit-grace window when one connects, re-arms it
+// while the leg is unpublished with its owner present, bills it against the
+// per-call ledger and forgives that ledger once the leg is seen published.
+// The decisions live in `mlsAdmitGracePolicy.ts` (`admitGraceLedgerResets`,
 // `shouldRearmAdmitGrace`, `legOwnerPresent`), where their own specs hold
-// them. This file holds the session to CALLING them, two ways:
+// them. Since C6 (`reconcileRoster` in `mlsRosterPolicy.ts`) none of that
+// decides a leg's verdict: a leg is never `pending`, and an unfolded leg
+// with ZERO publications whose owner is present (or is this device) is
+// INERT, in neither `nonEnrolled` nor `pending`, windowed or not. Every
+// other unfolded leg is loud at once: one with a publication nothing
+// witnessed encrypted, an ORPHAN (its owner absent), and one the binding
+// cannot vouch for as unpublished (no `unpublishedLegs` accessor). The leg
+// machinery stays in the session until a follow-up retires it, so this file
+// holds the session two ways:
 //
 //  - SOURCE PINS over `mlsCallSession.ts`, matched as TEXT after `codeOf`
 //    (`sourcePins.harness.ts`), for the inputs each call is handed and the
@@ -18,12 +24,21 @@
 //    `stateWiring.test.ts` lists: the same text in dead code satisfies a pin,
 //    and an equivalent rewrite (a renamed local, braces around a one-line
 //    `if`) breaks one. Changing one of these sites on purpose means changing
-//    its pin here too.
+//    its pin here too. For a leg's ledger they are now the ONLY guard in this
+//    file: no verdict reads that ledger, so no behavior spec can see it.
 //  - BEHAVIOR through the real session on the `mlsCallSession.harness.ts`
 //    world. The harness's binding implements neither leg accessor, so this
 //    file adds both (`encryptedLegs`, `unpublishedLegs`) by wrapping
 //    `bindMedia` for each test (restored when the test ends), and a spec
-//    moves a leg through join, publish and leave by hand.
+//    moves a leg through join, publish, a server-forced unpublish and leave
+//    by hand. The leg specs pin C6 end to end: the join→publish gap and a
+//    server-forced unpublish (F-W3-2: a Video revoke or an AFK designation
+//    leaves the leg in the room with nothing published and no window) are
+//    quiet for the sharer's own leg and for a peer's; a plaintext
+//    publication, an orphan and a binding with no accessor stay loud. The
+//    primary specs (C-e) still exercise the window itself. What C6 made
+//    vacuous is listed under "Weakened assertions" below, never dropped
+//    silently.
 //
 // "Loud" here is the leg reported non-enrolled now, OR the call flipping to
 // `mixed` at any point since the spec's mark. Non-enrolled alone is not a
@@ -478,37 +493,188 @@ async function loud(
 }
 
 /**
- * The leg's NEXT share after a 30 s connect whose spent grace must NOT have
- * been forgiven: rejoin, and it has 30 s of budget left, not a fresh 60 s.
- * Quiet at 25 s, loud by 45 s.
+ * The server force-unpublishes the leg (F-W3-2: a moderator's Video revoke,
+ * or an AFK designation, pushes the leg a grant without publish and the SFU
+ * drops its only track). The leg stays in the SFU set with ZERO
+ * publications, so it leaves `encryptedLegs` (livekit's `isEncrypted` needs
+ * a publication) and joins `unpublishedLegs`. One reconcile observes it.
  */
-async function nextShareHasOnly30sLeft(
+async function legForceUnpublished(
+  { world, legs }: LegCall,
+  leg: string,
+): Promise<void> {
+  assert.ok(world.sfu.includes(leg), `${leg} is not in the SFU set`);
+  legs.encrypted.delete(leg);
+  legs.unpublished.add(leg);
+  await world.session.reconcileNow();
+  await flush();
+}
+
+/** What a spec reads "since": the call mode and publish-gate history. */
+interface Marks {
+  mark: number;
+  gateMark: number;
+  gate: string[];
+}
+
+/**
+ * The leg joins, publishes encrypted (it folds onto its owner, and its
+ * window closes at the first expiry: a published leg is never re-armed),
+ * then the call runs well past that window AND the 60 s per-call cap, so no
+ * admit grace covers the leg any more. Returns the marks taken after.
+ */
+async function publishedLongAgo(
   t: TestContext,
   call: LegCall,
   leg: string,
-  why: string,
-): Promise<void> {
+): Promise<Marks> {
   const { world } = call;
-  await advance(t, 11_000);
-  assert.equal(world.session.callMode().kind, "e2ee");
-  const mark = world.modes.length;
   await legJoins(call, leg);
-  await advance(t, 25_000);
-  assert.equal(
-    await loud(world, leg, mark),
-    false,
-    "the next share lapsed inside the 30 s it had left",
+  await advance(t, 2_000);
+  await legPublishes(call, leg);
+  await advance(t, 75_000);
+  assert.equal(world.session.callMode().kind, "e2ee");
+  assert.ok(
+    !world.session.nonEnrolled().includes(leg),
+    "the published leg was non-enrolled before the unpublish",
   );
-  await advance(t, 20_000);
-  assert.equal(await loud(world, leg, mark), true, why);
+  return {
+    mark: world.modes.length,
+    gateMark: world.gateLog.length,
+    gate: [...world.gate].sort(),
+  };
 }
 
-test("🔴 E2-2: 25 share start/stop cycles of the sharer's own leg never exhaust its grace", async (t) => {
+/**
+ * F-W3-2 for one leg: published long ago, then force-unpublished, it stays
+ * INERT through 12 s of reconciles (one a second, on top of the session's
+ * own 5 s tick): never non-enrolled, never pending, the call never leaves
+ * `e2ee`, the publish gate gains no reason, and the session's own
+ * enable/resume precondition still holds.
+ */
+async function forcedUnpublishIsInert(
+  t: TestContext,
+  channelId: string,
+  leg: string,
+): Promise<void> {
+  const call = await soloCall(t, channelId);
+  const { world } = call;
+  const { mark, gateMark, gate } = await publishedLongAgo(t, call, leg);
+  await legForceUnpublished(call, leg);
+  // Checked every second, not only at the end: once the call is `mixed`,
+  // rule 2(b) is off and the leg folds, so a later reconcile no longer
+  // names it (the header's "loud").
+  assert.deepEqual(world.modes.slice(mark), [], "the unpublish moved the mode");
+  for (let second = 1; second <= 12; second++) {
+    await advance(t, 1_000);
+    const result = await world.session.reconcileNow();
+    await flush();
+    assert.ok(result, `${second} s after the unpublish: no reconcile ran`);
+    assert.ok(
+      !result.nonEnrolled.includes(leg),
+      `${second} s after the unpublish: the leg was reported non-enrolled`,
+    );
+    assert.deepEqual(
+      world.modes.slice(mark),
+      [],
+      `${second} s after the unpublish: the call mode moved`,
+    );
+    // Pending is not loud, but it is not consistent either: it would hold
+    // enable, resume, re-upgrade and heal for as long as the SFU kept the
+    // leg in the room (the rejected "A2" mechanism).
+    assert.ok(
+      !result.pending.includes(leg),
+      `${second} s after the unpublish: the leg was reported pending`,
+    );
+  }
+  assert.ok(world.sfu.includes(leg), "the leg left the SFU set");
+  assert.equal(await loud(world, leg, mark), false, "the leg went loud");
+  assert.deepEqual(world.modes.slice(mark), [], "the call mode moved");
+  assert.equal(world.session.callMode().kind, "e2ee");
+  assert.deepEqual(
+    world.gateLog.slice(gateMark).filter((edge) => edge.startsWith("+")),
+    [],
+    "a publish-gate pause reason was added",
+  );
+  assert.deepEqual([...world.gate].sort(), gate, "the publish gate moved");
+  // Both lists empty: what enable/resume wait on.
+  assert.equal(
+    await world.session.rosterConsistent(),
+    true,
+    "the force-unpublished leg holds the roster inconsistent",
+  );
+}
+
+// ---- Weakened assertions (wave 4, C6) ---------------------------------------
+//
+// C6 left a leg's admit-grace windows and ledger deciding no verdict, so
+// every spec that proved them THROUGH a leg's verdict lost its proof. Each
+// is recorded here:
+//
+//  - E2-3 used to prove a liveness bound: a leg that never publishes is
+//    re-armed past its first window but goes loud at the 60 s cap. Under C6
+//    an unpublished leg with its owner present is inert for as long as it
+//    stays that way, so the bound is gone by design (residual R9). The only
+//    bound left is native: the plugin's revoke/unpublish teardown (C8,
+//    `ScreenSharePlugin.kt`), which nothing here can observe, and which
+//    v0.64 builds lack. RESTATED below to the new contract (quiet past the
+//    cap, never pending). The re-arm decision itself is still held by
+//    `mlsAdmitGracePolicy.test.ts` ("an unpublished leg with its owner
+//    present re-arms (E2-3)", "a slow leg re-arms while unpublished and
+//    lapses once published (E2-3)") and by the expiry source pin above
+//    (C-d, C-e).
+//  - The three C-b specs used to prove that each conjunct of `seenPublished`
+//    (an e2ee witness; presence in the SFU set; an `unpublishedLegs`
+//    accessor at all) stands alone between a leg and a ledger reset, by
+//    showing the leg's NEXT share lapsing with only 30 s of budget left
+//    (their helper `nextShareHasOnly30sLeft` is gone with them). Under C6
+//    that next share's unpublished gap is inert whatever the ledger holds,
+//    so the ledger cannot be seen through a verdict and none of the three
+//    can go red here. The conjuncts stay held as TEXT by "seenPublished
+//    fails CLOSED ... (C-b)" above, and the reset decision by
+//    `mlsAdmitGracePolicy.test.ts` ("a published leg's ledger resets", "an
+//    unpublished leg keeps its spent grace", "a published plaintext leg is
+//    neither forgiven nor re-armed"). Per spec:
+//     - the e2ee witness: RESTATED to what is still true. A publication
+//       nothing witnessed encrypted is loud at once, inside the leg's open
+//       window, and again on its next share.
+//     - presence in the SFU set: DELETED. A leg gone from the SFU set is not
+//       reconciled at all, so no behavior is left to restate; the text pin
+//       above is its only replacement.
+//     - the accessor: RESTATED. With no `unpublishedLegs` accessor, a
+//       force-unpublished leg is loud: C6's inertness rests on the binding
+//       vouching for zero publications. The join-time spec ("with no
+//       unpublishedLegs accessor at all ...") is kept beside it.
+//  - E2-2 and C-a keep their assertions but not their premise. They were
+//    written to prove the ledger reset on publish (E2-2's 25 cycles exceed
+//    the 60 s ceiling; C-a's second share needs a forgiven 30 s), and under
+//    C6 they pass with no reset at all. What they pin now is that the own
+//    leg's join→publish gap is quiet however often, and however slowly, it
+//    repeats: both go red at once if C6's skip is lost, since a leg is never
+//    `pending`. The reset itself: the "bills THEN resets" source pin above
+//    and `mlsAdmitGracePolicy.test.ts` ("a phone that shares over and over
+//    never runs out of grace (E2-2)").
+//
+// The roster decision these specs drive end to end is held directly by
+// `rosterReconcile.test.ts` (an unpublished leg whose owner is present, or
+// is this device, is in neither list, windowed or not; an orphan, a bare
+// leg and a published-plaintext leg stay non-enrolled).
+
+test("🔴 F-W3-2: the sharer's OWN leg, force-unpublished long after it published, stays in the room quiet: never non-enrolled or pending, no mixed, no pause", async (t) => {
+  await forcedUnpublishIsInert(t, "ch-leggrace-fw32-own", OWN_LEG);
+});
+
+test("🔴 F-W3-2: a PEER's leg (its owner enrolled and present), force-unpublished long after it published, stays in the room quiet", async (t) => {
+  await forcedUnpublishIsInert(t, "ch-leggrace-fw32-peer", PEER_LEG);
+});
+
+test("🔴 E2-2: 25 share start/stop cycles of the sharer's own leg never go loud", async (t) => {
   const call = await soloCall(t, "ch-leggrace-cycles");
   const { world } = call;
   const mark = world.modes.length;
   // 25 × 4 s of connect→publish is 100 s, well past the 60 s per-call
-  // ceiling: without the reset on publish, a cycle in the teens goes loud.
+  // ceiling. Written for the ledger reset on publish; under C6 the gap is
+  // inert and the ledger decides nothing (see "Weakened assertions").
   for (let cycle = 1; cycle <= 25; cycle++) {
     await legJoins(call, OWN_LEG);
     await advance(t, 4_000);
@@ -531,7 +697,9 @@ test("🔴 E2-2: 25 share start/stop cycles of the sharer's own leg never exhaus
   assert.deepEqual(world.modes.slice(mark), [], "the call mode moved");
 });
 
-test("🔴 E2-3: a slow leg (unpublished, its owner this device) re-arms past its first window and still lapses at the 60 s cap", async (t) => {
+// RESTATED under C6 (see "Weakened assertions"): it used to go loud at the
+// 60 s cap.
+test("🔴 E2-3: a slow leg (unpublished, its owner this device) is inert past its first window and past the 60 s cap: never loud, never pending", async (t) => {
   const call = await soloCall(t, "ch-leggrace-slow");
   const { world } = call;
   const mark = world.modes.length;
@@ -541,17 +709,27 @@ test("🔴 E2-3: a slow leg (unpublished, its owner this device) re-arms past it
   assert.equal(
     await loud(world, OWN_LEG, mark),
     false,
-    "the slow leg lapsed at its first window",
+    "the slow leg went loud past its first window",
   );
   await advance(t, 32_000);
   assert.equal(
     await loud(world, OWN_LEG, mark),
-    true,
-    "a leg that never publishes outlived the 60 s cap",
+    false,
+    "the slow leg went loud past the 60 s cap",
   );
+  const result = await world.session.reconcileNow();
+  await flush();
+  assert.ok(result, "no reconcile ran");
+  assert.ok(!result.pending.includes(OWN_LEG), "the slow leg is pending");
+  assert.equal(
+    await world.session.rosterConsistent(),
+    true,
+    "the slow leg holds the roster inconsistent",
+  );
+  assert.deepEqual(world.modes.slice(mark), [], "the call mode moved");
 });
 
-test("🔴 C-a: the stretch billed at publish is forgiven, so the next share gets the full budget", async (t) => {
+test("🔴 C-a: a second slow share after a slow first one is quiet too, whatever the first left in the ledger", async (t) => {
   const call = await soloCall(t, "ch-leggrace-forgive");
   const { world } = call;
   const mark = world.modes.length;
@@ -562,97 +740,91 @@ test("🔴 C-a: the stretch billed at publish is forgiven, so the next share get
     false,
     "the first connect lapsed",
   );
-  // The publish reconcile settles (bills) the 30 s and resets the ledger in
-  // the same pass; the leg leaves before any later reconcile could reset it.
+  // Written for the forgiveness: the publish reconcile settles (bills) the
+  // 30 s and resets the ledger in the same pass, and the leg leaves before
+  // any later reconcile could reset it. Under C6 the second connect is
+  // inert whatever the ledger holds (see "Weakened assertions").
   await legPublishes(call, OWN_LEG);
   await legLeaves(call, OWN_LEG);
   await advance(t, 11_000);
   await legJoins(call, OWN_LEG);
-  // 45 s fits a fresh 60 s budget, not the 30 s left had the stretch stuck.
+  // 45 s: past the 30 s a stuck stretch would have left.
   await advance(t, 45_000);
   assert.equal(
     await loud(world, OWN_LEG, mark),
     false,
-    "the second connect lapsed: the first stretch was not forgiven",
+    "the second connect went loud",
   );
 });
 
-// The forgiveness is fail-closed: each spec below reaches the reconcile that
-// settles a 30 s connect with ONE of `seenPublished`'s conjuncts false and
-// the rest true, so only that conjunct stands between the leg and a reset.
-// The leg leaves right after it, before any later reconcile could look again,
-// and its next share must find the 30 s still spent.
-
-test("🔴 C-b: a publication nothing witnessed encrypted (e2ee) forgives nothing", async (t) => {
+// RESTATED under C6 (see "Weakened assertions"): it used to prove the e2ee
+// witness alone kept the ledger from resetting.
+test("🔴 C-b: a leg publication nothing witnessed encrypted (e2ee) is loud at once, inside the leg's open window, and again on its next share", async (t) => {
   const call = await soloCall(t, "ch-leggrace-unwitnessed");
   const { world } = call;
   const mark = world.modes.length;
   await legJoins(call, OWN_LEG);
   await advance(t, 30_000);
-  assert.equal(await loud(world, OWN_LEG, mark), false, "the connect lapsed");
+  assert.equal(
+    await loud(world, OWN_LEG, mark),
+    false,
+    "the unpublished leg went loud",
+  );
   // Published, in the SFU, listed nowhere as unpublished, but NOT in
-  // `encryptedLegs`. Rule 2(b) declares the mix in this very reconcile
-  // (the settle loop reads the call mode before the reconcile moves it).
+  // `encryptedLegs`, while its window is still open (re-armed while it sat
+  // unpublished with its owner present). A leg is never `pending`, so rule
+  // 2(b) declares the mix in this very reconcile.
   await legPublishes(call, OWN_LEG, false);
-  await legLeaves(call, OWN_LEG);
   assert.ok(
     world.modes.slice(mark).includes("mixed"),
     "an unwitnessed leg publication did not declare the mix",
   );
-  // The mix clears once the leg is gone: the re-upgrade hysteresis is 15 s.
-  await advance(t, 20_000);
-  await nextShareHasOnly30sLeft(
-    t,
-    call,
-    OWN_LEG,
-    "an unwitnessed publication forgave the leg's spent grace",
-  );
-});
-
-test("🔴 C-b: a leg already gone from the SFU set forgives nothing, even with a stale encrypted witness", async (t) => {
-  const call = await soloCall(t, "ch-leggrace-gone");
-  const { world, legs } = call;
-  const mark = world.modes.length;
-  await legJoins(call, OWN_LEG);
-  await advance(t, 30_000);
-  assert.equal(await loud(world, OWN_LEG, mark), false, "the connect lapsed");
-  // The leg dropped out of the SFU set before its leave event, and the only
-  // thing still vouching for it is an encrypted witness that outlived it.
-  world.sfu = world.sfu.filter((id) => id !== OWN_LEG);
-  legs.unpublished.delete(OWN_LEG);
-  legs.encrypted.add(OWN_LEG);
-  await world.session.reconcileNow();
-  await flush();
   await legLeaves(call, OWN_LEG);
-  await nextShareHasOnly30sLeft(
-    t,
-    call,
-    OWN_LEG,
-    "a leg absent from the SFU set was forgiven its spent grace",
+  // The mix clears once the leg is gone: the re-upgrade hysteresis is 15 s.
+  await advance(t, 31_000);
+  assert.equal(world.session.callMode().kind, "e2ee");
+  // The next share: its unpublished gap is inert whatever the first share
+  // left in the ledger, and its plaintext publication is loud again.
+  const next = world.modes.length;
+  await legJoins(call, OWN_LEG);
+  await advance(t, 25_000);
+  assert.equal(
+    await loud(world, OWN_LEG, next),
+    false,
+    "the next share's unpublished gap went loud",
+  );
+  await legPublishes(call, OWN_LEG, false);
+  assert.ok(
+    world.modes.slice(next).includes("mixed"),
+    "the next share's unwitnessed publication did not declare the mix",
   );
 });
 
-test("🔴 C-b: a binding without an unpublishedLegs accessor at the settle forgives nothing", async (t) => {
+// C-b "a leg already gone from the SFU set forgives nothing, even with a
+// stale encrypted witness": DELETED under C6, see "Weakened assertions".
+
+// RESTATED under C6 (see "Weakened assertions"): it used to prove an absent
+// accessor at the settle kept the ledger from resetting.
+test("🔴 C-b: a force-unpublished leg the binding cannot vouch for (no unpublishedLegs accessor) is loud", async (t) => {
   const call = await soloCall(t, "ch-leggrace-no-accessor-at-settle");
   const { world, legs } = call;
-  const mark = world.modes.length;
-  await legJoins(call, OWN_LEG);
-  await advance(t, 30_000);
-  assert.equal(await loud(world, OWN_LEG, mark), false, "the connect lapsed");
-  // Witnessed encrypted and in the SFU, but the binding cannot say whether
-  // it is published. Absent must not read as "published".
+  const { mark } = await publishedLongAgo(t, call, OWN_LEG);
+  // F-W3-2's world, but the binding can no longer say the leg has nothing
+  // published. Absent must not read as "unpublished": the session hands the
+  // policy `[]`, and an unfolded leg with nothing vouching for it is loud.
   legs.unpublishedAccessor = false;
-  await legPublishes(call, OWN_LEG);
-  await legLeaves(call, OWN_LEG);
-  legs.unpublishedAccessor = true;
-  await nextShareHasOnly30sLeft(
-    t,
-    call,
-    OWN_LEG,
-    "an absent unpublishedLegs accessor was read as published",
+  await legForceUnpublished(call, OWN_LEG);
+  assert.equal(
+    await loud(world, OWN_LEG, mark),
+    true,
+    "an absent unpublishedLegs accessor was read as unpublished",
   );
 });
 
+// Unchanged by C6. Still loud because the session hands the policy
+// `media.unpublishedLegs?.() ?? []`: with no accessor nothing vouches for
+// the leg's zero publications, so C6's skip never applies and a leg is
+// never pending.
 test("with no unpublishedLegs accessor at all, an unpublished leg gets no grace, so it has no budget to spend", async (t) => {
   const call = await soloCall(t, "ch-leggrace-no-accessor", {
     unpublishedAccessor: false,
@@ -667,7 +839,22 @@ test("with no unpublishedLegs accessor at all, an unpublished leg gets no grace,
   );
 });
 
-test("🔴 an orphan leg (its owner gone when its window expires) is not re-armed: it lapses at the first expiry", async (t) => {
+// Why the orphan is still loud under C6 (re-derived in wave 4). The window
+// no longer decides the verdict; the roster policy does, on every
+// reconcile. With its owner absent from the RAW SFU set (and not this
+// device) the leg fails rule 2(a) and stays unfolded, it is not in the MLS
+// group, it is device-qualified, and it FAILS C6's owner test, so it is not
+// inert; a leg is never `pending`, so it lands in `nonEnrolled` and the
+// call goes `mixed`. The 1.5 s gap below holds exactly ONE reconcile
+// (measured: the session's 5 s tick lands either side of it): the one the
+// expiry kicks after it CLOSES the window (`#onAdmitGraceExpiry` →
+// `reconcileNow`). A re-arm returns before that reconcile, so this spec
+// also still pins that the expiry closes an orphan's window rather than
+// re-arming it, but the verdict is C6's. The owner is back before the final
+// look, where the leg is inert again, so "loud" there is the `mixed` already
+// declared (the header's witness); the check inside the gap shows which
+// reconcile declared it.
+test("🔴 an orphan leg (its owner gone when its window expires) is loud: the expiry closes its window and the reconcile it kicks reports it non-enrolled", async (t) => {
   const call = await soloCall(t, "ch-leggrace-orphan");
   const { world } = call;
   const mark = world.modes.length;
@@ -679,17 +866,99 @@ test("🔴 an orphan leg (its owner gone when its window expires) is not re-arme
   );
   // The owner drops out of the SFU set across the expiry (14 s after the
   // leg joined), with no leave event and no reconcile of its own: only the
-  // expiry's owner check can see it. It is back before the next look.
+  // expiry's reconcile can see it. It is back before the next look.
   await advance(t, 13_000);
   const present = world.sfu;
   world.sfu = present.filter((id) => id !== PEER_ID);
   await advance(t, 1_500);
+  assert.ok(
+    world.session.nonEnrolled().includes(PEER_LEG),
+    "no reconcile inside the owner's absence reported the orphan non-enrolled",
+  );
   world.sfu = present;
   assert.equal(
     await loud(world, PEER_LEG, mark),
     true,
     "an orphan leg's window re-armed at its expiry",
   );
+});
+
+/** The session's periodic reconcile tick, read from its source (private there). */
+const RECONCILE_INTERVAL_MS = (() => {
+  const found = /const RECONCILE_INTERVAL_MS = ([\d_]+);/.exec(SESSION_SOURCE);
+  assert.ok(
+    found,
+    "mlsCallSession.ts no longer declares RECONCILE_INTERVAL_MS",
+  );
+  return Number(found[1].replaceAll("_", ""));
+})();
+
+/**
+ * The session-level guard for §5.4 orphan loudness, independent of any admit
+ * window. The spec above holds the orphan only through the ONE reconcile its
+ * window's expiry kicks inside a 1.5 s gap, which is a timing artifact. Here
+ * the leg's window closed long ago (`publishedLongAgo`), no join event opens
+ * another, and nothing but the session's own periodic tick reconciles: the
+ * owner leaves the SFU set (no leave event) and stays gone across at least
+ * two ticks. The leg must be reported non-enrolled and the call must go and
+ * stay `mixed`. Once `mixed`, rule 2(b) is off, but an orphan fails rule 2(a)
+ * and never folds, so non-enrolled stays a stable witness here. The same
+ * unpublished leg with its owner present is the F-W3-2 peer spec above, inert.
+ */
+async function orphanStaysLoud(
+  t: TestContext,
+  channelId: string,
+  publication: "none" | "encrypted" | "plaintext",
+): Promise<void> {
+  const call = await soloCall(t, channelId);
+  const { world, legs } = call;
+  const { mark } = await publishedLongAgo(t, call, PEER_LEG);
+  const session = world.session;
+  const reconcileNow = session.reconcileNow;
+  let reconciles = 0;
+  session.reconcileNow = function (this: typeof session) {
+    reconciles++;
+    return reconcileNow.call(this);
+  };
+  // No reconcile of the spec's own from here on: only the tick can see this.
+  if (publication !== "encrypted") legs.encrypted.delete(PEER_LEG);
+  if (publication === "none") legs.unpublished.add(PEER_LEG);
+  world.sfu = world.sfu.filter((id) => id !== PEER_ID);
+  await advance(t, 2 * RECONCILE_INTERVAL_MS + 1_000);
+  assert.ok(reconciles >= 2, `only ${reconciles} periodic reconcile(s) ran`);
+  assert.ok(world.sfu.includes(PEER_LEG), "the leg left the SFU set");
+  assert.ok(
+    session.nonEnrolled().includes(PEER_LEG),
+    "the periodic tick did not report the orphan leg non-enrolled",
+  );
+  assert.ok(
+    world.modes.slice(mark).includes("mixed"),
+    "the orphan leg did not declare the mix",
+  );
+  assert.equal(session.callMode().kind, "mixed");
+  // And it stays loud on the next tick.
+  const before = reconciles;
+  await advance(t, RECONCILE_INTERVAL_MS);
+  assert.ok(reconciles > before, "no periodic reconcile ran on the next tick");
+  assert.ok(
+    session.nonEnrolled().includes(PEER_LEG),
+    "the orphan leg was not non-enrolled on the next tick",
+  );
+  assert.equal(session.callMode().kind, "mixed", "the call left mixed");
+}
+
+test("🔴 §5.4 steady state: an UNPUBLISHED orphan leg, its owner gone across two periodic ticks and no window open, is non-enrolled and the call stays mixed", async (t) => {
+  await orphanStaysLoud(t, "ch-leggrace-orphan-steady-unpublished", "none");
+});
+
+// Rule 2(a) alone makes this one loud: the leg's publication is witnessed
+// encrypted, so only its absent owner keeps it from folding.
+test("🔴 §5.4 steady state: an orphan leg publishing ENCRYPTED, its owner gone across two periodic ticks, is non-enrolled and the call stays mixed", async (t) => {
+  await orphanStaysLoud(t, "ch-leggrace-orphan-steady-encrypted", "encrypted");
+});
+
+test("§5.4 steady state: an orphan leg publishing plaintext, its owner gone across two periodic ticks, is non-enrolled and the call stays mixed", async (t) => {
+  await orphanStaysLoud(t, "ch-leggrace-orphan-steady-plaintext", "plaintext");
 });
 
 test("🔴 a primary nothing is admitting lapses at its first expiry (C-e)", async (t) => {

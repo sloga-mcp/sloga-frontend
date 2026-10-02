@@ -21,12 +21,18 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import {
+  type GateStopWorld,
   type LegAnnouncer,
   type LegBridge,
   type LegSendKey,
+  type LegStopNotice,
   type NativeFrameKey,
+  type NativeStopReason,
   AndroidLegLifecycle,
+  gateStopNotice,
   keyActionAfterConnect,
+  nativeStopNotice,
+  staleExitNotice,
   startAttemptCancelled,
   startAttemptStale,
 } from "./androidLegStartPolicy.ts";
@@ -138,7 +144,7 @@ test("a rotation during connect is pushed once the sender exists", () => {
   );
 });
 
-test("changed key MATERIAL at the same index still re-keys", () => {
+test("a later epoch reusing the key index still re-keys", () => {
   // A key index is unique only within an epoch, so two epochs can reuse one.
   // Comparing indices alone would skip a required rotation and leave the leg
   // publishing under the key a removed member holds.
@@ -146,6 +152,17 @@ test("changed key MATERIAL at the same index still re-keys", () => {
     keyActionAfterConnect(key("AAA", 1), key("BBB", 1, { epoch: 20 })),
     { kind: "push", key: key("BBB", 1, { epoch: 20 }) },
   );
+});
+
+test("🔴 changed key MATERIAL alone (same index, epoch, group) re-keys", () => {
+  // The material is the secret itself. The case above moves the epoch too,
+  // so a reconcile that stopped comparing material would still push there.
+  // Here nothing else differs: skipping the push would leave the leg
+  // encrypting under the key a removed member holds.
+  assert.deepEqual(keyActionAfterConnect(key("AAA", 1), key("BBB", 1)), {
+    kind: "push",
+    key: key("BBB", 1),
+  });
 });
 
 test("an epoch move alone still re-keys", () => {
@@ -248,17 +265,22 @@ async function settlesWithin(
 /**
  * A lifecycle over a fake bridge. Every native `stop()` hands back a deferred
  * the test settles by hand (`stops`, in call order), every pushed key is
- * recorded as it crossed (`frameKeys`), and the announcer records what it
- * hears as `"started"` / `"stopped:<reason>"`.
+ * recorded as it crossed (`frameKeys`) and then settles as
+ * `nativeSetFrameKey` says (at once, by default), and the announcer records
+ * what it hears as `"started"` / `"stopped:<reason>"`.
  */
-function lifecycle(stopTimeoutMs?: number) {
+function lifecycle(
+  stopTimeoutMs?: number,
+  nativeSetFrameKey: (k: NativeFrameKey) => Promise<void> = () =>
+    Promise.resolve(),
+) {
   const events: string[] = [];
   const stops: Deferred<void>[] = [];
   const frameKeys: NativeFrameKey[] = [];
   const bridge: LegBridge = {
     setFrameKey: (k) => {
       frameKeys.push(k);
-      return Promise.resolve();
+      return nativeSetFrameKey(k);
     },
     stop: () => {
       const d = deferred();
@@ -488,6 +510,67 @@ test(
 );
 
 test(
+  "🔴 a REJECTED native re-key rejects the lifecycle push",
+  { timeout: 2000 },
+  async () => {
+    // The caller stops the leg (fail closed) only from the rejection. A push
+    // that swallowed it would let the provider report the rotation installed
+    // while the phone still encrypts under the old key, which the removed
+    // member holds.
+    const rig = lifecycle(undefined, () =>
+      Promise.reject(new Error("native re-key failed")),
+    );
+    await share(rig, key("AAA", 1));
+    await assert.rejects(
+      rig.leg.setFrameKey(key("BBB", 2, { epoch: 5 })),
+      /native re-key failed/,
+    );
+    // It did reach native: this is the bridge's failure, not the fence's.
+    assert.deepEqual(rig.frameKeys, [{ keyB64: "BBB", keyIndex: 2, epoch: 5 }]);
+  },
+);
+
+test(
+  "🔴 a SLOW native re-key holds the lifecycle push until it settles",
+  { timeout: 2000 },
+  async () => {
+    // "Installed" must mean the sender encrypts under the new key. A push
+    // that resolved first would report the rotation done while native still
+    // holds the old key, and a failure landing later would reach nobody.
+    const pending: Deferred<void>[] = [];
+    let nativeSettled = false;
+    const rig = lifecycle(undefined, () => {
+      const d = deferred();
+      pending.push(d);
+      return d.promise.finally(() => {
+        nativeSettled = true;
+      });
+    });
+    await share(rig, key("AAA", 1));
+
+    const pushing = rig.leg.setFrameKey(key("BBB", 2, { epoch: 5 }));
+    const pushDone = settled(pushing);
+    await flush();
+    assert.equal(pending.length, 1);
+    assert.equal(pushDone(), false, "the push settled before native did");
+    pending[0].resolve();
+    await pushing;
+    assert.equal(nativeSettled, true);
+
+    // A LATE rejection still reaches the caller.
+    nativeSettled = false;
+    const failing = rig.leg.setFrameKey(key("CCC", 3, { epoch: 6 }));
+    const failDone = settled(failing);
+    await flush();
+    assert.equal(pending.length, 2);
+    assert.equal(failDone(), false, "the push settled before native did");
+    pending[1].reject(new Error("native re-key failed late"));
+    await assert.rejects(failing, /native re-key failed late/);
+    assert.equal(nativeSettled, true);
+  },
+);
+
+test(
   "a plaintext share after an e2ee share refuses the old group's key",
   { timeout: 2000 },
   async () => {
@@ -568,6 +651,290 @@ test("a stopped event with no reason announces an error, once", () => {
   assert.equal(rig.leg.active(), false);
 });
 
+// The notice an ended (or never-started) share deserves. A KIND, not copy:
+// `state.tsx` maps it to a message, so a wrong toast, or a missing one, is
+// pinned here, where it shows without a phone.
+
+test("nativeStopNotice: this device's own stops are quiet; failures speak", () => {
+  // `user` and `system` are stops taken on this device (our stop, the system
+  // chip, the notification's Stop): a toast would report an error for a stop
+  // the user asked for. `disconnected` and `error` were not asked for, and
+  // the primary's state has no bearing on either.
+  const rows: [NativeStopReason, LegStopNotice][] = [
+    ["user", "none"],
+    ["system", "none"],
+    ["disconnected", "connection"],
+    ["error", "encryption"],
+  ];
+  for (const [reason, notice] of rows)
+    for (const canPublish of [true, false, undefined])
+      for (const inAfkChannel of [true, false])
+        assert.equal(
+          nativeStopNotice(reason, { canPublish, inAfkChannel }),
+          notice,
+          `${reason} canPublish=${String(canPublish)} afk=${inAfkChannel}`,
+        );
+});
+
+test("🔴 nativeStopNotice: a revoke speaks only if the primary kept publish", () => {
+  // The server took the leg's publish away. When the loss is primary-wide (a
+  // moderator mute: canPublish false; an AFK move: inAfkChannel) the
+  // primary's own toast already explains it, and a second one for the leg
+  // says the same thing worse. The AFK arm stands on its own: the leg's
+  // revoke can land FIRST, while the primary still reports canPublish true.
+  // An unknown canPublish is not a primary-wide loss, so the notice stands.
+  const rows: [boolean | undefined, boolean, LegStopNotice][] = [
+    [true, false, "revoked"],
+    [undefined, false, "revoked"],
+    [false, false, "none"],
+    [true, true, "none"],
+    [undefined, true, "none"],
+    [false, true, "none"],
+  ];
+  for (const [canPublish, inAfkChannel, notice] of rows)
+    assert.equal(
+      nativeStopNotice("revoked", { canPublish, inAfkChannel }),
+      notice,
+      `canPublish=${String(canPublish)} afk=${inAfkChannel}`,
+    );
+});
+
+test("nativeStopNotice: a reason newer than this build is quiet", () => {
+  // A newer native build can send a reason this JS does not know. An unknown
+  // stop is not worth a misleading message, even with the primary in the
+  // state where a revoke would speak.
+  const future = "preempted" as string as NativeStopReason;
+  for (const canPublish of [true, false, undefined])
+    for (const inAfkChannel of [true, false])
+      assert.equal(
+        nativeStopNotice(future, { canPublish, inAfkChannel }),
+        "none",
+        `canPublish=${String(canPublish)} afk=${inAfkChannel}`,
+      );
+});
+
+const gate = (over: Partial<GateStopWorld> = {}): GateStopWorld => ({
+  startingFor: undefined,
+  currentGeneration: 3,
+  active: false,
+  stopInFlight: false,
+  roomConnected: true,
+  ...over,
+});
+
+test("gateStopNotice: a gate that takes down a live share says so", () => {
+  // The gate stops the leg on every reason add (§0.4); without a notice the
+  // share simply vanishes.
+  assert.equal(gateStopNotice(gate({ active: true })), "gate-share");
+  // A live leg whose attempt has not settled yet is still a live share: one
+  // notice, the share one, not the start one as well.
+  assert.equal(
+    gateStopNotice(gate({ active: true, startingFor: 3 })),
+    "gate-share",
+  );
+});
+
+test("🔴 gateStopNotice: a gate joining a stop already in flight is quiet", () => {
+  // Something else (a tap, a hook) asked for that teardown and the gate only
+  // coalesces onto it; a toast would blame the gate for a stop the user
+  // asked for.
+  assert.equal(
+    gateStopNotice(gate({ active: true, stopInFlight: true })),
+    "none",
+  );
+  assert.equal(
+    gateStopNotice(gate({ active: true, stopInFlight: true, startingFor: 3 })),
+    "none",
+  );
+});
+
+test("gateStopNotice: a gate cancelling the owning start attempt says so", () => {
+  // The attempt still owns the generation. The gate's stop is about to bump
+  // it, so the attempt's own stale check will exit quietly: this is the one
+  // place the user hears that the share could not start.
+  assert.equal(
+    gateStopNotice(gate({ startingFor: 3, currentGeneration: 3 })),
+    "gate-start",
+  );
+});
+
+test("🔴 gateStopNotice: an attempt a tap already cancelled is quiet", () => {
+  // The cancelling tap bumped the generation first. That tap ended the
+  // share, so a gate toast would contradict what the user just did.
+  assert.equal(
+    gateStopNotice(gate({ startingFor: 3, currentGeneration: 4 })),
+    "none",
+  );
+});
+
+test("gateStopNotice: nothing starting and nothing live, nothing to say", () => {
+  assert.equal(gateStopNotice(gate()), "none");
+  // A teardown in flight for a leg that is not active is not a share.
+  assert.equal(gateStopNotice(gate({ stopInFlight: true })), "none");
+});
+
+test("🔴 gateStopNotice: a disconnected room is quiet, live or starting", () => {
+  // A room that is no longer connected is the call ending, which explains
+  // itself; a gate toast on top would blame the wrong thing.
+  for (const over of [
+    { active: true },
+    { active: true, startingFor: 3 },
+    { startingFor: 3, currentGeneration: 3 },
+  ])
+    assert.equal(
+      gateStopNotice(gate({ ...over, roomConnected: false })),
+      "none",
+      JSON.stringify(over),
+    );
+});
+
+test("🔴 staleExitNotice: a gate held before the claim reports the start", () => {
+  // Nothing cancelled this attempt (the gate's stop bumped a generation it
+  // had not taken yet), and gateStopNotice saw no starting attempt then, so
+  // this exit is the only place the user hears that the share never began.
+  assert.equal(staleExitNotice(world({ publishGateSize: 1 })), "gate-start");
+  assert.equal(staleExitNotice(world({ publishGateSize: 3 })), "gate-start");
+});
+
+test("🔴 staleExitNotice: a cancelled attempt is quiet, held gate or not", () => {
+  // A tap, a stop hook, a hang-up or gateStopNotice already spoke for it: a
+  // notice here would toast one stop twice, or toast a stop the user asked
+  // for.
+  for (const over of [
+    { currentGeneration: 8 },
+    { roomChanged: true },
+    { currentGeneration: 8, publishGateSize: 1 },
+    { roomChanged: true, publishGateSize: 1 },
+  ])
+    assert.equal(staleExitNotice(world(over)), "none", JSON.stringify(over));
+});
+
+test("staleExitNotice: a fresh attempt is not exiting", () => {
+  assert.equal(staleExitNotice(world()), "none");
+});
+
+test(
+  "stopping() is true exactly while a stop is in flight",
+  { timeout: 2000 },
+  async () => {
+    // gateStopNotice reads it as stopInFlight. Stuck false, every gate that
+    // merely joins a tap's stop toasts; stuck true, every gate that takes a
+    // live share down goes unannounced.
+    const rig = lifecycle();
+    await share(rig);
+    assert.equal(rig.leg.stopping(), false);
+    const stopping = rig.leg.stop();
+    assert.equal(rig.leg.stopping(), true);
+    await flush();
+    assert.equal(rig.leg.stopping(), true);
+    rig.stops[0].resolve();
+    await stopping;
+    assert.equal(rig.leg.stopping(), false);
+  },
+);
+
+test(
+  "🔴 stopping() clears when the bridge stop rejects or times out",
+  { timeout: 2000 },
+  async () => {
+    // A failed stop leaves the leg active() so the next hook retries. A
+    // stopping() that outlived it would read as a teardown still under way,
+    // and every later gate that takes the share down would go unannounced.
+    const rejected = lifecycle();
+    await share(rejected);
+    const failed = rejected.leg.stop();
+    assert.equal(rejected.leg.stopping(), true);
+    rejected.stops[0].reject(new Error("native stop failed"));
+    await failed;
+    assert.equal(rejected.leg.stopping(), false);
+    assert.equal(rejected.leg.active(), true);
+
+    const hung = lifecycle(5);
+    await share(hung);
+    const timedOut = hung.leg.stop();
+    assert.equal(hung.leg.stopping(), true);
+    assert.equal(
+      await settlesWithin(timedOut, 500),
+      true,
+      "the stop never settled",
+    );
+    assert.equal(hung.leg.stopping(), false);
+    assert.equal(hung.leg.active(), true);
+  },
+);
+
+test(
+  "two concurrent stops: one bridge call, stopping() until it settles",
+  { timeout: 2000 },
+  async () => {
+    // The second caller (a gate pulse during a hang-up, say) joins the
+    // teardown already running, and must see it in flight for its whole
+    // length, not only until the first caller's call returns.
+    const rig = lifecycle();
+    await share(rig);
+    const first = rig.leg.stop();
+    assert.equal(rig.leg.stopping(), true);
+    const second = rig.leg.stop();
+    assert.equal(rig.stops.length, 1);
+    assert.equal(rig.leg.stopping(), true);
+    await flush();
+    assert.equal(rig.leg.stopping(), true);
+    rig.stops[0].resolve();
+    await Promise.all([first, second]);
+    assert.equal(rig.stops.length, 1);
+    assert.equal(rig.leg.stopping(), false);
+  },
+);
+
+test(
+  "🔴 a revoked stop ends an active leg and announces it once",
+  { timeout: 2000 },
+  async () => {
+    // The server took the leg's publish away. The leg comes down like any
+    // other native stop: active() false, so no hook keeps talking to a dead
+    // sender, and ONE stopped("revoked") for state.tsx to map to a notice.
+    const rig = lifecycle();
+    await share(rig);
+    rig.leg.nativeStopped("revoked");
+    assert.equal(rig.leg.active(), false);
+    assert.deepEqual(rig.events, ["started", "stopped:revoked"]);
+
+    // A duplicate event, or a stop resolution racing the revoke, must not
+    // announce again (a second end-of-share sound, a "user" stop on top).
+    const raced = lifecycle();
+    await share(raced);
+    const stopping = raced.leg.stop();
+    raced.leg.nativeStopped("revoked");
+    raced.leg.nativeStopped("revoked");
+    raced.stops[0].resolve();
+    await stopping;
+    assert.equal(raced.leg.active(), false);
+    assert.deepEqual(raced.events, ["started", "stopped:revoked"]);
+  },
+);
+
+test(
+  "a revoked stop for a leg that is not active announces nothing",
+  { timeout: 2000 },
+  async () => {
+    // No share was live, so there is nothing to end and nothing to say.
+    const rig = lifecycle();
+    rig.leg.nativeStopped("revoked");
+    assert.equal(rig.leg.active(), false);
+    assert.deepEqual(rig.events, []);
+
+    // Revoked while connect is still in flight: the late resolution must not
+    // bring the leg up active() under a publish the server already took.
+    const publish = deferred<unknown>();
+    const connecting = rig.leg.connect(undefined, () => publish.promise);
+    rig.leg.nativeStopped("revoked");
+    publish.resolve(undefined);
+    await connecting;
+    assert.equal(rig.leg.active(), false);
+    assert.deepEqual(rig.events, []);
+  },
+);
+
 const SHARE_SOURCE = readFileSync(
   new URL("./androidScreenShare.ts", import.meta.url),
   "utf8",
@@ -576,6 +943,27 @@ const SHARE_CODE = codeOf(SHARE_SOURCE);
 
 /** `snippet` must appear exactly once in androidScreenShare.ts's code. */
 const assertShareWired = wiredAsserter("androidScreenShare.ts", SHARE_CODE);
+
+test("🔴 the plugin's re-key promise is handed to the lifecycle as is", () => {
+  // The lifecycle awaits whatever the bridge returns, so a wrapper that drops
+  // the plugin's promise (`async (k) => { void plugin!.setFrameKey(k); }`, a
+  // trailing `.catch`) turns a failed native re-key into a success: the
+  // caller never stops the leg, and the rotation counts as installed while
+  // the phone keeps the key a removed member holds. tsc accepts every one of
+  // those rewrites; the specs above run a fake bridge, not this lambda.
+  const bridgeKey = "setFrameKey: (k) => plugin!.setFrameKey(k),";
+  assertShareWired("the bridge's setFrameKey", bridgeKey);
+  const constructions = bodiesAfter(
+    SHARE_CODE,
+    "#core = new AndroidLegLifecycle(",
+  );
+  assert.equal(constructions.length, 1);
+  assert.equal(
+    countWired(constructions[0], bridgeKey),
+    1,
+    "the plugin's setFrameKey must be the lifecycle bridge's, returned as is",
+  );
+});
 
 test("🔴 androidScreenShare.ts holds no live copy of the lifecycle", () => {
   // The specs above prove the leaf. They prove the APP only while the plugin
@@ -595,6 +983,11 @@ test("🔴 androidScreenShare.ts holds no live copy of the lifecycle", () => {
     })`,
   );
   assertShareWired("active()", "return this.#core.active();");
+  // `state.tsx` reads `stopping()` to tell a gate that ends the share from
+  // one that joins a stop already under way; a wrapper-side copy (a constant
+  // false, say) would re-toast every coalesced stop while the specs above
+  // stay green.
+  assertShareWired("stopping()", "return this.#core.stopping();");
   assertShareWired("connect()", "return this.#core.connect(options.e2ee,");
   // The plugin connects with the key the lifecycle hands its callback, which
   // has already lost its group. The caller's own key would carry `groupId`
@@ -610,8 +1003,8 @@ test("🔴 androidScreenShare.ts holds no live copy of the lifecycle", () => {
   assertShareWired("stop()", "return this.#core.stop();");
   assert.equal(
     countWired(SHARE_CODE, "#core."),
-    6,
-    "androidScreenShare.ts must reach the lifecycle through exactly the six " +
+    7,
+    "androidScreenShare.ts must reach the lifecycle through exactly the seven " +
       "delegating calls pinned above",
   );
   for (const field of [

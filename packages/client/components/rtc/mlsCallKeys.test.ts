@@ -42,6 +42,7 @@ import { KeyProviderEvent } from "livekit-client";
 
 import {
   type InstalledKey,
+  type LocalScreenKey,
   MissingLocalFrameKeyError,
   MlsKeyProvider,
   orderForInstall,
@@ -634,6 +635,229 @@ test("an epoch with no screen-leg entry clears the leg key instead of keeping th
   await provider.applyKeys(restored, LOCAL);
   assert.equal(provider.lastLocalScreenKey()?.epoch, 19);
   assert.equal(pushed.at(-1), 19);
+});
+
+// ---------------------------------------------------------------------------
+// The leg key push (Android plan §5.2)
+//
+// `applyLocalKey` records this device's leg key and hands it to
+// `onLocalScreenKey`, which `state.tsx` forwards to the native leg. On a
+// Remove-driven rotation the order and the awaits ARE the control: until the
+// phone has the new key, it encrypts the share under one the removed member
+// still holds.
+// ---------------------------------------------------------------------------
+
+/** This device's screen-leg identity — e2ee-core's `{user}:{device}:screen`. */
+const LOCAL_LEG = `${LOCAL}:screen`;
+
+/** A promise settled from outside, for holding a leg push open. */
+function deferred<T = void>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+/** Let every queued microtask and the next macrotask run. */
+const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+test(
+  "🔴 the leg key is recorded BEFORE the push, so a share started mid-push gets the NEW key",
+  { timeout: 2000 },
+  async () => {
+    // `lastLocalScreenKey()` is what a leg starting mid-call connects on. Were
+    // it still the OLD epoch's while the push is in flight, a start in that
+    // window connects on the key the member this rotation removed holds; the
+    // post-connect sync sees "no change" and the listener skipped the
+    // not-yet-active leg, so nothing re-keys it until the next rotation.
+    const provider = new MlsKeyProvider();
+    await rotateThrough(provider, 17, [LOCAL, BOB, CAROL, LOCAL_LEG]);
+    assert.equal(provider.lastLocalScreenKey()?.epoch, 17);
+
+    const push = deferred();
+    const entered = deferred<LocalScreenKey>();
+    let inListener: LocalScreenKey | undefined;
+    provider.onLocalScreenKey = (k) => {
+      inListener = provider.lastLocalScreenKey();
+      entered.resolve(k);
+      return push.promise;
+    };
+
+    // Remove-driven: carol leaves at 18.
+    const roster = [LOCAL, BOB, LOCAL_LEG];
+    const install = provider.applyKeys(frameKeys(18, roster, roster), LOCAL);
+    const pushed = await entered.promise;
+    const midPush = provider.lastLocalScreenKey();
+    push.resolve();
+    await install;
+
+    assert.deepEqual(pushed, {
+      keyB64: key(LOCAL_LEG, 18).frame_key_b64,
+      keyIndex: 18 % KEYRING_SIZE,
+      epoch: 18,
+      groupId: GROUP,
+    });
+    assert.deepEqual(
+      inListener,
+      pushed,
+      "the listener must already read the key it is being handed",
+    );
+    assert.deepEqual(
+      midPush,
+      pushed,
+      "a start reading the key while the push is in flight must get epoch 18",
+    );
+  },
+);
+
+test(
+  "🔴 a rotation does not resolve until the leg has taken the new key",
+  { timeout: 2000 },
+  async () => {
+    // The push is awaited so a Remove-driven rotation does not report the
+    // local key installed while the phone still encrypts under the key the
+    // removed member holds. Dropping either await (on the push, or on the
+    // step that makes it) resolves the install with the push in flight.
+    const provider = new MlsKeyProvider();
+    await rotateThrough(provider, 17, [LOCAL, BOB, CAROL, LOCAL_LEG]);
+
+    const push = deferred();
+    const entered = deferred();
+    provider.onLocalScreenKey = () => {
+      entered.resolve();
+      return push.promise;
+    };
+
+    let installed = false;
+    const roster = [LOCAL, BOB, LOCAL_LEG];
+    const install = provider
+      .applyKeys(frameKeys(18, roster, roster), LOCAL)
+      .then(() => {
+        installed = true;
+      });
+    await entered.promise;
+    await settle();
+    assert.equal(
+      installed,
+      false,
+      "the install resolved while the leg push was still pending",
+    );
+
+    push.resolve();
+    await install;
+    assert.equal(installed, true);
+  },
+);
+
+test(
+  "🔴 a leg push that REJECTS fails the install loudly, with the new key still current",
+  { timeout: 2000 },
+  async () => {
+    // The listener is meant to own its failure (stop the leg, toast,
+    // resolve). A rejection is the documented backstop: it must reach the
+    // session's media-error path, never vanish. The recorded key stays the
+    // NEW one: it answers "what should a leg use now", not "what landed".
+    const provider = new MlsKeyProvider();
+    await rotateThrough(provider, 17, [LOCAL, BOB, CAROL, LOCAL_LEG]);
+
+    provider.onLocalScreenKey = async () => {
+      await Promise.resolve();
+      throw new Error("leg bridge refused the key");
+    };
+
+    const roster = [LOCAL, BOB, LOCAL_LEG];
+    await assert.rejects(
+      () => provider.applyKeys(frameKeys(18, roster, roster), LOCAL),
+      /leg bridge refused the key/,
+    );
+    assert.equal(provider.lastLocalScreenKey()?.epoch, 18);
+  },
+);
+
+test(
+  "🔴 the deferred local install awaits the whole leg-key step, and a throwing listener fails it",
+  { timeout: 2000 },
+  async () => {
+    // `applyLocalKey` is the Add-grace's deferred half and the only caller of
+    // the leg-key step, so it is held to the rule on its own: it resolves
+    // only once that step has, and a failure inside the step (here a listener
+    // that throws synchronously) rejects it, rather than escaping as an
+    // unhandled rejection beside an install that reported success.
+    const provider = new MlsKeyProvider();
+    await rotateThrough(provider, 17, [LOCAL, BOB, LOCAL_LEG]);
+
+    // Add-driven: carol joins at 18. Remotes now, our send key after grace.
+    const addAt18 = frameKeys(
+      18,
+      [LOCAL, BOB, CAROL, LOCAL_LEG],
+      [LOCAL, BOB, LOCAL_LEG],
+    );
+    const pushes: number[] = [];
+    const push = deferred();
+    const entered = deferred();
+    provider.onLocalScreenKey = (k) => {
+      pushes.push(k.epoch);
+      entered.resolve();
+      return push.promise;
+    };
+    await provider.applyRemoteKeys(addAt18, LOCAL);
+    assert.deepEqual(pushes, [], "the remote half must not move the leg key");
+    assert.equal(provider.lastLocalScreenKey()?.epoch, 17);
+
+    let installed = false;
+    const install = provider.applyLocalKey(addAt18, LOCAL).then(() => {
+      installed = true;
+    });
+    await entered.promise;
+    await settle();
+    assert.equal(
+      installed,
+      false,
+      "the deferred install resolved while the leg push was still pending",
+    );
+    push.resolve();
+    await install;
+    assert.deepEqual(pushes, [18]);
+
+    // A synchronous throw: the same failure, with no promise to await.
+    provider.onLocalScreenKey = () => {
+      throw new Error("leg bridge threw");
+    };
+    const roster = [LOCAL, BOB, CAROL, LOCAL_LEG];
+    await assert.rejects(
+      () => provider.applyLocalKey(frameKeys(19, roster, roster), LOCAL),
+      /leg bridge threw/,
+    );
+    assert.equal(provider.lastLocalScreenKey()?.epoch, 19);
+  },
+);
+
+test("🔴 resetForGroup forgets the leg key, so the next install pushes it afresh", async () => {
+  // The group the key belongs to is being REPLACED (a re-establish, a
+  // removed-self rejoin): answering `lastLocalScreenKey()` with its key would
+  // hand a share started in the negotiating window the outgoing group's
+  // material. The roster carries a leg entry so the key is really set before
+  // the reset; without one the check below holds vacuously.
+  const provider = new MlsKeyProvider();
+  const pushed: number[] = [];
+  provider.onLocalScreenKey = (k) => {
+    pushed.push(k.epoch);
+  };
+  await rotateThrough(provider, 17, [LOCAL, BOB, LOCAL_LEG]);
+  assert.equal(provider.lastLocalScreenKey()?.epoch, 17);
+
+  provider.resetForGroup();
+  assert.equal(provider.lastLocalScreenKey(), undefined);
+
+  // Nothing is current after a reset, so even an identical key is pushed
+  // again rather than swallowed as an equal-epoch re-assert.
+  const before = pushed.length;
+  await provider.applyKeys(frameKeys(17, [LOCAL, BOB, LOCAL_LEG]), LOCAL);
+  assert.equal(pushed.length, before + 1);
+  assert.equal(provider.lastLocalScreenKey()?.epoch, 17);
 });
 
 // ---------------------------------------------------------------------------

@@ -1,9 +1,10 @@
-// Source pins for `state.tsx`'s voice-move and chip wiring — run with Node's
-// built-in runner, from packages/client:
+// Source pins for `state.tsx`'s voice-move, chip and Android screen-leg wiring
+// — run with Node's built-in runner, from packages/client:
 //   node --test --conditions=browser components/rtc/stateWiring.test.ts
 // `node --test` cannot load `state.tsx` (Solid JSX, livekit), so the decisions
-// live in `voiceMovePolicy.ts` and `chipInputs.ts`, where their own specs hold
-// them, and this file holds `state.tsx` to CALLING them with the right inputs.
+// live in `voiceMovePolicy.ts`, `chipInputs.ts` and `androidLegStartPolicy.ts`,
+// where their own specs hold them, and this file holds `state.tsx` to CALLING
+// them with the right inputs.
 // Each pin is one load-bearing statement, matched as TEXT after `codeOf`
 // (`sourcePins.harness.ts`): comments and whitespace are ignored, so a
 // commented-out copy never satisfies a pin and a prettier reflow never breaks
@@ -692,4 +693,692 @@ test("source pin (FE2A-12): #handleVoiceMove logs fixed strings only", () => {
   // The event carries a live SFU credential, and a LiveKit error can quote
   // the signal URL, which carries it as `access_token=`.
   assertLogsOnly("#handleVoiceMove", handleMove());
+});
+
+/** `#toggleAndroidScreenShare`'s body: the one Android screen-leg start. */
+function androidLegStart(): string {
+  return bodyAfter(STATE_CODE, `async #toggleAndroidScreenShare(room: Room) {`);
+}
+
+// 🔴 SECURITY (C6, wave-4a e2ee #2). Under the inert-leg rule this filter
+// alone decides which screen legs the roster holds out of BOTH lists while
+// their owner is present. Anything wider (`|| !p.isEncrypted`, `size <= 1`,
+// no `isScreenLeg`) hides a participant that publishes plaintext from the
+// E2EE roster for as long as it stays, so the binding is pinned whole and its
+// filter callback is compared whole: nothing can be added to either.
+test("source pin (C9): unpublishedLegs is exactly the screen legs with zero publications", () => {
+  assertWired(
+    "the unpublishedLegs binding",
+    `unpublishedLegs: () =>
+      [...room.remoteParticipants.values()]
+        .filter(
+          (p) => isScreenLeg(p.identity) && p.trackPublications.size === 0,
+        )
+        .map((p) => p.identity),`,
+  );
+  assert.equal(
+    bodyAfter(
+      STATE_CODE,
+      `unpublishedLegs: () => [...room.remoteParticipants.values()].filter(`,
+    ),
+    codeOf(`(p) => isScreenLeg(p.identity) && p.trackPublications.size === 0`),
+    "the filter callback, whole",
+  );
+  assert.equal(countWired(STATE_CODE, `unpublishedLegs:`), 1, "one binding");
+});
+
+// 🔴 SECURITY (wave-4b e2ee F2). The sibling of `unpublishedLegs` in the same
+// binding: a leg listed here is FOLDED onto its owner, lent the owner's
+// enrollment. Only the leg's own declaration that it publishes encrypted
+// (`isEncrypted`: at least one publication, every one encrypted) earns that.
+// Widened (`&& p.isEncrypted` dropped, an `||`, no `isScreenLeg`), a leg that
+// publishes plaintext is folded away instead of reported, so the binding is
+// pinned whole and its filter callback compared whole.
+test("source pin (C9): encryptedLegs is exactly the screen legs that declare encryption", () => {
+  assertWired(
+    "the encryptedLegs binding",
+    `encryptedLegs: () =>
+      [...room.remoteParticipants.values()]
+        .filter((p) => isScreenLeg(p.identity) && p.isEncrypted)
+        .map((p) => p.identity),`,
+  );
+  assert.equal(
+    bodyAfter(
+      STATE_CODE,
+      `encryptedLegs: () => [...room.remoteParticipants.values()].filter(`,
+    ),
+    codeOf(`(p) => isScreenLeg(p.identity) && p.isEncrypted`),
+    "the filter callback, whole",
+  );
+  assert.equal(countWired(STATE_CODE, `encryptedLegs:`), 1, "one binding");
+});
+
+// 🔴 SECURITY (wave-4b e2ee F2). The roster's universe: everyone the SFU
+// shows, this device included. A participant left out here is never judged
+// at all, so a leg (or anyone) filtered out could publish plaintext with no
+// roster reaction. The array is pinned whole: nothing can be filtered from
+// it or appended to it.
+test("source pin (C9): sfuParticipants is every SFU participant, screen legs included", () => {
+  assertWired(
+    "the sfuParticipants binding",
+    `sfuParticipants: () => [
+      room.localParticipant.identity,
+      ...[...room.remoteParticipants.values()].map((p) => p.identity),
+    ],`,
+  );
+  assert.equal(countWired(STATE_CODE, `sfuParticipants:`), 1, "one binding");
+});
+
+// 🔴 (C6, wave-4a e2ee #3). An inert leg is judged by its publications the
+// moment it has one. This reconcile bounds the inert → published-plaintext
+// transition to the publish itself instead of the next periodic tick, so it
+// runs on every publication, unconditionally.
+test("source pin (C9): every trackPublished kicks a roster reconcile", () => {
+  assert.equal(
+    countWired(STATE_CODE, `room.addListener("trackPublished"`),
+    1,
+    "one trackPublished listener",
+  );
+  const listener = bodyAfter(
+    STATE_CODE,
+    `room.addListener("trackPublished", (pub, participant) => {`,
+  );
+  const kick = `void this.#mlsSession?.reconcileNow();`;
+  assert.equal(countWired(listener, kick), 1, "the reconcile kick");
+  const at = firstAt("the trackPublished listener", listener, kick);
+  assert.equal(braceDepthAt(listener, at), 0, "at the listener's top level");
+  assert.ok(
+    at === 0 || ";}".includes(listener[at - 1]),
+    "a statement of its own, not the tail of an unbraced `if`",
+  );
+  // (wave-4b e2ee F3) Nothing can leave the listener ahead of the kick: it
+  // opens with the chip's version bump and then the kick, so no guard (a
+  // screen-leg early `return`, a stale-room check) can sit in front of it.
+  assert.ok(
+    listener.startsWith(
+      codeOf(`this.#setCallParticipantsVersion((v) => v + 1);
+        ${kick}`),
+    ),
+    "the kick is the listener's second statement, after the version bump",
+  );
+});
+
+// C9 (R7). A publish-gate pulse stops the Android leg one-way, and now says
+// so. The notice is sampled BEFORE the stop bumps the generation, which is
+// the whole single-fire argument: a tap or a hang-up that got there first
+// has already bumped it, and a second reason during the teardown reads the
+// stop in flight. Sampled after the stop, `startingFor` never matches the
+// generation and the gate-start notice is lost.
+test("source pin (C9): #pauseGate samples gateStopNotice before it stops the leg, and toasts from it", () => {
+  const gate = bodyAfter(
+    STATE_CODE,
+    `async #pauseGate(room: Room, reason: PublishGateReason): Promise<void> {`,
+  );
+  const sample = `const notice = gateStopNotice({
+    startingFor: this.#androidLegStartingFor,
+    currentGeneration: this.#androidLegGeneration,
+    active: !!this.#androidLeg?.active(),
+    stopInFlight: !!this.#androidLeg?.stopping(),
+    roomConnected: room.state === ConnectionState.Connected,
+  });`;
+  const stop = `void this.#stopAndroidLeg();`;
+  const toast = `if (notice === "gate-start") this.onErr(new Error(LEG_GATE_START_NOTICE));
+    else if (notice === "gate-share")
+      this.onErr(new Error(LEG_GATE_SHARE_NOTICE));`;
+  assert.equal(countWired(gate, sample), 1, "the sample, whole");
+  assert.equal(countWired(gate, `#stopAndroidLeg(`), 1, "the one stop");
+  assert.equal(countWired(gate, toast), 1, "the toast");
+  const at = (snippet: string) => firstAt("#pauseGate", gate, snippet);
+  assert.ok(
+    at(`if (this.room() !== room) return;`) < at(sample),
+    "sampled after the stale-room guard",
+  );
+  assert.ok(at(sample) < at(stop), "sampled before the stop");
+  assert.ok(at(stop) < at(toast), "toasted after the stop");
+  // (wave-4b e2ee F4) Shown only once the primary's pause sweep has run: the
+  // method ENDS with the stop, the awaited sweep, then the toast, so the
+  // toast cannot overtake the await and nothing runs after it.
+  const sweep = `await this.#applyPublishGate(room);`;
+  assert.equal(countWired(gate, `#applyPublishGate(`), 1, "the one sweep");
+  assert.ok(at(sweep) < at(toast), "toasted after the sweep");
+  assert.ok(
+    gate.endsWith(codeOf(stop + sweep + toast).replace(/;$/, "")),
+    "#pauseGate ends: the stop, the awaited sweep, the toast",
+  );
+  assert.equal(braceDepthAt(gate, at(sample)), 0, "the sample's depth");
+  assert.equal(countWired(STATE_CODE, `gateStopNotice(`), 1, "its only call");
+});
+
+// C9 (wave-4 audit #3). The tier sheet is user-paced. A gate reason added
+// while it is open cancelled no attempt (none had claimed), so without a
+// second look the user goes through the OS consent dialog for a share that
+// then dies at its first stale check. The refusal runs before the sheet and
+// AGAIN once it closes, with nothing awaited between that re-check and the
+// claim (any later reason reaches the claimed attempt through `#pauseGate`).
+test("source pin (C9): the leg start refuses before the tier sheet, and again between the sheet and the claim", () => {
+  const start = androidLegStart();
+  const refusal = `if (this.#androidLegRefusedNow(mode)) {
+    this.onErr(new Error(SHARE_UNAVAILABLE_NOW));
+    return;
+  }`;
+  const refusals = wiredAt(start, refusal);
+  assert.equal(refusals.length, 2, "the two refusals");
+  const [beforeSheet, afterSheet] = refusals;
+  const at = (snippet: string) =>
+    firstAt("#toggleAndroidScreenShare", start, snippet);
+  const claim = at(`const generation = ++this.#androidLegGeneration;`);
+  assert.ok(
+    beforeSheet < at(`this.openModal({ type: "android_screen_share_sheet"`),
+    "the first refusal comes before the tier sheet",
+  );
+  assert.ok(
+    at(`if (!tier) return;`) < afterSheet,
+    "the second comes after the sheet resolves",
+  );
+  assert.ok(afterSheet < claim, "and before the claim");
+  assert.equal(braceDepthAt(start, afterSheet), 0, "the re-check's depth");
+  assert.equal(
+    countWired(start.slice(afterSheet, claim), `await`),
+    0,
+    "nothing awaits between the re-check and the claim",
+  );
+  // What both refusals ask: the gate, and under E2EE an active session with
+  // a leg send key.
+  assert.equal(
+    bodyOf(`#androidLegRefusedNow(mode: CallMode | undefined): boolean {`),
+    codeOf(`return this.#publishGate.size > 0 ||
+      (mode?.kind === "e2ee" &&
+        (this.#mlsSession?.state() !== "active" ||
+          !this.#mlsKeyProvider?.lastLocalScreenKey()))`),
+    "#androidLegRefusedNow",
+  );
+  assert.equal(countWired(STATE_CODE, `this.#androidLegRefusedNow(`), 2);
+});
+
+// C9 (wave-4 audit #3). Every stale exit of a claimed start tears down AND
+// reports a gate reason held since before the claim (`staleExitNotice`),
+// read BEFORE the stop bumps the generation: read after it, every exit reads
+// as cancelled and stays silent. A bare `#stopAndroidLeg()` at any one exit
+// is the silent abort R7 closed.
+test("source pin (C9): every stale exit of the leg start goes through #exitStaleAndroidLegStart", () => {
+  const start = androidLegStart();
+  const check = `if (this.#androidLegStale(generation, room)) {`;
+  const checks = countWired(start, check);
+  assert.equal(checks, 3, "after consent, after the token mint, after connect");
+  assert.equal(
+    countWired(
+      start,
+      `${check}
+        await this.#exitStaleAndroidLegStart(generation, room);
+        return;
+      }`,
+    ),
+    checks,
+    "each stale check exits through the helper",
+  );
+  assert.equal(countWired(start, `this.#exitStaleAndroidLegStart(`), checks);
+  assert.equal(countWired(STATE_CODE, `this.#androidLegStale(`), checks);
+  assert.equal(
+    countWired(STATE_CODE, `this.#exitStaleAndroidLegStart(`),
+    checks,
+  );
+  assert.equal(
+    bodyOf(`async #exitStaleAndroidLegStart(
+      generation: number,
+      room: Room,
+    ): Promise<void> {`),
+    codeOf(`const notice = staleExitNotice(this.#androidLegWorld(generation, room));
+    await this.#stopAndroidLeg();
+    if (notice === "gate-start") this.onErr(new Error(LEG_GATE_START_NOTICE))`),
+    "the helper reads its notice before it stops",
+  );
+  assert.equal(countWired(STATE_CODE, `staleExitNotice(`), 1, "its only call");
+});
+
+// C9 (C7, C8, wave-4 audits #5 and #7, wave-4a code #3). A native stop and a
+// connect a revoke cancelled are read by ONE rule, `nativeStopNotice`: a
+// revoke is silent when the primary lost publishing too (its own AFK or
+// moderator-mute toast explains), and `inAfkChannel` closes the race where
+// the leg's revoke lands before the primary's. An inline mapping, or a
+// constant in place of either read, double-toasts or names the wrong cause;
+// and the mapper's `NO_LEG_NOTICE` ("no notice") must never reach `onErr`.
+// (wave-4b e2ee F6) The revoke is an EXACT match: every other failed connect
+// is `connect_failed: <the native message>`, and a substring match would
+// silence any of those that happened to contain it.
+test("source pin (C9): a native stop and a revoked connect both go through nativeStopNotice", () => {
+  const primary = `{
+    canPublish: this.room()?.localParticipant.permissions?.canPublish,
+    inAfkChannel: this.isAfkChannel,
+  }`;
+  const stopped = bodyAfter(STATE_CODE, `leg.onStopped = (reason) => {`);
+  assert.equal(
+    countWired(
+      stopped,
+      `const text = this.#legStopNoticeMessage(
+        nativeStopNotice(reason, ${primary}),
+      );
+      if (text !== undefined) this.onErr(new Error(text));`,
+    ),
+    1,
+    "onStopped's notice",
+  );
+  assert.equal(countWired(stopped, `this.onErr(`), 1, "onStopped's one toast");
+  const mapper = bodyAfter(
+    STATE_CODE,
+    `#androidScreenShareError(error: unknown): unknown {`,
+  );
+  const revoked = `if (message === "connect_failed: revoked") {
+    const text = this.#legStopNoticeMessage(
+      nativeStopNotice("revoked", ${primary}),
+    );
+    return text === undefined ? NO_LEG_NOTICE : new Error(text);
+  }`;
+  assert.equal(countWired(mapper, revoked), 1, "the revoked-connect mapping");
+  // The revoke text is read in one place, by that exact comparison.
+  assert.equal(
+    countWired(STATE_CODE, `"connect_failed: revoked"`),
+    1,
+    "one read of the revoke text",
+  );
+  assert.ok(
+    firstAt("#androidScreenShareError", mapper, revoked) <
+      firstAt("#androidScreenShareError", mapper, `switch (type) {`),
+    "mapped before the pass-through",
+  );
+  assert.equal(countWired(STATE_CODE, `nativeStopNotice(`), 2, "its two calls");
+  // The start's catch skips the toast on the mapper's "no notice" marker,
+  // and on nothing else (a rejection whose value is `undefined` included).
+  assert.equal(
+    countWired(
+      androidLegStart(),
+      `const wasCancelled = this.#androidLegCancelled(generation, room);
+      await this.#stopAndroidLeg();
+      if (!wasCancelled) {
+        const notice = this.#androidScreenShareError(error);
+        if (notice !== NO_LEG_NOTICE) this.onErr(notice);
+      }`,
+    ),
+    1,
+    "the catch",
+  );
+  assert.equal(countWired(STATE_CODE, `this.#androidScreenShareError(`), 1);
+  // `none` is silence, and a revoke has its own copy.
+  const copy = bodyAfter(
+    STATE_CODE,
+    `#legStopNoticeMessage(notice: LegStopNotice): string | undefined {`,
+  );
+  for (const arm of [
+    `case "none": return undefined;`,
+    `case "revoked": return LEG_REVOKED_NOTICE;`,
+  ])
+    assert.equal(countWired(copy, arm), 1, arm);
+});
+
+// (wave-4b code #4) The start's catch is silenced by ONE value, a marker only
+// the revoke branch returns, not `undefined`, which the mapper's pass-through
+// hands back for an `undefined` rejection. Declared once and used exactly
+// three times in code (the declaration, the revoke's return and the catch's
+// comparison, both pinned whole above), so no other path can silence a toast.
+test("source pin (C9): NO_LEG_NOTICE is declared once and used only by the revoke and the catch", () => {
+  assertWired("the marker", `const NO_LEG_NOTICE = Symbol("no-leg-notice");`);
+  assert.equal(countWired(STATE_CODE, `NO_LEG_NOTICE`), 3, "its three uses");
+  const mapper = bodyAfter(
+    STATE_CODE,
+    `#androidScreenShareError(error: unknown): unknown {`,
+  );
+  assert.equal(countWired(mapper, `NO_LEG_NOTICE`), 1, "the one return");
+  assert.equal(
+    countWired(androidLegStart(), `NO_LEG_NOTICE`),
+    1,
+    "the one comparison",
+  );
+});
+
+// 🔴 SECURITY (wave-4b e2ee F1, decision 10). A leg that cannot take the
+// current epoch's key must not keep publishing under the old one, so both
+// key-fence catches stop it UNCONDITIONALLY. `spoken` is read BEFORE the stop
+// (a leg already stopping, or no longer active, was ended by something that
+// said why or chose silence), and only that skips the toast; a stop that
+// FAILED (the leg still `active()` after it) is reported regardless. Each
+// catch is compared whole, so the stop cannot be dropped, put under an `if`
+// or moved behind the toast, and the toast condition cannot be narrowed.
+const LEG_KEY_FENCE_CATCH = `const spoken = leg.stopping() || !leg.active();
+  await this.#stopAndroidLeg();
+  if (!spoken || leg.active())
+    this.onErr(
+      new Error(
+        "Your screen share stopped because it could no longer be encrypted.",
+      ),
+    )`;
+
+test("source pin (C9): both leg key-fence catches stop the leg unconditionally, then toast unless already spoken for", () => {
+  const catches = {
+    "the rotation listener": bodyAfter(
+      STATE_CODE,
+      `provider.onLocalScreenKey = async (key) => {`,
+    ),
+    "#syncLegKeyAfterConnect": bodyAfter(
+      STATE_CODE,
+      `async #syncLegKeyAfterConnect(
+        leg: AndroidScreenLeg,
+        connectedWith: LegE2EEKey | undefined,
+      ): Promise<void> {`,
+    ),
+  };
+  for (const [what, body] of Object.entries(catches))
+    assert.deepEqual(
+      bodiesAfter(body, `} catch {`),
+      [codeOf(LEG_KEY_FENCE_CATCH)],
+      `${what}: its one catch, whole`,
+    );
+  assert.equal(
+    countWired(STATE_CODE, LEG_KEY_FENCE_CATCH),
+    2,
+    "exactly two, one in each",
+  );
+});
+
+// (wave-4b code #2) The copy every leg notice reaches the user through, whole:
+// a silenced `connection` or `encryption` arm, a swapped constant or text, or
+// a `default` that stops being exhaustive fails here.
+test("source pin (C9): #legStopNoticeMessage maps every notice to its own copy", () => {
+  assert.equal(
+    bodyOf(
+      `#legStopNoticeMessage(notice: LegStopNotice): string | undefined {`,
+    ),
+    codeOf(`switch (notice) {
+      case "none":
+        return undefined;
+      case "connection":
+        return "Your screen share ended because the connection changed. Share again when you're ready.";
+      case "encryption":
+        return "Your screen share stopped because it could no longer be encrypted.";
+      case "revoked":
+        return LEG_REVOKED_NOTICE;
+      case "gate-start":
+        return LEG_GATE_START_NOTICE;
+      case "gate-share":
+        return LEG_GATE_SHARE_NOTICE;
+      default: {
+        const unknownNotice: never = notice;
+        void unknownNotice;
+        return undefined;
+      }
+    }`),
+    "the switch, whole",
+  );
+});
+
+// 🔴 SECURITY (wave-4b-fix2, decision 7 / E2-5). The key-fence catches above
+// act only once a push FAILS; these pins hold the pushes themselves. A
+// rotation that lands while the leg is still connecting is dropped by the
+// listener (the leg is not `active()` yet), and this call is what re-reads the
+// provider's key once `connect()` resolves and pushes it. Dropped, the share
+// stays on a key a member removed by that rotation still holds. It ends the
+// try, right after the post-connect stale exit, at the try's top level.
+test("source pin (C9): the leg start ends its try by syncing the leg's key, right after the post-connect stale exit", () => {
+  const start = androidLegStart();
+  const tryHead = `try {`;
+  assert.equal(countWired(start, tryHead), 1, "the start's one try");
+  const tryAt = firstAt("#toggleAndroidScreenShare", start, tryHead);
+  const tryEnd = closerOf(start, tryAt + codeOf(tryHead).length - 1);
+  const body = start.slice(tryAt + codeOf(tryHead).length, tryEnd);
+  assert.ok(
+    start.startsWith(codeOf(`} catch (error) {`), tryEnd),
+    "the try's own catch follows it",
+  );
+  const staleExit = `if (this.#androidLegStale(generation, room)) {
+    await this.#exitStaleAndroidLegStart(generation, room);
+    return;
+  }`;
+  const sync = `await this.#syncLegKeyAfterConnect(activeLeg, e2eeKey);`;
+  const exits = wiredAt(body, staleExit);
+  assert.equal(exits.length, 3, "the three stale exits, inside the try");
+  assert.ok(
+    firstAt("the try", body, `await activeLeg.connect(`) < exits[2],
+    "the third stale exit follows connect()",
+  );
+  const tail = codeOf(staleExit + sync).replace(/;$/, "");
+  assert.ok(
+    body.endsWith(tail),
+    "the try ends: the post-connect stale exit, then the key sync",
+  );
+  assert.equal(
+    exits[2],
+    body.length - tail.length,
+    "the stale exit it follows is the third",
+  );
+  assert.equal(
+    braceDepthAt(body, body.length - codeOf(sync).length + 1),
+    0,
+    "the sync's depth",
+  );
+  assert.equal(countWired(STATE_CODE, sync), 1, "the one awaited sync");
+  assert.equal(
+    countWired(STATE_CODE, `this.#syncLegKeyAfterConnect(`),
+    1,
+    "its only call",
+  );
+});
+
+// 🔴 SECURITY (wave-4b-fix2, decision 7 / E2-5). The sync, whole: the only
+// early return is "nothing moved" (`none`), a key from a superseded group
+// (`stop`) throws into the key-fence catch, and every other answer is pushed
+// and awaited. A guard that skips the push, or an un-awaited push, leaves the
+// share on the key the start connected with.
+test("source pin (C9): #syncLegKeyAfterConnect pushes every moved key, awaited, and fails closed otherwise", () => {
+  assert.equal(
+    bodyOf(`async #syncLegKeyAfterConnect(
+      leg: AndroidScreenLeg,
+      connectedWith: LegE2EEKey | undefined,
+    ): Promise<void> {`),
+    codeOf(`const action = keyActionAfterConnect(
+      connectedWith,
+      this.#mlsKeyProvider?.lastLocalScreenKey(),
+    );
+    if (action.kind === "none") return;
+    try {
+      if (action.kind === "stop")
+        throw new Error("screen leg key is from a different group");
+      await leg.setFrameKey(action.key);
+    } catch {
+      ${LEG_KEY_FENCE_CATCH};
+    }`),
+    "#syncLegKeyAfterConnect, whole",
+  );
+  assert.equal(
+    countWired(STATE_CODE, `keyActionAfterConnect(`),
+    1,
+    "its only call",
+  );
+});
+
+// 🔴 SECURITY (wave-4b-fix2, decision 7 / E2-5). The rotation push, whole: a
+// Remove-driven rotation re-keys a LIVE leg here, so the guard returns only
+// for a leg that is not `active()` (inverted, or widened to skip a leg that is
+// `stopping()`, a live share keeps the old key), the push is awaited (else
+// `applyLocalKey` reports the rotation installed before the phone has it, and
+// a failure never reaches the catch), and it carries the key's epoch and
+// group (the push fence).
+test("source pin (C9): the rotation listener pushes every rotation into a live leg, awaited and fenced", () => {
+  assertWired(
+    "the listener, on the call's key provider",
+    `const provider = this.#mlsKeyProvider;
+    provider.onLocalScreenKey = async (key) => {`,
+  );
+  assert.equal(
+    bodyAfter(STATE_CODE, `provider.onLocalScreenKey = async (key) => {`),
+    codeOf(`const leg = this.#androidLeg;
+    if (!leg?.active()) return;
+    try {
+      await leg.setFrameKey({
+        keyB64: key.keyB64,
+        keyIndex: key.keyIndex,
+        epoch: key.epoch,
+        groupId: key.groupId,
+      });
+    } catch {
+      ${LEG_KEY_FENCE_CATCH};
+    }`),
+    "the rotation listener, whole",
+  );
+  assert.equal(
+    countWired(STATE_CODE, `.onLocalScreenKey =`),
+    1,
+    "one listener",
+  );
+  assert.equal(
+    countWired(STATE_CODE, `.setFrameKey(`),
+    2,
+    "the two key pushes: the rotation and the sync",
+  );
+});
+
+// 🔴 SECURITY (wave-4b-fix3). THE binding read of the leg's send key, whole.
+// Skipping the `e2ee` branch, or dropping the session's `active` check or the
+// current-group check, starts a share in an encrypted call in plaintext or on
+// a superseded group's key; a swapped field in the literal hands native the
+// wrong key. The refusal stops the leg (consent is already taken) and says so.
+const LEG_KEY_READ = `let e2eeKey: LegE2EEKey | undefined;
+  if (mode?.kind === "e2ee") {
+    const key = this.#mlsKeyProvider?.lastLocalScreenKey();
+    if (
+      this.#mlsSession?.state() !== "active" ||
+      !key ||
+      key.groupId !== this.#mlsSession.groupId()
+    ) {
+      await this.#stopAndroidLeg();
+      this.onErr(new Error(SHARE_UNAVAILABLE_NOW));
+      return;
+    }
+    e2eeKey = {
+      keyB64: key.keyB64,
+      keyIndex: key.keyIndex,
+      epoch: key.epoch,
+      groupId: key.groupId,
+    };
+  }`;
+
+// 🔴 SECURITY (wave-4b-fix3). What the leg connects with, and everything after
+// it: the bound key reaches `connect()` (`e2ee: undefined` is a plaintext
+// share), and nothing runs between the connect and the post-connect stale
+// exit and key sync (an early `return` there skips the sync, leaving the
+// share on the key it connected with).
+const LEG_CONNECT_TAIL = `await activeLeg.connect({
+    url: auth.url,
+    token: auth.token,
+    tier,
+    e2ee: e2eeKey,
+  });
+  if (this.#androidLegStale(generation, room)) {
+    await this.#exitStaleAndroidLegStart(generation, room);
+    return;
+  }
+  await this.#syncLegKeyAfterConnect(activeLeg, e2eeKey);`;
+
+test("source pin (C9): the leg start's binding key read is whole: E2EE branch, active session, current group, every field", () => {
+  const start = androidLegStart();
+  assertWired("the binding key read", LEG_KEY_READ);
+  assert.equal(countWired(start, LEG_KEY_READ), 1, "in the leg start");
+  // The branch's input is the call's own mode, read once at the top level.
+  const mode = `const mode = this.callMode();`;
+  assert.equal(countWired(start, mode), 1, "the mode read");
+  assert.equal(
+    braceDepthAt(start, firstAt("#toggleAndroidScreenShare", start, mode)),
+    0,
+    "the mode read's depth",
+  );
+  // `e2eeKey` is named four times in the file, all here: the declaration,
+  // the one write, the connect and the sync. Nothing else can overwrite it.
+  const uses = (code: string) => code.match(/e2eeKey(?![\w$])/g)?.length;
+  assert.equal(uses(STATE_CODE), 4, "e2eeKey in the file");
+  assert.equal(uses(start), 4, "e2eeKey in the leg start");
+});
+
+test("source pin (C9): the leg start's try ends: the key read, connect with that key, the stale exit, the sync", () => {
+  const start = androidLegStart();
+  const tryHead = `try {`;
+  assert.equal(countWired(start, tryHead), 1, "the start's one try");
+  const tryAt = firstAt("#toggleAndroidScreenShare", start, tryHead);
+  const tryEnd = closerOf(start, tryAt + codeOf(tryHead).length - 1);
+  const body = start.slice(tryAt + codeOf(tryHead).length, tryEnd);
+  // Contiguous, at the try's top level, to the try's last token: nothing
+  // between the read and the connect, nor between the connect and the sync.
+  assert.ok(
+    body.endsWith(codeOf(LEG_KEY_READ + LEG_CONNECT_TAIL).replace(/;$/, "")),
+    "the try ends: the key read, connect, the stale exit, the sync",
+  );
+  assert.equal(
+    bodyAfter(start, `await activeLeg.connect(`),
+    codeOf(`{ url: auth.url, token: auth.token, tier, e2ee: e2eeKey }`),
+    "connect()'s argument, whole",
+  );
+  assert.equal(
+    countWired(STATE_CODE, `activeLeg.connect(`),
+    1,
+    "the leg's one connect",
+  );
+});
+
+// 🔴 SECURITY (wave-4b-fix3). The rotation listener lives on the ONE provider
+// the call builds, wired the moment it is built, unconditionally: gated on
+// `nativeScreenShareAvailable()` (an async probe) a call joined before the
+// probe landed had no listener for its whole life, and a provider rebuilt
+// after the wiring would leave the listener on an orphan. The try that builds
+// it is pinned at both ends (the listener's body is pinned whole above).
+test("source pin (C9): the call's key provider is built once and wired at once, unconditionally", () => {
+  const wiring = `this.#mlsKeyProvider = new MlsKeyProvider();
+    const provider = this.#mlsKeyProvider;
+    provider.onLocalScreenKey = async (key) => {`;
+  assertWired("the provider and its listener", wiring);
+  const tryBody = bodyAfter(STATE_CODE, `if (e2eeCapable) { try {`);
+  assert.ok(
+    tryBody.startsWith(codeOf(wiring)),
+    "the e2eeCapable try opens with the wiring, at its top level",
+  );
+  const listenerEnd = closerOf(tryBody, codeOf(wiring).length - 1);
+  assert.equal(
+    tryBody.slice(listenerEnd + 1),
+    codeOf(`; this.#e2eeWorker = new E2EEWorker();`).replace(/;$/, ""),
+    "after the listener, only the worker",
+  );
+  assert.equal(countWired(STATE_CODE, `new MlsKeyProvider(`), 1, "one build");
+  // Every write of the field, in file order: the build, then the two
+  // teardowns (the build's own catch and the call's teardown).
+  assert.deepEqual(
+    [
+      ...STATE_CODE.matchAll(
+        /(?:[\w$]+\.)?#mlsKeyProvider(?:\?\?|\|\||&&)?=(?![=>])[^;}]*/g,
+      ),
+    ].map((m) => m[0]),
+    [
+      `this.#mlsKeyProvider=newMlsKeyProvider()`,
+      `this.#mlsKeyProvider=undefined`,
+      `this.#mlsKeyProvider=undefined`,
+    ],
+    "the writes of #mlsKeyProvider",
+  );
+});
+
+// The three leg notices say exactly what the plan's copy says: a swapped or
+// reworded text fails here (the switch above only names the constants).
+test("source pin (C9): the leg notice constants hold the plan's copy", () => {
+  for (const [what, decl] of [
+    [
+      "gate-start",
+      `const LEG_GATE_START_NOTICE =
+        "Your screen share didn't start because the call is re-securing or paused. Try again in a moment.";`,
+    ],
+    [
+      "gate-share",
+      `const LEG_GATE_SHARE_NOTICE =
+        "Your screen share stopped because the call is re-securing or paused. Share again in a moment.";`,
+    ],
+    [
+      "revoked",
+      `const LEG_REVOKED_NOTICE =
+        "Your screen share ended because you no longer have permission to share video in this channel.";`,
+    ],
+  ])
+    assertWired(what, decl);
 });

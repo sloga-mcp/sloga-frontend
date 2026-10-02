@@ -152,6 +152,11 @@ export class AndroidScreenLeg {
     return this.#core.active();
   }
 
+  /** True while a [stop] is in flight ([AndroidLegLifecycle.stopping]). */
+  stopping(): boolean {
+    return this.#core.stopping();
+  }
+
   /** Phase 1: OS consent + FGS. User-paced — mint the token AFTER this.
    * Bounded by [PREPARE_TIMEOUT_MS] so a lost native callback cannot strand
    * the start attempt forever; a consent granted AFTER the timeout is stored
