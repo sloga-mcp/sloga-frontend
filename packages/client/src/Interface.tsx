@@ -18,6 +18,7 @@ import { Titlebar } from "@revolt/app/interface/desktop/Titlebar";
 import { useClient, useClientLifecycle } from "@revolt/client";
 import { ActivityWorker } from "@revolt/client/ActivityWorker";
 import { ApkUpdateWorker } from "@revolt/client/ApkUpdateWorker";
+import { ChannelListQueriesWorker } from "@revolt/client/ChannelListQueriesWorker";
 import { DiscordImportWorker } from "@revolt/client/DiscordImportWorker";
 import { FossUpdateNotice } from "@revolt/client/FossUpdateNotice";
 import { KeybindsWorker } from "@revolt/client/KeybindsWorker";
@@ -51,7 +52,10 @@ const Interface = (props: { children: JSX.Element }) => {
   // escapes /friends-popout (friend double-click, profile-modal actions,
   // the post-login redirect) bounces straight back instead of booting a
   // second set of workers over a web-mode client.
+  // Both window flags are frozen at module init, so neither early return has
+  // a re-render to miss.
   if (IS_POPOUT_WINDOW) {
+    // eslint-disable-next-line solid/components-return-once
     return <Navigate href="/friends-popout" />;
   }
 
@@ -60,6 +64,7 @@ const Interface = (props: { children: JSX.Element }) => {
   // it, so `Interface` cannot actually render here — every hook below would
   // be missing its provider if it did.
   if (IS_OVERLAY_WINDOW) {
+    // eslint-disable-next-line solid/components-return-once
     return <Navigate href="/voice-overlay" />;
   }
 
@@ -198,6 +203,7 @@ const Interface = (props: { children: JSX.Element }) => {
         <ActivityWorker />
         <StreamerModeWorker />
         <ApkUpdateWorker />
+        <ChannelListQueriesWorker />
         <FossUpdateNotice />
         {/* Global and in-app keybinds, over the native hook and the focused
             window. Main window only. It reads the `Voice` store, so it has to
