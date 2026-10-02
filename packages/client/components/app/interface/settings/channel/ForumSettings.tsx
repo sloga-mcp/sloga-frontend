@@ -68,6 +68,9 @@ export default function ForumSettings(props: ChannelSettingsProps) {
   const [defaultSort, setDefaultSort] = createSignal<string>(
     props.channel.defaultSort,
   );
+  const [defaultLayout, setDefaultLayout] = createSignal<string>(
+    props.channel.defaultLayout,
+  );
   const [forceSort, setForceSort] = createSignal(props.channel.forceSort);
   // minutes; a missing or invalid forum default shows as the fallback new
   // posts would get anyway. A custom duration set elsewhere survives, so
@@ -91,7 +94,7 @@ export default function ForumSettings(props: ChannelSettingsProps) {
     setSaving(true);
     try {
       await props.channel.edit({
-        // `tags`/`require_tag`/`default_sort`/`force_sort`/
+        // `tags`/`require_tag`/`default_sort`/`default_layout`/`force_sort`/
         // `default_auto_archive_minutes` are additive fields the typed client
         // predates; the PATCH route passes them through verbatim.
         tags: tags.map((tag) => ({
@@ -102,6 +105,7 @@ export default function ForumSettings(props: ChannelSettingsProps) {
         })),
         require_tag: requireTag(),
         default_sort: defaultSort(),
+        default_layout: defaultLayout(),
         force_sort: forceSort(),
         default_auto_archive_minutes: defaultAutoArchive(),
       } as Parameters<typeof props.channel.edit>[0]);
@@ -288,6 +292,32 @@ export default function ForumSettings(props: ChannelSettingsProps) {
             Members browse this forum in the order above and cannot change it.
             Use this for a forum that serves as an info board.
           </Trans>
+        </Text>
+      </Column>
+
+      <Column>
+        <Text class="label">
+          <Trans>Default layout</Trans>
+        </Text>
+        <FloatingSelect
+          value={defaultLayout()}
+          onChange={(e) => {
+            const value = e.currentTarget.value;
+            if (value) setDefaultLayout(value);
+          }}
+        >
+          <MenuItem value="Modern">
+            <Trans>Modern</Trans>
+          </MenuItem>
+          <MenuItem value="Classic">
+            <Trans>Classic</Trans>
+          </MenuItem>
+          <MenuItem value="ClassicPlus">
+            <Trans>Classic+</Trans>
+          </MenuItem>
+        </FloatingSelect>
+        <Text>
+          <Trans>Readers can still switch the layout for themselves.</Trans>
         </Text>
       </Column>
 

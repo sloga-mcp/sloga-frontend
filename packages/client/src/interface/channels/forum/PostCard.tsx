@@ -10,6 +10,8 @@ import { DisplayName } from "@revolt/ui/components/features/DisplayName";
 import { Time } from "@revolt/ui/components/utils";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
 
+import { DecorativeSlot, Tag, TagRow, UnreadDot } from "./forumStyles";
+
 /**
  * A single forum post card: title, tag chips, starter excerpt, author and
  * last-activity time
@@ -29,12 +31,26 @@ export function PostCard(props: {
       .filter((tag) => !!tag),
   );
 
-  const author = () => props.starter?.author;
+  // Prefer the starter's author; fall back to the server-stamped thread
+  // creator, which the API returns even without ReadMessageHistory.
+  const author = () => props.starter?.author ?? props.post.creator;
 
   const lastActive = () => props.post.updatedAt;
 
+  const open = () => navigate(props.post.path);
+
   return (
-    <Card onClick={() => navigate(props.post.path)}>
+    <Card
+      role="link"
+      tabIndex={0}
+      onClick={open}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          open();
+        }
+      }}
+    >
       <Row>
         <Text class="title" size="small">
           {props.post.name}
@@ -65,7 +81,9 @@ export function PostCard(props: {
 
       <Footer>
         <Show when={author()}>
-          <Avatar src={author()!.animatedAvatarURL} size={20} />
+          <DecorativeSlot aria-hidden="true">
+            <Avatar src={author()!.animatedAvatarURL} size={20} />
+          </DecorativeSlot>
           <Text class="label" size="small">
             <DisplayName
               user={author()}
@@ -101,6 +119,11 @@ const Card = styled("div", {
     "&:hover": {
       background: "var(--md-sys-color-surface-container-high)",
     },
+
+    "&:focus-visible": {
+      outline: "2px solid var(--md-sys-color-primary)",
+      outlineOffset: "-2px",
+    },
   },
 });
 
@@ -110,24 +133,6 @@ const Row = styled("div", {
     alignItems: "center",
     gap: "var(--gap-sm)",
     minWidth: 0,
-  },
-});
-
-const TagRow = styled("div", {
-  base: {
-    display: "flex",
-    flexWrap: "wrap",
-    gap: "var(--gap-sm)",
-  },
-});
-
-const Tag = styled("span", {
-  base: {
-    padding: "1px var(--gap-md)",
-    borderRadius: "var(--borderRadius-full)",
-    background: "var(--md-sys-color-surface-container-highest)",
-    fontSize: "0.75rem",
-    whiteSpace: "nowrap",
   },
 });
 
@@ -152,15 +157,5 @@ const Footer = styled("div", {
 const FooterGrow = styled("div", {
   base: {
     flexGrow: 1,
-  },
-});
-
-const UnreadDot = styled("div", {
-  base: {
-    width: "8px",
-    height: "8px",
-    flexShrink: 0,
-    borderRadius: "var(--borderRadius-circle)",
-    background: "var(--md-sys-color-primary)",
   },
 });

@@ -1,4 +1,8 @@
 import {
+  type ForumLayout,
+  cleanLayoutOverrides,
+} from "@revolt/common/lib/forumLayout";
+import {
   UNICODE_EMOJI_PACKS,
   UnicodeEmojiPacks,
 } from "@revolt/markdown/emoji/UnicodeEmoji";
@@ -298,6 +302,13 @@ interface SettingsDefinition {
    * present with "" plays nothing there even when a global sound is set.
    */
   "soundboard:entrance_servers": Record<string, string>;
+
+  /**
+   * Per-forum layout overrides (forum channel id → the layout this reader
+   * chose). A forum absent from the map follows the forum's moderator-set
+   * default, then "Modern". Per-device on purpose (this store does not sync).
+   */
+  "forum:layout": Record<string, ForumLayout>;
 }
 
 /**
@@ -361,6 +372,10 @@ const EXPECTED_TYPES: { [K in keyof SettingsDefinition]: ValueType<K> } = {
     }
     return out;
   },
+  // Drops any entry whose value is not a known layout, so a corrupt or
+  // future-version value falls back to the forum default instead of
+  // rendering nothing.
+  "forum:layout": (value) => cleanLayoutOverrides(value),
 };
 
 /**
@@ -408,6 +423,7 @@ const DEFAULT_VALUES: TypeSettings = {
   "streamer:show_banner": true,
   "soundboard:entrance": "",
   "soundboard:entrance_servers": {},
+  "forum:layout": {},
 };
 
 /**
@@ -477,6 +493,8 @@ export class Settings extends AbstractStore<"settings", TypeSettings> {
       "streamer:show_banner": true,
       "soundboard:entrance": "",
       "soundboard:entrance_servers": {},
+      // Mirrored in DEFAULT_VALUES — see the note there.
+      "forum:layout": {},
     };
   }
 
