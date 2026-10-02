@@ -10034,7 +10034,16 @@ class Voice {
     // the user had been through the OS consent dialog for nothing. Nothing
     // awaits between here and the claim, so any later reason reaches a
     // claimed attempt through `#pauseGate`.
-    if (this.#androidLegRefusedNow(mode)) {
+    //
+    // Asked of the mode as it is NOW, and only while it is still the one the
+    // tap read. Checked against the tap-time `mode`, a re-upgrade completed
+    // while the sheet was open (a plaintext interlude -> `negotiating` ->
+    // `e2ee`, its gate pulse long since released) passed this check, and the
+    // key read below then skipped the key and started a KEYLESS leg in an
+    // encrypted call. A changed mode is refused rather than followed: the user
+    // chose to share into the call they tapped in.
+    const modeNow = this.callMode();
+    if (modeNow?.kind !== mode?.kind || this.#androidLegRefusedNow(modeNow)) {
       this.onErr(new Error(SHARE_UNAVAILABLE_NOW));
       return;
     }
@@ -10075,8 +10084,26 @@ class Voice {
       // rotation during the consent window has already advanced it. Publishing
       // under the pre-dialog key would hand the share to whoever that
       // rotation removed.
+      //
+      // The MODE is re-read here for the same reason, and the current mode
+      // alone decides whether a key is needed. The OS consent dialog is
+      // user-paced: a mode read at tap time could skip the key in a call that
+      // has since become encrypted, publishing plaintext screen frames to the
+      // SFU until the roster flags the leg. A mode that changed since the tap,
+      // or one that may not publish plaintext (`#legPlaintextAuthorized`), is
+      // refused; consent is already taken, so the refusal stops the leg.
+      const modeAtConnect = this.callMode();
+      if (
+        modeAtConnect?.kind !== mode?.kind ||
+        (modeAtConnect?.kind !== "e2ee" &&
+          !this.#legPlaintextAuthorized(modeAtConnect))
+      ) {
+        await this.#stopAndroidLeg();
+        this.onErr(new Error(SHARE_UNAVAILABLE_NOW));
+        return;
+      }
       let e2eeKey: LegE2EEKey | undefined;
-      if (mode?.kind === "e2ee") {
+      if (modeAtConnect?.kind === "e2ee") {
         const key = this.#mlsKeyProvider?.lastLocalScreenKey();
         // Bound to the CURRENT group, not just "a key exists": across the two
         // user-paced dialogs the session can have re-established, and the
@@ -10182,9 +10209,10 @@ class Voice {
   /**
    * The cheap "can a leg start right now" refusal, run before the tier sheet
    * and again once it closes: the publish gate must be empty and, under E2EE,
-   * the session active with a leg send key derived. `mode` is the one the
-   * attempt read up front, so both checks answer for the call shape the
-   * binding key read before `connect()` will use.
+   * the session active with a leg send key derived. The first run is given
+   * the mode the tap read; the second the mode current once the sheet
+   * closes, and only after the caller checked it is still that one. The
+   * binding key read before `connect()` re-checks the mode for itself.
    */
   #androidLegRefusedNow(mode: CallMode | undefined): boolean {
     return (
@@ -10193,6 +10221,44 @@ class Voice {
         (this.#mlsSession?.state() !== "active" ||
           !this.#mlsKeyProvider?.lastLocalScreenKey()))
     );
+  }
+
+  /**
+   * May a leg in a call of this mode connect WITHOUT a key? Asked by the
+   * binding key read before `connect()` for every mode but `e2ee`, which
+   * takes the keyed path instead. The evidence is `CallMode` and
+   * `callModeTransition` in `mlsCallModePolicy.ts`:
+   *
+   * - `undefined`: no session, or a shell that cannot encrypt (a plain call;
+   *   reset at every call boundary). A capable shell's session that has not
+   *   reached its first verdict also reads `undefined`, but `connect()` holds
+   *   the `negotiating` gate for it from before the Room connects, and every
+   *   leg check refuses a held gate on its own.
+   * - `off`: not an E2EE call, publishing normally; terminal in the machine.
+   * - `interlude` with `localConfirmed`: this device's user confirmed
+   *   plaintext (`local_confirm` turns E2EE off and releases the gate).
+   *
+   * Everything else is refused: `negotiating` (gated, no verdict), `mixed`
+   * (paused), an unconfirmed `interlude` (a remote announce, which never
+   * resumes publishing), `call_full` (terminal) and `e2ee` itself. The switch
+   * is exhaustive, so a new mode fails to compile here rather than starting a
+   * plaintext leg.
+   */
+  #legPlaintextAuthorized(mode: CallMode | undefined): boolean {
+    if (mode === undefined) return true;
+    switch (mode.kind) {
+      case "off":
+        return true;
+      case "interlude":
+        return mode.localConfirmed;
+      case "negotiating":
+      case "mixed":
+      case "call_full":
+      case "e2ee":
+        return false;
+    }
+    const exhaustive: never = mode;
+    return exhaustive;
   }
 
   /**

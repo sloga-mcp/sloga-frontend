@@ -855,6 +855,11 @@ test("source pin (C9): #pauseGate samples gateStopNotice before it stops the leg
 // then dies at its first stale check. The refusal runs before the sheet and
 // AGAIN once it closes, with nothing awaited between that re-check and the
 // claim (any later reason reaches the claimed attempt through `#pauseGate`).
+// 🔴 (wave-4b-fix4) The re-check asks of the mode as it is once the sheet
+// closes, and refuses a mode that changed since the tap. Asked of the tap-time
+// mode, a call that re-upgraded to E2EE while the sheet was open (its gate
+// pulse long released) passed, and the start went on toward a KEYLESS leg in
+// an encrypted call.
 test("source pin (C9): the leg start refuses before the tier sheet, and again between the sheet and the claim", () => {
   const start = androidLegStart();
   const refusal = `if (this.#androidLegRefusedNow(mode)) {
@@ -862,8 +867,16 @@ test("source pin (C9): the leg start refuses before the tier sheet, and again be
     return;
   }`;
   const refusals = wiredAt(start, refusal);
-  assert.equal(refusals.length, 2, "the two refusals");
-  const [beforeSheet, afterSheet] = refusals;
+  assert.equal(refusals.length, 1, "the tap-time refusal");
+  const [beforeSheet] = refusals;
+  const recheck = `const modeNow = this.callMode();
+    if (modeNow?.kind !== mode?.kind || this.#androidLegRefusedNow(modeNow)) {
+      this.onErr(new Error(SHARE_UNAVAILABLE_NOW));
+      return;
+    }`;
+  const rechecks = wiredAt(start, recheck);
+  assert.equal(rechecks.length, 1, "the after-sheet re-check, on the mode now");
+  const [afterSheet] = rechecks;
   const at = (snippet: string) =>
     firstAt("#toggleAndroidScreenShare", start, snippet);
   const claim = at(`const generation = ++this.#androidLegGeneration;`);
@@ -1239,8 +1252,23 @@ test("source pin (C9): the rotation listener pushes every rotation into a live l
 // current-group check, starts a share in an encrypted call in plaintext or on
 // a superseded group's key; a swapped field in the literal hands native the
 // wrong key. The refusal stops the leg (consent is already taken) and says so.
-const LEG_KEY_READ = `let e2eeKey: LegE2EEKey | undefined;
-  if (mode?.kind === "e2ee") {
+// 🔴 (wave-4b-fix4) It opens with its own read of the mode, taken after both
+// user-paced dialogs, and the keyed branch tests THAT mode: the tap-time one
+// could skip the key in a call that became encrypted since. A mode that
+// changed since the tap, or one `#legPlaintextAuthorized` refuses, is refused
+// before any key is read, and that refusal stops the leg too.
+const LEG_KEY_READ = `const modeAtConnect = this.callMode();
+  if (
+    modeAtConnect?.kind !== mode?.kind ||
+    (modeAtConnect?.kind !== "e2ee" &&
+      !this.#legPlaintextAuthorized(modeAtConnect))
+  ) {
+    await this.#stopAndroidLeg();
+    this.onErr(new Error(SHARE_UNAVAILABLE_NOW));
+    return;
+  }
+  let e2eeKey: LegE2EEKey | undefined;
+  if (modeAtConnect?.kind === "e2ee") {
     const key = this.#mlsKeyProvider?.lastLocalScreenKey();
     if (
       this.#mlsSession?.state() !== "active" ||
@@ -1280,7 +1308,8 @@ test("source pin (C9): the leg start's binding key read is whole: E2EE branch, a
   const start = androidLegStart();
   assertWired("the binding key read", LEG_KEY_READ);
   assert.equal(countWired(start, LEG_KEY_READ), 1, "in the leg start");
-  // The branch's input is the call's own mode, read once at the top level.
+  // The tap-time mode the binding read's own must still equal, read once at
+  // the top level.
   const mode = `const mode = this.callMode();`;
   assert.equal(countWired(start, mode), 1, "the mode read");
   assert.equal(
@@ -1317,6 +1346,93 @@ test("source pin (C9): the leg start's try ends: the key read, connect with that
     countWired(STATE_CODE, `activeLeg.connect(`),
     1,
     "the leg's one connect",
+  );
+});
+
+// 🔴 SECURITY (wave-4b-fix4). The one answer to "may this leg connect WITHOUT
+// a key", whole. Each refused arm is load-bearing: `negotiating` (no verdict
+// yet), `mixed` (paused), an unconfirmed `interlude` (a remote announce, never
+// this user's confirmation) or `call_full` answering true connects a keyless
+// leg into a call that may not publish plaintext. The `never` default keeps
+// the switch exhaustive, so a new mode fails to compile rather than reaching
+// the plaintext path. Asked once, by the binding key read pinned whole above.
+test("source pin (C9): #legPlaintextAuthorized is whole, and asked only by the binding key read", () => {
+  assert.equal(
+    bodyOf(`#legPlaintextAuthorized(mode: CallMode | undefined): boolean {`),
+    codeOf(`if (mode === undefined) return true;
+    switch (mode.kind) {
+      case "off":
+        return true;
+      case "interlude":
+        return mode.localConfirmed;
+      case "negotiating":
+      case "mixed":
+      case "call_full":
+      case "e2ee":
+        return false;
+    }
+    const exhaustive: never = mode;
+    return exhaustive`),
+    "#legPlaintextAuthorized, whole",
+  );
+  const call = `this.#legPlaintextAuthorized(`;
+  assert.equal(countWired(STATE_CODE, call), 1, "its only call");
+  assert.equal(
+    countWired(codeOf(LEG_KEY_READ), call),
+    1,
+    "made by the binding key read",
+  );
+  assert.equal(
+    countWired(STATE_CODE, `#legPlaintextAuthorized(`),
+    2,
+    "defined, called",
+  );
+});
+
+// 🔴 SECURITY (wave-4b-fix4). The leg start reads the call's mode three
+// times, in order: at the tap, once the tier sheet closes, and right before
+// `connect()`. The tap-time `mode` only drives the refusal before the sheet
+// and is the reference both later reads must still equal; it never decides
+// whether the leg needs a key. Read at tap time, that decision skipped the key
+// in a call that became encrypted while a dialog was open: a KEYLESS leg in an
+// E2EE call. So the tap-time `mode` has exactly four uses here, none of them
+// an `e2ee` test.
+test("source pin (C9): the leg start reads the mode three times, and the tap-time mode never picks the key", () => {
+  const start = androidLegStart();
+  const reads = [
+    `const mode = this.callMode();`,
+    `const modeNow = this.callMode();`,
+    `const modeAtConnect = this.callMode();`,
+  ];
+  for (const read of reads) assert.equal(countWired(start, read), 1, read);
+  assert.equal(countWired(start, `this.callMode()`), 3, "the start's reads");
+  const at = reads.map((read) =>
+    firstAt("#toggleAndroidScreenShare", start, read),
+  );
+  assert.ok(at[0] < at[1] && at[1] < at[2], "tap, after the sheet, at connect");
+  assert.deepEqual(
+    at.map((a) => braceDepthAt(start, a)),
+    [0, 0, 1],
+    "the start's top level twice, then the try's",
+  );
+  // The tap-time mode: declared, refused on, and compared twice. `codeOf`
+  // drops whitespace, so the name can follow a keyword with nothing between
+  // (`constmode=`); any other name, `#` or `.` in front is another identifier.
+  const tapModeUses = (tail: string) =>
+    [...start.matchAll(new RegExp(`([\\w$#.]*)mode${tail}`, "g"))].filter((m) =>
+      /^(const|let|return|await|typeof|void|case|in|of|)$/.test(m[1]),
+    ).length;
+  assert.equal(tapModeUses(`(?![\\w$])`), 4, "the tap-time mode's uses");
+  for (const use of [
+    `if (this.#androidLegRefusedNow(mode)) {`,
+    `modeNow?.kind !== mode?.kind ||`,
+    `modeAtConnect?.kind !== mode?.kind ||`,
+  ])
+    assert.equal(countWired(start, use), 1, use);
+  assert.equal(
+    tapModeUses(`\\??\\.kind[!=]==?"e2ee"`),
+    0,
+    "no e2ee test of the tap-time mode",
   );
 });
 
