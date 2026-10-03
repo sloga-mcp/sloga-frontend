@@ -5561,6 +5561,18 @@ msgid "Expired"
 msgstr "Expired"
 
 #: components/app/interface/settings/user/Referrals.tsx
+msgid "Ward"
+msgstr "Ward"
+
+#: components/app/interface/settings/user/Referrals.tsx
+msgid "Every qualified referral earns Ward. Soon you'll be able to spend it on Protected channels and servers."
+msgstr "Every qualified referral earns Ward. Soon you'll be able to spend it on Protected channels and servers."
+
+#: components/app/interface/settings/user/Referrals.tsx
+msgid "Ward has no cash value and can't be transferred."
+msgstr "Ward has no cash value and can't be transferred."
+
+#: components/app/interface/settings/user/Referrals.tsx
 msgid "Rewards"
 msgstr "Rewards"
 
@@ -8366,6 +8378,10 @@ msgstr "Next reward: {current} of {next}"
 #: components/app/interface/settings/user/Referrals.tsx
 msgid "Next reward: {reward} ({current} of {next})"
 msgstr "Next reward: {reward} ({current} of {next})"
+
+#: components/app/interface/settings/user/Referrals.tsx
+msgid "{ward} Ward earned"
+msgstr "{ward} Ward earned"
 
 #: components/app/interface/settings/user/Referrals.tsx
 msgid "Your referral code"

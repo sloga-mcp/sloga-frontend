@@ -77,6 +77,11 @@ export function Referrals() {
 }
 
 /**
+ * Ward earned for each qualified referral (shown only, nothing stores it yet)
+ */
+const WARD_PER_REFERRAL = 100;
+
+/**
  * Code, link, counts and ladder for a loaded summary
  */
 function ReferralOverview(props: { summary: ReferralSummary }) {
@@ -139,6 +144,14 @@ function ReferralOverview(props: { summary: ReferralSummary }) {
     return t`Next reward: ${reward} (${current} of ${next})`;
   };
 
+  /**
+   * Ward from qualified referrals, derived here rather than stored
+   */
+  const wardText = () => {
+    const ward = props.summary.qualified * WARD_PER_REFERRAL;
+    return t`${ward} Ward earned`;
+  };
+
   return (
     <Column gap="lg">
       <CategoryButton.Group>
@@ -194,6 +207,28 @@ function ReferralOverview(props: { summary: ReferralSummary }) {
         <Show when={nextRewardText()}>
           {(text) => <Text class="label">{text()}</Text>}
         </Show>
+      </Column>
+
+      <Column>
+        <Text class="title" size="small">
+          <Trans>Ward</Trans>
+        </Text>
+        <CategoryButton.Group>
+          <CategoryButton
+            icon={<Symbol size={22}>shield</Symbol>}
+            description={
+              <Trans>
+                Every qualified referral earns Ward. Soon you'll be able to
+                spend it on Protected channels and servers.
+              </Trans>
+            }
+          >
+            {wardText()}
+          </CategoryButton>
+        </CategoryButton.Group>
+        <Text class="label">
+          <Trans>Ward has no cash value and can't be transferred.</Trans>
+        </Text>
       </Column>
 
       <Show when={tiers().length}>
