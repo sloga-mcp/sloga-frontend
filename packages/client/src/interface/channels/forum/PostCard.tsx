@@ -3,7 +3,7 @@ import { For, Show, createMemo } from "solid-js";
 import { Channel, Message } from "stoat.js";
 import { styled } from "styled-system/jsx";
 
-import { TextWithEmoji } from "@revolt/markdown";
+import { TextWithEmoji, renderSimpleMarkdown } from "@revolt/markdown";
 import { useNavigate } from "@revolt/routing";
 import { Avatar, Text, isSlogaStaff } from "@revolt/ui";
 import { DisplayName } from "@revolt/ui/components/features/DisplayName";
@@ -60,7 +60,7 @@ export function PostCard(props: {
       </Show>
 
       <Show when={props.starter?.content}>
-        <Excerpt>{props.starter!.content}</Excerpt>
+        <Excerpt>{renderSimpleMarkdown(props.starter!.content!)}</Excerpt>
       </Show>
 
       <Footer>

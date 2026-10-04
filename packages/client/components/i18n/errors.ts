@@ -163,6 +163,8 @@ export function useError() {
           return t`You can't have more than ${err.max} emojis on this server.`;
         case "TooManyChannels":
           return t`You can't have more than ${err.max} channels on this server.`;
+        case "TooManyRoles":
+          return t`You can't have more than ${err.max} roles on this server.`;
         case "TooManyServers":
           return t`You can't be in more than ${err.max} servers, please leave one and try again.`;
         case "TooManyPendingFriendRequests":
@@ -198,8 +200,7 @@ export function useError() {
         case "ProxyError":
         case "TooManyAttachments": // todo: maybe handle these:
         case "TooManyEmbeds":
-        case "TooManyReplies":
-        case "TooManyRoles": // ... to here
+        case "TooManyReplies": // ... to here
         case "UnknownAttachment":
         case "UnknownChannel":
         case "UnknownMessage":

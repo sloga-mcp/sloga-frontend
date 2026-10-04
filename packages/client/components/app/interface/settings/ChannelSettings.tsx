@@ -4,11 +4,13 @@ import {
   BiSolidInfoCircle,
   BiSolidTrash,
 } from "solid-icons/bi";
+import { Match, Switch } from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
 import { Channel } from "stoat.js";
 
 import { useClient } from "@revolt/client";
+import { channelNounOf } from "@revolt/common/lib/channelNoun";
 import { TextWithEmoji } from "@revolt/markdown";
 import { useModals } from "@revolt/modal";
 import { ColouredText } from "@revolt/ui";
@@ -169,7 +171,14 @@ const Config: SettingsConfiguration<Channel> = {
               ),
               title: (
                 <ColouredText colour="var(--md-sys-color-error)">
-                  <Trans>Delete Channel</Trans>
+                  <Switch fallback={<Trans>Delete Channel</Trans>}>
+                    <Match when={channelNounOf(channel) === "post"}>
+                      <Trans>Delete Post</Trans>
+                    </Match>
+                    <Match when={channelNounOf(channel) === "thread"}>
+                      <Trans>Delete Thread</Trans>
+                    </Match>
+                  </Switch>
                 </ColouredText>
               ),
               onClick() {

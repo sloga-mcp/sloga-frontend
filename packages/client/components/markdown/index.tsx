@@ -276,6 +276,8 @@ const replyPipeline = unified()
   .use(remarkBreaks)
   .use(remarkGfm)
   .use(remarkMentions)
+  .use(remarkTimestamps)
+  .use(remarkChannels)
   .use(remarkUnicodeEmoji)
   .use(remarkCustomEmoji)
   .use(remarkSpoiler)
@@ -286,6 +288,7 @@ const replyPipeline = unified()
       unicodeEmoji: unicodeEmojiHandler,
       customEmoji: customEmojiHandler,
       mention: mentionHandler,
+      timestamp: timestampHandler,
       spoiler: spoilerHandler,
     },
   })

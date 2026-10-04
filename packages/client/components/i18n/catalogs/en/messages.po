@@ -42,6 +42,10 @@ msgstr "dddd [at] LT"
 msgid "(changes are being saved…)"
 msgstr "(changes are being saved…)"
 
+#: components/app/interface/settings/server/roles/ServerRoleEditor.tsx
+msgid "(copy)"
+msgstr "(copy)"
+
 #. placeholder {0}: attachmentCount()
 #: src/interface/ServerEvents.tsx
 msgid "{0, plural, one {# / 10 file attached} other {# / 10 files attached}}"
@@ -2017,6 +2021,10 @@ msgstr "Copied"
 msgid "Copied!"
 msgstr "Copied!"
 
+#: components/app/interface/settings/server/roles/ServerRoleEditor.tsx
+msgid "Copies the name, color, hoist setting and server permissions. The icon and channel permissions are not copied."
+msgstr "Copies the name, color, hoist setting and server permissions. The icon and channel permissions are not copied."
+
 #: components/app/interface/settings/user/Supporter.tsx
 msgid "Your support is now linked to your account. Thank you!"
 msgstr "Your support is now linked to your account. Thank you!"
@@ -2153,6 +2161,10 @@ msgstr "Copy message ID"
 msgid "Copy message link"
 msgstr "Copy message link"
 
+#: components/app/menus/ChannelContextMenu.tsx
+msgid "Copy post ID"
+msgstr "Copy post ID"
+
 #: components/app/interface/settings/server/roles/ServerRoleEditor.tsx
 msgid "Copy role ID"
 msgstr "Copy role ID"
@@ -2169,6 +2181,10 @@ msgstr "Copy text"
 #: components/ui/components/features/voice/callCard/VoiceTranscriptPanel.tsx
 msgid "Copy the transcript to the clipboard"
 msgstr "Copy the transcript to the clipboard"
+
+#: components/app/menus/ChannelContextMenu.tsx
+msgid "Copy thread ID"
+msgstr "Copy thread ID"
 
 #: components/modal/modals/SoftResExport.tsx
 msgid "Copy to clipboard"
@@ -2649,6 +2665,14 @@ msgstr "Delete message"
 msgid "Delete Message History"
 msgstr "Delete Message History"
 
+#: components/app/menus/ChannelContextMenu.tsx
+msgid "Delete post"
+msgstr "Delete post"
+
+#: components/app/interface/settings/ChannelSettings.tsx
+msgid "Delete Post"
+msgstr "Delete Post"
+
 #: components/app/interface/settings/server/roles/ServerRoleEditor.tsx
 msgid "Delete Role"
 msgstr "Delete Role"
@@ -2656,6 +2680,14 @@ msgstr "Delete Role"
 #: components/app/interface/settings/ServerSettings.tsx
 msgid "Delete Server"
 msgstr "Delete Server"
+
+#: components/app/menus/ChannelContextMenu.tsx
+msgid "Delete thread"
+msgstr "Delete thread"
+
+#: components/app/interface/settings/ChannelSettings.tsx
+msgid "Delete Thread"
+msgstr "Delete Thread"
 
 #: src/interface/ServerEvents.tsx
 #: components/app/interface/settings/server/stickers/StickerList.tsx
@@ -2893,6 +2925,10 @@ msgstr "Drop the ball, clear the pegs."
 #: components/modal/modals/ReportContent.tsx
 msgid "Drugs or illegal goods"
 msgstr "Drugs or illegal goods"
+
+#: components/app/interface/settings/server/roles/ServerRoleEditor.tsx
+msgid "Duplicate role"
+msgstr "Duplicate role"
 
 #: components/modal/modals/SuspendUser.tsx
 msgid "Duration"
@@ -4827,6 +4863,10 @@ msgid "Monochrome"
 msgstr "Monochrome"
 
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
+msgid "Monochrome uses only grays, so it ignores your color. Pick another style below to use one."
+msgstr "Monochrome uses only grays, so it ignores your color. Pick another style below to use one."
+
+#: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Monospace Font"
 msgstr "Monospace Font"
 
@@ -4899,6 +4939,10 @@ msgstr "Mute Members"
 msgid "Mute message, call and notification sounds."
 msgstr "Mute message, call and notification sounds."
 
+#: components/app/menus/shared/NotificationContextMenu.tsx
+msgid "Mute Post"
+msgstr "Mute Post"
+
 #: components/app/menus/UserContextMenu.tsx
 msgid "Mute Screen Share"
 msgstr "Mute Screen Share"
@@ -4906,6 +4950,10 @@ msgstr "Mute Screen Share"
 #: components/app/menus/ServerContextMenu.tsx
 msgid "Mute Server"
 msgstr "Mute Server"
+
+#: components/app/menus/shared/NotificationContextMenu.tsx
+msgid "Mute Thread"
+msgstr "Mute Thread"
 
 #: src/interface/navigation/servers/ServerList.tsx
 msgid "Muted"
@@ -5455,6 +5503,10 @@ msgstr "Open Microphone"
 msgid "Open platform suspension for the reported user."
 msgstr "Open platform suspension for the reported user."
 
+#: components/app/menus/ChannelContextMenu.tsx
+msgid "Open post settings"
+msgstr "Open post settings"
+
 #: components/app/menus/ServerContextMenu.tsx
 msgid "Open server settings"
 msgstr "Open server settings"
@@ -5466,6 +5518,10 @@ msgstr "Open settings"
 #: components/app/interface/settings/user/Native.tsx
 msgid "Open Sloga more than once to use a second account. Takes effect next time you launch; the first window you open is always your main account."
 msgstr "Open Sloga more than once to use a second account. Takes effect next time you launch; the first window you open is always your main account."
+
+#: components/app/menus/ChannelContextMenu.tsx
+msgid "Open thread settings"
+msgstr "Open thread settings"
 
 #: components/modal/modals/TimelockCompose.tsx
 #: components/modal/modals/ScheduleMessage.tsx
@@ -5828,6 +5884,18 @@ msgstr "Polls are not available in encrypted conversations — votes are counted
 #: src/interface/Friends.tsx
 msgid "Pop out friends list"
 msgstr "Pop out friends list"
+
+#: components/app/interface/settings/channel/Overview.tsx
+msgid "Post Description"
+msgstr "Post Description"
+
+#: components/app/interface/settings/channel/Overview.tsx
+msgid "Post Info"
+msgstr "Post Info"
+
+#: src/interface/channels/ChannelHeader.tsx
+msgid "Post Settings"
+msgstr "Post Settings"
 
 #: components/modal/modals/CreateSoftRes.tsx
 msgid "Post the sheet to"
@@ -6587,6 +6655,10 @@ msgstr "Save"
 #: components/app/menus/MessageContextMenu.tsx
 msgid "Save file"
 msgstr "Save file"
+
+#: components/app/interface/settings/server/roles/ServerRoleEditor.tsx
+msgid "Save or discard your changes before duplicating this role."
+msgstr "Save or discard your changes before duplicating this role."
 
 #: components/ui/components/features/voice/callCard/VoiceTranscriptPanel.tsx
 msgid "Save the transcript as a text file"
@@ -7615,6 +7687,10 @@ msgstr "Streaming: {0}"
 msgid "Strength: {0}%"
 msgstr "Strength: {0}%"
 
+#: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
+msgid "Styles and contrast reshape your color: Neutral mutes it, Fruit Salad shifts its hue, and High Contrast strengthens it."
+msgstr "Styles and contrast reshape your color: Neutral mutes it, Fruit Salad shifts its hue, and High Contrast strengthens it."
+
 #: components/app/interface/settings/user/bots/ViewBot.tsx
 msgid "Submit to Discover"
 msgstr "Submit to Discover"
@@ -7777,6 +7853,10 @@ msgstr "That didn't go through. They may have left, or you may not have permissi
 msgid "Couldn't move you to that channel."
 msgstr "Couldn't move you to that channel."
 
+#: components/app/interface/settings/server/roles/ServerRoleEditor.tsx
+msgid "Couldn't remove the incomplete copy \"{name}\". Delete it from the role list."
+msgstr "Couldn't remove the incomplete copy \"{name}\". Delete it from the role list."
+
 #: components/app/menus/UserContextMenu.tsx
 #: src/interface/navigation/channels/ServerSidebar.tsx
 msgid "They can't see that channel, so they can't be moved there."
@@ -7896,6 +7976,10 @@ msgstr "The call is full. Try again when someone leaves."
 #: components/rtc/state.tsx
 msgid "The call server wouldn't accept this device's encryption."
 msgstr "The call server wouldn't accept this device's encryption."
+
+#: components/app/interface/settings/server/roles/ServerRoleEditor.tsx
+msgid "The copy was created but has not synced yet. Reopen Roles to see it."
+msgstr "The copy was created but has not synced yet. Reopen Roles to see it."
 
 #: src/interface/channels/text/Composition.tsx
 msgid "The edited image ({fileSize}) exceeds the maximum size limit of {maxSizeFormatted}. Crop it smaller, or close the editor to send the original."
@@ -8205,10 +8289,22 @@ msgstr "This password has previously appeared in security leaks, please use anot
 msgid "This post has a tag only moderators can change, so only a moderator can edit its tags."
 msgstr "This post has a tag only moderators can change, so only a moderator can edit its tags."
 
+#: components/app/interface/settings/channel/Overview.tsx
+msgid "This post is about..."
+msgstr "This post is about..."
+
 #: components/ui/components/features/profiles/ProfileBio.tsx
 #: components/i18n/errors.ts
 msgid "This profile is private."
 msgstr "This profile is private."
+
+#: components/app/interface/settings/server/roles/ServerRoleEditor.tsx
+msgid "This role allows permissions you don't have, so you can't copy it."
+msgstr "This role allows permissions you don't have, so you can't copy it."
+
+#: components/app/interface/settings/server/roles/ServerRoleEditor.tsx
+msgid "This server already has the maximum of {max} roles."
+msgstr "This server already has the maximum of {max} roles."
 
 #: components/app/interface/settings/server/Overview.tsx
 msgid "This server is about..."
@@ -8239,6 +8335,10 @@ msgstr "This share has no audio. To include sound, restart the share and pick a 
 msgid "This share is silent because \"Share audio\" is turned off. Tick it above and restart the share to include your computer's sound."
 msgstr "This share is silent because \"Share audio\" is turned off. Tick it above and restart the share to include your computer's sound."
 
+#: components/app/interface/settings/channel/Overview.tsx
+msgid "This thread is about..."
+msgstr "This thread is about..."
+
 #: src/interface/channels/text/TextChannel.tsx
 msgid "This thread is archived"
 msgstr "This thread is archived"
@@ -8267,9 +8367,21 @@ msgstr "This version of Windows cannot share system audio."
 msgid "This will invalidate the current token and stop any existing instances of the bot from running."
 msgstr "This will invalidate the current token and stop any existing instances of the bot from running."
 
+#: components/app/interface/settings/channel/Overview.tsx
+msgid "Thread Description"
+msgstr "Thread Description"
+
+#: components/app/interface/settings/channel/Overview.tsx
+msgid "Thread Info"
+msgstr "Thread Info"
+
 #: components/modal/modals/CreateThread.tsx
 msgid "Thread Name"
 msgstr "Thread Name"
+
+#: src/interface/channels/ChannelHeader.tsx
+msgid "Thread Settings"
+msgstr "Thread Settings"
 
 #: src/interface/channels/text/TextChannel.tsx
 msgid "Threads"
@@ -8623,9 +8735,17 @@ msgstr "Unmute Channel"
 msgid "Unmute game sounds"
 msgstr "Unmute game sounds"
 
+#: components/app/menus/shared/NotificationContextMenu.tsx
+msgid "Unmute Post"
+msgstr "Unmute Post"
+
 #: components/app/menus/ServerContextMenu.tsx
 msgid "Unmute Server"
 msgstr "Unmute Server"
+
+#: components/app/menus/shared/NotificationContextMenu.tsx
+msgid "Unmute Thread"
+msgstr "Unmute Thread"
 
 #: components/app/menus/MessageContextMenu.tsx
 msgid "Unpin message"
@@ -9238,6 +9358,11 @@ msgstr "You can't have more than {0} channels on this server."
 msgid "You can't have more than {0} emojis on this server."
 msgstr "You can't have more than {0} emojis on this server."
 
+#. placeholder {0}: err.max
+#: components/i18n/errors.ts
+msgid "You can't have more than {0} roles on this server."
+msgstr "You can't have more than {0} roles on this server."
+
 #: components/i18n/errors.ts
 msgid "You cannot give yourself missing permissions."
 msgstr "You cannot give yourself missing permissions."
@@ -9298,6 +9423,14 @@ msgstr "You have this user blocked."
 #: components/ui/components/features/voice/VoiceStatefulUserIcons.tsx
 msgid "You muted this user."
 msgstr "You muted this user."
+
+#: components/app/interface/settings/server/roles/ServerRoleEditor.tsx
+msgid "You need the Manage Permissions permission to copy this role's permissions."
+msgstr "You need the Manage Permissions permission to copy this role's permissions."
+
+#: components/app/interface/settings/server/roles/ServerRoleEditor.tsx
+msgid "You need the Manage Roles permission to duplicate a role."
+msgstr "You need the Manage Roles permission to duplicate a role."
 
 #: components/i18n/errors.ts
 msgid "You need to be in the call to do that."

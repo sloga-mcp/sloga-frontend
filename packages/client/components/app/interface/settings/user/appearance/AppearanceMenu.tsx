@@ -34,7 +34,7 @@ import {
   MONOSPACE_FONT_KEYS,
   MonospaceFonts,
 } from "@revolt/ui/themes/fonts";
-import { BRAND_ACCENT } from "@revolt/ui/themes/materialTheme";
+import { BRAND_ACCENT, accentHasEffect } from "@revolt/ui/themes/materialTheme";
 import { RAIL_ACCENT_PRESETS } from "@revolt/ui/themes/railAccent";
 
 import MDPalette from "@material-design-icons/svg/outlined/palette.svg?component-solid";
@@ -56,6 +56,12 @@ export function AppearanceMenu() {
   // hex, the presets are written uppercase, and a user who picked a preset
   // through the picker should still see it lit.
   const railAccent = () => state.theme.railAccent.toLowerCase();
+
+  // Monochrome builds its scheme from grays alone, so the accent has no
+  // visible effect there; lock the accent controls instead of letting a
+  // pick look broken.
+  const accentLocked = () =>
+    !accentHasEffect(state.theme.preset, state.theme.m3Variant);
 
   const contentWidth = () =>
     state.settings.getValue("appearance:content_width") ?? "full";
@@ -143,7 +149,10 @@ export function AppearanceMenu() {
         {/* Outside the preset guard: each preset keeps its own accent, and
             the Sloga one used to be unreachable, so picking a colour there did
             nothing at all. */}
-        <Row align justify wrap>
+        {/* The dimming is inline because each swatch paints its own `bg`,
+            which beats the disabled background, so `isDisabled` alone would
+            only change the cursor. */}
+        <Row align justify wrap style={{ opacity: accentLocked() ? 0.38 : 1 }}>
           {/* The swatch button and the hidden colour input shared one ref
               signal, so which element `pickerRef()` ended up pointing at was
               just whichever Solid created last. It happened to be the input,
@@ -152,6 +161,7 @@ export function AppearanceMenu() {
             variant="filled"
             shape="square"
             size="md"
+            isDisabled={accentLocked()}
             onPress={() => pickerRef()?.click()}
           >
             <MDPalette />
@@ -159,6 +169,7 @@ export function AppearanceMenu() {
           <input
             ref={setPickerRef}
             type="color"
+            disabled={accentLocked()}
             value={state.theme.accent ?? "#ffffff"}
             onInput={(e) => {
               const colour = (e.currentTarget as HTMLInputElement).value;
@@ -195,11 +206,20 @@ export function AppearanceMenu() {
                 groupActive={
                   state.theme.accent.toLowerCase() === colour.toLowerCase()
                 }
+                isDisabled={accentLocked()}
                 onPress={() => state.theme.setAccent(colour)}
               />
             )}
           </For>
         </Row>
+        <Show when={accentLocked()}>
+          <Text class="label" size="small">
+            <Trans>
+              Monochrome uses only grays, so it ignores your color. Pick another
+              style below to use one.
+            </Trans>
+          </Text>
+        </Show>
 
         <Show when={state.theme.preset === "you"}>
           {/* TODO: Cursed on mobile; may need to be replaced
@@ -313,6 +333,12 @@ export function AppearanceMenu() {
               <Trans>Fruit Salad</Trans>
             </Button>
           </Row>
+          <Text class="label" size="small">
+            <Trans>
+              Styles and contrast reshape your color: Neutral mutes it, Fruit
+              Salad shifts its hue, and High Contrast strengthens it.
+            </Trans>
+          </Text>
         </Show>
 
         <Text class="label">
