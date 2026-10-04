@@ -573,6 +573,34 @@ msgstr "90 days"
 msgid "A moderator deafened you in this server. You won't hear this call until they lift it."
 msgstr "A moderator deafened you in this server. You won't hear this call until they lift it."
 
+#: components/modal/modals/SupportSloga.tsx
+msgid "Already donated? Claim it in Supporter settings"
+msgstr "Already donated? Claim it in Supporter settings"
+
+#: components/modal/modals/SupportSloga.tsx
+msgid "Copy code and open Ko-fi"
+msgstr "Copy code and open Ko-fi"
+
+#: components/modal/modals/SupportSloga.tsx
+msgid "Couldn't copy to the clipboard. Select the code and copy it yourself."
+msgstr "Couldn't copy to the clipboard. Select the code and copy it yourself."
+
+#: components/modal/modals/SupportSloga.tsx
+msgid "Couldn't get your supporter code."
+msgstr "Couldn't get your supporter code."
+
+#: components/modal/modals/SupportSloga.tsx
+msgid "Donate without a code"
+msgstr "Donate without a code"
+
+#: components/modal/modals/SupportSloga.tsx
+msgid "Open Ko-fi"
+msgstr "Open Ko-fi"
+
+#: components/modal/modals/SupportSloga.tsx
+msgid "Paste this code into your Ko-fi message so the donation is added to your account and any perks it earns unlock automatically."
+msgstr "Paste this code into your Ko-fi message so the donation is added to your account and any perks it earns unlock automatically."
+
 #: components/rtc/state.tsx
 msgid "Your call continued in another window or on another device"
 msgstr "Your call continued in another window or on another device"
@@ -9450,6 +9478,10 @@ msgstr "Your role ranking is too low to take this action."
 msgid "Your server is ready. Paste this invite in Discord to bring your members over."
 msgstr "Your server is ready. Paste this invite in Discord to bring your members over."
 
+#: components/modal/modals/SupportSloga.tsx
+msgid "Your supporter code · Expires {expires}"
+msgstr "Your supporter code · Expires {expires}"
+
 #: components/auth/src/flows/Form.tsx
 msgid "Your suspension has expired — try logging in again."
 msgstr "Your suspension has expired — try logging in again."
@@ -9465,3 +9497,4 @@ msgstr "YouTube"
 #: components/ui/components/features/voice/minigame/MinigameChip.tsx
 msgid "Zap"
 msgstr "Zap"
+

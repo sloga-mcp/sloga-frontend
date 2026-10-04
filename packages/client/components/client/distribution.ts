@@ -96,6 +96,13 @@ export const allowsDonationLinks = () =>
   channel() !== "play" && channel() !== "appstore";
 
 /**
+ * Sloga's Ko-fi page, opened straight from the "Support Sloga" buttons. Keep
+ * it equal to the server's `[api.kofi] page_url`, which the Supporter page
+ * links to. Only ever open it behind `allowsDonationLinks()`.
+ */
+export const KOFI_PAGE_URL = "https://ko-fi.com/slogatech";
+
+/**
  * Google Play's Device and Network Abuse policy forbids an app distributed on
  * Play from updating itself outside Play, and Apple's guidelines (2.5.2) bar
  * App Store apps from downloading code that changes the app. Only sideload

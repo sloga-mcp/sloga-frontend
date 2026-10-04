@@ -84,6 +84,7 @@ import { SignOutSessionsModal } from "./modals/SignOutSessions";
 import { SignedOutModal } from "./modals/SignedOut";
 import { SoftResExportModal } from "./modals/SoftResExport";
 import { SoftResReserveModal } from "./modals/SoftResReserve";
+import { SupportSlogaModal } from "./modals/SupportSloga";
 import { SuspendUserModal } from "./modals/SuspendUser";
 import { TimelockComposeModal } from "./modals/TimelockCompose";
 import { UserProfileModal } from "./modals/UserProfile";
@@ -260,6 +261,8 @@ export function RenderModal(props: ActiveModal & { onClose: () => void }) {
       return <SignOutModal {...modalProps} />;
     case "sign_out_sessions":
       return <SignOutSessionsModal {...modalProps} />;
+    case "support_sloga":
+      return <SupportSlogaModal {...modalProps} />;
     case "user_profile":
       return <UserProfileModal {...modalProps} />;
     case "user_profile_roles":
