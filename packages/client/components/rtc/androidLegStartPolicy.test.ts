@@ -29,14 +29,17 @@ import {
   type NativeFrameKey,
   type NativeStopReason,
   AndroidLegLifecycle,
+  FRAME_KEY_TIMEOUT_MS,
   gateStopNotice,
   keyActionAfterConnect,
   nativeStopNotice,
   staleExitNotice,
   startAttemptCancelled,
   startAttemptStale,
+  STOP_TIMEOUT_MS,
 } from "./androidLegStartPolicy.ts";
 import {
+  argumentsOf,
   bodiesAfter,
   codeOf,
   countWired,
@@ -279,12 +282,16 @@ async function settlesWithin(
  * the test settles by hand (`stops`, in call order), every pushed key is
  * recorded as it crossed (`frameKeys`) and then settles as
  * `nativeSetFrameKey` says (at once, by default), and the announcer records
- * what it hears as `"started"` / `"stopped:<reason>"`.
+ * what it hears as `"started"` / `"stopped:<reason>"`. `frameKeyTimeoutMs`
+ * bounds each push as `FRAME_KEY_TIMEOUT_MS` does in the app (the default
+ * when omitted); a spec that leaves a push unsettled passes a short one, so
+ * no timer outlives it.
  */
 function lifecycle(
   stopTimeoutMs?: number,
   nativeSetFrameKey: (k: NativeFrameKey) => Promise<void> = () =>
     Promise.resolve(),
+  frameKeyTimeoutMs?: number,
 ) {
   const events: string[] = [];
   const stops: Deferred<void>[] = [];
@@ -308,7 +315,12 @@ function lifecycle(
       events.push(`stopped:${reason}`);
     },
   };
-  const leg = new AndroidLegLifecycle(bridge, announce, stopTimeoutMs);
+  const leg = new AndroidLegLifecycle(
+    bridge,
+    announce,
+    stopTimeoutMs,
+    frameKeyTimeoutMs,
+  );
   return { leg, events, stops, frameKeys };
 }
 
@@ -579,6 +591,129 @@ test(
     pending[1].reject(new Error("native re-key failed late"));
     await assert.rejects(failing, /native re-key failed late/);
     assert.equal(nativeSettled, true);
+  },
+);
+
+test(
+  "🔴 a native re-key that never settles rejects after the timeout",
+  { timeout: 2000 },
+  async () => {
+    // A lost native settlement must not leave the leg encrypting under the
+    // previous epoch's key, which a removed member holds, with the
+    // provider's rotation hung behind it. The bound turns "never" into a
+    // rejection, which is what the callers already fail closed on.
+    const rig = lifecycle(
+      undefined,
+      () => new Promise<void>(() => undefined),
+      50,
+    );
+    await share(rig, key("AAA", 1));
+    const hung = rig.leg.setFrameKey(key("BBB", 2, { epoch: 5 }));
+    // A turn of the event loop, not a wall-clock reading: Node arms timers
+    // from its cached loop time, so elapsed time can read short of the bound.
+    const done = settled(hung);
+    await flush();
+    assert.equal(done(), false, "rejected before the bound");
+    // Bounded here as well, so a missing bound fails this assertion rather
+    // than the test's own timeout.
+    assert.equal(
+      await settlesWithin(hung, 500),
+      true,
+      "the re-key never settled",
+    );
+    await assert.rejects(hung, /re-key timed out/);
+    // It did reach native: the hang is the bridge's, not the fence's.
+    assert.deepEqual(rig.frameKeys, [{ keyB64: "BBB", keyIndex: 2, epoch: 5 }]);
+    // The stop and the notice are the caller's, exactly as for a native
+    // rejection: the lifecycle neither stops itself nor announces anything.
+    assert.equal(rig.leg.active(), true);
+    assert.equal(rig.leg.stopping(), false);
+    assert.equal(rig.stops.length, 0);
+    assert.deepEqual(rig.events, ["started"]);
+  },
+);
+
+test(
+  "🔴 a native re-key settling after the timeout is absorbed",
+  { timeout: 2000 },
+  async () => {
+    // The timeout already rejected the caller's push, so native's late
+    // answer reaches nobody. Either way it goes, it must not surface as an
+    // unhandled rejection long after the caller stopped the leg.
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const pending: Deferred<void>[] = [];
+      const rig = lifecycle(
+        undefined,
+        () => {
+          const d = deferred();
+          pending.push(d);
+          return d.promise;
+        },
+        20,
+      );
+      await share(rig, key("AAA", 1));
+      const lateResolve = rig.leg.setFrameKey(key("BBB", 2, { epoch: 5 }));
+      const lateReject = rig.leg.setFrameKey(key("CCC", 3, { epoch: 6 }));
+      for (const push of [lateResolve, lateReject])
+        assert.equal(
+          await settlesWithin(push, 500),
+          true,
+          "the re-key never settled",
+        );
+      await assert.rejects(lateResolve, /re-key timed out/);
+      await assert.rejects(lateReject, /re-key timed out/);
+      assert.equal(pending.length, 2);
+      pending[0].resolve();
+      pending[1].reject(new Error("native re-key failed late"));
+      // Two turns of the event loop: the late settlements run, and Node
+      // reports any rejection they leave unhandled.
+      await flush();
+      await flush();
+      assert.deepEqual(unhandled, []);
+      assert.equal(rig.leg.active(), true);
+      assert.deepEqual(rig.events, ["started"]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  },
+);
+
+test(
+  "a native re-key settling inside the bound keeps its own outcome",
+  { timeout: 2000 },
+  async () => {
+    // The bound only ever replaces "never": a push native answers in time
+    // resolves, and a native failure in time surfaces as itself, not as a
+    // timeout. Native answers after a real delay rather than a microtask, so
+    // a bound that fires at once (unassigned, or zero) fails here too.
+    const rig = lifecycle(
+      undefined,
+      (k) =>
+        new Promise<void>((resolve, reject) => {
+          setTimeout(() => {
+            if (k.epoch === 6) reject(new Error("native re-key failed"));
+            else resolve();
+          }, 20);
+        }),
+      1000,
+    );
+    await share(rig, key("AAA", 1));
+    await assert.doesNotReject(
+      rig.leg.setFrameKey(key("BBB", 2, { epoch: 5 })),
+    );
+    await assert.rejects(rig.leg.setFrameKey(key("CCC", 3, { epoch: 6 })), {
+      message: "native re-key failed",
+    });
+    assert.deepEqual(rig.frameKeys, [
+      { keyB64: "BBB", keyIndex: 2, epoch: 5 },
+      { keyB64: "CCC", keyIndex: 3, epoch: 6 },
+    ]);
+    assert.equal(rig.leg.active(), true);
   },
 );
 
@@ -1044,4 +1179,82 @@ test("🔴 androidScreenShare.ts holds no live copy of the lifecycle", () => {
   assert.equal(countWired(construction, "=> this.onStopped?.("), 1);
   assert.equal(countWired(construction, "() => plugin!.stop()"), 1);
   assert.equal(countWired(construction, "plugin!.setFrameKey("), 1);
+});
+
+const POLICY_SOURCE = readFileSync(
+  new URL("./androidLegStartPolicy.ts", import.meta.url),
+  "utf8",
+);
+const POLICY_CODE = codeOf(POLICY_SOURCE);
+
+/** `snippet` must appear exactly once in androidLegStartPolicy.ts's code. */
+const assertPolicyWired = wiredAsserter(
+  "androidLegStartPolicy.ts",
+  POLICY_CODE,
+);
+
+test("🔴 every native re-key is bounded, by default at FRAME_KEY_TIMEOUT_MS", () => {
+  // The specs above each pass their own short bound, so none of them sees
+  // the default the app runs with, or notices a refactor that unhooks the
+  // push from the bound while a spec-sized one still happens to fire.
+  assert.ok(Number.isFinite(FRAME_KEY_TIMEOUT_MS), "the bound is not finite");
+  assert.ok(
+    FRAME_KEY_TIMEOUT_MS >= 1000,
+    "under a second, a slow phone fails healthy shares closed",
+  );
+  assert.ok(
+    FRAME_KEY_TIMEOUT_MS <= STOP_TIMEOUT_MS,
+    "the re-key bound must not leave the old key live longer than a stop",
+  );
+  assert.ok(
+    FRAME_KEY_TIMEOUT_MS <= 5_000,
+    "the old key's window is capped at the audited 5 s",
+  );
+  assertPolicyWired(
+    "the constructor default",
+    "frameKeyTimeoutMs: number = FRAME_KEY_TIMEOUT_MS,",
+  );
+  assertPolicyWired(
+    "the bound's assignment",
+    "this.#frameKeyTimeoutMs = frameKeyTimeoutMs;",
+  );
+  // One native re-key in the file, and that one inside the bound.
+  assert.equal(countWired(POLICY_CODE, "this.#bridge.setFrameKey("), 1);
+  assertPolicyWired(
+    "the bounded re-key",
+    `withTimeout(
+      this.#bridge.setFrameKey(`,
+  );
+  const bodies = bodiesAfter(
+    POLICY_CODE,
+    "async setFrameKey(key: LegSendKey): Promise<void> {",
+  );
+  assert.equal(bodies.length, 1);
+  assert.equal(
+    countWired(
+      bodies[0],
+      `await withTimeout(
+        this.#bridge.setFrameKey({
+          keyB64: key.keyB64,
+          keyIndex: key.keyIndex,
+          epoch: key.epoch,
+        }),
+        this.#frameKeyTimeoutMs,
+        "screen share re-key timed out",
+      );`,
+    ),
+    1,
+    "setFrameKey must await the native push under its own bound",
+  );
+  // The app runs the default: androidScreenShare.ts passes no bound of its
+  // own (a fourth argument there would bypass every check above).
+  const constructions = bodiesAfter(
+    SHARE_CODE,
+    "#core = new AndroidLegLifecycle(",
+  );
+  assert.equal(constructions.length, 1);
+  assert.ok(
+    argumentsOf(constructions[0]).length <= 3,
+    "androidScreenShare.ts must leave the re-key bound at its default",
+  );
 });

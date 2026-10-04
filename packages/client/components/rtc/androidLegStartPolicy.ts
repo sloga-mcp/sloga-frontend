@@ -294,6 +294,16 @@ export function gateStopNotice(w: GateStopWorld): LegStopNotice {
  * the state that lets the next hook retry. */
 export const STOP_TIMEOUT_MS = 15_000;
 
+/** Ceiling on a native re-key ([AndroidLegLifecycle.setFrameKey]). A push
+ * that never settles would leave the leg encrypting under the previous
+ * epoch's key — one a removed member still holds — and the provider's
+ * rotation, which awaits this push before reporting the local key installed,
+ * hung behind it. A timeout reads as a rejection, which the callers already
+ * treat as fail closed (stop the leg, tell the user). 5 s is far above a
+ * local Kotlin `setRawKey` round trip; [withTimeout] absorbs the loser's late
+ * settlement. */
+export const FRAME_KEY_TIMEOUT_MS = 5_000;
+
 /** Reject `work` if it has not settled within `ms`. The loser's late
  * settlement is absorbed by the race rather than surfacing unhandled. */
 export function withTimeout<T>(
@@ -334,6 +344,7 @@ export class AndroidLegLifecycle {
   #bridge: LegBridge;
   #announce: LegAnnouncer;
   #stopTimeoutMs: number;
+  #frameKeyTimeoutMs: number;
   #active = false;
   /** In-flight [stop], while one runs. Concurrent stops COALESCE onto it —
    * a hook that fires during a teardown must wait for that teardown, not be
@@ -352,10 +363,12 @@ export class AndroidLegLifecycle {
     bridge: LegBridge,
     announce: LegAnnouncer,
     stopTimeoutMs: number = STOP_TIMEOUT_MS,
+    frameKeyTimeoutMs: number = FRAME_KEY_TIMEOUT_MS,
   ) {
     this.#bridge = bridge;
     this.#announce = announce;
     this.#stopTimeoutMs = stopTimeoutMs;
+    this.#frameKeyTimeoutMs = frameKeyTimeoutMs;
   }
 
   active(): boolean {
@@ -429,8 +442,12 @@ export class AndroidLegLifecycle {
    * Rotation push (§5.2). Resolves only once the native sender encrypts under
    * the new (key, index) — the provider AWAITS this before reporting the
    * local key installed, which is what locks a removed member out. A
-   * rejection here means the leg cannot be trusted on the new epoch: the
-   * caller stops the leg (fail closed) and resolves the provider's push.
+   * rejection here — including a native call that does not settle within
+   * [FRAME_KEY_TIMEOUT_MS] — means the leg cannot be trusted on the new
+   * epoch: the caller stops the leg (fail closed) and resolves the provider's
+   * push. The lifecycle does not stop itself on a timeout: `active()` stays
+   * as it was, and the stop and the notice are the caller's, exactly as for
+   * a native rejection.
    */
   async setFrameKey(key: LegSendKey): Promise<void> {
     if (!this.#active) return;
@@ -440,11 +457,15 @@ export class AndroidLegLifecycle {
     // fail-closed path stops the leg.
     if (key.groupId !== this.#e2eeGroupId)
       throw new Error("screen leg key is from a different group");
-    await this.#bridge.setFrameKey({
-      keyB64: key.keyB64,
-      keyIndex: key.keyIndex,
-      epoch: key.epoch,
-    });
+    await withTimeout(
+      this.#bridge.setFrameKey({
+        keyB64: key.keyB64,
+        keyIndex: key.keyIndex,
+        epoch: key.epoch,
+      }),
+      this.#frameKeyTimeoutMs,
+      "screen share re-key timed out",
+    );
   }
 
   /**

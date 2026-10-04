@@ -7440,6 +7440,95 @@ MUTATIONS += [
         specs=[LEG_POLICY_SPEC],
         must_red=[LEG_POLICY_SPEC],
     ),
+    # ---- the re-key bound (screen-share flip wave 4d, R11) ------------------
+    # `setFrameKey` awaits the native re-key under `withTimeout`, so a push
+    # that never settles REJECTS, which is the callers' fail-closed stop,
+    # instead of hanging the provider's rotation with the leg still
+    # encrypting under the previous epoch's key. `leg-rekey-timeout-dropped`
+    # removes a timeout and must still finish: the spec bounds the hung push
+    # itself (`settlesWithin(hung, 500)`), so the mutant fails an assertion
+    # in about a second instead of riding out `SPEC_TIMEOUT_S`. Measured
+    # 2026-10-04: `-unbounded` is held by the source pin's range check alone
+    # (every behavior spec passes its own short bound, so none sees the
+    # default), and `-swallowed` by behavior alone (the pin strips comments
+    # and whitespace, and its text still matches inside the `try`).
+    Mutation(
+        id="leg-rekey-timeout-dropped",
+        what="the native re-key loses its timeout, so a push that never settles hangs the rotation and leaves the leg on the old epoch's key",
+        file=LEG_POLICY,
+        search="""    await withTimeout(
+      this.#bridge.setFrameKey({
+        keyB64: key.keyB64,
+        keyIndex: key.keyIndex,
+        epoch: key.epoch,
+      }),
+      this.#frameKeyTimeoutMs,
+      "screen share re-key timed out",
+    );
+""",
+        replace="""    await this.#bridge.setFrameKey({
+      keyB64: key.keyB64,
+      keyIndex: key.keyIndex,
+      epoch: key.epoch,
+    });
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-rekey-timeout-swallowed",
+        what="a re-key timeout is caught and the push resolves, so the caller never stops the leg and it keeps the old key silently",
+        file=LEG_POLICY,
+        search="""    await withTimeout(
+      this.#bridge.setFrameKey({
+        keyB64: key.keyB64,
+        keyIndex: key.keyIndex,
+        epoch: key.epoch,
+      }),
+      this.#frameKeyTimeoutMs,
+      "screen share re-key timed out",
+    );
+""",
+        replace="""    try {
+      await withTimeout(
+        this.#bridge.setFrameKey({
+          keyB64: key.keyB64,
+          keyIndex: key.keyIndex,
+          epoch: key.epoch,
+        }),
+        this.#frameKeyTimeoutMs,
+        "screen share re-key timed out",
+      );
+    } catch (e) {
+      if (e instanceof Error && e.message === "screen share re-key timed out")
+        return;
+      throw e;
+    }
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-rekey-timeout-unbounded",
+        what="the app's default re-key bound is ten minutes, so a hung native push leaves the old key live far longer than a stop may take",
+        file=LEG_POLICY,
+        search="""export const FRAME_KEY_TIMEOUT_MS = 5_000;
+""",
+        replace="""export const FRAME_KEY_TIMEOUT_MS = 600_000;
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-rekey-timeout-unwired",
+        what="the constructor drops its re-key bound, so every push races a timer that fires at once and a healthy re-key fails closed",
+        file=LEG_POLICY,
+        search="""    this.#frameKeyTimeoutMs = frameKeyTimeoutMs;
+""",
+        replace="",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
     Mutation(
         id="leg-3a-stale-check",
         what="a connect resolving after its share was stopped still marks the leg active",
@@ -7581,13 +7670,15 @@ MUTATIONS += [
         id="leg-4d",
         what="setFrameKey hands the whole key, groupId included, across the bridge",
         file=LEG_POLICY,
-        search="""    await this.#bridge.setFrameKey({
-      keyB64: key.keyB64,
-      keyIndex: key.keyIndex,
-      epoch: key.epoch,
-    });
+        # Wave 4d retarget: the push now sits inside the re-key `withTimeout`
+        # (R11). Same defect, new anchor; the bound is left in place.
+        search="""      this.#bridge.setFrameKey({
+        keyB64: key.keyB64,
+        keyIndex: key.keyIndex,
+        epoch: key.epoch,
+      }),
 """,
-        replace="""    await this.#bridge.setFrameKey(key);
+        replace="""      this.#bridge.setFrameKey(key),
 """,
         specs=[LEG_POLICY_SPEC],
         must_red=[LEG_POLICY_SPEC],
@@ -8461,9 +8552,13 @@ MUTATIONS += [
         id="leg-bridge-setframekey-unawaited",
         what="the leaf pushes the key across the bridge un-awaited, so a refused push never reaches the caller's fail-closed stop",
         file=LEG_POLICY,
-        search="""    await this.#bridge.setFrameKey({
+        # Wave 4d retarget: the push is now awaited through the re-key
+        # `withTimeout` (R11), so the `await` dropped is that one.
+        search="""    await withTimeout(
+      this.#bridge.setFrameKey({
 """,
-        replace="""    void this.#bridge.setFrameKey({
+        replace="""    void withTimeout(
+      this.#bridge.setFrameKey({
 """,
         specs=[LEG_POLICY_SPEC],
         must_red=[LEG_POLICY_SPEC],
