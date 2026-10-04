@@ -15,12 +15,17 @@ import { useUser } from "@revolt/markdown/users";
 import { useModals } from "@revolt/modal";
 import { fetchAllChangelogs } from "@revolt/modal/modals/Changelog";
 import { overlayShellAvailable } from "@revolt/rtc/overlay/shell";
-import { ColouredText, Column, Text, iconSize } from "@revolt/ui";
+import {
+  ColouredText,
+  Column,
+  SupportSlogaIcon,
+  Text,
+  iconSize,
+} from "@revolt/ui";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
 
 import MdAccountCircle from "@material-design-icons/svg/outlined/account_circle.svg?component-solid";
 import MdCampaign from "@material-design-icons/svg/outlined/campaign.svg?component-solid";
-import MdCoffee from "@material-design-icons/svg/outlined/coffee.svg?component-solid";
 import MdGavel from "@material-design-icons/svg/outlined/gavel.svg?component-solid";
 import MdLanguage from "@material-design-icons/svg/outlined/language.svg?component-solid";
 import MdLogout from "@material-design-icons/svg/outlined/logout.svg?component-solid";
@@ -38,7 +43,6 @@ import MdWorkspacePremium from "@material-design-icons/svg/outlined/workspace_pr
 import pkg from "../../../../../../package.json";
 
 import { SettingsConfiguration } from ".";
-import { useSettingsNavigation } from "./Settings";
 import { AccountCard, BackCard } from "./user/_AccountCard";
 import { MyAccount } from "./user/Account";
 import AdvancedSettings from "./user/Advanced";
@@ -157,9 +161,6 @@ const Config: SettingsConfiguration<{ server: Server }> = {
   list(_, onClose) {
     const { pop, openModal } = useModals();
     const client = useClient();
-    // The list is built inside the settings navigation provider (the header
-    // AccountCard relies on the same thing), so a row can switch pages itself.
-    const { navigate } = useSettingsNavigation();
 
     // Which streaming platforms this server can link. Connections is a dead
     // page ("not enabled on this server yet") wherever all are off, so the
@@ -434,10 +435,8 @@ const Config: SettingsConfiguration<{ server: Server }> = {
           entries: [
             {
               id: "donate",
-              // Opens the in-app Supporter page (the same page as the Account
-              // row) rather than linking straight out to Ko-fi, so the perks
-              // are explained before anyone leaves the app. Its id stays
-              // `donate`: the sidebar highlights the Account row once there.
+              // Hands out the supporter code, then opens Ko-fi to donate. The
+              // perks live on the Account section's Supporter page.
               // Google Play treats linking out to donations as a payments-policy
               // gray area and Sloga is not a registered nonprofit, and the App
               // Store only allows in-app purchase, so this is hidden in Play and
@@ -448,14 +447,14 @@ const Config: SettingsConfiguration<{ server: Server }> = {
               },
               // Brand orange, matching the Home screen Ko-fi button and the
               // sloga.gg header — this entry is meant to stand out.
-              icon: <MdCoffee {...iconSize(20)} fill="#FF8A00" />,
+              icon: <SupportSlogaIcon size={20} />,
               title: (
                 <ColouredText colour="#FF8A00">
                   <Trans>Support Sloga</Trans>
                 </ColouredText>
               ),
               onClick() {
-                navigate("supporter");
+                openModal({ type: "support_sloga" });
               },
             },
             {

@@ -886,6 +886,8 @@ internal open class UniffiVTableCallbackInterfaceKeyProtector(
 
 
 
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -1036,6 +1038,8 @@ fun uniffi_acutest_e2ee_checksum_method_e2eeengine_send_mode_group(
 fun uniffi_acutest_e2ee_checksum_method_e2eeengine_sign_claim(
 ): Short
 fun uniffi_acutest_e2ee_checksum_method_e2eeengine_status(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_store_owner(
 ): Short
 fun uniffi_acutest_e2ee_checksum_method_e2eeengine_wipe(
 ): Short
@@ -1236,6 +1240,8 @@ fun uniffi_acutest_e2ee_fn_method_e2eeengine_send_mode_group(`ptr`: Pointer,`con
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_sign_claim(`ptr`: Pointer,`sessionId`: RustBuffer.ByValue,`nonce`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_status(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_store_owner(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_wipe(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
@@ -1577,6 +1583,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_status() != 12604.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_store_owner() != 49521.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_wipe() != 31954.toShort()) {
@@ -2545,6 +2554,20 @@ public interface E2eeEngineInterface {
      * recreating the store the user just wiped (which bricks restore).
      */
     fun `status`(): kotlin.String
+    
+    /**
+     * Which account this install's E2EE store belongs to — `None` for a
+     * device that has never done MLS, and for an unprovisioned one. UNKNOWN,
+     * never an all-clear; see [`E2ee::store_owner`], including why this is
+     * never-provisioning but NOT the cheap `is_provisioned` class of call.
+     *
+     * 🔴 EXPORTED BUT NOT REACHABLE FROM THE APP YET: the uniffi bindings
+     * carry `storeOwner`, but `E2eePlugin.kt`'s command multiplexer has no
+     * `e2ee_store_owner` case, so a call rejects and the client reads
+     * UNKNOWN — fail-safe, and dark. Wiring it needs only that Kotlin case,
+     * which no JS gate can see.
+     */
+    fun `storeOwner`(): kotlin.String?
     
     /**
      * Destroy ALL local E2EE state.
@@ -3890,6 +3913,31 @@ open class E2eeEngine: Disposable, AutoCloseable, E2eeEngineInterface
     callWithPointer {
     uniffiRustCallWithError(E2eeException) { _status ->
     UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_status(
+        it, _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Which account this install's E2EE store belongs to — `None` for a
+     * device that has never done MLS, and for an unprovisioned one. UNKNOWN,
+     * never an all-clear; see [`E2ee::store_owner`], including why this is
+     * never-provisioning but NOT the cheap `is_provisioned` class of call.
+     *
+     * 🔴 EXPORTED BUT NOT REACHABLE FROM THE APP YET: the uniffi bindings
+     * carry `storeOwner`, but `E2eePlugin.kt`'s command multiplexer has no
+     * `e2ee_store_owner` case, so a call rejects and the client reads
+     * UNKNOWN — fail-safe, and dark. Wiring it needs only that Kotlin case,
+     * which no JS gate can see.
+     */
+    @Throws(E2eeException::class)override fun `storeOwner`(): kotlin.String? {
+            return FfiConverterOptionalString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_store_owner(
         it, _status)
 }
     }

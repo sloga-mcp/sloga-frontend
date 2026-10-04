@@ -385,7 +385,11 @@ function retryWebPushOnGesture(): boolean {
   return true;
 }
 
-/** Native bridge to fetch the FCM device token (Android app only) */
+/**
+ * Native bridge to fetch the FCM device token (Android app only). The foss
+ * build's getToken rejects with PUSH_UNAVAILABLE and is never called there:
+ * foss push rides UnifiedPush instead.
+ */
 const PushTokenNative = Capacitor.isNativePlatform()
   ? registerPlugin<{
       getToken(): Promise<{ token: string }>;
@@ -613,9 +617,9 @@ async function killUnifiedPushSubscription() {
 }
 
 /**
- * Whether push rides a browser service worker (VAPID web push): not the
- * Android app (FCM), not the Tauri or Electron desktop shells (no service
- * worker there).
+ * Whether push rides a browser service worker (VAPID web push): not any
+ * native Android build (FCM or UnifiedPush), not the Tauri or Electron
+ * desktop shells (no service worker there).
  */
 export function isWebPushPlatform(): boolean {
   return (
@@ -689,9 +693,10 @@ async function setUpServiceWorkerSubscription(
       p256dh: "",
       auth: token,
     });
-    // Persist the API base + session token so the native FirebaseMessagingService
-    // can re-subscribe on its own if FCM rotates the token while the app is
-    // killed (onNewToken), instead of waiting for the next app launch.
+    // Persist the API base + session token so the gms SlogaMessagingService
+    // can re-subscribe through PushResubscriber if FCM rotates the token
+    // while the app is killed (onNewToken), instead of waiting for the next
+    // app launch.
     await PushTokenNative.saveSubscription({
       apiUrl: client.options.baseURL,
       sessionToken: client.authenticationHeader[1],

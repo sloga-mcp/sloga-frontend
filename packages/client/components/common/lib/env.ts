@@ -123,11 +123,14 @@ export default {
   CHUNKED_UPLOAD_THRESHOLD:
     (import.meta.env.VITE_CFG_CHUNKED_UPLOAD_THRESHOLD as number) ?? 90_000_000,
   /**
-   * Client-side cap for attachments in E2EE conversations. The E2EE blob
-   * path is one-shot and server-capped at ~20 MiB plaintext
-   * (`MAX_E2EE_BLOB_SIZE`); chunked uploads do NOT apply to it (that is a
-   * later phase), so encrypted conversations must not admit files the blob
-   * endpoint will reject.
+   * Client-side cap for attachments in E2EE conversations. The binding limit
+   * is native: e2ee-core encrypts and decrypts one-shot, whole-buffer, and
+   * rejects plaintext above `MAX_ATTACHMENT_PLAINTEXT` (20 MiB = 20_971_520).
+   * Autumn's E2EE blob route is NOT the constraint (it accepts ciphertext up
+   * to `MAX_E2EE_BLOB_SIZE` = 91_000_000). 20_000_000 sits just under the
+   * native 20 MiB so the picker refuses before the core would. Chunked
+   * uploads do NOT apply to this path yet. Raise this only together with
+   * the native constant and autumn's ceiling, never alone.
    */
   E2EE_MAX_ATTACHMENT_SIZE:
     (import.meta.env.VITE_CFG_E2EE_MAX_ATTACHMENT_SIZE as number) ?? 20_000_000,

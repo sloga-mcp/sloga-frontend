@@ -243,6 +243,109 @@ tasks.configureEach {
     if (it.name.contains('Foss') && it.name.contains('ArtProfile')) it.enabled = false
 }
 
+// Fail-closed gate: all three flavors package the same src/main/assets, whose
+// CSP follows SLOGA_FDROID at `cap sync` time. A play or sideload build after a
+// foss sync would ship the foss CSP, and a foss build after a standard sync
+// would ship the Google and hCaptcha origins, so every merge<Flavor><Type>Assets
+// task first checks the synced CSP. Both predicates mirror injectAndroidCsp.mjs:
+// DIRECTIVES puts translate.googleapis.com in connect-src and both hCaptcha
+// origins in script-src, and the foss policy drops FOSS_OMITTED_ORIGINS from
+// every directive. A change to either list there must be made here too.
+// This guards only the CSP of the synced bundle, not the JS (webDir) axis: a
+// standard CSP over the live web dist passes it. That axis is checked by
+// build-android-foss.sh (foss) and the release sweep's dist gates (standard).
+// Every gradle packaging task must be flavor-scoped: an unscoped assemble,
+// bundle, build or assembleDebug realizes both guards, so one of them always
+// fails. A fresh tree has no synced bundle and needs a sync for the flavor
+// being packaged (the release's build-android-0NN.sh for play and sideload,
+// /home/mcp/build-android-foss.sh for foss) before any packaging task. There
+// is deliberately no bypass property.
+def webAssetsIndexHtml = file('src/main/assets/public/index.html')
+// Returns [kind, description]; kind is 'standard', 'foss' or null. Reads only
+// the File captured above, so it never touches the project at execution time.
+def classifyWebAssetsCsp = { File html ->
+    if (!html.isFile()) {
+        return [null, 'missing (no synced web bundle)']
+    }
+    def text = html.getText('UTF-8')
+    // Origins are compared case-insensitively, as the WebView matches them.
+    def lower = text.toLowerCase(Locale.ROOT)
+    def markers = text.count('<!-- android-csp:start -->')
+    def metas = (text =~ /(?i)http-equiv\s*=\s*["']?content-security-policy/).size()
+    def policies = []
+    def m = text =~ /<!-- android-csp:start --><meta http-equiv="Content-Security-Policy" content="([^"]*)">/
+    while (m.find()) {
+        policies << m.group(1)
+    }
+    if (markers != 1 || metas != 1 || policies.size() != 1) {
+        return [null, "${markers} android-csp markers, ${metas} CSP metas and ${policies.size()} injected CSP blocks, not exactly 1 of each"]
+    }
+    // Each directive as [name, source...].
+    def directives = policies[0].toLowerCase(Locale.ROOT).split(';')*.trim().findAll { it }.collect { it.split(/\s+/) as List }
+    def has = { String name, String source -> directives.any { it[0] == name && it.drop(1).contains(source) } }
+    def omitted = ['https://translate.googleapis.com', 'https://hcaptcha.com', 'https://*.hcaptcha.com']
+    if (has('connect-src', omitted[0]) && has('script-src', omitted[1]) && has('script-src', omitted[2])) {
+        return ['standard', 'the standard CSP']
+    }
+    if (!directives.any { d -> d.drop(1).any { omitted.contains(it) } } &&
+            !lower.contains('googleapis') && !lower.contains('hcaptcha')) {
+        return ['foss', 'the foss CSP']
+    }
+    return [null, 'a CSP that is neither the standard nor the foss one']
+}
+def verifyStandardWebAssets = tasks.register('verifyStandardWebAssets') {
+    group = 'verification'
+    description = 'Fails unless the synced web bundle carries the standard (play and sideload) CSP.'
+    doLast { task ->
+        def (kind, found) = classifyWebAssetsCsp(webAssetsIndexHtml)
+        if (kind != 'standard') {
+            throw new GradleException("verifyStandardWebAssets: src/main/assets/public/index.html: ${found}; want the standard CSP " +
+                "(translate.googleapis.com in connect-src, both hCaptcha origins in script-src). " +
+                "Re-run the release's build-android-0NN.sh with SLOGA_FDROID unset in the environment (it syncs the standard " +
+                "bundle with webDir dist_apk; with SLOGA_FDROID=1 exported, that sync injects the foss CSP instead).")
+        }
+        task.logger.lifecycle('verifyStandardWebAssets: OK (standard CSP in src/main/assets/public/index.html)')
+    }
+}
+def verifyFossWebAssets = tasks.register('verifyFossWebAssets') {
+    group = 'verification'
+    description = 'Fails unless the synced web bundle carries the foss CSP.'
+    doLast { task ->
+        def (kind, found) = classifyWebAssetsCsp(webAssetsIndexHtml)
+        if (kind != 'foss') {
+            throw new GradleException("verifyFossWebAssets: src/main/assets/public/index.html: ${found}; want the foss CSP " +
+                "(no translate.googleapis.com or hCaptcha origin, and no googleapis/hcaptcha text, in index.html). " +
+                "Build foss with /home/mcp/build-android-foss.sh.")
+        }
+        task.logger.lifecycle('verifyFossWebAssets: OK (foss CSP in src/main/assets/public/index.html)')
+    }
+}
+tasks.configureEach { task ->
+    def m = task.name =~ /^merge(Play|Sideload|Foss)(Debug|Release)Assets$/
+    if (m.matches()) {
+        task.dependsOn(m.group(1) == 'Foss' ? verifyFossWebAssets : verifyStandardWebAssets)
+    }
+}
+// configureEach silently wires nothing if AGP ever renames these tasks, so
+// configuration fails unless all six exist. projectsEvaluated rather than
+// afterEvaluate: it runs after every project's afterEvaluate, including the
+// one in which AGP registers its variant tasks, so it does not depend on
+// callback order. tasks.named finds a registered task without realizing it.
+def appTasks = tasks
+gradle.projectsEvaluated {
+    ['Play', 'Sideload', 'Foss'].each { flavor ->
+        ['Debug', 'Release'].each { type ->
+            def name = "merge${flavor}${type}Assets".toString()
+            try {
+                appTasks.named(name)
+            } catch (UnknownTaskException e) {
+                throw new GradleException("web assets guard: AGP no longer creates ${name}, so the CSP check is wired to nothing. " +
+                    "Update the merge task regex above.", e)
+            }
+        }
+    }
+}
+
 apply from: 'capacitor.build.gradle'
 
 // Per-flavor google-services.json: src/play and src/sideload each carry a copy,

@@ -58,9 +58,10 @@ export function NotificationsWorker() {
   const { lifecycle } = useClientLifecycle();
 
   // Tell the native layer whether this web layer can currently present the
-  // ringing popup, so SlogaMessagingService can suppress the DUPLICATE
-  // notification. Without this an incoming call shows an Android notification
-  // AND an in-app popup, each needing its own Decline (reported 2026-08-30).
+  // ringing popup, so SlogaNotifier.notifyIncomingCall (shared by the FCM and
+  // UnifiedPush services) can suppress the DUPLICATE notification. Without
+  // this an incoming call shows an Android notification AND an in-app popup,
+  // each needing its own Decline (reported 2026-08-30).
   //
   // Reported on every connection-state change rather than once at mount: the
   // popup rides the websocket VoiceChannelJoin event, so a disconnected client
@@ -99,6 +100,12 @@ export function NotificationsWorker() {
     // user just did — never worth a notification (and never persisted)
     if (message.isEphemeral) return;
 
+    // Silent sends ("@silent ", flag mask 1) skip the popup and the sound.
+    // The server already skips push for them, and an online user gets no
+    // push at all, so this popup would be the only alert they see. The
+    // unread and mention badges still update through stoat.js.
+    if (message.isSuppressed) return;
+
     // Ignore if we are currently looking at the channel
     if (params().channelId === message.channelId && document.hasFocus()) return;
 
@@ -107,6 +114,11 @@ export function NotificationsWorker() {
 
     // Ignore blocked users
     if (message.author?.relationship === "Blocked") return;
+
+    // A message can arrive for a channel this client no longer has, such as
+    // a thread of a server we just left, which stoat.js has swept from the
+    // cache. There is nothing to notify about without the channel.
+    if (!message.channel) return;
 
     // Ignore muted channels
     if (state.notifications.isMuted(message.channel)) return;

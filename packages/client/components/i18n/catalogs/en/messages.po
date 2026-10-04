@@ -577,6 +577,34 @@ msgstr "90 days"
 msgid "A moderator deafened you in this server. You won't hear this call until they lift it."
 msgstr "A moderator deafened you in this server. You won't hear this call until they lift it."
 
+#: components/modal/modals/SupportSloga.tsx
+msgid "Already donated? Claim it in Supporter settings"
+msgstr "Already donated? Claim it in Supporter settings"
+
+#: components/modal/modals/SupportSloga.tsx
+msgid "Copy code and open Ko-fi"
+msgstr "Copy code and open Ko-fi"
+
+#: components/modal/modals/SupportSloga.tsx
+msgid "Couldn't copy to the clipboard. Select the code and copy it yourself."
+msgstr "Couldn't copy to the clipboard. Select the code and copy it yourself."
+
+#: components/modal/modals/SupportSloga.tsx
+msgid "Couldn't get your supporter code."
+msgstr "Couldn't get your supporter code."
+
+#: components/modal/modals/SupportSloga.tsx
+msgid "Donate without a code"
+msgstr "Donate without a code"
+
+#: components/modal/modals/SupportSloga.tsx
+msgid "Open Ko-fi"
+msgstr "Open Ko-fi"
+
+#: components/modal/modals/SupportSloga.tsx
+msgid "Paste this code into your Ko-fi message so the donation is added to your account and any perks it earns unlock automatically."
+msgstr "Paste this code into your Ko-fi message so the donation is added to your account and any perks it earns unlock automatically."
+
 #: components/rtc/state.tsx
 msgid "Your call continued in another window or on another device"
 msgstr "Your call continued in another window or on another device"
@@ -5678,6 +5706,18 @@ msgid "Expired"
 msgstr "Expired"
 
 #: components/app/interface/settings/user/Referrals.tsx
+msgid "Ward"
+msgstr "Ward"
+
+#: components/app/interface/settings/user/Referrals.tsx
+msgid "Every qualified referral earns Ward. Soon you'll be able to spend it on Protected channels and servers."
+msgstr "Every qualified referral earns Ward. Soon you'll be able to spend it on Protected channels and servers."
+
+#: components/app/interface/settings/user/Referrals.tsx
+msgid "Ward has no cash value and can't be transferred."
+msgstr "Ward has no cash value and can't be transferred."
+
+#: components/app/interface/settings/user/Referrals.tsx
 msgid "Rewards"
 msgstr "Rewards"
 
@@ -8121,6 +8161,10 @@ msgstr "This attachment expired before it reached this device. Ask the sender to
 msgid "This attachment failed verification and was discarded (it may have been tampered with in transit)."
 msgstr "This attachment failed verification and was discarded (it may have been tampered with in transit)."
 
+#: components/app/interface/channels/text/EncryptedAttachment.tsx
+msgid "This attachment is larger than this version of the app can open."
+msgstr "This attachment is larger than this version of the app can open."
+
 #: components/i18n/errors.ts
 msgid "This bot is private and can only be added by the creator."
 msgstr "This bot is private and can only be added by the creator."
@@ -8539,6 +8583,10 @@ msgstr "Next reward: {current} of {next}"
 #: components/app/interface/settings/user/Referrals.tsx
 msgid "Next reward: {reward} ({current} of {next})"
 msgstr "Next reward: {reward} ({current} of {next})"
+
+#: components/app/interface/settings/user/Referrals.tsx
+msgid "{ward} Ward earned"
+msgstr "{ward} Ward earned"
 
 #: components/app/interface/settings/user/Referrals.tsx
 msgid "Your referral code"
@@ -9644,6 +9692,10 @@ msgstr "Your role ranking is too low to take this action."
 msgid "Your server is ready. Paste this invite in Discord to bring your members over."
 msgstr "Your server is ready. Paste this invite in Discord to bring your members over."
 
+#: components/modal/modals/SupportSloga.tsx
+msgid "Your supporter code · Expires {expires}"
+msgstr "Your supporter code · Expires {expires}"
+
 #: components/auth/src/flows/Form.tsx
 msgid "Your suspension has expired — try logging in again."
 msgstr "Your suspension has expired — try logging in again."
@@ -9659,3 +9711,4 @@ msgstr "YouTube"
 #: components/ui/components/features/voice/minigame/MinigameChip.tsx
 msgid "Zap"
 msgstr "Zap"
+

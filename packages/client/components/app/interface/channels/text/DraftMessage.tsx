@@ -1,4 +1,4 @@
-import { For, Match, Switch } from "solid-js";
+import { For, Match, Show, Switch } from "solid-js";
 
 import { Trans } from "@lingui-solid/solid/macro";
 import type { Channel } from "stoat.js";
@@ -92,11 +92,15 @@ export function DraftMessage(props: Props) {
                   resynced right now and a missing msgid renders as a raw
                   hash. */}
               <Text class="label">
-                {file.uploadProcessing[0]()
-                  ? `Processing \`${file.file.name}\` on the server...`
-                  : `Uploading file \`${file.file.name}\`... ${(
-                      file.uploadProgress[0]() * 100
-                    ).toFixed()}%`}
+                {props.draft.status !== "sending"
+                  ? file.autumnId
+                    ? `\`${file.file.name}\` uploaded`
+                    : `\`${file.file.name}\` was not uploaded`
+                  : file.uploadProcessing[0]()
+                    ? `Processing \`${file.file.name}\` on the server...`
+                    : `Uploading file \`${file.file.name}\`... ${(
+                        file.uploadProgress[0]() * 100
+                      ).toFixed()}%`}
               </Text>
               <Switch>
                 <Match when={file.dimensions}>
@@ -112,9 +116,24 @@ export function DraftMessage(props: Props) {
           );
         }}
       </For>
+      <Show when={props.draft.status === "failed" && props.draft.error}>
+        {/* Untranslated for the same reason as the upload label above */}
+        <SendError>{props.draft.error}</SendError>
+      </Show>
     </MessageContainer>
   );
 }
+
+/**
+ * Reason the last send attempt failed
+ */
+const SendError = styled("div", {
+  base: {
+    color: "var(--md-sys-color-error)",
+    fontSize: "0.875em",
+    wordBreak: "break-word",
+  },
+});
 
 /**
  * Break all text and prevent overflow from math blocks

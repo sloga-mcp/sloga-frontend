@@ -72,6 +72,7 @@ export {
   SnackbarProvider,
   useSnackbar,
 } from "./Snackbar";
+export { SupportSlogaIcon } from "./SupportSlogaIcon";
 export { Switch } from "./Switch";
 export { Text, typography } from "./Text";
 export { TextEditor } from "./TextEditor";
