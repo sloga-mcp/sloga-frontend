@@ -8,7 +8,10 @@ import com.getcapacitor.BridgeActivity;
  * only in this source set).
  *
  * The `play` flavor ships a no-op twin of this class — see
- * src/play/java/com/acutest/app/FlavorPlugins.java.
+ * src/play/java/com/acutest/app/FlavorPlugins.java. The `foss` flavor's twin,
+ * src/foss/java/com/acutest/app/FlavorPlugins.java, registers
+ * UnifiedPushPlugin and the website-install update notice
+ * (UpdateNoticePlugin) instead.
  */
 final class FlavorPlugins {
     private FlavorPlugins() {}

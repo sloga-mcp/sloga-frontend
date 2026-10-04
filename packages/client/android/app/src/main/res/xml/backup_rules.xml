@@ -18,7 +18,8 @@
 
      3. `shared_prefs/sloga_push.xml` — PushTokenPlugin.saveSubscription
         keeps the API base URL and a live SESSION TOKEN here so
-        SlogaMessagingService can re-subscribe when FCM rotates the token.
+        PushResubscriber can re-subscribe while the app is killed (in the
+        play and sideload builds, when FCM rotates the token).
         A restored copy would hand another device a working login. Nothing
         is lost by excluding it: the web layer re-saves it on every
         signed-in launch (resyncPushSubscription).

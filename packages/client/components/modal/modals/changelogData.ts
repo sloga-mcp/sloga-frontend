@@ -9,6 +9,60 @@ import type { ChangelogResponse } from "./Changelog";
  */
 export const CHANGELOGS: ChangelogResponse[] = [
   // ==========================================================================
+  // v0.65.0 (written 2026-10-04 by the merge steward from the v0.65 inbox,
+  // ~/.claude/plans/v065-release-inbox.md). NOT CUT YET: the release sweep
+  // bumps the root version and sets `published_at` to the release day. Fold
+  // later items into THIS entry; never add a second v0.65 entry. The popup is
+  // keyed on `id` only, so any web dist deploy from main before the cut pops
+  // this entry on web early: no interim web deploy past this commit without
+  // accepting that.
+  // Copy constraints, load-bearing — READ BEFORE EDITING:
+  // - Support Sloga (2d774aac): LEFT OUT. These notes show in the Play and
+  //   App Store builds too (there is no distribution gate; see the v0.63 rule:
+  //   no Ko-fi, donating, payment or supporter-perk copy). Announce it on
+  //   sloga.gg and socials instead.
+  // - Ward (d09e183f): display only. No price, no exchange rate, no date, no
+  //   cash value, nothing can be spent yet. "Soon" is the approved wording
+  //   (user ruling 2026-10-04: keep it), even though Protected channels is not
+  //   built yet.
+  // - Encrypted "too large" message (e2124749 + desktop 80bbf7a1): desktop and
+  //   Android only (web has no E2EE). It only works in shells built from the
+  //   new e2ee core (see the inbox table). Do NOT say updating opens the file,
+  //   do NOT say the sender uses a newer version, do NOT mention 5 GB or larger
+  //   attachments (no cap was raised).
+  // - Silent messages (2ac67a49): LEFT OUT. The live server stores a silent
+  //   send as flags 0 (MessageFlagsValue::has checks value 2 before acutest
+  //   d41d5dc6), so the client guard never fires until delta+crond from
+  //   >= d41d5dc6 deploy, which H-6 holds until AFTER this client ships. Add
+  //   the bullet in the release after that deploy. Inbox entry 4 (the stoat.js
+  //   `mentioned` fix) must not mention silent messages either.
+  // - Upload errors (0ab543e4): the new error strings are English-only for
+  //   now. The Android attach snapshot is NOT claimed (unverified against the
+  //   Xiaomi report).
+  // - LEFT OUT until deployed (server-side, landed on acutest, NOT live): the
+  //   ban purge of thread/forum messages + thread push to removed users,
+  //   threads appearing when access is granted, hidden new channels,
+  //   mark-server-read acking threads, the suspension-email appeal link. Add
+  //   each bullet only once its service is deployed.
+  // - LEFT OUT until landed: the 10-01 feedback batch (fix/feedback-1001) and
+  //   forum layouts (feat/forum-layouts).
+  {
+    id: "sloga-2026-10-04",
+    title: "Patch Notes",
+    published_at: "2026-10-04T12:00:00.000Z",
+    web_version: "0.65.0",
+    markdown_content: `## v0.65.0 — Ward for Referrals
+
+### 🎁 Referrals
+- **Referrals now show the Ward you've earned.** Every qualified referral earns Ward, which you'll soon be able to spend on Protected channels and servers.
+
+### 🔔 Fixes
+- **Failed uploads now say why.** If a file fails to upload, the unsent message now shows the reason instead of saying the upload reached 100%.
+- **Encrypted attachments that are too large for your app now say so.** In the desktop and Android apps, an encrypted attachment that is larger than your version of the app can open now says that, instead of showing a tampering warning.
+- **Fewer glitches after leaving a server or a bulk delete.** Threads and forum posts from a server you left no longer linger in the app, and going back to a channel after messages in it were bulk-deleted no longer shows blank rows.
+`,
+  },
+  // ==========================================================================
   // v0.64.0 (cut 2026-09-30 at main `99ae1b47`; written 2026-09-29 by the
   // merge steward from the v0.64 inbox, ~/.claude/plans/v064-patch-notes-inbox.md).
   // The live web serves nothing newer than `sloga-2026-09-23` (v0.63.0), so

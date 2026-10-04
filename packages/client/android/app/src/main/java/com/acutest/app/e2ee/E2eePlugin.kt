@@ -27,6 +27,18 @@ import java.util.concurrent.Executors
 import uniffi.acutest_e2ee.E2eeException
 
 /**
+ * Bounds the inbound attachment ciphertext GET. The native core bundled in
+ * this APK accepts at most `MAX_ATTACHMENT_PLAINTEXT` (20 MiB) of plaintext,
+ * i.e. at most 20_971_852 bytes of AE2A ciphertext, and rejects any other
+ * length; 21 MiB is that ceiling plus slack. A larger body is from a hostile
+ * sender or server and is refused as soon as it crosses this bound, before
+ * the rest of it is buffered. Moves together with the core's
+ * `MAX_ATTACHMENT_PLAINTEXT` (`e2ee-core/src/attachments.rs`), never with
+ * Autumn's larger blob ceiling.
+ */
+private const val MAX_ATTACHMENT_CIPHERTEXT: Long = 21L * 1024 * 1024
+
+/**
  * Capacitor bridge for the native E2EE layer (slice 4) — the Android analog
  * of the desktop Tauri command surface (`src-tauri/src/e2ee.rs`).
  *
@@ -1316,11 +1328,12 @@ class E2eePlugin : Plugin() {
                 connection.setRequestProperty(authHeader, authValue)
                 when (val status = connection.responseCode) {
                     200 -> {
-                        // Ciphertext ceiling: Autumn caps uploads at 21 MiB;
-                        // a larger GET body is a hostile server (OOM DoS #4)
+                        // Ciphertext ceiling: the bundled core's cap; a
+                        // larger GET body is a hostile sender or server
+                        // (OOM DoS #4)
                         val bytes =
                             connection.inputStream.use {
-                                readBounded(it, 21L * 1024 * 1024)
+                                readBounded(it, MAX_ATTACHMENT_CIPHERTEXT)
                             }
                         connection.disconnect()
                         try {

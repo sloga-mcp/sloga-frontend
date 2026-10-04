@@ -12,6 +12,7 @@ import { Channel, Client, Message } from "stoat.js";
 
 import { useClientLifecycle } from "@revolt/client";
 import { State } from "@revolt/client/Controller";
+import { restorableEntry } from "./messageCacheLive";
 
 type ChannelState = {
   messages: Message[];
@@ -90,7 +91,10 @@ export function MessageCache(props: { client: Client; children: JSX.Element }) {
           if (cache[channel.id]) {
             const state = cache[channel.id];
             delete cache[channel.id];
-            return state;
+            // stoat.js purges a left server's messages and bulk deletes never
+            // reach this cache, so a stale entry would restore blank rows.
+            const messages = props.client.messages;
+            return restorableEntry(state, (id) => messages.has(id));
           }
         },
       }}

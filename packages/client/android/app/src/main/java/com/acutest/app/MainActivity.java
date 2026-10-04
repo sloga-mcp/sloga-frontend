@@ -102,8 +102,9 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(PushTokenPlugin.class);
         registerPlugin(AppFlavorPlugin.class);
         registerPlugin(SlogaBackPlugin.class);
-        // Sideload adds the self-updater, foss adds UnifiedPush; the Play twin
-        // registers nothing. See FlavorPlugins in src/{sideload,play,foss}.
+        // Sideload adds the self-updater; foss adds UnifiedPush and the
+        // website-install update notice; the Play twin registers nothing. See
+        // FlavorPlugins in src/{sideload,play,foss}.
         FlavorPlugins.register(this);
         registerPlugin(SpeechToTextPlugin.class);
         registerPlugin(com.acutest.app.e2ee.E2eePlugin.class);

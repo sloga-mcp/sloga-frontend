@@ -140,13 +140,26 @@ export function EncryptedAttachment(props: {
         </StateContainer>
       </Match>
       <Match when={props.meta.state === "failed"}>
-        <StateContainer data-error>
-          <Symbol>gpp_bad</Symbol>
-          <Details>
-            <span>{props.meta.name}</span>
-            <Hint>{t`This attachment failed verification and was discarded (it may have been tampered with in transit).`}</Hint>
-          </Details>
-        </StateContainer>
+        <Show
+          when={props.meta.fail_reason === "too_large"}
+          fallback={
+            <StateContainer data-error>
+              <Symbol>gpp_bad</Symbol>
+              <Details>
+                <span>{props.meta.name}</span>
+                <Hint>{t`This attachment failed verification and was discarded (it may have been tampered with in transit).`}</Hint>
+              </Details>
+            </StateContainer>
+          }
+        >
+          <StateContainer data-error>
+            <Symbol>block</Symbol>
+            <Details>
+              <span>{props.meta.name}</span>
+              <Hint>{t`This attachment is larger than this version of the app can open.`}</Hint>
+            </Details>
+          </StateContainer>
+        </Show>
       </Match>
       <Match when={props.meta.state === "ready" && kind() === "image"}>
         <img
