@@ -329,3 +329,114 @@ describe("remarkSpoiler", () => {
     assertNoDelimiterText(multiline);
   });
 });
+
+// The plugin runs on every rendered message, including text nobody trusted,
+// so no input may make it slow. An earlier INVISIBLE_TEXT regex overlapped
+// `\s` with U+FEFF under `*`, and "hi ||" followed by about 40 U+FEFF and
+// one visible character froze the renderer for hours.
+
+/** Upper bound for one plugin pass over an adversarial input, in ms */
+const TIME_BOUND_MS = 50;
+
+const BOM = String.fromCodePoint(0xfeff);
+const ZWSP = String.fromCodePoint(0x200b);
+const WORD_JOINER = String.fromCodePoint(0x2060);
+const NBSP = String.fromCodePoint(0xa0);
+
+/**
+ * Parse markdown, then time `remarkSpoiler` alone over the tree. Parsing is
+ * left out of the timing so the bound measures the plugin, not remark-parse.
+ * The plugin runs three times on fresh copies and the fastest run counts:
+ * backtracking is slow on every run, a GC pause or a busy machine is not.
+ * @param markdown Source text
+ * @param app Also use the app's remark-breaks + remark-gfm parser stack
+ */
+function timedSpoiler(
+  markdown: string,
+  app = false,
+): { root: MdNode; ms: number } {
+  const parser = unified().use(remarkParse);
+  if (app) parser.use(remarkBreaks).use(remarkGfm);
+  const tree = parser.runSync(parser.parse(markdown));
+
+  const spoiler = unified().use(remarkSpoiler);
+  let root: MdNode | undefined;
+  let ms = Infinity;
+  for (let run = 0; run < 3; run++) {
+    // The plugin rewrites the tree in place
+    const copy = structuredClone(tree);
+    const start = performance.now();
+    root = spoiler.runSync(copy) as unknown as MdNode;
+    ms = Math.min(ms, performance.now() - start);
+  }
+  return { root: root!, ms };
+}
+
+const ADVERSARIAL: { name: string; markdown: string; app?: boolean }[] = [
+  {
+    name: "2000 U+FEFF then visible text after an unclosed ||",
+    markdown: "hi ||" + BOM.repeat(2000) + "x",
+  },
+  {
+    name: "2000 U+FEFF and nothing visible after an unclosed ||",
+    markdown: "hi ||" + BOM.repeat(2000),
+  },
+  {
+    name: "a mixed whitespace and zero-width run then text",
+    markdown:
+      "||" + (BOM + ZWSP + WORD_JOINER + " " + NBSP + "\t").repeat(2000) + "x",
+  },
+  {
+    name: "20000 spaces then text after an unclosed ||",
+    markdown: "||" + " ".repeat(20000) + "x",
+  },
+  {
+    name: "U+FEFF lines joined by line breaks after an unclosed ||",
+    markdown: "||" + (BOM.repeat(50) + "\n").repeat(200) + BOM.repeat(50) + "x",
+    app: true,
+  },
+  {
+    name: "2001 delimiters, the last one unclosed",
+    markdown: "||a ".repeat(2001),
+  },
+  {
+    name: "4001 pipes in a row",
+    markdown: "|".repeat(4001),
+  },
+  {
+    name: "an unclosed || after every U+FEFF",
+    markdown: (BOM + "||").repeat(3001) + "x",
+    app: true,
+  },
+];
+
+describe("remarkSpoiler on adversarial input", () => {
+  // Compile the plugin's code paths before anything is timed
+  timedSpoiler("a ||b|| c ||" + BOM + "d");
+
+  for (const { name, markdown, app } of ADVERSARIAL) {
+    it(`stays under ${TIME_BOUND_MS} ms: ${name}`, () => {
+      const { root, ms } = timedSpoiler(markdown, app);
+      assert.ok(
+        ms < TIME_BOUND_MS,
+        `took ${ms.toFixed(1)} ms (bound ${TIME_BOUND_MS} ms)`,
+      );
+      for (const block of root.children ?? []) {
+        assertNoDelimiterText(block.children ?? []);
+      }
+    });
+  }
+
+  it("still hides the text after a long U+FEFF run", () => {
+    const { root } = timedSpoiler("hi ||" + BOM.repeat(2000) + "x");
+    const inline = root.children![0].children!;
+    assert.equal(render(inline), "hi <S>" + BOM.repeat(2000) + "x</S>");
+  });
+
+  it("still makes no spoiler from a U+FEFF run alone", () => {
+    const { root } = timedSpoiler("hi ||" + BOM.repeat(2000));
+    const inline = root.children![0].children!;
+    assert.equal(count(inline, "spoiler"), 0);
+    assert.equal(render(inline), "hi ");
+  });
+});

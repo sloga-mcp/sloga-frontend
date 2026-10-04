@@ -19,8 +19,14 @@ function isText(node: InlineNode): node is TextNode {
   return node.type === "text" && typeof node.value === "string";
 }
 
-/** Only Unicode whitespace (NBSP included) and zero-width characters */
-const INVISIBLE_TEXT = /^(?:\s|\u200b|\u200c|\u200d|\u2060|\ufeff)*$/u;
+/**
+ * Only Unicode whitespace (NBSP included) and zero-width characters.
+ *
+ * One character class, never an alternation: `\s` already matches U+FEFF,
+ * and overlapping alternatives under `*` backtrack exponentially on a long
+ * run of them followed by any visible character
+ */
+const INVISIBLE_TEXT = /^[\s\u200b-\u200d\u2060\ufeff]*$/u;
 
 /**
  * Whether a node shows nothing a reader could reveal: a line break, or text
