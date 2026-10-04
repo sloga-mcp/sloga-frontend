@@ -7295,7 +7295,8 @@ function isGatedFor(
         id="afk-settings-mature-ungated",
         what="Mark as Mature stays enabled on the AFK channel",
         file=CHANNEL_OVERVIEW,
-        search="""            isDisabled={afkBlocksGate(props.channel.mature)}
+        # Retargeted 2026-10-04: main 4f48d894 nested the mature control two spaces deeper.
+        search="""              isDisabled={afkBlocksGate(props.channel.mature)}
 """,
         replace="""""",
         specs=[AFK_CHANNEL_SETTINGS_SPEC],
@@ -7330,12 +7331,13 @@ function isGatedFor(
         id="afk-settings-null-pointer-late-in-overview",
         what="Remove Password also writes `afk_channel_id: null`, the 200 that changes nothing, in the part of Overview.tsx the old regex comment stripper deleted from `accept=\"image/*\"` on",
         file=CHANNEL_OVERVIEW,
-        search="""                setPwInput("");
-                setChannelPassword();
+        # Retargeted 2026-10-04: main 4f48d894 nested the password controls two spaces deeper.
+        search="""                  setPwInput("");
+                  setChannelPassword();
 """,
-        replace="""                setPwInput("");
-                void props.channel.server?.edit({ afk_channel_id: null } as never);
-                setChannelPassword();
+        replace="""                  setPwInput("");
+                  void props.channel.server?.edit({ afk_channel_id: null } as never);
+                  setChannelPassword();
 """,
         specs=[AFK_CHANNEL_SETTINGS_SPEC],
         must_red=[AFK_CHANNEL_SETTINGS_SPEC],
