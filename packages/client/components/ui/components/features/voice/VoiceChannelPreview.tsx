@@ -121,6 +121,49 @@ function screenAudioOnly(state: VoiceParticipant | undefined) {
 }
 
 /**
+ * Use a copy of one participant row as the drag image.
+ *
+ * The browser's own image for the row is drawn over the row's bounds
+ * including the pressed ripple, whose circle grows to the row's diagonal; the
+ * clip that hides it on screen does not apply there, so the image came out as
+ * a square slab of the channel list around the row and read as the whole
+ * channel being dragged. The copy has no ripple and nothing around it.
+ *
+ * It sits exactly over the row, so the frame it may be painted for looks like
+ * the row itself; some engines draw nothing for an element off screen.
+ */
+function setRowDragImage(event: DragEvent, row: HTMLElement) {
+  if (!event.dataTransfer) return;
+
+  const rect = row.getBoundingClientRect();
+  const ghost = row.cloneNode(true) as HTMLElement;
+  ghost.querySelectorAll("md-ripple").forEach((ripple) => ripple.remove());
+
+  Object.assign(ghost.style, {
+    position: "fixed",
+    top: `${rect.top}px`,
+    left: `${rect.left}px`,
+    width: `${rect.width}px`,
+    height: `${rect.height}px`,
+    margin: "0",
+    boxSizing: "border-box",
+    color: getComputedStyle(row).color,
+    background: "var(--md-sys-color-surface-container-high)",
+    pointerEvents: "none",
+  });
+
+  document.body.appendChild(ghost);
+  event.dataTransfer.setDragImage(
+    ghost,
+    event.clientX - rect.left,
+    event.clientY - rect.top,
+  );
+
+  // the image is captured when `dragstart` returns
+  setTimeout(() => ghost.remove());
+}
+
+/**
  * Live variant of participant
  *
  * LiveKit supplies presence and the real-time speaking/mute signals, but camera
@@ -373,6 +416,7 @@ function CommonUser(props: {
     started = { userId, fromChannelId: rest.channel.id, serverId };
     setDraggedVoiceParticipant(started);
 
+    setRowDragImage(event, event.currentTarget as HTMLElement);
     event.stopPropagation();
   }
 
