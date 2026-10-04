@@ -1,4 +1,11 @@
-import { For, Show, Suspense, createSignal, onCleanup } from "solid-js";
+import {
+  For,
+  Show,
+  Suspense,
+  createSignal,
+  onCleanup,
+  onMount,
+} from "solid-js";
 
 import { Trans } from "@lingui-solid/solid/macro";
 import { useQuery } from "@tanstack/solid-query";
@@ -6,6 +13,10 @@ import { Channel, HydratedChannel } from "stoat.js";
 import { styled } from "styled-system/jsx";
 
 import { useClient } from "@revolt/client";
+import {
+  cachedChannels,
+  threadsQueryKey,
+} from "@revolt/common/lib/channelListQueries";
 import { useModals } from "@revolt/modal";
 import { Button, CircularProgress, Row, Text } from "@revolt/ui";
 import { Time } from "@revolt/ui/components/utils";
@@ -20,13 +31,20 @@ export function ThreadsListSidebar(props: { channel: Channel }) {
   const [archived, setArchived] = createSignal(false);
 
   const query = useQuery(() => ({
-    queryKey: ["threads", props.channel.id, archived()],
+    queryKey: threadsQueryKey(props.channel.id, archived()),
     queryFn: () => props.channel.fetchThreads({ archived: archived() }),
   }));
 
   // Keep the list live: new threads and archive transitions arrive as
   // threadCreate / channelUpdate events
   const liveClient = client();
+
+  /**
+   * Fetched threads still in the client. A thread swept with its server (the
+   * server was left) would otherwise render with no name and no server.
+   */
+  const threads = () =>
+    cachedChannels(query.data ?? [], (id) => liveClient.channels.has(id));
 
   /**
    * Refetch when a thread under this channel changes
@@ -50,9 +68,11 @@ export function ThreadsListSidebar(props: { channel: Channel }) {
     }
   }
 
-  liveClient.on("threadCreate", onThreadChange);
-  liveClient.on("channelUpdate", onThreadChange);
-  liveClient.on("channelDelete", onThreadDelete);
+  onMount(() => {
+    liveClient.on("threadCreate", onThreadChange);
+    liveClient.on("channelUpdate", onThreadChange);
+    liveClient.on("channelDelete", onThreadDelete);
+  });
 
   onCleanup(() => {
     liveClient.removeListener("threadCreate", onThreadChange);
@@ -95,14 +115,14 @@ export function ThreadsListSidebar(props: { channel: Channel }) {
       </Show>
 
       <Suspense fallback={<CircularProgress />}>
-        <Show when={query.data?.length === 0}>
+        <Show when={query.data && threads().length === 0}>
           <Text>
             <Show when={archived()} fallback={<Trans>No active threads</Trans>}>
               <Trans>No archived threads</Trans>
             </Show>
           </Text>
         </Show>
-        <For each={query.data}>
+        <For each={threads()}>
           {(thread) => (
             <a href={thread.path}>
               <ThreadEntry>
