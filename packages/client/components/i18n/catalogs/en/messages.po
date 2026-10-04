@@ -598,8 +598,8 @@ msgid "Open Ko-fi"
 msgstr "Open Ko-fi"
 
 #: components/modal/modals/SupportSloga.tsx
-msgid "Paste this code into your Ko-fi message so the donation is added to your account and your perks unlock automatically."
-msgstr "Paste this code into your Ko-fi message so the donation is added to your account and your perks unlock automatically."
+msgid "Paste this code into your Ko-fi message so the donation is added to your account and any perks it earns unlock automatically."
+msgstr "Paste this code into your Ko-fi message so the donation is added to your account and any perks it earns unlock automatically."
 
 #: components/rtc/state.tsx
 msgid "Your call continued in another window or on another device"
@@ -9481,7 +9481,6 @@ msgstr "Your server is ready. Paste this invite in Discord to bring your members
 #: components/modal/modals/SupportSloga.tsx
 msgid "Your supporter code · Expires {expires}"
 msgstr "Your supporter code · Expires {expires}"
-
 
 #: components/auth/src/flows/Form.tsx
 msgid "Your suspension has expired — try logging in again."
