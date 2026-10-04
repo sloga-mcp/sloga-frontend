@@ -100,6 +100,12 @@ export function NotificationsWorker() {
     // user just did — never worth a notification (and never persisted)
     if (message.isEphemeral) return;
 
+    // Silent sends ("@silent ", flag mask 1) skip the popup and the sound.
+    // The server already skips push for them, and an online user gets no
+    // push at all, so this popup would be the only alert they see. The
+    // unread and mention badges still update through stoat.js.
+    if (message.isSuppressed) return;
+
     // Ignore if we are currently looking at the channel
     if (params().channelId === message.channelId && document.hasFocus()) return;
 
