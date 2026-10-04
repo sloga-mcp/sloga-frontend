@@ -78,6 +78,7 @@ export const CHANGELOGS: ChangelogResponse[] = [
 - **@everyone and @online mentions now highlight the message**, like a direct mention does. In the desktop apps and in the browser, they also notify you in channels set to "Mentions only".
 - **Spoilers stay hidden.** A spoiler with formatting inside it no longer reveals the next spoiler on the same line, and an unclosed \`||\` now hides the rest of its paragraph instead of dropping part of it.
 - **Reply previews show channel links and timestamps** instead of raw codes.
+- **Dragging someone in a voice channel shows just them.** On desktop and in the browser, the drag preview is now only that member's row instead of a chunk of the channel list.
 - **Monochrome explains your accent color.** With the Monochrome style, a note now says that it uses only grays and ignores your color.
 - **Failed uploads now say why.** If a file fails to upload, the unsent message now shows the reason instead of saying the upload reached 100%.
 - **Encrypted attachments that are too large for your app now say so.** In the desktop and Android apps, an encrypted attachment that is larger than your version of the app can open now says that, instead of showing a tampering warning.
