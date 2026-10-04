@@ -11,12 +11,11 @@ export const CHANGELOGS: ChangelogResponse[] = [
   // ==========================================================================
   // v0.65.0 (written 2026-10-04 by the merge steward from the v0.65 inbox,
   // ~/.claude/plans/v065-release-inbox.md; feedback-1001, forum layouts and
-  // the stoat.js mentioned fix folded in after they landed in ac0d16ee). NOT
-  // CUT YET: the release sweep bumps the root version and sets `published_at`
-  // to the release day. Fold later items into THIS entry; never add a second
-  // v0.65 entry. The popup is keyed on `id` only, so any web dist deploy from
-  // main before the cut pops this entry on web early: no interim web deploy
-  // past this commit without accepting that.
+  // the stoat.js mentioned fix folded in after they landed in ac0d16ee). CUT
+  // 2026-10-04 at main `7890181f`, released the same day. The live web
+  // serves nothing newer than sloga-2026-09-29, so this entry pops once. A
+  // further edit after the cut moves the cut point; never add a second v0.65
+  // entry.
   // Copy constraints, load-bearing — READ BEFORE EDITING:
   // - Support Sloga (2d774aac): LEFT OUT. These notes show in the Play and
   //   App Store builds too (there is no distribution gate; see the v0.63 rule:
