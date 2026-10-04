@@ -42,7 +42,10 @@ export default defineConfig({
       filename: "serviceWorker.ts",
       strategies: "injectManifest",
       injectManifest: {
-        maximumFileSizeToCacheInBytes: 4000000,
+        // The entry chunk is precached so the app opens offline. It reached
+        // 4,000,039 bytes at v0.65.0 (3,961,346 at v0.64.0) and failed the build
+        // at the old 4,000,000 cap; 6 MB leaves room to grow.
+        maximumFileSizeToCacheInBytes: 6000000,
         // MediaPipe segmentation WASM (~9.4MB each) exceeds the precache cap and
         // vite-plugin-pwa THROWS (fails the build) on any globbed asset over it.
         // These are self-hosted, lazily fetched by @livekit/track-processors at
