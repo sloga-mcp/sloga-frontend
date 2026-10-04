@@ -20,6 +20,31 @@ const UPLOAD_TIMEOUT_BASE = 120e3;
 const UPLOAD_TIMEOUT_PER_10MB = 60e3;
 const UPLOAD_TIMEOUT_MAX = 30 * 60e3;
 
+/**
+ * On Android, files up to this size are read into memory when attached. The
+ * picked file is a content URI owned by the gallery app, and some galleries
+ * (seen on a Xiaomi) let the preview read succeed but fail the second read
+ * the upload needs, so the request dies on the device and never reaches the
+ * server. A snapshot taken at attach time is what every later read uses
+ * (upload, E2EE preparation, retries). Larger files keep streaming from the
+ * original handle to bound memory, and desktop pickers hand over stable disk
+ * files, so they are left alone.
+ */
+const ATTACH_SNAPSHOT_MAX_BYTES = 32_000_000;
+
+/**
+ * A snapshot read that takes longer than this (e.g. a cloud-backed gallery
+ * item still downloading) is abandoned in favour of the original handle, so
+ * one stuck file can't hold up every attachment queued behind it.
+ */
+const ATTACH_SNAPSHOT_TIMEOUT = 30e3;
+
+/**
+ * Whether attachments should be snapshotted on this platform
+ */
+const snapshotsAttachments = () =>
+  typeof navigator !== "undefined" && /Android/i.test(navigator.userAgent);
+
 export interface DraftData {
   /**
    * Message content
@@ -47,7 +72,44 @@ export type UnsentMessage = {
    * Status
    */
   status: "sending" | "unsent" | "failed";
+
+  /**
+   * Why the last send attempt failed, shown on the failed message
+   */
+  error?: string;
 } & DraftData;
+
+/**
+ * Turn whatever a send attempt threw into one line for the failed message
+ * @param error Thrown value
+ * @returns Human-readable reason
+ */
+function describeSendError(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message;
+
+  // stoat-api throws the raw response body of a failed request as a string:
+  // usually `{"type":"MissingPermission",...}`, but a proxy can return HTML
+  let body: unknown = error;
+  if (typeof error === "string") {
+    try {
+      body = JSON.parse(error);
+    } catch {
+      body = undefined;
+    }
+  }
+
+  if (typeof body === "object" && body !== null && "type" in body) {
+    return `The server rejected the message (${String(
+      (body as { type: unknown }).type,
+    )})`;
+  }
+
+  if (typeof error === "string" && error.trim()) {
+    return "The server returned an error";
+  }
+
+  return "Unknown error";
+}
 
 export interface TextSelection {
   /**
@@ -121,6 +183,12 @@ export class Draft extends AbstractStore<"draft", TypeDraft> {
        * (hashing, encryption, S3 PUT) with no indication anything is happening.
        */
       uploadProcessing: [Accessor<boolean>, Setter<boolean>];
+      /**
+       * Why the attach-time snapshot read failed, if it did. The upload then
+       * falls back to the original handle and will most likely fail the same
+       * way, so the reason goes into the error the user sees.
+       */
+      readError?: string;
     }
   >;
 
@@ -128,6 +196,11 @@ export class Draft extends AbstractStore<"draft", TypeDraft> {
    * Current text selection
    */
   private textSelection?: TextSelection;
+
+  /**
+   * Tail of the queue that attaches files one at a time
+   */
+  private attachQueue: Promise<void> = Promise.resolve();
 
   _setNodeReplacement?: Setter<readonly [string | "_focus"] | undefined>;
 
@@ -399,6 +472,11 @@ export class Draft extends AbstractStore<"draft", TypeDraft> {
           // We have to use XMLHttpRequest because modern fetch duplex streams require QUIC or HTTP/2
           const xhr = new XMLHttpRequest();
 
+          // How the request ended when it never got a response
+          let failure: "timeout" | "network" | undefined;
+          // Whether the whole body went out before it ended
+          let bodySent = false;
+
           const [success, response] = await new Promise<
             [boolean, { id: string }]
           >((resolve) => {
@@ -411,17 +489,22 @@ export class Draft extends AbstractStore<"draft", TypeDraft> {
             // The body is now fully written to the socket; everything after
             // this is the server hashing, encrypting and storing the file.
             xhr.upload.addEventListener("load", () => {
+              bodySent = true;
               uploadProgress[1](1);
               uploadProcessing[1](true);
             });
 
+            xhr.addEventListener("timeout", () => (failure = "timeout"));
+            xhr.addEventListener("error", () => (failure = "network"));
+
             xhr.addEventListener("loadend", () => {
-              uploadProgress[1](1);
+              const ok = xhr.readyState === 4 && xhr.status === 200;
+
+              // Only a real success may claim 100%: a failure that also read
+              // "100%" sent users (and us) looking at the server
+              if (ok) uploadProgress[1](1);
               uploadProcessing[1](false);
-              resolve([
-                xhr.readyState === 4 && xhr.status === 200,
-                xhr.response,
-              ]);
+              resolve([ok, xhr.response]);
             });
 
             xhr.open(
@@ -448,10 +531,17 @@ export class Draft extends AbstractStore<"draft", TypeDraft> {
           // "loadend" fires for error/abort/timeout too, so a non-200 (or no
           // response at all) lands here rather than hanging.
           if (!success) {
+            const { readError } = this.getFile(fileId);
             throw new Error(
               xhr.status
-                ? `Upload failed for \`${file.name}\` (HTTP ${xhr.status})`
-                : `Upload of \`${file.name}\` timed out or was interrupted`,
+                ? `Upload of \`${file.name}\` failed (HTTP ${xhr.status})`
+                : failure === "timeout"
+                  ? `Upload of \`${file.name}\` timed out`
+                  : bodySent
+                    ? `Upload of \`${file.name}\` lost its connection after the file was sent`
+                    : `Upload of \`${file.name}\` failed before reaching the server (network error, or the file couldn't be read${
+                        readError ? `: ${readError}` : ""
+                      })`,
             );
           }
 
@@ -490,6 +580,7 @@ export class Draft extends AbstractStore<"draft", TypeDraft> {
             ? {
                 ...entry,
                 status: "failed",
+                error: describeSendError(error),
               }
             : entry,
         ),
@@ -700,12 +791,44 @@ export class Draft extends AbstractStore<"draft", TypeDraft> {
   /**
    * Create a cache entry for a file and probe image dimensions
    * @param file File to cache
+   * @param snapshot Whether to read the file into memory first
    * @returns Cache ID
    */
-  private async cacheFile(file: File): Promise<string> {
+  private async cacheFile(file: File, snapshot = false): Promise<string> {
+    let readError: string | undefined;
+
+    if (snapshot && file.size <= ATTACH_SNAPSHOT_MAX_BYTES) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const bytes = await Promise.race([
+          file.arrayBuffer(),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(
+              () => reject(new Error("timed out reading the file")),
+              ATTACH_SNAPSHOT_TIMEOUT,
+            );
+          }),
+        ]);
+
+        file = new File([bytes], file.name, {
+          type: file.type,
+          lastModified: file.lastModified,
+        });
+      } catch (error) {
+        readError =
+          error instanceof Error
+            ? `${error.name}: ${error.message}`
+            : "unknown";
+        console.warn("[draft] couldn't snapshot attachment", file.name, error);
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
     const id = insecureUniqueId();
     this.fileCache[id] = {
       file,
+      readError,
       dataUri: ALLOWED_IMAGE_TYPES.includes(file.type)
         ? URL.createObjectURL(file)
         : undefined,
@@ -717,6 +840,7 @@ export class Draft extends AbstractStore<"draft", TypeDraft> {
     };
 
     if (this.fileCache[id].dataUri) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
       await new Promise((resolve, reject) => {
         const image = new Image();
 
@@ -727,9 +851,15 @@ export class Draft extends AbstractStore<"draft", TypeDraft> {
 
         image.onerror = reject;
         image.src = this.fileCache[id].dataUri!;
+
+        // A stalled read (the same one that can time out the snapshot) would
+        // otherwise never settle and hold up every attachment queued behind
+        // it; the preview just goes without dimensions
+        timer = setTimeout(reject, ATTACH_SNAPSHOT_TIMEOUT);
       })
         // ignore errors
-        .catch(() => {});
+        .catch(() => {})
+        .finally(() => clearTimeout(timer));
     }
 
     return id;
@@ -740,12 +870,27 @@ export class Draft extends AbstractStore<"draft", TypeDraft> {
    * @param channelId Channel ID
    * @param file File to add
    */
-  async addFile(channelId: string, file: File) {
-    const id = await this.cacheFile(file);
+  addFile(channelId: string, file: File) {
+    // One attachment at a time: the picker hands over many files at once and
+    // the composer doesn't await, so without this every snapshot would be
+    // read into memory concurrently. It also keeps the files in pick order.
+    const added = this.attachQueue.then(async () => {
+      // Files past the attachment limit are never sent from this draft, so
+      // they aren't worth holding in memory
+      const snapshot =
+        snapshotsAttachments() &&
+        (this.getDraft(channelId).files?.length ?? 0) <
+          CONFIGURATION.MAX_ATTACHMENTS;
 
-    this.setDraft(channelId, (data) => ({
-      files: [...(data.files ?? []), id],
-    }));
+      const id = await this.cacheFile(file, snapshot);
+
+      this.setDraft(channelId, (data) => ({
+        files: [...(data.files ?? []), id],
+      }));
+    });
+
+    this.attachQueue = added.catch(() => {});
+    return added;
   }
 
   /**
