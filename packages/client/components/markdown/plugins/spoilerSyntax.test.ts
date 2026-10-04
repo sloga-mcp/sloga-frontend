@@ -341,6 +341,8 @@ const TIME_BOUND_MS = 50;
 const BOM = String.fromCodePoint(0xfeff);
 const ZWSP = String.fromCodePoint(0x200b);
 const WORD_JOINER = String.fromCodePoint(0x2060);
+const ZWNJ = String.fromCodePoint(0x200c);
+const ZWJ = String.fromCodePoint(0x200d);
 const NBSP = String.fromCodePoint(0xa0);
 
 /**
@@ -410,12 +412,49 @@ const ADVERSARIAL: { name: string; markdown: string; app?: boolean }[] = [
   },
 ];
 
+/**
+ * Each invisible character the plugin knows, repeated a little. Short enough
+ * that an exponential regex still finishes in about a second, so a regression
+ * goes red here instead of hanging on the full-size cases.
+ */
+const CANARY_CHARACTERS = [" ", "\t", NBSP, ZWSP, ZWNJ, ZWJ, WORD_JOINER, BOM];
+const CANARY_LENGTH = 22;
+
 describe("remarkSpoiler on adversarial input", () => {
   // Compile the plugin's code paths before anything is timed
   timedSpoiler("a ||b|| c ||" + BOM + "d");
 
+  // A synchronous regex cannot be interrupted, so the full-size cases only
+  // run once every canary has passed
+  let canariesPassed = true;
+
+  /** Fail fast instead of running a full-size case that could hang */
+  function assertCanariesPassed() {
+    assert.ok(canariesPassed, "not run: a short canary already took too long");
+  }
+
+  for (const character of CANARY_CHARACTERS) {
+    const code = character
+      .codePointAt(0)!
+      .toString(16)
+      .toUpperCase()
+      .padStart(4, "0");
+
+    it(`stays under ${TIME_BOUND_MS} ms: ${CANARY_LENGTH} U+${code} then text after an unclosed ||`, () => {
+      const { ms } = timedSpoiler(
+        "hi ||" + character.repeat(CANARY_LENGTH) + "x",
+      );
+      if (ms >= TIME_BOUND_MS) canariesPassed = false;
+      assert.ok(
+        ms < TIME_BOUND_MS,
+        `took ${ms.toFixed(1)} ms (bound ${TIME_BOUND_MS} ms)`,
+      );
+    });
+  }
+
   for (const { name, markdown, app } of ADVERSARIAL) {
     it(`stays under ${TIME_BOUND_MS} ms: ${name}`, () => {
+      assertCanariesPassed();
       const { root, ms } = timedSpoiler(markdown, app);
       assert.ok(
         ms < TIME_BOUND_MS,
@@ -428,12 +467,14 @@ describe("remarkSpoiler on adversarial input", () => {
   }
 
   it("still hides the text after a long U+FEFF run", () => {
+    assertCanariesPassed();
     const { root } = timedSpoiler("hi ||" + BOM.repeat(2000) + "x");
     const inline = root.children![0].children!;
     assert.equal(render(inline), "hi <S>" + BOM.repeat(2000) + "x</S>");
   });
 
   it("still makes no spoiler from a U+FEFF run alone", () => {
+    assertCanariesPassed();
     const { root } = timedSpoiler("hi ||" + BOM.repeat(2000));
     const inline = root.children![0].children!;
     assert.equal(count(inline, "spoiler"), 0);
