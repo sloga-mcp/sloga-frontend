@@ -115,6 +115,11 @@ export function NotificationsWorker() {
     // Ignore blocked users
     if (message.author?.relationship === "Blocked") return;
 
+    // A message can arrive for a channel this client no longer has, such as
+    // a thread of a server we just left, which stoat.js has swept from the
+    // cache. There is nothing to notify about without the channel.
+    if (!message.channel) return;
+
     // Ignore muted channels
     if (state.notifications.isMuted(message.channel)) return;
 
