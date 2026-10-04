@@ -4410,6 +4410,38 @@ msgstr "Load file ({0})"
 msgid "Load more"
 msgstr "Load more"
 
+#: src/interface/channels/forum/PostRow.tsx
+msgid "posted"
+msgstr "posted"
+
+#: src/interface/channels/forum/PostRow.tsx
+msgid "replied"
+msgstr "replied"
+
+#. placeholder {0}: props.stats!.replies
+#. placeholder {0}: value().replies
+#: src/interface/channels/forum/PostRow.tsx
+#: src/interface/channels/forum/PostTable.tsx
+msgid "{0, plural, one {# reply} other {# replies}}"
+msgstr "{0, plural, one {# reply} other {# replies}}"
+
+#: src/interface/channels/forum/PostTable.tsx
+msgid "Topic"
+msgstr "Topic"
+
+#: src/interface/channels/forum/PostTable.tsx
+msgid "Replies"
+msgstr "Replies"
+
+#: src/interface/channels/forum/PostTable.tsx
+msgid "Last post"
+msgstr "Last post"
+
+#: src/interface/channels/forum/PostTable.tsx
+#: src/interface/channels/forum/PostTable.tsx
+msgid "by"
+msgstr "by"
+
 #: src/interface/ServerEvents.tsx
 msgid "Load more attendees"
 msgstr "Load more attendees"
@@ -4657,6 +4689,35 @@ msgstr "Members"
 #: components/app/interface/settings/channel/ForumSettings.tsx
 msgid "Members browse this forum in the order above and cannot change it. Use this for a forum that serves as an info board."
 msgstr "Members browse this forum in the order above and cannot change it. Use this for a forum that serves as an info board."
+
+#: components/app/interface/settings/channel/ForumSettings.tsx
+msgid "Default layout"
+msgstr "Default layout"
+
+#: components/app/interface/settings/channel/ForumSettings.tsx
+#: src/interface/channels/forum/ForumChannel.tsx
+#: src/interface/channels/forum/ForumChannel.tsx
+#: src/interface/channels/forum/ForumChannel.tsx
+msgid "Modern"
+msgstr "Modern"
+
+#: components/app/interface/settings/channel/ForumSettings.tsx
+#: src/interface/channels/forum/ForumChannel.tsx
+#: src/interface/channels/forum/ForumChannel.tsx
+#: src/interface/channels/forum/ForumChannel.tsx
+msgid "Classic"
+msgstr "Classic"
+
+#: components/app/interface/settings/channel/ForumSettings.tsx
+#: src/interface/channels/forum/ForumChannel.tsx
+#: src/interface/channels/forum/ForumChannel.tsx
+#: src/interface/channels/forum/ForumChannel.tsx
+msgid "Classic+"
+msgstr "Classic+"
+
+#: components/app/interface/settings/channel/ForumSettings.tsx
+msgid "Readers can still switch the layout for themselves."
+msgstr "Readers can still switch the layout for themselves."
 
 #. placeholder {0}: slowmodeWaitTime()
 #: src/interface/channels/text/Composition.tsx
@@ -6650,6 +6711,10 @@ msgstr "Same as all servers"
 #: components/app/interface/channels/text/EncryptedAttachment.tsx
 msgid "Save"
 msgstr "Save"
+
+#: src/interface/channels/forum/ForumChannel.tsx
+msgid "Use the forum's default ({name})"
+msgstr "Use the forum's default ({name})"
 
 #: components/app/menus/MessageContextMenu.tsx
 #: components/app/menus/MessageContextMenu.tsx
