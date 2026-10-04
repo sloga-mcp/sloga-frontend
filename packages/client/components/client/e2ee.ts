@@ -174,6 +174,10 @@ export type E2EEAttachmentMeta = {
   /** Plaintext size in bytes */
   size: number;
   state: "pending" | "ready" | "failed" | "expired";
+  /** Why a `failed` attachment failed: a closed set of snake_case reasons
+   *  written by the native core. `"too_large"` is the only value today.
+   *  Absent, null or unknown means show the generic failure copy. */
+  fail_reason?: string | null;
   blob_id: string | null;
 };
 

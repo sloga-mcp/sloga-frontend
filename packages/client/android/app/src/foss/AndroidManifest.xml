@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Foss-only manifest entries. Merged into the main manifest for the `foss`
+  (Google-free) flavor and absent from `play` and `sideload` builds.
+
+  SlogaPushService receives UnifiedPush events: the connector binds it by the
+  PUSH_EVENT action inside this package. The connector's own manifest merges
+  in everything else it needs (the distributor <queries>, its receiver,
+  LinkActivity, RaiseToForegroundService and WAKE_LOCK), so only the service
+  and the two WebView opt-outs below are declared here.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- No Safe Browsing URL lookups go to Google from this build's WebView. -->
+        <meta-data android:name="android.webkit.WebView.EnableSafeBrowsing" android:value="false" />
+        <!-- No WebView diagnostic metrics go to Google, even with user consent. -->
+        <meta-data android:name="android.webkit.WebView.MetricsOptOut" android:value="true" />
+
+        <service
+            android:name=".SlogaPushService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="org.unifiedpush.android.connector.PUSH_EVENT" />
+            </intent-filter>
+        </service>
+    </application>
+</manifest>

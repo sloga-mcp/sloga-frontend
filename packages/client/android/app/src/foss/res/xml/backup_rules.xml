@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android < 12 auto-backup rules.
+
+     Four locations must NEVER ride device backups:
+
+     1. `files/e2ee` — the native E2EE store. Its master key only unwraps via
+        this install's Android Keystore entry (which does not survive
+        uninstall or transfer to another device), so restored files can
+        never decrypt — they would only wedge the engine fail-closed and
+        leak local metadata. Fresh install = fresh device identity.
+
+     2. `app_webview` — the WebView's localStorage/IndexedDB, where the
+        client persists per-conversation DRAFTS (and other caches) via
+        localforage. A draft typed in an encrypted DM is plaintext; without
+        this exclusion it would leave the device to Google's cloud (or a
+        device-to-device transfer) entirely outside the native crypto layer
+        (slice-4 gate MEDIUM #1).
+
+     3. `shared_prefs/sloga_push.xml` — PushTokenPlugin.saveSubscription
+        keeps the API base URL and a live SESSION TOKEN here so
+        PushResubscriber can re-subscribe while the app is killed (in this
+        build, when the UnifiedPush distributor hands out a new endpoint).
+        The UnifiedPush endpoint and its keys (the up_* prefs) live in the
+        same file. A restored copy would hand another device a working
+        login, plus an endpoint that belongs to the old device's
+        distributor registration. Nothing is lost by excluding it: the web
+        layer re-saves the credentials on every signed-in launch
+        (resyncPushSubscription), and a new device registers from scratch.
+
+     4. `shared_prefs/sloga_ipc.xml` — IntentNonce's per-install secret.
+        It gates the exported MainActivity, so it must stay unique to this
+        install; a fresh install simply mints a new one. -->
+<!-- foss only: this file overrides src/main/res/xml/backup_rules.xml, so
+     keep the rules above in sync with it. It adds a fifth location, the
+     UnifiedPush connector's state. Connector 3.0.10 keeps its distributor,
+     registration token and Web Push keys in the SharedPreferences file
+     "unifiedpush.connector" (PREF_MASTER, Constants.kt). Its private key is
+     sealed with an Android Keystore key that does not transfer, and the
+     token belongs to the old device's distributor registration, so a
+     restored copy is dead state. Excluding it makes a new device register
+     from scratch. The two database rules are the upstream kdoc's
+     recommended set; 3.0.10 creates no database, so they are a no-op
+     until a connector bump. -->
+<full-backup-content>
+    <exclude domain="file" path="e2ee" />
+    <exclude domain="root" path="app_webview" />
+    <exclude domain="sharedpref" path="sloga_push.xml" />
+    <exclude domain="sharedpref" path="sloga_ipc.xml" />
+    <exclude domain="sharedpref" path="unifiedpush.connector.xml" />
+    <exclude domain="database" path="unifiedpush-connector" />
+    <exclude domain="database" path="unifiedpush-connector-journal" />
+</full-backup-content>

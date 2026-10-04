@@ -11,11 +11,14 @@ import com.getcapacitor.PermissionState;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.annotation.Permission;
 import com.getcapacitor.annotation.PermissionCallback;
-import com.google.firebase.messaging.FirebaseMessaging;
 
 /**
- * JS bridge for FCM push: request notification permission and fetch the
- * device registration token so the web layer can subscribe with the backend.
+ * JS bridge for native push: request notification permission and fetch a
+ * device push token from the per-flavor PushTokenSource so the web layer can
+ * subscribe with the backend. On play and sideload that is the FCM
+ * registration token. foss has no FCM token and getToken rejects with
+ * PUSH_UNAVAILABLE; its background push comes from UnifiedPush through
+ * its own plugin instead.
  */
 @CapacitorPlugin(
         name = "PushToken",
@@ -156,19 +159,38 @@ public class PushTokenPlugin extends Plugin {
     }
 
     private void resolveToken(PluginCall call) {
-        FirebaseMessaging.getInstance().getToken()
-                .addOnSuccessListener(token -> {
-                    JSObject result = new JSObject();
-                    result.put("token", token);
-                    call.resolve(result);
-                })
-                .addOnFailureListener(e -> call.reject("Failed to get FCM token", e));
+        PushTokenSource.fetch(call);
     }
 
     /**
-     * Persist the API base URL + session token so SlogaMessagingService can
-     * re-subscribe on its own when FCM rotates the token while the app is
-     * killed. Called by the web layer after each successful /push/subscribe.
+     * Ask for POST_NOTIFICATIONS on its own. getToken only asks as part of
+     * the FCM flow, so builds without FCM (foss) need this to show anything.
+     */
+    @PluginMethod
+    public void requestNotificationPermission(PluginCall call) {
+        if (android.os.Build.VERSION.SDK_INT < 33
+                || getPermissionState("notifications") == PermissionState.GRANTED) {
+            JSObject result = new JSObject();
+            result.put("granted", true);
+            call.resolve(result);
+        } else {
+            requestPermissionForAlias("notifications", call, "notificationPermissionResult");
+        }
+    }
+
+    @PermissionCallback
+    private void notificationPermissionResult(PluginCall call) {
+        JSObject result = new JSObject();
+        result.put("granted", getPermissionState("notifications") == PermissionState.GRANTED);
+        call.resolve(result);
+    }
+
+    /**
+     * Persist the API base URL + session token for PushResubscriber, which
+     * reads them back to re-subscribe on its own while the app is killed.
+     * The FCM service (play/sideload) calls it when FCM rotates the token,
+     * and it is written to serve a new UnifiedPush endpoint (foss) as well.
+     * Called by the web layer after each successful /push/subscribe.
      */
     @PluginMethod
     public void saveSubscription(PluginCall call) {

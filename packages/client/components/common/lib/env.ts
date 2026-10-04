@@ -123,11 +123,14 @@ export default {
   CHUNKED_UPLOAD_THRESHOLD:
     (import.meta.env.VITE_CFG_CHUNKED_UPLOAD_THRESHOLD as number) ?? 90_000_000,
   /**
-   * Client-side cap for attachments in E2EE conversations. The E2EE blob
-   * path is one-shot and server-capped at ~20 MiB plaintext
-   * (`MAX_E2EE_BLOB_SIZE`); chunked uploads do NOT apply to it (that is a
-   * later phase), so encrypted conversations must not admit files the blob
-   * endpoint will reject.
+   * Client-side cap for attachments in E2EE conversations. The binding limit
+   * is native: e2ee-core encrypts and decrypts one-shot, whole-buffer, and
+   * rejects plaintext above `MAX_ATTACHMENT_PLAINTEXT` (20 MiB = 20_971_520).
+   * Autumn's E2EE blob route is NOT the constraint (it accepts ciphertext up
+   * to `MAX_E2EE_BLOB_SIZE` = 91_000_000). 20_000_000 sits just under the
+   * native 20 MiB so the picker refuses before the core would. Chunked
+   * uploads do NOT apply to this path yet. Raise this only together with
+   * the native constant and autumn's ceiling, never alone.
    */
   E2EE_MAX_ATTACHMENT_SIZE:
     (import.meta.env.VITE_CFG_E2EE_MAX_ATTACHMENT_SIZE as number) ?? 20_000_000,
@@ -263,6 +266,52 @@ export default {
   ENABLE_WATCH_TOGETHER:
     (
       (import.meta.env.VITE_CFG_ENABLE_WATCH_TOGETHER as string) ?? ""
+    ).toLowerCase() == "true",
+  /**
+   * Google Translate — message translation and call-caption translation,
+   * both of which send text to `translate.googleapis.com`.
+   *
+   * DEFAULT ON, unlike the flags around it: only `false` (any case) turns it
+   * off, so play, sideload, web and desktop builds, whose `.env` never sets
+   * it, keep translation. The F-Droid (foss) Android build passes
+   * `VITE_CFG_ENABLE_GOOGLE_TRANSLATE=false` in the `vite build` environment
+   * (never in a `.env` file) so its Google-free claim holds.
+   *
+   * This key is the flag's registry entry and the artifact-literal anchor
+   * for the foss release gate, which counts this key's inlined, minified
+   * value in the built dist. It is NOT the runtime gate. That is
+   * `translationAvailable()` in `translation.ts`, which reads the SAME
+   * variable with the SAME parse, because that module must stay
+   * import-free: `translation.test.ts` loads it under `node --test`, where
+   * this file dies at module load on `import.meta.env.DEV`. Change the
+   * parse in both places or neither.
+   *
+   * Set `VITE_CFG_ENABLE_GOOGLE_TRANSLATE=false` for builds that must never
+   * reach Google Translate.
+   */
+  ENABLE_GOOGLE_TRANSLATE:
+    (
+      (import.meta.env.VITE_CFG_ENABLE_GOOGLE_TRANSLATE as string) ?? ""
+    ).toLowerCase() !== "false",
+  /**
+   * Click-to-load special embeds — the YouTube, Twitch, Lightspeed, Spotify,
+   * SoundCloud and Bandcamp players. When on, each embed shows a local
+   * "Load <provider>" button and mounts the third-party iframe only after a
+   * tap, so opening a channel contacts none of those hosts.
+   *
+   * DEFAULT OFF: unset, the iframe mounts immediately, as it always has. The
+   * F-Droid (foss) Android build passes `VITE_CFG_EMBEDS_CLICK_TO_LOAD=true`
+   * in the `vite build` environment (never in a `.env` file).
+   *
+   * Read once per embed in `SpecialEmbed.tsx`, its only reader, negated as
+   * the initial value of the `loaded` signal; the foss release gate counts
+   * that single negated read in the dist, so don't add another reader.
+   *
+   * Set `VITE_CFG_EMBEDS_CLICK_TO_LOAD=true` for builds that should have it.
+   */
+  EMBEDS_CLICK_TO_LOAD:
+    (
+      (import.meta.env.VITE_CFG_EMBEDS_CLICK_TO_LOAD as string) ?? ""
     ).toLowerCase() == "true",
   /**
    * Native Android screen share (the "screen leg" publisher, screen-leg plan

@@ -7,7 +7,22 @@
   package installer. Google Play restricts this permission to apps whose core
   purpose is installing packages, so it must never appear in a Play build —
   keeping it here rather than in src/main is what enforces that.
+
+  The one exception is the FCM messaging service below: it is declared here
+  and in src/play/AndroidManifest.xml instead of src/main, so the `foss`
+  (F-Droid) build carries no Google component. Its class lives in
+  src/gms/java, which only play and sideload compile.
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <application>
+        <service
+            android:name=".SlogaMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+    </application>
 </manifest>

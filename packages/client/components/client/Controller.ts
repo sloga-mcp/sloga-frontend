@@ -804,7 +804,9 @@ export default class ClientController {
     // revoke_devices_for_session), and the E2EE layer relies on a local
     // sign-out keeping that device so the next sign-in re-attaches it.
     // Revoking on sign-out needs an E2EE design decision first.
-    killServiceWorkerSubscription(this.getCurrentClient(), false);
+    killServiceWorkerSubscription(this.getCurrentClient(), false).catch(
+      console.error,
+    );
     this.state.auth.removeSession();
     this.lifecycle.transition({
       type: TransitionType.Logout,

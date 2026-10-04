@@ -3,8 +3,8 @@ package com.acutest.app;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
+import android.content.Context;
 import android.content.Intent;
-import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.os.Build;
@@ -13,19 +13,20 @@ import android.util.Log;
 import androidx.core.app.NotificationCompat;
 import androidx.core.app.NotificationManagerCompat;
 
-import com.google.firebase.messaging.FirebaseMessagingService;
-import com.google.firebase.messaging.RemoteMessage;
-
-import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.Map;
 
 /**
- * Receives data-only FCM messages from the Sloga backend (pushd) and posts
- * them to the notification bar. Runs even when the app is killed.
+ * Turns a Sloga push payload (pushd's data map) into a notification-bar
+ * entry. Shared by the FCM service (play/sideload) and the UnifiedPush
+ * service (foss), so it must stay free of Google push-SDK imports: callers
+ * pass the push data map.
+ *
+ * Runs on the caller's thread. fetchBitmap does network I/O, so never call
+ * handle() from the main thread.
  */
-public class SlogaMessagingService extends FirebaseMessagingService {
+final class SlogaNotifier {
     private static final String TAG = "SlogaFCM";
     // Channel settings are immutable after creation — bump the suffix to
     // apply new defaults on existing installs.
@@ -33,63 +34,13 @@ public class SlogaMessagingService extends FirebaseMessagingService {
     private static final String CHANNEL_CALLS = "incoming_calls_v2";
     private static final String CHANNEL_SOCIAL = "social_v2";
 
-    @Override
-    public void onNewToken(String token) {
-        // FCM can rotate the token while the app is killed. The web layer only
-        // re-syncs on the next app launch, so without this the backend would
-        // hold a stale token and silently drop notifications until the user
-        // reopens the app. Re-subscribe directly using credentials the web
-        // layer persisted on its last successful subscribe.
-        Log.i(TAG, "FCM token rotated; re-syncing with backend");
-        resubscribe(token);
-    }
+    private SlogaNotifier() {}
 
-    /**
-     * POST the rotated FCM token to pushd so delivery to this device keeps
-     * working. No-op when the user isn't subscribed/logged in (no stored
-     * credentials). Runs off the caller's thread so it never blocks FCM.
-     */
-    private void resubscribe(String token) {
-        SharedPreferences prefs = getSharedPreferences("sloga_push", MODE_PRIVATE);
-        String apiUrl = prefs.getString("api_url", null);
-        String sessionToken = prefs.getString("session_token", null);
-        if (apiUrl == null || sessionToken == null || token == null) return;
-
-        new Thread(() -> {
-            HttpURLConnection conn = null;
-            try {
-                URL url = new URL(apiUrl.replaceAll("/+$", "") + "/push/subscribe");
-                conn = (HttpURLConnection) url.openConnection();
-                conn.setRequestMethod("POST");
-                conn.setConnectTimeout(5000);
-                conn.setReadTimeout(5000);
-                conn.setDoOutput(true);
-                conn.setRequestProperty("Content-Type", "application/json");
-                conn.setRequestProperty("X-Session-Token", sessionToken);
-                // FCM tokens contain no JSON-special characters, so inlining is safe.
-                String body = "{\"endpoint\":\"fcm\",\"p256dh\":\"\",\"auth\":\"" + token + "\"}";
-                try (OutputStream os = conn.getOutputStream()) {
-                    os.write(body.getBytes("UTF-8"));
-                }
-                int code = conn.getResponseCode();
-                if (code < 200 || code >= 300) {
-                    Log.w(TAG, "Token re-sync failed: HTTP " + code);
-                }
-            } catch (Exception e) {
-                Log.w(TAG, "Token re-sync error: " + e.getMessage());
-            } finally {
-                if (conn != null) conn.disconnect();
-            }
-        }).start();
-    }
-
-    @Override
-    public void onMessageReceived(RemoteMessage remoteMessage) {
-        Map<String, String> data = remoteMessage.getData();
+    static void handle(Context ctx, Map<String, String> data) {
         String type = data.get("type");
         if (type == null) return;
 
-        createChannels();
+        ensureChannels(ctx);
 
         switch (type) {
             case "push.message": {
@@ -97,6 +48,7 @@ public class SlogaMessagingService extends FirebaseMessagingService {
                 String body = data.get("body");
                 String channel = data.get("channel");
                 notifyTapToOpen(
+                        ctx,
                         CHANNEL_MESSAGES,
                         channel != null ? channel.hashCode() : 1,
                         author != null ? author : "New message",
@@ -111,28 +63,28 @@ public class SlogaMessagingService extends FirebaseMessagingService {
                 int notificationId = channelId != null ? channelId.hashCode() : 2;
                 if (ended) {
                     // Remove the incoming call notification
-                    NotificationManagerCompat.from(this).cancel(notificationId);
+                    NotificationManagerCompat.from(ctx).cancel(notificationId);
                 } else {
-                    notifyIncomingCall(notificationId, channelId, data.get("initiator_id"));
+                    notifyIncomingCall(ctx, notificationId, channelId, data.get("initiator_id"));
                 }
                 break;
             }
             case "push.fr.receive": {
                 String username = data.get("username");
-                notifyTapToOpen(CHANNEL_SOCIAL, 3, "Friend Request",
+                notifyTapToOpen(ctx, CHANNEL_SOCIAL, 3, "Friend Request",
                         (username != null ? username : "Someone") + " sent you a friend request",
                         null, "/friends");
                 break;
             }
             case "push.fr.accept": {
                 String username = data.get("username");
-                notifyTapToOpen(CHANNEL_SOCIAL, 4, "Friend Request Accepted",
+                notifyTapToOpen(ctx, CHANNEL_SOCIAL, 4, "Friend Request Accepted",
                         (username != null ? username : "Someone") + " accepted your friend request",
                         null, "/friends");
                 break;
             }
             case "push.generic": {
-                notifyTapToOpen(CHANNEL_MESSAGES, 5,
+                notifyTapToOpen(ctx, CHANNEL_MESSAGES, 5,
                         data.getOrDefault("title", "Sloga"),
                         data.getOrDefault("body", ""),
                         data.get("image"), null);
@@ -173,6 +125,7 @@ public class SlogaMessagingService extends FirebaseMessagingService {
                     channel = CHANNEL_SOCIAL;
                 }
                 notifyTapToOpen(
+                        ctx,
                         channel,
                         eventId != null ? eventId.hashCode() : 6,
                         title, body, null,
@@ -183,7 +136,7 @@ public class SlogaMessagingService extends FirebaseMessagingService {
     }
 
     /** Ringing notification with Answer / Decline actions */
-    private void notifyIncomingCall(int notificationId, String channelId, String callerId) {
+    private static void notifyIncomingCall(Context ctx, int notificationId, String channelId, String callerId) {
         // ONE ringing UI at a time. With the app in front AND its web layer
         // connected, that layer already shows an Accept/Decline popup, so a
         // notification here is the duplicate the user has to dismiss twice.
@@ -200,36 +153,36 @@ public class SlogaMessagingService extends FirebaseMessagingService {
         // off or locked, so this MUST NOT answer: it only wakes the screen and opens
         // the ringing UI, where the user picks Accept or Decline. (Wiring the answer
         // intent here made calls auto-join with the screen still off.)
-        Intent ring = new Intent(this, MainActivity.class);
+        Intent ring = new Intent(ctx, MainActivity.class);
         ring.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
         if (path != null) ring.putExtra("sloga_path", path);
         ring.putExtra("sloga_ring_call", true);
         if (callerId != null) ring.putExtra("sloga_caller_id", callerId);
         // Proves to the exported MainActivity that Sloga minted this Intent.
-        ring.putExtra(IntentNonce.EXTRA, IntentNonce.get(this));
+        ring.putExtra(IntentNonce.EXTRA, IntentNonce.get(ctx));
         PendingIntent ringIntent = PendingIntent.getActivity(
-                this, notificationId + 300000, ring,
+                ctx, notificationId + 300000, ring,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
 
         // ANSWER intent — ONLY the explicit "Answer" action button joins the call.
-        Intent answer = new Intent(this, MainActivity.class);
+        Intent answer = new Intent(ctx, MainActivity.class);
         answer.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
         if (path != null) answer.putExtra("sloga_path", path);
         answer.putExtra("sloga_answer_call", true);
-        answer.putExtra(IntentNonce.EXTRA, IntentNonce.get(this));
+        answer.putExtra(IntentNonce.EXTRA, IntentNonce.get(ctx));
         PendingIntent answerIntent = PendingIntent.getActivity(
-                this, notificationId + 100000, answer,
+                ctx, notificationId + 100000, answer,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
 
-        Intent decline = new Intent(this, NotificationDismissReceiver.class);
+        Intent decline = new Intent(ctx, NotificationDismissReceiver.class);
         decline.putExtra("notification_id", notificationId);
         // Lets the receiver tell a running web layer which call was declined.
         if (channelId != null) decline.putExtra("sloga_channel_id", channelId);
         PendingIntent declineIntent = PendingIntent.getBroadcast(
-                this, notificationId + 200000, decline,
+                ctx, notificationId + 200000, decline,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
 
-        NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_CALLS)
+        NotificationCompat.Builder builder = new NotificationCompat.Builder(ctx, CHANNEL_CALLS)
                 .setSmallIcon(R.mipmap.ic_launcher)
                 .setContentTitle("Incoming Call")
                 .setContentText("Someone is calling you on Sloga")
@@ -244,24 +197,24 @@ public class SlogaMessagingService extends FirebaseMessagingService {
                 .setTimeoutAfter(45_000);
 
         try {
-            NotificationManagerCompat.from(this).notify(notificationId, builder.build());
+            NotificationManagerCompat.from(ctx).notify(notificationId, builder.build());
         } catch (SecurityException e) {
             Log.w(TAG, "Notification permission not granted");
         }
     }
 
-    private void notifyTapToOpen(
-            String channelId, int notificationId, String title, String body,
+    private static void notifyTapToOpen(
+            Context ctx, String channelId, int notificationId, String title, String body,
             String imageUrl, String path) {
-        Intent launch = new Intent(this, MainActivity.class);
+        Intent launch = new Intent(ctx, MainActivity.class);
         launch.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
         if (path != null) launch.putExtra("sloga_path", path);
-        launch.putExtra(IntentNonce.EXTRA, IntentNonce.get(this));
+        launch.putExtra(IntentNonce.EXTRA, IntentNonce.get(ctx));
         PendingIntent contentIntent = PendingIntent.getActivity(
-                this, notificationId, launch,
+                ctx, notificationId, launch,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
 
-        NotificationCompat.Builder builder = new NotificationCompat.Builder(this, channelId)
+        NotificationCompat.Builder builder = new NotificationCompat.Builder(ctx, channelId)
                 .setSmallIcon(R.mipmap.ic_launcher)
                 .setContentTitle(title)
                 .setContentText(body)
@@ -276,13 +229,13 @@ public class SlogaMessagingService extends FirebaseMessagingService {
         if (avatar != null) builder.setLargeIcon(avatar);
 
         try {
-            NotificationManagerCompat.from(this).notify(notificationId, builder.build());
+            NotificationManagerCompat.from(ctx).notify(notificationId, builder.build());
         } catch (SecurityException e) {
             Log.w(TAG, "Notification permission not granted");
         }
     }
 
-    private Bitmap fetchBitmap(String url) {
+    private static Bitmap fetchBitmap(String url) {
         if (url == null || url.isEmpty()) return null;
         try {
             HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
@@ -294,9 +247,9 @@ public class SlogaMessagingService extends FirebaseMessagingService {
         }
     }
 
-    private void createChannels() {
+    static void ensureChannels(Context ctx) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            NotificationManager manager = getSystemService(NotificationManager.class);
+            NotificationManager manager = ctx.getSystemService(NotificationManager.class);
             android.media.AudioAttributes attrs = new android.media.AudioAttributes.Builder()
                     .setUsage(android.media.AudioAttributes.USAGE_NOTIFICATION)
                     .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION)

@@ -13,10 +13,11 @@ public class MainActivity extends BridgeActivity {
     private static java.lang.ref.WeakReference<MainActivity> INSTANCE;
 
     /**
-     * Whether the activity is resumed. Read by SlogaMessagingService to decide
-     * whether an incoming-call NOTIFICATION is needed at all: when the app is
-     * in front, the web layer shows its own Accept/Decline popup and a
-     * notification would give the user two separate things to decline.
+     * Whether the activity is resumed. Read by SlogaNotifier, through
+     * isForeground(), to decide whether an incoming-call NOTIFICATION is
+     * needed at all: when the app is in front, the web layer shows its own
+     * Accept/Decline popup and a notification would give the user two
+     * separate things to decline.
      */
     private static volatile boolean FOREGROUND = false;
 
@@ -101,8 +102,9 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(PushTokenPlugin.class);
         registerPlugin(AppFlavorPlugin.class);
         registerPlugin(SlogaBackPlugin.class);
-        // Sideload builds add the self-updater here; the Play flavor's twin of
-        // this class registers nothing. See FlavorPlugins in src/{sideload,play}.
+        // Sideload adds the self-updater; foss adds UnifiedPush and the
+        // website-install update notice; the Play twin registers nothing. See
+        // FlavorPlugins in src/{sideload,play,foss}.
         FlavorPlugins.register(this);
         registerPlugin(SpeechToTextPlugin.class);
         registerPlugin(com.acutest.app.e2ee.E2eePlugin.class);

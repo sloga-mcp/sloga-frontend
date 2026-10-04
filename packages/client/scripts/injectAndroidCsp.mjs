@@ -32,7 +32,15 @@
  *    shared Android build must not white-screen when it is enabled. hCaptcha
  *    is a verification service, not an attacker-account data store, so its
  *    connect-src carries no useful key read-back channel (the residual
- *    supply-chain risk is the documented invariant-6 tradeoff);
+ *    supply-chain risk is the documented invariant-6 tradeoff). The foss
+ *    build omits these origins from all four directives that carry them
+ *    (script-src, style-src, connect-src, frame-src). That is harmless ONLY
+ *    while VITE_HCAPTCHA_SITEKEY is blank: the widget renders only for a
+ *    non-empty build-time sitekey (the `props.captcha` Show in
+ *    auth/src/flows/Form.tsx; env.ts HCAPTCHA_SITEKEY), and the live .env
+ *    sets it empty. The foss wave gate asserts `HCAPTCHA_SITEKEY:""` in its
+ *    dist; a foss build with a sitekey would load a login captcha this
+ *    policy blocks;
  *  - NO Stripe origins (crypto gate 6.7b MED-1): the Subscriptions settings
  *    section is `hidden: true` (UserSettings.tsx) on EVERY platform, so
  *    Stripe.js never mounts — matching the desktop 6.2b CSP, which also omits
@@ -44,6 +52,8 @@
  *    (script-src), api.stripe.com (connect-src), js/hooks.stripe.com
  *    (frame-src) AND re-run this gate on that exposure;
  *  - + connect-src https://translate.googleapis.com (message translation);
+ *    the foss build omits it (its translation is off by the build flag
+ *    VITE_CFG_ENABLE_GOOGLE_TRANSLATE=false, and this is the second fence);
  *  - + connect-src https://api.drand.sh (timelock messages): tlock only ever
  *    GETs public beacon values — chain info and a round's randomness — with
  *    the round number in the PATH and no request body. It is strictly lower
@@ -59,15 +69,22 @@
  *    is the static asset origin https://localhost, not a proxy).
  *
  * script-src rule (gate item): NO attacker-reachable origin — only 'self',
- * wasm, and the fixed hCaptcha vendor hosts. worker-src 'self' blob:
- * is REQUIRED (livekit e2ee worker + PWA SW ride 'self'; blob workers from
- * vendored libs ride blob:).
+ * wasm, and the fixed hCaptcha vendor hosts (the foss build: only 'self' and
+ * wasm). worker-src 'self' blob: is REQUIRED (livekit e2ee worker + PWA SW
+ * ride 'self'; blob workers from vendored libs ride blob:).
+ *
+ * Foss variant (F-Droid build): with SLOGA_FDROID=1 exactly in the
+ * environment of `cap sync android` (Capacitor spreads process.env into this
+ * hook), the Google-free policy drops FOSS_OMITTED_ORIGINS from every
+ * directive that carries them. YouTube stays in frame-src for embeds the user
+ * taps to load. Unset, or any other value, injects the standard policy
+ * byte-for-byte unchanged.
  */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const CSP = [
+const DIRECTIVES = [
   "default-src 'none'",
   "script-src 'self' 'wasm-unsafe-eval' https://hcaptcha.com https://*.hcaptcha.com",
   "style-src 'self' 'unsafe-inline' https://hcaptcha.com https://*.hcaptcha.com",
@@ -85,7 +102,28 @@ const CSP = [
   "object-src 'none'",
   "base-uri 'none'",
   "form-action 'none'",
-].join("; ");
+];
+
+// Only the exact value "1" selects the foss policy.
+const FOSS = process.env.SLOGA_FDROID === "1";
+// Google (translate) and hCaptcha origins, dropped from EVERY directive in
+// the foss policy. Matched as whole source tokens, never as substrings.
+const FOSS_OMITTED_ORIGINS = new Set([
+  "https://translate.googleapis.com",
+  "https://hcaptcha.com",
+  "https://*.hcaptcha.com",
+]);
+
+const CSP = (
+  FOSS
+    ? DIRECTIVES.map((directive) =>
+        directive
+          .split(" ")
+          .filter((source) => !FOSS_OMITTED_ORIGINS.has(source))
+          .join(" "),
+      )
+    : DIRECTIVES
+).join("; ");
 
 const MARKER_START = "<!-- android-csp:start -->";
 const MARKER_END = "<!-- android-csp:end -->";
@@ -140,5 +178,7 @@ html =
 
 writeFileSync(target, html);
 console.log(
-  "[android-csp] injected main-document CSP into android assets index.html",
+  FOSS
+    ? "[android-csp] injected foss (SLOGA_FDROID=1) main-document CSP into android assets index.html"
+    : "[android-csp] injected main-document CSP into android assets index.html",
 );

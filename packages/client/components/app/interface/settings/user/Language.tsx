@@ -3,6 +3,7 @@ import { Show } from "solid-js";
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
 
 import { TRANSLATE_LANGUAGES } from "@revolt/common";
+import { translationAvailable } from "@revolt/common/lib/translation";
 import { Language, Languages, browserPreferredLanguage } from "@revolt/i18n";
 import type { LanguageEntry } from "@revolt/i18n/Languages";
 import { timeLocale } from "@revolt/i18n/dayjs";
@@ -44,13 +45,18 @@ export function LanguageSettings() {
         <PickDateFormat />
         <PickTimeFormat />
       </CategoryButton.Group>
-      <CategoryButton.Group>
-        <ToggleMessageTranslation />
-        <PickTranslationLanguage />
-      </CategoryButton.Group>
+      {/* Builds without Google Translate hide what only it can do */}
+      <Show when={translationAvailable()}>
+        <CategoryButton.Group>
+          <ToggleMessageTranslation />
+          <PickTranslationLanguage />
+        </CategoryButton.Group>
+      </Show>
       <CategoryButton.Group>
         <ToggleCallCaptions />
-        <PickCaptionLanguage />
+        <Show when={translationAvailable()}>
+          <PickCaptionLanguage />
+        </Show>
         <PickSpokenLanguage />
         <ToggleSpeakCaptions />
       </CategoryButton.Group>

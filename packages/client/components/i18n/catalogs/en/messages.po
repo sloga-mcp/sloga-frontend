@@ -337,6 +337,10 @@ msgstr "{usernames} and {unknown} others reacted"
 msgid "{usernames} reacted"
 msgstr "{usernames} reacted"
 
+#: components/ui/components/features/messaging/elements/SpecialEmbed.tsx
+msgid "Load {provider}"
+msgstr "Load {provider}"
+
 #: components/app/interface/settings/user/voice/CameraOptions.tsx
 msgid "{v} Mbps"
 msgstr "{v} Mbps"
@@ -2677,6 +2681,10 @@ msgstr "Desktop"
 msgid "Details"
 msgstr "Details"
 
+#: components/client/FossUpdateNotice.tsx
+msgid "Sloga {versionName} is available. Open sloga.gg to download it?"
+msgstr "Sloga {versionName} is available. Open sloga.gg to download it?"
+
 #: components/app/interface/settings/user/Language.tsx
 #: components/app/interface/settings/user/Language.tsx
 msgid "Detect automatically"
@@ -3051,6 +3059,22 @@ msgstr "Enable Desktop Notifications"
 #: components/app/interface/settings/user/notifications/Notifications.tsx
 msgid "Enable Push Notifications"
 msgstr "Enable Push Notifications"
+
+#: components/app/interface/settings/user/notifications/Notifications.tsx
+msgid "No UnifiedPush app installed. This Google-free build can't get notifications while it's closed until you install one."
+msgstr "No UnifiedPush app installed. This Google-free build can't get notifications while it's closed until you install one."
+
+#: components/app/interface/settings/user/notifications/Notifications.tsx
+msgid "Get ntfy on F-Droid"
+msgstr "Get ntfy on F-Droid"
+
+#: components/app/interface/settings/user/notifications/Notifications.tsx
+msgid "Delivered through your UnifiedPush app"
+msgstr "Delivered through your UnifiedPush app"
+
+#: components/app/interface/settings/user/notifications/Notifications.tsx
+msgid "Background notifications (UnifiedPush)"
+msgstr "Background notifications (UnifiedPush)"
 
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
 msgid "Enable Push to Talk"
@@ -7975,6 +7999,10 @@ msgstr "This attachment expired before it reached this device. Ask the sender to
 #: components/app/interface/channels/text/EncryptedAttachment.tsx
 msgid "This attachment failed verification and was discarded (it may have been tampered with in transit)."
 msgstr "This attachment failed verification and was discarded (it may have been tampered with in transit)."
+
+#: components/app/interface/channels/text/EncryptedAttachment.tsx
+msgid "This attachment is larger than this version of the app can open."
+msgstr "This attachment is larger than this version of the app can open."
 
 #: components/i18n/errors.ts
 msgid "This bot is private and can only be added by the creator."

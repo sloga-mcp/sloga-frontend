@@ -867,8 +867,10 @@ export function MessageComposition(props: Props) {
   /**
    * Largest attachment this conversation will accept right now.
    *
-   * E2EE conversations use the one-shot blob path (server-capped ~20 MiB;
-   * chunked uploads are plaintext-only for now), so they must clamp small.
+   * E2EE conversations must clamp small: native encrypt/decrypt is one-shot
+   * and whole-buffer, capped at 20 MiB in e2ee-core (mirrored just under by
+   * E2EE_MAX_ATTACHMENT_SIZE), and chunked uploads are plaintext-only for
+   * now. The server's E2EE blob route is not the binding limit.
    * Fail closed: "pending"/"blocked"/"peer_downgraded" can still resolve
    * to an encrypted send, so they get the small cap too — only a
    * definitively-plaintext conversation may admit large files.

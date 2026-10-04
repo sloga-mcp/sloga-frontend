@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Play-only manifest entries. Merged into the main manifest for the `play`
+  flavor.
+
+  The FCM messaging service is declared here and in the sideload manifest
+  rather than in src/main, so the foss build has no Firebase component.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <service
+            android:name=".SlogaMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+    </application>
+</manifest>

@@ -19,12 +19,17 @@
 #   package name + signing certificate SHA-1 in Google Cloud Console. Note that
 #   Play App Signing re-signs the app, so the SHA-1 to register is Play's, not the
 #   upload keystore's.
+#   It lives per flavor (src/play, src/sideload) so the foss flavor ships no
+#   Firebase config; the old app/ path stays listed for branches that predate that.
 #
 # This is NOT a general exemption for config: Revolt.overrides.toml, .env and the
 # FCM service-account json hold real secrets and must stay gitignored.
 ALLOWLIST=':(exclude)packages/client/android/app/google-services.json'
+ALLOWLIST_PLAY=':(exclude)packages/client/android/app/src/play/google-services.json'
+ALLOWLIST_SIDELOAD=':(exclude)packages/client/android/app/src/sideload/google-services.json'
 
-added=$(git diff --cached --no-color --unified=0 --diff-filter=ACM -- . "$ALLOWLIST" 2>/dev/null \
+added=$(git diff --cached --no-color --unified=0 --diff-filter=ACM -- . \
+        "$ALLOWLIST" "$ALLOWLIST_PLAY" "$ALLOWLIST_SIDELOAD" 2>/dev/null \
         | grep '^+' | grep -v '^+++')
 [ -z "$added" ] && exit 0
 

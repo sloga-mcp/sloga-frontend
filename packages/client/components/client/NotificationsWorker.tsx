@@ -30,11 +30,16 @@ import { streamerModeHides } from "@revolt/state/streamer";
 
 import { useClient, useClientLifecycle, useNotifications, useSound } from ".";
 import { State } from "./Controller";
-import { isWebPushPlatform } from "./NotificationsController";
+import {
+  isWebPushPlatform,
+  pushProvider,
+  unifiedPushRegistered,
+} from "./NotificationsController";
 import {
   notificationPermissionGranted,
   showNotification,
 } from "./nativeNotifications";
+import { playsWebRingtone } from "./pushPolicy";
 import { connectionUrl } from "./streamConnections";
 import { type UnreadBadge, sameBadge, unreadBadge } from "./unreadBadge";
 import { publishUnreadBadge } from "./unreadBadgeShell";
@@ -53,9 +58,10 @@ export function NotificationsWorker() {
   const { lifecycle } = useClientLifecycle();
 
   // Tell the native layer whether this web layer can currently present the
-  // ringing popup, so SlogaMessagingService can suppress the DUPLICATE
-  // notification. Without this an incoming call shows an Android notification
-  // AND an in-app popup, each needing its own Decline (reported 2026-08-30).
+  // ringing popup, so SlogaNotifier.notifyIncomingCall (shared by the FCM and
+  // UnifiedPush services) can suppress the DUPLICATE notification. Without
+  // this an incoming call shows an Android notification AND an in-app popup,
+  // each needing its own Decline (reported 2026-08-30).
   //
   // Reported on every connection-state change rather than once at mount: the
   // popup rides the websocket VoiceChannelJoin event, so a disconnected client
@@ -332,8 +338,11 @@ export function NotificationsWorker() {
     // Android rings through the native call notification, which is the only
     // source that also works while the app is asleep or killed. Playing the
     // web ringtone as well put two ringtones on top of each other, and the
-    // web one is unstoppable from the notification's Decline button.
-    if (!Capacitor.isNativePlatform()) sound.playSound("ringtoneIncoming");
+    // web one is unstoppable from the notification's Decline button. The
+    // Google-free build has that native ring only once UnifiedPush is
+    // registered; until then nothing else rings, so it plays the web one.
+    if (playsWebRingtone(pushProvider(), unifiedPushRegistered()))
+      sound.playSound("ringtoneIncoming");
 
     // In-app ringing popup (IncomingCallOverlay) with Accept/Decline — shown
     // regardless of desktop-notification permission so calls are answerable
@@ -707,8 +716,9 @@ export function NotificationsWorker() {
   onMount(() => {
     document.addEventListener("click", tryRequest);
     document.addEventListener("visibilitychange", onVisibilityChange);
-    // Web push re-syncs from the configured-client effect below instead.
-    if (isWebPushPlatform()) return;
+    // Web push and UnifiedPush re-sync from the configured-client effect
+    // below instead.
+    if (isWebPushPlatform() || pushProvider() === "unifiedpush") return;
     // Native app: heal the FCM subscription on every logged-in launch — a
     // session whose subscription was lost otherwise never rings again. One
     // delayed retry covers the client/session not being ready yet at mount.
@@ -733,8 +743,9 @@ export function NotificationsWorker() {
    * client has fetched the server configuration. The subscription has to
    * match the VAPID key advertised there, so the mount-time resync above runs
    * too early whenever that fetch is still in flight, and its single 15 s
-   * retry is no guarantee either. Web only: the native app is covered by the
-   * mount-time call and its retry.
+   * retry is no guarantee either. The Google-free (foss) build's UnifiedPush
+   * re-sync runs here too, for the same reason: it registers with that key.
+   * FCM builds are covered by the mount-time call and its retry.
    */
   let webResyncStarted = false;
   let disposed = false;
@@ -750,7 +761,11 @@ export function NotificationsWorker() {
   }
 
   createEffect(() => {
-    if (webResyncStarted || !isWebPushPlatform()) return;
+    if (
+      webResyncStarted ||
+      !(isWebPushPlatform() || pushProvider() === "unifiedpush")
+    )
+      return;
     const c = client();
     if (!c?.configured()) return;
     webResyncStarted = true;

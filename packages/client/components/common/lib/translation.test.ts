@@ -317,3 +317,52 @@ test("consecutive openings double the cooldown; one success resets it", async (t
   calls[7].resolve(gtxResponse("sexto", "en"));
   assert.deepEqual(await afterReset, { text: "sexto", detectedSource: "en" });
 });
+
+// A build can switch translation off (the foss Android build). Captions
+// translate with a default target whether or not the settings show, so the
+// gate has to hold at the network, not only in the UI.
+test("switched off: resolves null and never reaches the network", async () => {
+  const { fn, calls } = scriptedFetch();
+  const translator = createTranslator(fn, () => false);
+
+  // Asserted on the call count BEFORE awaiting: a request that went out
+  // anyway would hang against a scripted fetch instead of failing.
+  const refused = translator.translateText("hello", "es");
+  await settle();
+  assert.equal(calls.length, 0);
+  assert.equal(await refused, null);
+});
+
+test("availability is asked on every call, not captured at construction", async () => {
+  const { fn, calls } = scriptedFetch();
+  let available = false;
+  const translator = createTranslator(fn, () => available);
+
+  const refused = translator.translateText("hello", "es");
+  await settle();
+  assert.equal(calls.length, 0);
+  assert.equal(await refused, null);
+
+  // The refused call was not cached either: the same text now fetches.
+  available = true;
+  const allowed = translator.translateText("hello", "es");
+  await settle();
+  assert.equal(calls.length, 1);
+  calls[0].resolve(gtxResponse("hola", "en"));
+  assert.deepEqual(await allowed, { text: "hola", detectedSource: "en" });
+});
+
+test("switched off after a success: the cached answer is not served", async () => {
+  const { fn, calls } = scriptedFetch();
+  let available = true;
+  const translator = createTranslator(fn, () => available);
+
+  const first = translator.translateText("hello", "es");
+  await settle();
+  calls[0].resolve(gtxResponse("hola", "en"));
+  assert.deepEqual(await first, { text: "hola", detectedSource: "en" });
+
+  available = false;
+  assert.equal(await translator.translateText("hello", "es"), null);
+  assert.equal(calls.length, 1);
+});

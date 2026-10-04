@@ -19,6 +19,7 @@ import { useClient, useClientLifecycle } from "@revolt/client";
 import { ActivityWorker } from "@revolt/client/ActivityWorker";
 import { ApkUpdateWorker } from "@revolt/client/ApkUpdateWorker";
 import { DiscordImportWorker } from "@revolt/client/DiscordImportWorker";
+import { FossUpdateNotice } from "@revolt/client/FossUpdateNotice";
 import { KeybindsWorker } from "@revolt/client/KeybindsWorker";
 import { NotificationsWorker } from "@revolt/client/NotificationsWorker";
 import { StreamerModeWorker } from "@revolt/client/StreamerModeWorker";
@@ -197,6 +198,7 @@ const Interface = (props: { children: JSX.Element }) => {
         <ActivityWorker />
         <StreamerModeWorker />
         <ApkUpdateWorker />
+        <FossUpdateNotice />
         {/* Global and in-app keybinds, over the native hook and the focused
             window. Main window only. It reads the `Voice` store, so it has to
             sit inside `<VoiceContext>` — which it does here, and would in

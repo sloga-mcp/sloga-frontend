@@ -1,6 +1,7 @@
 import { useLingui } from "@lingui-solid/solid/macro";
 
 import { Capacitor, registerPlugin } from "@capacitor/core";
+import { Accessor, createSignal } from "solid-js";
 import { Client } from "stoat.js";
 
 import { useModals } from "@revolt/modal";
@@ -14,6 +15,13 @@ import {
   requestNotificationPermission,
   tauriNotification,
 } from "./nativeNotifications";
+import {
+  PushProvider,
+  UnifiedPushSubscription,
+  choosePushProvider,
+  planUnifiedPushRegistration,
+  unifiedPushSubscribeBody,
+} from "./pushPolicy.ts";
 import {
   compareSubscriptionKey,
   decodeVapidKey,
@@ -118,9 +126,13 @@ export function useNotifications() {
       settings.pushNotificationsState = "allowed";
     } catch (e) {
       console.error(e);
-      snackbar.show({
-        message: t`Failed to enable push notifications. Please try again later.`,
-      });
+      // No UnifiedPush app installed: nothing failed, and the notification
+      // settings explain what to install, so no toast
+      if (!(e instanceof NoDistributorError)) {
+        snackbar.show({
+          message: t`Failed to enable push notifications. Please try again later.`,
+        });
+      }
       settings.pushNotificationsState = "default";
     }
   };
@@ -139,11 +151,16 @@ export function useNotifications() {
    * VAPID key and re-subscribes on a mismatch (a key rotation otherwise
    * strands the old subscription forever). Only when permission is granted
    * and push is already on; never changes the push setting.
+   *
+   * Google-free (foss) build: see resyncUnifiedPushSubscription.
    */
   const resyncPushSubscription = async (): Promise<boolean> => {
     if (isWebPushPlatform()) return resyncWebPushSubscription();
     if (!PushTokenNative) return true;
     if (settings.pushNotificationsState === "denied") return true;
+    if (pushProvider() === "unifiedpush") {
+      return resyncUnifiedPushSubscription();
+    }
     try {
       await setUpServiceWorkerSubscription(getClient());
       settings.pushNotificationsState = "allowed";
@@ -180,6 +197,147 @@ export function useNotifications() {
       }
       console.error("Web push subscription re-sync failed", e);
       return false;
+    }
+  };
+
+  /**
+   * Google-free (foss) build: heal the UnifiedPush registration once per
+   * launch, after the client has fetched the server configuration (the
+   * configured-client effect in NotificationsWorker). planUnifiedPushRegistration
+   * decides; this acts on it. Joins a UnifiedPush operation already in flight
+   * instead of racing it.
+   */
+  const resyncUnifiedPushSubscription = (): Promise<boolean> => {
+    if (upInFlight) {
+      return upInFlight.then(
+        (ok) => ok,
+        () => false,
+      );
+    }
+
+    return runUnifiedPushOp(async () => {
+      try {
+        const { unifiedPush } = unifiedPushBridges();
+        const client = getClient();
+        const status = await unifiedPush.status();
+        const vapid = unifiedPushVapid(client);
+        const plan = planUnifiedPushRegistration({
+          configured: client.configured(),
+          vapid,
+          acked: status.acked,
+          storedVapid: status.vapid,
+          endpoint: status.endpoint,
+        });
+
+        switch (plan.action) {
+          case "not-ready":
+            return false;
+          case "no-distributor":
+            unifiedPushGone();
+            return true;
+          case "reconcile-unsubscribe":
+            // The distributor was uninstalled: the server would keep pushing
+            // to an endpoint nothing listens on
+            setUnifiedPushRegistered(false);
+            unifiedPushGone();
+            await client.api.post("/push/unsubscribe");
+            await unifiedPush.unregister();
+            return true;
+          case "register":
+            return registerUnifiedPushAgain(client, plan.vapid!, status.vapid);
+          case "repost":
+            // An endpoint stored without its keys can't be re-posted
+            if (
+              status.endpoint === null ||
+              status.p256dh === null ||
+              status.auth === null
+            ) {
+              return registerUnifiedPushAgain(client, vapid!, status.vapid);
+            }
+            return repostUnifiedPush(client, {
+              endpoint: status.endpoint,
+              p256dh: status.p256dh,
+              auth: status.auth,
+            });
+        }
+      } catch (e) {
+        console.error("UnifiedPush re-sync failed", e);
+        return false;
+      }
+    });
+  };
+
+  /**
+   * Register with the acknowledged distributor again, with no unregister
+   * first. If this fails the connector has dropped the old registration
+   * anyway, so the next launch registers from scratch.
+   */
+  const registerUnifiedPushAgain = async (
+    client: Client,
+    vapid: string,
+    storedVapid: string | null,
+  ): Promise<boolean> => {
+    if (storedVapid !== null && storedVapid !== vapid) {
+      console.info("UnifiedPush vapid changed, registering again");
+    }
+    try {
+      const { pushToken } = unifiedPushBridges();
+      // First, as on enable: a new endpoint that arrives after the timeout
+      // below is still posted natively
+      await pushToken.saveSubscription(pushCredentials(client));
+      const body: UnifiedPushSubscription = unifiedPushSubscribeBody(
+        await registerUnifiedPush(vapid),
+      );
+      await client.api.post("/push/subscribe", body);
+    } catch (e) {
+      setUnifiedPushRegistered(false);
+      // The distributor went away since status() looked: same as having none
+      if (nativeRejectCode(e) === "NO_DISTRIBUTOR") {
+        unifiedPushGone();
+        return true;
+      }
+      console.error("UnifiedPush registration failed", e);
+      return false;
+    }
+    return unifiedPushSubscribed();
+  };
+
+  /**
+   * Post the stored registration again: /push/subscribe overwrites, so this
+   * heals a subscription the server lost, as the FCM re-sync does.
+   */
+  const repostUnifiedPush = async (
+    client: Client,
+    endpoint: { endpoint: string; p256dh: string; auth: string },
+  ): Promise<boolean> => {
+    try {
+      const { pushToken } = unifiedPushBridges();
+      await pushToken.saveSubscription(pushCredentials(client));
+      const body: UnifiedPushSubscription = unifiedPushSubscribeBody(endpoint);
+      await client.api.post("/push/subscribe", body);
+    } catch (e) {
+      setUnifiedPushRegistered(false);
+      console.error("UnifiedPush subscription re-post failed", e);
+      return false;
+    }
+    return unifiedPushSubscribed();
+  };
+
+  /** A live registration on the server: push is on, as after an FCM re-sync */
+  const unifiedPushSubscribed = (): boolean => {
+    setUnifiedPushRegistered(true);
+    settings.pushNotificationsState = "allowed";
+    return true;
+  };
+
+  /**
+   * No distributor, so no registration can exist: an "allowed" left behind
+   * would show the toggle on after the app is reinstalled, with nothing to
+   * repair it. A user's "denied" stays.
+   */
+  const unifiedPushGone = () => {
+    if (settings.pushNotificationsState === "allowed") {
+      settings.pushNotificationsState = "default";
     }
   };
 
@@ -227,7 +385,11 @@ function retryWebPushOnGesture(): boolean {
   return true;
 }
 
-/** Native bridge to fetch the FCM device token (Android app only) */
+/**
+ * Native bridge to fetch the FCM device token (Android app only). The foss
+ * build's getToken rejects with PUSH_UNAVAILABLE and is never called there:
+ * foss push rides UnifiedPush instead.
+ */
 const PushTokenNative = Capacitor.isNativePlatform()
   ? registerPlugin<{
       getToken(): Promise<{ token: string }>;
@@ -241,13 +403,223 @@ const PushTokenNative = Capacitor.isNativePlatform()
         applicable: boolean;
       }>;
       openFullScreenIntentSettings(): Promise<void>;
+      requestNotificationPermission(): Promise<{ granted: boolean }>;
     }>("PushToken")
   : undefined;
 
+const PUSH_PROVIDER = choosePushProvider({
+  native: Capacitor.isNativePlatform(),
+  unifiedPushAvailable: Capacitor.isPluginAvailable("UnifiedPush"),
+});
+
 /**
- * Whether push rides a browser service worker (VAPID web push): not the
- * Android app (FCM), not the Tauri or Electron desktop shells (no service
- * worker there).
+ * The push transport this build uses: "unifiedpush" only on the Google-free
+ * (foss) APK, the one flavor that ships the UnifiedPush plugin. Fixed at
+ * load, so every caller gets the same answer from the first render.
+ */
+export const pushProvider = (): PushProvider => PUSH_PROVIDER;
+
+/** What the UnifiedPush plugin reports; the four stored fields are verbatim */
+export type UnifiedPushStatus = {
+  distributors: string[];
+  acked: string | null;
+  endpoint: string | null;
+  p256dh: string | null;
+  auth: string | null;
+  vapid: string | null;
+};
+
+/** Native bridge to the UnifiedPush connector (foss build only) */
+const UnifiedPushNative =
+  pushProvider() === "unifiedpush"
+    ? registerPlugin<{
+        status(): Promise<UnifiedPushStatus>;
+        pickDistributor(): Promise<{ distributor: string }>;
+        register(opts: {
+          vapid: string;
+        }): Promise<{ endpoint: string; p256dh: string; auth: string }>;
+        unregister(): Promise<void>;
+      }>("UnifiedPush")
+    : undefined;
+
+const [registeredSignal, setUnifiedPushRegistered] = createSignal(false);
+
+/**
+ * Whether a UnifiedPush registration is live, so pushes ring natively. False
+ * on every other build, and until the enable flow or the launch re-sync has
+ * confirmed one with the server.
+ */
+export const unifiedPushRegistered: Accessor<boolean> = registeredSignal;
+
+/** Enabling UnifiedPush found no distributor app installed */
+export class NoDistributorError extends Error {
+  constructor() {
+    super("No UnifiedPush distributor is installed");
+    this.name = "NoDistributorError";
+  }
+}
+
+/** The UnifiedPush plugin's status, or null on other builds or on failure */
+export async function unifiedPushStatus(): Promise<UnifiedPushStatus | null> {
+  if (pushProvider() !== "unifiedpush" || !UnifiedPushNative) return null;
+  try {
+    return await UnifiedPushNative.status();
+  } catch (e) {
+    console.error("UnifiedPush status failed", e);
+    return null;
+  }
+}
+
+/**
+ * Both bridges the UnifiedPush paths use. They exist whenever pushProvider()
+ * is "unifiedpush" (only a native build has the plugin); the throw narrows.
+ */
+function unifiedPushBridges() {
+  if (!PushTokenNative || !UnifiedPushNative) {
+    throw "UnifiedPush is not available in this build";
+  }
+  return { pushToken: PushTokenNative, unifiedPush: UnifiedPushNative };
+}
+
+/**
+ * The UnifiedPush operation in flight (enable, launch re-sync or teardown),
+ * resolving to whether it succeeded. Each can end in register() or
+ * unregister() on the one connector instance, so they run one at a time.
+ */
+let upInFlight: Promise<boolean> | null = null;
+
+/** Run op as the UnifiedPush operation in flight, once any earlier one settled */
+async function runUnifiedPushOp(op: () => Promise<boolean>): Promise<boolean> {
+  // Looped: another waiter may have taken the slot first
+  while (upInFlight) await upInFlight.catch(() => false);
+  const current = op();
+  upInFlight = current;
+  try {
+    return await current;
+  } finally {
+    if (upInFlight === current) upInFlight = null;
+  }
+}
+
+/** How long register() may wait for the distributor to answer */
+const UNIFIED_PUSH_REGISTER_TIMEOUT = 30_000;
+
+/**
+ * register() raced against the timeout above, so the operation in flight
+ * always settles. An endpoint that arrives later is still posted natively
+ * (SlogaPushService), with the credentials saved before this.
+ */
+async function registerUnifiedPush(vapid: string) {
+  const { unifiedPush } = unifiedPushBridges();
+  let timer: number | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = window.setTimeout(
+      () => reject("UnifiedPush registration timed out"),
+      UNIFIED_PUSH_REGISTER_TIMEOUT,
+    );
+  });
+  try {
+    return await Promise.race([unifiedPush.register({ vapid }), timeout]);
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+/**
+ * The code a native plugin rejected with: Capacitor copies the native error,
+ * including the code passed to call.reject, onto the rejection.
+ */
+function nativeRejectCode(e: unknown): unknown {
+  return typeof e === "object" && e !== null && "code" in e
+    ? e.code
+    : undefined;
+}
+
+/**
+ * The server's VAPID key as the connector's register() takes it (87-char
+ * unpadded base64url), or null when none that parses is advertised.
+ */
+function unifiedPushVapid(client: Client): string | null {
+  const bytes = client.configuration
+    ? decodeVapidKey(client.configuration.vapid)
+    : null;
+  return bytes ? keyMarker(bytes) : null;
+}
+
+/** What the native side needs to post a subscription on its own */
+function pushCredentials(client: Client) {
+  return {
+    apiUrl: client.options.baseURL,
+    sessionToken: client.authenticationHeader[1],
+  };
+}
+
+/**
+ * Enable UnifiedPush: ask for notification permission, let the user pick a
+ * distributor if there is a choice, register with it and hand the endpoint
+ * to the server. Throws NoDistributorError when none is installed.
+ */
+async function setUpUnifiedPushSubscription(client: Client) {
+  if (!client.configured()) throw "Client not configured";
+  const vapid = unifiedPushVapid(client);
+  if (vapid === null) throw "Server did not advertise a valid VAPID key";
+  const { pushToken, unifiedPush } = unifiedPushBridges();
+
+  await runUnifiedPushOp(async () => {
+    try {
+      // First, so a new endpoint that reaches SlogaPushService after the
+      // timeout below is still posted natively
+      await pushToken.saveSubscription(pushCredentials(client));
+      await pushToken.requestNotificationPermission();
+      try {
+        await unifiedPush.pickDistributor();
+      } catch (e) {
+        if (nativeRejectCode(e) === "NO_DISTRIBUTOR") {
+          throw new NoDistributorError();
+        }
+        throw e;
+      }
+      const body: UnifiedPushSubscription = unifiedPushSubscribeBody(
+        await registerUnifiedPush(vapid),
+      );
+      await client.api.post("/push/subscribe", body);
+      // As the FCM branch does (repeats the first call)
+      await pushToken.saveSubscription(pushCredentials(client));
+    } catch (e) {
+      setUnifiedPushRegistered(false);
+      throw e;
+    }
+    setUnifiedPushRegistered(true);
+    return true;
+  });
+}
+
+/**
+ * UnifiedPush teardown, run by every kill (logout, push turned off,
+ * permission denied), even when the unsubscribe POST before it threw. Never
+ * throws: it runs in a finally.
+ */
+async function killUnifiedPushSubscription() {
+  // Credentials first, so a register() still in flight finds none to post
+  // this session with natively
+  await PushTokenNative?.clearSubscription().catch(console.error);
+  await runUnifiedPushOp(async () => {
+    const { pushToken, unifiedPush } = unifiedPushBridges();
+    try {
+      await unifiedPush.unregister();
+    } finally {
+      // Again: the operation waited out above may have saved them back
+      await pushToken.clearSubscription();
+    }
+    return true;
+  }).catch(console.error);
+  setUnifiedPushRegistered(false);
+}
+
+/**
+ * Whether push rides a browser service worker (VAPID web push): not any
+ * native Android build (FCM or UnifiedPush), not the Tauri or Electron
+ * desktop shells (no service worker there).
  */
 export function isWebPushPlatform(): boolean {
   return (
@@ -304,6 +676,14 @@ async function setUpServiceWorkerSubscription(
     throw "Web push is not supported in the desktop app";
   }
 
+  // Google-free Android app (foss): push rides the UnifiedPush distributor.
+  // Never FCM (getToken prompts, then rejects there) and never web push.
+  // Ignores gate, which is web only.
+  if (pushProvider() === "unifiedpush") {
+    await setUpUnifiedPushSubscription(client);
+    return;
+  }
+
   // Native Android app: web push is unavailable in the WebView — register
   // the FCM device token as the push subscription instead.
   if (PushTokenNative) {
@@ -313,9 +693,10 @@ async function setUpServiceWorkerSubscription(
       p256dh: "",
       auth: token,
     });
-    // Persist the API base + session token so the native FirebaseMessagingService
-    // can re-subscribe on its own if FCM rotates the token while the app is
-    // killed (onNewToken), instead of waiting for the next app launch.
+    // Persist the API base + session token so the gms SlogaMessagingService
+    // can re-subscribe through PushResubscriber if FCM rotates the token
+    // while the app is killed (onNewToken), instead of waiting for the next
+    // app launch.
     await PushTokenNative.saveSubscription({
       apiUrl: client.options.baseURL,
       sessionToken: client.authenticationHeader[1],
@@ -486,10 +867,14 @@ export async function killServiceWorkerSubscription(
   loggingOut?: boolean,
 ) {
   if (PushTokenNative) {
-    if (!loggingOut) await client.api.post("/push/unsubscribe");
-    // Drop stored credentials so a later token rotation can't re-register this
-    // now logged-out / unsubscribed session.
-    await PushTokenNative.clearSubscription();
+    try {
+      if (!loggingOut) await client.api.post("/push/unsubscribe");
+      // Drop stored credentials so a later token rotation can't re-register this
+      // now logged-out / unsubscribed session.
+      await PushTokenNative.clearSubscription();
+    } finally {
+      if (pushProvider() === "unifiedpush") await killUnifiedPushSubscription();
+    }
     return;
   }
 

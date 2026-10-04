@@ -22,6 +22,7 @@ import { styled } from "styled-system/jsx";
 import { decodeTime } from "ulid";
 
 import { useClient, useE2EE } from "@revolt/client";
+import { translationAvailable } from "@revolt/common/lib/translation";
 import { useTime } from "@revolt/i18n";
 import { Markdown } from "@revolt/markdown";
 import { useState } from "@revolt/state";
@@ -490,9 +491,12 @@ export function Message(props: Props) {
               <Markdown content={props.message.content!} />
             </BreakText>
             {/* Never translate E2EE messages: decrypted text must not
-                leave the device (translation calls Google) */}
+                leave the device (translation calls Google). Builds with
+                Google Translate off (foss) never show it, even when
+                "translation:enabled" arrives via settings sync */}
             <Show
               when={
+                translationAvailable() &&
                 state.settings.getValue("translation:enabled") &&
                 !props.message.systemMessage &&
                 props.message.authorId !== client().user?.id &&

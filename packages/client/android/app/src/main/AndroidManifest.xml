@@ -42,13 +42,9 @@
             android:exported="false"
             android:foregroundServiceType="microphone|camera" />
 
-        <service
-            android:name=".SlogaMessagingService"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="com.google.firebase.MESSAGING_EVENT" />
-            </intent-filter>
-        </service>
+        <!-- The push-messaging service is declared in the play and sideload
+             flavor manifests only, so the foss (F-Droid) build carries no
+             proprietary push component. -->
 
         <receiver
             android:name=".NotificationDismissReceiver"

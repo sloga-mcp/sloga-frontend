@@ -5,22 +5,28 @@ import { Capacitor, registerPlugin } from "@capacitor/core";
 /**
  * Which channel this client was distributed through.
  *
- * One web bundle serves the browser, the sloga.gg APK, the Play Store APK and
- * the App Store build, so anything the stores forbid has to be gated at
- * runtime rather than at build time. The Android native layer reports the
- * flavor it was compiled as — see
+ * One web bundle serves the browser, the sloga.gg APK, the Google-free foss
+ * APK (sloga.gg now, F-Droid later), the Play Store APK and the App Store
+ * build, so anything the stores forbid has to be gated at runtime rather than
+ * at build time. The Android native layer reports the flavor it was compiled
+ * as — see
  * android/app/src/main/java/com/acutest/app/AppFlavorPlugin.java. iOS has no
  * such plugin: every iOS build ships through the App Store.
  */
-export type DistributionChannel = "web" | "sideload" | "play" | "appstore";
+export type DistributionChannel =
+  | "web"
+  | "sideload"
+  | "play"
+  | "appstore"
+  | "foss";
 
 /**
  * Decide the channel from what the runtime can tell us.
  *
  * `reported` is the AppFlavor plugin's answer, or undefined while it is still
- * pending. Any value other than "sideload" maps to "play", so a flavor added
- * later (an F-Droid build, say) stays on the fail-closed side until it is
- * handled here explicitly.
+ * pending. "sideload" and "foss" (the Google-free build) are the Android
+ * flavors handled here; any other value maps to "play", so a flavor added
+ * later stays on the fail-closed side until it is handled here explicitly.
  */
 export function resolveChannel(input: {
   native: boolean;
@@ -42,6 +48,7 @@ export function resolveChannel(input: {
   if (!input.pluginAvailable) return "sideload";
 
   if (input.reported === "sideload") return "sideload";
+  if (input.reported === "foss") return "foss";
 
   // Native, plugin present, answer not back yet (or not one we know): assume
   // Play. Guessing wrong in this direction briefly hides a donate link;
@@ -82,7 +89,8 @@ export const distributionChannel = channel;
  * and Sloga Technologies LLC is not a registered nonprofit, so the charity
  * carve-out does not apply. Apple's guideline 3.1.1 likewise restricts App
  * Store apps from linking out to payment mechanisms other than in-app
- * purchase. Ko-fi entries stay out of both store builds.
+ * purchase. Ko-fi entries stay out of both store builds. The Google-free foss
+ * build is neither, so it keeps them.
  */
 export const allowsDonationLinks = () =>
   channel() !== "play" && channel() !== "appstore";
@@ -98,6 +106,7 @@ export const KOFI_PAGE_URL = "https://ko-fi.com/slogatech";
  * Google Play's Device and Network Abuse policy forbids an app distributed on
  * Play from updating itself outside Play, and Apple's guidelines (2.5.2) bar
  * App Store apps from downloading code that changes the app. Only sideload
- * builds update themselves.
+ * builds update themselves. The foss build ships no self-updater (ApkUpdater
+ * lives only in the sideload flavor), so it lands on false as well.
  */
 export const allowsSelfUpdate = () => channel() === "sideload";

@@ -36,9 +36,22 @@
  *   consecutive opening doubles the cooldown up to 10 minutes; one success
  *   resets it to 30 seconds.
  *
+ * ## A build can switch it off
+ *
+ * `VITE_CFG_ENABLE_GOOGLE_TRANSLATE=false` (the foss Android build) turns
+ * translation off: `translationAvailable()` is false, and `translateText`
+ * resolves `null` before the cache and without any request, so the callers
+ * show the original as they do on any failure. Hiding the settings is not
+ * enough on its own: captions translate with a default target, and settings
+ * sync can carry `translation:enabled` from another device. The flag's
+ * registry entry is `CONFIGURATION.ENABLE_GOOGLE_TRANSLATE` in `env.ts`, but
+ * this file reads the variable itself, with the same parse, and imports
+ * nothing: `env.ts` dereferences vite's env object at module load, and that
+ * object doesn't exist under `node --test`.
+ *
  * The factory takes its fetch so the specs can run the whole policy against
  * a scripted network — same reason the transcription engine takes a worker
- * factory.
+ * factory. It takes the availability check for the same reason.
  */
 
 /**
@@ -160,6 +173,9 @@ export function createTranslator(
   // Wrapped rather than passed bare: an unbound `fetch` throws
   // "Illegal invocation" in browsers.
   fetchFn: typeof fetch = (input, init) => fetch(input, init),
+  // Asked on every call, never captured. The app passes
+  // `translationAvailable`.
+  available: () => boolean = () => true,
 ): Translator {
   /** Bounded cache of finished/in-flight translations keyed by target + text */
   const cache = new Map<string, Promise<TranslationResult | null>>();
@@ -302,6 +318,10 @@ export function createTranslator(
     text: string,
     target: string,
   ): Promise<TranslationResult | null> {
+    // The build gate goes first: a refused call sends nothing, and it is
+    // neither cached nor answered from the cache.
+    if (!available()) return Promise.resolve(null);
+
     const trimmed = text.trim();
     if (!trimmed || trimmed.length > MAX_TRANSLATABLE_LENGTH) {
       return Promise.resolve(null);
@@ -330,12 +350,30 @@ export function createTranslator(
   return { translateText };
 }
 
-const shared = createTranslator();
+/**
+ * Whether this build may translate at all. On unless the build sets
+ * `VITE_CFG_ENABLE_GOOGLE_TRANSLATE=false` (the foss Android build). The
+ * same variable, with the same parse, as
+ * `CONFIGURATION.ENABLE_GOOGLE_TRANSLATE` in `env.ts`, which this file can't
+ * import (see the header). It is read inside the function, never at module
+ * scope: vite replaces the keyed read at build time, and the specs never
+ * call it under node, where the env object doesn't exist.
+ */
+export function translationAvailable(): boolean {
+  return (
+    (
+      (import.meta.env.VITE_CFG_ENABLE_GOOGLE_TRANSLATE as string) ?? ""
+    ).toLowerCase() !== "false"
+  );
+}
+
+const shared = createTranslator(undefined, translationAvailable);
 
 /**
  * Translate text into the target language, detecting the source language.
  * Resolves to `null` when translation is unnecessary (already in the target
- * language, empty, too long) or when the request fails.
+ * language, empty, too long), when the request fails, or when this build has
+ * translation switched off (`translationAvailable()`).
  */
 export function translateText(
   text: string,

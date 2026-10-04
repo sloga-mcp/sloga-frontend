@@ -3,7 +3,8 @@
 //   node --conditions=browser --test components/client/distribution.test.ts
 // Focus: iOS must resolve to the App Store whatever the plugin says (it has no
 // AppFlavor plugin, and a missing plugin otherwise reads as a sideload APK),
-// and Android must fail closed to Play for anything but an explicit sideload.
+// and Android must fail closed to Play for anything but an explicit sideload
+// or foss.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
@@ -33,7 +34,14 @@ test("iOS is the App Store without the plugin", () => {
 });
 
 test("iOS is the App Store with the plugin and any reported value", () => {
-  for (const reported of [undefined, "sideload", "play", "fdroid", ""]) {
+  for (const reported of [
+    undefined,
+    "sideload",
+    "play",
+    "fdroid",
+    "foss",
+    "",
+  ]) {
     for (const pluginAvailable of [true, false]) {
       assert.equal(
         resolveChannel({
@@ -60,6 +68,18 @@ test("Android without the plugin is a pre-split sideload APK", () => {
   );
 });
 
+test("Android without the plugin is sideload whatever it reports", () => {
+  assert.equal(
+    resolveChannel({
+      native: true,
+      platform: "android",
+      pluginAvailable: false,
+      reported: "foss",
+    }),
+    "sideload",
+  );
+});
+
 test("Android reporting sideload is sideload", () => {
   assert.equal(
     resolveChannel({
@@ -72,8 +92,27 @@ test("Android reporting sideload is sideload", () => {
   );
 });
 
+test("Android reporting foss is foss", () => {
+  assert.equal(
+    resolveChannel({
+      native: true,
+      platform: "android",
+      pluginAvailable: true,
+      reported: "foss",
+    }),
+    "foss",
+  );
+});
+
 test("Android fails closed to Play for anything else", () => {
-  for (const reported of [undefined, "play", "fdroid", "Sideload", ""]) {
+  for (const reported of [
+    undefined,
+    "play",
+    "fdroid",
+    "Sideload",
+    "Foss",
+    "",
+  ]) {
     assert.equal(
       resolveChannel({
         native: true,
