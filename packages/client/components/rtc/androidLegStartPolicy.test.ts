@@ -28,11 +28,13 @@ import {
   type LegStopNotice,
   type NativeFrameKey,
   type NativeStopReason,
+  type RekeyFailureNotice,
   AndroidLegLifecycle,
   FRAME_KEY_TIMEOUT_MS,
   gateStopNotice,
   keyActionAfterConnect,
   nativeStopNotice,
+  rekeyFailureNotice,
   staleExitNotice,
   startAttemptCancelled,
   startAttemptStale,
@@ -960,6 +962,27 @@ test("staleExitNotice: a fresh attempt is not exiting", () => {
   assert.equal(staleExitNotice(world()), "none");
 });
 
+test("🔴 rekeyFailureNotice: a share still live after the stop is reported even if something already spoke", () => {
+  // Read once the caller's fail-closed stop has settled. A share still live
+  // under the same token (activeAfterStop) was NOT stopped, whoever spoke
+  // first: a gate-share stop already in flight told the user "stopped" too,
+  // and that is the stop that failed. Deferring to it left a live share
+  // reported as stopped. Only a share that is really down may stay quiet
+  // for whoever spoke (spoken) or be reported stopped.
+  const rows: [boolean, boolean, RekeyFailureNotice][] = [
+    [false, false, "stopped"],
+    [true, false, "none"],
+    [false, true, "unstoppable"],
+    [true, true, "unstoppable"],
+  ];
+  for (const [spoken, activeAfterStop, notice] of rows)
+    assert.equal(
+      rekeyFailureNotice({ spoken, activeAfterStop }),
+      notice,
+      `spoken=${spoken} activeAfterStop=${activeAfterStop}`,
+    );
+});
+
 test(
   "stopping() is true exactly while a stop is in flight",
   { timeout: 2000 },
@@ -1030,6 +1053,86 @@ test(
     await Promise.all([first, second]);
     assert.equal(rig.stops.length, 1);
     assert.equal(rig.leg.stopping(), false);
+  },
+);
+
+test(
+  "🔴 a failed stop keeps the same share token, so the caller still recognizes the share as its own",
+  { timeout: 2000 },
+  async () => {
+    // `state.tsx` samples shareToken() before its fail-closed stop and
+    // reports the share unstoppable only while the leg is still active()
+    // under the SAME token. A failed stop that moved the token would read the
+    // share still live as somebody else's: the user would be told it stopped
+    // (or nothing at all) while it is still on the air.
+    const rejected = lifecycle();
+    await share(rejected);
+    const token = rejected.leg.shareToken();
+    const failed = rejected.leg.stop();
+    assert.equal(rejected.leg.shareToken(), token, "a stop in flight moved it");
+    rejected.stops[0].reject(new Error("native stop failed"));
+    await failed;
+    assert.equal(rejected.leg.active(), true);
+    assert.equal(rejected.leg.shareToken(), token, "a rejected stop moved it");
+
+    const hung = lifecycle(5);
+    await share(hung);
+    const hungToken = hung.leg.shareToken();
+    const timedOut = hung.leg.stop();
+    assert.equal(
+      await settlesWithin(timedOut, 500),
+      true,
+      "the stop never settled",
+    );
+    assert.equal(hung.leg.active(), true);
+    assert.equal(hung.leg.shareToken(), hungToken, "a timed-out stop moved it");
+    // Not a token frozen for good: the retry native resolves does move it.
+    const retry = hung.leg.stop();
+    hung.stops[1].resolve();
+    await retry;
+    assert.equal(hung.leg.active(), false);
+    assert.ok(hung.leg.shareToken() > hungToken, "a resolved stop kept it");
+  },
+);
+
+test(
+  "shareToken() moves with each share: connect, a resolved stop and nativeStopped",
+  { timeout: 2000 },
+  async () => {
+    const rig = lifecycle();
+    assert.equal(rig.leg.shareToken(), 0);
+    await share(rig);
+    const connected = rig.leg.shareToken();
+    assert.ok(connected > 0, "connect did not move it");
+    const stopping = rig.leg.stop();
+    assert.equal(rig.leg.shareToken(), connected, "a stop in flight moved it");
+    rig.stops[0].resolve();
+    await stopping;
+    assert.equal(rig.leg.active(), false);
+    const stopped = rig.leg.shareToken();
+    assert.ok(stopped > connected, "a resolved stop did not move it");
+    await share(rig);
+    const second = rig.leg.shareToken();
+    assert.ok(second > stopped, "the next connect did not move it");
+    rig.leg.nativeStopped("system");
+    assert.ok(rig.leg.shareToken() > second, "nativeStopped did not move it");
+
+    // What the token is for: native ends the share while our stop hangs, the
+    // user shares again, and then the stop times out. The leg is active(),
+    // but under a new token, so it is not the share that failed to stop.
+    const hung = lifecycle(5);
+    await share(hung);
+    const first = hung.leg.shareToken();
+    const timedOut = hung.leg.stop();
+    hung.leg.nativeStopped("user");
+    await share(hung);
+    assert.equal(
+      await settlesWithin(timedOut, 500),
+      true,
+      "the stop never settled",
+    );
+    assert.equal(hung.leg.active(), true);
+    assert.notEqual(hung.leg.shareToken(), first);
   },
 );
 
@@ -1135,6 +1238,11 @@ test("🔴 androidScreenShare.ts holds no live copy of the lifecycle", () => {
   // false, say) would re-toast every coalesced stop while the specs above
   // stay green.
   assertShareWired("stopping()", "return this.#core.stopping();");
+  // `state.tsx` compares `shareToken()` across its fail-closed stop to tell
+  // the share it acted on from one started meanwhile; a wrapper-side copy (a
+  // counter of its own, say) would report a live share as stopped, or a new
+  // one as unstoppable, while the specs above stay green.
+  assertShareWired("shareToken()", "return this.#core.shareToken();");
   assertShareWired("connect()", "return this.#core.connect(options.e2ee,");
   // The plugin connects with the key the lifecycle hands its callback, which
   // has already lost its group. The caller's own key would carry `groupId`
@@ -1150,8 +1258,8 @@ test("🔴 androidScreenShare.ts holds no live copy of the lifecycle", () => {
   assertShareWired("stop()", "return this.#core.stop();");
   assert.equal(
     countWired(SHARE_CODE, "#core."),
-    7,
-    "androidScreenShare.ts must reach the lifecycle through exactly the seven " +
+    8,
+    "androidScreenShare.ts must reach the lifecycle through exactly the eight " +
       "delegating calls pinned above",
   );
   for (const field of [

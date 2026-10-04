@@ -123,9 +123,11 @@ import {
 } from "./afkPolicy";
 import {
   type LegStopNotice,
+  type RekeyFailureNotice,
   gateStopNotice,
   keyActionAfterConnect,
   nativeStopNotice,
+  rekeyFailureNotice,
   staleExitNotice,
   startAttemptCancelled,
   startAttemptStale,
@@ -519,6 +521,44 @@ const LEG_GATE_SHARE_NOTICE =
  */
 const LEG_REVOKED_NOTICE =
   "Your screen share ended because you no longer have permission to share video in this channel.";
+
+/**
+ * A leg re-key failed and the fail-closed stop that followed took the share
+ * down (`rekeyFailureNotice`: `stopped`). Also native's own
+ * `stopped{"encryption"}` (`#legStopNoticeMessage`): one copy for both.
+ */
+const LEG_REKEY_STOPPED_NOTICE =
+  "Your screen share stopped because it could no longer be encrypted.";
+
+/**
+ * A leg re-key failed and the fail-closed stop that followed did NOT end the
+ * share (`rekeyFailureNotice`: `unstoppable`): the native stop was rejected or
+ * timed out, and the leg is still live for the same share.
+ *
+ * "Leave the call", not "Stop sharing": the share button re-enters the same
+ * hung native stop. Leaving does not depend on it: the leave fires the leg
+ * stop without awaiting it (`#stopAndroidLeg` in the disconnect path), and
+ * voice-ingress evicts `{identity}:screen` on the primary's
+ * `participant_left` (BE `api.rs:803-825`).
+ *
+ * "May", not "is": a native re-key that lands after its timeout may have put
+ * the leg on the new key after all. Until one does, the frames stay
+ * end-to-end encrypted under the previous key, readable only by its holders
+ * (the SFU holds no keys), which is why the copy names who could see it
+ * rather than saying "unencrypted".
+ */
+const LEG_REKEY_UNSTOPPABLE_NOTICE =
+  "Your screen share couldn't be stopped and may be visible to someone who left the call. Leave the call to end it.";
+
+/**
+ * A gate-share stop (`#pauseGate`) that did not end the share: the native
+ * stop was rejected or timed out, and the leg is still live for the same
+ * share after `LEG_GATE_SHARE_NOTICE` already said it stopped. Key-neutral
+ * (the gate stopped it for a pause or a re-secure, not a failed re-key), and
+ * "Leave the call" for the reason given on `LEG_REKEY_UNSTOPPABLE_NOTICE`.
+ */
+const LEG_UNSTOPPABLE_NOTICE =
+  "Your screen share couldn't be stopped. Leave the call to end it.";
 
 /**
  * `#androidScreenShareError`'s "no notice": the one value the leg start's
@@ -3340,18 +3380,25 @@ class Voice {
             // `active()`, was ended by something that spoke for itself — a
             // gate-share (a re-secure mid-share pushes its key into the leg
             // `#pauseGate` is already stopping), a revoke, a native stop — or
-            // deliberately said nothing (a tap, a hang-up), so this message
+            // deliberately said nothing (a tap, a hang-up), so "stopped"
             // would only contradict it. The stop runs either way. A stop that
-            // FAILED is reported regardless: the leg is still `active()`
-            // after it, so the share is live and the user must be told.
+            // FAILED or timed out is reported regardless, as `unstoppable`
+            // (`rekeyFailureNotice`): the leg is still `active()` after it for
+            // the SAME share (`shareToken()`, sampled before the stop, is
+            // unchanged; a share started meanwhile is not the one that
+            // failed), so the share is live and the user is told to leave the
+            // call (see `LEG_REKEY_UNSTOPPABLE_NOTICE`). Nothing rejects out
+            // of the listener and nothing retries: the rotation completes.
+            const token = leg.shareToken();
             const spoken = leg.stopping() || !leg.active();
             await this.#stopAndroidLeg();
-            if (!spoken || leg.active())
-              this.onErr(
-                new Error(
-                  "Your screen share stopped because it could no longer be encrypted.",
-                ),
-              );
+            const message = this.#rekeyFailureMessage(
+              rekeyFailureNotice({
+                spoken,
+                activeAfterStop: leg.active() && leg.shareToken() === token,
+              }),
+            );
+            if (message) this.onErr(new Error(message));
           }
         };
         this.#e2eeWorker = new E2EEWorker();
@@ -6170,11 +6217,30 @@ class Voice {
       console.warn(
         `[rtc] publish gate "${reason}" stopped the Android screen leg`,
       );
-    void this.#stopAndroidLeg();
+    // A gate-share stop that fails or hangs (a rejected or timed-out native
+    // stop) leaves the share live AFTER the notice below said it stopped, and
+    // with no rotation to follow (a mixed or interlude pause, a loud
+    // fallback) nothing else corrects it. So for `gate-share` the leg and its
+    // `shareToken()` are sampled BEFORE the stop, and once THAT stop settles
+    // a leg still `active()` for the same share gets `LEG_UNSTOPPABLE_NOTICE`.
+    // The stop stays un-awaited: awaiting a stop that can hang for its whole
+    // timeout would hold the primary's pause sweep behind it.
+    const leg = notice === "gate-share" ? this.#androidLeg : undefined;
+    const token = leg?.shareToken();
+    const stopped = this.#stopAndroidLeg();
     await this.#applyPublishGate(room);
     if (notice === "gate-start") this.onErr(new Error(LEG_GATE_START_NOTICE));
     else if (notice === "gate-share")
       this.onErr(new Error(LEG_GATE_SHARE_NOTICE));
+    // Chained only now, after "stopped" was shown, so it can never be the
+    // last word over a live share. `#stopAndroidLeg` does not reject on a
+    // failed native stop (`#doStop` catches the bridge's rejection and its
+    // timeout), so the chain adds no catch.
+    if (notice === "gate-share")
+      void stopped.then(() => {
+        if (leg?.active() && leg.shareToken() === token)
+          this.onErr(new Error(LEG_UNSTOPPABLE_NOTICE));
+      });
   }
 
   async #resumeGate(room: Room, reason: PublishGateReason): Promise<void> {
@@ -10303,7 +10369,7 @@ class Voice {
         // re-acquire the single-use consent (probe (c-iv)) — same UX.
         return "Your screen share ended because the connection changed. Share again when you're ready.";
       case "encryption":
-        return "Your screen share stopped because it could no longer be encrypted.";
+        return LEG_REKEY_STOPPED_NOTICE;
       case "revoked":
         return LEG_REVOKED_NOTICE;
       case "gate-start":
@@ -10312,6 +10378,27 @@ class Voice {
         return LEG_GATE_SHARE_NOTICE;
       default: {
         const unknownNotice: never = notice;
+        void unknownNotice;
+        return undefined;
+      }
+    }
+  }
+
+  /**
+   * The copy for a failed leg re-key's [RekeyFailureNotice]
+   * (`rekeyFailureNotice`), or undefined for `none`. Shared by both re-key
+   * sites: the rotation listener and `#syncLegKeyAfterConnect`.
+   */
+  #rekeyFailureMessage(n: RekeyFailureNotice): string | undefined {
+    switch (n) {
+      case "none":
+        return undefined;
+      case "stopped":
+        return LEG_REKEY_STOPPED_NOTICE;
+      case "unstoppable":
+        return LEG_REKEY_UNSTOPPABLE_NOTICE;
+      default: {
+        const unknownNotice: never = n;
         void unknownNotice;
         return undefined;
       }
@@ -10352,18 +10439,23 @@ class Voice {
       // Read BEFORE the stop, by the rotation listener's rule: a leg already
       // stopping (a gate-share, a tap, a hang-up) or no longer `active()` (a
       // revoke, a native error, a disconnect) was ended by something that
-      // already said why — or deliberately said nothing — so this message
+      // already said why — or deliberately said nothing — so "stopped"
       // would only contradict it. The stop runs either way. A stop that
-      // FAILED is reported regardless: the leg is still `active()` after it,
-      // so the share is live and the user must be told.
+      // FAILED or timed out is reported regardless, as `unstoppable`
+      // (`rekeyFailureNotice`): the leg is still `active()` after it for the
+      // SAME share (`shareToken()`, sampled before the stop, is unchanged),
+      // so the share is live and the user is told to leave the call. No
+      // rejection out of here and no retry, as in the listener.
+      const token = leg.shareToken();
       const spoken = leg.stopping() || !leg.active();
       await this.#stopAndroidLeg();
-      if (!spoken || leg.active())
-        this.onErr(
-          new Error(
-            "Your screen share stopped because it could no longer be encrypted.",
-          ),
-        );
+      const message = this.#rekeyFailureMessage(
+        rekeyFailureNotice({
+          spoken,
+          activeAfterStop: leg.active() && leg.shareToken() === token,
+        }),
+      );
+      if (message) this.onErr(new Error(message));
     }
   }
 

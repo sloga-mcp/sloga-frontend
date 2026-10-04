@@ -151,7 +151,7 @@ EXPECTED=(
   "components/ui/components/features/voice/callCard/callTileSelection.test.ts 23 0"
   # Source pins over the state.tsx wiring of member moves and the chip's
   # publication read (wave 7): no spec can load state.tsx itself.
-  "components/rtc/stateWiring.test.ts 42 0"
+  "components/rtc/stateWiring.test.ts 44 0"
   # The AFK channel and its merge with member moves (FE-2). Before it this
   # gate ran NO AFK spec, and none of the ladder that decides whether a
   # client follows a move. memberGate's opt-in skip is not in its row: see
@@ -165,7 +165,7 @@ EXPECTED=(
   "src/lib/afkChannelSettings.test.ts 51 0"
   # The Android screen-share leg: when a leg may start, and the share tiers.
   # Neither spec ran anywhere before these rows.
-  "components/rtc/androidLegStartPolicy.test.ts 58 0"
+  "components/rtc/androidLegStartPolicy.test.ts 61 0"
   "components/rtc/androidScreenShareTiers.test.ts 3 0"
 )
 

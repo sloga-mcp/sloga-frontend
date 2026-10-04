@@ -24,6 +24,9 @@
  *   attempt abandoned under a gate that was already held when it claimed
  *   ([staleExitNotice]). `state.tsx` maps the kind to copy; nothing here
  *   holds a string the user reads.
+ * - Which notice, if any, a failed leg re-key deserves once the caller's
+ *   fail-closed stop has settled ([rekeyFailureNotice]): none, stopped, or a
+ *   share the stop could not end. Also a kind, mapped to copy in `state.tsx`.
  * - The leg's state machine ([AndroidLegLifecycle]), behind an injected
  *   bridge and announcer; `androidScreenShare.ts` wires it to the plugin.
  */
@@ -286,6 +289,44 @@ export function gateStopNotice(w: GateStopWorld): LegStopNotice {
   return "none";
 }
 
+/** Which notice, if any, a failed leg re-key deserves. A KIND, not copy:
+ * `state.tsx` maps each one to its message. */
+export type RekeyFailureNotice = "none" | "stopped" | "unstoppable";
+
+/**
+ * The notice for a leg re-key that failed (a rejected or timed-out
+ * [AndroidLegLifecycle.setFrameKey], or a key the leg must not take), read
+ * once the caller's fail-closed stop has settled.
+ *
+ * The caller samples the two inputs on either side of that stop. `spoken` is
+ * read BEFORE it: a stop already in flight, or a leg already down, was ended
+ * by something that spoke for itself (or deliberately said nothing).
+ * `activeAfterStop` is read AFTER it, and only for the SAME share: the leg
+ * still `active()` AND its [AndroidLegLifecycle.shareToken] unchanged across
+ * the await. A new share started while the stop ran is not the one that
+ * failed, and must not raise an alarm.
+ *
+ * - `activeAfterStop`: `unstoppable`, whoever spoke first. The stop failed
+ *   or timed out and the share is still live. A gate-share stop in flight
+ *   that then fails told the user "stopped" too, so a share still live must
+ *   be reported whatever was said before.
+ * - Otherwise `spoken`: none. The share is down and something else already
+ *   explained (or deliberately did not explain) why.
+ * - Otherwise `stopped`.
+ *
+ * Two rotations failing together coalesce on one stop and each may announce
+ * (accepted). A native re-key that lands after its timeout may leave the leg
+ * on the NEW key after all, which is why the unstoppable copy says "may".
+ */
+export function rekeyFailureNotice(w: {
+  spoken: boolean;
+  activeAfterStop: boolean;
+}): RekeyFailureNotice {
+  if (w.activeAfterStop) return "unstoppable";
+  if (w.spoken) return "none";
+  return "stopped";
+}
+
 /** Ceiling on a native `stop()`. The Kotlin side settles in a `finally`, so
  * a lost settlement is already remote — but the in-flight stop clears only
  * when the call settles, so without a bound every later hook AND the user's
@@ -380,6 +421,18 @@ export class AndroidLegLifecycle {
    * ends the share from one that coalesces onto a stop already asked for. */
   stopping(): boolean {
     return this.#stopPromise !== undefined;
+  }
+
+  /** Identifies "the same share" across an await: a caller that samples it
+   * before a stop and compares it after can tell the share it acted on from
+   * one started meanwhile ([rekeyFailureNotice]'s `activeAfterStop`). Bumped
+   * only by [connect], [nativeStopped] and a RESOLVED [stop] that still
+   * speaks for the current share; never by a stop hook (hooks reach the leg
+   * only through [stop]), a rejected stop or a timed-out stop. So across a
+   * FAILED stop the token is unchanged, and a leg still `active()` with the
+   * same token is the same share. */
+  shareToken(): number {
+    return this.#connectGeneration;
   }
 
   /** The native `started` event. */

@@ -157,6 +157,12 @@ export class AndroidScreenLeg {
     return this.#core.stopping();
   }
 
+  /** Identifies the same share across an await; see
+   * [AndroidLegLifecycle.shareToken]. */
+  shareToken(): number {
+    return this.#core.shareToken();
+  }
+
   /** Phase 1: OS consent + FGS. User-paced — mint the token AFTER this.
    * Bounded by [PREPARE_TIMEOUT_MS] so a lost native callback cannot strand
    * the start attempt forever; a consent granted AFTER the timeout is stored
@@ -205,9 +211,11 @@ export class AndroidScreenLeg {
    * Rotation push (§5.2). Resolves only once the native sender encrypts under
    * the new (key, index) — the provider AWAITS this before reporting the
    * local key installed, which is what locks a removed member out. A
-   * rejection here means the leg cannot be trusted on the new epoch: the
-   * caller stops the leg (fail closed) and resolves the provider's push.
-   * A no-op while the leg is not active; a key from another group throws.
+   * rejection here, including a native call that does not settle within
+   * [FRAME_KEY_TIMEOUT_MS] (the lifecycle bounds it), means the leg cannot
+   * be trusted on the new epoch: the caller stops the leg (fail closed) and
+   * resolves the provider's push. A no-op while the leg is not active; a key
+   * from another group throws (see [AndroidLegLifecycle.setFrameKey]).
    */
   setFrameKey(key: LegE2EEKey): Promise<void> {
     return this.#core.setFrameKey(key);

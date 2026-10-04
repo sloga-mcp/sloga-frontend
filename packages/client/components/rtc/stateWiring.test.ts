@@ -809,7 +809,14 @@ test("source pin (C9): every trackPublished kicks a roster reconcile", () => {
 // has already bumped it, and a second reason during the teardown reads the
 // stop in flight. Sampled after the stop, `startingFor` never matches the
 // generation and the gate-start notice is lost.
-test("source pin (C9): #pauseGate samples gateStopNotice before it stops the leg, and toasts from it", () => {
+// 🔴 (wave 4e, C12 site (c)) The gate-share notice says "stopped" before the
+// un-awaited stop has settled, so a stop that fails or hangs (the leg still
+// `active()` for the SAME share once it settles) is reported after it, with
+// `LEG_UNSTOPPABLE_NOTICE`. The share token is read BEFORE the stop (a
+// resolved stop moves it, so read after one the check could never fire), and
+// the report is chained on THAT stop's promise, after the gate-share toast,
+// so the false "stopped" is never the last word over a live share.
+test("source pin (C9): #pauseGate samples gateStopNotice before it stops the leg, toasts from it, and reports a gate-share stop that did not take", () => {
   const gate = bodyAfter(
     STATE_CODE,
     `async #pauseGate(room: Room, reason: PublishGateReason): Promise<void> {`,
@@ -821,32 +828,64 @@ test("source pin (C9): #pauseGate samples gateStopNotice before it stops the leg
     stopInFlight: !!this.#androidLeg?.stopping(),
     roomConnected: room.state === ConnectionState.Connected,
   });`;
-  const stop = `void this.#stopAndroidLeg();`;
+  const capture = `const leg = notice === "gate-share" ? this.#androidLeg : undefined;
+    const token = leg?.shareToken();`;
+  const stop = `const stopped = this.#stopAndroidLeg();`;
+  const sweep = `await this.#applyPublishGate(room);`;
   const toast = `if (notice === "gate-start") this.onErr(new Error(LEG_GATE_START_NOTICE));
     else if (notice === "gate-share")
       this.onErr(new Error(LEG_GATE_SHARE_NOTICE));`;
+  const report = `if (notice === "gate-share")
+    void stopped.then(() => {
+      if (leg?.active() && leg.shareToken() === token)
+        this.onErr(new Error(LEG_UNSTOPPABLE_NOTICE));
+    });`;
   assert.equal(countWired(gate, sample), 1, "the sample, whole");
+  assert.equal(countWired(gate, capture), 1, "the gate-share capture, whole");
   assert.equal(countWired(gate, `#stopAndroidLeg(`), 1, "the one stop");
+  assert.equal(countWired(gate, `#applyPublishGate(`), 1, "the one sweep");
   assert.equal(countWired(gate, toast), 1, "the toast");
+  assert.equal(countWired(gate, report), 1, "the unstoppable report, whole");
+  assert.equal(
+    countWired(gate, `shareToken()`),
+    2,
+    "the token: read before the stop, compared once it settles",
+  );
+  assert.equal(
+    countWired(gate, `this.onErr(`),
+    3,
+    "the two gate notices and the unstoppable report",
+  );
   const at = (snippet: string) => firstAt("#pauseGate", gate, snippet);
   assert.ok(
     at(`if (this.room() !== room) return;`) < at(sample),
     "sampled after the stale-room guard",
   );
   assert.ok(at(sample) < at(stop), "sampled before the stop");
+  assert.ok(at(capture) < at(stop), "the share token is read before the stop");
+  assert.ok(at(stop) < at(sweep), "the stop is fired before the sweep");
   assert.ok(at(stop) < at(toast), "toasted after the stop");
+  assert.ok(at(toast) < at(report), "reported after the gate-share toast");
   // (wave-4b e2ee F4) Shown only once the primary's pause sweep has run: the
-  // method ENDS with the stop, the awaited sweep, then the toast, so the
-  // toast cannot overtake the await and nothing runs after it.
-  const sweep = `await this.#applyPublishGate(room);`;
-  assert.equal(countWired(gate, `#applyPublishGate(`), 1, "the one sweep");
+  // method ENDS with the capture, the stop (fired, never awaited), the awaited
+  // sweep, the toast, then the report chained on that same stop, so the toast
+  // cannot overtake the await, the sweep never waits on a hung stop, and
+  // nothing runs after the report.
   assert.ok(at(sweep) < at(toast), "toasted after the sweep");
   assert.ok(
-    gate.endsWith(codeOf(stop + sweep + toast).replace(/;$/, "")),
-    "#pauseGate ends: the stop, the awaited sweep, the toast",
+    gate.endsWith(
+      codeOf(capture + stop + sweep + toast + report).replace(/;$/, ""),
+    ),
+    "#pauseGate ends: the capture, the un-awaited stop, the awaited sweep, " +
+      "the toast, the report chained on that stop",
   );
   assert.equal(braceDepthAt(gate, at(sample)), 0, "the sample's depth");
   assert.equal(countWired(STATE_CODE, `gateStopNotice(`), 1, "its only call");
+  assert.equal(
+    countWired(STATE_CODE, `LEG_UNSTOPPABLE_NOTICE`),
+    2,
+    "the gate's unstoppable copy: declared, and reported only here",
+  );
 });
 
 // C9 (wave-4 audit #3). The tier sheet is user-paced. A gate reason added
@@ -1047,24 +1086,30 @@ test("source pin (C9): NO_LEG_NOTICE is declared once and used only by the revok
   );
 });
 
-// 🔴 SECURITY (wave-4b e2ee F1, decision 10). A leg that cannot take the
-// current epoch's key must not keep publishing under the old one, so both
-// key-fence catches stop it UNCONDITIONALLY. `spoken` is read BEFORE the stop
-// (a leg already stopping, or no longer active, was ended by something that
-// said why or chose silence), and only that skips the toast; a stop that
-// FAILED (the leg still `active()` after it) is reported regardless. Each
-// catch is compared whole, so the stop cannot be dropped, put under an `if`
-// or moved behind the toast, and the toast condition cannot be narrowed.
-const LEG_KEY_FENCE_CATCH = `const spoken = leg.stopping() || !leg.active();
+// 🔴 SECURITY (wave-4b e2ee F1, decision 10; wave 4e, C12). A leg that
+// cannot take the current epoch's key must not keep publishing under the old
+// one, so both key-fence catches stop it UNCONDITIONALLY. What the user is
+// told is `rekeyFailureNotice`'s answer, worded by `#rekeyFailureMessage`.
+// `spoken` is read BEFORE the stop (a leg already stopping, or no longer
+// active, was ended by something that said why or chose silence), and only
+// that skips the toast. A stop that FAILED or hung (the leg still `active()`
+// after it, for the SAME share by the `shareToken()` read before the stop) is
+// reported regardless, as `unstoppable`, never as "stopped". Each catch is
+// compared whole, so the stop cannot be dropped, put under an `if` or moved
+// behind the toast, the token cannot be read after the stop or left out of
+// the check, and the toast cannot be narrowed.
+const LEG_KEY_FENCE_CATCH = `const token = leg.shareToken();
+  const spoken = leg.stopping() || !leg.active();
   await this.#stopAndroidLeg();
-  if (!spoken || leg.active())
-    this.onErr(
-      new Error(
-        "Your screen share stopped because it could no longer be encrypted.",
-      ),
-    )`;
+  const message = this.#rekeyFailureMessage(
+    rekeyFailureNotice({
+      spoken,
+      activeAfterStop: leg.active() && leg.shareToken() === token,
+    }),
+  );
+  if (message) this.onErr(new Error(message))`;
 
-test("source pin (C9): both leg key-fence catches stop the leg unconditionally, then toast unless already spoken for", () => {
+test("source pin (C9): both leg key-fence catches stop the leg unconditionally, then report a stop that did not take as unstoppable", () => {
   const catches = {
     "the rotation listener": bodyAfter(
       STATE_CODE,
@@ -1105,7 +1150,7 @@ test("source pin (C9): #legStopNoticeMessage maps every notice to its own copy",
       case "connection":
         return "Your screen share ended because the connection changed. Share again when you're ready.";
       case "encryption":
-        return "Your screen share stopped because it could no longer be encrypted.";
+        return LEG_REKEY_STOPPED_NOTICE;
       case "revoked":
         return LEG_REVOKED_NOTICE;
       case "gate-start":
@@ -1119,6 +1164,63 @@ test("source pin (C9): #legStopNoticeMessage maps every notice to its own copy",
       }
     }`),
     "the switch, whole",
+  );
+});
+
+// 🔴 (wave 4e, C12) The copy a failed leg re-key reaches the user through,
+// whole: `unstoppable` worded as "stopped" (the lie wave 4e closes), either
+// arm silenced or swapped, or a `default` that stops being exhaustive fails
+// here. Only the two key-fence catches pinned above call it.
+test("source pin (C9): #rekeyFailureMessage maps every re-key failure notice to its own copy", () => {
+  assert.equal(
+    bodyOf(`#rekeyFailureMessage(n: RekeyFailureNotice): string | undefined {`),
+    codeOf(`switch (n) {
+      case "none":
+        return undefined;
+      case "stopped":
+        return LEG_REKEY_STOPPED_NOTICE;
+      case "unstoppable":
+        return LEG_REKEY_UNSTOPPABLE_NOTICE;
+      default: {
+        const unknownNotice: never = n;
+        void unknownNotice;
+        return undefined;
+      }
+    }`),
+    "the switch, whole",
+  );
+  assert.equal(
+    countWired(STATE_CODE, `this.#rekeyFailureMessage(`),
+    2,
+    "its two calls, one per key-fence catch",
+  );
+  assert.equal(
+    countWired(STATE_CODE, `rekeyFailureNotice(`),
+    2,
+    "the rule's two calls, one per key-fence catch",
+  );
+  assert.equal(
+    countWired(STATE_CODE, `LEG_REKEY_UNSTOPPABLE_NOTICE`),
+    2,
+    "the re-key unstoppable copy: declared, and returned only by the mapper",
+  );
+});
+
+// (wave 4e, C12) The "could no longer be encrypted" copy lives in ONE place in
+// code, `LEG_REKEY_STOPPED_NOTICE` (its text is pinned in the constants test
+// below): an inline copy at either re-key site or in `#legStopNoticeMessage`
+// bypasses the constant and fails here. Counted in the code, so a comment
+// quoting the copy does not count.
+test("source pin (C9): the re-key stopped copy occurs once in code, in its constant", () => {
+  assert.equal(
+    STATE_CODE.split("could no longer be encrypted").length - 1,
+    1,
+    "`could no longer be encrypted` in state.tsx's code",
+  );
+  assert.equal(
+    countWired(STATE_CODE, `LEG_REKEY_STOPPED_NOTICE`),
+    3,
+    "declared, then returned by #legStopNoticeMessage and #rekeyFailureMessage",
   );
 });
 
@@ -1515,8 +1617,8 @@ test("source pin (C9): the call's key provider is built once and wired at once, 
   );
 });
 
-// The three leg notices say exactly what the plan's copy says: a swapped or
-// reworded text fails here (the switch above only names the constants).
+// The leg notices say exactly what the plan's copy says: a swapped or
+// reworded text fails here (the switches above only name the constants).
 test("source pin (C9): the leg notice constants hold the plan's copy", () => {
   for (const [what, decl] of [
     [
@@ -1533,6 +1635,21 @@ test("source pin (C9): the leg notice constants hold the plan's copy", () => {
       "revoked",
       `const LEG_REVOKED_NOTICE =
         "Your screen share ended because you no longer have permission to share video in this channel.";`,
+    ],
+    [
+      "re-key stopped",
+      `const LEG_REKEY_STOPPED_NOTICE =
+        "Your screen share stopped because it could no longer be encrypted.";`,
+    ],
+    [
+      "re-key unstoppable",
+      `const LEG_REKEY_UNSTOPPABLE_NOTICE =
+        "Your screen share couldn't be stopped and may be visible to someone who left the call. Leave the call to end it.";`,
+    ],
+    [
+      "gate unstoppable",
+      `const LEG_UNSTOPPABLE_NOTICE =
+        "Your screen share couldn't be stopped. Leave the call to end it.";`,
     ],
   ])
     assertWired(what, decl);

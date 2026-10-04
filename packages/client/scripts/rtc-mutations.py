@@ -8598,6 +8598,49 @@ MUTATIONS += [
         specs=[LEG_POLICY_SPEC],
         must_red=[LEG_POLICY_SPEC],
     ),
+    # ---- C12 (wave 4e): the re-key failure notice and the share token -------
+    # `rekeyFailureNotice` decides what a failed leg re-key tells the user once
+    # the fail-closed stop has settled; `shareToken()` is what lets the caller
+    # say "the SAME share is still live" across that stop. Both held by
+    # behavior in the leaf spec (the truth table, and the token across a
+    # rejected, timed-out and resolved stop).
+    Mutation(
+        id="leg-rekey-notice-unstoppable-loses",
+        what="rekeyFailureNotice checks spoken first, so a gate-share stop that then failed keeps its stopped notice and the live share is never reported unstoppable",
+        file=LEG_POLICY,
+        search="""  if (w.activeAfterStop) return "unstoppable";
+  if (w.spoken) return "none";
+""",
+        replace="""  if (w.spoken) return "none";
+  if (w.activeAfterStop) return "unstoppable";
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-rekey-notice-active-ignored",
+        what="rekeyFailureNotice ignores activeAfterStop, so a share the stop could not end is reported stopped, or not at all",
+        file=LEG_POLICY,
+        search="""  if (w.activeAfterStop) return "unstoppable";
+""",
+        replace="",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-sharetoken-bumped-by-stop-hook",
+        what="every stop hook moves the share token, so after a FAILED stop the caller takes its own still-live share for a new one and tells the user it stopped, or nothing",
+        file=LEG_POLICY,
+        search="""    if (this.#stopPromise) return this.#stopPromise;
+    const attempt = this.#doStop().finally(() => {
+""",
+        replace="""    if (this.#stopPromise) return this.#stopPromise;
+    this.#connectGeneration++;
+    const attempt = this.#doStop().finally(() => {
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
     # ---- C10: the plugin wrapper, held to delegating by source pins ----------
     Mutation(
         id="leg-pin-x-stopping-copy",
@@ -8821,17 +8864,22 @@ MUTATIONS += [
         id="state-leg-gate-after-stop",
         what="the gate notice is sampled AFTER the stop bumped the generation, so a gate-start is never told",
         file=STATE,
-        search="""    const notice = gateStopNotice({
+        # Wave 4e retarget: the stop is no longer a bare `void` statement. It
+        # is held as `const stopped = ...` (C12 site (c)) so the gate-share
+        # report can chain on it, and it now follows the gate-share capture
+        # rather than sitting right above the sweep. The same stop still moves
+        # above the sample, kept under its own name so the chain still loads.
+        # The removal goes first: inserted first, the line would occur twice
+        # when the removal looked for it.
+        search="""    const stopped = this.#stopAndroidLeg();
 """,
-        replace="""    void this.#stopAndroidLeg();
-    const notice = gateStopNotice({
-""",
+        replace="",
         also=[
             (
-                """    void this.#stopAndroidLeg();
-    await this.#applyPublishGate(room);
+                """    const notice = gateStopNotice({
 """,
-                """    await this.#applyPublishGate(room);
+                """    const stopped = this.#stopAndroidLeg();
+    const notice = gateStopNotice({
 """,
             ),
         ],
@@ -8865,6 +8913,23 @@ MUTATIONS += [
         replace="""    void this.#applyPublishGate(room);
     if (notice === "gate-start") this.onErr(new Error(LEG_GATE_START_NOTICE));
 """,
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    # Wave 4e (C12 site (c)): the gate-share notice says stopped before the
+    # un-awaited stop has settled, so a stop that then fails or hangs is
+    # reported once it settles, chained on THAT stop's promise.
+    Mutation(
+        id="state-leg-gate-share-unstoppable-untold",
+        what="a gate-share stop that fails or hangs is never reported, so the gate's stopped notice is the last word over a share still live",
+        file=STATE,
+        search="""    if (notice === "gate-share")
+      void stopped.then(() => {
+        if (leg?.active() && leg.shareToken() === token)
+          this.onErr(new Error(LEG_UNSTOPPABLE_NOTICE));
+      });
+""",
+        replace="",
         specs=[STATE_WIRING_SPEC],
         must_red=[STATE_WIRING_SPEC],
     ),
@@ -8971,11 +9036,15 @@ MUTATIONS += [
         id="state-leg-keysync-stop-gated-on-active",
         what="the post-connect catch stops the leg only while it reads active(), so a leg still stopping is left to its old key",
         file=STATE,
+        # Wave 4e retarget: the toast condition that followed the stop is now
+        # the `#rekeyFailureMessage` call (C12), so the stop is anchored on
+        # the line that follows it today. Same gated stop. Two lines because
+        # the rotation listener's 12-space stop line contains this 6-space one.
         search="""      await this.#stopAndroidLeg();
-      if (!spoken || leg.active())
+      const message = this.#rekeyFailureMessage(
 """,
         replace="""      if (leg.active()) await this.#stopAndroidLeg();
-      if (!spoken || leg.active())
+      const message = this.#rekeyFailureMessage(
 """,
         specs=[STATE_WIRING_SPEC],
         must_red=[STATE_WIRING_SPEC],
@@ -8996,37 +9065,48 @@ MUTATIONS += [
         id="state-leg-rotation-stop-gated-on-spoken",
         what="the rotation catch stops the leg only when nothing spoke for it, so a stop that is already failing is never retried",
         file=STATE,
+        # Wave 4e retarget: as `state-leg-keysync-stop-gated-on-active`, the
+        # stop is anchored on the `#rekeyFailureMessage` call that now follows
+        # it. Same gated stop.
         search="""            await this.#stopAndroidLeg();
-            if (!spoken || leg.active())
+            const message = this.#rekeyFailureMessage(
 """,
         replace="""            if (!spoken) await this.#stopAndroidLeg();
-            if (!spoken || leg.active())
+            const message = this.#rekeyFailureMessage(
 """,
         specs=[STATE_WIRING_SPEC],
         must_red=[STATE_WIRING_SPEC],
     ),
     Mutation(
         id="state-leg-rotation-toast-narrowed",
-        what="the rotation catch's toast drops the still-active arm, so a FAILED stop leaves a live share untold",
+        what="the rotation catch's toast drops the still-active arm, so a FAILED stop leaves a live share untold (silent, or told it stopped)",
         file=STATE,
-        search="""            await this.#stopAndroidLeg();
-            if (!spoken || leg.active())
+        # Wave 4e retarget: the still-active arm of `!spoken || leg.active()`
+        # is now the `activeAfterStop` input to `rekeyFailureNotice` (C12), so
+        # dropping it reads false there. The unstoppable arm is never reached:
+        # a failed stop that something spoke for is told nothing, one nothing
+        # spoke for is told it stopped, exactly what the narrowed toast did.
+        search="""                spoken,
+                activeAfterStop: leg.active() && leg.shareToken() === token,
 """,
-        replace="""            await this.#stopAndroidLeg();
-            if (!spoken)
+        replace="""                spoken,
+                activeAfterStop: false,
 """,
         specs=[STATE_WIRING_SPEC],
         must_red=[STATE_WIRING_SPEC],
     ),
     Mutation(
         id="state-leg-keysync-toast-narrowed",
-        what="the post-connect catch's toast drops the still-active arm, so a FAILED stop leaves a live share untold",
+        what="the post-connect catch's toast drops the still-active arm, so a FAILED stop leaves a live share untold (silent, or told it stopped)",
         file=STATE,
-        search="""      await this.#stopAndroidLeg();
-      if (!spoken || leg.active())
+        # Wave 4e retarget: as `state-leg-rotation-toast-narrowed`, at this
+        # site. Two lines because the listener's 16-space `activeAfterStop`
+        # line contains this 10-space one.
+        search="""          spoken,
+          activeAfterStop: leg.active() && leg.shareToken() === token,
 """,
-        replace="""      await this.#stopAndroidLeg();
-      if (!spoken)
+        replace="""          spoken,
+          activeAfterStop: false,
 """,
         specs=[STATE_WIRING_SPEC],
         must_red=[STATE_WIRING_SPEC],
@@ -9072,16 +9152,181 @@ MUTATIONS += [
         id="state-leg-catch-rethrows",
         what="the rotation listener's catch rethrows instead of resolving, so a failed leg push fails the rotation itself",
         file=STATE,
-        search="""              );
+        # Wave 4e retarget: the catch no longer ends in the multi-line toast's
+        # `);` but in `if (message) this.onErr(new Error(message));` (C12), so
+        # the same throw lands after that line.
+        search="""            if (message) this.onErr(new Error(message));
           }
         };
         this.#e2eeWorker = new E2EEWorker();
 """,
-        replace="""              );
+        replace="""            if (message) this.onErr(new Error(message));
             throw new Error("screen leg key push failed");
           }
         };
         this.#e2eeWorker = new E2EEWorker();
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    # ---- C12 (wave 4e): what the two key-fence catches tell the user -------
+    # Each catch samples `shareToken()` and `spoken` before its stop, then
+    # words `rekeyFailureNotice({ spoken, activeAfterStop })` through
+    # `#rekeyFailureMessage`. Pin-only, like every `state-*` entry: held by
+    # `stateWiring.test.ts`'s whole-catch comparison of BOTH catches and its
+    # whole-switch pin on the mapper.
+    #
+    # The mapper is SHARED by the two sites, so a per-site entry mutates the
+    # SITE (its `if (message)` line or its `activeAfterStop` expression), never
+    # the mapper; `state-leg-rekey-mapper-unstoppable-silent` is the one
+    # mapper-level entry. The sites differ only by indentation (12/16 spaces
+    # in the listener, 6/10 in `#syncLegKeyAfterConnect`), and a deeper line
+    # contains a shallower one as a substring, so each search carries the
+    # line before it as well.
+    #
+    # Three distinct ways to lose the unstoppable report, per site: an
+    # unstoppable share told nothing (`*-unstoppable-silent-*`), told it
+    # stopped, the pre-4e lie (`*-unstoppable-old-copy-*`), and the still-
+    # active input reading false (the retargeted `*-toast-narrowed` above).
+    # Then that input's two halves: read before the stop, and the token
+    # ignored.
+    Mutation(
+        id="state-leg-rekey-unstoppable-silent-listener",
+        what="the rotation catch tells an unstoppable share nothing, so a failed stop leaves a share live after a rotation and the user never hears it",
+        file=STATE,
+        search="""            );
+            if (message) this.onErr(new Error(message));
+""",
+        replace="""            );
+            if (message && message !== LEG_REKEY_UNSTOPPABLE_NOTICE)
+              this.onErr(new Error(message));
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-rekey-unstoppable-silent-sync",
+        what="the post-connect catch tells an unstoppable share nothing, so a failed stop leaves a share live after a missed key and the user never hears it",
+        file=STATE,
+        search="""      );
+      if (message) this.onErr(new Error(message));
+""",
+        replace="""      );
+      if (message && message !== LEG_REKEY_UNSTOPPABLE_NOTICE)
+        this.onErr(new Error(message));
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-rekey-unstoppable-old-copy-listener",
+        what="the rotation catch words every notice as stopped, so a share its stop could not end is told it stopped (the pre-4e lie)",
+        file=STATE,
+        search="""            );
+            if (message) this.onErr(new Error(message));
+""",
+        replace="""            );
+            if (message) this.onErr(new Error(LEG_REKEY_STOPPED_NOTICE));
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-rekey-unstoppable-old-copy-sync",
+        what="the post-connect catch words every notice as stopped, so a share its stop could not end is told it stopped (the pre-4e lie)",
+        file=STATE,
+        search="""      );
+      if (message) this.onErr(new Error(message));
+""",
+        replace="""      );
+      if (message) this.onErr(new Error(LEG_REKEY_STOPPED_NOTICE));
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-rekey-active-before-stop-listener",
+        what="the rotation catch reads activeAfterStop BEFORE its stop, when the leg is still up, so a stop that worked is reported unstoppable",
+        file=STATE,
+        search="""            const spoken = leg.stopping() || !leg.active();
+            await this.#stopAndroidLeg();
+""",
+        replace="""            const spoken = leg.stopping() || !leg.active();
+            const activeBefore = leg.active() && leg.shareToken() === token;
+            await this.#stopAndroidLeg();
+""",
+        also=[
+            (
+                """                spoken,
+                activeAfterStop: leg.active() && leg.shareToken() === token,
+""",
+                """                spoken,
+                activeAfterStop: activeBefore,
+""",
+            ),
+        ],
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-rekey-active-before-stop-sync",
+        what="the post-connect catch reads activeAfterStop BEFORE its stop, when the leg is still up, so a stop that worked is reported unstoppable",
+        file=STATE,
+        search="""      const spoken = leg.stopping() || !leg.active();
+      await this.#stopAndroidLeg();
+""",
+        replace="""      const spoken = leg.stopping() || !leg.active();
+      const activeBefore = leg.active() && leg.shareToken() === token;
+      await this.#stopAndroidLeg();
+""",
+        also=[
+            (
+                """          spoken,
+          activeAfterStop: leg.active() && leg.shareToken() === token,
+""",
+                """          spoken,
+          activeAfterStop: activeBefore,
+""",
+            ),
+        ],
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-rekey-token-ignored-listener",
+        what="the rotation catch drops the share token from activeAfterStop, so a new share started while the stop ran is reported unstoppable",
+        file=STATE,
+        search="""                spoken,
+                activeAfterStop: leg.active() && leg.shareToken() === token,
+""",
+        replace="""                spoken,
+                activeAfterStop: leg.active(),
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-rekey-token-ignored-sync",
+        what="the post-connect catch drops the share token from activeAfterStop, so a new share started while the stop ran is reported unstoppable",
+        file=STATE,
+        search="""          spoken,
+          activeAfterStop: leg.active() && leg.shareToken() === token,
+""",
+        replace="""          spoken,
+          activeAfterStop: leg.active(),
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-rekey-mapper-unstoppable-silent",
+        what="#rekeyFailureMessage maps unstoppable to no copy, so neither catch tells the user a share its stop could not end is still live",
+        file=STATE,
+        search="""      case "unstoppable":
+        return LEG_REKEY_UNSTOPPABLE_NOTICE;
+""",
+        replace="""      case "unstoppable":
+        return undefined;
 """,
         specs=[STATE_WIRING_SPEC],
         must_red=[STATE_WIRING_SPEC],
