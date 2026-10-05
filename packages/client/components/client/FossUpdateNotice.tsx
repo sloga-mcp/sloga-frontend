@@ -6,7 +6,7 @@ import { useLingui } from "@lingui-solid/solid/macro";
 
 const FOSS_MANIFEST_URL =
   "https://app.sloga.gg/updates/android/latest-foss.json";
-const FOSS_DOWNLOAD_URL = "https://sloga.gg/dl/android-foss";
+const FOSS_DOWNLOAD_URL = "https://sloga.gg/dl/android-google-free";
 
 /** Installers that deliver this app's updates themselves (package ids INFERRED, plan U3 row). */
 const UPDATING_INSTALLERS: readonly string[] = [
