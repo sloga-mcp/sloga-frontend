@@ -214,8 +214,8 @@ export default function Notifications(props: { isDesktop: boolean }) {
           <Text class="label">
             <Trans>
               Applies to direct messages and group chats while this app is
-              running. Quick reply works in the Windows desktop app. Push
-              notifications aren't affected yet.
+              running. Quick reply works in the desktop app. Push notifications
+              aren't affected yet.
             </Trans>
           </Text>
         </Column>

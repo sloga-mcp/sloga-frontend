@@ -32,12 +32,18 @@ export function isDmPreviewMode(value: unknown): value is DmPreviewMode {
 
 /**
  * Who draws the notification. `sloga_toast` is our own window, so its text
- * never reaches the OS notification store; `os_toast` is any shell toast the
- * OS draws (Windows Action Center, macOS Notification Center, Electron's
- * `Notification`); `web` is the browser's `Notification`, which has no way to
- * send a reply back to us.
+ * never reaches the OS notification store and screen capture cannot see it
+ * (the Windows shell); `sloga_toast_unprotected` is our own window too, but
+ * one a capture can see, since Electron on Linux and macOS has no way to hide
+ * it; `os_toast` is any shell toast the OS draws (Windows Action Center,
+ * macOS Notification Center, Electron's `Notification`); `web` is the
+ * browser's `Notification`, which has no way to send a reply back to us.
  */
-export type NotificationSurface = "sloga_toast" | "os_toast" | "web";
+export type NotificationSurface =
+  | "sloga_toast"
+  | "sloga_toast_unprotected"
+  | "os_toast"
+  | "web";
 
 export interface PreviewPolicyInput {
   /** The global setting. */
@@ -118,7 +124,9 @@ export function decidePreview(input: PreviewPolicyInput): PreviewDecision {
           playSound: true,
           showBody: true,
           showImage: true,
-          allowReply: input.surface === "sloga_toast",
+          allowReply:
+            input.surface === "sloga_toast" ||
+            input.surface === "sloga_toast_unprotected",
         };
         break;
     }
@@ -136,10 +144,13 @@ export function decidePreview(input: PreviewPolicyInput): PreviewDecision {
   // A toast the OS draws is persisted by the OS (Windows keeps it in
   // wpndatabase.db), which would put decrypted E2EE text on disk in the clear.
   // Only our own toast window may show an encrypted message's content. The
-  // browser's `Notification` is OS-drawn too, so it is held to the same rule.
+  // browser's `Notification` is OS-drawn too, so it is held to the same rule,
+  // and so is our window where a capture can see it. Without the message to
+  // read, a reply box there would only invite an answer to an unseen message.
   if (input.isE2EE && input.surface !== "sloga_toast") {
     decision.showBody = false;
     decision.showImage = false;
+    decision.allowReply = false;
   }
 
   if (input.surface === "web") decision.allowReply = false;

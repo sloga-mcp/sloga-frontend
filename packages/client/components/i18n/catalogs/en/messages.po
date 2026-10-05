@@ -1034,6 +1034,10 @@ msgid "Applies to direct messages and group chats while this app is running. Pus
 msgstr "Applies to direct messages and group chats while this app is running. Push notifications aren't affected yet."
 
 #: components/app/interface/settings/user/notifications/Notifications.tsx
+msgid "Applies to direct messages and group chats while this app is running. Quick reply works in the desktop app. Push notifications aren't affected yet."
+msgstr "Applies to direct messages and group chats while this app is running. Quick reply works in the desktop app. Push notifications aren't affected yet."
+
+#: components/app/interface/settings/user/notifications/Notifications.tsx
 msgid "Applies to direct messages and group chats while this app is running. Quick reply works in the Windows desktop app. Push notifications aren't affected yet."
 msgstr "Applies to direct messages and group chats while this app is running. Quick reply works in the Windows desktop app. Push notifications aren't affected yet."
 

@@ -1,6 +1,8 @@
 /**
- * The main window's half of the Windows shell's Sloga toast: what it asks the
- * shell to draw, and what it does with a reply typed into it.
+ * The main window's half of the desktop shells' Sloga toast: what it asks the
+ * shell to draw, and what it does with a reply typed into it. The Windows
+ * (Tauri) shell and the Electron shell (Linux X11, macOS) take the same toast
+ * through different bridges; everything here goes through `toastHost`.
  *
  * The toast window is a separate, unprivileged page. It never learns which
  * channel a toast belongs to; it only hands back the id this window minted, so
@@ -22,27 +24,131 @@ import { useClient } from ".";
 import { DM_PREVIEW_DEFAULT } from "./notificationPreviewPolicy";
 import {
   type ToastEntry,
+  type ToastPayload,
   type ToastRequest,
+  type ToastSupport,
+  type ToastSurface,
   AVATAR_FETCH_TIMEOUT_MS,
   avatarDataUrl,
   classifySendError,
   entryForSession,
+  envelopeOk,
   MAX_AVATAR_DATA_URL_LENGTH,
   replyAllowed,
   showToast,
+  toastSupportFor,
 } from "./toastPolicy";
 
-export type { ToastRequest } from "./toastPolicy";
+export type { ToastRequest, ToastSupport, ToastSurface } from "./toastPolicy";
 
-/** Windows Tauri shell with the toast commands. */
-export function toastSupported(): boolean {
-  // An older Windows shell has no toast commands; its `toast_show` rejects
-  // and the caller falls back to the OS toast.
-  return (
-    !!tauriInvoke() &&
-    typeof navigator !== "undefined" &&
-    /Windows/i.test(navigator.userAgent)
-  );
+/** The Electron shell's toast bridge, when this window has one. */
+function electronToast() {
+  if (typeof window === "undefined") return undefined;
+  return window.slogaShell?.toast;
+}
+
+/**
+ * Which Sloga toast this window's shell can draw: `protected` (Windows, kept
+ * out of screen capture), `unprotected` (Electron on Linux X11 or macOS), or
+ * null for none, when notifications go to the OS.
+ */
+export function toastSupported(): ToastSupport | null {
+  let electronCapability: unknown;
+  try {
+    electronCapability = electronToast()?.capability?.();
+  } catch {
+    // A bridge that throws has not said "window".
+    electronCapability = undefined;
+  }
+  return toastSupportFor({
+    tauri: !!tauriInvoke(),
+    userAgent: typeof navigator === "undefined" ? "" : navigator.userAgent,
+    electronShell: typeof window !== "undefined" && "slogaShell" in window,
+    electronCapability,
+  });
+}
+
+/** One shell's toast bridge. Only `show` answers; the rest are best effort. */
+interface ToastHost {
+  /** @returns false when the shell refused it */
+  show(payload: ToastPayload): Promise<boolean>;
+  /** Take down the toasts for a conversation, or every one for null. */
+  clear(channelId: string | null): Promise<void>;
+  /** Tell the toast how its reply went; null error is success. */
+  replyResult(id: string, error: string | null): Promise<void>;
+  /** The OS's own entries for a conversation (Action Center on Windows). */
+  clearNotifications(channelId: string): void;
+}
+
+/**
+ * The bridge for the toast `toastSupported` finds, or undefined. Given a
+ * surface, only that surface's bridge: the toast's text was decided for it,
+ * so a shell that now answers differently draws nothing rather than draw that
+ * text where it was never allowed.
+ */
+function toastHost(surface?: ToastSurface): ToastHost | undefined {
+  const support = toastSupported();
+  const invoke = tauriInvoke();
+  if (
+    support === "protected" &&
+    invoke &&
+    (surface === undefined || surface === "sloga_toast")
+  ) {
+    return {
+      show: (payload) =>
+        invoke("toast_show", { payload }).then(
+          () => true,
+          () => false,
+        ),
+      clear: (channelId) =>
+        invoke<void>("toast_clear", { channelId }).catch(() => {}),
+      replyResult: (id, error) =>
+        invoke<void>("toast_reply_result", {
+          id,
+          ok: error === null,
+          error,
+        }).catch(() => {}),
+      clearNotifications: (channelId) => {
+        invoke("clear_channel_notifications", { channelId }).catch(() => {});
+      },
+    };
+  }
+
+  const toast = electronToast();
+  if (
+    support === "unprotected" &&
+    toast &&
+    (surface === undefined || surface === "sloga_toast_unprotected")
+  ) {
+    // The bridge answers show with an envelope and swallows its own errors
+    // on the rest; a synchronous throw (a mangled argument) is caught here
+    // so it cannot escape a best-effort call.
+    return {
+      show: (payload) =>
+        Promise.resolve()
+          .then(() => toast.show(payload))
+          .then(envelopeOk, () => false),
+      clear: async (channelId) => {
+        try {
+          if (channelId === null) toast.clear();
+          else toast.clear(channelId);
+        } catch {
+          // best effort
+        }
+      },
+      replyResult: async (id, error) => {
+        try {
+          toast.replyResult(id, error === null, error ?? undefined);
+        } catch {
+          // best effort
+        }
+      },
+      // Electron keeps no OS entries of its own for these.
+      clearNotifications: () => {},
+    };
+  }
+
+  return undefined;
 }
 
 /**
@@ -62,9 +168,7 @@ const sending = new Set<string>();
  */
 export function clearAllToasts(): void {
   toasts.clear();
-  const invoke = tauriInvoke();
-  if (!invoke) return;
-  invoke("toast_clear", { channelId: null }).catch(() => {});
+  void toastHost()?.clear(null);
 }
 
 /**
@@ -97,7 +201,7 @@ async function fetchAvatar(url: string): Promise<string | null> {
  * Must be called during component setup.
  */
 export function useToastShell(): {
-  show(request: ToastRequest): Promise<boolean>;
+  show(request: ToastRequest, surface: ToastSurface): Promise<boolean>;
   handleReply(toastId: string, text: string): Promise<void>;
   handleOpen(toastId: string): void;
   clearChannel(channelId: string): void;
@@ -109,20 +213,24 @@ export function useToastShell(): {
   const { t } = useLingui();
 
   /**
-   * Show one toast.
+   * Show one toast on the surface its content was decided for.
    * @returns false when the shell refused it (Focus Assist, a fullscreen app,
-   * an older shell), so the caller can hand it to the OS instead; also when
-   * the account changed while it went up
+   * an older shell) or no longer draws that surface, so the caller can hand
+   * it to the OS instead; also when the account changed while it went up
    */
-  async function show(request: ToastRequest): Promise<boolean> {
-    const invoke = tauriInvoke();
-    if (!invoke || !toastSupported()) return false;
+  async function show(
+    request: ToastRequest,
+    surface: ToastSurface,
+  ): Promise<boolean> {
+    const host = toastHost(surface);
+    if (!host) return false;
 
     return showToast(toasts, request, {
       currentUserId: () => client()?.user?.id,
       mintId: () => ulid(),
       fetchAvatar,
-      invoke: (command, args) => invoke(command, args),
+      show: (payload) => host.show(payload),
+      clear: (channelId) => host.clear(channelId),
       strings: () => ({
         replyPlaceholder: t`Reply…`,
         send: t`Send`,
@@ -134,13 +242,7 @@ export function useToastShell(): {
 
   /** Tell the toast how its reply went. The shell may be gone; that is fine. */
   function replyResult(id: string, error: string | null): Promise<void> {
-    const invoke = tauriInvoke();
-    if (!invoke) return Promise.resolve();
-    return invoke<void>("toast_reply_result", {
-      id,
-      ok: error === null,
-      error,
-    }).catch(() => {});
+    return toastHost()?.replyResult(id, error) ?? Promise.resolve();
   }
 
   /**
@@ -225,11 +327,7 @@ export function useToastShell(): {
         // be typing in one, and clearing them would empty the stack and hand
         // the foreground back mid-sentence. Action Center can go now.
         toasts.delete(toastId);
-        const invoke = tauriInvoke();
-        if (invoke)
-          invoke("clear_channel_notifications", {
-            channelId: entry.channelId,
-          }).catch(() => {});
+        toastHost()?.clearNotifications(entry.channelId);
       }
     } finally {
       sending.delete(toastId);
@@ -255,10 +353,10 @@ export function useToastShell(): {
     for (const [id, entry] of toasts) {
       if (entry.channelId === channelId) toasts.delete(id);
     }
-    const invoke = tauriInvoke();
-    if (!invoke) return;
-    invoke("toast_clear", { channelId }).catch(() => {});
-    invoke("clear_channel_notifications", { channelId }).catch(() => {});
+    const host = toastHost();
+    if (!host) return;
+    void host.clear(channelId);
+    host.clearNotifications(channelId);
   }
 
   return { show, handleReply, handleOpen, clearChannel };
