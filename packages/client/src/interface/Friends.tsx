@@ -33,7 +33,7 @@ import {
   UserStatus,
   isSlogaStaff,
   main,
-  presenceLabel,
+  usePresenceText,
   useSnackbar,
 } from "@revolt/ui";
 import { DisplayName } from "@revolt/ui/components/features/DisplayName";
@@ -375,6 +375,7 @@ export function Friends(props: Partial<RouteSectionProps> & { popout?: boolean }
  */
 function SelfBar() {
   const user = useUser();
+  const presence = usePresenceText();
   const [anchor, setAnchor] = createSignal<HTMLDivElement>();
 
   return (
@@ -399,7 +400,7 @@ function SelfBar() {
             <Symbol size={18}>expand_more</Symbol>
           </div>
           <div class={`${statusText()} ${ellipsis()}`}>
-            {user()?.status?.text ?? presenceLabel(user()?.presence)}
+            {user()?.status?.text ?? presence.pickerLabel(user()?.presence)}
           </div>
         </div>
       </div>
@@ -467,6 +468,7 @@ function Section(props: {
  */
 function Entry(props: { user: User; tabIndex?: number }) {
   const { t } = useLingui();
+  const presence = usePresenceText();
   const { openModal } = useModals();
   const navigate = useNavigate();
   const state = useState();
@@ -553,7 +555,7 @@ function Entry(props: { user: User; tabIndex?: number }) {
       ? t`Voice`
       : (activity() ??
         props.user.status?.text ??
-        presenceLabel(props.user.presence));
+        presence.label(props.user.presence));
 
   return (
     <div

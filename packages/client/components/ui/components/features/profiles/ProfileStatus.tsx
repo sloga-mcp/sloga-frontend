@@ -1,15 +1,15 @@
 import { Show } from "solid-js";
 
-import { Trans, useLingui } from "@lingui-solid/solid/macro";
+import { Trans } from "@lingui-solid/solid/macro";
 import { User } from "stoat.js";
 import { styled } from "styled-system/jsx";
 
-import { Text, typography } from "../../design";
+import { Text, typography, usePresenceText } from "../../design";
 
 import { ProfileCard } from "./ProfileCard";
 
 export function ProfileStatus(props: { user: User }) {
-  const { t } = useLingui();
+  const presence = usePresenceText();
 
   /**
    * Human-readable play duration, e.g. "for 2h 15m"
@@ -47,19 +47,7 @@ export function ProfileStatus(props: { user: User }) {
           <Text class="title" size="large">
             <Trans>Status</Trans>
           </Text>
-          <Status>
-            {props.user.statusMessage((s) =>
-              s === "Online"
-                ? t`Online`
-                : s === "Busy"
-                  ? t`Busy`
-                  : s === "Focus"
-                    ? t`Focus`
-                    : s === "Idle"
-                      ? t`Idle`
-                      : t`Offline`,
-            )}
-          </Status>
+          <Status>{props.user.statusMessage(presence.label)}</Status>
         </ProfileCard>
       </Show>
     </>

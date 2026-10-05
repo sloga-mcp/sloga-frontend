@@ -1020,6 +1020,10 @@ msgstr "Anyone you give control to can use your mouse and keyboard, run commands
 msgid "App Settings"
 msgstr "App Settings"
 
+#: components/ui/components/design/presenceText.ts
+msgid "Appear offline to everyone"
+msgstr "Appear offline to everyone"
+
 #: components/app/interface/settings/UserSettings.tsx
 #: components/app/interface/settings/user/Sync.tsx
 msgid "Appearance"
@@ -1068,6 +1072,10 @@ msgstr "Are you sure you want to remove {0} from {1}?"
 #: components/modal/modals/SignOut.tsx
 msgid "Are you sure you want to Sign out?"
 msgstr "Are you sure you want to Sign out?"
+
+#: components/ui/components/design/presenceText.ts
+msgid "Around and available"
+msgstr "Around and available"
 
 #: components/app/interface/settings/user/appearance/LayoutArrangement.tsx
 msgid "Arrangement"
@@ -1226,6 +1234,10 @@ msgstr "Avatars and names"
 #: components/app/interface/settings/user/voice/OverlaySettings.tsx
 msgid "Avatars only"
 msgstr "Avatars only"
+
+#: components/ui/components/design/presenceText.ts
+msgid "Away from the keyboard for a bit"
+msgstr "Away from the keyboard for a bit"
 
 #: src/interface/channels/SpoilerGate.tsx
 #: src/interface/channels/PasswordGate.tsx
@@ -2848,6 +2860,10 @@ msgstr "Dismiss incoming call"
 msgid "Display Name"
 msgstr "Display Name"
 
+#: components/ui/components/design/presenceText.ts
+msgid "Do not disturb"
+msgstr "Do not disturb"
+
 #: src/interface/navigation/servers/UserMenu.tsx
 msgid "Do Not Disturb"
 msgstr "Do Not Disturb"
@@ -4330,6 +4346,14 @@ msgstr "Leave Thread"
 msgid "Left"
 msgstr "Left"
 
+#: components/ui/components/design/presenceText.ts
+msgid "Let people know you want to join a group"
+msgstr "Let people know you want to join a group"
+
+#: components/ui/components/design/presenceText.ts
+msgid "Let people know your group wants more people"
+msgstr "Let people know your group wants more people"
+
 #: components/app/interface/settings/user/Native.tsx
 msgid "Let Sloga use its own custom titlebar."
 msgstr "Let Sloga use its own custom titlebar."
@@ -4349,6 +4373,16 @@ msgstr "Level Incoming Voices"
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
 msgid "Leveling Strength"
 msgstr "Leveling Strength"
+
+#. Short for Looking For Group, a presence status
+#: components/ui/components/design/presenceText.ts
+msgid "LFG"
+msgstr "LFG"
+
+#. Short for Looking For More, a presence status
+#: components/ui/components/design/presenceText.ts
+msgid "LFM"
+msgstr "LFM"
 
 #: components/app/menus/UserContextMenu.tsx
 msgid "Lift platform suspension"
@@ -4546,9 +4580,17 @@ msgstr "Logs you out of all sessions except this device."
 msgid "Looking For Group"
 msgstr "Looking For Group"
 
+#: components/ui/components/design/presenceText.ts
+msgid "Looking for group: wants to join a group to play or hang out"
+msgstr "Looking for group: wants to join a group to play or hang out"
+
 #: src/interface/navigation/servers/UserMenu.tsx
 msgid "Looking For More"
 msgstr "Looking For More"
+
+#: components/ui/components/design/presenceText.ts
+msgid "Looking for more: already in a group and looking for more people to join"
+msgstr "Looking for more: already in a group and looking for more people to join"
 
 #: components/auth/src/flows/FlowHome.tsx
 msgid "Low latency"
@@ -5030,6 +5072,10 @@ msgstr "Muted by a moderator. They cannot speak in this server."
 msgid "Muted until <0/>"
 msgstr "Muted until <0/>"
 
+#: components/ui/components/design/presenceText.ts
+msgid "Mutes all your notifications"
+msgstr "Mutes all your notifications"
+
 #: components/modal/modals/UserProfileMutualFriends.tsx
 msgid "Mutual Friends"
 msgstr "Mutual Friends"
@@ -5361,6 +5407,10 @@ msgstr "Not now"
 msgid "Not of minimum age to use the platform"
 msgstr "Not of minimum age to use the platform"
 
+#: components/ui/components/design/presenceText.ts
+msgid "Not online, or appearing offline"
+msgstr "Not online, or appearing offline"
+
 #: components/modal/modals/CreateSoftRes.tsx
 msgid "Note"
 msgstr "Note"
@@ -5400,6 +5450,10 @@ msgstr "Nothing sensitive was recognized. Text that is small, stylized, or not E
 #: components/app/interface/settings/UserSettings.tsx
 msgid "Notifications"
 msgstr "Notifications"
+
+#: components/ui/components/design/presenceText.ts
+msgid "Notifications are muted, so they may not see your message"
+msgstr "Notifications are muted, so they may not see your message"
 
 #: src/interface/ServerEvents.tsx
 msgid "occurrences"
@@ -5501,6 +5555,10 @@ msgstr "One shaper at a time. It runs alongside noise suppression and input gain
 msgid "Online"
 msgstr "Online"
 
+#: components/ui/components/design/presenceText.ts
+msgid "Online but concentrating; messages still come through"
+msgstr "Online but concentrating; messages still come through"
+
 #: components/modal/modals/ScreenShareAudioSource.tsx
 msgid "Only apps that are playing sound right now are listed."
 msgstr "Only apps that are playing sound right now are listed."
@@ -5512,6 +5570,10 @@ msgstr "Only does anything while the call is already fullscreen."
 #: components/modal/modals/ScreenShareSettings.tsx
 msgid "Only entire-screen shares carry your computer's audio. Restart the share and pick a whole screen instead of a window."
 msgstr "Only entire-screen shares carry your computer's audio. Restart the share and pick a whole screen instead of a window."
+
+#: components/ui/components/design/presenceText.ts
+msgid "Only mentions notify you"
+msgstr "Only mentions notify you"
 
 #: src/interface/navigation/servers/UserMenu.tsx
 msgid "Only mentions will notify you"

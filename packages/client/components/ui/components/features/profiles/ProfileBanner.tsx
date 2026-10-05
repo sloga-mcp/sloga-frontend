@@ -6,7 +6,13 @@ import { styled } from "styled-system/jsx";
 
 import { useLingui } from "@lingui-solid/solid/macro";
 import { Tooltip } from "@revolt/ui";
-import { Avatar, Ripple, UserStatus, typography } from "../../design";
+import {
+  Avatar,
+  Ripple,
+  UserStatus,
+  typography,
+  usePresenceText,
+} from "../../design";
 import { Row } from "../../layout";
 import { DisplayName } from "../DisplayName";
 import { isSlogaStaff } from "../legacy/Username";
@@ -20,6 +26,7 @@ export function ProfileBanner(props: {
   width: 2 | 3;
 }) {
   const { t } = useLingui();
+  const presence = usePresenceText();
 
   const [isCopied, setIsCopied] = createSignal(false);
 
@@ -107,6 +114,12 @@ export function ProfileBanner(props: {
           <Show when={props.user.pronouns}>
             <Pronouns>{props.user.pronouns}</Pronouns>
           </Show>
+          {/* Spelled out here because a dot's hover tooltip never fires on a
+              phone, and this card is what a tap on someone opens */}
+          <PresenceLine>
+            <PresenceName>{presence.label(props.user.presence)}</PresenceName>{" "}
+            {presence.description(props.user.presence)}
+          </PresenceLine>
         </UserShort>
       </Row>
     </Banner>
@@ -175,5 +188,23 @@ const Pronouns = styled("span", {
     fontSize: "0.75rem",
     fontWeight: 400,
     opacity: 0.8,
+  },
+});
+
+const PresenceLine = styled("span", {
+  base: {
+    fontSize: "0.75rem",
+    fontWeight: 400,
+    lineHeight: "1.2em",
+    opacity: 0.8,
+    // The banner is a fixed 120px; a long meaning must not push the name
+    // out of its top
+    lineClamp: 2,
+  },
+});
+
+const PresenceName = styled("span", {
+  base: {
+    fontWeight: 600,
   },
 });
