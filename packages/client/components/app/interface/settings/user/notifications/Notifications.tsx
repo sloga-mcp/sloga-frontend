@@ -197,7 +197,7 @@ export default function Notifications(props: { isDesktop: boolean }) {
               }
               options={{
                 full_reply: {
-                  title: <Trans>Show message</Trans>,
+                  title: <Trans>Show message + quick reply</Trans>,
                 },
                 sender: {
                   title: <Trans>Show sender only</Trans>,
@@ -214,7 +214,8 @@ export default function Notifications(props: { isDesktop: boolean }) {
           <Text class="label">
             <Trans>
               Applies to direct messages and group chats while this app is
-              running. Push notifications aren't affected yet.
+              running. Quick reply works in the Windows desktop app. Push
+              notifications aren't affected yet.
             </Trans>
           </Text>
         </Column>

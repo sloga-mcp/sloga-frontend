@@ -30,85 +30,25 @@ import { useSnackbar } from "@revolt/ui/components/design/Snackbar";
 
 import { useClient } from ".";
 import { IS_POPOUT_WINDOW } from "./popout";
+import {
+  type PopoutAction,
+  POPOUT_WEB_MESSAGE_TYPE,
+  ULID_RE,
+  isPopoutAction,
+} from "./shellToMain";
 
-export type PopoutAction = "dm" | "call" | "video" | "screenshare";
-
-export const POPOUT_ACTIONS: readonly PopoutAction[] = [
-  "dm",
-  "call",
-  "video",
-  "screenshare",
-];
-
-export function isPopoutAction(value: unknown): value is PopoutAction {
-  return (
-    typeof value === "string" &&
-    (POPOUT_ACTIONS as readonly string[]).includes(value)
-  );
-}
-
-/** `type` of the web popout's `postMessage` to its opener. */
-export const POPOUT_WEB_MESSAGE_TYPE = "sloga:popout-open-in-main";
-
-/** A ULID (Crockford base32, 26 chars). No `g` flag: `test` stays stateless. */
-export const ULID_RE: RegExp = /^[0-9A-HJKMNP-TV-Z]{26}$/;
-
-/**
- * Shell → main messages (Tauri `ipc::Channel` payload AND Electron
- * `sloga:shell-to-main` payload). Mirrors the Rust `ShellToMain` enum
- * (`#[serde(tag = "kind", rename_all = "camelCase")]`).
- */
-export type ShellToMain =
-  | { kind: "popoutOpenInMain"; action: PopoutAction; userId: string }
-  | { kind: "notificationOpen"; path: string };
-
-/** Bounds an in-app path before it reaches the router. */
-const MAX_PATH_LENGTH = 2048;
-
-/**
- * An in-app path the main window may navigate to: absolute ("/"), never
- * protocol-relative ("//host"), and free of backslashes and control
- * characters — URL parsing turns "/\host" into "//host".
- */
-function isInAppPath(value: unknown): value is string {
-  return (
-    typeof value === "string" &&
-    value.length <= MAX_PATH_LENGTH &&
-    value.startsWith("/") &&
-    !value.startsWith("//") &&
-    // eslint-disable-next-line no-control-regex
-    !/[\\\u0000-\u001f\u007f]/.test(value)
-  );
-}
-
-/** Exactly these own keys, so a payload can't smuggle extra fields along. */
-function hasExactKeys(value: object, keys: readonly string[]): boolean {
-  const own = Object.keys(value);
-  return own.length === keys.length && keys.every((key) => own.includes(key));
-}
-
-/**
- * Validate an untrusted shell → main payload. Everything that arrives over a
- * shell bridge passes through here before anything acts on it.
- */
-export function isShellToMain(value: unknown): value is ShellToMain {
-  if (typeof value !== "object" || value === null || Array.isArray(value))
-    return false;
-  const msg = value as Record<string, unknown>;
-  switch (msg.kind) {
-    case "popoutOpenInMain":
-      return (
-        hasExactKeys(msg, ["kind", "action", "userId"]) &&
-        isPopoutAction(msg.action) &&
-        typeof msg.userId === "string" &&
-        ULID_RE.test(msg.userId)
-      );
-    case "notificationOpen":
-      return hasExactKeys(msg, ["kind", "path"]) && isInAppPath(msg.path);
-    default:
-      return false;
-  }
-}
+// The validator lives in an import-free module so node can spec it; every
+// name stays importable from here.
+export {
+  type PopoutAction,
+  type ShellToMain,
+  POPOUT_ACTIONS,
+  POPOUT_WEB_MESSAGE_TYPE,
+  TOAST_ID_RE,
+  ULID_RE,
+  isPopoutAction,
+  isShellToMain,
+} from "./shellToMain";
 
 /**
  * Popout window only: hand the action to the main window. Never opens a DM
