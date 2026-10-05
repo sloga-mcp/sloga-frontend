@@ -146,3 +146,48 @@ export function decidePreview(input: PreviewPolicyInput): PreviewDecision {
 
   return decision;
 }
+
+/**
+ * The E2EE state of the conversation a message arrived in, as the native layer
+ * reports it. `unknown` means the lookup threw; `null` means the channel can
+ * never be end-to-end encrypted, or this platform has no E2EE engine.
+ */
+export type ConversationE2EEMode =
+  | "encrypt"
+  | "blocked"
+  | "plaintext"
+  | "peer_downgraded"
+  | "unknown"
+  | null;
+
+export type E2EEGate = "suppress" | "sender_only" | "normal";
+
+/**
+ * Whether a message in a possibly encrypted conversation may notify at all.
+ * Runs before `decidePreview`, which never sees a suppressed message.
+ *
+ * In an encrypted conversation only a message this device decrypted is the
+ * peer's. Anything else was put there by the server, or sent in plaintext by a
+ * web or old client, and the transcript hides it; announcing it under the
+ * peer's name would let the server speak for them. When the conversation's
+ * state cannot be read, the sender is still announced but nothing the server
+ * supplied as content is shown.
+ */
+export function e2eeNotificationGate(
+  mode: ConversationE2EEMode,
+  isEncryptedMessage: boolean,
+): E2EEGate {
+  if (mode === null) return "normal";
+  // decidePreview's isE2EE rule still keeps its content off OS-drawn toasts.
+  if (isEncryptedMessage) return "normal";
+  switch (mode) {
+    case "encrypt":
+    case "blocked":
+    case "peer_downgraded":
+      return "suppress";
+    case "plaintext":
+      return "normal";
+    default:
+      return "sender_only";
+  }
+}

@@ -1,7 +1,7 @@
 // Unit spec for the notification preview policy — run with Node's built-in
 // runner:
 //   node --conditions=browser --test components/client/notificationPreviewPolicy.test.ts
-// Declared test count: 17 (compare against the runner's pass count, since the
+// Declared test count: 23 (compare against the runner's pass count, since the
 // runner also exits 0 when it finds no tests at all).
 // Focus: the per-conversation override beats the global mode, "Off" beats
 // everything, anyone watching the screen strips the content and the reply but
@@ -14,6 +14,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  type ConversationE2EEMode,
   type DmPreviewMode,
   type NotificationSurface,
   type PreviewDecision,
@@ -21,6 +22,7 @@ import {
   DM_PREVIEW_DEFAULT,
   DM_PREVIEW_MODES,
   decidePreview,
+  e2eeNotificationGate,
   isDmPreviewMode,
 } from "./notificationPreviewPolicy.ts";
 
@@ -325,4 +327,48 @@ test("sweep: a reply needs everything else, and nothing outlives show", () => {
   // The sweep must reach the one corner where a reply is allowed, or the
   // block above checked nothing.
   assert.ok(replies > 0);
+});
+
+const LOCKED_MODES: readonly ConversationE2EEMode[] = [
+  "encrypt",
+  "blocked",
+  "peer_downgraded",
+];
+const ALL_E2EE_MODES: readonly ConversationE2EEMode[] = [
+  ...LOCKED_MODES,
+  "plaintext",
+  "unknown",
+  null,
+];
+
+test("e2ee gate: no engine or a channel that cannot be encrypted notifies as before", () => {
+  assert.equal(e2eeNotificationGate(null, false), "normal");
+  assert.equal(e2eeNotificationGate(null, true), "normal");
+});
+
+test("e2ee gate: a message this device decrypted notifies, whatever the mode", () => {
+  for (const mode of ALL_E2EE_MODES)
+    assert.equal(e2eeNotificationGate(mode, true), "normal", String(mode));
+});
+
+test("e2ee gate: anything else in an encrypted conversation never notifies", () => {
+  for (const mode of LOCKED_MODES)
+    assert.equal(e2eeNotificationGate(mode, false), "suppress", String(mode));
+});
+
+test("e2ee gate: a conversation whose state could not be read announces the sender only", () => {
+  assert.equal(e2eeNotificationGate("unknown", false), "sender_only");
+});
+
+test("e2ee gate: a plaintext conversation notifies as before", () => {
+  assert.equal(e2eeNotificationGate("plaintext", false), "normal");
+});
+
+test("e2ee gate: an unrecognized mode fails closed to sender-only", () => {
+  const bad = "everything" as unknown as ConversationE2EEMode;
+  assert.equal(e2eeNotificationGate(bad, false), "sender_only");
+  assert.equal(
+    e2eeNotificationGate(undefined as unknown as ConversationE2EEMode, false),
+    "sender_only",
+  );
 });

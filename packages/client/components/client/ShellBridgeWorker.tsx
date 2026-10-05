@@ -24,12 +24,6 @@ type TauriChannel = {
 
 type TauriGlobal = {
   core?: { Channel?: new () => TauriChannel };
-  event?: {
-    listen(
-      event: string,
-      handler: (event: { payload: unknown }) => void,
-    ): Promise<() => void>;
-  };
 };
 
 /**
@@ -104,55 +98,29 @@ export function ShellBridgeWorker(): JSX.Element | null {
     const tauri = (window as { __TAURI__?: TauriGlobal }).__TAURI__;
     if (!tauri) return;
 
-    let disposed = false;
-    let channel: TauriChannel | undefined;
-    let unlisten: Promise<() => void> | undefined;
-
-    // A shell from before the bridge clicks its toasts through the
-    // `notification_clicked` event (show_clickable_notification) instead.
-    // Spoofable by any webview that can emit to `main`, but all it can do is
-    // navigate this window, and those shells offer nothing better.
-    const listenLegacy = () => {
-      if (disposed || !tauri.event) return;
-      unlisten = tauri.event.listen("notification_clicked", (event) =>
-        handle({ kind: "notificationOpen", path: event.payload }),
-      );
-    };
-
     const invoke = tauriInvoke();
     const Channel = tauri.core?.Channel;
-    if (invoke && Channel) {
-      // The handler goes on BEFORE the invoke: the Channel starts with a
-      // no-op `onmessage` and delivers immediately, so anything sent in
-      // between would be dropped.
-      channel = new Channel();
-      channel.onmessage = handle;
-      invoke("register_shell_bridge", { channel }).catch((error) => {
-        // Only a shell that predates the command gets the spoofable legacy
-        // path. Any other failure (an ACL or capability mistake) must stay
-        // loud and closed, or a misconfigured build silently reopens it.
-        // Exact match: an ACL denial reads "... not allowed. Command not found".
-        if (String(error) === "Command register_shell_bridge not found") {
-          console.info(
-            "[shell-bridge] register_shell_bridge unavailable, using notification_clicked",
-          );
-          listenLegacy();
-        } else {
-          console.error("[shell-bridge] register_shell_bridge failed", error);
-        }
-      });
-    } else {
-      listenLegacy();
-    }
+    if (!invoke || !Channel) return;
+
+    // The handler goes on BEFORE the invoke: the Channel starts with a no-op
+    // `onmessage` and delivers immediately, so anything sent in between would
+    // be dropped.
+    const channel = new Channel();
+    channel.onmessage = handle;
+    // No fallback to the old spoofable `notification_clicked` event. Tauri
+    // checks the ACL before it looks the command up, so a shell without this
+    // command answers "not allowed by ACL", never "not found", and a fallback
+    // keyed on that could never fire. The shell and this frontend ship as a
+    // bundled pair, so there is no older shell to serve. A failure here is a
+    // build or capability mistake: keep it loud and closed.
+    invoke("register_shell_bridge", { channel }).catch((error) =>
+      console.error("[shell-bridge] register_shell_bridge failed", error),
+    );
 
     onCleanup(() => {
-      disposed = true;
-      if (channel) {
-        // The shell keeps its end until the next registration replaces it.
-        channel.onmessage = () => {};
-        channel.cleanupCallback?.();
-      }
-      unlisten?.then((fn) => fn()).catch(() => {});
+      // The shell keeps its end until the next registration replaces it.
+      channel.onmessage = () => {};
+      channel.cleanupCallback?.();
     });
   });
 

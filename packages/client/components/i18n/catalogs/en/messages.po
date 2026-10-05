@@ -1030,8 +1030,16 @@ msgid "Appearance"
 msgstr "Appearance"
 
 #: components/app/interface/settings/user/notifications/Notifications.tsx
+msgid "Applies to direct messages and group chats while this app is running. Push notifications aren't affected yet."
+msgstr "Applies to direct messages and group chats while this app is running. Push notifications aren't affected yet."
+
+#: components/app/interface/settings/user/notifications/Notifications.tsx
 msgid "Applies to direct messages and group chats. Quick reply is available in the desktop app."
 msgstr "Applies to direct messages and group chats. Quick reply is available in the desktop app."
+
+#: components/app/interface/settings/user/notifications/Notifications.tsx
+msgid "Applies to notifications from this app while it's running. Push notifications aren't affected yet."
+msgstr "Applies to notifications from this app while it's running. Push notifications aren't affected yet."
 
 #: components/modal/modals/ImageEditorCore.tsx
 msgid "Apply"
@@ -7294,6 +7302,12 @@ msgstr "Show live captions during voice and video calls, translated into your ch
 #: components/ui/components/features/voice/callCard/VoiceCaptionsButton.tsx
 msgid "Show live captions, translated into your chosen language"
 msgstr "Show live captions, translated into your chosen language"
+
+#: components/app/interface/settings/user/notifications/Notifications.tsx
+#: components/app/menus/shared/NotificationContextMenu.tsx
+#: components/app/menus/shared/NotificationContextMenu.tsx
+msgid "Show message"
+msgstr "Show message"
 
 #: components/app/interface/settings/user/notifications/Notifications.tsx
 #: components/app/menus/shared/NotificationContextMenu.tsx

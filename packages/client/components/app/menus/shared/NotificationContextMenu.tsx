@@ -267,7 +267,7 @@ export function NotificationContextMenu(props: { channel: Channel }) {
               <Text class="label" size="small">
                 <Switch fallback={<Trans>Off</Trans>}>
                   <Match when={globalPreviewMode() === "full_reply"}>
-                    <Trans>Show message + quick reply</Trans>
+                    <Trans>Show message</Trans>
                   </Match>
                   <Match when={globalPreviewMode() === "sender"}>
                     <Trans>Show sender only</Trans>
@@ -286,7 +286,7 @@ export function NotificationContextMenu(props: { channel: Channel }) {
                 : MdRadioButtonUnchecked
             }
           >
-            <Trans>Show message + quick reply</Trans>
+            <Trans>Show message</Trans>
           </ContextMenuButton>
           <ContextMenuButton
             symbol={MdPerson}

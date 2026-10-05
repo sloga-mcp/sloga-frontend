@@ -197,7 +197,7 @@ export default function Notifications(props: { isDesktop: boolean }) {
               }
               options={{
                 full_reply: {
-                  title: <Trans>Show message + quick reply</Trans>,
+                  title: <Trans>Show message</Trans>,
                 },
                 sender: {
                   title: <Trans>Show sender only</Trans>,
@@ -213,8 +213,8 @@ export default function Notifications(props: { isDesktop: boolean }) {
           </CategoryButton.Group>
           <Text class="label">
             <Trans>
-              Applies to direct messages and group chats. Quick reply is
-              available in the desktop app.
+              Applies to direct messages and group chats while this app is
+              running. Push notifications aren't affected yet.
             </Trans>
           </Text>
         </Column>
