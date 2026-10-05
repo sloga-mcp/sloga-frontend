@@ -26,7 +26,7 @@ import {
   useVoice,
 } from "@revolt/rtc";
 import { useState } from "@revolt/state";
-import { streamerModeHides } from "@revolt/state/streamer";
+import { streamerModeActive, streamerModeHides } from "@revolt/state/streamer";
 
 import { useClient, useClientLifecycle, useNotifications, useSound } from ".";
 import { State } from "./Controller";
@@ -39,10 +39,24 @@ import {
   notificationPermissionGranted,
   showNotification,
 } from "./nativeNotifications";
+import {
+  type NotificationSurface,
+  decidePreview,
+  DM_PREVIEW_DEFAULT,
+} from "./notificationPreviewPolicy";
 import { playsWebRingtone } from "./pushPolicy";
 import { connectionUrl } from "./streamConnections";
 import { type UnreadBadge, sameBadge, unreadBadge } from "./unreadBadge";
 import { publishUnreadBadge } from "./unreadBadgeShell";
+
+/**
+ * Who draws a message notification on this platform. Both desktop shells hand
+ * it to the OS (the Tauri toast, Electron's `Notification`), which keeps its
+ * text in the OS notification store; anything else is the browser's own.
+ */
+function notificationSurface(): NotificationSurface {
+  return "__TAURI__" in window || "slogaShell" in window ? "os_toast" : "web";
+}
 
 /**
  * Process and display desktop notifications
@@ -138,14 +152,37 @@ export function NotificationsWorker() {
     )
       return;
 
+    // How much this notification may reveal. Decided before the sound so
+    // "Off" stays silent, and before the payload so a withheld body is never
+    // built into it.
+    const preview = decidePreview({
+      mode:
+        state.settings.getValue("notifications:dm_preview") ??
+        DM_PREVIEW_DEFAULT,
+      override: state.settings.getValue("notifications:dm_preview_overrides")?.[
+        message.channelId
+      ],
+      isE2EE: !!client().e2ee?.isEncryptedMessage(message.id),
+      surface: notificationSurface(),
+      screensharing: voice.screenshare(),
+      streamerMode: streamerModeActive(state.settings),
+      // Any session in which we give control counts, an offer still pending
+      // included: the controller may be watching before input is live.
+      rcActive: !!voice.remoteControl.sharing(),
+      channelType: message.channel.type,
+    });
+    if (!preview.show) return;
+
     // Generate the title
     let title;
     switch (message.channel!.type) {
       case "SavedMessages":
         return;
-      case "DirectMessage":
-        title = `@${message.username}`;
+      case "DirectMessage": {
+        const name = message.username;
+        title = preview.showBody ? `@${name}` : t`New message from ${name}`;
         break;
+      }
       case "Group":
         if (message.author?.id === "00000000000000000000000000") {
           title = message.channel?.name;
@@ -278,17 +315,21 @@ export function NotificationsWorker() {
     )
       return;
 
-    sound.playSound("message");
+    if (preview.playSound) sound.playSound("message");
 
     if (notificationsSuppressed()) return;
 
-    console.info(`[notification] ${title} ${icon} ${body}`);
+    // Never the title or body: either can carry decrypted E2EE text, and
+    // console lines end up in bug reports.
+    console.info(
+      `[notification] ${message.channel.type} body=${preview.showBody}`,
+    );
 
     showNotification({
       title: title!,
       icon,
-      image,
-      body,
+      image: preview.showImage ? image : undefined,
+      body: preview.showBody ? body : undefined,
       timestamp: message.createdAt,
       tag: message.channelId,
       path: message.path,
@@ -471,31 +512,8 @@ export function NotificationsWorker() {
     }
   }
 
-  // Desktop shell: clicking a WinRT toast focuses the window and emits
-  // `notification_clicked` with the in-app path to open (see
-  // show_clickable_notification in the desktop shell)
-  onMount(() => {
-    const tauriEvent = (
-      window as {
-        __TAURI__?: {
-          event?: {
-            listen(
-              event: string,
-              handler: (event: { payload: unknown }) => void,
-            ): Promise<() => void>;
-          };
-        };
-      }
-    ).__TAURI__?.event;
-    if (!tauriEvent) return;
-
-    const unlisten = tauriEvent.listen("notification_clicked", (event) => {
-      if (typeof event.payload === "string" && event.payload.startsWith("/")) {
-        navigate(event.payload);
-      }
-    });
-    onCleanup(() => unlisten.then((fn) => fn()).catch(() => {}));
-  });
+  // Desktop toast clicks are handled by ShellBridgeWorker, over a channel only
+  // the shell can write to.
 
   // Native app: notification taps (open message / answer call) navigate here
   onMount(() => {

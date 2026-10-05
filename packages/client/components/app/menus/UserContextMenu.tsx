@@ -1,10 +1,10 @@
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
-import { useNavigate } from "@solidjs/router";
 import { Track } from "livekit-client";
 import { type JSX, For, Match, Show, Switch } from "solid-js";
 import type { Channel, Message, ServerMember, User } from "stoat.js";
 
 import { useClient } from "@revolt/client";
+import { type PopoutAction, useUserActions } from "@revolt/client/popoutBridge";
 import { CONFIGURATION } from "@revolt/common";
 import { useModals } from "@revolt/modal";
 import { useSmartParams } from "@revolt/routing";
@@ -87,79 +87,22 @@ export function UserContextMenu(props: {
   // same for the floating menu I guess?
   const state = useState();
   const client = useClient();
-  const navigate = useNavigate();
   const { openModal, modals } = useModals();
   const voice = useVoice();
   const snackbar = useSnackbar();
+  const userActions = useUserActions();
   const { t } = useLingui();
 
   // server context
   const params = useSmartParams();
 
   /**
-   * Surface an openDM failure — otherwise a denied DM reads as a dead button
+   * Message or call this user. Inside the friends popout the shared runner
+   * hands the action to the main window instead of navigating or joining a
+   * call here, and it surfaces its own failures.
    */
-  function dmFailed(err: unknown) {
-    console.error(err);
-    snackbar.show({ message: "Couldn't open a conversation with this user." });
-  }
-
-  /**
-   * Enter the DM channel; on phones the navigation happens in the content
-   * pane, which may be slid off-screen behind the sidebar
-   */
-  function enterDm(channel: { path: string }) {
-    navigate(channel.path);
-    state.appDrawer()?.setShown(true);
-  }
-
-  /**
-   * Open direct message channel
-   */
-  function openDm() {
-    props.user.openDM().then(enterDm).catch(dmFailed);
-    props.onClose?.();
-  }
-
-  /**
-   * Start a voice call in the DM channel
-   */
-  function startVoiceCall() {
-    props.user
-      .openDM()
-      .then((channel) => {
-        enterDm(channel);
-        return voice.connect(channel);
-      })
-      .catch(dmFailed);
-    props.onClose?.();
-  }
-
-  /**
-   * Start a call in the DM channel with the camera enabled
-   */
-  function startVideoCall() {
-    props.user
-      .openDM()
-      .then(async (channel) => {
-        enterDm(channel);
-        if (await voice.connect(channel)) await voice.toggleCamera();
-      })
-      .catch(dmFailed);
-    props.onClose?.();
-  }
-
-  /**
-   * Start a call in the DM channel and immediately share the screen
-   */
-  function startScreenShareCall() {
-    props.user
-      .openDM()
-      .then(async (channel) => {
-        enterDm(channel);
-        if (await voice.connect(channel)) await voice.toggleScreenshare();
-      })
-      .catch(dmFailed);
+  function runUserAction(action: PopoutAction) {
+    void userActions.run(action, props.user.id);
     props.onClose?.();
   }
 
@@ -1053,20 +996,23 @@ export function UserContextMenu(props: {
         </ContextMenuButton>
       </Show>
       <Show when={canDm()}>
-        <ContextMenuButton icon={MdChat} onClick={openDm}>
+        <ContextMenuButton icon={MdChat} onClick={() => runUserAction("dm")}>
           <Trans>Send Message</Trans>
         </ContextMenuButton>
-        <ContextMenuButton icon={MdCall} onClick={startVoiceCall}>
+        <ContextMenuButton icon={MdCall} onClick={() => runUserAction("call")}>
           <Trans>Call</Trans>
         </ContextMenuButton>
         <Show when={CONFIGURATION.ENABLE_VIDEO}>
-          <ContextMenuButton icon={MdVideocam} onClick={startVideoCall}>
+          <ContextMenuButton
+            icon={MdVideocam}
+            onClick={() => runUserAction("video")}
+          >
             <Trans>Video Call</Trans>
           </ContextMenuButton>
           <Show when={screenShareSupported()}>
             <ContextMenuButton
               icon={MdScreenShare}
-              onClick={startScreenShareCall}
+              onClick={() => runUserAction("screenshare")}
             >
               <Trans>Screen Share</Trans>
             </ContextMenuButton>
