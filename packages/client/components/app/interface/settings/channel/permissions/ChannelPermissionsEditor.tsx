@@ -238,6 +238,18 @@ export function ChannelPermissionsEditor(props: Props) {
       },
     },
     {
+      // Bit 14. Server-wide only, so Server wording alone: the row is hidden
+      // in channel and group editors. Not in any default; owners get it via
+      // GrantAllSafe. The log also covers role, channel and server-settings
+      // changes, and does not hide entries about private channels.
+      key: "ViewAuditLog",
+      value: 2n ** 14n,
+      title: t`View Audit Log`,
+      description: {
+        Server: t`View the log of moderation actions and changes to the server, its roles and channels`,
+      },
+    },
+    {
       key: "AssignRoles",
       value: 2n ** 9n,
       title: t`Assign Roles`,

@@ -162,7 +162,8 @@ export function ServerContextMenu(props: { server: Server }) {
     props.server.havePermission("ManagePermissions") ||
     props.server.havePermission("ManageRole") ||
     props.server.havePermission("ManageServer") ||
-    props.server.havePermission("ManageWebhooks");
+    props.server.havePermission("ManageWebhooks") ||
+    props.server.havePermission("ViewAuditLog");
 
   return (
     <ContextMenu>
