@@ -56,6 +56,27 @@ export default defineConfig([
     },
   },
   {
+    // The live-leg tools in scripts/leg/*.js are pasted into a browser seat's
+    // DevTools console, not run by Node, so they get the browser globals they
+    // use. Without this block they inherit only the Node set above and every
+    // `window` / `performance` reads as `no-undef`.
+    files: ["**/scripts/leg/*.js"],
+    languageOptions: {
+      globals: {
+        Blob: "readonly",
+        clearInterval: "readonly",
+        document: "readonly",
+        navigator: "readonly",
+        performance: "readonly",
+        RTCRtpScriptTransform: "readonly",
+        setInterval: "readonly",
+        setTimeout: "readonly",
+        window: "readonly",
+        Worker: "readonly",
+      },
+    },
+  },
+  {
     rules: {
       "@typescript-eslint/no-unused-vars": [
         "warn",

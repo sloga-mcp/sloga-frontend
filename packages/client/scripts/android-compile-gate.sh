@@ -26,7 +26,7 @@
 #      cordova.variables.gradle). No web build is needed.
 #   3. Drift alarm on the two COMMITTED files `cap update` rewrites.
 #   3b. Source pin: the Capacitor MessageHandler.java gradle is about to
-#      compile must carry patches/@capacitor__android@8.4.1.patch.
+#      compile must carry patches/@capacitor__android@8.4.3.patch.
 #   4. gradle compile{Sideload,Play,Foss}DebugJavaWithJavac. In each variant
 #      javac runs after kotlinc (it depends on it), so one task per flavor
 #      checks both languages, and every flavor-only source set (src/sideload,
@@ -144,7 +144,7 @@ git --no-pager diff --exit-code -- \
 
 # --- 3b. the patched Capacitor bridge ----------------------------------------------
 #
-# patches/@capacitor__android@8.4.1.patch (pnpm patchedDependencies) makes
+# patches/@capacitor__android@8.4.3.patch (pnpm patchedDependencies) makes
 # MessageHandler.java store the sending page's reply proxy BEFORE it dispatches
 # the call, and declares that field volatile. Unpatched, the first plugin call
 # after a WebView reload could be answered to the dead page and never settle
@@ -155,10 +155,10 @@ git --no-pager diff --exit-code -- \
 # the :capacitor-android projectDir the drift-checked settings name (relative
 # to $ANDROID, as gradle resolves it).
 #
-# Control: an unpatched copy of the 8.4.1 file, the swap alone and the
+# Control: an unpatched copy of the 8.4.1 file (byte-identical in 8.4.3), the swap alone and the
 # volatile alone each fail this step; the patched copy passes.
 CAP_SETTINGS="$ANDROID/capacitor.settings.gradle"
-CAP_PATCH="patches/@capacitor__android@8.4.1.patch"
+CAP_PATCH="patches/@capacitor__android@8.4.3.patch"
 cap_dir=$(sed -n "s/^project(':capacitor-android')\.projectDir = new File('\(.*\)')\$/\1/p" \
   "$CAP_SETTINGS")
 [ -n "$cap_dir" ] && [ "$(printf '%s\n' "$cap_dir" | wc -l)" -eq 1 ] ||

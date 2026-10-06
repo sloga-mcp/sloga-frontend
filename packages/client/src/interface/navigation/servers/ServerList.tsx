@@ -1,4 +1,12 @@
-import { Accessor, For, JSX, Show, createSignal, onMount } from "solid-js";
+import {
+  Accessor,
+  For,
+  JSX,
+  Show,
+  createMemo,
+  createSignal,
+  onMount,
+} from "solid-js";
 
 import { Trans } from "@lingui-solid/solid/macro";
 import { Channel, Server, User } from "stoat.js";
@@ -9,7 +17,7 @@ import { allowsDonationLinks } from "@revolt/client";
 import { useDevice } from "@revolt/common";
 import { KeybindAction, createKeybind } from "@revolt/keybinds";
 import { useModals } from "@revolt/modal";
-import { useNavigate } from "@revolt/routing";
+import { useNavigate, useSmartParams } from "@revolt/routing";
 import { useState } from "@revolt/state";
 import {
   LAYOUT_SECTIONS,
@@ -24,10 +32,10 @@ import {
   Unreads,
   UserStatus,
   iconSize,
-  presenceLabel,
   slogaBurstKeyframes,
   unreadHolepunch,
   unreadTone,
+  usePresenceText,
 } from "@revolt/ui";
 
 import MdAdd from "@material-design-icons/svg/filled/add.svg?component-solid";
@@ -206,7 +214,15 @@ export const ServerList = (props: Props) => {
   const state = useState();
   const navigate = useNavigate();
   const device = useDevice();
+  const params = useSmartParams();
+  const presence = usePresenceText();
   const { openModal } = useModals();
+
+  /**
+   * Unread conversations, read several times per render below; the prop
+   * re-runs the full ordering and filter on every read
+   */
+  const unreadConversations = createMemo(() => props.unreadConversations);
 
   /**
    * Whether the rail is expanded to show text labels.
@@ -293,6 +309,68 @@ export const ServerList = (props: Props) => {
             </Show>
           </a>
         </Tooltip>
+        {/* Unread DMs and groups sit right under Home, where they are seen */}
+        <For each={unreadConversations().slice(0, 9)}>
+          {(conversation) => (
+            <Tooltip placement="right" content={conversation.displayName}>
+              <a
+                class={entryContainer({
+                  indicator:
+                    params().channelId === conversation.id
+                      ? "selected"
+                      : undefined,
+                  expanded: railExpanded(),
+                })}
+                use:floating={props.menuGenerator(conversation)}
+                href={`/channel/${conversation.id}`}
+              >
+                <Avatar
+                  size={42}
+                  src={conversation.iconURL}
+                  holepunch={unreadHolepunch(
+                    conversation.unreadCount,
+                    conversation.unread,
+                  )}
+                  overlay={
+                    <>
+                      <Show when={conversation.unread}>
+                        {/* Every message in a DM or group is addressed to
+                            you, so these always take the mention colour */}
+                        <Unreads.Graphic
+                          count={conversation.unreadCount}
+                          tone="mention"
+                          unread
+                        />
+                      </Show>
+                    </>
+                  }
+                  fallback={
+                    conversation.type === "Group" ? (
+                      <MdGroup />
+                    ) : (
+                      (conversation.name ?? conversation.recipient?.username)
+                    )
+                  }
+                  interactive
+                />
+                <Show when={railExpanded()}>
+                  <RailLabel>{conversation.displayName}</RailLabel>
+                </Show>
+              </a>
+            </Tooltip>
+          )}
+        </For>
+        <Show when={unreadConversations().length > 9}>
+          <a class={entryContainer({ expanded: railExpanded() })} href={`/`}>
+            <Avatar
+              size={42}
+              fallback={<>+{unreadConversations().length - 9}</>}
+            />
+            <Show when={railExpanded()}>
+              <RailLabel>{unreadConversations().length - 9} more</RailLabel>
+            </Show>
+          </a>
+        </Show>
         <Tooltip placement="right" content="Friends">
           <a
             class={entryContainer({ expanded: railExpanded() })}
@@ -340,7 +418,10 @@ export const ServerList = (props: Props) => {
             <Column>
               <span>{props.user.username}</span>
               <Text class="label" size="small">
-                {presenceLabel(props.user.presence)}
+                {presence.pickerLabel(props.user.presence)}
+              </Text>
+              <Text class="label" size="small">
+                {presence.pickerDescription(props.user.presence)}
               </Text>
             </Column>
           )}
@@ -354,7 +435,9 @@ export const ServerList = (props: Props) => {
               size={42}
               src={props.user.avatarURL}
               holepunch={"bottom-right"}
-              overlay={<UserStatus.Graphic status={props.user.presence} />}
+              overlay={
+                <UserStatus.Graphic status={props.user.presence} noTooltip />
+              }
               interactive
             />
             <Show when={railExpanded()}>
@@ -368,59 +451,6 @@ export const ServerList = (props: Props) => {
           </a>
           <UserMenu anchor={menuButton} />
         </Tooltip>
-        <For each={props.unreadConversations.slice(0, 9)}>
-          {(conversation) => (
-            <Tooltip placement="right" content={conversation.displayName}>
-              <a
-                class={entryContainer({ expanded: railExpanded() })}
-                use:floating={props.menuGenerator(conversation)}
-                href={`/channel/${conversation.id}`}
-              >
-                <Avatar
-                  size={42}
-                  // TODO: fix this
-                  src={conversation.iconURL}
-                  holepunch={unreadHolepunch(
-                    conversation.unreadCount,
-                    conversation.unread,
-                  )}
-                  overlay={
-                    <>
-                      <Show when={conversation.unread}>
-                        <Unreads.Graphic
-                          count={conversation.unreadCount}
-                          tone={unreadTone(
-                            conversation.mentions?.size ?? 0,
-                            conversation.unreadHasAttachments,
-                          )}
-                          unread
-                        />
-                      </Show>
-                    </>
-                  }
-                  fallback={
-                    conversation.name ?? conversation.recipient?.username
-                  }
-                  interactive
-                />
-                <Show when={railExpanded()}>
-                  <RailLabel>{conversation.displayName}</RailLabel>
-                </Show>
-              </a>
-            </Tooltip>
-          )}
-        </For>
-        <Show when={props.unreadConversations.length > 9}>
-          <a class={entryContainer({ expanded: railExpanded() })} href={`/`}>
-            <Avatar
-              size={42}
-              fallback={<>+{props.unreadConversations.length - 9}</>}
-            />
-            <Show when={railExpanded()}>
-              <RailLabel>{props.unreadConversations.length - 9} more</RailLabel>
-            </Show>
-          </a>
-        </Show>
         <Show when={device.layout() !== "phone"} fallback={<LineDivider />}>
           <DividerRow>
             <DividerLine />

@@ -1,4 +1,10 @@
-import { createEffect, onCleanup, onMount } from "solid-js";
+import {
+  createEffect,
+  createSignal,
+  onCleanup,
+  onMount,
+  untrack,
+} from "solid-js";
 
 import { Capacitor, registerPlugin } from "@capacitor/core";
 
@@ -26,7 +32,7 @@ import {
   useVoice,
 } from "@revolt/rtc";
 import { useState } from "@revolt/state";
-import { streamerModeHides } from "@revolt/state/streamer";
+import { streamerModeActive, streamerModeHides } from "@revolt/state/streamer";
 
 import { useClient, useClientLifecycle, useNotifications, useSound } from ".";
 import { State } from "./Controller";
@@ -39,10 +45,31 @@ import {
   notificationPermissionGranted,
   showNotification,
 } from "./nativeNotifications";
+import {
+  type ConversationE2EEMode,
+  type NotificationSurface,
+  type PreviewDecision,
+  type PreviewPolicyInput,
+  decidePreview,
+  DM_PREVIEW_DEFAULT,
+  e2eeNotificationGate,
+} from "./notificationPreviewPolicy";
 import { playsWebRingtone } from "./pushPolicy";
 import { connectionUrl } from "./streamConnections";
+import { toastSurfaceFor } from "./toastPolicy";
+import { toastSupported, useToastShell } from "./toastShell";
 import { type UnreadBadge, sameBadge, unreadBadge } from "./unreadBadge";
 import { publishUnreadBadge } from "./unreadBadgeShell";
+
+/**
+ * Who draws a message notification when our own toast window is unavailable.
+ * Both desktop shells hand it to the OS (the Tauri toast, Electron's
+ * `Notification`), which keeps its text in the OS notification store;
+ * anything else is the browser's own.
+ */
+function notificationSurface(): NotificationSurface {
+  return "__TAURI__" in window || "slogaShell" in window ? "os_toast" : "web";
+}
 
 /**
  * Process and display desktop notifications
@@ -55,6 +82,7 @@ export function NotificationsWorker() {
   const voice = useVoice();
   const params = useSmartParams();
   const sound = useSound();
+  const toastShell = useToastShell();
   const { lifecycle } = useClientLifecycle();
 
   // Tell the native layer whether this web layer can currently present the
@@ -90,10 +118,32 @@ export function NotificationsWorker() {
     streamerModeHides(state.settings, "notifications");
 
   /**
+   * The E2EE state of a message's conversation, for `e2eeNotificationGate`.
+   * The send-mode cache only fills when a conversation is opened, sent to or
+   * synced, so a miss asks the native layer, which also fills the cache. A
+   * failed lookup is "unknown", never a guess.
+   */
+  async function conversationE2EEMode(
+    channel: Channel,
+  ): Promise<ConversationE2EEMode> {
+    const e2ee = client().e2ee as import("./e2ee").E2EEBridge | undefined;
+    if (!e2ee) return null;
+    if (channel.type !== "DirectMessage" && channel.type !== "Group")
+      return null;
+    const key = channel.type === "Group" ? channel.id : channel.recipient?.id;
+    const cached = key ? e2ee.sendModes.get(key) : undefined;
+    try {
+      return cached ?? (await e2ee.sendModeNowFor(channel));
+    } catch {
+      return "unknown";
+    }
+  }
+
+  /**
    * Handle incoming messages
    * @param message Message
    */
-  function onMessage(message: Message) {
+  async function onMessage(message: Message) {
     const us = client().user!;
 
     // Ephemeral interaction responses are the bot answering something this
@@ -138,25 +188,95 @@ export function NotificationsWorker() {
     )
       return;
 
-    // Generate the title
-    let title;
-    switch (message.channel!.type) {
-      case "SavedMessages":
-        return;
-      case "DirectMessage":
-        title = `@${message.username}`;
-        break;
-      case "Group":
-        if (message.author?.id === "00000000000000000000000000") {
-          title = message.channel?.name;
-        } else {
-          title = `@${message.username} - ${message.channel?.name}`;
+    // In an encrypted conversation the transcript hides every message this
+    // device did not decrypt itself (Messages.tsx), so it must not notify
+    // either: announced under the peer's name, it would let the server speak
+    // for them. Asked after the cheap checks above, so the native lookup only
+    // runs for a message that would otherwise notify.
+    const e2eeGate = e2eeNotificationGate(
+      await conversationE2EEMode(message.channel),
+      !!client().e2ee?.isEncryptedMessage(message.id),
+    );
+    if (e2eeGate === "suppress") return;
+
+    // The lookup can take a moment. Meanwhile the channel may have been swept
+    // from the cache, or the user may have opened it and is reading already.
+    if (!message.channel) return;
+    if (params().channelId === message.channelId && document.hasFocus()) return;
+
+    // Held from here on: the toast below is awaited, and stoat.js may sweep
+    // the channel from the cache meanwhile.
+    const channel = message.channel;
+    if (channel.type === "SavedMessages") return;
+
+    // How much this notification may reveal. Decided before the sound so
+    // "Off" stays silent, and before the payload so a withheld body is never
+    // built into it. Everything but the surface is fixed here, so a refused
+    // Sloga toast is decided again for the OS toast from the same facts.
+    const policy: Omit<PreviewPolicyInput, "surface"> = {
+      mode:
+        state.settings.getValue("notifications:dm_preview") ??
+        DM_PREVIEW_DEFAULT,
+      override: state.settings.getValue("notifications:dm_preview_overrides")?.[
+        message.channelId
+      ],
+      // A conversation whose E2EE state could not be read is treated as
+      // encrypted: its content stays off any toast the OS draws.
+      isE2EE:
+        e2eeGate === "sender_only" ||
+        !!client().e2ee?.isEncryptedMessage(message.id),
+      screensharing: voice.screenshare(),
+      streamerMode: streamerModeActive(state.settings),
+      // Any session in which we give control counts, an offer still pending
+      // included: the controller may be watching before input is live.
+      rcActive: !!voice.remoteControl.sharing(),
+      channelType: channel.type,
+    };
+    const decide = (surface: NotificationSurface): PreviewDecision => {
+      const decision = decidePreview({ ...policy, surface });
+      // decidePreview lets our own toast show encrypted text, but under this
+      // gate the content is whatever the server supplied, unverified. No
+      // surface shows it, and no reply goes into a conversation whose state
+      // we could not read.
+      if (e2eeGate === "sender_only") {
+        decision.showBody = false;
+        decision.showImage = false;
+        decision.allowReply = false;
+      }
+      return decision;
+    };
+    // Our toast is for direct messages and group chats (toastSurfaceFor
+    // decides; the shell is asked only where it could say yes). A toast the
+    // shell cannot keep out of screen capture is its own surface, so an
+    // encrypted message on it stays sender-only, and the toast shell is held
+    // to the surface decided here.
+    const toastSurface = toastSurfaceFor(
+      channel.type,
+      channel.type === "DirectMessage" || channel.type === "Group"
+        ? toastSupported()
+        : null,
+    );
+    const slogaToast = toastSurface !== null;
+    const preview = decide(toastSurface ?? notificationSurface());
+    if (!preview.show) return;
+
+    // Generate the title. A function of the decision, since the OS fallback
+    // below may reveal less than the decision it replaces.
+    const titleFor = (decision: PreviewDecision) => {
+      switch (channel.type) {
+        case "DirectMessage": {
+          const name = message.username;
+          return decision.showBody ? `@${name}` : t`New message from ${name}`;
         }
-        break;
-      case "TextChannel":
-        title = `@${message.username} (#${message.channel?.name}, ${message.channel?.server?.name})`;
-        break;
-    }
+        case "Group":
+          if (message.author?.id === "00000000000000000000000000") {
+            return channel.name;
+          }
+          return `@${message.username} - ${channel.name}`;
+        case "TextChannel":
+          return `@${message.username} (#${channel.name}, ${channel.server?.name})`;
+      }
+    };
 
     // Find image if applicable
     const image = message.attachments?.find(
@@ -278,17 +398,70 @@ export function NotificationsWorker() {
     )
       return;
 
-    sound.playSound("message");
+    if (preview.playSound) sound.playSound("message");
 
     if (notificationsSuppressed()) return;
 
-    console.info(`[notification] ${title} ${icon} ${body}`);
+    // Our own toast window first, where the shell has one. Its text never
+    // reaches the OS notification store, so the protected one alone may show
+    // an encrypted message's content and offer a reply. A rejected show() (an
+    // older shell) counts as refused like any other.
+    if (
+      toastSurface !== null &&
+      (await toastShell
+        .show(
+          {
+            channelId: message.channelId,
+            messageId: message.id,
+            title: titleFor(preview) ?? "",
+            sender: message.username ?? "",
+            body: preview.showBody ? (body ?? null) : null,
+            avatarUrl: icon ?? null,
+            allowReply: preview.allowReply,
+          },
+          toastSurface,
+        )
+        .catch(() => false))
+    ) {
+      // Showing it awaited (avatar fetch, page registration); if the user
+      // opened this conversation meanwhile, take it straight back down.
+      if (params().channelId === message.channelId && document.hasFocus())
+        toastShell.clearChannel(message.channelId);
+      // Never the title or body: either can carry decrypted E2EE text, and
+      // console lines end up in bug reports.
+      console.info(
+        `[notification] ${channel.type} ${toastSurface} body=${preview.showBody}`,
+      );
+      return;
+    }
+
+    // The toast attempt awaited (avatar fetch, page registration). If the
+    // account changed meanwhile, this notification belongs to someone who is
+    // no longer signed in: drop it rather than hand it to the OS.
+    if (slogaToast && client()?.user?.id !== us.id) return;
+
+    // Refused (Focus Assist, a fullscreen app, a presentation), so the OS
+    // draws it after all. Decided again for that surface: an encrypted
+    // message must fall back to sender-only, not carry the text the Sloga
+    // toast was allowed into the OS store.
+    const osPreview = slogaToast ? decide("os_toast") : preview;
+    if (!osPreview.show) return;
+
+    // Showing the toast may have taken a moment; the user may be reading.
+    if (
+      slogaToast &&
+      params().channelId === message.channelId &&
+      document.hasFocus()
+    )
+      return;
+
+    console.info(`[notification] ${channel.type} body=${osPreview.showBody}`);
 
     showNotification({
-      title: title!,
+      title: titleFor(osPreview)!,
       icon,
-      image,
-      body,
+      image: osPreview.showImage ? image : undefined,
+      body: osPreview.showBody ? body : undefined,
       timestamp: message.createdAt,
       tag: message.channelId,
       path: message.path,
@@ -471,31 +644,8 @@ export function NotificationsWorker() {
     }
   }
 
-  // Desktop shell: clicking a WinRT toast focuses the window and emits
-  // `notification_clicked` with the in-app path to open (see
-  // show_clickable_notification in the desktop shell)
-  onMount(() => {
-    const tauriEvent = (
-      window as {
-        __TAURI__?: {
-          event?: {
-            listen(
-              event: string,
-              handler: (event: { payload: unknown }) => void,
-            ): Promise<() => void>;
-          };
-        };
-      }
-    ).__TAURI__?.event;
-    if (!tauriEvent) return;
-
-    const unlisten = tauriEvent.listen("notification_clicked", (event) => {
-      if (typeof event.payload === "string" && event.payload.startsWith("/")) {
-        navigate(event.payload);
-      }
-    });
-    onCleanup(() => unlisten.then((fn) => fn()).catch(() => {}));
-  });
+  // Desktop toast clicks are handled by ShellBridgeWorker, over a channel only
+  // the shell can write to.
 
   // Native app: notification taps (open message / answer call) navigate here
   onMount(() => {
@@ -656,6 +806,31 @@ export function NotificationsWorker() {
       client().removeListener("userUpdate", onUserUpdate);
       client().removeListener("reportCreate", onReport);
     });
+  });
+
+  /**
+   * Reading a conversation retires its notifications: our own toasts for it
+   * and whatever the OS still holds for it in Action Center. "Reading" is the
+   * test onMessage uses to skip a notification, the channel open in a focused
+   * window. `document.hasFocus()` is not reactive, hence the signal; the
+   * effect re-runs only when the focus or the open channel changes, never per
+   * message.
+   */
+  const [windowFocused, setWindowFocused] = createSignal(document.hasFocus());
+  const onWindowFocus = () => setWindowFocused(true);
+  const onWindowBlur = () => setWindowFocused(false);
+  window.addEventListener("focus", onWindowFocus);
+  window.addEventListener("blur", onWindowBlur);
+  onCleanup(() => {
+    window.removeEventListener("focus", onWindowFocus);
+    window.removeEventListener("blur", onWindowBlur);
+  });
+
+  createEffect(() => {
+    const channelId = params().channelId;
+    // Untracked: nothing the shell reads may re-run this effect.
+    if (channelId && windowFocused())
+      untrack(() => toastShell.clearChannel(channelId));
   });
 
   /**

@@ -65,6 +65,41 @@ declare global {
           include: string[];
         }): Promise<number>;
       };
+      /** Friends popout window only (absent on the main and overlay
+       * windows). `getState`/`setAlwaysOnTop` back the always-on-top pin
+       * (Friends.tsx `electronPopout()`); `openInMain` hands a DM/call
+       * action to the main window and is missing on preloads that predate
+       * the popout bridge. */
+      popout?: {
+        getState(): { alwaysOnTop: boolean } | null;
+        setAlwaysOnTop(value: boolean): Promise<unknown>;
+        openInMain(
+          action: "dm" | "call" | "video" | "screenshare",
+          userId: string,
+        ): Promise<void>;
+      };
+      /** Electron reply toast (main window only; absent on popout/overlay
+       * windows and on preloads that predate it). `capability()` is
+       * synchronous: `mode: "window"` means the shell draws its own toast
+       * (Linux X11, macOS), which is NOT hidden from screen capture, so
+       * E2EE previews must stay sender-only there; `"os"` means fall back
+       * to the OS notification. `show` resolves an envelope and never
+       * rejects; `clear` and `replyResult` return nothing and swallow
+       * shell errors. */
+      toast?: {
+        capability(): { mode: "window" | "os"; reason?: string } | null;
+        show(
+          payload: unknown,
+        ): Promise<{ ok: true } | { ok: false; err: string }>;
+        /** Clears one channel's toasts, or every toast when omitted/null. */
+        clear(channelId?: string | null): void;
+        /** Reports the outcome of a `toastReply` the main window handled. */
+        replyResult(id: string, ok: boolean, error?: string | null): void;
+      };
+      /** Main window only: shell-to-main messages (popout actions,
+       * notification clicks). Payloads are untrusted until validated.
+       * Returns the unsubscribe. */
+      onShellToMain?(callback: (message: unknown) => void): () => void;
     };
   }
 }

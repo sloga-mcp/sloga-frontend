@@ -1,4 +1,9 @@
+import { Show } from "solid-js";
+
 import type { API } from "stoat.js";
+import { styled } from "styled-system/jsx";
+
+import { usePresenceText } from "./presenceText";
 
 /**
  * Presence values we render.
@@ -8,10 +13,7 @@ import type { API } from "stoat.js";
  * coming off `User.presence` are typed as the narrow union but may carry these
  * at runtime.
  */
-export type PresenceValue =
-  | API.Presence
-  | "LookingForGroup"
-  | "LookingForMore";
+export type PresenceValue = API.Presence | "LookingForGroup" | "LookingForMore";
 
 export type Props = {
   /**
@@ -19,42 +21,35 @@ export type Props = {
    * @default Invisible
    */
   status?: PresenceValue;
+
+  /**
+   * Do not explain the dot on hover: for places that already name the
+   * presence next to it (your own presence picker) or where the dot is
+   * decoration rather than someone's status
+   */
+  noTooltip?: boolean;
 };
 
 /**
- * Readable label for a presence, for the places that show it as text rather
- * than as a dot. Anything unrecognised (including no presence at all) reads as
- * offline.
- */
-export function presenceLabel(presence?: string) {
-  switch (presence) {
-    case "Online":
-      return "Online";
-    case "Idle":
-      return "Idle";
-    case "Focus":
-      return "Focus";
-    case "Busy":
-      return "Do not disturb";
-    case "LookingForGroup":
-      return "Looking for group";
-    case "LookingForMore":
-      return "Looking for more";
-    default:
-      return "Offline";
-  }
-}
-
-/**
  * Overlays user status in current SVG
+ *
+ * Hovering the dot shows the presence name and what it means. The tooltip
+ * goes through the `use:floating` directive, never the `Tooltip` component:
+ * that would import `floating/Tooltip`, which imports this barrel back, and
+ * the cycle blanks the page.
  */
 const UserStatusGraphic = (props: Props) => {
+  const presence = usePresenceText();
+
   /**
    * Convert status to lower case
    */
   const statusLowercase = () => props.status?.toLowerCase() ?? "invisible";
 
-  return (
+  /**
+   * The visible dot
+   */
+  const dot = () => (
     <circle
       cx="27"
       cy="27"
@@ -62,6 +57,30 @@ const UserStatusGraphic = (props: Props) => {
       fill={`var(--brand-presence-${statusLowercase()})`}
       mask={`url(#accessible-status-${statusLowercase()})`}
     />
+  );
+
+  return (
+    <Show when={!props.noTooltip} fallback={dot()}>
+      <g
+        use:floating={{
+          tooltip: {
+            placement: "top",
+            content: () => (
+              <PresenceTooltip>
+                <PresenceName>{presence.label(props.status)}</PresenceName>
+                <span>{presence.description(props.status)}</span>
+              </PresenceTooltip>
+            ),
+            aria: `${presence.label(props.status)}, ${presence.description(props.status)}`,
+          },
+        }}
+      >
+        {/* Transparent hit area the size of the avatar's cut-out, so the
+            5px dot is not a pixel hunt */}
+        <circle cx="27" cy="27" r="7" fill="transparent" />
+        {dot()}
+      </g>
+    </Show>
   );
 };
 
@@ -77,3 +96,24 @@ export function UserStatus(props: Props & { size: string }) {
 }
 
 UserStatus.Graphic = UserStatusGraphic;
+
+/**
+ * Tooltip body: presence name over its meaning
+ */
+const PresenceTooltip = styled("div", {
+  base: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "2px",
+    maxWidth: "240px",
+  },
+});
+
+/**
+ * Presence name in the tooltip
+ */
+const PresenceName = styled("span", {
+  base: {
+    fontWeight: 600,
+  },
+});

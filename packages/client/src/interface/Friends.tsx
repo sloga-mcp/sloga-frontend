@@ -9,7 +9,7 @@ import {
 } from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
-import { type RouteSectionProps, useNavigate } from "@solidjs/router";
+import { type RouteSectionProps } from "@solidjs/router";
 import { VirtualContainer } from "@minht11/solid-virtual-container";
 import type { User } from "stoat.js";
 import { cva } from "styled-system/css";
@@ -17,7 +17,7 @@ import { styled } from "styled-system/jsx";
 
 import { UserContextMenu } from "@revolt/app";
 import { useClient, useUser } from "@revolt/client";
-import { IS_POPOUT_WINDOW } from "@revolt/client/popout";
+import { useUserActions } from "@revolt/client/popoutBridge";
 import { voiceChannelOf } from "@revolt/client/voicePresence";
 import { tauriInvoke, useDevice } from "@revolt/common";
 import { useModals } from "@revolt/modal";
@@ -33,8 +33,7 @@ import {
   UserStatus,
   isSlogaStaff,
   main,
-  presenceLabel,
-  useSnackbar,
+  usePresenceText,
 } from "@revolt/ui";
 import { DisplayName } from "@revolt/ui/components/features/DisplayName";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
@@ -375,6 +374,7 @@ export function Friends(props: Partial<RouteSectionProps> & { popout?: boolean }
  */
 function SelfBar() {
   const user = useUser();
+  const presence = usePresenceText();
   const [anchor, setAnchor] = createSignal<HTMLDivElement>();
 
   return (
@@ -399,7 +399,7 @@ function SelfBar() {
             <Symbol size={18}>expand_more</Symbol>
           </div>
           <div class={`${statusText()} ${ellipsis()}`}>
-            {user()?.status?.text ?? presenceLabel(user()?.presence)}
+            {user()?.status?.text ?? presence.pickerLabel(user()?.presence)}
           </div>
         </div>
       </div>
@@ -467,11 +467,11 @@ function Section(props: {
  */
 function Entry(props: { user: User; tabIndex?: number }) {
   const { t } = useLingui();
+  const presence = usePresenceText();
   const { openModal } = useModals();
-  const navigate = useNavigate();
   const state = useState();
-  const snackbar = useSnackbar();
   const client = useClient();
+  const userActions = useUserActions();
 
   // Delay single-click so a double-click can cancel it and open the DM instead
   let clickTimer: number | undefined;
@@ -493,23 +493,9 @@ function Entry(props: { user: User; tabIndex?: number }) {
       clickTimer = undefined;
     }
 
-    // In the popout window the app shell would bounce this navigation
-    // straight back (single full-client model) — the profile modal via
-    // single-click is the popout's affordance.
-    if (IS_POPOUT_WINDOW) return;
-
-    props.user
-      .openDM()
-      .then((channel) => {
-        navigate(channel.path);
-        state.appDrawer()?.setShown(true);
-      })
-      .catch((err) => {
-        console.error(err);
-        snackbar.show({
-          message: "Couldn't open a conversation with this user.",
-        });
-      });
+    // run() never rejects (failures surface as a snackbar); in the popout it
+    // hands the DM to the main window, since the popout bounces navigation
+    void userActions.run("dm", props.user.id);
   }
 
   const isFriend = () => props.user.relationship === "Friend";
@@ -553,7 +539,7 @@ function Entry(props: { user: User; tabIndex?: number }) {
       ? t`Voice`
       : (activity() ??
         props.user.status?.text ??
-        presenceLabel(props.user.presence));
+        presence.label(props.user.presence));
 
   return (
     <div

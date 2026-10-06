@@ -27,6 +27,7 @@ import {
   Row,
   Tooltip,
   typography,
+  usePresenceText,
   UserStatus,
 } from "@revolt/ui";
 import { DisplayName } from "@revolt/ui/components/features/DisplayName";
@@ -288,7 +289,7 @@ export function ServerMemberSidebar(props: Props) {
       <Show when={!LARGE_SERVERS.includes(props.channel.serverId)}>
         <MemberTitle bottomMargin="yes">
           <Row align>
-            <UserStatus size="0.7em" status="Online" />
+            <UserStatus size="0.7em" status="Online" noTooltip />
             {onlineMembers()} members online
           </Row>
         </MemberTitle>
@@ -457,6 +458,7 @@ function Member(props: {
   group?: Channel;
 }) {
   const { t } = useLingui();
+  const presence = usePresenceText();
 
   /**
    * Create user information
@@ -482,17 +484,7 @@ function Member(props: {
         : t`Streaming on ${live.platform}`;
     const activity = target?.activity;
     if (activity) return t`Playing ${activity.name}`;
-    return target?.statusMessage((s) =>
-      s === "Online"
-        ? t`Online`
-        : s === "Busy"
-          ? t`Busy`
-          : s === "Focus"
-            ? t`Focus`
-            : s === "Idle"
-              ? t`Idle`
-              : t`Offline`,
-    );
+    return target?.statusMessage(presence.label);
   };
 
   return (

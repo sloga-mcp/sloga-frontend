@@ -1,6 +1,6 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name">Sloga FOSS</string>
-    <string name="title_activity_main">Sloga FOSS</string>
+    <string name="app_name">Sloga (Google-free)</string>
+    <string name="title_activity_main">Sloga (Google-free)</string>
     <string name="sloga_unifiedpush_picker_title">Choose a UnifiedPush app</string>
 </resources>
