@@ -315,6 +315,48 @@ test("at pnpm's path cap, an importer depending on the package directly fails", 
   assert.match(r.out, /packages__client>seroval/);
 });
 
+function cappedSeroval(lock) {
+  return run(
+    report(advisory("GHSA-test-0003", "seroval", CAPPED)),
+    SEROVAL,
+    lock,
+  );
+}
+
+const withSnapshot = (entry) =>
+  LOCK_OK.replace("  seroval@1.0.0: {}\n", `  seroval@1.0.0: {}\n\n${entry}`);
+
+test("at pnpm's path cap, a parent that aliases the package fails", () => {
+  const r = cappedSeroval(
+    withSnapshot(
+      "  zz-runtime-lib@1.0.0:\n    dependencies:\n      myser: seroval@1.0.0\n",
+    ),
+  );
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /zz-runtime-lib>seroval/);
+});
+
+test("at pnpm's path cap, an importer that aliases the package fails", () => {
+  const r = cappedSeroval(
+    LOCK_OK.replace(
+      "    devDependencies:\n",
+      "      zz-ser:\n        specifier: npm:seroval@^1.0.0\n        version: seroval@1.0.0\n    devDependencies:\n",
+    ),
+  );
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /packages__client>seroval/);
+});
+
+test("at pnpm's path cap, a quoted scoped parent with a peer suffix fails", () => {
+  const r = cappedSeroval(
+    withSnapshot(
+      "  '@zz/runtime@1.0.0(solid-js@1.0.0)':\n    dependencies:\n      seroval: 1.0.0(solid-js@1.0.0)\n",
+    ),
+  );
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /@zz\/runtime>seroval/);
+});
+
 test("at pnpm's path cap, an unreadable lockfile fails", () => {
   const r = run(
     report(advisory("GHSA-test-0003", "seroval", CAPPED)),

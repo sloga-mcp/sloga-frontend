@@ -102,6 +102,17 @@ function readParents() {
     const at = key.indexOf("@", 1);
     return [key.slice(0, at), bareVersion(key.slice(at + 1))];
   };
+  // A dependency value is a version, or for an alias ("myser: seroval@1.5.6",
+  // from an npm: specifier) the real name@version. The edge belongs to the
+  // real package, which is the name pnpm audit reports.
+  const childId = (name, value) => {
+    const v = bareVersion(value);
+    if (!/^(link|file|workspace):/.test(v) && v.indexOf("@", 1) > 0) {
+      const [realName, realVersion] = splitKey(v);
+      return `${realName}@${realVersion}`;
+    }
+    return `${name}@${v}`;
+  };
 
   let section = "";
   let owner = null;
@@ -142,15 +153,12 @@ function readParents() {
     if (section === "snapshots" && indent === 6) {
       const sep = text.indexOf(": ");
       if (sep < 0) continue;
-      add(
-        `${unquote(text.slice(0, sep))}@${bareVersion(text.slice(sep + 2))}`,
-        owner,
-      );
+      add(childId(unquote(text.slice(0, sep)), text.slice(sep + 2)), owner);
     } else if (section === "importers" && indent === 6) {
       depName = unquote(text.replace(/:$/, ""));
     } else if (section === "importers" && indent === 8 && depName) {
       if (text.startsWith("version: ")) {
-        add(`${depName}@${bareVersion(text.slice(9))}`, owner);
+        add(childId(depName, text.slice(9)), owner);
       }
     }
   }
