@@ -1,3 +1,4 @@
+import { TRANSLATE_LANGUAGE_CODES } from "@revolt/common";
 import {
   type ForumLayout,
   cleanLayoutOverrides,
@@ -6,7 +7,6 @@ import {
   UNICODE_EMOJI_PACKS,
   UnicodeEmojiPacks,
 } from "@revolt/markdown/emoji/UnicodeEmoji";
-import { TRANSLATE_LANGUAGE_CODES } from "@revolt/common";
 import { batch } from "solid-js";
 
 import { State } from "..";

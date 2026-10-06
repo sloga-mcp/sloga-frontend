@@ -154,7 +154,11 @@ export function UserMenu(props: Props) {
           >
             <ContextMenu>
               <ContextMenuItem
-                onClick={() => navigator.clipboard.writeText(`${user()?.username}#${user()?.discriminator}`)}
+                onClick={() =>
+                  navigator.clipboard.writeText(
+                    `${user()?.username}#${user()?.discriminator}`,
+                  )
+                }
                 action
               >
                 <Row align>
