@@ -329,6 +329,10 @@ msgstr "{name} didn't take the controller. Remote control needs the desktop app 
 msgid "{sec} seconds"
 msgstr "{sec} seconds"
 
+#: src/interface/channels/text/Composition.tsx
+msgid "You are timed out until {time}"
+msgstr "You are timed out until {time}"
+
 #: components/ui/components/features/messaging/elements/Reactions.tsx
 msgid "{unknown} reacted"
 msgstr "{unknown} reacted"
@@ -1287,6 +1291,40 @@ msgstr "Ban lower-ranking members from the server"
 msgid "Ban member"
 msgstr "Ban member"
 
+#: components/app/interface/settings/server/auditLog/AuditLogPage.tsx
+msgid "Unban member"
+msgstr "Unban member"
+
+#: components/app/interface/settings/server/auditLog/AuditLogPage.tsx
+#: components/app/menus/UserContextMenu.tsx
+msgid "Timeout member"
+msgstr "Timeout member"
+
+#: components/app/interface/settings/server/auditLog/AuditLogPage.tsx
+#: components/app/menus/UserContextMenu.tsx
+msgid "Remove timeout"
+msgstr "Remove timeout"
+
+#: components/app/interface/settings/server/auditLog/AuditLogPage.tsx
+msgid "Change member roles"
+msgstr "Change member roles"
+
+#: components/app/interface/settings/server/auditLog/AuditLogPage.tsx
+msgid "Change member profile"
+msgstr "Change member profile"
+
+#: components/app/interface/settings/server/auditLog/AuditLogPage.tsx
+msgid "Change member voice permissions"
+msgstr "Change member voice permissions"
+
+#: components/app/interface/settings/server/auditLog/AuditLogPage.tsx
+msgid "Move member"
+msgstr "Move member"
+
+#: components/app/interface/settings/server/auditLog/AuditLogPage.tsx
+msgid "Disconnect member"
+msgstr "Disconnect member"
+
 #: components/modal/modals/BanMember.tsx
 msgid "Ban Member"
 msgstr "Ban Member"
@@ -1310,6 +1348,10 @@ msgstr "Banner"
 #: components/app/interface/settings/ServerSettings.tsx
 msgid "Bans"
 msgstr "Bans"
+
+#: components/app/interface/settings/ServerSettings.tsx
+msgid "Audit Log"
+msgstr "Audit Log"
 
 #. placeholder {0}: voice.cameraBeautify
 #: components/modal/modals/CameraSettings.tsx
@@ -2365,6 +2407,10 @@ msgstr "Create category"
 msgid "Create channel"
 msgstr "Create channel"
 
+#: components/app/interface/settings/server/auditLog/AuditLogPage.tsx
+msgid "Change channel"
+msgstr "Change channel"
+
 #: src/interface/ServerEvents.tsx
 msgid "Create Event"
 msgstr "Create Event"
@@ -2647,6 +2693,58 @@ msgstr "Delete category"
 msgid "Delete channel"
 msgstr "Delete channel"
 
+#: components/app/interface/settings/server/auditLog/AuditLogPage.tsx
+msgid "Change channel permissions"
+msgstr "Change channel permissions"
+
+#: components/app/interface/settings/server/auditLog/AuditLogPage.tsx
+msgid "Change server permissions"
+msgstr "Change server permissions"
+
+#: components/app/interface/settings/server/auditLog/AuditLogPage.tsx
+msgid "Create role"
+msgstr "Create role"
+
+#: components/app/interface/settings/server/auditLog/AuditLogPage.tsx
+msgid "Change role"
+msgstr "Change role"
+
+#: components/app/interface/settings/server/auditLog/AuditLogPage.tsx
+msgid "Delete role"
+msgstr "Delete role"
+
+#: components/app/interface/settings/server/auditLog/AuditLogPage.tsx
+msgid "Reorder roles"
+msgstr "Reorder roles"
+
+#: components/app/interface/settings/server/auditLog/AuditLogPage.tsx
+msgid "Change server settings"
+msgstr "Change server settings"
+
+#: components/app/interface/settings/server/auditLog/AuditLogPage.tsx
+msgid "Transfer ownership"
+msgstr "Transfer ownership"
+
+#: components/app/interface/settings/server/auditLog/AuditLogPage.tsx
+msgid "Action"
+msgstr "Action"
+
+#: components/app/interface/settings/server/auditLog/AuditLogPage.tsx
+msgid "All actions"
+msgstr "All actions"
+
+#: components/app/interface/settings/server/auditLog/AuditLogPage.tsx
+msgid "Performed by"
+msgstr "Performed by"
+
+#: components/app/interface/settings/server/auditLog/AuditLogPage.tsx
+msgid "Anyone"
+msgstr "Anyone"
+
+#: components/app/interface/settings/server/auditLog/AuditLogPage.tsx
+msgid "You need the View Audit Log permission to see this server's audit log."
+msgstr "You need the View Audit Log permission to see this server's audit log."
+
 #: components/app/interface/settings/ChannelSettings.tsx
 msgid "Delete Channel"
 msgstr "Delete Channel"
@@ -2660,6 +2758,10 @@ msgstr "Delete Invite"
 #: components/app/menus/DraftMessageContextMenu.tsx
 msgid "Delete message"
 msgstr "Delete message"
+
+#: components/app/interface/settings/server/auditLog/AuditLogPage.tsx
+msgid "Bulk delete messages"
+msgstr "Bulk delete messages"
 
 #: components/modal/modals/BanMember.tsx
 msgid "Delete Message History"
@@ -4773,6 +4875,10 @@ msgstr "Message"
 msgid "Message {0}"
 msgstr "Message {0}"
 
+#: src/interface/channels/text/MemberSidebar.tsx
+msgid "Timed out until {time}"
+msgstr "Timed out until {time}"
+
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Message alignment"
 msgstr "Message alignment"
@@ -6165,6 +6271,10 @@ msgstr "Rearrange channels"
 msgid "Reason"
 msgstr "Reason"
 
+#: components/app/interface/settings/server/auditLog/AuditLogPage.tsx
+msgid "Deleted User"
+msgstr "Deleted User"
+
 #: components/modal/modals/ReportContent.tsx
 msgid "Reason for report"
 msgstr "Reason for report"
@@ -6817,6 +6927,23 @@ msgstr "Seal & send"
 #: components/modal/modals/TimelockCompose.tsx
 msgid "Sealed on your device using timelock encryption against the drand randomness beacon. Nobody — not the recipients, not the server, not even you — can open it before the chosen time. It unlocks for everyone at once."
 msgstr "Sealed on your device using timelock encryption against the drand randomness beacon. Nobody — not the recipients, not the server, not even you — can open it before the chosen time. It unlocks for everyone at once."
+
+#: components/modal/modals/TimeoutMember.tsx
+msgid "Timeout Member"
+msgstr "Timeout Member"
+
+#: components/modal/modals/TimeoutMember.tsx
+msgid "Timeout"
+msgstr "Timeout"
+
+#. placeholder {0}: props.member.user?.username
+#: components/modal/modals/TimeoutMember.tsx
+msgid "You are about to time out {0}. Until the timeout ends, they can read channels but cannot send messages, react, or join voice. If they are in a voice channel, they will be disconnected."
+msgstr "You are about to time out {0}. Until the timeout ends, they can read channels but cannot send messages, react, or join voice. If they are in a voice channel, they will be disconnected."
+
+#: components/modal/modals/TimeoutMember.tsx
+msgid "60 seconds"
+msgstr "60 seconds"
 
 #: components/app/interface/channels/text/TimelockMessage.tsx
 msgid "Sealed with timelock encryption — the key to open it will not exist anywhere until the drand beacon reaches the unlock round."
@@ -7817,6 +7944,143 @@ msgstr "Sync your currently chosen language."
 msgid "System"
 msgstr "System"
 
+#: components/app/interface/settings/server/auditLog/AuditEntryRow.tsx
+msgid "{actor} kicked {target}"
+msgstr "{actor} kicked {target}"
+
+#: components/app/interface/settings/server/auditLog/AuditEntryRow.tsx
+msgid "{actor} banned {target}"
+msgstr "{actor} banned {target}"
+
+#: components/app/interface/settings/server/auditLog/AuditEntryRow.tsx
+msgid "{actor} unbanned {target}"
+msgstr "{actor} unbanned {target}"
+
+#: components/app/interface/settings/server/auditLog/AuditEntryRow.tsx
+msgid "{actor} timed out {target}"
+msgstr "{actor} timed out {target}"
+
+#: components/app/interface/settings/server/auditLog/AuditEntryRow.tsx
+msgid "{actor} removed the timeout for {target}"
+msgstr "{actor} removed the timeout for {target}"
+
+#: components/app/interface/settings/server/auditLog/AuditEntryRow.tsx
+msgid "{actor} changed the roles of {target}"
+msgstr "{actor} changed the roles of {target}"
+
+#: components/app/interface/settings/server/auditLog/AuditEntryRow.tsx
+msgid "{actor} changed the server profile of {target}"
+msgstr "{actor} changed the server profile of {target}"
+
+#: components/app/interface/settings/server/auditLog/AuditEntryRow.tsx
+msgid "{actor} changed the voice permissions of {target}"
+msgstr "{actor} changed the voice permissions of {target}"
+
+#: components/app/interface/settings/server/auditLog/AuditEntryRow.tsx
+msgid "{actor} moved {target} to {channel}"
+msgstr "{actor} moved {target} to {channel}"
+
+#: components/app/interface/settings/server/auditLog/AuditEntryRow.tsx
+msgid "{actor} disconnected {target} from {channel}"
+msgstr "{actor} disconnected {target} from {channel}"
+
+#: components/app/interface/settings/server/auditLog/AuditEntryRow.tsx
+msgid "{actor} deleted a message by {target} in {channel}"
+msgstr "{actor} deleted a message by {target} in {channel}"
+
+#: components/app/interface/settings/server/auditLog/AuditEntryRow.tsx
+msgid "{actor} deleted messages in {channel}"
+msgstr "{actor} deleted messages in {channel}"
+
+#: components/app/interface/settings/server/auditLog/AuditEntryRow.tsx
+msgid "{actor} bulk-deleted messages in {channel} ({count})"
+msgstr "{actor} bulk-deleted messages in {channel} ({count})"
+
+#: components/app/interface/settings/server/auditLog/AuditEntryRow.tsx
+msgid "{actor} created the channel {target}"
+msgstr "{actor} created the channel {target}"
+
+#: components/app/interface/settings/server/auditLog/AuditEntryRow.tsx
+msgid "{actor} changed the channel {target}"
+msgstr "{actor} changed the channel {target}"
+
+#: components/app/interface/settings/server/auditLog/AuditEntryRow.tsx
+msgid "{actor} deleted the channel {target}"
+msgstr "{actor} deleted the channel {target}"
+
+#: components/app/interface/settings/server/auditLog/AuditEntryRow.tsx
+msgid "{actor} changed the default permissions in {channel}"
+msgstr "{actor} changed the default permissions in {channel}"
+
+#: components/app/interface/settings/server/auditLog/AuditEntryRow.tsx
+msgid "{actor} changed the permissions of {target} in {channel}"
+msgstr "{actor} changed the permissions of {target} in {channel}"
+
+#: components/app/interface/settings/server/auditLog/AuditEntryRow.tsx
+msgid "{actor} changed the default server permissions"
+msgstr "{actor} changed the default server permissions"
+
+#: components/app/interface/settings/server/auditLog/AuditEntryRow.tsx
+msgid "{actor} changed the server permissions of {target}"
+msgstr "{actor} changed the server permissions of {target}"
+
+#: components/app/interface/settings/server/auditLog/AuditEntryRow.tsx
+msgid "{actor} created the role {target}"
+msgstr "{actor} created the role {target}"
+
+#: components/app/interface/settings/server/auditLog/AuditEntryRow.tsx
+msgid "{actor} changed the role {target}"
+msgstr "{actor} changed the role {target}"
+
+#: components/app/interface/settings/server/auditLog/AuditEntryRow.tsx
+msgid "{actor} deleted the role {target}"
+msgstr "{actor} deleted the role {target}"
+
+#: components/app/interface/settings/server/auditLog/AuditEntryRow.tsx
+msgid "{actor} reordered the roles"
+msgstr "{actor} reordered the roles"
+
+#: components/app/interface/settings/server/auditLog/AuditEntryRow.tsx
+msgid "{actor} changed the server name"
+msgstr "{actor} changed the server name"
+
+#: components/app/interface/settings/server/auditLog/AuditEntryRow.tsx
+msgid "{actor} changed the server settings"
+msgstr "{actor} changed the server settings"
+
+#: components/app/interface/settings/server/auditLog/AuditEntryRow.tsx
+msgid "{actor} transferred ownership of the server to {target}"
+msgstr "{actor} transferred ownership of the server to {target}"
+
+#: components/app/interface/settings/server/auditLog/AuditEntryRow.tsx
+#: components/app/interface/settings/server/auditLog/AuditEntryRow.tsx
+msgid "{actor} performed an action"
+msgstr "{actor} performed an action"
+
+#: components/app/interface/settings/server/auditLog/AuditEntryRow.tsx
+msgid "(none)"
+msgstr "(none)"
+
+#: components/app/interface/settings/server/auditLog/AuditEntryRow.tsx
+msgid "set"
+msgstr "set"
+
+#: components/app/interface/settings/server/auditLog/AuditEntryRow.tsx
+msgid "removed"
+msgstr "removed"
+
+#: components/app/interface/settings/server/auditLog/AuditEntryRow.tsx
+msgid "changed"
+msgstr "changed"
+
+#: components/app/interface/settings/server/auditLog/AuditEntryRow.tsx
+msgid "Show details"
+msgstr "Show details"
+
+#: components/app/interface/settings/server/auditLog/AuditEntryRow.tsx
+msgid "Hide details"
+msgstr "Hide details"
+
 #: components/modal/modals/ScreenShareSettings.tsx
 msgid "System audio capture isn't supported on Linux yet."
 msgstr "System audio capture isn't supported on Linux yet."
@@ -7874,6 +8138,14 @@ msgstr "Template link"
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "Temporarily prevent lower-ranking members from interacting"
 msgstr "Temporarily prevent lower-ranking members from interacting"
+
+#: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
+msgid "View Audit Log"
+msgstr "View Audit Log"
+
+#: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
+msgid "View the log of moderation actions and changes to the server, its roles and channels"
+msgstr "View the log of moderation actions and changes to the server, its roles and channels"
 
 #: components/auth/src/flows/FlowCreate.tsx
 #: components/app/interface/settings/UserSettings.tsx
@@ -8334,6 +8606,18 @@ msgstr "This message is already pinned."
 msgid "This message is empty and has not been sent."
 msgstr "This message is empty and has not been sent."
 
+#: components/i18n/errors.ts
+msgid "Timeouts must end in the future and last at most 28 days."
+msgstr "Timeouts must end in the future and last at most 28 days."
+
+#: components/i18n/errors.ts
+msgid "The reason can be at most 512 characters."
+msgstr "The reason can be at most 512 characters."
+
+#: components/i18n/errors.ts
+msgid "Couldn't load the audit log. Try again."
+msgstr "Couldn't load the audit log. Try again."
+
 #: components/modal/modals/TimelockCompose.tsx
 msgid "This message is too long to timelock."
 msgstr "This message is too long to timelock."
@@ -8423,6 +8707,10 @@ msgstr "This username is already taken."
 #: components/i18n/errors.ts
 msgid "This username is not allowed."
 msgstr "This username is not allowed."
+
+#: components/i18n/errors.ts
+msgid "You can't do that to a member who has the same moderation permission."
+msgstr "You can't do that to a member who has the same moderation permission."
 
 #: components/rtc/state.tsx
 msgid "This version of Windows cannot share system audio."
@@ -8558,6 +8846,14 @@ msgstr "Trust this server's certificate"
 #: components/modal/modals/ImportDiscord.tsx
 msgid "Try again"
 msgstr "Try again"
+
+#: components/app/interface/settings/server/auditLog/AuditLogPage.tsx
+msgid "No audit log entries yet."
+msgstr "No audit log entries yet."
+
+#: components/app/interface/settings/server/auditLog/AuditLogPage.tsx
+msgid "No entries match these filters."
+msgstr "No entries match these filters."
 
 #: components/app/interface/settings/user/Referrals.tsx
 msgid "Could not copy to the clipboard."
