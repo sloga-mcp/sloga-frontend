@@ -25,6 +25,8 @@
 #      configure without (capacitor-cordova-android-plugins/, including
 #      cordova.variables.gradle). No web build is needed.
 #   3. Drift alarm on the two COMMITTED files `cap update` rewrites.
+#   3b. Source pin: the Capacitor MessageHandler.java gradle is about to
+#      compile must carry patches/@capacitor__android@8.4.1.patch.
 #   4. gradle compile{Sideload,Play,Foss}DebugJavaWithJavac. In each variant
 #      javac runs after kotlinc (it depends on it), so one task per flavor
 #      checks both languages, and every flavor-only source set (src/sideload,
@@ -139,6 +141,62 @@ git --no-pager diff --exit-code -- \
     "capacitor.settings.gradle / app/capacitor.build.gradle do not match the" \
     "installed @capacitor packages: after a capacitor bump or a plugin change," \
     "run 'cap update android' and commit the regenerated files."
+
+# --- 3b. the patched Capacitor bridge ----------------------------------------------
+#
+# patches/@capacitor__android@8.4.1.patch (pnpm patchedDependencies) makes
+# MessageHandler.java store the sending page's reply proxy BEFORE it dispatches
+# the call, and declares that field volatile. Unpatched, the first plugin call
+# after a WebView reload could be answered to the dead page and never settle
+# (wave 4h: the share button said "not supported" for a whole session). An
+# install made before the patch compiles the UNPATCHED file and gradle still
+# exits 0, and the drift alarm above only proves the committed settings match
+# the install, not that the install is patched. So pin the source itself, in
+# the :capacitor-android projectDir the drift-checked settings name (relative
+# to $ANDROID, as gradle resolves it).
+#
+# Control: an unpatched copy of the 8.4.1 file, the swap alone and the
+# volatile alone each fail this step; the patched copy passes.
+CAP_SETTINGS="$ANDROID/capacitor.settings.gradle"
+CAP_PATCH="patches/@capacitor__android@8.4.1.patch"
+cap_dir=$(sed -n "s/^project(':capacitor-android')\.projectDir = new File('\(.*\)')\$/\1/p" \
+  "$CAP_SETTINGS")
+[ -n "$cap_dir" ] && [ "$(printf '%s\n' "$cap_dir" | wc -l)" -eq 1 ] ||
+  fail 5 "expected exactly one :capacitor-android projectDir line in $CAP_SETTINGS"
+case "$cap_dir" in
+/*) ;;
+*) cap_dir="$ANDROID/$cap_dir" ;;
+esac
+MH="$cap_dir/src/main/java/com/getcapacitor/MessageHandler.java"
+[ -s "$MH" ] || fail 5 "$MH (from $CAP_SETTINGS) is missing or empty"
+
+# grep -c prints 0 and exits 1 on no match; `|| true` keeps set -e out of it.
+mh_count() { grep -cE "$1" "$MH" || true; }
+mh_line() { grep -nE "$1" "$MH" | cut -d: -f1; }
+re_field='^    private volatile JavaScriptReplyProxy javaScriptReplyProxy;$'
+re_main='^ +if \(isMainFrame\) \{$'
+re_assign='^ +javaScriptReplyProxy = replyProxy;$'
+re_post='^ +postMessage\(message\.getData\(\)\);$'
+n_field=$(mh_count "$re_field")
+n_main=$(mh_count "$re_main")
+n_assign=$(mh_count "$re_assign")
+n_post=$(mh_count "$re_post")
+mh_fix="$CAP_PATCH is not applied to this install: reinstall with the frozen"
+mh_fix="$mh_fix lockfile (pnpm install --frozen-lockfile), then rerun this gate."
+[ "$n_field" = 1 ] && [ "$n_main" = 1 ] && [ "$n_assign" = 1 ] &&
+  [ "$n_post" = 1 ] ||
+  fail 5 "$MH: volatile reply-proxy field x$n_field, 'if (isMainFrame) {'" \
+    "x$n_main, proxy assignment x$n_assign, postMessage(message.getData())" \
+    "x$n_post (each must be exactly 1). $mh_fix"
+# Each pattern matched exactly once above, so each line number is one integer.
+l_main=$(mh_line "$re_main")
+l_assign=$(mh_line "$re_assign")
+l_post=$(mh_line "$re_post")
+[ "$l_main" -lt "$l_assign" ] && [ "$l_assign" -lt "$l_post" ] ||
+  fail 5 "$MH: the reply proxy is not stored before the call is dispatched" \
+    "(isMainFrame line $l_main, assignment line $l_assign, postMessage line" \
+    "$l_post). $mh_fix"
+echo "capacitor bridge pin: $MH is patched"
 
 # --- 4. compile ----------------------------------------------------------------------
 TASKS=()
