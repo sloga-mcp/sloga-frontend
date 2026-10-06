@@ -1,46 +1,56 @@
 // Tests for dependency-audit.mjs. Each case runs the real script against a
-// saved report and baseline, so the gate's verdict is its exit status.
+// saved report and baseline, so the gate's verdict is its exit status, and
+// every failing case also checks the error it printed: a crash exits 1 too.
 //
 // Run from the repository root: `node --test .github/scripts/dependency-audit.test.mjs`.
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 const SCRIPT = fileURLToPath(
   new URL("./dependency-audit.mjs", import.meta.url),
 );
 const dir = mkdtempSync(join(tmpdir(), "dependency-audit-test-"));
+after(() => rmSync(dir, { recursive: true, force: true }));
 let n = 0;
 
-function run(report, advisories) {
+const MOVED = /::error title=Baselined advisory on a new path::/;
+const NEW = /::error title=New dependency advisory::/;
+
+function run(report, advisories, lockfile) {
   n += 1;
   const reportFile = join(dir, `report-${n}.json`);
   const baselineFile = join(dir, `baseline-${n}.json`);
   writeFileSync(reportFile, JSON.stringify(report));
   writeFileSync(baselineFile, JSON.stringify({ advisories }));
+  const env = {
+    ...process.env,
+    AUDIT_REPORT_FILE: reportFile,
+    AUDIT_BASELINE_FILE: baselineFile,
+  };
+  if (lockfile !== undefined) {
+    env.AUDIT_LOCKFILE = join(dir, `lock-${n}.yaml`);
+    if (lockfile !== null) writeFileSync(env.AUDIT_LOCKFILE, lockfile);
+  }
   const result = spawnSync(process.execPath, [SCRIPT], {
     encoding: "utf8",
-    env: {
-      ...process.env,
-      AUDIT_REPORT_FILE: reportFile,
-      AUDIT_BASELINE_FILE: baselineFile,
-    },
+    env,
   });
   return { status: result.status, out: result.stdout + result.stderr };
 }
 
-function advisory(id, moduleName, paths, severity = "high") {
+function advisory(id, moduleName, paths, severity = "high", extra = []) {
   return {
     github_advisory_id: id,
     module_name: moduleName,
     severity,
     title: "test advisory",
-    findings: [{ version: "1.0.0", paths }],
+    findings: [{ version: "1.0.0", paths }, ...extra],
   };
 }
 
@@ -66,6 +76,56 @@ const SHARP = {
   },
 };
 
+const SEROVAL = {
+  "GHSA-test-0003": {
+    package: "seroval",
+    via: ["solid-js>seroval", "solid-js>seroval-plugins>seroval"],
+    reason: "test reason",
+  },
+};
+
+// 100 reported paths (pnpm's cap), all covered, so the verdict comes from
+// the lockfile walk.
+const CAPPED = Array.from(
+  { length: 100 },
+  (_, i) => `packages__client>pkg-${i}>solid-js>seroval`,
+);
+
+const LOCK_OK = `lockfileVersion: '9.0'
+
+importers:
+
+  packages/client:
+    dependencies:
+      solid-js:
+        specifier: ^1.0.0
+        version: 1.0.0
+    devDependencies:
+      seroval:
+        specifier: ^1.0.0
+        version: 1.0.0
+
+packages:
+
+  seroval@1.0.0:
+    resolution: {integrity: sha512-x}
+
+snapshots:
+
+  seroval-plugins@1.0.0(seroval@1.0.0):
+    dependencies:
+      seroval: 1.0.0
+
+  seroval@1.0.0: {}
+
+  solid-js@1.0.0:
+    dependencies:
+      seroval: 1.0.0
+      seroval-plugins: 1.0.0(seroval@1.0.0)
+    transitivePeerDependencies:
+      - seroval
+`;
+
 test("a baselined advisory on its listed chain passes", () => {
   const r = run(
     report(
@@ -89,7 +149,7 @@ test("the same advisory through another parent fails", () => {
     SHARP,
   );
   assert.equal(r.status, 1, r.out);
-  assert.match(r.out, /new path/);
+  assert.match(r.out, MOVED);
   assert.match(r.out, /some-runtime-lib>sharp/);
 });
 
@@ -103,6 +163,7 @@ test("chains match whole package names, not a suffix of one", () => {
     SHARP,
   );
   assert.equal(r.status, 1, r.out);
+  assert.match(r.out, MOVED);
 });
 
 test("the same advisory id in another package fails", () => {
@@ -113,12 +174,49 @@ test("the same advisory id in another package fails", () => {
     SHARP,
   );
   assert.equal(r.status, 1, r.out);
+  assert.match(r.out, MOVED);
   assert.match(r.out, /now reported in "other-pkg"/);
 });
 
 test("a baselined advisory with no paths fails rather than passing unchecked", () => {
   const r = run(report(advisory("GHSA-test-0001", "sharp", [])), SHARP);
   assert.equal(r.status, 1, r.out);
+  assert.match(r.out, MOVED);
+  assert.match(r.out, /no dependency paths/);
+});
+
+test("one finding without paths fails even when another finding has them", () => {
+  const r = run(
+    report(
+      advisory(
+        "GHSA-test-0001",
+        "sharp",
+        ["packages__client>@huggingface/transformers>sharp"],
+        "high",
+        [{ version: "2.0.0" }],
+      ),
+    ),
+    SHARP,
+  );
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /no dependency paths/);
+});
+
+test("every finding (version) is checked, not just the first", () => {
+  const r = run(
+    report(
+      advisory(
+        "GHSA-test-0001",
+        "sharp",
+        ["packages__client>@huggingface/transformers>sharp"],
+        "high",
+        [{ version: "2.0.0", paths: ["packages__client>runtime-lib>sharp"] }],
+      ),
+    ),
+    SHARP,
+  );
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /runtime-lib>sharp/);
 });
 
 test("an unlisted high advisory fails", () => {
@@ -129,7 +227,7 @@ test("an unlisted high advisory fails", () => {
     SHARP,
   );
   assert.equal(r.status, 1, r.out);
-  assert.match(r.out, /New dependency advisory/);
+  assert.match(r.out, NEW);
 });
 
 test("an unlisted moderate advisory passes", () => {
@@ -165,33 +263,78 @@ test("a chain that does not end in its package is rejected", () => {
   assert.match(r.out, /must end with its package/);
 });
 
+test("a chain of just the package name is rejected", () => {
+  const r = run(report(), {
+    "GHSA-test-0001": { package: "sharp", via: ["sharp"], reason: "x" },
+  });
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /must name at least the parent/);
+});
+
 test("a registry error report fails", () => {
   const r = run({ error: { code: "ENOTFOUND" } }, SHARP);
   assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /unexpected pnpm audit report/);
 });
 
-test("a path list at pnpm's cap passes with a warning when every listed path is covered", () => {
-  const paths = Array.from(
-    { length: 100 },
-    (_, i) => `packages__client>pkg-${i}>@huggingface/transformers>sharp`,
+test("at pnpm's path cap, parents read from the lockfile pass when covered", () => {
+  const r = run(
+    report(advisory("GHSA-test-0003", "seroval", CAPPED)),
+    SEROVAL,
+    LOCK_OK,
   );
-  const r = run(report(advisory("GHSA-test-0001", "sharp", paths)), SHARP);
   assert.equal(r.status, 0, r.out);
-  assert.match(r.out, /::warning/);
+});
+
+test("at pnpm's path cap, a lockfile parent the reported paths missed fails", () => {
+  const lock = LOCK_OK.replace(
+    "  seroval@1.0.0: {}\n",
+    "  seroval@1.0.0: {}\n\n  zz-runtime-lib@1.0.0:\n    dependencies:\n      seroval: 1.0.0\n",
+  );
+  const r = run(
+    report(advisory("GHSA-test-0003", "seroval", CAPPED)),
+    SEROVAL,
+    lock,
+  );
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, MOVED);
+  assert.match(r.out, /zz-runtime-lib>seroval/);
+});
+
+test("at pnpm's path cap, an importer depending on the package directly fails", () => {
+  const lock = LOCK_OK.replace(
+    "    devDependencies:\n      seroval:",
+    "      seroval:\n        specifier: ^1.0.0\n        version: 1.0.0\n    devDependencies:\n      seroval:",
+  );
+  const r = run(
+    report(advisory("GHSA-test-0003", "seroval", CAPPED)),
+    SEROVAL,
+    lock,
+  );
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /packages__client>seroval/);
+});
+
+test("at pnpm's path cap, an unreadable lockfile fails", () => {
+  const r = run(
+    report(advisory("GHSA-test-0003", "seroval", CAPPED)),
+    SEROVAL,
+    null,
+  );
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /could not be read/);
 });
 
 test("the committed baseline is well formed", () => {
+  const reportFile = join(dir, "empty-report.json");
+  writeFileSync(reportFile, JSON.stringify(report()));
+  // No AUDIT_BASELINE_FILE: the script reads the committed baseline.
+  const env = { ...process.env, AUDIT_REPORT_FILE: reportFile };
+  delete env.AUDIT_BASELINE_FILE;
   const result = spawnSync(process.execPath, [SCRIPT], {
     encoding: "utf8",
-    env: {
-      ...process.env,
-      AUDIT_REPORT_FILE: (() => {
-        const f = join(dir, "empty-report.json");
-        writeFileSync(f, JSON.stringify(report()));
-        return f;
-      })(),
-      AUDIT_BASELINE_FILE: "",
-    },
+    env,
   });
   assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /\d+ baselined/);
 });

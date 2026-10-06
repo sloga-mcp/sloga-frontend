@@ -9,12 +9,18 @@
   "advisories": {
     "GHSA-73wf-gq98-2v4g": {
       "package": "browserslist",
-      "via": ["@babel/core>@babel/helper-compilation-targets>browserslist"],
+      "via": [
+        "@lingui/babel-plugin-lingui-macro>@babel/core>@babel/helper-compilation-targets>browserslist",
+        "packages__js-lingui-solid__packages__babel-plugin-lingui-macro>@babel/core>@babel/helper-compilation-targets>browserslist"
+      ],
       "reason": "browserslist 4.25.3 (high): via the lingui macro's @babel/core, build time only. Not shipped to users."
     },
     "GHSA-c83g-rgw3-j3cx": {
       "package": "browserslist",
-      "via": ["@babel/core>@babel/helper-compilation-targets>browserslist"],
+      "via": [
+        "@lingui/babel-plugin-lingui-macro>@babel/core>@babel/helper-compilation-targets>browserslist",
+        "packages__js-lingui-solid__packages__babel-plugin-lingui-macro>@babel/core>@babel/helper-compilation-targets>browserslist"
+      ],
       "reason": "browserslist 4.25.3 (high): via the lingui macro's @babel/core, build time only. Not shipped to users."
     },
     "GHSA-2883-xcg3-v3hh": {

@@ -24,8 +24,10 @@ import { readFileSync } from "node:fs";
 const BLOCKING = new Set(["high", "critical"]);
 
 // pnpm keeps at most this many paths per finding and silently drops the rest
-// (MAX_PATHS_PER_FINDING in pnpm's audit code), so a list this long may be
-// incomplete. Only the paths pnpm reports can be checked.
+// (MAX_PATHS_PER_FINDING in pnpm 11.3.0's audit code, the version pinned in
+// package.json's packageManager). It collects them in lockfile order, so a
+// capped list misses whole branches of the tree. For a capped finding the
+// gate reads the package's parents from pnpm-lock.yaml instead.
 const PNPM_PATH_CAP = 100;
 
 function fail(message) {
@@ -61,12 +63,124 @@ for (const [id, entry] of Object.entries(baseline)) {
     );
   }
   for (const chain of entry.via) {
-    if (chain.split(">").at(-1) !== entry.package) {
+    const hops = chain.split(">");
+    if (hops.at(-1) !== entry.package) {
       fail(
         `baseline entry ${id}: via chain "${chain}" must end with its package "${entry.package}"`,
       );
     }
+    // A chain of just the package name would accept every parent, which is
+    // the id-only gap again.
+    if (hops.length < 2 || hops.some((hop) => hop.length === 0)) {
+      fail(
+        `baseline entry ${id}: via chain "${chain}" must name at least the parent and the package`,
+      );
+    }
   }
+}
+
+// Reverse dependency edges from pnpm-lock.yaml: "name@version" -> the names
+// of everything that depends on it, importers included (named the way pnpm
+// audit names them in paths, e.g. `packages__client`). Read only for capped
+// findings. Importer devDependencies are skipped because the audit is --prod;
+// snapshot entries carry no dev flag, so a dev-only parent can show up here
+// and fail the check. That errs closed.
+function readParents() {
+  const file = process.env.AUDIT_LOCKFILE
+    ? process.env.AUDIT_LOCKFILE
+    : new URL("../../pnpm-lock.yaml", import.meta.url);
+  const lines = readFileSync(file, "utf8").split("\n");
+  const parents = new Map();
+  const add = (child, parent) => {
+    if (!parents.has(child)) parents.set(child, new Map());
+    parents.get(child).set(parent.label, parent);
+  };
+  const bareVersion = (v) => v.trim().replace(/^'|'$/g, "").split("(")[0];
+  const unquote = (s) => s.trim().replace(/^'|'$/g, "");
+  // "name@1.2.3(peer@4)" or "@scope/name@1.2.3" -> [name, version]
+  const splitKey = (key) => {
+    const at = key.indexOf("@", 1);
+    return [key.slice(0, at), bareVersion(key.slice(at + 1))];
+  };
+
+  let section = "";
+  let owner = null;
+  let group = "";
+  let depName = null;
+  for (const line of lines) {
+    if (/^\S/.test(line)) {
+      section = line.replace(/:.*$/, "");
+      owner = null;
+      continue;
+    }
+    const indent = line.length - line.trimStart().length;
+    const text = line.trim();
+    if (text === "") continue;
+    if (indent === 2) {
+      const key = unquote(text.replace(/:\s*(\{\})?$/, ""));
+      if (section === "importers") {
+        const name = key === "." ? "." : key.replaceAll("/", "__");
+        owner = { label: name, name, id: null };
+      } else if (section === "snapshots") {
+        const [name, version] = splitKey(key);
+        owner = { label: `${name}@${version}`, name, id: `${name}@${version}` };
+      } else {
+        owner = null;
+      }
+      group = "";
+      continue;
+    }
+    if (!owner) continue;
+    if (indent === 4) {
+      group = text.replace(/:$/, "");
+      depName = null;
+      continue;
+    }
+    const prodGroup =
+      group === "dependencies" || group === "optionalDependencies";
+    if (!prodGroup) continue;
+    if (section === "snapshots" && indent === 6) {
+      const sep = text.indexOf(": ");
+      if (sep < 0) continue;
+      add(
+        `${unquote(text.slice(0, sep))}@${bareVersion(text.slice(sep + 2))}`,
+        owner,
+      );
+    } else if (section === "importers" && indent === 6) {
+      depName = unquote(text.replace(/:$/, ""));
+    } else if (section === "importers" && indent === 8 && depName) {
+      if (text.startsWith("version: ")) {
+        add(`${depName}@${bareVersion(text.slice(9))}`, owner);
+      }
+    }
+  }
+  return parents;
+}
+
+let lockParents = null;
+
+// Walks up from `name@version` through the lockfile and returns every upward
+// chain that no `via` chain covers. A chain is followed only while it is
+// still a suffix of some `via` chain, so the walk stops at the longest chain.
+function uncoveredInLockfile(name, version, chains) {
+  lockParents ??= readParents();
+  const bad = [];
+  const walk = (hops, id) => {
+    const suffix = hops.join(">");
+    if (chains.includes(suffix)) return;
+    if (!chains.some((c) => c.endsWith(`>${suffix}`))) {
+      bad.push(suffix);
+      return;
+    }
+    const ps = id ? lockParents.get(id) : undefined;
+    if (!ps || ps.size === 0) {
+      bad.push(`${suffix} (no further parents in pnpm-lock.yaml)`);
+      return;
+    }
+    for (const p of ps.values()) walk([p.name, ...hops], p.id);
+  };
+  walk([name], `${name}@${version}`);
+  return bad;
 }
 
 let raw;
@@ -126,22 +240,31 @@ for (const advisory of Object.values(report.advisories)) {
     );
     continue;
   }
-  const paths = [...new Set(findings.flatMap((f) => f.paths ?? []))];
-  if (paths.length === 0) {
+  if (findings.length === 0 || findings.some((f) => !f.paths?.length)) {
     moved.push(`${label}: the report lists no dependency paths to check`);
     continue;
   }
+  const paths = [...new Set(findings.flatMap((f) => f.paths))];
   const uncovered = paths.filter((p) => !covered(p, entry.via));
+  for (const f of findings.filter((f) => f.paths.length >= PNPM_PATH_CAP)) {
+    let fromLock;
+    try {
+      fromLock = uncoveredInLockfile(
+        advisory.module_name,
+        f.version,
+        entry.via,
+      );
+    } catch (e) {
+      fail(
+        `${id}: pnpm capped its paths and pnpm-lock.yaml could not be read: ${e.message}`,
+      );
+    }
+    uncovered.push(...fromLock.map((s) => `${s} (pnpm-lock.yaml)`));
+  }
   if (uncovered.length > 0) {
     moved.push(
       `${label}: reached through ${uncovered.length} path(s) the baseline reason does not cover, e.g. ` +
         uncovered.slice(0, 3).join(" ; "),
-    );
-    continue;
-  }
-  if (findings.some((f) => (f.paths ?? []).length >= PNPM_PATH_CAP)) {
-    console.log(
-      `::warning title=Dependency audit::${id}: pnpm reported ${PNPM_PATH_CAP} paths, its cap; paths past the cap were not checked.`,
     );
   }
 }
