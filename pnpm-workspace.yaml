@@ -37,6 +37,16 @@ patchedDependencies:
 
 # Override prettier because some of the submodules have ancient prettiers required
 # Having multiple prettiers makes the vscode extension unpredictable
+#
+# One copy each of solid-js, prosemirror-model and prosemirror-view across the
+# workspace. The submodules and editor plugins otherwise keep their own older
+# locked copies: two Solid runtimes break reactivity, two ProseMirror copies
+# break the composer (instanceof checks on Fragment/Slice), and the old copies
+# would keep the SEC-048 advisories shipping (prosemirror-view paste XSS
+# GHSA-c8x8-7fp4-3x9w, fixed in 1.42.3; seroval via solid-js).
 overrides:
   "prettier": "^3.8.1"
+  "prosemirror-model": "^1.25.12"
+  "prosemirror-view": "^1.42.6"
+  "solid-js": "^1.9.15"
 strictPeerDependencies: false
