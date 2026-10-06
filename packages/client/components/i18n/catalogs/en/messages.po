@@ -7559,6 +7559,10 @@ msgstr "Slogatron minigame"
 msgid "Slow down — try again in a moment"
 msgstr "Slow down — try again in a moment"
 
+#: components/client/toastShell.ts
+msgid "Couldn't confirm it sent. Open Sloga to check."
+msgstr "Couldn't confirm it sent. Open Sloga to check."
+
 #: src/interface/channels/text/Composition.tsx
 msgid "Slowmode Immune"
 msgstr "Slowmode Immune"

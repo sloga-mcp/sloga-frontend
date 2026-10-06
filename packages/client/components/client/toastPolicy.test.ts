@@ -1,7 +1,7 @@
 // Unit spec for the Sloga toast's rules — run with Node's built-in runner
 // from packages/client:
 //   node --conditions=browser --test components/client/toastPolicy.test.ts
-// Declared test count: 27 (compare against the runner's pass count, since the
+// Declared test count: 46 (compare against the runner's pass count, since the
 // runner also exits 0 when it finds no tests at all).
 // Focus: only a Windows Tauri window or an Electron shell answering exactly
 // "window" gets a Sloga toast, any sign of Electron rules out the protected
@@ -10,21 +10,31 @@
 // still holds (the sweep checks no fact undoes another's denial); a toast
 // belongs to the account it was shown to and is dropped for anyone else,
 // including when the account changes while it goes up; a failed send maps to
-// the right message for every rate-limit shape stoat-api throws; and nothing
-// reaches the shell that it would refuse (length caps, surrogate pairs,
-// avatar types and size).
+// the right message for every rate-limit shape stoat-api throws; a reply
+// settles as sent, failed or timed out (timer cleared, a late rejection
+// caught) and each maps to its message; a toast reply is sent at most once,
+// however retries race its send, its timeout and its late result, and a late
+// success keeps the card for a click but never for another send; and nothing
+// reaches the shell that it would refuse (length caps on every string,
+// surrogate pairs, avatar types and size).
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { DmPreviewMode } from "./notificationPreviewPolicy.ts";
 import {
+  type ReplyCoordinator,
+  type ReplyError,
   type ReplyFacts,
+  type ReplyOutcome,
   type ToastEntry,
   type ToastRequest,
   type ToastShowDeps,
+  type ToastStrings,
   avatarDataUrl,
   bytesToBase64,
+  capToastStrings,
   classifySendError,
+  createReplyCoordinator,
   entryForSession,
   envelopeOk,
   evictOldest,
@@ -32,11 +42,14 @@ import {
   MAX_TOAST_BODY_LENGTH,
   MAX_TOAST_NAME_LENGTH,
   MAX_TOASTS,
+  REPLY_TIMEOUT_MS,
   replyAllowed,
+  replyErrorFor,
   showToast,
   toastSupportFor,
   toastSurfaceFor,
   truncateForToast,
+  withReplyTimeout,
 } from "./toastPolicy.ts";
 
 const entry = (channelId: string, userId = "u1"): ToastEntry => ({
@@ -48,21 +61,35 @@ const entry = (channelId: string, userId = "u1"): ToastEntry => ({
 
 // ---- eviction
 
-test("evictOldest: the cap is the shell's three", () => {
-  assert.equal(MAX_TOASTS, 3);
+test("evictOldest: the cap reaches far past the three cards on screen", () => {
+  // The page keeps a card being typed in through newer toasts and never tells
+  // us what it dismissed, so its entry has to outlive many of them.
+  assert.equal(MAX_TOASTS, 32);
 });
 
 test("evictOldest drops the oldest past the cap and reports them", () => {
   const m = new Map<string, ToastEntry>();
   for (const id of ["a", "b", "c"]) m.set(id, entry(id));
-  assert.deepEqual(evictOldest(m), []);
+  assert.deepEqual(evictOldest(m, 3), []);
   m.set("d", entry("d"));
-  assert.deepEqual(evictOldest(m), ["a"]);
+  assert.deepEqual(evictOldest(m, 3), ["a"]);
   assert.deepEqual([...m.keys()], ["b", "c", "d"]);
   m.set("e", entry("e"));
   m.set("f", entry("f"));
-  assert.deepEqual(evictOldest(m), ["b", "c"]);
+  assert.deepEqual(evictOldest(m, 3), ["b", "c"]);
   assert.deepEqual([...m.keys()], ["d", "e", "f"]);
+});
+
+test("evictOldest: by default only past MAX_TOASTS", () => {
+  const m = new Map<string, ToastEntry>();
+  for (let i = 0; i < MAX_TOASTS; i++) m.set(`t${i}`, entry(`t${i}`));
+  assert.deepEqual(evictOldest(m), []);
+  assert.equal(m.size, MAX_TOASTS);
+  m.set("new", entry("new"));
+  assert.deepEqual(evictOldest(m), ["t0"]);
+  assert.equal(m.size, MAX_TOASTS);
+  assert.equal(m.has("t1"), true);
+  assert.equal(m.has("new"), true);
 });
 
 // ---- the reply re-check
@@ -225,6 +252,221 @@ test("classifySendError: everything else is other", () => {
       "other",
       String(JSON.stringify(error)),
     );
+});
+
+// ---- reply outcome
+
+/** Timers that only fire when told to; records every set and clear. */
+function fakeTimers(): {
+  timers: { set: typeof setTimeout; clear: typeof clearTimeout };
+  pending: Map<number, () => void>;
+  delays: number[];
+  cleared: number[];
+  fire(): void;
+} {
+  const pending = new Map<number, () => void>();
+  const delays: number[] = [];
+  const cleared: number[] = [];
+  let next = 1;
+  const set = (callback: () => void, ms?: number): number => {
+    const id = next++;
+    delays.push(ms ?? 0);
+    pending.set(id, callback);
+    return id;
+  };
+  const clear = (id?: number): void => {
+    if (id === undefined) return;
+    cleared.push(id);
+    pending.delete(id);
+  };
+  return {
+    timers: {
+      set: set as unknown as typeof setTimeout,
+      clear: clear as unknown as typeof clearTimeout,
+    },
+    pending,
+    delays,
+    cleared,
+    fire() {
+      const callbacks = [...pending.values()];
+      pending.clear();
+      for (const callback of callbacks) callback();
+    },
+  };
+}
+
+const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+test("withReplyTimeout: a send that settles first wins, and its timer is cleared", async () => {
+  assert.equal(REPLY_TIMEOUT_MS, 30_000);
+
+  const sent = fakeTimers();
+  assert.deepEqual(
+    await withReplyTimeout(Promise.resolve("m"), REPLY_TIMEOUT_MS, sent.timers),
+    { kind: "sent" },
+  );
+  assert.deepEqual(sent.delays, [REPLY_TIMEOUT_MS]);
+  assert.deepEqual(sent.cleared, [1]);
+  assert.equal(sent.pending.size, 0);
+
+  const error = new Error("network");
+  const failed = fakeTimers();
+  const outcome = await withReplyTimeout(
+    Promise.reject(error),
+    REPLY_TIMEOUT_MS,
+    failed.timers,
+  );
+  assert.equal(outcome.kind, "failed");
+  assert.equal((outcome as { error: unknown }).error, error);
+  assert.deepEqual(failed.cleared, [1]);
+  assert.equal(failed.pending.size, 0);
+
+  // A send that settles later, still inside the window, also clears it.
+  const later = deferred<string>();
+  const slow = fakeTimers();
+  const pending = withReplyTimeout(later.promise, 500, slow.timers);
+  await settle();
+  assert.deepEqual(slow.delays, [500]);
+  assert.equal(slow.pending.size, 1);
+  later.resolve("m");
+  assert.deepEqual(await pending, { kind: "sent" });
+  assert.equal(slow.pending.size, 0);
+});
+
+test("withReplyTimeout: a send that never settles times out, and late ones go nowhere", async () => {
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    for (const late of ["resolve", "reject"] as const) {
+      const send = deferred<string>();
+      const fake = fakeTimers();
+      const pending = withReplyTimeout(
+        send.promise,
+        REPLY_TIMEOUT_MS,
+        fake.timers,
+      );
+      let done = false;
+      void pending.then(() => (done = true));
+      await settle();
+      assert.equal(done, false, late);
+      fake.fire();
+      assert.deepEqual(await pending, { kind: "timeout" }, late);
+
+      // The send settles after the card stopped waiting: the outcome stays a
+      // timeout, and a rejection surfaces nowhere.
+      if (late === "resolve") send.resolve("m");
+      else send.reject(new Error("late"));
+      await settle();
+      await settle();
+      assert.deepEqual(await pending, { kind: "timeout" }, late);
+    }
+    assert.deepEqual(unhandled, []);
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+});
+
+test("withReplyTimeout: the default timers really fire", async () => {
+  const never = new Promise<never>(() => {});
+  assert.deepEqual(await withReplyTimeout(never, 1), { kind: "timeout" });
+  assert.deepEqual(await withReplyTimeout(Promise.resolve(1), 60_000), {
+    kind: "sent",
+  });
+});
+
+test("replyErrorFor: sent is no error, a timeout is not confirmed", () => {
+  assert.equal(replyErrorFor({ kind: "sent" }), null);
+  assert.equal(replyErrorFor({ kind: "timeout" }), "notConfirmed");
+  // Anything unrecognized is never taken for sent.
+  for (const kind of ["bogus", "Sent", "", undefined])
+    assert.equal(
+      replyErrorFor({ kind } as unknown as ReplyOutcome),
+      "notConfirmed",
+      String(kind),
+    );
+});
+
+test("replyErrorFor: a failed send maps through classifySendError", () => {
+  const e2ee = new Error("peer identity changed");
+  e2ee.name = "E2EESendError";
+  const cases: [unknown, string][] = [
+    [e2ee, "review"],
+    [{ name: "E2EESendError", status: 429 }, "review"],
+    [{ status: 429 }, "slowDown"],
+    ['{"type":"InSlowmode"}', "slowDown"],
+    ['{"retry_after":1234}', "slowDown"],
+    ["<!DOCTYPE html><title>429 Too Many Requests</title>", "slowDown"],
+    [new Error("network"), "couldNotSend"],
+    ['{"type":"MissingPermission"}', "couldNotSend"],
+    [undefined, "couldNotSend"],
+    [null, "couldNotSend"],
+  ];
+  for (const [error, expected] of cases)
+    assert.equal(
+      replyErrorFor({ kind: "failed", error }),
+      expected,
+      String(JSON.stringify(error)),
+    );
+});
+
+// ---- the toast's own strings
+
+const strings: ToastStrings = {
+  replyPlaceholder: "R",
+  send: "S",
+  dismiss: "D",
+  sending: "G",
+  couldNotSend: "C",
+};
+
+test("capToastStrings: short strings are untouched, every long one is cut", () => {
+  assert.deepEqual(capToastStrings(strings), strings);
+  const keys = Object.keys(strings) as (keyof ToastStrings)[];
+  assert.deepEqual([...keys].sort(), [
+    "couldNotSend",
+    "dismiss",
+    "replyPlaceholder",
+    "send",
+    "sending",
+  ]);
+  for (const key of keys) {
+    // Only this key is long: it alone is cut, to exactly the cap.
+    const exact = capToastStrings({ ...strings, [key]: "x".repeat(100) });
+    assert.equal(exact[key], "x".repeat(100), key);
+    const long = capToastStrings({ ...strings, [key]: "x".repeat(250) });
+    assert.deepEqual(long, { ...strings, [key]: "x".repeat(99) + "…" }, key);
+  }
+  const all = capToastStrings(
+    Object.fromEntries(keys.map((key) => [key, key.repeat(50)])) as never,
+    20,
+  );
+  for (const key of keys) {
+    assert.equal(all[key], key.repeat(50).slice(0, 19) + "…", key);
+  }
+  // Nothing but the five keys reaches the shell.
+  const extra = capToastStrings({ ...strings, title: "x" } as never);
+  assert.deepEqual(extra, strings);
+});
+
+test("capToastStrings: never splits a surrogate pair", () => {
+  const emoji = String.fromCodePoint(0x1f600); // two UTF-16 units
+  const keys = Object.keys(strings) as (keyof ToastStrings)[];
+  for (const max of [99, 100, 101]) {
+    for (const lead of [0, 1, 2]) {
+      const value = "x".repeat(lead) + emoji.repeat(80);
+      const out = capToastStrings(
+        Object.fromEntries(keys.map((key) => [key, value])) as never,
+        max,
+      );
+      for (const key of keys) {
+        const label = `${key} ${max}/${lead}`;
+        assert.ok(out[key].length <= max, label);
+        assert.ok(out[key].isWellFormed(), label);
+        assert.ok(out[key].endsWith("…"), label);
+      }
+    }
+  }
 });
 
 // ---- avatars
@@ -401,12 +643,7 @@ function fakeDeps(options: {
       calls.push({ command: "clear", args: { channelId } });
       return options.clear ? options.clear() : Promise.resolve(undefined);
     },
-    strings: () => ({
-      replyPlaceholder: "R",
-      send: "S",
-      dismiss: "D",
-      sending: "G",
-    }),
+    strings: () => ({ ...strings }),
   };
   return { deps, calls, fetched, session };
 }
@@ -432,6 +669,7 @@ test("showToast: the payload is what the shell accepts, and the entry is this us
           send: "S",
           dismiss: "D",
           sending: "G",
+          couldNotSend: "C",
         },
       },
     },
@@ -466,22 +704,23 @@ test("showToast: nobody signed in shows nothing", async () => {
 
 test("showToast: a refused toast leaves no entry and costs no older one", async () => {
   const m = new Map<string, ToastEntry>();
-  for (const id of ["a", "b", "c"]) m.set(id, entry(id));
+  const full = Array.from({ length: MAX_TOASTS }, (_, i) => `t${i}`);
+  for (const id of full) m.set(id, entry(id));
   const { deps } = fakeDeps({
     show: () => Promise.reject(new Error("suppressed")),
   });
   assert.equal(await showToast(m, request, deps), false);
-  assert.deepEqual([...m.keys()], ["a", "b", "c"]);
+  assert.deepEqual([...m.keys()], full);
 
   // Accepted: recorded before the shell answers, oldest evicted after.
   const show = deferred<boolean>();
   const { deps: later } = fakeDeps({ show: () => show.promise });
   const pending = showToast(m, request, later);
   await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual([...m.keys()], ["a", "b", "c", "id0"]);
+  assert.deepEqual([...m.keys()], [...full, "id0"]);
   show.resolve(true);
   assert.equal(await pending, true);
-  assert.deepEqual([...m.keys()], ["b", "c", "id0"]);
+  assert.deepEqual([...m.keys()], [...full.slice(1), "id0"]);
 });
 
 test("showToast: an account change during the avatar fetch shows nothing", async () => {
@@ -679,5 +918,385 @@ test("envelopeOk: only { ok: true } counts as shown", () => {
       false,
       JSON.stringify(envelope) ?? "undefined",
     );
+  }
+});
+
+// ---- answering replies
+
+interface Held<T> {
+  promise: Promise<T>;
+  resolve(value: T): void;
+  reject(error: unknown): void;
+}
+
+/**
+ * A reply coordinator over a fake app: toast "t" (conversation "c") is u1's,
+ * the first send is a deferred the test settles, and every answer is
+ * recorded. Any later send goes through at once, so a coordinator that sends
+ * twice fails on `starts` rather than hanging on a send nobody settles.
+ * While `gate` is set, answering the card waits on it.
+ */
+function replies(options: { timeoutMs?: number } = {}) {
+  const toasts = new Map<string, ToastEntry>([["t", entry("c")]]);
+  const inFlight = new Set<string>();
+  const clock = fakeTimers();
+  const h = {
+    toasts,
+    inFlight,
+    clock,
+    user: "u1" as string | undefined,
+    start: "send" as "send" | "null" | "throw",
+    starts: [] as [ToastEntry, string][],
+    sends: [] as Held<unknown>[],
+    answers: [] as [string, ReplyError | null][],
+    cleared: [] as string[],
+    gate: undefined as Promise<void> | undefined,
+    coordinator: undefined as unknown as ReplyCoordinator,
+  };
+  h.coordinator = createReplyCoordinator({
+    toasts,
+    inFlight,
+    currentUserId: () => h.user,
+    start(toast, text) {
+      h.starts.push([toast, text]);
+      if (h.start === "null") return null;
+      if (h.start === "throw") throw new Error("check");
+      const send = deferred<unknown>();
+      if (h.sends.length > 0) send.resolve("m");
+      h.sends.push(send);
+      return send.promise;
+    },
+    async answer(toastId, error) {
+      h.answers.push([toastId, error]);
+      if (h.gate) await h.gate;
+    },
+    clearNotifications(channelId) {
+      h.cleared.push(channelId);
+    },
+    ...(options.timeoutMs === undefined
+      ? {}
+      : { timeoutMs: options.timeoutMs }),
+    timers: clock.timers,
+  });
+  return h;
+}
+
+/** A gate for `replies().gate`, and the call that opens it. */
+function gate(): { promise: Promise<void>; open(): void } {
+  const held = deferred<void>();
+  return { promise: held.promise, open: () => held.resolve() };
+}
+
+const errorsOf = (h: ReturnType<typeof replies>) =>
+  h.answers.map(([, error]) => error);
+
+const lastError = (h: ReturnType<typeof replies>) =>
+  h.answers[h.answers.length - 1]?.[1];
+
+test("reply: nothing is sent from a toast this session cannot reply from", async () => {
+  // Unknown here: answered, never left on "Sending…".
+  const unknown = replies();
+  await unknown.coordinator.reply("gone", "hi");
+  assert.deepEqual(unknown.answers, [["gone", "openToReply"]]);
+  assert.equal(unknown.starts.length, 0);
+
+  // Another account's, or nobody's: answered, and the entry dropped.
+  for (const who of ["u2", undefined]) {
+    const h = replies();
+    h.user = who;
+    await h.coordinator.reply("t", "hi");
+    assert.deepEqual(h.answers, [["t", "openToReply"]], String(who));
+    assert.equal(h.starts.length, 0, String(who));
+    assert.equal(h.toasts.has("t"), false, String(who));
+  }
+
+  // The re-checks said no, or threw: nothing in flight, the entry kept.
+  for (const start of ["null", "throw"] as const) {
+    const h = replies();
+    h.start = start;
+    await h.coordinator.reply("t", "hi");
+    assert.deepEqual(h.answers, [["t", "openToReply"]], start);
+    assert.equal(h.starts.length, 1, start);
+    assert.equal(h.inFlight.size, 0, start);
+    assert.deepEqual(h.toasts.get("t"), entry("c"), start);
+    assert.equal(h.clock.delays.length, 0, start);
+  }
+
+  // Already replied to after its timeout. (Were it sent, the timeout would
+  // end the wait rather than leave the test hanging.)
+  const replied = replies();
+  replied.toasts.set("t", { ...entry("c"), replied: true });
+  const answered = replied.coordinator.reply("t", "hi");
+  replied.clock.fire();
+  await answered;
+  assert.deepEqual(replied.answers, [["t", "openToReply"]]);
+  assert.equal(replied.starts.length, 0);
+});
+
+test("reply (i): a retry while the send is in flight sends nothing and is not confirmed", async () => {
+  const h = replies({ timeoutMs: 500 });
+  const first = h.coordinator.reply("t", "hi");
+  // Everything up to the send is synchronous.
+  assert.equal(h.starts.length, 1);
+  assert.equal(h.starts[0][0], h.toasts.get("t"));
+  assert.equal(h.starts[0][1], "hi");
+  assert.deepEqual([...h.inFlight], ["t"]);
+  assert.deepEqual(h.clock.delays, [500]);
+
+  await h.coordinator.reply("t", "hi");
+  await h.coordinator.reply("t", "hi");
+  assert.equal(h.starts.length, 1);
+  assert.deepEqual(errorsOf(h), ["notConfirmed", "notConfirmed"]);
+
+  h.sends[0].resolve("m");
+  await first;
+  assert.deepEqual(h.answers, [
+    ["t", "notConfirmed"],
+    ["t", "notConfirmed"],
+    ["t", null],
+  ]);
+  assert.equal(h.toasts.has("t"), false);
+  assert.equal(h.inFlight.size, 0);
+  assert.deepEqual(h.cleared, ["c"]);
+  assert.equal(h.clock.pending.size, 0);
+});
+
+test("reply (ii): a success after the timeout answers nothing more, and the card only opens", async () => {
+  const h = replies();
+  const first = h.coordinator.reply("t", "hi");
+  h.clock.fire();
+  await first;
+  assert.deepEqual(h.answers, [["t", "notConfirmed"]]);
+  assert.deepEqual([...h.inFlight], ["t"]);
+  assert.deepEqual(h.toasts.get("t"), entry("c"));
+
+  // Still unsettled: a retry is not confirmed and sends nothing.
+  await h.coordinator.reply("t", "again");
+  assert.equal(h.starts.length, 1);
+
+  h.sends[0].resolve("m");
+  await settle();
+  assert.equal(h.inFlight.size, 0);
+  assert.deepEqual(h.toasts.get("t"), { ...entry("c"), replied: true });
+  assert.deepEqual(h.cleared, ["c"]);
+  assert.deepEqual(errorsOf(h), ["notConfirmed", "notConfirmed"]);
+
+  // It went: a retry from the card is "Open Sloga to reply", never a send.
+  await h.coordinator.reply("t", "again");
+  assert.equal(h.starts.length, 1);
+  assert.deepEqual(errorsOf(h), [
+    "notConfirmed",
+    "notConfirmed",
+    "openToReply",
+  ]);
+
+  // A click opens the conversation, once.
+  assert.deepEqual(h.coordinator.open("t"), { ...entry("c"), replied: true });
+  assert.equal(h.toasts.has("t"), false);
+  assert.equal(h.coordinator.open("t"), undefined);
+});
+
+test("reply (iii): a failure after the timeout lets a retry send", async () => {
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const h = replies();
+    const first = h.coordinator.reply("t", "hi");
+    h.clock.fire();
+    await first;
+    h.sends[0].reject(new Error("late"));
+    await settle();
+    await settle();
+    assert.equal(h.inFlight.size, 0);
+    // Not marked: it never went.
+    assert.deepEqual(h.toasts.get("t"), entry("c"));
+    assert.deepEqual(h.cleared, []);
+    assert.deepEqual(errorsOf(h), ["notConfirmed"]);
+
+    const retry = h.coordinator.reply("t", "again");
+    assert.equal(h.starts.length, 2);
+    await retry;
+    assert.deepEqual(errorsOf(h), ["notConfirmed", null]);
+    assert.equal(h.toasts.has("t"), false);
+    assert.deepEqual(unhandled, []);
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+});
+
+test("reply (iv): a success in time is answered ok exactly once, and a retry sends nothing", async () => {
+  const h = replies();
+  const first = h.coordinator.reply("t", "hi");
+  h.sends[0].resolve("m");
+  await first;
+  assert.deepEqual(h.answers, [["t", null]]);
+  assert.deepEqual(h.cleared, ["c"]);
+  assert.equal(h.toasts.has("t"), false);
+  assert.equal(h.inFlight.size, 0);
+  assert.equal(h.clock.pending.size, 0);
+
+  await h.coordinator.reply("t", "again");
+  await settle();
+  assert.equal(h.starts.length, 1);
+  assert.deepEqual(errorsOf(h), [null, "openToReply"]);
+  assert.equal(h.coordinator.open("t"), undefined);
+});
+
+test("reply (v): a send that never settles keeps every retry from sending", async () => {
+  const h = replies();
+  const first = h.coordinator.reply("t", "hi");
+  assert.deepEqual(h.clock.delays, [REPLY_TIMEOUT_MS]);
+  h.clock.fire();
+  await first;
+  for (let i = 0; i < 5; i++) {
+    await h.coordinator.reply("t", "again");
+    h.clock.fire();
+    await settle();
+  }
+  assert.equal(h.starts.length, 1);
+  assert.deepEqual([...h.inFlight], ["t"]);
+  assert.deepEqual(h.toasts.get("t"), entry("c"));
+  assert.deepEqual(errorsOf(h), Array(6).fill("notConfirmed"));
+  assert.deepEqual(h.cleared, []);
+});
+
+test("reply (vi): a retry at any point around the send settling sends nothing", async () => {
+  for (const late of [false, true]) {
+    for (let ticks = 0; ticks <= 10; ticks++) {
+      const label = `${late ? "late" : "in time"} +${ticks}`;
+      const h = replies();
+      const first = h.coordinator.reply("t", "hi");
+      if (late) {
+        h.clock.fire();
+        await first;
+      }
+      h.sends[0].resolve("m");
+      for (let i = 0; i < ticks; i++) await Promise.resolve();
+      const retry = h.coordinator.reply("t", "again");
+      await first;
+      await retry;
+      await settle();
+      await h.coordinator.reply("t", "again");
+      assert.equal(h.starts.length, 1, label);
+      assert.equal(h.inFlight.size, 0, label);
+      assert.equal(
+        errorsOf(h).filter((error) => error === null).length,
+        late ? 0 : 1,
+        label,
+      );
+      assert.equal(lastError(h), "openToReply", label);
+    }
+  }
+});
+
+test("reply (vi): a send settling while the card is being answered is still sent once", async () => {
+  for (const late of [false, true]) {
+    const label = late ? "late" : "in time";
+    const h = replies();
+    const held = gate();
+    h.gate = held.promise;
+    const first = h.coordinator.reply("t", "hi");
+    if (late) h.clock.fire();
+    else h.sends[0].resolve("m");
+    await settle();
+    assert.deepEqual(errorsOf(h), [late ? "notConfirmed" : null], label);
+    // The late send lands while the card still waits for its answer.
+    if (late) h.sends[0].resolve("m");
+    await settle();
+
+    h.gate = undefined;
+    await h.coordinator.reply("t", "again");
+    held.open();
+    await first;
+    await settle();
+    await h.coordinator.reply("t", "again");
+    assert.equal(h.starts.length, 1, label);
+    assert.equal(h.inFlight.size, 0, label);
+    assert.equal(lastError(h), "openToReply", label);
+    if (late) {
+      assert.deepEqual(h.toasts.get("t"), { ...entry("c"), replied: true });
+      assert.equal(errorsOf(h).includes(null), false, label);
+    }
+  }
+});
+
+test("reply (vii): a toast forgotten before its late success stays forgotten", async () => {
+  for (const how of ["sign-out", "conversation read"]) {
+    const h = replies();
+    h.toasts.set("k", entry("d"));
+    const first = h.coordinator.reply("t", "hi");
+    h.clock.fire();
+    await first;
+
+    if (how === "sign-out") {
+      h.user = undefined;
+      h.toasts.clear();
+    } else {
+      for (const [id, toast] of h.toasts)
+        if (toast.channelId === "c") h.toasts.delete(id);
+    }
+    h.sends[0].resolve("m");
+    await settle();
+    assert.equal(h.toasts.has("t"), false, how);
+    assert.equal(h.inFlight.size, 0, how);
+    assert.equal(h.toasts.has("k"), how !== "sign-out", how);
+
+    h.user = "u1";
+    await h.coordinator.reply("t", "again");
+    assert.equal(h.starts.length, 1, how);
+    assert.equal(lastError(h), "openToReply", how);
+    assert.equal(h.coordinator.open("t"), undefined, how);
+  }
+});
+
+test("reply (viii): open gives only this session's entry, and forgets the toast", () => {
+  const own = replies();
+  assert.deepEqual(own.coordinator.open("t"), entry("c"));
+  assert.equal(own.toasts.has("t"), false);
+  assert.equal(own.coordinator.open("t"), undefined);
+  assert.equal(own.coordinator.open("unknown"), undefined);
+
+  for (const who of ["u2", undefined, ""]) {
+    const h = replies();
+    h.toasts.set("k", entry("d"));
+    h.user = who;
+    assert.equal(h.coordinator.open("t"), undefined, String(who));
+    assert.equal(h.toasts.has("t"), false, String(who));
+    assert.equal(h.toasts.has("k"), true, String(who));
+    // Dropped, not kept for when u1 is back.
+    h.user = "u1";
+    assert.equal(h.coordinator.open("t"), undefined, String(who));
+  }
+});
+
+test("reply (ix): a failure in time lets a retry send at once", async () => {
+  const e2ee = new Error("peer identity changed");
+  e2ee.name = "E2EESendError";
+  const cases: [unknown, ReplyError][] = [
+    [new Error("network"), "couldNotSend"],
+    [e2ee, "review"],
+    ['{"retry_after":1234}', "slowDown"],
+  ];
+  for (const [error, expected] of cases) {
+    const h = replies();
+    const held = gate();
+    h.gate = held.promise;
+    const first = h.coordinator.reply("t", "hi");
+    h.sends[0].reject(error);
+    await settle();
+    assert.deepEqual(h.answers, [["t", expected]], expected);
+    assert.equal(h.inFlight.size, 0, expected);
+    assert.deepEqual(h.toasts.get("t"), entry("c"), expected);
+    assert.deepEqual(h.cleared, [], expected);
+
+    // Prompted by the error while the card is still being answered.
+    h.gate = undefined;
+    const retry = h.coordinator.reply("t", "again");
+    assert.equal(h.starts.length, 2, expected);
+    await retry;
+    held.open();
+    await first;
+    assert.deepEqual(errorsOf(h), [expected, null], expected);
   }
 });
