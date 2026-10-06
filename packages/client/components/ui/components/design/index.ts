@@ -61,6 +61,7 @@ export { livePill } from "./LivePill";
 export { CircularProgress, slogaBurstKeyframes } from "./LoadingProgress";
 export { MenuItem } from "./Menu";
 export { MenuButton } from "./MenuButton";
+export { usePresenceText } from "./presenceText";
 export { Radio2 } from "./Radio";
 export { Ripple } from "./Ripple";
 export { Slider } from "./Slider";
@@ -83,8 +84,4 @@ export {
   unreadHolepunch,
   unreadTone,
 } from "./Unreads";
-export {
-  type PresenceValue,
-  UserStatus,
-  presenceLabel,
-} from "./UserStatus";
+export { type PresenceValue, UserStatus } from "./UserStatus";
