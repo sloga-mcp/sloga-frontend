@@ -1,0 +1,10 @@
+# Sloga security contact (RFC 9116).
+# Please email with "Security" in the subject line, or report privately on GitHub
+# (Security tab of the affected repository, "Report a vulnerability").
+Contact: mailto:support@sloga.gg
+Contact: https://github.com/sloga-mcp/sloga-backend/security/advisories/new
+Expires: 2027-09-30T23:59:59Z
+Preferred-Languages: en, pt
+Policy: https://sloga.gg/legal/security.html
+Canonical: https://sloga.gg/.well-known/security.txt
+Canonical: https://app.sloga.gg/.well-known/security.txt

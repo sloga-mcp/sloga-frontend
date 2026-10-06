@@ -772,7 +772,7 @@ export type KeybindEventPayload = { id: string };
  * lanes can cite one symbol for the rule instead of restating it. Do not
  * branch on it as though the native behavior could vary.
  */
-export const ARM_RELEASES_ALL_HELD: true = true;
+export const ARM_RELEASES_ALL_HELD = true as const;
 
 /* ------------------------------------------------------------------------ *
  * 7. Reserved combo
