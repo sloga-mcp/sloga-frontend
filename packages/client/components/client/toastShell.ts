@@ -32,15 +32,12 @@ import {
   AVATAR_FETCH_TIMEOUT_MS,
   avatarDataUrl,
   capToastStrings,
-  entryForSession,
+  createReplyCoordinator,
   envelopeOk,
   MAX_AVATAR_DATA_URL_LENGTH,
-  REPLY_TIMEOUT_MS,
   replyAllowed,
-  replyErrorFor,
   showToast,
   toastSupportFor,
-  withReplyTimeout,
 } from "./toastPolicy";
 
 export type { ToastRequest, ToastSupport, ToastSurface } from "./toastPolicy";
@@ -163,11 +160,11 @@ function toastHost(surface?: ToastSurface): ToastHost | undefined {
 const toasts = new Map<string, ToastEntry>();
 
 /**
- * Toasts whose reply is being sent, so a repeated submit cannot send twice.
- * An id stays here until its send settles, even after the toast was told the
- * send timed out: the message may still go out.
+ * Toasts whose reply is being sent, shared like `toasts`. Only the reply
+ * coordinator (`createReplyCoordinator`) adds and removes ids; when, and in
+ * what order against `toasts`, is its contract.
  */
-const sending = new Set<string>();
+const inFlight = new Set<string>();
 
 /**
  * Forget every toast and take down whatever the shell still shows. For a
@@ -314,95 +311,46 @@ export function useToastShell(): {
   }
 
   /**
-   * The reply went. Only the card replied to goes (the ok result removes it
-   * in the shell). Other cards from this conversation stay: the user may be
-   * typing in one, and clearing them would empty the stack and hand the
-   * foreground back mid-sentence. Action Center can go now.
+   * Replies typed into our toasts. Each hook builds its own, but all of them
+   * work on the module-level `toasts` and `inFlight`, so a toast shown from
+   * one worker and replied to or opened from another is the same toast.
+   *
+   * The coordinator owns the ordering that keeps a reply from going twice
+   * (each attempt carries a fresh idempotency key, so the server would take
+   * both), the REPLY_TIMEOUT_MS answer, and what a send that lands after the
+   * timeout does; see `createReplyCoordinator`. This window only says how to
+   * send, how to answer the toast and what to clear on success. On success
+   * only the card replied to goes (the ok result removes it in the shell):
+   * other cards from this conversation stay, since the user may be typing in
+   * one, and only Action Center is cleared.
    */
-  async function replied(toastId: string, channelId: string): Promise<void> {
-    // Forgotten before anything is awaited, so a retry from the card while
-    // the result is on its way finds nothing to send.
-    toasts.delete(toastId);
-    await replyResult(toastId, null);
-    toastHost()?.clearNotifications(channelId);
-  }
+  const replies = createReplyCoordinator({
+    toasts,
+    inFlight,
+    currentUserId: () => client()?.user?.id,
+    start: startReply,
+    answer: (toastId, error) =>
+      replyResult(toastId, error === null ? null : replyErrorText(error)),
+    clearNotifications: (channelId) =>
+      toastHost()?.clearNotifications(channelId),
+  });
 
   /**
    * A reply typed into one of our toasts. The channel comes from our own
    * record, never from anything the toast sent.
-   *
-   * The toast hears back within REPLY_TIMEOUT_MS. A send still going then is
-   * not abandoned: its id stays in `sending` until it settles, so a retry
-   * cannot post the message twice (each attempt carries a fresh idempotency
-   * key, so the server would take both). If it lands after all, the toast is
-   * told nothing more: an ok result takes the card down in the shell, and the
-   * user may be typing in it again. The card keeps its "couldn't confirm"
-   * until it is closed, and this window forgets it, so a retry from it is
-   * "Open Sloga to reply" and sends nothing.
    */
-  async function handleReply(toastId: string, text: string): Promise<void> {
-    // Another submit while a send for this toast has not settled, even one the
-    // toast was already told timed out: answer it, and send nothing.
-    if (sending.has(toastId)) {
-      await replyResult(toastId, replyErrorText("notConfirmed"));
-      return;
-    }
-
-    const entry = entryForSession(toasts, toastId, client()?.user?.id);
-    if (!entry) {
-      // Unknown to this page (it reloaded, or the toast was evicted) or shown
-      // to another account: answer anyway, or the card sits on "Sending…".
-      await replyResult(toastId, replyErrorText("openToReply"));
-      return;
-    }
-
-    let attempt: Promise<unknown> | null;
-    try {
-      attempt = startReply(entry, text);
-    } catch {
-      // A check that threw has not confirmed anything.
-      attempt = null;
-    }
-    if (!attempt) {
-      await replyResult(toastId, replyErrorText("openToReply"));
-      return;
-    }
-
-    sending.add(toastId);
-    const outcome = withReplyTimeout(attempt, REPLY_TIMEOUT_MS);
-    // Out of `sending` when the send itself settles, never on the timeout.
-    attempt.then(
-      () => {
-        // A success in time is answered below, which forgets the toast first.
-        // One after the timeout sends no result (see above); the toast is
-        // forgotten here, before the id leaves `sending`, so no retry ever
-        // finds it sendable. Only Action Center goes, as for a success in
-        // time; the toasts themselves stay.
-        void outcome.then((settled) => {
-          if (settled.kind === "timeout") {
-            toasts.delete(toastId);
-            toastHost()?.clearNotifications(entry.channelId);
-          }
-          sending.delete(toastId);
-        });
-      },
-      () => {
-        // A failure after the timeout says nothing more: the toast already
-        // has its error.
-        sending.delete(toastId);
-      },
-    );
-
-    const error = replyErrorFor(await outcome);
-    if (error === null) await replied(toastId, entry.channelId);
-    else await replyResult(toastId, replyErrorText(error));
+  function handleReply(toastId: string, text: string): Promise<void> {
+    return replies.reply(toastId, text);
   }
 
-  /** A click on one of our toasts. The shell has already raised the window. */
+  /**
+   * A click on one of our toasts. The shell has already raised the window.
+   * A card whose reply landed after the timeout still opens its conversation,
+   * so the user can check what its "couldn't confirm" was about.
+   */
   function handleOpen(toastId: string): void {
-    const entry = entryForSession(toasts, toastId, client()?.user?.id);
+    const entry = replies.open(toastId);
     if (!entry) return;
-    toasts.delete(toastId);
     navigate(
       client()?.channels.get(entry.channelId)?.path ??
         `/channel/${entry.channelId}`,

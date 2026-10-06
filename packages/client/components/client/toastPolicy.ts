@@ -1,8 +1,9 @@
 /**
  * The rules behind the desktop shells' Sloga toast, kept free of Solid,
  * lingui and the client so `node --test` can load them: which shell can draw
- * one, who may still reply, how long a reply may take and what a failed one
- * tells the user, which toast belongs to whom, and what the shell will accept.
+ * one, who may still reply, how long a reply may take, that it goes at most
+ * once and what a failed one tells the user, which toast belongs to whom, and
+ * what the shell will accept.
  * toastShell.ts wires them to the running app.
  */
 import {
@@ -123,6 +124,13 @@ export interface ToastEntry {
   allowReply: boolean;
   /** Who was signed in when the toast went up. */
   userId: string;
+  /**
+   * A reply from this toast went out after the card had stopped waiting for
+   * it. The card still says "couldn't confirm", so the entry is kept for a
+   * click to open its conversation, but nothing more is sent from it. Only
+   * the reply coordinator sets it; a new toast never carries the key.
+   */
+  replied?: boolean;
 }
 
 /**
@@ -348,6 +356,149 @@ export function replyErrorFor(outcome: ReplyOutcome): ReplyError | null {
     }
   }
   return "notConfirmed";
+}
+
+/** What answering the toast's replies needs from the running app. */
+export interface ReplyCoordinatorDeps {
+  /** The toasts shown, the same map `showToast` records them in. */
+  toasts: Map<string, ToastEntry>;
+  /**
+   * Toasts whose reply is being sent. An id stays here until its send
+   * settles, even after the card was told it timed out: the message may
+   * still go out, and each attempt carries a fresh idempotency key, so a
+   * second one would post it twice (an encrypted one the server cannot even
+   * tell apart).
+   */
+  inFlight: Set<string>;
+  /** Who is signed in right now; undefined once nobody is. */
+  currentUserId(): string | undefined;
+  /**
+   * Start sending a reply, if everything that put the reply box up still
+   * holds. Null, or a throw, when it may not go from the toast.
+   */
+  start(entry: ToastEntry, text: string): Promise<unknown> | null;
+  /** Tell the card how its reply went; null when it was sent. */
+  answer(toastId: string, error: ReplyError | null): Promise<void>;
+  /** Take a conversation's entries out of Action Center. */
+  clearNotifications(channelId: string): void;
+  /** How long the card waits for a send; REPLY_TIMEOUT_MS unless given. */
+  timeoutMs?: number;
+  timers?: { set: typeof setTimeout; clear: typeof clearTimeout };
+}
+
+export interface ReplyCoordinator {
+  /**
+   * A reply typed into a toast. The channel comes from our own record,
+   * never from anything the toast sent.
+   */
+  reply(toastId: string, text: string): Promise<void>;
+  /**
+   * A click on a toast: its entry, if it is still this session's, and the
+   * toast is forgotten. A late-replied one opens like any other.
+   */
+  open(toastId: string): ToastEntry | undefined;
+}
+
+/**
+ * Answer the toast's replies, sending each at most once.
+ *
+ * The card hears back within the timeout. A send still going then is not
+ * abandoned: its id stays in `inFlight` until it settles, and every retry
+ * meanwhile is told "couldn't confirm" and sends nothing. If it lands after
+ * all, the card is told nothing more (an ok result takes it down, and the
+ * user may be typing in it again) and keeps its "couldn't confirm"; its entry
+ * is marked `replied`, so a retry from it is "Open Sloga to reply" while a
+ * click still opens the conversation. If it fails after all, the card
+ * already has its error and a retry may send.
+ *
+ * After a send that went, the id leaves `inFlight` in the same synchronous
+ * block that makes the toast unsendable (forgotten, or marked `replied`),
+ * never in a promise handler apart from it, so no retry falls between them.
+ */
+export function createReplyCoordinator(
+  d: ReplyCoordinatorDeps,
+): ReplyCoordinator {
+  const timeoutMs = d.timeoutMs ?? REPLY_TIMEOUT_MS;
+
+  async function reply(toastId: string, text: string): Promise<void> {
+    // Another submit while a send for this toast has not settled, even one
+    // the card was already told timed out: answer it, and send nothing.
+    if (d.inFlight.has(toastId)) {
+      await d.answer(toastId, "notConfirmed");
+      return;
+    }
+
+    // Unknown here (the page reloaded, the toast was evicted or opened),
+    // shown to another account, or already replied to after its timeout:
+    // answer anyway, or the card sits on "Sending…".
+    const entry = entryForSession(d.toasts, toastId, d.currentUserId());
+    if (!entry || entry.replied) {
+      await d.answer(toastId, "openToReply");
+      return;
+    }
+
+    let attempt: Promise<unknown> | null;
+    try {
+      attempt = d.start(entry, text);
+    } catch {
+      // A check that threw has not confirmed anything.
+      attempt = null;
+    }
+    if (!attempt) {
+      await d.answer(toastId, "openToReply");
+      return;
+    }
+
+    d.inFlight.add(toastId);
+    const send = attempt;
+    const outcome = await withReplyTimeout(send, timeoutMs, d.timers);
+
+    if (outcome.kind === "sent") {
+      // Forgotten as the id leaves `inFlight`, so a retry while the ok
+      // result is on its way finds nothing to send. Only the card replied
+      // to goes (the ok result removes it in the shell); other cards from
+      // this conversation stay, and Action Center can go.
+      d.toasts.delete(toastId);
+      d.inFlight.delete(toastId);
+      await d.answer(toastId, null);
+      d.clearNotifications(entry.channelId);
+      return;
+    }
+
+    if (outcome.kind === "timeout") {
+      // Told apart by the outcome itself, so a send that settles while the
+      // card is being answered is still a late one.
+      send.then(
+        () => {
+          // Kept for a click, never for another send. One forgotten in the
+          // meantime (a sign-out, the conversation read) stays forgotten.
+          if (d.toasts.get(toastId) === entry)
+            d.toasts.set(toastId, { ...entry, replied: true });
+          d.clearNotifications(entry.channelId);
+          d.inFlight.delete(toastId);
+        },
+        () => {
+          // The card already has its error; a retry from it may send.
+          d.inFlight.delete(toastId);
+        },
+      );
+      await d.answer(toastId, "notConfirmed");
+      return;
+    }
+
+    // Free before the card hears of the failure, so a retry it prompts at
+    // once is sent rather than told "couldn't confirm".
+    d.inFlight.delete(toastId);
+    await d.answer(toastId, replyErrorFor(outcome));
+  }
+
+  function open(toastId: string): ToastEntry | undefined {
+    const entry = entryForSession(d.toasts, toastId, d.currentUserId());
+    if (entry) d.toasts.delete(toastId);
+    return entry;
+  }
+
+  return { reply, open };
 }
 
 /** Standard base64 of `bytes`, in chunks so a large image cannot blow the stack. */
