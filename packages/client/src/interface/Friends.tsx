@@ -9,8 +9,8 @@ import {
 } from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
-import { type RouteSectionProps } from "@solidjs/router";
 import { VirtualContainer } from "@minht11/solid-virtual-container";
+import { type RouteSectionProps } from "@solidjs/router";
 import type { User } from "stoat.js";
 import { cva } from "styled-system/css";
 import { styled } from "styled-system/jsx";
@@ -106,7 +106,9 @@ function openPopout() {
  * Friends menu (also mounted directly on the `/friends` route, so the
  * props must stay route-component compatible)
  */
-export function Friends(props: Partial<RouteSectionProps> & { popout?: boolean }) {
+export function Friends(
+  props: Partial<RouteSectionProps> & { popout?: boolean },
+) {
   const { t } = useLingui();
   const client = useClient();
   const state = useState();
@@ -216,7 +218,12 @@ export function Friends(props: Partial<RouteSectionProps> & { popout?: boolean }
         <Show when={!props.popout && !window.opener && !isMobile}>
           <IconButton
             onPress={openPopout}
-            use:floating={{ tooltip: { placement: "bottom", content: t`Pop out friends list` } }}
+            use:floating={{
+              tooltip: {
+                placement: "bottom",
+                content: t`Pop out friends list`,
+              },
+            }}
           >
             <Symbol>open_in_new</Symbol>
           </IconButton>
