@@ -1034,6 +1034,10 @@ msgid "Applies to direct messages and group chats while this app is running. Pus
 msgstr "Applies to direct messages and group chats while this app is running. Push notifications aren't affected yet."
 
 #: components/app/interface/settings/user/notifications/Notifications.tsx
+msgid "Applies to direct messages and group chats while this app is running. Quick reply works in the Windows desktop app. Push notifications aren't affected yet."
+msgstr "Applies to direct messages and group chats while this app is running. Quick reply works in the Windows desktop app. Push notifications aren't affected yet."
+
+#: components/app/interface/settings/user/notifications/Notifications.tsx
 msgid "Applies to direct messages and group chats. Quick reply is available in the desktop app."
 msgstr "Applies to direct messages and group chats. Quick reply is available in the desktop app."
 
@@ -5662,6 +5666,16 @@ msgstr "Open settings"
 msgid "Open Sloga more than once to use a second account. Takes effect next time you launch; the first window you open is always your main account."
 msgstr "Open Sloga more than once to use a second account. Takes effect next time you launch; the first window you open is always your main account."
 
+#: components/client/toastShell.ts
+#: components/client/toastShell.ts
+#: components/client/toastShell.ts
+msgid "Open Sloga to reply"
+msgstr "Open Sloga to reply"
+
+#: components/client/toastShell.ts
+msgid "Open the conversation to review"
+msgstr "Open the conversation to review"
+
 #: components/app/menus/ChannelContextMenu.tsx
 msgid "Open thread settings"
 msgstr "Open thread settings"
@@ -6531,6 +6545,10 @@ msgstr "Repeat"
 msgid "Reply"
 msgstr "Reply"
 
+#: components/client/toastShell.ts
+msgid "Reply…"
+msgstr "Reply…"
+
 #: components/ui/components/features/messaging/composition/MessageReplyPreview.tsx
 msgid "Replying to"
 msgstr "Replying to"
@@ -7015,6 +7033,10 @@ msgstr "Select video input"
 msgid "Select your language"
 msgstr "Select your language"
 
+#: components/client/toastShell.ts
+msgid "Send"
+msgstr "Send"
+
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "Send attachments to chat"
 msgstr "Send attachments to chat"
@@ -7072,6 +7094,10 @@ msgstr "Send your computer's sound when you share your screen, where the app sup
 #: components/app/interface/channels/text/DraftMessage.tsx
 msgid "Sending..."
 msgstr "Sending..."
+
+#: components/client/toastShell.ts
+msgid "Sending…"
+msgstr "Sending…"
 
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
 #~ msgid "Sensitivity threshold: {0}%"
@@ -7524,6 +7550,10 @@ msgstr "Slogaball minigame"
 #: components/ui/components/features/voice/minigame/MinigameChip.tsx
 msgid "Slogatron minigame"
 msgstr "Slogatron minigame"
+
+#: components/client/toastShell.ts
+msgid "Slow down — try again in a moment"
+msgstr "Slow down — try again in a moment"
 
 #: src/interface/channels/text/Composition.tsx
 msgid "Slowmode Immune"
@@ -8029,6 +8059,10 @@ msgstr "Couldn't open this in the main Sloga window."
 #: components/app/interface/settings/server/roles/ServerRoleEditor.tsx
 msgid "Couldn't remove the incomplete copy \"{name}\". Delete it from the role list."
 msgstr "Couldn't remove the incomplete copy \"{name}\". Delete it from the role list."
+
+#: components/client/toastShell.ts
+msgid "Couldn't send. Open Sloga to retry."
+msgstr "Couldn't send. Open Sloga to retry."
 
 #: components/app/menus/UserContextMenu.tsx
 #: src/interface/navigation/channels/ServerSidebar.tsx

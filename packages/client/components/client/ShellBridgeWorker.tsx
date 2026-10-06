@@ -3,7 +3,7 @@ import { type JSX, onCleanup, onMount } from "solid-js";
 import { tauriInvoke } from "@revolt/common";
 import { useNavigate } from "@revolt/routing";
 
-import { useClient } from ".";
+import { useClient, useClientLifecycle } from ".";
 import {
   POPOUT_WEB_MESSAGE_TYPE,
   ULID_RE,
@@ -11,6 +11,7 @@ import {
   isShellToMain,
   useUserActions,
 } from "./popoutBridge";
+import { clearAllToasts, useToastShell } from "./toastShell";
 
 /**
  * The parts of the Tauri global this worker touches, declared locally as the
@@ -49,7 +50,8 @@ function fromFriendsPopout(event: MessageEvent): boolean {
 
 /**
  * Receives what other windows ask the main window to do: a friends-popout
- * action (open a DM, start a call) and a click on a desktop notification.
+ * action (open a DM, start a call), a click on a desktop notification, and a
+ * reply typed into (or a click on) the Windows shell's Sloga toast.
  *
  * Mounted in the main window only. Every input is untrusted until
  * `isShellToMain` accepts it, whichever transport it came in on.
@@ -64,6 +66,20 @@ export function ShellBridgeWorker(): JSX.Element | null {
   const client = useClient();
   const navigate = useNavigate();
   const actions = useUserActions();
+  const toastShell = useToastShell();
+  const { lifecycle } = useClientLifecycle();
+
+  // Toasts belong to the session and the page that showed them. This
+  // worker leaves with Interface when signing out lands on /login; the hook
+  // fires earlier, while the old client is still alive. The mount clear is
+  // for a reloaded page, which starts with an empty map while the shell
+  // still shows the old page's toasts; it is queued ahead of the Tauri
+  // registration below, so those toasts go before any reply can arrive.
+  onCleanup(lifecycle.onSignOut(clearAllToasts));
+  onMount(() => {
+    clearAllToasts();
+    onCleanup(clearAllToasts);
+  });
 
   function handle(message: unknown) {
     if (!isShellToMain(message)) {
@@ -90,6 +106,32 @@ export function ShellBridgeWorker(): JSX.Element | null {
       case "notificationOpen":
         navigate(message.path);
         return;
+      // No `users.get` check: these name a toast id this window minted, and
+      // toastShell resolves the channel from its own map, never the payload.
+      case "toastReply":
+        toastShell
+          .handleReply(message.toastId, message.text)
+          // The name only: the error may echo the reply text.
+          .catch((error) =>
+            console.error(
+              "[shell-bridge] toast reply failed",
+              error instanceof Error ? error.name : typeof error,
+            ),
+          );
+        return;
+      case "toastOpen":
+        toastShell.handleOpen(message.toastId);
+        return;
+      default: {
+        // A kind added to `ShellToMain` without a case here fails to compile
+        // instead of being silently ignored.
+        const unhandled: never = message;
+        console.warn(
+          "[shell-bridge] unhandled kind",
+          (unhandled as { kind: string }).kind,
+        );
+        return;
+      }
     }
   }
 
