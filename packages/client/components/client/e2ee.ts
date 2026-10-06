@@ -50,6 +50,7 @@ import {
   MLS_REQUEST_DEADLINE_MS,
   settleCallRosterReconcile,
 } from "./e2eeRatelimitPolicy";
+import { settleDelivered } from "./e2eeSendSettle";
 import { classifyEnvelopeError } from "./mlsEnvelopeClassify";
 import {
   type MlsBufferedEnvelope,
@@ -2446,53 +2447,64 @@ export class E2EEBridge implements E2EEAdapter {
       );
     }
 
-    const revoked = await this.#invoke<string[]>("e2ee_handle_receipts", {
+    // The server accepted the ciphertext: the peer has the message. From
+    // here on everything is bookkeeping, so a failure is logged and the
+    // send still resolves with the echo (a rejection would make Retry
+    // re-encrypt and deliver a second copy).
+    let revoked: string[] | undefined;
+    return settleDelivered({
+      // Local echo with the native store's canonical message id. Attachment
+      // metadata arrives with the #syncRecent below (the rows were bound in
+      // the native encrypt transaction) — the renderer reads the reactive
+      // attachment map, so the echo picks them up without re-injection.
+      inject: () =>
+        this.#inject(
+          channel.id,
+          {
+            id: result.message_id,
+            conversation: peerId,
+            direction: "out",
+            kind: "text",
+            content,
+            sender_device_id: null,
+            sequence: null,
+            detail: null,
+            created_at: Math.floor(Date.now() / 1000),
+          },
+          true,
+        ),
       receipts,
-    });
-    if (revoked.length || opportunistic) {
-      // opportunistic: the conversation just became sticky-encrypted —
-      // flip the composer indicator to the lock
-      await this.#refreshMode(peerId);
-    }
-
-    // Local echo with the native store's canonical message id. Attachment
-    // metadata arrives with the #syncRecent below (the rows were bound in
-    // the native encrypt transaction) — the renderer reads the reactive
-    // attachment map, so the echo picks them up without re-injection.
-    const message = this.#inject(
-      channel.id,
-      {
-        id: result.message_id,
-        conversation: peerId,
-        direction: "out",
-        kind: "text",
-        content,
-        sender_device_id: null,
-        sequence: null,
-        detail: null,
-        created_at: Math.floor(Date.now() / 1000),
+      handleReceipts: async () => {
+        revoked = await this.#invoke<string[]>("e2ee_handle_receipts", {
+          receipts,
+        });
       },
-      true,
-    );
-
-    await this.#syncRecent(peerId);
-
-    // Rev-2 MAJOR-1: a fan-out that reached ZERO live devices would
-    // otherwise render as a clean send — the one-message silent-loss
-    // window when every device-change event was missed. Surface it and
-    // arm the bundle prefetch so the user's resend heals. Injected AFTER
-    // the echo so the marker reads under the message it refers to
-    // (review MINOR-2). NON-PERSISTED (live session only — design §7).
-    const statuses = (receipts as { status?: string }[]).map((r) => r?.status);
-    if (statuses.length && statuses.every((st) => st === "UnknownDevice")) {
-      this.#bundleNeeded.add(peerId);
-      this.#injectLocalMarker(
-        channel.id,
-        "Not delivered — the recipient's devices changed. Send the message again.",
-      );
-    }
-
-    return message;
+      refreshMode: async () => {
+        // opportunistic: the conversation just became sticky-encrypted —
+        // flip the composer indicator to the lock. revoked unset: receipt
+        // handling failed, so the indicator may be stale.
+        if (!revoked || revoked.length || opportunistic) {
+          await this.#refreshMode(peerId);
+        }
+      },
+      syncRecent: () => this.#syncRecent(peerId),
+      // Rev-2 MAJOR-1: a fan-out that reached ZERO live devices would
+      // otherwise render as a clean send — the one-message silent-loss
+      // window when every device-change event was missed. Surface it and
+      // arm the bundle prefetch so the user's resend heals. Injected AFTER
+      // the echo so the marker reads under the message it refers to
+      // (review MINOR-2). NON-PERSISTED (live session only — design §7).
+      // settleDelivered calls this only when every receipt is UnknownDevice.
+      markUndelivered: () => {
+        this.#bundleNeeded.add(peerId);
+        this.#injectLocalMarker(
+          channel.id,
+          "Not delivered — the recipient's devices changed. Send the message again.",
+        );
+      },
+      log: (step, name) =>
+        console.warn(`[e2ee] post-delivery ${step} failed:`, name),
+    });
   }
 
   // ================================================================
@@ -2575,27 +2587,39 @@ export class E2EEBridge implements E2EEAdapter {
       );
     }
 
-    await this.#invoke<string[]>("e2ee_handle_receipts", { receipts });
-
-    const message = this.#inject(
-      channel.id,
-      {
-        id: result.message_id,
-        conversation: conversationId,
-        direction: "out",
-        kind: "text",
-        content,
-        sender_user_id: this.#client.user!.id,
-        sender_device_id: null,
-        sequence: null,
-        detail: null,
-        created_at: Math.floor(Date.now() / 1000),
+    // Delivered: bookkeeping failures are logged, never a failed send
+    // (same reasoning as the DM path).
+    return settleDelivered({
+      inject: () =>
+        this.#inject(
+          channel.id,
+          {
+            id: result.message_id,
+            conversation: conversationId,
+            direction: "out",
+            kind: "text",
+            content,
+            sender_user_id: this.#client.user!.id,
+            sender_device_id: null,
+            sequence: null,
+            detail: null,
+            created_at: Math.floor(Date.now() / 1000),
+          },
+          true,
+        ),
+      receipts,
+      handleReceipts: async () => {
+        await this.#invoke<string[]>("e2ee_handle_receipts", { receipts });
       },
-      true,
-    );
-
-    await this.#syncRecentConversation(conversationId, channel.id);
-    return message;
+      refreshMode: () => this.#refreshGroupMode(conversationId),
+      syncRecent: () =>
+        this.#syncRecentConversation(conversationId, channel.id),
+      markUndelivered: () => {
+        // group sends show no "Not delivered" marker
+      },
+      log: (step, name) =>
+        console.warn(`[e2ee] post-delivery ${step} failed:`, name),
+    });
   }
 
   /**
