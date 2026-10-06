@@ -565,6 +565,33 @@ class Lifecycle {
 }
 
 /**
+ * Attempts the server allows on one MFA login ticket. It deletes the ticket
+ * once they are used up. Mirrors `MFA_TICKET_MAX_ATTEMPTS` in the backend's
+ * `mfa_tickets/model.rs`.
+ */
+const MFA_TICKET_MAX_ATTEMPTS = 3;
+
+/**
+ * Read the `type` of an error thrown by the API client. On a non-2xx status
+ * it throws the raw response body, a JSON string.
+ * @param error Thrown value
+ * @returns Error type, if there is one
+ */
+function apiErrorType(error: unknown): string | undefined {
+  let value = error;
+  if (typeof value === "string") {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return undefined;
+    }
+  }
+
+  const type = (value as { type?: unknown } | null | undefined)?.type;
+  return typeof type === "string" ? type : undefined;
+}
+
+/**
  * Controls lifecycle of clients
  */
 export default class ClientController {
@@ -718,6 +745,9 @@ export default class ClientController {
     // Prompt for MFA verification if necessary
     if (session.result === "MFA") {
       const { allowed_methods } = session;
+      // Every response sent counts against the ticket on the server, whatever
+      // the outcome
+      let attempts = 0;
       while (session.result === "MFA") {
         const mfa_response: API.MFAResponse | undefined = await new Promise(
           (callback) =>
@@ -733,6 +763,7 @@ export default class ClientController {
           break;
         }
 
+        attempts++;
         try {
           session = await this.api.post("/auth/session/login", {
             mfa_response,
@@ -741,6 +772,21 @@ export default class ClientController {
           });
         } catch (err) {
           console.error("Failed login:", err);
+
+          // Every code is refused until the lock expires. Rethrow the raw
+          // body, as the password step does, so the form shows the
+          // `LockedOut` message.
+          if (apiErrorType(err) === "LockedOut") {
+            throw err;
+          }
+
+          // A wrong code is also `InvalidToken`, so the type cannot tell a
+          // dead ticket apart; count the attempts instead. The server deletes
+          // the ticket after its last failed attempt, and the user has to
+          // sign in again ("Please log in again.").
+          if (attempts >= MFA_TICKET_MAX_ATTEMPTS) {
+            throw { type: "InvalidSession" };
+          }
         }
       }
 
