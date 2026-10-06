@@ -40,9 +40,9 @@ patchedDependencies:
 #
 # One copy each of solid-js, prosemirror-model and prosemirror-view across the
 # workspace. The submodules and editor plugins otherwise keep their own older
-# locked copies: two Solid runtimes break reactivity, two ProseMirror copies
-# break the composer (instanceof checks on Fragment/Slice), and the old copies
-# would keep the SEC-048 advisories shipping (prosemirror-view paste XSS
+# locked copies: two Solid runtimes break reactivity, two prosemirror-model
+# copies break each other's instanceof checks, and the old copies would keep
+# the SEC-048 advisories in the shipped tree (prosemirror-view paste XSS
 # GHSA-c8x8-7fp4-3x9w, fixed in 1.42.3; seroval via solid-js).
 overrides:
   "prettier": "^3.8.1"

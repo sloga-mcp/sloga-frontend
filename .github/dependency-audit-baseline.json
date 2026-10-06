@@ -15,6 +15,6 @@
     "GHSA-p6vx-979v-rg4c": "seroval 1.5.6 (critical): via solid-js 1.9.15, whose own range (~1.5.4) has no patched release; fixed in seroval 1.6.1. Only solid-js/web/dist/server.js (the server-rendering build) imports seroval, and the client bundle contains no seroval code (checked in the built dist). This app never server-renders or calls fromJSON. Tracked as SEC-048.",
     "GHSA-f88m-g3jw-g9cj": "sharp 0.34.5 (high): via @huggingface/transformers, Node-only image decoding that the browser build never loads (its native build is disabled in pnpm-workspace.yaml allowBuilds).",
     "GHSA-rgj7-g3m4-5g8c": "sharp 0.34.5 (high): via @huggingface/transformers, Node-only image decoding that the browser build never loads (its native build is disabled in pnpm-workspace.yaml allowBuilds).",
-    "GHSA-r292-9mhp-454m": "tar 7.5.19 (high): via @huggingface/transformers > onnxruntime-node, Node-only (unpacks native binaries at install time); the browser build never loads it. Not shipped to users."
+    "GHSA-r292-9mhp-454m": "tar 7.5.19 (high): via @huggingface/transformers > onnxruntime-node, whose install script (the only thing that runs tar) is disabled in pnpm-workspace.yaml allowBuilds; Node-only, the browser build never loads it. Not shipped to users."
   }
 }
