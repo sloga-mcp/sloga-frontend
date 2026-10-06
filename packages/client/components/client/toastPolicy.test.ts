@@ -1,9 +1,12 @@
 // Unit spec for the Sloga toast's rules — run with Node's built-in runner
 // from packages/client:
 //   node --conditions=browser --test components/client/toastPolicy.test.ts
-// Declared test count: 21 (compare against the runner's pass count, since the
+// Declared test count: 27 (compare against the runner's pass count, since the
 // runner also exits 0 when it finds no tests at all).
-// Focus: a reply is sent only while everything that offered the reply box
+// Focus: only a Windows Tauri window or an Electron shell answering exactly
+// "window" gets a Sloga toast, any sign of Electron rules out the protected
+// one, only a DM or group gets one, only the protected one is `sloga_toast`,
+// and only an exact { ok: true } envelope counts as shown; a reply is sent only while everything that offered the reply box
 // still holds (the sweep checks no fact undoes another's denial); a toast
 // belongs to the account it was shown to and is dropped for anyone else,
 // including when the account changes while it goes up; a failed send maps to
@@ -23,6 +26,7 @@ import {
   bytesToBase64,
   classifySendError,
   entryForSession,
+  envelopeOk,
   evictOldest,
   MAX_AVATAR_DATA_URL_LENGTH,
   MAX_TOAST_BODY_LENGTH,
@@ -30,6 +34,8 @@ import {
   MAX_TOASTS,
   replyAllowed,
   showToast,
+  toastSupportFor,
+  toastSurfaceFor,
   truncateForToast,
 } from "./toastPolicy.ts";
 
@@ -368,7 +374,7 @@ function deferred<T>(): {
 /** Fake app: `user` is who is signed in; each call is recorded. */
 function fakeDeps(options: {
   avatar?: Promise<string | null>;
-  show?: () => Promise<unknown>;
+  show?: () => Promise<boolean>;
   clear?: () => Promise<unknown>;
 }): {
   deps: ToastShowDeps;
@@ -387,10 +393,13 @@ function fakeDeps(options: {
       fetched.push(url);
       return options.avatar ?? Promise.resolve("data:image/png;base64,AQID");
     },
-    invoke(command, args) {
-      calls.push({ command, args });
-      const answer = command === "toast_show" ? options.show : options.clear;
-      return answer ? answer() : Promise.resolve(undefined);
+    show(payload) {
+      calls.push({ command: "show", args: { ...payload } });
+      return options.show ? options.show() : Promise.resolve(true);
+    },
+    clear(channelId) {
+      calls.push({ command: "clear", args: { channelId } });
+      return options.clear ? options.clear() : Promise.resolve(undefined);
     },
     strings: () => ({
       replyPlaceholder: "R",
@@ -409,22 +418,20 @@ test("showToast: the payload is what the shell accepts, and the entry is this us
   assert.deepEqual(fetched, [request.avatarUrl]);
   assert.deepEqual(calls, [
     {
-      command: "toast_show",
+      command: "show",
       args: {
-        payload: {
-          id: "id0",
-          channelId: request.channelId,
-          title: "t".repeat(199) + "…",
-          sender: "Alice",
-          body: "b".repeat(3999) + "…",
-          avatarDataUrl: "data:image/png;base64,AQID",
-          allowReply: true,
-          strings: {
-            replyPlaceholder: "R",
-            send: "S",
-            dismiss: "D",
-            sending: "G",
-          },
+        id: "id0",
+        channelId: request.channelId,
+        title: "t".repeat(199) + "…",
+        sender: "Alice",
+        body: "b".repeat(3999) + "…",
+        avatarDataUrl: "data:image/png;base64,AQID",
+        allowReply: true,
+        strings: {
+          replyPlaceholder: "R",
+          send: "S",
+          dismiss: "D",
+          sending: "G",
         },
       },
     },
@@ -442,7 +449,7 @@ test("showToast: the payload is what the shell accepts, and the entry is this us
     await showToast(m, { ...request, body: null, avatarUrl: null }, bare),
     true,
   );
-  const payload = bareCalls[0].args.payload as Record<string, unknown>;
+  const payload = bareCalls[0].args;
   assert.equal(payload.body, null);
   assert.equal(payload.avatarDataUrl, null);
   assert.deepEqual(none, []);
@@ -467,12 +474,12 @@ test("showToast: a refused toast leaves no entry and costs no older one", async 
   assert.deepEqual([...m.keys()], ["a", "b", "c"]);
 
   // Accepted: recorded before the shell answers, oldest evicted after.
-  const show = deferred<unknown>();
+  const show = deferred<boolean>();
   const { deps: later } = fakeDeps({ show: () => show.promise });
   const pending = showToast(m, request, later);
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual([...m.keys()], ["a", "b", "c", "id0"]);
-  show.resolve(undefined);
+  show.resolve(true);
   assert.equal(await pending, true);
   assert.deepEqual([...m.keys()], ["b", "c", "id0"]);
 });
@@ -494,7 +501,7 @@ test("showToast: an account change during the avatar fetch shows nothing", async
 test("showToast: an account change while the shell takes it takes it down again", async () => {
   for (const next of [undefined, "u2"]) {
     const m = new Map<string, ToastEntry>([["old", entry("x")]]);
-    const show = deferred<unknown>();
+    const show = deferred<boolean>();
     const { deps, calls, session } = fakeDeps({
       show: () => show.promise,
       // A failed clear must not surface as an unhandled rejection.
@@ -503,15 +510,174 @@ test("showToast: an account change while the shell takes it takes it down again"
     const pending = showToast(m, request, deps);
     await new Promise((resolve) => setImmediate(resolve));
     session.user = next;
-    show.resolve(undefined);
+    show.resolve(true);
     assert.equal(await pending, false, String(next));
     assert.deepEqual(
       calls.map((call) => call.command),
-      ["toast_show", "toast_clear"],
+      ["show", "clear"],
       String(next),
     );
     assert.deepEqual(calls[1].args, { channelId: request.channelId });
     assert.deepEqual([...m.keys()], ["old"], String(next));
     await new Promise((resolve) => setImmediate(resolve));
+  }
+});
+
+test("showToast: a shell answering false is a refusal, like a rejection", async () => {
+  const m = new Map<string, ToastEntry>();
+  for (const id of ["a", "b", "c"]) m.set(id, entry(id));
+  const { deps, calls } = fakeDeps({ show: () => Promise.resolve(false) });
+  assert.equal(await showToast(m, request, deps), false);
+  assert.deepEqual([...m.keys()], ["a", "b", "c"]);
+  assert.deepEqual(
+    calls.map((call) => call.command),
+    ["show"],
+  );
+});
+
+// ---- which shell draws it
+
+const WINDOWS_UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)";
+const LINUX_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36";
+
+test("toastSupportFor: only a Windows Tauri window is protected", () => {
+  assert.equal(
+    toastSupportFor({
+      tauri: true,
+      userAgent: WINDOWS_UA,
+      electronShell: false,
+      electronCapability: undefined,
+    }),
+    "protected",
+  );
+  // Tauri off Windows, and Windows without Tauri (the web app), draw none.
+  assert.equal(
+    toastSupportFor({
+      tauri: true,
+      userAgent: LINUX_UA,
+      electronShell: false,
+      electronCapability: undefined,
+    }),
+    null,
+  );
+  assert.equal(
+    toastSupportFor({
+      tauri: false,
+      userAgent: WINDOWS_UA,
+      electronShell: false,
+      electronCapability: undefined,
+    }),
+    null,
+  );
+});
+
+test("toastSupportFor: Electron is unprotected only on an exact window answer", () => {
+  assert.equal(
+    toastSupportFor({
+      tauri: false,
+      userAgent: LINUX_UA,
+      electronShell: true,
+      electronCapability: { mode: "window", reason: "x11" },
+    }),
+    "unprotected",
+  );
+  for (const answer of [
+    { mode: "os", reason: "wayland" },
+    { mode: "Window", reason: "x11" },
+    { reason: "x11" },
+    "window",
+    null,
+    undefined,
+    42,
+  ]) {
+    assert.equal(
+      toastSupportFor({
+        tauri: false,
+        userAgent: LINUX_UA,
+        electronShell: true,
+        electronCapability: answer,
+      }),
+      null,
+      JSON.stringify(answer) ?? "undefined",
+    );
+  }
+});
+
+test("toastSupportFor: any sign of Electron rules out the protected toast", () => {
+  const facts = (electronShell: boolean, electronCapability: unknown) =>
+    toastSupportFor({
+      tauri: true,
+      userAgent: WINDOWS_UA,
+      electronShell,
+      electronCapability,
+    });
+  // A Tauri global beside an Electron bridge never claims "protected": the
+  // Electron toast is what would draw it, and it is in every capture.
+  assert.equal(facts(true, { mode: "window", reason: "x11" }), "unprotected");
+  assert.equal(facts(true, { mode: "os", reason: "wayland" }), null);
+  // The bridge without a toast, or one whose capability() threw.
+  assert.equal(facts(true, undefined), null);
+  assert.equal(facts(true, null), null);
+  // An answer from a bridge is evidence of one, even unflagged.
+  assert.equal(facts(false, { mode: "window" }), "unprotected");
+  assert.equal(facts(false, { mode: "os" }), null);
+  assert.equal(facts(false, null), null);
+  // Tauri alone on Windows is the protected toast.
+  assert.equal(facts(false, undefined), "protected");
+});
+
+test("toastSurfaceFor: DMs and groups only, on exactly the shell's surface", () => {
+  const supports = ["protected", "unprotected", null] as const;
+  const expected: Record<string, (string | null)[]> = {
+    DirectMessage: ["sloga_toast", "sloga_toast_unprotected", null],
+    Group: ["sloga_toast", "sloga_toast_unprotected", null],
+    TextChannel: [null, null, null],
+    VoiceChannel: [null, null, null],
+    SavedMessages: [null, null, null],
+    Forum: [null, null, null],
+    Thread: [null, null, null],
+    directmessage: [null, null, null],
+    "": [null, null, null],
+  };
+  for (const [channelType, row] of Object.entries(expected)) {
+    supports.forEach((support, index) => {
+      assert.equal(
+        toastSurfaceFor(channelType, support),
+        row[index],
+        `${channelType} × ${support}`,
+      );
+    });
+  }
+  // Anything but the two exact answers is no Sloga toast.
+  for (const support of ["Protected", "window", "", undefined]) {
+    assert.equal(
+      toastSurfaceFor("DirectMessage", support as never),
+      null,
+      String(support),
+    );
+  }
+});
+
+test("envelopeOk: only { ok: true } counts as shown", () => {
+  assert.equal(envelopeOk({ ok: true }), true);
+  for (const envelope of [
+    { ok: false, err: "suppressed" },
+    { ok: false, err: "unsupported" },
+    { ok: false, err: "invalid" },
+    { ok: false, err: "not_ready" },
+    { ok: "true" },
+    { ok: 1 },
+    {},
+    true,
+    "ok",
+    null,
+    undefined,
+  ]) {
+    assert.equal(
+      envelopeOk(envelope),
+      false,
+      JSON.stringify(envelope) ?? "undefined",
+    );
   }
 });

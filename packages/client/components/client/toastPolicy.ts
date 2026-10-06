@@ -1,11 +1,13 @@
 /**
- * The rules behind the Windows shell's Sloga toast, kept free of Solid,
- * lingui and the client so `node --test` can load them: who may still reply,
- * what a failed send tells the user, which toast belongs to whom, and what the
- * shell will accept. toastShell.ts wires them to the running app.
+ * The rules behind the desktop shells' Sloga toast, kept free of Solid,
+ * lingui and the client so `node --test` can load them: which shell can draw
+ * one, who may still reply, what a failed send tells the user, which toast
+ * belongs to whom, and what the shell will accept. toastShell.ts wires them to
+ * the running app.
  */
 import {
   type DmPreviewMode,
+  type NotificationSurface,
   decidePreview,
 } from "./notificationPreviewPolicy.ts";
 
@@ -31,6 +33,83 @@ const AVATAR_TYPES: readonly string[] = [
   "image/webp",
   "image/gif",
 ];
+
+/**
+ * The Sloga toast a shell can draw. `protected` is the Windows shell's, kept
+ * out of screen capture; `unprotected` is the Electron shell's (Linux X11,
+ * macOS), which nothing there can keep out of a capture.
+ */
+export type ToastSupport = "protected" | "unprotected";
+
+/** What decides which toast, if any, this window's shell can draw. */
+export interface ToastShellFacts {
+  /** A Tauri window allowed to call the shell (`tauriInvoke()`). */
+  tauri: boolean;
+  userAgent: string;
+  /**
+   * `slogaShell` is on the window: the Electron preload's bridge, with or
+   * without a toast on it. The marker of an Electron window, as it is for
+   * the OS notification surface.
+   */
+  electronShell: boolean;
+  /**
+   * What the Electron shell's `slogaShell.toast.capability()` answered;
+   * undefined when there is no such bridge, or it threw.
+   */
+  electronCapability: unknown;
+}
+
+/**
+ * Which toast this window's shell can draw, or null for none. An older
+ * Windows shell has no toast commands; its `toast_show` rejects and the
+ * caller falls back to the OS toast. On Electron only an exact "window"
+ * answer counts: a Wayland session, an older shell and anything malformed all
+ * keep the OS notification.
+ *
+ * Any sign of Electron (the bridge, or an answer from it) rules out the
+ * protected toast, whatever else the window carries: the protected surface
+ * may show decrypted text, and Electron's toast is in every screen capture.
+ */
+export function toastSupportFor(facts: ToastShellFacts): ToastSupport | null {
+  if (facts.electronShell || facts.electronCapability !== undefined) {
+    const mode = (facts.electronCapability as { mode?: unknown } | null)?.mode;
+    return mode === "window" ? "unprotected" : null;
+  }
+  return facts.tauri && /Windows/i.test(facts.userAgent) ? "protected" : null;
+}
+
+/** The surfaces our own toast window goes up on. */
+export type ToastSurface = Extract<
+  NotificationSurface,
+  "sloga_toast" | "sloga_toast_unprotected"
+>;
+
+/**
+ * The surface a Sloga toast for this conversation goes up on, or null when
+ * it goes to the OS. Only direct messages and group chats, which is what the
+ * setting promises; server channels keep the OS notification. Only the
+ * protected toast is `sloga_toast`, the surface that may show an encrypted
+ * message's text, and the toast shell is then asked for exactly this surface.
+ */
+export function toastSurfaceFor(
+  channelType: string,
+  support: ToastSupport | null,
+): ToastSurface | null {
+  if (channelType !== "DirectMessage" && channelType !== "Group") return null;
+  if (support === "protected") return "sloga_toast";
+  if (support === "unprotected") return "sloga_toast_unprotected";
+  return null;
+}
+
+/**
+ * Whether the Electron shell took a toast. Its bridge answers with an
+ * envelope rather than rejecting (contextBridge mangles a rejection), so only
+ * `{ ok: true }` counts; "suppressed", "unsupported", "invalid", "not_ready"
+ * and anything malformed are a refusal.
+ */
+export function envelopeOk(envelope: unknown): boolean {
+  return (envelope as { ok?: unknown } | null)?.ok === true;
+}
 
 export interface ToastEntry {
   channelId: string;
@@ -122,8 +201,10 @@ export function replyAllowed(facts: ReplyFacts): boolean {
   const decision = decidePreview({
     mode: facts.mode,
     override: facts.override,
-    // Only the content rules read this, never the reply rule; true is the
-    // value that can only take something away.
+    // On this surface only the content rules read this, never the reply rule;
+    // true is the value that can only take something away. The unprotected
+    // toast's own E2EE rule (no reply) was applied when it went up and is in
+    // `allowReply`.
     isE2EE: true,
     surface: "sloga_toast",
     screensharing: facts.screensharing,
@@ -237,6 +318,18 @@ export interface ToastStrings {
   sending: string;
 }
 
+/** One toast as the shell takes it; both shells validate the same shape. */
+export interface ToastPayload {
+  id: string;
+  channelId: string;
+  title: string;
+  sender: string;
+  body: string | null;
+  avatarDataUrl: string | null;
+  allowReply: boolean;
+  strings: ToastStrings;
+}
+
 /** What showing a toast needs from the running app. */
 export interface ToastShowDeps {
   /** Who is signed in right now; undefined once nobody is. */
@@ -244,7 +337,10 @@ export interface ToastShowDeps {
   /** A fresh toast id. */
   mintId(): string;
   fetchAvatar(url: string): Promise<string | null>;
-  invoke(command: string, args: Record<string, unknown>): Promise<unknown>;
+  /** Hand the toast to the shell; false (or a rejection) when it refused. */
+  show(payload: ToastPayload): Promise<boolean>;
+  /** Take down every toast the shell has up for a conversation. */
+  clear(channelId: string): Promise<unknown>;
   strings(): ToastStrings;
 }
 
@@ -272,8 +368,8 @@ export async function showToast(
 
   if (deps.currentUserId() !== userId) return false;
 
-  // Recorded before the shell has it: a reply can arrive before
-  // `toast_show` resolves.
+  // Recorded before the shell has it: a reply can arrive before the show
+  // resolves.
   toasts.set(id, {
     channelId: request.channelId,
     messageId: request.messageId,
@@ -281,25 +377,27 @@ export async function showToast(
     userId,
   });
 
+  let shown: boolean;
   try {
-    await deps.invoke("toast_show", {
-      payload: {
-        id,
-        channelId: request.channelId,
-        // Cut here rather than refused there: a long group or server name
-        // would otherwise cost the toast.
-        title: truncateForToast(request.title, MAX_TOAST_NAME_LENGTH),
-        sender: truncateForToast(request.sender, MAX_TOAST_NAME_LENGTH),
-        body:
-          request.body === null
-            ? null
-            : truncateForToast(request.body, MAX_TOAST_BODY_LENGTH),
-        avatarDataUrl: avatar,
-        allowReply: request.allowReply,
-        strings: deps.strings(),
-      },
+    shown = await deps.show({
+      id,
+      channelId: request.channelId,
+      // Cut here rather than refused there: a long group or server name
+      // would otherwise cost the toast.
+      title: truncateForToast(request.title, MAX_TOAST_NAME_LENGTH),
+      sender: truncateForToast(request.sender, MAX_TOAST_NAME_LENGTH),
+      body:
+        request.body === null
+          ? null
+          : truncateForToast(request.body, MAX_TOAST_BODY_LENGTH),
+      avatarDataUrl: avatar,
+      allowReply: request.allowReply,
+      strings: deps.strings(),
     });
   } catch {
+    shown = false;
+  }
+  if (!shown) {
     toasts.delete(id);
     return false;
   }
@@ -307,9 +405,7 @@ export async function showToast(
   if (deps.currentUserId() !== userId) {
     // It went up after the session ended: take it straight down again.
     toasts.delete(id);
-    deps
-      .invoke("toast_clear", { channelId: request.channelId })
-      .catch(() => {});
+    deps.clear(request.channelId).catch(() => {});
     return false;
   }
 

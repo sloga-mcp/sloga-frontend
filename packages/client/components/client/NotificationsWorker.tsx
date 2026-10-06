@@ -56,6 +56,7 @@ import {
 } from "./notificationPreviewPolicy";
 import { playsWebRingtone } from "./pushPolicy";
 import { connectionUrl } from "./streamConnections";
+import { toastSurfaceFor } from "./toastPolicy";
 import { toastSupported, useToastShell } from "./toastShell";
 import { type UnreadBadge, sameBadge, unreadBadge } from "./unreadBadge";
 import { publishUnreadBadge } from "./unreadBadgeShell";
@@ -244,12 +245,19 @@ export function NotificationsWorker() {
       }
       return decision;
     };
-    // Our toast is for direct messages and group chats, which is what the
-    // setting promises; server channels keep the OS notification.
-    const slogaToast =
-      toastSupported() &&
-      (channel.type === "DirectMessage" || channel.type === "Group");
-    const preview = decide(slogaToast ? "sloga_toast" : notificationSurface());
+    // Our toast is for direct messages and group chats (toastSurfaceFor
+    // decides; the shell is asked only where it could say yes). A toast the
+    // shell cannot keep out of screen capture is its own surface, so an
+    // encrypted message on it stays sender-only, and the toast shell is held
+    // to the surface decided here.
+    const toastSurface = toastSurfaceFor(
+      channel.type,
+      channel.type === "DirectMessage" || channel.type === "Group"
+        ? toastSupported()
+        : null,
+    );
+    const slogaToast = toastSurface !== null;
+    const preview = decide(toastSurface ?? notificationSurface());
     if (!preview.show) return;
 
     // Generate the title. A function of the decision, since the OS fallback
@@ -395,21 +403,24 @@ export function NotificationsWorker() {
     if (notificationsSuppressed()) return;
 
     // Our own toast window first, where the shell has one. Its text never
-    // reaches the OS notification store, so it alone may show an encrypted
-    // message's content and offer a reply. A rejected show() (an older shell)
-    // counts as refused like any other.
+    // reaches the OS notification store, so the protected one alone may show
+    // an encrypted message's content and offer a reply. A rejected show() (an
+    // older shell) counts as refused like any other.
     if (
-      slogaToast &&
+      toastSurface !== null &&
       (await toastShell
-        .show({
-          channelId: message.channelId,
-          messageId: message.id,
-          title: titleFor(preview) ?? "",
-          sender: message.username ?? "",
-          body: preview.showBody ? (body ?? null) : null,
-          avatarUrl: icon ?? null,
-          allowReply: preview.allowReply,
-        })
+        .show(
+          {
+            channelId: message.channelId,
+            messageId: message.id,
+            title: titleFor(preview) ?? "",
+            sender: message.username ?? "",
+            body: preview.showBody ? (body ?? null) : null,
+            avatarUrl: icon ?? null,
+            allowReply: preview.allowReply,
+          },
+          toastSurface,
+        )
         .catch(() => false))
     ) {
       // Showing it awaited (avatar fetch, page registration); if the user
@@ -419,7 +430,7 @@ export function NotificationsWorker() {
       // Never the title or body: either can carry decrypted E2EE text, and
       // console lines end up in bug reports.
       console.info(
-        `[notification] ${channel.type} sloga_toast body=${preview.showBody}`,
+        `[notification] ${channel.type} ${toastSurface} body=${preview.showBody}`,
       );
       return;
     }

@@ -1,12 +1,13 @@
 // Unit spec for the notification preview policy — run with Node's built-in
 // runner:
 //   node --conditions=browser --test components/client/notificationPreviewPolicy.test.ts
-// Declared test count: 23 (compare against the runner's pass count, since the
+// Declared test count: 25 (compare against the runner's pass count, since the
 // runner also exits 0 when it finds no tests at all).
 // Focus: the per-conversation override beats the global mode, "Off" beats
 // everything, anyone watching the screen strips the content and the reply but
 // still announces the message, an E2EE message never puts its content on a
-// toast the OS draws, the browser never offers a reply, and server channels
+// toast the OS draws, nor its content or a reply box on our own toast where a
+// capture can see it, the browser never offers a reply, and server channels
 // ignore the DM setting entirely. The sweeps at the end hold invariants over
 // every input combination, so a rule that re-enables what an earlier one
 // withheld fails there even if no single case above names it.
@@ -28,6 +29,7 @@ import {
 
 const SURFACES: readonly NotificationSurface[] = [
   "sloga_toast",
+  "sloga_toast_unprotected",
   "os_toast",
   "web",
 ];
@@ -130,6 +132,10 @@ test("full_reply on our own toast allows everything, in a DM and a group", () =>
 });
 
 test("full_reply offers a reply only on our own toast", () => {
+  assert.deepEqual(
+    decidePreview(input({ surface: "sloga_toast_unprotected" })),
+    EVERYTHING,
+  );
   assert.deepEqual(decidePreview(input({ surface: "os_toast" })), {
     ...EVERYTHING,
     allowReply: false,
@@ -250,6 +256,42 @@ test("an E2EE message keeps its content and reply on our own toast", () => {
   );
 });
 
+test("an E2EE message on our toast where a capture can see it announces the sender only, with no reply", () => {
+  for (const channelType of DM_TYPES)
+    for (const mode of DM_PREVIEW_MODES)
+      if (mode !== "off")
+        assert.deepEqual(
+          decidePreview(
+            input({
+              isE2EE: true,
+              surface: "sloga_toast_unprotected",
+              channelType,
+              mode,
+            }),
+          ),
+          SENDER_ONLY,
+          `${channelType} ${mode}`,
+        );
+});
+
+test("a plaintext message on our toast where a capture can see it keeps its content and reply", () => {
+  for (const channelType of DM_TYPES)
+    assert.deepEqual(
+      decidePreview(input({ surface: "sloga_toast_unprotected", channelType })),
+      EVERYTHING,
+      channelType,
+    );
+  // Watchers still take the content and the reply away there.
+  for (const flag of ["rcActive", "screensharing", "streamerMode"] as const)
+    assert.deepEqual(
+      decidePreview(
+        input({ [flag]: true, surface: "sloga_toast_unprotected" }),
+      ),
+      SENDER_ONLY,
+      flag,
+    );
+});
+
 test("the browser never offers a reply, whatever else is true", () => {
   for (const i of everyInput())
     if (i.surface === "web")
@@ -300,7 +342,7 @@ test("each call returns a fresh decision", () => {
 });
 
 test("sweep: a reply needs everything else, and nothing outlives show", () => {
-  let replies = 0;
+  const replies = new Map<NotificationSurface, number>();
   for (const i of everyInput()) {
     const d = decidePreview(i);
     const where = label(i);
@@ -308,9 +350,13 @@ test("sweep: a reply needs everything else, and nothing outlives show", () => {
     if (!d.show) assert.deepEqual(d, NOTHING, where);
     if (d.showBody || d.showImage) assert.equal(d.show, true, where);
     if (d.allowReply) {
-      replies++;
+      replies.set(i.surface, (replies.get(i.surface) ?? 0) + 1);
       assert.equal(d.showBody, true, where);
-      assert.equal(i.surface, "sloga_toast", where);
+      assert.ok(
+        i.surface === "sloga_toast" ||
+          (i.surface === "sloga_toast_unprotected" && !i.isE2EE),
+        where,
+      );
       assert.ok((DM_TYPES as readonly string[]).includes(i.channelType), where);
       assert.equal(i.override ?? i.mode, "full_reply", where);
       assert.equal(
@@ -322,11 +368,15 @@ test("sweep: a reply needs everything else, and nothing outlives show", () => {
     if (i.isE2EE && i.surface !== "sloga_toast") {
       assert.equal(d.showBody, false, where);
       assert.equal(d.showImage, false, where);
+      assert.equal(d.allowReply, false, where);
     }
   }
-  // The sweep must reach the one corner where a reply is allowed, or the
-  // block above checked nothing.
-  assert.ok(replies > 0);
+  // The sweep must reach each corner where a reply is allowed, or the block
+  // above checked nothing there.
+  assert.deepEqual([...replies.keys()].sort(), [
+    "sloga_toast",
+    "sloga_toast_unprotected",
+  ]);
 });
 
 const LOCKED_MODES: readonly ConversationE2EEMode[] = [
