@@ -1,4 +1,5 @@
 import { createFormControl, createFormGroup } from "solid-forms";
+import { createSignal } from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
 
@@ -28,10 +29,22 @@ export function BanMemberModal(
     reason: createFormControl(""),
     deleteMessageSeconds: createFormControl("0"),
   });
+
+  // ban() awaits the request, so the dialog stays open for the round trip.
+  // The Ban action calls onSubmit directly rather than through the form's
+  // submit handler, so group.isPending never covers it; this flag does, and
+  // also stops Enter from starting a second ban while one is in flight.
+  const [banning, setBanning] = createSignal(false);
+
   async function onSubmit() {
+    if (banning()) return;
+    setBanning(true);
+
     try {
+      const reason = group.controls.reason.value.trim();
+
       await props.member.ban({
-        reason: group.controls.reason.value,
+        reason: reason || undefined,
         delete_message_seconds: Number(
           group.controls.deleteMessageSeconds.value,
         ),
@@ -40,6 +53,8 @@ export function BanMemberModal(
       props.onClose();
     } catch (error) {
       showError(error);
+    } finally {
+      setBanning(false);
     }
   }
 
@@ -58,10 +73,10 @@ export function BanMemberModal(
             onSubmit();
             return false;
           },
-          isDisabled: !Form2.canSubmit(group),
+          isDisabled: banning() || !Form2.canSubmit(group),
         },
       ]}
-      isDisabled={group.isPending}
+      isDisabled={group.isPending || banning()}
     >
       <form onSubmit={submit}>
         <Column align>

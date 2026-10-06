@@ -114,6 +114,17 @@ export function useError() {
         case "EmptyMessage":
           return t`This message is empty and has not been sent.`;
         case "FailedValidation":
+          // Moderation validation codes (member timeout, audit log reason
+          // header, audit log fetch). Any other code keeps the generic text.
+          switch (err.error) {
+            case "TimeoutOutOfRange":
+              return t`Timeouts must end in the future and last at most 28 days.`;
+            case "AuditLogReasonTooLong":
+              return t`The reason can be at most 512 characters.`;
+            case "UnknownAuditLogAction":
+            case "InvalidAuditLogCursor":
+              return t`Couldn't load the audit log. Try again.`;
+          }
           return t`Something is wrong with your request, ${err.error}.`;
         case "FeatureDisabled":
           return t`This feature is currently disabled.`;
@@ -146,6 +157,8 @@ export function useError() {
           return t`Please log in again.`;
         case "InvalidUsername":
           return t`This username is not allowed.`;
+        case "IsElevated":
+          return t`You can't do that to a member who has the same moderation permission.`;
         case "MissingPermission":
         case "MissingUserPermission":
           return t`You do not have permission to do this.`;

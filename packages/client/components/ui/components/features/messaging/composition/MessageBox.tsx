@@ -78,6 +78,12 @@ interface Props {
   sendingAllowed: boolean;
 
   /**
+   * Notice shown in place of the editor when sending isn't allowed;
+   * the generic no-permission text is used when unset
+   */
+  blockedText?: string;
+
+  /**
    * Auto complete config
    */
   autoCompleteSearchSpace?: Accessor<AutoCompleteSearchSpace>;
@@ -341,9 +347,16 @@ export function MessageBox(props: Props) {
     >
       <Match when={!props.sendingAllowed}>
         <Blocked align noPad>
-          <Trans>
-            You don't have permission to send messages in this channel.
-          </Trans>
+          <Show
+            when={props.blockedText}
+            fallback={
+              <Trans>
+                You don't have permission to send messages in this channel.
+              </Trans>
+            }
+          >
+            {props.blockedText}
+          </Show>
         </Blocked>
       </Match>
     </Switch>

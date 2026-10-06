@@ -87,6 +87,7 @@ import { SoftResReserveModal } from "./modals/SoftResReserve";
 import { SupportSlogaModal } from "./modals/SupportSloga";
 import { SuspendUserModal } from "./modals/SuspendUser";
 import { TimelockComposeModal } from "./modals/TimelockCompose";
+import { TimeoutMemberModal } from "./modals/TimeoutMember";
 import { UserProfileModal } from "./modals/UserProfile";
 import { UserProfileMutualFriendsModal } from "./modals/UserProfileMutualFriends";
 import { UserProfileMutualGroupsModal } from "./modals/UserProfileMutualGroups";
@@ -229,6 +230,8 @@ export function RenderModal(props: ActiveModal & { onClose: () => void }) {
       return <JoinServerModal {...modalProps} />;
     case "kick_member":
       return <KickMemberModal {...modalProps} />;
+    case "timeout_member":
+      return <TimeoutMemberModal {...modalProps} />;
     case "leave_server":
       return <LeaveServerModal {...modalProps} />;
     case "link_warning":
