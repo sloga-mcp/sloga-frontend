@@ -23,6 +23,7 @@ import { streamerModeActive } from "@revolt/state/streamer";
 import { useClient } from ".";
 import { DM_PREVIEW_DEFAULT } from "./notificationPreviewPolicy";
 import {
+  type ReplyError,
   type ToastEntry,
   type ToastPayload,
   type ToastRequest,
@@ -30,13 +31,16 @@ import {
   type ToastSurface,
   AVATAR_FETCH_TIMEOUT_MS,
   avatarDataUrl,
-  classifySendError,
+  capToastStrings,
   entryForSession,
   envelopeOk,
   MAX_AVATAR_DATA_URL_LENGTH,
+  REPLY_TIMEOUT_MS,
   replyAllowed,
+  replyErrorFor,
   showToast,
   toastSupportFor,
+  withReplyTimeout,
 } from "./toastPolicy";
 
 export type { ToastRequest, ToastSupport, ToastSurface } from "./toastPolicy";
@@ -158,7 +162,11 @@ function toastHost(surface?: ToastSurface): ToastHost | undefined {
  */
 const toasts = new Map<string, ToastEntry>();
 
-/** Toasts whose reply is being sent, so a repeated submit cannot send twice. */
+/**
+ * Toasts whose reply is being sent, so a repeated submit cannot send twice.
+ * An id stays here until its send settles, even after the toast was told the
+ * send timed out: the message may still go out.
+ */
 const sending = new Set<string>();
 
 /**
@@ -231,12 +239,16 @@ export function useToastShell(): {
       fetchAvatar,
       show: (payload) => host.show(payload),
       clear: (channelId) => host.clear(channelId),
-      strings: () => ({
-        replyPlaceholder: t`Reply…`,
-        send: t`Send`,
-        dismiss: t`Dismiss`,
-        sending: t`Sending…`,
-      }),
+      // Capped here: the shell refuses a toast whose strings run long, and a
+      // long translation must not cost the toast.
+      strings: () =>
+        capToastStrings({
+          replyPlaceholder: t`Reply…`,
+          send: t`Send`,
+          dismiss: t`Dismiss`,
+          sending: t`Sending…`,
+          couldNotSend: t`Couldn't send. Open Sloga to retry.`,
+        }),
     });
   }
 
@@ -245,14 +257,32 @@ export function useToastShell(): {
     return toastHost()?.replyResult(id, error) ?? Promise.resolve();
   }
 
+  /** What a toast says about a reply that did not go, in the user's language. */
+  function replyErrorText(error: ReplyError): string {
+    switch (error) {
+      case "openToReply":
+        return t`Open Sloga to reply`;
+      case "review":
+        return t`Open the conversation to review`;
+      case "slowDown":
+        return t`Slow down — try again in a moment`;
+      case "couldNotSend":
+        return t`Couldn't send. Open Sloga to retry.`;
+      case "notConfirmed":
+        // Not "failed": the message may still arrive.
+        return t`Couldn't confirm it sent. Open Sloga to check.`;
+    }
+  }
+
   /**
-   * Send a reply typed into a toast.
-   * @returns The message for the toast, or null when it was sent
+   * Start sending a reply typed into a toast, if everything that put the
+   * reply box up still holds.
+   * @returns The send, or null when the reply may not go from the toast
    */
-  async function sendReply(
+  function startReply(
     entry: ToastEntry,
     text: string,
-  ): Promise<string | null> {
+  ): Promise<unknown> | null {
     const channel = client()?.channels.get(entry.channelId);
     const allowed =
       !!channel &&
@@ -273,65 +303,99 @@ export function useToastShell(): {
         canSendMessage: channel.havePermission("SendMessage"),
         recipientRelationship: channel.recipient?.relationship,
       });
-    if (!channel || !allowed) return t`Open Sloga to reply`;
+    if (!channel || !allowed) return null;
 
-    try {
-      // Straight to the channel, never through Draft: the composer's draft for
-      // this conversation is the user's and must not be sent or cleared. The
-      // E2EE choke point inside sendMessage still decides how it goes out.
-      // A fresh idempotency key per attempt: the server remembers a key even
-      // when the send then fails, so reusing one would refuse a real retry.
-      await channel.sendMessage({ content: text }, ulid());
-      return null;
-    } catch (error) {
-      switch (classifySendError(error)) {
-        case "e2ee":
-          return t`Open the conversation to review`;
-        case "ratelimited":
-          return t`Slow down — try again in a moment`;
-        default:
-          return t`Couldn't send. Open Sloga to retry.`;
-      }
-    }
+    // Straight to the channel, never through Draft: the composer's draft for
+    // this conversation is the user's and must not be sent or cleared. The
+    // E2EE choke point inside sendMessage still decides how it goes out.
+    // A fresh idempotency key per attempt: the server remembers a key even
+    // when the send then fails, so reusing one would refuse a real retry.
+    return channel.sendMessage({ content: text }, ulid());
+  }
+
+  /**
+   * The reply went. Only the card replied to goes (the ok result removes it
+   * in the shell). Other cards from this conversation stay: the user may be
+   * typing in one, and clearing them would empty the stack and hand the
+   * foreground back mid-sentence. Action Center can go now.
+   */
+  async function replied(toastId: string, channelId: string): Promise<void> {
+    // Forgotten before anything is awaited, so a retry from the card while
+    // the result is on its way finds nothing to send.
+    toasts.delete(toastId);
+    await replyResult(toastId, null);
+    toastHost()?.clearNotifications(channelId);
   }
 
   /**
    * A reply typed into one of our toasts. The channel comes from our own
    * record, never from anything the toast sent.
+   *
+   * The toast hears back within REPLY_TIMEOUT_MS. A send still going then is
+   * not abandoned: its id stays in `sending` until it settles, so a retry
+   * cannot post the message twice (each attempt carries a fresh idempotency
+   * key, so the server would take both). If it lands after all, the toast is
+   * told nothing more: an ok result takes the card down in the shell, and the
+   * user may be typing in it again. The card keeps its "couldn't confirm"
+   * until it is closed, and this window forgets it, so a retry from it is
+   * "Open Sloga to reply" and sends nothing.
    */
   async function handleReply(toastId: string, text: string): Promise<void> {
-    // A second submit while the first is in flight: the first answers.
-    if (sending.has(toastId)) return;
+    // Another submit while a send for this toast has not settled, even one the
+    // toast was already told timed out: answer it, and send nothing.
+    if (sending.has(toastId)) {
+      await replyResult(toastId, replyErrorText("notConfirmed"));
+      return;
+    }
 
     const entry = entryForSession(toasts, toastId, client()?.user?.id);
     if (!entry) {
       // Unknown to this page (it reloaded, or the toast was evicted) or shown
       // to another account: answer anyway, or the card sits on "Sending…".
-      await replyResult(toastId, t`Open Sloga to reply`);
+      await replyResult(toastId, replyErrorText("openToReply"));
+      return;
+    }
+
+    let attempt: Promise<unknown> | null;
+    try {
+      attempt = startReply(entry, text);
+    } catch {
+      // A check that threw has not confirmed anything.
+      attempt = null;
+    }
+    if (!attempt) {
+      await replyResult(toastId, replyErrorText("openToReply"));
       return;
     }
 
     sending.add(toastId);
-    try {
-      let error: string | null;
-      try {
-        error = await sendReply(entry, text);
-      } catch {
-        // A check that threw has not confirmed anything.
-        error = t`Open Sloga to reply`;
-      }
-      await replyResult(toastId, error);
-      if (error === null) {
-        // Only the card replied to goes (the ok result already removed it in
-        // the shell). Other cards from this conversation stay: the user may
-        // be typing in one, and clearing them would empty the stack and hand
-        // the foreground back mid-sentence. Action Center can go now.
-        toasts.delete(toastId);
-        toastHost()?.clearNotifications(entry.channelId);
-      }
-    } finally {
-      sending.delete(toastId);
-    }
+    const outcome = withReplyTimeout(attempt, REPLY_TIMEOUT_MS);
+    // Out of `sending` when the send itself settles, never on the timeout.
+    attempt.then(
+      () => {
+        // A success in time is answered below, which forgets the toast first.
+        // One after the timeout sends no result (see above); the toast is
+        // forgotten here, before the id leaves `sending`, so no retry ever
+        // finds it sendable. Only Action Center goes, as for a success in
+        // time; the toasts themselves stay.
+        void outcome.then((settled) => {
+          if (settled.kind === "timeout") {
+            toasts.delete(toastId);
+            toastHost()?.clearNotifications(entry.channelId);
+          }
+          sending.delete(toastId);
+        });
+      },
+      () => {
+        // A failure after the timeout says nothing more: the toast already
+        // has its error.
+        sending.delete(toastId);
+      },
+    );
+
+    const error = replyErrorFor(await outcome);
+    if (error === null) await replied(toastId, entry.channelId);
+    else await replyResult(toastId, replyErrorText(error));
   }
 
   /** A click on one of our toasts. The shell has already raised the window. */

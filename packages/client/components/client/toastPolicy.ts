@@ -1,9 +1,9 @@
 /**
  * The rules behind the desktop shells' Sloga toast, kept free of Solid,
  * lingui and the client so `node --test` can load them: which shell can draw
- * one, who may still reply, what a failed send tells the user, which toast
- * belongs to whom, and what the shell will accept. toastShell.ts wires them to
- * the running app.
+ * one, who may still reply, how long a reply may take and what a failed one
+ * tells the user, which toast belongs to whom, and what the shell will accept.
+ * toastShell.ts wires them to the running app.
  */
 import {
   type DmPreviewMode,
@@ -11,8 +11,14 @@ import {
   decidePreview,
 } from "./notificationPreviewPolicy.ts";
 
-/** Toasts the shell stacks at once; it drops the oldest past this, as we do. */
-export const MAX_TOASTS = 3;
+/**
+ * Toast entries kept for replies, newest last. An entry is metadata only (no
+ * message text), and the toast page dismisses older cards itself without
+ * telling us, keeping one the user is typing in or sending from. So this
+ * reaches far past the three cards on screen: a kept card must outlive many
+ * newer toasts. A reply to a card older than this gets "Open Sloga to reply".
+ */
+export const MAX_TOASTS = 32;
 
 /** The shell drops an avatar data URL longer than this. */
 export const MAX_AVATAR_DATA_URL_LENGTH = 300_000;
@@ -275,6 +281,75 @@ export function classifySendError(error: unknown): SendFailure {
   return "other";
 }
 
+/** How long a reply from a toast may take before the card stops waiting. */
+export const REPLY_TIMEOUT_MS = 30_000;
+
+/** How a reply's send ended, as far as the toast is concerned. */
+export type ReplyOutcome =
+  | { kind: "sent" }
+  | { kind: "failed"; error: unknown }
+  | { kind: "timeout" };
+
+/**
+ * Wait for a reply's send, but no longer than `ms`. Never rejects. A timeout
+ * is not a failure: the send may still go through, so the caller must not
+ * offer a second one while this one is unsettled. A rejection after the
+ * timeout is caught here and goes nowhere.
+ */
+export function withReplyTimeout<T>(
+  attempt: Promise<T>,
+  ms: number,
+  timers?: { set: typeof setTimeout; clear: typeof clearTimeout },
+): Promise<ReplyOutcome> {
+  // Called detached: the browser's own timers throw on any other `this`.
+  const set = timers?.set ?? setTimeout;
+  const clear = timers?.clear ?? clearTimeout;
+  return new Promise<ReplyOutcome>((resolve) => {
+    const timer = set(() => resolve({ kind: "timeout" }), ms);
+    attempt.then(
+      () => {
+        clear(timer);
+        resolve({ kind: "sent" });
+      },
+      (error: unknown) => {
+        clear(timer);
+        resolve({ kind: "failed", error });
+      },
+    );
+  });
+}
+
+/**
+ * Which message the toast shows for a reply. `openToReply` is the caller's,
+ * for a reply that was never sent; a send's own outcome never maps to it.
+ */
+export type ReplyError =
+  | "openToReply"
+  | "review"
+  | "slowDown"
+  | "couldNotSend"
+  | "notConfirmed";
+
+/**
+ * The message for a reply's outcome, or null when it was sent. A timeout is
+ * "not confirmed" rather than failed, since the message may still arrive, and
+ * anything unrecognized counts as that too, never as sent.
+ */
+export function replyErrorFor(outcome: ReplyOutcome): ReplyError | null {
+  if (outcome.kind === "sent") return null;
+  if (outcome.kind === "failed") {
+    switch (classifySendError(outcome.error)) {
+      case "e2ee":
+        return "review";
+      case "ratelimited":
+        return "slowDown";
+      default:
+        return "couldNotSend";
+    }
+  }
+  return "notConfirmed";
+}
+
 /** Standard base64 of `bytes`, in chunks so a large image cannot blow the stack. */
 export function bytesToBase64(bytes: Uint8Array): string {
   let binary = "";
@@ -316,6 +391,24 @@ export interface ToastStrings {
   send: string;
   dismiss: string;
   sending: string;
+  /** What the card shows for a failed reply when nothing better is known. */
+  couldNotSend: string;
+}
+
+/**
+ * The toast's strings cut to what the shell accepts: it refuses the whole
+ * toast over one string longer than `max`, and a long translation must not
+ * cost it. Built key by key, so nothing but these keys reaches the shell
+ * (Electron refuses any other).
+ */
+export function capToastStrings(s: ToastStrings, max = 100): ToastStrings {
+  return {
+    replyPlaceholder: truncateForToast(s.replyPlaceholder, max),
+    send: truncateForToast(s.send, max),
+    dismiss: truncateForToast(s.dismiss, max),
+    sending: truncateForToast(s.sending, max),
+    couldNotSend: truncateForToast(s.couldNotSend, max),
+  };
 }
 
 /** One toast as the shell takes it; both shells validate the same shape. */
@@ -409,8 +502,7 @@ export async function showToast(
     return false;
   }
 
-  // Only now: the shell drops its oldest when it takes this one, and a
-  // refused toast must not cost an older one its entry here.
+  // Only now: a refused toast must not cost an older one its entry here.
   evictOldest(toasts);
   return true;
 }
