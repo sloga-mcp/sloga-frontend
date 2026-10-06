@@ -12,7 +12,7 @@
  * call-level ordering (preconditions, stop hooks, key pushes) stays in
  * `rtc/state.tsx`, which owns the call.
  */
-import { type Accessor, createSignal } from "solid-js";
+import type { Accessor } from "solid-js";
 
 import { Capacitor, registerPlugin } from "@capacitor/core";
 
@@ -24,6 +24,7 @@ import {
   type NativeFrameKey,
   type NativeStopReason,
   AndroidLegLifecycle,
+  nativeShareAvailable,
   withTimeout,
 } from "./androidLegStartPolicy";
 import {
@@ -49,7 +50,6 @@ export type LegE2EEKey = LegSendKey;
 const PREPARE_TIMEOUT_MS = 120_000;
 
 interface NativeScreenSharePlugin {
-  isAvailable(): Promise<{ available: boolean; audioCapture: boolean }>;
   prepare(): Promise<{ ok: boolean }>;
   connect(options: {
     url: string;
@@ -83,22 +83,30 @@ const plugin: NativeScreenSharePlugin | undefined = isAndroidShell()
   ? registerPlugin<NativeScreenSharePlugin>("ScreenShare")
   : undefined;
 
-const [available, setAvailable] = createSignal(false);
+const AVAILABLE = nativeShareAvailable({
+  androidShell: isAndroidShell(),
+  flag: CONFIGURATION.ENABLE_ANDROID_SCREEN_SHARE,
+  pluginHeader: Capacitor.isPluginAvailable("ScreenShare"),
+});
 
 /**
- * Whether the NATIVE share path exists on this device — Android shell + the
- * build-time flag + the plugin answering (§7.1). A SIGNAL rather than a
- * const: `isAvailable()` is async, so the buttons it gates must react when
- * the probe lands rather than reading a stale `false` forever.
+ * Whether the NATIVE share path exists on this device: Android shell + the
+ * build-time flag + the `ScreenShare` plugin registered by the native shell
+ * (§7.1). Computed once, synchronously, at module load, and constant for the
+ * session. It must never flip from true to false: `stopScreenshare`, the AFK
+ * guard and `toggleScreenshare` all route on it, so a flip during a share
+ * would send the stop down the web path and strand the native leg.
+ *
+ * This used to be a signal fed by an async native `isAvailable` probe. In
+ * `@capacitor/android` 8.4.1 the reply to the first native call after a
+ * WebView reload can be lost, and that probe was the first call, so the
+ * share button could say "not supported" for the whole session. The native
+ * method always answered `available: true`, so the round trip only proved
+ * the plugin header exists, which `Capacitor.isPluginAvailable` reports
+ * synchronously (the web bundle ships inside the APK, so the header always
+ * matches the native plugin set). Screen-leg plan, wave 4h.
  */
-export const nativeScreenShareAvailable: Accessor<boolean> = available;
-
-if (plugin && CONFIGURATION.ENABLE_ANDROID_SCREEN_SHARE) {
-  plugin
-    .isAvailable()
-    .then((result) => setAvailable(result.available))
-    .catch(() => setAvailable(false));
-}
+export const nativeScreenShareAvailable: Accessor<boolean> = () => AVAILABLE;
 
 /**
  * The live leg, at most one per call. Owned by `Voice` (rtc/state.tsx), which

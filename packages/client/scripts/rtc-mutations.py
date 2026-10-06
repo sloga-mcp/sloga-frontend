@@ -8675,6 +8675,143 @@ MUTATIONS += [
         specs=[LEG_POLICY_SPEC],
         must_red=[LEG_POLICY_SPEC],
     ),
+    # ---- C16 (wave 4h): whether the native share path exists ----------------
+    # `nativeShareAvailable` in the leaf is the three-way AND; the wrapper
+    # calls it ONCE, at module load, with the shell check, the build flag and
+    # the plugin header, and its accessor returns that constant. The leaf
+    # entries are killed by the 8-row truth table (and the body pin); the
+    # wrapper entries only by the source pin in the same spec, which strips
+    # comments, so the same text in dead code would still satisfy it.
+    # `share-avail-async-probe` puts back the probe this wave removed (the
+    # `94618cd2` import, signal and `isAvailable()` block, verbatim) and points
+    # the accessor at the signal, but LEAVES the new `AVAILABLE` statement in
+    # place: a half-revert the pin's first assertion still accepts, so the
+    # kill has to come from the accessor pin and the banned-token counts.
+    Mutation(
+        id="share-avail-no-header",
+        what="the leaf drops the plugin header, so a shell without the ScreenShare plugin offers a share that cannot start",
+        file=LEG_POLICY,
+        search="""  return w.androidShell && w.flag && w.pluginHeader;
+""",
+        replace="""  return w.androidShell && w.flag;
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="share-avail-no-flag",
+        what="the leaf drops the build flag, so a flag-off build still routes shares down the native path",
+        file=LEG_POLICY,
+        search="""  return w.androidShell && w.flag && w.pluginHeader;
+""",
+        replace="""  return w.androidShell && w.pluginHeader;
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="share-avail-no-shell",
+        what="the leaf drops the Android shell check, so any platform reporting the plugin header takes the native path",
+        file=LEG_POLICY,
+        search="""  return w.androidShell && w.flag && w.pluginHeader;
+""",
+        replace="""  return w.flag && w.pluginHeader;
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="share-avail-header-forced",
+        what="the wrapper hands the leaf `pluginHeader: true` instead of reading the plugin header",
+        file=ANDROID_SHARE,
+        search="""const AVAILABLE = nativeShareAvailable({
+  androidShell: isAndroidShell(),
+  flag: CONFIGURATION.ENABLE_ANDROID_SCREEN_SHARE,
+  pluginHeader: Capacitor.isPluginAvailable("ScreenShare"),
+});
+""",
+        replace="""const AVAILABLE = nativeShareAvailable({
+  androidShell: isAndroidShell(),
+  flag: CONFIGURATION.ENABLE_ANDROID_SCREEN_SHARE,
+  pluginHeader: true,
+});
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="share-avail-shell-forced",
+        what="the wrapper hands the leaf `androidShell: true` instead of asking Capacitor for the platform",
+        file=ANDROID_SHARE,
+        search="""const AVAILABLE = nativeShareAvailable({
+  androidShell: isAndroidShell(),
+  flag: CONFIGURATION.ENABLE_ANDROID_SCREEN_SHARE,
+  pluginHeader: Capacitor.isPluginAvailable("ScreenShare"),
+});
+""",
+        replace="""const AVAILABLE = nativeShareAvailable({
+  androidShell: true,
+  flag: CONFIGURATION.ENABLE_ANDROID_SCREEN_SHARE,
+  pluginHeader: Capacitor.isPluginAvailable("ScreenShare"),
+});
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="share-avail-flag-forced",
+        what="the wrapper hands the leaf `flag: true` instead of the build flag",
+        file=ANDROID_SHARE,
+        search="""const AVAILABLE = nativeShareAvailable({
+  androidShell: isAndroidShell(),
+  flag: CONFIGURATION.ENABLE_ANDROID_SCREEN_SHARE,
+  pluginHeader: Capacitor.isPluginAvailable("ScreenShare"),
+});
+""",
+        replace="""const AVAILABLE = nativeShareAvailable({
+  androidShell: isAndroidShell(),
+  flag: true,
+  pluginHeader: Capacitor.isPluginAvailable("ScreenShare"),
+});
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="share-avail-async-probe",
+        what="the accessor reads the async isAvailable() probe again, whose reply can be lost after a WebView reload, so the share button says not supported for the session",
+        file=ANDROID_SHARE,
+        search="""import type { Accessor } from "solid-js";
+""",
+        replace="""import { type Accessor, createSignal } from "solid-js";
+""",
+        also=[
+            (
+                """  pluginHeader: Capacitor.isPluginAvailable("ScreenShare"),
+});
+""",
+                """  pluginHeader: Capacitor.isPluginAvailable("ScreenShare"),
+});
+const [available, setAvailable] = createSignal(false);
+""",
+            ),
+            (
+                """export const nativeScreenShareAvailable: Accessor<boolean> = () => AVAILABLE;
+""",
+                """export const nativeScreenShareAvailable: Accessor<boolean> = available;
+
+if (plugin && CONFIGURATION.ENABLE_ANDROID_SCREEN_SHARE) {
+  plugin
+    .isAvailable()
+    .then((result) => setAvailable(result.available))
+    .catch(() => setAvailable(false));
+}
+""",
+            ),
+        ],
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
     # ---- the leg send key in mlsCallKeys.ts ----------------------------------
     Mutation(
         id="keys-screen-apply-unawaited",
@@ -9479,7 +9616,7 @@ MUTATIONS += [
     ),
     Mutation(
         id="state-keyprovider-listener-gated",
-        what="the rotation listener is wired only behind the async native probe, so a call joined before it lands has none",
+        what="the rotation listener is wired only behind nativeScreenShareAvailable(), which was an async native probe before wave 4h, so a call joined before it landed had none; the wiring stays unconditional now the accessor is constant",
         file=STATE,
         search="""        const provider = this.#mlsKeyProvider;
         provider.onLocalScreenKey = async (key) => {

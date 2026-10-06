@@ -3348,13 +3348,16 @@ class Voice {
         // that cannot land stops the leg — fail closed, never continue on
         // the old key — and RESOLVES, so the rotation itself completes.
         // Wired unconditionally rather than behind
-        // `nativeScreenShareAvailable()`: that accessor is fed by an ASYNC
-        // Capacitor probe, so gating the wiring on it left every call joined
-        // before the probe landed (cold start into a call, accepting a call
-        // from a push notification) with no rotation listener at all, for the
-        // call's whole life — a share started later would then keep
-        // encrypting under a key a removed member still holds. The body is
-        // inert without a leg, so always wiring it costs nothing.
+        // `nativeScreenShareAvailable()`. Before wave 4h that accessor was
+        // fed by an ASYNC Capacitor probe, so gating the wiring on it left
+        // every call joined before the probe landed (cold start into a call,
+        // accepting a call from a push notification) with no rotation
+        // listener at all, for the call's whole life — a share started later
+        // would then keep encrypting under a key a removed member still
+        // holds. The accessor is now synchronous and constant for the
+        // session, but the wiring stays unconditional on purpose (pinned by
+        // `stateWiring.test.ts` C9): the body is inert without a leg, so
+        // always wiring it costs nothing.
         const provider = this.#mlsKeyProvider;
         provider.onLocalScreenKey = async (key) => {
           const leg = this.#androidLeg;

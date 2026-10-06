@@ -33,6 +33,7 @@ import {
   FRAME_KEY_TIMEOUT_MS,
   gateStopNotice,
   keyActionAfterConnect,
+  nativeShareAvailable,
   nativeStopNotice,
   rekeyFailureNotice,
   staleExitNotice,
@@ -1364,5 +1365,85 @@ test("🔴 every native re-key is bounded, by default at FRAME_KEY_TIMEOUT_MS", 
   assert.ok(
     argumentsOf(constructions[0]).length <= 3,
     "androidScreenShare.ts must leave the re-key bound at its default",
+  );
+});
+
+test("nativeShareAvailable: the shell, the flag and the plugin header, all three", () => {
+  // Screen-leg plan wave 4h. Every row: any one input false hides the native
+  // share path, whatever the other two say.
+  const rows: [boolean, boolean, boolean, boolean][] = [
+    // androidShell, flag, pluginHeader, available
+    [false, false, false, false],
+    [false, false, true, false],
+    [false, true, false, false],
+    [false, true, true, false],
+    [true, false, false, false],
+    [true, false, true, false],
+    [true, true, false, false],
+    [true, true, true, true],
+  ];
+  assert.equal(
+    new Set(rows.map((row) => row.slice(0, 3).join())).size,
+    8,
+    "the table must hold every combination of the three inputs once",
+  );
+  for (const [androidShell, flag, pluginHeader, available] of rows)
+    assert.equal(
+      nativeShareAvailable({ androidShell, flag, pluginHeader }),
+      available,
+      JSON.stringify({ androidShell, flag, pluginHeader }),
+    );
+});
+
+test("🔴 share availability pin: read once, synchronously, from the plugin header", () => {
+  // Screen-leg plan wave 4h. The table above proves the leaf; this holds
+  // androidScreenShare.ts to calling it once, at module load, with the real
+  // inputs. The async `isAvailable()` probe it replaces was the first native
+  // call after a WebView reload, a reply @capacitor/android 8.4.1 can lose,
+  // which left the share button saying "not supported" for the session. A
+  // probe or a signal grown back, or an input forced to `true`, leaves every
+  // row above green.
+  assertShareWired(
+    "the availability, from the leaf",
+    `const AVAILABLE = nativeShareAvailable({
+      androidShell: isAndroidShell(),
+      flag: CONFIGURATION.ENABLE_ANDROID_SCREEN_SHARE,
+      pluginHeader: Capacitor.isPluginAvailable("ScreenShare"),
+    });`,
+  );
+  assertShareWired(
+    "the accessor",
+    "export const nativeScreenShareAvailable: Accessor<boolean> = () => AVAILABLE;",
+  );
+  assert.equal(
+    countWired(SHARE_CODE, "AVAILABLE"),
+    2,
+    "AVAILABLE must be assigned once and read only by the accessor",
+  );
+  assert.equal(
+    countWired(SHARE_CODE, 'Capacitor.isPluginAvailable("ScreenShare")'),
+    1,
+    "the plugin header must be read once, as the leaf's input",
+  );
+  // The call above must reach the leaf the truth table runs, not a local
+  // function of the same name.
+  assert.equal(countWired(SHARE_CODE, "nativeShareAvailable"), 2);
+  const leafImport = SHARE_CODE.match(
+    /import\{([^{}]*)\}from"\.\/androidLegStartPolicy"/,
+  );
+  assert.ok(leafImport, "androidScreenShare.ts must import the leaf");
+  assert.ok(
+    argumentsOf(leafImport[1]).includes("nativeShareAvailable"),
+    "nativeShareAvailable must come from the leaf's import block",
+  );
+  for (const banned of ["createSignal", "setAvailable", ".isAvailable("])
+    assert.equal(
+      countWired(SHARE_CODE, banned),
+      0,
+      `androidScreenShare.ts must not hold ${banned}`,
+    );
+  assertPolicyWired(
+    "nativeShareAvailable's body",
+    "return w.androidShell && w.flag && w.pluginHeader;",
   );
 });

@@ -11,6 +11,7 @@
  *
  * What this leaf decides:
  *
+ * - Whether the native share path exists at all ([nativeShareAvailable]).
  * - Whether a start attempt still owns the leg ([startAttemptStale],
  *   [startAttemptCancelled]). One rule: an attempt owns the leg only until
  *   something else claims it. Until `connect()` resolves the leg is not
@@ -40,6 +41,30 @@ export interface LegSendKey {
   /** The MLS group the key belongs to. Epochs are only comparable within one
    * group, so a group change makes two keys UNRELATABLE, not merely stale. */
   groupId: string;
+}
+
+/**
+ * Whether the native share path exists: the Android shell, the build-time
+ * flag, and the `ScreenShare` plugin header (`Capacitor.isPluginAvailable`),
+ * all read synchronously.
+ *
+ * Not the old async `isAvailable()` probe: @capacitor/android 8.4.1 can lose
+ * the reply to the first native call after a WebView reload, and the probe
+ * was that call, so a lost reply left the button saying "not supported" for
+ * the rest of the session (screen-leg plan wave 4h). The header is enough:
+ * the web bundle ships inside the APK, so it always matches the native
+ * plugin set, and native `isAvailable` answered true unconditionally anyway.
+ *
+ * The caller computes this once, at module load, so the value is constant
+ * for the session. It must never go from true to false: `stopScreenshare`,
+ * the AFK guard and the toggle route all branch on it.
+ */
+export function nativeShareAvailable(w: {
+  androidShell: boolean;
+  flag: boolean;
+  pluginHeader: boolean;
+}): boolean {
+  return w.androidShell && w.flag && w.pluginHeader;
 }
 
 export interface StartAttemptWorld {

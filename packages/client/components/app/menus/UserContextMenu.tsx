@@ -176,8 +176,9 @@ export function UserContextMenu(props: {
 
   // Screen sharing goes through getDisplayMedia on web/desktop, or the
   // native MediaProjection screen leg on the Android shell (screen-leg plan
-  // §7.1). A function: the native probe is async, so the entry must react
-  // when it lands.
+  // §7.1). nativeScreenShareAvailable() is synchronous and constant for the
+  // session. This stays a function anyway: it is cheap, and it stays correct
+  // if either input ever becomes reactive.
   const screenShareSupported = () =>
     (typeof navigator !== "undefined" &&
       typeof navigator.mediaDevices?.getDisplayMedia === "function") ||

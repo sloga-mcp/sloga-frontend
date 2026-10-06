@@ -1579,10 +1579,12 @@ test("source pin (C9): the leg start reads the mode three times, and the tap-tim
 
 // 🔴 SECURITY (wave-4b-fix3). The rotation listener lives on the ONE provider
 // the call builds, wired the moment it is built, unconditionally: gated on
-// `nativeScreenShareAvailable()` (an async probe) a call joined before the
-// probe landed had no listener for its whole life, and a provider rebuilt
-// after the wiring would leave the listener on an orphan. The try that builds
-// it is pinned at both ends (the listener's body is pinned whole above).
+// `nativeScreenShareAvailable()` (an async probe before wave 4h) a call
+// joined before the probe landed had no listener for its whole life, and a
+// provider rebuilt after the wiring would leave the listener on an orphan.
+// Since wave 4h the accessor is synchronous and constant for the session; the
+// wiring stays unconditional on purpose all the same. The try that builds it
+// is pinned at both ends (the listener's body is pinned whole above).
 test("source pin (C9): the call's key provider is built once and wired at once, unconditionally", () => {
   const wiring = `this.#mlsKeyProvider = new MlsKeyProvider();
     const provider = this.#mlsKeyProvider;
