@@ -14,7 +14,7 @@ with it. You can write in English or Portuguese.
 
 We send a first reply within 72 hours, our assessment within 7 days, and updates
 at least every 14 days until the fix is out. Please keep the details private
-until then; we agree a disclosure date with you, and we credit you if you want
+until then; we agree on a disclosure date with you, and we credit you if you want
 credit.
 
 The full policy, including what is in scope, the rules for testing and our safe
