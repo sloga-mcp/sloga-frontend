@@ -355,6 +355,19 @@ class ScreenSharePlugin : Plugin() {
                 audioOptions = AudioOptions(audioHandler = NoAudioHandler()),
             ),
         )
+        // No RTC metrics on the leg. It publishes one screen track, subscribes
+        // to nothing and its grant is `can_publish_data: false`, so it needs no
+        // telemetry. With metrics on, `collectMetrics` keeps calling
+        // `DataChannel.send` while `handleDisconnect` runs `engine.close()`
+        // BEFORE cancelling the Room scope that owns the collector: a race on
+        // every disconnect, which crashed the leg's WebRTC network thread
+        // (SIGSEGV, tombstone 28, crash class B). The post-join coroutine reads
+        // the flag once, so it MUST be set before `room.connect`. Re-check on
+        // any SDK upgrade: livekit-android 2.28.0 Room.kt:578/1013/1019. On
+        // any SDK upgrade also re-check that `removePublishedTrack` disables
+        // the cryptor only after the sender is detached, and that
+        // `dataChannelEncryptionEnabled` stays off by default.
+        room.enableMetrics = false
         this.room = room
         // From here this attempt OWNS `room` until it either hands it over by
         // resolving, or disposes it below. Nothing else can: a tearDown that
@@ -375,6 +388,7 @@ class ScreenSharePlugin : Plugin() {
             }
             eventsJob = events
 
+            trace("connect metrics=${room.enableMetrics}")
             // Belt-and-braces on the token's canSubscribe=false (§4.3 step 2).
             room.connect(url, token, ConnectOptions(autoSubscribe = false))
             // First suspension behind us: a stop may have torn the room down
@@ -426,8 +440,9 @@ class ScreenSharePlugin : Plugin() {
                 onStop = {
                     // System chip / notification Stop / OS revoke. The SDK
                     // has just unpublished the track and may be renegotiating
-                    // the publisher, so the native teardown is settled
-                    // ([SETTLE_MS]).
+                    // the publisher. The native teardown is settled
+                    // ([SETTLE_MS]): a conservative heuristic against a
+                    // suspected race, not a crash fix (see [SETTLE_MS]).
                     scope.launch { tearDown("system", settle = true) }
                 },
             )
@@ -486,11 +501,22 @@ class ScreenSharePlugin : Plugin() {
     }
 
     /**
-     * Stop a screen capture, before the Room that owns it goes away. NOT
-     * redundant with disconnecting: stopping the track is what releases the
-     * MediaProjection and lets the SDK's ScreenCaptureService go, so a Room
-     * torn down without it can leave the OS cast chip and our notification
-     * up while the app believes nothing is shared.
+     * Stop a screen capture, before the Room that owns it goes away.
+     * Redundant with `disconnect()` for any published track
+     * (`LocalParticipant.cleanup()` stops it). Its value is timing: it stops
+     * the capture immediately on paths where the disconnect is deferred (the
+     * settle paths, and `discardRoom` while a disposal is pending). It is a
+     * no-op once the SDK has unpublished. On the `TrackUnpublished` settle
+     * path and the system path that holds by construction (the publication
+     * is already gone), so the immediate stop does nothing there. It has
+     * effect only on the permission-branch revoke (the permission event can
+     * precede the forced unpublish) and in `discardRoom` while a disposal
+     * is pending.
+     *
+     * Not suspending, but it can BLOCK: `Track.stop()` reaches
+     * `executeBlockingOnRTCThread` (via `setEnabled`), so on the permission
+     * branch Main parks behind `LK_RTC_THREAD` while the SDK renegotiates
+     * (tombstone 27). An ANR exposure, pre-existing.
      *
      * 🔴 MUST STAY NON-SUSPENDING — see [tearDown]'s invariant. `Track.stop()`
      * is `public void stop()` in livekit-android 2.28.0 (checked against the
@@ -530,9 +556,10 @@ class ScreenSharePlugin : Plugin() {
      *  `pendingDisposals`.
      *
      *  If a settled teardown claimed this Room and its disposal is still
-     *  pending, only the capture stop happens here. Disconnecting now would
-     *  reopen the race the settle window exists for, and that pending
-     *  [disposeDetached] disconnects, disposes and releases the Room itself.
+     *  pending, only the capture stop happens here. That pending
+     *  [disposeDetached] disconnects, disposes and releases the Room itself,
+     *  and disconnecting now would bypass the settle window (a heuristic,
+     *  see [SETTLE_MS]).
      *  MUST stay non-suspending, like [tearDown]. */
     private fun discardRoom(room: Room, alreadyReleased: Boolean) {
         stopCapture(room)
@@ -727,9 +754,12 @@ class ScreenSharePlugin : Plugin() {
                         // (finding `room` already null) would emit a second
                         // `stopped`.
                         //
-                        // Settled: the SFU's forced unpublish and the
-                        // renegotiation it triggers may still be running in
-                        // the SDK, so only the logical stop happens now.
+                        // Settled ([SETTLE_MS]): only the logical stop
+                        // happens now, the native half later. A conservative
+                        // heuristic against our disconnect landing under the
+                        // forced unpublish's renegotiation; it does not
+                        // prevent either observed crash class (see
+                        // [SETTLE_MS]).
                         scope.launch {
                             if (this@ScreenSharePlugin.room === room) {
                                 tearDown("revoked", settle = true)
@@ -782,8 +812,10 @@ class ScreenSharePlugin : Plugin() {
                             room.localParticipant
                                 .getTrackPublication(Track.Source.SCREEN_SHARE) == null
                         ) {
-                            // Settled like the permission branch: the forced
-                            // unpublish's renegotiation may still be running.
+                            // Settled like the permission branch (see
+                            // [SETTLE_MS]; a heuristic, not a crash fix). The
+                            // disposal runs UNPUBLISH_GRACE_MS + SETTLE_MS
+                            // after the unpublish.
                             tearDown("revoked", settle = true)
                         }
                     }
@@ -857,9 +889,12 @@ class ScreenSharePlugin : Plugin() {
      * release, its sender cryptors and the key ring go to [disposeDetached]
      * [SETTLE_MS] later, through [scheduleDisposal], which holds the only
      * wait (inside its launched coroutine, never here). Only for a teardown
-     * that follows a forced unpublish the SDK is still processing: the two
-     * revoke branches and the MediaProjection system stop. Every other caller
-     * disposes inline.
+     * that follows a forced unpublish the SDK may still be processing: the
+     * two revoke branches and the MediaProjection system stop. Every other
+     * caller disposes inline. The deferral was added in wave 4f against a
+     * SUSPECTED race (our disconnect/release under that renegotiation);
+     * neither observed crash class is that race, so it is a conservative
+     * heuristic, not a crash fix (see [SETTLE_MS], including its cost).
      */
     private fun tearDown(reason: String?, settle: Boolean = false) {
         trace("tearDown reason=$reason settle=$settle stopping=$stopping")
@@ -893,12 +928,19 @@ class ScreenSharePlugin : Plugin() {
         // still-live claim, and the attempt it belonged to would then
         // release its Room a second time.
         room?.let { releasedRoom = it }
-        // Stop the capture before the Room goes: stopping the track is what
-        // releases the MediaProjection and its foreground service, and a
-        // Room disconnected without it can leave the OS cast chip up (see
-        // [stopCapture]).
+        // Stop the capture before the Room goes. Redundant with
+        // `disconnect()` for any published track (`LocalParticipant.cleanup()`
+        // stops it). Its value is timing: it stops the capture immediately on
+        // paths where the disconnect is deferred (the settle paths, and
+        // `discardRoom` while a disposal is pending). It is a no-op once the
+        // SDK has unpublished (see [stopCapture]).
+        // Diagnostic: whether a screen publication still existed when the
+        // capture stop ran (without one it is a no-op). No identity, no key
+        // material.
+        val hadScreenPub =
+            room?.localParticipant?.getTrackPublication(Track.Source.SCREEN_SHARE) != null
         room?.let { stopCapture(it) }
-        trace("tearDown capture stopped")
+        trace("tearDown capture stopped screenPub=${hadScreenPub}")
         // Everything a successor or a late push could read is cleared NOW,
         // before this returns, on both paths: inside a settle window
         // `setFrameKey` rejects `not_connected` instead of keying a leg that
@@ -1166,22 +1208,31 @@ class ScreenSharePlugin : Plugin() {
          *  covered by this wait at all; the CONNECTED check at event arrival
          *  excludes them, and the post-wait CONNECTED check is a second
          *  guard. A permission-event revoke that tears down first also clears
-         *  `room`. The capture is already stopped, so the wait only delays
-         *  the toast. */
+         *  `room`. The capture is already stopped, so the wait delays the
+         *  toast and also the disposal: a settled revoke from this path is
+         *  disposed UNPUBLISH_GRACE_MS + [SETTLE_MS] after the unpublish. */
         private const val UNPUBLISH_GRACE_MS = 1_000L
 
         /** How long a SETTLED teardown waits before its native half
          *  ([disposeDetached]) runs: the two revoke branches and the
          *  MediaProjection system stop, where the SDK has just unpublished
-         *  the screen track and is renegotiating the publisher on its own
-         *  coroutines. Disconnecting and releasing under that renegotiation
-         *  aborted the app on the leg's WebRTC network thread (wave 4f).
-         *  livekit-android 2.28.0 exposes no public "publisher negotiation
-         *  stable" signal. The local `TrackUnpublished` marks the end of the
-         *  synchronous half, and 4 s covers the offer/answer on a loaded
-         *  device. A heuristic that narrows the race on a heavily loaded
-         *  device, not a proof. On the permission branch it is measured from
-         *  the permission event, which can precede the forced unpublish. */
+         *  the screen track and may still be renegotiating the publisher on
+         *  its own coroutines. Added in wave 4f against a SUSPECTED race: our
+         *  disconnect/release under that in-flight renegotiation. Neither
+         *  observed crash class is that race. Class B (LiveKit metrics
+         *  `DataChannel.send` racing `engine.close()`) is removed by
+         *  `enableMetrics = false` in [doConnect]; class A (SIGABRT) fires
+         *  inside the SDK's own renegotiation after the forced unpublish,
+         *  before any disconnect of ours. This does NOT prevent a crash. It
+         *  is kept as a conservative heuristic, at a cost: the leg's key ring
+         *  stays resident, and a connected leg that no longer receives key
+         *  rotations stays on the SFU, for up to SETTLE_MS after the teardown
+         *  (plus the 1 s [UNPUBLISH_GRACE_MS] on the `TrackUnpublished`
+         *  path). livekit-android 2.28.0 exposes no public "publisher
+         *  negotiation stable" signal; the local `TrackUnpublished` marks the
+         *  end of the synchronous half. On the permission branch the window
+         *  is measured from the permission event, which can precede the
+         *  forced unpublish. */
         private const val SETTLE_MS = 4_000L
 
         /** Teardown diagnostics with a monotonic timestamp, so a log ties a
