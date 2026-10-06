@@ -65,6 +65,23 @@ declare global {
           include: string[];
         }): Promise<number>;
       };
+      /** Friends popout window only (absent on the main and overlay
+       * windows). `getState`/`setAlwaysOnTop` back the always-on-top pin
+       * (Friends.tsx `electronPopout()`); `openInMain` hands a DM/call
+       * action to the main window and is missing on preloads that predate
+       * the popout bridge. */
+      popout?: {
+        getState(): { alwaysOnTop: boolean } | null;
+        setAlwaysOnTop(value: boolean): Promise<unknown>;
+        openInMain(
+          action: "dm" | "call" | "video" | "screenshare",
+          userId: string,
+        ): Promise<void>;
+      };
+      /** Main window only: shell-to-main messages (popout actions,
+       * notification clicks). Payloads are untrusted until validated.
+       * Returns the unsubscribe. */
+      onShellToMain?(callback: (message: unknown) => void): () => void;
     };
   }
 }

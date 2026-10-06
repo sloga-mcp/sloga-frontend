@@ -17,9 +17,14 @@ import {
   pushProvider,
   unifiedPushStatus,
 } from "@revolt/client/NotificationsController";
+import {
+  type DmPreviewMode,
+  DM_PREVIEW_DEFAULT,
+} from "@revolt/client/notificationPreviewPolicy";
 import { useState } from "@revolt/state";
-import { CategoryButton, Checkbox, Column, iconSize } from "@revolt/ui";
+import { CategoryButton, Checkbox, Column, Text, iconSize } from "@revolt/ui";
 
+import MdChat from "@material-design-icons/svg/outlined/chat.svg?component-solid";
 import MdMarkUnreadChatAlt from "@material-design-icons/svg/outlined/mark_unread_chat_alt.svg?component-solid";
 import MdNotifications from "@material-design-icons/svg/outlined/notifications.svg?component-solid";
 import MdNotificationsOff from "@material-design-icons/svg/outlined/notifications_off.svg?component-solid";
@@ -177,6 +182,43 @@ export default function Notifications(props: { isDesktop: boolean }) {
           </Show>
         </CategoryButton.Group>
       </Column>
+      {/* Only the in-app notification path reads this, and it needs the
+          browser/shell Notification API; where that is missing the choice
+          would do nothing, so it is hidden alongside the toggle above. */}
+      <Show when={settings.desktopNotificationsState !== "unsupported"}>
+        <Column>
+          <CategoryButton.Group>
+            <CategoryButton.Select<DmPreviewMode>
+              icon={<MdChat {...iconSize(22)} />}
+              title={<Trans>When someone messages me</Trans>}
+              value={
+                settings.getValue("notifications:dm_preview") ??
+                DM_PREVIEW_DEFAULT
+              }
+              options={{
+                full_reply: {
+                  title: <Trans>Show message</Trans>,
+                },
+                sender: {
+                  title: <Trans>Show sender only</Trans>,
+                },
+                off: {
+                  title: <Trans>Off</Trans>,
+                },
+              }}
+              onUpdate={(mode) =>
+                settings.setValue("notifications:dm_preview", mode)
+              }
+            />
+          </CategoryButton.Group>
+          <Text class="label">
+            <Trans>
+              Applies to direct messages and group chats while this app is
+              running. Push notifications aren't affected yet.
+            </Trans>
+          </Text>
+        </Column>
+      </Show>
       <Sounds />
     </Column>
   );

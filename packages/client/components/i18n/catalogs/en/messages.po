@@ -1029,6 +1029,18 @@ msgstr "Appear offline to everyone"
 msgid "Appearance"
 msgstr "Appearance"
 
+#: components/app/interface/settings/user/notifications/Notifications.tsx
+msgid "Applies to direct messages and group chats while this app is running. Push notifications aren't affected yet."
+msgstr "Applies to direct messages and group chats while this app is running. Push notifications aren't affected yet."
+
+#: components/app/interface/settings/user/notifications/Notifications.tsx
+msgid "Applies to direct messages and group chats. Quick reply is available in the desktop app."
+msgstr "Applies to direct messages and group chats. Quick reply is available in the desktop app."
+
+#: components/app/interface/settings/user/notifications/Notifications.tsx
+msgid "Applies to notifications from this app while it's running. Push notifications aren't affected yet."
+msgstr "Applies to notifications from this app while it's running. Push notifications aren't affected yet."
+
 #: components/modal/modals/ImageEditorCore.tsx
 msgid "Apply"
 msgstr "Apply"
@@ -4831,6 +4843,10 @@ msgstr "Message history stays on Discord."
 msgid "Message not loaded, click to jump"
 msgstr "Message not loaded, click to jump"
 
+#: components/app/menus/shared/NotificationContextMenu.tsx
+msgid "Message previews"
+msgstr "Message previews"
+
 #: components/app/interface/settings/user/notifications/Sounds.tsx
 msgid "Message Received"
 msgstr "Message Received"
@@ -5161,6 +5177,10 @@ msgstr "New direct messages with contacts who also have encryption on will be en
 #: src/interface/ServerEvents.tsx
 msgid "New Event"
 msgstr "New Event"
+
+#: components/client/NotificationsWorker.tsx
+msgid "New message from {name}"
+msgstr "New message from {name}"
 
 #. placeholder {0}: dayjs(decodeTime(props.lastId()!)).fromNow()
 #: components/ui/components/features/messaging/bars/NewMessages.tsx
@@ -7283,6 +7303,18 @@ msgstr "Show live captions during voice and video calls, translated into your ch
 msgid "Show live captions, translated into your chosen language"
 msgstr "Show live captions, translated into your chosen language"
 
+#: components/app/interface/settings/user/notifications/Notifications.tsx
+#: components/app/menus/shared/NotificationContextMenu.tsx
+#: components/app/menus/shared/NotificationContextMenu.tsx
+msgid "Show message"
+msgstr "Show message"
+
+#: components/app/interface/settings/user/notifications/Notifications.tsx
+#: components/app/menus/shared/NotificationContextMenu.tsx
+#: components/app/menus/shared/NotificationContextMenu.tsx
+msgid "Show message + quick reply"
+msgstr "Show message + quick reply"
+
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Show message timestamps"
 msgstr "Show message timestamps"
@@ -7307,6 +7339,12 @@ msgstr "Show reminder banner"
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Show send message button"
 msgstr "Show send message button"
+
+#: components/app/interface/settings/user/notifications/Notifications.tsx
+#: components/app/menus/shared/NotificationContextMenu.tsx
+#: components/app/menus/shared/NotificationContextMenu.tsx
+msgid "Show sender only"
+msgstr "Show sender only"
 
 #: components/app/interface/settings/user/StreamerMode.tsx
 msgid "Show the banner above the app while Streamer Mode is active. You can also hide it from the banner itself."
@@ -7979,6 +8017,14 @@ msgstr "That didn't go through. They may have left, or you may not have permissi
 #: src/interface/navigation/channels/ServerSidebar.tsx
 msgid "Couldn't move you to that channel."
 msgstr "Couldn't move you to that channel."
+
+#: components/client/popoutBridge.ts
+msgid "Couldn't open a conversation with this user."
+msgstr "Couldn't open a conversation with this user."
+
+#: components/client/popoutBridge.ts
+msgid "Couldn't open this in the main Sloga window."
+msgstr "Couldn't open this in the main Sloga window."
 
 #: components/app/interface/settings/server/roles/ServerRoleEditor.tsx
 msgid "Couldn't remove the incomplete copy \"{name}\". Delete it from the role list."
@@ -9314,6 +9360,10 @@ msgstr "When I speak"
 #: components/app/interface/settings/user/voice/AttenuationOptions.tsx
 msgid "When others speak"
 msgstr "When others speak"
+
+#: components/app/interface/settings/user/notifications/Notifications.tsx
+msgid "When someone messages me"
+msgstr "When someone messages me"
 
 #: components/app/interface/settings/server/Overview.tsx
 msgid "Where new calls in this server are hosted. Auto picks the closest node for whoever starts the call; a fixed region is better when most members are in one place. Calls already in progress keep their region."
