@@ -27,11 +27,11 @@ import { AppsList } from "./server/apps/AppsList";
 import { AuditLogPage } from "./server/auditLog/AuditLogPage";
 import { ListServerBans } from "./server/bans/ListBans";
 import { EmojiList } from "./server/emojis/EmojiList";
-import { SoundboardList } from "./server/soundboard/SoundboardList";
-import { StickerList } from "./server/stickers/StickerList";
 import { ListServerInvites } from "./server/invites/ListServerInvites";
 import { ServerRoleEditor } from "./server/roles/ServerRoleEditor";
 import { ServerRoleOverview } from "./server/roles/ServerRoleOverview";
+import { SoundboardList } from "./server/soundboard/SoundboardList";
+import { StickerList } from "./server/stickers/StickerList";
 import { BackCard } from "./user/_AccountCard";
 
 const Config: SettingsConfiguration<Server> = {
