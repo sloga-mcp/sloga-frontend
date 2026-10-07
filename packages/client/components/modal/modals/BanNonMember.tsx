@@ -21,14 +21,22 @@ export function BanNonMemberModal(
   });
 
   async function onSubmit() {
+    // The Ban action calls this directly, bypassing the form's submit
+    // handler, so mark the group pending here: that disables the action
+    // (via canSubmit) and the dialog until the request settles.
+    group.markPending(true);
+
     try {
+      const reason = group.controls.reason.value.trim();
       await props.server.banUser(props.user.id, {
-        reason: group.controls.reason.value,
+        reason: reason || undefined,
       });
 
       props.onClose();
     } catch (error) {
       showError(error);
+    } finally {
+      group.markPending(false);
     }
   }
 
@@ -44,7 +52,8 @@ export function BanNonMemberModal(
         {
           text: <Trans>Ban</Trans>,
           onClick: () => {
-            onSubmit();
+            if (!Form2.canSubmit(group)) return false;
+            void onSubmit();
             return false;
           },
           isDisabled: !Form2.canSubmit(group),

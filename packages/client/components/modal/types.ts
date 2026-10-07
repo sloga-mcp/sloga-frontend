@@ -362,6 +362,10 @@ export type Modals =
       member: ServerMember;
     }
   | {
+      type: "timeout_member";
+      member: ServerMember;
+    }
+  | {
       type: "leave_server";
       server: Server;
     }
