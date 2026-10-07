@@ -925,7 +925,12 @@ export function Messages(props: Props) {
       (shouldSetEditingMessageId) =>
         shouldSetEditingMessageId === true &&
         state.draft.setEditingMessage(
-          messages().find((message) => message.author?.self),
+          // Encrypted rows are local-only and cannot be edited on the
+          // server, so skip them; with none left this clears the request.
+          messages().find(
+            (message) =>
+              message.author?.self && !e2ee?.isEncryptedMessage(message.id),
+          ),
         ),
     ),
   );

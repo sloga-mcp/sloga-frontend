@@ -122,6 +122,14 @@ export function MessageContextMenu(props: {
   const { openModal, showError } = useModals();
 
   /**
+   * Whether this is a locally-decrypted E2EE message. It never existed on
+   * the server, so every action that references its id there (edit,
+   * delete, reactions, pins, threads, acks) is a dead end, and an edit or
+   * reaction would carry plaintext out of the conversation.
+   */
+  const isEncrypted = () => !!e2ee?.isEncryptedMessage(props.message!.id);
+
+  /**
    * Whether the message can be forwarded: needs server-side substance
    * (content or attachments), and never system messages, polls (state
    * wouldn't travel), ephemerals, or locally-decrypted E2EE messages
@@ -175,11 +183,12 @@ export function MessageContextMenu(props: {
   }
 
   /**
-   * Whether this message takes reactions at all: ephemerals have no
-   * server-side existence to react to.
+   * Whether this message takes reactions at all: ephemerals and E2EE
+   * messages have no server-side existence to react to.
    */
   const canReact = () =>
     !props.message!.isEphemeral &&
+    !isEncrypted() &&
     !!props.message!.channel?.havePermission("React");
 
   /**
@@ -418,6 +427,7 @@ export function MessageContextMenu(props: {
         <Show
           when={
             !props.message!.isEphemeral &&
+            !isEncrypted() &&
             props.message!.channel?.type === "TextChannel" &&
             props.message!.channel?.havePermission("SendMessage") &&
             !props.message!.thread
@@ -436,7 +446,7 @@ export function MessageContextMenu(props: {
             <Trans>Create thread</Trans>
           </ContextMenuButton>
         </Show>
-        <Show when={!props.message!.isEphemeral}>
+        <Show when={!props.message!.isEphemeral && !isEncrypted()}>
           <ContextMenuButton icon={MdMarkChatUnread} onClick={markAsUnread}>
             <Trans>Mark as unread</Trans>
           </ContextMenuButton>
@@ -450,6 +460,7 @@ export function MessageContextMenu(props: {
         <Show
           when={
             !props.message!.isEphemeral &&
+            !isEncrypted() &&
             props.reactPicker &&
             props.message?.channel?.havePermission("React")
           }
@@ -465,6 +476,7 @@ export function MessageContextMenu(props: {
         <Show
           when={
             props.message!.author?.self &&
+            !isEncrypted() &&
             props.message!.channel?.havePermission("SendMessage")
           }
         >
@@ -478,6 +490,7 @@ export function MessageContextMenu(props: {
         <Show
           when={
             !props.message!.isEphemeral &&
+            !isEncrypted() &&
             (props.message!.channel?.type === "DirectMessage" ||
               props.message!.channel?.havePermission("ManageMessages"))
           }
@@ -517,6 +530,7 @@ export function MessageContextMenu(props: {
         <Show
           when={
             props.message!.reactions.size &&
+            !isEncrypted() &&
             props.message!.channel?.havePermission("ManageMessages")
           }
         >
@@ -544,6 +558,7 @@ export function MessageContextMenu(props: {
         <Show
           when={
             props.message!.reactions.size &&
+            !isEncrypted() &&
             props.message!.channel?.havePermission("ManageMessages")
           }
         >
@@ -558,6 +573,7 @@ export function MessageContextMenu(props: {
         <Show
           when={
             !props.message!.isEphemeral &&
+            !isEncrypted() &&
             (props.message!.author?.self ||
               props.message!.channel?.havePermission("ManageMessages"))
           }
