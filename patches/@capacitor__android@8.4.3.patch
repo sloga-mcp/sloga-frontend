@@ -1,0 +1,25 @@
+diff --git a/capacitor/src/main/java/com/getcapacitor/MessageHandler.java b/capacitor/src/main/java/com/getcapacitor/MessageHandler.java
+--- a/capacitor/src/main/java/com/getcapacitor/MessageHandler.java
++++ b/capacitor/src/main/java/com/getcapacitor/MessageHandler.java
+@@ -16,7 +16,7 @@
+     private Bridge bridge;
+     private WebView webView;
+     private PluginManager cordovaPluginManager;
+-    private JavaScriptReplyProxy javaScriptReplyProxy;
++    private volatile JavaScriptReplyProxy javaScriptReplyProxy;
+ 
+     public MessageHandler(Bridge bridge, WebView webView, PluginManager cordovaPluginManager) {
+         this.bridge = bridge;
+@@ -26,8 +26,11 @@
+         if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER) && !bridge.getConfig().isUsingLegacyBridge()) {
+             WebViewCompat.WebMessageListener capListener = (view, message, sourceOrigin, isMainFrame, replyProxy) -> {
+                 if (isMainFrame) {
+-                    postMessage(message.getData());
++                    // Sloga: store the proxy of the page that sent this call BEFORE dispatching it. The call
++                    // runs on the CapacitorPlugins thread and can answer before a later assignment ran, so the
++                    // first call after a WebView reload was answered to the dead page and never settled.
+                     javaScriptReplyProxy = replyProxy;
++                    postMessage(message.getData());
+                 } else {
+                     Logger.warn("Plugin execution is allowed in Main Frame only");
+                 }

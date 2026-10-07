@@ -122,7 +122,13 @@ import {
   voicePublishPermission,
 } from "./afkPolicy";
 import {
+  type LegStopNotice,
+  type RekeyFailureNotice,
+  gateStopNotice,
   keyActionAfterConnect,
+  nativeStopNotice,
+  rekeyFailureNotice,
+  staleExitNotice,
   startAttemptCancelled,
   startAttemptStale,
 } from "./androidLegStartPolicy";
@@ -481,12 +487,87 @@ const AFK_IDLE_REQUEST_TIMEOUT_MS = 10_000;
 
 /**
  * Refusal shown when the Android screen leg cannot start (screen-leg plan
- * §7.2). One string for two checks — the cheap one before the dialogs and the
- * binding one just before `connect()` — because to the user they are the same
- * answer, and the second must not read as a different, scarier failure.
+ * §7.2). One string for every such check — the cheap one before the dialogs,
+ * its repeat once the tier sheet closes, and the binding one just before
+ * `connect()` — because to the user they are the same answer, and a later one
+ * must not read as a different, scarier failure.
  */
 const SHARE_UNAVAILABLE_NOW =
   "You can't share your screen right now — the call is re-securing or paused. Try again in a moment.";
+
+/**
+ * A publish-gate pulse (a re-secure, a pause) ended a leg start that had
+ * already claimed the leg: `gate-start`, from `gateStopNotice` when the pulse
+ * landed during the attempt. `staleExitNotice` can answer it too, for a
+ * reason already held at a stale check — defense in depth, unreachable in
+ * production today (see `#exitStaleAndroidLegStart`). Without it the user
+ * consents and nothing happens.
+ */
+const LEG_GATE_START_NOTICE =
+  "Your screen share didn't start because the call is re-securing or paused. Try again in a moment.";
+
+/**
+ * A publish-gate pulse stopped a LIVE leg (`gate-share`). The stop is one-way
+ * (§0.4): the share does not come back by itself when the gate clears.
+ */
+const LEG_GATE_SHARE_NOTICE =
+  "Your screen share stopped because the call is re-securing or paused. Share again in a moment.";
+
+/**
+ * The server took the leg's publish permission away while the primary kept
+ * its own (`revoked`): native's `stopped{"revoked"}`, or a connect it rejected
+ * as `connect_failed: revoked`. A primary-wide loss (the AFK channel, a
+ * moderator mute) is left to the primary's own toast — see `nativeStopNotice`.
+ */
+const LEG_REVOKED_NOTICE =
+  "Your screen share ended because you no longer have permission to share video in this channel.";
+
+/**
+ * A leg re-key failed and the fail-closed stop that followed took the share
+ * down (`rekeyFailureNotice`: `stopped`). Also native's own
+ * `stopped{"encryption"}` (`#legStopNoticeMessage`): one copy for both.
+ */
+const LEG_REKEY_STOPPED_NOTICE =
+  "Your screen share stopped because it could no longer be encrypted.";
+
+/**
+ * A leg re-key failed and the fail-closed stop that followed did NOT end the
+ * share (`rekeyFailureNotice`: `unstoppable`): the native stop was rejected or
+ * timed out, and the leg is still live for the same share.
+ *
+ * "Leave the call", not "Stop sharing": the share button re-enters the same
+ * hung native stop. Leaving does not depend on it: the leave fires the leg
+ * stop without awaiting it (`#stopAndroidLeg` in the disconnect path), and
+ * voice-ingress evicts `{identity}:screen` on the primary's
+ * `participant_left` (BE `api.rs:803-825`).
+ *
+ * "May", not "is": a native re-key that lands after its timeout may have put
+ * the leg on the new key after all. Until one does, the frames stay
+ * end-to-end encrypted under the previous key, readable only by its holders
+ * (the SFU holds no keys), which is why the copy names who could see it
+ * rather than saying "unencrypted".
+ */
+const LEG_REKEY_UNSTOPPABLE_NOTICE =
+  "Your screen share couldn't be stopped and may be visible to someone who left the call. Leave the call to end it.";
+
+/**
+ * A gate-share stop (`#pauseGate`) that did not end the share: the native
+ * stop was rejected or timed out, and the leg is still live for the same
+ * share after `LEG_GATE_SHARE_NOTICE` already said it stopped. Key-neutral
+ * (the gate stopped it for a pause or a re-secure, not a failed re-key), and
+ * "Leave the call" for the reason given on `LEG_REKEY_UNSTOPPABLE_NOTICE`.
+ */
+const LEG_UNSTOPPABLE_NOTICE =
+  "Your screen share couldn't be stopped. Leave the call to end it.";
+
+/**
+ * `#androidScreenShareError`'s "no notice": the one value the leg start's
+ * catch does not toast. A dedicated marker rather than `undefined`, so only
+ * the revoke branch that returns it can silence that catch — anything else
+ * the mapper returns, a literal `undefined` rejection included, still reaches
+ * `onErr`.
+ */
+const NO_LEG_NOTICE = Symbol("no-leg-notice");
 
 /**
  * The SDK event a moderator move (or our own move from another device)
@@ -3267,13 +3348,16 @@ class Voice {
         // that cannot land stops the leg — fail closed, never continue on
         // the old key — and RESOLVES, so the rotation itself completes.
         // Wired unconditionally rather than behind
-        // `nativeScreenShareAvailable()`: that accessor is fed by an ASYNC
-        // Capacitor probe, so gating the wiring on it left every call joined
-        // before the probe landed (cold start into a call, accepting a call
-        // from a push notification) with no rotation listener at all, for the
-        // call's whole life — a share started later would then keep
-        // encrypting under a key a removed member still holds. The body is
-        // inert without a leg, so always wiring it costs nothing.
+        // `nativeScreenShareAvailable()`. Before wave 4h that accessor was
+        // fed by an ASYNC Capacitor probe, so gating the wiring on it left
+        // every call joined before the probe landed (cold start into a call,
+        // accepting a call from a push notification) with no rotation
+        // listener at all, for the call's whole life — a share started later
+        // would then keep encrypting under a key a removed member still
+        // holds. The accessor is now synchronous and constant for the
+        // session, but the wiring stays unconditional on purpose (pinned by
+        // `stateWiring.test.ts` C9): the body is inert without a leg, so
+        // always wiring it costs nothing.
         const provider = this.#mlsKeyProvider;
         provider.onLocalScreenKey = async (key) => {
           const leg = this.#androidLeg;
@@ -3295,12 +3379,29 @@ class Voice {
               groupId: key.groupId,
             });
           } catch {
+            // Read BEFORE the stop: a leg already stopping, or no longer
+            // `active()`, was ended by something that spoke for itself — a
+            // gate-share (a re-secure mid-share pushes its key into the leg
+            // `#pauseGate` is already stopping), a revoke, a native stop — or
+            // deliberately said nothing (a tap, a hang-up), so "stopped"
+            // would only contradict it. The stop runs either way. A stop that
+            // FAILED or timed out is reported regardless, as `unstoppable`
+            // (`rekeyFailureNotice`): the leg is still `active()` after it for
+            // the SAME share (`shareToken()`, sampled before the stop, is
+            // unchanged; a share started meanwhile is not the one that
+            // failed), so the share is live and the user is told to leave the
+            // call (see `LEG_REKEY_UNSTOPPABLE_NOTICE`). Nothing rejects out
+            // of the listener and nothing retries: the rotation completes.
+            const token = leg.shareToken();
+            const spoken = leg.stopping() || !leg.active();
             await this.#stopAndroidLeg();
-            this.onErr(
-              new Error(
-                "Your screen share stopped because it could no longer be encrypted.",
-              ),
+            const message = this.#rekeyFailureMessage(
+              rekeyFailureNotice({
+                spoken,
+                activeAfterStop: leg.active() && leg.shareToken() === token,
+              }),
             );
+            if (message) this.onErr(new Error(message));
           }
         };
         this.#e2eeWorker = new E2EEWorker();
@@ -4004,12 +4105,13 @@ class Voice {
       // immediately, not on the next unrelated join/leave.
       this.#setCallParticipantsVersion((v) => v + 1);
       // Reconcile on the publication itself, for BOTH kinds of participant —
-      // publishing is what changes the roster answer in each case, in
-      // opposite directions:
-      //  - a screen leg declares its encryption only once it publishes, and
-      //    until then fails closed as non-enrolled (§5.3 rule 2(b), see
-      //    `encryptedLegs`), so publishing is what CLEARS a legitimate
-      //    share's mixed banner;
+      // publishing is what changes the roster answer in each case:
+      //  - a screen leg with ZERO publications and its owner present is
+      //    INERT, in neither roster list (see `unpublishedLegs`). Its
+      //    publications are what the roster then judges it by (§5.3 rule
+      //    2(b), see `encryptedLegs`): all declaring encryption folds it onto
+      //    its owner, any declaring plaintext makes it non-enrolled — so a
+      //    plaintext leg goes loud on THIS reconcile, not the next tick;
       //  - a PRIMARY's publication changes the chip's media-plane gate and,
       //    for a bare (device-less) identity, is the moment its plaintext
       //    media becomes audible — the roster already reports it non-enrolled
@@ -5912,19 +6014,23 @@ class Voice {
       // §5.3 rule 2(b): the legs whose OWN declaration says they are
       // encrypted, which is the only witness a viewer has before a frame
       // decrypts. `Participant.isEncrypted` is `size > 0 && every(encrypted)`,
-      // so a leg that has joined but published nothing yet is NOT here — it
-      // over-warns for the join→publish window rather than lending it the
-      // owner's trust in advance. The `trackPublished` listener kicks a fresh
-      // reconcile for a leg so that window closes on the publish, not on the
-      // next periodic tick.
+      // so a leg that has published nothing (yet, or any more) is NOT here:
+      // it is never lent its owner's trust in advance. Unfolded, it is inert
+      // while its owner is present (`unpublishedLegs` below) and loud as an
+      // orphan. The `trackPublished` listener kicks a fresh reconcile, so a
+      // leg is judged on its publish, not on the next periodic tick.
       encryptedLegs: () =>
         [...room.remoteParticipants.values()]
           .filter((p) => isScreenLeg(p.identity) && p.isEncrypted)
           .map((p) => p.identity),
-      // The join→publish window: a leg with no publications yet. The roster
-      // policy grants these the admit-grace instead of the rule-2(b) instant
-      // over-warn — under §0.4 that over-warn one-way stops the newborn leg
-      // whenever a reconcile lands between its connect and first publication.
+      // Legs with ZERO publications: the join→publish window, and a leg the
+      // server force-unpublished (a Video revoke, an AFK designation) before
+      // native tears it down. The roster policy holds such a leg INERT — in
+      // neither list, never `pending` — while its owner is present (or is
+      // this device); an orphan stays loud. It sends nothing, so there is no
+      // mix to report, and reporting one would one-way stop a newborn leg
+      // (§0.4) and name a revoked sharer as unencrypted. 🔴 Exactly
+      // `size === 0`: anything wider hides a leg that publishes plaintext.
       unpublishedLegs: () =>
         [...room.remoteParticipants.values()]
           .filter(
@@ -6091,12 +6197,53 @@ class Voice {
     // LocalTrackPublished. The gate cannot pause the leg: it is a separate
     // native participant the WebView's publication sweep never sees. The stop
     // is one-way, so name the reason that fired it.
+    //
+    // The user is told as well (`gateStopNotice`), sampled BEFORE the stop
+    // bumps the generation — which is what makes it single-fire: a tap or a
+    // hang-up that got there first has already bumped it (the starting owner
+    // no longer matches), and a second reason during the teardown sees the
+    // stop in flight. The attempt this stop cancels exits quietly at its own
+    // stale check or catch (it is CANCELLED, so `staleExitNotice` answers
+    // none and the catch skips its error), so this is its only notice.
+    //
+    // Sampled here, but SHOWN only once the primary's pause sweep below has
+    // run: nothing new — a modal opening, its reactive fallout — runs between
+    // the reason add and that sweep.
+    const notice = gateStopNotice({
+      startingFor: this.#androidLegStartingFor,
+      currentGeneration: this.#androidLegGeneration,
+      active: !!this.#androidLeg?.active(),
+      stopInFlight: !!this.#androidLeg?.stopping(),
+      roomConnected: room.state === ConnectionState.Connected,
+    });
     if (this.#androidLeg?.active() || this.#androidLegStartingFor !== undefined)
       console.warn(
         `[rtc] publish gate "${reason}" stopped the Android screen leg`,
       );
-    void this.#stopAndroidLeg();
+    // A gate-share stop that fails or hangs (a rejected or timed-out native
+    // stop) leaves the share live AFTER the notice below said it stopped, and
+    // with no rotation to follow (a mixed or interlude pause, a loud
+    // fallback) nothing else corrects it. So for `gate-share` the leg and its
+    // `shareToken()` are sampled BEFORE the stop, and once THAT stop settles
+    // a leg still `active()` for the same share gets `LEG_UNSTOPPABLE_NOTICE`.
+    // The stop stays un-awaited: awaiting a stop that can hang for its whole
+    // timeout would hold the primary's pause sweep behind it.
+    const leg = notice === "gate-share" ? this.#androidLeg : undefined;
+    const token = leg?.shareToken();
+    const stopped = this.#stopAndroidLeg();
     await this.#applyPublishGate(room);
+    if (notice === "gate-start") this.onErr(new Error(LEG_GATE_START_NOTICE));
+    else if (notice === "gate-share")
+      this.onErr(new Error(LEG_GATE_SHARE_NOTICE));
+    // Chained only now, after "stopped" was shown, so it can never be the
+    // last word over a live share. `#stopAndroidLeg` does not reject on a
+    // failed native stop (`#doStop` catches the bridge's rejection and its
+    // timeout), so the chain adds no catch.
+    if (notice === "gate-share")
+      void stopped.then(() => {
+        if (leg?.active() && leg.shareToken() === token)
+          this.onErr(new Error(LEG_UNSTOPPABLE_NOTICE));
+      });
   }
 
   async #resumeGate(room: Room, reason: PublishGateReason): Promise<void> {
@@ -9924,12 +10071,7 @@ class Voice {
     // user-paced, and a key read now would be a snapshot of an epoch that may
     // be several rotations stale by the time the leg publishes. The binding
     // read is the one below, immediately before `connect()`.
-    if (
-      this.#publishGate.size > 0 ||
-      (mode?.kind === "e2ee" &&
-        (this.#mlsSession?.state() !== "active" ||
-          !this.#mlsKeyProvider?.lastLocalScreenKey()))
-    ) {
+    if (this.#androidLegRefusedNow(mode)) {
       this.onErr(new Error(SHARE_UNAVAILABLE_NOW));
       return;
     }
@@ -9952,6 +10094,29 @@ class Voice {
     );
     if (!tier) return;
 
+    // The sheet is user-paced too. A call that ended or changed while it was
+    // open is a cancellation: quiet, as the stale checks below treat it.
+    if (this.room() !== room) return;
+    // The same refusal again, now the sheet is closed: a gate reason added
+    // while it was open (a re-secure, say) cancelled no attempt — none had
+    // claimed yet — and would only surface at the first stale check, AFTER
+    // the user had been through the OS consent dialog for nothing. Nothing
+    // awaits between here and the claim, so any later reason reaches a
+    // claimed attempt through `#pauseGate`.
+    //
+    // Asked of the mode as it is NOW, and only while it is still the one the
+    // tap read. Checked against the tap-time `mode`, a re-upgrade completed
+    // while the sheet was open (a plaintext interlude -> `negotiating` ->
+    // `e2ee`, its gate pulse long since released) passed this check, and the
+    // key read below then skipped the key and started a KEYLESS leg in an
+    // encrypted call. A changed mode is refused rather than followed: the user
+    // chose to share into the call they tapped in.
+    const modeNow = this.callMode();
+    if (modeNow?.kind !== mode?.kind || this.#androidLegRefusedNow(modeNow)) {
+      this.onErr(new Error(SHARE_UNAVAILABLE_NOW));
+      return;
+    }
+
     // Claim the attempt. Any stop hook, or a competing tap, bumps this and so
     // orphans everything below.
     const generation = ++this.#androidLegGeneration;
@@ -9967,7 +10132,7 @@ class Voice {
       // return leaves the phone permitted to capture with nothing owning the
       // teardown.
       if (this.#androidLegStale(generation, room)) {
-        await this.#stopAndroidLeg();
+        await this.#exitStaleAndroidLegStart(generation, room);
         return;
       }
 
@@ -9978,7 +10143,7 @@ class Voice {
       const deviceId = identity.split(":")[1] || undefined;
       const auth = await channel.joinScreenLeg(deviceId);
       if (this.#androidLegStale(generation, room)) {
-        await this.#stopAndroidLeg();
+        await this.#exitStaleAndroidLegStart(generation, room);
         return;
       }
 
@@ -9988,8 +10153,26 @@ class Voice {
       // rotation during the consent window has already advanced it. Publishing
       // under the pre-dialog key would hand the share to whoever that
       // rotation removed.
+      //
+      // The MODE is re-read here for the same reason, and the current mode
+      // alone decides whether a key is needed. The OS consent dialog is
+      // user-paced: a mode read at tap time could skip the key in a call that
+      // has since become encrypted, publishing plaintext screen frames to the
+      // SFU until the roster flags the leg. A mode that changed since the tap,
+      // or one that may not publish plaintext (`#legPlaintextAuthorized`), is
+      // refused; consent is already taken, so the refusal stops the leg.
+      const modeAtConnect = this.callMode();
+      if (
+        modeAtConnect?.kind !== mode?.kind ||
+        (modeAtConnect?.kind !== "e2ee" &&
+          !this.#legPlaintextAuthorized(modeAtConnect))
+      ) {
+        await this.#stopAndroidLeg();
+        this.onErr(new Error(SHARE_UNAVAILABLE_NOW));
+        return;
+      }
       let e2eeKey: LegE2EEKey | undefined;
-      if (mode?.kind === "e2ee") {
+      if (modeAtConnect?.kind === "e2ee") {
         const key = this.#mlsKeyProvider?.lastLocalScreenKey();
         // Bound to the CURRENT group, not just "a key exists": across the two
         // user-paced dialogs the session can have re-established, and the
@@ -10027,7 +10210,7 @@ class Voice {
       // while `connect()` was in flight must be answered by tearing down, not
       // by returning — returning is what let a share outlive its own call.
       if (this.#androidLegStale(generation, room)) {
-        await this.#stopAndroidLeg();
+        await this.#exitStaleAndroidLegStart(generation, room);
         return;
       }
       await this.#syncLegKeyAfterConnect(activeLeg, e2eeKey);
@@ -10038,13 +10221,22 @@ class Voice {
       // Read BEFORE the stop below bumps the generation. CANCELLED, not
       // merely stale: a stop hook or a cancelling tap already ended this
       // attempt, native rejects the cancelled connect, and surfacing that
-      // rejection would toast an error for a stop that was asked for. A held
-      // publish gate deliberately does NOT count — it also aborts the
-      // attempt, but nobody asked for this share to end, so a genuine
-      // failure racing a transient re-secure pulse keeps its message.
+      // rejection would toast an error for a stop that was asked for. A
+      // publish-gate pulse during the attempt IS such a cancellation —
+      // `#pauseGate` stops the leg through `#stopAndroidLeg` and gives the
+      // notice itself — so a failure racing it stays quiet. Merely stale is
+      // not enough: a gate reason held since before the claim cancelled
+      // nothing, and a genuine failure keeps its message (defense in depth,
+      // unreachable in production today: see `#exitStaleAndroidLegStart`).
       const wasCancelled = this.#androidLegCancelled(generation, room);
       await this.#stopAndroidLeg();
-      if (!wasCancelled) this.onErr(this.#androidScreenShareError(error));
+      if (!wasCancelled) {
+        // `NO_LEG_NOTICE` is the mapper's "no notice", returned only by its
+        // revoke branch: a revoke the primary's own toast already explains.
+        // Anything else it maps reaches `onErr` as it always has.
+        const notice = this.#androidScreenShareError(error);
+        if (notice !== NO_LEG_NOTICE) this.onErr(notice);
+      }
     } finally {
       // Cleared only by the attempt that still owns the window. A stop bumps
       // the generation without claiming one, so keying on the token itself
@@ -10065,9 +10257,11 @@ class Voice {
     return startAttemptStale(this.#androidLegWorld(generation, room));
   }
 
-  /** Did something CLAIM the leg (stop hook, competing tap, call change), as
-   * opposed to the attempt merely having to abandon? Only a cancellation
-   * silences the attempt's error. */
+  /** Did something CLAIM the leg — a stop hook (a publish-gate pulse
+   * included: `#pauseGate` stops through `#stopAndroidLeg`), a competing tap,
+   * a call change — as opposed to the attempt merely finding a gate reason
+   * that was already held when it claimed? Only a cancellation silences the
+   * attempt's error: whatever claimed the leg speaks for itself. */
   #androidLegCancelled(generation: number, room: Room): boolean {
     return startAttemptCancelled(this.#androidLegWorld(generation, room));
   }
@@ -10079,6 +10273,139 @@ class Voice {
       roomChanged: this.room() !== room,
       publishGateSize: this.#publishGate.size,
     };
+  }
+
+  /**
+   * The cheap "can a leg start right now" refusal, run before the tier sheet
+   * and again once it closes: the publish gate must be empty and, under E2EE,
+   * the session active with a leg send key derived. The first run is given
+   * the mode the tap read; the second the mode current once the sheet
+   * closes, and only after the caller checked it is still that one. The
+   * binding key read before `connect()` re-checks the mode for itself.
+   */
+  #androidLegRefusedNow(mode: CallMode | undefined): boolean {
+    return (
+      this.#publishGate.size > 0 ||
+      (mode?.kind === "e2ee" &&
+        (this.#mlsSession?.state() !== "active" ||
+          !this.#mlsKeyProvider?.lastLocalScreenKey()))
+    );
+  }
+
+  /**
+   * May a leg in a call of this mode connect WITHOUT a key? Asked by the
+   * binding key read before `connect()` for every mode but `e2ee`, which
+   * takes the keyed path instead. The evidence is `CallMode` and
+   * `callModeTransition` in `mlsCallModePolicy.ts`:
+   *
+   * - `undefined`: no session, or a shell that cannot encrypt (a plain call;
+   *   reset at every call boundary). A capable shell's session that has not
+   *   reached its first verdict also reads `undefined`, but `connect()` holds
+   *   the `negotiating` gate for it from before the Room connects, and every
+   *   leg check refuses a held gate on its own.
+   * - `off`: not an E2EE call, publishing normally; terminal in the machine.
+   * - `interlude` with `localConfirmed`: this device's user confirmed
+   *   plaintext (`local_confirm` turns E2EE off and releases the gate).
+   *
+   * Everything else is refused: `negotiating` (gated, no verdict), `mixed`
+   * (paused), an unconfirmed `interlude` (a remote announce, which never
+   * resumes publishing), `call_full` (terminal) and `e2ee` itself. The switch
+   * is exhaustive, so a new mode fails to compile here rather than starting a
+   * plaintext leg.
+   */
+  #legPlaintextAuthorized(mode: CallMode | undefined): boolean {
+    if (mode === undefined) return true;
+    switch (mode.kind) {
+      case "off":
+        return true;
+      case "interlude":
+        return mode.localConfirmed;
+      case "negotiating":
+      case "mixed":
+      case "call_full":
+      case "e2ee":
+        return false;
+    }
+    const exhaustive: never = mode;
+    return exhaustive;
+  }
+
+  /**
+   * A start attempt's stale exit: tear down, and tell the user when nobody
+   * else will. `staleExitNotice` is read BEFORE the stop bumps the
+   * generation. Exactly one notice per attempt: it answers `gate-start` only
+   * for a stale but NOT cancelled attempt (a gate reason held since before
+   * the claim), while `#pauseGate` answers `gate-start` only for a pulse
+   * DURING the attempt — and that pulse's stop bumps the generation, so the
+   * attempt is cancelled here and this answers none. The catch never runs
+   * for these exits; they return.
+   *
+   * The `gate-start` answer is DEFENSE IN DEPTH, unreachable in production
+   * today: the second `#androidLegRefusedNow` check runs synchronously right
+   * before the claim, so no reason is held AT the claim, and every later gate
+   * add goes through `#pauseGate`, which bumps the generation — the attempt
+   * then reads as cancelled and this answers none. It stays so that a gate
+   * add that bypasses `#pauseGate`, or an await slipped in ahead of the claim,
+   * still tells the user instead of aborting silently.
+   */
+  async #exitStaleAndroidLegStart(
+    generation: number,
+    room: Room,
+  ): Promise<void> {
+    const notice = staleExitNotice(this.#androidLegWorld(generation, room));
+    await this.#stopAndroidLeg();
+    if (notice === "gate-start") this.onErr(new Error(LEG_GATE_START_NOTICE));
+  }
+
+  /**
+   * The copy for a native stop's [LegStopNotice] (`nativeStopNotice`), or
+   * undefined for `none`. The gate kinds never come from a native stop; they
+   * map here too so the switch stays exhaustive.
+   */
+  #legStopNoticeMessage(notice: LegStopNotice): string | undefined {
+    switch (notice) {
+      case "none":
+        return undefined;
+      case "connection":
+        // Ingress removes a leg on the primary's reconnect/network switch
+        // with no grace (§7.5), and a full native reconnect cannot
+        // re-acquire the single-use consent (probe (c-iv)) — same UX.
+        return "Your screen share ended because the connection changed. Share again when you're ready.";
+      case "encryption":
+        return LEG_REKEY_STOPPED_NOTICE;
+      case "revoked":
+        return LEG_REVOKED_NOTICE;
+      case "gate-start":
+        return LEG_GATE_START_NOTICE;
+      case "gate-share":
+        return LEG_GATE_SHARE_NOTICE;
+      default: {
+        const unknownNotice: never = notice;
+        void unknownNotice;
+        return undefined;
+      }
+    }
+  }
+
+  /**
+   * The copy for a failed leg re-key's [RekeyFailureNotice]
+   * (`rekeyFailureNotice`), or undefined for `none`. Shared by both re-key
+   * sites: the rotation listener and `#syncLegKeyAfterConnect`.
+   */
+  #rekeyFailureMessage(n: RekeyFailureNotice): string | undefined {
+    switch (n) {
+      case "none":
+        return undefined;
+      case "stopped":
+        return LEG_REKEY_STOPPED_NOTICE;
+      case "unstoppable":
+        return LEG_REKEY_UNSTOPPABLE_NOTICE;
+      default: {
+        const unknownNotice: never = n;
+        void unknownNotice;
+        return undefined;
+      }
+    }
   }
 
   /**
@@ -10112,16 +10439,31 @@ class Voice {
     } catch {
       // Fail closed, exactly as the rotation listener does: a leg that cannot
       // take the current epoch's key must not keep publishing under the old.
+      // Read BEFORE the stop, by the rotation listener's rule: a leg already
+      // stopping (a gate-share, a tap, a hang-up) or no longer `active()` (a
+      // revoke, a native error, a disconnect) was ended by something that
+      // already said why — or deliberately said nothing — so "stopped"
+      // would only contradict it. The stop runs either way. A stop that
+      // FAILED or timed out is reported regardless, as `unstoppable`
+      // (`rekeyFailureNotice`): the leg is still `active()` after it for the
+      // SAME share (`shareToken()`, sampled before the stop, is unchanged),
+      // so the share is live and the user is told to leave the call. No
+      // rejection out of here and no retry, as in the listener.
+      const token = leg.shareToken();
+      const spoken = leg.stopping() || !leg.active();
       await this.#stopAndroidLeg();
-      this.onErr(
-        new Error(
-          "Your screen share stopped because it could no longer be encrypted.",
-        ),
+      const message = this.#rekeyFailureMessage(
+        rekeyFailureNotice({
+          spoken,
+          activeAfterStop: leg.active() && leg.shareToken() === token,
+        }),
       );
+      if (message) this.onErr(new Error(message));
     }
   }
 
-  /** Map the route's refusals to copy (§3); pass anything else through. */
+  /** Map the route's refusals to copy (§3); pass anything else through.
+   * `NO_LEG_NOTICE` means "no notice" — the caller skips its toast. */
   #androidScreenShareError(error: unknown): unknown {
     // A NATIVE-side cancellation that JS did not ask for — the leg's own room
     // was torn down mid-connect (the 10 s token expiring, a server close, an
@@ -10136,6 +10478,24 @@ class Voice {
       message.includes("connect_failed: cancelled")
     )
       return new Error("Your screen share couldn't start. Try sharing again.");
+    // A revoke that cancelled the connect (C8): the server took the leg's
+    // publish permission away mid-start. Read the same way as a native
+    // `stopped{"revoked"}` — and, like it, silent when the primary lost
+    // publishing too (its own toast explains), which returns `NO_LEG_NOTICE`.
+    // EXACT match: the plugin rejects a revoke-cancelled connect with exactly
+    // this text (`call.reject("connect_failed: revoked")`, which Capacitor
+    // surfaces verbatim as the error's `message`), while every other failed
+    // connect is `connect_failed: <the native exception's message>` — a
+    // substring match would silence any of those that merely contained it.
+    if (message === "connect_failed: revoked") {
+      const text = this.#legStopNoticeMessage(
+        nativeStopNotice("revoked", {
+          canPublish: this.room()?.localParticipant.permissions?.canPublish,
+          inAfkChannel: this.isAfkChannel,
+        }),
+      );
+      return text === undefined ? NO_LEG_NOTICE : new Error(text);
+    }
     const type = (error as { type?: string })?.type;
     switch (type) {
       case "FeatureDisabled":
@@ -10171,22 +10531,17 @@ class Voice {
     leg.onStopped = (reason) => {
       this.#setScreenshare(false);
       this.sound.playSound("streamEnd");
-      if (reason === "disconnected") {
-        // Ingress removes a leg on the primary's reconnect/network switch
-        // with no grace (§7.5), and a full native reconnect cannot
-        // re-acquire the single-use consent (probe (c-iv)) — same UX.
-        this.onErr(
-          new Error(
-            "Your screen share ended because the connection changed. Share again when you're ready.",
-          ),
-        );
-      } else if (reason === "error") {
-        this.onErr(
-          new Error(
-            "Your screen share stopped because it could no longer be encrypted.",
-          ),
-        );
-      }
+      // `user`/`system` (stops taken on this device) say nothing; a revoke
+      // says nothing when the primary lost publishing too — its own AFK /
+      // moderator-mute toast explains, and `inAfkChannel` covers the leg's
+      // revoke landing before the primary's.
+      const text = this.#legStopNoticeMessage(
+        nativeStopNotice(reason, {
+          canPublish: this.room()?.localParticipant.permissions?.canPublish,
+          inAfkChannel: this.isAfkChannel,
+        }),
+      );
+      if (text !== undefined) this.onErr(new Error(text));
     };
     leg.onMuted = (muted) => {
       if (muted)

@@ -317,13 +317,15 @@ test("🔴 the admit-grace never covers an orphan or a published plaintext leg",
   assert.deepEqual(plaintext.pending, []);
 });
 
-test("a graced UNPUBLISHED leg with its owner present is pending, not loud", () => {
+test("a graced UNPUBLISHED leg with its owner present is inert: in neither list", () => {
   // The join→publish window: the leg is in the SFU but has zero publications
   // — it sends nothing (no frames exist) and its token cannot subscribe, so
-  // there is nothing to fail closed against. Before this rule, a reconcile
-  // landing in that window read the leg non-enrolled (rule 2(b) over-warn),
-  // fired `mixed`, and §0.4 one-way stopped the leg that had just connected
-  // — the share killed itself at birth under load.
+  // there is nothing to fail closed against. Before the join→publish rule, a
+  // reconcile landing in that window read the leg non-enrolled (rule 2(b)
+  // over-warn), fired `mixed`, and §0.4 one-way stopped the leg that had just
+  // connected — the share killed itself at birth under load. It is not
+  // `pending` either: a leg is never pending, because a pending leg would
+  // hold enable/resume for as long as a hostile SFU kept it unpublished.
   const result = reconcileRoster(
     [SELF, ALICE, ALICE_LEG],
     [SELF, ALICE],
@@ -332,7 +334,8 @@ test("a graced UNPUBLISHED leg with its owner present is pending, not loud", () 
     [ALICE_LEG],
   );
   assert.deepEqual(result.nonEnrolled, []);
-  assert.deepEqual(result.pending, [ALICE_LEG]);
+  assert.deepEqual(result.pending, []);
+  assert.deepEqual(result.ghosts, []);
 });
 
 test("🔴 a graced unpublished leg is still loud when its owner is ABSENT", () => {
@@ -350,15 +353,193 @@ test("🔴 a graced unpublished leg is still loud when its owner is ABSENT", () 
   assert.deepEqual(result.pending, []);
 });
 
-test("an UNGRACED unpublished leg still over-warns (the grace is the caller's call)", () => {
+test("🔴 an UNGRACED unpublished leg with its owner present is inert too (the server-forced unpublish)", () => {
+  // This spec used to pin the F-W3-2 over-warn: it asserted the leg was
+  // non-enrolled. A moderator Video revoke or an AFK designation makes the
+  // SFU force-unpublish the leg's only track; the leg stays in the room with
+  // zero publications and no admit window, and reporting it held the whole
+  // call `mixed` with a banner naming the SHARER as not using encrypted
+  // calls. It still sends nothing and can read nothing, so it is in neither
+  // list, grace or not.
   const result = reconcileRoster(
     [SELF, ALICE, ALICE_LEG],
     [SELF, ALICE],
     SELF,
     { e2ee: true, encryptedLegs: [], unpublishedLegs: [ALICE_LEG] },
   );
-  assert.deepEqual(result.nonEnrolled, [ALICE_LEG]);
+  assert.deepEqual(result.nonEnrolled, []);
   assert.deepEqual(result.pending, []);
+  assert.deepEqual(result.ghosts, []);
+});
+
+// ---- Inert unpublished legs: what stays loud (wave 4, F-W3-2) --------------
+// Hiding a zero-publication leg is the ONE place this function leaves a
+// device-qualified non-member unreported, so every boundary of that skip is
+// pinned: the owner test is by DEVICE (present in the raw SFU set, or this
+// device), it applies to screen legs only, it sits BELOW the bare-identity
+// rule, and it ends the moment the leg publishes anything.
+// The published-plaintext leg with its owner present is covered above:
+// ungraced by "a leg declaring plaintext inside an e2ee call reads as
+// non-enrolled", graced by "the admit-grace never covers an orphan or a
+// published plaintext leg".
+
+test("🔴 our OWN unpublished, unencrypted leg is inert in an e2ee call", () => {
+  // The sharer's view of its own server-forced unpublish. The owner test
+  // passes through `localIdentity`, which reconcile deletes from the raw set
+  // (and which a caller need not list at all); without that arm the sharer
+  // reports its own leg and pauses its own call.
+  const selfLeg = `${SELF}:screen`;
+  for (const sfu of [
+    [SELF, selfLeg, ALICE],
+    [selfLeg, ALICE],
+  ]) {
+    for (const graced of [[], [selfLeg]]) {
+      const result = reconcileRoster(
+        sfu,
+        [SELF, ALICE],
+        SELF,
+        { e2ee: true, encryptedLegs: [], unpublishedLegs: [selfLeg] },
+        graced,
+      );
+      assert.deepEqual(result.nonEnrolled, []);
+      assert.deepEqual(result.pending, []);
+      assert.deepEqual(result.ghosts, []);
+    }
+  }
+});
+
+test("🔴 an unpublished ORPHAN leg is non-enrolled, graced or not (a leg is never pending)", () => {
+  // §5.4: a server-minted leg under a departed device's identity. Having
+  // published nothing does not make it inert — its owner is not here to
+  // answer for it — and it must not keep the owner's leaf alive either.
+  for (const graced of [[], [ALICE_LEG]]) {
+    const result = reconcileRoster(
+      [SELF, ALICE_LEG],
+      [SELF, ALICE],
+      SELF,
+      { e2ee: true, encryptedLegs: [], unpublishedLegs: [ALICE_LEG] },
+      graced,
+    );
+    assert.deepEqual(result.nonEnrolled, [ALICE_LEG]);
+    assert.deepEqual(result.pending, []);
+    assert.deepEqual(result.ghosts, [ALICE]);
+  }
+});
+
+test("an unpublished leg whose owner is NOT in the group: only the owner is reported", () => {
+  // The inert leg adds nothing to the mix; its owner is the non-member. One
+  // row naming the person, whether the owner is non-enrolled or graced.
+  const ungraced = reconcileRoster(
+    [SELF, ALICE, BOB, BOB_LEG],
+    [SELF, ALICE],
+    SELF,
+    { e2ee: true, encryptedLegs: [], unpublishedLegs: [BOB_LEG] },
+  );
+  assert.deepEqual(ungraced.nonEnrolled, [BOB]);
+  assert.deepEqual(ungraced.pending, []);
+
+  const graced = reconcileRoster(
+    [SELF, ALICE, BOB, BOB_LEG],
+    [SELF, ALICE],
+    SELF,
+    { e2ee: true, encryptedLegs: [], unpublishedLegs: [BOB_LEG] },
+    [BOB, BOB_LEG],
+  );
+  assert.deepEqual(graced.nonEnrolled, []);
+  assert.deepEqual(graced.pending, [BOB]);
+});
+
+test("🔴 an unpublished BARE leg is loud even with its owner present", () => {
+  // The skip sits BELOW the bare-identity rule. `01WEB::screen` strips to
+  // `01WEB`, which is present, so a skip placed above that rule would hide
+  // the leg of a client that can never be admitted.
+  for (const graced of [[], [WEB, WEB_LEG]]) {
+    const result = reconcileRoster(
+      [SELF, ALICE, WEB, WEB_LEG],
+      [SELF, ALICE],
+      SELF,
+      { e2ee: true, encryptedLegs: [], unpublishedLegs: [WEB_LEG] },
+      graced,
+    );
+    assert.deepEqual(result.nonEnrolled, [WEB, WEB_LEG]);
+    assert.deepEqual(result.pending, []);
+  }
+});
+
+test("🔴 a PRIMARY listed as unpublished is still non-enrolled (the skip is for legs only)", () => {
+  // A device that has published nothing is NOT inert: it is a participant
+  // that can subscribe, and a primary trivially "owns" itself. Whatever the
+  // caller hands in `unpublishedLegs`, a zero-publication non-member must
+  // never hide as an unpublished leg. A graced one keeps its ordinary grace.
+  const ungraced = reconcileRoster([SELF, ALICE, BOB], [SELF, ALICE], SELF, {
+    e2ee: true,
+    encryptedLegs: [],
+    unpublishedLegs: [BOB],
+  });
+  assert.deepEqual(ungraced.nonEnrolled, [BOB]);
+  assert.deepEqual(ungraced.pending, []);
+
+  const graced = reconcileRoster(
+    [SELF, ALICE, BOB],
+    [SELF, ALICE],
+    SELF,
+    { e2ee: true, encryptedLegs: [], unpublishedLegs: [BOB] },
+    [BOB],
+  );
+  assert.deepEqual(graced.nonEnrolled, []);
+  assert.deepEqual(graced.pending, [BOB]);
+});
+
+test("🔴 the owner test is by DEVICE, not by user", () => {
+  // Another device of a present member, or of the local user, is not the
+  // leg's owner. `01ALICE:devZ:screen` with only `01ALICE:devA` here is an
+  // orphan, however familiar the user id looks.
+  const otherDeviceLeg = "01ALICE:devZ:screen";
+  const peer = reconcileRoster(
+    [SELF, ALICE, otherDeviceLeg],
+    [SELF, ALICE],
+    SELF,
+    { e2ee: true, encryptedLegs: [], unpublishedLegs: [otherDeviceLeg] },
+  );
+  assert.deepEqual(peer.nonEnrolled, [otherDeviceLeg]);
+  assert.deepEqual(peer.pending, []);
+
+  const ownOtherDeviceLeg = "01SELF:devOther:screen";
+  const own = reconcileRoster(
+    [SELF, ALICE, ownOtherDeviceLeg],
+    [SELF, ALICE],
+    SELF,
+    { e2ee: true, encryptedLegs: [], unpublishedLegs: [ownOtherDeviceLeg] },
+  );
+  assert.deepEqual(own.nonEnrolled, [ownOtherDeviceLeg]);
+  assert.deepEqual(own.pending, []);
+});
+
+test("🔴 an inert leg goes loud on the call after it publishes plaintext, graced or not", () => {
+  // The inertness lasts only while there is nothing to be plaintext. Once the
+  // leg publishes a NONE-declared track it leaves `unpublishedLegs` without
+  // entering `encryptedLegs`, and rule 2(b) reports it on that very call.
+  for (const graced of [[], [ALICE_LEG]]) {
+    const inert = reconcileRoster(
+      [SELF, ALICE, ALICE_LEG],
+      [SELF, ALICE],
+      SELF,
+      { e2ee: true, encryptedLegs: [], unpublishedLegs: [ALICE_LEG] },
+      graced,
+    );
+    assert.deepEqual(inert.nonEnrolled, []);
+    assert.deepEqual(inert.pending, []);
+
+    const published = reconcileRoster(
+      [SELF, ALICE, ALICE_LEG],
+      [SELF, ALICE],
+      SELF,
+      { e2ee: true, encryptedLegs: [], unpublishedLegs: [] },
+      graced,
+    );
+    assert.deepEqual(published.nonEnrolled, [ALICE_LEG]);
+    assert.deepEqual(published.pending, []);
+  }
 });
 
 test("an admitted identity still in the grace set is neither pending nor non-enrolled", () => {

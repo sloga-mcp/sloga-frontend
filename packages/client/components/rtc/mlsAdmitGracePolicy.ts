@@ -32,6 +32,7 @@
  * budget those replays cannot mint fresh windows and blank the mixed banner's
  * names.
  */
+import { stripLeg } from "../ui/components/features/voice/participantIdentity.ts";
 
 export interface AdmitGraceWindowInput {
   /** Grace milliseconds this identity has already spent in this call. */
@@ -166,4 +167,70 @@ export function rearmAdmitGraceExpiry(input: {
     input.deadlineMs,
     Math.max(input.currentExpiryMs, input.nowMs + input.baseMs),
   );
+}
+
+/**
+ * Whether a screen leg's OWNER primary is in the call — the same owner rule
+ * `reconcileRoster` applies before it graces an unfolded leg.
+ *
+ * `localIdentity` counts as present: the roster deletes our own identity from
+ * the SFU set before it looks, and our own device's leg is the most legitimate
+ * leg there is. Without it the SHARER's phone would be the first to lose its
+ * own leg's grace. On a primary `stripLeg` is the identity itself, so this
+ * reads as plain presence; callers only ask it about legs. An empty owner (a
+ * malformed `::screen` identity) is never present, even against an empty
+ * `localIdentity`.
+ */
+export function legOwnerPresent(
+  leg: string,
+  sfu: readonly string[],
+  localIdentity: string,
+): boolean {
+  const owner = stripLeg(leg);
+  return owner !== "" && (sfu.includes(owner) || owner === localIdentity);
+}
+
+/**
+ * Whether a leg's spent grace is forgiven because it has now been seen
+ * PUBLISHED.
+ *
+ * Legs are still billed like any joiner, but each share start bills its own
+ * connect→publish gap against a ledger that lives for the whole call, so a
+ * phone that shared enough times ran out of budget: its next leg was
+ * non-enrolled on sight, the share self-stopped and every viewer went red. A
+ * publication ends the leg's inert window, so it clears the slate. A churned
+ * leg that never publishes never resets and still runs out at the per-call
+ * ceiling, which keeps the anti-churn bound on `#admitGraceUsed`.
+ */
+export function admitGraceLedgerResets(i: {
+  isLeg: boolean;
+  legPublished: boolean;
+}): boolean {
+  return i.isLeg && i.legPublished;
+}
+
+export interface AdmitGraceRearmInput {
+  /** The identity is a screen leg rather than a primary. */
+  isLeg: boolean;
+  /** This member's own admit machinery is still working on the identity. */
+  admitInProgress: boolean;
+  /** The leg has a publication (ignored for a primary). */
+  legPublished: boolean;
+  /** `legOwnerPresent` for the leg (ignored for a primary). */
+  legOwnerPresent: boolean;
+}
+
+/**
+ * Whether an expiring window is still enrolling and should re-arm.
+ *
+ * A primary re-arms while its admit is in progress, as before. A leg never
+ * sends a join request, so that signal is always false for it and a slow
+ * connect→publish lapsed straight into non-enrolled. A leg re-arms instead
+ * while it is still in its inert window, unpublished with its owner present,
+ * mirroring the roster's leg grace. Re-arms stay capped by the window's
+ * remaining budget, so this never extends past the ceiling.
+ */
+export function shouldRearmAdmitGrace(i: AdmitGraceRearmInput): boolean {
+  if (i.isLeg) return !i.legPublished && i.legOwnerPresent;
+  return i.admitInProgress;
 }

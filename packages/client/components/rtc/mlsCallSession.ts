@@ -86,10 +86,13 @@ import {
   unencryptedLocalPublications,
 } from "./localPublicationEncryption";
 import {
+  admitGraceLedgerResets,
   admitGraceWindow,
   billAdmitGrace,
+  legOwnerPresent,
   rearmAdmitGraceExpiry,
   settleAdmitGrace,
+  shouldRearmAdmitGrace,
 } from "./mlsAdmitGracePolicy";
 import {
   type AdmitAbort,
@@ -1806,7 +1809,9 @@ export class MlsCallSession {
    * hostile SFU on purpose, since it controls the connect/disconnect events)
    * could hold `pending` forever and the mix warning would never fire. It
    * also suppressed re-upgrade, because `#evaluateEnable` early-returns while
-   * anything is pending.
+   * anything is pending. A screen leg's entry is forgiven only once the leg
+   * is seen published (`admitGraceLedgerResets`), so a churned leg that never
+   * publishes still runs out of this budget.
    *
    * Billing TIME USED rather than stamping an absolute per-call deadline is
    * what keeps a legitimate rejoin working: a participant that spent 3 s in
@@ -7100,6 +7105,14 @@ export class MlsCallSession {
     {
       const pendingSet = new Set(result.pending);
       const now = Date.now();
+      // A leg's spent grace is forgiven once it is seen PUBLISHED, so share
+      // cycling never exhausts the per-call budget. Fail closed: an absent
+      // `unpublishedLegs` accessor, or a leg not yet witnessed encrypted in an
+      // `e2ee` call (the rule-2(b) predicate above), forgives nothing.
+      const sfuNow = new Set(media.sfuParticipants());
+      const unpublishedLegs = media.unpublishedLegs?.();
+      const encryptedLegs = new Set(media.encryptedLegs?.() ?? []);
+      const e2ee = this.#callMode.kind === "e2ee";
       for (const [identity, entry] of this.#admitGrace) {
         const settled = settleAdmitGrace(
           entry.pendingSince,
@@ -7108,6 +7121,17 @@ export class MlsCallSession {
         );
         if (settled.billMs > 0) this.#billAdmitGrace(identity, settled.billMs);
         entry.pendingSince = settled.pendingSince;
+        // Bill THEN reset: reversed, the stretch just billed would survive
+        // the reset. Touches the ledger only, never this window's timer.
+        const isLeg = isScreenLeg(identity);
+        const seenPublished =
+          isLeg &&
+          unpublishedLegs !== undefined &&
+          sfuNow.has(identity) &&
+          !unpublishedLegs.includes(identity) &&
+          (!e2ee || encryptedLegs.has(identity));
+        if (admitGraceLedgerResets({ isLeg, legPublished: seenPublished }))
+          this.#admitGraceUsed.delete(identity);
       }
     }
     // Surface the VERIFIED MLS roster + divergent ghosts for the 6.5 panel.
@@ -7332,8 +7356,27 @@ export class MlsCallSession {
   #onAdmitGraceExpiry(identity: string): void {
     const entry = this.#admitGrace.get(identity);
     if (!entry) return; // cleared concurrently
-    if (this.#rearmAdmitGrace(identity, entry, this.#admitInProgress(identity)))
-      return;
+    // A leg sends no join request, so `#admitInProgress` is always false for
+    // it: a leg re-arms instead while it is still UNPUBLISHED and its owner
+    // (or this device) is present. An absent accessor never re-arms a leg.
+    const media = this.#media;
+    const isLeg = isScreenLeg(identity);
+    const unpublished =
+      isLeg && (media?.unpublishedLegs?.() ?? []).includes(identity);
+    const stillEnrolling = shouldRearmAdmitGrace({
+      isLeg,
+      admitInProgress: isLeg ? false : this.#admitInProgress(identity),
+      legPublished: !unpublished,
+      legOwnerPresent:
+        isLeg &&
+        media !== null &&
+        legOwnerPresent(
+          identity,
+          media.sfuParticipants(),
+          media.localIdentity() ?? "",
+        ),
+    });
+    if (this.#rearmAdmitGrace(identity, entry, stillEnrolling)) return;
     this.#closeAdmitGrace(identity, entry);
     this.#admitGrace.delete(identity);
     void this.reconcileNow();

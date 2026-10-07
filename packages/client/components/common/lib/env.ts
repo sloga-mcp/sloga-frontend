@@ -319,9 +319,10 @@ export default {
    * landmine (§0.8), NOT an `inject.js` runtime flag: verify the flag ON THE
    * ARTIFACT, never the source tree.
    *
-   * Read in `nativeScreenShareAvailable()` (rtc/androidScreenShare.ts), the
-   * single point the call-card button, the context-menu entry and
-   * `toggleScreenshare`'s Android branch all sit behind. The backend
+   * Folded into `nativeScreenShareAvailable()` (rtc/androidScreenShare.ts)
+   * once, at module load: that accessor is the single point the call-card
+   * button, the context-menu entry, `toggleScreenshare`'s Android branch,
+   * `stopScreenshare` and the AFK guard all sit behind. The backend
    * `Features.screen_leg` flag gates the token route independently — both
    * must be lit for a share to start, and the client copy for the
    * `FeatureDisabled` refusal assumes exactly that split.

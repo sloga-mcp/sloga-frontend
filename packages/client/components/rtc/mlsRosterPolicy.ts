@@ -16,9 +16,10 @@ import {
 /**
  * The two-directional SFU∪MLS roster divergence (plan §1.4/§3.4):
  *  - `nonEnrolled` — device-qualified identities in the SFU call but NOT in the
- *    MLS group. The **trusted downgrade-trigger enumeration** (§3.4): a live
- *    participant we cannot encrypt to ⇒ the call is mixed ⇒ loud state + pause
- *    (the client can only ever OVER-warn here, never suppress a real one). Also
+ *    MLS group (an inert screen leg excepted: see `unpublishedLegs`). The
+ *    **trusted downgrade-trigger enumeration** (§3.4): a live participant we
+ *    cannot encrypt to ⇒ the call is mixed ⇒ loud state + pause (the client
+ *    can only ever OVER-warn here, never suppress a real one). Also
  *    the load-bearing hostile-DS T-15 backstop (audit H2): a DS that steers us
  *    into another channel's group yields a roster inconsistent with THIS
  *    channel's SFU set, caught here before enable/publish.
@@ -35,7 +36,8 @@ export interface RosterReconcileResult {
    * plausibly still in flight. NOT a mix trigger — but also NOT consistent:
    * enable/resume must keep waiting for these to drain. When the caller's
    * window expires the identity moves to `nonEnrolled` and the loud path fires
-   * as before, so a joiner that never admits still fails closed.
+   * as before, so a joiner that never admits still fails closed. Never holds
+   * a screen leg: a leg is inert, folded onto its owner, or `nonEnrolled`.
    */
   pending: string[];
   ghosts: string[];
@@ -58,20 +60,29 @@ export interface RosterLegInputs {
   /**
    * Leg identities where EVERY publication declares `trackInfo.encryption !==
    * NONE`. A leg absent from this set has at least one publication claiming
-   * plaintext (or has not published at all yet), and is NOT folded onto its
-   * owner.
+   * plaintext (or has not published at all — see `unpublishedLegs`), and is
+   * NOT folded onto its owner.
    */
   encryptedLegs: readonly string[];
   /**
-   * Leg identities with ZERO publications — the join→publish window. Such a
-   * leg sends nothing (no frames exist to be plaintext) and receives nothing
-   * (a leg's token is publish-only, `can_subscribe: false`), so within the
-   * caller's admit-grace it reads as `pending` instead of non-enrolled when
-   * its owner is present. Without this, the rule-2(b) over-warn in that
-   * window fires `mixed`, and §0.4 turns the over-warn into a one-way stop
-   * of the very leg that just connected — the share kills itself at birth
-   * whenever a reconcile lands between the leg's SFU connect and its first
-   * publication (measured live: ~1.6 s apart under emulator load).
+   * Leg identities with ZERO publications. In `e2ee` mode such a leg is
+   * unfolded (rule 2(b)), and when its owner is present (or is this device)
+   * it is INERT: reported in neither `nonEnrolled` nor `pending`, admit-grace
+   * or not. It sends nothing (no frames exist to be plaintext), its token is
+   * publish-only (`can_subscribe: false`), and anything a hostile SFU forwards
+   * to it is ciphertext under keys it does not hold. Two windows produce such
+   * a leg:
+   *  - join→publish: a reconcile landing between the leg's SFU connect and its
+   *    first publication (measured live: ~1.6 s apart under emulator load)
+   *    would otherwise fire `mixed`, and §0.4 turns that over-warn into a
+   *    one-way stop of the very leg that just connected;
+   *  - after a server-forced unpublish (Video revoke, AFK designation): the leg
+   *    stays in the room with nothing published and no admit window, and would
+   *    otherwise hold the whole call `mixed`, naming its sharer as not using
+   *    encrypted calls.
+   * An ORPHAN leg (owner absent) and a bare-grammar leg stay loud whatever
+   * this says. Accepted cost: a server-minted zero-publication leg named after
+   * a PRESENT owner is silent too — it can neither send nor read media.
    */
   unpublishedLegs?: readonly string[];
 }
@@ -151,6 +162,12 @@ export function anyPeerCouldEncrypt(
  *          other than NONE — a leg declaring plaintext inside an encrypted
  *          call reads as non-enrolled, which is exactly the loud path.
  *
+ * One unfolded leg is reported NOWHERE: a leg with zero publications whose
+ * owner is present (see `unpublishedLegs`). It is the only device-qualified
+ * SFU identity outside the MLS group left unreported, and it is inert — it
+ * publishes nothing and whatever reaches it is ciphertext, so there is no mix
+ * to report.
+ *
  * The client may only ever OVER-warn here, never suppress a real mix.
  *
  * `pendingAdmits` — identities the caller saw JOIN the SFU within its
@@ -167,10 +184,10 @@ export function anyPeerCouldEncrypt(
  *    participant has no E2EE device and can never be admitted, so it is
  *    non-enrolled on sight — the enrolled sides pause before it has published
  *    a frame;
- *  - a SCREEN LEG is pending ONLY in its join→publish window (owner present
- *    AND zero publications — see `unpublishedLegs`, which is inert by
- *    construction): the §5.4 orphan impostor and a leg with any actual
- *    publication failing rule 2(b) both stay instantly loud;
+ *  - a SCREEN LEG is never `pending`: the unpublished leg with its owner
+ *    present is inert (above), and every other unfolded leg — the §5.4 orphan
+ *    impostor, a leg with any actual publication failing rule 2(b) — stays
+ *    instantly loud;
  *  - `pending` is not "consistent" — callers gate enable/resume on BOTH lists
  *    being empty, and when the grace expires the identity falls through to
  *    `nonEnrolled` and the loud path fires exactly as before.
@@ -227,10 +244,22 @@ export function reconcileRoster(
       nonEnrolled.push(id);
       continue;
     }
+    // An unfolded leg with ZERO publications and its owner present (or this
+    // device) is inert — in neither list, graced or not (see
+    // `unpublishedLegs`). A folded leg never reaches here as a leg, so this
+    // is only ever the e2ee rule-2(b) case; the §5.4 orphan fails the owner
+    // test and stays loud.
+    if (
+      isScreenLeg(id) &&
+      unpublished.has(id) &&
+      (rawSfu.has(stripLeg(id)) || stripLeg(id) === localIdentity)
+    ) {
+      continue;
+    }
     // Admit-grace: a freshly-joined DEVICE is pending, not non-enrolled,
-    // until the caller's window expires. An UNFOLDED leg gets the grace only
-    // in its inert join→publish window AND with its owner present — the §5.4
-    // orphan and any leg with an actual publication failing rule 2(b) stay
+    // until the caller's window expires. A SCREEN LEG never is: the inert
+    // unpublished leg was skipped above, and every other unfolded leg (the
+    // §5.4 orphan, a leg with an actual publication failing rule 2(b)) stays
     // instantly loud.
     //
     // A graced PRIMARY keeps its window whatever its publications declare.
@@ -248,16 +277,7 @@ export function reconcileRoster(
     // sends plaintext inside the window is bounded by the caller's grace
     // budget, and an announced downgrade reaches every member through the
     // ctl path regardless.
-    let inGrace = false;
-    if (graced.has(id)) {
-      if (!isScreenLeg(id)) {
-        inGrace = true;
-      } else {
-        const owner = stripLeg(id);
-        inGrace =
-          unpublished.has(id) && (rawSfu.has(owner) || owner === localIdentity);
-      }
-    }
+    const inGrace = graced.has(id) && !isScreenLeg(id);
     if (inGrace) pending.push(id);
     else nonEnrolled.push(id);
   }

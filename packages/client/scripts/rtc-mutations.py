@@ -84,10 +84,17 @@ HARNESS = "mlsCallSession.harness.ts"
 #: as an `expect="green"` entry, which would be an admission dressed as a
 #: measurement.
 #:
-#: 🔴 The ONLY entries that carry `file=STATE` are the `state-*` entries at the
-#: end of this table (call-view suggestions, wave 7). They reach nothing but
-#: the voice-move and chip-publication statements `stateWiring.test.ts` pins
-#: as TEXT: those source pins strip comments before matching (`codeOf`, in
+#: 🔴 The ONLY entries that carry `file=STATE` are entries whose id starts
+#: with `state-`, and `preflight` refuses any other: the call-view
+#: suggestions block (wave 7) and the Android screen-leg block at the end of
+#: this table (screen-share flip wave 4c: `state-leg-*`,
+#: `state-keyprovider-*`, `state-encryptedlegs-*`, `state-sfu-*`,
+#: `state-trackpublished-*`, `state-pausegate-*`). They reach nothing but the
+#: statements `stateWiring.test.ts` pins as TEXT — the voice-move and
+#: chip-publication wiring, and since wave 4 the screen leg's roster inputs,
+#: its stop and gate notices, the start path's mode re-reads and binding key
+#: read, and the leg key fence and pushes: those source pins strip comments
+#: before matching (`codeOf`, in
 #: `sourcePins.harness.ts`), so unlike a `grep -qF` one comment line cannot
 #: satisfy them, but the same text in dead code still would, and a pin proves
 #: a statement is PRESENT, never what it does at runtime. Nothing else in
@@ -819,6 +826,12 @@ def preflight(mutations: list[Mutation]) -> list[str]:
             problems.append(f"{m.id}: expect={m.expect!r} is neither red nor green")
         if not m.specs:
             problems.append(f"{m.id}: names no spec, so nothing can catch it")
+        # The header's file=STATE rule, enforced rather than only stated.
+        if m.file == STATE and not m.id.startswith("state-"):
+            problems.append(
+                f"{m.id}: targets {STATE}, which only `state-*` entries may "
+                f"(see the file=STATE rule in the header)"
+            )
         path = RTC / m.file
         if CLIENT.resolve() not in path.resolve().parents:
             problems.append(f"{m.id}: target {m.file} is outside {CLIENT}")
@@ -7282,7 +7295,8 @@ function isGatedFor(
         id="afk-settings-mature-ungated",
         what="Mark as Mature stays enabled on the AFK channel",
         file=CHANNEL_OVERVIEW,
-        search="""            isDisabled={afkBlocksGate(props.channel.mature)}
+        # Retargeted 2026-10-04: main 4f48d894 nested the mature control two spaces deeper.
+        search="""              isDisabled={afkBlocksGate(props.channel.mature)}
 """,
         replace="""""",
         specs=[AFK_CHANNEL_SETTINGS_SPEC],
@@ -7317,17 +7331,2556 @@ function isGatedFor(
         id="afk-settings-null-pointer-late-in-overview",
         what="Remove Password also writes `afk_channel_id: null`, the 200 that changes nothing, in the part of Overview.tsx the old regex comment stripper deleted from `accept=\"image/*\"` on",
         file=CHANNEL_OVERVIEW,
-        search="""                setPwInput("");
-                setChannelPassword();
+        # Retargeted 2026-10-04: main 4f48d894 nested the password controls two spaces deeper.
+        search="""                  setPwInput("");
+                  setChannelPassword();
 """,
-        replace="""                setPwInput("");
-                void props.channel.server?.edit({ afk_channel_id: null } as never);
-                setChannelPassword();
+        replace="""                  setPwInput("");
+                  void props.channel.server?.edit({ afk_channel_id: null } as never);
+                  setChannelPassword();
 """,
         specs=[AFK_CHANNEL_SETTINGS_SPEC],
         must_red=[AFK_CHANNEL_SETTINGS_SPEC],
     ),
 ]
+
+
+# --- The Android screen-share flip: leg lifecycle, leg grace, leg keys -------
+#
+# Wave 2 of the screen-share flip (G2). Four groups, one namespace each:
+#
+#  - `leg-*`: the leg lifecycle leaf `androidLegStartPolicy.ts` (stop
+#    coalescing, the "not stopped" reading of a failed or hung native stop,
+#    the connect generation, the JS-side group binding, FX1's stop on a key
+#    cleared mid-connect) and the SOURCE PINS that hold the plugin wrapper
+#    `androidScreenShare.ts` to delegating to it. A `file=ANDROID_SHARE`
+#    entry is killed by the pin spec ("holds no live copy of the
+#    lifecycle"), not by running the wrapper, which `node --test` cannot
+#    load; the pins strip comments, so the same text in dead code would
+#    still satisfy them.
+#  - `grace-*`: the admit-grace decisions in `mlsAdmitGracePolicy.ts`
+#    (`legOwnerPresent` with FX2's empty-owner guard, `admitGraceLedgerResets`,
+#    `shouldRearmAdmitGrace`). Where the session spec also notices, it is
+#    listed in `must_red` as MEASURED, not assumed: every `grace-*` entry was
+#    run with `mlsCallSession.leggrace.test.ts` pinned, and the six that list
+#    only the policy spec left it GREEN (the FX2 guard, the dropped
+#    localIdentity, the suffix slice, the reset ignoring isLeg, the re-arm
+#    ignoring legPublished, the re-arm honoring admitInProgress). The session
+#    spec does not drive those shapes; the policy spec alone holds them.
+#  - `session-*`: the call sites in `mlsCallSession.ts` (the settle loop's
+#    bill THEN reset, the fail-closed `seenPublished`, the expiry's re-arm
+#    inputs). Every one is pinned on `mlsCallSession.leggrace.test.ts`, which
+#    holds them by source pins AND by behavior through the session harness.
+#    None keys on `const isLeg = isScreenLeg(identity);` or the billing line
+#    alone: both occur twice in the file.
+#  - `keys-*`: F7's clear of the stale leg key on a legless epoch in
+#    `mlsCallKeys.ts`.
+#
+# Nothing here keys on `state.tsx`, whose "different group" wording is stale.
+
+#: Relative to `RTC`, like every other target (`apply` reads
+#: `RTC / mutation.file`).
+LEG_POLICY = "androidLegStartPolicy.ts"
+ANDROID_SHARE = "androidScreenShare.ts"
+ADMIT_GRACE_POLICY = "mlsAdmitGracePolicy.ts"
+CALL_KEYS = "mlsCallKeys.ts"
+#: The native plugin, held by the Kotlin source pins in LEG_POLICY_SPEC (wave
+#: 4i). Inside this client package, so `preflight`'s containment check holds.
+SHARE_PLUGIN_KT = (
+    "../../android/app/src/main/java/com/acutest/app/screenshare/"
+    "ScreenSharePlugin.kt"
+)
+LEG_POLICY_SPEC = "components/rtc/androidLegStartPolicy.test.ts"
+ADMIT_GRACE_SPEC = "components/rtc/mlsAdmitGracePolicy.test.ts"
+LEGGRACE_SPEC = "components/rtc/mlsCallSession.leggrace.test.ts"
+CALL_KEYS_SPEC = "components/rtc/mlsCallKeys.test.ts"
+
+MUTATIONS += [
+    # ---- the leg lifecycle leaf ---------------------------------------------
+    Mutation(
+        id="leg-1a",
+        what="concurrent leg stops no longer coalesce onto the one in flight, so each caller drives its own bridge stop",
+        file=LEG_POLICY,
+        search="""    if (this.#stopPromise) return this.#stopPromise;
+""",
+        replace="""    if (false) return this.#stopPromise;
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-1b",
+        what="a settled leg stop stays memoized, so every later stop returns the old result and never reaches the bridge",
+        file=LEG_POLICY,
+        search="""    const attempt = this.#doStop().finally(() => {
+      this.#stopPromise = undefined;
+    });
+""",
+        replace="""    const attempt = this.#doStop();
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-2a",
+        what="a rejected or hung native stop marks the leg down, so a share still on the wire reads as stopped",
+        file=LEG_POLICY,
+        search="""    } catch {
+""",
+        replace="""    } catch {
+      this.#active = false;
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-2b",
+        what="the native stop loses its timeout, so a stop that never settles hangs the caller forever",
+        file=LEG_POLICY,
+        search="""      await withTimeout(
+        this.#bridge.stop(),
+        this.#stopTimeoutMs,
+        "screen share stop timed out",
+      );
+""",
+        replace="""      await this.#bridge.stop();
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # ---- the re-key bound (screen-share flip wave 4d, R11) ------------------
+    # `setFrameKey` awaits the native re-key under `withTimeout`, so a push
+    # that never settles REJECTS, which is the callers' fail-closed stop,
+    # instead of hanging the provider's rotation with the leg still
+    # encrypting under the previous epoch's key. `leg-rekey-timeout-dropped`
+    # removes a timeout and must still finish: the spec bounds the hung push
+    # itself (`settlesWithin(hung, 500)`), so the mutant fails an assertion
+    # in about a second instead of riding out `SPEC_TIMEOUT_S`. Measured
+    # 2026-10-04: `-unbounded` is held by the source pin's range check alone
+    # (every behavior spec passes its own short bound, so none sees the
+    # default), and `-swallowed` by behavior alone (the pin strips comments
+    # and whitespace, and its text still matches inside the `try`).
+    Mutation(
+        id="leg-rekey-timeout-dropped",
+        what="the native re-key loses its timeout, so a push that never settles hangs the rotation and leaves the leg on the old epoch's key",
+        file=LEG_POLICY,
+        search="""    await withTimeout(
+      this.#bridge.setFrameKey({
+        keyB64: key.keyB64,
+        keyIndex: key.keyIndex,
+        epoch: key.epoch,
+      }),
+      this.#frameKeyTimeoutMs,
+      "screen share re-key timed out",
+    );
+""",
+        replace="""    await this.#bridge.setFrameKey({
+      keyB64: key.keyB64,
+      keyIndex: key.keyIndex,
+      epoch: key.epoch,
+    });
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-rekey-timeout-swallowed",
+        what="a re-key timeout is caught and the push resolves, so the caller never stops the leg and it keeps the old key silently",
+        file=LEG_POLICY,
+        search="""    await withTimeout(
+      this.#bridge.setFrameKey({
+        keyB64: key.keyB64,
+        keyIndex: key.keyIndex,
+        epoch: key.epoch,
+      }),
+      this.#frameKeyTimeoutMs,
+      "screen share re-key timed out",
+    );
+""",
+        replace="""    try {
+      await withTimeout(
+        this.#bridge.setFrameKey({
+          keyB64: key.keyB64,
+          keyIndex: key.keyIndex,
+          epoch: key.epoch,
+        }),
+        this.#frameKeyTimeoutMs,
+        "screen share re-key timed out",
+      );
+    } catch (e) {
+      if (e instanceof Error && e.message === "screen share re-key timed out")
+        return;
+      throw e;
+    }
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-rekey-timeout-unbounded",
+        what="the app's default re-key bound is ten minutes, so a hung native push leaves the old key live far longer than a stop may take",
+        file=LEG_POLICY,
+        search="""export const FRAME_KEY_TIMEOUT_MS = 5_000;
+""",
+        replace="""export const FRAME_KEY_TIMEOUT_MS = 600_000;
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-rekey-timeout-unwired",
+        what="the constructor drops its re-key bound, so every push races a timer that fires at once and a healthy re-key fails closed",
+        file=LEG_POLICY,
+        search="""    this.#frameKeyTimeoutMs = frameKeyTimeoutMs;
+""",
+        replace="",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-3a-stale-check",
+        what="a connect resolving after its share was stopped still marks the leg active",
+        file=LEG_POLICY,
+        search="""    if (generation !== this.#connectGeneration) return;
+    this.#active = true;
+""",
+        replace="""    this.#active = true;
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-3a-nativeStopped-bump",
+        what="a native stopped event no longer orphans the connect in flight, so its resolution resurrects active()",
+        file=LEG_POLICY,
+        search="""    const wasActive = this.#active;
+    this.#active = false;
+    // Definitively down: orphan any connect still in flight so its
+    // resolution cannot flip `#active` back on.
+    this.#connectGeneration++;
+""",
+        replace="""    const wasActive = this.#active;
+    this.#active = false;
+    // Definitively down: orphan any connect still in flight so its
+    // resolution cannot flip `#active` back on.
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-3b",
+        what="a completed stop() no longer orphans the connect in flight, so its resolution brings the leg back up",
+        file=LEG_POLICY,
+        search="""    if (generation !== this.#connectGeneration) return;
+    // Definitively down (native resolved the stop): orphan any connect still
+    // in flight, as [nativeStopped] does.
+    this.#connectGeneration++;
+""",
+        replace="""    if (generation !== this.#connectGeneration) return;
+    // Definitively down (native resolved the stop): orphan any connect still
+    // in flight, as [nativeStopped] does.
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-3c",
+        what="a stale stop resolution is no longer generation-checked, so it stops the NEXT share",
+        file=LEG_POLICY,
+        search="""    if (generation !== this.#connectGeneration) return;
+    // Definitively down (native resolved the stop): orphan any connect still
+    // in flight, as [nativeStopped] does.
+    this.#connectGeneration++;
+""",
+        replace="""    // Definitively down (native resolved the stop): orphan any connect still
+    // in flight, as [nativeStopped] does.
+    this.#connectGeneration++;
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-3d",
+        what="a native stopped event announces even when the leg was already down, so the stop event and the stop resolution announce twice",
+        file=LEG_POLICY,
+        search="""    if (wasActive) this.#announce.stopped(reason ?? "error");
+""",
+        replace="""    if (true) this.#announce.stopped(reason ?? "error");
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-3d-x-doStop-active",
+        what="a stop on an inactive leg still runs the active-leg teardown, so a stale connect is not orphaned and announces a user stop",
+        file=LEG_POLICY,
+        search="""    if (this.#active) {
+      this.#active = false;
+      this.#announce.stopped("user");
+""",
+        replace="""    if (true) {
+      this.#active = false;
+      this.#announce.stopped("user");
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-4a",
+        what="a key from another MLS group is pushed to the leg instead of refused",
+        file=LEG_POLICY,
+        search="""    if (key.groupId !== this.#e2eeGroupId)
+""",
+        replace="""    if (false)
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-4b",
+        what="a plaintext share keeps the previous share's group binding, so it accepts the old group's key",
+        file=LEG_POLICY,
+        search="""    this.#e2eeGroupId = e2ee?.groupId;
+""",
+        replace="""    if (e2ee) this.#e2eeGroupId = e2ee.groupId;
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-4c",
+        what="the leg's group is bound only AFTER connect resolves, so a key pushed during connect is checked against the wrong group",
+        file=LEG_POLICY,
+        search="""    this.#e2eeGroupId = e2ee?.groupId;
+    const generation = ++this.#connectGeneration;
+    await publish(
+      e2ee && {
+        keyB64: e2ee.keyB64,
+        keyIndex: e2ee.keyIndex,
+        epoch: e2ee.epoch,
+      },
+    );
+""",
+        replace="""    const generation = ++this.#connectGeneration;
+    await publish(
+      e2ee && {
+        keyB64: e2ee.keyB64,
+        keyIndex: e2ee.keyIndex,
+        epoch: e2ee.epoch,
+      },
+    );
+    this.#e2eeGroupId = e2ee?.groupId;
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-4d",
+        what="setFrameKey hands the whole key, groupId included, across the bridge",
+        file=LEG_POLICY,
+        # Wave 4d retarget: the push now sits inside the re-key `withTimeout`
+        # (R11). Same defect, new anchor; the bound is left in place.
+        search="""      this.#bridge.setFrameKey({
+        keyB64: key.keyB64,
+        keyIndex: key.keyIndex,
+        epoch: key.epoch,
+      }),
+""",
+        replace="""      this.#bridge.setFrameKey(key),
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-4d-x-publish-arg",
+        what="the connect hands the whole key, groupId included, to publish",
+        file=LEG_POLICY,
+        search="""      e2ee && {
+        keyB64: e2ee.keyB64,
+        keyIndex: e2ee.keyIndex,
+        epoch: e2ee.epoch,
+      },
+""",
+        replace="""      e2ee,
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-c1-inactive-noop",
+        what="a key pushed to an inactive leg reaches the bridge instead of being a silent no-op",
+        file=LEG_POLICY,
+        search="""    if (!this.#active) return;
+""",
+        replace="",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-c1-missing-reason-error",
+        what="a native stopped event with no reason announces a user stop instead of an error",
+        file=LEG_POLICY,
+        search="""    if (wasActive) this.#announce.stopped(reason ?? "error");
+""",
+        replace="""    if (wasActive) this.#announce.stopped(reason ?? "user");
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-fx1-cleared-key-stops",
+        what="an E2EE leg whose key was cleared during connect is left running under a key nothing current backs (FX1)",
+        file=LEG_POLICY,
+        search="""  if (!current) return { kind: "stop" };
+""",
+        replace="""  if (!current) return { kind: "none" };
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # ---- the plugin wrapper, held to delegating by source pins ---------------
+    Mutation(
+        id="leg-pin-stopPromise-field",
+        what="the wrapper grows its own stop memo beside the leaf's",
+        file=ANDROID_SHARE,
+        search="""  #listeners: { remove: () => Promise<void> }[] = [];
+""",
+        replace="""  #stopPromise: Promise<void> | undefined;
+  #listeners: { remove: () => Promise<void> }[] = [];
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-pin-x-active-field",
+        what="the wrapper grows its own active flag beside the leaf's",
+        file=ANDROID_SHARE,
+        search="""  #ready: Promise<void>;
+""",
+        replace="""  #ready: Promise<void>;
+  #active = false;
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-pin-x-eager-announcer",
+        what="the started announcer binds `onStarted` at construction, so a handler set later is never called",
+        file=ANDROID_SHARE,
+        search="""      started: () => this.onStarted?.(),
+""",
+        replace="""      started: this.onStarted ?? (() => {}),
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-pin-x-stop-bypass",
+        what="the wrapper's stop() resolves without asking the leaf, so nothing stops",
+        file=ANDROID_SHARE,
+        search="""    return this.#core.stop();
+""",
+        replace="""    return Promise.resolve();
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-pin-x-reason-dropped",
+        what="the native stopped listener drops the plugin's reason",
+        file=ANDROID_SHARE,
+        search="""        this.#core.nativeStopped(data.reason);
+""",
+        replace="""        this.#core.nativeStopped(undefined);
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-pin-x-bridge-stop-stub",
+        what="the bridge handed to the leaf stubs the native stop, so the projection never ends",
+        file=ANDROID_SHARE,
+        search="""      stop: () => plugin!.stop(),
+""",
+        replace="""      stop: () => Promise.resolve(),
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-pin-x-full-key-to-plugin",
+        what="the plugin connect is handed the caller's full key, groupId included, instead of the bridge-shaped one",
+        file=ANDROID_SHARE,
+        search="""        audio: false,
+        e2ee,
+""",
+        replace="""        audio: false,
+        e2ee: options.e2ee,
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # ---- the admit-grace decisions ------------------------------------------
+    Mutation(
+        id="grace-fx2-empty-owner-guard-removed",
+        what="a malformed `::screen` leg (empty owner) reads as present against an empty localIdentity (FX2)",
+        file=ADMIT_GRACE_POLICY,
+        search="""  return owner !== "" && (sfu.includes(owner) || owner === localIdentity);
+""",
+        replace="""  return sfu.includes(owner) || owner === localIdentity;
+""",
+        specs=[ADMIT_GRACE_SPEC],
+        must_red=[ADMIT_GRACE_SPEC],
+    ),
+    Mutation(
+        id="grace-owner-local-identity-dropped",
+        what="the sharer's OWN leg reads as an orphan, so this device's leg loses its grace first",
+        file=ADMIT_GRACE_POLICY,
+        search="""  return owner !== "" && (sfu.includes(owner) || owner === localIdentity);
+""",
+        replace="""  return owner !== "" && sfu.includes(owner);
+""",
+        specs=[ADMIT_GRACE_SPEC],
+        must_red=[ADMIT_GRACE_SPEC],
+    ),
+    # WEAKENED (wave 4c): see the WEAKENED ASSERTIONS block below
+    Mutation(
+        id="grace-owner-presence-always-true",
+        what="every well-formed leg reads as owner-present, so an orphan leg keeps re-arming",
+        file=ADMIT_GRACE_POLICY,
+        search="""  return owner !== "" && (sfu.includes(owner) || owner === localIdentity);
+""",
+        replace="""  return owner !== "";
+""",
+        specs=[ADMIT_GRACE_SPEC],
+        must_red=[ADMIT_GRACE_SPEC, LEGGRACE_SPEC],
+    ),
+    # WEAKENED (wave 4c): see the WEAKENED ASSERTIONS block below
+    Mutation(
+        id="grace-owner-is-raw-leg",
+        what="the owner is the leg identity itself, so no leg ever finds its owner",
+        file=ADMIT_GRACE_POLICY,
+        search="""  const owner = stripLeg(leg);
+""",
+        replace="""  const owner = leg;
+""",
+        specs=[ADMIT_GRACE_SPEC],
+        must_red=[ADMIT_GRACE_SPEC, LEGGRACE_SPEC],
+    ),
+    Mutation(
+        id="grace-owner-naive-suffix-slice",
+        what="the owner is a suffix slice instead of the identity grammar, so a device leg's owner is misread",
+        file=ADMIT_GRACE_POLICY,
+        search="""  const owner = stripLeg(leg);
+""",
+        replace="""  const owner = leg.slice(0, -":screen".length);
+""",
+        specs=[ADMIT_GRACE_SPEC],
+        must_red=[ADMIT_GRACE_SPEC],
+    ),
+    Mutation(
+        id="grace-reset-ignores-isLeg",
+        what="the published-leg ledger reset applies to primaries too",
+        file=ADMIT_GRACE_POLICY,
+        search="""  return i.isLeg && i.legPublished;
+""",
+        replace="""  return i.legPublished;
+""",
+        specs=[ADMIT_GRACE_SPEC],
+        must_red=[ADMIT_GRACE_SPEC],
+    ),
+    Mutation(
+        id="grace-reset-ignores-legPublished",
+        what="every leg's ledger resets, published or not, so a churned leg never exhausts",
+        file=ADMIT_GRACE_POLICY,
+        search="""  return i.isLeg && i.legPublished;
+""",
+        replace="""  return i.isLeg;
+""",
+        specs=[ADMIT_GRACE_SPEC],
+        # Wave 4c retarget: LEGGRACE_SPEC dropped, measured GREEN (25/25) under C6 —
+        # a leg is never pending, so its ledger decides no verdict; the policy
+        # spec alone kills it (3 failing of 36). See the wave-4 WEAKENED record.
+        must_red=[ADMIT_GRACE_SPEC],
+    ),
+    Mutation(
+        id="grace-reset-never",
+        what="no ledger ever resets, so a phone that shares over and over runs out of grace (E2-2)",
+        file=ADMIT_GRACE_POLICY,
+        search="""  return i.isLeg && i.legPublished;
+""",
+        replace="""  return false;
+""",
+        specs=[ADMIT_GRACE_SPEC],
+        # Wave 4c retarget: LEGGRACE_SPEC dropped, measured GREEN (25/25) under C6 —
+        # a leg is never pending, so its ledger decides no verdict; the policy
+        # spec alone kills it (3 failing of 36). See the wave-4 WEAKENED record.
+        must_red=[ADMIT_GRACE_SPEC],
+    ),
+    Mutation(
+        id="grace-rearm-leg-branch-removed",
+        what="a leg re-arms on the primary-only admit signal, which is always false for it, so a slow leg lapses (E2-3)",
+        file=ADMIT_GRACE_POLICY,
+        search="""  if (i.isLeg) return !i.legPublished && i.legOwnerPresent;
+""",
+        replace="",
+        specs=[ADMIT_GRACE_SPEC],
+        # Wave 4c retarget: LEGGRACE_SPEC dropped, measured GREEN (25/25) under C6 —
+        # a leg's window decides no verdict, so a lapsed slow leg is inert, not
+        # loud; the policy spec alone kills it (5 failing of 36). See the wave-4
+        # WEAKENED record.
+        must_red=[ADMIT_GRACE_SPEC],
+    ),
+    Mutation(
+        id="grace-rearm-leg-ignores-legPublished",
+        what="a published leg keeps re-arming while its owner is present",
+        file=ADMIT_GRACE_POLICY,
+        search="""  if (i.isLeg) return !i.legPublished && i.legOwnerPresent;
+""",
+        replace="""  if (i.isLeg) return i.legOwnerPresent;
+""",
+        specs=[ADMIT_GRACE_SPEC],
+        must_red=[ADMIT_GRACE_SPEC],
+    ),
+    # WEAKENED (wave 4c): see the WEAKENED ASSERTIONS block below
+    Mutation(
+        id="grace-rearm-leg-ignores-owner",
+        what="an orphan unpublished leg keeps re-arming",
+        file=ADMIT_GRACE_POLICY,
+        search="""  if (i.isLeg) return !i.legPublished && i.legOwnerPresent;
+""",
+        replace="""  if (i.isLeg) return !i.legPublished;
+""",
+        specs=[ADMIT_GRACE_SPEC],
+        must_red=[ADMIT_GRACE_SPEC, LEGGRACE_SPEC],
+    ),
+    Mutation(
+        id="grace-rearm-leg-honors-admitInProgress",
+        what="a leg also re-arms on the admit signal, so a published or orphan leg can be held open by it",
+        file=ADMIT_GRACE_POLICY,
+        search="""  if (i.isLeg) return !i.legPublished && i.legOwnerPresent;
+""",
+        replace="""  if (i.isLeg) return (!i.legPublished && i.legOwnerPresent) || i.admitInProgress;
+""",
+        specs=[ADMIT_GRACE_SPEC],
+        must_red=[ADMIT_GRACE_SPEC],
+    ),
+    Mutation(
+        id="grace-rearm-leg-rule-for-primaries",
+        what="a primary is judged by the leg rule, so its admit signal is ignored",
+        file=ADMIT_GRACE_POLICY,
+        search="""  if (i.isLeg) return !i.legPublished && i.legOwnerPresent;
+""",
+        replace="""  if (true) return !i.legPublished && i.legOwnerPresent;
+""",
+        specs=[ADMIT_GRACE_SPEC],
+        must_red=[ADMIT_GRACE_SPEC, LEGGRACE_SPEC],
+    ),
+    # ---- the session's call sites -------------------------------------------
+    # WEAKENED (wave 4c): see the WEAKENED ASSERTIONS block below
+    Mutation(
+        id="session-ca-reset-before-bill",
+        what="the settle loop resets the ledger BEFORE billing, so the stretch just billed survives the reset (C-a)",
+        file=SESSION,
+        search="""        if (settled.billMs > 0) this.#billAdmitGrace(identity, settled.billMs);
+        entry.pendingSince = settled.pendingSince;
+        // Bill THEN reset:""",
+        replace="""        // Bill THEN reset:""",
+        also=[
+            (
+                """        if (admitGraceLedgerResets({ isLeg, legPublished: seenPublished }))
+          this.#admitGraceUsed.delete(identity);
+      }
+    }
+""",
+                """        if (admitGraceLedgerResets({ isLeg, legPublished: seenPublished }))
+          this.#admitGraceUsed.delete(identity);
+        if (settled.billMs > 0) this.#billAdmitGrace(identity, settled.billMs);
+        entry.pendingSince = settled.pendingSince;
+      }
+    }
+""",
+            ),
+        ],
+        specs=[LEGGRACE_SPEC],
+        must_red=[LEGGRACE_SPEC],
+    ),
+    # WEAKENED (wave 4c): see the WEAKENED ASSERTIONS block below
+    Mutation(
+        id="session-m3-absent-reads-published",
+        what="an absent unpublishedLegs accessor reads as \"nothing unpublished\", so the reset fails open (C-b, M3)",
+        file=SESSION,
+        search="""      const unpublishedLegs = media.unpublishedLegs?.();""",
+        replace="""      const unpublishedLegs = media.unpublishedLegs?.() ?? [];""",
+        specs=[LEGGRACE_SPEC],
+        must_red=[LEGGRACE_SPEC],
+    ),
+    # WEAKENED (wave 4c): see the WEAKENED ASSERTIONS block below
+    Mutation(
+        id="session-leg-takes-admit-signal",
+        what="the expiry feeds a leg the primary-only admit signal",
+        file=SESSION,
+        search="""      admitInProgress: isLeg ? false : this.#admitInProgress(identity),""",
+        replace="""      admitInProgress: this.#admitInProgress(identity),""",
+        specs=[LEGGRACE_SPEC],
+        must_red=[LEGGRACE_SPEC],
+    ),
+    # WEAKENED (wave 4c): see the WEAKENED ASSERTIONS block below
+    Mutation(
+        id="session-old-rearm-restored",
+        what="the expiry re-arms on the old primary-only admit signal instead of the leg-aware decision",
+        file=SESSION,
+        search="""    if (this.#rearmAdmitGrace(identity, entry, stillEnrolling)) return;""",
+        replace="""    if (this.#rearmAdmitGrace(identity, entry, this.#admitInProgress(identity)))
+      return;""",
+        specs=[LEGGRACE_SPEC],
+        must_red=[LEGGRACE_SPEC],
+    ),
+    Mutation(
+        id="session-owner-always-present",
+        what="every leg reads as owner-present at the expiry, so an orphan leg keeps re-arming",
+        file=SESSION,
+        search="""      legOwnerPresent:
+        isLeg &&
+        media !== null &&""",
+        replace="""      legOwnerPresent:
+        isLeg ||
+        media !== null &&""",
+        specs=[LEGGRACE_SPEC],
+        must_red=[LEGGRACE_SPEC],
+    ),
+    Mutation(
+        id="session-primary-never-rearms",
+        what="the expiry feeds every identity a false admit signal, so a primary mid-admit lapses (C-e)",
+        file=SESSION,
+        search="""      admitInProgress: isLeg ? false : this.#admitInProgress(identity),""",
+        replace="""      admitInProgress: false,""",
+        specs=[LEGGRACE_SPEC],
+        must_red=[LEGGRACE_SPEC],
+    ),
+    Mutation(
+        id="session-primary-always-rearms",
+        what="the expiry feeds every primary a true admit signal, so a primary nothing is admitting re-arms (C-e)",
+        file=SESSION,
+        search="""      admitInProgress: isLeg ? false : this.#admitInProgress(identity),""",
+        replace="""      admitInProgress: !isLeg,""",
+        specs=[LEGGRACE_SPEC],
+        must_red=[LEGGRACE_SPEC],
+    ),
+    # WEAKENED (wave 4c): see the WEAKENED ASSERTIONS block below
+    Mutation(
+        id="session-m1-e2ee-witness-dropped",
+        what="in an e2ee call a leg nothing witnessed encrypted still resets its ledger (C-b, M1)",
+        file=SESSION,
+        search="""          !unpublishedLegs.includes(identity) &&
+          (!e2ee || encryptedLegs.has(identity));""",
+        replace="""          !unpublishedLegs.includes(identity);""",
+        specs=[LEGGRACE_SPEC],
+        must_red=[LEGGRACE_SPEC],
+    ),
+    # WEAKENED (wave 4c): see the WEAKENED ASSERTIONS block below
+    Mutation(
+        id="session-m4-sfu-presence-dropped",
+        what="a leg already gone from the SFU set still resets its ledger (C-b, M4)",
+        file=SESSION,
+        search="""          sfuNow.has(identity) &&
+""",
+        replace="",
+        specs=[LEGGRACE_SPEC],
+        must_red=[LEGGRACE_SPEC],
+    ),
+    # WEAKENED (wave 4c): see the WEAKENED ASSERTIONS block below
+    Mutation(
+        id="session-reset-dropped",
+        what="the settle loop never forgives a published leg's spent grace (E2-2)",
+        file=SESSION,
+        search="""          this.#admitGraceUsed.delete(identity);""",
+        replace="""          void identity;""",
+        specs=[LEGGRACE_SPEC],
+        must_red=[LEGGRACE_SPEC],
+    ),
+    # WEAKENED (wave 4c): see the WEAKENED ASSERTIONS block below
+    Mutation(
+        id="session-local-identity-dropped",
+        what="the expiry's owner check ignores this device, so the sharer's own leg reads as an orphan",
+        file=SESSION,
+        search="""          media.localIdentity() ?? "",""",
+        replace="""          "",""",
+        specs=[LEGGRACE_SPEC],
+        must_red=[LEGGRACE_SPEC],
+    ),
+    # WEAKENED (wave 4c): see the WEAKENED ASSERTIONS block below
+    Mutation(
+        id="session-m7-e2ee-const-false",
+        what="the settle loop treats every call as plaintext, so an unwitnessed leg resets in an e2ee call (C-b, M7)",
+        file=SESSION,
+        search="""      const e2ee = this.#callMode.kind === "e2ee";""",
+        replace="""      const e2ee = false;""",
+        specs=[LEGGRACE_SPEC],
+        must_red=[LEGGRACE_SPEC],
+    ),
+    # WEAKENED (wave 4c): see the WEAKENED ASSERTIONS block below
+    Mutation(
+        id="session-expiry-legpublished-inverted",
+        what="the expiry hands the re-arm decision `legPublished` inverted, so a published leg re-arms and an unpublished one lapses",
+        file=SESSION,
+        search="""      legPublished: !unpublished,""",
+        replace="""      legPublished: unpublished,""",
+        specs=[LEGGRACE_SPEC],
+        must_red=[LEGGRACE_SPEC],
+    ),
+    # WEAKENED (wave 4c): see the WEAKENED ASSERTIONS block below
+    Mutation(
+        id="session-expiry-absent-accessor-reads-unpublished",
+        what="at the expiry an absent unpublishedLegs accessor reads every leg as unpublished, so a binding with no accessor re-arms legs (fails open)",
+        file=SESSION,
+        search="""      isLeg && (media?.unpublishedLegs?.() ?? []).includes(identity);""",
+        replace="""      isLeg && (media?.unpublishedLegs?.() ?? [identity]).includes(identity);""",
+        specs=[LEGGRACE_SPEC],
+        must_red=[LEGGRACE_SPEC],
+    ),
+    # ---- the leg key on a legless epoch (F7) --------------------------------
+    Mutation(
+        id="keys-legless-clear",
+        what="an epoch with no screen-leg entry keeps the superseded leg key instead of clearing it (F7)",
+        file=CALL_KEYS,
+        search="""    if (!entry) {
+      // Clear the stale key so a later start refuses on "no key".
+      this.#lastLocalScreenKey = undefined;
+""",
+        replace="""    if (!entry) {
+      // Clear the stale key so a later start refuses on "no key".
+""",
+        specs=[CALL_KEYS_SPEC],
+        must_red=[CALL_KEYS_SPEC],
+    ),
+]
+
+
+# --- The Android screen-share flip, wave 4 (F-W3-2): roster, leaf, keys, state
+#
+# Wave 4c of the screen-share flip (G2). One namespace per target, as above:
+#
+#  - `roster-*`: C6 in `mlsRosterPolicy.ts` — the inert-leg skip (a leg with
+#    ZERO publications whose owner is present, or is this device, is in
+#    neither list), its placement below the bare-identity rule, a leg never
+#    `pending`, and rule 2(a)'s owner fold. Killed by `rosterReconcile.test.ts`
+#    and, where `must_red` says so, by the session-level F-W3-2 / steady-state
+#    orphan specs in `mlsCallSession.leggrace.test.ts` — every listed spec was
+#    MEASURED red on its own.
+#  - `session-*` (two): the session's own inputs to that skip — the
+#    `unpublishedLegs` default an absent accessor gets, and the SFU set it
+#    hands `reconcileRoster`.
+#  - `leg-*` / `share-*`: C7 in `androidLegStartPolicy.ts` (the stop notices
+#    `nativeStopNotice` / `gateStopNotice` / `staleExitNotice`, `stopping()`,
+#    a revoke reaching the announcer, the awaited bridge push, every field of
+#    the post-connect key compare, the group-mismatch stop) and the plugin
+#    wrapper
+#    `androidScreenShare.ts`, held to delegating by the leaf spec's SOURCE
+#    PINS (`node --test` cannot load the wrapper).
+#  - `keys-*`: the leg send key's ordering in `mlsCallKeys.ts` — recorded
+#    BEFORE the push, both pushes awaited, cleared by `resetForGroup`; and
+#    (4c-fix) pushed only AFTER the post-import fence re-check and the
+#    primary's local publish, skipped as unchanged only on all four fields.
+#  - `state-*`: C9 in `state.tsx`, killed ONLY by the source pins in
+#    `stateWiring.test.ts` (see the `file=STATE` rule in the header). Every
+#    such kill proves the pinned TEXT changed, never what the code does at
+#    runtime. The leg's runtime behavior there is left to the emulator re-run
+#    owed after wave 4c (plan § "Wave 3 re-run"), not measured by this table.
+#
+# 🔴 WEAKENED ASSERTIONS (wave 4c, measured at b6f85aa0 + the 4c-i specs; the
+# runs are `w4scratch/w4_G2_m0_sectionE_pre.log` and `w4_G2_sbE.log`). Under C6
+# a screen leg is never `pending` and its admit-grace ledger decides no
+# verdict, so the leggrace BEHAVIORAL specs that used to kill these entries
+# went vacuous (T2, wave 4b). What each is held by now:
+#  - `grace-reset-never`, `grace-reset-ignores-legPublished`,
+#    `grace-rearm-leg-branch-removed`: GREEN on leggrace (25/25) — retargeted
+#    to `mlsAdmitGracePolicy.test.ts` alone (3, 3 and 5 failing of 36). The
+#    POLICY decision is still pinned; that it matters to a call is not.
+#  - `grace-owner-presence-always-true`, `grace-owner-is-raw-leg`,
+#    `grace-rearm-leg-ignores-owner`: still on LEGGRACE_SPEC, but killed ONLY
+#    by the expiry-orphan spec ("an orphan leg (its owner gone when its window
+#    expires) is loud"), through the expiry TIMING gap; the steady-state
+#    orphan specs are green under all three. Equivalent under C6 (a leg's
+#    window decides no verdict); kept rather than deleted.
+#  - `session-m1-e2ee-witness-dropped`, `session-m3-absent-reads-published`,
+#    `session-m4-sfu-presence-dropped`, `session-m7-e2ee-const-false`,
+#    `session-reset-dropped`, `session-ca-reset-before-bill`,
+#    `session-local-identity-dropped`, `session-leg-takes-admit-signal`,
+#    `session-expiry-legpublished-inverted`,
+#    `session-expiry-absent-accessor-reads-unpublished`,
+#    `session-old-rearm-restored`: BEHAVIORAL -> PIN. Each is now killed only
+#    by a leggrace SOURCE PIN over `mlsCallSession.ts` (the C-a, C-b and
+#    C-d/C-e pin tests, plus "the expiry no longer re-arms on the primary-only
+#    admit signal"); no behavioral spec reddens. The retirement of the leg
+#    admit-grace windows is the recorded follow-up that removes this code.
+# The last two groups' 14 entries each carry a one-line `# WEAKENED (wave 4c)`
+# marker; the first group's three say so in their own retarget comments.
+
+ROSTER_POLICY = "mlsRosterPolicy.ts"
+ROSTER_SPEC = "components/rtc/rosterReconcile.test.ts"
+
+MUTATIONS += [
+    # ---- C6: the inert-leg skip in reconcileRoster --------------------------
+    Mutation(
+        id="roster-skip-removed",
+        what="the inert-leg skip is gone, so a force-unpublished leg with its owner present lands in nonEnrolled and the call goes mixed (F-W3-2a)",
+        file=ROSTER_POLICY,
+        search="""    if (
+      isScreenLeg(id) &&
+      unpublished.has(id) &&
+      (rawSfu.has(stripLeg(id)) || stripLeg(id) === localIdentity)
+    ) {
+      continue;
+    }
+""",
+        replace="",
+        specs=[ROSTER_SPEC, LEGGRACE_SPEC],
+        must_red=[ROSTER_SPEC, LEGGRACE_SPEC],
+    ),
+    Mutation(
+        id="roster-owner-check-dropped",
+        what="an unpublished leg is inert whatever its owner, so an ORPHAN unpublished leg goes quiet",
+        file=ROSTER_POLICY,
+        search="""      (rawSfu.has(stripLeg(id)) || stripLeg(id) === localIdentity)
+""",
+        replace="""      true
+""",
+        specs=[ROSTER_SPEC, LEGGRACE_SPEC],
+        must_red=[ROSTER_SPEC, LEGGRACE_SPEC],
+    ),
+    Mutation(
+        id="roster-owner-local-dropped",
+        what="this device's own unpublished leg is not inert (its owner is deleted from rawSfu), so the sharer accuses itself",
+        file=ROSTER_POLICY,
+        search="""      (rawSfu.has(stripLeg(id)) || stripLeg(id) === localIdentity)
+""",
+        replace="""      rawSfu.has(stripLeg(id))
+""",
+        specs=[ROSTER_SPEC],
+        must_red=[ROSTER_SPEC],
+    ),
+    Mutation(
+        id="roster-unpublished-check-dropped",
+        what="every unfolded leg with its owner present is inert, so a leg PUBLISHING plaintext goes quiet",
+        file=ROSTER_POLICY,
+        search="""      unpublished.has(id) &&
+""",
+        replace="",
+        specs=[ROSTER_SPEC],
+        must_red=[ROSTER_SPEC],
+    ),
+    Mutation(
+        id="roster-skip-to-pending",
+        what="the inert leg is reported pending instead of neither (the rejected A2 design: a hostile SFU holds pending forever)",
+        file=ROSTER_POLICY,
+        search="""      (rawSfu.has(stripLeg(id)) || stripLeg(id) === localIdentity)
+    ) {
+      continue;
+    }
+""",
+        replace="""      (rawSfu.has(stripLeg(id)) || stripLeg(id) === localIdentity)
+    ) {
+      pending.push(id);
+      continue;
+    }
+""",
+        specs=[ROSTER_SPEC, LEGGRACE_SPEC],
+        must_red=[ROSTER_SPEC, LEGGRACE_SPEC],
+    ),
+    Mutation(
+        id="roster-ingrace-legs",
+        what="a graced leg is pending again, so an orphan or plaintext-publishing leg inside its window is not loud",
+        file=ROSTER_POLICY,
+        search="""    const inGrace = graced.has(id) && !isScreenLeg(id);
+""",
+        replace="""    const inGrace = graced.has(id);
+""",
+        specs=[ROSTER_SPEC],
+        must_red=[ROSTER_SPEC],
+    ),
+    Mutation(
+        id="roster-skip-above-bare",
+        what="the inert-leg skip runs above the bare-identity rule, so an unpublished BARE leg with its owner present goes quiet (audit #12)",
+        file=ROSTER_POLICY,
+        # Code-only anchors (4c-fix): the main search removes the skip block
+        # and the `also` edit re-inserts it above the bare-identity rule. The
+        # skip's explanatory comment stays where it is, so rewording it cannot
+        # break this entry.
+        search="""    if (
+      isScreenLeg(id) &&
+      unpublished.has(id) &&
+      (rawSfu.has(stripLeg(id)) || stripLeg(id) === localIdentity)
+    ) {
+      continue;
+    }
+""",
+        replace="",
+        also=[
+            (
+                """    if (!isDeviceQualified(id)) {
+""",
+                """    if (
+      isScreenLeg(id) &&
+      unpublished.has(id) &&
+      (rawSfu.has(stripLeg(id)) || stripLeg(id) === localIdentity)
+    ) {
+      continue;
+    }
+    if (!isDeviceQualified(id)) {
+""",
+            ),
+        ],
+        specs=[ROSTER_SPEC],
+        must_red=[ROSTER_SPEC],
+    ),
+    Mutation(
+        id="roster-skip-drops-isScreenLeg",
+        what="the skip no longer asks isScreenLeg, so a PRIMARY named in unpublishedLegs goes quiet (e2ee #1)",
+        file=ROSTER_POLICY,
+        search="""      isScreenLeg(id) &&
+      unpublished.has(id) &&
+""",
+        replace="""      unpublished.has(id) &&
+""",
+        specs=[ROSTER_SPEC],
+        must_red=[ROSTER_SPEC],
+    ),
+    Mutation(
+        id="roster-owner-by-user",
+        what="the skip's owner test compares the USER id, so a leg of another device of the same user reads as owner-present (e2ee #4)",
+        file=ROSTER_POLICY,
+        search="""      (rawSfu.has(stripLeg(id)) || stripLeg(id) === localIdentity)
+""",
+        replace="""      ([...rawSfu].some((p) => !isScreenLeg(p) && p.split(":")[0] === id.split(":")[0]) || id.split(":")[0] === localIdentity.split(":")[0])
+""",
+        specs=[ROSTER_SPEC],
+        must_red=[ROSTER_SPEC],
+    ),
+    Mutation(
+        id="roster-fold-ignores-owner",
+        what="rule 2(a) folds a leg onto an ABSENT owner, so a steady-state orphan leg is never reported",
+        file=ROSTER_POLICY,
+        search="""    if (!rawSfu.has(owner) && owner !== localIdentity) return identity;
+""",
+        replace="",
+        specs=[ROSTER_SPEC, LEGGRACE_SPEC],
+        must_red=[ROSTER_SPEC, LEGGRACE_SPEC],
+    ),
+    Mutation(
+        id="roster-orphan-unpublished-inert",
+        what="the skip drops its owner test as a whole, so a steady-state ORPHAN unpublished leg is inert instead of loud (§5.4)",
+        file=ROSTER_POLICY,
+        search="""    if (
+      isScreenLeg(id) &&
+      unpublished.has(id) &&
+      (rawSfu.has(stripLeg(id)) || stripLeg(id) === localIdentity)
+    ) {
+      continue;
+    }
+""",
+        replace="""    if (isScreenLeg(id) && unpublished.has(id)) {
+      continue;
+    }
+""",
+        # Behaviorally the same defect as `roster-owner-check-dropped` (same
+        # reds in both specs); kept as the whole-block form the steady-state
+        # orphan specs were written against.
+        specs=[ROSTER_SPEC, LEGGRACE_SPEC],
+        must_red=[ROSTER_SPEC, LEGGRACE_SPEC],
+    ),
+    # ---- the session's inputs to the skip -----------------------------------
+    Mutation(
+        id="session-unpublished-fail-open",
+        what="an absent unpublishedLegs accessor reads as every participant unpublished, so a binding that cannot vouch hides every leg (fails open)",
+        file=SESSION,
+        search="""        unpublishedLegs: media.unpublishedLegs?.() ?? [],
+""",
+        replace="""        unpublishedLegs: media.unpublishedLegs?.() ?? media.sfuParticipants(),
+""",
+        specs=[LEGGRACE_SPEC],
+        must_red=[LEGGRACE_SPEC],
+    ),
+    Mutation(
+        id="session-orphan-owner-synthesized",
+        what="the session adds every leg's owner to the SFU set it hands reconcileRoster, so an orphan leg always finds its owner",
+        file=SESSION,
+        search="""    const result = reconcileRoster(
+      media.sfuParticipants(),
+""",
+        replace="""    const result = reconcileRoster(
+      [...media.sfuParticipants(), ...media.sfuParticipants().map(stripLeg)],
+""",
+        specs=[LEGGRACE_SPEC],
+        must_red=[LEGGRACE_SPEC],
+    ),
+    # ---- C7: the stop notices -----------------------------------------------
+    Mutation(
+        id="leg-notice-revoked-silenced",
+        what="a native revoke maps to no notice, so the sharer is never told why the share ended",
+        file=LEG_POLICY,
+        search="""        : "revoked";
+""",
+        replace="""        : "none";
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-notice-revoked-under-mute",
+        what="a revoke toasts even when the primary lost publishing too, doubling the moderator-mute toast",
+        file=LEG_POLICY,
+        search="""      return primary.canPublish === false || primary.inAfkChannel
+""",
+        replace="""      return primary.inAfkChannel
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-notice-revoked-in-afk",
+        what="a revoke toasts in the AFK channel when the leg's revoke beats the primary's, doubling the AFK toast (audit #5)",
+        file=LEG_POLICY,
+        search="""      return primary.canPublish === false || primary.inAfkChannel
+""",
+        replace="""      return primary.canPublish === false
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-notice-system-toasts",
+        what="a system stop (the notification's Stop) toasts the connection copy for a stop the user took",
+        file=LEG_POLICY,
+        search="""    case "user":
+    case "system":
+      return "none";
+    case "disconnected":
+""",
+        replace="""    case "user":
+      return "none";
+    case "system":
+    case "disconnected":
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-gate-cancel-tap-toasts",
+        what="a gate pulse after a cancelling tap still answers gate-start, toasting a start the user cancelled",
+        file=LEG_POLICY,
+        search="""    w.startingFor !== undefined &&
+    w.startingFor === w.currentGeneration
+""",
+        replace="""    w.startingFor !== undefined
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-gate-inflight-retoast",
+        what="a second gate reason during the teardown toasts gate-share again",
+        file=LEG_POLICY,
+        search="""  if (w.active && !w.stopInFlight) return "gate-share";
+""",
+        replace="""  if (w.active) return "gate-share";
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-gate-disconnected-toasts",
+        what="a gate stop while the Room is not connected toasts, on top of the native connection notice",
+        file=LEG_POLICY,
+        search="""  if (!w.roomConnected) return "none";
+""",
+        replace="",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-stale-exit-silenced",
+        what="a stale-but-not-cancelled start exits silently again: the user consents and nothing happens (R7)",
+        file=LEG_POLICY,
+        search="""    ? "gate-start"
+    : "none";
+""",
+        replace="""    ? "none"
+    : "none";
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-stale-exit-cancelled-toasts",
+        what="a CANCELLED start's stale exit answers gate-start, so a tap or a gate pulse toasts twice",
+        file=LEG_POLICY,
+        search="""  return startAttemptStale(world) && !startAttemptCancelled(world)
+""",
+        replace="""  return startAttemptStale(world)
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # ---- C7: stopping(), the revoke announce, the key push and compare -------
+    Mutation(
+        id="leg-stopping-false",
+        what="stopping() never reads true, so a second gate reason during a stop toasts again",
+        file=LEG_POLICY,
+        search="""    return this.#stopPromise !== undefined;
+""",
+        replace="""    return false;
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-stopping-memo-sticks",
+        what="the stop memo is never cleared, so stopping() stays true after the stop settles (same edit as leg-1b's effect, pinned through stopping())",
+        file=LEG_POLICY,
+        search="""      this.#stopPromise = undefined;
+""",
+        replace="",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-revoked-unannounced",
+        what="a native revoke is never announced, so the share UI stays on Stop sharing",
+        file=LEG_POLICY,
+        search="""    if (wasActive) this.#announce.stopped(reason ?? "error");
+""",
+        replace="""    if (wasActive && reason !== "revoked")
+      this.#announce.stopped(reason ?? "error");
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-bridge-setframekey-unawaited",
+        what="the leaf pushes the key across the bridge un-awaited, so a refused push never reaches the caller's fail-closed stop",
+        file=LEG_POLICY,
+        # Wave 4d retarget: the push is now awaited through the re-key
+        # `withTimeout` (R11), so the `await` dropped is that one.
+        search="""    await withTimeout(
+      this.#bridge.setFrameKey({
+""",
+        replace="""    void withTimeout(
+      this.#bridge.setFrameKey({
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-key-material-compare-dropped",
+        what="the post-connect compare ignores the key material, so a re-keyed same-index key is never pushed",
+        file=LEG_POLICY,
+        search="""    current.keyB64 === connectedWith.keyB64
+""",
+        replace="""    true
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-key-index-compare-dropped",
+        what="the post-connect compare ignores the key index, so an index-only move is never pushed (4c-i LT spec)",
+        file=LEG_POLICY,
+        search="""    current.keyIndex === connectedWith.keyIndex &&
+""",
+        replace="""    true &&
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-key-group-mismatch-pushes",
+        what="the post-connect compare pushes a key from a DIFFERENT group onto the leg instead of stopping it, so a leg connected under a superseded group stays live on a key it cannot be fenced onto (E2EE N11)",
+        file=LEG_POLICY,
+        search="""  if (current.groupId !== connectedWith.groupId) return { kind: "stop" };
+""",
+        replace="""  if (current.groupId !== connectedWith.groupId) return { kind: "push", key: current };
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # ---- C12 (wave 4e): the re-key failure notice and the share token -------
+    # `rekeyFailureNotice` decides what a failed leg re-key tells the user once
+    # the fail-closed stop has settled; `shareToken()` is what lets the caller
+    # say "the SAME share is still live" across that stop. Both held by
+    # behavior in the leaf spec (the truth table, and the token across a
+    # rejected, timed-out and resolved stop).
+    Mutation(
+        id="leg-rekey-notice-unstoppable-loses",
+        what="rekeyFailureNotice checks spoken first, so a gate-share stop that then failed keeps its stopped notice and the live share is never reported unstoppable",
+        file=LEG_POLICY,
+        search="""  if (w.activeAfterStop) return "unstoppable";
+  if (w.spoken) return "none";
+""",
+        replace="""  if (w.spoken) return "none";
+  if (w.activeAfterStop) return "unstoppable";
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-rekey-notice-active-ignored",
+        what="rekeyFailureNotice ignores activeAfterStop, so a share the stop could not end is reported stopped, or not at all",
+        file=LEG_POLICY,
+        search="""  if (w.activeAfterStop) return "unstoppable";
+""",
+        replace="",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="leg-sharetoken-bumped-by-stop-hook",
+        what="every stop hook moves the share token, so after a FAILED stop the caller takes its own still-live share for a new one and tells the user it stopped, or nothing",
+        file=LEG_POLICY,
+        search="""    if (this.#stopPromise) return this.#stopPromise;
+    const attempt = this.#doStop().finally(() => {
+""",
+        replace="""    if (this.#stopPromise) return this.#stopPromise;
+    this.#connectGeneration++;
+    const attempt = this.#doStop().finally(() => {
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # ---- C10: the plugin wrapper, held to delegating by source pins ----------
+    Mutation(
+        id="leg-pin-x-stopping-copy",
+        what="the wrapper answers stopping() from its own copy instead of the leaf's",
+        file=ANDROID_SHARE,
+        search="""    return this.#core.stopping();
+""",
+        replace="""    return this.#stopping;
+""",
+        also=[
+            (
+                """  #ready: Promise<void>;
+""",
+                """  #ready: Promise<void>;
+  #stopping = false;
+""",
+            ),
+        ],
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="share-plugin-setframekey-voided",
+        what="the bridge's setFrameKey swallows the plugin's promise, so a native refusal resolves as a landed push",
+        file=ANDROID_SHARE,
+        search="""      setFrameKey: (k) => plugin!.setFrameKey(k),
+""",
+        replace="""      setFrameKey: async (k) => {
+        void plugin!.setFrameKey(k);
+      },
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # ---- C16 (wave 4h): whether the native share path exists ----------------
+    # `nativeShareAvailable` in the leaf is the three-way AND; the wrapper
+    # calls it ONCE, at module load, with the shell check, the build flag and
+    # the plugin header, and its accessor returns that constant. The leaf
+    # entries are killed by the 8-row truth table (and the body pin); the
+    # wrapper entries only by the source pin in the same spec, which strips
+    # comments, so the same text in dead code would still satisfy it.
+    # `share-avail-async-probe` puts back the probe this wave removed (the
+    # `94618cd2` import, signal and `isAvailable()` block, verbatim) and points
+    # the accessor at the signal, but LEAVES the new `AVAILABLE` statement in
+    # place: a half-revert the pin's first assertion still accepts, so the
+    # kill has to come from the accessor pin and the banned-token counts.
+    Mutation(
+        id="share-avail-no-header",
+        what="the leaf drops the plugin header, so a shell without the ScreenShare plugin offers a share that cannot start",
+        file=LEG_POLICY,
+        search="""  return w.androidShell && w.flag && w.pluginHeader;
+""",
+        replace="""  return w.androidShell && w.flag;
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="share-avail-no-flag",
+        what="the leaf drops the build flag, so a flag-off build still routes shares down the native path",
+        file=LEG_POLICY,
+        search="""  return w.androidShell && w.flag && w.pluginHeader;
+""",
+        replace="""  return w.androidShell && w.pluginHeader;
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="share-avail-no-shell",
+        what="the leaf drops the Android shell check, so any platform reporting the plugin header takes the native path",
+        file=LEG_POLICY,
+        search="""  return w.androidShell && w.flag && w.pluginHeader;
+""",
+        replace="""  return w.flag && w.pluginHeader;
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="share-avail-header-forced",
+        what="the wrapper hands the leaf `pluginHeader: true` instead of reading the plugin header",
+        file=ANDROID_SHARE,
+        search="""const AVAILABLE = nativeShareAvailable({
+  androidShell: isAndroidShell(),
+  flag: CONFIGURATION.ENABLE_ANDROID_SCREEN_SHARE,
+  pluginHeader: Capacitor.isPluginAvailable("ScreenShare"),
+});
+""",
+        replace="""const AVAILABLE = nativeShareAvailable({
+  androidShell: isAndroidShell(),
+  flag: CONFIGURATION.ENABLE_ANDROID_SCREEN_SHARE,
+  pluginHeader: true,
+});
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="share-avail-shell-forced",
+        what="the wrapper hands the leaf `androidShell: true` instead of asking Capacitor for the platform",
+        file=ANDROID_SHARE,
+        search="""const AVAILABLE = nativeShareAvailable({
+  androidShell: isAndroidShell(),
+  flag: CONFIGURATION.ENABLE_ANDROID_SCREEN_SHARE,
+  pluginHeader: Capacitor.isPluginAvailable("ScreenShare"),
+});
+""",
+        replace="""const AVAILABLE = nativeShareAvailable({
+  androidShell: true,
+  flag: CONFIGURATION.ENABLE_ANDROID_SCREEN_SHARE,
+  pluginHeader: Capacitor.isPluginAvailable("ScreenShare"),
+});
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="share-avail-flag-forced",
+        what="the wrapper hands the leaf `flag: true` instead of the build flag",
+        file=ANDROID_SHARE,
+        search="""const AVAILABLE = nativeShareAvailable({
+  androidShell: isAndroidShell(),
+  flag: CONFIGURATION.ENABLE_ANDROID_SCREEN_SHARE,
+  pluginHeader: Capacitor.isPluginAvailable("ScreenShare"),
+});
+""",
+        replace="""const AVAILABLE = nativeShareAvailable({
+  androidShell: isAndroidShell(),
+  flag: true,
+  pluginHeader: Capacitor.isPluginAvailable("ScreenShare"),
+});
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="share-avail-async-probe",
+        what="the accessor reads the async isAvailable() probe again, whose reply can be lost after a WebView reload, so the share button says not supported for the session",
+        file=ANDROID_SHARE,
+        search="""import type { Accessor } from "solid-js";
+""",
+        replace="""import { type Accessor, createSignal } from "solid-js";
+""",
+        also=[
+            (
+                """  pluginHeader: Capacitor.isPluginAvailable("ScreenShare"),
+});
+""",
+                """  pluginHeader: Capacitor.isPluginAvailable("ScreenShare"),
+});
+const [available, setAvailable] = createSignal(false);
+""",
+            ),
+            (
+                """export const nativeScreenShareAvailable: Accessor<boolean> = () => AVAILABLE;
+""",
+                """export const nativeScreenShareAvailable: Accessor<boolean> = available;
+
+if (plugin && CONFIGURATION.ENABLE_ANDROID_SCREEN_SHARE) {
+  plugin
+    .isAvailable()
+    .then((result) => setAvailable(result.available))
+    .catch(() => setAvailable(false));
+}
+""",
+            ),
+        ],
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # ---- wave 4i rev 2: the native leg ends when a new page starts ----------
+    # A full WebView load replaces the JS that owned the leg, so the plugin
+    # tears the leg down from a page-start listener it adds in `handleOnStart`,
+    # and `connect` re-checks the consent on Main so the dying page's queued
+    # connect cannot start a leg after that teardown. The pins in the same
+    # spec read the comment-stripped .kt; `node --test` cannot run Kotlin, so
+    # every entry here is killed by a source pin, never by behavior.
+    # `page-start-registered-in-load` is the rev-1 no-op: Capacitor calls
+    # `load()` inside the Bridge constructor and `Bridge.Builder.create()`
+    # then replaces the listener list, so the moved registration never fires
+    # while the listener, its body and the once-flag all still read right.
+    Mutation(
+        id="page-start-listener-dropped",
+        what="handleOnStart no longer adds the page-start listener, so a WebView reload mid-share leaves the native leg encrypting under the dying page's epoch key (plan wave 4i rev 2)",
+        file=SHARE_PLUGIN_KT,
+        search="""        bridge.addWebViewListener(object : WebViewListener() {
+            override fun onPageStarted(webView: WebView) {
+                trace("page started")
+                scope.launch { tearDown(null) }
+            }
+        })
+""",
+        replace="",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="page-start-teardown-dropped",
+        what="the page-start listener only traces, so a reload logs `page started` and the native leg outlives its page (plan wave 4i rev 2)",
+        file=SHARE_PLUGIN_KT,
+        search="""                trace("page started")
+                scope.launch { tearDown(null) }
+""",
+        replace="""                trace("page started")
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="page-start-registered-in-load",
+        what="the page-start listener is added in load(), inside the Bridge constructor, so Bridge.Builder.create() drops it and the leg outlives a reload (the rev-1 no-op, plan wave 4i rev 2)",
+        file=SHARE_PLUGIN_KT,
+        search="""    override fun handleOnStart() {
+        super.handleOnStart()
+        if (pageListenerRegistered) return
+        pageListenerRegistered = true
+        bridge.addWebViewListener(object : WebViewListener() {
+            override fun onPageStarted(webView: WebView) {
+                trace("page started")
+                scope.launch { tearDown(null) }
+            }
+        })
+    }
+""",
+        replace="""    override fun load() {
+        super.load()
+        bridge.addWebViewListener(object : WebViewListener() {
+            override fun onPageStarted(webView: WebView) {
+                trace("page started")
+                scope.launch { tearDown(null) }
+            }
+        })
+    }
+
+    override fun handleOnStart() {
+        super.handleOnStart()
+        if (pageListenerRegistered) return
+        pageListenerRegistered = true
+    }
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="connect-consent-recheck-dropped",
+        what="connect's Main launch no longer re-checks the consent, so a connect queued by the dying page runs after the page-start teardown and starts a leg with no JS owner (plan wave 4i rev 2)",
+        file=SHARE_PLUGIN_KT,
+        search="""            if (consentIntent !== intent) {
+                call.reject("connect_failed: cancelled")
+                return@launch
+            }
+""",
+        replace="",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # ---- the leg send key in mlsCallKeys.ts ----------------------------------
+    Mutation(
+        id="keys-screen-apply-unawaited",
+        what="applyLocalKey does not await the leg key update, so a rotation reports installed before the phone took it",
+        file=CALL_KEYS,
+        search="""    await this.#applyLocalScreenKey(frameKeys, localIdentity);
+""",
+        replace="""    void this.#applyLocalScreenKey(frameKeys, localIdentity);
+""",
+        specs=[CALL_KEYS_SPEC],
+        must_red=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id="keys-screen-listener-unawaited",
+        what="the leg key listener is called un-awaited, so the push's outcome is lost",
+        file=CALL_KEYS,
+        search="""    await this.onLocalScreenKey?.(key);
+""",
+        replace="""    void this.onLocalScreenKey?.(key);
+""",
+        specs=[CALL_KEYS_SPEC],
+        must_red=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id="keys-screen-record-after-push",
+        what="the leg key is recorded only AFTER the push, so a leg started during the push is handed the superseded key",
+        file=CALL_KEYS,
+        search="""    this.#lastLocalScreenKey = key;
+""",
+        replace="",
+        also=[
+            (
+                """    await this.onLocalScreenKey?.(key);
+""",
+                """    await this.onLocalScreenKey?.(key);
+    this.#lastLocalScreenKey = key;
+""",
+            ),
+        ],
+        specs=[CALL_KEYS_SPEC],
+        must_red=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id="keys-reset-keeps-screen-key",
+        what="resetForGroup keeps the leg key, so a start after a re-establish is handed the old group's key",
+        file=CALL_KEYS,
+        search="""    this.#fence = undefined;
+    this.#lastLocalScreenKey = undefined;
+""",
+        replace="""    this.#fence = undefined;
+""",
+        specs=[CALL_KEYS_SPEC],
+        must_red=[CALL_KEYS_SPEC],
+    ),
+    # ---- 4c-fix: where applyLocalKey pushes the leg key (E2EE N23/N22/N20) ---
+    # The first two MOVE the push: the main search removes it from the end of
+    # `applyLocalKey` and the `also` edit re-inserts it higher up, applied in
+    # that order in memory (see `apply`), so each moved line exists exactly
+    # once in the mutant.
+    Mutation(
+        id="keys-screen-push-before-admits-recheck",
+        what="applyLocalKey pushes the leg key before the post-import fence re-check, so an install overtaken during its import pushes and records the superseded epoch's leg key (N23)",
+        file=CALL_KEYS,
+        search="""    await this.#applyLocalScreenKey(frameKeys, localIdentity);
+""",
+        replace="",
+        also=[
+            (
+                """    const imported = await this.#import(entries);
+""",
+                """    const imported = await this.#import(entries);
+    await this.#applyLocalScreenKey(frameKeys, localIdentity);
+""",
+            ),
+        ],
+        specs=[CALL_KEYS_SPEC],
+        must_red=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id="keys-screen-push-before-local-publish",
+        what="applyLocalKey pushes the leg key before publishing the primary's local key, so a stalled leg bridge holds back the primary's forward-secrecy switch (N22)",
+        file=CALL_KEYS,
+        search="""    await this.#applyLocalScreenKey(frameKeys, localIdentity);
+""",
+        replace="",
+        also=[
+            (
+                """    this.#publish(imported, "local");
+""",
+                """    await this.#applyLocalScreenKey(frameKeys, localIdentity);
+    this.#publish(imported, "local");
+""",
+            ),
+        ],
+        specs=[CALL_KEYS_SPEC],
+        must_red=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id="keys-screen-idempotence-epoch-only",
+        what="the leg key's skip-if-unchanged check compares the epoch only (N20)",
+        file=CALL_KEYS,
+        search="""      previous.groupId === key.groupId &&
+      previous.epoch === key.epoch &&
+      previous.keyIndex === key.keyIndex &&
+      previous.keyB64 === key.keyB64
+""",
+        replace="""      previous.epoch === key.epoch
+""",
+        specs=[CALL_KEYS_SPEC],
+        must_red=[CALL_KEYS_SPEC],
+    ),
+    # ---- C9 (state.tsx): the roster inputs and the trackPublished kick -------
+    Mutation(
+        id="state-leg-unpublished-widened",
+        what="unpublishedLegs also takes every participant not declaring encryption, so a leg publishing plaintext is hidden as inert (e2ee #2)",
+        file=STATE,
+        search="""            (p) => isScreenLeg(p.identity) && p.trackPublications.size === 0,
+""",
+        replace="""            (p) =>
+              isScreenLeg(p.identity) && p.trackPublications.size === 0 || !p.isEncrypted,
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-encryptedlegs-widened",
+        what="encryptedLegs takes every leg, encrypted or not, so a plaintext leg folds onto its owner",
+        file=STATE,
+        search="""          .filter((p) => isScreenLeg(p.identity) && p.isEncrypted)
+""",
+        replace="""          .filter((p) => isScreenLeg(p.identity))
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-sfu-drops-legs",
+        what="sfuParticipants leaves the screen legs out, so no roster ever judges a leg",
+        file=STATE,
+        search="""        ...[...room.remoteParticipants.values()].map((p) => p.identity),
+      ],
+""",
+        replace="""        ...[...room.remoteParticipants.values()]
+          .filter((p) => !isScreenLeg(p.identity))
+          .map((p) => p.identity),
+      ],
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-sfu-drops-local",
+        what="sfuParticipants leaves this device out, so the roster's local-identity handling never sees it",
+        file=STATE,
+        search="""        room.localParticipant.identity,
+        ...[...room.remoteParticipants.values()].map((p) => p.identity),
+""",
+        replace="""        ...[...room.remoteParticipants.values()].map((p) => p.identity),
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-trackpublished-reconcile-dropped",
+        what="trackPublished no longer kicks a reconcile, so a leg that publishes plaintext stays hidden until the next tick (e2ee #3)",
+        file=STATE,
+        search="""      void this.#mlsSession?.reconcileNow();
+""",
+        replace="",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-trackpublished-leg-early-return",
+        what="the trackPublished listener returns early for a screen leg, so a leg's publish never kicks the reconcile (e2ee F3)",
+        file=STATE,
+        search="""    room.addListener("trackPublished", (pub, participant) => {
+""",
+        replace="""    room.addListener("trackPublished", (pub, participant) => {
+      if (isScreenLeg(participant.identity)) return;
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    # ---- C9: #pauseGate's notice ---------------------------------------------
+    Mutation(
+        id="state-leg-gate-after-stop",
+        what="the gate notice is sampled AFTER the stop bumped the generation, so a gate-start is never told",
+        file=STATE,
+        # Wave 4e retarget: the stop is no longer a bare `void` statement. It
+        # is held as `const stopped = ...` (C12 site (c)) so the gate-share
+        # report can chain on it, and it now follows the gate-share capture
+        # rather than sitting right above the sweep. The same stop still moves
+        # above the sample, kept under its own name so the chain still loads.
+        # The removal goes first: inserted first, the line would occur twice
+        # when the removal looked for it.
+        search="""    const stopped = this.#stopAndroidLeg();
+""",
+        replace="",
+        also=[
+            (
+                """    const notice = gateStopNotice({
+""",
+                """    const stopped = this.#stopAndroidLeg();
+    const notice = gateStopNotice({
+""",
+            ),
+        ],
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-pausegate-toast-before-sweep",
+        what="the gate toast fires before the primary's pause sweep, ahead of the reactive fallout it should follow (e2ee F4)",
+        file=STATE,
+        search="""    await this.#applyPublishGate(room);
+    if (notice === "gate-start") this.onErr(new Error(LEG_GATE_START_NOTICE));
+    else if (notice === "gate-share")
+      this.onErr(new Error(LEG_GATE_SHARE_NOTICE));
+""",
+        replace="""    if (notice === "gate-start") this.onErr(new Error(LEG_GATE_START_NOTICE));
+    else if (notice === "gate-share")
+      this.onErr(new Error(LEG_GATE_SHARE_NOTICE));
+    await this.#applyPublishGate(room);
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-pausegate-sweep-unawaited",
+        what="the primary's pause sweep is no longer awaited before the gate toast",
+        file=STATE,
+        search="""    await this.#applyPublishGate(room);
+    if (notice === "gate-start") this.onErr(new Error(LEG_GATE_START_NOTICE));
+""",
+        replace="""    void this.#applyPublishGate(room);
+    if (notice === "gate-start") this.onErr(new Error(LEG_GATE_START_NOTICE));
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    # Wave 4e (C12 site (c)): the gate-share notice says stopped before the
+    # un-awaited stop has settled, so a stop that then fails or hangs is
+    # reported once it settles, chained on THAT stop's promise.
+    Mutation(
+        id="state-leg-gate-share-unstoppable-untold",
+        what="a gate-share stop that fails or hangs is never reported, so the gate's stopped notice is the last word over a share still live",
+        file=STATE,
+        search="""    if (notice === "gate-share")
+      void stopped.then(() => {
+        if (leg?.active() && leg.shareToken() === token)
+          this.onErr(new Error(LEG_UNSTOPPABLE_NOTICE));
+      });
+""",
+        replace="",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    # ---- C9: the stop notices' copy and routing ------------------------------
+    Mutation(
+        id="state-leg-onstopped-inline",
+        what="onStopped maps the reason inline instead of through nativeStopNotice, so a revoke under a mute or in the AFK channel toasts twice",
+        file=STATE,
+        search="""      const text = this.#legStopNoticeMessage(
+        nativeStopNotice(reason, {
+          canPublish: this.room()?.localParticipant.permissions?.canPublish,
+          inAfkChannel: this.isAfkChannel,
+        }),
+      );
+""",
+        replace="""      const text =
+        reason === "user" || reason === "system"
+          ? undefined
+          : this.#legStopNoticeMessage(
+              reason === "disconnected"
+                ? "connection"
+                : reason === "error"
+                  ? "encryption"
+                  : "revoked",
+            );
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-revoked-connect-unmapped",
+        what="a revoke-cancelled connect is never matched, so the raw bridge string reaches the toast",
+        file=STATE,
+        search="""    if (message === "connect_failed: revoked") {
+""",
+        replace="""    if (message === "connect_failed: revoked-unmapped") {
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-revoked-connect-unsuppressed",
+        what="the start's catch toasts the no-notice marker too, so a revoke the primary's toast explains toasts twice (code #3)",
+        file=STATE,
+        search="""        if (notice !== NO_LEG_NOTICE) this.onErr(notice);
+""",
+        replace="""        this.onErr(notice);
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-revoked-substring-match",
+        what="the revoke is matched as a substring, so any connect failure merely containing it is silenced (e2ee F6)",
+        file=STATE,
+        search="""    if (message === "connect_failed: revoked") {
+""",
+        replace="""    if (
+      typeof message === "string" &&
+      message.includes("connect_failed: revoked")
+    ) {
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-no-notice-undefined",
+        what="the no-notice marker is undefined, so a literal undefined rejection is silenced too (code #4)",
+        file=STATE,
+        search="""const NO_LEG_NOTICE = Symbol("no-leg-notice");
+""",
+        replace="""const NO_LEG_NOTICE = undefined;
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-notice-copy-swapped",
+        what="gate-share shows the revoked copy",
+        file=STATE,
+        search="""      case "gate-share":
+        return LEG_GATE_SHARE_NOTICE;
+""",
+        replace="""      case "gate-share":
+        return LEG_REVOKED_NOTICE;
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    # ---- C9: the leg key fence's two catches (4b-fix) ------------------------
+    Mutation(
+        id="state-leg-keysync-stop-dropped",
+        what="a failed post-connect key push no longer stops the leg, so it keeps publishing under the old key (e2ee F1)",
+        file=STATE,
+        search="""      const spoken = leg.stopping() || !leg.active();
+      await this.#stopAndroidLeg();
+""",
+        replace="""      const spoken = leg.stopping() || !leg.active();
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-keysync-stop-gated-on-active",
+        what="the post-connect catch stops the leg only while it reads active(), so a leg still stopping is left to its old key",
+        file=STATE,
+        # Wave 4e retarget: the toast condition that followed the stop is now
+        # the `#rekeyFailureMessage` call (C12), so the stop is anchored on
+        # the line that follows it today. Same gated stop. Two lines because
+        # the rotation listener's 12-space stop line contains this 6-space one.
+        search="""      await this.#stopAndroidLeg();
+      const message = this.#rekeyFailureMessage(
+""",
+        replace="""      if (leg.active()) await this.#stopAndroidLeg();
+      const message = this.#rekeyFailureMessage(
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-rotation-stop-dropped",
+        what="a failed rotation push no longer stops the leg, so it keeps publishing under a key a removed member holds (e2ee F1)",
+        file=STATE,
+        search="""            const spoken = leg.stopping() || !leg.active();
+            await this.#stopAndroidLeg();
+""",
+        replace="""            const spoken = leg.stopping() || !leg.active();
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-rotation-stop-gated-on-spoken",
+        what="the rotation catch stops the leg only when nothing spoke for it, so a stop that is already failing is never retried",
+        file=STATE,
+        # Wave 4e retarget: as `state-leg-keysync-stop-gated-on-active`, the
+        # stop is anchored on the `#rekeyFailureMessage` call that now follows
+        # it. Same gated stop.
+        search="""            await this.#stopAndroidLeg();
+            const message = this.#rekeyFailureMessage(
+""",
+        replace="""            if (!spoken) await this.#stopAndroidLeg();
+            const message = this.#rekeyFailureMessage(
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-rotation-toast-narrowed",
+        what="the rotation catch's toast drops the still-active arm, so a FAILED stop leaves a live share untold (silent, or told it stopped)",
+        file=STATE,
+        # Wave 4e retarget: the still-active arm of `!spoken || leg.active()`
+        # is now the `activeAfterStop` input to `rekeyFailureNotice` (C12), so
+        # dropping it reads false there. The unstoppable arm is never reached:
+        # a failed stop that something spoke for is told nothing, one nothing
+        # spoke for is told it stopped, exactly what the narrowed toast did.
+        search="""                spoken,
+                activeAfterStop: leg.active() && leg.shareToken() === token,
+""",
+        replace="""                spoken,
+                activeAfterStop: false,
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-keysync-toast-narrowed",
+        what="the post-connect catch's toast drops the still-active arm, so a FAILED stop leaves a live share untold (silent, or told it stopped)",
+        file=STATE,
+        # Wave 4e retarget: as `state-leg-rotation-toast-narrowed`, at this
+        # site. Two lines because the listener's 16-space `activeAfterStop`
+        # line contains this 10-space one.
+        search="""          spoken,
+          activeAfterStop: leg.active() && leg.shareToken() === token,
+""",
+        replace="""          spoken,
+          activeAfterStop: false,
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-spoken-after-stop",
+        what="the post-connect catch reads spoken AFTER its own stop, so it always reads spoken and a failure nobody explained is untold",
+        file=STATE,
+        search="""      const spoken = leg.stopping() || !leg.active();
+      await this.#stopAndroidLeg();
+""",
+        replace="""      await this.#stopAndroidLeg();
+      const spoken = leg.stopping() || !leg.active();
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-spoken-narrowed",
+        what="the rotation catch's spoken drops stopping(), so a push into a leg #pauseGate is stopping toasts on top of gate-share",
+        file=STATE,
+        search="""            const spoken = leg.stopping() || !leg.active();
+""",
+        replace="""            const spoken = !leg.active();
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-sync-toast-unsuppressed",
+        what="the post-connect catch's spoken drops stopping(), so a sync failing into a stopping leg toasts on top of gate-share",
+        file=STATE,
+        search="""      const spoken = leg.stopping() || !leg.active();
+      await this.#stopAndroidLeg();
+""",
+        replace="""      const spoken = !leg.active();
+      await this.#stopAndroidLeg();
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-catch-rethrows",
+        what="the rotation listener's catch rethrows instead of resolving, so a failed leg push fails the rotation itself",
+        file=STATE,
+        # Wave 4e retarget: the catch no longer ends in the multi-line toast's
+        # `);` but in `if (message) this.onErr(new Error(message));` (C12), so
+        # the same throw lands after that line.
+        search="""            if (message) this.onErr(new Error(message));
+          }
+        };
+        this.#e2eeWorker = new E2EEWorker();
+""",
+        replace="""            if (message) this.onErr(new Error(message));
+            throw new Error("screen leg key push failed");
+          }
+        };
+        this.#e2eeWorker = new E2EEWorker();
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    # ---- C12 (wave 4e): what the two key-fence catches tell the user -------
+    # Each catch samples `shareToken()` and `spoken` before its stop, then
+    # words `rekeyFailureNotice({ spoken, activeAfterStop })` through
+    # `#rekeyFailureMessage`. Pin-only, like every `state-*` entry: held by
+    # `stateWiring.test.ts`'s whole-catch comparison of BOTH catches and its
+    # whole-switch pin on the mapper.
+    #
+    # The mapper is SHARED by the two sites, so a per-site entry mutates the
+    # SITE (its `if (message)` line or its `activeAfterStop` expression), never
+    # the mapper; `state-leg-rekey-mapper-unstoppable-silent` is the one
+    # mapper-level entry. The sites differ only by indentation (12/16 spaces
+    # in the listener, 6/10 in `#syncLegKeyAfterConnect`), and a deeper line
+    # contains a shallower one as a substring, so each search carries the
+    # line before it as well.
+    #
+    # Three distinct ways to lose the unstoppable report, per site: an
+    # unstoppable share told nothing (`*-unstoppable-silent-*`), told it
+    # stopped, the pre-4e lie (`*-unstoppable-old-copy-*`), and the still-
+    # active input reading false (the retargeted `*-toast-narrowed` above).
+    # Then that input's two halves: read before the stop, and the token
+    # ignored.
+    Mutation(
+        id="state-leg-rekey-unstoppable-silent-listener",
+        what="the rotation catch tells an unstoppable share nothing, so a failed stop leaves a share live after a rotation and the user never hears it",
+        file=STATE,
+        search="""            );
+            if (message) this.onErr(new Error(message));
+""",
+        replace="""            );
+            if (message && message !== LEG_REKEY_UNSTOPPABLE_NOTICE)
+              this.onErr(new Error(message));
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-rekey-unstoppable-silent-sync",
+        what="the post-connect catch tells an unstoppable share nothing, so a failed stop leaves a share live after a missed key and the user never hears it",
+        file=STATE,
+        search="""      );
+      if (message) this.onErr(new Error(message));
+""",
+        replace="""      );
+      if (message && message !== LEG_REKEY_UNSTOPPABLE_NOTICE)
+        this.onErr(new Error(message));
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-rekey-unstoppable-old-copy-listener",
+        what="the rotation catch words every notice as stopped, so a share its stop could not end is told it stopped (the pre-4e lie)",
+        file=STATE,
+        search="""            );
+            if (message) this.onErr(new Error(message));
+""",
+        replace="""            );
+            if (message) this.onErr(new Error(LEG_REKEY_STOPPED_NOTICE));
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-rekey-unstoppable-old-copy-sync",
+        what="the post-connect catch words every notice as stopped, so a share its stop could not end is told it stopped (the pre-4e lie)",
+        file=STATE,
+        search="""      );
+      if (message) this.onErr(new Error(message));
+""",
+        replace="""      );
+      if (message) this.onErr(new Error(LEG_REKEY_STOPPED_NOTICE));
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-rekey-active-before-stop-listener",
+        what="the rotation catch reads activeAfterStop BEFORE its stop, when the leg is still up, so a stop that worked is reported unstoppable",
+        file=STATE,
+        search="""            const spoken = leg.stopping() || !leg.active();
+            await this.#stopAndroidLeg();
+""",
+        replace="""            const spoken = leg.stopping() || !leg.active();
+            const activeBefore = leg.active() && leg.shareToken() === token;
+            await this.#stopAndroidLeg();
+""",
+        also=[
+            (
+                """                spoken,
+                activeAfterStop: leg.active() && leg.shareToken() === token,
+""",
+                """                spoken,
+                activeAfterStop: activeBefore,
+""",
+            ),
+        ],
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-rekey-active-before-stop-sync",
+        what="the post-connect catch reads activeAfterStop BEFORE its stop, when the leg is still up, so a stop that worked is reported unstoppable",
+        file=STATE,
+        search="""      const spoken = leg.stopping() || !leg.active();
+      await this.#stopAndroidLeg();
+""",
+        replace="""      const spoken = leg.stopping() || !leg.active();
+      const activeBefore = leg.active() && leg.shareToken() === token;
+      await this.#stopAndroidLeg();
+""",
+        also=[
+            (
+                """          spoken,
+          activeAfterStop: leg.active() && leg.shareToken() === token,
+""",
+                """          spoken,
+          activeAfterStop: activeBefore,
+""",
+            ),
+        ],
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-rekey-token-ignored-listener",
+        what="the rotation catch drops the share token from activeAfterStop, so a new share started while the stop ran is reported unstoppable",
+        file=STATE,
+        search="""                spoken,
+                activeAfterStop: leg.active() && leg.shareToken() === token,
+""",
+        replace="""                spoken,
+                activeAfterStop: leg.active(),
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-rekey-token-ignored-sync",
+        what="the post-connect catch drops the share token from activeAfterStop, so a new share started while the stop ran is reported unstoppable",
+        file=STATE,
+        search="""          spoken,
+          activeAfterStop: leg.active() && leg.shareToken() === token,
+""",
+        replace="""          spoken,
+          activeAfterStop: leg.active(),
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-rekey-mapper-unstoppable-silent",
+        what="#rekeyFailureMessage maps unstoppable to no copy, so neither catch tells the user a share its stop could not end is still live",
+        file=STATE,
+        search="""      case "unstoppable":
+        return LEG_REKEY_UNSTOPPABLE_NOTICE;
+""",
+        replace="""      case "unstoppable":
+        return undefined;
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    # ---- C9: the leg key pushes (4b-fix2) ------------------------------------
+    Mutation(
+        id="state-leg-keysync-call-dropped",
+        what="the start path never syncs the leg key after connect, so a rotation during connect leaves the leg on the old key",
+        file=STATE,
+        search="""      await this.#syncLegKeyAfterConnect(activeLeg, e2eeKey);
+""",
+        replace="",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-keysync-push-skipped",
+        what="the post-connect sync decides push but never pushes",
+        file=STATE,
+        search="""      await leg.setFrameKey(action.key);
+""",
+        replace="",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-rotation-setframekey-unawaited",
+        what="the rotation listener pushes the leg key un-awaited, so a failed push never reaches its fail-closed catch",
+        file=STATE,
+        search="""            await leg.setFrameKey({
+""",
+        replace="""            void leg.setFrameKey({
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-rotation-guard-inverted",
+        what="the rotation listener skips every LIVE leg, so a rotation never re-keys a share",
+        file=STATE,
+        search="""          if (!leg?.active()) return;
+""",
+        replace="""          if (leg?.active()) return;
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-rotation-skip-stopping",
+        what="the rotation listener skips a STOPPING leg, which a failed stop leaves live on the old key",
+        file=STATE,
+        search="""          if (!leg?.active()) return;
+""",
+        replace="""          if (!leg?.active() || leg.stopping()) return;
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    # ---- C9: the start path's binding key read (4b-fix3; anchor per fix4) ----
+    Mutation(
+        id="state-leg-start-e2ee-branch-skipped",
+        what="the start never takes the keyed branch, so an E2EE call starts a KEYLESS leg",
+        file=STATE,
+        search="""      if (modeAtConnect?.kind === "e2ee") {
+        const key = this.#mlsKeyProvider?.lastLocalScreenKey();
+""",
+        replace="""      if (false) {
+        const key = this.#mlsKeyProvider?.lastLocalScreenKey();
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-start-key-undefined",
+        what="connect is handed no key, so an E2EE call starts a plaintext leg",
+        file=STATE,
+        search="""        e2ee: e2eeKey,
+""",
+        replace="""        e2ee: undefined,
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-start-group-check-dropped",
+        what="the binding read takes a key from a superseded group",
+        file=STATE,
+        search="""          !key ||
+          key.groupId !== this.#mlsSession.groupId()
+        ) {
+""",
+        replace="""          !key
+        ) {
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-start-active-check-dropped",
+        what="the binding read takes a key while the session is not active",
+        file=STATE,
+        search="""          this.#mlsSession?.state() !== "active" ||
+          !key ||
+""",
+        replace="""          !key ||
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-start-key-fields-swapped",
+        what="the binding read hands connect the key index as the epoch and the epoch as the index",
+        file=STATE,
+        search="""          keyIndex: key.keyIndex,
+          epoch: key.epoch,
+""",
+        replace="""          keyIndex: key.epoch,
+          epoch: key.keyIndex,
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-start-early-return-before-sync",
+        what="an encrypted start returns between connect and the key sync, so a rotation during connect is never pushed",
+        file=STATE,
+        search="""        e2ee: e2eeKey,
+      });
+""",
+        replace="""        e2ee: e2eeKey,
+      });
+      if (e2eeKey) return;
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-keyprovider-rewired",
+        what="a second key provider replaces the wired one, so the rotation listener sits on an orphan provider",
+        file=STATE,
+        search="""        };
+        this.#e2eeWorker = new E2EEWorker();
+""",
+        replace="""        };
+        this.#mlsKeyProvider = new MlsKeyProvider();
+        this.#e2eeWorker = new E2EEWorker();
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-keyprovider-listener-gated",
+        what="the rotation listener is wired only behind nativeScreenShareAvailable(), which was an async native probe before wave 4h, so a call joined before it landed had none; the wiring stays unconditional now the accessor is constant",
+        file=STATE,
+        search="""        const provider = this.#mlsKeyProvider;
+        provider.onLocalScreenKey = async (key) => {
+""",
+        replace="""        if (nativeScreenShareAvailable()) {
+        const provider = this.#mlsKeyProvider;
+        provider.onLocalScreenKey = async (key) => {
+""",
+        also=[
+            (
+                """        };
+        this.#e2eeWorker = new E2EEWorker();
+""",
+                """        };
+        }
+        this.#e2eeWorker = new E2EEWorker();
+""",
+            ),
+        ],
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    # ---- C9: the mode re-reads (4b-fix4, 4c-i adjacency pin) -----------------
+    Mutation(
+        id="state-leg-start-e2ee-stale-mode",
+        what="the keyed branch asks the TAP-time mode instead of the pre-connect one: an EQUIVALENT mutant, since the pre-connect kind check has already refused any mode whose kind moved since the tap, so it cannot start a keyless leg; killed by the stateWiring source pin alone (pin-only)",
+        file=STATE,
+        search="""      if (modeAtConnect?.kind === "e2ee") {
+""",
+        replace="""      if (mode?.kind === "e2ee") {
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-postsheet-stale-mode",
+        what="the post-sheet refusal asks the TAP-time mode, so a re-upgrade during the sheet passes it",
+        file=STATE,
+        search="""    if (modeNow?.kind !== mode?.kind || this.#androidLegRefusedNow(modeNow)) {
+""",
+        replace="""    if (modeNow?.kind !== mode?.kind || this.#androidLegRefusedNow(mode)) {
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-postsheet-kind-check-dropped",
+        what="the post-sheet refusal follows a mode that changed during the sheet instead of refusing",
+        file=STATE,
+        search="""    if (modeNow?.kind !== mode?.kind || this.#androidLegRefusedNow(modeNow)) {
+""",
+        replace="""    if (this.#androidLegRefusedNow(modeNow)) {
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-preclaim-recheck-dropped",
+        what="no refusal between the tier sheet and the claim, so a gate added during the sheet costs an OS consent and drops the start (audit #3)",
+        file=STATE,
+        search="""    const modeNow = this.callMode();
+    if (modeNow?.kind !== mode?.kind || this.#androidLegRefusedNow(modeNow)) {
+      this.onErr(new Error(SHARE_UNAVAILABLE_NOW));
+      return;
+    }
+""",
+        replace="",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-preconnect-kind-check-dropped",
+        what="the pre-connect re-read follows a mode that changed since the tap instead of refusing",
+        file=STATE,
+        search="""        modeAtConnect?.kind !== mode?.kind ||
+        (modeAtConnect?.kind !== "e2ee" &&
+          !this.#legPlaintextAuthorized(modeAtConnect))
+""",
+        replace="""        modeAtConnect?.kind !== "e2ee" &&
+        !this.#legPlaintextAuthorized(modeAtConnect)
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-preconnect-await-before-read",
+        what="an await slips in between the post-mint stale exit and the pre-connect mode read, so the mode can move after the stale check",
+        file=STATE,
+        search="""      const modeAtConnect = this.callMode();
+""",
+        replace="""      await Promise.resolve();
+      const modeAtConnect = this.callMode();
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-preconnect-tapmode",
+        what="the pre-connect re-read is replaced by the TAP-time mode, so the kind check compares the tap mode with itself and a call that became encrypted during consent starts a keyless leg (E2EE N30)",
+        file=STATE,
+        search="""      const modeAtConnect = this.callMode();
+""",
+        replace="""      const modeAtConnect = mode;
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-preconnect-refusal-no-stop",
+        what="the pre-connect refusal returns without stopping the leg, leaving consent and the FGS held",
+        file=STATE,
+        search="""      ) {
+        await this.#stopAndroidLeg();
+        this.onErr(new Error(SHARE_UNAVAILABLE_NOW));
+""",
+        replace="""      ) {
+        this.onErr(new Error(SHARE_UNAVAILABLE_NOW));
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-plaintext-authorizes-negotiating",
+        what="a negotiating call may start a keyless leg",
+        file=STATE,
+        search="""      case "negotiating":
+      case "mixed":
+      case "call_full":
+      case "e2ee":
+        return false;
+""",
+        replace="""      case "negotiating":
+        return true;
+      case "mixed":
+      case "call_full":
+      case "e2ee":
+        return false;
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-plaintext-authorizes-mixed",
+        what="a mixed (paused) call may start a keyless leg",
+        file=STATE,
+        search="""      case "mixed":
+      case "call_full":
+      case "e2ee":
+        return false;
+""",
+        replace="""      case "mixed":
+        return true;
+      case "call_full":
+      case "e2ee":
+        return false;
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-plaintext-authorizes-unconfirmed",
+        what="an UNCONFIRMED plaintext interlude (a remote's announce) may start a keyless leg",
+        file=STATE,
+        search="""        return mode.localConfirmed;
+""",
+        replace="""        return true;
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+]
+
 
 
 if __name__ == "__main__":
