@@ -412,13 +412,15 @@ export const ServerSidebar = (props: Props) => {
     ),
   );
 
-  // Users can manage certain parts of the server individually, regardless of their ManageServer Permission
+  // Users can manage certain parts of the server individually, regardless of their ManageServer Permission.
+  // Only gates the header settings gear; ViewAuditLog lets a role holding just that bit reach the audit log.
   const canManageServer = () =>
     props.server.orPermission(
       "ManageServer",
       "ManageCustomisation",
       "ManageRole",
       "ManagePermissions",
+      "ViewAuditLog",
     );
 
   // TODO: this does not filter visible channels at the moment because the state for categories is not stored anywhere

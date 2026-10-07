@@ -15,6 +15,7 @@ import { styled } from "styled-system/jsx";
 
 import { floatingUserMenus } from "@revolt/app/menus/UserContextMenu";
 import { useClient } from "@revolt/client";
+import { useTime } from "@revolt/i18n";
 import { TextWithEmoji } from "@revolt/markdown";
 import { userInformation } from "@revolt/markdown/users";
 import {
@@ -32,6 +33,8 @@ import {
 } from "@revolt/ui";
 import { DisplayName } from "@revolt/ui/components/features/DisplayName";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
+
+import { createTimedOutUntil } from "../../../lib/timedOut";
 
 interface Props {
   /**
@@ -446,6 +449,34 @@ const NameStatusStack = styled("div", {
     display: "flex",
     flexDirection: "column",
     justifyContent: "center",
+    // Inside MemberRow: take the free width but let OverflowingText still
+    // truncate, rather than growing to its content and pushing the badge out.
+    flexGrow: 1,
+    minWidth: 0,
+  },
+});
+
+/**
+ * Name/status stack plus any trailing badges, side by side
+ */
+const MemberRow = styled("div", {
+  base: {
+    height: "100%",
+    display: "flex",
+    alignItems: "center",
+    gap: "var(--gap-sm)",
+    minWidth: 0,
+  },
+});
+
+/**
+ * Trailing badge slot; never shrinks, so a long name truncates instead
+ */
+const MemberBadge = styled("span", {
+  base: {
+    flexShrink: 0,
+    display: "flex",
+    alignItems: "center",
   },
 });
 
@@ -459,6 +490,24 @@ function Member(props: {
 }) {
   const { t } = useLingui();
   const presence = usePresenceText();
+  const dayjs = useTime();
+
+  /**
+   * When this member's timeout ends, while it is still in force. Re-evaluates
+   * at expiry, so the badge clears itself. Always undefined in a group, which
+   * has no members.
+   */
+  const timedOutUntil = createTimedOutUntil(() => props.member);
+
+  /**
+   * Tooltip for the timeout badge
+   */
+  const timedOutLabel = () => {
+    const until = timedOutUntil();
+    if (!until) return undefined;
+    const time = dayjs(until).format("lll");
+    return t`Timed out until ${time}`;
+  };
 
   /**
    * Create user information
@@ -514,34 +563,52 @@ function Member(props: {
           />
         }
       >
-        <NameStatusStack>
-          <OverflowingText>
-            <span class={typography({ class: "label", size: "large" })}>
-              <DisplayName
-                user={user().user}
-                member={props.member}
-                name={user().username}
-                brand={isSlogaStaff(user().user)}
-              />
-            </span>
-            <Show when={liveConnection()}>
-              <span class={livePill()}>
-                <Trans>LIVE</Trans>
+        <MemberRow>
+          <NameStatusStack>
+            <OverflowingText>
+              <span class={typography({ class: "label", size: "large" })}>
+                <DisplayName
+                  user={user().user}
+                  member={props.member}
+                  name={user().username}
+                  brand={isSlogaStaff(user().user)}
+                />
               </span>
+              <Show when={liveConnection()}>
+                <span class={livePill()}>
+                  <Trans>LIVE</Trans>
+                </span>
+              </Show>
+            </OverflowingText>
+            <Show when={status()}>
+              <Tooltip
+                content={() => <TextWithEmoji content={status()!} />}
+                placement="top-start"
+                aria={status()!}
+              >
+                <OverflowingText class={typography({ class: "_status" })}>
+                  <TextWithEmoji content={status()!} />
+                </OverflowingText>
+              </Tooltip>
             </Show>
-          </OverflowingText>
-          <Show when={status()}>
-            <Tooltip
-              content={() => <TextWithEmoji content={status()!} />}
-              placement="top-start"
-              aria={status()!}
-            >
-              <OverflowingText class={typography({ class: "_status" })}>
-                <TextWithEmoji content={status()!} />
-              </OverflowingText>
-            </Tooltip>
+          </NameStatusStack>
+          <Show when={timedOutLabel()}>
+            <MemberBadge role="img" aria-label={timedOutLabel()}>
+              <Symbol
+                size={16}
+                color="var(--md-sys-color-error)"
+                use:floating={{
+                  tooltip: {
+                    placement: "top",
+                    content: timedOutLabel()!,
+                  },
+                }}
+              >
+                hourglass_top
+              </Symbol>
+            </MemberBadge>
           </Show>
-        </NameStatusStack>
+        </MemberRow>
       </MenuButton>
     </div>
   );
