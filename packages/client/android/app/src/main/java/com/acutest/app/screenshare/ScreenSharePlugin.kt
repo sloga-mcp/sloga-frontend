@@ -11,12 +11,14 @@ import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.SystemClock
 import android.util.Base64
+import android.webkit.WebView
 import androidx.activity.result.ActivityResult
 import androidx.core.app.NotificationCompat
 import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
 import com.getcapacitor.PluginMethod
+import com.getcapacitor.WebViewListener
 import com.getcapacitor.annotation.ActivityCallback
 import com.getcapacitor.annotation.CapacitorPlugin
 import io.livekit.android.AudioOptions
@@ -121,6 +123,13 @@ class ScreenSharePlugin : Plugin() {
 
     /** Set while [tearDown] runs so event handlers do not double-report. */
     private var stopping = false
+
+    /** Whether [handleOnStart] has added the page-start listener. Once per
+     *  plugin instance: `handleOnStart` runs on every return to the
+     *  foreground, and each run must not stack another teardown. Plain var:
+     *  only ever read and written on the main thread, in the Activity's
+     *  `onStart`. */
+    private var pageListenerRegistered = false
 
     /**
      * Cancellation for [doConnect] — the native mirror of the JS generation
@@ -231,6 +240,19 @@ class ScreenSharePlugin : Plugin() {
         }
 
         scope.launch {
+            // The guards above ran on the plugin thread, and this launch is
+            // queued behind whatever Main already holds. Every [tearDown]
+            // nulls `consentIntent`, so a different value here means one ran
+            // in between: a page-start teardown (this connect came from the
+            // dying page, and connecting now would start a leg with no JS
+            // owner), [handleOnDestroy], or a stop. Re-checked on Main, where
+            // the field is written. Normal flows keep the same object: a
+            // failed connect restores the consent it held, and its retry
+            // re-captures it above.
+            if (consentIntent !== intent) {
+                call.reject("connect_failed: cancelled")
+                return@launch
+            }
             // The previous leg leaves before this one joins: a disposal still
             // waiting out its settle window runs now, not over the new leg's
             // connect. Inside the launch (Main) rather than beside the guards
@@ -1187,6 +1209,45 @@ class ScreenSharePlugin : Plugin() {
             .setSmallIcon(com.acutest.app.R.mipmap.ic_launcher)
             .setOngoing(true)
             .build()
+    }
+
+    /**
+     * Ends the leg whenever a new page starts loading in the WebView. A full
+     * page load (a `window.location.assign` from FlowLogin or Connections, a
+     * reload) replaces the JS that owned the leg, and the new page has no
+     * `#androidLeg`: its rotations return early, so nothing re-keys the leg,
+     * and only the server's best-effort eviction on primary leave would end
+     * it. Until then it keeps encrypting under the dying page's epoch key
+     * (stage-6 MAJOR, wave 4i).
+     *
+     * Registered HERE, not in `load()`: Capacitor calls `load()` inside the
+     * `Bridge` constructor (`registerAllPlugins`), and `Bridge.Builder.create()`
+     * then REPLACES the listener list with its own (`setWebViewListeners`,
+     * Capacitor 8.4.3 Bridge.java:1623), so a listener added there is silently
+     * dropped. `handleOnStart` runs from the Activity's `onStart`, after
+     * `create()` has returned; missing the cold-start page that began loading
+     * before it is harmless (no leg exists yet). It fires on main-frame full
+     * loads only, on the main thread, after `bridge.reset()` and before the
+     * new page's JS runs.
+     *
+     * Reason `null`: no `stopped` event, because nothing on the new page owns
+     * the leg. The call is UNCONDITIONAL and must stay so: with no Room (a
+     * cold start, or a share already ended) [tearDown] only bumps the
+     * generation and clears empty fields; the bump cancels only an attempt
+     * the dying page started; a settled disposal still pending in
+     * [pendingDisposals] is left to its timer. The trace sits outside the
+     * launch so the log shows the listener fired even if Main is busy.
+     */
+    override fun handleOnStart() {
+        super.handleOnStart()
+        if (pageListenerRegistered) return
+        pageListenerRegistered = true
+        bridge.addWebViewListener(object : WebViewListener() {
+            override fun onPageStarted(webView: WebView) {
+                trace("page started")
+                scope.launch { tearDown(null) }
+            }
+        })
     }
 
     override fun handleOnDestroy() {

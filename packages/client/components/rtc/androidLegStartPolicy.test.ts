@@ -43,10 +43,14 @@ import {
 } from "./androidLegStartPolicy.ts";
 import {
   argumentsOf,
+  assertLexesInSync,
   bodiesAfter,
+  closerOf,
   codeOf,
   countWired,
+  stringsOf,
   wiredAsserter,
+  wiredAt,
 } from "./sourcePins.harness.ts";
 
 const world = (
@@ -1445,5 +1449,189 @@ test("🔴 share availability pin: read once, synchronously, from the plugin hea
   assertPolicyWired(
     "nativeShareAvailable's body",
     "return w.androidShell && w.flag && w.pluginHeader;",
+  );
+});
+
+const PLUGIN_SOURCE = readFileSync(
+  new URL(
+    "../../android/app/src/main/java/com/acutest/app/screenshare/ScreenSharePlugin.kt",
+    import.meta.url,
+  ),
+  "utf8",
+);
+const PLUGIN_CODE = codeOf(PLUGIN_SOURCE);
+
+/** `snippet` must appear exactly once in ScreenSharePlugin.kt's code. */
+const assertPluginWired = wiredAsserter("ScreenSharePlugin.kt", PLUGIN_CODE);
+
+/**
+ * The block body of each Kotlin function `head` declares in `code` (already
+ * put through `codeOf`). `head` ends with the `(` that opens the parameters;
+ * a function with no block body right after them fails.
+ */
+function blockBodiesOf(code: string, head: string): string[] {
+  const want = codeOf(head);
+  const out: string[] = [];
+  for (
+    let at = code.indexOf(want);
+    at !== -1;
+    at = code.indexOf(want, at + 1)
+  ) {
+    const params = closerOf(code, at + want.length - 1);
+    assert.equal(code[params + 1], "{", `${head} must have a block body`);
+    out.push(code.slice(params + 2, closerOf(code, params + 1)));
+  }
+  return out;
+}
+
+/** Where `snippet` occurs in `code`, which must hold it exactly once. */
+function onceAt(code: string, what: string, snippet: string): number {
+  const at = wiredAt(code, snippet);
+  assert.equal(
+    at.length,
+    1,
+    `${what}: expected exactly once, found ${at.length}:\n${codeOf(snippet)}`,
+  );
+  return at[0];
+}
+
+test("ScreenSharePlugin.kt reads in sync under the source-pin lexer", () => {
+  // `codeOf` lexes TypeScript, and reads this Kotlin file right because the
+  // two share what it relies on: `//` and `/* */` comments (KDoc is a block
+  // comment), and quoted strings and char literals with backslash escapes,
+  // copied whole, so a `//` inside one is never read as a comment. It does
+  // not know raw strings, nested block comments, backtick identifiers or a
+  // template holding a quote; any of those would make it lose its place and
+  // the pins below match the wrong text.
+  assert.equal(
+    codeOf('val u = "https://x" /** a `KDoc`, it\'s */ // a "comment"\nf()'),
+    'valu="https://x"f()',
+  );
+  assert.ok(
+    !PLUGIN_SOURCE.includes('"""'),
+    "the lexer cannot read a raw string",
+  );
+  assert.ok(!PLUGIN_CODE.includes("*/"), "a nested block comment left code");
+  assert.ok(!PLUGIN_CODE.includes("`"), "the lexer cannot read a backtick");
+  for (const { text } of stringsOf(PLUGIN_CODE))
+    assert.ok(!/\$\{[^}]*$/.test(text), `a template cut at a quote: ${text}`);
+  assertLexesInSync("ScreenSharePlugin.kt", PLUGIN_SOURCE, PLUGIN_CODE, 80);
+});
+
+test("the page-start listener is never registered in load()", () => {
+  // Screen-leg plan wave 4i rev 2. Capacitor runs `load()` inside the Bridge
+  // constructor, and `Bridge.Builder.create()` then replaces the WebView
+  // listener list, so a listener added there never fires: the rev-1 no-op,
+  // which left the reload orphan in place while every other pin passed.
+  assert.equal(
+    countWired(PLUGIN_CODE, "override fun load()"),
+    0,
+    "ScreenSharePlugin.kt must not override load(): a listener added there " +
+      "is dropped by Bridge.Builder.create()",
+  );
+});
+
+test("the page-start listener is added once, from handleOnStart", () => {
+  // Screen-leg plan wave 4i rev 2. `handleOnStart` runs from the
+  // Activity's onStart, after `create()` has set its listener list, so a
+  // listener added here survives. It runs on every return to the
+  // foreground: a missing or late once-flag stacks a listener per return,
+  // and a second registration site stacks one more.
+  assertPluginWired("handleOnStart", "override fun handleOnStart()");
+  const [body] = blockBodiesOf(PLUGIN_CODE, "override fun handleOnStart(");
+  const superAt = onceAt(
+    body,
+    "handleOnStart's super.handleOnStart()",
+    "super.handleOnStart()",
+  );
+  const checkAt = onceAt(
+    body,
+    "handleOnStart's once-flag check",
+    "if (pageListenerRegistered) return",
+  );
+  const setAt = onceAt(
+    body,
+    "handleOnStart's once-flag set",
+    "pageListenerRegistered = true",
+  );
+  const addAt = onceAt(
+    body,
+    "handleOnStart's listener registration",
+    "bridge.addWebViewListener(",
+  );
+  assert.ok(
+    superAt < checkAt,
+    "super.handleOnStart() must run before the once-flag check",
+  );
+  assert.ok(
+    checkAt < setAt && setAt < addAt,
+    "the once-flag must be checked, then set, before the listener is added",
+  );
+  assert.equal(
+    countWired(PLUGIN_CODE, "addWebViewListener("),
+    1,
+    "ScreenSharePlugin.kt must add a WebView listener from handleOnStart only",
+  );
+});
+
+test("a page start tears the leg down, unconditionally", () => {
+  // Screen-leg plan wave 4i rev 2. The new page has no `#androidLeg`, so
+  // nothing on it re-keys or stops the leg; this callback is the only thing
+  // that ends it. The trace runs synchronously so the log shows the
+  // callback fired; any guard, early return or condition added here would
+  // let the leg outlive its page again, encrypting under the dying page's
+  // epoch key.
+  assertPluginWired("the page-start callback", "override fun onPageStarted(");
+  const starts = blockBodiesOf(PLUGIN_CODE, "override fun handleOnStart(");
+  const registrations = starts.flatMap((start) =>
+    bodiesAfter(start, "bridge.addWebViewListener("),
+  );
+  const bodies = registrations.flatMap((registration) =>
+    blockBodiesOf(registration, "override fun onPageStarted("),
+  );
+  assert.equal(
+    bodies.length,
+    1,
+    "onPageStarted must be the listener handleOnStart registers",
+  );
+  const [body] = bodies;
+  const traceAt = onceAt(body, "the page-start trace", 'trace("page started")');
+  const tearDownAt = onceAt(
+    body,
+    "the page-start teardown",
+    "scope.launch { tearDown(null) }",
+  );
+  assert.ok(
+    traceAt < tearDownAt,
+    "the page-start trace must run before the teardown is launched",
+  );
+  assert.equal(
+    body,
+    codeOf('trace("page started") scope.launch { tearDown(null) }'),
+    "onPageStarted must hold the trace and the teardown and nothing else",
+  );
+});
+
+test("connect re-checks the consent first thing on Main", () => {
+  // Screen-leg plan wave 4i rev 2. `connect` captures `consentIntent` on
+  // the plugin thread, then queues its launch on Main. A page-start
+  // teardown (or a stop, or handleOnDestroy) landing in between nulls the
+  // field; without this re-check the dying page's connect would run after
+  // it and start a leg with no JS owner. Anything ahead of it in the launch
+  // runs first.
+  assertPluginWired("connect", "fun connect(");
+  const [connect] = blockBodiesOf(PLUGIN_CODE, "fun connect(");
+  const launches = bodiesAfter(connect, "scope.launch {");
+  assert.ok(launches.length > 0, "connect must launch its work on scope");
+  const [launch] = launches;
+  const recheck = codeOf("if (consentIntent !== intent) {");
+  assert.ok(
+    launch.startsWith(recheck),
+    "the consent re-check must be the first statement of connect's launch",
+  );
+  assert.equal(
+    launch.slice(recheck.length, closerOf(launch, recheck.length - 1)),
+    codeOf('call.reject("connect_failed: cancelled") return@launch'),
+    "the consent re-check must reject as cancelled, then return",
   );
 });

@@ -7384,6 +7384,12 @@ LEG_POLICY = "androidLegStartPolicy.ts"
 ANDROID_SHARE = "androidScreenShare.ts"
 ADMIT_GRACE_POLICY = "mlsAdmitGracePolicy.ts"
 CALL_KEYS = "mlsCallKeys.ts"
+#: The native plugin, held by the Kotlin source pins in LEG_POLICY_SPEC (wave
+#: 4i). Inside this client package, so `preflight`'s containment check holds.
+SHARE_PLUGIN_KT = (
+    "../../android/app/src/main/java/com/acutest/app/screenshare/"
+    "ScreenSharePlugin.kt"
+)
 LEG_POLICY_SPEC = "components/rtc/androidLegStartPolicy.test.ts"
 ADMIT_GRACE_SPEC = "components/rtc/mlsAdmitGracePolicy.test.ts"
 LEGGRACE_SPEC = "components/rtc/mlsCallSession.leggrace.test.ts"
@@ -8809,6 +8815,92 @@ if (plugin && CONFIGURATION.ENABLE_ANDROID_SCREEN_SHARE) {
 """,
             ),
         ],
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # ---- wave 4i rev 2: the native leg ends when a new page starts ----------
+    # A full WebView load replaces the JS that owned the leg, so the plugin
+    # tears the leg down from a page-start listener it adds in `handleOnStart`,
+    # and `connect` re-checks the consent on Main so the dying page's queued
+    # connect cannot start a leg after that teardown. The pins in the same
+    # spec read the comment-stripped .kt; `node --test` cannot run Kotlin, so
+    # every entry here is killed by a source pin, never by behavior.
+    # `page-start-registered-in-load` is the rev-1 no-op: Capacitor calls
+    # `load()` inside the Bridge constructor and `Bridge.Builder.create()`
+    # then replaces the listener list, so the moved registration never fires
+    # while the listener, its body and the once-flag all still read right.
+    Mutation(
+        id="page-start-listener-dropped",
+        what="handleOnStart no longer adds the page-start listener, so a WebView reload mid-share leaves the native leg encrypting under the dying page's epoch key (plan wave 4i rev 2)",
+        file=SHARE_PLUGIN_KT,
+        search="""        bridge.addWebViewListener(object : WebViewListener() {
+            override fun onPageStarted(webView: WebView) {
+                trace("page started")
+                scope.launch { tearDown(null) }
+            }
+        })
+""",
+        replace="",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="page-start-teardown-dropped",
+        what="the page-start listener only traces, so a reload logs `page started` and the native leg outlives its page (plan wave 4i rev 2)",
+        file=SHARE_PLUGIN_KT,
+        search="""                trace("page started")
+                scope.launch { tearDown(null) }
+""",
+        replace="""                trace("page started")
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="page-start-registered-in-load",
+        what="the page-start listener is added in load(), inside the Bridge constructor, so Bridge.Builder.create() drops it and the leg outlives a reload (the rev-1 no-op, plan wave 4i rev 2)",
+        file=SHARE_PLUGIN_KT,
+        search="""    override fun handleOnStart() {
+        super.handleOnStart()
+        if (pageListenerRegistered) return
+        pageListenerRegistered = true
+        bridge.addWebViewListener(object : WebViewListener() {
+            override fun onPageStarted(webView: WebView) {
+                trace("page started")
+                scope.launch { tearDown(null) }
+            }
+        })
+    }
+""",
+        replace="""    override fun load() {
+        super.load()
+        bridge.addWebViewListener(object : WebViewListener() {
+            override fun onPageStarted(webView: WebView) {
+                trace("page started")
+                scope.launch { tearDown(null) }
+            }
+        })
+    }
+
+    override fun handleOnStart() {
+        super.handleOnStart()
+        if (pageListenerRegistered) return
+        pageListenerRegistered = true
+    }
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="connect-consent-recheck-dropped",
+        what="connect's Main launch no longer re-checks the consent, so a connect queued by the dying page runs after the page-start teardown and starts a leg with no JS owner (plan wave 4i rev 2)",
+        file=SHARE_PLUGIN_KT,
+        search="""            if (consentIntent !== intent) {
+                call.reject("connect_failed: cancelled")
+                return@launch
+            }
+""",
+        replace="",
         specs=[LEG_POLICY_SPEC],
         must_red=[LEG_POLICY_SPEC],
     ),

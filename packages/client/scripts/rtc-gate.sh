@@ -165,7 +165,7 @@ EXPECTED=(
   "src/lib/afkChannelSettings.test.ts 51 0"
   # The Android screen-share leg: when a leg may start, and the share tiers.
   # Neither spec ran anywhere before these rows.
-  "components/rtc/androidLegStartPolicy.test.ts 63 0"
+  "components/rtc/androidLegStartPolicy.test.ts 68 0"
   "components/rtc/androidScreenShareTiers.test.ts 3 0"
 )
 
