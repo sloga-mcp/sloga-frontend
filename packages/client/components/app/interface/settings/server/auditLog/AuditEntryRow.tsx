@@ -49,7 +49,13 @@ const CHANNEL_ID_KEYS = new Set(["voice_channel", "afk_channel_id"]);
 const SET_REMOVED_MARKER_KEYS = new Set(["icon", "banner"]);
 
 // Keys the server writes as a new-only Bool(true) meaning "this changed"
-const CHANGED_MARKER_KEYS = new Set(["categories", "system_messages"]);
+const CHANGED_MARKER_KEYS = new Set([
+  "categories",
+  "system_messages",
+  "voice",
+  "tags",
+  "default_permissions",
+]);
 
 /**
  * How one change is shown: a marker word, the new value alone, or a genuine
