@@ -9,13 +9,16 @@ import android.content.Intent
 import android.media.AudioManager
 import android.media.projection.MediaProjectionManager
 import android.os.Build
+import android.os.SystemClock
 import android.util.Base64
+import android.webkit.WebView
 import androidx.activity.result.ActivityResult
 import androidx.core.app.NotificationCompat
 import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
 import com.getcapacitor.PluginMethod
+import com.getcapacitor.WebViewListener
 import com.getcapacitor.annotation.ActivityCallback
 import com.getcapacitor.annotation.CapacitorPlugin
 import io.livekit.android.AudioOptions
@@ -24,6 +27,7 @@ import io.livekit.android.LiveKit
 import io.livekit.android.LiveKitOverrides
 import io.livekit.android.RoomOptions
 import io.livekit.android.audio.NoAudioHandler
+import io.livekit.android.e2ee.E2EEManager
 import io.livekit.android.e2ee.E2EEOptions
 import io.livekit.android.e2ee.E2EEState
 import io.livekit.android.events.RoomEvent
@@ -39,6 +43,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import livekit.org.webrtc.FrameCryptor
 import livekit.org.webrtc.RtpParameters
@@ -71,9 +76,13 @@ import livekit.org.webrtc.RtpParameters
  *    silently kept encrypting under the removed member's key is exactly the
  *    hole this contract closes.
  *
- * Hygiene (§4.2): key material is held only inside the native key provider
- * (dropped in [tearDown] via `dispose()`), never logged, and never echoed
- * back through resolve/reject/events.
+ * Hygiene (§4.2): key material is held only inside the native key provider,
+ * never logged, and never echoed back through resolve/reject/events. It is
+ * released in [disposeDetached], possibly [SETTLE_MS] after the share ended:
+ * first the leg's sender frame cryptors (each native transformer holds its
+ * own reference to the key ring, and the SDK never disposes them on a
+ * disconnect), then the provider via `dispose()`. Released means the native
+ * memory is freed, not zeroized.
  */
 @CapacitorPlugin(name = "ScreenShare")
 class ScreenSharePlugin : Plugin() {
@@ -93,12 +102,34 @@ class ScreenSharePlugin : Plugin() {
      *  SFU. */
     private var releasedRoom: Room? = null
     private var keyProvider: RawScreenKeyProvider? = null
+    /** The leg Room's E2EE manager, captured in [doConnect] once it is
+     *  witnessed enabled, so [disposeDetached] can still reach the sender
+     *  frame cryptors after `disconnect()`. Capturing it at teardown would be
+     *  too late: the SDK's disconnect cleanup nulls `Room.e2eeManager`, and
+     *  on a server `Disconnected` that has already happened when [tearDown]
+     *  runs. */
+    private var e2eeManager: E2EEManager? = null
+    /** Detached legs whose native teardown is waiting out [SETTLE_MS]
+     *  ([scheduleDisposal]). A list, not a slot: a second settled teardown
+     *  inside the window must not strand the first Room and its key ring.
+     *  Entries are matched by IDENTITY only (`===`), never by `equals`:
+     *  neither `Room` nor [Detached] declares one today, and anything keyed
+     *  on `equals` would silently change meaning if an SDK upgrade added it.
+     *  Main-dispatcher confined, like every other field here. */
+    private val pendingDisposals = ArrayList<Detached>()
     private var legIdentity: String? = null
     private var currentKeyIndex: Int = 0
     private var eventsJob: Job? = null
 
     /** Set while [tearDown] runs so event handlers do not double-report. */
     private var stopping = false
+
+    /** Whether [handleOnStart] has added the page-start listener. Once per
+     *  plugin instance: `handleOnStart` runs on every return to the
+     *  foreground, and each run must not stack another teardown. Plain var:
+     *  only ever read and written on the main thread, in the Activity's
+     *  `onStart`. */
+    private var pageListenerRegistered = false
 
     /**
      * Cancellation for [doConnect] — the native mirror of the JS generation
@@ -109,6 +140,18 @@ class ScreenSharePlugin : Plugin() {
      * Main-dispatcher confined, like every other field here.
      */
     private var connectGeneration = 0
+
+    /**
+     * The [connectGeneration] that a `tearDown("revoked")` cancelled, so the
+     * cancelled attempt rejects with `connect_failed: revoked` instead of
+     * `connect_failed: cancelled`. A revoke during connect is a moderator's
+     * decision, not a superseded attempt, and JS shows the revoke toast only
+     * off that exact text. Keyed by generation rather than "the last
+     * teardown's reason": a later stop or a successor connect must not
+     * relabel an attempt that something else cancelled. Stamps start at 1,
+     * so -1 never matches.
+     */
+    private var revokedGeneration = -1
 
     /**
      * The MLS epoch of the key the sender currently encrypts under. Frame-key
@@ -126,7 +169,11 @@ class ScreenSharePlugin : Plugin() {
      * through create → connect → publish, but Room/audio TEARDOWN reset the
      * global mode to NORMAL even under NoAudioHandler — which would yank the
      * live WebView call out of `MODE_IN_COMMUNICATION`. Re-asserted in
-     * [tearDown] if teardown moved it.
+     * [disposeDetached], possibly [SETTLE_MS] later, if teardown moved it, but
+     * NOT from this snapshot: it puts back the mode it reads just before its
+     * own disconnect. Restoring the snapshot after the window would force
+     * call mode on a user who left the call inside it. So this field is only
+     * a record now, cleared with the rest of the share's state in [tearDown].
      */
     private var savedAudioMode: Int? = null
 
@@ -193,6 +240,27 @@ class ScreenSharePlugin : Plugin() {
         }
 
         scope.launch {
+            // The guards above ran on the plugin thread, and this launch is
+            // queued behind whatever Main already holds. Every [tearDown]
+            // nulls `consentIntent`, so a different value here means one ran
+            // in between: a page-start teardown (this connect came from the
+            // dying page, and connecting now would start a leg with no JS
+            // owner), [handleOnDestroy], or a stop. Re-checked on Main, where
+            // the field is written. Normal flows keep the same object: a
+            // failed connect restores the consent it held, and its retry
+            // re-captures it above.
+            if (consentIntent !== intent) {
+                call.reject("connect_failed: cancelled")
+                return@launch
+            }
+            // The previous leg leaves before this one joins: a disposal still
+            // waiting out its settle window runs now, not over the new leg's
+            // connect. Inside the launch (Main) rather than beside the guards
+            // above, because `pendingDisposals` is Main-confined. A snapshot,
+            // since each disposal removes itself from the list.
+            for (pending in ArrayList(pendingDisposals)) {
+                disposeDetached(pending)
+            }
             // Claim the attempt. Any tearDown (JS stop, room event, plugin
             // destroy) bumps the counter and thereby cancels this connect at
             // its next check; a competing connect supersedes it the same way.
@@ -211,9 +279,21 @@ class ScreenSharePlugin : Plugin() {
                 // created, which is the one thing that IS its own; that is
                 // deliberately not left to the cancelling tearDown, because
                 // whether `disconnect()` aborts an in-flight `connect()` is
-                // not a documented lk-android guarantee.
+                // not a documented lk-android guarantee. (One exception: a
+                // SETTLED teardown that claimed it still holds it in
+                // `pendingDisposals`. This attempt is no longer in flight by
+                // then, so doConnect only stopped the capture and left the
+                // rest to that disposal; see [discardRoom].)
                 if (generation != connectGeneration) {
-                    call.reject("connect_failed: cancelled")
+                    // Only the rejection TEXT depends on who cancelled; the
+                    // ownership rule above is identical for a revoke. The
+                    // revoking tearDown has already emitted
+                    // `stopped{"revoked"}` by the time this runs.
+                    if (generation == revokedGeneration) {
+                        call.reject("connect_failed: revoked")
+                    } else {
+                        call.reject("connect_failed: cancelled")
+                    }
                 } else {
                     // Still the current attempt: this failure is ours to
                     // clean up. The consent survives a failed connect (probe
@@ -297,6 +377,19 @@ class ScreenSharePlugin : Plugin() {
                 audioOptions = AudioOptions(audioHandler = NoAudioHandler()),
             ),
         )
+        // No RTC metrics on the leg. It publishes one screen track, subscribes
+        // to nothing and its grant is `can_publish_data: false`, so it needs no
+        // telemetry. With metrics on, `collectMetrics` keeps calling
+        // `DataChannel.send` while `handleDisconnect` runs `engine.close()`
+        // BEFORE cancelling the Room scope that owns the collector: a race on
+        // every disconnect, which crashed the leg's WebRTC network thread
+        // (SIGSEGV, tombstone 28, crash class B). The post-join coroutine reads
+        // the flag once, so it MUST be set before `room.connect`. Re-check on
+        // any SDK upgrade: livekit-android 2.28.0 Room.kt:578/1013/1019. On
+        // any SDK upgrade also re-check that `removePublishedTrack` disables
+        // the cryptor only after the sender is detached, and that
+        // `dataChannelEncryptionEnabled` stays off by default.
+        room.enableMetrics = false
         this.room = room
         // From here this attempt OWNS `room` until it either hands it over by
         // resolving, or disposes it below. Nothing else can: a tearDown that
@@ -317,6 +410,7 @@ class ScreenSharePlugin : Plugin() {
             }
             eventsJob = events
 
+            trace("connect metrics=${room.enableMetrics}")
             // Belt-and-braces on the token's canSubscribe=false (§4.3 step 2).
             room.connect(url, token, ConnectOptions(autoSubscribe = false))
             // First suspension behind us: a stop may have torn the room down
@@ -337,6 +431,12 @@ class ScreenSharePlugin : Plugin() {
                 if (manager == null || !manager.enabled) {
                     throw IllegalStateException("e2ee manager not enabled")
                 }
+                // Kept for [disposeDetached], which must dispose this
+                // manager's sender cryptors after the SDK has nulled
+                // `room.e2eeManager` (see [e2eeManager]). No suspension since
+                // the generation check above, so this attempt still owns the
+                // plugin's fields.
+                e2eeManager = manager
                 val keyB64 = e2ee!!.getString("keyB64")
                     ?: throw IllegalArgumentException("e2ee.keyB64 missing")
                 val keyIndex = e2ee.getInteger("keyIndex") ?: 0
@@ -360,8 +460,12 @@ class ScreenSharePlugin : Plugin() {
                 notificationId = NOTIFICATION_ID,
                 notification = buildNotification(),
                 onStop = {
-                    // System chip / notification Stop / OS revoke.
-                    scope.launch { tearDown("system") }
+                    // System chip / notification Stop / OS revoke. The SDK
+                    // has just unpublished the track and may be renegotiating
+                    // the publisher. The native teardown is settled
+                    // ([SETTLE_MS]): a conservative heuristic against a
+                    // suspected race, not a crash fix (see [SETTLE_MS]).
+                    scope.launch { tearDown("system", settle = true) }
                 },
             )
             // The consent is consumed by this publish (single-use by OS rule).
@@ -404,11 +508,14 @@ class ScreenSharePlugin : Plugin() {
                 if (events != null && eventsJob === events) eventsJob = null
                 // `releasedRoom` distinguishes the two cases that reaching
                 // here otherwise looks identical for: the COMMON one, where
-                // the cancelling tearDown already released this very Room
-                // (so releasing again would be a second native dispose), and
-                // the successor case, where nobody has. Only the release is
-                // conditional — the disconnect and the capture stop below
-                // are what scenario B still needs either way.
+                // the cancelling tearDown already claimed this very Room, so
+                // its disconnect and release are owned, possibly deferred by
+                // [SETTLE_MS] (releasing again would be a second native
+                // dispose), and the successor case, where nobody has. The
+                // capture stop is what scenario B needs either way; whether
+                // [discardRoom] also disconnects depends on whether a pending
+                // disposal owns the Room, and only the release depends on
+                // this flag.
                 discardRoom(room, alreadyReleased = releasedRoom === room)
             }
             throw t
@@ -416,11 +523,22 @@ class ScreenSharePlugin : Plugin() {
     }
 
     /**
-     * Stop a screen capture, before the Room that owns it goes away. NOT
-     * redundant with disconnecting: stopping the track is what releases the
-     * MediaProjection and lets the SDK's ScreenCaptureService go, so a Room
-     * torn down without it can leave the OS cast chip and our notification
-     * up while the app believes nothing is shared.
+     * Stop a screen capture, before the Room that owns it goes away.
+     * Redundant with `disconnect()` for any published track
+     * (`LocalParticipant.cleanup()` stops it). Its value is timing: it stops
+     * the capture immediately on paths where the disconnect is deferred (the
+     * settle paths, and `discardRoom` while a disposal is pending). It is a
+     * no-op once the SDK has unpublished. On the `TrackUnpublished` settle
+     * path and the system path that holds by construction (the publication
+     * is already gone), so the immediate stop does nothing there. It has
+     * effect only on the permission-branch revoke (the permission event can
+     * precede the forced unpublish) and in `discardRoom` while a disposal
+     * is pending.
+     *
+     * Not suspending, but it can BLOCK: `Track.stop()` reaches
+     * `executeBlockingOnRTCThread` (via `setEnabled`), so on the permission
+     * branch Main parks behind `LK_RTC_THREAD` while the SDK renegotiates
+     * (tombstone 27). An ANR exposure, pre-existing.
      *
      * 🔴 MUST STAY NON-SUSPENDING — see [tearDown]'s invariant. `Track.stop()`
      * is `public void stop()` in livekit-android 2.28.0 (checked against the
@@ -454,14 +572,29 @@ class ScreenSharePlugin : Plugin() {
     private class ConnectCancelled : IllegalStateException("cancelled")
 
     /** Tear down a Room this attempt created but no longer owns: stop any
-     *  capture it started, disconnect, and release unless a tearDown already
-     *  did. Never touches plugin-global state — that belongs to whoever
-     *  holds `this.room` now. */
+     *  capture it started, disconnect, dispose its sender frame cryptors, and
+     *  release unless a tearDown already did. Never touches plugin-global
+     *  state — that belongs to whoever holds `this.room` now; it only READS
+     *  `pendingDisposals`.
+     *
+     *  If a settled teardown claimed this Room and its disposal is still
+     *  pending, only the capture stop happens here. That pending
+     *  [disposeDetached] disconnects, disposes and releases the Room itself,
+     *  and disconnecting now would bypass the settle window (a heuristic,
+     *  see [SETTLE_MS]).
+     *  MUST stay non-suspending, like [tearDown]. */
     private fun discardRoom(room: Room, alreadyReleased: Boolean) {
         stopCapture(room)
+        if (pendingDisposals.any { it.room === room }) return
+        // Read before the disconnect: the SDK's cleanup nulls it, and it is
+        // then the only way left to this Room's sender cryptors.
+        val manager = room.e2eeManager
         try {
             room.disconnect()
         } catch (_: Throwable) {}
+        // Same position as in [disposeDetached]: after the disconnect,
+        // before the release.
+        trace("discard sender cryptors disposed=${disposeSenderCryptors(manager)}")
         if (alreadyReleased) return
         try {
             room.release()
@@ -563,11 +696,19 @@ class ScreenSharePlugin : Plugin() {
                 }
             }
             is RoomEvent.Reconnected -> {
-                // A full reconnect does NOT re-publish the screencast track —
-                // consent data is single-use, so the SDK cannot silently
-                // re-acquire it (probe (c-iv)). No publication after
-                // Reconnected ⇒ the share is over; with one, re-assert the
-                // send index (a re-created cryptor resets key_index_ to 0).
+                // On a full reconnect the SDK unpublishes the screencast but
+                // keeps the still-running track for its own
+                // `republishTracks`, which WOULD put it back on air; when
+                // this event arrives the publication is gone (probe
+                // (c-iv)). No publication after Reconnected ⇒ the share is
+                // over, and this teardown is deliberately NOT settled: its
+                // immediate disconnect is what pre-empts the republish. A
+                // deferred one would let the screen return for up to
+                // [SETTLE_MS] after `stopped{disconnected}`, under a key that
+                // no longer receives rotations. (The immediate teardown can
+                // still race the republish: a recorded residual.) With a
+                // publication, re-assert the send index (a re-created
+                // cryptor resets key_index_ to 0).
                 val pub = room.localParticipant.getTrackPublication(Track.Source.SCREEN_SHARE)
                 if (pub == null) {
                     scope.launch { tearDown("disconnected") }
@@ -605,6 +746,103 @@ class ScreenSharePlugin : Plugin() {
                     notifyListeners("muted", data)
                 }
             }
+            is RoomEvent.ParticipantPermissionsChanged -> {
+                // A moderator revoked Video, or AFK-designated the sharer: the
+                // backend pushes the leg `canPublish = false` with an empty
+                // source list, the SFU force-unpublishes the track, and the SDK
+                // stops the capture on its own. The leg itself stays
+                // CONNECTED, so no Disconnected ever follows. Without this
+                // branch the leg sat in the room with zero publications while
+                // JS still showed a live share.
+                //
+                // An EMPTY `canPublishSources` is LiveKit's "no restriction",
+                // never a revoke on its own. The backend only sends it
+                // alongside `canPublish = false`, so only a NON-empty list
+                // that lacks SCREEN_SHARE counts.
+                //
+                // `newPermissions` is @Nullable in 2.28.0; a null carries no
+                // decision and is ignored. The reason is "revoked", not
+                // "disconnected": the user must learn that a moderator ended
+                // the share. A disconnect toast would invite a re-share that
+                // the same grant refuses.
+                val p = event.newPermissions
+                if (event.participant === room.localParticipant && !stopping && p != null) {
+                    val screenAllowed = p.canPublishSources.isEmpty() ||
+                        Track.Source.SCREEN_SHARE in p.canPublishSources
+                    if (!p.canPublish || !screenAllowed) {
+                        // Only if THIS share is still the live one when the
+                        // launch runs. Two events handled back to back would
+                        // otherwise each queue a teardown, and the second
+                        // (finding `room` already null) would emit a second
+                        // `stopped`.
+                        //
+                        // Settled ([SETTLE_MS]): only the logical stop
+                        // happens now, the native half later. A conservative
+                        // heuristic against our disconnect landing under the
+                        // forced unpublish's renegotiation; it does not
+                        // prevent either observed crash class (see
+                        // [SETTLE_MS]).
+                        scope.launch {
+                            if (this@ScreenSharePlugin.room === room) {
+                                tearDown("revoked", settle = true)
+                            }
+                        }
+                    }
+                }
+            }
+            is RoomEvent.TrackUnpublished -> {
+                // Second liveness bound for a revoke, independent of the
+                // permission event above. livekit-android 2.28.0 DOES re-emit a
+                // LOCAL unpublish as this RoomEvent
+                // (`LocalParticipant.unpublishTrack` -> its internal listener,
+                // which is the Room -> `Room.onTrackUnpublished(Local...)`;
+                // checked in the .aar bytecode), including the SFU-forced one
+                // (`handleLocalTrackUnpublished`).
+                //
+                // The forced unpublish is not the only local one, though. The
+                // SDK also unpublishes on a full reconnect
+                // (`prepareForFullReconnect`, state already RECONNECTING;
+                // Reconnected decides that case), in disconnect cleanup (state
+                // already DISCONNECTED), and when MediaProjection stops (BEFORE
+                // it calls our onStop, which reports "system"). The first two
+                // are excluded HERE, by requiring CONNECTED when the event
+                // arrives: checking it only after the wait would let a full
+                // reconnect that completes inside the grace pass as a revoke.
+                // The system stop happens while CONNECTED, so it cannot be
+                // told apart on the spot; the grace period covers it, and the
+                // re-check after the wait reports "revoked" only for a leg that
+                // is still THIS share, still CONNECTED, and still has no screen
+                // publication. The wait sits in the launched coroutine, never
+                // inside tearDown (see its invariant).
+                if (event.participant === room.localParticipant &&
+                    event.publication.source == Track.Source.SCREEN_SHARE
+                ) {
+                    // Diagnostic: ties a later teardown's steps to this
+                    // unpublish. No identity, no key material.
+                    trace("local screen unpublished state=${room.state} stopping=$stopping")
+                }
+                if (event.participant === room.localParticipant &&
+                    event.publication.source == Track.Source.SCREEN_SHARE &&
+                    !stopping &&
+                    room.state == Room.State.CONNECTED
+                ) {
+                    scope.launch {
+                        delay(UNPUBLISH_GRACE_MS)
+                        if (this@ScreenSharePlugin.room === room &&
+                            !stopping &&
+                            room.state == Room.State.CONNECTED &&
+                            room.localParticipant
+                                .getTrackPublication(Track.Source.SCREEN_SHARE) == null
+                        ) {
+                            // Settled like the permission branch (see
+                            // [SETTLE_MS]; a heuristic, not a crash fix). The
+                            // disposal runs UNPUBLISH_GRACE_MS + SETTLE_MS
+                            // after the unpublish.
+                            tearDown("revoked", settle = true)
+                        }
+                    }
+                }
+            }
             is RoomEvent.Disconnected -> {
                 // Server-side removal: primary left (ingress removes the leg),
                 // moderator kick, orphan eject. tearDown is a no-op when this
@@ -628,11 +866,7 @@ class ScreenSharePlugin : Plugin() {
      */
     private fun senderCryptors(room: Room?): Collection<FrameCryptor> {
         val manager = room?.e2eeManager ?: return emptyList()
-        val field = manager.javaClass.getDeclaredField("frameCryptors")
-        field.isAccessible = true
-        @Suppress("UNCHECKED_CAST")
-        val map = field.get(manager) as Map<*, FrameCryptor>
-        return map.values
+        return frameCryptorMap(manager).values
     }
 
     /** Takes the OWNING Room explicitly rather than reading `this.room`: a
@@ -668,12 +902,32 @@ class ScreenSharePlugin : Plugin() {
      * path then read `releasedRoom` before this had written it — releasing
      * the same native Room twice, on exactly the stop-during-publish path
      * [stopCapture] exists to serve. Anything called from here ([stopCapture],
-     * [discardRoom]) must stay non-suspending.
+     * [disposeDetached]) must stay non-suspending, and so must [discardRoom],
+     * which runs on the same ownership scheme from [doConnect]'s abandon path.
+     *
+     * `settle` splits off the native half. Everything above still happens
+     * here, atomically: the generation bump, the claim, the capture stop and
+     * the clearing of every plugin field. But the Room's disconnect and
+     * release, its sender cryptors and the key ring go to [disposeDetached]
+     * [SETTLE_MS] later, through [scheduleDisposal], which holds the only
+     * wait (inside its launched coroutine, never here). Only for a teardown
+     * that follows a forced unpublish the SDK may still be processing: the
+     * two revoke branches and the MediaProjection system stop. Every other
+     * caller disposes inline. The deferral was added in wave 4f against a
+     * SUSPECTED race (our disconnect/release under that renegotiation);
+     * neither observed crash class is that race, so it is a conservative
+     * heuristic, not a crash fix (see [SETTLE_MS], including its cost).
      */
-    private fun tearDown(reason: String?) {
+    private fun tearDown(reason: String?, settle: Boolean = false) {
+        trace("tearDown reason=$reason settle=$settle stopping=$stopping")
         // Cancel any in-flight connect FIRST — even a re-entrant tearDown
         // that returns at the guard below must orphan it (see
         // [ensureConnectCurrent]); the bump is idempotent and harmless.
+        // A revoke records the generation it is about to cancel first, so an
+        // in-flight attempt can tell JS why it died (see [revokedGeneration]).
+        // If no attempt is in flight, the stamp names one that has already
+        // settled and is never read.
+        if (reason == "revoked") revokedGeneration = connectGeneration
         connectGeneration++
         if (stopping) return
         stopping = true
@@ -696,43 +950,49 @@ class ScreenSharePlugin : Plugin() {
         // still-live claim, and the attempt it belonged to would then
         // release its Room a second time.
         room?.let { releasedRoom = it }
-        // Stop the capture before the Room goes: stopping the track is what
-        // releases the MediaProjection and its foreground service, and a
-        // Room disconnected without it can leave the OS cast chip up (see
-        // [stopCapture]).
+        // Stop the capture before the Room goes. Redundant with
+        // `disconnect()` for any published track (`LocalParticipant.cleanup()`
+        // stops it). Its value is timing: it stops the capture immediately on
+        // paths where the disconnect is deferred (the settle paths, and
+        // `discardRoom` while a disposal is pending). It is a no-op once the
+        // SDK has unpublished (see [stopCapture]).
+        // Diagnostic: whether a screen publication still existed when the
+        // capture stop ran (without one it is a no-op). No identity, no key
+        // material.
+        val hadScreenPub =
+            room?.localParticipant?.getTrackPublication(Track.Source.SCREEN_SHARE) != null
         room?.let { stopCapture(it) }
-        try {
-            room?.disconnect()
-        } catch (_: Throwable) {}
-        try {
-            room?.release()
-        } catch (_: Throwable) {}
-        // Drop the native keyring (§4.2 hygiene) — the provider outlives the
-        // Room, so its rtcKeyProvider must be disposed explicitly.
-        try {
-            keyProvider?.dispose()
-        } catch (_: Throwable) {}
+        trace("tearDown capture stopped screenPub=${hadScreenPub}")
+        // Everything a successor or a late push could read is cleared NOW,
+        // before this returns, on both paths: inside a settle window
+        // `setFrameKey` rejects `not_connected` instead of keying a leg that
+        // is going away, and a successor's epoch fence starts clean. What the
+        // native half still needs moves into a [Detached] that only
+        // [disposeDetached] reads.
+        val provider = keyProvider
         keyProvider = null
-        // Probe (f) caveat: Room/audio teardown reset the GLOBAL audio mode
-        // to NORMAL even under NoAudioHandler. Re-assert the WebView call's
-        // mode if teardown moved it, so ending a share does not silently break
-        // the call's audio routing. Guarded like every other step: a throw
-        // here (the service lookup as much as the mode write) must not abort
-        // the rest of the teardown — an aborted teardown leaves `stopping`
-        // latched and the stop() call unsettled on old callers.
-        try {
-            savedAudioMode?.let { saved ->
-                val audioManager = context.applicationContext
-                    .getSystemService(Context.AUDIO_SERVICE) as AudioManager
-                if (audioManager.mode != saved) {
-                    audioManager.mode = saved
-                }
-            }
-        } catch (_: Throwable) {}
+        val manager = e2eeManager
+        e2eeManager = null
         savedAudioMode = null
         consentIntent = null
         currentEpoch = -1
         currentKeyIndex = 0
+        if (room != null) {
+            val detached = Detached(room, manager, provider)
+            if (settle) {
+                scheduleDisposal(detached)
+            } else {
+                disposeDetached(detached)
+            }
+        } else {
+            // No Room to detach: the attempt failed before creating one (the
+            // provider is built first). Nothing to disconnect and no audio
+            // mode a Room could have moved; drop the native keyring (§4.2
+            // hygiene) all the same.
+            try {
+                provider?.dispose()
+            } catch (_: Throwable) {}
+        }
         // Cleared HERE, not only on a successful connect. `stopping` exists to
         // make a teardown re-entrant-safe for its own duration; leaving it set
         // afterwards latched it for the rest of the process, so the next
@@ -752,6 +1012,106 @@ class ScreenSharePlugin : Plugin() {
                 notifyListeners("stopped", data)
             } catch (_: Throwable) {}
         }
+    }
+
+    /**
+     * A leg the plugin has let go of, carrying exactly what its native
+     * teardown needs. [tearDown] builds it after clearing the plugin's
+     * fields; from then on only [disposeDetached] touches these. [disposed]
+     * makes the disposal run once, whichever of the inline call, the settle
+     * timer or a [connect] drain gets there first.
+     */
+    private class Detached(
+        val room: Room,
+        val e2eeManager: E2EEManager?,
+        val keyProvider: RawScreenKeyProvider?,
+    ) {
+        var disposed = false
+    }
+
+    /**
+     * Defer [d]'s native teardown by [SETTLE_MS]. The only place a teardown
+     * waits, and the wait sits inside the launched coroutine, so [tearDown]
+     * itself stays non-suspending. `scope` is never cancelled, so the timer
+     * still fires after [handleOnDestroy]; a [connect] inside the window runs
+     * the disposal early instead.
+     */
+    private fun scheduleDisposal(d: Detached) {
+        pendingDisposals.add(d)
+        trace("disposal scheduled in ${SETTLE_MS}ms")
+        scope.launch {
+            delay(SETTLE_MS)
+            disposeDetached(d)
+        }
+    }
+
+    /**
+     * The native half of a teardown: disconnect, sender frame cryptors,
+     * release, key provider, audio mode, in that order. Runs inline from
+     * [tearDown], [SETTLE_MS] later from [scheduleDisposal], or early from a
+     * [connect] drain.
+     *
+     * Idempotent, and it reads ONLY [d] and the application context. The one
+     * plugin field it touches is [pendingDisposals], to remove [d] by
+     * identity. By the time a deferred disposal runs, `room`, `keyProvider`,
+     * `releasedRoom`, `stopping` and the generation may all belong to a
+     * successor share. Each step is guarded on its own, so one throw cannot
+     * skip the rest. MUST stay non-suspending, like [tearDown].
+     */
+    private fun disposeDetached(d: Detached) {
+        if (d.disposed) return
+        d.disposed = true
+        pendingDisposals.removeAll { it === d }
+        val audioManager = try {
+            context.applicationContext
+                .getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        } catch (_: Throwable) {
+            null
+        }
+        // Read just before the disconnect, not snapshotted at connect (see
+        // the restore below).
+        val modeBefore = try {
+            audioManager?.mode
+        } catch (_: Throwable) {
+            null
+        }
+        trace("dispose disconnect begin")
+        try {
+            d.room.disconnect()
+        } catch (_: Throwable) {}
+        trace("dispose disconnect end")
+        // After the disconnect, so no SDK path can still reach
+        // `removePublishedTrack` with a cryptor disposed under it; before the
+        // release, because each transformer posts to the factory's signaling
+        // thread, which the release ends.
+        val cryptors = disposeSenderCryptors(d.e2eeManager)
+        trace("dispose sender cryptors disposed=$cryptors")
+        trace("dispose release begin")
+        try {
+            d.room.release()
+        } catch (_: Throwable) {}
+        trace("dispose release end")
+        // Drop the native keyring (§4.2 hygiene) — the provider outlives the
+        // Room, so its rtcKeyProvider must be disposed explicitly. The sender
+        // cryptors above held their own references to it.
+        try {
+            d.keyProvider?.dispose()
+        } catch (_: Throwable) {}
+        trace("dispose key provider released")
+        // Probe (f) caveat: Room/audio teardown reset the GLOBAL audio mode
+        // to NORMAL even under NoAudioHandler. Put back the mode read just
+        // before the disconnect if the teardown moved it, so ending a share
+        // does not silently break the call's audio routing. Not the
+        // connect-time snapshot: this can run SETTLE_MS after the share
+        // ended, and forcing call mode back on a user who left the call in
+        // between would be wrong (inline, a leave racing the stop has the
+        // same shape). Guarded like every other step: inline, a throw here
+        // would abort the rest of [tearDown] and leave `stopping` latched.
+        try {
+            if (audioManager != null && modeBefore != null && audioManager.mode != modeBefore) {
+                audioManager.mode = modeBefore
+            }
+        } catch (_: Throwable) {}
     }
 
     /**
@@ -851,6 +1211,45 @@ class ScreenSharePlugin : Plugin() {
             .build()
     }
 
+    /**
+     * Ends the leg whenever a new page starts loading in the WebView. A full
+     * page load (a `window.location.assign` from FlowLogin or Connections, a
+     * reload) replaces the JS that owned the leg, and the new page has no
+     * `#androidLeg`: its rotations return early, so nothing re-keys the leg,
+     * and only the server's best-effort eviction on primary leave would end
+     * it. Until then it keeps encrypting under the dying page's epoch key
+     * (stage-6 MAJOR, wave 4i).
+     *
+     * Registered HERE, not in `load()`: Capacitor calls `load()` inside the
+     * `Bridge` constructor (`registerAllPlugins`), and `Bridge.Builder.create()`
+     * then REPLACES the listener list with its own (`setWebViewListeners`,
+     * Capacitor 8.4.3 Bridge.java:1623), so a listener added there is silently
+     * dropped. `handleOnStart` runs from the Activity's `onStart`, after
+     * `create()` has returned; missing the cold-start page that began loading
+     * before it is harmless (no leg exists yet). It fires on main-frame full
+     * loads only, on the main thread, after `bridge.reset()` and before the
+     * new page's JS runs.
+     *
+     * Reason `null`: no `stopped` event, because nothing on the new page owns
+     * the leg. The call is UNCONDITIONAL and must stay so: with no Room (a
+     * cold start, or a share already ended) [tearDown] only bumps the
+     * generation and clears empty fields; the bump cancels only an attempt
+     * the dying page started; a settled disposal still pending in
+     * [pendingDisposals] is left to its timer. The trace sits outside the
+     * launch so the log shows the listener fired even if Main is busy.
+     */
+    override fun handleOnStart() {
+        super.handleOnStart()
+        if (pageListenerRegistered) return
+        pageListenerRegistered = true
+        bridge.addWebViewListener(object : WebViewListener() {
+            override fun onPageStarted(webView: WebView) {
+                trace("page started")
+                scope.launch { tearDown(null) }
+            }
+        })
+    }
+
     override fun handleOnDestroy() {
         scope.launch { tearDown(null) }
         super.handleOnDestroy()
@@ -859,6 +1258,92 @@ class ScreenSharePlugin : Plugin() {
     companion object {
         private const val NOTIFICATION_ID = 4243
         private const val CHANNEL_ID = "sloga_screenshare"
+
+        /** How long a local screen unpublish, seen while the leg is
+         *  CONNECTED, waits before it is reported as a revoke. Of the three
+         *  non-revoke unpublishes, only the MediaProjection system stop needs
+         *  it: the SDK unpublishes and then calls our onStop, whose
+         *  tearDown("system") runs within milliseconds and clears `room`, so
+         *  the post-wait same-Room check fails. A full reconnect (state
+         *  RECONNECTING) and disconnect cleanup (state DISCONNECTED) are not
+         *  covered by this wait at all; the CONNECTED check at event arrival
+         *  excludes them, and the post-wait CONNECTED check is a second
+         *  guard. A permission-event revoke that tears down first also clears
+         *  `room`. The capture is already stopped, so the wait delays the
+         *  toast and also the disposal: a settled revoke from this path is
+         *  disposed UNPUBLISH_GRACE_MS + [SETTLE_MS] after the unpublish. */
+        private const val UNPUBLISH_GRACE_MS = 1_000L
+
+        /** How long a SETTLED teardown waits before its native half
+         *  ([disposeDetached]) runs: the two revoke branches and the
+         *  MediaProjection system stop, where the SDK has just unpublished
+         *  the screen track and may still be renegotiating the publisher on
+         *  its own coroutines. Added in wave 4f against a SUSPECTED race: our
+         *  disconnect/release under that in-flight renegotiation. Neither
+         *  observed crash class is that race. Class B (LiveKit metrics
+         *  `DataChannel.send` racing `engine.close()`) is removed by
+         *  `enableMetrics = false` in [doConnect]; class A (SIGABRT) fires
+         *  inside the SDK's own renegotiation after the forced unpublish,
+         *  before any disconnect of ours. This does NOT prevent a crash. It
+         *  is kept as a conservative heuristic, at a cost: the leg's key ring
+         *  stays resident, and a connected leg that no longer receives key
+         *  rotations stays on the SFU, for up to SETTLE_MS after the teardown
+         *  (plus the 1 s [UNPUBLISH_GRACE_MS] on the `TrackUnpublished`
+         *  path). livekit-android 2.28.0 exposes no public "publisher
+         *  negotiation stable" signal; the local `TrackUnpublished` marks the
+         *  end of the synchronous half. On the permission branch the window
+         *  is measured from the permission event, which can precede the
+         *  forced unpublish. */
+        private const val SETTLE_MS = 4_000L
+
+        /** Teardown diagnostics with a monotonic timestamp, so a log ties a
+         *  teardown's native steps to the local screen unpublish. Step names,
+         *  reasons and counts only: no key material, no identities. */
+        private fun trace(step: String) {
+            android.util.Log.i("ScreenSharePlugin", "$step t=${SystemClock.elapsedRealtime()}")
+        }
+
+        /** `E2EEManager.frameCryptors`, through the reflection described at
+         *  [senderCryptors] (private, no accessor in 2.28.0). */
+        @Suppress("UNCHECKED_CAST")
+        private fun frameCryptorMap(manager: E2EEManager): MutableMap<*, FrameCryptor> {
+            val field = manager.javaClass.getDeclaredField("frameCryptors")
+            field.isAccessible = true
+            return field.get(manager) as MutableMap<*, FrameCryptor>
+        }
+
+        /**
+         * Dispose every sender frame cryptor in [manager], for a leg whose
+         * Room is already disconnected; returns how many were disposed. The
+         * SDK never does it on that path: `E2EEManager.dispose()` frees only
+         * the data-packet cryptor, and its cleanup nulls `Room.e2eeManager`
+         * before `removePublishedTrack` could run, so each native transformer
+         * (its own OS thread, its own reference to the key ring) would live
+         * until process exit. Snapshot, clear the map (so nothing disposes a
+         * cryptor twice: a second `dispose()` throws), then dispose each in
+         * its own try/catch. Never sets `isEnabled = false` first: disposing
+         * needs no disable, and a disabled sender cryptor passes frames
+         * through unencrypted.
+         */
+        private fun disposeSenderCryptors(manager: E2EEManager?): Int {
+            if (manager == null) return 0
+            val snapshot = try {
+                val map = frameCryptorMap(manager)
+                val copy = ArrayList(map.values)
+                map.clear()
+                copy
+            } catch (_: Throwable) {
+                return 0
+            }
+            var disposed = 0
+            for (cryptor in snapshot) {
+                try {
+                    cryptor.dispose()
+                    disposed++
+                } catch (_: Throwable) {}
+            }
+            return disposed
+        }
 
         private var webRtcLoaded = false
 

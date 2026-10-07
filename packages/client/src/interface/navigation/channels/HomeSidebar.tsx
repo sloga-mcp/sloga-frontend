@@ -24,6 +24,7 @@ import {
   isSlogaStaff,
   typography,
   unreadTone,
+  usePresenceText,
 } from "@revolt/ui";
 import { DisplayName } from "@revolt/ui/components/features/DisplayName";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
@@ -74,7 +75,13 @@ export const HomeSidebar = (props: Props) => {
   });
 
   return (
-    <SidebarBase class="channel_bar home" style={{"--md-sys-color-primary-container": "#FF8A00", "--md-sys-color-on-primary-container": "#ffffff"}}>
+    <SidebarBase
+      class="channel_bar home"
+      style={{
+        "--md-sys-color-primary-container": "#FF8A00",
+        "--md-sys-color-on-primary-container": "#ffffff",
+      }}
+    >
       <div ref={scrollTargetElement} use:invisibleScrollable>
         <List>
           <SidebarTitle href="/app">
@@ -269,6 +276,7 @@ function Entry(
   const [local, remote] = splitProps(props, ["channel", "active", "isMobile"]);
 
   const { t } = useLingui();
+  const presence = usePresenceText();
   const { openModal } = useModals();
   const client = useClient();
 
@@ -299,17 +307,7 @@ function Entry(
     if (inVoice()) return t`Voice`;
     const activity = local.channel.recipient?.activity;
     if (activity) return t`Playing ${activity.name}`;
-    return local.channel.recipient?.statusMessage((s) =>
-      s === "Online"
-        ? t`Online`
-        : s === "Busy"
-          ? t`Busy`
-          : s === "Focus"
-            ? t`Focus`
-            : s === "Idle"
-              ? t`Idle`
-              : t`Offline`,
-    );
+    return local.channel.recipient?.statusMessage(presence.label);
   };
 
   return (

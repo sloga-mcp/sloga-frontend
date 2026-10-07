@@ -23,6 +23,7 @@ import { DiscordImportWorker } from "@revolt/client/DiscordImportWorker";
 import { FossUpdateNotice } from "@revolt/client/FossUpdateNotice";
 import { KeybindsWorker } from "@revolt/client/KeybindsWorker";
 import { NotificationsWorker } from "@revolt/client/NotificationsWorker";
+import { ShellBridgeWorker } from "@revolt/client/ShellBridgeWorker";
 import { StreamerModeWorker } from "@revolt/client/StreamerModeWorker";
 import { IS_OVERLAY_WINDOW, IS_POPOUT_WINDOW } from "@revolt/client/popout";
 import { useModals } from "@revolt/modal";
@@ -49,9 +50,11 @@ import { Sidebar } from "./interface/Sidebar";
 const Interface = (props: { children: JSX.Element }) => {
   // The friends popout window must never host the full app shell (single
   // full-client model — see @revolt/client/popout): any navigation that
-  // escapes /friends-popout (friend double-click, profile-modal actions,
-  // the post-login redirect) bounces straight back instead of booting a
-  // second set of workers over a web-mode client.
+  // escapes /friends-popout (e.g. the post-login redirect) bounces straight
+  // back instead of booting a second set of workers over a web-mode client.
+  // Friend double-click and the message/call actions don't navigate here:
+  // useUserActions forwards them to the main window, where
+  // ShellBridgeWorker (below) opens the DM or starts the call.
   // Both window flags are frozen at module init, so neither early return has
   // a re-render to miss.
   if (IS_POPOUT_WINDOW) {
@@ -200,6 +203,11 @@ const Interface = (props: { children: JSX.Element }) => {
         </Switch>
 
         <NotificationsWorker />
+        {/* Receives friends-popout actions and notification clicks from the
+            shell (or, on web, the popout's postMessage) and runs them in this
+            window. Main window only: the popout and overlay never reach this
+            render, they returned at the top of this component. */}
+        <ShellBridgeWorker />
         <ActivityWorker />
         <StreamerModeWorker />
         <ApkUpdateWorker />

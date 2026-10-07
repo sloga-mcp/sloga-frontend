@@ -1,6 +1,7 @@
 import { useFloating } from "solid-floating-ui";
 import {
   Accessor,
+  For,
   Show,
   createEffect,
   createSignal,
@@ -12,7 +13,7 @@ import { Portal } from "solid-js/web";
 import { Motion, Presence } from "solid-motionone";
 
 import { Placement, autoUpdate, flip, offset, shift } from "@floating-ui/dom";
-import { Trans, useLingui } from "@lingui-solid/solid/macro";
+import { Trans } from "@lingui-solid/solid/macro";
 import { API } from "stoat.js";
 import { styled } from "styled-system/jsx";
 
@@ -26,21 +27,19 @@ import { useClient, useUser } from "@revolt/client";
 import { useModals } from "@revolt/modal";
 import { useState } from "@revolt/state";
 import {
+  type PresenceValue,
   Avatar,
   Column,
-  type PresenceValue,
   Row,
   Text,
   UserStatus,
-  iconSize,
+  usePresenceText,
 } from "@revolt/ui";
 
 import MdContactPage from "@material-design-icons/svg/outlined/contact_page.svg?component-solid";
 import MdDelete from "@material-design-icons/svg/outlined/delete.svg?component-solid";
 import MdEditNote from "@material-design-icons/svg/outlined/edit_note.svg?component-solid";
-import MdInfo from "@material-design-icons/svg/outlined/info.svg?component-solid";
 import MdLogout from "@material-design-icons/svg/outlined/logout.svg?component-solid";
-import MdNotificationsOff from "@material-design-icons/svg/outlined/notifications_off.svg?component-solid";
 
 interface Props {
   anchor: Accessor<HTMLDivElement | undefined>;
@@ -51,6 +50,19 @@ interface Props {
    */
   placement?: Placement;
 }
+
+/**
+ * Presences offered in the picker, in menu order
+ */
+const PRESENCE_OPTIONS: PresenceValue[] = [
+  "Online",
+  "Idle",
+  "Focus",
+  "Busy",
+  "LookingForGroup",
+  "LookingForMore",
+  "Invisible",
+];
 
 const TruncatedStatusText = styled("div", {
   base: {
@@ -65,7 +77,7 @@ const TruncatedStatusText = styled("div", {
  * User menu attached to the server list
  */
 export function UserMenu(props: Props) {
-  const { t } = useLingui();
+  const presence = usePresenceText();
   const { openModal } = useModals();
   const client = useClient();
   const user = useUser();
@@ -142,7 +154,11 @@ export function UserMenu(props: Props) {
           >
             <ContextMenu>
               <ContextMenuItem
-                onClick={() => navigator.clipboard.writeText(`${user()?.username}#${user()?.discriminator}`)}
+                onClick={() =>
+                  navigator.clipboard.writeText(
+                    `${user()?.username}#${user()?.discriminator}`,
+                  )
+                }
                 action
               >
                 <Row align>
@@ -162,100 +178,26 @@ export function UserMenu(props: Props) {
 
               <ContextMenuDivider />
 
-              <ContextMenuButton
-                icon={
-                  <Status>
-                    <UserStatus size="10" status="Online" />
-                  </Status>
-                }
-                onClick={() => setPresence("Online")}
-              >
-                <Trans>Online</Trans>
-              </ContextMenuButton>
-              <ContextMenuButton
-                icon={
-                  <Status>
-                    <UserStatus size="10" status="Idle" />
-                  </Status>
-                }
-                onClick={() => setPresence("Idle")}
-              >
-                <Trans>Idle</Trans>
-              </ContextMenuButton>
-              <ContextMenuButton
-                icon={
-                  <Status>
-                    <UserStatus size="10" status="Focus" />
-                  </Status>
-                }
-                onClick={() => setPresence("Focus")}
-              >
-                <Row align gap="sm">
-                  <Trans>Focus</Trans>{" "}
-                  <div
-                    use:floating={{
-                      tooltip: {
-                        placement: "top",
-                        content: t`Only mentions will notify you`,
-                      },
-                    }}
+              <For each={PRESENCE_OPTIONS}>
+                {(option) => (
+                  <ContextMenuButton
+                    icon={
+                      <Status>
+                        <UserStatus size="10" status={option} noTooltip />
+                      </Status>
+                    }
+                    onClick={() => setPresence(option)}
+                    _titleCase={false}
                   >
-                    <MdInfo {...iconSize(12)} />
-                  </div>
-                </Row>
-              </ContextMenuButton>
-              <ContextMenuButton
-                icon={
-                  <Status>
-                    <UserStatus size="10" status="Busy" />
-                  </Status>
-                }
-                onClick={() => setPresence("Busy")}
-              >
-                <Row align gap="sm">
-                  <Trans>Do Not Disturb</Trans>{" "}
-                  <div
-                    use:floating={{
-                      tooltip: {
-                        placement: "top",
-                        content: t`You will not receive any notifications`,
-                      },
-                    }}
-                  >
-                    <MdNotificationsOff {...iconSize(12)} />
-                  </div>
-                </Row>
-              </ContextMenuButton>
-              <ContextMenuButton
-                icon={
-                  <Status>
-                    <UserStatus size="10" status="LookingForGroup" />
-                  </Status>
-                }
-                onClick={() => setPresence("LookingForGroup")}
-              >
-                <Trans>Looking For Group</Trans>
-              </ContextMenuButton>
-              <ContextMenuButton
-                icon={
-                  <Status>
-                    <UserStatus size="10" status="LookingForMore" />
-                  </Status>
-                }
-                onClick={() => setPresence("LookingForMore")}
-              >
-                <Trans>Looking For More</Trans>
-              </ContextMenuButton>
-              <ContextMenuButton
-                icon={
-                  <Status>
-                    <UserStatus size="10" status="Invisible" />
-                  </Status>
-                }
-                onClick={() => setPresence("Invisible")}
-              >
-                <Trans>Invisible</Trans>
-              </ContextMenuButton>
+                    <PresenceOption>
+                      <div>{presence.pickerLabel(option)}</div>
+                      <PresenceDescription>
+                        {presence.pickerDescription(option)}
+                      </PresenceDescription>
+                    </PresenceOption>
+                  </ContextMenuButton>
+                )}
+              </For>
 
               <ContextMenuDivider />
 
@@ -322,5 +264,33 @@ const Status = styled("div", {
     width: "16px",
     display: "flex",
     justifyContent: "center",
+  },
+});
+
+/**
+ * Presence name over what choosing it does. Divs, not spans: the menu item
+ * stretches every nested span.
+ */
+const PresenceOption = styled("div", {
+  base: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "2px",
+  },
+});
+
+/**
+ * What choosing a presence does. Wraps rather than truncates, at the same
+ * width the custom status text truncates at, and never wider than a phone
+ * leaves room for.
+ */
+const PresenceDescription = styled("div", {
+  base: {
+    maxWidth:
+      "min(var(--layout-width-user-context-menu-truncate), calc(100vw - 96px))",
+    whiteSpace: "normal",
+    fontSize: "0.75rem",
+    lineHeight: "1.2em",
+    color: "var(--md-sys-color-on-surface-variant)",
   },
 });

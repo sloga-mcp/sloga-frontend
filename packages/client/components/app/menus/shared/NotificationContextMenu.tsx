@@ -4,6 +4,12 @@ import { Trans } from "@lingui-solid/solid/macro";
 import dayjs from "dayjs";
 import { Channel } from "stoat.js";
 
+import {
+  type DmPreviewMode,
+  DM_PREVIEW_DEFAULT,
+  isDmPreviewMode,
+} from "@revolt/client/notificationPreviewPolicy";
+import { IS_POPOUT_WINDOW } from "@revolt/client/popout";
 import { channelNounOf } from "@revolt/common/lib/channelNoun";
 import { useState } from "@revolt/state";
 import { Column, Text, Time } from "@revolt/ui";
@@ -15,8 +21,12 @@ import MdNotificationsOff from "@material-design-icons/svg/outlined/notification
 import MdDoNotDisturbOff from "@material-symbols/svg-400/outlined/do_not_disturb_off.svg?component-solid";
 import MdDoNotDisturbOn from "@material-symbols/svg-400/outlined/do_not_disturb_on.svg?component-solid";
 import MdNotificationSettings from "@material-symbols/svg-400/outlined/notification_settings.svg?component-solid";
+import MdPerson from "@material-symbols/svg-400/outlined/person.svg?component-solid";
+import MdPreview from "@material-symbols/svg-400/outlined/preview.svg?component-solid";
+import MdQuickreply from "@material-symbols/svg-400/outlined/quickreply.svg?component-solid";
 import MdRadioButtonChecked from "@material-symbols/svg-400/outlined/radio_button_checked-fill.svg?component-solid";
 import MdRadioButtonUnchecked from "@material-symbols/svg-400/outlined/radio_button_unchecked.svg?component-solid";
+import MdVisibilityOff from "@material-symbols/svg-400/outlined/visibility_off.svg?component-solid";
 
 import { ContextMenuButton, ContextMenuSubMenu } from "../ContextMenu";
 
@@ -28,6 +38,49 @@ export function NotificationContextMenu(props: { channel: Channel }) {
    * channels resolve to "channel" and keep the original strings
    */
   const noun = () => channelNounOf(props.channel);
+
+  /**
+   * Message previews are a DM and group chat setting only. The override is
+   * also hidden in the friends popout: settings are not synced between
+   * windows, so a write there would be clobbered by, or clobber, the main
+   * window's copy.
+   */
+  const showPreviewOverride = () =>
+    !IS_POPOUT_WINDOW &&
+    (props.channel.type === "DirectMessage" || props.channel.type === "Group");
+
+  /**
+   * The mode this conversation follows when it has no override of its own
+   */
+  const globalPreviewMode = (): DmPreviewMode => {
+    const value = state.settings.getValue("notifications:dm_preview");
+    return isDmPreviewMode(value) ? value : DM_PREVIEW_DEFAULT;
+  };
+
+  /**
+   * This conversation's own pick, if any
+   */
+  const previewOverride = (): DmPreviewMode | undefined => {
+    const value = state.settings.getValue(
+      "notifications:dm_preview_overrides",
+    )?.[props.channel.id];
+    return isDmPreviewMode(value) ? value : undefined;
+  };
+
+  /**
+   * Save this conversation's override, keeping every other conversation's.
+   *
+   * Clearing writes `undefined` for this channel rather than deleting the key
+   * from a copy: the settings store merges an object written over an object,
+   * so a missing key would survive, while one set to `undefined` is removed.
+   * @param mode Mode to use here, or undefined to follow the global setting
+   */
+  function setPreviewOverride(mode: DmPreviewMode | undefined) {
+    state.settings.setValue("notifications:dm_preview_overrides", {
+      ...state.settings.getValue("notifications:dm_preview_overrides"),
+      [props.channel.id]: mode,
+    } as Record<string, DmPreviewMode>);
+  }
 
   return (
     <>
@@ -195,6 +248,70 @@ export function NotificationContextMenu(props: { channel: Channel }) {
           <Trans>None</Trans>
         </ContextMenuButton>
       </ContextMenuSubMenu>
+
+      <Show when={showPreviewOverride()}>
+        <ContextMenuSubMenu
+          symbol={MdPreview}
+          buttonContent={<Trans>Message previews</Trans>}
+        >
+          <ContextMenuButton
+            onClick={() => setPreviewOverride(undefined)}
+            actionSymbol={
+              typeof previewOverride() === "undefined"
+                ? MdRadioButtonChecked
+                : MdRadioButtonUnchecked
+            }
+          >
+            <Column gap="none">
+              <Trans>Default</Trans>
+              <Text class="label" size="small">
+                <Switch fallback={<Trans>Off</Trans>}>
+                  <Match when={globalPreviewMode() === "full_reply"}>
+                    <Trans>Show message + quick reply</Trans>
+                  </Match>
+                  <Match when={globalPreviewMode() === "sender"}>
+                    <Trans>Show sender only</Trans>
+                  </Match>
+                </Switch>
+              </Text>
+            </Column>
+          </ContextMenuButton>
+
+          <ContextMenuButton
+            symbol={MdQuickreply}
+            onClick={() => setPreviewOverride("full_reply")}
+            actionSymbol={
+              previewOverride() === "full_reply"
+                ? MdRadioButtonChecked
+                : MdRadioButtonUnchecked
+            }
+          >
+            <Trans>Show message + quick reply</Trans>
+          </ContextMenuButton>
+          <ContextMenuButton
+            symbol={MdPerson}
+            onClick={() => setPreviewOverride("sender")}
+            actionSymbol={
+              previewOverride() === "sender"
+                ? MdRadioButtonChecked
+                : MdRadioButtonUnchecked
+            }
+          >
+            <Trans>Show sender only</Trans>
+          </ContextMenuButton>
+          <ContextMenuButton
+            symbol={MdVisibilityOff}
+            onClick={() => setPreviewOverride("off")}
+            actionSymbol={
+              previewOverride() === "off"
+                ? MdRadioButtonChecked
+                : MdRadioButtonUnchecked
+            }
+          >
+            <Trans>Off</Trans>
+          </ContextMenuButton>
+        </ContextMenuSubMenu>
+      </Show>
     </>
   );
 }

@@ -1,0 +1,72 @@
+{
+  "_readme": [
+    "High and critical advisories that were already in the shipped (non-dev) dependency tree when the audit gate was added on 2026-10-06 (frontend main 31d77000), plus later ones that cannot reach users.",
+    ".github/scripts/dependency-audit.mjs fails on any high or critical advisory NOT listed here.",
+    "Each entry is {package, via, reason}. `via` lists the dependency chains the reason covers, ending in the package (e.g. \"@huggingface/transformers>sharp\"); a reported path must end with one of them. The gate also fails when a listed advisory shows up in another package or through a chain not listed, because the reason no longer covers it.",
+    "To retire an entry: bump the dependency, re-run the gate, and delete the entry. The gate prints a notice for every entry that no longer matches anything.",
+    "Never add an entry or a chain just to turn the gate green: say why the advisory cannot reach users through that chain, or what is tracking the fix."
+  ],
+  "advisories": {
+    "GHSA-73wf-gq98-2v4g": {
+      "package": "browserslist",
+      "via": [
+        "@lingui/babel-plugin-lingui-macro>@babel/core>@babel/helper-compilation-targets>browserslist",
+        "packages__js-lingui-solid__packages__babel-plugin-lingui-macro>@babel/core>@babel/helper-compilation-targets>browserslist"
+      ],
+      "reason": "browserslist 4.25.3 (high): via the lingui macro's @babel/core, build time only. Not shipped to users."
+    },
+    "GHSA-c83g-rgw3-j3cx": {
+      "package": "browserslist",
+      "via": [
+        "@lingui/babel-plugin-lingui-macro>@babel/core>@babel/helper-compilation-targets>browserslist",
+        "packages__js-lingui-solid__packages__babel-plugin-lingui-macro>@babel/core>@babel/helper-compilation-targets>browserslist"
+      ],
+      "reason": "browserslist 4.25.3 (high): via the lingui macro's @babel/core, build time only. Not shipped to users."
+    },
+    "GHSA-2883-xcg3-v3hh": {
+      "package": "js-yaml",
+      "via": ["@lingui/conf>cosmiconfig>js-yaml"],
+      "reason": "js-yaml 4.1.0 (high): via @lingui-solid/solid > @lingui/core > the lingui macro's config loader (cosmiconfig), build time only. Not shipped to users."
+    },
+    "GHSA-52cp-r559-cp3m": {
+      "package": "js-yaml",
+      "via": ["@lingui/conf>cosmiconfig>js-yaml"],
+      "reason": "js-yaml 4.1.0 (high): via @lingui-solid/solid > @lingui/core > the lingui macro's config loader (cosmiconfig), build time only. Not shipped to users."
+    },
+    "GHSA-5p4m-2wfm-xmqj": {
+      "package": "js-yaml",
+      "via": ["@lingui/conf>cosmiconfig>js-yaml"],
+      "reason": "js-yaml 4.1.0 (high): via @lingui-solid/solid > @lingui/core > the lingui macro's config loader (cosmiconfig), build time only. Not shipped to users."
+    },
+    "GHSA-jp82-f5mq-hwhp": {
+      "package": "seroval",
+      "via": ["solid-js>seroval", "solid-js>seroval-plugins>seroval"],
+      "reason": "seroval 1.5.6 (high): via solid-js 1.9.15, whose own range (~1.5.4) has no patched release; fixed in seroval 1.6.3. Only solid-js/web/dist/server.js (the server-rendering build) imports seroval, and the client bundle contains no seroval code (checked in the built dist). This app never server-renders or calls fromJSON. Tracked as SEC-048."
+    },
+    "GHSA-p6vx-979v-rg4c": {
+      "package": "seroval",
+      "via": ["solid-js>seroval", "solid-js>seroval-plugins>seroval"],
+      "reason": "seroval 1.5.6 (critical): via solid-js 1.9.15, whose own range (~1.5.4) has no patched release; fixed in seroval 1.6.1. Only solid-js/web/dist/server.js (the server-rendering build) imports seroval, and the client bundle contains no seroval code (checked in the built dist). This app never server-renders or calls fromJSON. Tracked as SEC-048."
+    },
+    "GHSA-f88m-g3jw-g9cj": {
+      "package": "sharp",
+      "via": ["@huggingface/transformers>sharp"],
+      "reason": "sharp 0.34.5 (high): via @huggingface/transformers, Node-only image decoding that the browser build never loads (its native build is disabled in pnpm-workspace.yaml allowBuilds)."
+    },
+    "GHSA-rgj7-g3m4-5g8c": {
+      "package": "sharp",
+      "via": ["@huggingface/transformers>sharp"],
+      "reason": "sharp 0.34.5 (high): via @huggingface/transformers, Node-only image decoding that the browser build never loads (its native build is disabled in pnpm-workspace.yaml allowBuilds)."
+    },
+    "GHSA-wq5f-xc86-pv6w": {
+      "package": "sharp",
+      "via": ["@huggingface/transformers>sharp"],
+      "reason": "sharp 0.34.5 (high): via @huggingface/transformers, Node-only image decoding that the browser build never loads (its native build is disabled in pnpm-workspace.yaml allowBuilds). Published 2026-10-06 (librsvg); fixed in sharp 0.35.5, outside the range the locked @huggingface/transformers accepts."
+    },
+    "GHSA-r292-9mhp-454m": {
+      "package": "tar",
+      "via": ["@huggingface/transformers>onnxruntime-node>tar"],
+      "reason": "tar 7.5.19 (high): via @huggingface/transformers > onnxruntime-node, whose install script (the only thing that runs tar) is disabled in pnpm-workspace.yaml allowBuilds; Node-only, the browser build never loads it. Not shipped to users."
+    }
+  }
+}

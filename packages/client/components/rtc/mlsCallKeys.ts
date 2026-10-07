@@ -602,7 +602,11 @@ export class MlsKeyProvider extends BaseKeyProvider {
     localIdentity: string,
   ): Promise<void> {
     const entry = localScreenLegEntry(frameKeys, localIdentity);
-    if (!entry) return;
+    if (!entry) {
+      // Clear the stale key so a later start refuses on "no key".
+      this.#lastLocalScreenKey = undefined;
+      return;
+    }
     const key: LocalScreenKey = {
       keyB64: entry.frame_key_b64,
       keyIndex: entry.key_index,

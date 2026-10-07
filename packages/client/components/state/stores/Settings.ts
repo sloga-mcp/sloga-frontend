@@ -1,3 +1,4 @@
+import { TRANSLATE_LANGUAGE_CODES } from "@revolt/common";
 import {
   type ForumLayout,
   cleanLayoutOverrides,
@@ -6,10 +7,14 @@ import {
   UNICODE_EMOJI_PACKS,
   UnicodeEmojiPacks,
 } from "@revolt/markdown/emoji/UnicodeEmoji";
-import { TRANSLATE_LANGUAGE_CODES } from "@revolt/common";
 import { batch } from "solid-js";
 
 import { State } from "..";
+import {
+  type DmPreviewMode,
+  DM_PREVIEW_DEFAULT,
+  isDmPreviewMode,
+} from "../../client/notificationPreviewPolicy";
 
 import { AbstractStore } from ".";
 
@@ -86,6 +91,12 @@ export type MembersSide = "auto" | LayoutSide;
  */
 const MembersSides: MembersSide[] = ["auto", "left", "right"];
 
+/**
+ * Shape of a conversation id. Override keys are written by the client, so
+ * anything else in a stored blob is corruption and is dropped by clean().
+ */
+const ULID_RE = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+
 interface SettingsDefinition {
   /**
    * Whether to enable desktop notifications
@@ -96,6 +107,19 @@ interface SettingsDefinition {
    * Whether to enable push notifications
    */
   "notifications:push": NotificationPermissionState;
+
+  /**
+   * How much of a direct or group message a notification reveals. Per-device
+   * on purpose (this store does not sync): what is safe to pop up on a work
+   * laptop is not what is safe on a personal phone.
+   */
+  "notifications:dm_preview": DmPreviewMode;
+
+  /**
+   * Per-conversation preview overrides (DM or group channel id → mode). A
+   * conversation absent from the map follows "notifications:dm_preview".
+   */
+  "notifications:dm_preview_overrides": Record<string, DmPreviewMode>;
 
   /**
    * Selected unicode emoji
@@ -332,6 +356,17 @@ type ValueType<T extends keyof SettingsDefinition> =
 const EXPECTED_TYPES: { [K in keyof SettingsDefinition]: ValueType<K> } = {
   "notifications:desktop": "string",
   "notifications:push": "string",
+  "notifications:dm_preview": "string",
+  // Drops entries with a malformed channel id or an unknown mode, so a
+  // corrupt or future-version value falls back to the global mode.
+  "notifications:dm_preview_overrides": (value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+    const out: Record<string, DmPreviewMode> = {};
+    for (const [channel, mode] of Object.entries(value)) {
+      if (ULID_RE.test(channel) && isDmPreviewMode(mode)) out[channel] = mode;
+    }
+    return out;
+  },
   "appearance:unicode_emoji": "string",
   "appearance:show_send_button": "boolean",
   "appearance:expand_emoticons": "boolean",
@@ -390,6 +425,8 @@ const DEFAULT_VALUES: TypeSettings = {
   // Also in default() below: that one is the baseline clean() builds on, while
   // this one is what getValue() falls back to for a key a stored settings blob
   // has never heard of — which is every existing user, for a new key.
+  "notifications:dm_preview": DM_PREVIEW_DEFAULT,
+  "notifications:dm_preview_overrides": {},
   "appearance:expand_emoticons": true,
   "appearance:show_timestamps": true,
   "appearance:show_usernames": true,
@@ -452,6 +489,9 @@ export class Settings extends AbstractStore<"settings", TypeSettings> {
     return {
       "notifications:desktop": "default",
       "notifications:push": "default",
+      // Mirrored in DEFAULT_VALUES — see the note there.
+      "notifications:dm_preview": DM_PREVIEW_DEFAULT,
+      "notifications:dm_preview_overrides": {},
       "appearance:unicode_emoji": "fluent-3d",
       "appearance:show_send_button": true,
       // On: the expansion shipped before the toggle did, so off would be a
@@ -524,6 +564,12 @@ export class Settings extends AbstractStore<"settings", TypeSettings> {
         }
       } else if (key === "notifications:push") {
         if (NotificationPermissionStates.includes(input[key] as never)) {
+          settings[key] = input[key];
+        }
+      } else if (key === "notifications:dm_preview") {
+        // An unknown mode must fall back to the default rather than reach
+        // decidePreview, which has no branch for it.
+        if (isDmPreviewMode(input[key])) {
           settings[key] = input[key];
         }
       } else if (key === "appearance:content_width") {

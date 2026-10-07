@@ -38,6 +38,9 @@ if (import.meta.env.PROD && import.meta.env.VITE_SENTRY_DSN) {
       // raw objects in `data.arguments`, so dropping the whole crumb is what
       // suppresses them.
       if (message.startsWith("[gate-trace]")) return null;
+      // ...and `[notification]` (`NotificationsWorker`): message text, which
+      // may be E2EE plaintext, must never reach a crash report.
+      if (message.startsWith("[notification]")) return null;
       // ...and livekit-client's, which reach the console UNPREFIXED via
       // `E2eeManager.onWorkerMessage` → loglevel: "MissingKey: missing key at
       // index N for participant X" and "InvalidKey: valid key missing for

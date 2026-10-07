@@ -44,6 +44,12 @@ export function Masks() {
           <circle cx="27" cy="27" r="5" fill="white" />
           <circle cx="27" cy="27" r="3" fill="black" />
         </mask>
+        {/* Offline users report "Invisible" (so does someone appearing
+            offline), so this is the ring every offline dot actually uses */}
+        <mask id="accessible-status-invisible">
+          <circle cx="27" cy="27" r="5" fill="white" />
+          <circle cx="27" cy="27" r="3" fill="black" />
+        </mask>
         <mask id="accessible-status-idle">
           <circle cx="27" cy="27" r="5" fill="white" />
           <circle cx="25" cy="25" r="4" fill="black" />
@@ -63,6 +69,31 @@ export function Masks() {
           <circle cx="27" cy="27" r="5" fill="white" />
           <circle cx="27" cy="27" r="4" fill="black" />
           <circle cx="27" cy="27" r="2" fill="white" />
+        </mask>
+        {/* Looking for more: a "+" cut out of the dot */}
+        <mask id="accessible-status-lookingformore">
+          <circle cx="27" cy="27" r="5" fill="white" />
+          <line
+            x1="24"
+            y1="27"
+            x2="30"
+            y2="27"
+            stroke="black"
+            stroke-width={2}
+          />
+          <line
+            x1="27"
+            y1="24"
+            x2="27"
+            y2="30"
+            stroke="black"
+            stroke-width={2}
+          />
+        </mask>
+        {/* Looking for group: an up-pointing triangle cut out of the dot */}
+        <mask id="accessible-status-lookingforgroup">
+          <circle cx="27" cy="27" r="5" fill="white" />
+          <polygon points="27,24 30,29.2 24,29.2" fill="black" />
         </mask>
       </defs>
     </svg>
