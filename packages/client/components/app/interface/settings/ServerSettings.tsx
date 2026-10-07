@@ -1,4 +1,5 @@
 import {
+  BiSolidBookContent,
   BiSolidEnvelope,
   BiSolidExtension,
   BiSolidFlagAlt,
@@ -23,13 +24,14 @@ import { SettingsConfiguration } from ".";
 import { ChannelPermissionsEditor } from "./channel/permissions/ChannelPermissionsEditor";
 import Overview from "./server/Overview";
 import { AppsList } from "./server/apps/AppsList";
+import { AuditLogPage } from "./server/auditLog/AuditLogPage";
 import { ListServerBans } from "./server/bans/ListBans";
 import { EmojiList } from "./server/emojis/EmojiList";
-import { SoundboardList } from "./server/soundboard/SoundboardList";
-import { StickerList } from "./server/stickers/StickerList";
 import { ListServerInvites } from "./server/invites/ListServerInvites";
 import { ServerRoleEditor } from "./server/roles/ServerRoleEditor";
 import { ServerRoleOverview } from "./server/roles/ServerRoleOverview";
+import { SoundboardList } from "./server/soundboard/SoundboardList";
+import { StickerList } from "./server/stickers/StickerList";
 import { BackCard } from "./user/_AccountCard";
 
 const Config: SettingsConfiguration<Server> = {
@@ -91,6 +93,8 @@ const Config: SettingsConfiguration<Server> = {
         return <ListServerInvites server={server} />;
       case "bans":
         return <ListServerBans server={server} />;
+      case "audit_log":
+        return <AuditLogPage server={server} />;
 
       default:
         return null;
@@ -156,7 +160,8 @@ const Config: SettingsConfiguration<Server> = {
         {
           hidden:
             !server.havePermission("ManageServer") &&
-            !server.havePermission("BanMembers"),
+            !server.havePermission("BanMembers") &&
+            !server.havePermission("ViewAuditLog"),
           title: <Trans>User Management</Trans>,
           entries: [
             {
@@ -185,6 +190,12 @@ const Config: SettingsConfiguration<Server> = {
               id: "bans",
               icon: <BiSolidUserX size={20} />,
               title: <Trans>Bans</Trans>,
+            },
+            {
+              hidden: !server.havePermission("ViewAuditLog"),
+              id: "audit_log",
+              icon: <BiSolidBookContent size={20} />,
+              title: <Trans>Audit Log</Trans>,
             },
           ],
         },

@@ -48,6 +48,8 @@ import MdPersonAddAlt from "@material-design-icons/svg/outlined/person_add_alt.s
 import MdPersonRemove from "@material-design-icons/svg/outlined/person_remove.svg?component-solid";
 import MdReport from "@material-design-icons/svg/outlined/report.svg?component-solid";
 import MdScreenShare from "@material-design-icons/svg/outlined/screen_share.svg?component-solid";
+import MdTimer from "@material-design-icons/svg/outlined/timer.svg?component-solid";
+import MdTimerOff from "@material-design-icons/svg/outlined/timer_off.svg?component-solid";
 import MdVideocam from "@material-design-icons/svg/outlined/videocam.svg?component-solid";
 import MdVisibility from "@material-design-icons/svg/outlined/visibility.svg?component-solid";
 import MdVisibilityOff from "@material-design-icons/svg/outlined/visibility_off.svg?component-solid";
@@ -220,6 +222,30 @@ export function UserContextMenu(props: {
   }
 
   /**
+   * Time the member out
+   */
+  function timeoutMember() {
+    const member = props.member;
+    if (!member) return;
+
+    openModal({
+      type: "timeout_member",
+      member,
+    });
+  }
+
+  /**
+   * Lift the member's timeout
+   */
+  function removeTimeout() {
+    const member = props.member;
+    if (!member) return;
+
+    member.edit({ remove: ["Timeout"] }).catch(moderationFailed);
+    props.onClose?.();
+  }
+
+  /**
    * Ban the user
    */
   function banUser() {
@@ -373,6 +399,41 @@ export function UserContextMenu(props: {
       props.member?.server?.havePermission("BanMembers") &&
       props.member.inferiorTo(props.member.server.member!)
     );
+  }
+
+  /**
+   * Whether the user may moderate this member's timeout at all: not
+   * ourselves, we hold Timeout Members, we outrank them, and they do not
+   * hold Timeout Members themselves. Our own membership is checked rather
+   * than asserted, since staff acting on a server they are not in have none.
+   */
+  function timeoutGate() {
+    const member = props.member;
+    const server = member?.server;
+    const ownMember = server?.member;
+    return (
+      !props.user.self &&
+      !!member &&
+      !!server &&
+      !!ownMember &&
+      server.havePermission("TimeoutMembers") &&
+      member.inferiorTo(ownMember) &&
+      !member.hasPermission(server, "TimeoutMembers")
+    );
+  }
+
+  /**
+   * Whether the user can time this member out (they are not timed out now)
+   */
+  function canTimeout() {
+    return timeoutGate() && !props.member?.timedOutUntil();
+  }
+
+  /**
+   * Whether the user can lift this member's timeout (they are timed out now)
+   */
+  function canRemoveTimeout() {
+    return timeoutGate() && !!props.member?.timedOutUntil();
   }
 
   /**
@@ -1085,12 +1146,12 @@ export function UserContextMenu(props: {
         </Show>
       </Show>
 
-      {/* Moderation: kick, ban */}
-      {/** TODO: #287 timeout users */}
+      {/* Moderation: timeout, kick, ban */}
       <Show
         when={
           canRemoveMemberFromGroup() ||
-          (props.member && (canKick() || canBan()))
+          (props.member &&
+            (canTimeout() || canRemoveTimeout() || canKick() || canBan()))
         }
       >
         <ContextMenuDivider />
@@ -1101,6 +1162,16 @@ export function UserContextMenu(props: {
             destructive
           >
             <Trans>Remove Member</Trans>
+          </ContextMenuButton>
+        </Show>
+        <Show when={canTimeout()}>
+          <ContextMenuButton icon={MdTimer} onClick={timeoutMember} destructive>
+            <Trans>Timeout member</Trans>
+          </ContextMenuButton>
+        </Show>
+        <Show when={canRemoveTimeout()}>
+          <ContextMenuButton icon={MdTimerOff} onClick={removeTimeout}>
+            <Trans>Remove timeout</Trans>
           </ContextMenuButton>
         </Show>
         <Show when={canKick()}>

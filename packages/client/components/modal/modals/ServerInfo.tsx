@@ -19,6 +19,7 @@ export function ServerInfoModal(
       "ManageCustomisation",
       "ManageRole",
       "ManagePermissions",
+      "ViewAuditLog",
     );
 
   return (

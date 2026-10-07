@@ -22,6 +22,7 @@ import { SOFTRES_CREATION_ENABLED } from "@revolt/app";
 import { E2EESendError, useClient, useE2EE, useSound } from "@revolt/client";
 import { CONFIGURATION, debounce, useDevice } from "@revolt/common";
 import { pickUploadLimit } from "@revolt/common/lib/uploadLimit";
+import { useTime } from "@revolt/i18n";
 import { Keybind, KeybindAction, createKeybind } from "@revolt/keybinds";
 import { unicodeEmojiPackPrefix } from "@revolt/markdown/emoji/UnicodeEmoji";
 import { useModals } from "@revolt/modal";
@@ -45,6 +46,8 @@ import { expandTrailingEmoticon } from "@revolt/ui/components/features/textedito
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
 import { useSearchSpace } from "@revolt/ui/components/utils/autoComplete";
 import { UserSlowmodes } from "stoat.js/lib/events/v1";
+
+import { createTimedOutUntil } from "../../../lib/timedOut";
 
 interface Props {
   /**
@@ -379,6 +382,46 @@ export function MessageComposition(props: Props) {
   const isAlmostTooLong = () => messageLength() > maxMessageLength() - 200;
 
   const wayTooLong = () => messageLength() > maxMessageLength() + 9999;
+
+  const dayjs = useTime();
+
+  /**
+   * The viewer's active timeout in this server, re-evaluated when it expires.
+   * DMs and groups have no server member, so this is always undefined there.
+   */
+  const timedOutUntil = createTimedOutUntil(() => props.channel.server?.member);
+
+  /**
+   * Whether the viewer may type in this channel at all.
+   *
+   * Reads the timeout tick so the composer comes back on its own when a
+   * timeout lapses: the SDK permission check compares the timeout against a
+   * `new Date()` taken at call time, and nothing re-runs it at the expiry.
+   */
+  const sendingAllowed = () => {
+    timedOutUntil();
+    return (
+      props.channel.havePermission("SendMessage") &&
+      // Archived/locked threads are read-only unless the user can manage
+      // the parent channel (mirrors the server-side write-lock).
+      (!(props.channel.archived || props.channel.locked) ||
+        props.channel.havePermission("ManageChannel"))
+    );
+  };
+
+  /**
+   * Composer notice while the viewer is timed out, in place of the generic
+   * no-permission text.
+   */
+  const blockedText = () => {
+    const until = timedOutUntil();
+    if (!until) {
+      return undefined;
+    }
+
+    const time = dayjs(until).format("lll");
+    return t`You are timed out until ${time}`;
+  };
 
   // Whether the send button should be active/clickable
   const canSend = createMemo(() => {
@@ -1785,13 +1828,8 @@ export function MessageComposition(props: Props) {
               ? t`Message ${props.channel.recipient?.username}`
               : t`Message ${props.channel.name}`
         }
-        sendingAllowed={
-          props.channel.havePermission("SendMessage") &&
-          // Archived/locked threads are read-only unless the user can manage
-          // the parent channel (mirrors the server-side write-lock).
-          (!(props.channel.archived || props.channel.locked) ||
-            props.channel.havePermission("ManageChannel"))
-        }
+        sendingAllowed={sendingAllowed()}
+        blockedText={blockedText()}
         autoCompleteSearchSpace={searchSpace}
         updateDraftSelection={(start, end) =>
           state.draft.setSelection(props.channel.id, start, end)
