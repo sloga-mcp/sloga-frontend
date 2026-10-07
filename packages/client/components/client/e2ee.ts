@@ -3572,7 +3572,8 @@ export class E2EEBridge implements E2EEAdapter {
     // The row id is the server's envelope id, and getOrCreate returns a
     // cached object unchanged: a forged `Message` event sent with this id
     // before decrypt would otherwise be adopted and shown under the lock.
-    // Evict it the way the v1 `MessageDelete` handler does, then create.
+    // Evict it with the v1 `MessageDelete` events, then create. Delete first
+    // so a throwing listener cannot leave the forged object cached.
     return adoptTrustedRow(
       this.#client.messages,
       row.id,
@@ -3581,9 +3582,10 @@ export class E2EEBridge implements E2EEAdapter {
       alreadyTrusted,
       (id) => {
         const evicted = this.#client.messages.getUnderlyingObject(id);
-        this.#client.emit("messageDeleteId", id, evicted.channelId);
-        this.#client.emit("messageDelete", evicted);
+        const channelId = evicted.channelId;
         this.#client.messages.delete(id);
+        this.#client.emit("messageDeleteId", id, channelId);
+        this.#client.emit("messageDelete", evicted);
       },
     );
   }
