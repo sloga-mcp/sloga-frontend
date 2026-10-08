@@ -205,6 +205,12 @@ export function Message(props: Props) {
    */
   const unreact = (emoji: string) => props.message.unreact(emoji);
 
+  /**
+   * Whether this is a local E2EE row; it has no server copy, so server
+   * actions (reactions) would 404 and leak the emoji in plaintext
+   */
+  const isEncrypted = () => !!e2ee?.isEncryptedMessage(props.message.id);
+
   return (
     <MessageContext message={props.message} reactPicker={reactPicker}>
       <MessageContainer
@@ -411,29 +417,32 @@ export function Message(props: Props) {
             isServer={!!props.message.server}
           />
         </Show>
-        <CompositionMediaPicker
-          onMessage={(content) =>
-            props.message?.channel?.sendMessage({
-              content,
-              replies: [{ id: props.message.id, mention: true }],
-            })
-          }
-          onTextReplacement={(emoji) =>
-            react(
-              emoji.startsWith(":")
-                ? emoji.slice(1, emoji.length - 1)
-                : startsWithPackPUA(emoji)
-                  ? emoji.slice(1)
-                  : emoji,
-            )
-          }
-        >
-          {(trigProps) => {
-            trigProps.ref(msgRef);
-            setReactPicker(trigProps);
-            return <></>;
-          }}
-        </CompositionMediaPicker>
+        {/* The emoji tab reacts on the server; hidden for E2EE rows */}
+        <Show when={!isEncrypted()}>
+          <CompositionMediaPicker
+            onMessage={(content) =>
+              props.message?.channel?.sendMessage({
+                content,
+                replies: [{ id: props.message.id, mention: true }],
+              })
+            }
+            onTextReplacement={(emoji) =>
+              react(
+                emoji.startsWith(":")
+                  ? emoji.slice(1, emoji.length - 1)
+                  : startsWithPackPUA(emoji)
+                    ? emoji.slice(1)
+                    : emoji,
+              )
+            }
+          >
+            {(trigProps) => {
+              trigProps.ref(msgRef);
+              setReactPicker(trigProps);
+              return <></>;
+            }}
+          </CompositionMediaPicker>
+        </Show>
         <Show when={props.message.isCrosspost}>
           <CrosspostAttribution>
             <Symbol size={14}>campaign</Symbol>
@@ -500,7 +509,7 @@ export function Message(props: Props) {
                 state.settings.getValue("translation:enabled") &&
                 !props.message.systemMessage &&
                 props.message.authorId !== client().user?.id &&
-                !e2ee?.isEncryptedMessage(props.message.id)
+                !isEncrypted()
               }
             >
               <MessageTranslation content={props.message.content!} />
@@ -562,15 +571,17 @@ export function Message(props: Props) {
             </ThreadPill>
           </a>
         </Show>
-        <Reactions
-          reactions={
-            props.message.reactions as never as Map<string, Set<string>>
-          }
-          interactions={props.message.interactions}
-          userId={client().user!.id}
-          addReaction={react}
-          removeReaction={unreact}
-        />
+        <Show when={!isEncrypted()}>
+          <Reactions
+            reactions={
+              props.message.reactions as never as Map<string, Set<string>>
+            }
+            interactions={props.message.interactions}
+            userId={client().user!.id}
+            addReaction={react}
+            removeReaction={unreact}
+          />
+        </Show>
       </MessageContainer>
     </MessageContext>
   );

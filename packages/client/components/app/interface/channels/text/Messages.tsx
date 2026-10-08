@@ -712,6 +712,14 @@ export function Messages(props: Props) {
    * Handle deleted messages
    */
   function onMessageDelete(message: { id: string; channelId: string }) {
+    // Also drop it from the in-flight load buffer, or the merge revives it
+    // (incl. a forged row the E2EE layer evicted before injecting).
+    if (collectedMessages && message.channelId === props.channel.id) {
+      collectedMessages = collectedMessages.filter(
+        (msg) => msg.id !== message.id,
+      );
+    }
+
     if (
       message.channelId === props.channel.id &&
       messages().find((msg) => msg.id === message.id)
@@ -729,6 +737,13 @@ export function Messages(props: Props) {
     channel?: { id: string },
   ) {
     if (channel?.id === props.channel.id) {
+      // Same as onMessageDelete: keep the load buffer in step.
+      if (collectedMessages) {
+        collectedMessages = collectedMessages.filter(
+          (msg) => !deleted_messages.find((m) => m.id === msg.id),
+        );
+      }
+
       setMessages((messages) =>
         messages.filter(
           (msg) => !deleted_messages.find((m) => m.id === msg.id),
@@ -925,7 +940,12 @@ export function Messages(props: Props) {
       (shouldSetEditingMessageId) =>
         shouldSetEditingMessageId === true &&
         state.draft.setEditingMessage(
-          messages().find((message) => message.author?.self),
+          // Encrypted rows are local-only and cannot be edited on the
+          // server, so skip them; with none left this clears the request.
+          messages().find(
+            (message) =>
+              message.author?.self && !e2ee?.isEncryptedMessage(message.id),
+          ),
         ),
     ),
   );

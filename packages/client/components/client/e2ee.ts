@@ -51,6 +51,7 @@ import {
   settleCallRosterReconcile,
 } from "./e2eeRatelimitPolicy";
 import { settleDelivered } from "./e2eeSendSettle";
+import { adoptTrustedRow } from "./e2eeTrustedRow";
 import { classifyEnvelopeError } from "./mlsEnvelopeClassify";
 import {
   type MlsBufferedEnvelope,
@@ -3541,7 +3542,9 @@ export class E2EEBridge implements E2EEAdapter {
 
     // Trusted encrypted-ness lives in this set, NOT in a message flag (a
     // flag is server-forgeable). Marker rows are E2EE-conversation events
-    // too, so they count.
+    // too, so they count. Read whether the id was ALREADY trusted before
+    // adding it: only an untrusted id may have a server-sent object cached.
+    const alreadyTrusted = this.#encryptedIds.has(row.id);
     this.#encryptedIds.add(row.id);
 
     // Attachment metadata (reactive) + kick off pending ciphertext
@@ -3566,7 +3569,25 @@ export class E2EEBridge implements E2EEAdapter {
         : { type: "text", content: this.#markerText(row) },
     };
 
-    return this.#client.messages.getOrCreate(row.id, shape as never, isNew);
+    // The row id is the server's envelope id, and getOrCreate returns a
+    // cached object unchanged: a forged `Message` event sent with this id
+    // before decrypt would otherwise be adopted and shown under the lock.
+    // Evict it with the v1 `MessageDelete` events, then create. Delete first
+    // so a throwing listener cannot leave the forged object cached.
+    return adoptTrustedRow(
+      this.#client.messages,
+      row.id,
+      shape,
+      isNew,
+      alreadyTrusted,
+      (id) => {
+        const evicted = this.#client.messages.getUnderlyingObject(id);
+        const channelId = evicted.channelId;
+        this.#client.messages.delete(id);
+        this.#client.emit("messageDeleteId", id, channelId);
+        this.#client.emit("messageDelete", evicted);
+      },
+    );
   }
 
   /** Trusted encrypted-ness of a message id (see `#encryptedIds`) */

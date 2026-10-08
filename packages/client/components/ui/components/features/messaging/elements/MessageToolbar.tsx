@@ -4,7 +4,7 @@ import { cva } from "styled-system/css";
 import { styled } from "styled-system/jsx";
 
 import { MessageContextMenu, useMessage } from "@revolt/app";
-import { useUser } from "@revolt/client";
+import { useE2EE, useUser } from "@revolt/client";
 import { useModals } from "@revolt/modal";
 import { useState } from "@revolt/state";
 import { Ripple } from "@revolt/ui/components/design";
@@ -21,6 +21,12 @@ export function MessageToolbar() {
   const state = useState();
   const { openModal } = useModals();
   const { message, reactPicker } = useMessage();
+  const e2ee = useE2EE();
+
+  /**
+   * Encrypted messages are local rows, so server actions on them are hidden
+   */
+  const encrypted = () => !!message && !!e2ee?.isEncryptedMessage(message.id);
 
   let reactRef;
 
@@ -30,6 +36,8 @@ export function MessageToolbar() {
    * Delete the message
    */
   function deleteMessage(ev: MouseEvent) {
+    if (encrypted()) return;
+
     if (ev.shiftKey) {
       message?.delete();
     } else if (message) {
@@ -51,7 +59,7 @@ export function MessageToolbar() {
           <MdReply {...iconSize(20)} />
         </div>
       </Show>
-      <Show when={message?.channel?.havePermission("React")}>
+      <Show when={!encrypted() && message?.channel?.havePermission("React")}>
         <div
           ref={reactRef}
           class={tool()}
@@ -61,7 +69,7 @@ export function MessageToolbar() {
           <MdEmojiEmotions {...iconSize(20)} />
         </div>
       </Show>
-      <Show when={message?.author?.self}>
+      <Show when={!encrypted() && message?.author?.self}>
         <div
           class={tool()}
           onClick={() => state.draft.setEditingMessage(message)}
@@ -72,8 +80,9 @@ export function MessageToolbar() {
       </Show>
       <Show
         when={
-          message?.author?.self ||
-          message?.channel?.havePermission("ManageMessages")
+          !encrypted() &&
+          (message?.author?.self ||
+            message?.channel?.havePermission("ManageMessages"))
         }
       >
         <div class={tool()} onClick={deleteMessage}>
