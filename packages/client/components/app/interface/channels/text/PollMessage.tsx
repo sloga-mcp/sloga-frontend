@@ -246,9 +246,7 @@ export function PollMessage(props: Props) {
                   <Bar style={{ width: `${percentFor(answer.id)}%` }} />
                 </Show>
                 <AnswerContent>
-                  <Show
-                    when={!closed() && !expired() && !encryptedContext()}
-                  >
+                  <Show when={!closed() && !expired() && !encryptedContext()}>
                     <SelectMark
                       data-multi={definition().allow_multiselect || undefined}
                       data-selected={selected() || undefined}

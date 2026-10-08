@@ -392,8 +392,8 @@ export function SoftResMessage(props: Props) {
       <Show when={encryptedContext()}>
         <Hint>
           <Trans>
-            Soft-reserve sheets are not available in encrypted
-            conversations — reserves are stored by the server.
+            Soft-reserve sheets are not available in encrypted conversations —
+            reserves are stored by the server.
           </Trans>
         </Hint>
       </Show>
