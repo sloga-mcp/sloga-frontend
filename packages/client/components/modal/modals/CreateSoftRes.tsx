@@ -21,7 +21,14 @@ import { styled } from "styled-system/jsx";
 
 import { serverActionsBlocked } from "@revolt/app/interface/channels/text/e2eeTranscriptTrust";
 import { useClient, useE2EE } from "@revolt/client";
-import { Column, Dialog, DialogProps, Form2, IconButton, MenuItem } from "@revolt/ui";
+import {
+  Column,
+  Dialog,
+  DialogProps,
+  Form2,
+  IconButton,
+  MenuItem,
+} from "@revolt/ui";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
 
 import { useModals } from "..";
@@ -86,9 +93,7 @@ export function CreateSoftResModal(
   const [edition, setEdition] = createSignal<string | undefined>(
     editDefinition?.edition,
   );
-  const [raids, setRaids] = createSignal<string[]>(
-    editDefinition?.raids ?? [],
-  );
+  const [raids, setRaids] = createSignal<string[]>(editDefinition?.raids ?? []);
   const [allowDuplicates, setAllowDuplicates] = createSignal(
     editDefinition?.allow_duplicates ?? false,
   );
@@ -253,8 +258,7 @@ export function CreateSoftResModal(
   // block Save and are marked in the list until the user removes them.
   const orphanedHardReserves = createMemo(() => {
     if (selectedItems() === undefined) return 0;
-    return hardReserves().filter((row) => !itemLookup().has(row.itemId))
-      .length;
+    return hardReserves().filter((row) => !itemLookup().has(row.itemId)).length;
   });
 
   // ----- Submission ---------------------------------------------------------
@@ -303,8 +307,7 @@ export function CreateSoftResModal(
         await props.editMessage!.editSoftRes({
           title,
           reserves_per_user: Number(group.controls.reservesPerUser.value),
-          per_item_cap:
-            perItemCap === "off" ? undefined : Number(perItemCap),
+          per_item_cap: perItemCap === "off" ? undefined : Number(perItemCap),
           allow_duplicates: allowDuplicates(),
           class_restriction: classRestriction(),
           hidden: hidden(),
@@ -384,8 +387,8 @@ export function CreateSoftResModal(
           <ErrorNotice>
             <Symbol size={16}>error</Symbol>
             <Trans>
-              This event already has a soft-reserve sheet — each event can
-              only have one.
+              This event already has a soft-reserve sheet — each event can only
+              have one.
             </Trans>
           </ErrorNotice>
         </Show>
@@ -499,9 +502,8 @@ export function CreateSoftResModal(
               <For each={raids()}>
                 {(raidId) => (
                   <Chip type="button" disabled data-disabled>
-                    {selectedEdition()?.raids.find(
-                      (raid) => raid.id === raidId,
-                    )?.name ?? raidId}
+                    {selectedEdition()?.raids.find((raid) => raid.id === raidId)
+                      ?.name ?? raidId}
                   </Chip>
                 )}
               </For>
@@ -593,8 +595,8 @@ export function CreateSoftResModal(
           <Hint>
             <Symbol size={16}>info</Symbol>
             <Trans>
-              Items taken off the table before reserves open — raiders
-              cannot soft-reserve them.
+              Items taken off the table before reserves open — raiders cannot
+              soft-reserve them.
             </Trans>
           </Hint>
 
@@ -642,16 +644,15 @@ export function CreateSoftResModal(
             <ErrorNotice>
               <Symbol size={16}>error</Symbol>
               <Trans>
-                Some hard reserves are not in the selected raids' loot —
-                remove them (or restore the raid) before saving.
+                Some hard reserves are not in the selected raids' loot — remove
+                them (or restore the raid) before saving.
               </Trans>
             </ErrorNotice>
           </Show>
 
           <Show
             when={
-              raids().length > 0 &&
-              hardReserves().length < MAX_HARD_RESERVES
+              raids().length > 0 && hardReserves().length < MAX_HARD_RESERVES
             }
           >
             <SearchInput
