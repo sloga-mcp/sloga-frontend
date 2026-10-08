@@ -29,13 +29,12 @@ android {
         // versionName tracks the PATCH NOTES version from v0.55.0 on (it used
         // to run its own 1.x sequence, which matched nothing users could see).
         // versionCode keeps counting up untouched — it is what ApkUpdateWorker
-        // and Play order releases by, and it must never go backwards. vc71 was
-        // published as the 0.64.0 SIDELOAD apk, so this release is vc72. Play
-        // still carries vc70 (0.63.0): the vc71 bundle was never uploaded, and
-        // vc72 supersedes it (as with vc67, vc68 and vc69, skipping codes is
-        // harmless on Play).
-        versionCode 72
-        versionName "0.65.0"
+        // and Play order releases by, and it must never go backwards. vc72 was
+        // published as the 0.65.0 SIDELOAD apk and its bundle went to Play
+        // review on 2026-10-04, so this release is vc73 (the Android screen
+        // share flip requires >= 73).
+        versionCode 73
+        versionName "0.66.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.

@@ -9,6 +9,70 @@ import type { ChangelogResponse } from "./Changelog";
  */
 export const CHANGELOGS: ChangelogResponse[] = [
   // ==========================================================================
+  // v0.66.0 (written 2026-10-08 by the merge steward from the v0.66 inbox,
+  // ~/.claude/plans/v066-release-inbox.md, consolidated draft rev 2). CUT
+  // 2026-10-08 at main `1655d7bf`. The live web serves nothing newer than
+  // sloga-2026-10-04, so this entry pops once. A further edit after the cut
+  // moves the cut point; never add a second v0.66 entry.
+  // Copy constraints, load-bearing — READ BEFORE EDITING:
+  // - Quick reply / private cards: desktop apps only (no reply on web); push
+  //   notifications unchanged; encrypted text only on the Windows card. No
+  //   timeout numbers. Windows installed-build live leg WAIVED (user 10-07).
+  // - Encrypted chats: Edit/Delete/React/Pin are hidden on encrypted rows and,
+  //   since 1655d7bf, Edit/React/votes/soft-res per conversation. Do NOT claim
+  //   that nothing at all can be sent unencrypted: poll creation and scheduled
+  //   messages are not gated yet (user 10-08: ship, fix after).
+  // - Moderation: backend live on heart1 since 2026-10-08 01:33Z (delta
+  //   4b36bf1a, rev 73). App names: "Timeout Members", "Audit Log", "View
+  //   Audit Log". The audit log does not cover every action.
+  // - Android screen share: standard Android app only (the Google-free build
+  //   ships it dark). No screen AUDIO, iOS or web claim. Phone canary WAIVED.
+  // - Google-free APK: ships only if /dl/android-google-free serves the 0.66.0
+  //   build in this sweep. Never mention F-Droid or "open source"; it does not
+  //   update itself; push needs a UnifiedPush app.
+  // - Security: no advisory IDs, no "critical", never describe the old
+  //   weakness beyond the edit-leak sentence the owner approved.
+  {
+    id: "sloga-2026-10-08",
+    title: "Patch Notes",
+    published_at: "2026-10-08T12:00:00.000Z",
+    web_version: "0.66.0",
+    markdown_content: `## v0.66.0 — Quick Reply, Moderation Tools and Android Screen Share
+
+### 💬 Messages
+- **Reply to messages without opening Sloga.** In the desktop app, a new direct or group message pops up a card you can answer right there. Choose what it shows in Settings › Notifications › "When someone messages me": the message with quick reply, the sender only, or nothing, and change it per conversation under Message previews.
+- **Notifications stay private.** Notification cards only show who wrote, never the message, while you share your screen, while someone remote-controls your computer, or in Streamer Mode. Encrypted messages show their text only in the Windows app's own card.
+
+### 🔒 Encrypted chats
+- **No more broken buttons on encrypted messages.** Edit, Delete, Reactions and Pin are no longer offered on end-to-end encrypted messages, where they could not work; trying to edit one used to show "Could not find what you requested." Editing encrypted messages is planned for a later update.
+- **Encrypted chats only show what your device decrypted.** Coming back to an encrypted DM or group no longer shows messages your device never decrypted; a short note stands in for them. The app also ignores any attempt by the server to change, delete or react to an encrypted message.
+- **Encrypted messages no longer show as failed after they were sent.** If something went wrong just after an end-to-end encrypted message was delivered, it could show as failed, and Retry sent it a second time.
+
+### 🛡️ Moderation
+- **Time out members.** Moderators with the Timeout Members permission can now time someone out for up to 28 days. Until it ends they can read channels but can't send messages, react, or join voice, and they're disconnected from voice. Their message box shows when the timeout ends, and an hourglass marks them in the member list.
+- **Add a reason when you kick, ban, or time out.** The reason is saved in the server's audit log.
+- **Audit log.** Server settings now have an Audit Log page listing moderation actions and changes to the server, its roles, and channels, with filters for the action and who did it. A new View Audit Log permission lets you give someone access to it without other admin rights; roles that already had Manage Server get it automatically.
+
+### 🟢 Status
+- **Status dots explain themselves.** Hover any status dot to see what it means, profile cards show the status in words, and the status picker describes each option. Looking for group and Looking for more appear as LFG and LFM with their own shapes, and offline people show a ring.
+- **Unread DMs are easier to spot.** Unread direct messages and group chats now sit right under Home on the server list, always with a red badge.
+
+### 📱 Android
+- **Share your screen from Android.** You can now share your phone's screen in a voice call in the standard Android app, including end-to-end encrypted calls.
+- **A Google-free Android app.** If your phone doesn't have Google services, or you'd rather avoid them, you can now download a Google-free APK from sloga.gg. It has no Google Play Services or Firebase and doesn't contact Google unless you tap to load a YouTube video. Notifications need a UnifiedPush app such as ntfy. It tells you when an update is out; download it from sloga.gg or use Obtainium. Message translation and Watch Together aren't in this version.
+
+### 🔐 Security
+- **Safer two-factor sign-in.** A two-factor check now only works for the account that started it, each sign-in allows a few code attempts before you have to start over, and the app now sends you back to the login screen instead of asking for codes forever.
+- **Tighter permission checks.** The server now checks permissions more strictly when members, channels and roles are edited or deleted.
+- **Edits to encrypted messages can't leak.** Before this fix, trying to edit an encrypted message sent the new text to our server without encryption. The server rejected it and never stored it; the app no longer offers that edit.
+
+### 🔔 Fixes
+- **Replies show up live in threads you join.** If you opened a thread or forum post you hadn't joined yet and replied, other people's new replies didn't appear until you reloaded. They now arrive right away.
+- **Leaving and quickly rejoining a server no longer breaks its forums or thread lists.** An A-Z sorted forum could fail to load, and thread lists could show blank names.
+- **The popped-out Friends list is fixed.** Send message, double-clicking a friend, and calls now open in the main Sloga window.
+`,
+  },
+  // ==========================================================================
   // v0.65.0 (written 2026-10-04 by the merge steward from the v0.65 inbox,
   // ~/.claude/plans/v065-release-inbox.md; feedback-1001, forum layouts and
   // the stoat.js mentioned fix folded in after they landed in ac0d16ee). CUT
