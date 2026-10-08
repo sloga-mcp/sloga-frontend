@@ -3107,8 +3107,7 @@ export class E2EEBridge implements E2EEAdapter {
       limit: 10,
     });
     for (const row of rows.reverse()) {
-      const isNew = live && !this.#client.messages.has(row.id);
-      this.#inject(channelId, row, isNew);
+      this.#inject(channelId, row, live);
     }
   }
 
@@ -3422,8 +3421,7 @@ export class E2EEBridge implements E2EEAdapter {
     });
 
     for (const row of rows.reverse()) {
-      const isNew = live && !this.#client.messages.has(row.id);
-      this.#inject(channel.id, row, isNew);
+      this.#inject(channel.id, row, live);
     }
   }
 
@@ -3536,7 +3534,7 @@ export class E2EEBridge implements E2EEAdapter {
   }
 
   /** Build + insert a collection message from a native history row */
-  #inject(channelId: string, row: HistoryRow, isNew: boolean): Message {
+  #inject(channelId: string, row: HistoryRow, live: boolean): Message {
     const self = this.#client.user!.id;
     const isText = row.kind === "text";
 
@@ -3574,11 +3572,14 @@ export class E2EEBridge implements E2EEAdapter {
     // before decrypt would otherwise be adopted and shown under the lock.
     // Evict it with the v1 `MessageDelete` events, then create. Delete first
     // so a throwing listener cannot leave the forged object cached.
+    // messageCreate fires only for a live row that this call actually
+    // creates, so a server object cached under the envelope id and evicted
+    // here no longer hides the decrypted message.
     return adoptTrustedRow(
       this.#client.messages,
       row.id,
       shape,
-      isNew,
+      live,
       alreadyTrusted,
       (id) => {
         const evicted = this.#client.messages.getUnderlyingObject(id);

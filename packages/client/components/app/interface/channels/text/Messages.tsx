@@ -38,6 +38,12 @@ import {
 } from "@revolt/ui/components/utils/ListView2";
 import { Message } from "./Message";
 import { useMessageCache } from "./MessageCache";
+import {
+  type ConversationTrust,
+  conversationTrust,
+  restorableForTrust,
+  splitUntrusted,
+} from "./e2eeTranscriptTrust";
 
 /**
  * Initial fetch limit
@@ -220,12 +226,25 @@ export function Messages(props: Props) {
       // Fetch messages for channel
       let messages;
 
-      const existingState = cache!.unmanage(props.channel);
+      // In an encrypted (or not yet known) conversation, a cached list that
+      // holds a row this device did not decrypt is refused and refetched.
+      // Its marker is emitted once, after the merge below.
+      const restored = restorableForTrust(
+        cache!.unmanage(props.channel) ?? undefined,
+        currentTrust(),
+        isTrustedMessage,
+      );
+      const existingState = restored.entry;
+      const restoreHidden = restored.hiddenVisible;
+      let mergeHidden = 0;
       const useExistingState = existingState && !nearby;
 
       if (useExistingState) {
         messages = existingState.messages;
       } else {
+        // Fetch results are not re-checked: in an encrypted conversation
+        // fetchMessagesWithUsers returns fetchLocalHistory, whose rows are
+        // all trusted.
         messages = await props.channel
           .fetchMessagesWithUsers({
             limit: INITIAL_FETCH_LIMIT,
@@ -263,9 +282,17 @@ export function Messages(props: Props) {
 
       // Merge list with any new ones that have come in if we are at the end
       if (atEnd()) {
-        const knownIds = new Set(collectedMessages!.map((x) => x.id));
+        let collected = collectedMessages!;
+        // Live rows buffered before the send mode was known skipped the
+        // trust filter in onMessage, so re-check them here
+        if (encryptedConversation()) {
+          const split = splitUntrusted(collected, isTrustedMessage);
+          collected = split.trusted;
+          mergeHidden = split.hiddenVisible;
+        }
+        const knownIds = new Set(collected.map((x) => x.id));
         setMessagesSafely(
-          collectedMessages!,
+          collected,
           messages.filter((x) => !knownIds.has(x.id)),
         );
       }
@@ -276,6 +303,13 @@ export function Messages(props: Props) {
 
       // Stop collecting messages
       collectedMessages = undefined;
+
+      // One marker per load, emitted only now: its messageCreate arrives
+      // through onMessage synchronously, and with no load buffer left it is
+      // prepended to the list instead of being lost with the buffer
+      if (restoreHidden + mergeHidden > 0 && atEnd()) {
+        e2ee?.noteDroppedPlaintext(props.channel.id);
+      }
 
       // Mark as fetching has ended
       setFetching();
@@ -506,15 +540,29 @@ export function Messages(props: Props) {
         // Indicate we are at the end now
         setEnd(true);
 
-        // Merge list with any new ones that have come in
-        const knownIds = new Set(collectedMessages!.map((x) => x.id));
+        // Merge list with any new ones that have come in, re-checking
+        // live rows buffered before the send mode was known
+        let collected = collectedMessages!;
+        let mergeHidden = 0;
+        if (encryptedConversation()) {
+          const split = splitUntrusted(collected, isTrustedMessage);
+          collected = split.trusted;
+          mergeHidden = split.hiddenVisible;
+        }
+        const knownIds = new Set(collected.map((x) => x.id));
         setMessagesSafely(
-          collectedMessages!,
+          collected,
           messages.filter((x) => !knownIds.has(x.id)),
         );
 
         // Stop collecting messages
         collectedMessages = undefined;
+
+        // One marker per load, emitted after the buffer is gone so that
+        // onMessage prepends it to the list
+        if (mergeHidden > 0) {
+          e2ee?.noteDroppedPlaintext(props.channel.id);
+        }
 
         // Animate scroll to bottom
         setTimeout(() => {
@@ -661,20 +709,43 @@ export function Messages(props: Props) {
    * web/old client. It must NEVER render as if encrypted (final-audit HIGH,
    * design §5.2). We suppress it from the encrypted transcript rather than
    * showing server-controlled content under the lock.
+   *
+   * `pending` is a composer-only label, never a sendModes value. An absent
+   * mode must not hide live messages (it would blank plaintext DMs and any
+   * device with E2EE off), so "unknown" fails closed only on cache restore.
    */
   function encryptedConversation(): boolean {
-    if (!e2ee) return false;
-    const conv =
-      props.channel.type === "Group"
-        ? props.channel.id
-        : props.channel.type === "DirectMessage"
-          ? props.channel.recipient?.id
-          : undefined;
-    if (!conv) return false;
-    const mode = e2ee.sendModes.get(conv);
-    return (
-      mode === "encrypt" || mode === "blocked" || mode === "peer_downgraded"
-    );
+    return currentTrust() === "encrypted";
+  }
+
+  /**
+   * Trust level of this conversation, keyed the same way as the e2ee layer:
+   * the channel id for a group, the other recipient's id for a DM
+   */
+  function currentTrust(): ConversationTrust {
+    const isGroup = props.channel.type === "Group";
+    const isDM = props.channel.type === "DirectMessage";
+    const conversationId = isGroup
+      ? props.channel.id
+      : isDM
+        ? [...props.channel.recipientIds.values()].find(
+            (id) => id !== client().user?.id,
+          )
+        : undefined;
+    return conversationTrust({
+      hasE2EE: !!e2ee,
+      isConversation: isGroup || isDM,
+      conversationId,
+      mode: conversationId ? e2ee?.sendModes.get(conversationId) : undefined,
+    });
+  }
+
+  /**
+   * Whether this device decrypted and injected the given message
+   * @param id Message id
+   */
+  function isTrustedMessage(id: string): boolean {
+    return e2ee?.isEncryptedMessage(id) === true;
   }
 
   /**

@@ -21,9 +21,9 @@ import MdEdit from "@material-design-icons/svg/outlined/edit.svg?component-solid
 import MdEmojiEmotions from "@material-design-icons/svg/outlined/emoji_emotions.svg?component-solid";
 import MdForum from "@material-design-icons/svg/outlined/forum.svg?component-solid";
 import MdForward from "@material-design-icons/svg/outlined/forward.svg?component-solid";
-import MdLink from "@material-design-icons/svg/outlined/link.svg?component-solid";
 import MdHowToVote from "@material-design-icons/svg/outlined/how_to_vote.svg?component-solid";
 import MdImage from "@material-design-icons/svg/outlined/image.svg?component-solid";
+import MdLink from "@material-design-icons/svg/outlined/link.svg?component-solid";
 import MdMarkChatUnread from "@material-design-icons/svg/outlined/mark_chat_unread.svg?component-solid";
 import MdOpenInNew from "@material-design-icons/svg/outlined/open_in_new.svg?component-solid";
 import MdPin from "@material-design-icons/svg/outlined/pin_invoke.svg?component-solid";
@@ -165,9 +165,7 @@ export function MessageContextMenu(props: {
       return false;
     }
     const isAuthor = message.authorId === user()?.id;
-    return channel.havePermission(
-      isAuthor ? "SendMessage" : "ManageMessages",
-    );
+    return channel.havePermission(isAuthor ? "SendMessage" : "ManageMessages");
   };
 
   /**
