@@ -14,10 +14,11 @@ import type { SoftResCatalogItemData, WowClass } from "stoat.js";
 
 import { styled } from "styled-system/jsx";
 
-import { useClient } from "@revolt/client";
+import { useClient, useE2EE } from "@revolt/client";
 import { Column, Dialog, DialogProps } from "@revolt/ui";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
 
+import { serverActionsBlocked } from "../../app/interface/channels/text/e2eeTranscriptTrust";
 import {
   WOW_CLASS_COLORS,
   WOW_CLASS_NAMES,
@@ -44,7 +45,23 @@ export function SoftResReserveModal(
 ) {
   const { t } = useLingui();
   const client = useClient();
+  const e2ee = useE2EE();
   const { showError } = useModals();
+
+  /**
+   * The same conversation gate as the card's Reserve button. The card
+   * stops new opens, but a modal opened before the conversation turned
+   * encrypted (or pending) would still PUT the reservation, note included,
+   * in plaintext. So it is re-checked at submit and closes the modal as
+   * soon as it holds.
+   */
+  const actionsBlocked = () =>
+    serverActionsBlocked(e2ee, props.message.channel, client().user?.id);
+  createEffect(
+    on(actionsBlocked, (blocked) => {
+      if (blocked) props.onClose();
+    }),
+  );
 
   /** Hydrated definition wins over the embedded creation-time snapshot */
   const definition = () =>
@@ -188,6 +205,10 @@ export function SoftResReserveModal(
     items().length <= maxItems();
 
   async function onSubmit() {
+    if (actionsBlocked()) {
+      props.onClose();
+      return;
+    }
     if (!canSubmit()) return;
     setPending(true);
     try {
