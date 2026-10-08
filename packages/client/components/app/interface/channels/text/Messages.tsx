@@ -40,8 +40,9 @@ import { Message } from "./Message";
 import { useMessageCache } from "./MessageCache";
 import {
   type ConversationTrust,
-  conversationTrust,
+  channelTrust,
   restorableForTrust,
+  serverActionsBlocked,
   splitUntrusted,
 } from "./e2eeTranscriptTrust";
 
@@ -723,21 +724,7 @@ export function Messages(props: Props) {
    * the channel id for a group, the other recipient's id for a DM
    */
   function currentTrust(): ConversationTrust {
-    const isGroup = props.channel.type === "Group";
-    const isDM = props.channel.type === "DirectMessage";
-    const conversationId = isGroup
-      ? props.channel.id
-      : isDM
-        ? [...props.channel.recipientIds.values()].find(
-            (id) => id !== client().user?.id,
-          )
-        : undefined;
-    return conversationTrust({
-      hasE2EE: !!e2ee,
-      isConversation: isGroup || isDM,
-      conversationId,
-      mode: conversationId ? e2ee?.sendModes.get(conversationId) : undefined,
-    });
+    return channelTrust(e2ee, props.channel, client().user?.id);
   }
 
   /**
@@ -1013,10 +1000,15 @@ export function Messages(props: Props) {
         state.draft.setEditingMessage(
           // Encrypted rows are local-only and cannot be edited on the
           // server, so skip them; with none left this clears the request.
-          messages().find(
-            (message) =>
-              message.author?.self && !e2ee?.isEncryptedMessage(message.id),
-          ),
+          // If the conversation itself is gated, edit nothing: a mode flip
+          // leaves old plaintext rows on screen, and editing one would PATCH
+          // the new text to the server in plaintext.
+          serverActionsBlocked(e2ee, props.channel, client().user?.id)
+            ? undefined
+            : messages().find(
+                (message) =>
+                  message.author?.self && !e2ee?.isEncryptedMessage(message.id),
+              ),
         ),
     ),
   );

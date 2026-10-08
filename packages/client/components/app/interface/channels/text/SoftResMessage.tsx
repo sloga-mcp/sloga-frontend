@@ -24,6 +24,7 @@ import { useClient, useE2EE } from "@revolt/client";
 import { useModals } from "@revolt/modal";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
 
+import { serverActionsBlocked } from "./e2eeTranscriptTrust";
 import {
   WOW_CLASS_COLORS,
   WOW_CLASS_NAMES,
@@ -195,15 +196,14 @@ export function SoftResMessage(props: Props) {
     );
   };
 
-  const encryptedContext = () => {
-    const channel = props.message.channel;
-    if (!channel) return false;
-    const conversationId =
-      channel.type === "DirectMessage" ? channel.recipient?.id : channel.id;
-    return (
-      !!conversationId && e2ee?.sendModes.get(conversationId) === "encrypt"
-    );
-  };
+  /**
+   * Reservations are stored by the server, so they are withheld wherever
+   * the shared conversation gate says new content must not leave the
+   * device: encrypted, unknown while E2EE is on, or the composer's pending
+   * state.
+   */
+  const encryptedContext = () =>
+    serverActionsBlocked(e2ee, props.message.channel, client().user?.id);
 
   // ----- Catalog lookups (names for raid pills / item chips) ----------------
 
@@ -392,8 +392,8 @@ export function SoftResMessage(props: Props) {
       <Show when={encryptedContext()}>
         <Hint>
           <Trans>
-            Soft-reserve sheets are not available in encrypted
-            conversations — reserves are stored by the server.
+            Soft-reserve sheets are not available in encrypted conversations —
+            reserves are stored by the server.
           </Trans>
         </Hint>
       </Show>

@@ -858,7 +858,7 @@ export function MessageComposition(props: Props) {
           client().removeListener("messageCreate", onMsg);
           setTimeout(() => {
             try {
-              message.delete();
+              void message.delete().catch(() => undefined);
             } catch {
               // Best-effort self-destruct: the message may already be gone.
             }
