@@ -61,6 +61,7 @@ import { MessageTranslation } from "./MessageTranslation";
 import { PollMessage, isPollMessage } from "./PollMessage";
 import { SoftResMessage, isSoftResMessage } from "./SoftResMessage";
 import { TimelockMessage, isTimelockMessage } from "./TimelockMessage";
+import { serverActionsBlocked } from "./e2eeTranscriptTrust";
 
 /**
  * Regex for matching URLs
@@ -210,6 +211,16 @@ export function Message(props: Props) {
    * actions (reactions) would 404 and leak the emoji in plaintext
    */
   const isEncrypted = () => !!e2ee?.isEncryptedMessage(props.message.id);
+
+  /**
+   * Whether reacting must be withheld: an E2EE row, or a conversation whose
+   * new content must not reach the server in plaintext (encrypted, unknown
+   * or pending), which covers plaintext rows left over from before it was
+   * encrypted
+   */
+  const contentActionsBlocked = () =>
+    isEncrypted() ||
+    serverActionsBlocked(e2ee, props.message.channel, client().user?.id);
 
   return (
     <MessageContext message={props.message} reactPicker={reactPicker}>
@@ -417,8 +428,8 @@ export function Message(props: Props) {
             isServer={!!props.message.server}
           />
         </Show>
-        {/* The emoji tab reacts on the server; hidden for E2EE rows */}
-        <Show when={!isEncrypted()}>
+        {/* The emoji tab reacts on the server; hidden when blocked */}
+        <Show when={!contentActionsBlocked()}>
           <CompositionMediaPicker
             onMessage={(content) =>
               props.message?.channel?.sendMessage({
@@ -565,7 +576,7 @@ export function Message(props: Props) {
             </ThreadPill>
           </a>
         </Show>
-        <Show when={!isEncrypted()}>
+        <Show when={!contentActionsBlocked()}>
           <Reactions
             reactions={
               props.message.reactions as never as Map<string, Set<string>>

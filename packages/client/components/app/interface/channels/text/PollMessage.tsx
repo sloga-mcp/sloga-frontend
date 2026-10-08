@@ -18,6 +18,8 @@ import { useClient, useE2EE } from "@revolt/client";
 import { useModals } from "@revolt/modal";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
 
+import { serverActionsBlocked } from "./e2eeTranscriptTrust";
+
 /**
  * Poll message flag (bit 6). Server-assigned only: the regular send path
  * rejects client-supplied flag values above 7, so a message carrying this
@@ -124,18 +126,12 @@ export function PollMessage(props: Props) {
   /**
    * In an E2EE conversation a poll should not exist (the composer refuses
    * to create them); if one arrives anyway, show a notice, never a ballot.
-   * The `sendModes` cache is keyed by the E2EE conversation id: the PEER
-   * USER id for DMs, the channel id for groups (same rule as the composer).
+   * Votes are counted by the server, so this uses the shared gate for
+   * actions that send new content: it also holds while the conversation's
+   * mode is unknown, blocked, downgraded or in the composer's pending state.
    */
-  const encryptedContext = () => {
-    const channel = props.message.channel;
-    if (!channel) return false;
-    const conversationId =
-      channel.type === "DirectMessage" ? channel.recipient?.id : channel.id;
-    return (
-      !!conversationId && e2ee?.sendModes.get(conversationId) === "encrypt"
-    );
-  };
+  const encryptedContext = () =>
+    serverActionsBlocked(e2ee, props.message.channel, client().user?.id);
 
   const canManage = () =>
     isSelfAuthor() ||
@@ -173,7 +169,9 @@ export function PollMessage(props: Props) {
   };
 
   async function castBallot(answerIds: number[]) {
-    if (busy() || closed() || expired()) return;
+    // Re-checked here: a multi-select ballot staged before the conversation
+    // turned encrypted would otherwise still go out through the Vote button
+    if (busy() || closed() || expired() || encryptedContext()) return;
     setBusy(true);
     try {
       await props.message.votePoll(answerIds);

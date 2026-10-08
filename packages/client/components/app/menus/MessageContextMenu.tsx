@@ -33,6 +33,8 @@ import MdShare from "@material-design-icons/svg/outlined/share.svg?component-sol
 
 import MdSentimentContent from "@material-symbols/svg-400/outlined/sentiment_content.svg?component-solid";
 
+import { serverActionsBlocked } from "../interface/channels/text/e2eeTranscriptTrust";
+
 import {
   ContextMenu,
   ContextMenuButton,
@@ -130,6 +132,16 @@ export function MessageContextMenu(props: {
   const isEncrypted = () => !!e2ee?.isEncryptedMessage(props.message!.id);
 
   /**
+   * Whether this conversation must not send new content to the server:
+   * it is encrypted, its mode has not settled, or the composer is about to
+   * encrypt. An edit or reaction there would go out in plaintext even on a
+   * row that is itself plaintext, so Edit and React are hidden. Actions on
+   * what the server already holds (delete, pin, reply and so on) stay.
+   */
+  const actionsBlocked = () =>
+    serverActionsBlocked(e2ee, props.message!.channel, user()?.id);
+
+  /**
    * Whether the message can be forwarded: needs server-side substance
    * (content or attachments), and never system messages, polls (state
    * wouldn't travel), ephemerals, or locally-decrypted E2EE messages
@@ -187,6 +199,7 @@ export function MessageContextMenu(props: {
   const canReact = () =>
     !props.message!.isEphemeral &&
     !isEncrypted() &&
+    !actionsBlocked() &&
     !!props.message!.channel?.havePermission("React");
 
   /**
@@ -459,6 +472,7 @@ export function MessageContextMenu(props: {
           when={
             !props.message!.isEphemeral &&
             !isEncrypted() &&
+            !actionsBlocked() &&
             props.reactPicker &&
             props.message?.channel?.havePermission("React")
           }
@@ -475,6 +489,7 @@ export function MessageContextMenu(props: {
           when={
             props.message!.author?.self &&
             !isEncrypted() &&
+            !actionsBlocked() &&
             props.message!.channel?.havePermission("SendMessage")
           }
         >

@@ -4,6 +4,7 @@ import { cva } from "styled-system/css";
 import { styled } from "styled-system/jsx";
 
 import { MessageContextMenu, useMessage } from "@revolt/app";
+import { serverActionsBlocked } from "@revolt/app/interface/channels/text/e2eeTranscriptTrust";
 import { useE2EE, useUser } from "@revolt/client";
 import { useModals } from "@revolt/modal";
 import { useState } from "@revolt/state";
@@ -27,6 +28,14 @@ export function MessageToolbar() {
    * Encrypted messages are local rows, so server actions on them are hidden
    */
   const encrypted = () => !!message && !!e2ee?.isEncryptedMessage(message.id);
+
+  /**
+   * Edit and React send new content to the server, so they are also hidden
+   * when the conversation itself is encrypted (or may be), even on old
+   * plaintext rows
+   */
+  const contentActionsBlocked = () =>
+    encrypted() || serverActionsBlocked(e2ee, message?.channel, user()?.id);
 
   let reactRef;
 
@@ -59,7 +68,11 @@ export function MessageToolbar() {
           <MdReply {...iconSize(20)} />
         </div>
       </Show>
-      <Show when={!encrypted() && message?.channel?.havePermission("React")}>
+      <Show
+        when={
+          !contentActionsBlocked() && message?.channel?.havePermission("React")
+        }
+      >
         <div
           ref={reactRef}
           class={tool()}
@@ -69,7 +82,7 @@ export function MessageToolbar() {
           <MdEmojiEmotions {...iconSize(20)} />
         </div>
       </Show>
-      <Show when={!encrypted() && message?.author?.self}>
+      <Show when={!contentActionsBlocked() && message?.author?.self}>
         <div
           class={tool()}
           onClick={() => state.draft.setEditingMessage(message)}
