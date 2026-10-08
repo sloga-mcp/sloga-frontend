@@ -52,15 +52,15 @@ import {
 import { startsWithPackPUA } from "@revolt/markdown/emoji/UnicodeEmoji";
 import { MediaPickerProps } from "@revolt/ui/components/features/messaging/composition/picker/CompositionMediaPicker";
 import { DiceRollMessage, isDiceRollMessage } from "./DiceRollMessage";
-import { TimelockMessage, isTimelockMessage } from "./TimelockMessage";
 import { EditMessage } from "./EditMessage";
+import { EncryptedAttachment } from "./EncryptedAttachment";
 import { ForwardedMessage } from "./ForwardedMessage";
 import { InteractionContext } from "./InteractionContext";
 import { MessageComponents } from "./MessageComponents";
+import { MessageTranslation } from "./MessageTranslation";
 import { PollMessage, isPollMessage } from "./PollMessage";
 import { SoftResMessage, isSoftResMessage } from "./SoftResMessage";
-import { EncryptedAttachment } from "./EncryptedAttachment";
-import { MessageTranslation } from "./MessageTranslation";
+import { TimelockMessage, isTimelockMessage } from "./TimelockMessage";
 
 /**
  * Regex for matching URLs
@@ -454,10 +454,7 @@ export function Message(props: Props) {
             <EditMessage message={props.message} />
           </Match>
           <Match
-            when={isDiceRollMessage(
-              props.message.flags,
-              props.message.content,
-            )}
+            when={isDiceRollMessage(props.message.flags, props.message.content)}
           >
             <DiceRollMessage content={props.message.content!} />
           </Match>
@@ -471,10 +468,7 @@ export function Message(props: Props) {
               string ("🛡️ Soft reserves — title") for legacy clients and
               push notifications which must not double-render here */}
           <Match
-            when={isSoftResMessage(
-              props.message.flags,
-              props.message.softres,
-            )}
+            when={isSoftResMessage(props.message.flags, props.message.softres)}
           >
             <SoftResMessage message={props.message} />
           </Match>
