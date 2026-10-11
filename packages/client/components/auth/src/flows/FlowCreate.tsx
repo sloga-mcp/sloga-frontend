@@ -70,7 +70,14 @@ export default function FlowCreate() {
       <FlowTitle subtitle={<Trans>Create an account</Trans>} emoji="wave">
         <Trans>Hello!</Trans>
       </FlowTitle>
-      <Form onSubmit={create} captcha={CONFIGURATION.HCAPTCHA_SITEKEY}>
+      {/* `code` is already a percent-encoded segment (the router matches
+          on URL.pathname), so it is appended as-is: encodeURIComponent
+          would double-encode any "%" and the invite would not round-trip. */}
+      <Form
+        onSubmit={create}
+        captcha={CONFIGURATION.HCAPTCHA_SITEKEY}
+        handoffPath={`/login/create${code ? "/" + code : ""}`}
+      >
         <Fields fields={["email", "new-password"]} />
         <Show when={isInviteOnly()}>
           <Fields fields={[{ field: "invite", value: code }]} />

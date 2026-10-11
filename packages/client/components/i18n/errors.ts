@@ -71,6 +71,10 @@ export function useError() {
         return t`That referral code wasn't found. Clear it to continue without one.`;
       if (errType === "InvalidClaim")
         return t`This donation can't be claimed. It has already been claimed, was refunded, or is waiting for review.`;
+      // Anti-spam: DMs to non-friends are paused server-side pending staff
+      // review (same lag pattern; stoat-api's union predates it).
+      if (errType === "DirectMessagesPaused")
+        return t`Your messages to people who aren't your friends are paused while our team reviews your account. You can still message your friends.`;
 
       switch (err.type) {
         case "AlreadyFriends":
@@ -192,6 +196,8 @@ export function useError() {
           return t`This password has previously appeared in security leaks, please use another password.`;
         case "UnverifiedAccount":
           return t`This account is not activated! Please check your account's inbox and try again.`;
+        case "CaptchaFailed":
+          return t`The captcha check didn't go through. Please try again.`;
         case "TotpAlreadyEnabled":
           return t`Multi-factor authentication is already enabled for this account.`;
 

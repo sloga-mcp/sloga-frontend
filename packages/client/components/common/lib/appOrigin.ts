@@ -5,11 +5,13 @@ import CONFIGURATION from "./env";
  * from — invite links above all.
  *
  * **Do not build a shareable link out of `window.location` directly.** The web
- * client is only one of three shells:
+ * client is only one of four shells:
  *
  * - Tauri desktop serves the app from `tauri://localhost` (Windows/Linux) or
  *   `http://tauri.localhost`, so `location.origin` yields a link that is dead
  *   for everyone who receives it.
+ * - Electron desktop serves the app from `app://bundle`, a custom scheme that
+ *   means nothing outside the shell.
  * - Capacitor Android serves from `https://localhost` — a valid-looking https
  *   origin that resolves to nothing off-device.
  *
@@ -22,16 +24,24 @@ import CONFIGURATION from "./env";
  */
 
 /**
- * Whether the app is running inside a native shell whose document origin is a
- * local scheme rather than the public web origin.
+ * Whether the app is running inside a native shell (Tauri desktop, Electron
+ * desktop or Capacitor mobile) whose document origin is a local scheme rather
+ * than the public web origin.
+ *
+ * Besides picking the origin for shareable links, this is also used to hand
+ * the sign-up and password-reset flows off to the system browser instead of
+ * running them inside the shell.
  */
-function isNativeShell(): boolean {
+export function isNativeShell(): boolean {
   if (typeof window === "undefined") return false;
 
-  // Read both shell globals off one alias: an `in`-narrowed `window` loses its
-  // own members for the rest of the function.
+  // Read every shell global off one alias: an `in`-narrowed `window` loses
+  // its own members for the rest of the function.
   const shell = window as Window & {
     __TAURI__?: unknown;
+    // Electron's preload bridge. Only its presence matters here, so it is not
+    // tied to the full declaration the desktop settings page relies on.
+    native?: unknown;
     // Capacitor's global, read rather than imported from `@capacitor/core` so
     // this module stays dependency-free.
     Capacitor?: { isNativePlatform?: () => boolean };
@@ -42,6 +52,11 @@ function isNativeShell(): boolean {
   if (shell.__TAURI__) return true;
   if (shell.location.protocol === "tauri:") return true;
   if (shell.location.hostname === "tauri.localhost") return true;
+
+  // Electron desktop: the preload script exposes `window.native` before any
+  // app code runs. Its `app://bundle` origin is already excluded below by the
+  // http(s) check in `appOrigin`, but other callers have no such fallback.
+  if (shell.native) return true;
 
   return shell.Capacitor?.isNativePlatform?.() === true;
 }

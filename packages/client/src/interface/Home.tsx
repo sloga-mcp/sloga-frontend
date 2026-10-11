@@ -310,11 +310,15 @@ export function HomePage() {
         return response.json();
       };
 
+      // Ask the server for open reports only: automated anti-spam reports
+      // grow the collection, so the unfiltered list keeps getting bigger.
       const [reports, listings] = await Promise.allSettled([
-        get("/safety/reports"),
+        get("/safety/reports?status=Created"),
         get("/discover/requests"),
       ]);
 
+      // The Created filter below is kept as a guard in case the server
+      // ignores the query parameter.
       return {
         reports:
           reports.status === "fulfilled"

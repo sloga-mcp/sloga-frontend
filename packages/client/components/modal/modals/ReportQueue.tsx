@@ -1,5 +1,12 @@
 import { createFormControl, createFormGroup } from "solid-forms";
-import { For, Match, Show, Switch, createResource, createSignal } from "solid-js";
+import {
+  For,
+  Match,
+  Show,
+  Switch,
+  createResource,
+  createSignal,
+} from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
 
@@ -14,6 +21,9 @@ import {
 
 import { useModals } from "..";
 import { Modals } from "../types";
+
+// Author id of reports the server files itself (automated anti-spam detection)
+const SYSTEM_USER_ID = "00000000000000000000000000";
 
 /**
  * Message copy inside a snapshot
@@ -88,8 +98,13 @@ export function ReportQueueModal(
   }
 
   const [reports, { refetch }] = createResource(async () => {
-    const all = (await apiCall("GET", "/safety/reports")) as Report[];
-    return all.filter((report) => report.status === "Created");
+    const open = (await apiCall(
+      "GET",
+      "/safety/reports?status=Created",
+    )) as Report[];
+
+    // The server already filters by status; this only guards the queue
+    return open.filter((report) => report.status === "Created");
   });
 
   const [details] = createResource(
@@ -112,6 +127,13 @@ export function ReportQueueModal(
     if (!id) return "unknown";
     const user = props.client.users.get(id);
     return user ? `${user.username}#${user.discriminator}` : id;
+  }
+
+  /**
+   * Display name for whoever filed a report
+   */
+  function reporterName(id: string) {
+    return id === SYSTEM_USER_ID ? t`Automated detection` : username(id);
   }
 
   /**
@@ -253,7 +275,7 @@ export function ReportQueueModal(
                   onClick={() => setSelected(report)}
                   description={
                     <>
-                      {t`Reported by`} {username(report.author_id)}
+                      {t`Reported by`} {reporterName(report.author_id)}
                       {report.additional_context
                         ? ` — ${report.additional_context}`
                         : ""}
@@ -282,7 +304,15 @@ export function ReportQueueModal(
             <Text class="label">
               <Trans>Reported by</Trans>
             </Text>
-            <Text>{username(selected()!.author_id)}</Text>
+            <Text>{reporterName(selected()!.author_id)}</Text>
+            <Show when={selected()!.author_id === SYSTEM_USER_ID}>
+              <Text>
+                <Trans>
+                  If this report paused the account's messages to non-friends,
+                  resolving or rejecting it lifts that pause.
+                </Trans>
+              </Text>
+            </Show>
 
             <Show when={details.loading}>
               <Text>
@@ -356,9 +386,7 @@ export function ReportQueueModal(
               <CategoryButton
                 onClick={suspendReportedUser}
                 description={
-                  <Trans>
-                    Open platform suspension for the reported user.
-                  </Trans>
+                  <Trans>Open platform suspension for the reported user.</Trans>
                 }
               >
                 <Trans>Suspend {username(reportedUserId())}</Trans>

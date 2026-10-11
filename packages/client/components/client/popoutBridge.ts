@@ -21,6 +21,7 @@ import { useNavigate } from "@solidjs/router";
 import type { Channel } from "stoat.js";
 
 import { CONFIGURATION, tauriInvoke } from "@revolt/common";
+import { useError } from "@revolt/i18n/errors";
 import { useVoice } from "@revolt/rtc";
 import { useState } from "@revolt/state";
 // The file, not the `@revolt/ui` barrel: ProfileActions (inside
@@ -29,6 +30,7 @@ import { useState } from "@revolt/state";
 import { useSnackbar } from "@revolt/ui/components/design/Snackbar";
 
 import { useClient } from ".";
+import { apiErrorType } from "./apiErrorType";
 import { IS_POPOUT_WINDOW } from "./popout";
 import {
   type PopoutAction,
@@ -110,14 +112,21 @@ export function useUserActions(): {
   const state = useState();
   const snackbar = useSnackbar();
   const { t } = useLingui();
+  const describeError = useError();
 
   /**
-   * Surface an openDM failure — otherwise a denied DM reads as a dead button
+   * Surface an openDM failure — otherwise a denied DM reads as a dead button.
+   * Paused DMs (the account is under anti-spam review) get the errors
+   * mapper's explanation; anything else keeps the generic message rather
+   * than a raw server string.
    */
   function dmFailed(err: unknown) {
     console.error(err);
     snackbar.show({
-      message: t`Couldn't open a conversation with this user.`,
+      message:
+        apiErrorType(err) === "DirectMessagesPaused"
+          ? describeError(err)
+          : t`Couldn't open a conversation with this user.`,
     });
   }
 
