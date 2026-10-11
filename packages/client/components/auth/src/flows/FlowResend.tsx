@@ -38,7 +38,11 @@ export default function FlowResend() {
       <FlowTitle>
         <Trans>Resend verification</Trans>
       </FlowTitle>
-      <Form onSubmit={resend} captcha={CONFIGURATION.HCAPTCHA_SITEKEY}>
+      <Form
+        onSubmit={resend}
+        captcha={CONFIGURATION.HCAPTCHA_SITEKEY}
+        handoffPath="/login/resend"
+      >
         <Fields fields={["email"]} />
         <Button type="submit">
           <Trans>Resend</Trans>

@@ -1,13 +1,45 @@
 import HCaptcha, { HCaptchaFunctions } from "solid-hcaptcha";
-import { createSignal, For, JSX, onCleanup, Show } from "solid-js";
+import {
+  createEffect,
+  createMemo,
+  createSignal,
+  For,
+  JSX,
+  onCleanup,
+  Show,
+} from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
 
+import { appOrigin, CONFIGURATION, isNativeShell } from "@revolt/common";
 import { useError } from "@revolt/i18n";
-import { Checkbox, Column, iconSize, Text, TextField } from "@revolt/ui";
+import {
+  Button,
+  Checkbox,
+  Column,
+  iconSize,
+  Text,
+  TextField,
+} from "@revolt/ui";
 import { styled } from "styled-system/jsx";
 
 import MdError from "@material-design-icons/svg/filled/error.svg?component-solid";
+
+import { type ServerCaptcha, getServerCaptcha } from "./captchaConfig";
+import { decideCaptcha } from "./captchaDecision";
+
+/**
+ * How long a captcha-capable form waits for the server's captcha setting
+ * before treating captcha as off (the server still refuses a request it
+ * wanted a captcha for)
+ */
+const CAPTCHA_CONFIG_TIMEOUT_MS = 5000;
+
+/**
+ * How long a submit waits for the hCaptcha widget's script (loaded from
+ * hcaptcha.com) when it is pressed before the widget has finished loading
+ */
+const CAPTCHA_WIDGET_TIMEOUT_MS = 8000;
 
 const ErrorContainer = styled("span", {
   base: {
@@ -45,9 +77,7 @@ function SuspensionCountdown(props: { until: string }) {
         <Trans>Your suspension has expired — try logging in again.</Trans>
       }
     >
-      <Trans>
-        This account is suspended. Time remaining: {formatted()}
-      </Trans>
+      <Trans>This account is suspended. Time remaining: {formatted()}</Trans>
     </Show>
   );
 }
@@ -56,9 +86,7 @@ function SuspensionCountdown(props: { until: string }) {
  * If this error is a timed suspension, return its expiry timestamp
  */
 function suspendedUntil(error: unknown): string | undefined {
-  const err = error as
-    | { type?: string; suspended_until?: string }
-    | undefined;
+  const err = error as { type?: string; suspended_until?: string } | undefined;
   return err?.type === "AccountDisabled" ? err.suspended_until : undefined;
 }
 
@@ -194,9 +222,17 @@ interface Props {
   children: JSX.Element;
 
   /**
-   * Whether to include captcha token
+   * Build-time hCaptcha sitekey, used only when the server does not ask for
+   * a captcha. Passing it at all (even empty) makes the form captcha-capable.
    */
   captcha?: string;
+
+  /**
+   * App path (e.g. `/login/create`) that a native shell opens in the system
+   * browser, instead of showing the form, when the server wants a captcha.
+   * Also makes the form captcha-capable.
+   */
+  handoffPath?: string;
 
   /**
    * Submission handler
@@ -205,12 +241,136 @@ interface Props {
 }
 
 /**
+ * Replaces a captcha-capable form in a native shell when the server wants a
+ * captcha: the shell never loads hCaptcha, so the step continues in the
+ * system browser
+ */
+function BrowserHandoff(props: { href: string }) {
+  return (
+    <Column gap="lg">
+      <Text class="body" size="medium">
+        <Trans>To keep spam out, this step opens in your web browser.</Trans>
+      </Text>
+      <a href={props.href} target="_blank" rel="noreferrer">
+        <Button>
+          <Trans>Continue in your browser</Trans>
+        </Button>
+      </a>
+    </Column>
+  );
+}
+
+/**
  * Small wrapper for HTML form
  */
 export function Form(props: Props) {
+  const { t } = useLingui();
   const [error, setError] = createSignal();
   const err = useError();
   let hcaptcha: HCaptchaFunctions | undefined;
+
+  // Read once: the shell cannot change under a mounted form
+  const native = isNativeShell();
+
+  /**
+   * Whether this form may need a captcha at all. Other forms (e.g. login)
+   * never ask the server and behave exactly as before.
+   */
+  const captchaCapable = () =>
+    props.captcha !== undefined || props.handoffPath !== undefined;
+
+  // The server's captcha setting; `undefined` until it answers or times out
+  const [serverCaptcha, setServerCaptcha] = createSignal<ServerCaptcha>();
+  let serverCaptchaReady: Promise<void> | undefined;
+  let serverCaptchaTimer: ReturnType<typeof setTimeout> | undefined;
+
+  createEffect(() => {
+    if (!captchaCapable() || serverCaptchaReady) return;
+
+    const timedOut = new Promise<ServerCaptcha>((resolve) => {
+      serverCaptchaTimer = setTimeout(
+        () => resolve({ enabled: false }),
+        CAPTCHA_CONFIG_TIMEOUT_MS,
+      );
+    });
+
+    // `getServerCaptcha` never rejects, and neither does the timeout
+    serverCaptchaReady = Promise.race([
+      getServerCaptcha(CONFIGURATION.DEFAULT_API_URL),
+      timedOut,
+    ]).then((server) => {
+      clearTimeout(serverCaptchaTimer);
+      setServerCaptcha(server);
+    });
+  });
+
+  onCleanup(() => clearTimeout(serverCaptchaTimer));
+
+  const captcha = createMemo(() =>
+    decideCaptcha({
+      native,
+      server: captchaCapable() ? serverCaptcha() : { enabled: false },
+      buildTimeKey: props.captcha,
+      handoffPath: props.handoffPath,
+    }),
+  );
+
+  /**
+   * Browser handoff link, when the form is replaced by one
+   */
+  const handoffHref = () => {
+    const decision = captcha();
+    return decision.kind === "handoff"
+      ? appOrigin() + decision.path
+      : undefined;
+  };
+
+  /**
+   * Sitekey for the invisible widget, when one is mounted
+   */
+  const widgetSitekey = () => {
+    const decision = captcha();
+    return decision.kind === "widget" ? decision.sitekey : undefined;
+  };
+
+  /**
+   * Error shown whenever a required captcha cannot be completed
+   */
+  const captchaError = () =>
+    new Error(
+      t`Couldn't load the captcha. Check your connection and try again.`,
+    );
+
+  let awaitingCaptchaConfig = false;
+
+  // Resolves once the mounted widget has loaded and rendered; replaced
+  // whenever the widget unmounts, so a remount is waited for afresh
+  let widgetLoaded!: Promise<void>;
+  let markWidgetLoaded!: () => void;
+  const resetWidgetLoaded = () => {
+    widgetLoaded = new Promise<void>((resolve) => (markWidgetLoaded = resolve));
+  };
+  resetWidgetLoaded();
+
+  let awaitingWidget = false;
+  let widgetWaitTimer: ReturnType<typeof setTimeout> | undefined;
+  onCleanup(() => clearTimeout(widgetWaitTimer));
+
+  /**
+   * Wait for the widget to load, giving up after CAPTCHA_WIDGET_TIMEOUT_MS
+   */
+  async function waitForWidget() {
+    try {
+      await Promise.race([
+        widgetLoaded,
+        new Promise<void>((resolve) => {
+          widgetWaitTimer = setTimeout(resolve, CAPTCHA_WIDGET_TIMEOUT_MS);
+        }),
+      ]);
+    } finally {
+      clearTimeout(widgetWaitTimer);
+    }
+  }
 
   /**
    * Handle submission
@@ -219,12 +379,58 @@ export function Form(props: Props) {
   async function onSubmit(event: Event) {
     event.preventDefault();
 
+    // Read the fields first: `currentTarget` is gone after the first await
     const formData = new FormData(event.currentTarget as HTMLFormElement);
 
-    if (props.captcha) {
-      if (!hcaptcha) return alert("hCaptcha not loaded!");
-      const response = await hcaptcha.execute();
-      formData.set("captcha", response!.response);
+    // Never submit before the server says whether it wants a captcha; the
+    // lookup gives up after CAPTCHA_CONFIG_TIMEOUT_MS. Repeat presses while
+    // waiting are dropped.
+    if (captcha().kind === "loading") {
+      if (awaitingCaptchaConfig) return;
+      awaitingCaptchaConfig = true;
+      try {
+        await serverCaptchaReady;
+      } finally {
+        awaitingCaptchaConfig = false;
+      }
+    }
+
+    const decision = captcha();
+
+    // The form has been replaced by the handoff link
+    if (decision.kind === "handoff") return;
+
+    // Required but impossible here: never submit without a token
+    if (decision.kind === "loading" || decision.kind === "unavailable") {
+      setError(captchaError());
+      return;
+    }
+
+    if (decision.kind === "widget") {
+      // The widget only mounts once the server answers, so a quick first
+      // press can beat its script; give it a moment to load. Repeat presses
+      // while waiting are dropped.
+      if (!hcaptcha) {
+        if (awaitingWidget) return;
+        awaitingWidget = true;
+        try {
+          await waitForWidget();
+        } finally {
+          awaitingWidget = false;
+        }
+      }
+
+      try {
+        if (!hcaptcha) throw new Error("hCaptcha not loaded");
+        // Rejects when the challenge is closed, expires or fails
+        const response = await hcaptcha.execute();
+        if (!response?.response) throw new Error("hCaptcha gave no token");
+        formData.set("captcha", response.response);
+      } catch (err) {
+        console.error(err);
+        setError(captchaError());
+        return;
+      }
     }
 
     try {
@@ -232,38 +438,59 @@ export function Form(props: Props) {
     } catch (err) {
       console.error(err);
       setError(err);
+      // The token is spent; a retry needs a fresh challenge
+      if (formData.has("captcha")) hcaptcha?.resetCaptcha();
     }
   }
 
   return (
-    <form onSubmit={onSubmit}>
-      <Column gap="lg">
-        {props.children}
-        <Show when={error()}>
-          <ErrorContainer>
-            <MdError
-              {...iconSize("1rem")}
-              fill="currentColor"
-              style={{ "flex-shrink": 0 }}
-            />
-            <Text class="label" size="small">
-              <Show
-                when={suspendedUntil(error())}
-                fallback={err(error())}
-              >
-                {(until) => <SuspensionCountdown until={until()} />}
-              </Show>
-            </Text>
-          </ErrorContainer>
+    <Show
+      when={!handoffHref()}
+      fallback={<BrowserHandoff href={handoffHref()!} />}
+    >
+      <form onSubmit={onSubmit}>
+        <Column gap="lg">
+          {props.children}
+          <Show when={error()}>
+            <ErrorContainer>
+              <MdError
+                {...iconSize("1rem")}
+                fill="currentColor"
+                style={{ "flex-shrink": 0 }}
+              />
+              <Text class="label" size="small">
+                <Show when={suspendedUntil(error())} fallback={err(error())}>
+                  {(until) => <SuspensionCountdown until={until()} />}
+                </Show>
+              </Text>
+            </ErrorContainer>
+          </Show>
+        </Column>
+        <Show when={widgetSitekey()}>
+          {(sitekey) => {
+            // A script that loads after an unmount must not revive the
+            // removed widget
+            let mounted = true;
+            onCleanup(() => {
+              mounted = false;
+              hcaptcha = undefined;
+              resetWidgetLoaded();
+            });
+
+            return (
+              <HCaptcha
+                sitekey={sitekey()}
+                onLoad={(instance) => {
+                  if (!mounted) return;
+                  hcaptcha = instance;
+                  markWidgetLoaded();
+                }}
+                size="invisible"
+              />
+            );
+          }}
         </Show>
-      </Column>
-      <Show when={props.captcha}>
-        <HCaptcha
-          sitekey={props.captcha!}
-          onLoad={(instance) => (hcaptcha = instance)}
-          size="invisible"
-        />
-      </Show>
-    </form>
+      </form>
+    </Show>
   );
 }

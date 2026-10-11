@@ -1,5 +1,5 @@
 export * from "./Device";
-export { appOrigin, inviteUrl } from "./lib/appOrigin";
+export { appOrigin, inviteUrl, isNativeShell } from "./lib/appOrigin";
 export {
   AUTO_ARCHIVE_NEVER,
   AUTO_ARCHIVE_PRESETS,

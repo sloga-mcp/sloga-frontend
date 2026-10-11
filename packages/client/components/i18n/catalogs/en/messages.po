@@ -1222,6 +1222,10 @@ msgstr "Auto-redact"
 msgid "Auto-redact couldn't run on this image."
 msgstr "Auto-redact couldn't run on this image."
 
+#: components/modal/modals/ReportQueue.tsx
+msgid "Automated detection"
+msgstr "Automated detection"
+
 #: components/app/interface/settings/user/Language.tsx
 #: components/app/interface/settings/user/Language.tsx
 msgid "Automatic"
@@ -2069,6 +2073,10 @@ msgstr "Continue"
 msgid "Continue in browser"
 msgstr "Continue in browser"
 
+#: components/auth/src/flows/Form.tsx
+msgid "Continue in your browser"
+msgstr "Continue in your browser"
+
 #: components/auth/src/flows/FlowVerify.tsx
 msgid "Continue to app"
 msgstr "Continue to app"
@@ -2345,6 +2353,10 @@ msgstr "Couldn't load items"
 #: components/ui/components/features/voice/watch/JellyfinBrowser.tsx
 msgid "Couldn't load libraries"
 msgstr "Couldn't load libraries"
+
+#: components/auth/src/flows/Form.tsx
+msgid "Couldn't load the captcha. Check your connection and try again."
+msgstr "Couldn't load the captcha. Check your connection and try again."
 
 #: src/interface/Discover.tsx
 msgid "Couldn't load the directory. Try again in a moment."
@@ -4060,6 +4072,10 @@ msgstr "ID copied to clipboard"
 #: components/ui/components/features/profiles/ProfileStatus.tsx
 msgid "Idle"
 msgstr "Idle"
+
+#: components/modal/modals/ReportQueue.tsx
+msgid "If this report paused the account's messages to non-friends, resolving or rejecting it lifts that pause."
+msgstr "If this report paused the account's messages to non-friends, resolving or rejecting it lifts that pause."
 
 #: components/modal/modals/ReportContent.tsx
 msgid "Illegal hacking or cracking"
@@ -8464,6 +8480,10 @@ msgstr "The call is full. Try again when someone leaves."
 msgid "The call server wouldn't accept this device's encryption."
 msgstr "The call server wouldn't accept this device's encryption."
 
+#: components/i18n/errors.ts
+msgid "The captcha check didn't go through. Please try again."
+msgstr "The captcha check didn't go through. Please try again."
+
 #: components/app/interface/settings/server/roles/ServerRoleEditor.tsx
 msgid "The copy was created but has not synced yet. Reopen Roles to see it."
 msgstr "The copy was created but has not synced yet. Reopen Roles to see it."
@@ -8923,6 +8943,10 @@ msgstr "Timeout Members"
 #: components/modal/modals/CreateForumPost.tsx
 msgid "Title"
 msgstr "Title"
+
+#: components/auth/src/flows/Form.tsx
+msgid "To keep spam out, this step opens in your web browser."
+msgstr "To keep spam out, this step opens in your web browser."
 
 #: components/modal/modals/SoftResExport.tsx
 msgid "to open Gargul's soft-reserve window, paste the string and import."
@@ -10113,6 +10137,11 @@ msgstr "Your input is not being delivered yet. They have to answer a prompt from
 #: components/i18n/errors.ts
 msgid "Your message is too long, please remove some characters and try again."
 msgstr "Your message is too long, please remove some characters and try again."
+
+#: components/app/interface/channels/text/DraftMessage.tsx
+#: components/i18n/errors.ts
+msgid "Your messages to people who aren't your friends are paused while our team reviews your account. You can still message your friends."
+msgstr "Your messages to people who aren't your friends are paused while our team reviews your account. You can still message your friends."
 
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
 msgid "Your microphone as it is."

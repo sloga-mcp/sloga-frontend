@@ -38,7 +38,11 @@ export default function FlowReset() {
       <FlowTitle>
         <Trans>Reset password</Trans>
       </FlowTitle>
-      <Form onSubmit={reset} captcha={CONFIGURATION.HCAPTCHA_SITEKEY}>
+      <Form
+        onSubmit={reset}
+        captcha={CONFIGURATION.HCAPTCHA_SITEKEY}
+        handoffPath="/login/reset"
+      >
         <Fields fields={["email"]} />
         <Button type="submit">
           <Trans>Reset</Trans>

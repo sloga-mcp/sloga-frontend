@@ -1,6 +1,6 @@
 import { For, Match, Show, Switch } from "solid-js";
 
-import { Trans } from "@lingui-solid/solid/macro";
+import { Trans, useLingui } from "@lingui-solid/solid/macro";
 import type { Channel } from "stoat.js";
 import { styled } from "styled-system/jsx";
 
@@ -9,6 +9,7 @@ import { Markdown } from "@revolt/markdown";
 import { userInformation } from "@revolt/markdown/users";
 import { useState } from "@revolt/state";
 import type { UnsentMessage } from "@revolt/state/stores/Draft";
+import { DM_PAUSED_SEND_ERROR } from "@revolt/state/stores/draftSendError";
 import {
   Avatar,
   MessageContainer,
@@ -32,6 +33,7 @@ interface Props {
  * Unsent message preview
  */
 export function DraftMessage(props: Props) {
+  const { t } = useLingui();
   const user = useUser();
   const state = useState();
   const client = useClient();
@@ -117,8 +119,14 @@ export function DraftMessage(props: Props) {
         }}
       </For>
       <Show when={props.draft.status === "failed" && props.draft.error}>
-        {/* Untranslated for the same reason as the upload label above */}
-        <SendError>{props.draft.error}</SendError>
+        {/* Server reasons stay untranslated for the same reason as the upload
+            label above. A paused sender gets a marker instead, which is
+            swapped for translated copy here. */}
+        <SendError>
+          {props.draft.error === DM_PAUSED_SEND_ERROR
+            ? t`Your messages to people who aren't your friends are paused while our team reviews your account. You can still message your friends.`
+            : props.draft.error}
+        </SendError>
       </Show>
     </MessageContainer>
   );

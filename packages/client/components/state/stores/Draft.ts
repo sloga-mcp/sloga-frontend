@@ -10,6 +10,7 @@ import { State } from "..";
 import { AbstractStore } from ".";
 import { LAYOUT_SECTIONS } from "./Layout";
 import { uploadFileChunked } from "./chunkedUpload";
+import { describeSendError } from "./draftSendError.ts";
 
 /**
  * Attachment upload timeout, in milliseconds. Autumn buffers the whole file,
@@ -78,38 +79,6 @@ export type UnsentMessage = {
    */
   error?: string;
 } & DraftData;
-
-/**
- * Turn whatever a send attempt threw into one line for the failed message
- * @param error Thrown value
- * @returns Human-readable reason
- */
-function describeSendError(error: unknown): string {
-  if (error instanceof Error && error.message) return error.message;
-
-  // stoat-api throws the raw response body of a failed request as a string:
-  // usually `{"type":"MissingPermission",...}`, but a proxy can return HTML
-  let body: unknown = error;
-  if (typeof error === "string") {
-    try {
-      body = JSON.parse(error);
-    } catch {
-      body = undefined;
-    }
-  }
-
-  if (typeof body === "object" && body !== null && "type" in body) {
-    return `The server rejected the message (${String(
-      (body as { type: unknown }).type,
-    )})`;
-  }
-
-  if (typeof error === "string" && error.trim()) {
-    return "The server returned an error";
-  }
-
-  return "Unknown error";
-}
 
 export interface TextSelection {
   /**
@@ -517,7 +486,8 @@ export class Draft extends AbstractStore<"draft", TypeDraft> {
             // this a stalled S3 write hangs the send indefinitely. Scale with
             // file size — the server-side leg is proportional to it.
             xhr.timeout = Math.min(
-              UPLOAD_TIMEOUT_BASE + (file.size / 10e6) * UPLOAD_TIMEOUT_PER_10MB,
+              UPLOAD_TIMEOUT_BASE +
+                (file.size / 10e6) * UPLOAD_TIMEOUT_PER_10MB,
               UPLOAD_TIMEOUT_MAX,
             );
 
