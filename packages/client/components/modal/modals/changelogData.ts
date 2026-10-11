@@ -9,6 +9,30 @@ import type { ChangelogResponse } from "./Changelog";
  */
 export const CHANGELOGS: ChangelogResponse[] = [
   // ==========================================================================
+  // v0.66.1 PATCH (written 2026-10-11 by the merge steward; user go
+  // 2026-10-11 "Release v0.66.1 clients"). CUT at main = v0.66.0 + the
+  // anti-spam client (feat/antispam-client bbe7c2ec). The anti-spam backend is
+  // live on heart1 since 2026-10-11 14:54Z (delta 18251283, crond d2b00175).
+  // Copy constraints, load-bearing — READ BEFORE EDITING:
+  // - These notes also show in the Play and App Store builds.
+  // - Never describe how detection works (no thresholds, no "identical text",
+  //   no counts): the repo is public and spammers read patch notes.
+  // - Sign-up captcha is OFF on the server; do NOT say sign-up now has a
+  //   captcha. "Ready for upcoming spam protection" is the approved wording.
+  {
+    id: "sloga-2026-10-11",
+    title: "Patch Notes",
+    published_at: "2026-10-11T12:00:00.000Z",
+    web_version: "0.66.1",
+    markdown_content: `## v0.66.1 — Spam Protection
+
+### 🛡️ Safety
+- **If our automated spam protection pauses your messages to strangers, the app now explains why.**
+- **Staff: automated reports are labeled in the report queue.**
+- **Sign-up is ready for upcoming spam protection.**
+`,
+  },
+  // ==========================================================================
   // v0.66.0 (written 2026-10-08 by the merge steward from the v0.66 inbox,
   // ~/.claude/plans/v066-release-inbox.md, consolidated draft rev 2). CUT
   // 2026-10-08 at main `1655d7bf`. The live web serves nothing newer than
