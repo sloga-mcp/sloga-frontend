@@ -42,13 +42,13 @@ import io.livekit.android.events.collect
 import io.livekit.android.room.Room
 import io.livekit.android.room.participant.AudioTrackPublishOptions
 import io.livekit.android.room.participant.VideoTrackPublishDefaults
+import io.livekit.android.room.participant.VideoTrackPublishOptions
 import io.livekit.android.room.track.LocalAudioTrackOptions
-import io.livekit.android.room.track.LocalVideoTrack
+import io.livekit.android.room.track.LocalScreencastVideoTrack
 import io.livekit.android.room.track.LocalVideoTrackOptions
 import io.livekit.android.room.track.Track
 import io.livekit.android.room.track.VideoCaptureParameter
 import io.livekit.android.room.track.VideoEncoding
-import io.livekit.android.room.track.screencapture.ScreenCaptureParams
 import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CancellationException
@@ -73,14 +73,24 @@ import livekit.org.webrtc.audio.JavaAudioDeviceModule
  * TWO-PHASE by design (§4.2): `prepare()` runs the OS consent dialog (which is
  * user-paced and easily outlives the 10 s leg token), THEN the JS side mints
  * the token, THEN `connect()` uses it immediately. The single-use
- * `getMediaProjection()` only happens inside the SDK's track start at publish
- * time, so a failed `connect()` does not burn the consent (probe (e)).
+ * `getMediaProjection()` only happens when the plugin starts the capture,
+ * after the publish and the sender witness, so a `connect()` that fails
+ * before the capture setup does not burn the consent (probe (e)).
  *
  * E2EE is FAIL-CLOSED, witnessed rather than assumed (§0.4 / §0-R.5):
+ *  - the screen capture starts only after the screen sender's frame cryptor
+ *    is witnessed enabled at the current key index, and the track keeps that
+ *    sender as its only one. The plugin owns the track: it publishes it
+ *    first, witnesses the cryptor the SDK attached to that sender, checks
+ *    that the track keeps that one sender ([screenSenderLayoutOk]), admits a
+ *    [ScreenVideoGate] for that sender's transceiver, and only then starts
+ *    the capture. The gate
+ *    forwards frames only while the track is still on the witnessed
+ *    transceiver with no additional transceiver recorded; once that stops
+ *    holding, it drops every frame for good;
  *  - the raw-byte key provider is built with `discardFrameWhenCryptorNotReady
- *    = true`, so nothing — not plaintext, not garbage — leaves the phone
- *    before the sender cryptor holds the key (probe (c-i): zero frames over
- *    12 s with no key);
+ *    = true`: a sender's cryptor drops its frames while it holds no key
+ *    (probe (c-i): zero frames over 12 s with a keyless cryptor);
  *  - publish happens only after the E2EE manager reports enabled AND the send
  *    key + key index are installed;
  *  - any sender cryptor state other than OK disconnects the leg (the
@@ -152,13 +162,32 @@ class ScreenSharePlugin : Plugin() {
      * an audio-only loss ([onScreenAudioLost]), which nulls it so one loss
      * reports once. Released BEFORE the video capture stops, everywhere:
      * stopping the video capturer calls `MediaProjection.stop()`, which the
-     * playback capture sits on (see [stopCapture]). Never unset as the
+     * playback capture sits on (see [stopShareCapture]). Never unset as the
      * track's buffer callback: `setAudioBufferCallback(null)` would put the
      * ADM's mic-off record loop back into a busy spin, and a released source
      * keeps pacing zeros until the Room disconnects. Main-dispatcher
      * confined, like every other field here.
      */
     private var screenAudio: ScreenAudioSource? = null
+
+    /**
+     * The live share's screen track and its [ScreenVideoGate], held BY
+     * REFERENCE so every stop path reaches them without a publication
+     * lookup (a full reconnect drops the publication while the track keeps
+     * running). Written by [doConnect] only, after the sender witness and
+     * the admit and right before the capture starts, with no suspension
+     * since its last generation check: so they always belong to the current
+     * attempt. Before that the attempt holds both as locals, and its catch
+     * handles them ([releaseAttemptVideo]); a superseded attempt never
+     * writes or clears these. Taken out (nulled) by [tearDown]. The
+     * Reconnecting arm closes the gate and stops the capture at arrival
+     * without nulling them. Main-dispatcher confined, like every other field
+     * here.
+     */
+    private var screenVideo: LocalScreencastVideoTrack? = null
+
+    /** The gate in front of [screenVideo]'s video source; same rules. */
+    private var screenVideoGate: ScreenVideoGate? = null
 
     /**
      * Sids of the system-audio publications this plugin muted itself
@@ -355,13 +384,15 @@ class ScreenSharePlugin : Plugin() {
                     }
                 } else {
                     // Still the current attempt: this failure is ours to
-                    // clean up. The consent survives a failed connect (probe
-                    // (e)) — the single-use getMediaProjection only happens
-                    // at publish, so JS may retry connect() with a fresh
-                    // token and no new dialog. tearDown clears the stored
-                    // consent (right for an ACTIVE share ending), so restore
-                    // it around the cleanup — unless the failure was the
-                    // publish itself, which consumed it.
+                    // clean up. The consent survives a connect that failed
+                    // before the capture setup (probe (e)): the single-use
+                    // getMediaProjection only happens at the capture start,
+                    // so JS may retry connect() with a fresh token and no new
+                    // dialog. tearDown clears the stored consent (right for
+                    // an ACTIVE share ending), so restore it around the
+                    // cleanup. A failure from the capture setup on finds it
+                    // already null: doConnect hands it to the screen track
+                    // there, and that track is gone with the attempt.
                     val consent = consentIntent
                     tearDown(reason = null)
                     consentIntent = consent
@@ -495,6 +526,15 @@ class ScreenSharePlugin : Plugin() {
         // [screenAudio]. Every throw out of the try below releases it first,
         // superseded or current, since nothing else can reach it.
         var audio: ScreenAudioSource? = null
+        // The screen track and its gate, under the same rule: this attempt's
+        // own from creation. Copied into [screenVideo]/[screenVideoGate]
+        // right before the capture starts, but the attempt keeps its own
+        // reference, and every throw out of the try below handles the track
+        // through it ([releaseAttemptVideo]), superseded or current: before
+        // the copy nothing else can reach it, and after it the fields may
+        // already belong to a successor.
+        var video: LocalScreencastVideoTrack? = null
+        var videoGate: ScreenVideoGate? = null
         try {
             eventsJob?.cancel()
             events = scope.launch {
@@ -541,29 +581,62 @@ class ScreenSharePlugin : Plugin() {
                 provider.setRawKey(identity, keyIndex, Base64.decode(keyB64, Base64.DEFAULT))
             }
 
-            // The FGS runs with OUR notification (§4.3 step 1, option (a)):
-            // the SDK auto-starts its own ScreenCaptureService inside the
-            // track start, declared with
-            // foregroundServiceType="mediaProjection" via manifest merge, and
-            // only builds a default notification when none is passed —
-            // exactly one notification on API 34/35/36 (probe (e)).
-            val params = ScreenCaptureParams(
+            // The plugin owns the screen track, so the capture can start
+            // after the sender witness. The order is create, foreground
+            // service, publish, sender witness, single-sender check, admit,
+            // and only then the capture start.
+            //
+            // The gate is a VideoProcessor between the capturer and the
+            // track's video source, which feeds every sender of the track,
+            // and it starts closed: no frame reaches that source until
+            // [ScreenVideoGate.admit] binds it to the witnessed sender's
+            // transceiver below.
+            val gate = ScreenVideoGate()
+            videoGate = gate
+            val track = room.localParticipant.createScreencastTrack(
                 mediaProjectionPermissionResultData = intent,
-                notificationId = NOTIFICATION_ID,
-                notification = buildNotification(),
-                onStop = {
-                    // System chip / notification Stop / OS revoke. The SDK
-                    // has just unpublished the track and may be renegotiating
-                    // the publisher. The native teardown is settled
-                    // ([SETTLE_MS]): a conservative heuristic against a
-                    // suspected race, not a crash fix (see [SETTLE_MS]).
-                    scope.launch { tearDown("system", settle = true) }
+                videoProcessor = gate,
+                onStop = { stopped ->
+                    // System chip / notification Stop / OS revoke, on the
+                    // projection's callback thread. The same first step as
+                    // the SDK's own wrapper: unpublish the track (guarded,
+                    // see [unpublishOnProjectionStop]), after which the SDK
+                    // may be renegotiating the publisher. The native
+                    // teardown is settled ([SETTLE_MS]): a conservative
+                    // heuristic against a suspected race, not a crash fix
+                    // (see [SETTLE_MS]). Only if THIS attempt's Room is
+                    // still the live share when the launch runs: a late stop
+                    // from an earlier share never ends a successor.
+                    unpublishOnProjectionStop(room, stopped)
+                    scope.launch {
+                        if (this@ScreenSharePlugin.room === room) {
+                            tearDown("system", settle = true)
+                        }
+                    }
                 },
             )
-            // The consent is consumed by this publish (single-use by OS rule).
+            video = track
+            // The FGS runs with OUR notification (plan section 4.3 step 1,
+            // option (a)): the track binds the SDK's own
+            // ScreenCaptureService, declared with
+            // foregroundServiceType="mediaProjection" via manifest merge,
+            // which only builds a default notification when none is passed:
+            // exactly one notification on API 34/35/36 (probe (e)). Started
+            // before the capture, as the projection requires.
+            //
+            // The consent now belongs to the track, which consumes it at the
+            // capture start (single-use by OS rule).
             consentIntent = null
-            val published = room.localParticipant.setScreenShareEnabled(true, params)
-            // Second suspension: a stop that landed during the publish has
+            track.startForegroundService(NOTIFICATION_ID, buildNotification())
+            // The service bind suspends: a stop may have landed meanwhile.
+            ensureConnectCurrent(generation)
+            // Published BEFORE anything is captured. The defaults are the
+            // screencast ones: a screencast track picks
+            // `screenShareTrackPublishDefaults` and the SCREEN_SHARE source
+            // (livekit-android 2.28.0 LocalParticipant.kt:529-534 and
+            // :1778-1784), the same options the SDK's wrapper passes.
+            val published = room.localParticipant.publishVideoTrack(track)
+            // Suspension again: a stop that landed during the publish has
             // already released the plugin's state — the publication is moot,
             // and announcing `started` for it would resurrect the share in JS.
             ensureConnectCurrent(generation)
@@ -571,12 +644,80 @@ class ScreenSharePlugin : Plugin() {
                 throw IllegalStateException("screen share publish refused")
             }
 
+            // The sender witness, BEFORE the capture starts. The SDK attaches
+            // the sender's frame cryptor synchronously inside the publish
+            // (`Room.onTrackPublished`), and getLatestKeyIndex gave it the
+            // current index. First re-assert the send index on the live
+            // sender cryptor(s): verify rather than trust (section 0-R.6),
+            // since a cryptor at the wrong index encrypts under a key the wrong
+            // epoch's members hold. Then require THIS sender's own cryptor,
+            // enabled and at the current index. A failed witness fails the
+            // whole leg with the capture never started, and the track is NOT
+            // unpublished (a renegotiation, crash class A): the catch below
+            // handles it and the disconnect does the rest. No retry: the
+            // attach is synchronous, so a failure is deterministic.
+            //
+            // The transceiver is read on both sides of the witness, with or
+            // without E2EE, and both reads must be the same non-null object:
+            // the gate is admitted for exactly that transceiver.
             if (provider != null) {
-                // Re-assert the send index on the live sender cryptor(s):
-                // getLatestKeyIndex covers creation, but verify rather than
-                // trust (§0-R.6) — a cryptor sitting at the wrong index
-                // encrypts under a key the wrong epoch's members hold.
                 assertSenderKeyIndex(room, currentKeyIndex)
+            }
+            val before = ScreenTrackAccess.transceiverOf(track)
+            if (provider != null &&
+                !senderCryptorWitnessed(room, Track.Source.SCREEN_SHARE, currentKeyIndex)
+            ) {
+                throw IllegalStateException("screen sender cryptor not witnessed")
+            }
+            // No suspension since the publish check; checked again so the
+            // admit and the capture start sit directly behind one.
+            ensureConnectCurrent(generation)
+            val after = ScreenTrackAccess.transceiverOf(track)
+            if (before == null || after == null || before !== after) {
+                throw IllegalStateException("screen sender transceiver changed")
+            }
+            // The witnessed sender must stay the track's ONLY one, with or
+            // without E2EE: the gate feeds the track's video source, which
+            // feeds every sender of the track. See [screenSenderLayoutOk].
+            // Fails closed, with the capture never started and, as for the
+            // witness, no unpublish.
+            if (!screenSenderLayoutOk(room, track)) {
+                throw IllegalStateException("screen share sender layout refused")
+            }
+            // Admitted BEFORE the capture starts, so the first frame is not
+            // dropped. admit re-reads the transceiver through the accessor the
+            // frames use and throws unless it matches, so a broken accessor
+            // fails this connect instead of giving a black share.
+            gate.admit(track, after)
+            // Into the fields NOW (no suspension since the last generation
+            // check), so every stop path reaches the track and its gate from
+            // here on, the audio publish below included.
+            screenVideo = track
+            screenVideoGate = gate
+            // The ONLY capture start in this plugin; the projection is
+            // obtained here.
+            track.startCapture()
+
+            // The first frame, directly behind the capture start and before
+            // the audio, so nothing suspends between the audio source's gate
+            // opening and the hand-over below. `started` means "capturing",
+            // so it resolves only once the gate has passed at least one frame
+            // on. A share that was admitted but never forwards (a capture
+            // that delivers nothing, a sender that moved) would otherwise
+            // read as live while viewers see black. Polled: the flag is set
+            // on the capture thread. A stop that bumps the generation ends
+            // the wait at the next poll, and the check right after it
+            // throws; one that only closes the gate ends it at the timeout.
+            val firstFrameBy = SystemClock.elapsedRealtime() + FIRST_FRAME_TIMEOUT_MS
+            while (!gate.forwardedAny &&
+                generation == connectGeneration &&
+                SystemClock.elapsedRealtime() < firstFrameBy
+            ) {
+                delay(FIRST_FRAME_POLL_MS)
+            }
+            ensureConnectCurrent(generation)
+            if (!gate.forwardedAny) {
+                throw IllegalStateException("no first frame")
             }
 
             // System audio (slice 4): after the video is up and keyed, before
@@ -598,14 +739,12 @@ class ScreenSharePlugin : Plugin() {
                 val failedEarly = AtomicBoolean(false)
                 var audioPublished = false
                 try {
-                    // The projection the video capture already holds. The
+                    // The projection the video capture holds since its start
+                    // above, read off this attempt's own track. The
                     // playback capture rides on it; stopping the video
                     // capturer stops it, which is why every stop path
                     // releases the source first.
-                    val screenTrack = room.localParticipant
-                        .getTrackPublication(Track.Source.SCREEN_SHARE)
-                        ?.track as? LocalVideoTrack
-                    val capturer = screenTrack?.capturer as? ScreenCapturerAndroid
+                    val capturer = track.capturer as? ScreenCapturerAndroid
                     val projection = capturer?.mediaProjection
                         ?: throw IllegalStateException("no media projection")
                     val source = ScreenAudioSource(projection) {
@@ -613,7 +752,7 @@ class ScreenSharePlugin : Plugin() {
                         scope.launch { onScreenAudioLost(room, "failed") }
                     }
                     audio = source
-                    val track = room.localParticipant.createAudioTrack(
+                    val audioTrack = room.localParticipant.createAudioTrack(
                         "screen_audio",
                         LocalAudioTrackOptions(
                             noiseSuppression = false,
@@ -625,14 +764,14 @@ class ScreenSharePlugin : Plugin() {
                     )
                     // Before the publish, so the first buffer the ADM asks
                     // for already goes through the (closed) gate.
-                    track.setAudioBufferCallback(SourceCallback(source))
+                    audioTrack.setAudioBufferCallback(SourceCallback(source))
                     // RED off: livekit-client never sends RED under E2EE
                     // (`disableRed: this.isE2EEEnabled || ...`), so the web
                     // viewers' decrypt path is only proven without it. DTX
                     // off: it is built for speech pauses, and playback audio
                     // has none worth cutting to comfort noise.
                     audioPublished = room.localParticipant.publishAudioTrack(
-                        track,
+                        audioTrack,
                         AudioTrackPublishOptions(
                             name = "screen_audio",
                             audioBitrate = 96_000,
@@ -663,7 +802,11 @@ class ScreenSharePlugin : Plugin() {
                     // the source feeds zeros, so nothing but digital silence
                     // can leave the phone, encrypted or not.
                     val witnessed = provider == null ||
-                        audioCryptorWitnessed(room, currentKeyIndex)
+                        senderCryptorWitnessed(
+                            room,
+                            Track.Source.SCREEN_SHARE_AUDIO,
+                            currentKeyIndex,
+                        )
                     if (witnessed && !failedEarly.get()) {
                         source.openGate()
                         audioState = "live"
@@ -706,6 +849,14 @@ class ScreenSharePlugin : Plugin() {
             // [discardRoom] is about to stop the video capture under it.
             // Idempotent, so the release in [discardRoom] is harmless.
             releaseAudio(audio)
+            // Then the screen track this attempt created, through its OWN
+            // reference and never through a field, on every path too:
+            // stopped, and disposed when no publication holds it (see
+            // [releaseAttemptVideo]). After the audio, which rides on its
+            // projection; before any disconnect below, which would unpublish
+            // it and blur published from unpublished. Harmless again in
+            // [discardRoom] and in a current attempt's tearDown.
+            releaseAttemptVideo(room, video, videoGate)
             // Superseded ⇒ `this.room` is null or a SUCCESSOR's, so nothing
             // else will ever finish tearing down the Room this attempt
             // created. Do it here rather than assuming the cancelling
@@ -729,46 +880,64 @@ class ScreenSharePlugin : Plugin() {
                 // [discardRoom] also disconnects depends on whether a pending
                 // disposal owns the Room, and only the release depends on
                 // this flag.
-                discardRoom(room, alreadyReleased = releasedRoom === room, audio = audio)
+                discardRoom(
+                    room,
+                    alreadyReleased = releasedRoom === room,
+                    audio = audio,
+                    video = video,
+                    gate = videoGate,
+                )
             }
             throw t
         }
     }
 
     /**
-     * Stop a screen capture, before the Room that owns it goes away.
-     * Redundant with `disconnect()` for any published track
-     * (`LocalParticipant.cleanup()` stops it). Its value is timing: it stops
-     * the capture immediately on paths where the disconnect is deferred (the
-     * settle paths, and `discardRoom` while a disposal is pending). It is a
-     * no-op once the SDK has unpublished. On the `TrackUnpublished` settle
-     * path and the system path that holds by construction (the publication
-     * is already gone), so the immediate stop does nothing there. It has
-     * effect only on the permission-branch revoke (the permission event can
-     * precede the forced unpublish) and in `discardRoom` while a disposal
-     * is pending.
+     * Stop a screen capture, before the Room that owns it goes away. BY
+     * REFERENCE whenever the caller holds the track ([video]: the share's
+     * [screenVideo], or a discarded attempt's own local), which reaches it
+     * whatever the SDK has done to its publication: a full reconnect drops
+     * the publication while the capture keeps running. Only without a
+     * reference does it fall back to the publication lookup: a teardown
+     * that lands before the attempt copied its track into the fields. That
+     * attempt, cancelled at its next check, then handles its own track in
+     * its catch ([releaseAttemptVideo]), including one the lookup cannot see
+     * because it never reached `trackPublications` (a stop landing
+     * mid-publish).
      *
-     * Not suspending, but it can BLOCK: `Track.stop()` reaches
-     * `executeBlockingOnRTCThread` (via `setEnabled`), so on the permission
-     * branch Main parks behind `LK_RTC_THREAD` while the SDK renegotiates
-     * (tombstone 27). An ANR exposure, pre-existing.
+     * Order: the system-audio source [audio] first (below), then [gate]
+     * closes for good, then the capture stops. The closed gate alone keeps
+     * every later frame from the track's video source; the capture stop
+     * ends the projection.
+     *
+     * Redundant with `disconnect()` for any published track
+     * (`LocalParticipant.cleanup()` stops and disposes it). Its value is
+     * timing: it stops the capture immediately on paths where the
+     * disconnect is deferred (the settle paths, and `discardRoom` while a
+     * disposal is pending). Harmless twice: the gate close and the capture
+     * stop are idempotent, and every step is guarded ([closeVideoGate],
+     * [stopVideoCapture]).
+     *
+     * Not suspending, but it can BLOCK. By reference it is the capturer's
+     * own stop, which posts to the capture thread and waits for it there.
+     * The fallback `Track.stop()` reaches `executeBlockingOnRTCThread` (via
+     * `setEnabled`), so on the permission branch Main can park behind
+     * `LK_RTC_THREAD` while the SDK renegotiates (tombstone 27). An ANR
+     * exposure, pre-existing.
      *
      * 🔴 MUST STAY NON-SUSPENDING — see [tearDown]'s invariant. `Track.stop()`
-     * is `public void stop()` in livekit-android 2.28.0 (checked against the
-     * .aar, not assumed). The obvious-looking `setScreenShareEnabled(false)`
-     * is NOT usable here: it is `suspend`, and `LocalParticipant` serializes
-     * per-source publish/unpublish behind a mutex, so it would block for the
-     * whole of an in-flight publish — turning teardown into a suspending
-     * section and making every field it has not yet written readable as
-     * stale. It also buys nothing: it reaches the track through the same
-     * publication lookup this does.
+     * and `LocalVideoTrack.stopCapture` are both plain (non-`suspend`) calls
+     * in livekit-android 2.28.0 (checked against the sources, not assumed).
+     * The SDK's screen-share disable
+     * (`setScreenShareEnabled` with false) is NOT usable here: it is
+     * `suspend`, and `LocalParticipant` serializes per-source
+     * publish/unpublish behind a mutex, so it would block for the whole of
+     * an in-flight publish, turning teardown into a suspending section and
+     * making every field it has not yet written readable as stale.
      *
-     * 🔴 Residual, needs HARDWARE: a track that never reached
-     * `trackPublications` (a stop landing mid-publish) is invisible to this
-     * lookup as much as to the SDK's own cleanup. Owed before the flag
-     * lights: one device leg that ends the call from the other participant
-     * DURING the publish, then checks the shade and
-     * `adb shell dumpsys media_projection`.
+     * Device check still owed for the mid-publish stop: one device leg that
+     * ends the call from the other participant DURING the publish, then
+     * checks the shade and `adb shell dumpsys media_projection`.
      *
      * The system-audio source [audio] is released FIRST, always (a
      * null [room] still releases it). Stopping the video capturer calls
@@ -780,14 +949,107 @@ class ScreenSharePlugin : Plugin() {
      * is NOT stopped or unpublished here: it keeps its sender until the
      * Room disconnects, and the released source keeps pacing zeros into it.
      */
-    private fun stopCapture(room: Room?, audio: ScreenAudioSource?) {
+    private fun stopShareCapture(
+        room: Room?,
+        audio: ScreenAudioSource?,
+        video: LocalScreencastVideoTrack?,
+        gate: ScreenVideoGate?,
+    ) {
         releaseAudio(audio)
+        closeVideoGate(gate)
+        if (video != null) {
+            stopVideoCapture(video)
+            return
+        }
         if (room == null) return
         try {
             room.localParticipant
                 .getTrackPublication(Track.Source.SCREEN_SHARE)
                 ?.track
                 ?.stop()
+        } catch (_: Throwable) {}
+    }
+
+    /** Close a [ScreenVideoGate] for good; null-safe, idempotent,
+     *  non-suspending and guarded like every teardown step. Safe on Main at
+     *  any time, including inside `onRoomEvent`. */
+    private fun closeVideoGate(gate: ScreenVideoGate?) {
+        try {
+            gate?.close()
+        } catch (_: Throwable) {}
+    }
+
+    /** Stop a screen track's capture by reference: the capturer's own stop
+     *  (`LocalVideoTrack.stopCapture`), the only place this plugin calls it.
+     *  Null-safe, idempotent (a second stop finds nothing running), and
+     *  guarded: on a disposed track the capturer throws, and an SDK throw
+     *  inside `onRoomEvent` would crash the app. Non-suspending; it can
+     *  block on the capture thread (see [stopShareCapture]). Leaves the
+     *  track, its foreground service and its publication to the Room's
+     *  disconnect. */
+    private fun stopVideoCapture(video: LocalScreencastVideoTrack?) {
+        try {
+            video?.stopCapture()
+        } catch (_: Throwable) {}
+    }
+
+    /**
+     * The [doConnect] catch's handling of the screen track that attempt
+     * created, through the attempt's own reference (never a field: by then
+     * the fields may hold a successor's). It mirrors the SDK wrapper's own
+     * failure cleanup (livekit-android 2.28.0 LocalParticipant.kt:427-435),
+     * keyed on whether a publication still holds the track and NOT on the
+     * publish result, since the publish can throw after it registered the
+     * publication. The gate closes first either way.
+     *  - Published: only the capture stops, now. The Room's disconnect
+     *    (`LocalParticipant.cleanup()`) stops and disposes the track.
+     *  - Not published: nothing else would ever reach it, so it is stopped
+     *    and disposed here; `stop()` also unbinds the screen-capture
+     *    foreground service. The capture stops before the dispose, always
+     *    (`VideoSource.dispose()` drops the processor).
+     *
+     * `localTrackPublications`, which the SDK keys its own check on, is
+     * private in 2.28.0; this reads the public `trackPublications` map it
+     * is derived from. An unreadable map counts as "not published": a
+     * second dispose is caught by the SDK, a track left running is not.
+     *
+     * Harmless twice. Once the fields hold the track, a current attempt's
+     * tearDown (from [connect]'s catch) reaches it too, and the gate close
+     * and the capture stop are idempotent. The dispose happens only on the
+     * unpublished branch; a disconnect reaches such a track only when the
+     * SDK parked it for a republish, and its cleanup catches the second
+     * dispose. Every step guarded; non-suspending.
+     */
+    private fun releaseAttemptVideo(
+        room: Room,
+        video: LocalScreencastVideoTrack?,
+        gate: ScreenVideoGate?,
+    ) {
+        closeVideoGate(gate)
+        if (video == null) return
+        val published = try {
+            room.localParticipant.trackPublications.values.any { it.track === video }
+        } catch (_: Throwable) {
+            false
+        }
+        stopVideoCapture(video)
+        trace("attempt screen track released published=$published")
+        if (published) return
+        try {
+            video.stop()
+        } catch (_: Throwable) {}
+        try {
+            video.dispose()
+        } catch (_: Throwable) {}
+    }
+
+    /** The SDK wrapper's first step on a MediaProjection stop, kept for a
+     *  track this plugin owns: unpublish it, with the SDK's own default of
+     *  stopping it too. Runs on the projection's callback thread, as the
+     *  wrapper's does. Guarded: a throw there would end the process. */
+    private fun unpublishOnProjectionStop(room: Room, track: Track) {
+        try {
+            room.localParticipant.unpublishTrack(track)
         } catch (_: Throwable) {}
     }
 
@@ -819,11 +1081,21 @@ class ScreenSharePlugin : Plugin() {
      *  and disconnecting now would bypass the settle window (a heuristic,
      *  see [SETTLE_MS]).
      *  The attempt's system-audio source [audio] goes first, inside
-     *  [stopCapture] and so before the video stop and before the
-     *  pending-disposal return: no disposal ever learns of it.
+     *  [stopShareCapture] and so before the video stop and before the
+     *  pending-disposal return: no disposal ever learns of it. The
+     *  attempt's own screen track [video] and its [gate] follow in the same
+     *  call, by reference, before anything else touches the Room (the catch
+     *  has already handled them through [releaseAttemptVideo], so this stop
+     *  is the idempotent second one).
      *  MUST stay non-suspending, like [tearDown]. */
-    private fun discardRoom(room: Room, alreadyReleased: Boolean, audio: ScreenAudioSource?) {
-        stopCapture(room, audio)
+    private fun discardRoom(
+        room: Room,
+        alreadyReleased: Boolean,
+        audio: ScreenAudioSource?,
+        video: LocalScreencastVideoTrack?,
+        gate: ScreenVideoGate?,
+    ) {
+        stopShareCapture(room, audio, video, gate)
         if (pendingDisposals.any { it.room === room }) return
         // Read before the disconnect: the SDK's cleanup nulls it, and it is
         // then the only way left to this Room's sender cryptors.
@@ -926,9 +1198,15 @@ class ScreenSharePlugin : Plugin() {
         when (event) {
             is RoomEvent.TrackE2EEStateEvent -> {
                 // The manager's own per-sender observer, surfaced as an event.
-                // NEW is the pre-key transient (discardFrameWhenCryptorNotReady
-                // means nothing leaves the phone during it); everything else
-                // that is not OK is a sender that cannot be trusted — fail
+                // NEW is the pre-key transient, during which
+                // discardFrameWhenCryptorNotReady drops that sender's
+                // frames. The screen capture starts only after the screen sender's
+                // cryptor is witnessed at the current key index, the track
+                // keeps that sender as its only one, and the video gate
+                // forwards only while that holds; the audio source's gate
+                // likewise opens only after its own sender's witness (see
+                // [doConnect]). Everything else that is not OK
+                // is a sender that cannot be trusted, and the leg must fail
                 // closed, never keep publishing (§4.3 step 3).
                 //
                 // Deliberately NOT filtered by source: an error on the
@@ -951,28 +1229,31 @@ class ScreenSharePlugin : Plugin() {
                 // `onEngineResuming`, which Room does not override, so it
                 // posts no room event at all and never reaches this branch.
                 //
-                // Why not wait for Reconnected, as the video alone could:
-                // `prepareForFullReconnect` drops the publications but keeps
-                // the tracks running, and `onPostReconnect -> republishTracks`
-                // publishes them again on NEW senders, the video and then the
-                // audio, AFTER Reconnected is posted. A source whose gate is
-                // open would feed live playback into a new audio sender whose
-                // cryptor nobody has witnessed, and whether its first frames
-                // leave encrypted then depends on SDK timing. The gate must
-                // never be open on an unwitnessed sender, so the audio is
-                // released right here, synchronously and before any video
-                // stop: released, the source only paces zeros. The teardown
-                // that follows disconnects at once (not settled), and that
-                // disconnect cancels the reconnect job, which pre-empts the
-                // republish of both senders. Same reason and toast as a
-                // Reconnected that finds no screen publication (probe (c-iv)
-                // already showed a full reconnect ends the share).
+                // Why not wait for Reconnected: `prepareForFullReconnect`
+                // drops the publications but keeps the tracks running, and
+                // `onPostReconnect -> republishTracks` publishes them again
+                // on NEW senders, the video and then the audio, AFTER
+                // Reconnected is posted. Nobody has witnessed those senders'
+                // cryptors, and what reaches them first would then depend on
+                // SDK timing. Neither gate may ever be open on an unwitnessed
+                // sender, so both close right here, synchronously: the audio
+                // source is released first (released, it only paces zeros),
+                // then the video gate closes for good and the capture stops,
+                // by reference, since the publication a lookup would need is
+                // already gone. The teardown that follows disconnects at
+                // once (not settled), and that disconnect cancels the
+                // reconnect job, which pre-empts the republish of both
+                // senders. Same reason and toast as the Reconnected backstop
+                // below (probe (c-iv) already showed a full reconnect ends
+                // the share).
                 //
                 // Launched, like every other teardown from this collector,
                 // and only if THIS share is still the live one when it runs
                 // (see the permission branch). Taking [screenAudio] out of
                 // the field first leaves the teardown nothing to release,
-                // and a queued audio-loss report nothing to report.
+                // and a queued audio-loss report nothing to report. The
+                // video fields stay set: the teardown takes them, and its
+                // second gate close and capture stop are no-ops.
                 //
                 // Only the live share's own Room may take its audio. The
                 // field read below is synchronous, ahead of the launched
@@ -984,6 +1265,8 @@ class ScreenSharePlugin : Plugin() {
                 val audio = screenAudio
                 screenAudio = null
                 releaseAudio(audio)
+                closeVideoGate(screenVideoGate)
+                stopVideoCapture(screenVideo)
                 trace("full reconnect began audioReleased=${audio != null}")
                 scope.launch {
                     if (this@ScreenSharePlugin.room === room) {
@@ -992,36 +1275,33 @@ class ScreenSharePlugin : Plugin() {
                 }
             }
             is RoomEvent.Reconnected -> {
-                // On a full reconnect the SDK unpublishes the screencast but
-                // keeps the still-running track for its own
-                // `republishTracks`, which WOULD put it back on air; when
-                // this event arrives the publication is gone (probe
-                // (c-iv)). No publication after Reconnected ⇒ the share is
-                // over, and this teardown is deliberately NOT settled: its
-                // immediate disconnect is what pre-empts the republish. A
-                // deferred one would let the screen return for up to
-                // [SETTLE_MS] after `stopped{disconnected}`, under a key that
-                // no longer receives rotations. (The immediate teardown can
-                // still race the republish: a recorded residual.) With a
-                // publication, re-assert the send index (a re-created
-                // cryptor resets key_index_ to 0).
+                // The backstop only. The Reconnecting branch above ends the
+                // share when the full reconnect BEGINS, so a live share
+                // should never see this event; reaching it means that event
+                // was missed or handled late. On a full reconnect the SDK
+                // unpublishes the screencast but keeps the still-running
+                // track for its own `republishTracks`, which WOULD put it
+                // back on air on a new sender whose cryptor nobody has
+                // witnessed. So this ends the share ALWAYS, with or without
+                // a screen publication: a share is never carried across a
+                // full reconnect, which is also why there is no key-index
+                // re-assertion here any more (that kept a republished share
+                // alive). Deliberately NOT settled: the immediate disconnect
+                // is what pre-empts the republish. A deferred one would let
+                // the screen return for up to [SETTLE_MS] after
+                // `stopped{disconnected}`, under a key that no longer
+                // receives rotations. (The immediate teardown can still race
+                // the republish: a recorded residual. The gate narrows it:
+                // from the moment the track's transceiver is cleared or
+                // replaced, it drops every frame for good.)
                 //
-                // Since slice 4 the Reconnecting branch above ends the share
-                // when the full reconnect BEGINS, so this branch is only the
-                // backstop should that event ever be missed or handled late.
-                //
-                // Still keyed on the VIDEO alone: the audio never keeps a
-                // leg alive by itself. When the audio publication is present
-                // too, the same assertion covers it, since it walks every
-                // sender cryptor in the leg's manager, the audio's included.
-                val pub = room.localParticipant.getTrackPublication(Track.Source.SCREEN_SHARE)
-                if (pub == null) {
-                    scope.launch { tearDown("disconnected") }
-                } else if (keyProvider != null) {
-                    try {
-                        assertSenderKeyIndex(room, currentKeyIndex)
-                    } catch (t: Throwable) {
-                        scope.launch { tearDown("error") }
+                // Same guards as the Reconnecting branch: only this share's
+                // own Room may end it, and only while it is still the live
+                // share when the launch runs.
+                if (event.room !== room) return
+                scope.launch {
+                    if (this@ScreenSharePlugin.room === room) {
+                        tearDown("disconnected")
                     }
                 }
             }
@@ -1098,6 +1378,11 @@ class ScreenSharePlugin : Plugin() {
                         // forced unpublish's renegotiation; it does not
                         // prevent either observed crash class (see
                         // [SETTLE_MS]).
+                        //
+                        // The video gate closes NOW, at arrival, ahead of the
+                        // launch: a revoked share forwards no further frame,
+                        // however long Main takes to reach the teardown.
+                        closeVideoGate(screenVideoGate)
                         scope.launch {
                             if (this@ScreenSharePlugin.room === room) {
                                 tearDown("revoked", settle = true)
@@ -1129,11 +1414,12 @@ class ScreenSharePlugin : Plugin() {
                 // (`prepareForFullReconnect`, state already RECONNECTING;
                 // the Reconnecting branch ends that share), in disconnect
                 // cleanup (state already DISCONNECTED), and when
-                // MediaProjection stops (BEFORE
-                // it calls our onStop, which reports "system"). The first two
-                // are excluded HERE, by requiring CONNECTED when the event
-                // arrives: checking it only after the wait would let a full
-                // reconnect that completes inside the grace pass as a revoke.
+                // MediaProjection stops (the plugin's own onStop unpublishes
+                // the track, then launches the teardown that reports
+                // "system"). The first two are excluded HERE, by requiring
+                // CONNECTED when the event arrives: checking it only after
+                // the wait would let a full reconnect that completes inside
+                // the grace pass as a revoke.
                 // The system stop happens while CONNECTED, so it cannot be
                 // told apart on the spot; the grace period covers it, and the
                 // re-check after the wait reports "revoked" only for a leg that
@@ -1143,6 +1429,12 @@ class ScreenSharePlugin : Plugin() {
                 if (event.participant === room.localParticipant &&
                     event.publication.source == Track.Source.SCREEN_SHARE
                 ) {
+                    // The video gate closes at arrival, before the state
+                    // checks and the grace below: whatever unpublished it (a
+                    // forced unpublish, a full reconnect, the system stop,
+                    // disconnect cleanup), the track is off its witnessed
+                    // sender and forwards nothing more.
+                    closeVideoGate(screenVideoGate)
                     // Diagnostic: ties a later teardown's steps to this
                     // unpublish. No identity, no key material.
                     trace("local screen unpublished state=${room.state} stopping=$stopping")
@@ -1178,6 +1470,11 @@ class ScreenSharePlugin : Plugin() {
                 if (event.participant === room.localParticipant &&
                     event.publication.source == Track.Source.SCREEN_SHARE_AUDIO
                 ) {
+                    // The source's gate closes at arrival, ahead of the grace
+                    // in [onScreenAudioLost]: zeros from the next buffer on,
+                    // whatever that path then decides.
+                    // A source exists only on API 29+; the check is for lint.
+                    if (Build.VERSION.SDK_INT >= 29) screenAudio?.closeGate()
                     trace("local screen audio unpublished state=${room.state} stopping=$stopping")
                     onScreenAudioLost(room, "lost")
                 }
@@ -1246,26 +1543,54 @@ class ScreenSharePlugin : Plugin() {
     }
 
     /**
-     * The witness [doConnect] opens the audio gate on: the system-audio
-     * publication's OWN sender cryptor, found by its key in the manager's
-     * map (the publication sid and the leg's identity, as `E2EEManager`
-     * stores it), enabled, and at [index]. Read through the same reflection
-     * as [senderCryptors]. Anything missing or unreadable is "not witnessed",
-     * never a pass: a cryptor that is absent or disabled passes frames
-     * through in the clear.
+     * The witness [doConnect] holds each sender to before anything captured
+     * may reach it: the screen video's (the capture starts only after it)
+     * and the system audio's (its source's gate opens only after it). The
+     * [source] publication's OWN sender cryptor, found by its key in the
+     * manager's map (the publication sid and the leg's identity, as
+     * `E2EEManager` stores it), enabled, and at [index]. Read through the
+     * same reflection as [senderCryptors]. Anything missing or unreadable is
+     * "not witnessed", never a pass: a cryptor that is absent or disabled
+     * does not encrypt that sender's frames.
      */
-    private fun audioCryptorWitnessed(room: Room, index: Int): Boolean {
+    private fun senderCryptorWitnessed(room: Room, source: Track.Source, index: Int): Boolean {
         return try {
             val manager = room.e2eeManager ?: return false
             if (!manager.enabled) return false
             val pub = room.localParticipant
-                .getTrackPublication(Track.Source.SCREEN_SHARE_AUDIO) ?: return false
+                .getTrackPublication(source) ?: return false
             val identity = room.localParticipant.identity ?: return false
             val key = Pair(pub.sid, identity)
             val cryptor = frameCryptorMap(manager).entries
                 .firstOrNull { it.key == key }
                 ?.value ?: return false
             cryptor.isEnabled && cryptor.keyIndex == index
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    /**
+     * Whether [track], just published, has exactly ONE sender: the one whose
+     * cryptor [doConnect] witnessed. [ScreenVideoGate] controls what reaches
+     * the track's video source, and that source feeds every sender of the
+     * track, so the track must keep that one sender for the whole share.
+     * The conditions below are read from the Room, from the publication's
+     * options (which do not change after its publish) and from the track's
+     * transceivers, so they hold for the rest of the share too. Checked
+     * against livekit-android 2.28.0. Non-suspending; anything missing or
+     * unreadable, or any throw, is false (fail closed).
+     */
+    private fun screenSenderLayoutOk(room: Room, track: LocalScreencastVideoTrack): Boolean {
+        return try {
+            if (room.dynacast) return false
+            val pub = room.localParticipant
+                .getTrackPublication(Track.Source.SCREEN_SHARE) ?: return false
+            if (pub.track !== track) return false
+            val options = pub.options as? VideoTrackPublishOptions ?: return false
+            options.videoCodec.equals("vp8", ignoreCase = true) &&
+                options.backupCodec == null &&
+                ScreenTrackAccess.extraTransceiverCountOf(track) == 0
         } catch (_: Throwable) {
             false
         }
@@ -1337,9 +1662,10 @@ class ScreenSharePlugin : Plugin() {
      * Not suspending, but it can BLOCK: the setter
      * (`LocalTrackPublication.muted`, public in livekit-android 2.28.0)
      * disables the track on the RTC thread, the same class as `Track.stop()`
-     * in [stopCapture]. Guarded on its own and never throws: a failure costs
-     * the badge alone, never the video. Never called from [tearDown],
-     * [stopCapture] or [discardRoom]: a share that is ending needs no mute.
+     * in [stopShareCapture]. Guarded on its own and never throws: a failure
+     * costs the badge alone, never the video. Never called from [tearDown],
+     * [stopShareCapture] or [discardRoom]: a share that is ending needs no
+     * mute.
      */
     private fun muteSilentAudio(room: Room) {
         try {
@@ -1362,14 +1688,15 @@ class ScreenSharePlugin : Plugin() {
      * settle a PluginCall early, and no attempt can read a field this has
      * not yet written.
      *
-     * It was briefly violated by calling the SUSPENDING
-     * `setScreenShareEnabled(false)` from [stopCapture], and the cost was
-     * immediate and deterministic rather than theoretical: `LocalParticipant`
-     * serializes per-source publish/unpublish behind a mutex, so a teardown
-     * during a publish blocked until that publish finished, and the abandon
-     * path then read `releasedRoom` before this had written it — releasing
-     * the same native Room twice, on exactly the stop-during-publish path
-     * [stopCapture] exists to serve. Anything called from here ([stopCapture],
+     * It was briefly violated by calling the SUSPENDING screen-share disable
+     * (`setScreenShareEnabled` with false) from the capture stop, and the
+     * cost was immediate and deterministic rather than theoretical:
+     * `LocalParticipant` serializes per-source publish/unpublish behind a
+     * mutex, so a teardown during a publish blocked until that publish
+     * finished, and the abandon path then read `releasedRoom` before this
+     * had written it, releasing the same native Room twice, on exactly the
+     * stop-during-publish path the capture stop exists to serve. Anything
+     * called from here ([stopShareCapture] and its guarded helpers,
      * [disposeDetached]) must stay non-suspending, and so must [discardRoom],
      * which runs on the same ownership scheme from [doConnect]'s abandon path.
      * That includes [releaseAudio] and the `ScreenAudioSource.release()` it
@@ -1421,24 +1748,32 @@ class ScreenSharePlugin : Plugin() {
         // release its Room a second time.
         room?.let { releasedRoom = it }
         // The system audio leaves with the share, released inside
-        // [stopCapture] BEFORE the video stop (which stops the projection
-        // the playback capture rides on). Taken out of the field first, so
-        // a queued audio-loss report finds nothing to report.
+        // [stopShareCapture] BEFORE the video stop (which stops the
+        // projection the playback capture rides on). Taken out of the field
+        // first, so a queued audio-loss report finds nothing to report.
         val audio = screenAudio
         screenAudio = null
+        // The screen track and its gate, taken out of the fields the same
+        // way: the gate closes and the capture stops BY REFERENCE inside
+        // [stopShareCapture], whatever happened to the publication. Only
+        // that non-blocking capture stop happens here, never a dispose: the
+        // Room's disconnect stops and disposes a published track.
+        val video = screenVideo
+        screenVideo = null
+        val gate = screenVideoGate
+        screenVideoGate = null
         // Stop the capture before the Room goes. Redundant with
         // `disconnect()` for any published track (`LocalParticipant.cleanup()`
         // stops it). Its value is timing: it stops the capture immediately on
         // paths where the disconnect is deferred (the settle paths, and
-        // `discardRoom` while a disposal is pending). It is a no-op once the
-        // SDK has unpublished (see [stopCapture]).
+        // `discardRoom` while a disposal is pending).
         // Diagnostic: whether a screen publication still existed when the
-        // capture stop ran (without one it is a no-op). No identity, no key
-        // material.
+        // capture stop ran, and whether it stopped by reference. No
+        // identity, no key material.
         val hadScreenPub =
             room?.localParticipant?.getTrackPublication(Track.Source.SCREEN_SHARE) != null
-        stopCapture(room, audio)
-        trace("tearDown capture stopped screenPub=${hadScreenPub}")
+        stopShareCapture(room, audio, video, gate)
+        trace("tearDown capture stopped screenPub=${hadScreenPub} byRef=${video != null}")
         // Everything a successor or a late push could read is cleared NOW,
         // before this returns, on both paths: inside a settle window
         // `setFrameKey` rejects `not_connected` instead of keying a leg that
@@ -1761,13 +2096,13 @@ class ScreenSharePlugin : Plugin() {
         /** How long a local screen unpublish, seen while the leg is
          *  CONNECTED, waits before it is reported as a revoke. Of the three
          *  non-revoke unpublishes, only the MediaProjection system stop needs
-         *  it: the SDK unpublishes and then calls our onStop, whose
-         *  tearDown("system") runs within milliseconds and clears `room`, so
-         *  the post-wait same-Room check fails. A full reconnect (state
-         *  RECONNECTING) and disconnect cleanup (state DISCONNECTED) are not
-         *  covered by this wait at all; the CONNECTED check at event arrival
-         *  excludes them, and the post-wait CONNECTED check is a second
-         *  guard. A permission-event revoke that tears down first also clears
+         *  it: the plugin's own onStop unpublishes the track and then
+         *  launches tearDown("system"), which runs within milliseconds and
+         *  clears `room`, so the post-wait same-Room check fails. A full
+         *  reconnect (state RECONNECTING) and disconnect cleanup (state
+         *  DISCONNECTED) are not covered by this wait at all; the CONNECTED
+         *  check at event arrival excludes them, and the post-wait CONNECTED
+         *  check is a second guard. A permission-event revoke that tears down first also clears
          *  `room`. The capture is already stopped, so the wait delays the
          *  toast and also the disposal: a settled revoke from this path is
          *  disposed UNPUBLISH_GRACE_MS + [SETTLE_MS] after the unpublish. */
@@ -1794,6 +2129,16 @@ class ScreenSharePlugin : Plugin() {
          *  is measured from the permission event, which can precede the
          *  forced unpublish. */
         private const val SETTLE_MS = 4_000L
+
+        /** How long [doConnect] waits, right after the capture started and
+         *  before the system audio, for the [ScreenVideoGate] to pass its
+         *  first frame on before it fails the connect (`no first frame`). A
+         *  started share must be a capturing one, not a silent black tile. */
+        private const val FIRST_FRAME_TIMEOUT_MS = 4_000L
+
+        /** The poll step of that wait: the gate's flag is written on the
+         *  capture thread, so it is read, not awaited. */
+        private const val FIRST_FRAME_POLL_MS = 50L
 
         /** Teardown diagnostics with a monotonic timestamp, so a log ties a
          *  teardown's native steps to the local screen unpublish. Step names,

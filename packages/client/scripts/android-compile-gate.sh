@@ -4,9 +4,10 @@
 #   bash packages/client/scripts/android-compile-gate.sh
 #
 # Compiles the Kotlin AND the Java of the Android app (packages/client/android)
-# for every distribution flavor (sideload, play, foss) and judges the run on
-# GRADLE'S OWN EXIT STATUS, never on a grep of its output and never on the
-# status of something it was piped into.
+# for every distribution flavor (sideload, play, foss), runs the screen-share
+# video gate's JVM unit test (ScreenVideoGateTest) for each of them, and judges
+# the run on GRADLE'S OWN EXIT STATUS, never on a grep of its output and never
+# on the status of something it was piped into.
 #
 # Why this file exists. node --test, tsc, eslint and prettier cover NONE of
 # packages/client/android/**. On a slice whose weight is in Kotlin (the screen
@@ -31,9 +32,14 @@
 #      javac runs after kotlinc (it depends on it), so one task per flavor
 #      checks both languages, and every flavor-only source set (src/sideload,
 #      src/play, src/foss, src/gms) is compiled by at least one variant.
+#      The same invocation runs test{Sideload,Play,Foss}DebugUnitTest, each
+#      filtered to com.acutest.app.screenshare.ScreenVideoGateTest.
 #   5. Anti-vacuity: a compiled Kotlin class (ScreenSharePlugin.class) and a
 #      compiled Java class (MainActivity.class) must exist for every flavor.
 #      A green run that produced neither compiled nothing.
+#   6. Anti-vacuity for the test: every flavor's JUnit XML report for
+#      ScreenVideoGateTest must exist, written by THIS run, with at least
+#      GATE_TEST_MIN tests and no failure, error or skipped test.
 #
 # How CI uses it. The `android-compile` job in
 # .github/workflows/build-and-test.yml checks out with submodules, installs
@@ -73,6 +79,15 @@ cd "$ROOT"
 CLIENT=packages/client
 ANDROID="$CLIENT/android"
 FLAVORS=(sideload play foss)
+
+# The screen-share video gate's JVM unit test (step 4 runs it for every
+# flavor, step 6 reads its reports). GATE_TEST_MIN is the number of @Test
+# methods in
+# android/app/src/test/java/com/acutest/app/screenshare/ScreenVideoGateTest.kt.
+# Raise it when tests are added; never lower it to make a run pass.
+GATE_TEST_CLASS=com.acutest.app.screenshare.ScreenVideoGateTest
+GATE_TEST_MIN=22
+TEST_RESULTS="$ANDROID/app/build/test-results"
 
 # --- toolchain -----------------------------------------------------------------
 
@@ -204,6 +219,21 @@ for f in "${FLAVORS[@]}"; do
   TASKS+=("compile${f^}DebugJavaWithJavac")
 done
 
+# `--tests` is an option of the task named right before it on the command
+# line and filters that task only, so every test task carries its own copy
+# (gradle 8.14.3, measured: a test task listed without one ran every test
+# class of its variant). A filter that matches no test fails the task.
+for f in "${FLAVORS[@]}"; do
+  TASKS+=("test${f^}DebugUnitTest" --tests "$GATE_TEST_CLASS")
+done
+
+# A report left by an earlier run must never satisfy step 6. Removing it
+# also makes gradle rerun a test task it would otherwise skip as up to date,
+# so the only report step 6 can find is one this invocation wrote.
+for f in "${FLAVORS[@]}"; do
+  rm -f "$TEST_RESULTS/test${f^}DebugUnitTest/TEST-$GATE_TEST_CLASS.xml"
+done
+
 echo "=============== gradle ${TASKS[*]} ==============="
 gradle_rc=0
 (cd "$ANDROID" && ./gradlew --console=plain "${TASKS[@]}") || gradle_rc=$?
@@ -229,4 +259,49 @@ for f in "${FLAVORS[@]}"; do
     fail 4 "gradle exited 0 but the Java output $jv is missing: nothing proves javac compiled $v"
 done
 
-echo ">>> ANDROID GATE PASS: Kotlin + Java compiled for ${FLAVORS[*]} (debug)"
+# --- 6. anti-vacuity for the screen video gate test ------------------------------------
+#
+# gradle already fails the run on a failing test and on a filter that matches
+# nothing. This step proves the test RAN, for every flavor, in this
+# invocation: each flavor's JUnit XML report (the AGP 8.13 location; after a
+# toolchain bump, find it with
+#   find packages/client/android/app/build -name 'TEST-*ScreenVideoGateTest.xml'
+# and update TEST_RESULTS) must name the suite, count at least GATE_TEST_MIN
+# tests with one <testcase> element each, and report no failure, error or
+# skipped test. A test task dropped from the list, deleted or ignored tests,
+# or a missing report all end here. Never relax this check to make it pass.
+#
+# xml_attr <name> <testsuite-line>: the attribute's value when it is a
+# non-negative integer, else empty.
+xml_attr() { printf '%s\n' "$2" | sed -n "s/.* $1=\"\([0-9][0-9]*\)\".*/\1/p"; }
+test_counts=()
+for f in "${FLAVORS[@]}"; do
+  v="${f}Debug"
+  xml="$TEST_RESULTS/test${f^}DebugUnitTest/TEST-$GATE_TEST_CLASS.xml"
+  [ -s "$xml" ] ||
+    fail 6 "gradle exited 0 but the test report $xml is missing or empty: nothing proves $GATE_TEST_CLASS ran for $v"
+  suite=$(grep -E '^<testsuite ' "$xml" || true)
+  [ -n "$suite" ] && [ "$(printf '%s\n' "$suite" | wc -l)" -eq 1 ] ||
+    fail 6 "$xml: expected exactly one <testsuite> line"
+  case "$suite" in
+  "<testsuite name=\"$GATE_TEST_CLASS\" "*) ;;
+  *) fail 6 "$xml: the report's suite is not $GATE_TEST_CLASS" ;;
+  esac
+  n_tests=$(xml_attr tests "$suite")
+  n_fail=$(xml_attr failures "$suite")
+  n_err=$(xml_attr errors "$suite")
+  n_skip=$(xml_attr skipped "$suite")
+  # grep -c prints 0 and exits 1 on no match; `|| true` keeps set -e out of it.
+  n_case=$(grep -c '<testcase ' "$xml" || true)
+  [ -n "$n_tests" ] && [ -n "$n_fail" ] && [ -n "$n_err" ] && [ -n "$n_skip" ] &&
+    [ "$n_tests" -ge "$GATE_TEST_MIN" ] && [ "$n_case" -eq "$n_tests" ] &&
+    [ "$n_fail" -eq 0 ] && [ "$n_err" -eq 0 ] && [ "$n_skip" -eq 0 ] ||
+    fail 6 "$xml: tests='$n_tests' (at least $GATE_TEST_MIN), <testcase>" \
+      "x$n_case (must equal tests), failures='$n_fail', errors='$n_err'," \
+      "skipped='$n_skip' (each must be 0): $GATE_TEST_CLASS did not pass in" \
+      "full for $v"
+  test_counts+=("$f=$n_tests")
+done
+
+echo ">>> ANDROID GATE PASS: Kotlin + Java compiled for ${FLAVORS[*]} (debug);" \
+  "$GATE_TEST_CLASS passed (tests: ${test_counts[*]})"

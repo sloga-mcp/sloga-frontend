@@ -10172,10 +10172,15 @@ MUTATIONS += [
         must_red=[LEG_POLICY_SPEC],
     ),
     # Retargeted with the lighting prerequisites: the arm now opens with the
-    # event-room guard, so the search carries it.
+    # event-room guard, so the search carries it. Retargeted again with the
+    # screen-capture order: the arm also closes the video gate and stops the
+    # capture, and its comment was rewritten with it. The search is the whole
+    # arm, so only the arm's code matters to the kill; the Reconnected
+    # backstop below it stays, which is exactly the residue this entry
+    # asserts is not enough.
     Mutation(
         id="native-reconnecting-branch-removed",
-        what="a full reconnect no longer releases the audio and ends the share, so republishTracks puts open-gate playback on a new audio sender whose cryptor nobody witnessed (wave-1 MAJOR-1)",
+        what="a full reconnect no longer releases the audio, closes the video gate or stops the capture when it begins, so republishTracks can put both tracks back on new senders whose cryptors nobody witnessed, with only the Reconnected backstop left to end the share",
         file=SHARE_PLUGIN_KT,
         search="""            is RoomEvent.Reconnecting -> {
                 // A FULL reconnect has begun, and the share ends here, before
@@ -10187,28 +10192,31 @@ MUTATIONS += [
                 // `onEngineResuming`, which Room does not override, so it
                 // posts no room event at all and never reaches this branch.
                 //
-                // Why not wait for Reconnected, as the video alone could:
-                // `prepareForFullReconnect` drops the publications but keeps
-                // the tracks running, and `onPostReconnect -> republishTracks`
-                // publishes them again on NEW senders, the video and then the
-                // audio, AFTER Reconnected is posted. A source whose gate is
-                // open would feed live playback into a new audio sender whose
-                // cryptor nobody has witnessed, and whether its first frames
-                // leave encrypted then depends on SDK timing. The gate must
-                // never be open on an unwitnessed sender, so the audio is
-                // released right here, synchronously and before any video
-                // stop: released, the source only paces zeros. The teardown
-                // that follows disconnects at once (not settled), and that
-                // disconnect cancels the reconnect job, which pre-empts the
-                // republish of both senders. Same reason and toast as a
-                // Reconnected that finds no screen publication (probe (c-iv)
-                // already showed a full reconnect ends the share).
+                // Why not wait for Reconnected: `prepareForFullReconnect`
+                // drops the publications but keeps the tracks running, and
+                // `onPostReconnect -> republishTracks` publishes them again
+                // on NEW senders, the video and then the audio, AFTER
+                // Reconnected is posted. Nobody has witnessed those senders'
+                // cryptors, and what reaches them first would then depend on
+                // SDK timing. Neither gate may ever be open on an unwitnessed
+                // sender, so both close right here, synchronously: the audio
+                // source is released first (released, it only paces zeros),
+                // then the video gate closes for good and the capture stops,
+                // by reference, since the publication a lookup would need is
+                // already gone. The teardown that follows disconnects at
+                // once (not settled), and that disconnect cancels the
+                // reconnect job, which pre-empts the republish of both
+                // senders. Same reason and toast as the Reconnected backstop
+                // below (probe (c-iv) already showed a full reconnect ends
+                // the share).
                 //
                 // Launched, like every other teardown from this collector,
                 // and only if THIS share is still the live one when it runs
                 // (see the permission branch). Taking [screenAudio] out of
                 // the field first leaves the teardown nothing to release,
-                // and a queued audio-loss report nothing to report.
+                // and a queued audio-loss report nothing to report. The
+                // video fields stay set: the teardown takes them, and its
+                // second gate close and capture stop are no-ops.
                 //
                 // Only the live share's own Room may take its audio. The
                 // field read below is synchronous, ahead of the launched
@@ -10220,6 +10228,8 @@ MUTATIONS += [
                 val audio = screenAudio
                 screenAudio = null
                 releaseAudio(audio)
+                closeVideoGate(screenVideoGate)
+                stopVideoCapture(screenVideo)
                 trace("full reconnect began audioReleased=${audio != null}")
                 scope.launch {
                     if (this@ScreenSharePlugin.room === room) {
@@ -10292,7 +10302,7 @@ MUTATIONS += [
     ),
     Mutation(
         id="native-audio-witness-skips-key-check",
-        what="the audio witness passes for any cryptor found in the manager's map, so the gate opens on a disabled cryptor (frames in the clear) or one at a stale key index (a key the wrong epoch's members hold)",
+        what="the shared sender witness passes for any cryptor found in the manager's map, so the screen capture starts, and the audio gate opens, on a sender whose cryptor is disabled or at a stale key index (a key the wrong epoch's members hold)",
         file=SHARE_PLUGIN_KT,
         search="""            cryptor.isEnabled && cryptor.keyIndex == index
 """,
@@ -10306,7 +10316,7 @@ MUTATIONS += [
     # the witness predicate above it.
     Mutation(
         id="native-audio-witness-catch-true",
-        what="a reflection failure inside the audio witness (an SDK upgrade renaming the cryptor map) reads as witnessed, so the gate opens on a sender nobody verified",
+        what="a reflection failure inside the shared sender witness (an SDK upgrade renaming the cryptor map) reads as witnessed, so the screen capture starts and the audio gate opens on senders nobody verified",
         file=SHARE_PLUGIN_KT,
         search="""            cryptor.isEnabled && cryptor.keyIndex == index
         } catch (_: Throwable) {
@@ -10580,16 +10590,24 @@ MUTATIONS += [
         specs=[LEG_POLICY_SPEC],
         must_red=[LEG_POLICY_SPEC],
     ),
+    # Retargeted with the screen-capture order: the Reconnected arm now
+    # carries the same room guard, so the search anchors on the line the
+    # Reconnecting arm's guard protects.
     Mutation(
         id="native-reconnecting-room-guard-dropped",
-        what="the Reconnecting arm takes and releases `screenAudio` before anything checks which Room posted the event, so a Reconnecting from a Room that is no longer the live share's (a collector that outlived its attempt) silences the live share's system audio while its video plays on (lighting prerequisites)",
+        what="the Reconnecting arm takes and releases `screenAudio`, closes the video gate and stops the capture before anything checks which Room posted the event, so a Reconnecting from a Room that is no longer the live share's (a collector that outlived its attempt) silences the live share's system audio and ends its video capture (lighting prerequisites)",
         file=SHARE_PLUGIN_KT,
         search="""                if (event.room !== room) return
+                val audio = screenAudio
 """,
-        replace="",
+        replace="""                val audio = screenAudio
+""",
         specs=[LEG_POLICY_SPEC],
         must_red=[LEG_POLICY_SPEC],
     ),
+    # Retargeted with the screen-capture order: the video gate close and the
+    # capture stop now sit between the release and the trace. Only the audio
+    # release moves; the video steps stay where they are.
     Mutation(
         id="native-reconnecting-release-deferred",
         what="the Reconnecting arm releases the audio only inside the launched teardown, so the source stays in `screenAudio` with its gate open for that whole hop and the full reconnect's republish can put live playback back on air on a new audio sender (lighting prerequisites)",
@@ -10597,14 +10615,615 @@ MUTATIONS += [
         search="""                val audio = screenAudio
                 screenAudio = null
                 releaseAudio(audio)
+                closeVideoGate(screenVideoGate)
+                stopVideoCapture(screenVideo)
                 trace("full reconnect began audioReleased=${audio != null}")
                 scope.launch {
 """,
         replace="""                val audio = screenAudio
+                closeVideoGate(screenVideoGate)
+                stopVideoCapture(screenVideo)
                 trace("full reconnect began audioReleased=${audio != null}")
                 scope.launch {
                     screenAudio = null
                     releaseAudio(audio)
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+]
+
+
+# ---- native: the screen capture starts only behind the sender witness -----
+# The plugin owns the screen track: it creates it with a `ScreenVideoGate`
+# as its video processor, publishes it, witnesses the screen sender's
+# cryptor at the current key index (with E2EE), checks that the track has
+# that one sender and no other, admits the gate for that sender's
+# transceiver, and only then starts the capture. The gate forwards to the
+# track's video source only while the track is still on the admitted
+# transceiver with no additional one, and every stop path closes it.
+#
+# Every entry is killed by a SOURCE PIN in LEG_POLICY_SPEC over the
+# comment-stripped native files, so, as with every native entry above, a
+# kill proves the pinned text changed, never what the APK does on a device.
+# The gate's own behavior is also tested by the JVM unit test
+# `ScreenVideoGateTest.kt`, which this runner does not run and does not
+# measure. That suite drives `admitWith` with its own suppliers, so by
+# construction it cannot see the `native-video-gate-admit-*` and
+# `native-track-access-extra-count-zero` entries: only the pins hold them.
+#
+# Order entries move a statement rather than delete it: the moved code is
+# all still present, so only a pin on ORDER (by position inside doConnect,
+# or inside tearDown) can kill them, never a presence or count pin.
+
+#: Relative to `RTC`, like SHARE_PLUGIN_KT, so each of the three below
+#: climbs out of `components/rtc` and stays inside this client package.
+SCREEN_VIDEO_GATE_KT = (
+    "../../android/app/src/main/java/com/acutest/app/screenshare/"
+    "ScreenVideoGate.kt"
+)
+SCREEN_TRACK_ACCESS_JAVA = (
+    "../../android/app/src/main/java/com/acutest/app/screenshare/"
+    "ScreenTrackAccess.java"
+)
+#: The screen leg's key provider: its frame cryptor options and its raw key
+#: install.
+RAW_SCREEN_KEY_PROVIDER_KT = (
+    "../../android/app/src/main/java/com/acutest/app/screenshare/"
+    "RawScreenKeyProvider.kt"
+)
+
+#: The block that holds the share to a single witnessed sender, moved whole
+#: by `native-layout-check-after-capture`.
+_LAYOUT_CHECK = """            if (!screenSenderLayoutOk(room, track)) {
+                throw IllegalStateException("screen share sender layout refused")
+            }
+"""
+#: The first-frame wait and its throw, moved whole by
+#: `native-first-frame-after-audio`.
+_FIRST_FRAME_WAIT = """            val firstFrameBy = SystemClock.elapsedRealtime() + FIRST_FRAME_TIMEOUT_MS
+            while (!gate.forwardedAny &&
+                generation == connectGeneration &&
+                SystemClock.elapsedRealtime() < firstFrameBy
+            ) {
+                delay(FIRST_FRAME_POLL_MS)
+            }
+            ensureConnectCurrent(generation)
+            if (!gate.forwardedAny) {
+                throw IllegalStateException("no first frame")
+            }
+"""
+#: The only capture start, with the field writes and comment above it, so a
+#: move can delete it from its place without matching the moved copy.
+_CAPTURE_START = """            screenVideoGate = gate
+            // The ONLY capture start in this plugin; the projection is
+            // obtained here.
+            track.startCapture()
+"""
+
+MUTATIONS += [
+    # ---- doConnect: what runs before the capture starts --------------------
+    Mutation(
+        id="native-capture-before-publish",
+        what="the screen capture starts right after the foreground service, before the track is published, so it runs before the screen sender's cryptor is witnessed at the current key index",
+        file=SHARE_PLUGIN_KT,
+        search="""            track.startForegroundService(NOTIFICATION_ID, buildNotification())
+""",
+        replace="""            track.startForegroundService(NOTIFICATION_ID, buildNotification())
+            track.startCapture()
+""",
+        also=[(_CAPTURE_START, "            screenVideoGate = gate\n")],
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-capture-before-witness",
+        what="the screen capture starts directly after the publish, ahead of the key-index assertion, the sender witness, the sender-layout check and admit, so it runs before the screen sender's cryptor is witnessed at the current key index",
+        file=SHARE_PLUGIN_KT,
+        search="""            if (published != true) {
+                throw IllegalStateException("screen share publish refused")
+            }
+""",
+        replace="""            if (published != true) {
+                throw IllegalStateException("screen share publish refused")
+            }
+            track.startCapture()
+""",
+        also=[(_CAPTURE_START, "            screenVideoGate = gate\n")],
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-video-witness-dropped",
+        what="doConnect no longer requires the screen sender's own cryptor to be witnessed, enabled and at the current key index, before it admits the gate and starts the capture",
+        file=SHARE_PLUGIN_KT,
+        search="""            if (provider != null &&
+                !senderCryptorWitnessed(room, Track.Source.SCREEN_SHARE, currentKeyIndex)
+            ) {
+                throw IllegalStateException("screen sender cryptor not witnessed")
+            }
+""",
+        replace="",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-video-witness-wrong-source",
+        what="the screen video's witness asks about the SCREEN_SHARE_AUDIO publication instead of its own, so the capture start rests on another sender's cryptor and never on the screen sender's; today the wrong lookup fails closed, since the audio is published only after the video's witness and the lookup finds nothing, but that holds only as long as the audio publish stays behind it",
+        file=SHARE_PLUGIN_KT,
+        search="""                !senderCryptorWitnessed(room, Track.Source.SCREEN_SHARE, currentKeyIndex)
+""",
+        replace="""                !senderCryptorWitnessed(room, Track.Source.SCREEN_SHARE_AUDIO, currentKeyIndex)
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-sdk-share-enable-restored",
+        what="the publish goes back to the SDK's one-call screen-share enable, which builds its own screen track outside the gate, so the capture no longer starts only after the screen sender's cryptor is witnessed",
+        file=SHARE_PLUGIN_KT,
+        search="""            val published = room.localParticipant.publishVideoTrack(track)
+""",
+        replace="""            val published = room.localParticipant.setScreenShareEnabled(true, ScreenCaptureParams(intent))
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-witness-source-hardcoded",
+        what="the shared sender witness looks up the SCREEN_SHARE_AUDIO publication whatever source it is asked about, so the screen video's witness reads the audio sender's cryptor instead of its own; today the wrong lookup fails closed, since the audio is published only after the video's witness and the lookup finds nothing, but that holds only as long as the audio publish stays behind it",
+        file=SHARE_PLUGIN_KT,
+        search="""                .getTrackPublication(source) ?: return false
+""",
+        replace="""                .getTrackPublication(Track.Source.SCREEN_SHARE_AUDIO) ?: return false
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # ---- doConnect: one sender, checked before admit ------------------------
+    Mutation(
+        id="native-layout-check-dropped",
+        what="doConnect no longer runs the sender-layout check before admit, so the gate is admitted for a screen track that is not guaranteed to keep the witnessed sender as its only one",
+        file=SHARE_PLUGIN_KT,
+        search=_LAYOUT_CHECK,
+        replace="",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-layout-dynacast-dropped",
+        what="the sender-layout check accepts a Room with dynacast on, so the screen track is no longer guaranteed to keep the witnessed sender as its only one",
+        file=SHARE_PLUGIN_KT,
+        search="""            if (room.dynacast) return false
+""",
+        replace="",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-layout-codec-dropped",
+        what="the sender-layout check no longer requires the publication's codec to be VP8, so the screen track is no longer guaranteed to keep the witnessed sender as its only one",
+        file=SHARE_PLUGIN_KT,
+        search="""            options.videoCodec.equals("vp8", ignoreCase = true) &&
+                options.backupCodec == null &&
+""",
+        replace="""            options.backupCodec == null &&
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-layout-backup-codec-dropped",
+        what="the sender-layout check accepts a publication with a backup codec, so the screen track is no longer guaranteed to keep the witnessed sender as its only one",
+        file=SHARE_PLUGIN_KT,
+        search="""                options.backupCodec == null &&
+""",
+        replace="",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-layout-track-identity-dropped",
+        what="the sender-layout check reads whatever SCREEN_SHARE publication the Room holds without checking that it carries this track (`pub.track === track`), so another track's publish options can vouch for this one",
+        file=SHARE_PLUGIN_KT,
+        search="""            if (pub.track !== track) return false
+""",
+        replace="",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-layout-extra-count-dropped",
+        what="the sender-layout check no longer reads the track's additional-transceiver count, so the screen track is no longer guaranteed to keep the witnessed sender as its only one",
+        file=SHARE_PLUGIN_KT,
+        search="""                options.backupCodec == null &&
+                ScreenTrackAccess.extraTransceiverCountOf(track) == 0
+""",
+        replace="""                options.backupCodec == null
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-layout-check-after-capture",
+        what="the sender-layout check runs after admit and the capture start, so frames reach the track's video source before the track is known to have the witnessed sender as its only one",
+        file=SHARE_PLUGIN_KT,
+        search=_LAYOUT_CHECK,
+        replace="",
+        also=[
+            (
+                """            track.startCapture()
+""",
+                """            track.startCapture()
+""" + _LAYOUT_CHECK,
+            ),
+        ],
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # ---- doConnect: the first frame ----------------------------------------
+    Mutation(
+        id="native-first-frame-after-audio",
+        what="the first-frame wait runs after the audio block, so the connect suspends between the audio source's gate opening and the source's hand-over to the share",
+        file=SHARE_PLUGIN_KT,
+        search=_FIRST_FRAME_WAIT,
+        replace="",
+        also=[
+            (
+                """            trace("audio state=$audioState")
+""",
+                """            trace("audio state=$audioState")
+""" + _FIRST_FRAME_WAIT,
+            ),
+        ],
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-first-frame-ignores-generation",
+        what="the first-frame wait no longer ends when a stop bumps the connect generation, so a stopped connect sits out the whole first-frame timeout before it notices",
+        file=SHARE_PLUGIN_KT,
+        search="""                generation == connectGeneration &&
+""",
+        replace="",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # ---- ScreenVideoGate / ScreenTrackAccess --------------------------------
+    Mutation(
+        id="native-video-gate-starts-admitted",
+        what="the video gate forwards frames before admit, so the capture's frames reach the track's video source before the screen sender's cryptor is witnessed and before the gate is bound to its transceiver",
+        file=SCREEN_VIDEO_GATE_KT,
+        search="""        val admitted = admission ?: return
+        if (!singleAdmittedSender(admitted)) {
+""",
+        replace="""        val admitted = admission
+        if (admitted != null && !singleAdmittedSender(admitted)) {
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-video-gate-ignores-transceiver",
+        what="the video gate no longer compares the track's current transceiver with the admitted one on each frame, so after a republish onto a new transceiver it keeps forwarding to a sender whose cryptor nobody witnessed",
+        file=SCREEN_VIDEO_GATE_KT,
+        search="""        if (now == null || now !== admitted.expected) return false
+""",
+        replace="""        if (now == null) return false
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-video-gate-ignores-extra-senders",
+        what="the video gate ignores the per-frame count of additional transceivers, so it keeps forwarding when the screen track no longer has the witnessed sender as its only one",
+        file=SCREEN_VIDEO_GATE_KT,
+        search="""        return extras == 0
+""",
+        replace="""        return true
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # The JVM suite drives `admitWith` with its own suppliers, so these three
+    # survive it; only the pin on `admit`'s exact body holds.
+    Mutation(
+        id="native-video-gate-admit-self-suppliers",
+        what="admit hands admitWith `{ transceiver }` and `{ 0 }` instead of the ScreenTrackAccess reads, so neither the admit check nor any per-frame check ever looks at the track's real transceivers",
+        file=SCREEN_VIDEO_GATE_KT,
+        search="""            { ScreenTrackAccess.transceiverOf(track) },
+            { ScreenTrackAccess.extraTransceiverCountOf(track) },
+""",
+        replace="""            { transceiver },
+            { 0 },
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-video-gate-admit-current-self",
+        what="admit hands admitWith `{ transceiver }` as the current-transceiver read, so the gate never sees the screen track move to another transceiver",
+        file=SCREEN_VIDEO_GATE_KT,
+        search="""            { ScreenTrackAccess.transceiverOf(track) },
+""",
+        replace="""            { transceiver },
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-video-gate-admit-extra-zero",
+        what="admit hands admitWith `{ 0 }` as the additional-sender read, so neither admit nor the per-frame check ever sees a second sender on the screen track",
+        file=SCREEN_VIDEO_GATE_KT,
+        search="""            { ScreenTrackAccess.extraTransceiverCountOf(track) },
+""",
+        replace="""            { 0 },
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-track-access-extra-count-zero",
+        what="ScreenTrackAccess.extraTransceiverCountOf always answers 0, so neither the sender-layout check nor the video gate ever sees a second sender on the screen track",
+        file=SCREEN_TRACK_ACCESS_JAVA,
+        search="""        return track.getSimulcastTransceivers$livekit_android_sdk_release().size();
+""",
+        replace="""        return 0;
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # ---- event arms: the gate closes at arrival -----------------------------
+    # `closeVideoGate(screenVideoGate)` occurs in three arms at three
+    # indentations, and a shallower one is a substring of a deeper, so each
+    # search carries a neighboring line.
+    Mutation(
+        id="native-reconnecting-gate-left-open",
+        what="the Reconnecting arm no longer closes the video gate at arrival, so keeping frames off the track's video source until the launched teardown runs, while the full reconnect prepares to put the track on a new sender, rests on the capture stop beside it alone (defense in depth: each of the two ends the forwarding on its own)",
+        file=SHARE_PLUGIN_KT,
+        search="""                releaseAudio(audio)
+                closeVideoGate(screenVideoGate)
+""",
+        replace="""                releaseAudio(audio)
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-reconnecting-capture-left-running",
+        what="the Reconnecting arm no longer stops the screen capture at arrival, so the capture keeps running until the launched teardown, while the full reconnect prepares to put the track on a new sender",
+        file=SHARE_PLUGIN_KT,
+        search="""                stopVideoCapture(screenVideo)
+""",
+        replace="",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-revoke-gate-left-open",
+        what="a full publish revoke no longer closes the video gate at arrival, so a revoked share keeps forwarding frames until Main reaches the settled teardown",
+        file=SHARE_PLUGIN_KT,
+        search="""                        closeVideoGate(screenVideoGate)
+                        scope.launch {
+""",
+        replace="""                        scope.launch {
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-unpublish-gate-left-open",
+        what="a local SCREEN_SHARE unpublish no longer closes the video gate at arrival, so the track keeps forwarding through the state checks and the grace after it left its witnessed sender",
+        file=SHARE_PLUGIN_KT,
+        search="""                    closeVideoGate(screenVideoGate)
+                    // Diagnostic: ties a later teardown's steps to this
+""",
+        replace="""                    // Diagnostic: ties a later teardown's steps to this
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # ---- cleanup by reference ------------------------------------------------
+    Mutation(
+        id="native-catch-unpublished-track-undisposed",
+        what="the connect's catch stops an unpublished screen track it created but never disposes it, so the track and its video source outlive the failed attempt with nothing left to release them",
+        file=SHARE_PLUGIN_KT,
+        search="""        try {
+            video.dispose()
+        } catch (_: Throwable) {}
+""",
+        replace="",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-catch-reaches-fields",
+        what="the connect's catch releases the screen track through the plugin's fields instead of its own local, so a superseded attempt closes and stops a successor's live share and leaves its own track running",
+        file=SHARE_PLUGIN_KT,
+        search="""            releaseAttemptVideo(room, video, videoGate)
+""",
+        replace="""            releaseAttemptVideo(room, screenVideo, screenVideoGate)
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # tearDown makes the same `stopShareCapture` call at the same
+    # indentation, so the search carries discardRoom's next line.
+    Mutation(
+        id="native-discard-local-track-not-stopped",
+        what="discardRoom hands stopShareCapture no track and no gate, so stopping a discarded attempt's capture by reference rests on the catch's releaseAttemptVideo alone; discardRoom's own stop then reaches the track only through the publication lookup, which misses a track that never reached the publications (defense in depth: each of the two stops ends the capture on its own)",
+        file=SHARE_PLUGIN_KT,
+        search="""        stopShareCapture(room, audio, video, gate)
+        if (pendingDisposals.any { it.room === room }) return
+""",
+        replace="""        stopShareCapture(room, audio, null, null)
+        if (pendingDisposals.any { it.room === room }) return
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-teardown-disposes-track",
+        what="tearDown disposes the screen track itself, ahead of the Room's disconnect, which then stops and disposes the published track a second time",
+        file=SHARE_PLUGIN_KT,
+        search="""        stopShareCapture(room, audio, video, gate)
+        trace("tearDown capture stopped screenPub=${hadScreenPub} byRef=${video != null}")
+""",
+        replace="""        stopShareCapture(room, audio, video, gate)
+        video?.dispose()
+        trace("tearDown capture stopped screenPub=${hadScreenPub} byRef=${video != null}")
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-teardown-capture-stop-launched",
+        what="tearDown launches its stopShareCapture call instead of making it inline, so the audio release, the gate close and the capture stop no longer happen before tearDown returns: an inline disposal disconnects the Room first, stopping the projection under a live playback capture, and the gate stays open after tearDown has cleared the share's fields",
+        file=SHARE_PLUGIN_KT,
+        search="""        stopShareCapture(room, audio, video, gate)
+        trace("tearDown capture stopped screenPub=${hadScreenPub} byRef=${video != null}")
+""",
+        replace="""        scope.launch { stopShareCapture(room, audio, video, gate) }
+        trace("tearDown capture stopped screenPub=${hadScreenPub} byRef=${video != null}")
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-teardown-capture-stop-after-disposal",
+        what="tearDown makes its stopShareCapture call only after it has handed the Room to its disposal, so an inline disposal disconnects the Room, stopping the projection under a live playback capture, before the audio is released and the gate is closed",
+        file=SHARE_PLUGIN_KT,
+        search="""        stopShareCapture(room, audio, video, gate)
+        trace("tearDown capture stopped screenPub=${hadScreenPub} byRef=${video != null}")
+""",
+        replace="",
+        also=[
+            (
+                """        // Cleared HERE, not only on a successful connect. `stopping` exists to
+""",
+                """        stopShareCapture(room, audio, video, gate)
+        trace("tearDown capture stopped screenPub=${hadScreenPub} byRef=${video != null}")
+        // Cleared HERE, not only on a successful connect. `stopping` exists to
+""",
+            ),
+        ],
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-stop-capture-lookup-only",
+        what="stopShareCapture no longer stops the capture through the screen track it is handed and reaches it only through the Room's SCREEN_SHARE publication, so a track that is not, or no longer, published (a full reconnect has dropped the publications, or the publish never completed) keeps capturing after its share ended",
+        file=SHARE_PLUGIN_KT,
+        search="""        closeVideoGate(gate)
+        if (video != null) {
+            stopVideoCapture(video)
+            return
+        }
+""",
+        replace="""        closeVideoGate(gate)
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # The existing `startCapture(` count cannot see a callable reference,
+    # which has no parenthesis; only a count of the bare name can.
+    Mutation(
+        id="native-capture-start-callable-reference",
+        what="doConnect starts the screen capture a second time through a callable reference, directly after the publish and ahead of the key-index assertion, the sender witness, the sender-layout check and admit, so the capture runs before the screen sender's cryptor is witnessed at the current key index",
+        file=SHARE_PLUGIN_KT,
+        search="""            if (published != true) {
+                throw IllegalStateException("screen share publish refused")
+            }
+""",
+        replace="""            if (published != true) {
+                throw IllegalStateException("screen share publish refused")
+            }
+            track.let(LocalScreencastVideoTrack::startCapture)
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # A coherent change, not a broken one: the snapshot compiles, and the
+    # per-frame check then compares values read once at admit.
+    Mutation(
+        id="native-video-gate-admission-snapshot",
+        what="the video gate's admission keeps the transceiver and the additional-sender count read once at admit instead of their accessors, so the per-frame check compares those stale values and keeps forwarding after the track moves to another transceiver or gains a second sender",
+        file=SCREEN_VIDEO_GATE_KT,
+        search="""        val current: () -> Any?,
+        val extraSenders: () -> Int,
+""",
+        replace="""        val current: Any?,
+        val extraSenders: Int,
+""",
+        also=[
+            (
+                """            admission = Admission(expected, current, extraSenders)
+""",
+                """            admission = Admission(expected, now, extras)
+""",
+            ),
+            (
+                """            admitted.current()
+""",
+                """            admitted.current
+""",
+            ),
+            (
+                """            admitted.extraSenders()
+""",
+                """            admitted.extraSenders
+""",
+            ),
+        ],
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # ---- the key provider, the SDK version and the destroy hook -------------
+    Mutation(
+        id="native-key-provider-discard-not-ready-off",
+        what="the screen leg's key provider is created with discardFrameWhenCryptorNotReady false, so a sender whose attached cryptor holds no key no longer drops its frames",
+        file=RAW_SCREEN_KEY_PROVIDER_KT,
+        search="""            /* discardFrameWhenCryptorNotReady = */ true,
+""",
+        replace="""            /* discardFrameWhenCryptorNotReady = */ false,
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-key-provider-refusal-dropped",
+        what="setRawKey ignores the native keyring refusing a key install, so the leg goes on as keyed at that index while the sender cryptor holds no key for it",
+        file=RAW_SCREEN_KEY_PROVIDER_KT,
+        search="""        if (!rtcKeyProvider.setKey(participantId, keyIndex, key)) {
+            throw IllegalStateException("native key install refused")
+        }
+""",
+        replace="""        rtcKeyProvider.setKey(participantId, keyIndex, key)
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-livekit-version-bumped",
+        what="the livekit-android dependency moves off 2.28.0, the version whose internals the screen leg's sender witness, transceiver accessors and frame cryptor options were checked against, without the screen leg's sender and cryptor invariants being re-checked",
+        file=APP_BUILD_GRADLE,
+        search="""    implementation 'io.livekit:livekit-android:2.28.0'
+""",
+        replace="""    implementation 'io.livekit:livekit-android:2.29.0'
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # `scope.launch { tearDown(null) }` also sits in onPageStarted, deeper,
+    # so the search carries the override's own line.
+    Mutation(
+        id="native-destroy-teardown-dropped",
+        what="handleOnDestroy no longer tears the share down, so a destroyed plugin leaves the screen capture, its gate, the system audio and the Room running with nothing left to stop them",
+        file=SHARE_PLUGIN_KT,
+        search="""    override fun handleOnDestroy() {
+        scope.launch { tearDown(null) }
+""",
+        replace="""    override fun handleOnDestroy() {
 """,
         specs=[LEG_POLICY_SPEC],
         must_red=[LEG_POLICY_SPEC],
