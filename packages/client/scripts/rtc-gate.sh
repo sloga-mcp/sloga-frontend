@@ -142,16 +142,21 @@ EXPECTED=(
   # moves, opt-in share recording), first measured at 0c672a54; the watch,
   # move and chip counts were re-measured after the final-audit fix rounds.
   # The move, redaction, moderation and wiring rows were re-measured again
-  # when the AFK channel merged with member moves (FE-2).
-  "components/rtc/screenShareWatchPolicy.test.ts 66 0"
+  # when the AFK channel merged with member moves (FE-2). The watch row was
+  # re-measured (66 -> 68) when Android screen-share audio (slice 4, wave 3a)
+  # pinned RoomAudioManager's `isSelfLeg:` so the phone never subscribes to
+  # its own leg's audio.
+  "components/rtc/screenShareWatchPolicy.test.ts 68 0"
   "components/rtc/voiceMovePolicy.test.ts 53 0"
   "components/rtc/moveEventRedaction.test.ts 7 0"
   "components/rtc/callModerationPolicy.test.ts 22 0"
   "components/rtc/callRecorder.test.ts 25 0"
   "components/ui/components/features/voice/callCard/callTileSelection.test.ts 23 0"
   # Source pins over the state.tsx wiring of member moves and the chip's
-  # publication read (wave 7): no spec can load state.tsx itself.
-  "components/rtc/stateWiring.test.ts 44 0"
+  # publication read (wave 7): no spec can load state.tsx itself. Re-measured
+  # (44 -> 48) by slice 4 wave 3a: the leg connect tail now carries `audio`,
+  # and the share sheet's audio offer, request and notices are pinned.
+  "components/rtc/stateWiring.test.ts 48 0"
   # The AFK channel and its merge with member moves (FE-2). Before it this
   # gate ran NO AFK spec, and none of the ladder that decides whether a
   # client follows a move. memberGate's opt-in skip is not in its row: see
@@ -164,9 +169,15 @@ EXPECTED=(
   "src/interface/channels/memberGate.test.ts 13 0"
   "src/lib/afkChannelSettings.test.ts 51 0"
   # The Android screen-share leg: when a leg may start, and the share tiers.
-  # Neither spec ran anywhere before these rows.
-  "components/rtc/androidLegStartPolicy.test.ts 68 0"
+  # Neither spec ran anywhere before these rows. The start-policy row was
+  # re-measured (68 -> 83) by slice 4 wave 3a: the screen-audio truth tables
+  # and the TS and Kotlin source pins on the leg's audio track.
+  "components/rtc/androidLegStartPolicy.test.ts 83 0"
   "components/rtc/androidScreenShareTiers.test.ts 3 0"
+  # Android screen-share audio (slice 4, wave 3a): the tile's share-audio
+  # badge truth table and its ParticipantTile.tsx source pins. First measured
+  # at 10.
+  "components/rtc/shareAudioBadge.test.ts 10 0"
 )
 
 # --- skips -------------------------------------------------------------------
@@ -380,7 +391,11 @@ SPECS=(components/rtc/mls*.test.ts components/rtc/rosterReconcile.test.ts
   # 🔴 NOT matched by the mls*.test.ts glob above: the Android screen-share
   # leg's start policy and share tiers. Without these literals both run nowhere.
   components/rtc/androidLegStartPolicy.test.ts
-  components/rtc/androidScreenShareTiers.test.ts)
+  components/rtc/androidScreenShareTiers.test.ts
+  # NOT matched by any glob either: the share-audio badge's spec (slice 4).
+  # Without this literal it runs nowhere and its EXPECTED row trips "never
+  # ran".
+  components/rtc/shareAudioBadge.test.ts)
 # 🔴 Arguments ADD to that set; they do not replace it. They used to replace
 # it, so the natural invocation for this branch —
 #   rtc-gate.sh components/rtc/mls*.test.ts
@@ -521,7 +536,17 @@ FILES=(components/rtc/mlsCallSession.ts components/rtc/mlsCallModePolicy.ts
   # unfolded leg with zero publications is inert). Enrolled because both are
   # clean: `prettier --check` and `eslint --max-warnings 0` both exit 0 on
   # each, one file at a time (measured in wave 4c-ii).
-  components/rtc/mlsRosterPolicy.ts components/rtc/rosterReconcile.test.ts)
+  components/rtc/mlsRosterPolicy.ts components/rtc/rosterReconcile.test.ts
+  # Android screen-share audio (slice 4): the share sheet's audio offer, the
+  # modal props carrying it, the build flag in env.ts, and the tile badge's
+  # pure module and spec. Enrolled because each is clean: `prettier --check`
+  # and `eslint --max-warnings 0` both exit 0 on it, one file at a time
+  # (measured in slice 4 wave 3b, over waves 1-3a). state.tsx,
+  # androidScreenShare.ts, ParticipantTile.tsx and RoomAudioManager.tsx, which
+  # the slice also edits or pins, were already enrolled above.
+  components/modal/modals/AndroidScreenShareSheet.tsx
+  components/modal/types.ts components/common/lib/env.ts
+  components/rtc/shareAudioBadge.ts components/rtc/shareAudioBadge.test.ts)
 # 🔴 NOT in FILES: components/app/interface/settings/channel/Overview.tsx.
 # FE-2 edits it (the AFK channel's check rules), but eslint reports two
 # pre-existing solid/reactivity warnings on it, present before that edit in

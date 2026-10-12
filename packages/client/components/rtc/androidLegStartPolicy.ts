@@ -12,6 +12,11 @@
  * What this leaf decides:
  *
  * - Whether the native share path exists at all ([nativeShareAvailable]).
+ * - The leg's system audio (slice 4): whether it is offered
+ *   ([nativeShareAudioAvailable]) and asked for ([legAudioRequested]), how
+ *   an untrusted native audio state is read ([isLegAudioState]), and which
+ *   notice a mute ([legMutedNotice]) or an audio outcome ([legAudioNotice])
+ *   deserves. Kinds again, mapped to copy in `state.tsx`.
  * - Whether a start attempt still owns the leg ([startAttemptStale],
  *   [startAttemptCancelled]). One rule: an attempt owns the leg only until
  *   something else claims it. Until `connect()` resolves the leg is not
@@ -65,6 +70,183 @@ export function nativeShareAvailable(w: {
   pluginHeader: boolean;
 }): boolean {
   return w.androidShell && w.flag && w.pluginHeader;
+}
+
+/**
+ * Whether the share sheet may OFFER system audio: the native share path
+ * itself ([nativeShareAvailable]), the audio build flag
+ * (`ENABLE_ANDROID_SCREEN_AUDIO`, dark by default), and the `ScreenShareAudio`
+ * marker plugin's header, all three.
+ *
+ * The marker is the capability: native registers it only on API 29+, where
+ * playback capture exists, so its header answers "can this device capture
+ * audio at all" synchronously, for the same reason [nativeShareAvailable]
+ * reads a header rather than an async `isAvailable()` probe. It does not
+ * answer the per-share questions (microphone permission, a microphone
+ * foreground service); native reports those through the state `connect()`
+ * resolves with ([LegAudioState]).
+ *
+ * Read once, at module load, like [nativeShareAvailable]. While the flag is
+ * dark this is false, so no toggle is shown and every connect asks for no
+ * audio.
+ */
+export function nativeShareAudioAvailable(w: {
+  shareAvailable: boolean;
+  audioFlag: boolean;
+  audioHeader: boolean;
+}): boolean {
+  return w.shareAvailable && w.audioFlag && w.audioHeader;
+}
+
+/**
+ * Whether a share asks native for audio: the sheet offered it AND the user
+ * left it on.
+ *
+ * `offered` is checked as well as `userWants` because the user's choice is a
+ * saved preference (`voice.screenShareAudio`, shared with desktop and ON by
+ * default), so it is usually true on a device where audio was never offered.
+ * Without the AND a dark build, or a device without the capability, would
+ * still send `audio: true` and get a "could not start" toast for a toggle it
+ * never showed.
+ */
+export function legAudioRequested(w: {
+  offered: boolean;
+  userWants: boolean;
+}): boolean {
+  return w.offered && w.userWants;
+}
+
+/**
+ * The leg's audio, as native reports it when `connect()` resolves.
+ *
+ * - `live`: published, and the gate is open (under E2EE, only once its
+ *   sender is witnessed under the current key).
+ * - `off`: not asked for.
+ * - `unsupported`: below API 29, so there is no playback capture.
+ * - `no_permission`: RECORD_AUDIO is not granted.
+ * - `no_mic_service`: no microphone-type foreground service is running, so
+ *   capture would stop the moment the app is backgrounded.
+ * - `failed`: anything else. Video continues without audio.
+ */
+export type LegAudioState =
+  | "live"
+  | "off"
+  | "unsupported"
+  | "no_permission"
+  | "no_mic_service"
+  | "failed";
+
+/** Every [LegAudioState], once. A `Record` keyed by the union, so adding a
+ * state without a row here (or a row outside the union) fails to type-check
+ * and [isLegAudioState] cannot drift from the type. */
+const LEG_AUDIO_STATES: Readonly<Record<LegAudioState, true>> = {
+  live: true,
+  off: true,
+  unsupported: true,
+  no_permission: true,
+  no_mic_service: true,
+  failed: true,
+};
+
+/**
+ * Whether a value from the native bridge is a [LegAudioState].
+ *
+ * The bridge's types are a promise the native build makes, not one it is
+ * held to: an older APK resolves with no `audio` at all, and a newer one may
+ * send a state this JS does not know. The caller reads anything this rejects
+ * as `"failed"`, which fails toward telling the user audio is not being
+ * shared, never toward a silent share that looks like it has sound.
+ *
+ * An own-key lookup, so a prototype name such as `"toString"` or
+ * `"__proto__"` is not a state.
+ */
+export function isLegAudioState(x: unknown): x is LegAudioState {
+  return (
+    typeof x === "string" &&
+    Object.prototype.hasOwnProperty.call(LEG_AUDIO_STATES, x)
+  );
+}
+
+/** The notice kinds of [legMutedNotice]. */
+export type LegMutedNotice = "none" | "video-off" | "audio-off";
+
+/**
+ * Which notice, if any, a native `muted` event deserves. A KIND, mapped to
+ * copy in `state.tsx`.
+ *
+ * Native mutes the leg's publications one by one and names the source. A
+ * muted `screen_share_audio` is `audio-off` ("Screen audio stopped. Your
+ * video is still being shared."), because the video is unaffected. Any
+ * OTHER source, including none, is `video-off`, which keeps today's toast:
+ * before slice 4 the event carried no source and always meant the video, so
+ * an older native build, or a source this JS does not know, must still be
+ * told its share went dark. An unmute is never announced.
+ */
+export function legMutedNotice(e: {
+  muted: boolean;
+  source?: string;
+}): LegMutedNotice {
+  if (!e.muted) return "none";
+  if (e.source === "screen_share_audio") return "audio-off";
+  return "video-off";
+}
+
+/** The notice kinds of [legAudioNotice]. */
+export type LegAudioNotice =
+  | "none"
+  | "could-not-start"
+  | "no-permission"
+  | "no-mic-service"
+  | "stopped";
+
+/**
+ * Which notice, if any, the leg's audio outcome deserves. A KIND, mapped to
+ * copy in `state.tsx`.
+ *
+ * `state` is either what `connect()` resolved with (`midShare` false) or a
+ * native `audio` event during the share (`midShare` true), whose states are
+ * `lost` (the audio publication went away while the video stayed) and
+ * `failed` (capture died).
+ *
+ * - Not requested: none. The user did not ask for audio, so there is nothing
+ *   to report about it.
+ * - `live` or `off`: none.
+ * - `lost`, or `failed` mid-share: `stopped`. The share goes on without
+ *   sound, and the user is told the video is still being shared.
+ * - At start, `unsupported` or `failed`: `could-not-start`. `no_permission`
+ *   and `no_mic_service` get their own kinds, because the user can fix those.
+ *
+ * Native checks `unsupported`, `no_permission` and `no_mic_service` only
+ * before publishing, so none of them can arrive mid-share. If one does
+ * anyway (a native build ahead of this JS), it reads as `stopped`: the share
+ * is live, so the fix-it advice of the start-time kinds would be wrong, and
+ * the user must still hear that audio is not being shared. A value outside
+ * the union at runtime reads as `failed`, for the same reason.
+ */
+export function legAudioNotice(w: {
+  requested: boolean;
+  state: LegAudioState | "lost";
+  midShare: boolean;
+}): LegAudioNotice {
+  if (!w.requested) return "none";
+  if (w.state === "live" || w.state === "off") return "none";
+  if (w.state === "lost" || w.midShare) return "stopped";
+  switch (w.state) {
+    case "no_permission":
+      return "no-permission";
+    case "no_mic_service":
+      return "no-mic-service";
+    case "unsupported":
+    case "failed":
+      return "could-not-start";
+    default: {
+      // Compile-time: a state added to the union without an arm here fails
+      // to type-check. Runtime: whatever arrived that is not in it.
+      const unknownState: never = w.state;
+      void unknownState;
+      return "could-not-start";
+    }
+  }
 }
 
 export interface StartAttemptWorld {

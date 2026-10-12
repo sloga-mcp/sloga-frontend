@@ -898,6 +898,10 @@ msgstr "Allow members to change name and avatar per-message"
 msgid "Allow members to set a color with Masquerade"
 msgstr "Allow members to set a color with Masquerade"
 
+#: components/rtc/state.tsx
+msgid "Allow microphone access to share screen audio."
+msgstr "Allow microphone access to share screen audio."
+
 #: components/modal/modals/CreatePoll.tsx
 msgid "Allow multiple answers"
 msgstr "Allow multiple answers"
@@ -1179,6 +1183,10 @@ msgstr "Attenuation Strength"
 #: components/modal/modals/ScreenShareSettings.tsx
 #~ msgid "Audio disabled by browser"
 #~ msgstr "Audio disabled by browser"
+
+#: components/modal/modals/AndroidScreenShareSheet.tsx
+msgid "Audio from other apps playing media is shared too."
+msgstr "Audio from other apps playing media is shared too."
 
 #: components/ui/components/features/voice/callCard/VoiceDeviceSelector.tsx
 msgid "Audio output"
@@ -7019,6 +7027,10 @@ msgstr "Screen audio is unavailable in this window. If you are running a second 
 msgid "Screen audio stopped. The screen is still being shared."
 msgstr "Screen audio stopped. The screen is still being shared."
 
+#: components/rtc/state.tsx
+msgid "Screen audio stopped. Your video is still being shared."
+msgstr "Screen audio stopped. Your video is still being shared."
+
 #: components/app/interface/settings/user/voice/OverlaySettings.tsx
 msgid "Screen position"
 msgstr "Screen position"
@@ -7721,6 +7733,10 @@ msgstr "Slowmode off"
 #: components/app/interface/channels/text/SoftResMessage.tsx
 msgid "Soft-reserve sheets are not available in encrypted conversations — reserves are stored by the server."
 msgstr "Soft-reserve sheets are not available in encrypted conversations — reserves are stored by the server."
+
+#: components/modal/modals/AndroidScreenShareSheet.tsx
+msgid "Some apps block audio sharing. Viewers will hear silence from those apps."
+msgstr "Some apps block audio sharing. Viewers will hear silence from those apps."
 
 #: components/modal/modals/CreateSoftRes.tsx
 msgid "Some hard reserves are not in the selected raids' loot — remove them (or restore the raid) before saving."
@@ -8821,6 +8837,10 @@ msgstr "This profile is private."
 msgid "This role allows permissions you don't have, so you can't copy it."
 msgstr "This role allows permissions you don't have, so you can't copy it."
 
+#: components/ui/components/features/voice/callCard/ParticipantTile.tsx
+msgid "This screen share has no audio"
+msgstr "This screen share has no audio"
+
 #: components/app/interface/settings/server/roles/ServerRoleEditor.tsx
 msgid "This server already has the maximum of {max} roles."
 msgstr "This server already has the maximum of {max} roles."
@@ -8951,6 +8971,10 @@ msgstr "To keep spam out, this step opens in your web browser."
 #: components/modal/modals/SoftResExport.tsx
 msgid "to open Gargul's soft-reserve window, paste the string and import."
 msgstr "to open Gargul's soft-reserve window, paste the string and import."
+
+#: components/rtc/state.tsx
+msgid "To share screen audio, rejoin the call after allowing microphone access."
+msgstr "To share screen audio, rejoin the call after allowing microphone access."
 
 #: src/interface/common/CommonHeader.tsx
 msgid "Toggle main sidebar"

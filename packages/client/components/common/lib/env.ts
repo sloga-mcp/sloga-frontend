@@ -335,6 +335,27 @@ export default {
       (import.meta.env.VITE_CFG_ENABLE_ANDROID_SCREEN_SHARE as string) ?? ""
     ).toLowerCase() == "true",
   /**
+   * Android screen-share audio (screen-leg slice 4): the native screen leg
+   * also publishes the phone's system audio as a SCREEN_SHARE_AUDIO track.
+   * DEFAULT OFF, baked at APK BUILD time like the flag above.
+   *
+   * Dark, the share sheet hides its "Share audio" toggle and the JS side
+   * always sends `audio: false` to the native `connect`, so the leg stays
+   * video-only. Lit, the toggle still shows only where the native
+   * `ScreenShareAudio` capability marker is present (Android 10+).
+   *
+   * Has effect only when `ENABLE_ANDROID_SCREEN_SHARE` is also on: with no
+   * screen leg there is nothing to attach audio to.
+   *
+   * Set `VITE_CFG_ENABLE_ANDROID_SCREEN_AUDIO=true` on the Android build
+   * command line only, never in a `.env` file: the release scripts refuse
+   * per-shell flags in `.env`, since every other surface would inherit it.
+   */
+  ENABLE_ANDROID_SCREEN_AUDIO:
+    (
+      (import.meta.env.VITE_CFG_ENABLE_ANDROID_SCREEN_AUDIO as string) ?? ""
+    ).toLowerCase() == "true",
+  /**
    * Linux screen-share audio — system audio for Entire Screen shares from
    * the Linux desktop shell, captured through a native PipeWire virtual
    * source that excludes Sloga's own playback (the echo-loop defense; see

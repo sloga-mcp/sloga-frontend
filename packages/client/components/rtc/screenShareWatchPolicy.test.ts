@@ -1638,3 +1638,64 @@ test("source pin: the lists the cryptor-disarm sweep reads stay unfiltered", () 
     `for (const ref of [...tracks(), ...videoTracks()]) {`,
   );
 });
+
+// Our own Android screen leg joins the call as a REMOTE participant, so
+// `isLocal` never catches it. Once the leg publishes system audio, `isSelfLeg`
+// is the only thing that keeps the sharing phone from subscribing to, and
+// playing, its own leg's audio: a self-echo of whatever it is sharing. The
+// policy tests above prove every decision honors `isSelfLeg`, but they are
+// handed the flag; `isSelfLeg: false` in RoomAudioManager.tsx would leave
+// all of them green. These pins hold the two places the file computes it.
+
+/** `watchPubOf`'s self-leg test: by DEVICE, as the video filter's is. */
+const WATCH_PUB_SELF_LEG = `isSelfLeg:
+  isScreenLeg(identity) &&
+  stripLeg(identity) === voice.room()?.localParticipant.identity,`;
+
+test("source pin: watchPubOf marks our own screen leg by device, once, and nothing overrides it", () => {
+  // Exactly once in the whole file, so neither a second copy nor a moved one
+  // passes.
+  assertWired("watchPubOf's isSelfLeg", WATCH_PUB_SELF_LEG);
+  // And that one copy is the last property of the one object watchPubOf
+  // returns, with `identity` bound to the reference's own participant: no
+  // early return, spread or later key can replace it.
+  assertWired(
+    "watchPubOf",
+    `const watchPubOf = (ref: {
+      participant: Participant;
+      source: Track.Source;
+    }): WatchPub => {
+      const identity = ref.participant.identity;
+      return {
+        identity,
+        source: ref.source,
+        isLocal: isLocal(ref.participant),
+        ${WATCH_PUB_SELF_LEG}
+      };
+    };`,
+  );
+});
+
+test("source pin: the watch-transition effect marks our own screen leg by device", () => {
+  // A new watch subscribes share AUDIO through `reconcileShareSubscriptions`,
+  // which reads this flag instead of calling watchPubOf.
+  assertWired(
+    "the watch-transition effect's local identity",
+    `const local = room.localParticipant.identity;`,
+  );
+  assertWired(
+    "the watch-transition effect's isSelfLeg",
+    `for (const participant of room.remoteParticipants.values()) {
+      const identity = participant.identity;
+      const isSelfLeg = isScreenLeg(identity) && stripLeg(identity) === local;
+      for (const publication of participant.trackPublications.values()) {
+        if (!isShareSource(publication.source)) continue;
+        pubs.push({
+          identity,
+          source: publication.source,
+          isLocal: false,
+          isSelfLeg,
+          isDesired: publication.isDesired,
+        });`,
+  );
+});

@@ -584,8 +584,12 @@ export type Modals =
        * Native Android screen-share sheet (screen-leg plan §7.6): the phone
        * ladder is its own small table — `screen_share_settings` wants a live
        * track for preview and `screen_share_picker` wants desktop sources,
-       * so neither reuses cleanly. Tier only in v1; the audio toggle arrives
-       * with slice 4 (system audio).
+       * so neither reuses cleanly. The "Share audio" toggle (slice 4, system
+       * audio) is shown only when `audioOffered`; its value is the user's
+       * per-device `voice.screenShareAudio` setting (`initialAudio`), the
+       * same one the desktop picker's "Share audio" uses. `callback`'s
+       * `audio` is true only when audio was offered AND the toggle is
+       * checked.
        */
       type: "android_screen_share_sheet";
       tiers: readonly {
@@ -595,7 +599,9 @@ export type Modals =
         maxBitrateKbps: number;
       }[];
       initialTier: AndroidScreenShareTierName;
-      callback: (tierName: AndroidScreenShareTierName) => void;
+      audioOffered: boolean;
+      initialAudio: boolean;
+      callback: (tierName: AndroidScreenShareTierName, audio: boolean) => void;
       onCancel: () => void;
     }
   | {
