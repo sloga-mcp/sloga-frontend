@@ -171,8 +171,9 @@ EXPECTED=(
   # The Android screen-share leg: when a leg may start, and the share tiers.
   # Neither spec ran anywhere before these rows. The start-policy row was
   # re-measured (68 -> 83) by slice 4 wave 3a: the screen-audio truth tables
-  # and the TS and Kotlin source pins on the leg's audio track.
-  "components/rtc/androidLegStartPolicy.test.ts 83 0"
+  # and the TS and Kotlin source pins on the leg's audio track; then 83 -> 85
+  # for the screen-audio build flag and the self-mute skip.
+  "components/rtc/androidLegStartPolicy.test.ts 85 0"
   "components/rtc/androidScreenShareTiers.test.ts 3 0"
   # Android screen-share audio (slice 4, wave 3a): the tile's share-audio
   # badge truth table and its ParticipantTile.tsx source pins. First measured

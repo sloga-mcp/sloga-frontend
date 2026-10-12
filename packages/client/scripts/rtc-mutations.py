@@ -10171,6 +10171,8 @@ MUTATIONS += [
         specs=[LEG_POLICY_SPEC],
         must_red=[LEG_POLICY_SPEC],
     ),
+    # Retargeted with the lighting prerequisites: the arm now opens with the
+    # event-room guard, so the search carries it.
     Mutation(
         id="native-reconnecting-branch-removed",
         what="a full reconnect no longer releases the audio and ends the share, so republishTracks puts open-gate playback on a new audio sender whose cryptor nobody witnessed (wave-1 MAJOR-1)",
@@ -10207,6 +10209,14 @@ MUTATIONS += [
                 // (see the permission branch). Taking [screenAudio] out of
                 // the field first leaves the teardown nothing to release,
                 // and a queued audio-loss report nothing to report.
+                //
+                // Only the live share's own Room may take its audio. The
+                // field read below is synchronous, ahead of the launched
+                // same-share check, so a Reconnecting from any other Room (a
+                // collector that outlived its attempt) would otherwise
+                // release the live share's source. Checked first, before
+                // anything is touched.
+                if (event.room !== room) return
                 val audio = screenAudio
                 screenAudio = null
                 releaseAudio(audio)
@@ -10459,6 +10469,142 @@ MUTATIONS += [
                 ok.put("audio", "failed")
                 call.resolve(ok)
             } catch (t: Throwable) {
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+]
+
+
+# ---- native: switching the system audio on (lighting prerequisites) ------
+# Each is killed by a source pin in LEG_POLICY_SPEC (wave A2, lane T1), so, as
+# with every native entry above, a kill proves the pinned text changed, never
+# what the APK does on a device. Four layers keep a build without the audio
+# flag from ever capturing it: the gradle default, the MainActivity marker the
+# page reads, isAvailable, and the refusal the plugin checks first. The rest
+# hold the muted badge for a silent audio publication and the order of the
+# Reconnecting arm.
+
+#: Relative to `RTC`, like SHARE_PLUGIN_KT, so both climb out of
+#: `components/rtc` and stay inside this client package.
+MAIN_ACTIVITY_JAVA = (
+    "../../android/app/src/main/java/com/acutest/app/MainActivity.java"
+)
+APP_BUILD_GRADLE = "../../android/app/build.gradle"
+
+MUTATIONS += [
+    Mutation(
+        id="native-audio-flag-arm-dropped",
+        what="screenAudioRefusal no longer refuses on a build with the system audio switched off, so a dark APK whose page asks for `audio: true` builds and publishes the playback capture anyway (lighting prerequisites)",
+        file=SHARE_PLUGIN_KT,
+        search="""        !BuildConfig.SCREEN_SHARE_AUDIO -> "unsupported"
+""",
+        replace="",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-audio-available-ignores-flag",
+        what="isAvailable reports `audioCapture` from the API level alone, so a dark APK tells the page it can capture system audio on every API 29+ phone",
+        file=SHARE_PLUGIN_KT,
+        search="""        result.put("audioCapture", BuildConfig.SCREEN_SHARE_AUDIO && Build.VERSION.SDK_INT >= 29)
+""",
+        replace="""        result.put("audioCapture", Build.VERSION.SDK_INT >= 29)
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-audio-marker-unguarded",
+        what="MainActivity registers the ScreenShareAudio marker on every API 29+ phone whatever the build flag, so the page offers the audio toggle from a dark APK",
+        file=MAIN_ACTIVITY_JAVA,
+        search="""        if (com.acutest.app.BuildConfig.SCREEN_SHARE_AUDIO
+                && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+""",
+        replace="""        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-audio-flag-default-on",
+        what="a build given neither -PsharedScreenAudio nor SLOGA_SCREEN_SHARE_AUDIO compiles BuildConfig.SCREEN_SHARE_AUDIO true, so every APK that never asked for the system audio ships it switched on",
+        file=APP_BUILD_GRADLE,
+        search="""def screenShareAudioRaw = 'false'
+""",
+        replace="""def screenShareAudioRaw = 'true'
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # The two calls differ only in indentation, and the shallower one is a
+    # substring of the deeper, so each search carries the line above it.
+    Mutation(
+        id="native-audio-silent-mute-dropped",
+        what="doConnect no longer marks a system-audio publication that never went live as muted, so when its gate stays closed (the witness failed, or the source failed before the gate opened) viewers' badges read its silence as playing (lighting prerequisites)",
+        file=SHARE_PLUGIN_KT,
+        search="""                    // never end the video.
+                    muteSilentAudio(room)
+""",
+        replace="""                    // never end the video.
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-audio-loss-mute-dropped",
+        what="a mid-share audio loss releases the source but leaves its publication unmuted, so viewers' badges keep reading the silence as playing (lighting prerequisites)",
+        file=SHARE_PLUGIN_KT,
+        search="""            // this share's Room. A no-op once the publication is gone.
+            muteSilentAudio(room)
+""",
+        replace="""            // this share's Room. A no-op once the publication is gone.
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-audio-self-mute-reaches-js",
+        what="the TrackMuted arm forwards the plugin's own mute of a silent audio publication to JS as a server mute, so a share whose audio never went live, or was lost, also shows a second, contradictory \"Screen audio stopped\" notice",
+        file=SHARE_PLUGIN_KT,
+        search="""                if (event.participant === room.localParticipant &&
+                    event.publication.sid !in selfMutedSids
+                ) {
+                    val data = JSObject()
+                    data.put("muted", true)
+""",
+        replace="""                if (event.participant === room.localParticipant) {
+                    val data = JSObject()
+                    data.put("muted", true)
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-reconnecting-room-guard-dropped",
+        what="the Reconnecting arm takes and releases `screenAudio` before anything checks which Room posted the event, so a Reconnecting from a Room that is no longer the live share's (a collector that outlived its attempt) silences the live share's system audio while its video plays on (lighting prerequisites)",
+        file=SHARE_PLUGIN_KT,
+        search="""                if (event.room !== room) return
+""",
+        replace="",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-reconnecting-release-deferred",
+        what="the Reconnecting arm releases the audio only inside the launched teardown, so the source stays in `screenAudio` with its gate open for that whole hop and the full reconnect's republish can put live playback back on air on a new audio sender (lighting prerequisites)",
+        file=SHARE_PLUGIN_KT,
+        search="""                val audio = screenAudio
+                screenAudio = null
+                releaseAudio(audio)
+                trace("full reconnect began audioReleased=${audio != null}")
+                scope.launch {
+""",
+        replace="""                val audio = screenAudio
+                trace("full reconnect began audioReleased=${audio != null}")
+                scope.launch {
+                    screenAudio = null
+                    releaseAudio(audio)
 """,
         specs=[LEG_POLICY_SPEC],
         must_red=[LEG_POLICY_SPEC],

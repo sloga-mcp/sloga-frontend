@@ -2050,11 +2050,15 @@ test("the leg's microphone recording is disabled right after LiveKit.create, on 
   );
   assertPluginWired("the refusal arm", `!micRecordingOff -> "failed"`);
   // The whole refusal, every arm in order. Each arm is a case the audio
-  // block below must never see: below API 29 there is no playback capture,
-  // the ADM recording still on would let the leg open the microphone, with
-  // no RECORD_AUDIO grant the capture is refused, and with no microphone
+  // block below must never see: in a build without the system audio there
+  // is nothing to offer, below API 29 there is no playback capture, the ADM
+  // recording still on would let the leg open the microphone, with no
+  // RECORD_AUDIO grant the capture is refused, and with no microphone
   // foreground service the OS silences it while the state reads "live". A
   // dropped arm turns its case into a null, and the block runs for it.
+  // Re-pinned for the lighting prerequisites: the build-flag arm is new and
+  // comes first, so a dark APK refuses whatever the page sent (the flag's
+  // own pins are in the build-flag test below).
   const refusals = bodiesAfter(
     PLUGIN_CODE,
     "private fun screenAudioRefusal(micRecordingOff: Boolean): String? = when {",
@@ -2062,14 +2066,16 @@ test("the leg's microphone recording is disabled right after LiveKit.create, on 
   assert.equal(refusals.length, 1, "the plugin must declare the refusal once");
   assert.equal(
     refusals[0],
-    codeOf(`Build.VERSION.SDK_INT < 29 -> "unsupported"
+    codeOf(`!BuildConfig.SCREEN_SHARE_AUDIO -> "unsupported"
+      Build.VERSION.SDK_INT < 29 -> "unsupported"
       !micRecordingOff -> "failed"
       ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) !=
         PackageManager.PERMISSION_GRANTED -> "no_permission"
       !VoiceCallService.micForegroundActive -> "no_mic_service"
       else -> null`),
-    "screenAudioRefusal must refuse on the API level, the ADM recording, " +
-      "the RECORD_AUDIO grant and the microphone service, in that order",
+    "screenAudioRefusal must refuse on the build flag, the API level, the " +
+      "ADM recording, the RECORD_AUDIO grant and the microphone service, in " +
+      "that order",
   );
   // The audio block runs only on a null refusal, and its guard is the very
   // next statement, so it reads the state the refusal just wrote. Without
@@ -2120,6 +2126,200 @@ test("the leg's microphone recording is disabled right after LiveKit.create, on 
     "LiveKit.create must get NoAudioHandler with prewarming disabled",
   );
   assert.equal(countWired(PLUGIN_CODE, "disableAudioPrewarming"), 1);
+});
+
+// The native build flag (lighting prerequisites). The web bundle's flag only
+// decides whether the page asks; BuildConfig.SCREEN_SHARE_AUDIO decides
+// whether the APK will ever answer. Read as text through the same lexer:
+// MainActivity.java (Java) and build.gradle (Groovy) share the comment and
+// quoted-string syntax it relies on, and the sync checks below hold them to
+// that.
+
+const MAIN_ACTIVITY_SOURCE = readFileSync(
+  new URL(
+    "../../android/app/src/main/java/com/acutest/app/MainActivity.java",
+    import.meta.url,
+  ),
+  "utf8",
+);
+const MAIN_ACTIVITY_CODE = codeOf(MAIN_ACTIVITY_SOURCE);
+
+const APP_GRADLE_SOURCE = readFileSync(
+  new URL("../../android/app/build.gradle", import.meta.url),
+  "utf8",
+);
+// Past the android block build.gradle holds Groovy slashy regexes
+// (`/.../`), whose quotes the lexer misreads. So only the text before the
+// first top-level block after `android { }` is lexed; the test checks the
+// cut is unique and that the whole android block lies before it.
+const APP_GRADLE_CUT = "\nrepositories {\n";
+const APP_GRADLE_HEAD = APP_GRADLE_SOURCE.slice(
+  0,
+  Math.max(0, APP_GRADLE_SOURCE.indexOf(APP_GRADLE_CUT)),
+);
+const APP_GRADLE_CODE = codeOf(APP_GRADLE_HEAD);
+
+/** `snippet` must appear exactly once in build.gradle's code. */
+const assertGradleWired = wiredAsserter("build.gradle", APP_GRADLE_CODE);
+
+test("the system audio needs the native build flag: off by default, refused first, never offered", () => {
+  // Same constraints as the Kotlin files: no raw or triple-quoted strings,
+  // nested block comments or backticks left in code, or the pins below
+  // match the wrong text. build.gradle is read up to its cut (see
+  // APP_GRADLE_HEAD), which must be unique and close the android block.
+  assert.equal(
+    APP_GRADLE_SOURCE.split(APP_GRADLE_CUT).length - 1,
+    1,
+    "build.gradle must hold one top-level repositories block",
+  );
+  assert.equal(
+    bodiesAfter(APP_GRADLE_CODE, "android {").length,
+    1,
+    "the whole android block must lie before build.gradle's cut",
+  );
+  for (const [file, source, code, minStrings] of [
+    ["MainActivity.java", MAIN_ACTIVITY_SOURCE, MAIN_ACTIVITY_CODE, 5],
+    ["build.gradle", APP_GRADLE_HEAD, APP_GRADLE_CODE, 20],
+  ] as const) {
+    assert.ok(!source.includes('"""'), `${file}: a triple-quoted string`);
+    assert.ok(!source.includes("'''"), `${file}: a triple-quoted string`);
+    assert.ok(!code.includes("*/"), `${file}: a nested block comment`);
+    assert.ok(!code.includes("`"), `${file}: a backtick left code`);
+    for (const { text } of stringsOf(code))
+      assert.ok(!/\$\{[^}]*$/.test(text), `${file}: a template cut: ${text}`);
+    assertLexesInSync(file, source, code, minStrings);
+  }
+
+  // build.gradle: ONE field, in defaultConfig, so no flavor (play, sideload,
+  // foss) can override it; a second `"SCREEN_SHARE_AUDIO"` literal would be
+  // such an override.
+  assertGradleWired(
+    "the build flag",
+    `buildConfigField "boolean", "SCREEN_SHARE_AUDIO", screenShareAudio`,
+  );
+  assert.equal(
+    countWired(APP_GRADLE_CODE, `"SCREEN_SHARE_AUDIO"`),
+    1,
+    "build.gradle must declare SCREEN_SHARE_AUDIO once, with no override",
+  );
+  // The same over the WHOLE raw file, past the cut too and in either quote,
+  // so a late `android.productFlavors...buildConfigField(...)` fails here.
+  assert.equal(
+    APP_GRADLE_SOURCE.split(`"SCREEN_SHARE_AUDIO"`).length +
+      APP_GRADLE_SOURCE.split(`'SCREEN_SHARE_AUDIO'`).length -
+      2,
+    1,
+    "build.gradle must name the SCREEN_SHARE_AUDIO field once in all",
+  );
+  const defaults = bodiesAfter(APP_GRADLE_CODE, "defaultConfig {");
+  assert.equal(defaults.length, 1, "build.gradle must hold one defaultConfig");
+  assert.equal(
+    countWired(
+      defaults[0],
+      `buildConfigField "boolean", "SCREEN_SHARE_AUDIO", screenShareAudio`,
+    ),
+    1,
+    "the build flag must be declared inside defaultConfig",
+  );
+  // Where its value comes from: unset is false; -PsharedScreenAudio wins
+  // over env SLOGA_SCREEN_SHARE_AUDIO (checked first, the env only in the
+  // else arm); the field takes the TRIMMED value, and only after the
+  // validation, which fails the build on anything but "true" or "false"
+  // (so a typo can never ship the flag on). A default of 'true', the env
+  // read first, or a dropped throw each change this text.
+  assertGradleWired(
+    "the flag's sources, default and validation",
+    `def screenShareAudioProperty = providers.gradleProperty('sharedScreenAudio').orNull
+    def screenShareAudioEnv = providers.environmentVariable('SLOGA_SCREEN_SHARE_AUDIO').orNull
+    def screenShareAudioSource = 'default'
+    def screenShareAudioRaw = 'false'
+    if (screenShareAudioProperty != null) {
+      screenShareAudioSource = '-PsharedScreenAudio'
+      screenShareAudioRaw = screenShareAudioProperty
+    } else if (screenShareAudioEnv != null) {
+      screenShareAudioSource = 'env SLOGA_SCREEN_SHARE_AUDIO'
+      screenShareAudioRaw = screenShareAudioEnv
+    }
+    def screenShareAudio = screenShareAudioRaw.trim()
+    if (screenShareAudio != 'true' && screenShareAudio != 'false') {
+      throw new GradleException(`,
+  );
+  // Nothing else writes either variable: a later `screenShareAudioRaw =
+  // 'true'` (or a second `screenShareAudio =`) would bypass the default or
+  // the validation.
+  assert.equal(countWired(APP_GRADLE_CODE, "screenShareAudioRaw ="), 3);
+  assert.equal(countWired(APP_GRADLE_CODE, "screenShareAudio ="), 1);
+  assert.ok(
+    APP_GRADLE_CODE.indexOf(codeOf("throw new GradleException(")) <
+      APP_GRADLE_CODE.indexOf(codeOf("android {")),
+    "the validation must run before the android block reads the flag",
+  );
+
+  // MainActivity: the capability marker JS reads synchronously is
+  // registered only when the build has the flag AND the OS has playback
+  // capture, before super.onCreate (Capacitor reads its plugin list there).
+  // Without the flag in the guard a dark APK advertises audio and the page
+  // offers it; native would still refuse, but the user sees a toggle that
+  // can never work.
+  const creates = bodiesAfter(
+    MAIN_ACTIVITY_CODE,
+    "public void onCreate(Bundle savedInstanceState) {",
+  );
+  assert.equal(creates.length, 1, "MainActivity must declare onCreate once");
+  const [create] = creates;
+  const markerAt = onceAt(
+    create,
+    "the guarded marker registration",
+    `if (com.acutest.app.BuildConfig.SCREEN_SHARE_AUDIO
+        && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+      registerPlugin(com.acutest.app.screenshare.ScreenShareAudioPlugin.class);
+    }`,
+  );
+  const superAt = onceAt(
+    create,
+    "MainActivity's super.onCreate",
+    "super.onCreate(savedInstanceState)",
+  );
+  assert.ok(
+    markerAt < superAt,
+    "the marker must be registered before super.onCreate",
+  );
+  assert.equal(
+    countWired(MAIN_ACTIVITY_CODE, "ScreenShareAudioPlugin"),
+    1,
+    "MainActivity must register the marker only inside the flag guard",
+  );
+
+  // The plugin: the flag arm is the refusal's FIRST, so native refuses even
+  // if the page sends `audio: true`, and isAvailable reports the same
+  // answer. `BuildConfig` itself is the app's (the import), read only at
+  // those two sites: another module's BuildConfig would compile against a
+  // field of its own.
+  const [refusal] = bodiesAfter(
+    PLUGIN_CODE,
+    "private fun screenAudioRefusal(micRecordingOff: Boolean): String? = when {",
+  );
+  assert.ok(
+    refusal.startsWith(
+      codeOf(`!BuildConfig.SCREEN_SHARE_AUDIO -> "unsupported"
+        Build.VERSION.SDK_INT < 29 -> "unsupported"`),
+    ),
+    "the build-flag arm must be screenAudioRefusal's first",
+  );
+  assertPluginWired(
+    "isAvailable's audio answer",
+    `result.put("audioCapture", BuildConfig.SCREEN_SHARE_AUDIO && Build.VERSION.SDK_INT >= 29)`,
+  );
+  assert.equal(countWired(PLUGIN_CODE, `"audioCapture"`), 1);
+  assertPluginWired(
+    "the app's BuildConfig",
+    "import com.acutest.app.BuildConfig",
+  );
+  assert.equal(
+    countWired(PLUGIN_CODE, "BuildConfig"),
+    3,
+    "BuildConfig must be the import, the refusal arm and isAvailable",
+  );
 });
 
 test("the system audio is released before the video capture stops, on every stop path", () => {
@@ -2178,11 +2378,41 @@ test("a full reconnect releases the audio before it tears the share down", () =>
   // nobody witnessed, with the source's gate still open. The branch must
   // release the source synchronously (so it only paces zeros) and then end
   // the share, and nothing else.
+  //
+  // Re-pinned for the lighting prerequisites: the branch now opens with an
+  // event-room guard. The release reads the [screenAudio] field
+  // synchronously, ahead of the launched same-share check, so a
+  // Reconnecting from any Room but the live share's (a collector that
+  // outlived its attempt) would release the live share's source. The guard
+  // must be the first statement, before anything is touched.
   const bodies = bodiesAfter(PLUGIN_CODE, "is RoomEvent.Reconnecting -> {");
   assert.equal(bodies.length, 1, "onRoomEvent must handle Reconnecting once");
+  const [arm] = bodies;
+  assert.ok(
+    arm.startsWith(codeOf("if (event.room !== room) return val audio")),
+    "the Reconnecting branch must check the event's Room first",
+  );
+  // The release stays synchronous and ahead of the launch: moved into the
+  // launch it would run only after the same-share check, by which time the
+  // SDK may already be republishing onto an unwitnessed audio sender.
+  const releaseAt = onceAt(
+    arm,
+    "the Reconnecting branch's release",
+    "releaseAudio(audio)",
+  );
+  const launchAt = onceAt(
+    arm,
+    "the Reconnecting branch's launch",
+    "scope.launch {",
+  );
+  assert.ok(
+    releaseAt < launchAt,
+    "the Reconnecting branch must release the audio before its launch",
+  );
   assert.equal(
-    bodies[0],
-    codeOf(`val audio = screenAudio
+    arm,
+    codeOf(`if (event.room !== room) return
+      val audio = screenAudio
       screenAudio = null
       releaseAudio(audio)
       trace("full reconnect began audioReleased=\${audio != null}")
@@ -2191,8 +2421,135 @@ test("a full reconnect releases the audio before it tears the share down", () =>
           tearDown("disconnected")
         }
       }`),
-    "the Reconnecting branch must release the audio, then tear down",
+    "the Reconnecting branch must check its Room, release the audio, then " +
+      "tear down",
   );
+});
+
+test("an audio publication left carrying silence is marked muted, and that mute never reaches JS", () => {
+  // A published audio track whose gate never opened (witness failed, the
+  // source failed first, the publish threw after registering it) or whose
+  // source was lost mid-share stays on air (an unpublish renegotiates,
+  // crash class A) carrying only silence; unmuted, viewers' badge reads it
+  // as playing. One guarded helper mutes it: the declaration and two call
+  // sites, nothing else.
+  assert.equal(
+    countWired(PLUGIN_CODE, "muteSilentAudio("),
+    3,
+    "muteSilentAudio must be the declaration and its two call sites",
+  );
+  // Its own try, so a throw from the blocking setter costs the badge only,
+  // never the video (and doConnect's try count stays 3). The sid goes into
+  // the skip set BEFORE the mute: the SDK re-posts the mute as a TrackMuted,
+  // and recorded after, that event could find the set without it.
+  const mutes = blockBodiesOf(PLUGIN_CODE, "private fun muteSilentAudio(");
+  assert.equal(mutes.length, 1, "the plugin must declare muteSilentAudio once");
+  const [mute] = mutes;
+  const recordAt = onceAt(
+    mute,
+    "muteSilentAudio's sid record",
+    "selfMutedSids.add(pub.sid)",
+  );
+  const mutedAt = onceAt(mute, "muteSilentAudio's mute", "pub.muted = true");
+  assert.ok(
+    recordAt < mutedAt,
+    "muteSilentAudio must record the sid before it sets the mute",
+  );
+  assert.equal(
+    mute,
+    codeOf(`try {
+        val pub = room.localParticipant
+          .getTrackPublication(Track.Source.SCREEN_SHARE_AUDIO) ?: return
+        selfMutedSids.add(pub.sid)
+        pub.muted = true
+        trace("audio publication muted")
+      } catch (t: Throwable) {
+        trace("audio mute failed \${t.javaClass.simpleName}")
+      }`),
+    "muteSilentAudio must mute only the system-audio publication, inside " +
+      "its own try, after recording its sid",
+  );
+  assert.equal(countWired(PLUGIN_CODE, ".muted = true"), 1);
+  assert.equal(countWired(PLUGIN_CODE, "selfMutedSids.add("), 1);
+
+  // Call site 1: doConnect's not-live arm, inside the audio block, after the
+  // release. Every share whose audio did not go live passes through it.
+  const [connect] = blockBodiesOf(
+    PLUGIN_CODE,
+    "private suspend fun doConnect(",
+  );
+  const [audioBlock] = bodiesAfter(
+    connect,
+    "if (audioState == null && Build.VERSION.SDK_INT >= 29) {",
+  );
+  onceAt(
+    audioBlock,
+    "doConnect's not-live arm mutes the publication",
+    `if (audioState != "live") {
+      releaseAudio(audio)
+      audio = null
+      muteSilentAudio(room)
+    }`,
+  );
+  assert.equal(countWired(connect, "muteSilentAudio("), 1);
+  // Call site 2: a mid-share loss, only after the launched same-share
+  // checks, so it only ever touches this share's Room.
+  const [lost] = blockBodiesOf(PLUGIN_CODE, "private fun onScreenAudioLost(");
+  const lostLaunches = bodiesAfter(lost, "scope.launch {");
+  assert.equal(lostLaunches.length, 1, "onScreenAudioLost launches once");
+  const [lostLaunch] = lostLaunches;
+  const bailAt = onceAt(
+    lostLaunch,
+    "the audio-loss same-share check",
+    "return@launch",
+  );
+  const lostMuteAt = onceAt(
+    lostLaunch,
+    "the audio loss mutes the publication",
+    `screenAudio = null
+    releaseAudio(audio)
+    trace("audio lost state=$state")
+    muteSilentAudio(room)`,
+  );
+  assert.ok(
+    bailAt < lostMuteAt,
+    "the audio-loss mute must come after the same-share checks",
+  );
+  // Never on a stop path: a share that is ending needs no mute, and the
+  // setter blocks Main on the RTC thread.
+  for (const head of [
+    "private fun tearDown(",
+    "private fun stopCapture(",
+    "private fun discardRoom(",
+  ]) {
+    const [body] = blockBodiesOf(PLUGIN_CODE, head);
+    assert.equal(
+      countWired(body, "muteSilentAudio("),
+      0,
+      `${head}) must never mute the audio publication`,
+    );
+  }
+
+  // The SDK re-posts the self-mute as TrackMuted; JS reads every `muted`
+  // event as a server mute, so forwarded it would add a second,
+  // contradictory "Screen audio stopped" notice. Both arms skip the
+  // recorded sids, and the set ends with the share.
+  for (const arm of ["TrackMuted", "TrackUnmuted"]) {
+    const arms = bodiesAfter(PLUGIN_CODE, `is RoomEvent.${arm} -> {`);
+    assert.equal(arms.length, 1, `onRoomEvent must handle ${arm} once`);
+    assert.ok(
+      arms[0].startsWith(
+        codeOf(`if (event.participant === room.localParticipant &&
+          event.publication.sid !in selfMutedSids
+        ) {`),
+      ),
+      `the ${arm} arm must skip the sids the plugin muted itself`,
+    );
+  }
+  const [tearDown] = blockBodiesOf(PLUGIN_CODE, "private fun tearDown(");
+  onceAt(tearDown, "tearDown clears the self-mutes", "selfMutedSids.clear()");
+  // The declaration, the record, the two skips and the clear.
+  assert.equal(countWired(PLUGIN_CODE, "selfMutedSids"), 5);
 });
 
 test("the system audio publishes as SCREEN_SHARE_AUDIO, RED off, buffer callback never unset", () => {
