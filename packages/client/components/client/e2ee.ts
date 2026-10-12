@@ -41,6 +41,7 @@ import type {
 } from "stoat.js";
 
 import type { ResumeCommitRef, ResumePrefetch } from "../rtc/mlsRejoinPolicy";
+import { decryptBump } from "./e2eeConversationBump";
 import {
   type CallRosterOutcome,
   type RatelimitTransportOptions,
@@ -50,8 +51,12 @@ import {
   MLS_REQUEST_DEADLINE_MS,
   settleCallRosterReconcile,
 } from "./e2eeRatelimitPolicy";
-import { settleDelivered } from "./e2eeSendSettle";
-import { adoptTrustedRow } from "./e2eeTrustedRow";
+import { errorName, settleDelivered } from "./e2eeSendSettle";
+import {
+  adoptTrustedRow,
+  isTrustedId,
+  trustEncryptedId,
+} from "./e2eeTrustedRow";
 import { classifyEnvelopeError } from "./mlsEnvelopeClassify";
 import {
   type MlsBufferedEnvelope,
@@ -1197,6 +1202,23 @@ export class E2EEBridge implements E2EEAdapter {
    */
   #encryptedIds = new Set<string>();
 
+  /**
+   * Bumped by each enabled `#onReady`. A conversation-order seed stops as
+   * soon as this moves past the generation it was started with, so a
+   * reconnect leaves one live seed.
+   */
+  #seedGeneration = 0;
+
+  /**
+   * Ids the conversation-order seed trusted without injecting a row. They
+   * sit in `#encryptedIds` only so that `#inject` evicts on the first
+   * adopt: no trusted object is cached yet, and a server fetch may cache a
+   * forged one under the id. Until then `isEncryptedMessage` is false for
+   * them (no lock, no ack padding, no live-event drop); `#inject` removes
+   * them once it has created the decrypted object.
+   */
+  #seedOnly = new Set<string>();
+
   /** Reactive per-peer send-mode cache for the composer indicator */
   readonly sendModes = new ReactiveMap<
     string,
@@ -1637,6 +1659,11 @@ export class E2EEBridge implements E2EEAdapter {
         // notified, or leave the "may not have reached everyone" state
         // [G2: 5].
         void this.#resumePendingDowngrades();
+
+        // Order encrypted conversations in the list from the local store:
+        // the server never sees their messages. Fire-and-forget, and a
+        // later connect supersedes it.
+        void this.#seedConversationOrder(++this.#seedGeneration);
       }
       // NB: a §6.4 restore strand is NOT caught here. A restored store carries
       // `published = true` (restore imports the source device's published flag,
@@ -1646,6 +1673,86 @@ export class E2EEBridge implements E2EEAdapter {
       // exactly where that rejection lands.
     } catch (error) {
       console.error("[e2ee] startup failed", error);
+    }
+  }
+
+  /**
+   * Startup order for encrypted DMs and groups (plan A2). For each one whose
+   * native verdict is not `plaintext`, the newest `text` row of its local
+   * history moves the channel's last message forward: `own` for ours (a
+   * local acknowledge, no server ack), `restored` otherwise. Nothing is
+   * injected. Sequential, and stops between conversations once a newer
+   * connect bumps the generation or E2EE is no longer enabled. Never
+   * throws; logs counts and error names only.
+   */
+  async #seedConversationOrder(generation: number): Promise<void> {
+    const current = () =>
+      generation === this.#seedGeneration &&
+      this.status.get("state")?.enabled === true;
+
+    let failed = 0;
+    let lastError: unknown;
+    try {
+      const channels = [...this.#client.channels.values()].filter(
+        (channel) =>
+          channel.type === "DirectMessage" || channel.type === "Group",
+      );
+      for (const channel of channels) {
+        if (!current()) return;
+        try {
+          // Pending, blocked and peer_downgraded still count as encrypted
+          const mode = await this.sendModeNowFor(channel);
+          if (!current()) return;
+          if (mode === null || mode === "plaintext") continue;
+
+          const conversationId =
+            channel.type === "Group" ? channel.id : this.#peerOf(channel);
+          if (!conversationId) continue;
+
+          const rows = await this.#invoke<HistoryRow[]>("e2ee_history", {
+            peerUserId: conversationId,
+            before: null,
+            limit: 5,
+          });
+          if (!current()) return;
+
+          // Newest first (native order), so this is the latest message
+          const row = rows.find((r) => r.kind === "text");
+          if (!row) continue;
+
+          // Never `#encryptedIds.add` directly: an untrusted object cached
+          // under this id must be evicted first (audit BLOCKER 1). An id
+          // `#inject` already trusted has its trusted object cached; a new
+          // one has none yet, so it is seed-only until injected.
+          const injected = this.#encryptedIds.has(row.id);
+          trustEncryptedId(
+            this.#client.messages,
+            this.#encryptedIds,
+            row.id,
+            (id) => this.#evictUntrusted(id),
+          );
+          if (!injected) this.#seedOnly.add(row.id);
+
+          // `own` acknowledges, so only while this row is still the newest:
+          // a newer incoming message decrypted first keeps its count
+          const own =
+            row.direction === "out" &&
+            (channel.lastMessageId ?? "0").localeCompare(row.id) <= 0;
+          channel.noteEncryptedMessage(row.id, own ? "own" : "restored");
+        } catch (error) {
+          failed++;
+          lastError = error;
+        }
+      }
+    } catch (error) {
+      console.warn("[e2ee] conversation order seed failed:", errorName(error));
+      return;
+    }
+    if (failed) {
+      console.warn(
+        `[e2ee] conversation order seed skipped ${failed} conversation(s):`,
+        errorName(lastError),
+      );
     }
   }
 
@@ -2309,21 +2416,43 @@ export class E2EEBridge implements E2EEAdapter {
     const isGroup =
       outcome.kind === "message" && outcome.conversation_kind === "group";
 
+    let target: Channel | undefined;
+    let rows: HistoryRow[];
     if (isGroup) {
       // A group conversation may have been ESTABLISHED by this very message
       // (an inbound group_enable). Resolve the group channel and surface it.
       const channel = this.#groupChannel(conversation);
       await this.#refreshGroupMode(conversation);
-      await this.#syncRecentConversation(
+      rows = await this.#syncRecentConversation(
         conversation,
         channel?.id ?? conversation,
         /* live */ true,
       );
+      target = channel ?? this.#groupChannel(conversation);
     } else {
       await this.#refreshMode(conversation);
       // Inject the message and any markers the decrypt recorded (gap,
       // tampered, identity change …) with their canonical native row ids
-      await this.#syncRecent(conversation, /* live */ true);
+      ({ channel: target, rows } = await this.#syncRecent(
+        conversation,
+        /* live */ true,
+      ));
+    }
+
+    // Order + unread for the conversation list, once per decrypt (a
+    // duplicate returned above): the `incoming` count is not idempotent.
+    // Only a real text message bumps. No server ack here; for `own` the
+    // sending device already sent it.
+    const bump = decryptBump(outcome, rows);
+    if (bump && target) {
+      try {
+        target.noteEncryptedMessage(bump.id, bump.origin, {
+          hasAttachments: bump.hasAttachments,
+          reopen: bump.reopen,
+        });
+      } catch (error) {
+        console.warn("[e2ee] conversation bump failed:", errorName(error));
+      }
     }
   }
 
@@ -2474,6 +2603,13 @@ export class E2EEBridge implements E2EEAdapter {
           },
           true,
         ),
+      // Bump + own read pointer. Server ack only with a Queued receipt id:
+      // the echo id is local-clock, not a server instant.
+      noteDelivered: (m, receiptId) =>
+        channel.noteEncryptedMessage(m.id, "own", {
+          receiptId,
+          serverAck: receiptId !== undefined,
+        }),
       receipts,
       handleReceipts: async () => {
         revoked = await this.#invoke<string[]>("e2ee_handle_receipts", {
@@ -2488,7 +2624,9 @@ export class E2EEBridge implements E2EEAdapter {
           await this.#refreshMode(peerId);
         }
       },
-      syncRecent: () => this.#syncRecent(peerId),
+      syncRecent: async () => {
+        await this.#syncRecent(peerId);
+      },
       // Rev-2 MAJOR-1: a fan-out that reached ZERO live devices would
       // otherwise render as a clean send — the one-message silent-loss
       // window when every device-change event was missed. Surface it and
@@ -2608,13 +2746,20 @@ export class E2EEBridge implements E2EEAdapter {
           },
           true,
         ),
+      // Same as the DM path: no Queued receipt, no server ack
+      noteDelivered: (m, receiptId) =>
+        channel.noteEncryptedMessage(m.id, "own", {
+          receiptId,
+          serverAck: receiptId !== undefined,
+        }),
       receipts,
       handleReceipts: async () => {
         await this.#invoke<string[]>("e2ee_handle_receipts", { receipts });
       },
       refreshMode: () => this.#refreshGroupMode(conversationId),
-      syncRecent: () =>
-        this.#syncRecentConversation(conversationId, channel.id),
+      syncRecent: async () => {
+        await this.#syncRecentConversation(conversationId, channel.id);
+      },
       markUndelivered: () => {
         // group sends show no "Not delivered" marker
       },
@@ -3095,12 +3240,15 @@ export class E2EEBridge implements E2EEAdapter {
     return this.#refreshGroupMode(conversationId);
   }
 
-  /** Group-aware analog of `#syncRecent` (keyed by conversation id). */
+  /**
+   * Group-aware analog of `#syncRecent` (keyed by conversation id). Returns
+   * the rows it injected, oldest first.
+   */
   async #syncRecentConversation(
     conversationId: string,
     channelId: string,
     live = false,
-  ): Promise<void> {
+  ): Promise<HistoryRow[]> {
     const rows = await this.#invoke<HistoryRow[]>("e2ee_history", {
       peerUserId: conversationId,
       before: null,
@@ -3109,6 +3257,7 @@ export class E2EEBridge implements E2EEAdapter {
     for (const row of rows.reverse()) {
       this.#inject(channelId, row, live);
     }
+    return rows;
   }
 
   /**
@@ -3408,11 +3557,15 @@ export class E2EEBridge implements E2EEAdapter {
    * Re-inject the newest native history rows for a conversation. Rows keep
    * their canonical native ids, so this is idempotent — used after
    * decrypts and device events to surface new messages AND the marker rows
-   * the native layer recorded alongside them.
+   * the native layer recorded alongside them. Returns the DM channel (when
+   * one resolved) and the rows it injected, oldest first.
    */
-  async #syncRecent(peerId: string, live = false): Promise<void> {
+  async #syncRecent(
+    peerId: string,
+    live = false,
+  ): Promise<{ channel?: Channel; rows: HistoryRow[] }> {
     const channel = await this.#dmChannel(peerId);
-    if (!channel) return;
+    if (!channel) return { rows: [] };
 
     const rows = await this.#invoke<HistoryRow[]>("e2ee_history", {
       peerUserId: peerId,
@@ -3423,6 +3576,7 @@ export class E2EEBridge implements E2EEAdapter {
     for (const row of rows.reverse()) {
       this.#inject(channel.id, row, live);
     }
+    return { channel, rows };
   }
 
   // ================================================================
@@ -3540,10 +3694,16 @@ export class E2EEBridge implements E2EEAdapter {
 
     // Trusted encrypted-ness lives in this set, NOT in a message flag (a
     // flag is server-forgeable). Marker rows are E2EE-conversation events
-    // too, so they count. Read whether the id was ALREADY trusted before
-    // adding it: only an untrusted id may have a server-sent object cached.
-    const alreadyTrusted = this.#encryptedIds.has(row.id);
-    this.#encryptedIds.add(row.id);
+    // too, so they count. Read whether the id was ALREADY trusted: only an
+    // untrusted id may have a server-sent object cached. A seed-trusted id
+    // has no trusted object yet, so anything cached under it came from the
+    // server and is evicted on this first inject. Trust itself is granted
+    // in `beforeCreate` below, right before the object is created.
+    const alreadyTrusted = isTrustedId(
+      this.#encryptedIds,
+      this.#seedOnly,
+      row.id,
+    );
 
     // Attachment metadata (reactive) + kick off pending ciphertext
     // fetches — also resumes fetches interrupted by a restart
@@ -3575,25 +3735,54 @@ export class E2EEBridge implements E2EEAdapter {
     // messageCreate fires only for a live row that this call actually
     // creates, so a server object cached under the envelope id and evicted
     // here no longer hides the decrypted message.
-    return adoptTrustedRow(
-      this.#client.messages,
-      row.id,
-      shape,
-      live,
-      alreadyTrusted,
-      (id) => {
-        const evicted = this.#client.messages.getUnderlyingObject(id);
-        const channelId = evicted.channelId;
-        this.#client.messages.delete(id);
-        this.#client.emit("messageDeleteId", id, channelId);
-        this.#client.emit("messageDelete", evicted);
-      },
-    );
+    let undo: (() => void) | undefined;
+    try {
+      return adoptTrustedRow(
+        this.#client.messages,
+        row.id,
+        shape,
+        live,
+        alreadyTrusted,
+        (id) => this.#evictUntrusted(id),
+        // Trust is final BEFORE getOrCreate fires messageCreate, whose
+        // listeners (transcript, notifications) read `isEncryptedMessage`
+        (id) => {
+          const wasTrusted = this.#encryptedIds.has(id);
+          const wasSeed = this.#seedOnly.delete(id);
+          this.#encryptedIds.add(id);
+          undo = () => {
+            if (!wasTrusted) this.#encryptedIds.delete(id);
+            if (wasSeed) this.#seedOnly.add(id);
+          };
+        },
+      );
+    } catch (error) {
+      // Nothing cached: never leave a trusted id with no trusted object
+      if (undo && !this.#client.messages.has(row.id)) undo();
+      throw error;
+    }
   }
 
-  /** Trusted encrypted-ness of a message id (see `#encryptedIds`) */
+  /**
+   * Drop an untrusted cached message under an encrypted id, with the v1
+   * `MessageDelete` events. The ONE eviction both `#inject` and the
+   * conversation-order seed use.
+   */
+  #evictUntrusted(id: string): void {
+    const evicted = this.#client.messages.getUnderlyingObject(id);
+    const channelId = evicted.channelId;
+    this.#client.messages.delete(id);
+    this.#client.emit("messageDeleteId", id, channelId);
+    this.#client.emit("messageDelete", evicted);
+  }
+
+  /**
+   * Trusted encrypted-ness of a message id (see `#encryptedIds`). A
+   * seed-only id is NOT encrypted yet: no decrypted object is cached under
+   * it, so whatever is cached came from the server (see `#seedOnly`).
+   */
   isEncryptedMessage(id: string): boolean {
-    return this.#encryptedIds.has(id);
+    return isTrustedId(this.#encryptedIds, this.#seedOnly, id);
   }
 
   /**

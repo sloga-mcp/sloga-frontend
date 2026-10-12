@@ -25,6 +25,13 @@
  * `alreadyTrusted` and an object is cached under `id`, `evict(id)` runs
  * exactly once, BEFORE `getOrCreate`. `getOrCreate` then receives
  * `isNew = live && !collection.has(id)`. Returns `getOrCreate`'s result.
+ *
+ * `beforeCreate(id)`, when given, runs exactly once, after any eviction and
+ * immediately before `getOrCreate`, whether or not eviction ran. It exists so
+ * the caller can flip trust state (mark the id trusted, clear seed-only)
+ * before `getOrCreate` synchronously fires `messageCreate`, whose listeners
+ * read trust. A throwing `beforeCreate` propagates and `getOrCreate` is not
+ * called.
  */
 export function adoptTrustedRow<T>(
   collection: {
@@ -36,10 +43,47 @@ export function adoptTrustedRow<T>(
   live: boolean,
   alreadyTrusted: boolean,
   evict: (id: string) => void,
+  beforeCreate?: (id: string) => void,
 ): T {
   if (!alreadyTrusted && collection.has(id)) {
     evict(id);
   }
   const isNew = live && !collection.has(id);
+  beforeCreate?.(id);
   return collection.getOrCreate(id, data as never, isNew);
+}
+
+/**
+ * Marks `id` trusted WITHOUT injecting its row - the startup seed that orders
+ * encrypted conversations uses this. When `id` is not yet in `trusted` and an
+ * object is cached under it, `evict(id)` runs exactly once, BEFORE the id is
+ * added. Trusting the id without that eviction would let a forged `Message`
+ * cached under the envelope id before the seed be treated as already trusted
+ * by `#inject` later and render under the lock - the same hazard
+ * `adoptTrustedRow` closes. A throwing `evict` propagates and leaves the id
+ * untrusted.
+ */
+export function trustEncryptedId(
+  collection: { has(id: string): boolean },
+  trusted: Set<string>,
+  id: string,
+  evict: (id: string) => void,
+): void {
+  if (!trusted.has(id) && collection.has(id)) {
+    evict(id);
+  }
+  trusted.add(id);
+}
+
+/**
+ * True when `id` is trusted for rendering and adoption: it is in `trusted`
+ * and not in `seedOnly`. An id the startup seed trusted without caching its
+ * decrypted object is not yet trusted for rendering or adoption.
+ */
+export function isTrustedId(
+  trusted: { has(id: string): boolean },
+  seedOnly: { has(id: string): boolean },
+  id: string,
+): boolean {
+  return trusted.has(id) && !seedOnly.has(id);
 }
