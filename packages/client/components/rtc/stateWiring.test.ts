@@ -32,6 +32,7 @@ import {
   assertLexesInSync,
   assertLogsOnly,
   bodiesAfter,
+  bodyFrom,
   closerOf,
   codeOf,
   consoleCallsIn,
@@ -1224,13 +1225,32 @@ test("source pin (C9): the re-key stopped copy occurs once in code, in its const
   );
 });
 
+// (slice 4) The start's audio notice, whole, and the ONLY statement after the
+// key sync: the try's last. It speaks only while the attempt still owns the
+// leg (a stop during the sync bumped the generation and has said why, so
+// "sharing without it" over an ended share would be false), from the sheet's
+// `audio` and the state native reported at connect, never as a mid-share
+// notice. Moved above the sync, it would sit between the connect and the sync
+// the pins below hold contiguous.
+const LEG_START_AUDIO_NOTICE = `if (this.#androidLegGeneration === generation) {
+    const text = this.#legAudioNoticeMessage(
+      legAudioNotice({
+        requested: audio,
+        state: audioState,
+        midShare: false,
+      }),
+    );
+    if (text !== undefined) this.onErr(new Error(text));
+  }`;
+
 // 🔴 SECURITY (wave-4b-fix2, decision 7 / E2-5). The key-fence catches above
 // act only once a push FAILS; these pins hold the pushes themselves. A
 // rotation that lands while the leg is still connecting is dropped by the
 // listener (the leg is not `active()` yet), and this call is what re-reads the
 // provider's key once `connect()` resolves and pushes it. Dropped, the share
-// stays on a key a member removed by that rotation still holds. It ends the
-// try, right after the post-connect stale exit, at the try's top level.
+// stays on a key a member removed by that rotation still holds. It follows
+// the post-connect stale exit directly, at the try's top level, and only the
+// start's audio notice follows it (slice 4).
 test("source pin (C9): the leg start ends its try by syncing the leg's key, right after the post-connect stale exit", () => {
   const start = androidLegStart();
   const tryHead = `try {`;
@@ -1253,10 +1273,13 @@ test("source pin (C9): the leg start ends its try by syncing the leg's key, righ
     firstAt("the try", body, `await activeLeg.connect(`) < exits[2],
     "the third stale exit follows connect()",
   );
-  const tail = codeOf(staleExit + sync).replace(/;$/, "");
+  const tail = codeOf(staleExit + sync + LEG_START_AUDIO_NOTICE).replace(
+    /;$/,
+    "",
+  );
   assert.ok(
     body.endsWith(tail),
-    "the try ends: the post-connect stale exit, then the key sync",
+    "the try ends: the post-connect stale exit, the key sync, the audio notice",
   );
   assert.equal(
     exits[2],
@@ -1264,15 +1287,28 @@ test("source pin (C9): the leg start ends its try by syncing the leg's key, righ
     "the stale exit it follows is the third",
   );
   assert.equal(
-    braceDepthAt(body, body.length - codeOf(sync).length + 1),
+    braceDepthAt(
+      body,
+      body.length - codeOf(sync + LEG_START_AUDIO_NOTICE).length + 1,
+    ),
     0,
     "the sync's depth",
+  );
+  assert.equal(
+    braceDepthAt(body, body.length - codeOf(LEG_START_AUDIO_NOTICE).length + 1),
+    0,
+    "the audio notice's depth",
   );
   assert.equal(countWired(STATE_CODE, sync), 1, "the one awaited sync");
   assert.equal(
     countWired(STATE_CODE, `this.#syncLegKeyAfterConnect(`),
     1,
     "its only call",
+  );
+  assert.equal(
+    countWired(STATE_CODE, LEG_START_AUDIO_NOTICE),
+    1,
+    "the one start audio notice",
   );
 });
 
@@ -1393,18 +1429,22 @@ const LEG_KEY_READ = `const modeAtConnect = this.callMode();
 // it: the bound key reaches `connect()` (`e2ee: undefined` is a plaintext
 // share), and nothing runs between the connect and the post-connect stale
 // exit and key sync (an early `return` there skips the sync, leaving the
-// share on the key it connected with).
-const LEG_CONNECT_TAIL = `await activeLeg.connect({
+// share on the key it connected with). (slice 4) The connect also carries the
+// sheet's `audio` and binds native's `audioState`, and the start's audio
+// notice is the one statement after the sync.
+const LEG_CONNECT_TAIL = `const audioState = await activeLeg.connect({
     url: auth.url,
     token: auth.token,
     tier,
+    audio,
     e2ee: e2eeKey,
   });
   if (this.#androidLegStale(generation, room)) {
     await this.#exitStaleAndroidLegStart(generation, room);
     return;
   }
-  await this.#syncLegKeyAfterConnect(activeLeg, e2eeKey);`;
+  await this.#syncLegKeyAfterConnect(activeLeg, e2eeKey);
+  ${LEG_START_AUDIO_NOTICE}`;
 
 test("source pin (C9): the leg start's binding key read is whole: E2EE branch, active session, current group, every field", () => {
   const start = androidLegStart();
@@ -1437,12 +1477,19 @@ test("source pin (C9): the leg start's try ends: the key read, connect with that
   // between the read and the connect, nor between the connect and the sync.
   assert.ok(
     body.endsWith(codeOf(LEG_KEY_READ + LEG_CONNECT_TAIL).replace(/;$/, "")),
-    "the try ends: the key read, connect, the stale exit, the sync",
+    "the try ends: the key read, connect, the stale exit, the sync, " +
+      "the audio notice",
   );
   assert.equal(
     bodyAfter(start, `await activeLeg.connect(`),
-    codeOf(`{ url: auth.url, token: auth.token, tier, e2ee: e2eeKey }`),
+    codeOf(`{ url: auth.url, token: auth.token, tier, audio, e2ee: e2eeKey }`),
     "connect()'s argument, whole",
+  );
+  // (slice 4) The sheet's `audio`, by shorthand, right before the key.
+  assert.equal(
+    countWired(start, `tier, audio, e2ee: e2eeKey }`),
+    1,
+    "audio immediately before e2ee: e2eeKey",
   );
   assert.equal(
     countWired(STATE_CODE, `activeLeg.connect(`),
@@ -1514,7 +1561,8 @@ test("source pin (C9): the stale exit after the token mint is immediately follow
   assertWired("the mint's stale exit, then the mode read", adjacency);
   assert.equal(countWired(start, adjacency), 1, "in the leg start");
   // The live copy, not a dead one: the try ends with the mint, its stale
-  // exit, the binding read, connect and the sync, contiguous.
+  // exit, the binding read, connect, the sync and the audio notice,
+  // contiguous.
   const tryHead = `try {`;
   const tryAt = firstAt("#toggleAndroidScreenShare", start, tryHead);
   const tryEnd = closerOf(start, tryAt + codeOf(tryHead).length - 1);
@@ -1526,7 +1574,8 @@ test("source pin (C9): the stale exit after the token mint is immediately follow
         "",
       ),
     ),
-    "the try ends: the mint, its stale exit, the key read, connect, the sync",
+    "the try ends: the mint, its stale exit, the key read, connect, the " +
+      "sync, the audio notice",
   );
 });
 
@@ -1616,6 +1665,356 @@ test("source pin (C9): the call's key provider is built once and wired at once, 
       `this.#mlsKeyProvider=undefined`,
     ],
     "the writes of #mlsKeyProvider",
+  );
+});
+
+// (slice 4) The phone's system audio is offered by the sheet only where this
+// build and device can share it, and `audio` is decided ONCE, in the sheet's
+// callback, before the claim: `legAudioRequested` ANDs the offer in, so a
+// saved "on" never asks a dark build or an incapable device for audio. The
+// per-device setting is written only when the sheet offered it (a sheet that
+// did not leaves the desktop picker's choice alone), and nothing in the start
+// re-reads it for `audio`. Pinned whole, so a forced offer, a raw
+// `userWants`, or an unconditional write all fail here.
+const LEG_SHEET = `const audioOffered = nativeScreenShareAudioOffered();
+  const { tier, audio } = await new Promise<{
+    tier: AndroidScreenShareTier | undefined;
+    audio: boolean;
+  }>((resolve) => {
+    this.openModal({
+      type: "android_screen_share_sheet",
+      tiers: ANDROID_SCREEN_SHARE_TIERS,
+      initialTier: this.#settings.androidScreenShareTier,
+      audioOffered,
+      initialAudio: this.#settings.screenShareAudio,
+      callback: (name, userWants) => {
+        this.#settings.androidScreenShareTier = name;
+        if (audioOffered) this.#settings.screenShareAudio = userWants;
+        resolve({
+          tier: ANDROID_SCREEN_SHARE_TIERS.find((t) => t.name === name),
+          audio: legAudioRequested({ offered: audioOffered, userWants }),
+        });
+      },
+      onCancel: () => resolve({ tier: undefined, audio: false }),
+    });
+  });
+  if (!tier) return;`;
+
+// (slice 4) The sheet's own layer of the dark/opt-in guard. Two layers keep a
+// saved "on" from becoming an audio request where audio was never offered:
+// the sheet reports `false` unless it showed the toggle, and the state ANDs
+// the offer in again through `legAudioRequested` (LEG_SHEET). At runtime the
+// state's layer masks the sheet's, so dropping the sheet's guard changes no
+// behavior any other spec can see; each layer is pinned on its own, here.
+// The sheet is TSX with JSX text the lexer does not read, so it is lexed only
+// from the pinned head on (`bodyFrom`, and a slice for the toggle), never
+// whole.
+const SHEET_SOURCE = readFileSync(
+  new URL("../modal/modals/AndroidScreenShareSheet.tsx", import.meta.url),
+  "utf8",
+);
+const SHEET_SUBMIT = `props.callback(
+  group.controls.tier.value,
+  props.audioOffered && group.controls.audio.value === true,
+);
+props.onClose();`;
+// The audio toggle is the first thing inside the offer's `<Show>`.
+const SHEET_TOGGLE_HEAD = `<Show when={props.audioOffered}>`;
+const SHEET_TOGGLE = `${SHEET_TOGGLE_HEAD}
+  <Form2.Checkbox control={group.controls.audio}>`;
+
+test("source pin (slice 4): the sheet offers audio only where native can share it, and decides it once, before the claim", () => {
+  const start = androidLegStart();
+  assertWired("the tier sheet and its audio answer", LEG_SHEET);
+  assert.equal(countWired(start, LEG_SHEET), 1, "in the leg start");
+  const at = (snippet: string) =>
+    firstAt("#toggleAndroidScreenShare", start, snippet);
+  const offered = at(`const audioOffered = nativeScreenShareAudioOffered();`);
+  assert.equal(braceDepthAt(start, offered), 0, "the offer read's depth");
+  assert.ok(
+    at(`audio: legAudioRequested(`) <
+      at(`const generation = ++this.#androidLegGeneration;`),
+    "audio is decided before the claim",
+  );
+  assert.equal(
+    countWired(STATE_CODE, `nativeScreenShareAudioOffered(`),
+    1,
+    "the offer's only read",
+  );
+  assert.equal(
+    countWired(STATE_CODE, `legAudioRequested(`),
+    1,
+    "audio's only derivation, in the sheet's callback",
+  );
+  assert.equal(
+    countWired(
+      bodyAfter(start, `callback: (name, userWants) => {`),
+      `legAudioRequested(`,
+    ),
+    1,
+    "inside the callback",
+  );
+  // `audioOffered`: declared, handed to the sheet, guarding the write, and
+  // ANDed into `audio`. Nothing else reads or rebinds it. `codeOf` drops
+  // whitespace, so the name can follow a keyword with nothing between
+  // (`constaudioOffered=`); any other name, `#` or `.` in front is another
+  // identifier.
+  const offeredUses = [
+    ...STATE_CODE.matchAll(/([\w$#.]*)audioOffered(?![\w$])/g),
+  ].filter((m) =>
+    /^(const|let|var|return|await|typeof|void|case|in|of|)$/.test(m[1]),
+  ).length;
+  assert.equal(offeredUses, 4, "audioOffered in the file");
+  // The one write of the setting, under the offer.
+  const writes = [
+    ...STATE_CODE.matchAll(/\.screenShareAudio(?:\?\?|\|\||&&)?=(?![=>])/g),
+  ];
+  assert.equal(writes.length, 1, "one write of screenShareAudio");
+  assert.ok(
+    STATE_CODE.slice(0, writes[0].index).endsWith(
+      codeOf(`if (audioOffered) this.#settings`),
+    ),
+    "written only inside if (audioOffered)",
+  );
+  // The start reads the setting once, for the sheet's initial value, and
+  // writes it once; `audio` itself is never redeclared or reassigned, and is
+  // read only by connect() and the start's audio notice.
+  assert.equal(
+    countWired(start, `this.#settings.screenShareAudio`),
+    2,
+    "the setting in the leg start: the initial value and the write",
+  );
+  assert.equal(
+    start.match(/(?:const|let|var)audio(?![\w$])/g)?.length ?? 0,
+    0,
+    "no other declaration of audio",
+  );
+  assert.equal(
+    start.match(/(?<![\w$#.])audio(?:\?\?|\|\||&&)?=(?![=>])/g)?.length ?? 0,
+    0,
+    "no write of audio",
+  );
+  assert.equal(
+    start.match(/(?<![\w$#.])audio(?![\w$:])/g)?.length,
+    3,
+    "audio: declared by the sheet, given to connect(), read by the notice",
+  );
+  // The sheet's layer (SHEET_SOURCE above): `onSubmit` is the sheet's only
+  // report, and hands back the toggle's value only when it offered it.
+  const sheetCount = (text: string) => SHEET_SOURCE.split(text).length - 1;
+  assert.equal(sheetCount(`props.callback(`), 1, "the sheet's only report");
+  const submit = bodyFrom(
+    "AndroidScreenShareSheet.tsx",
+    SHEET_SOURCE,
+    `function onSubmit() {`,
+  );
+  assert.equal(
+    countWired(
+      submit,
+      `props.audioOffered && group.controls.audio.value === true,`,
+    ),
+    1,
+    "the sheet reports audio only when it offered it",
+  );
+  // `codeOf` drops the `;` before the closing `}`, so the body ends without
+  // one.
+  assert.equal(
+    submit,
+    codeOf(SHEET_SUBMIT).replace(/;$/, ""),
+    "the sheet's onSubmit, whole",
+  );
+  // The toggle renders only under the offer, and nothing else binds it.
+  assert.equal(sheetCount(SHEET_TOGGLE_HEAD), 1, "the offer's one <Show>");
+  const offerShow = SHEET_SOURCE.slice(SHEET_SOURCE.indexOf(SHEET_TOGGLE_HEAD));
+  assert.ok(
+    codeOf(offerShow).startsWith(codeOf(SHEET_TOGGLE)),
+    "the audio toggle opens the offer's <Show>",
+  );
+  assert.equal(
+    sheetCount(`control={group.controls.audio}`),
+    1,
+    "the toggle is the audio control's only binding",
+  );
+});
+
+// (slice 4) The leg's two mid-share audio hooks, whole. `onMuted` reads which
+// publication native names through `legMutedNotice` (the video keeps its
+// notice; the audio says the video goes on, as "stopped"); `onAudio` is sent
+// only for a share that asked for audio and published it, so the request is
+// taken as made and the notice is a mid-share one.
+const EM_DASH = String.fromCharCode(0x2014);
+
+test("source pin (slice 4): onMuted goes through legMutedNotice and onAudio through legAudioNotice, mid-share", () => {
+  const ensure = bodyAfter(
+    STATE_CODE,
+    `#ensureAndroidLeg(): AndroidScreenLeg {`,
+  );
+  assert.equal(
+    bodyAfter(ensure, `leg.onMuted = (event) => {`),
+    codeOf(`const notice = legMutedNotice(event);
+      if (notice === "video-off")
+        this.onErr(
+          new Error(
+            "The server turned off your screen share ${EM_DASH} the share may be an unsupported shape, or the call may be full for video. You're still in the call.",
+          ),
+        );
+      else if (notice === "audio-off") {
+        const text = this.#legAudioNoticeMessage("stopped");
+        if (text !== undefined) this.onErr(new Error(text));
+      }`),
+    "onMuted, whole",
+  );
+  assert.equal(
+    bodyAfter(ensure, `leg.onAudio = (state) => {`),
+    codeOf(`const text = this.#legAudioNoticeMessage(
+        legAudioNotice({ requested: true, state, midShare: true }),
+      );
+      if (text !== undefined) this.onErr(new Error(text));`).replace(/;$/, ""),
+    "onAudio, whole",
+  );
+  assert.equal(countWired(STATE_CODE, `.onMuted =`), 1, "one onMuted hook");
+  assert.equal(countWired(STATE_CODE, `.onAudio =`), 1, "one onAudio hook");
+  assert.equal(countWired(STATE_CODE, `legMutedNotice(`), 1, "its only call");
+  assert.equal(
+    countWired(STATE_CODE, `legAudioNotice(`),
+    2,
+    "its two calls: the start's notice and onAudio",
+  );
+  assert.equal(
+    countWired(STATE_CODE, `this.#legAudioNoticeMessage(`),
+    3,
+    "the start's notice, onMuted and onAudio",
+  );
+});
+
+// (slice 4) The copy every leg audio notice reaches the user through, whole:
+// a silenced arm, a swapped text, or a `default` that stops being exhaustive
+// fails here (the hooks and the start above only name the notices).
+test("source pin (slice 4): #legAudioNoticeMessage maps every audio notice to its own copy", () => {
+  assert.equal(
+    bodyOf(
+      `#legAudioNoticeMessage(notice: LegAudioNotice): string | undefined {`,
+    ),
+    codeOf(`switch (notice) {
+      case "none":
+        return undefined;
+      case "could-not-start":
+        return t\`Screen audio could not start; sharing without it.\`;
+      case "no-permission":
+        return t\`Allow microphone access to share screen audio.\`;
+      case "no-mic-service":
+        return t\`To share screen audio, rejoin the call after allowing microphone access.\`;
+      case "stopped":
+        return t\`Screen audio stopped. Your video is still being shared.\`;
+      default: {
+        const unknownNotice: never = notice;
+        void unknownNotice;
+        return undefined;
+      }
+    }`),
+    "the switch, whole",
+  );
+});
+
+/**
+ * The block of every listener state.tsx registers on a Room for `event`,
+ * through `room.addListener(` or `room.on(`, by name (`"trackMuted"`) or by
+ * constant (`RoomEvent.TrackMuted`), as the inside of its arrow.
+ */
+function roomListenersOf(event: string): string[] {
+  const constant = event[0].toUpperCase() + event.slice(1);
+  const calls = [`room.addListener(`, `room.on(`].flatMap((head) =>
+    bodiesAfter(STATE_CODE, head).filter(
+      (args) =>
+        args.startsWith(`"${event}",`) ||
+        args.startsWith(`RoomEvent.${constant},`),
+    ),
+  );
+  return calls.map((args) => {
+    const parts = argumentsOf(args);
+    assert.equal(parts.length, 2, `${event}: an event and one listener`);
+    const fn = parts[1];
+    const openAt = fn.indexOf("=>{") + 2;
+    assert.ok(openAt > 1, `${event}: a block-bodied arrow`);
+    assert.equal(closerOf(fn, openAt), fn.length - 1, `${event}: its block`);
+    return fn.slice(openAt + 1, -1);
+  });
+}
+
+// (slice 4) The share-audio badge re-reads a tile's publications on
+// `sharePubVersion`, so every edge that adds, removes, mutes or unmutes a
+// publication, remote or local, bumps it: unconditionally, at the top level
+// of one listener per event, with nothing returning ahead of it. The four
+// listeners slice 4 added or extended for mute and local edges bump ONLY
+// that: `callParticipantsVersion` re-derives the chip, and no mute or local
+// publish moves it.
+test("source pin (slice 4): sharePubVersion is bumped by the six publication events, and the new listeners leave callParticipantsVersion alone", () => {
+  const shareBump = `this.#setSharePubVersion((v) => v + 1);`;
+  const chipBump = `this.#setCallParticipantsVersion(`;
+  const bumping = (event: string): string => {
+    const found = roomListenersOf(event).filter(
+      (body) => countWired(body, shareBump) > 0,
+    );
+    assert.equal(found.length, 1, `${event}: one listener bumps it`);
+    return found[0];
+  };
+  for (const event of [
+    "trackPublished",
+    "trackUnpublished",
+    "trackMuted",
+    "trackUnmuted",
+    "localTrackPublished",
+    "localTrackUnpublished",
+  ]) {
+    const body = bumping(event);
+    assert.equal(countWired(body, shareBump), 1, `${event}: bumps it once`);
+    const at = firstAt(event, body, shareBump);
+    assert.equal(braceDepthAt(body, at), 0, `${event}: at the top level`);
+    assert.ok(
+      at === 0 || ";}".includes(body[at - 1]),
+      `${event}: a statement of its own, not the tail of an unbraced if`,
+    );
+    assert.equal(
+      body.slice(0, at).match(/(?<![\w$])return(?![\w$])/g)?.length ?? 0,
+      0,
+      `${event}: nothing returns ahead of the bump`,
+    );
+  }
+  const bumpOnly = codeOf(shareBump).replace(/;$/, "");
+  for (const event of [
+    "trackMuted",
+    "localTrackPublished",
+    "localTrackUnpublished",
+  ])
+    assert.equal(bumping(event), bumpOnly, `${event}: the bump, whole`);
+  assert.equal(
+    bumping("trackUnmuted"),
+    codeOf(`${shareBump}
+      this.#remoteShareStartChime(room, pub, participant)`),
+    "trackUnmuted: the bump, then the start chime, whole",
+  );
+  for (const event of [
+    "trackMuted",
+    "trackUnmuted",
+    "localTrackPublished",
+    "localTrackUnpublished",
+  ])
+    assert.equal(
+      countWired(bumping(event), chipBump),
+      0,
+      `${event}: the share listener leaves callParticipantsVersion alone`,
+    );
+  for (const event of ["trackMuted", "trackUnmuted", "localTrackUnpublished"])
+    for (const body of roomListenersOf(event))
+      assert.equal(
+        countWired(body, chipBump),
+        0,
+        `${event}: no listener bumps callParticipantsVersion`,
+      );
+  assert.equal(
+    countWired(STATE_CODE, `this.#setSharePubVersion(`),
+    6,
+    "the six bumps, one per event",
   );
 });
 

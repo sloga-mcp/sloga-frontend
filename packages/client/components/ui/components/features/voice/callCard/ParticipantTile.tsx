@@ -1,4 +1,12 @@
-import { createEffect, createSignal, onCleanup, Show } from "solid-js";
+import {
+  createEffect,
+  createMemo,
+  createSignal,
+  Match,
+  onCleanup,
+  Show,
+  Switch,
+} from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
 import {
@@ -23,6 +31,7 @@ import { UserContextMenu } from "@revolt/app";
 import { useClient } from "@revolt/client";
 import { useUser } from "@revolt/markdown/users";
 import { useVoice } from "@revolt/rtc";
+import { shareAudioBadge } from "@revolt/rtc/shareAudioBadge";
 import { useState } from "@revolt/state";
 import { Avatar } from "@revolt/ui/components/design";
 import { Row } from "@revolt/ui/components/layout";
@@ -95,20 +104,35 @@ export function ParticipantTile(props: TileProps) {
     source: Track.Source.Microphone,
   });
 
-  const isScreenShareAudioMuted = useIsMuted({
-    participant,
-    source: Track.Source.ScreenShareAudio,
-  });
-
   const isRemoteScreenShareMuted = useIsMuted({
     participant,
     source: Track.Source.ScreenShare,
   });
 
-  const isScreenShareAudioUserMuted = () =>
-    state.voice.getScreenShareMuted(user().user!.id)
-      ? "by-user"
-      : isScreenShareAudioMuted() || false;
+  /**
+   * The share's audio badge (Android screen share slice 4, Design section 7).
+   *
+   * `hasAudioPub` comes from the publication itself, never `useIsMuted`:
+   * components-core's observer answers `pub?.isMuted ?? true`, so a share with
+   * no audio track read as "muted" and showed a mute the viewer could never
+   * undo. `participant` is a plain livekit object, so the read is re-run on
+   * `sharePubVersion()`, bumped on remote publish and unpublish and on every
+   * mute and unmute.
+   *
+   * The per-user mute is keyed by USER id, the key the context menu writes and
+   * `RoomAudioManager` reads, so the badge matches what is actually silenced.
+   */
+  const shareAudio = createMemo(() => {
+    void voice.sharePubVersion();
+    const pub = participant.getTrackPublication(Track.Source.ScreenShareAudio);
+    return shareAudioBadge({
+      hasAudioPub: pub !== undefined,
+      pubMuted: pub?.isMuted ?? false,
+      userMuted: state.voice.getScreenShareMuted(
+        participantUserId(participant.identity),
+      ),
+    });
+  });
 
   const isVideoMuted = useIsMuted({
     participant,
@@ -595,18 +619,34 @@ export function ParticipantTile(props: TileProps) {
                 userId={participantUserId(participant.identity)}
               />
               {isScreenShare() ? (
-                <Show when={isScreenShareAudioUserMuted()}>
-                  <Symbol
-                    size={18}
-                    color={
-                      isScreenShareAudioUserMuted() === "by-user"
-                        ? "var(--md-sys-color-error)"
-                        : undefined
-                    }
-                  >
-                    no_sound
-                  </Symbol>
-                </Show>
+                <Switch>
+                  {/* The viewer muted this sharer: red, as before slice 4. */}
+                  <Match when={shareAudio() === "user-muted"}>
+                    <Symbol size={18} color="var(--md-sys-color-error)">
+                      no_sound
+                    </Symbol>
+                  </Match>
+                  {/* The sharer muted their share audio: grey, as before. */}
+                  <Match when={shareAudio() === "muted"}>
+                    <Symbol size={18}>no_sound</Symbol>
+                  </Match>
+                  {/* No audio track at all. A different glyph from the mute
+                      badges, so it does not read as a mute to undo, plus a
+                      tooltip that says what it means. */}
+                  <Match when={shareAudio() === "no-audio"}>
+                    <Symbol
+                      size={18}
+                      use:floating={{
+                        tooltip: {
+                          placement: "top",
+                          content: t`This screen share has no audio`,
+                        },
+                      }}
+                    >
+                      volume_mute
+                    </Symbol>
+                  </Match>
+                </Switch>
               ) : (
                 <VoiceStatefulUserIcons
                   userId={participantUserId(participant.identity)}

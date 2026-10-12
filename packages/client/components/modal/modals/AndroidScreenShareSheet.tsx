@@ -4,6 +4,8 @@ import { createFormControl, createFormGroup } from "solid-forms";
 import { AndroidScreenShareTierName } from "@revolt/state/stores/Voice";
 import { Column, Dialog, DialogProps, Form2 } from "@revolt/ui";
 
+import { Show } from "solid-js";
+
 import { Modals } from "../types";
 
 /**
@@ -16,6 +18,11 @@ import { Modals } from "../types";
  * leads to the system consent dialog, which re-asks on every share by OS
  * rule; the copy sets that expectation so the double prompt reads as designed
  * rather than broken.
+ *
+ * The "Share audio" toggle only renders when the caller offers it
+ * (`audioOffered`: flag on, API 29+ marker plugin present). When it is not
+ * offered the callback always reports `audio: false`, whatever the control
+ * holds.
  */
 export function AndroidScreenShareSheetModal(
   props: DialogProps & Modals & { type: "android_screen_share_sheet" },
@@ -26,6 +33,7 @@ export function AndroidScreenShareSheetModal(
     tier: createFormControl<AndroidScreenShareTierName>(props.initialTier, {
       required: true,
     }),
+    audio: createFormControl<boolean>(props.initialAudio),
   });
 
   const tierLabel = (name: AndroidScreenShareTierName) => {
@@ -40,7 +48,10 @@ export function AndroidScreenShareSheetModal(
   };
 
   function onSubmit() {
-    props.callback(group.controls.tier.value);
+    props.callback(
+      group.controls.tier.value,
+      props.audioOffered && group.controls.audio.value === true,
+    );
     props.onClose();
   }
 
@@ -81,6 +92,20 @@ export function AndroidScreenShareSheetModal(
               value: tier.name,
             }))}
           />
+          <Show when={props.audioOffered}>
+            <Form2.Checkbox control={group.controls.audio}>
+              <Trans>Share audio</Trans>
+            </Form2.Checkbox>
+            <small>
+              <Trans>
+                Some apps block audio sharing. Viewers will hear silence from
+                those apps.
+              </Trans>
+            </small>
+            <small>
+              <Trans>Audio from other apps playing media is shared too.</Trans>
+            </small>
+          </Show>
           <small>
             <Trans>
               Android will ask you to confirm every time you start sharing.

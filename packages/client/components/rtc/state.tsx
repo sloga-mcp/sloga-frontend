@@ -122,10 +122,14 @@ import {
   voicePublishPermission,
 } from "./afkPolicy";
 import {
+  type LegAudioNotice,
   type LegStopNotice,
   type RekeyFailureNotice,
   gateStopNotice,
   keyActionAfterConnect,
+  legAudioNotice,
+  legAudioRequested,
+  legMutedNotice,
   nativeStopNotice,
   rekeyFailureNotice,
   staleExitNotice,
@@ -138,6 +142,7 @@ import {
   ANDROID_SCREEN_SHARE_TIERS,
   AndroidScreenLeg,
   createAndroidScreenLeg,
+  nativeScreenShareAudioOffered,
   nativeScreenShareAvailable,
 } from "./androidScreenShare";
 import { Attenuation } from "./attenuation";
@@ -1667,6 +1672,17 @@ class Voice {
    */
   #chipPublicationsVersion: Accessor<number>;
   #setChipPublicationsVersion: Setter<number>;
+  /**
+   * Publication version for the tile's share-audio badge (`shareAudioBadge`):
+   * bumped on every publish and unpublish, remote and local, and on every
+   * publication mute and unmute. The badge reads the Room's publications,
+   * which are not signals, so without this it never re-evaluates when a
+   * share's audio track arrives, goes or is muted. Kept apart from
+   * `callParticipantsVersion` so the chip and its other readers do not re-run
+   * on every mute edge.
+   */
+  sharePubVersion: Accessor<number>;
+  #setSharePubVersion: Setter<number>;
   /** Whether the call roster / verification panel is open (chip click). */
   callRosterPanelOpen: Accessor<boolean>;
   #setCallRosterPanelOpen: Setter<boolean>;
@@ -2414,6 +2430,10 @@ class Voice {
       createSignal(0);
     this.#chipPublicationsVersion = chipPublicationsVersion;
     this.#setChipPublicationsVersion = setChipPublicationsVersion;
+
+    const [sharePubVersion, setSharePubVersion] = createSignal(0);
+    this.sharePubVersion = sharePubVersion;
+    this.#setSharePubVersion = setSharePubVersion;
 
     const [callRosterPanelOpen, setCallRosterPanelOpen] = createSignal(false);
     this.callRosterPanelOpen = callRosterPanelOpen;
@@ -4118,6 +4138,9 @@ class Voice {
       //    on sight, but the reconcile keeps the pause/banner state fresh
       //    rather than waiting up to a full tick.
       void this.#mlsSession?.reconcileNow();
+      // The share-audio badge: a share's audio track can arrive after its
+      // video (an Android leg publishes them one by one).
+      this.#setSharePubVersion((v) => v + 1);
       // The share start chime, off the PUBLICATION rather than playback: with
       // click-to-watch an unwatched share is never subscribed, so a
       // playback-tied chime would never sound for it. See
@@ -4128,7 +4151,14 @@ class Voice {
     // The other half of that edge: a consent-held share is muted while its
     // sharer answers the quality dialog, and this is it going live.
     room.addListener("trackUnmuted", (pub, participant) => {
+      this.#setSharePubVersion((v) => v + 1);
       this.#remoteShareStartChime(room, pub, participant);
+    });
+
+    // A publication muted, local or remote: the share-audio badge re-reads
+    // it. Not `callParticipantsVersion`, which no mute edge moves.
+    room.addListener("trackMuted", () => {
+      this.#setSharePubVersion((v) => v + 1);
     });
 
     room.addListener("trackUnpublished", (unpub) => {
@@ -4142,6 +4172,9 @@ class Voice {
       }
       // Gate (b)'s quantification domain changed (R2-3): re-derive the chip.
       this.#setCallParticipantsVersion((v) => v + 1);
+      // The share-audio badge: a share's audio track can go while its video
+      // stays.
+      this.#setSharePubVersion((v) => v + 1);
     });
 
     // Our own FULL reconnect (livekit 2.15.13 `handleRestarting`) unwinds
@@ -4397,6 +4430,20 @@ class Voice {
         track.on(TrackEvent.UpstreamResumed, gtTrace.resumed);
         track.on(TrackEvent.TrackProcessorUpdate, gtTrace.processor);
       }
+    });
+
+    // The share-audio badge on OUR OWN tile: `trackPublished` and
+    // `trackUnpublished` fire for remote participants only, and a local
+    // share's audio publication can land after its tile mounts on the video.
+    // Registered after the publish-gate listener above so the gate acts
+    // first. (Local mutes need nothing more: livekit emits the Room's
+    // `trackMuted` / `trackUnmuted` for local publications too.) Not
+    // `callParticipantsVersion`, which no local publish moves.
+    room.addListener("localTrackPublished", () => {
+      this.#setSharePubVersion((v) => v + 1);
+    });
+    room.addListener("localTrackUnpublished", () => {
+      this.#setSharePubVersion((v) => v + 1);
     });
 
     // Between `emit(LocalSenderCreated)` and the `LocalTrackPublished` that
@@ -10078,20 +10125,38 @@ class Voice {
 
     // Tier sheet first: it is the cheap step, and cancelling it must not
     // have shown an OS consent dialog for nothing.
-    const tier = await new Promise<AndroidScreenShareTier | undefined>(
-      (resolve) => {
-        this.openModal({
-          type: "android_screen_share_sheet",
-          tiers: ANDROID_SCREEN_SHARE_TIERS,
-          initialTier: this.#settings.androidScreenShareTier,
-          callback: (name) => {
-            this.#settings.androidScreenShareTier = name;
-            resolve(ANDROID_SCREEN_SHARE_TIERS.find((t) => t.name === name));
-          },
-          onCancel: () => resolve(undefined),
-        });
-      },
-    );
+    //
+    // The sheet offers the phone's system audio (slice 4) only when this
+    // build and device can share it (`nativeScreenShareAudioOffered`, a
+    // module-load constant). Its toggle starts from, and is saved to, the
+    // per-device `voice.screenShareAudio` the desktop picker uses; a sheet
+    // that did not offer audio leaves that setting alone. `audio` is decided
+    // ONCE, here, from the sheet's answer, and is what `connect()` and the
+    // start's audio notice are given; nothing re-reads the setting for it.
+    // `legAudioRequested` ANDs the offer in, so a saved "on" can never ask a
+    // dark build or an incapable device for audio.
+    const audioOffered = nativeScreenShareAudioOffered();
+    const { tier, audio } = await new Promise<{
+      tier: AndroidScreenShareTier | undefined;
+      audio: boolean;
+    }>((resolve) => {
+      this.openModal({
+        type: "android_screen_share_sheet",
+        tiers: ANDROID_SCREEN_SHARE_TIERS,
+        initialTier: this.#settings.androidScreenShareTier,
+        audioOffered,
+        initialAudio: this.#settings.screenShareAudio,
+        callback: (name, userWants) => {
+          this.#settings.androidScreenShareTier = name;
+          if (audioOffered) this.#settings.screenShareAudio = userWants;
+          resolve({
+            tier: ANDROID_SCREEN_SHARE_TIERS.find((t) => t.name === name),
+            audio: legAudioRequested({ offered: audioOffered, userWants }),
+          });
+        },
+        onCancel: () => resolve({ tier: undefined, audio: false }),
+      });
+    });
     if (!tier) return;
 
     // The sheet is user-paced too. A call that ended or changed while it was
@@ -10197,10 +10262,14 @@ class Voice {
         };
       }
 
-      await activeLeg.connect({
+      // `audioState` is the leg's audio as native reports it once `connect()`
+      // resolves: native publishes the audio (or gives up on it) first, so
+      // it is final for the start (`AndroidScreenLeg.connect`).
+      const audioState = await activeLeg.connect({
         url: auth.url,
         token: auth.token,
         tier,
+        audio,
         e2ee: e2eeKey,
       });
       // `started` fires the signal + sound (the phone never subscribes to
@@ -10214,6 +10283,22 @@ class Voice {
         return;
       }
       await this.#syncLegKeyAfterConnect(activeLeg, e2eeKey);
+      // The share is up on the current key: say if the audio the user asked
+      // for is not in it. Only while the attempt still owns the leg: a stop
+      // during the sync (its own fail-closed stop, a hook, a tap) bumped the
+      // generation and has said why, and "sharing without it" over a share
+      // that ended would be false. Nothing when audio was not asked for, so a
+      // dark build says nothing new.
+      if (this.#androidLegGeneration === generation) {
+        const text = this.#legAudioNoticeMessage(
+          legAudioNotice({
+            requested: audio,
+            state: audioState,
+            midShare: false,
+          }),
+        );
+        if (text !== undefined) this.onErr(new Error(text));
+      }
     } catch (error) {
       // A failure anywhere above can still leave native capturing (consent is
       // granted in phase 1, and `connect()` can throw after publishing), so
@@ -10409,6 +10494,33 @@ class Voice {
   }
 
   /**
+   * The copy for a [LegAudioNotice] about the leg's system audio
+   * (`legAudioNotice`, and `legMutedNotice`'s `audio-off`, which reads as
+   * `stopped`), or undefined for `none`. Shared by the start's notice and the
+   * leg's `onAudio` and `onMuted` hooks. Translated, unlike the leg's other
+   * notices: "could not start" is the desktop share's existing string.
+   */
+  #legAudioNoticeMessage(notice: LegAudioNotice): string | undefined {
+    switch (notice) {
+      case "none":
+        return undefined;
+      case "could-not-start":
+        return t`Screen audio could not start; sharing without it.`;
+      case "no-permission":
+        return t`Allow microphone access to share screen audio.`;
+      case "no-mic-service":
+        return t`To share screen audio, rejoin the call after allowing microphone access.`;
+      case "stopped":
+        return t`Screen audio stopped. Your video is still being shared.`;
+      default: {
+        const unknownNotice: never = notice;
+        void unknownNotice;
+        return undefined;
+      }
+    }
+  }
+
+  /**
    * Close the last gap in the start path: a rotation that landed between the
    * key read above and `connect()` resolving was seen by `onLocalScreenKey`
    * while the leg was not yet `active()`, so it was dropped. The provider's
@@ -10543,13 +10655,31 @@ class Voice {
       );
       if (text !== undefined) this.onErr(new Error(text));
     };
-    leg.onMuted = (muted) => {
-      if (muted)
+    // Native names which of the leg's publications was muted. The video (or
+    // an older build that names none) keeps its notice unchanged; the audio
+    // says the video goes on (`legMutedNotice`). An unmute says nothing.
+    leg.onMuted = (event) => {
+      const notice = legMutedNotice(event);
+      if (notice === "video-off")
         this.onErr(
           new Error(
             "The server turned off your screen share — the share may be an unsupported shape, or the call may be full for video. You're still in the call.",
           ),
         );
+      else if (notice === "audio-off") {
+        const text = this.#legAudioNoticeMessage("stopped");
+        if (text !== undefined) this.onErr(new Error(text));
+      }
+    };
+    // The leg's system audio ended mid-share while its video goes on (`lost`:
+    // the audio publication went away; `failed`: capture died). Native sends
+    // this only for a share that asked for audio and published it, so the
+    // request is taken as made.
+    leg.onAudio = (state) => {
+      const text = this.#legAudioNoticeMessage(
+        legAudioNotice({ requested: true, state, midShare: true }),
+      );
+      if (text !== undefined) this.onErr(new Error(text));
     };
     this.#androidLeg = leg;
     return leg;

@@ -23,7 +23,10 @@ import { test } from "node:test";
 import {
   type GateStopWorld,
   type LegAnnouncer,
+  type LegAudioNotice,
+  type LegAudioState,
   type LegBridge,
+  type LegMutedNotice,
   type LegSendKey,
   type LegStopNotice,
   type NativeFrameKey,
@@ -32,7 +35,12 @@ import {
   AndroidLegLifecycle,
   FRAME_KEY_TIMEOUT_MS,
   gateStopNotice,
+  isLegAudioState,
   keyActionAfterConnect,
+  legAudioNotice,
+  legAudioRequested,
+  legMutedNotice,
+  nativeShareAudioAvailable,
   nativeShareAvailable,
   nativeStopNotice,
   rekeyFailureNotice,
@@ -1253,7 +1261,11 @@ test("🔴 androidScreenShare.ts holds no live copy of the lifecycle", () => {
   // has already lost its group. The caller's own key would carry `groupId`
   // across the bridge, and tsc accepts that (the extra field is no error).
   assertShareWired("the plugin's connect", "(e2ee) => plugin!.connect({");
-  assertShareWired("the callback's key", "audio: false, e2ee, })");
+  // Since slice 4 the field before the key is the caller's audio request
+  // (`audio: options.audio`), no longer a hard-coded `false`: the share sheet
+  // decides it through `legAudioRequested`. The key itself is unchanged, the
+  // callback's group-stripped `e2ee`, never `options.e2ee`.
+  assertShareWired("the callback's key", "audio: options.audio, e2ee, })");
   assert.equal(
     countWired(SHARE_CODE, "options.e2ee"),
     1,
@@ -1452,6 +1464,319 @@ test("🔴 share availability pin: read once, synchronously, from the plugin hea
   );
 });
 
+// Slice 4 (system audio). The live legs are waived, so these tables and the
+// source pins after them are the only proof the audio is offered, requested,
+// reported and announced the way the plan says: every row is a literal, never
+// recomputed from the rule it checks.
+
+test("nativeShareAudioAvailable: the share path, the flag and the marker header, all three", () => {
+  // Any one input false hides the audio toggle, whatever the other two say.
+  // The flag is dark by default, so a dark build must never offer audio.
+  const rows: [boolean, boolean, boolean, boolean][] = [
+    // shareAvailable, audioFlag, audioHeader, offered
+    [false, false, false, false],
+    [false, false, true, false],
+    [false, true, false, false],
+    [false, true, true, false],
+    [true, false, false, false],
+    [true, false, true, false],
+    [true, true, false, false],
+    [true, true, true, true],
+  ];
+  assert.equal(
+    new Set(rows.map((row) => row.slice(0, 3).join())).size,
+    8,
+    "the table must hold every combination of the three inputs once",
+  );
+  for (const [shareAvailable, audioFlag, audioHeader, offered] of rows)
+    assert.equal(
+      nativeShareAudioAvailable({ shareAvailable, audioFlag, audioHeader }),
+      offered,
+      JSON.stringify({ shareAvailable, audioFlag, audioHeader }),
+    );
+});
+
+test("legAudioRequested: audio is asked for only when it was offered AND wanted", () => {
+  // The saved preference is ON by default and shared with desktop, so
+  // `userWants` is usually true on a device that was never offered audio. A
+  // request without the offer would send `audio: true` from a dark build and
+  // toast "could not start" for a toggle the user never saw.
+  const rows: [boolean, boolean, boolean][] = [
+    // offered, userWants, requested
+    [false, false, false],
+    [false, true, false],
+    [true, false, false],
+    [true, true, true],
+  ];
+  for (const [offered, userWants, requested] of rows)
+    assert.equal(
+      legAudioRequested({ offered, userWants }),
+      requested,
+      JSON.stringify({ offered, userWants }),
+    );
+});
+
+test("legMutedNotice: only the audio source is audio-off; anything else is the video", () => {
+  // Before slice 4 the event carried no source and always meant the video,
+  // so an older native build, or a source this JS does not know, must still
+  // be told its share went dark. An unmute is never announced. The match is
+  // exact: a case or spelling variant of the audio source is the video.
+  const rows: [string | undefined, LegMutedNotice][] = [
+    // source, notice when muted
+    [undefined, "video-off"],
+    ["screen_share", "video-off"],
+    ["screen_share_audio", "audio-off"],
+    ["", "video-off"],
+    ["SCREEN_SHARE_AUDIO", "video-off"],
+    ["screen_share_audio ", "video-off"],
+    ["microphone", "video-off"],
+    ["bogus", "video-off"],
+  ];
+  for (const [source, notice] of rows) {
+    assert.equal(
+      legMutedNotice({ muted: true, source }),
+      notice,
+      `muted ${String(source)}`,
+    );
+    assert.equal(
+      legMutedNotice({ muted: false, source }),
+      "none",
+      `unmuted ${String(source)}`,
+    );
+  }
+  assert.equal(legMutedNotice({ muted: true }), "video-off", "no source key");
+  assert.equal(legMutedNotice({ muted: false }), "none", "no source key");
+});
+
+test("legAudioNotice: what the leg's audio outcome tells the user, at start and mid-share", () => {
+  // Records keyed by the full union, so a state added to it without a row
+  // here fails to type-check. Mid-share every failure is `stopped` (the
+  // share is live, so the start-time fix-it advice would be wrong); at start
+  // `lost` is `stopped` too, and the two fixable refusals get their own kinds.
+  const atStart: Record<LegAudioState | "lost", LegAudioNotice> = {
+    live: "none",
+    off: "none",
+    unsupported: "could-not-start",
+    no_permission: "no-permission",
+    no_mic_service: "no-mic-service",
+    failed: "could-not-start",
+    lost: "stopped",
+  };
+  const midShare: Record<LegAudioState | "lost", LegAudioNotice> = {
+    live: "none",
+    off: "none",
+    unsupported: "stopped",
+    no_permission: "stopped",
+    no_mic_service: "stopped",
+    failed: "stopped",
+    lost: "stopped",
+  };
+  for (const [table, mid] of [
+    [atStart, false],
+    [midShare, true],
+  ] as const)
+    for (const [state, notice] of Object.entries(table) as [
+      LegAudioState | "lost",
+      LegAudioNotice,
+    ][]) {
+      assert.equal(
+        legAudioNotice({ requested: true, state, midShare: mid }),
+        notice,
+        `requested ${state} midShare=${mid}`,
+      );
+      // Not requested: nothing to report about audio, whatever native said.
+      assert.equal(
+        legAudioNotice({ requested: false, state, midShare: mid }),
+        "none",
+        `unrequested ${state} midShare=${mid}`,
+      );
+    }
+  // A state outside the union (a native build ahead of this JS) fails toward
+  // telling the user, never toward a silent share that looks like it has
+  // sound.
+  const unknown = "zzz-unknown" as string as LegAudioState;
+  assert.equal(
+    legAudioNotice({ requested: true, state: unknown, midShare: false }),
+    "could-not-start",
+  );
+  assert.equal(
+    legAudioNotice({ requested: true, state: unknown, midShare: true }),
+    "stopped",
+  );
+  assert.equal(
+    legAudioNotice({ requested: false, state: unknown, midShare: false }),
+    "none",
+  );
+});
+
+test("isLegAudioState: exactly the six states, own keys only", () => {
+  // The bridge is untrusted: an older APK resolves with no `audio`, and a
+  // prototype name must not pass an `in`-style lookup. Anything rejected
+  // here is read as "failed" by the caller (when audio was asked for).
+  const states: Record<LegAudioState, true> = {
+    live: true,
+    off: true,
+    unsupported: true,
+    no_permission: true,
+    no_mic_service: true,
+    failed: true,
+  };
+  for (const state of Object.keys(states))
+    assert.equal(isLegAudioState(state), true, state);
+  for (const value of [
+    "lost",
+    "",
+    "LIVE",
+    "Live",
+    " live",
+    "live ",
+    "toString",
+    "__proto__",
+    "constructor",
+    "hasOwnProperty",
+    "valueOf",
+    undefined,
+    null,
+    0,
+    1,
+    true,
+    {},
+    [],
+    ["live"],
+    Object("live"),
+    { live: true },
+  ])
+    assert.equal(
+      isLegAudioState(value),
+      false,
+      `${typeof value} ${JSON.stringify(value)}`,
+    );
+});
+
+test("audio offer pin: read once, synchronously, from the ScreenShareAudio header", () => {
+  // The table above proves the leaf; this holds androidScreenShare.ts to
+  // calling it once, at module load, with the real inputs. Any input forced
+  // to `true` (the flag, the marker header, or the share path) offers audio
+  // from a dark build or on a device below API 29, and every row above stays
+  // green. The marker is a header lookup for the reason the share path is:
+  // an `isAvailable()` round trip can lose its reply after a WebView reload.
+  assertShareWired(
+    "the audio offer, from the leaf",
+    `const SHARE_AUDIO_OFFERED = nativeShareAudioAvailable({
+      shareAvailable: nativeScreenShareAvailable(),
+      audioFlag: CONFIGURATION.ENABLE_ANDROID_SCREEN_AUDIO,
+      audioHeader: Capacitor.isPluginAvailable("ScreenShareAudio"),
+    });`,
+  );
+  assertShareWired(
+    "the audio offer accessor",
+    "export const nativeScreenShareAudioOffered: Accessor<boolean> = () => SHARE_AUDIO_OFFERED;",
+  );
+  for (const [snippet, count, why] of [
+    ["SHARE_AUDIO_OFFERED", 2, "assigned once and read only by the accessor"],
+    [
+      'Capacitor.isPluginAvailable("ScreenShareAudio")',
+      1,
+      "the marker header read once, as the leaf's input",
+    ],
+    [
+      "CONFIGURATION.ENABLE_ANDROID_SCREEN_AUDIO",
+      1,
+      "the audio flag read once, as the leaf's input",
+    ],
+    ["nativeShareAudioAvailable", 2, "imported once and called once"],
+    [".isAvailable(", 0, "no native availability probe"],
+  ] as const)
+    assert.equal(
+      countWired(SHARE_CODE, snippet),
+      count,
+      `androidScreenShare.ts: ${why} (${snippet})`,
+    );
+  const leafImport = SHARE_CODE.match(
+    /import\{([^{}]*)\}from"\.\/androidLegStartPolicy"/,
+  );
+  assert.ok(leafImport, "androidScreenShare.ts must import the leaf");
+  const imported = argumentsOf(leafImport[1]);
+  for (const name of ["nativeShareAudioAvailable", "isLegAudioState"])
+    assert.ok(imported.includes(name), `${name} must come from the leaf`);
+  assertPolicyWired(
+    "nativeShareAudioAvailable's body",
+    "return w.shareAvailable && w.audioFlag && w.audioHeader;",
+  );
+  assertPolicyWired(
+    "legAudioRequested's body",
+    "return w.offered && w.userWants;",
+  );
+});
+
+test("connect resolves native's audio state, and an unknown report fails closed", () => {
+  // Native's `audio` is untrusted (an older APK sends none). Read through the
+  // guard, a report that is not a state becomes "failed" when audio was asked
+  // for, so the user hears it did not start; "live" there would be a silent
+  // share that looks like it has sound. Not asked for, it is "off".
+  assertShareWired("the report's slot", "let reported: unknown;");
+  assertShareWired(
+    "the report, from the plugin's resolve",
+    `.then((result) => {
+      reported = result?.audio;
+    })`,
+  );
+  assertShareWired(
+    "the fallback",
+    `.then(
+      (): LegAudioState =>
+        isLegAudioState(reported)
+          ? reported
+          : options.audio
+            ? "failed"
+            : "off",
+    );`,
+  );
+  // Declared, written once, guarded, returned: no other path to the result.
+  assert.equal(countWired(SHARE_CODE, "reported"), 4);
+  assert.equal(countWired(SHARE_CODE, "isLegAudioState"), 2);
+  // Sent to native once (pinned with the key above) and read once by the
+  // fallback: the request and the fallback cannot disagree.
+  assert.equal(countWired(SHARE_CODE, "options.audio"), 2);
+});
+
+test("native audio and mute events are filtered before they reach the owner", () => {
+  // `onAudio` means the audio ended while the video goes on. Any other state
+  // native sends (a "live", an unknown) must not toast "Screen audio
+  // stopped" over a share that still has sound.
+  assertShareWired(
+    "the audio listener",
+    `p.addListener("audio", (data) => {
+      const state = data.state;
+      if (state === "lost" || state === "failed") this.onAudio?.(state);
+    })`,
+  );
+  assert.equal(countWired(SHARE_CODE, "this.onAudio?.("), 1);
+  // A source outside the two the leg publishes reaches the owner as
+  // undefined, which `legMutedNotice` reads as the video (the table above).
+  // Passed through raw, a native build ahead of this JS could name a source
+  // the owner's copy does not expect.
+  assertShareWired(
+    "the mute-source whitelist",
+    `function muteSource(source: unknown): LegMuteSource | undefined {
+      return source === "screen_share" || source === "screen_share_audio"
+        ? source
+        : undefined;
+    }`,
+  );
+  assertShareWired(
+    "the muted listener",
+    `p.addListener("muted", (data) => {
+      this.onMuted?.({
+        muted: data.muted ?? true,
+        source: muteSource(data.source),
+      });
+    })`,
+  );
+  assert.equal(countWired(SHARE_CODE, "this.onMuted?.("), 1);
+  assert.equal(countWired(SHARE_CODE, "muteSource("), 2);
+});
+
 const PLUGIN_SOURCE = readFileSync(
   new URL(
     "../../android/app/src/main/java/com/acutest/app/screenshare/ScreenSharePlugin.kt",
@@ -1634,4 +1959,766 @@ test("connect re-checks the consent first thing on Main", () => {
     codeOf('call.reject("connect_failed: cancelled") return@launch'),
     "the consent re-check must reject as cancelled, then return",
   );
+});
+
+// Slice 4 (system audio), native half. Live legs are waived, so these pins
+// are what holds the plugin to the plan's audio rules. They read the files
+// through the same lexer as the pins above, under the same constraints.
+
+const AUDIO_SOURCE_SOURCE = readFileSync(
+  new URL(
+    "../../android/app/src/main/java/com/acutest/app/screenshare/ScreenAudioSource.kt",
+    import.meta.url,
+  ),
+  "utf8",
+);
+const AUDIO_SOURCE_CODE = codeOf(AUDIO_SOURCE_SOURCE);
+
+/** `snippet` must appear exactly once in ScreenAudioSource.kt's code. */
+const assertAudioSourceWired = wiredAsserter(
+  "ScreenAudioSource.kt",
+  AUDIO_SOURCE_CODE,
+);
+
+test("ScreenAudioSource.kt reads in sync under the source-pin lexer", () => {
+  // Same constraints as ScreenSharePlugin.kt above: no raw strings, nested
+  // block comments, backticks, or a template holding a quote, or the pins
+  // below match the wrong text.
+  assert.ok(
+    !AUDIO_SOURCE_SOURCE.includes('"""'),
+    "the lexer cannot read a raw string",
+  );
+  assert.ok(
+    !AUDIO_SOURCE_CODE.includes("*/"),
+    "a nested block comment left code",
+  );
+  assert.ok(
+    !AUDIO_SOURCE_CODE.includes("`"),
+    "the lexer cannot read a backtick",
+  );
+  for (const { text } of stringsOf(AUDIO_SOURCE_CODE))
+    assert.ok(!/\$\{[^}]*$/.test(text), `a template cut at a quote: ${text}`);
+  assertLexesInSync(
+    "ScreenAudioSource.kt",
+    AUDIO_SOURCE_SOURCE,
+    AUDIO_SOURCE_CODE,
+    15,
+  );
+});
+
+test("the leg's microphone recording is disabled right after LiveKit.create, on every leg", () => {
+  // The WebView call owns the microphone. With the ADM's recording disabled
+  // the leg builds no mic AudioRecord and the audio track carries only what
+  // ScreenAudioSource writes. The statement must follow the create call
+  // directly, at the top level of doConnect: inside an `if (audioRequested)`
+  // (or after the connect) a leg could reach a recording with it still on.
+  assertPluginWired("doConnect", "private suspend fun doConnect(");
+  const [connect] = blockBodiesOf(
+    PLUGIN_CODE,
+    "private suspend fun doConnect(",
+  );
+  const head = codeOf("val room = LiveKit.create(");
+  const createAt = onceAt(
+    connect,
+    "the leg's Room",
+    "val room = LiveKit.create(",
+  );
+  const createEnd = closerOf(connect, createAt + head.length - 1);
+  assert.ok(
+    connect.slice(createEnd + 1).startsWith(
+      codeOf(`val micRecordingOff = try {
+        val adm = room.lkObjects.audioDeviceModule as? JavaAudioDeviceModule
+        adm?.setAudioRecordEnabled(false)
+        adm != null
+      } catch (_: Throwable) {
+        false
+      }`),
+    ),
+    "the ADM's recording must be disabled by the statement right after " +
+      "LiveKit.create, unconditionally",
+  );
+  assert.equal(
+    countWired(PLUGIN_CODE, "setAudioRecordEnabled("),
+    1,
+    "ScreenSharePlugin.kt must touch the ADM's recording only to disable it",
+  );
+  // A leg whose disable did not take (no ADM, or a throw) must refuse the
+  // audio: publishing it would let the ADM open the microphone.
+  assertPluginWired(
+    "the refusal reads the disable",
+    `var audioState = if (audioRequested) screenAudioRefusal(micRecordingOff) else "off"`,
+  );
+  assertPluginWired("the refusal arm", `!micRecordingOff -> "failed"`);
+  // The whole refusal, every arm in order. Each arm is a case the audio
+  // block below must never see: below API 29 there is no playback capture,
+  // the ADM recording still on would let the leg open the microphone, with
+  // no RECORD_AUDIO grant the capture is refused, and with no microphone
+  // foreground service the OS silences it while the state reads "live". A
+  // dropped arm turns its case into a null, and the block runs for it.
+  const refusals = bodiesAfter(
+    PLUGIN_CODE,
+    "private fun screenAudioRefusal(micRecordingOff: Boolean): String? = when {",
+  );
+  assert.equal(refusals.length, 1, "the plugin must declare the refusal once");
+  assert.equal(
+    refusals[0],
+    codeOf(`Build.VERSION.SDK_INT < 29 -> "unsupported"
+      !micRecordingOff -> "failed"
+      ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) !=
+        PackageManager.PERMISSION_GRANTED -> "no_permission"
+      !VoiceCallService.micForegroundActive -> "no_mic_service"
+      else -> null`),
+    "screenAudioRefusal must refuse on the API level, the ADM recording, " +
+      "the RECORD_AUDIO grant and the microphone service, in that order",
+  );
+  // The audio block runs only on a null refusal, and its guard is the very
+  // next statement, so it reads the state the refusal just wrote. Without
+  // `audioState == null` the block would build and publish the playback
+  // capture for a share that never asked for audio ("off", the user's
+  // opt-out) or that the refusal turned down (no RECORD_AUDIO grant, no
+  // microphone service, the ADM recording still on).
+  assertPluginWired(
+    "the audio block runs only on a null refusal",
+    `var audioState = if (audioRequested) screenAudioRefusal(micRecordingOff) else "off"
+    if (audioState == null && Build.VERSION.SDK_INT >= 29) {`,
+  );
+  // The request reaches doConnect from JS by one path and is read once, in
+  // the refusal above: any other read of `audioRequested` is a new branch
+  // on the bare request, around the refusal and its guard.
+  assertPluginWired(
+    "connect reads the JS request",
+    `val audio = call.getBoolean("audio", false) == true`,
+  );
+  assertPluginWired(
+    "connect hands the request to doConnect",
+    "doConnect(generation, call, url, token, quality, e2ee, intent, audio)",
+  );
+  assertPluginWired(
+    "doConnect's audio parameter",
+    `intent: Intent,
+    audioRequested: Boolean,
+    ) {`,
+  );
+  assert.equal(
+    countWired(PLUGIN_CODE, "audioRequested"),
+    2,
+    "audioRequested must be the parameter and the refusal's read, nothing else",
+  );
+
+  // No prewarming either: the prewarmer starts the ADM's recording ahead of
+  // a publish. Set in the create call's own options, for every leg.
+  const createArgs = connect.slice(createAt + head.length, createEnd);
+  assert.equal(
+    countWired(
+      createArgs,
+      `audioOptions = AudioOptions(
+        audioHandler = NoAudioHandler(),
+        disableAudioPrewarming = true,
+      ),`,
+    ),
+    1,
+    "LiveKit.create must get NoAudioHandler with prewarming disabled",
+  );
+  assert.equal(countWired(PLUGIN_CODE, "disableAudioPrewarming"), 1);
+});
+
+test("the system audio is released before the video capture stops, on every stop path", () => {
+  // Stopping the video capturer stops the MediaProjection the playback
+  // capture rides on; stopped under a live capture, the source would report
+  // a failure for a share that is merely ending. stopCapture takes the
+  // source so every caller decides about the audio first.
+  const [stop] = blockBodiesOf(PLUGIN_CODE, "private fun stopCapture(");
+  assert.equal(
+    stop,
+    codeOf(`releaseAudio(audio)
+      if (room == null) return
+      try {
+        room.localParticipant
+          .getTrackPublication(Track.Source.SCREEN_SHARE)
+          ?.track
+          ?.stop()
+      } catch (_: Throwable) {}`),
+    "stopCapture must release the audio first, then stop the video",
+  );
+  const [release] = blockBodiesOf(PLUGIN_CODE, "private fun releaseAudio(");
+  assert.equal(
+    release,
+    codeOf(`if (audio != null && Build.VERSION.SDK_INT >= 29) {
+        try {
+          audio.release()
+        } catch (_: Throwable) {}
+      }`),
+    "releaseAudio must release the source",
+  );
+  // The declaration plus the two callers, tearDown and discardRoom, each
+  // handing over the source it holds.
+  assert.equal(countWired(PLUGIN_CODE, "stopCapture("), 3);
+  assert.equal(countWired(PLUGIN_CODE, "stopCapture(room, audio)"), 2);
+  const [tearDown] = blockBodiesOf(PLUGIN_CODE, "private fun tearDown(");
+  const takeAt = onceAt(
+    tearDown,
+    "tearDown takes the live source",
+    "val audio = screenAudio screenAudio = null",
+  );
+  const stopAt = onceAt(
+    tearDown,
+    "tearDown's capture stop",
+    "stopCapture(room, audio)",
+  );
+  assert.ok(takeAt < stopAt, "tearDown must take the source before the stop");
+  const [discard] = blockBodiesOf(PLUGIN_CODE, "private fun discardRoom(");
+  assert.ok(
+    discard.startsWith(codeOf("stopCapture(room, audio)")),
+    "discardRoom must release the audio before anything else",
+  );
+});
+
+test("a full reconnect releases the audio before it tears the share down", () => {
+  // `republishTracks` would put the audio back on a NEW sender whose cryptor
+  // nobody witnessed, with the source's gate still open. The branch must
+  // release the source synchronously (so it only paces zeros) and then end
+  // the share, and nothing else.
+  const bodies = bodiesAfter(PLUGIN_CODE, "is RoomEvent.Reconnecting -> {");
+  assert.equal(bodies.length, 1, "onRoomEvent must handle Reconnecting once");
+  assert.equal(
+    bodies[0],
+    codeOf(`val audio = screenAudio
+      screenAudio = null
+      releaseAudio(audio)
+      trace("full reconnect began audioReleased=\${audio != null}")
+      scope.launch {
+        if (this@ScreenSharePlugin.room === room) {
+          tearDown("disconnected")
+        }
+      }`),
+    "the Reconnecting branch must release the audio, then tear down",
+  );
+});
+
+test("the system audio publishes as SCREEN_SHARE_AUDIO, RED off, buffer callback never unset", () => {
+  // RED off: livekit-client never sends RED under E2EE, so the viewers'
+  // decrypt path is only proven without it. The source tags the publication
+  // as the share's audio (viewers and the server's grant both key on it).
+  assertPluginWired(
+    "the audio publish",
+    `audioPublished = room.localParticipant.publishAudioTrack(
+      track,
+      AudioTrackPublishOptions(
+        name = "screen_audio",
+        audioBitrate = 96_000,
+        dtx = false,
+        red = false,
+        source = Track.Source.SCREEN_SHARE_AUDIO,
+      ),
+    )`,
+  );
+  assert.equal(countWired(PLUGIN_CODE, "publishAudioTrack("), 1);
+  // Unsetting the callback (`setAudioBufferCallback(null)`) re-arms the ADM
+  // loop with no pacing, spinning a core; the released source paces zeros
+  // until the Room goes instead.
+  assertPluginWired(
+    "the buffer callback",
+    "track.setAudioBufferCallback(SourceCallback(source))",
+  );
+  assert.equal(countWired(PLUGIN_CODE, "setAudioBufferCallback("), 1);
+  assert.equal(countWired(PLUGIN_CODE, "setAudioBufferCallback(null)"), 0);
+});
+
+test("the playback capture matches the three usages and excludes Sloga's own UID", () => {
+  // The call plays as USAGE_VOICE_COMMUNICATION, which playback capture can
+  // never match; excluding our own UID is the second wall, so Sloga's own
+  // sounds never loop back into the share.
+  assertAudioSourceWired(
+    "the capture configuration",
+    `val config = AudioPlaybackCaptureConfiguration.Builder(projection)
+      .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
+      .addMatchingUsage(AudioAttributes.USAGE_GAME)
+      .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
+      .excludeUid(Process.myUid())
+      .build()`,
+  );
+  for (const [snippet, count] of [
+    ["addMatchingUsage(", 3],
+    ["excludeUid(", 1],
+    ["addMatchingUid(", 0],
+    ["USAGE_VOICE_COMMUNICATION", 0],
+    [".setAudioPlaybackCaptureConfig(config)", 1],
+  ] as const)
+    assert.equal(
+      countWired(AUDIO_SOURCE_CODE, snippet),
+      count,
+      `ScreenAudioSource.kt: ${snippet}`,
+    );
+});
+
+test("the audio gate starts closed and opens only behind the plugin's witness", () => {
+  // Closed, the source sends zeros. Under E2EE nothing real may leave the
+  // phone before the audio sender's cryptor is witnessed on the current key.
+  assertAudioSourceWired(
+    "the gate's initial state",
+    "@Volatile private var gateOpen = false",
+  );
+  assert.equal(
+    countWired(AUDIO_SOURCE_CODE, "gateOpen = true"),
+    1,
+    "only openGate may open the gate",
+  );
+  const [open] = blockBodiesOf(AUDIO_SOURCE_CODE, "fun openGate(");
+  assert.equal(open, codeOf("gateOpen = true if (released) gateOpen = false"));
+  // The plugin opens it once, and only on the witness.
+  assert.equal(countWired(PLUGIN_CODE, ".openGate()"), 1);
+  // A call needs no leading `.`: an `init { openGate() }` or an
+  // `if (...) openGate()` in produce inside the source, or a scope function
+  // in the plugin (`source.apply { openGate() }`, `with(source) { ... }`),
+  // opens the gate with no witness and slips past both pins above. So the
+  // bare name, across both files: the declaration in ScreenAudioSource.kt,
+  // which never opens its own gate, and the one witnessed call in the plugin.
+  assert.equal(
+    countWired(AUDIO_SOURCE_CODE, "openGate"),
+    1,
+    "ScreenAudioSource.kt may declare openGate but never call it",
+  );
+  assert.equal(
+    countWired(AUDIO_SOURCE_CODE, "openGate") +
+      countWired(PLUGIN_CODE, "openGate"),
+    2,
+    "openGate must be the declaration and the plugin's one witnessed call",
+  );
+  assertPluginWired(
+    "the witnessed open",
+    `val witnessed = provider == null ||
+        audioCryptorWitnessed(room, currentKeyIndex)
+      if (witnessed && !failedEarly.get()) {
+        source.openGate()
+        audioState = "live"
+      }`,
+  );
+
+  // The gate is read where the bytes are written. `produce` reads the
+  // capture into the source's own scratch buffer, never into the ADM's, and
+  // copies it across only inside the open-gate branch; closed or released,
+  // the same call zero-fills, so the read still drains the capture but
+  // nothing captured is sent. A `true` or a bare `!released` there would
+  // send playback before the plugin's witness, and a copy in the else arm
+  // would send it with the gate closed.
+  const produces = bodiesAfter(
+    AUDIO_SOURCE_CODE,
+    `private fun produce(
+      buffer: ByteBuffer,
+      capacity: Int,
+      audioFormat: Int,
+      channelCount: Int,
+      sampleRate: Int,
+    ): Boolean {`,
+  );
+  assert.equal(produces.length, 1, "ScreenAudioSource.kt must declare produce");
+  const [produce] = produces;
+  assertAudioSourceWired(
+    "the capture read",
+    "val got = rec.read(scratch, capacity, AudioRecord.READ_BLOCKING)",
+  );
+  assert.equal(
+    countWired(AUDIO_SOURCE_CODE, ".read("),
+    1,
+    "the capture must be read only into the scratch buffer",
+  );
+  assert.equal(
+    countWired(AUDIO_SOURCE_CODE, "if (gateOpen && !released) {"),
+    1,
+    "the open-gate branch must appear exactly once in ScreenAudioSource.kt",
+  );
+  const gateHead = codeOf("if (gateOpen && !released) {");
+  const gateAt = onceAt(
+    produce,
+    "produce's open-gate branch",
+    "if (gateOpen && !released) {",
+  );
+  const gateEnd = closerOf(produce, gateAt + gateHead.length - 1);
+  assert.equal(
+    produce.slice(gateAt + gateHead.length, gateEnd),
+    codeOf(`buffer.clear()
+      scratch.clear()
+      scratch.limit(got)
+      buffer.put(scratch)
+      if (got < capacity) buffer.put(zerosOf(capacity), 0, capacity - got)
+      buffer.position(0)
+      scratch.clear()`),
+    "the open-gate branch must copy the capture into the ADM buffer",
+  );
+  const elseHead = codeOf("else {");
+  assert.ok(
+    produce.startsWith(elseHead, gateEnd + 1),
+    "the open-gate branch must have an else arm",
+  );
+  assert.equal(
+    produce.slice(
+      gateEnd + 1 + elseHead.length,
+      closerOf(produce, gateEnd + elseHead.length),
+    ),
+    codeOf("zeroFill(buffer, capacity)"),
+    "a closed or released gate must zero-fill the ADM buffer, and only that",
+  );
+  assert.equal(
+    countWired(AUDIO_SOURCE_CODE, "buffer.put(scratch)"),
+    1,
+    "the capture may reach the ADM buffer only inside the open-gate branch",
+  );
+  // The two copies in the branch and the one in zeroFill, which writes zeros.
+  assert.equal(countWired(AUDIO_SOURCE_CODE, ".put("), 3);
+  const [zeroFill] = blockBodiesOf(AUDIO_SOURCE_CODE, "private fun zeroFill(");
+  assert.equal(
+    zeroFill,
+    codeOf(`buffer.clear()
+      buffer.put(zerosOf(capacity), 0, capacity)
+      buffer.position(0)`),
+    "zeroFill must fill the ADM buffer from the zeros array",
+  );
+  assert.equal(
+    countWired(AUDIO_SOURCE_CODE, "zeros ="),
+    2,
+    "the zeros array is written only as a fresh array",
+  );
+  // Every mention of the gate, accounted for: the declaration (pinned
+  // above), openGate (pinned above), closeGate and release (writes only,
+  // release closing it for good), produce's one read, and the two reads in
+  // deliverFailureIfDue, which only decide when a held-back failure is
+  // reported, never what is sent. A ninth mention is a new read.
+  assert.equal(countWired(produce, "gateOpen"), 1);
+  const [close] = blockBodiesOf(AUDIO_SOURCE_CODE, "fun closeGate(");
+  assert.equal(close, codeOf("gateOpen = false"));
+  const releases = blockBodiesOf(AUDIO_SOURCE_CODE, "fun release(");
+  assert.equal(releases.length, 1, "ScreenAudioSource.kt must declare release");
+  assert.equal(
+    releases[0],
+    codeOf(`gateOpen = false
+      val rec = synchronized(lock) {
+        released = true
+        val r = record
+        record = null
+        r
+      }
+      gateOpen = false
+      stopAndRelease(rec)`),
+    "release must close the gate, latch released, then close it again",
+  );
+  const [deliver] = blockBodiesOf(
+    AUDIO_SOURCE_CODE,
+    "private fun deliverFailureIfDue(",
+  );
+  assert.equal(
+    deliver,
+    codeOf(`if (!failed || failureDelivered || !gateOpen || released) return
+      synchronized(lock) {
+        if (released || failureDelivered || !gateOpen) return
+        failureDelivered = true
+        try {
+          onFailure()
+        } catch (e: Exception) {
+          Log.w(TAG, "onFailure threw " + e.javaClass.simpleName)
+        }
+      }`),
+    "deliverFailureIfDue may read the gate only to time the failure report",
+  );
+  assert.equal(
+    countWired(AUDIO_SOURCE_CODE, "gateOpen"),
+    9,
+    "ScreenAudioSource.kt must not read the gate anywhere else",
+  );
+
+  // The witness itself: THIS publication's own sender cryptor, found by the
+  // key E2EEManager stores it under (the publication sid and the leg's
+  // identity), enabled AND at the current index. Anything missing or a
+  // throw from the reflection is "not witnessed": a disabled cryptor passes
+  // frames in the clear, and one at a stale index encrypts under a key the
+  // wrong epoch's members hold.
+  const witnesses = bodiesAfter(
+    PLUGIN_CODE,
+    "private fun audioCryptorWitnessed(room: Room, index: Int): Boolean {",
+  );
+  assert.equal(witnesses.length, 1, "the plugin must declare the witness once");
+  assert.equal(
+    witnesses[0],
+    codeOf(`return try {
+        val manager = room.e2eeManager ?: return false
+        if (!manager.enabled) return false
+        val pub = room.localParticipant
+          .getTrackPublication(Track.Source.SCREEN_SHARE_AUDIO) ?: return false
+        val identity = room.localParticipant.identity ?: return false
+        val key = Pair(pub.sid, identity)
+        val cryptor = frameCryptorMap(manager).entries
+          .firstOrNull { it.key == key }
+          ?.value ?: return false
+        cryptor.isEnabled && cryptor.keyIndex == index
+      } catch (_: Throwable) {
+        false
+      }`),
+    "the witness must require this sender's cryptor, enabled and at the " +
+      "current index, and read a throw as not witnessed",
+  );
+  assert.equal(countWired(PLUGIN_CODE, "audioCryptorWitnessed("), 2);
+
+  // After the gate opens, the manager's observer is what watches the audio
+  // sender, and plan A-M1 has it end the WHOLE leg: the arm takes no source
+  // filter, so an audio cryptor error tears the video down too (one key
+  // ring, one index), and nothing in onRoomEvent runs ahead of it.
+  // Nothing ahead of onRoomEvent either: the Room's events reach it from one
+  // collector, launched on its own, with nothing between `room.events` and
+  // `.collect`. A `.filter { it !is TrackEvent }` or a `.takeWhile` there
+  // would drop the audio sender's E2EE failure before the arm below could
+  // end the leg, and with no collector no failure is seen at all.
+  assertPluginWired(
+    "the room-event collector",
+    "room.events.collect { event -> onRoomEvent(event) }",
+  );
+  assertPluginWired(
+    "the collector is its launch's whole body",
+    `events = scope.launch {
+      room.events.collect { event -> onRoomEvent(event) }
+    }`,
+  );
+  assert.equal(
+    countWired(PLUGIN_CODE, "onRoomEvent("),
+    2,
+    "onRoomEvent must be the declaration and the one collector's call",
+  );
+  const onRoomEvents = blockBodiesOf(PLUGIN_CODE, "private fun onRoomEvent(");
+  assert.equal(onRoomEvents.length, 1, "the plugin must declare onRoomEvent");
+  assert.ok(
+    onRoomEvents[0].startsWith(
+      codeOf(`val room = this.room ?: return
+        when (event) {
+          is RoomEvent.TrackE2EEStateEvent -> {`),
+    ),
+    "the E2EE state arm must be onRoomEvent's first, with no filter before it",
+  );
+  const e2eeArms = bodiesAfter(
+    PLUGIN_CODE,
+    "is RoomEvent.TrackE2EEStateEvent -> {",
+  );
+  assert.equal(e2eeArms.length, 1, "onRoomEvent must handle E2EE state once");
+  assert.equal(
+    e2eeArms[0],
+    codeOf(`if (event.state != E2EEState.OK && event.state != E2EEState.NEW) {
+        scope.launch { tearDown("error") }
+      }`),
+    "the E2EE state arm must end the whole leg on any sender, audio included",
+  );
+  assert.equal(countWired(PLUGIN_CODE, "TrackE2EEStateEvent"), 1);
+
+  // The post-audio-publish key-index assertion sits OUTSIDE the audio-only
+  // catch, ahead of the witness: its throw must fail the whole leg (a second
+  // E2EE sender refusing the current index is a hole for the video too),
+  // never be swallowed as "audio failed" with the video left on air. The
+  // audio block holds one try, whose catch rethrows cancellation only.
+  const [connect] = blockBodiesOf(
+    PLUGIN_CODE,
+    "private suspend fun doConnect(",
+  );
+  const audioBlocks = bodiesAfter(
+    connect,
+    "if (audioState == null && Build.VERSION.SDK_INT >= 29) {",
+  );
+  assert.equal(audioBlocks.length, 1, "doConnect must hold one audio block");
+  const [audioBlock] = audioBlocks;
+  const tryHead = codeOf("try {");
+  const tryAt = onceAt(audioBlock, "the audio-only try", "try {");
+  const tryEnd = closerOf(audioBlock, tryAt + tryHead.length - 1);
+  const tryBody = audioBlock.slice(tryAt + tryHead.length, tryEnd);
+  assert.equal(
+    countWired(tryBody, "assertSenderKeyIndex("),
+    0,
+    "the audio key-index assertion must not sit inside the audio-only try",
+  );
+  // The block is the only place a source is built, so the guard pinned in
+  // the mic-recording test above guards every playback capture.
+  assert.equal(countWired(tryBody, "ScreenAudioSource(projection)"), 1);
+  assert.equal(countWired(PLUGIN_CODE, "ScreenAudioSource("), 1);
+  const catchHead = codeOf("catch (t: Throwable) {");
+  assert.ok(
+    audioBlock.startsWith(catchHead, tryEnd + 1),
+    "the audio-only try must be caught as Throwable",
+  );
+  const catchEnd = closerOf(audioBlock, tryEnd + catchHead.length);
+  assert.equal(
+    audioBlock.slice(tryEnd + 1 + catchHead.length, catchEnd),
+    codeOf(
+      'if (t is ConnectCancelled || t is CancellationException) throw t trace("audio publish failed ${t.javaClass.simpleName}")',
+    ),
+    "the audio-only catch must swallow audio failures and rethrow cancellation",
+  );
+  const assertAt = onceAt(
+    audioBlock,
+    "the post-audio-publish key-index assertion",
+    "assertSenderKeyIndex(room, currentKeyIndex)",
+  );
+  assert.ok(
+    assertAt > catchEnd,
+    "the audio key-index assertion must come after the audio-only catch",
+  );
+  assert.ok(
+    audioBlock.slice(catchEnd + 1).startsWith(
+      codeOf(`ensureConnectCurrent(generation)
+        val source = audio
+        if (audioPublished && source != null) {
+          if (provider != null) {
+            assertSenderKeyIndex(room, currentKeyIndex)
+          }
+          val witnessed = provider == null ||
+            audioCryptorWitnessed(room, currentKeyIndex)`),
+    ),
+    "the audio key-index assertion must run right after a successful " +
+      "publish, outside the catch and before the witness",
+  );
+  // The video's assertion and the audio's, nothing else in doConnect.
+  assert.equal(countWired(connect, "assertSenderKeyIndex("), 2);
+  // What the assertion does: move EVERY sender cryptor, audio and video, to
+  // the current index, then throw if any one of them did not take it. With
+  // no switch the audio sender stays at the index it was built with; with
+  // no throw a refused switch passes silently, and the leg sends under a key
+  // the current epoch's members may not hold instead of failing.
+  const keyAsserts = blockBodiesOf(
+    PLUGIN_CODE,
+    "private fun assertSenderKeyIndex(",
+  );
+  assert.equal(keyAsserts.length, 1, "the plugin must declare it once");
+  assert.equal(
+    keyAsserts[0],
+    codeOf(`for (cryptor in senderCryptors(room)) {
+        cryptor.setKeyIndex(index)
+      }
+      for (cryptor in senderCryptors(room)) {
+        if (cryptor.keyIndex != index) {
+          throw IllegalStateException("sender cryptor refused key index switch")
+        }
+      }`),
+    "assertSenderKeyIndex must set the index on every sender cryptor, then " +
+      "throw if any one of them is not at it",
+  );
+  // The cryptors both loops walk: every one the manager holds. An empty or
+  // narrowed list would pass both loops without checking anything.
+  const senders = bodiesAfter(
+    PLUGIN_CODE,
+    "private fun senderCryptors(room: Room?): Collection<FrameCryptor> {",
+  );
+  assert.equal(senders.length, 1, "senderCryptors must be declared once");
+  assert.equal(
+    senders[0],
+    codeOf(`val manager = room?.e2eeManager ?: return emptyList()
+      return frameCryptorMap(manager).values`),
+    "senderCryptors must hand back every cryptor the manager holds",
+  );
+
+  // Where that throw lands. An IllegalStateException from either assertion
+  // is not cancellation, so it must fail the connect: if any catch on its
+  // way out resolved instead (`if (t is IllegalStateException)
+  // call.resolve(ok)`), a leg whose sender cryptor refused the key index
+  // would go live and JS would be told it started. Nothing between the
+  // assertions and doConnect's outer catch may catch it: doConnect holds
+  // three tries, the mic-recording guard (closed before the outer try
+  // opens), the outer try, and the audio-only try, whose catch rethrows
+  // only cancellation (pinned above). The outer catch releases the audio,
+  // discards a Room this attempt no longer owns, and always rethrows.
+  // connect's catch then rejects. A current attempt is torn down first; a
+  // superseded one was torn down by whatever cancelled it, and the outer
+  // catch discarded its Room. The one resolve is the success tail, the
+  // outer try's last statement.
+  assert.equal(countWired(connect, "try {"), 3, "doConnect must hold 3 tries");
+  assert.equal(countWired(connect, "catch ("), 3, "and 3 catches");
+  assert.equal(countWired(connect, "runCatching"), 0);
+  const micHead = codeOf("val micRecordingOff = try {");
+  const micAt = onceAt(
+    connect,
+    "the mic-recording guard",
+    "val micRecordingOff = try {",
+  );
+  const micEnd = closerOf(connect, micAt + micHead.length - 1);
+  assert.ok(
+    connect.startsWith(codeOf("catch (_: Throwable) { false }"), micEnd + 1),
+    "the mic-recording guard must catch into false",
+  );
+  const outerHead = codeOf("var audio: ScreenAudioSource? = null try {");
+  const outerAt = onceAt(
+    connect,
+    "doConnect's outer try",
+    "var audio: ScreenAudioSource? = null try {",
+  );
+  assert.ok(micEnd < outerAt, "the mic-recording guard must close first");
+  const outerOpen = outerAt + outerHead.length - 1;
+  const outerEnd = closerOf(connect, outerOpen);
+  const asserts = wiredAt(connect, "assertSenderKeyIndex(");
+  assert.equal(asserts.length, 2);
+  for (const at of asserts) {
+    assert.ok(
+      at > outerOpen && at < outerEnd,
+      "each key-index assertion must sit inside doConnect's outer try",
+    );
+  }
+  assertPluginWired(
+    "the video key-index assertion, straight after the publish check",
+    `if (published != true) {
+      throw IllegalStateException("screen share publish refused")
+    }
+    if (provider != null) {
+      assertSenderKeyIndex(room, currentKeyIndex)
+    }`,
+  );
+  assert.ok(
+    connect.slice(0, outerEnd).endsWith(
+      codeOf(`ensureConnectCurrent(generation)
+        screenAudio = audio
+        audio = null
+        notifyListeners("started", JSObject())
+        val ok = JSObject()
+        ok.put("ok", true)
+        ok.put("audio", audioState ?: "failed")
+        call.resolve(ok)`),
+    ),
+    "doConnect's resolve must be the outer try's last statement",
+  );
+  assert.equal(
+    connect.slice(outerEnd + 1),
+    codeOf(`catch (t: Throwable) {
+        releaseAudio(audio)
+        if (this.room !== room) {
+          events?.cancel()
+          if (events != null && eventsJob === events) eventsJob = null
+          discardRoom(room, alreadyReleased = releasedRoom === room, audio = audio)
+        }
+        throw t
+      }`),
+    "doConnect's outer catch must release, discard, and always rethrow",
+  );
+  assert.equal(countWired(connect, ".resolve("), 1, "doConnect resolves once");
+  assert.equal(countWired(connect, ".reject("), 0, "doConnect never rejects");
+  assert.equal(countWired(PLUGIN_CODE, "doConnect("), 2);
+  const [connectCall] = blockBodiesOf(PLUGIN_CODE, "fun connect(");
+  assert.ok(
+    connectCall.endsWith(
+      codeOf(`val generation = ++connectGeneration
+        try {
+          doConnect(generation, call, url, token, quality, e2ee, intent, audio)
+        } catch (t: Throwable) {
+          if (generation != connectGeneration) {
+            if (generation == revokedGeneration) {
+              call.reject("connect_failed: revoked")
+            } else {
+              call.reject("connect_failed: cancelled")
+            }
+          } else {
+            val consent = consentIntent
+            tearDown(reason = null)
+            consentIntent = consent
+            call.reject("connect_failed: \${t.message ?: t.javaClass.simpleName}")
+          }
+        }
+      }`),
+    ),
+    "connect's catch must reject every failure, tearing a current one down",
+  );
+  assert.equal(
+    countWired(connectCall, ".resolve("),
+    0,
+    "connect never resolves",
+  );
+  assert.equal(countWired(connectCall, "tearDown("), 1);
 });

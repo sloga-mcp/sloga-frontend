@@ -7811,11 +7811,15 @@ MUTATIONS += [
         id="leg-pin-x-full-key-to-plugin",
         what="the plugin connect is handed the caller's full key, groupId included, instead of the bridge-shaped one",
         file=ANDROID_SHARE,
-        search="""        audio: false,
-        e2ee,
+        # Retargeted 2026-10-11 (Android screen share slice 4): the plugin call
+        # now sits inside the leaf's publish callback, two levels deeper, and
+        # the field before the key is the caller's audio request, no longer a
+        # hard-coded `false`. Same defect, new anchor.
+        search="""            audio: options.audio,
+            e2ee,
 """,
-        replace="""        audio: false,
-        e2ee: options.e2ee,
+        replace="""            audio: options.audio,
+            e2ee: options.e2ee,
 """,
         specs=[LEG_POLICY_SPEC],
         must_red=[LEG_POLICY_SPEC],
@@ -9881,6 +9885,585 @@ if (plugin && CONFIGURATION.ENABLE_ANDROID_SCREEN_SHARE) {
     ),
 ]
 
+
+# --- Android screen share slice 4: the leg's system audio --------------------
+#
+# The live legs for slice 4 were waived, so these entries and the specs that
+# kill them are the only automated proof the audio is wired right. Three
+# groups:
+#
+#  - Dark and opt-in, one entry per layer (wave-2 E2EE audit MINOR-2): the
+#    offer (`SHARE_AUDIO_OFFERED`, each of its three inputs forced), the
+#    sheet's own guard on what it reports, the state's `legAudioRequested`
+#    AND, and the request handed to the plugin. Each layer must go red ALONE:
+#    the layers mask one another at runtime, so a layer no pin holds can be
+#    deleted with every behavior intact and every gate green.
+#  - What reaches the user: the connect's fail-closed fallback for an
+#    unknown native report, the `audio` and `muted` event filters, the start
+#    notice's place after the key sync, the self-leg flag that keeps the
+#    phone from playing its own share audio, and the tile badge (its leaf
+#    precedence and where `hasAudioPub` comes from).
+#  - Native (Kotlin): the ADM's microphone recording disabled on every leg,
+#    the `RoomEvent.Reconnecting` branch that releases the audio before a
+#    full reconnect can republish it, Sloga's own UID excluded from the
+#    playback capture, and the audio gate starting closed.
+#
+# Every entry except the two `badge-*` ones is killed by a SOURCE PIN (the
+# targets are wrappers, Solid components and Kotlin, none of which
+# `node --test` can load): a kill proves the pinned text changed, never what
+# the code does at runtime, and the same text in dead code would still pass.
+# The `badge-*` entries are killed by the leaf's truth table.
+
+#: Relative to `RTC`, like every other target (`apply` reads
+#: `RTC / mutation.file`), so the files outside `components/rtc` climb out.
+ANDROID_SHARE_SHEET = "../modal/modals/AndroidScreenShareSheet.tsx"
+PARTICIPANT_TILE = "../ui/components/features/voice/callCard/ParticipantTile.tsx"
+SHARE_AUDIO_BADGE = "shareAudioBadge.ts"
+#: The playback capture source, held by the Kotlin source pins in
+#: LEG_POLICY_SPEC beside SHARE_PLUGIN_KT's.
+SCREEN_AUDIO_KT = (
+    "../../android/app/src/main/java/com/acutest/app/screenshare/"
+    "ScreenAudioSource.kt"
+)
+SHARE_AUDIO_BADGE_SPEC = "components/rtc/shareAudioBadge.test.ts"
+
+MUTATIONS += [
+    # ---- dark and opt-in, one layer at a time -------------------------------
+    Mutation(
+        id="state-leg-audio-offered-forced",
+        what="the share sheet is told audio is offered on every build and device, so a dark build or a phone below API 29 shows the toggle and the saved setting is overwritten",
+        file=STATE,
+        search="""    const audioOffered = nativeScreenShareAudioOffered();
+""",
+        replace="""    const audioOffered = true;
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    # At runtime the state's `legAudioRequested` AND masks this guard, so it
+    # is killed only by the sheet pin in stateWiring.test.ts (beside
+    # LEG_SHEET), which reads `onSubmit` whole. It survived until that pin
+    # existed (measured 2026-10-11).
+    Mutation(
+        id="sheet-audio-offer-guard-dropped",
+        what="the sheet reports the toggle's value even when it never showed the toggle, so a saved \"on\" comes back as a request from a build that did not offer audio",
+        file=ANDROID_SHARE_SHEET,
+        search="""      props.audioOffered && group.controls.audio.value === true,
+""",
+        replace="""      group.controls.audio.value === true,
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="state-leg-audio-request-unguarded",
+        what="the start takes the sheet's raw answer as the audio request instead of ANDing the offer in, so a saved \"on\" asks a dark build for audio",
+        file=STATE,
+        search="""            audio: legAudioRequested({ offered: audioOffered, userWants }),
+""",
+        replace="""            audio: userWants,
+""",
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="share-audio-offer-path-forced",
+        what="the audio offer is handed `shareAvailable: true`, so a device without the native share path offers audio",
+        file=ANDROID_SHARE,
+        search="""  shareAvailable: nativeScreenShareAvailable(),
+""",
+        replace="""  shareAvailable: true,
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="share-audio-offer-flag-forced",
+        what="the audio offer is handed `audioFlag: true` instead of the build flag, so a dark build offers audio",
+        file=ANDROID_SHARE,
+        search="""  audioFlag: CONFIGURATION.ENABLE_ANDROID_SCREEN_AUDIO,
+""",
+        replace="""  audioFlag: true,
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="share-audio-offer-header-forced",
+        what="the audio offer is handed `audioHeader: true` instead of the ScreenShareAudio marker, so a phone below API 29 offers audio it cannot capture",
+        file=ANDROID_SHARE,
+        search="""  audioHeader: Capacitor.isPluginAvailable("ScreenShareAudio"),
+""",
+        replace="""  audioHeader: true,
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="share-audio-request-false",
+        what="the plugin connect is always told `audio: false`, so a user who asked for audio shares silence and the start reports it off",
+        file=ANDROID_SHARE,
+        search="""            audio: options.audio,
+""",
+        replace="""            audio: false,
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="share-audio-request-true",
+        what="the plugin connect is always told `audio: true`, so every share, dark build included, publishes the phone's system audio",
+        file=ANDROID_SHARE,
+        search="""            audio: options.audio,
+""",
+        replace="""            audio: true,
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # ---- what reaches the user ----------------------------------------------
+    Mutation(
+        id="share-audio-fallback-live",
+        what="a connect whose native audio report is unknown (an older APK) reads as live when audio was asked for, so a silent share looks like it has sound",
+        file=ANDROID_SHARE,
+        search="""              ? "failed"
+""",
+        replace="""              ? "live"
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="share-audio-event-unfiltered",
+        what="every native `audio` event reaches the owner, so a `live` or unknown state toasts \"Screen audio stopped\" over a share that still has sound",
+        file=ANDROID_SHARE,
+        search="""        if (state === "lost" || state === "failed") this.onAudio?.(state);
+""",
+        replace="""        this.onAudio?.(state as "lost" | "failed");
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="share-mute-source-unfiltered",
+        what="the native `muted` event's source is passed through raw, so a source this JS does not know reaches the owner instead of reading as the video",
+        file=ANDROID_SHARE,
+        search="""  return source === "screen_share" || source === "screen_share_audio"
+    ? source
+    : undefined;
+""",
+        replace="""  return source as LegMuteSource | undefined;
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="state-leg-audio-notice-before-sync",
+        what="the start's audio notice is given before the post-connect key sync, so a share the sync stops fail-closed still says \"sharing without it\"",
+        file=STATE,
+        search="""      await this.#syncLegKeyAfterConnect(activeLeg, e2eeKey);
+""",
+        replace="",
+        also=[
+            (
+                """        if (text !== undefined) this.onErr(new Error(text));
+      }
+    } catch (error) {
+""",
+                """        if (text !== undefined) this.onErr(new Error(text));
+      }
+      await this.#syncLegKeyAfterConnect(activeLeg, e2eeKey);
+    } catch (error) {
+""",
+            ),
+        ],
+        specs=[STATE_WIRING_SPEC],
+        must_red=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id="watch-self-leg-false-in-watchpub",
+        what="watchPubOf never marks this phone's own screen leg, so a watched self-share subscribes and plays its own system audio back (self-echo)",
+        file=AUDIO_MANAGER,
+        search="""      isSelfLeg:
+        isScreenLeg(identity) &&
+        stripLeg(identity) === voice.room()?.localParticipant.identity,
+""",
+        replace="""      isSelfLeg: false,
+""",
+        specs=[WATCH_POLICY_SPEC],
+        must_red=[WATCH_POLICY_SPEC],
+    ),
+    Mutation(
+        id="watch-self-leg-false-in-transition",
+        what="the watch-transition effect never marks this phone's own screen leg, so a new watch subscribes its own share audio through reconcileShareSubscriptions (self-echo)",
+        file=AUDIO_MANAGER,
+        search="""        const isSelfLeg = isScreenLeg(identity) && stripLeg(identity) === local;
+""",
+        replace="""        const isSelfLeg = false;
+""",
+        specs=[WATCH_POLICY_SPEC],
+        must_red=[WATCH_POLICY_SPEC],
+    ),
+    Mutation(
+        id="badge-user-muted-over-no-audio",
+        what="the viewer's own mute outranks a missing audio publication, so a share with no audio shows the red mute badge again, a mute over a track that does not exist",
+        file=SHARE_AUDIO_BADGE,
+        search="""  if (!w.hasAudioPub) return "no-audio";
+  if (w.userMuted) return "user-muted";
+""",
+        replace="""  if (w.userMuted) return "user-muted";
+  if (!w.hasAudioPub) return "no-audio";
+""",
+        specs=[SHARE_AUDIO_BADGE_SPEC],
+        must_red=[SHARE_AUDIO_BADGE_SPEC],
+    ),
+    Mutation(
+        id="badge-pub-muted-over-user-muted",
+        what="the publisher's mute outranks the viewer's own, so a viewer who muted the sharer sees the grey badge and cannot tell they must unmute locally",
+        file=SHARE_AUDIO_BADGE,
+        search="""  if (w.userMuted) return "user-muted";
+  if (w.pubMuted) return "muted";
+""",
+        replace="""  if (w.pubMuted) return "muted";
+  if (w.userMuted) return "user-muted";
+""",
+        specs=[SHARE_AUDIO_BADGE_SPEC],
+        must_red=[SHARE_AUDIO_BADGE_SPEC],
+    ),
+    Mutation(
+        id="tile-has-audio-pub-from-mute-observer",
+        what="the tile derives hasAudioPub from components-core's mute observer, which answers `pub?.isMuted ?? true`, so every audio-less share reads as muted again (the \"muted, can't unmute\" report)",
+        file=PARTICIPANT_TILE,
+        search="""      hasAudioPub: pub !== undefined,
+""",
+        replace="""      hasAudioPub: !isRemoteScreenShareAudioMuted(),
+""",
+        also=[
+            (
+                """  const isRemoteScreenShareMuted = useIsMuted({
+    participant,
+    source: Track.Source.ScreenShare,
+  });
+""",
+                """  const isRemoteScreenShareMuted = useIsMuted({
+    participant,
+    source: Track.Source.ScreenShare,
+  });
+
+  const isRemoteScreenShareAudioMuted = useIsMuted({
+    participant,
+    source: Track.Source.ScreenShareAudio,
+  });
+""",
+            ),
+        ],
+        specs=[SHARE_AUDIO_BADGE_SPEC],
+        must_red=[SHARE_AUDIO_BADGE_SPEC],
+    ),
+    # ---- native (Kotlin source pins) ----------------------------------------
+    Mutation(
+        id="native-adm-recording-left-on",
+        what="the leg's ADM keeps its microphone recording enabled, so a leg that publishes audio can open the microphone the WebView call owns",
+        file=SHARE_PLUGIN_KT,
+        search="""            adm?.setAudioRecordEnabled(false)
+""",
+        replace="",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-reconnecting-branch-removed",
+        what="a full reconnect no longer releases the audio and ends the share, so republishTracks puts open-gate playback on a new audio sender whose cryptor nobody witnessed (wave-1 MAJOR-1)",
+        file=SHARE_PLUGIN_KT,
+        search="""            is RoomEvent.Reconnecting -> {
+                // A FULL reconnect has begun, and the share ends here, before
+                // the SDK can put any of it back on air. In livekit-android
+                // 2.28.0 this event comes only from `onEngineReconnecting`,
+                // which the engine calls only on its full-reconnect branch
+                // (RTCEngine.kt:615-620; Room.kt:1191-1194). A RESUME (the
+                // common network blip, which keeps the senders) goes through
+                // `onEngineResuming`, which Room does not override, so it
+                // posts no room event at all and never reaches this branch.
+                //
+                // Why not wait for Reconnected, as the video alone could:
+                // `prepareForFullReconnect` drops the publications but keeps
+                // the tracks running, and `onPostReconnect -> republishTracks`
+                // publishes them again on NEW senders, the video and then the
+                // audio, AFTER Reconnected is posted. A source whose gate is
+                // open would feed live playback into a new audio sender whose
+                // cryptor nobody has witnessed, and whether its first frames
+                // leave encrypted then depends on SDK timing. The gate must
+                // never be open on an unwitnessed sender, so the audio is
+                // released right here, synchronously and before any video
+                // stop: released, the source only paces zeros. The teardown
+                // that follows disconnects at once (not settled), and that
+                // disconnect cancels the reconnect job, which pre-empts the
+                // republish of both senders. Same reason and toast as a
+                // Reconnected that finds no screen publication (probe (c-iv)
+                // already showed a full reconnect ends the share).
+                //
+                // Launched, like every other teardown from this collector,
+                // and only if THIS share is still the live one when it runs
+                // (see the permission branch). Taking [screenAudio] out of
+                // the field first leaves the teardown nothing to release,
+                // and a queued audio-loss report nothing to report.
+                val audio = screenAudio
+                screenAudio = null
+                releaseAudio(audio)
+                trace("full reconnect began audioReleased=${audio != null}")
+                scope.launch {
+                    if (this@ScreenSharePlugin.room === room) {
+                        tearDown("disconnected")
+                    }
+                }
+            }
+""",
+        replace="",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-audio-uid-not-excluded",
+        what="the playback capture no longer excludes Sloga's own UID, so the app's own sounds can loop back into the share",
+        file=SCREEN_AUDIO_KT,
+        search="""                            .excludeUid(Process.myUid())
+""",
+        replace="",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-audio-gate-starts-open",
+        what="the audio gate starts open, so captured playback leaves the phone before the audio sender's cryptor is witnessed on the current key",
+        file=SCREEN_AUDIO_KT,
+        search="""    private var gateOpen = false
+""",
+        replace="""    private var gateOpen = true
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # ---- native: the request guard, the gate, the witness, the key ---------
+    # Fix lane P2 (2026-10-11). Each is killed by a Kotlin source pin in
+    # LEG_POLICY_SPEC (fix lane P1), so a kill proves the pinned text changed,
+    # never what the plugin does on a device.
+    Mutation(
+        id="native-audio-request-guard-dropped",
+        what="the audio block runs whatever screenAudioRefusal answered, so a share that never asked for audio, or one refused for a missing RECORD_AUDIO grant, microphone service or disabled ADM recording, still builds and publishes the playback capture",
+        file=SHARE_PLUGIN_KT,
+        search="""            if (audioState == null && Build.VERSION.SDK_INT >= 29) {
+""",
+        replace="""            if (Build.VERSION.SDK_INT >= 29) {
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-audio-gate-read-forced-open",
+        what="the record callback copies captured playback into the ADM buffer whatever the gate and release state, so playback leaves the phone before the audio sender's cryptor is witnessed on the current key",
+        file=SCREEN_AUDIO_KT,
+        search="""        if (gateOpen && !released) {
+""",
+        replace="""        if (true) {
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-audio-gate-read-ignores-gate",
+        what="the record callback checks only `released`, never the gate, so captured playback leaves the phone from the first buffer, before the audio sender's cryptor is witnessed on the current key",
+        file=SCREEN_AUDIO_KT,
+        search="""        if (gateOpen && !released) {
+""",
+        replace="""        if (!released) {
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-audio-witness-skips-key-check",
+        what="the audio witness passes for any cryptor found in the manager's map, so the gate opens on a disabled cryptor (frames in the clear) or one at a stale key index (a key the wrong epoch's members hold)",
+        file=SHARE_PLUGIN_KT,
+        search="""            cryptor.isEnabled && cryptor.keyIndex == index
+""",
+        replace="""            true
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # The catch line alone (`} catch (_: Throwable) {` then `false`) also
+    # closes the ADM recording guard in `doConnect`, so the search carries
+    # the witness predicate above it.
+    Mutation(
+        id="native-audio-witness-catch-true",
+        what="a reflection failure inside the audio witness (an SDK upgrade renaming the cryptor map) reads as witnessed, so the gate opens on a sender nobody verified",
+        file=SHARE_PLUGIN_KT,
+        search="""            cryptor.isEnabled && cryptor.keyIndex == index
+        } catch (_: Throwable) {
+            false
+        }
+""",
+        replace="""            cryptor.isEnabled && cryptor.keyIndex == index
+        } catch (_: Throwable) {
+            true
+        }
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-e2ee-observer-filters-audio",
+        what="the E2EE state observer skips the system-audio sender, so an audio cryptor error no longer ends the leg and both senders keep publishing under the key state the branch exists to refuse",
+        file=SHARE_PLUGIN_KT,
+        search="""                if (event.state != E2EEState.OK && event.state != E2EEState.NEW) {
+""",
+        replace="""                if (
+                    event.state != E2EEState.OK &&
+                    event.state != E2EEState.NEW &&
+                    event.publication.source != Track.Source.SCREEN_SHARE_AUDIO
+                ) {
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # Moved, not deleted: the assertion still runs, but its throw lands in the
+    # audio-only catch. `audioPublished` is already true by then, so the
+    # connect goes on to the witness and resolves with the video still on air
+    # beside a sender cryptor that refused the current key index.
+    Mutation(
+        id="native-audio-assert-swallowed",
+        what="the post-audio-publish key-index assertion runs inside the audio-only try, so a sender cryptor that refuses the current index is swallowed as an audio failure and the video keeps publishing instead of the whole leg ending",
+        file=SHARE_PLUGIN_KT,
+        search="""                    // audio-only catch on purpose: a throw here ends the leg.
+                    if (provider != null) {
+                        assertSenderKeyIndex(room, currentKeyIndex)
+                    }
+""",
+        replace="""                    // audio-only catch on purpose: a throw here ends the leg.
+""",
+        also=[
+            (
+                """                    )
+                } catch (t: Throwable) {
+                    if (t is ConnectCancelled || t is CancellationException) throw t
+                    trace("audio publish failed ${t.javaClass.simpleName}")
+""",
+                """                    )
+                    if (provider != null) {
+                        assertSenderKeyIndex(room, currentKeyIndex)
+                    }
+                } catch (t: Throwable) {
+                    if (t is ConnectCancelled || t is CancellationException) throw t
+                    trace("audio publish failed ${t.javaClass.simpleName}")
+""",
+            ),
+        ],
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-adm-prewarm-left-on",
+        what="the leg's ADM prewarms recording ahead of a publish (`prewarmRecording`), so a leg can open the microphone the WebView call owns",
+        file=SHARE_PLUGIN_KT,
+        search="""                    disableAudioPrewarming = true,
+""",
+        replace="""                    disableAudioPrewarming = false,
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # ---- native: who opens the gate, what reaches the E2EE arm -------------
+    # Fix lane P2b (2026-10-11). Killed by Kotlin source pins in
+    # LEG_POLICY_SPEC (fix lane P1b), so, as above, a kill proves the pinned
+    # text changed, never what the plugin does on a device. The two gate
+    # entries open it WITHOUT touching the `source.openGate()` line after the
+    # witness, so only a pin on every opener (not on that one call) holds.
+    Mutation(
+        id="native-audio-source-self-opens",
+        what="the capture source opens its own gate on its first full read, so captured playback replaces the zeros from that very buffer on, before the plugin's witness has seen the audio sender's cryptor on the current key",
+        file=SCREEN_AUDIO_KT,
+        search="""        if (gateOpen && !released) {
+""",
+        replace="""        if (got == capacity && !failed) openGate()
+        if (gateOpen && !released) {
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-audio-gate-opened-via-scope",
+        what="the plugin opens the audio gate through a scope function as soon as the source is built, before the publish, so captured playback is fed to the audio sender from its publish on, before the plugin's witness has seen its cryptor on the current key",
+        file=SHARE_PLUGIN_KT,
+        search="""                    audio = source
+""",
+        replace="""                    audio = source.apply { openGate() }
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-room-events-filtered",
+        what="the room-event collector drops every `Track*` event before onRoomEvent, so the E2EE-state arm never sees a failed or missing-key sender cryptor and the leg keeps publishing video and audio under the key state it exists to refuse (the filter never names TrackE2EEStateEvent, so only a pin on the collector itself holds)",
+        file=SHARE_PLUGIN_KT,
+        search="""                room.events.collect { event -> onRoomEvent(event) }
+""",
+        replace="""                room.events.collect { event ->
+                    if (!event.javaClass.simpleName.startsWith("Track")) onRoomEvent(event)
+                }
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-key-index-assert-never-throws",
+        what="assertSenderKeyIndex only traces a sender cryptor that refused the key index switch, so a connect, rekey, reconnect or publish goes on with a sender still at the old index (a key the wrong epoch's members hold) instead of failing closed",
+        file=SHARE_PLUGIN_KT,
+        search="""                throw IllegalStateException("sender cryptor refused key index switch")
+""",
+        replace="""                trace("sender cryptor refused key index switch")
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-audio-refusal-mic-service-dropped",
+        what="screenAudioRefusal no longer refuses without a microphone-type foreground service, so a backgrounded share builds the playback capture the OS silences and reports `live` while it publishes silence",
+        file=SHARE_PLUGIN_KT,
+        search="""        !VoiceCallService.micForegroundActive -> "no_mic_service"
+""",
+        replace="",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # ---- native: a failed connect fails closed -----------------------------
+    # Fix lane P2c (2026-10-11). Killed by a Kotlin source pin in
+    # LEG_POLICY_SPEC (fix lane P1c), so, as above, a kill proves the pinned
+    # text changed, never what the plugin does on a device. The new arm sits
+    # in `connect`, AFTER doConnect's own catch has run: that catch releases
+    # the audio source and discards only a superseded attempt's Room, so for
+    # the current attempt the connected Room and its published video stay up
+    # and nothing tears them down. (ConnectCancelled and coroutine
+    # cancellation are IllegalStateExceptions too, so the arm also eats them;
+    # the key-index assertion's throw is the case the pin exists for.)
+    Mutation(
+        id="native-connect-failure-resolves-ok",
+        what="an IllegalStateException out of doConnect (the post-publish key-index assertion's throw) resolves the connect `{ ok: true }` instead of tearing down and rejecting, so a leg whose sender cryptor refused the current key index goes live, its video still published under a key the wrong epoch's members hold, and JS believes the share started",
+        file=SHARE_PLUGIN_KT,
+        search="""                doConnect(generation, call, url, token, quality, e2ee, intent, audio)
+            } catch (t: Throwable) {
+""",
+        replace="""                doConnect(generation, call, url, token, quality, e2ee, intent, audio)
+            } catch (e: IllegalStateException) {
+                val ok = JSObject()
+                ok.put("ok", true)
+                ok.put("audio", "failed")
+                call.resolve(ok)
+            } catch (t: Throwable) {
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+]
 
 
 if __name__ == "__main__":

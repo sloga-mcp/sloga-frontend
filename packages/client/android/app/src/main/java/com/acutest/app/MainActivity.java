@@ -110,6 +110,17 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(com.acutest.app.e2ee.E2eePlugin.class);
         registerPlugin(com.acutest.app.watch.JellyfinPlugin.class);
         registerPlugin(com.acutest.app.screenshare.ScreenSharePlugin.class);
+        // Empty capability marker. JS reads
+        // Capacitor.isPluginAvailable("ScreenShareAudio") synchronously at
+        // module load to learn whether system-audio capture
+        // (AudioPlaybackCapture, API 29) exists. JS must never ask through
+        // ScreenShare.isAvailable(): @capacitor/android 8.4.x can lose the
+        // reply to the first native call after a WebView reload (screen-leg
+        // plan wave 4h; see androidLegStartPolicy.ts). Registered only on
+        // API 29+, so the header itself is the answer.
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+            registerPlugin(com.acutest.app.screenshare.ScreenShareAudioPlugin.class);
+        }
         super.onCreate(savedInstanceState);
         // One WebViewClient serves both native interceptors: decrypted E2EE
         // attachments (/_e2ee-att/, in the E2eeWebViewClient base) and
