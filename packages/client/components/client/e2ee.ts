@@ -1662,8 +1662,17 @@ export class E2EEBridge implements E2EEAdapter {
 
         // Order encrypted conversations in the list from the local store:
         // the server never sees their messages. Fire-and-forget, and a
-        // later connect supersedes it.
-        void this.#seedConversationOrder(++this.#seedGeneration);
+        // later connect supersedes it. Never on a store that may belong to
+        // another account: its decrypted rows must not enter this session,
+        // nor its ids be trusted here. `#checkStoreOwner` reads "unknown"
+        // without an MLS row, so the server's device-claim verdict
+        // (`deviceOwnedElsewhere`) is the second signal.
+        if (
+          !this.storeOwnedByAnotherAccount.has("state") &&
+          !this.deviceOwnedElsewhere.has("state")
+        ) {
+          void this.#seedConversationOrder(++this.#seedGeneration);
+        }
       }
       // NB: a §6.4 restore strand is NOT caught here. A restored store carries
       // `published = true` (restore imports the source device's published flag,
@@ -1682,13 +1691,17 @@ export class E2EEBridge implements E2EEAdapter {
    * history moves the channel's last message forward: `own` for ours (a
    * local acknowledge, no server ack), `restored` otherwise. Nothing is
    * injected. Sequential, and stops between conversations once a newer
-   * connect bumps the generation or E2EE is no longer enabled. Never
-   * throws; logs counts and error names only.
+   * connect bumps the generation, E2EE is no longer enabled, or either
+   * other-account flag (`storeOwnedByAnotherAccount`,
+   * `deviceOwnedElsewhere`; see the call site) is raised. Never throws;
+   * logs counts and error names only.
    */
   async #seedConversationOrder(generation: number): Promise<void> {
     const current = () =>
       generation === this.#seedGeneration &&
-      this.status.get("state")?.enabled === true;
+      this.status.get("state")?.enabled === true &&
+      !this.storeOwnedByAnotherAccount.has("state") &&
+      !this.deviceOwnedElsewhere.has("state");
 
     let failed = 0;
     let lastError: unknown;
@@ -2604,7 +2617,8 @@ export class E2EEBridge implements E2EEAdapter {
           true,
         ),
       // Bump + own read pointer. Server ack only with a Queued receipt id:
-      // the echo id is local-clock, not a server instant.
+      // the echo id is local-clock, not a server instant. The ack reveals
+      // nothing new: the pair is already known to the server.
       noteDelivered: (m, receiptId) =>
         channel.noteEncryptedMessage(m.id, "own", {
           receiptId,
@@ -2746,12 +2760,13 @@ export class E2EEBridge implements E2EEAdapter {
           },
           true,
         ),
-      // Same as the DM path: no Queued receipt, no server ack
+      // Local acknowledge only: this skips the sender's own send-time
+      // server ack, which would tie the send to the group channel to the
+      // millisecond (the Olm fan-out envelopes do not name the group). It
+      // does not prevent that link: recipients' read acks still make it,
+      // which is accepted for cross-device read sync (design section 8b).
       noteDelivered: (m, receiptId) =>
-        channel.noteEncryptedMessage(m.id, "own", {
-          receiptId,
-          serverAck: receiptId !== undefined,
-        }),
+        channel.noteEncryptedMessage(m.id, "own", { receiptId }),
       receipts,
       handleReceipts: async () => {
         await this.#invoke<string[]>("e2ee_handle_receipts", { receipts });
