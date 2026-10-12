@@ -115,6 +115,11 @@ msgstr "{0} emoji slots remaining"
 msgid "{0} files exceed the maximum size limit of {maxSizeFormatted} and were not uploaded."
 msgstr "{0} files exceed the maximum size limit of {maxSizeFormatted} and were not uploaded."
 
+#. placeholder {0}: count()
+#: src/interface/Home.tsx
+msgid "{0} Founding Streamers seen live in the last few minutes"
+msgstr "{0} Founding Streamers seen live in the last few minutes"
+
 #. placeholder {0}: controller().username
 #. placeholder {1}: sharer().username
 #: components/ui/components/features/voice/callCard/VoiceCallRosterPanel.tsx
@@ -2370,6 +2375,11 @@ msgstr "Couldn't load the captcha. Check your connection and try again."
 msgid "Couldn't load the directory. Try again in a moment."
 msgstr "Couldn't load the directory. Try again in a moment."
 
+#: src/interface/FoundingStreamers.tsx
+#: src/interface/FoundingStreamers.tsx
+msgid "Couldn't load the streamer list. Try again in a moment."
+msgstr "Couldn't load the streamer list. Try again in a moment."
+
 #: components/app/interface/channels/text/TimelockMessage.tsx
 msgid "Couldn't unlock this message yet."
 msgstr "Couldn't unlock this message yet."
@@ -3711,6 +3721,15 @@ msgstr "Forwarded"
 msgid "Forwarded a message"
 msgstr "Forwarded a message"
 
+#: components/ui/components/features/profiles/ProfileBadges.tsx
+msgid "Founding Streamer"
+msgstr "Founding Streamer"
+
+#: src/interface/Home.tsx
+#: src/interface/FoundingStreamers.tsx
+msgid "Founding Streamers"
+msgstr "Founding Streamers"
+
 #: components/auth/src/flows/FlowHome.tsx
 msgid "Free"
 msgstr "Free"
@@ -4569,6 +4588,7 @@ msgstr "Listing requests"
 msgid "Live"
 msgstr "Live"
 
+#: src/interface/FoundingStreamers.tsx
 #: src/interface/channels/text/MemberSidebar.tsx
 #: components/ui/components/features/voice/VoiceChannelPreview.tsx
 #: components/ui/components/features/profiles/ProfileConnections.tsx
@@ -4657,6 +4677,10 @@ msgstr "Loading requests…"
 #: components/modal/modals/ReportQueue.tsx
 msgid "Loading snapshots…"
 msgstr "Loading snapshots…"
+
+#: src/interface/FoundingStreamers.tsx
+msgid "Loading streamers…"
+msgstr "Loading streamers…"
 
 #: src/interface/ServerEvents.tsx
 #: components/ui/components/features/voice/watch/JellyfinBrowser.tsx
@@ -4854,6 +4878,10 @@ msgstr "Max bitrate: Auto"
 #: components/ui/components/features/voice/callCard/RemoteControlOverlays.tsx
 msgid "Maximize & hide participants"
 msgstr "Maximize & hide participants"
+
+#: src/interface/Home.tsx
+msgid "Meet the creators streaming on Sloga and follow them wherever they go live."
+msgstr "Meet the creators streaming on Sloga and follow them wherever they go live."
 
 #: components/app/interface/settings/user/appearance/LayoutArrangement.tsx
 msgid "Member list"
@@ -5449,6 +5477,10 @@ msgstr "No communities match your search."
 #: src/interface/ServerEvents.tsx
 msgid "No events on this day."
 msgstr "No events on this day."
+
+#: src/interface/FoundingStreamers.tsx
+msgid "No Founding Streamers are listed yet. Check back once the first creators have linked their channels."
+msgstr "No Founding Streamers are listed yet. Check back once the first creators have linked their channels."
 
 #: components/modal/modals/SoftResReserve.tsx
 msgid "No items match."
@@ -8504,6 +8536,10 @@ msgstr "The captcha check didn't go through. Please try again."
 msgid "The copy was created but has not synced yet. Reopen Roles to see it."
 msgstr "The copy was created but has not synced yet. Reopen Roles to see it."
 
+#: src/interface/FoundingStreamers.tsx
+msgid "The creators who helped start Sloga. Follow them on Twitch, YouTube or Kick — channels that are broadcasting are marked LIVE and listed first. Live status can be a couple of minutes behind."
+msgstr "The creators who helped start Sloga. Follow them on Twitch, YouTube or Kick — channels that are broadcasting are marked LIVE and listed first. Live status can be a couple of minutes behind."
+
 #: src/interface/channels/text/Composition.tsx
 msgid "The edited image ({fileSize}) exceeds the maximum size limit of {maxSizeFormatted}. Crop it smaller, or close the editor to send the original."
 msgstr "The edited image ({fileSize}) exceeds the maximum size limit of {maxSizeFormatted}. Crop it smaller, or close the editor to send the original."
@@ -9041,6 +9077,7 @@ msgstr "Trending GIFs"
 msgid "Trust this server's certificate"
 msgstr "Trust this server's certificate"
 
+#: src/interface/FoundingStreamers.tsx
 #: components/modal/modals/ImportDiscord.tsx
 msgid "Try again"
 msgstr "Try again"

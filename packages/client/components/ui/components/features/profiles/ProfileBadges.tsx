@@ -11,6 +11,7 @@ import badgeDeveloper from "../../../../../scripts/assets_fallback/badges/develo
 import badgeDisclosure from "../../../../../scripts/assets_fallback/badges/disclosure.svg";
 import badgeEarlyAdopter from "../../../../../scripts/assets_fallback/badges/early_adopter.svg";
 import badgeFounder from "../../../../../scripts/assets_fallback/badges/founder.svg";
+import badgeFoundingStreamer from "../../../../../scripts/assets_fallback/badges/founding_streamer.svg";
 import badgeModeration from "../../../../../scripts/assets_fallback/badges/moderation.svg";
 import badgePatron from "../../../../../scripts/assets_fallback/badges/patron.svg";
 import badgePaw from "../../../../../scripts/assets_fallback/badges/paw.svg";
@@ -123,6 +124,17 @@ export function ProfileBadges(props: { user: User }) {
                 },
               }}
               src={badgeEarlyAdopter}
+            />
+          </Show>
+          <Show when={props.user.badges & UserBadges.FoundingStreamer}>
+            <img
+              use:floating={{
+                tooltip: {
+                  placement: "top",
+                  content: t`Founding Streamer`,
+                },
+              }}
+              src={badgeFoundingStreamer}
             />
           </Show>
           <Show when={props.user.badges & UserBadges.Welcomed}>
