@@ -8,6 +8,32 @@ if (keystorePropertiesFile.exists()) {
     keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
 }
 
+// Screen-share audio build flag, the native-side twin of the web bundle's
+// VITE_CFG_ENABLE_ANDROID_SCREEN_AUDIO: it becomes BuildConfig.SCREEN_SHARE_AUDIO
+// (defaultConfig, below), so a dark APK refuses screen audio even if the web
+// bundle asks for it. The release build sets both. Read at configuration time
+// from -PsharedScreenAudio, which wins, else env SLOGA_SCREEN_SHARE_AUDIO; unset
+// means false. Any value other than exactly true or false (after trimming) fails
+// the build, so a typo can never ship a flag nobody asked for.
+def screenShareAudioProperty = providers.gradleProperty('sharedScreenAudio').orNull
+def screenShareAudioEnv = providers.environmentVariable('SLOGA_SCREEN_SHARE_AUDIO').orNull
+def screenShareAudioSource = 'default'
+def screenShareAudioRaw = 'false'
+if (screenShareAudioProperty != null) {
+    screenShareAudioSource = '-PsharedScreenAudio'
+    screenShareAudioRaw = screenShareAudioProperty
+} else if (screenShareAudioEnv != null) {
+    screenShareAudioSource = 'env SLOGA_SCREEN_SHARE_AUDIO'
+    screenShareAudioRaw = screenShareAudioEnv
+}
+def screenShareAudio = screenShareAudioRaw.trim()
+if (screenShareAudio != 'true' && screenShareAudio != 'false') {
+    throw new GradleException("SCREEN_SHARE_AUDIO: ${screenShareAudioSource} is '${screenShareAudioRaw}'; " +
+        "-PsharedScreenAudio (which wins) and env SLOGA_SCREEN_SHARE_AUDIO accept only true or false " +
+        "(case-sensitive; unset means false).")
+}
+logger.lifecycle("SCREEN_SHARE_AUDIO=${screenShareAudio} (from ${screenShareAudioSource})")
+
 android {
     namespace = "com.acutest.app"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -36,6 +62,9 @@ android {
         versionCode 74
         versionName "0.66.1"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        // Validated "true" or "false" (top of file). No flavor overrides it,
+        // so play, sideload and foss all take this value.
+        buildConfigField "boolean", "SCREEN_SHARE_AUDIO", screenShareAudio
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
              // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61

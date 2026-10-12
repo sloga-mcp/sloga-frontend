@@ -116,9 +116,12 @@ public class MainActivity extends BridgeActivity {
         // (AudioPlaybackCapture, API 29) exists. JS must never ask through
         // ScreenShare.isAvailable(): @capacitor/android 8.4.x can lose the
         // reply to the first native call after a WebView reload (screen-leg
-        // plan wave 4h; see androidLegStartPolicy.ts). Registered only on
-        // API 29+, so the header itself is the answer.
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+        // plan wave 4h; see androidLegStartPolicy.ts). Registered only when
+        // the APK was built with screen audio (BuildConfig.SCREEN_SHARE_AUDIO)
+        // AND on API 29+, so the header itself is the answer and a dark APK
+        // never offers audio.
+        if (com.acutest.app.BuildConfig.SCREEN_SHARE_AUDIO
+                && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
             registerPlugin(com.acutest.app.screenshare.ScreenShareAudioPlugin.class);
         }
         super.onCreate(savedInstanceState);

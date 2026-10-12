@@ -499,8 +499,9 @@ class ScreenAudioSource(
 
 /**
  * Empty CAPABILITY MARKER for screen-share system audio. MainActivity
- * registers it only on API 29+ (AudioPlaybackCapture), before
- * super.onCreate, so its presence in the plugin header IS the answer: JS
+ * registers it only when the APK was built with screen audio
+ * (BuildConfig.SCREEN_SHARE_AUDIO) and on API 29+ (AudioPlaybackCapture),
+ * before super.onCreate, so its presence in the plugin header IS the answer: JS
  * reads Capacitor.isPluginAvailable("ScreenShareAudio") synchronously at
  * module load and never calls into it.
  *

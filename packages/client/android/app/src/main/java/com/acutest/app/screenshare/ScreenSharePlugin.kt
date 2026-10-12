@@ -18,6 +18,7 @@ import androidx.activity.result.ActivityResult
 import androidx.annotation.RequiresApi
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import com.acutest.app.BuildConfig
 import com.acutest.app.VoiceCallService
 import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
@@ -159,6 +160,16 @@ class ScreenSharePlugin : Plugin() {
      */
     private var screenAudio: ScreenAudioSource? = null
 
+    /**
+     * Sids of the system-audio publications this plugin muted itself
+     * ([muteSilentAudio]). The SDK re-posts that mute as a `TrackMuted`,
+     * and JS reads every `muted` event as a server mute: forwarding it would
+     * add a second, contradictory notice to the audio state JS already has.
+     * The mute arms skip these sids. Cleared by [tearDown]. Main-dispatcher
+     * confined, like every other field here.
+     */
+    private val selfMutedSids = HashSet<String>()
+
     /** Set while [tearDown] runs so event handlers do not double-report. */
     private var stopping = false
 
@@ -220,8 +231,10 @@ class ScreenSharePlugin : Plugin() {
         val result = JSObject()
         // MediaProjection exists on every supported API level (21+; minSdk 24).
         result.put("available", true)
-        // AudioPlaybackCapture (slice 4) needs API 29.
-        result.put("audioCapture", Build.VERSION.SDK_INT >= 29)
+        // AudioPlaybackCapture (slice 4) needs API 29, and a build with the
+        // system audio switched on (the same flag [screenAudioRefusal]
+        // checks first).
+        result.put("audioCapture", BuildConfig.SCREEN_SHARE_AUDIO && Build.VERSION.SDK_INT >= 29)
         call.resolve(result)
     }
 
@@ -260,7 +273,8 @@ class ScreenSharePlugin : Plugin() {
      * positively-plaintext call. `audio` asks for the system audio too
      * (slice 4); absent or not a boolean means false, so an older page gets a
      * video-only leg. Resolves `{ ok: true, audio }` with the audio's final
-     * state: "live", "off" (not asked for), "unsupported" (below API 29),
+     * state: "live", "off" (not asked for), "unsupported" (a build without
+     * system audio, or below API 29),
      * "no_permission" (RECORD_AUDIO not held; never requested from here),
      * "no_mic_service" (no microphone-type foreground service, so background
      * capture would be silenced) or "failed". Only the video decides whether
@@ -663,6 +677,13 @@ class ScreenSharePlugin : Plugin() {
                     // only silence until the Room goes.
                     releaseAudio(audio)
                     audio = null
+                    // A publication that made it on air (the witness failed,
+                    // the source failed before the gate opened, or the
+                    // publish threw after registering it) is marked muted, so
+                    // viewers never show that silence as playing. A no-op
+                    // when nothing was published. Guarded inside, so it can
+                    // never end the video.
+                    muteSilentAudio(room)
                 }
             }
             trace("audio state=$audioState")
@@ -952,6 +973,14 @@ class ScreenSharePlugin : Plugin() {
                 // (see the permission branch). Taking [screenAudio] out of
                 // the field first leaves the teardown nothing to release,
                 // and a queued audio-loss report nothing to report.
+                //
+                // Only the live share's own Room may take its audio. The
+                // field read below is synchronous, ahead of the launched
+                // same-share check, so a Reconnecting from any other Room (a
+                // collector that outlived its attempt) would otherwise
+                // release the live share's source. Checked first, before
+                // anything is touched.
+                if (event.room !== room) return
                 val audio = screenAudio
                 screenAudio = null
                 releaseAudio(audio)
@@ -1011,7 +1040,12 @@ class ScreenSharePlugin : Plugin() {
                 // shows the toast (§4.2 events).
                 // `source` tells JS whether the video or the system audio
                 // was muted; each gets its own copy.
-                if (event.participant === room.localParticipant) {
+                // A mute this plugin set itself ([muteSilentAudio]) is not a
+                // server mute, and JS already knows that audio's state, so
+                // it is skipped, here and in the unmute arm.
+                if (event.participant === room.localParticipant &&
+                    event.publication.sid !in selfMutedSids
+                ) {
                     val data = JSObject()
                     data.put("muted", true)
                     sourceName(event.publication.source)?.let { data.put("source", it) }
@@ -1019,7 +1053,9 @@ class ScreenSharePlugin : Plugin() {
                 }
             }
             is RoomEvent.TrackUnmuted -> {
-                if (event.participant === room.localParticipant) {
+                if (event.participant === room.localParticipant &&
+                    event.publication.sid !in selfMutedSids
+                ) {
                     val data = JSObject()
                     data.put("muted", false)
                     sourceName(event.publication.source)?.let { data.put("source", it) }
@@ -1196,8 +1232,11 @@ class ScreenSharePlugin : Plugin() {
      * [VoiceCallService.micForegroundActive]: without a microphone-type
      * foreground service the OS silences a background playback capture, so
      * starting one would publish silence while reporting "live".
+     * [BuildConfig.SCREEN_SHARE_AUDIO] comes first: a build with the system
+     * audio switched off refuses it here, whatever the page asked for.
      */
     private fun screenAudioRefusal(micRecordingOff: Boolean): String? = when {
+        !BuildConfig.SCREEN_SHARE_AUDIO -> "unsupported"
         Build.VERSION.SDK_INT < 29 -> "unsupported"
         !micRecordingOff -> "failed"
         ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) !=
@@ -1248,7 +1287,9 @@ class ScreenSharePlugin : Plugin() {
      * land here. A failure from a source whose gate never opened finds
      * [screenAudio] null and is dropped; [doConnect] checks for that itself.
      * The source is never unset as the buffer callback and its track is never
-     * unpublished from here (a renegotiation; see crash class A).
+     * unpublished from here (a renegotiation; see crash class A). A
+     * publication still on air is marked muted instead ([muteSilentAudio]),
+     * so viewers never show the released source's silence as playing.
      */
     private fun onScreenAudioLost(room: Room, state: String) {
         if (this.room !== room || stopping || screenAudio == null ||
@@ -1270,11 +1311,45 @@ class ScreenSharePlugin : Plugin() {
             screenAudio = null
             releaseAudio(audio)
             trace("audio lost state=$state")
+            // After the same-share checks above, so it only ever touches
+            // this share's Room. A no-op once the publication is gone.
+            muteSilentAudio(room)
             try {
                 val data = JSObject()
                 data.put("state", state)
                 notifyListeners("audio", data)
             } catch (_: Throwable) {}
+        }
+    }
+
+    /**
+     * Mark [room]'s system-audio publication muted: a track that stays on
+     * air but will only ever carry silence, because its gate never opened in
+     * [doConnect] or its source was lost mid-share ([onScreenAudioLost]).
+     * Viewers then show it muted instead of playing. The track is neither
+     * unpublished (a renegotiation, crash class A) nor stopped.
+     *
+     * The sid is recorded in [selfMutedSids] BEFORE the mute, so the
+     * `TrackMuted` the SDK re-posts for it (asynchronously, through the
+     * Room's event bus) is skipped rather than reported to JS as a server
+     * mute. A no-op when there is no audio publication.
+     *
+     * Not suspending, but it can BLOCK: the setter
+     * (`LocalTrackPublication.muted`, public in livekit-android 2.28.0)
+     * disables the track on the RTC thread, the same class as `Track.stop()`
+     * in [stopCapture]. Guarded on its own and never throws: a failure costs
+     * the badge alone, never the video. Never called from [tearDown],
+     * [stopCapture] or [discardRoom]: a share that is ending needs no mute.
+     */
+    private fun muteSilentAudio(room: Room) {
+        try {
+            val pub = room.localParticipant
+                .getTrackPublication(Track.Source.SCREEN_SHARE_AUDIO) ?: return
+            selfMutedSids.add(pub.sid)
+            pub.muted = true
+            trace("audio publication muted")
+        } catch (t: Throwable) {
+            trace("audio mute failed ${t.javaClass.simpleName}")
         }
     }
 
@@ -1378,6 +1453,9 @@ class ScreenSharePlugin : Plugin() {
         consentIntent = null
         currentEpoch = -1
         currentKeyIndex = 0
+        // The share's self-mutes end with it; the collector that would have
+        // read them is already cancelled above.
+        selfMutedSids.clear()
         if (room != null) {
             val detached = Detached(room, manager, provider)
             if (settle) {
