@@ -29,6 +29,13 @@
 export interface SettleDeps<M> {
   /** Local echo of the delivered message; a throw rejects the send. */
   inject(): M;
+  /**
+   * Optional: tells the conversation list about the delivered echo (bump +
+   * own read pointer). `receiptId` is the server's id for this send, the
+   * first `Queued` receipt's envelope id, or undefined when none was queued.
+   * Best-effort: runs after `inject`, before receipts; a throw is logged.
+   */
+  noteDelivered?(m: M, receiptId: string | undefined): void;
   /** Raw receipts from the POST response. */
   receipts: unknown;
   handleReceipts(receipts: unknown): Promise<void>;
@@ -59,6 +66,24 @@ export function allUndelivered(receipts: unknown): boolean {
 }
 
 /**
+ * The server's envelope id from the first receipt with `status === "Queued"`
+ * (`E2EEDeliveryStatus::Queued { id }`, flattened into the receipt), or
+ * undefined when nothing was queued or the id is not a non-empty string.
+ * Plausibility of the id is the consumer's check, not this one.
+ */
+export function queuedReceiptId(receipts: unknown): string | undefined {
+  if (!Array.isArray(receipts)) return undefined;
+  for (const r of receipts) {
+    const shape = r as { status?: unknown; id?: unknown } | null | undefined;
+    if (shape?.status !== "Queued") continue;
+    return typeof shape.id === "string" && shape.id.length > 0
+      ? shape.id
+      : undefined;
+  }
+  return undefined;
+}
+
+/**
  * A loggable name for a caught error: its `type`, else its `name`, capped
  * at 64 characters. Anything that is not a string — including a thrown
  * string, which may carry content — is "unknown".
@@ -85,11 +110,23 @@ function safeLog<M>(d: SettleDeps<M>, step: string, e: unknown): void {
 
 /**
  * Settles an E2EE send whose ciphertext the server has ALREADY accepted.
- * Order (today's visible order): echo, receipts, marker, mode refresh,
- * history sync. Resolves with the echo whatever the later steps do.
+ * Order (today's visible order): echo, conversation note (when supplied),
+ * receipts, marker, mode refresh, history sync. Resolves with the echo
+ * whatever the later steps do.
  */
 export async function settleDelivered<M>(d: SettleDeps<M>): Promise<M> {
   const m = d.inject();
+
+  // Only after a successful echo. Not awaited: the contract is synchronous,
+  // but a returned promise's rejection is still caught and logged.
+  try {
+    const r: unknown = d.noteDelivered?.(m, queuedReceiptId(d.receipts));
+    if (typeof (r as PromiseLike<unknown> | undefined)?.then === "function") {
+      Promise.resolve(r).catch((e) => safeLog(d, "note", e));
+    }
+  } catch (e) {
+    safeLog(d, "note", e);
+  }
 
   try {
     await d.handleReceipts(d.receipts);

@@ -16,6 +16,7 @@ import {
   type SettleDeps,
   allUndelivered,
   errorName,
+  queuedReceiptId,
   settleDelivered,
 } from "./e2eeSendSettle.ts";
 
@@ -268,4 +269,270 @@ test("errorName: type, then name, string-only, capped at 64", () => {
     },
   };
   assert.equal(errorName(hostile), "unknown");
+});
+
+// noteDelivered: the conversation-list hook the send path supplies. It runs
+// once, after a successful echo and before receipts, with the server's id
+// for the send (the first Queued receipt's envelope id, or undefined), and
+// it is best-effort like every other step after the echo.
+
+/** The server's envelope id on the first Queued receipt in MIXED. */
+const QUEUED_ID = "01JABCDEFGHJKMNPQRSTVWXYZ0";
+
+/** A mixed fan-out: one dead device, one full queue, two queued copies. */
+const MIXED = [
+  { status: "UnknownDevice", device: SENTINEL },
+  { status: "QueueFull", device: "dev-2" },
+  { status: "Queued", id: QUEUED_ID, device: "dev-3" },
+  { status: "Queued", id: "01JSECONDSECONDSECONDSECON", device: "dev-4" },
+];
+
+/** Receipts that carry no usable server id for the send. */
+const NO_QUEUED_ID: unknown[] = [
+  [],
+  undefined,
+  null,
+  "Queued",
+  { status: "Queued", id: QUEUED_ID },
+  { 0: { status: "Queued", id: QUEUED_ID }, length: 1 },
+  ALL_UNKNOWN,
+  [{ status: "UnknownDevice" }, { status: "QueueFull" }],
+  [{ status: "Queued" }],
+  [{ status: "Queued", id: 42 }],
+  [{ status: "Queued", id: "" }],
+  [{ status: "Queued", id: null }],
+  [{ status: "queued", id: QUEUED_ID }],
+  [{ id: QUEUED_ID }],
+  [null],
+  // the FIRST Queued receipt decides; a later good id is not used
+  [null, { status: "Queued", id: 7 }, { status: "Queued", id: QUEUED_ID }],
+];
+
+interface Note {
+  /** Arguments of each noteDelivered call. */
+  args: unknown[][];
+  /** The steps already run at each noteDelivered call. */
+  seen: Step[][];
+}
+
+/** Gives `h` a recording noteDelivered that can throw or reject. */
+function withNote(h: Harness, mode?: "sync" | "async"): Note {
+  const note: Note = { args: [], seen: [] };
+  h.deps.noteDelivered = (...args) => {
+    note.args.push(args);
+    note.seen.push([...h.calls]);
+    if (mode === "sync") throw failure("noteError");
+    // a promise is outside the void contract, but its rejection is caught too
+    return mode === "async" ? Promise.reject(failure("noteError")) : undefined;
+  };
+  return note;
+}
+
+/** Lets an uncaught rejection surface (Node reports it after microtasks). */
+const tick = () => new Promise((r) => setTimeout(r, 0));
+
+test("noteDelivered runs once, after inject and before receipts, with the echo and the first Queued id", async () => {
+  const h = harness({ receipts: MIXED });
+  const note = withNote(h);
+  const out = await settleDelivered(h.deps);
+  assert.equal(out, h.echo);
+  assert.equal(note.args.length, 1);
+  assert.equal(note.args[0].length, 2);
+  assert.equal(note.args[0][0], h.echo);
+  assert.equal(note.args[0][1], QUEUED_ID);
+  assert.deepEqual(note.seen, [["inject"]]);
+  assert.deepEqual(h.calls, ["inject", "receipts", "refresh", "sync"]);
+  assert.deepEqual(h.logs, []);
+});
+
+test("noteDelivered with zero live devices gets undefined, and the marker still runs", async () => {
+  const h = harness({ receipts: ALL_UNKNOWN });
+  const note = withNote(h);
+  const out = await settleDelivered(h.deps);
+  assert.equal(out, h.echo);
+  assert.deepEqual(note.args, [[h.echo, undefined]]);
+  assert.deepEqual(note.seen, [["inject"]]);
+  assert.deepEqual(h.calls, FULL_ORDER);
+  assert.deepEqual(h.logs, []);
+});
+
+test("queuedReceiptId: the first Queued receipt's non-empty string id, else undefined", () => {
+  assert.equal(queuedReceiptId(MIXED), QUEUED_ID);
+  assert.equal(
+    queuedReceiptId([{ status: "Queued", id: QUEUED_ID }]),
+    QUEUED_ID,
+  );
+  assert.equal(
+    queuedReceiptId([
+      null,
+      { status: "QueueFull" },
+      { status: "Queued", id: QUEUED_ID },
+    ]),
+    QUEUED_ID,
+  );
+  for (const receipts of NO_QUEUED_ID) {
+    assert.equal(
+      queuedReceiptId(receipts),
+      undefined,
+      JSON.stringify(receipts),
+    );
+  }
+});
+
+test("noteDelivered gets undefined when the receipts carry no usable Queued id", async () => {
+  for (const receipts of NO_QUEUED_ID) {
+    const h = harness();
+    h.deps.receipts = receipts;
+    const note = withNote(h);
+    const out = await settleDelivered(h.deps);
+    const label = JSON.stringify(receipts);
+    assert.equal(out, h.echo, label);
+    assert.deepEqual(note.args, [[h.echo, undefined]], label);
+    assert.deepEqual(h.logs, [], label);
+  }
+});
+
+for (const mode of ["sync", "async"] as const) {
+  test(`noteDelivered throws (${mode}) -> resolves once with the echo; receipts, marker, refresh, sync still run; log has the name only`, async () => {
+    let unhandled = 0;
+    const onUnhandled = () => {
+      unhandled++;
+    };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const h = harness({ receipts: ALL_UNKNOWN });
+      const note = withNote(h, mode);
+      let settled = 0;
+      const out = await settleDelivered(h.deps).then((m) => {
+        settled++;
+        return m;
+      });
+      await tick();
+      assert.equal(out, h.echo);
+      assert.equal(settled, 1);
+      assert.equal(note.args.length, 1);
+      assert.deepEqual(h.calls, FULL_ORDER);
+      assert.deepEqual(h.logs, [["note", "noteError"]]);
+      assert.ok(!JSON.stringify(h.logs).includes(SENTINEL));
+      assert.equal(unhandled, 0);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+}
+
+test("noteDelivered throws and any mix of later steps throws: still the echo, full order, every step logged", async () => {
+  const steps = ["receipts", "marker", "refresh", "sync"] as const;
+  for (const noteMode of ["sync", "async"] as const) {
+    for (let mask = 0; mask < 1 << steps.length; mask++) {
+      for (const mode of ["sync", "async"] as const) {
+        const throwOn: Partial<Record<Step, "sync" | "async">> = {};
+        steps.forEach((s, i) => {
+          if (mask & (1 << i)) throwOn[s] = mode;
+        });
+        const h = harness({ receipts: ALL_UNKNOWN, throwOn });
+        withNote(h, noteMode);
+        const out = await settleDelivered(h.deps);
+        await tick();
+        const label = `note ${noteMode} mask ${mask} ${mode}`;
+        assert.equal(out, h.echo, label);
+        assert.deepEqual(h.calls, FULL_ORDER, label);
+        const expected = [
+          ["note", "noteError"],
+          ...steps.filter((s) => throwOn[s]).map((s) => [s, `${s}Error`]),
+        ];
+        // a rejected promise is logged a microtask later, so only the set
+        // of entries is fixed; a synchronous throw is logged first
+        if (noteMode === "sync") assert.deepEqual(h.logs, expected, label);
+        else {
+          const sorted = (l: unknown[][]) => l.map((e) => e.join(":")).sort();
+          assert.deepEqual(sorted(h.logs), sorted(expected), label);
+        }
+      }
+    }
+  }
+});
+
+test("a throwing receipt getter is contained in the note step", async () => {
+  const h = harness();
+  h.deps.receipts = [
+    {
+      status: "Queued",
+      get id(): string {
+        throw failure("getterError");
+      },
+    },
+  ];
+  const note = withNote(h);
+  const out = await settleDelivered(h.deps);
+  assert.equal(out, h.echo);
+  assert.equal(note.args.length, 0);
+  assert.deepEqual(h.logs, [["note", "getterError"]]);
+  assert.deepEqual(h.calls, ["inject", "receipts", "refresh", "sync"]);
+});
+
+test("an inject throw rejects and noteDelivered is never called", async () => {
+  const h = harness({ receipts: MIXED, throwOn: { inject: "sync" } });
+  const note = withNote(h);
+  await assert.rejects(settleDelivered(h.deps), { name: "injectError" });
+  assert.equal(note.args.length, 0);
+  assert.deepEqual(h.calls, ["inject"]);
+  assert.deepEqual(h.logs, []);
+});
+
+test("absent noteDelivered: the settle behaves exactly as before, across throw masks", async () => {
+  const steps = ["inject", "receipts", "marker", "refresh", "sync"] as const;
+  // [receipts, whether the marker runs]; written out, not derived
+  const receiptSets: [unknown, boolean][] = [
+    [undefined, false],
+    [[], false],
+    [MIXED, false],
+    [ALL_UNKNOWN, true],
+  ];
+  let compared = 0;
+  for (const [receipts, marker] of receiptSets) {
+    for (let mask = 0; mask < 1 << steps.length; mask++) {
+      for (const mode of ["sync", "async"] as const) {
+        for (const absent of ["missing", "undefined"] as const) {
+          const throwOn: Partial<Record<Step, "sync" | "async">> = {};
+          steps.forEach((s, i) => {
+            if (mask & (1 << i)) throwOn[s] = mode;
+          });
+          const h = harness({ throwOn });
+          h.deps.receipts = receipts;
+          if (absent === "undefined") h.deps.noteDelivered = undefined;
+          else assert.ok(!("noteDelivered" in h.deps));
+
+          // the pre-noteDelivered behavior, independent of the module
+          const ran: Step[] = throwOn.inject
+            ? ["inject"]
+            : marker
+              ? FULL_ORDER
+              : ["inject", "receipts", "refresh", "sync"];
+          const expected = {
+            out: throwOn.inject ? "rejected:injectError" : "echo",
+            calls: ran,
+            logs: ran
+              .filter((s) => s !== "inject" && throwOn[s])
+              .map((s) => [s, `${s}Error`]),
+          };
+
+          let out: string;
+          try {
+            out = (await settleDelivered(h.deps)) === h.echo ? "echo" : "other";
+          } catch (e) {
+            out = `rejected:${(e as Error).name}`;
+          }
+          const label = `${JSON.stringify(receipts)} mask ${mask} ${mode} ${absent}`;
+          assert.deepEqual(
+            { out, calls: h.calls, logs: h.logs },
+            expected,
+            label,
+          );
+          compared++;
+        }
+      }
+    }
+  }
+  assert.equal(compared, 4 * 32 * 2 * 2);
 });
