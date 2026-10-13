@@ -174,8 +174,11 @@ EXPECTED=(
   # and the TS and Kotlin source pins on the leg's audio track; then 83 -> 85
   # for the screen-audio build flag and the self-mute skip; then 85 -> 97 for
   # the screen track's capture order, its frame gate and its single sender;
-  # then 97 -> 105 for the key provider, the SDK version and the stop paths.
-  "components/rtc/androidLegStartPolicy.test.ts 105 0"
+  # then 97 -> 105 for the key provider, the SDK version and the stop paths;
+  # then 105 -> 118 for the screen unpublish that keeps its transceiver, the
+  # leg's participant listener, the audio source's sender check, and the
+  # compile gate's JVM test table.
+  "components/rtc/androidLegStartPolicy.test.ts 118 0"
   "components/rtc/androidScreenShareTiers.test.ts 3 0"
   # Android screen-share audio (slice 4, wave 3a): the tile's share-audio
   # badge truth table and its ParticipantTile.tsx source pins. First measured

@@ -10177,7 +10177,8 @@ MUTATIONS += [
     # capture, and its comment was rewritten with it. The search is the whole
     # arm, so only the arm's code matters to the kill; the Reconnected
     # backstop below it stays, which is exactly the residue this entry
-    # asserts is not enough.
+    # asserts is not enough. Retargeted again with the per-buffer audio
+    # sender check: the arm's comment gained a sentence.
     Mutation(
         id="native-reconnecting-branch-removed",
         what="a full reconnect no longer releases the audio, closes the video gate or stops the capture when it begins, so republishTracks can put both tracks back on new senders whose cryptors nobody witnessed, with only the Reconnected backstop left to end the share",
@@ -10203,7 +10204,9 @@ MUTATIONS += [
                 // source is released first (released, it only paces zeros),
                 // then the video gate closes for good and the capture stops,
                 // by reference, since the publication a lookup would need is
-                // already gone. The teardown that follows disconnects at
+                // already gone. The audio source's per-buffer sender check
+                // is only a backstop; this synchronous close stays the
+                // primary one. The teardown that follows disconnects at
                 // once (not settled), and that disconnect cancels the
                 // reconnect job, which pre-empts the republish of both
                 // senders. Same reason and toast as the Reconnected backstop
@@ -10278,24 +10281,28 @@ MUTATIONS += [
         specs=[LEG_POLICY_SPEC],
         must_red=[LEG_POLICY_SPEC],
     ),
+    # Retargeted with the per-buffer audio sender check, which the head now
+    # also asks (last); the mutant drops all three conditions.
     Mutation(
         id="native-audio-gate-read-forced-open",
-        what="the record callback copies captured playback into the ADM buffer whatever the gate and release state, so playback leaves the phone before the audio sender's cryptor is witnessed on the current key",
+        what="the record callback copies captured playback into the ADM buffer whatever the gate, release and sender-check state, so playback leaves the phone before the audio sender's cryptor is witnessed on the current key",
         file=SCREEN_AUDIO_KT,
-        search="""        if (gateOpen && !released) {
+        search="""        if (gateOpen && !released && senderGate.allows()) {
 """,
         replace="""        if (true) {
 """,
         specs=[LEG_POLICY_SPEC],
         must_red=[LEG_POLICY_SPEC],
     ),
+    # Retargeted with the per-buffer audio sender check: only the gate is
+    # dropped; the release and sender checks stay.
     Mutation(
         id="native-audio-gate-read-ignores-gate",
-        what="the record callback checks only `released`, never the gate, so captured playback leaves the phone from the first buffer, before the audio sender's cryptor is witnessed on the current key",
+        what="the record callback's buffer condition reads the audio gate, the release flag and the sender gate; this entry drops the audio gate from it",
         file=SCREEN_AUDIO_KT,
-        search="""        if (gateOpen && !released) {
+        search="""        if (gateOpen && !released && senderGate.allows()) {
 """,
-        replace="""        if (!released) {
+        replace="""        if (!released && senderGate.allows()) {
 """,
         specs=[LEG_POLICY_SPEC],
         must_red=[LEG_POLICY_SPEC],
@@ -10398,14 +10405,16 @@ MUTATIONS += [
     # text changed, never what the plugin does on a device. The two gate
     # entries open it WITHOUT touching the `source.openGate()` line after the
     # witness, so only a pin on every opener (not on that one call) holds.
+    # Retargeted with the per-buffer audio sender check: the head it is
+    # inserted above now ends with that check.
     Mutation(
         id="native-audio-source-self-opens",
-        what="the capture source opens its own gate on its first full read, so captured playback replaces the zeros from that very buffer on, before the plugin's witness has seen the audio sender's cryptor on the current key",
+        what="the audio gate is opened only by the plugin, behind its witness; this entry has the capture source open its own gate on a full read",
         file=SCREEN_AUDIO_KT,
-        search="""        if (gateOpen && !released) {
+        search="""        if (gateOpen && !released && senderGate.allows()) {
 """,
         replace="""        if (got == capacity && !failed) openGate()
-        if (gateOpen && !released) {
+        if (gateOpen && !released && senderGate.allows()) {
 """,
         specs=[LEG_POLICY_SPEC],
         must_red=[LEG_POLICY_SPEC],
@@ -10672,6 +10681,16 @@ RAW_SCREEN_KEY_PROVIDER_KT = (
     "../../android/app/src/main/java/com/acutest/app/screenshare/"
     "RawScreenKeyProvider.kt"
 )
+#: The screen audio source's per-buffer sender check. Relative to `RTC`,
+#: like the three above.
+SCREEN_AUDIO_SENDER_GATE_KT = (
+    "../../android/app/src/main/java/com/acutest/app/screenshare/"
+    "ScreenAudioSenderGate.kt"
+)
+#: The compile gate, whose GATE_TESTS table LEG_POLICY_SPEC reads. Relative
+#: to `RTC`, like the native constants above: it climbs to this package's
+#: `scripts/`, so it stays inside this client package.
+ANDROID_COMPILE_GATE_SH = "../../scripts/android-compile-gate.sh"
 
 #: The block that holds the share to a single witnessed sender, moved whole
 #: by `native-layout-check-after-capture`.
@@ -11224,6 +11243,503 @@ MUTATIONS += [
         scope.launch { tearDown(null) }
 """,
         replace="""    override fun handleOnDestroy() {
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+]
+
+
+# ---- native: a kept screen sender, the per-buffer audio sender check -----
+# A screen unpublish that leaves the track's transceiver set ends the leg's
+# connection at once, with no grace and no settle window, whether the
+# TrackUnpublished arm, the projection stop or the participant listener
+# (`ScreenUnpublishGuard`, installed before any publish) sees it first; an
+# E2EE leg starts only with that listener installed. Captured audio reaches
+# the ADM buffer only while the sender admitted behind the audio witness is
+# still the track's sender and its publication is still the participant's
+# screen-audio publication (`ScreenAudioSenderGate`), and the first buffer
+# that finds either one changed, missing or unreadable zeroes it for good.
+#
+# Every entry is killed by a SOURCE PIN in LEG_POLICY_SPEC over the
+# comment-stripped native files, so, as with every native entry above, a
+# kill proves the pinned text changed, never what the APK does on a device.
+# The JVM unit tests `ScreenAudioSenderGateTest.kt` and
+# `ScreenUnpublishGuardTest.kt` also cover the gate and the guard; this
+# runner does not run them and does not measure them. Both drive the class
+# with their own suppliers or callbacks, so by construction they cannot see
+# the `native-audio-sender-gate-admit-*` entries or any entry outside the two
+# classes' own bodies (the install, the arm, the projection stop, doConnect,
+# the source): only the pins hold those.
+
+#: The arm's two paths for a local SCREEN_SHARE unpublish while CONNECTED,
+#: replaced whole by `native-unpublish-fast-branch-graced`.
+_UNPUBLISH_ARM_PATHS = """                    if (screenSenderRetained(event.publication.track)) {
+                        // A screen unpublish that leaves the track's
+                        // transceiver set ends the leg's connection at once,
+                        // with no grace and no settle window. It reports
+                        // "system" while this Room's projection stop is in
+                        // progress ([projectionStopRoom]), else "revoked".
+                        scope.launch {
+                            if (this@ScreenSharePlugin.room === room) {
+                                tearDown(if (projectionStopRoom === room) "system" else "revoked")
+                            }
+                        }
+                    } else {
+                        scope.launch {
+                            delay(UNPUBLISH_GRACE_MS)
+                            if (this@ScreenSharePlugin.room === room &&
+                                !stopping &&
+                                room.state == Room.State.CONNECTED &&
+                                room.localParticipant
+                                    .getTrackPublication(Track.Source.SCREEN_SHARE) == null
+                            ) {
+                                // Settled like the permission branch (see
+                                // [SETTLE_MS]; a heuristic, not a crash fix). The
+                                // disposal runs UNPUBLISH_GRACE_MS + SETTLE_MS
+                                // after the unpublish.
+                                tearDown("revoked", settle = true)
+                            }
+                        }
+                    }
+"""
+#: The grace path alone, as the arm held it before the immediate path.
+_UNPUBLISH_GRACE_ONLY = """                    scope.launch {
+                        delay(UNPUBLISH_GRACE_MS)
+                        if (this@ScreenSharePlugin.room === room &&
+                            !stopping &&
+                            room.state == Room.State.CONNECTED &&
+                            room.localParticipant
+                                .getTrackPublication(Track.Source.SCREEN_SHARE) == null
+                        ) {
+                            // Settled like the permission branch (see
+                            // [SETTLE_MS]; a heuristic, not a crash fix). The
+                            // disposal runs UNPUBLISH_GRACE_MS + SETTLE_MS
+                            // after the unpublish.
+                            tearDown("revoked", settle = true)
+                        }
+                    }
+"""
+#: The audio sender and publication reads before the witness, moved whole
+#: by `native-audio-before-reads-ahead-of-key-assert`.
+_AUDIO_BEFORE_READS = """                    val sent = sentAudioTrack
+                    val audioBefore = sent?.let { ScreenTrackAccess.audioTransceiverOf(it) }
+                    val audioPubBefore = room.localParticipant.getTrackPublication(Track.Source.SCREEN_SHARE_AUDIO)
+"""
+#: The refusal of an E2EE leg without the participant listener wrapped,
+#: moved whole by `native-unpublish-guard-refusal-after-connect`.
+_GUARD_REFUSAL = """            if (provider != null && !unpublishGuarded) throw IllegalStateException("participant listener not wrapped")
+"""
+
+MUTATIONS += [
+    # ---- the TrackUnpublished arm and the projection stop ------------------
+    Mutation(
+        id="native-unpublish-fast-branch-graced",
+        what="a local SCREEN_SHARE unpublish that leaves the track's transceiver set takes the grace path like any other, so the leg's connection stays up for the grace and the settle window instead of ending at once",
+        file=SHARE_PLUGIN_KT,
+        search=_UNPUBLISH_ARM_PATHS,
+        replace=_UNPUBLISH_GRACE_ONLY,
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # The install's withheld-unpublish teardown is the same call, shallower,
+    # so this search is the arm's alone.
+    Mutation(
+        id="native-unpublish-fast-teardown-settled",
+        what="the immediate teardown for a screen unpublish that leaves the track's transceiver set is settled, so the leg's connection stays up for the settle window instead of ending at once",
+        file=SHARE_PLUGIN_KT,
+        search="""                                tearDown(if (projectionStopRoom === room) "system" else "revoked")
+""",
+        replace="""                                tearDown(if (projectionStopRoom === room) "system" else "revoked", settle = true)
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-sender-retained-inverted",
+        what="screenSenderRetained answers true for a track without a transceiver and false for one that still has it, so a screen unpublish that leaves the track's transceiver set gets the grace and the settle window and one that cleared it ends at once",
+        file=SHARE_PLUGIN_KT,
+        search="""            ScreenTrackAccess.transceiverOf(video) != null
+""",
+        replace="""            ScreenTrackAccess.transceiverOf(video) == null
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-sender-retained-reads-field",
+        what="screenSenderRetained reads the plugin's screen track field instead of the unpublished track it is handed, so an unpublish is judged by whatever track the field holds when it runs, and by none once the field is cleared",
+        file=SHARE_PLUGIN_KT,
+        search="""            val video = track as? LocalVideoTrack ?: return true
+""",
+        replace="""            val video = screenVideo ?: return true
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-projection-stop-settle-forced",
+        what="the projection stop's teardown is always settled, also when the unpublish left the track's transceiver set, so the leg's connection stays up for the settle window instead of ending at once",
+        file=SHARE_PLUGIN_KT,
+        search="""                            tearDown("system", settle = !screenSenderRetained(stopped))
+""",
+        replace="""                            tearDown("system", settle = true)
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-projection-stop-mark-after-unpublish",
+        what="the projection stop marks its Room only after the unpublish, so an immediate teardown of that Room that runs in between reports \"revoked\" for a stop the system made",
+        file=SHARE_PLUGIN_KT,
+        search="""                    projectionStopRoom = room
+                    unpublishOnProjectionStop(room, stopped)
+""",
+        replace="""                    unpublishOnProjectionStop(room, stopped)
+                    projectionStopRoom = room
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # ---- the audio source and its sender gate ------------------------------
+    Mutation(
+        id="native-audio-sender-check-dropped",
+        what="the record callback no longer asks the sender gate, so with the audio gate open captured playback keeps reaching the buffer after the audio track moves to another sender or its publication is removed or replaced",
+        file=SCREEN_AUDIO_KT,
+        search="""        if (gateOpen && !released && senderGate.allows()) {
+""",
+        replace="""        if (gateOpen && !released) {
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-audio-admit-sender-always-true",
+        what="admitSender answers true without admitting the sender gate, so the audio reads as live while the never-admitted per-buffer check keeps every buffer zeroed",
+        file=SCREEN_AUDIO_KT,
+        search="""    ): Boolean = senderGate.admit(track, transceiver, participant, publication)
+""",
+        replace="""    ): Boolean = true
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-audio-sender-gate-not-terminal",
+        what="the sender gate no longer ends for good on its first mismatch, so captured playback reaches the buffer again whenever the admitted sender and publication come back",
+        file=SCREEN_AUDIO_SENDER_GATE_KT,
+        search="""            ended = true
+""",
+        replace="",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-audio-sender-gate-transceiver-unchecked",
+        what="the sender gate compares only the publication, never the audio track's current transceiver, so admit accepts any sender and captured playback keeps reaching the buffer after the track moves to another sender under the same publication",
+        file=SCREEN_AUDIO_SENDER_GATE_KT,
+        search="""        current() === expected && currentPublication() === expectedPublication
+""",
+        replace="""        currentPublication() === expectedPublication
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-audio-sender-gate-publication-unchecked",
+        what="the sender gate compares only the audio track's transceiver, never the participant's screen-audio publication, so captured playback keeps reaching the buffer after that publication is removed or replaced while the track keeps its transceiver",
+        file=SCREEN_AUDIO_SENDER_GATE_KT,
+        search="""        current() === expected && currentPublication() === expectedPublication
+""",
+        replace="""        current() === expected
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-audio-sender-gate-catch-true",
+        what="a read that throws inside the sender gate counts as the same sender, so admit succeeds and captured playback keeps reaching the buffer on a sender and publication that could not be read",
+        file=SCREEN_AUDIO_SENDER_GATE_KT,
+        search="""    } catch (_: Throwable) {
+        false
+    }
+""",
+        replace="""    } catch (_: Throwable) {
+        true
+    }
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # The JVM suite drives `admitWith` with its own suppliers, so these two
+    # survive it; only the pin on `admit`'s exact body holds.
+    Mutation(
+        id="native-audio-sender-gate-admit-self-transceiver",
+        what="admit hands admitWith `{ transceiver }` as the current-transceiver read, so neither admit nor the per-buffer check ever sees the audio track move to another sender",
+        file=SCREEN_AUDIO_SENDER_GATE_KT,
+        search="""        { ScreenTrackAccess.audioTransceiverOf(track) },
+""",
+        replace="""        { transceiver },
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-audio-sender-gate-admit-self-publication",
+        what="admit hands admitWith `{ publication }` as the current-publication read, so neither admit nor the per-buffer check ever sees the screen-audio publication removed or replaced",
+        file=SCREEN_AUDIO_SENDER_GATE_KT,
+        search="""        { participant.getTrackPublication(Track.Source.SCREEN_SHARE_AUDIO) },
+""",
+        replace="""        { publication },
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # ---- doConnect: the reads around the audio witness ---------------------
+    Mutation(
+        id="native-audio-after-read-reuses-before",
+        what="the audio track's transceiver is read only before the witness and that value reused after it, so admission no longer requires the track to have kept the same sender across the witness",
+        file=SHARE_PLUGIN_KT,
+        search="""                    val audioAfter = sent?.let { ScreenTrackAccess.audioTransceiverOf(it) }
+""",
+        replace="""                    val audioAfter = audioBefore
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-audio-pub-after-read-reuses-before",
+        what="the screen-audio publication is read only before the witness and that value reused after it, so admission no longer requires the participant to have kept the same publication across the witness",
+        file=SHARE_PLUGIN_KT,
+        search="""                    val audioPub = room.localParticipant.getTrackPublication(Track.Source.SCREEN_SHARE_AUDIO)
+""",
+        replace="""                    val audioPub = audioPubBefore
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-audio-before-reads-ahead-of-key-assert",
+        what="the audio sender and publication are first read ahead of the key-index assertion instead of after it, so the reads that bracket the witness no longer start from a sender whose cryptor is confirmed at the current index",
+        file=SHARE_PLUGIN_KT,
+        search=_AUDIO_BEFORE_READS,
+        replace="",
+        also=[
+            (
+                """                    // audio-only catch on purpose: a throw here ends the leg.
+""",
+                """                    // audio-only catch on purpose: a throw here ends the leg.
+""" + _AUDIO_BEFORE_READS,
+            ),
+        ],
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # ---- the participant listener guard ------------------------------------
+    Mutation(
+        id="native-unpublish-guard-call-forced",
+        what="doConnect never installs the participant listener guard and treats it as installed, so an E2EE leg starts with every screen unpublish reaching the Room first",
+        file=SHARE_PLUGIN_KT,
+        search="""        val unpublishGuarded = installUnpublishGuard(room)
+""",
+        replace="""        val unpublishGuarded = true
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # Every count stays: the guard is still built once and the install still
+    # called once. Only the pin on the install's exact body holds.
+    Mutation(
+        id="native-unpublish-guard-built-not-installed",
+        what="installUnpublishGuard builds the guard but never sets it as the participant listener, and still reports it installed, so an E2EE leg starts with every screen unpublish reaching the Room first",
+        file=SHARE_PLUGIN_KT,
+        search="""                participant.internalListener = ScreenUnpublishGuard(
+""",
+        replace="""                val unusedGuard = ScreenUnpublishGuard(
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-unpublish-guard-never-withholds",
+        what="the participant listener forwards every screen unpublish to the Room, so one that leaves the track's transceiver set is never handed to the plugin",
+        file=SHARE_PLUGIN_KT,
+        search="""            if (withhold) {
+                onWithheld()
+                return
+            }
+""",
+        replace="",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-unpublish-guard-withheld-noop",
+        what="a screen unpublish the participant listener withholds from the Room is dropped without a teardown, so the leg's connection stays up with the track still on its transceiver",
+        file=SHARE_PLUGIN_KT,
+        search="""                ) {
+                    scope.launch {
+                        if (this@ScreenSharePlugin.room === room) {
+                            tearDown(if (projectionStopRoom === room) "system" else "revoked")
+                        }
+                    }
+                }
+""",
+        replace="""                ) {}
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-unpublish-guard-forwards-withheld",
+        what="the participant listener hands a withheld screen unpublish to the plugin and then forwards it to the Room as well",
+        file=SHARE_PLUGIN_KT,
+        search="""                onWithheld()
+                return
+""",
+        replace="""                onWithheld()
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-unpublish-guard-ignores-connected",
+        what="the participant listener withholds a screen unpublish in every Room state, not only while connected, so an unpublish in any other state never reaches the Room",
+        file=SHARE_PLUGIN_KT,
+        search="""                    connected() &&
+""",
+        replace="",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-unpublish-guard-fresh-inner",
+        what="the participant listener is built over a fresh listener instead of the Room's own, so every other participant callback, and every unpublish it forwards, no longer reaches the Room",
+        file=SHARE_PLUGIN_KT,
+        search="""                    inner,
+""",
+        replace="""                    object : io.livekit.android.room.participant.ParticipantListener {},
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # Still a lambda, so it compiles: it closes over the state read once, at
+    # install, before the connect.
+    Mutation(
+        id="native-unpublish-guard-state-read-once",
+        what="the participant listener's connected check is the Room state read once at install, before the connect, so it never holds and no screen unpublish is ever withheld",
+        file=SHARE_PLUGIN_KT,
+        search="""                    { room.state == Room.State.CONNECTED },
+""",
+        replace="""                    room.state.let { state -> { state == Room.State.CONNECTED } },
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-unpublish-guard-refusal-dropped",
+        what="doConnect no longer refuses an E2EE leg whose participant listener was not wrapped, so such a leg connects and publishes with every screen unpublish reaching the Room first",
+        file=SHARE_PLUGIN_KT,
+        search=_GUARD_REFUSAL,
+        replace="",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-unpublish-guard-refusal-after-connect",
+        what="doConnect refuses an E2EE leg whose participant listener was not wrapped only after room.connect, so such a leg joins the room before it is refused",
+        file=SHARE_PLUGIN_KT,
+        search=_GUARD_REFUSAL,
+        replace="",
+        also=[
+            (
+                """            room.connect(url, token, ConnectOptions(autoSubscribe = false))
+""",
+                """            room.connect(url, token, ConnectOptions(autoSubscribe = false))
+""" + _GUARD_REFUSAL,
+            ),
+        ],
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+]
+
+
+# ---- native: the participant listener, tearDown, the scope; the gate table --
+# The plugin entries are killed by SOURCE PINS in LEG_POLICY_SPEC over the
+# comment-stripped plugin, as with every native entry above: a kill proves
+# the pinned text changed, never what the APK does on a device. The two
+# compile-gate entries are killed by the spec's read of the gate's
+# GATE_TESTS table against the @Test count in each JVM test file; this
+# runner does not run the gate or the JVM tests.
+
+MUTATIONS += [
+    Mutation(
+        id="native-listener-reset-after-connect",
+        what="the Room's participant listener is written only inside the unpublish guard's install; this entry adds a write of the Room itself right after room.connect",
+        file=SHARE_PLUGIN_KT,
+        search="""            room.connect(url, token, ConnectOptions(autoSubscribe = false))
+""",
+        replace="""            room.connect(url, token, ConnectOptions(autoSubscribe = false))
+            room.localParticipant.internalListener = room
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-teardown-default-settled",
+        what="tearDown settles only when its caller passes settle = true; this entry makes the parameter default to true",
+        file=SHARE_PLUGIN_KT,
+        search="""    private fun tearDown(reason: String?, settle: Boolean = false) {
+""",
+        replace="""    private fun tearDown(reason: String?, settle: Boolean = true) {
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-scope-unconfined",
+        what="the plugin's coroutines run in one supervised scope on Dispatchers.Main; this entry moves that scope to Dispatchers.Unconfined",
+        file=SHARE_PLUGIN_KT,
+        search="""    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+""",
+        replace="""    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-audio-track-created-twice",
+        what="the screen leg creates one audio track and publishes it once; this entry creates and publishes a second audio track beside it",
+        file=SHARE_PLUGIN_KT,
+        search="""                    sentAudioTrack = audioTrack
+""",
+        replace="""                    sentAudioTrack = audioTrack
+                    room.localParticipant.publishAudioTrack(
+                        room.localParticipant.createAudioTrack("screen_audio"),
+                    )
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # ---- the compile gate's GATE_TESTS table -------------------------------
+    Mutation(
+        id="compile-gate-row-removed",
+        what="the compile gate's GATE_TESTS table holds one row per screen-share JVM test class; this entry removes the ScreenUnpublishGuardTest row",
+        file=ANDROID_COMPILE_GATE_SH,
+        search="""  ScreenUnpublishGuardTest:12
+""",
+        replace="",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="compile-gate-min-lowered",
+        what="each GATE_TESTS minimum equals the @Test count in its class's test file; this entry lowers the ScreenVideoGateTest minimum by one",
+        file=ANDROID_COMPILE_GATE_SH,
+        search="""  ScreenVideoGateTest:22
+""",
+        replace="""  ScreenVideoGateTest:21
 """,
         specs=[LEG_POLICY_SPEC],
         must_red=[LEG_POLICY_SPEC],

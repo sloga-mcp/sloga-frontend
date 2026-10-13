@@ -3,11 +3,13 @@ package com.acutest.app.screenshare;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
+import io.livekit.android.room.track.LocalAudioTrack;
 import io.livekit.android.room.track.LocalVideoTrack;
 import livekit.org.webrtc.RtpTransceiver;
 
 /**
- * Reads a local video track's transceivers for {@link ScreenVideoGate}.
+ * Reads local tracks' transceivers for {@link ScreenVideoGate} and
+ * {@link ScreenAudioSenderGate}.
  *
  * livekit-android keeps {@code LocalVideoTrack.transceiver} and
  * {@code LocalVideoTrack.simulcastTransceivers} Kotlin-internal, so Kotlin code
@@ -23,7 +25,7 @@ public final class ScreenTrackAccess {
      * The track's current transceiver, read through the SDK's internal accessor.
      *
      * Null before the track's first publish. The SDK clears it when the track is
-     * unpublished while the room is CONNECTED; an unpublish in any other
+     * unpublished while the engine is connected; an unpublish in any other engine
      * connection state, and the preparation for a full reconnect, leave the old
      * transceiver set. So null does not mean "unpublished" and non-null does not
      * mean "published". A republish assigns a new transceiver object, so callers
@@ -47,5 +49,21 @@ public final class ScreenTrackAccess {
      */
     public static int extraTransceiverCountOf(@NonNull LocalVideoTrack track) {
         return track.getSimulcastTransceivers$livekit_android_sdk_release().size();
+    }
+
+    /**
+     * The audio track's current transceiver, read through the SDK's internal
+     * accessor.
+     *
+     * Null before the track's first publish. Unlike {@link #transceiverOf} for
+     * a video track, it is never cleared by an unpublish: it changes only when
+     * a publish assigns a new transceiver, or when a failed publish restores
+     * the previous value (the earlier transceiver, or null). So non-null does
+     * not mean published. Callers compare the result by identity with the
+     * transceiver they checked, and read the track's publication separately.
+     */
+    @Nullable
+    public static RtpTransceiver audioTransceiverOf(@NonNull LocalAudioTrack track) {
+        return track.getTransceiver$livekit_android_sdk_release();
     }
 }

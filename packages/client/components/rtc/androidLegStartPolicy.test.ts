@@ -2116,6 +2116,24 @@ const assertKeyProviderWired = wiredAsserter(
   KEY_PROVIDER_CODE,
 );
 
+// The system audio's per-buffer sender check, which ScreenAudioSource.kt
+// consults for every buffer it would fill with captured audio. Read through
+// the same lexer (checked in its sync test below).
+const AUDIO_SENDER_GATE_SOURCE = readFileSync(
+  new URL(
+    "../../android/app/src/main/java/com/acutest/app/screenshare/ScreenAudioSenderGate.kt",
+    import.meta.url,
+  ),
+  "utf8",
+);
+const AUDIO_SENDER_GATE_CODE = codeOf(AUDIO_SENDER_GATE_SOURCE);
+
+/** `snippet` must appear exactly once in ScreenAudioSenderGate.kt's code. */
+const assertAudioSenderGateWired = wiredAsserter(
+  "ScreenAudioSenderGate.kt",
+  AUDIO_SENDER_GATE_CODE,
+);
+
 test("ScreenAudioSource.kt reads in sync under the source-pin lexer", () => {
   // Same constraints as ScreenSharePlugin.kt above: no raw strings, nested
   // block comments, backticks, or a template holding a quote, or the pins
@@ -2142,12 +2160,15 @@ test("ScreenAudioSource.kt reads in sync under the source-pin lexer", () => {
   );
 });
 
-test("the leg's microphone recording is disabled right after LiveKit.create, on every leg", () => {
+test("the leg's microphone recording is disabled right after LiveKit.create and the unpublish guard's install, on every leg", () => {
   // The WebView call owns the microphone. With the ADM's recording disabled
   // the leg builds no mic AudioRecord and the audio track carries only what
   // ScreenAudioSource writes. The statement must follow the create call
   // directly, at the top level of doConnect: inside an `if (audioRequested)`
   // (or after the connect) a leg could reach a recording with it still on.
+  // Re-pinned for the unpublish guard: its install (pinned in the guard's
+  // own tests below) is the one statement between the two, and records only
+  // whether the guard went in.
   assertPluginWired("doConnect", "private suspend fun doConnect(");
   const [connect] = blockBodiesOf(
     PLUGIN_CODE,
@@ -2162,7 +2183,8 @@ test("the leg's microphone recording is disabled right after LiveKit.create, on 
   const createEnd = closerOf(connect, createAt + head.length - 1);
   assert.ok(
     connect.slice(createEnd + 1).startsWith(
-      codeOf(`val micRecordingOff = try {
+      codeOf(`val unpublishGuarded = installUnpublishGuard(room)
+      val micRecordingOff = try {
         val adm = room.lkObjects.audioDeviceModule as? JavaAudioDeviceModule
         adm?.setAudioRecordEnabled(false)
         adm != null
@@ -2171,7 +2193,7 @@ test("the leg's microphone recording is disabled right after LiveKit.create, on 
       }`),
     ),
     "the ADM's recording must be disabled by the statement right after " +
-      "LiveKit.create, unconditionally",
+      "LiveKit.create and the unpublish guard's install, unconditionally",
   );
   assert.equal(
     countWired(PLUGIN_CODE, "setAudioRecordEnabled("),
@@ -2840,8 +2862,8 @@ test("the audio gate starts closed and opens only behind the plugin's witness", 
   // opens the gate with no witness and slips past both pins above. So the
   // bare name, across both files: the declaration in ScreenAudioSource.kt,
   // which never opens its own gate, and the one witnessed call in the plugin.
-  // The screen video gate shares none of it: its names avoid the token, so
-  // this count stays the audio gate's alone.
+  // The screen video gate and the audio sender gate share none of it: their
+  // names avoid the token, so this count stays the audio gate's alone.
   assert.equal(
     countWired(AUDIO_SOURCE_CODE, "openGate"),
     1,
@@ -2850,12 +2872,16 @@ test("the audio gate starts closed and opens only behind the plugin's witness", 
   assert.equal(
     countWired(AUDIO_SOURCE_CODE, "openGate") +
       countWired(PLUGIN_CODE, "openGate") +
-      countWired(GATE_CODE, "openGate"),
+      countWired(GATE_CODE, "openGate") +
+      countWired(AUDIO_SENDER_GATE_CODE, "openGate"),
     2,
     "openGate must be the declaration and the plugin's one witnessed call",
   );
   // Re-pinned for the generic witness: the audio call names its own
-  // source, so it is this sender's cryptor that must be witnessed.
+  // source, so it is this sender's cryptor that must be witnessed. Re-pinned
+  // again for the sender admission: the gate opens only when the witness
+  // holds AND the source admits the sender and publication read on both
+  // sides of it (pinned in full in the admission test below).
   assertPluginWired(
     "the witnessed open",
     `val witnessed = provider == null ||
@@ -2864,7 +2890,15 @@ test("the audio gate starts closed and opens only behind the plugin's witness", 
           Track.Source.SCREEN_SHARE_AUDIO,
           currentKeyIndex,
         )
-      if (witnessed && !failedEarly.get()) {
+      val audioAfter = sent?.let { ScreenTrackAccess.audioTransceiverOf(it) }
+      val audioPub = room.localParticipant.getTrackPublication(Track.Source.SCREEN_SHARE_AUDIO)
+      val admitted = witnessed && !failedEarly.get() &&
+        sent != null && audioBefore != null && audioAfter != null &&
+        audioBefore === audioAfter &&
+        audioPubBefore != null && audioPub != null &&
+        audioPubBefore === audioPub && audioPub.track === sent &&
+        source.admitSender(sent, audioAfter, room.localParticipant, audioPub)
+      if (admitted) {
         source.openGate()
         audioState = "live"
       }`,
@@ -2876,7 +2910,9 @@ test("the audio gate starts closed and opens only behind the plugin's witness", 
   // the same call zero-fills, so the read still drains the capture but
   // nothing captured is sent. A `true` or a bare `!released` there would
   // send playback before the plugin's witness, and a copy in the else arm
-  // would send it with the gate closed.
+  // would send it with the gate closed. Re-pinned for the sender check: the
+  // branch also needs the source's sender gate, asked last, so only while
+  // the gate is open and the source not released, and every such buffer.
   const produces = bodiesAfter(
     AUDIO_SOURCE_CODE,
     `private fun produce(
@@ -2899,15 +2935,20 @@ test("the audio gate starts closed and opens only behind the plugin's witness", 
     "the capture must be read only into the scratch buffer",
   );
   assert.equal(
-    countWired(AUDIO_SOURCE_CODE, "if (gateOpen && !released) {"),
+    countWired(
+      AUDIO_SOURCE_CODE,
+      "if (gateOpen && !released && senderGate.allows()) {",
+    ),
     1,
     "the open-gate branch must appear exactly once in ScreenAudioSource.kt",
   );
-  const gateHead = codeOf("if (gateOpen && !released) {");
+  const gateHead = codeOf(
+    "if (gateOpen && !released && senderGate.allows()) {",
+  );
   const gateAt = onceAt(
     produce,
     "produce's open-gate branch",
-    "if (gateOpen && !released) {",
+    "if (gateOpen && !released && senderGate.allows()) {",
   );
   const gateEnd = closerOf(produce, gateAt + gateHead.length - 1);
   assert.equal(
@@ -3135,6 +3176,9 @@ test("the audio gate starts closed and opens only behind the plugin's witness", 
     assertAt > catchEnd,
     "the audio key-index assertion must come after the audio-only catch",
   );
+  // Re-pinned for the sender admission: the audio sender and its
+  // publication are first read right after the assertion's block, and
+  // nothing else sits between that block and the witness.
   assert.ok(
     audioBlock.slice(catchEnd + 1).startsWith(
       codeOf(`ensureConnectCurrent(generation)
@@ -3143,6 +3187,9 @@ test("the audio gate starts closed and opens only behind the plugin's witness", 
           if (provider != null) {
             assertSenderKeyIndex(room, currentKeyIndex)
           }
+          val sent = sentAudioTrack
+          val audioBefore = sent?.let { ScreenTrackAccess.audioTransceiverOf(it) }
+          val audioPubBefore = room.localParticipant.getTrackPublication(Track.Source.SCREEN_SHARE_AUDIO)
           val witnessed = provider == null ||
             senderCryptorWitnessed(
               room,
@@ -3151,7 +3198,7 @@ test("the audio gate starts closed and opens only behind the plugin's witness", 
             )`),
     ),
     "the audio key-index assertion must run right after a successful " +
-      "publish, outside the catch and before the witness",
+      "publish, outside the catch and before the sender reads and the witness",
   );
   // The video's assertion and the audio's, nothing else in doConnect.
   assert.equal(countWired(connect, "assertSenderKeyIndex("), 2);
@@ -3389,7 +3436,20 @@ test("the screen track accessors return the SDK's own transceiver fields, and no
     "extraTransceiverCountOf must return the size of the track's own list " +
       "of additional transceivers, read through the SDK's accessor",
   );
-  // The whole class: a private constructor and the two accessors, so no
+  // The system audio track's transceiver, through the same SDK read.
+  const audios = blockBodiesOf(
+    ACCESS_CODE,
+    "public static RtpTransceiver audioTransceiverOf(",
+  );
+  assert.equal(audios.length, 1, "audioTransceiverOf must be declared once");
+  assert.equal(
+    audios[0],
+    codeOf("return track.getTransceiver$livekit_android_sdk_release()"),
+    "audioTransceiverOf must return the audio track's transceiver through " +
+      "the SDK's own accessor",
+  );
+  // The whole class: a private constructor and the three accessors (the
+  // screen video track's two and the system audio track's one), so no
   // overload or second path can sit beside them.
   const classes = bodiesAfter(
     ACCESS_CODE,
@@ -3405,19 +3465,42 @@ test("the screen track accessors return the SDK's own transceiver fields, and no
       }
       public static int extraTransceiverCountOf(@NonNull LocalVideoTrack track) {
         return track.getSimulcastTransceivers$livekit_android_sdk_release().size();
+      }
+      @Nullable
+      public static RtpTransceiver audioTransceiverOf(@NonNull LocalAudioTrack track) {
+        return track.getTransceiver$livekit_android_sdk_release();
       }`),
-    "ScreenTrackAccess must hold its private constructor and the two " +
+    "ScreenTrackAccess must hold its private constructor and the three " +
       "accessors, nothing else",
   );
+  // Each name declared once, as a whole token: the video accessor is never
+  // overloaded with an audio form.
+  const accessText = uncommentedOf(ACCESS_SOURCE);
+  for (const name of ["transceiverOf", "audioTransceiverOf"])
+    assert.equal(
+      tokenAt(accessText, name).length,
+      1,
+      `ScreenTrackAccess.java must name ${name} once, its declaration`,
+    );
   // The gate reads the track only through these two, in admit; the plugin
-  // reads the transceiver on both sides of the witness and the count in the
-  // single-sender check.
+  // reads the screen transceiver on both sides of the witness, the count in
+  // the single-sender check, and the screen transceiver once more in
+  // screenSenderRetained (re-pinned 2 -> 3 for that check). The audio
+  // accessor: the plugin's reads on both sides of the audio witness, and
+  // the audio sender gate's supplier in admit.
   assert.equal(countWired(GATE_CODE, "ScreenTrackAccess."), 2);
-  assert.equal(countWired(PLUGIN_CODE, "ScreenTrackAccess.transceiverOf("), 2);
+  assert.equal(countWired(PLUGIN_CODE, "ScreenTrackAccess.transceiverOf("), 3);
   assert.equal(
     countWired(PLUGIN_CODE, "ScreenTrackAccess.extraTransceiverCountOf("),
     1,
   );
+  assert.equal(countWired(PLUGIN_CODE, "audioTransceiverOf("), 2);
+  assert.equal(
+    countWired(PLUGIN_CODE, "ScreenTrackAccess.audioTransceiverOf("),
+    2,
+  );
+  assert.equal(countWired(AUDIO_SENDER_GATE_CODE, "ScreenTrackAccess."), 1);
+  assert.equal(countWired(AUDIO_SENDER_GATE_CODE, "audioTransceiverOf("), 1);
 });
 
 test("the screen video gate starts closed and admits once, through the track's own accessors", () => {
@@ -3602,6 +3685,262 @@ test("the screen video gate owns no frame, cryptor or lifetime, and stays clear 
     );
 });
 
+test("ScreenAudioSenderGate.kt reads in sync under the source-pin lexer", () => {
+  // Same constraints as the Kotlin files above. It holds no string, so it
+  // must lex to none (a quote from its KDoc left in code would open one).
+  assert.ok(
+    !AUDIO_SENDER_GATE_SOURCE.includes('"""'),
+    "the lexer cannot read a raw string",
+  );
+  assert.ok(
+    !AUDIO_SENDER_GATE_CODE.includes("*/"),
+    "a nested block comment left code",
+  );
+  assert.ok(
+    !AUDIO_SENDER_GATE_CODE.includes("`"),
+    "the lexer cannot read a backtick",
+  );
+  assert.equal(
+    stringsOf(AUDIO_SENDER_GATE_CODE).length,
+    0,
+    "ScreenAudioSenderGate.kt must lex to no string",
+  );
+  assertLexesInSync(
+    "ScreenAudioSenderGate.kt",
+    AUDIO_SENDER_GATE_SOURCE,
+    AUDIO_SENDER_GATE_CODE,
+    0,
+  );
+});
+
+test("the screen audio sender gate starts unadmitted, admits once through the track's and the participant's own reads, and ends for good on the first mismatch", () => {
+  // Unadmitted at construction, with no initializer; only admitWith
+  // admits it, after all of its checks, and nothing is recorded unless
+  // they all pass.
+  assertAudioSenderGateWired(
+    "the gate's declaration",
+    "class ScreenAudioSenderGate {",
+  );
+  assertAudioSenderGateWired(
+    "the gate starts unadmitted",
+    "@Volatile private var admission: Admission? = null",
+  );
+  assertAudioSenderGateWired(
+    "the end latch starts unset",
+    "@Volatile private var ended = false",
+  );
+  assert.equal(countWired(AUDIO_SENDER_GATE_CODE, "init {"), 0);
+  // The admission keeps both reads as functions, so every later buffer
+  // reads the track and the participant again.
+  assertAudioSenderGateWired(
+    "the admission's declaration, with no body",
+    `private class Admission(
+      val expected: Any,
+      val current: () -> Any?,
+      val expectedPublication: Any,
+      val currentPublication: () -> Any?,
+    )
+    @Volatile`,
+  );
+  // `admit` is the source's entry and nothing but a delegation: the sender
+  // and publication the plugin checked, and the track's own accessor and
+  // the participant's own screen-audio lookup as the reads. A read that
+  // closed over the checked object itself (`{ transceiver }`,
+  // `{ publication }`) would compare it with itself on every buffer.
+  const admitHead = codeOf(`fun admit(
+      track: LocalAudioTrack,
+      transceiver: RtpTransceiver,
+      participant: LocalParticipant,
+      publication: LocalTrackPublication,
+    ): Boolean = admitWith(`);
+  const admitAt = onceAt(
+    AUDIO_SENDER_GATE_CODE,
+    "admit's declaration",
+    admitHead,
+  );
+  const admitOpen = admitAt + admitHead.length - 1;
+  const admitEnd = closerOf(AUDIO_SENDER_GATE_CODE, admitOpen);
+  assert.deepEqual(
+    argumentsOf(AUDIO_SENDER_GATE_CODE.slice(admitOpen + 1, admitEnd)),
+    [
+      "transceiver",
+      codeOf("{ ScreenTrackAccess.audioTransceiverOf(track) }"),
+      "publication",
+      codeOf(
+        "{ participant.getTrackPublication(Track.Source.SCREEN_SHARE_AUDIO) }",
+      ),
+    ],
+    "admit must hand admitWith the checked sender and publication, and the " +
+      "track's and the participant's own reads",
+  );
+  assert.ok(
+    AUDIO_SENDER_GATE_CODE.startsWith(
+      codeOf("@Synchronized internal fun admitWith("),
+      admitEnd + 1,
+    ),
+    "admit must be the delegation and nothing else",
+  );
+  assert.equal(countWired(AUDIO_SENDER_GATE_CODE, "fun admit("), 1);
+  assert.equal(
+    countWired(AUDIO_SENDER_GATE_CODE, "admitWith("),
+    2,
+    "admitWith must be the declaration and admit's one call",
+  );
+  // Every check before the one write, under the gate's lock: not ended,
+  // not yet admitted, and both reads on the expected objects.
+  const admitWiths = bodiesAfter(
+    AUDIO_SENDER_GATE_CODE,
+    `@Synchronized
+    internal fun admitWith(
+      expected: Any,
+      current: () -> Any?,
+      expectedPublication: Any,
+      currentPublication: () -> Any?,
+    ): Boolean {`,
+  );
+  assert.equal(admitWiths.length, 1, "the gate must declare admitWith once");
+  assert.equal(
+    admitWiths[0],
+    codeOf(`if (ended || admission != null) return false
+      if (!sameSender(expected, current, expectedPublication, currentPublication)) return false
+      admission = Admission(expected, current, expectedPublication, currentPublication)
+      return true`),
+    "admitWith must refuse an ended or admitted gate and a sender or " +
+      "publication that is not the current one, and only then admit",
+  );
+  assert.equal(
+    countWired(AUDIO_SENDER_GATE_CODE, "admission = Admission("),
+    1,
+    "only admitWith may admit the gate",
+  );
+  // Once per buffer: the volatile admission is read first, so before
+  // admission no read runs and nothing is latched; then the latch; then
+  // both reads, and the first mismatch, absence or failed read ends the
+  // gate for good.
+  const allows = bodiesAfter(AUDIO_SENDER_GATE_CODE, "fun allows(): Boolean {");
+  assert.equal(allows.length, 1, "the gate must declare allows once");
+  assert.ok(
+    allows[0].startsWith(codeOf("val admitted = admission ?: return false")),
+    "allows must read the admission before anything else",
+  );
+  assert.equal(
+    allows[0],
+    codeOf(`val admitted = admission ?: return false
+      if (ended) return false
+      if (!sameSender(
+          admitted.expected,
+          admitted.current,
+          admitted.expectedPublication,
+          admitted.currentPublication,
+        )
+      ) {
+        ended = true
+        return false
+      }
+      return true`),
+    "allows must pass only an admitted, unended gate whose reads still " +
+      "return the admitted sender and publication, and end it otherwise",
+  );
+  // Both reads compared by identity, the publication read only while the
+  // sender still matches, and a throw from either read is a mismatch. The
+  // gate's last declaration.
+  const sameSenderText = `private fun sameSender(
+      expected: Any,
+      current: () -> Any?,
+      expectedPublication: Any,
+      currentPublication: () -> Any?,
+    ): Boolean = try {
+      current() === expected && currentPublication() === expectedPublication
+    } catch (_: Throwable) {
+      false
+    }`;
+  onceAt(AUDIO_SENDER_GATE_CODE, "the sender comparison", sameSenderText);
+  assert.ok(
+    AUDIO_SENDER_GATE_CODE.endsWith(codeOf(`${sameSenderText}\n}`)),
+    "sameSender must compare both reads by identity, read a throw as a " +
+      "mismatch, and be the gate's last declaration",
+  );
+  assert.equal(
+    countWired(AUDIO_SENDER_GATE_CODE, "sameSender("),
+    3,
+    "sameSender must be the declaration, admitWith's call and allows' call",
+  );
+  // The latch: set only by allows, never reset, and no close of its own.
+  assert.equal(
+    countWired(AUDIO_SENDER_GATE_CODE, "ended = true"),
+    1,
+    "only allows may end the gate",
+  );
+  assert.equal(
+    countWired(AUDIO_SENDER_GATE_CODE, "ended = false"),
+    1,
+    "the latch may be unset only by its declaration",
+  );
+  assert.equal(
+    countWired(AUDIO_SENDER_GATE_CODE, "close"),
+    0,
+    "the gate must have no close of its own",
+  );
+});
+
+test("the screen audio sender gate owns nothing and stays clear of the audio gate's and the lifetime tokens", () => {
+  // The audio source owns the record and its gate, and the plugin owns the
+  // track, its publication and its cryptor. Checked on the raw file,
+  // comments included, since other pins count these names as substrings.
+  for (const token of [
+    "openGate",
+    "gateOpen",
+    "release",
+    "dispose",
+    "FrameCryptor",
+    "AudioRecord",
+  ])
+    assert.ok(
+      !AUDIO_SENDER_GATE_SOURCE.includes(token),
+      `ScreenAudioSenderGate.kt must not name ${token}`,
+    );
+});
+
+test("the audio source forwards captured audio only while the sender it admitted stays current", () => {
+  // One sender gate per source, built with it. admitSender is the only way
+  // in, and nothing but a delegation; produce asks the gate last, in its
+  // open-gate branch's head (pinned with the audio gate above).
+  assertAudioSourceWired(
+    "the source's sender gate",
+    "private val senderGate = ScreenAudioSenderGate()",
+  );
+  const admitSenderText = `fun admitSender(
+      track: LocalAudioTrack,
+      transceiver: RtpTransceiver,
+      participant: LocalParticipant,
+      publication: LocalTrackPublication,
+    ): Boolean = senderGate.admit(track, transceiver, participant, publication)`;
+  const admitSenderAt = onceAt(
+    AUDIO_SOURCE_CODE,
+    "the source's admitSender",
+    admitSenderText,
+  );
+  assert.match(
+    AUDIO_SOURCE_CODE.slice(admitSenderAt + codeOf(admitSenderText).length),
+    /^(fun|private|internal|override|val|var|@|\})/,
+    "admitSender must return the sender gate's admit and nothing else",
+  );
+  assert.equal(
+    countWired(AUDIO_SOURCE_CODE, "senderGate."),
+    2,
+    "the sender gate must be admitted by admitSender and asked by produce, " +
+      "nothing else",
+  );
+  assert.equal(countWired(AUDIO_SOURCE_CODE, "senderGate.allows()"), 1);
+  assert.equal(countWired(AUDIO_SOURCE_CODE, "senderGate.admit("), 1);
+  assert.equal(countWired(AUDIO_SOURCE_CODE, "ScreenAudioSenderGate("), 1);
+  assert.equal(
+    countWired(PLUGIN_CODE, "ScreenAudioSenderGate("),
+    0,
+    "the plugin must reach the sender gate only through the source",
+  );
+});
+
 test("the plugin owns the screen track: one create, one publish, one capture start, no one-call enable", () => {
   // The plugin owns the screen track, so the capture can start after the
   // witness: it never calls the SDK's one-call enable, creates the track
@@ -3631,7 +3970,10 @@ test("the plugin owns the screen track: one create, one publish, one capture sta
   }
   // The track is created with the gate in front of its video source, and
   // its stop callback ends only the share of the Room it was created for:
-  // a late stop from an earlier share never ends a successor.
+  // a late stop from an earlier share never ends a successor. Re-pinned for
+  // the projection-stop mark: the callback marks its Room before the
+  // unpublish, and the teardown is settled only when the unpublish left the
+  // track without a transceiver.
   const creates = bodiesAfter(
     connect,
     "val track = room.localParticipant.createScreencastTrack(",
@@ -3646,10 +3988,11 @@ test("the plugin owns the screen track: one create, one publish, one capture sta
     codeOf(`mediaProjectionPermissionResultData = intent,
       videoProcessor = gate,
       onStop = { stopped ->
+        projectionStopRoom = room
         unpublishOnProjectionStop(room, stopped)
         scope.launch {
           if (this@ScreenSharePlugin.room === room) {
-            tearDown("system", settle = true)
+            tearDown("system", settle = !screenSenderRetained(stopped))
           }
         }
       }`),
@@ -3811,7 +4154,8 @@ test("doConnect starts the screen capture only after the publish, the sender wit
       `doConnect: a generation check must sit between "${from}" and "${to}"`,
     );
   // The stretch is exactly that: nothing else runs between the gate's
-  // construction and the end of the first-frame check.
+  // construction and the end of the first-frame check (re-pinned for the
+  // stop callback's projection-stop mark and its settle condition).
   onceAt(
     connect,
     "the publish-then-capture stretch, whole",
@@ -3821,10 +4165,11 @@ test("doConnect starts the screen capture only after the publish, the sender wit
         mediaProjectionPermissionResultData = intent,
         videoProcessor = gate,
         onStop = { stopped ->
+          projectionStopRoom = room
           unpublishOnProjectionStop(room, stopped)
           scope.launch {
             if (this@ScreenSharePlugin.room === room) {
-              tearDown("system", settle = true)
+              tearDown("system", settle = !screenSenderRetained(stopped))
             }
           }
         },
@@ -4245,11 +4590,12 @@ test("tearDown takes the screen track and its gate out of the fields and only st
     );
 });
 
-// Names, counted as whole tokens: the plugin, the gate and the key provider
+// Names, counted as whole tokens: the plugin, the gates and the key provider
 // with only their comments removed (see `uncommentedOf`).
 const PLUGIN_TEXT = uncommentedOf(PLUGIN_SOURCE);
 const GATE_TEXT = uncommentedOf(GATE_SOURCE);
 const KEY_PROVIDER_TEXT = uncommentedOf(KEY_PROVIDER_SOURCE);
+const AUDIO_SENDER_GATE_TEXT = uncommentedOf(AUDIO_SENDER_GATE_SOURCE);
 
 test("the native files read the same with only their comments removed", () => {
   // `uncommentedOf` must drop exactly what `codeOf` drops, or the names
@@ -4258,6 +4604,11 @@ test("the native files read the same with only their comments removed", () => {
     ["ScreenSharePlugin.kt", PLUGIN_TEXT, PLUGIN_CODE],
     ["ScreenVideoGate.kt", GATE_TEXT, GATE_CODE],
     ["RawScreenKeyProvider.kt", KEY_PROVIDER_TEXT, KEY_PROVIDER_CODE],
+    [
+      "ScreenAudioSenderGate.kt",
+      AUDIO_SENDER_GATE_TEXT,
+      AUDIO_SENDER_GATE_CODE,
+    ],
   ] as const)
     assert.equal(codeOf(text), code, `${file}: the two readings differ`);
   // Three whole `f` tokens: the declaration, the reference and the
@@ -4563,4 +4914,641 @@ test("the plugin's destroy tears the share down", () => {
     "handleOnDestroy must hold the teardown and the super call and nothing " +
       "else",
   );
+});
+
+// The senders after the witness: the system audio's sender admitted by its
+// source, a screen unpublish that leaves the track's transceiver set, and
+// the participant listener that hands such an unpublish to the plugin.
+
+test("the audio gate opens only for the sender and publication read unchanged on both sides of the witness and admitted by the source", () => {
+  // The track the source feeds is recorded right after its buffer callback
+  // is set, inside the audio block, and is the one sender the leg builds.
+  assertPluginWired(
+    "the sent track's declaration, in the audio block",
+    `var audioPublished = false
+    var sentAudioTrack: LocalAudioTrack? = null
+    try {`,
+  );
+  assertPluginWired(
+    "the sent track is recorded right after the buffer callback",
+    `audioTrack.setAudioBufferCallback(SourceCallback(source))
+    sentAudioTrack = audioTrack`,
+  );
+  assert.equal(countWired(PLUGIN_CODE, "sentAudioTrack = audioTrack"), 1);
+  // The declaration, the record and the one read.
+  assert.equal(tokenAt(PLUGIN_TEXT, "sentAudioTrack").length, 3);
+  for (const [snippet, count] of [
+    ["createAudioTrack(", 1],
+    ["publishAudioTrack(", 1],
+    ["setMicrophoneEnabled", 0],
+    ["setTrackEnabled(", 0],
+    ["MICROPHONE", 0],
+  ] as const)
+    assert.equal(
+      countWired(PLUGIN_CODE, snippet),
+      count,
+      `ScreenSharePlugin.kt: ${snippet}`,
+    );
+  // Admitted only when the witness holds, the source has not failed, both
+  // reads of the sender and of the publication are the same non-null
+  // object, the publication holds the track the source feeds, and the
+  // source admits exactly those; otherwise the gate stays closed and the
+  // audio takes the failed-witness path.
+  assertPluginWired(
+    "the admission",
+    `val admitted = witnessed && !failedEarly.get() &&
+      sent != null && audioBefore != null && audioAfter != null &&
+      audioBefore === audioAfter &&
+      audioPubBefore != null && audioPub != null &&
+      audioPubBefore === audioPub && audioPub.track === sent &&
+      source.admitSender(sent, audioAfter, room.localParticipant, audioPub)
+    if (admitted) {
+      source.openGate()
+      audioState = "live"
+    } else {
+      trace("audio gate kept closed witnessed=$witnessed admitted=$admitted")
+    }`,
+  );
+  assert.equal(countWired(PLUGIN_CODE, ".admitSender("), 1);
+  // In order, inside the audio block: the key-index assertion's block ends,
+  // the sender and publication are read, the witness, the same reads again,
+  // the admission, and only then the gate opens.
+  const [connect] = blockBodiesOf(
+    PLUGIN_CODE,
+    "private suspend fun doConnect(",
+  );
+  const [audioBlock] = bodiesAfter(
+    connect,
+    "if (audioState == null && Build.VERSION.SDK_INT >= 29) {",
+  );
+  const assertBlock = codeOf(`if (provider != null) {
+      assertSenderKeyIndex(room, currentKeyIndex)
+    }`);
+  const assertBlockEnd =
+    onceAt(audioBlock, "the audio key-index assertion's block", assertBlock) +
+    assertBlock.length;
+  const order = [
+    ["the sent track is read", "val sent = sentAudioTrack"],
+    [
+      "the sender is read before the witness",
+      "val audioBefore = sent?.let { ScreenTrackAccess.audioTransceiverOf(it) }",
+    ],
+    [
+      "the publication is read before the witness",
+      "val audioPubBefore = room.localParticipant.getTrackPublication(Track.Source.SCREEN_SHARE_AUDIO)",
+    ],
+    ["the witness", "senderCryptorWitnessed("],
+    [
+      "the sender is read after the witness",
+      "val audioAfter = sent?.let { ScreenTrackAccess.audioTransceiverOf(it) }",
+    ],
+    [
+      "the publication is read after the witness",
+      "val audioPub = room.localParticipant.getTrackPublication(Track.Source.SCREEN_SHARE_AUDIO)",
+    ],
+    ["the source admits", ".admitSender("],
+    ["the gate opens", ".openGate()"],
+  ] as const;
+  let previous: [string, number] = [
+    "the key-index assertion's block ends",
+    assertBlockEnd,
+  ];
+  for (const [what, snippet] of order) {
+    const at = onceAt(audioBlock, `the audio block: ${what}`, snippet);
+    assert.ok(
+      at >= previous[1],
+      `the audio block: ${previous[0]} must come before ${what}`,
+    );
+    previous = [what, at];
+  }
+  // Those reads and no others: nothing reads the audio sender or its
+  // publication ahead of the key-index assertion.
+  assert.equal(countWired(audioBlock, "audioTransceiverOf("), 2);
+  assert.equal(
+    countWired(
+      audioBlock,
+      "getTrackPublication(Track.Source.SCREEN_SHARE_AUDIO)",
+    ),
+    2,
+  );
+});
+
+test("a screen unpublish that leaves the track's transceiver set ends the share at once, with no grace and no settle window", () => {
+  // The check reads the unpublished track's own transceiver: still set, it
+  // is retained. A null track, any other track, or a throw also counts as
+  // retained, so a failed read ends the share at once too.
+  const retains = bodiesAfter(
+    PLUGIN_CODE,
+    "private fun screenSenderRetained(track: Track?): Boolean {",
+  );
+  assert.equal(retains.length, 1, "the plugin must declare the check once");
+  assert.equal(
+    retains[0],
+    codeOf(`return try {
+        val video = track as? LocalVideoTrack ?: return true
+        ScreenTrackAccess.transceiverOf(video) != null
+      } catch (_: Throwable) {
+        true
+      }`),
+    "screenSenderRetained must read the track's own transceiver, and read " +
+      "a null or non-video track, or a throw, as retained",
+  );
+  // The declaration, the TrackUnpublished arm's call, the stop callback's
+  // call, and the unpublish guard's reference.
+  assert.equal(countWired(PLUGIN_CODE, "screenSenderRetained("), 3);
+  assert.equal(countWired(PLUGIN_CODE, "::screenSenderRetained"), 1);
+  assert.equal(tokenAt(PLUGIN_TEXT, "screenSenderRetained").length, 4);
+  // The arm's second branch (CONNECTED at arrival, not stopping) decides on
+  // the unpublished publication's own track. Retained: an unsettled
+  // teardown of its own Room, launched at once, reported "system" while
+  // that Room's projection stop is in progress and "revoked" otherwise.
+  // Otherwise: the grace path, unchanged.
+  const [arm] = bodiesAfter(PLUGIN_CODE, "is RoomEvent.TrackUnpublished -> {");
+  const branches = bodiesAfter(
+    arm,
+    `if (event.participant === room.localParticipant &&
+      event.publication.source == Track.Source.SCREEN_SHARE &&
+      !stopping &&
+      room.state == Room.State.CONNECTED
+    ) {`,
+  );
+  assert.equal(
+    branches.length,
+    1,
+    "the unpublish arm must hold one connected screen branch",
+  );
+  assert.equal(
+    branches[0],
+    codeOf(`if (screenSenderRetained(event.publication.track)) {
+        scope.launch {
+          if (this@ScreenSharePlugin.room === room) {
+            tearDown(if (projectionStopRoom === room) "system" else "revoked")
+          }
+        }
+      } else {
+        scope.launch {
+          delay(UNPUBLISH_GRACE_MS)
+          if (this@ScreenSharePlugin.room === room &&
+            !stopping &&
+            room.state == Room.State.CONNECTED &&
+            room.localParticipant
+              .getTrackPublication(Track.Source.SCREEN_SHARE) == null
+          ) {
+            tearDown("revoked", settle = true)
+          }
+        }
+      }`),
+    "a retained screen unpublish must end its own Room's share at once, " +
+      "unsettled, and any other must take the grace path",
+  );
+  const fast = bodiesAfter(
+    branches[0],
+    "if (screenSenderRetained(event.publication.track)) {",
+  );
+  assert.equal(fast.length, 1, "the branch must check the unpublished track");
+  assert.equal(
+    countWired(fast[0], "settle"),
+    0,
+    "the immediate teardown must not be settled",
+  );
+  assert.equal(
+    countWired(fast[0], "delay("),
+    0,
+    "the immediate teardown must not wait",
+  );
+  assert.equal(
+    countWired(arm, "screenSenderRetained("),
+    1,
+    "the arm must check the unpublished track once",
+  );
+});
+
+test("the projection stop marks its Room before it unpublishes, and the mark lasts one share", () => {
+  // The mark is written on the projection's callback thread and read on
+  // Main, so it is volatile. It labels an immediate teardown of its Room
+  // "system", and is cleared by every teardown and at the start of every
+  // connect attempt, so it never speaks for a later share.
+  assertPluginWired(
+    "the mark starts unset",
+    "@Volatile private var projectionStopRoom: Room? = null",
+  );
+  const [connect] = blockBodiesOf(
+    PLUGIN_CODE,
+    "private suspend fun doConnect(",
+  );
+  onceAt(
+    connect,
+    "the stop callback marks its Room, then unpublishes",
+    `projectionStopRoom = room
+    unpublishOnProjectionStop(room, stopped)`,
+  );
+  onceAt(
+    connect,
+    "the stop callback settles only a detached sender",
+    `tearDown("system", settle = !screenSenderRetained(stopped))`,
+  );
+  assert.equal(countWired(PLUGIN_CODE, "projectionStopRoom = room"), 1);
+  assert.equal(countWired(PLUGIN_CODE, "unpublishOnProjectionStop("), 2);
+  assert.equal(
+    countWired(PLUGIN_CODE, "projectionStopRoom = null"),
+    2,
+    "the mark must be cleared by tearDown and by connect, nothing else",
+  );
+  const [tearDown] = blockBodiesOf(PLUGIN_CODE, "private fun tearDown(");
+  onceAt(tearDown, "tearDown clears the mark", "projectionStopRoom = null");
+  const [connectCall] = blockBodiesOf(PLUGIN_CODE, "fun connect(");
+  const [launch] = bodiesAfter(connectCall, "scope.launch {");
+  const clearAt = onceAt(
+    launch,
+    "connect clears the mark",
+    "projectionStopRoom = null",
+  );
+  const claimAt = onceAt(
+    launch,
+    "connect claims the attempt",
+    "val generation = ++connectGeneration",
+  );
+  assert.ok(
+    clearAt < claimAt,
+    "connect must clear the mark before it claims the attempt",
+  );
+  // Both reads label the immediate teardown: the TrackUnpublished arm's
+  // and the unpublish guard's.
+  assert.equal(
+    countWired(
+      PLUGIN_CODE,
+      `tearDown(if (projectionStopRoom === room) "system" else "revoked")`,
+    ),
+    2,
+  );
+  // The declaration, the mark, the two clears and the two reads.
+  assert.equal(tokenAt(PLUGIN_TEXT, "projectionStopRoom").length, 6);
+});
+
+test("the unpublish guard wraps the Room's own participant listener, once, before the connect, and an E2EE leg starts only with it", () => {
+  // Installed by doConnect's statement right after LiveKit.create (pinned
+  // in the microphone test above), so before the connect and before any
+  // publish, and called nowhere else.
+  assert.equal(
+    countWired(PLUGIN_CODE, "installUnpublishGuard("),
+    2,
+    "installUnpublishGuard must be the declaration and doConnect's one call",
+  );
+  const [connect] = blockBodiesOf(
+    PLUGIN_CODE,
+    "private suspend fun doConnect(",
+  );
+  const createAt = onceAt(
+    connect,
+    "the leg's Room",
+    "val room = LiveKit.create(",
+  );
+  const installAt = onceAt(
+    connect,
+    "the guard's install",
+    "val unpublishGuarded = installUnpublishGuard(room)",
+  );
+  const micAt = onceAt(
+    connect,
+    "the mic-recording guard",
+    "val micRecordingOff = try {",
+  );
+  const joinAt = onceAt(
+    connect,
+    "the Room's connect",
+    "room.connect(url, token, ConnectOptions(autoSubscribe = false))",
+  );
+  assert.ok(
+    createAt < installAt && installAt < micAt && micAt < joinAt,
+    "the guard must be installed after LiveKit.create, before the " +
+      "mic-recording guard and the Room's connect",
+  );
+  assert.equal(countWired(PLUGIN_CODE, "room.connect("), 1);
+  // A leg with a key provider refuses to start unless the guard went in:
+  // the outer try's first statement, before the collector and the connect.
+  // A leg without one proceeds either way.
+  const outerHead = codeOf(`var audio: ScreenAudioSource? = null
+    var video: LocalScreencastVideoTrack? = null
+    var videoGate: ScreenVideoGate? = null
+    try {`);
+  const outerAt = onceAt(connect, "doConnect's outer try", outerHead);
+  assert.ok(
+    connect.startsWith(
+      codeOf(`if (provider != null && !unpublishGuarded) throw IllegalStateException("participant listener not wrapped")
+        eventsJob?.cancel()`),
+      outerAt + outerHead.length,
+    ),
+    "the refusal must be the first statement of doConnect's outer try",
+  );
+  assert.equal(
+    countWired(PLUGIN_CODE, "unpublishGuarded"),
+    2,
+    "the install's result must be recorded once and read by the refusal",
+  );
+  // The install wraps the Room's own listener (never a fresh one), only
+  // when the Room is the current listener, hands the guard the Room's state
+  // as a function (read again on every unpublish), the plugin's own check,
+  // and a teardown of its own Room; and reports true only when it
+  // installed. Guarded, so it never throws.
+  assertPluginWired(
+    "the install's declaration",
+    `@Suppress("DEPRECATION")
+    private fun installUnpublishGuard(room: Room): Boolean {`,
+  );
+  const installs = bodiesAfter(
+    PLUGIN_CODE,
+    "private fun installUnpublishGuard(room: Room): Boolean {",
+  );
+  assert.equal(installs.length, 1, "the plugin must declare the install once");
+  const [install] = installs;
+  assert.equal(
+    install,
+    codeOf(`return try {
+        val participant = room.localParticipant
+        val inner = participant.internalListener
+        if (inner === room) {
+          participant.internalListener = ScreenUnpublishGuard(
+            inner,
+            { room.state == Room.State.CONNECTED },
+            ::screenSenderRetained,
+          ) {
+            scope.launch {
+              if (this@ScreenSharePlugin.room === room) {
+                tearDown(if (projectionStopRoom === room) "system" else "revoked")
+              }
+            }
+          }
+          trace("connect unpublish guard installed")
+          true
+        } else {
+          trace("connect unpublish guard skipped")
+          false
+        }
+      } catch (_: Throwable) {
+        trace("connect unpublish guard failed")
+        false
+      }`),
+    "the install must wrap the Room's own listener, and only it, and report " +
+      "true only when it installed",
+  );
+  const built = bodiesAfter(install, "ScreenUnpublishGuard(");
+  assert.equal(built.length, 1, "the install must build the guard once");
+  assert.deepEqual(
+    argumentsOf(built[0]),
+    [
+      "inner",
+      codeOf("{ room.state == Room.State.CONNECTED }"),
+      "::screenSenderRetained",
+    ],
+    "the guard must wrap the listener it replaces, and read the Room's " +
+      "state on every unpublish",
+  );
+  assert.equal(countWired(install, "true"), 1, "one path reports installed");
+});
+
+test("the unpublish guard withholds only a screen unpublish that leaves the transceiver set while connected, and forwards everything else unchanged", () => {
+  // Nested in the plugin (not an inner class), internal so a JVM test can
+  // build it, and delegating the whole listener interface to the Room's
+  // own listener, with exactly one callback of its own.
+  const headText = `@VisibleForTesting
+    @Suppress("DEPRECATION")
+    internal class ScreenUnpublishGuard(
+      private val inner: io.livekit.android.room.participant.ParticipantListener,
+      private val connected: () -> Boolean,
+      private val retained: (Track?) -> Boolean,
+      private val onWithheld: () -> Unit,
+    ) : io.livekit.android.room.participant.ParticipantListener by inner {`;
+  const guardAt = onceAt(PLUGIN_CODE, "the guard's declaration", headText);
+  const pluginHead = codeOf("class ScreenSharePlugin : Plugin() {");
+  const pluginOpen = PLUGIN_CODE.indexOf(pluginHead) + pluginHead.length - 1;
+  assert.ok(
+    guardAt > pluginOpen &&
+      guardAt < closerOf(PLUGIN_CODE, pluginOpen) &&
+      depthAt(PLUGIN_CODE, guardAt) === 1,
+    "the guard must be declared directly in the plugin's class body",
+  );
+  assert.equal(
+    [...PLUGIN_TEXT.matchAll(/(?<![\w$])inner\s+class(?![\w$])/g)].length,
+    0,
+    "the guard must not be an inner class",
+  );
+  assert.equal(
+    countWired(PLUGIN_CODE, "ScreenUnpublishGuard("),
+    2,
+    "the guard must be the declaration and the install's one construction",
+  );
+  // The one callback: withheld (handed to the plugin, not forwarded) only
+  // for the screen source, while connected, with the track's transceiver
+  // still set. Any throw while deciding forwards. The forward sits outside
+  // the try, unchanged and synchronous.
+  const bodies = bodiesAfter(PLUGIN_CODE, headText);
+  assert.equal(bodies.length, 1);
+  assert.equal(
+    bodies[0],
+    codeOf(`override fun onTrackUnpublished(publication: LocalTrackPublication, participant: LocalParticipant) {
+        val withhold = try {
+          publication.source == Track.Source.SCREEN_SHARE &&
+            connected() &&
+            retained(publication.track)
+        } catch (_: Throwable) {
+          false
+        }
+        if (withhold) {
+          onWithheld()
+          return
+        }
+        inner.onTrackUnpublished(publication, participant)
+      }`),
+    "the guard must withhold only a retained screen unpublish while " +
+      "connected, read a throw as forward, and forward everything else",
+  );
+  assert.equal(
+    countWired(bodies[0], "override fun"),
+    1,
+    "the guard must override exactly one callback",
+  );
+});
+
+test("the Room's participant listener is written only by the unpublish guard's install, and never put back", () => {
+  // The install reads the Room's own listener and writes the guard in its
+  // place. Nothing else in the plugin, or in the other screen-share files,
+  // names the listener, in either spelling, so the guard stays in place for
+  // as long as the Room lives.
+  const head = "private fun installUnpublishGuard(room: Room): Boolean {";
+  const headAt = PLUGIN_TEXT.indexOf(head);
+  assert.ok(
+    headAt !== -1 && PLUGIN_TEXT.indexOf(head, headAt + 1) === -1,
+    "the plugin must declare the install once",
+  );
+  const open = headAt + head.length - 1;
+  const install = PLUGIN_TEXT.slice(open + 1, closerOf(PLUGIN_TEXT, open));
+  assert.equal(
+    tokenAt(PLUGIN_TEXT, "internalListener").length,
+    2,
+    "the plugin must name the participant listener twice: the install's " +
+      "read and its write",
+  );
+  assert.equal(
+    tokenAt(install, "internalListener").length,
+    2,
+    "both of the plugin's listener names must sit in the install's body",
+  );
+  const installCode = codeOf(install);
+  const readAt = onceAt(
+    installCode,
+    "the install reads the Room's listener",
+    "val inner = participant.internalListener",
+  );
+  const writeAt = onceAt(
+    installCode,
+    "the install writes the guard",
+    "participant.internalListener = ScreenUnpublishGuard(",
+  );
+  assert.ok(readAt < writeAt, "the install must read before it writes");
+  assert.equal(
+    tokenAt(PLUGIN_TEXT, "setInternalListener").length,
+    0,
+    "the plugin must not set the participant listener through its setter",
+  );
+  for (const [file, source] of [
+    ["ScreenAudioSource.kt", AUDIO_SOURCE_SOURCE],
+    ["ScreenVideoGate.kt", GATE_SOURCE],
+    ["ScreenTrackAccess.java", ACCESS_SOURCE],
+    ["RawScreenKeyProvider.kt", KEY_PROVIDER_SOURCE],
+    ["ScreenAudioSenderGate.kt", AUDIO_SENDER_GATE_SOURCE],
+  ] as const) {
+    const text = uncommentedOf(source);
+    for (const name of ["internalListener", "setInternalListener"])
+      assert.equal(
+        tokenAt(text, name).length,
+        0,
+        `${file} must not name the participant listener: ${name}`,
+      );
+  }
+});
+
+test("a teardown settles only when its caller asks for it", () => {
+  // tearDown is declared once, and its default is the unsettled teardown;
+  // a caller that wants the settle says so at the call.
+  assertPluginWired(
+    "tearDown's declaration",
+    "private fun tearDown(reason: String?, settle: Boolean = false) {",
+  );
+  assert.equal(
+    countWired(PLUGIN_CODE, "fun tearDown("),
+    1,
+    "the plugin must declare tearDown once",
+  );
+});
+
+test("the plugin's coroutines run on Main, in one supervised scope", () => {
+  assertPluginWired(
+    "the plugin's scope",
+    "private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)",
+  );
+  assert.equal(
+    countWired(PLUGIN_CODE, "CoroutineScope("),
+    1,
+    "the plugin must build one scope",
+  );
+  assert.equal(
+    tokenAt(PLUGIN_TEXT, "Dispatchers").length,
+    2,
+    "the plugin must name a dispatcher only in its import and its scope",
+  );
+});
+
+const COMPILE_GATE_SOURCE = readFileSync(
+  new URL("../../scripts/android-compile-gate.sh", import.meta.url),
+  "utf8",
+);
+
+/** The screen-share JVM test classes the compile gate runs, in table order. */
+const JVM_TEST_CLASSES = [
+  "ScreenVideoGateTest",
+  "ScreenAudioSenderGateTest",
+  "ScreenUnpublishGuardTest",
+];
+
+function jvmTestSourceOf(name: string): string {
+  return readFileSync(
+    new URL(
+      `../../android/app/src/test/java/com/acutest/app/screenshare/${name}.kt`,
+      import.meta.url,
+    ),
+    "utf8",
+  );
+}
+
+test("the compile gate runs exactly the three screen-share JVM test classes, each held to its own file's test count", () => {
+  // The gate's table is read from the script itself, and each minimum is
+  // compared with the `@Test` annotations counted in that class's own file,
+  // so a test added without raising its row, a row lowered, or a row
+  // dropped fails here.
+  assert.deepEqual(
+    [...COMPILE_GATE_SOURCE.matchAll(/^GATE_TEST_PKG=(.*)$/gm)].map(
+      (m) => m[1],
+    ),
+    ["com.acutest.app.screenshare"],
+    "the gate must name the screen-share test package once",
+  );
+  assert.equal(
+    [
+      ...COMPILE_GATE_SOURCE.matchAll(
+        /(?<![\w$])GATE_TESTS(?:\[[^\]\n]*\])?\+?=/g,
+      ),
+    ].length,
+    1,
+    "the gate's table must be assigned once, whole",
+  );
+  const head = "\nGATE_TESTS=(\n";
+  const start = COMPILE_GATE_SOURCE.indexOf(head);
+  assert.notEqual(start, -1, "the gate's table must open on its own line");
+  const end = COMPILE_GATE_SOURCE.indexOf("\n)\n", start + head.length - 1);
+  assert.notEqual(end, -1, "the gate's table must close on its own line");
+  const rows = COMPILE_GATE_SOURCE.slice(start + head.length, end)
+    .split("\n")
+    .map((row) => {
+      const m = /^ {2}([A-Za-z]\w*):([1-9]\d*)$/.exec(row);
+      assert.ok(
+        m,
+        `the gate's table holds a row that is not <class>:<min>: ${row}`,
+      );
+      return { name: m[1], min: Number(m[2]) };
+    });
+  assert.deepEqual(
+    rows.map((row) => row.name),
+    JVM_TEST_CLASSES,
+    "the gate must run exactly the three screen-share test classes",
+  );
+  for (const { name, min } of rows) {
+    const source = jvmTestSourceOf(name);
+    // Same lexer constraints as the native files: the annotations are
+    // counted in the text with only its comments removed.
+    assert.ok(!source.includes('"""'), `${name}.kt: a raw string`);
+    const code = codeOf(source);
+    assert.ok(!code.includes("*/"), `${name}.kt: a nested block comment`);
+    assert.ok(!code.includes("`"), `${name}.kt: a backtick`);
+    for (const { text } of stringsOf(code))
+      assert.ok(!text.includes("\n"), `${name}.kt: a string ran over a line`);
+    const text = uncommentedOf(source);
+    assert.equal(codeOf(text), code, `${name}.kt: the two readings differ`);
+    assert.equal(
+      [...text.matchAll(/^package com\.acutest\.app\.screenshare$/gm)].length,
+      1,
+      `${name}.kt must sit in the screen-share package`,
+    );
+    assert.equal(
+      [...text.matchAll(new RegExp(`^class ${name} \\{$`, "gm"))].length,
+      1,
+      `${name}.kt must declare the class ${name}`,
+    );
+    const tests = [...text.matchAll(/(?<![\w$@])@Test(?![\w$])/g)].length;
+    assert.ok(tests > 0, `${name}.kt holds no test`);
+    assert.equal(
+      min,
+      tests,
+      `the gate's minimum for ${name} must equal the @Test count in its file`,
+    );
+  }
 });

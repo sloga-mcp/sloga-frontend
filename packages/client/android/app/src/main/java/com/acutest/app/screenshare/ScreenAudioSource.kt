@@ -14,6 +14,10 @@ import androidx.annotation.RequiresApi
 import com.getcapacitor.Plugin
 import com.getcapacitor.annotation.CapacitorPlugin
 import io.livekit.android.audio.AudioBufferCallback
+import io.livekit.android.room.participant.LocalParticipant
+import io.livekit.android.room.track.LocalAudioTrack
+import io.livekit.android.room.track.LocalTrackPublication
+import livekit.org.webrtc.RtpTransceiver
 import livekit.org.webrtc.audio.JavaAudioDeviceModule
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -51,7 +55,12 @@ import kotlin.math.max
  *    gate opens) and the buffer is zeroed. Open: the captured audio REPLACES
  *    the buffer. The plugin opens the gate only once the sender cryptor is
  *    witnessed holding the current key (or right after publish without
- *    E2EE), so nothing real is sent in the pre-cryptor window;
+ *    E2EE), so nothing real is sent in the pre-cryptor window. Even with
+ *    the gate open, captured audio reaches the buffer only while the
+ *    sender admitted behind the witness (see [admitSender]) is still the
+ *    track's sender and its publication is still the participant's
+ *    screen-audio publication. From the first buffer that finds either
+ *    one changed, missing or unreadable, the buffer is zeroed for good;
  *  - PACING: with the mic record disabled, the ADM loop calls this with no
  *    sleep of its own and would spin a core. A call that did a full blocking
  *    read was already paced by the read; any other call (gate closed with no
@@ -97,6 +106,11 @@ class ScreenAudioSource(
      *  nothing captured is sent until the plugin's E2EE witness passes. */
     @Volatile
     private var gateOpen = false
+
+    /** The per-buffer sender check: shut until [admitSender] admits the
+     *  sender behind the witness, then shut for good once that sender or
+     *  its publication is no longer the current one. */
+    private val senderGate = ScreenAudioSenderGate()
 
     /** Terminal. Written only under [lock]. */
     @Volatile
@@ -150,6 +164,21 @@ class ScreenAudioSource(
     fun closeGate() {
         gateOpen = false
     }
+
+    /**
+     * Admit the sender behind the witness. Called once, from Main, after the
+     * plugin's audio witness. True only if [transceiver] is the current
+     * sender of [track] and [publication] is the current screen-audio
+     * publication of [participant]. Until it returns true the gate never
+     * forwards captured audio; after that, captured audio is forwarded only
+     * while both stay current.
+     */
+    fun admitSender(
+        track: LocalAudioTrack,
+        transceiver: RtpTransceiver,
+        participant: LocalParticipant,
+        publication: LocalTrackPublication,
+    ): Boolean = senderGate.admit(track, transceiver, participant, publication)
 
     /**
      * Close the gate for good, suppress any later [onFailure], and STOP and
@@ -257,7 +286,7 @@ class ScreenAudioSource(
             zeroFill(buffer, capacity)
             return false
         }
-        if (gateOpen && !released) {
+        if (gateOpen && !released && senderGate.allows()) {
             // REPLACE, never mix: the ADM buffer is zeros in mic-off mode,
             // but nothing of it is kept either way.
             buffer.clear()
