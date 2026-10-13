@@ -110,7 +110,11 @@ export function useError() {
         case "CannotTimeoutYourself":
           return t`You cannot timeout yourself.`;
         case "DatabaseError":
-          return t`Database error, please contact support. (${err.location})`;
+          // Error bodies no longer carry `location`; name the failed
+          // operation instead (same message id, so translations still apply).
+          return t`Database error, please contact support. (${
+            (err as { operation?: string }).operation ?? err.type
+          })`;
         case "DiscriminatorChangeRatelimited":
           return t`Your discriminator change has been ratelimited, please try again later.`;
         case "DuplicateNonce":
@@ -226,7 +230,7 @@ export function useError() {
         case "UnknownServer":
         case "UnknownUser":
         case "VosoUnavailable":
-          return err.type + " " + err.location;
+          return err.type;
 
         default:
           return t`Uncaught Stoat error: ${err.type}`;
