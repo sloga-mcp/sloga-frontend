@@ -35,7 +35,7 @@ export const CHANGELOGS: ChangelogResponse[] = [
     markdown_content: `## v0.67.0 — Android Screen Share Audio, Encrypted Chats Up Top and Founding Streamers
 
 ### 📱 Android screen share
-- **Share your phone's sound with your screen.** When you share your screen from the Android app, viewers can hear what's playing, like game audio, protected the same way as the picture. Turn it on in the share sheet. (Not in the Google-free build.)
+- **Share your phone's sound with your screen.** When you share your screen from the Android app (Android 10 and newer), viewers can hear what's playing, like game audio, protected the same way as the picture. Turn it on in the share sheet. (Not in the Google-free build.)
 - Screen share tiles now show "no audio" when a share has no sound, instead of a grey "muted" icon you couldn't undo.
 
 ### 🔒 Encrypted chats
