@@ -9,6 +9,55 @@ import type { ChangelogResponse } from "./Changelog";
  */
 export const CHANGELOGS: ChangelogResponse[] = [
   // ==========================================================================
+  // v0.67.0 (written 2026-10-13 by the merge steward from the v0.67 inbox,
+  // ~/.claude/plans/v067-release-inbox.md, consolidated draft rev 3 + the
+  // DM-order owner's "and group chats" correction). User go 2026-10-13
+  // "deploy and run the full sweep for patch version 0.67.0". Every backend
+  // change these notes rely on is live on heart1 (delta b59d3abe,
+  // voice-ingress a79c63a5, bonfire/january/autumn secnl builds).
+  // Copy constraints, load-bearing — READ BEFORE EDITING:
+  // - These notes also show in the Play and App Store builds.
+  // - Founding Streamers: the user grants at least one badge before release
+  //   (the directory was empty at the cut); the steward checks it is
+  //   non-empty before publishing.
+  // - Do NOT claim that reading on one device clears an encrypted chat on the
+  //   other devices: a restart path still sends an unpadded ack (follow-up).
+  // - Screen audio: standard Android app only; the Google-free build ships it
+  //   dark. Device check waived by the user.
+  // - Security bullets: public-safe wording from the security owner. Never
+  //   add attack details, advisory ids, or anything about the held Android
+  //   items.
+  {
+    id: "sloga-2026-10-13",
+    title: "Patch Notes",
+    published_at: "2026-10-13T12:00:00.000Z",
+    web_version: "0.67.0",
+    markdown_content: `## v0.67.0 — Android Screen Share Audio, Encrypted Chats Up Top and Founding Streamers
+
+### 📱 Android screen share
+- **Share your phone's sound with your screen.** When you share your screen from the Android app, viewers can hear what's playing, like game audio, protected the same way as the picture. Turn it on in the share sheet. (Not in the Google-free build.)
+- Screen share tiles now show "no audio" when a share has no sound, instead of a grey "muted" icon you couldn't undo.
+
+### 🔒 Encrypted chats
+- **Encrypted DMs and group chats now move to the top of your list and show unread badges**, just like regular chats.
+- After updating, encrypted chats whose newest message is from someone else show an unread dot once. Open them to clear it.
+
+### ⭐ Founding Streamers
+- **Meet our Founding Streamers.** A new Streamers page, also on your Home screen, shows the creators helping build Sloga, with links to their channels.
+- Founding Streamers get their own badge and a violet name.
+
+### 🔔 Notifications (Windows desktop app)
+- **Message cards close on their own again**, and what you type in a card's reply box stays in the card.
+- After a reply fails to send, pressing Esc closes the card and takes you back to what you were doing.
+
+### 🛡️ Security and reliability
+- **Link previews and the image proxy were hardened.** Links on unusual ports, and very large images or videos, no longer get a preview.
+- **SVG images are no longer previewed** (pasted links and website cards).
+- **If the app is frozen in the background, you now show as offline after about 2 minutes**, so your notifications reach your phone.
+- **Error messages no longer include internal server details.**
+`,
+  },
+  // ==========================================================================
   // v0.66.1 PATCH (written 2026-10-11 by the merge steward; user go
   // 2026-10-11 "Release v0.66.1 clients"). CUT at main = v0.66.0 + the
   // anti-spam client (feat/antispam-client bbe7c2ec). The anti-spam backend is
