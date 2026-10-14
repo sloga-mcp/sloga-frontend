@@ -16,8 +16,8 @@ declare global {
         invoke(command: string, args?: unknown): Promise<unknown>;
         on(name: string, callback: (payload: unknown) => void): () => void;
       };
-      /** Linux screen-share audio (main window only; absent on popout/
-       * overlay windows and on shells without the native module). */
+      /** Linux screen-share audio (main window only; absent on the
+       * overlay window and on shells without the native module). */
       screenAudio?: {
         probe(refresh?: boolean): Promise<{
           available: boolean;
@@ -65,21 +65,8 @@ declare global {
           include: string[];
         }): Promise<number>;
       };
-      /** Friends popout window only (absent on the main and overlay
-       * windows). `getState`/`setAlwaysOnTop` back the always-on-top pin
-       * (Friends.tsx `electronPopout()`); `openInMain` hands a DM/call
-       * action to the main window and is missing on preloads that predate
-       * the popout bridge. */
-      popout?: {
-        getState(): { alwaysOnTop: boolean } | null;
-        setAlwaysOnTop(value: boolean): Promise<unknown>;
-        openInMain(
-          action: "dm" | "call" | "video" | "screenshare",
-          userId: string,
-        ): Promise<void>;
-      };
-      /** Electron reply toast (main window only; absent on popout/overlay
-       * windows and on preloads that predate it). `capability()` is
+      /** Electron reply toast (main window only; absent on the overlay
+       * window and on preloads that predate it). `capability()` is
        * synchronous: `mode: "window"` means the shell draws its own toast
        * (Linux X11, macOS), which is NOT hidden from screen capture, so
        * E2EE previews must stay sender-only there; `"os"` means fall back
@@ -96,8 +83,25 @@ declare global {
         /** Reports the outcome of a `toastReply` the main window handled. */
         replyResult(id: string, ok: boolean, error?: string | null): void;
       };
-      /** Main window only: shell-to-main messages (popout actions,
-       * notification clicks). Payloads are untrusted until validated.
+      /** Chat windows (main window only; absent on child windows and on
+       * preloads that predate them). `arm` must precede the matching
+       * `window.open("about:blank")` and resolves the label that window will
+       * get. Every call resolves an envelope and never rejects. */
+      chatWindows?: {
+        arm(
+          kind: "friends" | "chat",
+        ): Promise<{ ok: true; label: string } | { ok: false; err: string }>;
+        pin(
+          label: string,
+          on: boolean,
+        ): Promise<{ ok: true } | { ok: false; err: string }>;
+        bounds(
+          label: string,
+        ): Promise<{ ok: true } | { ok: false; err: string }>;
+        focusMain(): Promise<{ ok: true } | { ok: false; err: string }>;
+      };
+      /** Main window only: shell-to-main messages (notification clicks,
+       * toast replies and opens). Payloads are untrusted until validated.
        * Returns the unsubscribe. */
       onShellToMain?(callback: (message: unknown) => void): () => void;
     };

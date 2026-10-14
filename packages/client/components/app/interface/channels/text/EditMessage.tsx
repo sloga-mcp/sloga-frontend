@@ -6,6 +6,7 @@ import { css } from "styled-system/css";
 import { styled } from "styled-system/jsx";
 
 import { useClient, useE2EE } from "@revolt/client";
+import { useWindowCtx } from "@revolt/client/windowCtx";
 import { KeybindAction, createKeybind } from "@revolt/keybinds";
 import { unicodeEmojiPackPrefix } from "@revolt/markdown/emoji/UnicodeEmoji";
 import { useModals } from "@revolt/modal";
@@ -21,7 +22,18 @@ export function EditMessage(props: { message: Message }) {
   const state = useState();
   const client = useClient();
   const e2ee = useE2EE();
-  const { openModal, isOpen, pop } = useModals();
+  const { openModal, isOpenIn, popIn } = useModals();
+
+  // The window this editor is in. Edit-to-empty confirms a delete only
+  // against the prompt shown in THIS window: one open in another window
+  // (main's, say) must neither count as confirmed nor be closed from here.
+  const windowId = useWindowCtx().id;
+
+  /**
+   * Editing state is kept per channel, so every read and write goes to the
+   * channel of the message being edited
+   */
+  const channelId = () => props.message.channelId;
 
   /**
    * Whether an edit would send new content to the server where it must not:
@@ -34,7 +46,7 @@ export function EditMessage(props: { message: Message }) {
   // Close the editor as soon as the conversation turns encrypted. Only
   // writes the draft, never reads the editing id, so it cannot loop.
   createEffect(() => {
-    if (blocked()) state.draft.setEditingMessage(undefined);
+    if (blocked()) state.draft.setEditingMessage(undefined, channelId());
   });
 
   /**
@@ -43,17 +55,21 @@ export function EditMessage(props: { message: Message }) {
    */
   function closeIfBlocked() {
     if (!blocked()) return false;
-    state.draft.setEditingMessage(undefined);
+    state.draft.setEditingMessage(undefined, channelId());
     openModal({ type: "error2", error: { type: "CannotEditMessage" } });
     return true;
   }
 
-  const initialValue = [state.draft.editingMessageContent || ""] as const;
+  // Read once: the editor seeds from this and owns the text from then on
+  const initialValue = [
+    // eslint-disable-next-line solid/reactivity
+    state.draft.getEditingMessageContent(channelId()) || "",
+  ] as const;
 
   const change = useMutation(() => ({
     mutationFn: (content: string) => props.message.edit({ content }),
     onSuccess() {
-      state.draft.setEditingMessage(undefined);
+      state.draft.setEditingMessage(undefined, channelId());
     },
     onError(error) {
       openModal({ type: "error2", error });
@@ -61,10 +77,10 @@ export function EditMessage(props: { message: Message }) {
   }));
 
   function saveMessage() {
-    const content = state.draft.editingMessageContent;
+    const content = state.draft.getEditingMessageContent(channelId());
 
     if (content?.length) {
-      state.draft._setNodeReplacement?.(["_focus"]); // focus message box
+      state.draft.replaceNode(channelId(), ["_focus"]); // focus message box
       if (content === props.message.content) {
         return;
       }
@@ -84,23 +100,24 @@ export function EditMessage(props: { message: Message }) {
             )
           : content,
       );
-    } else if (isOpen("delete_message")) {
+    } else if (isOpenIn("delete_message", windowId)) {
       // Edit-to-empty deletes; when blocked, close instead (Delete stays
       // in the message menu).
       if (closeIfBlocked()) return;
       void props.message.delete();
-      pop();
+      popIn(windowId);
     } else {
       openModal({
         type: "delete_message",
         message: props.message,
+        windowId,
       });
     }
   }
 
   createKeybind(KeybindAction.CHAT_CANCEL_EDITING, () => {
-    state.draft.setEditingMessage(undefined);
-    state.draft._setNodeReplacement?.(["_focus"]); // focus message box
+    state.draft.setEditingMessage(undefined, channelId());
+    state.draft.replaceNode(channelId(), ["_focus"]); // focus message box
   });
 
   const searchSpace = useSearchSpace(() => props.message, client);
@@ -111,7 +128,9 @@ export function EditMessage(props: { message: Message }) {
         <TextEditor2
           autoFocus
           onComplete={saveMessage}
-          onChange={state.draft.setEditingMessageContent}
+          onChange={(content) =>
+            state.draft.setEditingMessageContent(channelId(), content)
+          }
           initialValue={initialValue}
           autoCompleteSearchSpace={searchSpace}
         />
@@ -121,7 +140,11 @@ export function EditMessage(props: { message: Message }) {
         fallback={
           <Text size="small">
             escape to{" "}
-            <Action onClick={() => state.draft.setEditingMessage(undefined)}>
+            <Action
+              onClick={() =>
+                state.draft.setEditingMessage(undefined, channelId())
+              }
+            >
               cancel
             </Action>{" "}
             &middot; enter to <Action onClick={saveMessage}>save</Action>

@@ -1,4 +1,4 @@
-import { Accessor, createEffect, on, onMount } from "solid-js";
+import { Accessor, createEffect, on, onCleanup, onMount } from "solid-js";
 
 import { defaultKeymap, history } from "@codemirror/commands";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
@@ -260,11 +260,42 @@ export function TextEditor2(props: Props) {
     ),
   );
 
+  // CodeMirror resolves its root from the parent at construction, and the
+  // parent is still detached there, so it falls back to the main `document`.
+  // The root decides where selection is read, where the `selectionchange`
+  // listener sits and where the base theme styles are injected, so an editor
+  // rendered into a chat window (another document) must be re-pointed once
+  // attached. In the main window this is a no-op.
+  let rootMoved = false;
+  const syncRoot = () => {
+    if (!codeMirror.isConnected) return;
+    const doc = codeMirror.ownerDocument;
+    if (view.root === doc) return;
+
+    view.setRoot(doc);
+    view.requestMeasure();
+    // the first measure ran against the main window, before the chat
+    // window's own fonts had loaded
+    doc.fonts?.ready.then(() => view.requestMeasure());
+    rootMoved = true;
+  };
+
+  onMount(syncRoot);
+
+  // fallback for an ancestor that attaches after mount
+  codeMirror.addEventListener("focusin", syncRoot);
+
+  // the window listeners now live on the chat window: release them when the
+  // composer unmounts (channel switch) rather than piling up on that window
+  onCleanup(() => rootMoved && view.destroy());
+
   // auto focus on mount
   onMount(
     () =>
       props.autoFocus &&
-      setTimeout(() => {
+      // owner window's timer: the main window's may be throttled while it is
+      // hidden behind a chat window
+      (codeMirror.ownerDocument.defaultView ?? window).setTimeout(() => {
         view.focus();
 
         view.dispatch(

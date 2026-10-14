@@ -4,7 +4,9 @@ import { type JSX, For, Match, Show, Switch } from "solid-js";
 import type { Channel, Message, ServerMember, User } from "stoat.js";
 
 import { useClient } from "@revolt/client";
+import * as chatShell from "@revolt/client/chatShell";
 import { type PopoutAction, useUserActions } from "@revolt/client/popoutBridge";
+import { useWindowCtx } from "@revolt/client/windowCtx";
 import { CONFIGURATION } from "@revolt/common";
 import { useModals } from "@revolt/modal";
 import { useSmartParams } from "@revolt/routing";
@@ -93,6 +95,7 @@ export function UserContextMenu(props: {
   const voice = useVoice();
   const snackbar = useSnackbar();
   const userActions = useUserActions();
+  const windowCtx = useWindowCtx();
   const { t } = useLingui();
 
   // server context
@@ -106,6 +109,17 @@ export function UserContextMenu(props: {
   function runUserAction(action: PopoutAction) {
     void userActions.run(action, props.user.id);
     props.onClose?.();
+  }
+
+  /**
+   * Call, video call or screen share this user. The mic prompt and the
+   * screen picker for a call render in the main window, so a menu opened in
+   * a chat window brings main forward first. A shell that cannot (web) just
+   * carries on; the action reports its own failures.
+   */
+  async function runCallAction(action: PopoutAction) {
+    if (windowCtx.id !== "main") await chatShell.focusMain();
+    runUserAction(action);
   }
 
   /**
@@ -162,11 +176,32 @@ export function UserContextMenu(props: {
   }
 
   /**
-   * Mention the user
+   * Whether the channel this menu was opened from has a composer mounted
+   */
+  const channelComposer = () =>
+    props.channel !== undefined &&
+    state.draft.hasNodeReplacement(props.channel.id);
+
+  /**
+   * Whether Mention is offered: from a server text channel, and only while
+   * a composer is mounted to receive it, either that channel's or one in
+   * this menu's window.
+   */
+  const mentionShown = () =>
+    props.channel?.type === "TextChannel" &&
+    (channelComposer() ||
+      state.draft.hasNodeReplacement(undefined, windowCtx.id));
+
+  /**
+   * Mention the user in the channel's composer, else in the composer focused
+   * last in this menu's window, so a chat window never writes into main's
    */
   function mention() {
-    if (!state.draft._setNodeReplacement) return;
-    state.draft._setNodeReplacement([props.user.toString()]);
+    if (channelComposer()) {
+      state.draft.replaceNode(props.channel!.id, [props.user.toString()]);
+    } else {
+      state.draft.replaceNode(undefined, [props.user.toString()], windowCtx.id);
+    }
   }
 
   /**
@@ -770,8 +805,7 @@ export function UserContextMenu(props: {
    * anything. It is the only group below the call section without a leading
    * divider of its own, so the call section's trailing divider depends on it.
    */
-  const quickActionsShown = () =>
-    !isProfileOpen() || canDm() || props.channel?.type === "TextChannel";
+  const quickActionsShown = () => !isProfileOpen() || canDm() || mentionShown();
 
   /**
    * Toggle the server mute on this member
@@ -1061,27 +1095,30 @@ export function UserContextMenu(props: {
         <ContextMenuButton icon={MdChat} onClick={() => runUserAction("dm")}>
           <Trans>Send Message</Trans>
         </ContextMenuButton>
-        <ContextMenuButton icon={MdCall} onClick={() => runUserAction("call")}>
+        <ContextMenuButton
+          icon={MdCall}
+          onClick={() => void runCallAction("call")}
+        >
           <Trans>Call</Trans>
         </ContextMenuButton>
         <Show when={CONFIGURATION.ENABLE_VIDEO}>
           <ContextMenuButton
             icon={MdVideocam}
-            onClick={() => runUserAction("video")}
+            onClick={() => void runCallAction("video")}
           >
             <Trans>Video Call</Trans>
           </ContextMenuButton>
           <Show when={screenShareSupported()}>
             <ContextMenuButton
               icon={MdScreenShare}
-              onClick={() => runUserAction("screenshare")}
+              onClick={() => void runCallAction("screenshare")}
             >
               <Trans>Screen Share</Trans>
             </ContextMenuButton>
           </Show>
         </Show>
       </Show>
-      <Show when={props.channel?.type === "TextChannel"}>
+      <Show when={mentionShown()}>
         <ContextMenuButton icon={MdAlternateEmail} onClick={mention}>
           <Trans>Mention</Trans>
         </ContextMenuButton>

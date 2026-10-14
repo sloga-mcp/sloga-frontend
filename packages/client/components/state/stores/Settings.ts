@@ -92,6 +92,18 @@ export type MembersSide = "auto" | LayoutSide;
 const MembersSides: MembersSide[] = ["auto", "left", "right"];
 
 /**
+ * Where direct and group conversations open. "chat_windows" only takes
+ * effect on a desktop shell that supports child windows; elsewhere it reads
+ * as "main".
+ */
+export type DmWindowsMode = "main" | "chat_windows";
+
+/**
+ * Possible conversation window modes
+ */
+const DmWindowsModes: DmWindowsMode[] = ["main", "chat_windows"];
+
+/**
  * Shape of a conversation id. Override keys are written by the client, so
  * anything else in a stored blob is corruption and is dropped by clean().
  */
@@ -211,6 +223,13 @@ interface SettingsDefinition {
    * Play animated name effects; off shows the still version
    */
   "appearance:name_effects": boolean;
+
+  /**
+   * Whether conversations open in the main window or in separate chat
+   * windows (with a separate friends window). Per-device on purpose (this
+   * store does not sync): only a desktop shell can honour it.
+   */
+  "appearance:dm_windows": DmWindowsMode;
 
   /**
    * Indicate new users to Stoat
@@ -379,6 +398,7 @@ const EXPECTED_TYPES: { [K in keyof SettingsDefinition]: ValueType<K> } = {
   "appearance:layout_nav_side": "string",
   "appearance:layout_members_side": "string",
   "appearance:name_effects": "boolean",
+  "appearance:dm_windows": "string",
   "advanced:copy_id": "boolean",
   "sounds:message_variant": "number",
   "sounds:ringtone_variant": "number",
@@ -440,6 +460,8 @@ const DEFAULT_VALUES: TypeSettings = {
   "appearance:layout_nav_side": "left",
   "appearance:layout_members_side": "auto",
   "appearance:name_effects": true,
+  // Today's behaviour, so shipping chat windows moves nobody's conversations.
+  "appearance:dm_windows": "main",
   "sounds:message_variant": 4,
   "sounds:ringtone_variant": 8,
   "sounds:disconnect_variant": 3,
@@ -513,6 +535,8 @@ export class Settings extends AbstractStore<"settings", TypeSettings> {
       "appearance:layout_members_side": "auto",
       // Mirrored in DEFAULT_VALUES — see the note there.
       "appearance:name_effects": true,
+      // Mirrored in DEFAULT_VALUES — see the note there.
+      "appearance:dm_windows": "main",
       "advanced:copy_id": false,
       "sounds:message_variant": 4,
       "sounds:ringtone_variant": 8,
@@ -589,6 +613,12 @@ export class Settings extends AbstractStore<"settings", TypeSettings> {
         }
       } else if (key === "appearance:layout_members_side") {
         if (MembersSides.includes(input[key] as never)) {
+          settings[key] = input[key];
+        }
+      } else if (key === "appearance:dm_windows") {
+        // "string" alone would let an unknown mode through, which every
+        // consumer would have to treat as "main" on its own.
+        if (DmWindowsModes.includes(input[key] as never)) {
           settings[key] = input[key];
         }
       } else if (key === "translation:target" || key === "captions:target") {

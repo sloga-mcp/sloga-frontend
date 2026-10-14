@@ -85,7 +85,7 @@ export function MessageToolbar() {
       <Show when={!contentActionsBlocked() && message?.author?.self}>
         <div
           class={tool()}
-          onClick={() => state.draft.setEditingMessage(message)}
+          onClick={() => state.draft.setEditingMessage(message!)}
         >
           <Ripple />
           <MdEdit {...iconSize(20)} />

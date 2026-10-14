@@ -1,3 +1,4 @@
+import { useWindowCtx } from "@revolt/client/windowCtx";
 import { useFloating } from "solid-floating-ui";
 import {
   Component,
@@ -200,7 +201,7 @@ export function ContextMenuSubMenu(
       >
         {local.buttonContent}
       </ContextMenuButton>
-      <Portal mount={document.getElementById("floating")!}>
+      <Portal mount={useWindowCtx().floatingMount()}>
         <Presence>
           <Show when={isShowing()}>
             <Motion

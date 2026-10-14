@@ -1,3 +1,4 @@
+import { useWindowCtx } from "@revolt/client/windowCtx";
 import { useFloating } from "solid-floating-ui";
 import {
   JSX,
@@ -94,9 +95,10 @@ export function FloatingSelect(props: FloatingSelectProps) {
     }
   }
 
-  onMount(() => document.addEventListener("mousedown", handleClickOutside));
+  const windowDoc = useWindowCtx().doc;
+  onMount(() => windowDoc.addEventListener("mousedown", handleClickOutside));
   onCleanup(() =>
-    document.removeEventListener("mousedown", handleClickOutside),
+    windowDoc.removeEventListener("mousedown", handleClickOutside),
   );
 
   function handleItemClick(event: MouseEvent) {
@@ -140,7 +142,7 @@ export function FloatingSelect(props: FloatingSelectProps) {
         </ArrowIcon>
       </SelectTrigger>
 
-      <Portal mount={document.getElementById("floating")!}>
+      <Portal mount={useWindowCtx().floatingMount()}>
         <Presence>
           <Show when={isOpen()}>
             <Motion

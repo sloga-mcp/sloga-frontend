@@ -2,6 +2,7 @@ import {
   createEffect,
   createSignal,
   JSX,
+  lazy,
   Match,
   onCleanup,
   Show,
@@ -40,9 +41,20 @@ import { VoiceMoveNotices } from "@revolt/ui/components/features/voice/callCard/
 import { VoiceTranscriptPanel } from "@revolt/ui/components/features/voice/callCard/VoiceTranscriptPanel";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
 
+import { ChatWindowsHost } from "../components/chatWindows/ChatWindowsHost";
 import { SlideDrawer } from "../components/ui/components/navigation/SlideDrawer";
 import { PaneErrorBoundary } from "./interface/PaneErrorBoundary";
 import { Sidebar } from "./interface/Sidebar";
+
+// DEV only: a dynamic import behind the folded constant, so production
+// bundles don't carry the harness at all.
+const ChatWinDevHarness = import.meta.env.DEV
+  ? lazy(() =>
+      import("../components/chatWindows/devHarness").then((m) => ({
+        default: m.ChatWinDevHarness,
+      })),
+    )
+  : () => null;
 
 /**
  * Application layout
@@ -254,6 +266,16 @@ const Interface = (props: { children: JSX.Element }) => {
             and took the only route to Export with it, while the transcript sat
             intact and unreachable in memory. */}
         <VoiceTranscriptPanel />
+        {/* DEV-only console hook for chat windows (`__chatwin.open(id)`). It
+            portals each window's content from here, so the windows inherit
+            this tree's client, state and modal contexts. Main window only, as
+            above. The constant-folded guard drops it from production builds. */}
+        {import.meta.env.DEV && <ChatWinDevHarness />}
+        {/* Desktop chat windows (friends + tabbed conversations). Main window
+            only, as above: it opens and owns every child window and portals
+            their content from here. Inert unless the chat-windows mode is on
+            in a supported shell. */}
+        <ChatWindowsHost />
       </AppRoot>
     </MessageCache>
   );

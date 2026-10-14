@@ -69,8 +69,12 @@ export function ListView2(props: Props) {
   function consumeDOMUpdate(update?: ListView2Update) {
     if (!update) return;
 
+    // The list may be portalled into a chat window, so look the anchor
+    // up in the document it actually lives in.
+    const doc = ref?.ownerDocument ?? document;
+
     const currentRect = update.scrollAnchorId
-      ? document.getElementById(update.scrollAnchorId)?.getBoundingClientRect()
+      ? doc.getElementById(update.scrollAnchorId)?.getBoundingClientRect()
       : null;
 
     batch(() => {
@@ -80,9 +84,7 @@ export function ListView2(props: Props) {
     if (currentRect) {
       queueMicrotask(() => {
         const updatedRect = update.scrollAnchorId
-          ? document
-              .getElementById(update.scrollAnchorId)
-              ?.getBoundingClientRect()
+          ? doc.getElementById(update.scrollAnchorId)?.getBoundingClientRect()
           : null;
 
         if (updatedRect) {
@@ -166,7 +168,10 @@ function Skeleton(props: {
       () => [ref, props.containerRef, props.permitFetching()] as const,
       ([ref, containerRef, permitFetching]) => {
         if (ref && containerRef && permitFetching) {
-          const observer = new IntersectionObserver(onEvent, {
+          // Use the observer from the window that owns the list: a main-realm
+          // observer is throttled along with main while it is hidden.
+          const view = ref.ownerDocument.defaultView ?? window;
+          const observer = new view.IntersectionObserver(onEvent, {
             root: containerRef,
           });
 

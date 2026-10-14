@@ -1,4 +1,4 @@
-import { createEffect, onCleanup, onMount } from "solid-js";
+import { createEffect, mapArray, onCleanup, onMount } from "solid-js";
 
 import { tauriInvoke } from "@revolt/common";
 import { setKeybindArmState } from "@revolt/keybinds/armState";
@@ -8,6 +8,7 @@ import {
   KEYBIND_COMMANDS,
   KEYBIND_EVENTS,
 } from "@revolt/keybinds/globalKeybinds";
+import { boundKeybindWindows } from "@revolt/keybinds/keybindHandler";
 import {
   type KeybindArmPlan,
   type KeybindHeldEvent,
@@ -298,6 +299,45 @@ export function KeybindsWorker() {
   });
 
   /*
+   * Focused-window transport handlers, shared by the main window and every
+   * bound chat window. One `heldSet` behind all of them, for the reason
+   * given on it: a key pressed in one window and released in another must
+   * still clear.
+   */
+  const onKeyDown = (event: KeyboardEvent) => {
+    const { actions } = matchDomKey({
+      bindings: state.keybinds.bindings(),
+      event,
+      edge: "down",
+      // 🔴 Read at the instant of the press, not captured: a
+      // remote-control session can start between two keystrokes. The
+      // native path is immune (injected input is filtered natively by
+      // `RC_INJECT_EXTRA`); this one is not, which is the entire reason
+      // `@revolt/keybinds/suppress` exists — without it a remote
+      // controller typing on the sharer's machine can hang up the
+      // sharer's call.
+      suppressed: keybindsSuppressed(),
+      repeat: event.repeat,
+    });
+    for (const action of actions) applyEdge({ kind: "down", id: action });
+  };
+
+  const onKeyUp = (event: KeyboardEvent) => {
+    const { actions } = matchDomKey({
+      bindings: state.keybinds.bindings(),
+      event,
+      edge: "up",
+      suppressed: keybindsSuppressed(),
+      // A `keyup` carries no meaningful `repeat`, and gating a release on
+      // one would drop it — a dropped release latches the action down.
+      repeat: false,
+    });
+    for (const action of actions) applyEdge({ kind: "up", id: action });
+  };
+
+  const onBlur = () => applyEdge({ kind: "release-all" });
+
+  /*
    * Focused-window transport. On `window`, matching `Voice`'s push-to-talk
    * listeners, rather than on `document.body` as the older in-app registry
    * does: a key pressed while focus sits on an element outside `body`'s
@@ -305,37 +345,6 @@ export function KeybindsWorker() {
    * remount) still reaches `window`.
    */
   onMount(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      const { actions } = matchDomKey({
-        bindings: state.keybinds.bindings(),
-        event,
-        edge: "down",
-        // 🔴 Read at the instant of the press, not captured: a
-        // remote-control session can start between two keystrokes. The
-        // native path is immune (injected input is filtered natively by
-        // `RC_INJECT_EXTRA`); this one is not, which is the entire reason
-        // `@revolt/keybinds/suppress` exists — without it a remote
-        // controller typing on the sharer's machine can hang up the
-        // sharer's call.
-        suppressed: keybindsSuppressed(),
-        repeat: event.repeat,
-      });
-      for (const action of actions) applyEdge({ kind: "down", id: action });
-    };
-
-    const onKeyUp = (event: KeyboardEvent) => {
-      const { actions } = matchDomKey({
-        bindings: state.keybinds.bindings(),
-        event,
-        edge: "up",
-        suppressed: keybindsSuppressed(),
-        // A `keyup` carries no meaningful `repeat`, and gating a release on
-        // one would drop it — a dropped release latches the action down.
-        repeat: false,
-      });
-      for (const action of actions) applyEdge({ kind: "up", id: action });
-    };
-
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
 
@@ -379,10 +388,42 @@ export function KeybindsWorker() {
    * next press is dropped as `"already-down"`.
    */
   onMount(() => {
-    const onBlur = () => applyEdge({ kind: "release-all" });
     window.addEventListener("blur", onBlur);
     onCleanup(() => window.removeEventListener("blur", onBlur));
   });
+
+  /*
+   * The same focused-window transport for every chat window bound through
+   * `bindKeybinds`, so a global binding (mute, deafen, …) pressed while a
+   * chat window has focus still works: its key events reach that window
+   * only, never main's `window`.
+   *
+   * Blur too, for the same reason as main's: switching between main and a
+   * chat window mid-hold sends the release to the other window, which this
+   * shared held-set then drops as `"not-down"` after the release-all.
+   *
+   * Torn down per window when it unbinds, and before the `release-all` in
+   * the cleanup below when the worker unmounts (owned computations are
+   * disposed before their owner's cleanups run).
+   */
+  createEffect(
+    mapArray(boundKeybindWindows, (ctx) => {
+      const win = ctx.win;
+      win.addEventListener("keydown", onKeyDown);
+      win.addEventListener("keyup", onKeyUp);
+      win.addEventListener("blur", onBlur);
+
+      onCleanup(() => {
+        try {
+          win.removeEventListener("keydown", onKeyDown);
+          win.removeEventListener("keyup", onKeyUp);
+          win.removeEventListener("blur", onBlur);
+        } catch {
+          // A closed window's listeners die with it.
+        }
+      });
+    }),
+  );
 
   onCleanup(() => {
     // 🔴 FIRST, and not left to the disarm below: this is where the

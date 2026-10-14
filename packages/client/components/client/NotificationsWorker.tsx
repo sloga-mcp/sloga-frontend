@@ -35,6 +35,7 @@ import { useState } from "@revolt/state";
 import { streamerModeActive, streamerModeHides } from "@revolt/state/streamer";
 
 import { useClient, useClientLifecycle, useNotifications, useSound } from ".";
+import { routeConversation } from "../chatWindows/openConversation";
 import { State } from "./Controller";
 import {
   isWebPushPlatform,
@@ -60,6 +61,8 @@ import { toastSurfaceFor } from "./toastPolicy";
 import { toastSupported, useToastShell } from "./toastShell";
 import { type UnreadBadge, sameBadge, unreadBadge } from "./unreadBadge";
 import { publishUnreadBadge } from "./unreadBadgeShell";
+import { isViewingConversation } from "./viewingConversation";
+import { focusedConversations } from "./windowCtx";
 
 /**
  * Who draws a message notification when our own toast window is unavailable.
@@ -140,6 +143,18 @@ export function NotificationsWorker() {
   }
 
   /**
+   * Whether the user is reading this conversation now: open in the focused
+   * main window, or in a chat window that holds focus. A point-in-time read
+   * (`document.hasFocus()` is not reactive), so call it at each decision.
+   */
+  const isViewing = (channelId: string) =>
+    isViewingConversation(channelId, {
+      routeChannelId: params().channelId,
+      mainFocused: document.hasFocus(),
+      chatWindowConversations: focusedConversations(),
+    });
+
+  /**
    * Handle incoming messages
    * @param message Message
    */
@@ -157,7 +172,7 @@ export function NotificationsWorker() {
     if (message.isSuppressed) return;
 
     // Ignore if we are currently looking at the channel
-    if (params().channelId === message.channelId && document.hasFocus()) return;
+    if (isViewing(message.channelId)) return;
 
     // Ignore our own messages
     if (message.author?.self) return;
@@ -202,7 +217,7 @@ export function NotificationsWorker() {
     // The lookup can take a moment. Meanwhile the channel may have been swept
     // from the cache, or the user may have opened it and is reading already.
     if (!message.channel) return;
-    if (params().channelId === message.channelId && document.hasFocus()) return;
+    if (isViewing(message.channelId)) return;
 
     // Held from here on: the toast below is awaited, and stoat.js may sweep
     // the channel from the cache meanwhile.
@@ -425,7 +440,7 @@ export function NotificationsWorker() {
     ) {
       // Showing it awaited (avatar fetch, page registration); if the user
       // opened this conversation meanwhile, take it straight back down.
-      if (params().channelId === message.channelId && document.hasFocus())
+      if (isViewing(message.channelId))
         toastShell.clearChannel(message.channelId);
       // Never the title or body: either can carry decrypted E2EE text, and
       // console lines end up in bug reports.
@@ -448,12 +463,7 @@ export function NotificationsWorker() {
     if (!osPreview.show) return;
 
     // Showing the toast may have taken a moment; the user may be reading.
-    if (
-      slogaToast &&
-      params().channelId === message.channelId &&
-      document.hasFocus()
-    )
-      return;
+    if (slogaToast && isViewing(message.channelId)) return;
 
     console.info(`[notification] ${channel.type} body=${osPreview.showBody}`);
 
@@ -466,8 +476,15 @@ export function NotificationsWorker() {
       tag: message.channelId,
       path: message.path,
       onClick: () => {
-        window.focus();
-        navigate(message.path);
+        const openInMain = () => {
+          window.focus();
+          navigate(message.path);
+        };
+        // Chat-windows mode opens a DM or group as a chat-window tab; server
+        // channels always open in the main window.
+        if (channel.type === "DirectMessage" || channel.type === "Group")
+          routeConversation(state, channel.id, openInMain);
+        else openInMain();
       },
     });
   }
@@ -831,6 +848,15 @@ export function NotificationsWorker() {
     // Untracked: nothing the shell reads may re-run this effect.
     if (channelId && windowFocused())
       untrack(() => toastShell.clearChannel(channelId));
+  });
+
+  // The same for a conversation in a focused chat window. That set is a
+  // signal already, and only republished when its contents change.
+  createEffect(() => {
+    const channelIds = focusedConversations();
+    untrack(() => {
+      for (const channelId of channelIds) toastShell.clearChannel(channelId);
+    });
   });
 
   /**

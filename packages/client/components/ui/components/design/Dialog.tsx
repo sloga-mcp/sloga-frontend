@@ -1,3 +1,4 @@
+import { useWindowCtx } from "@revolt/client/windowCtx";
 import type { JSX } from "solid-js";
 import { For, Show } from "solid-js";
 import { Portal } from "solid-js/web";
@@ -39,7 +40,7 @@ type Props = DialogProps & {
  */
 export function Dialog(props: Props) {
   return (
-    <Portal mount={document.getElementById("floating")!}>
+    <Portal mount={useWindowCtx().floatingMount()}>
       <Dialog.Scrim
         show={props.show}
         onClick={props.onClose}

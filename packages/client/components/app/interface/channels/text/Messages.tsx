@@ -167,6 +167,15 @@ export function Messages(props: Props) {
   }
 
   /**
+   * Window the list renders in: a chat window is its own document, and the
+   * main realm's timers are throttled while the main window is hidden
+   * @returns Window
+   */
+  function listWindow(): Window {
+    return listRef?.ownerDocument.defaultView ?? window;
+  }
+
+  /**
    * Pre-empt the current fetch
    */
   function preempt() {
@@ -317,7 +326,7 @@ export function Messages(props: Props) {
 
       // If we're not at the end, restore scroll position
       if (existingState && !existingState.atEnd) {
-        setTimeout(() =>
+        listWindow().setTimeout(() =>
           listRef?.scrollTo({
             top: existingState.scrollTop!,
             behavior: "instant",
@@ -326,7 +335,7 @@ export function Messages(props: Props) {
       }
       // Or... reset scroll to the end
       else if (atEnd()) {
-        setTimeout(() =>
+        listWindow().setTimeout(() =>
           listRef?.scrollTo({
             top: 9999999,
             behavior: "instant",
@@ -490,7 +499,10 @@ export function Messages(props: Props) {
     function findScrollContainer(el: Element | null) {
       if (!el) {
         return null;
-      } else if (getComputedStyle(el).overflowY === "scroll") {
+      } else if (
+        (el.ownerDocument.defaultView ?? window).getComputedStyle(el)
+          .overflowY === "scroll"
+      ) {
         return el;
       } else {
         return el.parentElement;
@@ -566,7 +578,7 @@ export function Messages(props: Props) {
         }
 
         // Animate scroll to bottom
-        setTimeout(() => {
+        listWindow().setTimeout(() => {
           const containerChild = findScrollContainer(listRef!)!.children[0];
 
           containerChild!.scrollIntoView({
@@ -574,7 +586,7 @@ export function Messages(props: Props) {
             block: "start",
           });
 
-          setTimeout(() => {
+          listWindow().setTimeout(() => {
             containerChild!.scrollIntoView({
               behavior: "smooth",
               block: "end",
@@ -641,12 +653,14 @@ export function Messages(props: Props) {
       // Replace the messages
       setMessagesSafely(messages);
 
-      setTimeout(() => {
+      // A one-shot read, as with the global setTimeout the rule allows
+      // eslint-disable-next-line solid/reactivity
+      listWindow().setTimeout(() => {
         // Scroll to the message
         scrollToNearestMessage();
 
         // Mark as fetching has ended
-        setTimeout(() => {
+        listWindow().setTimeout(() => {
           setFetching();
         }, 300 /* probably long enough for scroll to finish */);
       });
@@ -990,28 +1004,53 @@ export function Messages(props: Props) {
   }
 
   /**
-   * Select last message for editing if signal is true
+   * Select last message for editing if this channel's signal is true.
+   * Editing state is per channel, so a list in another window never
+   * resolves (or clears) this channel's request.
    */
   createEffect(
     on(
-      () => state.draft.editingMessageId,
-      (shouldSetEditingMessageId) =>
-        shouldSetEditingMessageId === true &&
-        state.draft.setEditingMessage(
-          // Encrypted rows are local-only and cannot be edited on the
-          // server, so skip them; with none left this clears the request.
-          // If the conversation itself is gated, edit nothing: a mode flip
-          // leaves old plaintext rows on screen, and editing one would PATCH
-          // the new text to the server in plaintext.
-          serverActionsBlocked(e2ee, props.channel, client().user?.id)
-            ? undefined
-            : messages().find(
-                (message) =>
-                  message.author?.self && !e2ee?.isEncryptedMessage(message.id),
-              ),
-        ),
+      () => state.draft.getEditingMessageId(props.channel.id),
+      (shouldSetEditingMessageId) => {
+        if (shouldSetEditingMessageId !== true) return;
+
+        const channelId = props.channel.id;
+
+        // Encrypted rows are local-only and cannot be edited on the
+        // server, so skip them; with none left this clears the request.
+        // If the conversation itself is gated, edit nothing: a mode flip
+        // leaves old plaintext rows on screen, and editing one would PATCH
+        // the new text to the server in plaintext.
+        const message = serverActionsBlocked(
+          e2ee,
+          props.channel,
+          client().user?.id,
+        )
+          ? undefined
+          : messages().find(
+              (message) =>
+                message.channelId === channelId &&
+                message.author?.self &&
+                !e2ee?.isEncryptedMessage(message.id),
+            );
+
+        if (message) {
+          state.draft.setEditingMessage(message);
+        } else {
+          state.draft.setEditingMessage(undefined, channelId);
+        }
+      },
     ),
   );
+
+  /**
+   * Id of the message being edited in this channel
+   * @returns Message id, if a message is being edited
+   */
+  function editingMessageId() {
+    const id = state.draft.getEditingMessageId(props.channel.id);
+    return typeof id === "string" ? id : undefined;
+  }
 
   /**
    * Check whether to trail the currently pending messages
@@ -1060,11 +1099,7 @@ export function Messages(props: Props) {
                   <Entry
                     {...entry}
                     highlightedMessageId={props.highlightedMessageId}
-                    editingMessageId={
-                      typeof state.draft.editingMessageId === "string"
-                        ? state.draft.editingMessageId
-                        : undefined
-                    }
+                    editingMessageId={editingMessageId()}
                   />
                 )}
               </For>

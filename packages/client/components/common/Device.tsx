@@ -8,6 +8,9 @@ import {
 } from "solid-js";
 
 import { isMobileBrowser } from "@livekit/components-core";
+// The leaf module, not the `@revolt/client` barrel, to stay out of its cycles.
+import { useWindowCtx } from "@revolt/client/windowCtx";
+
 import Breakpoint from "./Breakpoint";
 
 export type Layout = "desktop" | "tablet" | "phone";
@@ -38,9 +41,9 @@ const ULTRAWIDE_MIN_WIDTH = 1800;
  * "window moved to another monitor", so this is re-read on resize instead; the
  * values track whichever monitor the window is currently on.
  */
-function readUltrawideDisplay(): boolean {
-  const width = globalThis.screen?.width;
-  const height = globalThis.screen?.height;
+function readUltrawideDisplay(win: Window): boolean {
+  const width = win.screen?.width;
+  const height = win.screen?.height;
 
   // Fail OPEN. Locking a genuine ultrawide owner out of a layout preference
   // because some shell reported nothing is a worse outcome than offering the
@@ -86,28 +89,34 @@ export class Device {
   private lastLayout: Layout | undefined;
   private setUltrawideDisplay;
   private onResize;
+  private win: Window;
 
-  constructor() {
+  /**
+   * @param win Window whose viewport and screen are measured. A chat window
+   * is its own viewport, so it gets its own layout rather than main's.
+   */
+  constructor(win: Window = window) {
+    this.win = win;
     this.isMobile = isMobileBrowser();
 
     const [lo, setLo] = createSignal<Layout>("desktop");
     this.layout = lo;
     this.setLayout = setLo;
 
-    this.pMedia = matchMedia(Breakpoint.phone);
-    this.tMedia = matchMedia(Breakpoint.tablet);
+    this.pMedia = win.matchMedia(Breakpoint.phone);
+    this.tMedia = win.matchMedia(Breakpoint.tablet);
     (this.pMedia.onchange = this.tMedia.onchange = this.onLayout.bind(this))();
 
-    this.wMedia = matchMedia(`(min-width: ${ULTRAWIDE_MIN_WIDTH}px)`);
+    this.wMedia = win.matchMedia(`(min-width: ${ULTRAWIDE_MIN_WIDTH}px)`);
     const [wide, setWide] = createSignal(this.wMedia.matches);
     this.wideEnough = wide;
     this.wMedia.onchange = () => setWide(this.wMedia.matches);
 
-    const [ultrawide, setUltrawide] = createSignal(readUltrawideDisplay());
+    const [ultrawide, setUltrawide] = createSignal(readUltrawideDisplay(win));
     this.ultrawideDisplay = ultrawide;
     this.setUltrawideDisplay = setUltrawide;
-    this.onResize = () => this.setUltrawideDisplay(readUltrawideDisplay());
-    addEventListener("resize", this.onResize);
+    this.onResize = () => this.setUltrawideDisplay(readUltrawideDisplay(win));
+    win.addEventListener("resize", this.onResize);
   }
 
   onLayout() {
@@ -135,12 +144,12 @@ export class Device {
       console.info(
         `[device] layout ${this.lastLayout ?? "(init)"} -> ${next}`,
         {
-          innerWidth,
-          innerHeight,
-          devicePixelRatio,
+          innerWidth: this.win.innerWidth,
+          innerHeight: this.win.innerHeight,
+          devicePixelRatio: this.win.devicePixelRatio,
           phone: this.pMedia.matches,
           tablet: this.tMedia.matches,
-          orientation: globalThis.screen?.orientation?.type,
+          orientation: this.win.screen?.orientation?.type,
         },
       );
       this.lastLayout = next;
@@ -151,15 +160,16 @@ export class Device {
 
   destroy() {
     this.pMedia.onchange = this.tMedia.onchange = this.wMedia.onchange = null;
-    removeEventListener("resize", this.onResize);
+    this.win.removeEventListener("resize", this.onResize);
   }
 }
 
 const deviceCtx = createContext<Device>(null! as Device);
 
-/** Mount device context */
+/** Mount device context for the window this subtree renders into */
 export function DeviceContext(props: { children: JSX.Element }) {
-  const dev = new Device();
+  // Outside any WindowCtxProvider this is the main window, as before.
+  const dev = new Device(useWindowCtx().win);
   // Passing `dev.destroy` bare loses `this` and throws on the first line of the
   // method. It never surfaced because this context is mounted at the root and
   // so is only ever disposed on teardown — but the resize listener added above
@@ -168,6 +178,9 @@ export function DeviceContext(props: { children: JSX.Element }) {
 
   return <deviceCtx.Provider value={dev}>{props.children}</deviceCtx.Provider>;
 }
+
+/** Name the chat-window chrome mounts; same component as `DeviceContext` */
+export const DeviceProvider = DeviceContext;
 
 /** Device type and compatibility info */
 export const useDevice = () => useContext(deviceCtx);
