@@ -346,12 +346,21 @@ export class Draft extends AbstractStore<"draft", TypeDraft> {
    * @param client Client
    * @param channel Channel
    * @param existingDraft The existing draft to send
+   * @param retryOf Idempotency key of the outbox entry being retried
    */
-  async sendDraft(client: Client, channel: Channel, existingDraft?: DraftData) {
+  async sendDraft(
+    client: Client,
+    channel: Channel,
+    existingDraft?: DraftData,
+    retryOf?: string,
+  ) {
     const draft = existingDraft ?? this.popDraft(channel.id);
 
     // Check if this is something we can even send
-    if (!draft.content && !draft.files?.length) return;
+    if (!draft.content && !draft.files?.length) {
+      if (retryOf) this.cancelSend(channel, retryOf);
+      return;
+    }
 
     // Fail-closed E2EE gate at the shared chokepoint (composer, retrySend,
     // any future caller), BEFORE the outbox entry and BEFORE any plaintext
@@ -360,24 +369,35 @@ export class Draft extends AbstractStore<"draft", TypeDraft> {
     // string[] ⇒ the files were encrypted natively and uploaded as opaque
     // ciphertext blobs (refs travel inside the envelope); blocked /
     // unverifiable ⇒ throws E2EESendError — never a plaintext fallback.
-    const e2eeAttachments = client.e2ee
-      ? await client.e2ee.prepareDraftAttachments(
-          channel,
-          (draft.files ?? []).map((fileId) => {
-            const entry = this.getFile(fileId);
-            return {
-              file: entry.file,
-              onProgress: (fraction: number) =>
-                entry.uploadProgress[1](fraction),
-            };
-          }),
-        )
-      : null;
+    let e2eeAttachments: string[] | null;
+    try {
+      e2eeAttachments = client.e2ee
+        ? await client.e2ee.prepareDraftAttachments(
+            channel,
+            (draft.files ?? []).map((fileId) => {
+              const entry = this.getFile(fileId);
+              return {
+                file: entry.file,
+                onProgress: (fraction: number) =>
+                  entry.uploadProgress[1](fraction),
+              };
+            }),
+          )
+        : null;
+    } catch (error) {
+      // Nothing was queued or sent. A retried entry is still in the outbox
+      // (retrySend only marks it "sending"), so put it back as failed
+      // rather than letting the message disappear.
+      if (retryOf) this.markFailed(channel.id, retryOf, error);
+      throw error;
+    }
 
-    // Add message to the outbox
+    // Add message to the outbox, replacing the entry being retried
     const idempotencyKey = ulid();
     this.set("outbox", channel.id, [
-      ...this.getPendingMessages(channel.id),
+      ...this.getPendingMessages(channel.id).filter(
+        (entry) => entry.idempotencyKey !== retryOf,
+      ),
       {
         ...draft,
         idempotencyKey,
@@ -542,19 +562,7 @@ export class Draft extends AbstractStore<"draft", TypeDraft> {
         ),
       );
     } catch (error) {
-      this.set(
-        "outbox",
-        channel.id,
-        this.getPendingMessages(channel.id).map((entry) =>
-          entry.idempotencyKey === idempotencyKey
-            ? {
-                ...entry,
-                status: "failed",
-                error: describeSendError(error),
-              }
-            : entry,
-        ),
-      );
+      this.markFailed(channel.id, idempotencyKey, error);
 
       // A fail-closed E2EE send (peer identity change, no usable device,
       // delivery failure) must surface loudly — the message was NOT sent in
@@ -593,22 +601,44 @@ export class Draft extends AbstractStore<"draft", TypeDraft> {
    * @param client Client
    * @param channel Channel
    * @param idempotencyKey Idempotency key
+   * @param onError Called with the reason if the retry fails; the entry is
+   * already back in the outbox as failed by then
    */
-  retrySend(client: Client, channel: Channel, idempotencyKey: string) {
+  retrySend(
+    client: Client,
+    channel: Channel,
+    idempotencyKey: string,
+    onError?: (error: unknown) => void,
+  ) {
     batch(() => {
-      const draft = this.get().outbox[channel.id].find(
+      const draft = this.getPendingMessages(channel.id).find(
         (entry) => entry.idempotencyKey === idempotencyKey,
       );
       // TODO: validation?
+      if (!draft || draft.status === "sending") return;
 
-      this.cancelSend(channel, idempotencyKey);
+      // The entry stays in the outbox, shown as sending, until sendDraft
+      // queues its replacement; a send refused before that (the E2EE gate)
+      // marks it failed again instead of losing the message.
+      this.set(
+        "outbox",
+        channel.id,
+        this.getPendingMessages(channel.id).map((entry) =>
+          entry.idempotencyKey === idempotencyKey
+            ? { ...entry, status: "sending" }
+            : entry,
+        ),
+      );
+
       // sendDraft's shared E2EE gate re-runs on retry: a conversation that
       // became encrypted since the original send re-routes the files down
       // the encrypted path (never a plaintext upload), and a blocked /
-      // unverifiable state rejects the retry outright. Swallow the
-      // rejection so it doesn't surface as an unhandled one — the
-      // fail-closed refusal already prevented any plaintext upload.
-      this.sendDraft(client, channel, draft!).catch(() => {});
+      // unverifiable state rejects the retry outright. Without a handler,
+      // swallow the rejection so it doesn't surface as an unhandled one —
+      // the fail-closed refusal already prevented any plaintext upload.
+      this.sendDraft(client, channel, draft, idempotencyKey).catch(
+        (error: unknown) => onError?.(error),
+      );
     });
   }
 
@@ -623,6 +653,32 @@ export class Draft extends AbstractStore<"draft", TypeDraft> {
       channel.id,
       this.getPendingMessages(channel.id).filter(
         (entry) => entry.idempotencyKey !== idempotencyKey,
+      ),
+    );
+  }
+
+  /**
+   * Mark an outbox entry as failed
+   * @param channelId Channel ID
+   * @param idempotencyKey Idempotency key
+   * @param error Why the send failed
+   */
+  private markFailed(
+    channelId: string,
+    idempotencyKey: string,
+    error: unknown,
+  ) {
+    this.set(
+      "outbox",
+      channelId,
+      this.getPendingMessages(channelId).map((entry) =>
+        entry.idempotencyKey === idempotencyKey
+          ? {
+              ...entry,
+              status: "failed",
+              error: describeSendError(error),
+            }
+          : entry,
       ),
     );
   }

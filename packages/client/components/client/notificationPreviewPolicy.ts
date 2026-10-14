@@ -162,12 +162,15 @@ export function decidePreview(input: PreviewPolicyInput): PreviewDecision {
  * The E2EE state of the conversation a message arrived in, as the native layer
  * reports it. `unknown` means the lookup threw; `null` means the channel can
  * never be end-to-end encrypted, or this platform has no E2EE engine.
+ * `unconfirmed` is a group this device has no record of: its messages are
+ * server plaintext, and its transcript shows them.
  */
 export type ConversationE2EEMode =
   | "encrypt"
   | "blocked"
   | "plaintext"
   | "peer_downgraded"
+  | "unconfirmed"
   | "unknown"
   | null;
 
@@ -197,6 +200,10 @@ export function e2eeNotificationGate(
     case "peer_downgraded":
       return "suppress";
     case "plaintext":
+    case "unconfirmed":
+      // The transcript of an unconfirmed group shows these server rows as
+      // they are, so they notify as before; "sender_only" here would strip
+      // the preview from every ordinary group on a new device.
       return "normal";
     default:
       return "sender_only";

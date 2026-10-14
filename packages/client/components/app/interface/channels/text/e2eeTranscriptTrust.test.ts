@@ -8,6 +8,8 @@
 // deserve a "message hidden" marker, and `restorableForTrust` decides whether
 // a MessageCache entry may be restored without a refetch. An "unknown" mode
 // refuses an entry holding untrusted rows but never counts a marker for it.
+// An "unconfirmed" group renders and restores like plaintext, while
+// `serverActionsBlocked` keeps new server-side actions out of it.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
@@ -44,6 +46,14 @@ function entryOf(rows: Row[]): Entry {
 }
 
 const isTrusted = (id: string) => TRUSTED.includes(id);
+
+/** Values no send mode may hold: raw native verdict names and junk. */
+const UNRECOGNIZED_MODES = [
+  "group_unconfirmed",
+  "group_unestablished",
+  "everything",
+  "",
+];
 
 // conversationTrust
 
@@ -96,6 +106,20 @@ test("conversationTrust: encrypt, blocked and peer_downgraded are all encrypted"
     conversationTrust({ ...base, mode: "peer_downgraded" }),
     "encrypted",
   );
+});
+
+test("conversationTrust: an unconfirmed group is unconfirmed", () => {
+  assert.equal(
+    conversationTrust({ ...base, mode: "unconfirmed" }),
+    "unconfirmed",
+  );
+});
+
+test("conversationTrust: an unrecognized mode is unknown, never plaintext", () => {
+  for (const raw of UNRECOGNIZED_MODES) {
+    const mode = raw as unknown as Mode;
+    assert.equal(conversationTrust({ ...base, mode }), "unknown", raw);
+  }
 });
 
 // splitUntrusted
@@ -155,7 +179,7 @@ test("splitUntrusted: empty input gives an empty list and zero", () => {
   assert.equal(result.hiddenVisible, 0);
 });
 
-// restorableForTrust: 4 trust values x 4 entry shapes
+// restorableForTrust: 5 trust values x 4 entry shapes
 
 type Shape = "all trusted" | "untrusted non-system" | "untrusted system";
 
@@ -186,6 +210,11 @@ const EXPECTED: Record<
     "untrusted non-system": { restored: true, hiddenVisible: 0 },
     "untrusted system": { restored: true, hiddenVisible: 0 },
   },
+  unconfirmed: {
+    "all trusted": { restored: true, hiddenVisible: 0 },
+    "untrusted non-system": { restored: true, hiddenVisible: 0 },
+    "untrusted system": { restored: true, hiddenVisible: 0 },
+  },
   encrypted: {
     "all trusted": { restored: true, hiddenVisible: 0 },
     "untrusted non-system": { restored: false, hiddenVisible: 1 },
@@ -201,6 +230,7 @@ const EXPECTED: Record<
 const TRUSTS: ConversationTrust[] = [
   "not_e2ee",
   "plaintext",
+  "unconfirmed",
   "encrypted",
   "unknown",
 ];
@@ -271,7 +301,12 @@ const SELF = "01SELF0001";
 const PEER = "01PEER0001";
 const GROUP = "01GROUP001";
 
-type Mode = "encrypt" | "blocked" | "plaintext" | "peer_downgraded";
+type Mode =
+  | "encrypt"
+  | "blocked"
+  | "plaintext"
+  | "peer_downgraded"
+  | "unconfirmed";
 type Status = { enabled: boolean; published: boolean };
 
 const ENABLED: Status = { enabled: true, published: true };
@@ -374,6 +409,7 @@ test("channelTrust: every send mode maps as conversationTrust does", () => {
     ["blocked", "encrypted"],
     ["peer_downgraded", "encrypted"],
     ["plaintext", "plaintext"],
+    ["unconfirmed", "unconfirmed"],
     [undefined, "unknown"],
   ];
   for (const [mode, want] of cases) {
@@ -477,4 +513,58 @@ test("serverActionsBlocked: a plaintext group is allowed, since groups never sho
   const optedIn = { ...group(), recipient: { e2eeEnabled: true } };
   assert.equal(serverActionsBlocked(e2ee, group(), SELF), false);
   assert.equal(serverActionsBlocked(e2ee, optedIn, SELF), false);
+});
+
+test("serverActionsBlocked: an unconfirmed group is blocked, whatever the E2EE status", () => {
+  const statuses: (Status | "not loaded")[] = [
+    ENABLED,
+    { enabled: true, published: false },
+    { enabled: false, published: false },
+    "not loaded",
+  ];
+  const optedIn = { ...group(), recipient: { e2eeEnabled: true } };
+  for (const status of statuses) {
+    const e2ee = fakeE2EE({ [GROUP]: "unconfirmed" }, status);
+    const where = JSON.stringify(status);
+    assert.equal(serverActionsBlocked(e2ee, group(), SELF), true, where);
+    assert.equal(serverActionsBlocked(e2ee, optedIn, SELF), true, where);
+  }
+});
+
+test("serverActionsBlocked: an unconfirmed mode under a DM peer is blocked too", () => {
+  // The DM verdict never yields it; if it ever did, the gate fails closed.
+  const e2ee = fakeE2EE({ [PEER]: "unconfirmed" }, ENABLED);
+  assert.equal(serverActionsBlocked(e2ee, dm(false), SELF), true);
+});
+
+test("restorableForTrust: an unconfirmed group restores server rows with no markers", () => {
+  // The mount path in Messages.tsx: channelTrust, then the cache restore. A
+  // row this device did not decrypt is ordinary server history here, so it
+  // is neither refused nor counted.
+  const e2ee = fakeE2EE({ [GROUP]: "unconfirmed" });
+  const trust = channelTrust(e2ee, group(), SELF);
+  const entry = entryOf([
+    row(FORGED),
+    row(TRUSTED[0]),
+    row(FORGED_SYSTEM, true),
+  ]);
+  const result = restorableForTrust(entry, trust, isTrusted);
+
+  assert.strictEqual(result.entry, entry);
+  assert.equal(result.hiddenVisible, 0);
+  // Messages.tsx drops live rows and emits markers only for "encrypted".
+  assert.notEqual(trust, "encrypted");
+});
+
+test("serverActionsBlocked: an unrecognized group mode fails closed while E2EE is enabled", () => {
+  for (const raw of UNRECOGNIZED_MODES) {
+    const e2ee = fakeE2EE({ [GROUP]: raw as unknown as Mode }, ENABLED);
+    const trust = channelTrust(e2ee, group(), SELF);
+    assert.equal(trust, "unknown", raw);
+    assert.equal(serverActionsBlocked(e2ee, group(), SELF), true, raw);
+    const entry = entryOf([row(TRUSTED[0]), row(FORGED)]);
+    const restored = restorableForTrust(entry, trust, isTrusted);
+    assert.strictEqual(restored.entry, undefined, raw);
+    assert.equal(restored.hiddenVisible, 0, raw);
+  }
 });

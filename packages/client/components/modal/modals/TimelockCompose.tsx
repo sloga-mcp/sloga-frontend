@@ -4,6 +4,7 @@ import { Trans, useLingui } from "@lingui-solid/solid/macro";
 
 import { styled } from "styled-system/jsx";
 
+import { E2EESendError } from "@revolt/client";
 import {
   MAX_TIMELOCK_HORIZON_MS,
   MAX_TIMELOCK_PLAINTEXT_BYTES,
@@ -31,7 +32,7 @@ export function TimelockComposeModal(
 ) {
   const { t } = useLingui();
   const state = useState();
-  const { showError } = useModals();
+  const { openModal, showError } = useModals();
 
   const [pending, setPending] = createSignal(false);
   const [custom, setCustom] = createSignal<string>("");
@@ -92,7 +93,21 @@ export function TimelockComposeModal(
       state.draft.setDraft(props.channel.id, { content: "", replies: [] });
       props.onClose();
     } catch (error) {
-      showError(error);
+      // A group this device cannot confirm is unencrypted refuses the send
+      // before anything leaves the device. Ask for consent; the draft stays
+      // and nothing is resent automatically.
+      if (
+        error instanceof E2EESendError &&
+        (error.kind === "group_unconfirmed" ||
+          error.kind === "group_unestablished")
+      ) {
+        openModal({
+          type: "e2ee_group_plaintext_confirm",
+          channelId: props.channel.id,
+        });
+      } else {
+        showError(error);
+      }
     } finally {
       setPending(false);
     }

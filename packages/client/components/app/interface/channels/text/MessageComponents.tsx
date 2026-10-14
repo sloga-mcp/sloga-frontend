@@ -19,6 +19,8 @@ import { useClient, useE2EE } from "@revolt/client";
 import { useModals } from "@revolt/modal";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
 
+import { serverActionsBlocked } from "./e2eeTranscriptTrust";
+
 /**
  * How long a clicked component stays pending before we give up on the bot
  * answering (matches the invoke-side indicator; the interaction itself
@@ -97,6 +99,15 @@ export function MessageComponents(props: { message: Message }) {
     onCleanup(() => client().removeListener("messageCreate", handler));
   });
 
+  /**
+   * Whether this conversation must not send new content to the server
+   * (encrypted, unknown, pending, or a group this device cannot confirm is
+   * unencrypted). Reads the cached mode: it disables the controls, and a
+   * click also asks the native layer before anything is sent.
+   */
+  const actionsBlocked = () =>
+    serverActionsBlocked(e2ee, props.message.channel, client().user?.id);
+
   async function interact(component: ComponentData, values?: string[]) {
     if (component.disabled || pending()[component.custom_id]) return;
 
@@ -105,14 +116,17 @@ export function MessageComponents(props: { message: Message }) {
 
     // Fail closed, mirroring slash-command invocation: never fan component
     // metadata out of an encrypted or blocked conversation. Awaits the
-    // AUTHORITATIVE native verdict, not the cached indicator.
+    // AUTHORITATIVE native verdict, not the cached indicator, with the group
+    // plaintext proof. Only "plaintext" (or a channel that can never be
+    // E2EE) is allowed; anything else, "unconfirmed" and unrecognized values
+    // included, is refused, as is a conversation the cached gate blocks.
     if (
       e2ee &&
       (channel.type === "DirectMessage" || channel.type === "Group")
     ) {
-      let mode: "encrypt" | "blocked" | "plaintext" | "peer_downgraded" | null;
+      let mode: unknown;
       try {
-        mode = await e2ee.sendModeNowFor(channel);
+        mode = await e2ee.sendModeNowFor(channel, { proof: true });
       } catch {
         openModal({
           type: "error2",
@@ -120,7 +134,7 @@ export function MessageComponents(props: { message: Message }) {
         });
         return;
       }
-      if (mode === "encrypt" || mode === "blocked" || mode === "peer_downgraded") {
+      if (actionsBlocked() || (mode !== null && mode !== "plaintext")) {
         openModal({
           type: "error2",
           error: t`Interactions are unavailable in encrypted conversations.`,
@@ -185,7 +199,9 @@ export function MessageComponents(props: { message: Message }) {
                             | "Danger"
                         }
                         disabled={
-                          component.disabled || pending()[component.custom_id]
+                          component.disabled ||
+                          pending()[component.custom_id] ||
+                          actionsBlocked()
                         }
                         onClick={() => interact(component)}
                       >
@@ -206,7 +222,9 @@ export function MessageComponents(props: { message: Message }) {
                     <Match when={component.type === "StringSelect"}>
                       <ComponentSelect
                         disabled={
-                          component.disabled || pending()[component.custom_id]
+                          component.disabled ||
+                          pending()[component.custom_id] ||
+                          actionsBlocked()
                         }
                         onChange={(event) => {
                           const value = event.currentTarget.value;

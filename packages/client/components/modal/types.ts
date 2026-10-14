@@ -292,6 +292,10 @@ export type Modals =
       channelId: string;
     }
   | {
+      type: "e2ee_group_plaintext_confirm";
+      channelId: string;
+    }
+  | {
       type: "e2ee_enable";
       /**
        * Lead with the restore-vs-start-fresh choice (slice 5.5). Set when the

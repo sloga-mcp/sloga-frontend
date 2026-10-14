@@ -13,6 +13,18 @@ import { useModals } from "..";
 import { Modals } from "../types";
 
 /**
+ * Submit-time forward rule. Forwards are server-mediated plaintext, so a
+ * destination is allowed only without E2EE (web), for a channel type that
+ * can never be E2EE (`mode === null`), or on an authoritative "plaintext"
+ * verdict. Anything else — including no verdict at all and "unconfirmed"
+ * (a group with no local row whose plaintext could not be proven) — is
+ * refused. A native error never reaches this: the caller refuses on a throw.
+ */
+function forwardDestinationAllowed(hasE2EE: boolean, mode: unknown): boolean {
+  return !hasE2EE || mode === null || mode === "plaintext";
+}
+
+/**
  * Modal to forward a message to another channel. The server copies an
  * immutable snapshot of the original (verifying this user can actually
  * read it) — later edits or deletion of the original do not propagate.
@@ -33,7 +45,8 @@ export function ForwardMessageModal(
    * Whether a channel is in an E2EE conversation (forwards are
    * server-mediated plaintext, so encrypted destinations are excluded —
    * same conversation-id rule as the composer: peer user id for DMs,
-   * channel id for groups).
+   * channel id for groups). This reads the cached indicator and only trims
+   * the list; it is never the authority — `forward()` re-checks natively.
    */
   const isEncryptedDestination = (channel: Channel) => {
     const conversationId =
@@ -83,6 +96,29 @@ export function ForwardMessageModal(
     if (!destination || pending()) return;
     setPending(true);
     try {
+      // Authoritative re-check at submit time: a fresh native verdict, with
+      // the plaintext proof for a group that has no local row yet. A throw
+      // or any verdict other than plaintext refuses the forward.
+      let mode: unknown;
+      try {
+        mode = e2ee
+          ? await e2ee.sendModeNowFor(destination, { proof: true })
+          : null;
+      } catch {
+        setSelected(undefined);
+        showError(
+          t`Encryption status could not be verified. Nothing was sent.`,
+        );
+        return;
+      }
+      if (!forwardDestinationAllowed(!!e2ee, mode)) {
+        setSelected(undefined);
+        showError(
+          t`The forward keeps a copy of the message as it is right now — later edits or deletion of the original won't change it. Encrypted conversations can't receive forwards.`,
+        );
+        return;
+      }
+
       await props.message.forwardTo(destination);
       props.onClose();
     } catch (error) {
