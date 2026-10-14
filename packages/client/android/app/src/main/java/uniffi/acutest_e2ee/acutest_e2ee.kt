@@ -888,6 +888,8 @@ internal open class UniffiVTableCallbackInterfaceKeyProtector(
 
 
 
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -904,6 +906,8 @@ internal open class UniffiVTableCallbackInterfaceKeyProtector(
 internal interface IntegrityCheckingUniffiLib : Library {
     // Integrity check functions only
     fun uniffi_acutest_e2ee_checksum_method_e2eeengine_accept_identity_change(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_acknowledge_group_plaintext(
 ): Short
 fun uniffi_acutest_e2ee_checksum_method_e2eeengine_add_group_member(
 ): Short
@@ -1106,6 +1110,8 @@ fun uniffi_acutest_e2ee_fn_free_e2eeengine(`ptr`: Pointer,uniffi_out_err: Uniffi
 fun uniffi_acutest_e2ee_fn_constructor_e2eeengine_new(`dir`: RustBuffer.ByValue,`protector`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Pointer
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_accept_identity_change(`ptr`: Pointer,`peerUserId`: RustBuffer.ByValue,`deviceId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_acknowledge_group_plaintext(`ptr`: Pointer,`conversationId`: RustBuffer.ByValue,`expected`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_add_group_member(`ptr`: Pointer,`conversationId`: RustBuffer.ByValue,`userId`: RustBuffer.ByValue,`selfUserId`: RustBuffer.ByValue,`bundlesJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
@@ -1382,6 +1388,9 @@ private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
 @Suppress("UNUSED_PARAMETER")
 private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_accept_identity_change() != 60024.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_acknowledge_group_plaintext() != 11994.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_add_group_member() != 3315.toShort()) {
@@ -2056,6 +2065,18 @@ public interface E2eeEngineInterface {
     fun `acceptIdentityChange`(`peerUserId`: kotlin.String, `deviceId`: kotlin.String)
     
     /**
+     * Record that the user chose plaintext for a group this device holds
+     * no conversation row for (`group_unconfirmed` /
+     * `group_unestablished`). `expected` names the verdict the user saw
+     * and goes through core's ONE strict parser; this binding maps no
+     * strings itself. No Kotlin dialog: the documented exception above.
+     * Never-provision: an unprovisioned device answers `NotEnabled`
+     * instead of creating a store just to hold an ack (its
+     * `send_mode_group` already reads `Plaintext`).
+     */
+    fun `acknowledgeGroupPlaintext`(`conversationId`: kotlin.String, `expected`: kotlin.String)
+    
+    /**
      * Add a member to an encrypted group's audience (design §2.3).
      */
     fun `addGroupMember`(`conversationId`: kotlin.String, `userId`: kotlin.String, `selfUserId`: kotlin.String, `bundlesJson`: kotlin.String?): kotlin.String
@@ -2694,6 +2715,28 @@ open class E2eeEngine: Disposable, AutoCloseable, E2eeEngineInterface
     uniffiRustCallWithError(E2eeException) { _status ->
     UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_accept_identity_change(
         it, FfiConverterString.lower(`peerUserId`),FfiConverterString.lower(`deviceId`),_status)
+}
+    }
+    
+    
+
+    
+    /**
+     * Record that the user chose plaintext for a group this device holds
+     * no conversation row for (`group_unconfirmed` /
+     * `group_unestablished`). `expected` names the verdict the user saw
+     * and goes through core's ONE strict parser; this binding maps no
+     * strings itself. No Kotlin dialog: the documented exception above.
+     * Never-provision: an unprovisioned device answers `NotEnabled`
+     * instead of creating a store just to hold an ack (its
+     * `send_mode_group` already reads `Plaintext`).
+     */
+    @Throws(E2eeException::class)override fun `acknowledgeGroupPlaintext`(`conversationId`: kotlin.String, `expected`: kotlin.String)
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_acknowledge_group_plaintext(
+        it, FfiConverterString.lower(`conversationId`),FfiConverterString.lower(`expected`),_status)
 }
     }
     
