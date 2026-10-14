@@ -79,7 +79,6 @@ const STUBS: Record<string, string> = {
     export function arm(kind) { ${R}.armCalls.push(kind); return ${R}.arm(kind); }
     export function focusMain() { ${R}.focusMainCalls++; return ${R}.focusMain(); }
     export function discard(label) { ${R}.discardCalls.push(label); return ${R}.discard(label); }
-    export const setPin = async () => ({ ok: false, err: "unsupported" });
     export const saveBounds = async () => ({ ok: false, err: "unsupported" });`,
   "./clipboardShim.ts": `
     export function installClipboardShim() { ${R}.clipboardInstalls++; }`,

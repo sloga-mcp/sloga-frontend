@@ -20,7 +20,7 @@ import { afterEach, test } from "node:test";
 import { createComputed, createRoot } from "solid-js";
 
 import type * as ChatShell from "./chatShell.ts";
-import { arm, focusMain, saveBounds, setPin, supported } from "./chatShell.ts";
+import { arm, focusMain, saveBounds, supported } from "./chatShell.ts";
 
 type Discard = (label: string) => Promise<unknown>;
 let discardFn: Discard | undefined;
@@ -73,25 +73,19 @@ function fakeElectron(answer: (verb: string, args: unknown[]) => unknown) {
     calls,
     bridge: {
       arm: verb("arm"),
-      pin: verb("pin"),
       bounds: verb("bounds"),
       focusMain: verb("focusMain"),
     },
   };
 }
 
-async function allFour() {
-  return [
-    await arm("chat"),
-    await setPin("chat-1", true),
-    await saveBounds("chat-1"),
-    await focusMain(),
-  ];
+async function allThree() {
+  return [await arm("chat"), await saveBounds("chat-1"), await focusMain()];
 }
 
 test("no shell: unsupported everywhere, never a rejection", async () => {
   assert.equal(supported(), false);
-  for (const result of await allFour()) {
+  for (const result of await allThree()) {
     assert.deepEqual(result, { ok: false, err: "unsupported" });
   }
 
@@ -100,7 +94,7 @@ test("no shell: unsupported everywhere, never a rejection", async () => {
   for (const win of [{}, { __TAURI__: {} }, { slogaShell: { name: "x" } }]) {
     g.window = win;
     assert.equal(supported(), false);
-    for (const result of await allFour()) {
+    for (const result of await allThree()) {
       assert.deepEqual(result, { ok: false, err: "unsupported" });
     }
   }
@@ -114,14 +108,10 @@ test("tauri: exact commands and args, label passed through", async () => {
   assert.equal(supported(), true);
 
   assert.deepEqual(await arm("friends"), { ok: true, label: "chat-7" });
-  assert.deepEqual(await setPin("chat-7", true), { ok: true });
-  assert.deepEqual(await setPin("chat-7", false), { ok: true });
   assert.deepEqual(await saveBounds("chat-7"), { ok: true });
   assert.deepEqual(await focusMain(), { ok: true });
   assert.deepEqual(tauri.calls, [
     { cmd: "chat_window_arm", args: { kind: "friends" } },
-    { cmd: "chat_window_pin", args: { label: "chat-7", on: true } },
-    { cmd: "chat_window_pin", args: { label: "chat-7", on: false } },
     { cmd: "chat_window_bounds", args: { label: "chat-7" } },
     { cmd: "chat_window_focus_main", args: undefined },
   ]);
@@ -150,7 +140,7 @@ test("tauri: rejections and synchronous throws become { ok: false, err }", async
   ];
   for (const [answer, err] of cases) {
     g.window = { __TAURI__: fakeTauri(answer).global };
-    for (const result of await allFour()) {
+    for (const result of await allThree()) {
       assert.deepEqual(result, { ok: false, err });
     }
   }
@@ -163,8 +153,8 @@ test("tauri is preferred when both bridges are present", async () => {
     __TAURI__: tauri.global,
     slogaShell: { chatWindows: electron.bridge },
   };
-  await allFour();
-  assert.equal(tauri.calls.length, 4);
+  await allThree();
+  assert.equal(tauri.calls.length, 3);
   assert.equal(electron.calls.length, 0);
 });
 
@@ -183,12 +173,10 @@ test("electron: exact verbs and args, envelopes rebuilt", async () => {
     ok: true,
     label: "friends-window",
   });
-  assert.deepEqual(await setPin("friends-window", true), { ok: true });
   assert.deepEqual(await saveBounds("friends-window"), { ok: true });
   assert.deepEqual(await focusMain(), { ok: true });
   assert.deepEqual(electron.calls, [
     { verb: "arm", args: ["friends"] },
-    { verb: "pin", args: ["friends-window", true] },
     { verb: "bounds", args: ["friends-window"] },
     { verb: "focusMain", args: [] },
   ]);
@@ -202,7 +190,7 @@ test("electron: refusals pass through, malformed envelopes are invalid", async (
       ).bridge,
     },
   };
-  for (const result of await allFour()) {
+  for (const result of await allThree()) {
     assert.deepEqual(result, { ok: false, err: "exists" });
   }
 
@@ -223,7 +211,7 @@ test("electron: refusals pass through, malformed envelopes are invalid", async (
         chatWindows: fakeElectron(() => Promise.resolve(envelope)).bridge,
       },
     };
-    for (const result of await allFour()) {
+    for (const result of await allThree()) {
       assert.deepEqual(result, { ok: false, err: "invalid" }, String(envelope));
     }
   }
@@ -249,7 +237,7 @@ test("electron: rejections, throws and missing verbs never escape", async () => 
         .bridge,
     },
   };
-  for (const result of await allFour()) {
+  for (const result of await allThree()) {
     assert.deepEqual(result, { ok: false, err: "ipc down" });
   }
 
@@ -260,7 +248,7 @@ test("electron: rejections, throws and missing verbs never escape", async () => 
       }).bridge,
     },
   };
-  for (const result of await allFour()) {
+  for (const result of await allThree()) {
     assert.deepEqual(result, { ok: false, err: "sync" });
   }
 
@@ -271,10 +259,6 @@ test("electron: rejections, throws and missing verbs never escape", async () => 
   };
   assert.equal(supported(), true);
   assert.deepEqual(await arm("chat"), { ok: false, err: "unsupported" });
-  assert.deepEqual(await setPin("chat-1", true), {
-    ok: false,
-    err: "unsupported",
-  });
   assert.deepEqual(await saveBounds("chat-1"), {
     ok: false,
     err: "unsupported",

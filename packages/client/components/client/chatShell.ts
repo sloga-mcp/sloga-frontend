@@ -1,8 +1,8 @@
 /**
  * The main window's bridge to the desktop shells' chat windows: arm the next
- * `window.open("about:blank")` so the shell builds it as a chat window, pin
- * one on top, remember where it sat, pull the main window forward, and throw
- * away a window built for an arm main never got to use.
+ * `window.open("about:blank")` so the shell builds it as a chat window,
+ * remember where one sat, pull the main window forward, and throw away a
+ * window built for an arm main never got to use.
  *
  * Windows (Tauri) and the Electron shell (macOS, Linux) take the same verbs
  * through different bridges; every answer comes back as one `ShellResult`
@@ -36,7 +36,6 @@ export type ChatWindowKind = "friends" | "chat";
  */
 interface ChatWindowsBridge {
   arm?(kind: ChatWindowKind): Promise<unknown>;
-  pin?(label: string, on: boolean): Promise<unknown>;
   bounds?(label: string): Promise<unknown>;
   focusMain?(): Promise<unknown>;
 }
@@ -53,7 +52,7 @@ function electronChatWindows(): ChatWindowsBridge | undefined {
 /**
  * Whether this window's shell can make chat windows. On web (and Android)
  * there is no shell: `window.open` still gives a child window, just one the
- * browser places and the app cannot pin.
+ * browser places and the app cannot remember the position of.
  */
 export function supported(): boolean {
   return !!tauriInvoke() || !!electronChatWindows();
@@ -150,15 +149,6 @@ export function arm(
     (electronCall("arm", [kind], true) as
       | Promise<ShellResult<{ label: string }>>
       | undefined) ?? Promise.resolve(UNSUPPORTED)
-  );
-}
-
-/** Keep the chat window `label` above other windows, or stop. */
-export function setPin(label: string, on: boolean): Promise<ShellResult> {
-  return (
-    tauriVoid("chat_window_pin", { label, on }) ??
-    electronCall("pin", [label, on], false) ??
-    Promise.resolve(UNSUPPORTED)
   );
 }
 

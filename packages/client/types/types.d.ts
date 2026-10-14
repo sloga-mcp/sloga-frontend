@@ -91,10 +91,6 @@ declare global {
         arm(
           kind: "friends" | "chat",
         ): Promise<{ ok: true; label: string } | { ok: false; err: string }>;
-        pin(
-          label: string,
-          on: boolean,
-        ): Promise<{ ok: true } | { ok: false; err: string }>;
         bounds(
           label: string,
         ): Promise<{ ok: true } | { ok: false; err: string }>;
