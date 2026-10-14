@@ -41,8 +41,10 @@ function isStateChanged(error: unknown): boolean {
  * read on open, so the user acknowledges exactly the state they were shown
  * and the native layer refuses the ack if it moved in between. This protects
  * against an honest server and client state loss; a malicious server can
- * still pass the device-listing proof for a fresh device. Confirm records
- * the ack and closes; it never resends, so the user presses send again.
+ * still pass the device-listing proof for any device that has no row for
+ * the group (a fresh device, or one never delivered `group_enable`).
+ * Confirm records the ack and closes; it never resends, so the user
+ * presses send again.
  */
 export function E2EEGroupPlaintextConfirmModal(
   props: DialogProps & Modals & { type: "e2ee_group_plaintext_confirm" },
@@ -132,7 +134,7 @@ export function E2EEGroupPlaintextConfirmModal(
             <Trans>Send unencrypted?</Trans>
           </Match>
           <Match when={kind() === "unestablished"}>
-            <Trans>This group is encrypted</Trans>
+            <Trans>This group may be encrypted</Trans>
           </Match>
         </Switch>
       }
@@ -168,6 +170,17 @@ export function E2EEGroupPlaintextConfirmModal(
             </Text>
           </Match>
         </Switch>
+
+        <Show when={kind()}>
+          <Text>
+            <Trans>
+              If you allow it, messages and files you send to this group from
+              this device won't be end-to-end encrypted and can be read by the
+              server. This device will remember this choice for this group.
+              Nothing has been sent yet.
+            </Trans>
+          </Text>
+        </Show>
 
         <Show when={error()}>
           {(shown) => <ErrorText>{err(shown().value)}</ErrorText>}

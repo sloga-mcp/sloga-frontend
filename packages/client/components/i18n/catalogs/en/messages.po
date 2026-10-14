@@ -3363,6 +3363,10 @@ msgid "Encryption was turned off — choose how to continue."
 msgstr "Encryption was turned off — choose how to continue."
 
 #: src/interface/channels/text/Composition.tsx
+msgid "This device can't confirm this group is unencrypted — review before sending."
+msgstr "This device can't confirm this group is unencrypted — review before sending."
+
+#: src/interface/channels/text/Composition.tsx
 msgid "Encryption will start once a message is sent."
 msgstr "Encryption will start once a message is sent."
 
@@ -3807,6 +3811,30 @@ msgstr "Game Overlay"
 msgid "Gathering keys for every member…"
 msgstr "Gathering keys for every member…"
 
+#: components/modal/modals/E2EEGroupPlaintextConfirm.tsx
+msgid "Send unencrypted?"
+msgstr "Send unencrypted?"
+
+#: components/modal/modals/E2EEGroupPlaintextConfirm.tsx
+msgid "This group may be encrypted"
+msgstr "This group may be encrypted"
+
+#: components/modal/modals/E2EEGroupPlaintextConfirm.tsx
+msgid "Allow unencrypted"
+msgstr "Allow unencrypted"
+
+#: components/modal/modals/E2EEGroupPlaintextConfirm.tsx
+msgid "This device can't confirm this group is unencrypted. Other members may have turned on encryption. Send unencrypted?"
+msgstr "This device can't confirm this group is unencrypted. Other members may have turned on encryption. Send unencrypted?"
+
+#: components/modal/modals/E2EEGroupPlaintextConfirm.tsx
+msgid "Encrypted messages for this group reached this device, but it doesn't have the group's keys. Anything you send now is unencrypted, and members using encryption won't see it."
+msgstr "Encrypted messages for this group reached this device, but it doesn't have the group's keys. Anything you send now is unencrypted, and members using encryption won't see it."
+
+#: components/modal/modals/E2EEGroupPlaintextConfirm.tsx
+msgid "If you allow it, messages and files you send to this group from this device won't be end-to-end encrypted and can be read by the server. This device will remember this choice for this group. Nothing has been sent yet."
+msgstr "If you allow it, messages and files you send to this group from this device won't be end-to-end encrypted and can be read by the server. This device will remember this choice for this group. Nothing has been sent yet."
+
 #: components/app/interface/settings/user/bots/ViewBot.tsx
 msgid "Generate a new token if it gets lost or compromised"
 msgstr "Generate a new token if it gets lost or compromised"
@@ -4189,6 +4217,10 @@ msgstr "In 4 hours"
 #: components/modal/modals/ScheduleMessage.tsx
 msgid "In a week"
 msgstr "In a week"
+
+#: components/modal/modals/ScheduleMessage.tsx
+msgid "Scheduled messages are stored unencrypted on the server, so they can't be used in this conversation right now. Nothing was scheduled."
+msgstr "Scheduled messages are stored unencrypted on the server, so they can't be used in this conversation right now. Nothing was scheduled."
 
 #: components/modal/modals/TimelockCompose.tsx
 msgid "In a year"

@@ -16,9 +16,11 @@
  * except an unconfirmed group the server listings PROVE nobody encrypts.
  *
  * Threat model: this protects an honest server combined with client state
- * loss. A malicious server can still pass the proof for a fresh device
- * (empty listings, withheld `group_enable`); only local pinned state resists
- * that, and a fresh device has none. Server-sourced signals only ever skip a
+ * loss. A malicious server can still make the proof pass for ANY device
+ * that has no row for the group — a fresh device, or one the server never
+ * delivered `group_enable` and the group's encrypted traffic to — by
+ * returning empty listings; only a pinned group row resists that, and such
+ * a device has none. Server-sourced signals only ever skip a
  * prompt — they never touch an existing row (a row always wins natively).
  *
  * Every malformed input fails CLOSED: an unknown verdict is "invalid" (the
