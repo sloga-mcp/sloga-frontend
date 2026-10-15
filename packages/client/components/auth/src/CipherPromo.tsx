@@ -218,9 +218,12 @@ export function CipherPromo(props: { variant: "panel" | "banner" }) {
           <BannerRow>
             <CipherLock size={56} />
             <div>
-              <Kicker>
-                <Trans>Coming soon</Trans>
-              </Kicker>
+              {/* Store builds drop it: app review can reject "coming soon" copy */}
+              <Show when={purchase()}>
+                <Kicker>
+                  <Trans>Coming soon</Trans>
+                </Kicker>
+              </Show>
               <BannerTitle>
                 <Trans>Protected servers and channels</Trans>
               </BannerTitle>
@@ -237,9 +240,12 @@ export function CipherPromo(props: { variant: "panel" | "banner" }) {
     >
       <Panel>
         <Content>
-          <Kicker>
-            <Trans>Coming soon</Trans>
-          </Kicker>
+          {/* Store builds drop it: app review can reject "coming soon" copy */}
+          <Show when={purchase()}>
+            <Kicker>
+              <Trans>Coming soon</Trans>
+            </Kicker>
+          </Show>
           <Title>
             <Trans>Protected servers and channels</Trans>
           </Title>
