@@ -43,6 +43,12 @@ import type {
 import type { ResumeCommitRef, ResumePrefetch } from "../rtc/mlsRejoinPolicy";
 import { decryptBump } from "./e2eeConversationBump";
 import {
+  type GroupGrowthOutcome,
+  groupGrowthDisplayNames,
+  groupGrowthNeedsBundle,
+  groupGrowthOutcomeOf,
+} from "./e2eeGroupGrowth.ts";
+import {
   type CallRosterOutcome,
   type RatelimitTransportOptions,
   CALL_PLANE_RATELIMIT_RETRIES,
@@ -154,6 +160,16 @@ type GroupState = {
   members: GroupMember[];
 };
 
+// Group-growth decisions live in a loadable, spec'd module
+export {
+  type GroupGrowthOutcome,
+  groupEnableNamedIds,
+  groupEnableRoster,
+  groupGrowthDisplayNames,
+  groupGrowthNeedsBundle,
+  groupGrowthOutcomeOf,
+} from "./e2eeGroupGrowth.ts";
+
 /** Native `SafetyNumber` (digits + verification flags — never key bytes) */
 export type SafetyNumber = {
   digits: string;
@@ -162,16 +178,6 @@ export type SafetyNumber = {
 };
 
 export type KeyBundle = { user_id: string; devices: unknown[] };
-
-/**
- * How an audience-growth command ended (`addGroupMemberEncrypted`). The
- * native shell confirms the growth in an OS dialog: `declined` means the
- * user pressed Cancel there and nothing changed, a silent outcome that is
- * never a toast; `busy` means another growth dialog is open, or this
- * group's prompt is locked for a while after a decline. Every other
- * failure still throws.
- */
-export type GroupGrowthOutcome = "ok" | "declined" | "busy";
 
 /**
  * Whether a member can be included in an encrypted group's encryption
@@ -3277,7 +3283,9 @@ export class E2EEBridge implements E2EEAdapter {
           throw new Error("no longer in the local member list");
         }
         const displayed = [...channel.recipientIds.values()];
-        const displayNames = this.#growthDisplayNames(displayed);
+        const displayNames = groupGrowthDisplayNames(displayed, (id) =>
+          this.#client.users.get(id),
+        );
         await this.#invoke("e2ee_group_reconcile", {
           conversationId,
           displayed,
@@ -3293,12 +3301,12 @@ export class E2EEBridge implements E2EEAdapter {
           });
           break;
         } catch (raw) {
-          const native = raw as NativeError;
           // Cancel in the native dialog, or another growth dialog holds it
           // (or this group's prompt is locked after a decline). Nothing was
           // pinned, marked or sent: a silent outcome, not an error.
-          if (native.type === "declined") return "declined";
-          if (native.type === "busy") return "busy";
+          const outcome = groupGrowthOutcomeOf(raw);
+          if (outcome) return outcome;
+          const native = raw as NativeError;
           if (native.type === "needs_bundle" && native.user_id) {
             if (fetched.has(native.user_id)) throw raw;
             fetched.add(native.user_id);
@@ -3387,25 +3395,6 @@ export class E2EEBridge implements E2EEAdapter {
     } finally {
       release();
     }
-  }
-
-  /**
-   * Labels for the native growth dialog, keyed by user id:
-   * `username#discriminator` (unique on the server, so harder to imitate
-   * than a display name), the username alone when there is no
-   * discriminator, and no entry for a user this client has not loaded (the
-   * dialog then shows the id). The dialog says the names come from the app
-   * and are not verified.
-   */
-  #growthDisplayNames(userIds: string[]): Record<string, string> {
-    const names: Record<string, string> = {};
-    for (const id of userIds) {
-      const user = this.#client.users.get(id);
-      if (!user?.username) continue;
-      const tag = user.discriminator;
-      names[id] = tag ? `${user.username}#${tag}` : user.username;
-    }
-    return names;
   }
 
   /**
@@ -3545,45 +3534,45 @@ export class E2EEBridge implements E2EEAdapter {
     return bundles;
   }
 
+  // group-growth preflight: begin
   /**
-   * Preflight for the audience-growth commands (`e2ee_enable_group`,
-   * `e2ee_add_group_member`). Native confirms a growth in an OS dialog, and
-   * a `needs_bundle` after the user confirmed means a re-invoke, so the
-   * bundles go in up front and the common case shows ONE dialog.
-   *
-   * Fetches ONLY where this device cannot encrypt from its own pins,
-   * because every fetch spends one of that user's one-time keys:
-   * - a user in `userIds` with no pinned device at all, or with an Active
-   *   device that has no session;
-   * - self (always considered) when `#selfDevicesUnpinned` is set, since
-   *   the core pins own devices only from a self bundle and never raises
-   *   `needs_bundle` for self, or when one of our OTHER Active devices has
-   *   no session. The local device never counts.
-   * Availability-only and never throws: a failed read or fetch skips that
-   * user and leaves them to the caller's `needs_bundle` loop.
+   * Bundle preflight for group growth (enable, include), run BEFORE the
+   * native confirm so `needs_bundle` rarely fires after the user said yes;
+   * the callers' `needs_bundle` re-invoke stays as the fallback. Fetches
+   * only for the users `groupGrowthNeedsBundle` names, self always
+   * considered (own-device fan-out; on `#selfDevicesUnpinned` without
+   * reading state, as native never asks for a self bundle): each fetch
+   * spends one of that user's one-time keys. A caller whose send included
+   * a self bundle clears `#selfDevicesUnpinned` once native succeeds.
+   * Availability-only and never throws: a failed read or fetch leaves that
+   * user to the fallback. Not on an un-enabled device (nothing to fan out
+   * from, and the state read can open the engine).
    */
   async groupGrowthBundlePreflight(
     channel: Channel,
-    userIds: string[],
+    userIds: Iterable<string>,
   ): Promise<KeyBundle[]> {
     if (channel.type !== "Group") return [];
+    const status = this.status.get("state");
+    if (!status?.enabled) return [];
     const selfId = this.#client.user!.id;
-    const localDevice = this.status.get("state")?.device_id;
+    const selfUnpinned = this.#selfDevicesUnpinned;
     const bundles: KeyBundle[] = [];
     for (const userId of new Set([...userIds, selfId])) {
       try {
-        let needs = userId === selfId && this.#selfDevicesUnpinned;
-        if (!needs) {
-          const { devices } = await this.conversationState(userId);
-          const sessionless = devices.some(
-            (d) =>
-              d.status === "active" &&
-              !d.has_active_session &&
-              !(userId === selfId && d.device_id === localDevice),
-          );
-          needs = sessionless || (userId !== selfId && devices.length === 0);
-        }
-        if (needs) {
+        const isSelf = userId === selfId;
+        const devices =
+          isSelf && selfUnpinned
+            ? []
+            : (await this.conversationState(userId)).devices;
+        if (
+          groupGrowthNeedsBundle(
+            devices,
+            isSelf,
+            status.device_id,
+            selfUnpinned,
+          )
+        ) {
           bundles.push(
             await this.#api<KeyBundle>("GET", `/e2ee/keys/${userId}`),
           );
@@ -3597,6 +3586,7 @@ export class E2EEBridge implements E2EEAdapter {
     }
     return bundles;
   }
+  // group-growth preflight: end
 
   /**
    * Late-device downgrade notify (needs-bundle §2), fire-and-forget from

@@ -15,7 +15,9 @@
 // attempt loop, so a confirmed dialog rarely meets a needs_bundle. The dialog
 // labels are built in the attempt from the list it reconciles. A Cancel
 // ("declined") or a held dialog ("busy") resolves at once, before any
-// needs_bundle retry; only a delivered include resolves "ok".
+// needs_bundle retry; only a delivered include resolves "ok". The labels
+// and the outcome tag come from e2eeGroupGrowth.ts, whose own spec pins
+// what they produce; this one pins where and on what they are called.
 //
 // e2ee.ts cannot load under node (Capacitor, Solid primitives, extensionless
 // sibling imports, and #invoke is private), so this scans the source.
@@ -161,13 +163,22 @@ const RETURNS_OUTCOME = /\)\s*:\s*Promise\s*<\s*GroupGrowthOutcome\s*>\s*$/;
 const AWAITED_PREFLIGHT = /\bawait\s+this\.groupGrowthBundlePreflight\s*\(/;
 const PREFLIGHT = /\bgroupGrowthBundlePreflight\b/;
 const DISPLAY_NAMES_DECL =
-  /\bconst\s+displayNames\s*=\s*this\.#growthDisplayNames\(\s*displayed\s*\)\s*;/;
+  /\bconst\s+displayNames\s*=\s*groupGrowthDisplayNames\(\s*displayed\s*,\s*\(\s*id\s*\)\s*=>\s*this\.#client\.users\.get\(\s*id\s*\)\s*,?\s*\)\s*;/;
 const DISPLAY_NAMES_ARG = /\bdisplayNames\s*[,}]/;
-const DECLINED_RETURN =
-  /\bif\s*\(\s*native\.type\s*===\s*"declined"\s*\)\s*\{?\s*return\s+"declined"/;
-const BUSY_RETURN =
-  /\bif\s*\(\s*native\.type\s*===\s*"busy"\s*\)\s*\{?\s*return\s+"busy"/;
-const OUTCOME_RETURN = /\breturn\s+"(?:ok|declined|busy)"/;
+/** `outcome` read from the add's own catch binding, returned as is */
+const outcomeReturn = (caught: string) =>
+  new RegExp(
+    String.raw`\bconst\s+outcome\s*=\s*groupGrowthOutcomeOf\(\s*` +
+      caught +
+      String.raw`\s*\)\s*;\s*if\s*\(\s*outcome\s*\)\s*\{?\s*return\s+outcome\b`,
+  );
+const OUTCOME_RETURN = /\breturn\s+(?:"(?:ok|declined|busy)"|outcome\b)/;
+const MODULE_IMPORT = (name: string) =>
+  new RegExp(
+    String.raw`\nimport\s*\{[^}]*\b` +
+      name +
+      String.raw`\b[^}]*\}\s*from\s*"\.\/e2eeGroupGrowth\.ts";`,
+  );
 const OK_RETURN = /\breturn\s+"ok"/;
 const DELIVERY_POST = /\bthis\.#api\b[^;]*"POST"\s*,\s*"\/e2ee\/messages"/;
 
@@ -245,10 +256,15 @@ function addCall(m: Views) {
     steps.loop.end,
   );
   const catchOpen = catchHead.end - 1;
+  const caught = /catch\s*\(\s*(\w+)/.exec(
+    m.skel.slice(catchHead.at, catchHead.end),
+  )?.[1];
+  assert.ok(caught, "the add's catch binds the rejection");
   return {
     ...steps,
     addArgsOpen,
     addArgsClose,
+    caught,
     catchOpen,
     catchClose: closeOf(m.skel, catchOpen),
   };
@@ -374,36 +390,59 @@ describe("addGroupMemberEncrypted include order", () => {
 
   test("a Cancel or a held dialog resolves at once, before any needs_bundle retry", () => {
     const m = method();
-    const { catchOpen, catchClose } = addCall(m);
+    const { caught, catchOpen, catchClose } = addCall(m);
     const code = m.code.slice(catchOpen, catchClose + 1);
     const skel = m.skel.slice(catchOpen, catchClose + 1);
-    const declined = find(code, DECLINED_RETURN, 'return "declined"');
-    const busy = find(code, BUSY_RETURN, 'return "busy"');
+    // groupGrowthOutcomeOf maps exactly declined and busy (its own spec)
+    const outcome = find(
+      code,
+      outcomeReturn(caught),
+      `return groupGrowthOutcomeOf(${caught}) when set`,
+    );
     const firstAwait = skel.search(/\bawait\b/);
     const firstContinue = skel.search(/\bcontinue\b/);
     const firstThrow = skel.search(/\bthrow\b/);
-    for (const [what, hit] of [
-      ["declined", declined],
-      ["busy", busy],
+    for (const [step, at] of [
+      ["await", firstAwait],
+      ["continue", firstContinue],
+      ["throw", firstThrow],
     ] as const) {
-      for (const [step, at] of [
-        ["await", firstAwait],
-        ["continue", firstContinue],
-        ["throw", firstThrow],
-      ] as const) {
-        assert.ok(at < 0 || hit.at < at, `${what} resolves before any ${step}`);
-      }
+      assert.ok(
+        at < 0 || outcome.at < at,
+        `declined/busy resolve before any ${step}`,
+      );
     }
     assert.equal(
-      countIn(m.code, /\breturn\s+"declined"/),
+      countIn(m.code, /\bgroupGrowthOutcomeOf\b/),
       1,
-      'only the add resolves "declined"',
+      "only the add's rejection is read as an outcome",
     );
     assert.equal(
-      countIn(m.code, /\breturn\s+"busy"/),
-      1,
-      'only the add resolves "busy"',
+      countIn(m.code, /\breturn\s+"(?:declined|busy)"/),
+      0,
+      "no other path resolves declined or busy",
     );
+  });
+
+  test("the labels and the outcome tag are e2eeGroupGrowth.ts's", () => {
+    for (const name of [
+      "groupGrowthDisplayNames",
+      "groupGrowthOutcomeOf",
+      "GroupGrowthOutcome",
+    ]) {
+      assert.match(SOURCE, MODULE_IMPORT(name), `${name} is imported`);
+      assert.doesNotMatch(
+        SOURCE,
+        new RegExp(
+          String.raw`\b(?:(?:function|const|let|var|class)\s+` +
+            name +
+            String.raw`\b|type\s+` +
+            name +
+            String.raw`\s*[=<])`,
+        ),
+        `${name} is not redeclared locally`,
+      );
+    }
   });
 
   test('only a delivered include resolves "ok"', () => {
@@ -414,8 +453,8 @@ describe("addGroupMemberEncrypted include order", () => {
     find(m.code, OK_RETURN, 'return "ok" after the delivery POST', post.end);
     assert.equal(
       countIn(m.code, OUTCOME_RETURN),
-      3,
-      "the outcomes are ok, declined and busy, once each",
+      2,
+      "the outcomes are ok and the add's declined/busy, once each",
     );
   });
 });
