@@ -221,6 +221,19 @@ export type Modals =
       client: Client;
     }
   | {
+      /**
+       * Import a server from another platform (Stoat, Fluxer, Matrix) via the
+       * per-source import bot. Flag-gated per source on
+       * `features.import_sources`.
+       */
+      type: "import_source";
+      client: Client;
+      /**
+       * Source to open directly; when absent the modal shows the source picker.
+       */
+      source?: "stoat" | "fluxer" | "matrix";
+    }
+  | {
       type: "create_webhook";
       channel: Channel;
       callback: (id: string) => void;
