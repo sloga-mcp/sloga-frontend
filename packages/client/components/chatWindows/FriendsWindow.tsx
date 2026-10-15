@@ -1,0 +1,119 @@
+import { JSX, createEffect } from "solid-js";
+
+import { useLingui } from "@lingui-solid/solid/macro";
+import { useNavigate } from "@solidjs/router";
+import { cva } from "styled-system/css";
+
+import { useClient } from "@revolt/client";
+import * as chatShell from "@revolt/client/chatShell";
+import { useWindowCtx } from "@revolt/client/windowCtx";
+import { useModals } from "@revolt/modal";
+import { useState } from "@revolt/state";
+
+import { FriendsList } from "../friends/FriendsList";
+import { GroupChatsDock } from "../friends/GroupChatsDock";
+import { SelfBar } from "../friends/SelfBar";
+
+import { routeConversation } from "./openConversation";
+
+/**
+ * The desktop friends window, in both "Open DMs in" modes: your own presence
+ * on top, the friends list in the middle and the group chats dock at the
+ * bottom.
+ *
+ * Rendered from the main tree into the child document (inside
+ * `ChildWindowChrome`), so the router here is MAIN's router.
+ */
+export function FriendsWindow(): JSX.Element {
+  const client = useClient();
+  const state = useState();
+  const navigate = useNavigate();
+  const ctx = useWindowCtx();
+  const { openModal } = useModals();
+  const { t } = useLingui();
+
+  createEffect(() => {
+    ctx.doc.title = t`Friends`;
+  });
+
+  /**
+   * "Main window" mode: the conversation opens in main, not in a chat window.
+   * Main is raised first, as the conversation shows there and not here.
+   */
+  function openInMain(path: string) {
+    void chatShell.focusMain();
+    navigate(path);
+  }
+
+  async function openConversation(userId: string) {
+    try {
+      const user = client().users.get(userId);
+      if (!user) throw new Error("friends window: unknown user");
+
+      const dm = await user.openDM();
+      routeConversation(state, dm.id, () => openInMain(dm.path));
+    } catch (err) {
+      // A denied or paused DM must not read as a dead row; shown in this
+      // window, where the user double-clicked.
+      console.error(err);
+      openModal({ type: "error2", error: err, windowId: ctx.id });
+    }
+  }
+
+  function openGroup(channelId: string) {
+    const channel = client().channels.get(channelId);
+    routeConversation(state, channelId, () =>
+      openInMain(channel?.path ?? `/channel/${channelId}`),
+    );
+  }
+
+  return (
+    <div class={column()}>
+      <div class={top()}>
+        <SelfBar />
+      </div>
+      <div class={middle()}>
+        <FriendsList onOpenConversation={(id) => void openConversation(id)} />
+      </div>
+      <div class={bottom()}>
+        <GroupChatsDock onOpen={openGroup} />
+      </div>
+    </div>
+  );
+}
+
+const column = cva({
+  base: {
+    display: "flex",
+    flexDirection: "column",
+    height: "100%",
+    minHeight: 0,
+    overflow: "hidden",
+    background: "var(--md-sys-color-surface)",
+    color: "var(--md-sys-color-on-surface)",
+  },
+});
+
+const top = cva({
+  base: {
+    flexShrink: 0,
+    paddingInline: "var(--gap-sm)",
+  },
+});
+
+const middle = cva({
+  base: {
+    position: "relative",
+    flexGrow: 1,
+    minHeight: 0,
+    display: "flex",
+    flexDirection: "column",
+    overflowY: "auto",
+  },
+});
+
+const bottom = cva({
+  base: {
+    flexShrink: 0,
+  },
+});

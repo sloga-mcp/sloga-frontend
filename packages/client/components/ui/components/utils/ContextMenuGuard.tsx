@@ -1,5 +1,7 @@
 import { onCleanup, onMount } from "solid-js";
 
+import { useWindowCtx } from "@revolt/client/windowCtx";
+
 /**
  * `<input>` types that hold no text, so the native menu offers them nothing.
  */
@@ -16,17 +18,42 @@ const NON_TEXT_INPUTS = new Set([
   "submit",
 ]);
 
+type Realm = Window & typeof globalThis;
+
+/**
+ * `instanceof` against both the main realm and the window the event came
+ * from. In a chat window most nodes are main-realm (Solid builds them from
+ * main's `document` and the portal adopts them, keeping their prototype), but
+ * anything created through that window's own `document` carries its realm's
+ * constructors and would fail a main-only check.
+ * @param node Node from the composed path
+ * @param name Constructor name
+ * @param win Window the guard is listening on
+ */
+function isA<
+  K extends "HTMLElement" | "HTMLTextAreaElement" | "HTMLInputElement",
+>(node: EventTarget, name: K, win: Window): node is InstanceType<Realm[K]> {
+  return node instanceof window[name] || node instanceof (win as Realm)[name];
+}
+
 /**
  * Whether the browser's own menu is the only thing that can serve this
  * right-click, so the guard has to stand down.
  * @param event Context menu event
+ * @param win Window the guard is listening on
+ * @param isMain Whether that window is the main window
  */
-function nativeMenuIsTheOnlyOption(event: MouseEvent) {
+function nativeMenuIsTheOnlyOption(
+  event: MouseEvent,
+  win: Window,
+  isMain: boolean,
+) {
   // Shift+right-click is the browser-wide "page, keep out of it" gesture —
   // Firefox honours it natively — and here it is the only way to reach the
   // affordances Sloga has no menu of its own for: Save image as…, Picture in
   // picture on a screenshare tile, View source, Inspect.
-  if (event.shiftKey) return true;
+  // Main only: in a chat window that menu's Reload blanks the about:blank child.
+  if (isMain && event.shiftKey) return true;
 
   // Paste, spellcheck suggestions and Undo live only in the native menu, and
   // right-click → Paste is how a good number of people paste at all, so every
@@ -41,10 +68,10 @@ function nativeMenuIsTheOnlyOption(event: MouseEvent) {
     .composedPath()
     .some(
       (node) =>
-        node instanceof HTMLElement &&
+        isA(node, "HTMLElement", win) &&
         (node.isContentEditable ||
-          node instanceof HTMLTextAreaElement ||
-          (node instanceof HTMLInputElement &&
+          isA(node, "HTMLTextAreaElement", win) ||
+          (isA(node, "HTMLInputElement", win) &&
             !NON_TEXT_INPUTS.has(node.type))),
     );
 }
@@ -76,8 +103,17 @@ function nativeMenuIsTheOnlyOption(event: MouseEvent) {
  *   browser-chrome menu this is here to hide.
  * - **It never stops propagation.** Anything downstream that wants the event
  *   still gets it; the only effect is on the browser's default action.
+ *
+ * Mounted once per window: in the main tree, and inside each chat window's
+ * chrome, where the global `window` is still main's and the WebView2 menu
+ * (Reload included) would otherwise come up in the child.
  */
 export function ContextMenuGuard() {
+  // Resolved once so add and remove hit the same window.
+  const ctx = useWindowCtx();
+  const win = ctx.win;
+  const isMain = ctx.id === "main";
+
   /**
    * Deny the browser its menu
    * @param event Context menu event
@@ -85,13 +121,13 @@ export function ContextMenuGuard() {
   function onContextMenu(event: MouseEvent) {
     if (event.defaultPrevented) return;
     if (event.button !== 2) return;
-    if (nativeMenuIsTheOnlyOption(event)) return;
+    if (nativeMenuIsTheOnlyOption(event, win, isMain)) return;
 
     event.preventDefault();
   }
 
-  onMount(() => window.addEventListener("contextmenu", onContextMenu));
-  onCleanup(() => window.removeEventListener("contextmenu", onContextMenu));
+  onMount(() => win.addEventListener("contextmenu", onContextMenu));
+  onCleanup(() => win.removeEventListener("contextmenu", onContextMenu));
 
   return <></>;
 }

@@ -1,3 +1,4 @@
+import { useWindowCtx } from "@revolt/client/windowCtx";
 import { useFloating } from "solid-floating-ui";
 import { JSX, Show, createSignal, onCleanup, onMount } from "solid-js";
 import { Portal } from "solid-js/web";
@@ -75,14 +76,17 @@ export function ComposerPopover(props: Props) {
     if (event.key === "Escape" && props.open) props.onDismiss?.();
   }
 
-  onMount(() => document.addEventListener("keydown", onKeyDown));
-  onCleanup(() => document.removeEventListener("keydown", onKeyDown));
+  // The document of the window this composer is in (chat windows are
+  // separate documents rendered from the main app).
+  const windowDoc = useWindowCtx().doc;
+  onMount(() => windowDoc.addEventListener("keydown", onKeyDown));
+  onCleanup(() => windowDoc.removeEventListener("keydown", onKeyDown));
 
   return (
     <>
       <Anchor ref={setAnchor}>{props.children}</Anchor>
       <Show when={props.open}>
-        <Portal mount={document.getElementById("floating")!}>
+        <Portal mount={useWindowCtx().floatingMount()}>
           {/* Sits above the trigger too, so tapping the trigger while the
               panel is open closes it instead of re-toggling it open. */}
           <Show when={props.onDismiss}>

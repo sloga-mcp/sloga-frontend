@@ -65,6 +65,21 @@ msgstr "{0, plural, one {# blocked message} other {# blocked messages}}"
 msgid "{0, plural, one {# member} other {# members}}"
 msgstr "{0, plural, one {# member} other {# members}}"
 
+#. placeholder {0}: onlineCount()
+#: components/chatWindows/ChatWindowView.tsx
+msgid "{0} online"
+msgstr "{0} online"
+
+#: components/chatWindows/ChatWindowView.tsx
+#: components/chatWindows/ChatWindowView.tsx
+msgid "Voice call"
+msgstr "Voice call"
+
+#: components/chatWindows/ChatWindowView.tsx
+#: components/chatWindows/ChatWindowView.tsx
+msgid "Video call"
+msgstr "Video call"
+
 #. placeholder {0}: current().total_reserves
 #: src/interface/ServerEvents.tsx
 msgid "{0, plural, one {# raider reserved} other {# raiders reserved}}"
@@ -811,6 +826,18 @@ msgstr "Add friend"
 #: components/modal/modals/AddMembersToGroup.tsx
 msgid "Add friends to group"
 msgstr "Add friends to group"
+
+#: components/chatWindows/ChatWindowView.tsx
+#: components/chatWindows/ChatWindowView.tsx
+#: components/friends/FriendRow.tsx
+#: components/friends/FriendRow.tsx
+msgid "Add to group"
+msgstr "Add to group"
+
+#: components/chatWindows/ChatWindowView.tsx
+#: components/chatWindows/ChatWindowView.tsx
+msgid "Pop out into a new window"
+msgstr "Pop out into a new window"
 
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "Add new members to the group"
@@ -2417,6 +2444,10 @@ msgstr "Create a new category"
 msgid "Create a new group"
 msgstr "Create a new group"
 
+#: components/friends/GroupChatsDock.tsx
+msgid "No group chats yet"
+msgstr "No group chats yet"
+
 #: components/app/interface/settings/server/roles/ServerRoleOverview.tsx
 msgid "Create a new role"
 msgstr "Create a new role"
@@ -3240,6 +3271,22 @@ msgstr "Emoji names can only use letters, numbers and underscores."
 msgid "Emoji Pack (affects your messages only)"
 msgstr "Emoji Pack (affects your messages only)"
 
+#: components/app/interface/settings/user/appearance/DmWindowsChoice.tsx
+msgid "Open direct messages in"
+msgstr "Open direct messages in"
+
+#: components/app/interface/settings/user/appearance/DmWindowsChoice.tsx
+msgid "Main window"
+msgstr "Main window"
+
+#: components/app/interface/settings/user/appearance/DmWindowsChoice.tsx
+msgid "Chat windows (separate friends and chat windows, like Steam)"
+msgstr "Chat windows (separate friends and chat windows, like Steam)"
+
+#: components/app/interface/settings/user/appearance/DmWindowsChoice.tsx
+msgid "Chat windows let you keep conversations open in their own windows. Drag a tab out to pop it out, or drag it onto another window to merge."
+msgstr "Chat windows let you keep conversations open in their own windows. Drag a tab out to pop it out, or drag it onto another window to merge."
+
 #: components/app/interface/settings/ServerSettings.tsx
 msgid "Emojis"
 msgstr "Emojis"
@@ -3366,6 +3413,10 @@ msgstr "Encryption was turned off — choose how to continue."
 msgid "Encryption will start once a message is sent."
 msgstr "Encryption will start once a message is sent."
 
+#: components/chatWindows/ChatWindowView.tsx
+msgid "Encryption needs your attention. See the notice above the message box."
+msgstr "Encryption needs your attention. See the notice above the message box."
+
 #: components/ui/components/features/voice/callCard/VoiceCallCardActions.tsx
 msgid "End call"
 msgstr "End call"
@@ -3377,6 +3428,28 @@ msgstr "End poll now"
 #: components/ui/components/features/voice/callCard/VoiceCallCardStatus.tsx
 msgid "End-to-end encrypted"
 msgstr "End-to-end encrypted"
+
+#: components/chatWindows/TabStrip.tsx
+#: components/chatWindows/TabStrip.tsx
+msgid "Encryption needs your attention"
+msgstr "Encryption needs your attention"
+
+#: components/chatWindows/TabStrip.tsx
+#: components/friends/FriendRow.tsx
+#: components/friends/GroupChatsDock.tsx
+msgid "Unread mentions"
+msgstr "Unread mentions"
+
+#: components/chatWindows/TabStrip.tsx
+#: components/friends/FriendRow.tsx
+#: components/friends/GroupChatsDock.tsx
+msgid "Unread messages"
+msgstr "Unread messages"
+
+#: components/chatWindows/TabStrip.tsx
+#: components/chatWindows/TabStrip.tsx
+msgid "Pop out"
+msgstr "Pop out"
 
 #: components/ui/components/features/voice/callCard/VoiceCallCardPreview.tsx
 msgid "End-to-end encrypted call"
@@ -3751,6 +3824,22 @@ msgstr "Friend Request"
 #: src/interface/navigation/channels/HomeSidebar.tsx
 msgid "Friends"
 msgstr "Friends"
+
+#: components/chatWindows/TabStrip.tsx
+msgid "Conversations"
+msgstr "Conversations"
+
+#: components/chatWindows/TabStrip.tsx
+msgid "1 member"
+msgstr "1 member"
+
+#: components/chatWindows/TabStrip.tsx
+msgid "{count} members"
+msgstr "{count} members"
+
+#: components/chatWindows/TabStrip.tsx
+msgid "Unknown conversation"
+msgstr "Unknown conversation"
 
 #: components/app/interface/settings/user/Privacy.tsx
 msgid "Friends only"
@@ -5055,6 +5144,10 @@ msgstr "Messages go out around their scheduled time."
 msgid "Messages to this conversation are end-to-end encrypted."
 msgstr "Messages to this conversation are end-to-end encrypted."
 
+#: components/chatWindows/ChatWindowView.tsx
+msgid "Messages in this conversation are not end-to-end encrypted."
+msgstr "Messages in this conversation are not end-to-end encrypted."
+
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "Messaging"
 msgstr "Messaging"
@@ -5170,6 +5263,24 @@ msgstr "More Contrast"
 #: src/interface/channels/text/Composition.tsx
 msgid "More options"
 msgstr "More options"
+
+#: components/friends/FriendsList.tsx
+#: components/modal/modals/FriendGroups.tsx
+msgid "Group name"
+msgstr "Group name"
+
+#: components/friends/FriendsList.tsx
+#: components/modal/modals/FriendGroups.tsx
+#: components/modal/modals/FriendGroups.tsx
+msgid "Group names need 1 to 40 characters."
+msgstr "Group names need 1 to 40 characters."
+
+#. placeholder {0}: group.name
+#. placeholder {0}: groupName(groupProps.id)
+#: components/friends/FriendsList.tsx
+#: components/modal/modals/FriendGroups.tsx
+msgid "Delete {0}? Your friends stay on your friends list."
+msgstr "Delete {0}? Your friends stay on your friends list."
 
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "Move Members"
@@ -5547,6 +5658,21 @@ msgstr "Nobody else is in this call yet."
 msgid "Nobody here right now!"
 msgstr "Nobody here right now!"
 
+#: components/friends/FriendsList.tsx
+#: components/friends/FriendsList.tsx
+msgid "Groups…"
+msgstr "Groups…"
+
+#: components/friends/FriendsList.tsx
+#: components/modal/modals/FriendGroups.tsx
+msgid "Delete group"
+msgstr "Delete group"
+
+#: components/friends/FriendsList.tsx
+#: components/friends/FriendsList.tsx
+msgid "Manage groups"
+msgstr "Manage groups"
+
 #: src/interface/ServerEvents.tsx
 #: src/interface/ServerEvents.tsx
 #: components/modal/modals/CameraSettings.tsx
@@ -5579,6 +5705,14 @@ msgstr "not encrypted"
 #: components/ui/components/features/voice/callCard/VoiceCallCardStatus.tsx
 msgid "Not encrypted"
 msgstr "Not encrypted"
+
+#: components/chatWindows/ChatWindowView.tsx
+msgid "Encryption pending"
+msgstr "Encryption pending"
+
+#: components/chatWindows/ChatWindowView.tsx
+msgid "Encryption needs attention"
+msgstr "Encryption needs attention"
 
 #: src/interface/channels/text/Composition.tsx
 msgid "Not encrypted — the other person hasn't turned on encryption."
@@ -5679,6 +5813,11 @@ msgstr "Official Server"
 #: components/ui/components/features/profiles/ProfileStatus.tsx
 msgid "Offline"
 msgstr "Offline"
+
+#: components/friends/GroupChatsDock.tsx
+#: components/friends/GroupChatsDock.tsx
+msgid "Group chats"
+msgstr "Group chats"
 
 #: components/modal/modals/SignedOut.tsx
 #: components/modal/modals/ImageEditorCore.tsx
@@ -6139,6 +6278,10 @@ msgstr "Color"
 #: components/ui/components/features/profiles/ProfileStatus.tsx
 msgid "Playing {0}"
 msgstr "Playing {0}"
+
+#: components/chatWindows/ChatWindowView.tsx
+msgid "Encrypted"
+msgstr "Encrypted"
 
 #. placeholder {0}: props.user.activity!.name
 #. placeholder {1}: playingFor()
@@ -7150,6 +7293,18 @@ msgstr "Search for users..."
 #: components/modal/modals/InviteToServer.tsx
 msgid "Search friends..."
 msgstr "Search friends..."
+
+#: components/friends/FriendsList.tsx
+msgid "Clear search"
+msgstr "Clear search"
+
+#: components/friends/FriendsList.tsx
+msgid "In game"
+msgstr "In game"
+
+#: components/friends/FriendsList.tsx
+msgid "Favorites"
+msgstr "Favorites"
 
 #: components/modal/modals/SoftResReserve.tsx
 msgid "Search items or bosses…"
@@ -8321,6 +8476,70 @@ msgstr "Tap to start"
 msgid "Tell them why you're adding them"
 msgstr "Tell them why you're adding them"
 
+#: components/modal/modals/AddFriendToGroup.tsx
+msgid "This group chat may be encrypted, but this device can't confirm it, so nobody was added."
+msgstr "This group chat may be encrypted, but this device can't confirm it, so nobody was added."
+
+#: components/modal/modals/AddFriendToGroup.tsx
+msgid "Couldn't confirm that this group chat is unencrypted, so nobody was added."
+msgstr "Couldn't confirm that this group chat is unencrypted, so nobody was added."
+
+#: components/modal/modals/AddFriendToGroup.tsx
+msgid "{name} hasn't turned on encryption on any device, so they can't be added to an encrypted group chat."
+msgstr "{name} hasn't turned on encryption on any device, so they can't be added to an encrypted group chat."
+
+#: components/modal/modals/AddFriendToGroup.tsx
+msgid "This encrypted group chat is full."
+msgstr "This encrypted group chat is full."
+
+#: components/modal/modals/AddFriendToGroup.tsx
+msgid "Couldn't prepare encryption for {name}, so nobody was added. Try again."
+msgstr "Couldn't prepare encryption for {name}, so nobody was added. Try again."
+
+#: components/modal/modals/AddFriendToGroup.tsx
+msgid "{name} couldn't be included in this group chat's encryption. Remove them from the group chat, or review their security identity."
+msgstr "{name} couldn't be included in this group chat's encryption. Remove them from the group chat, or review their security identity."
+
+#: components/modal/modals/AddFriendToGroup.tsx
+msgid "{name} was added to the group chat, but couldn't be included in its encryption yet."
+msgstr "{name} was added to the group chat, but couldn't be included in its encryption yet."
+
+#: components/modal/modals/AddFriendToGroup.tsx
+msgid "Add {name} to an encrypted group chat?"
+msgstr "Add {name} to an encrypted group chat?"
+
+#: components/modal/modals/AddFriendToGroup.tsx
+msgid "“{group}” is end-to-end encrypted. {name} will be included in its encryption and can read messages sent from now on, but not earlier ones. Everyone in the group will see that they were added."
+msgstr "“{group}” is end-to-end encrypted. {name} will be included in its encryption and can read messages sent from now on, but not earlier ones. Everyone in the group will see that they were added."
+
+#: components/modal/modals/AddFriendToGroup.tsx
+msgid "Add to group chat"
+msgstr "Add to group chat"
+
+#: components/modal/modals/AddFriendToGroup.tsx
+msgid "New group chat"
+msgstr "New group chat"
+
+#: components/modal/modals/AddFriendToGroup.tsx
+msgid "Turn on encryption on this device to add people to encrypted group chats."
+msgstr "Turn on encryption on this device to add people to encrypted group chats."
+
+#: components/modal/modals/AddFriendToGroup.tsx
+msgid "Can't add people to this group chat from here yet."
+msgstr "Can't add people to this group chat from here yet."
+
+#: components/modal/modals/AddFriendToGroup.tsx
+msgid "Checking…"
+msgstr "Checking…"
+
+#: components/modal/modals/AddFriendToGroup.tsx
+msgid "No other group chats to add them to."
+msgstr "No other group chats to add them to."
+
+#: components/modal/modals/AddFriendToGroup.tsx
+msgid "Add and include"
+msgstr "Add and include"
+
 #: components/modal/modals/ReportContent.tsx
 msgid "Tell us what's wrong with this message"
 msgstr "Tell us what's wrong with this message"
@@ -8556,6 +8775,44 @@ msgstr "The file \"{0}\" ({fileSize}) exceeds the maximum size limit of {maxSize
 #: components/modal/modals/ForwardMessage.tsx
 msgid "The forward keeps a copy of the message as it is right now — later edits or deletion of the original won't change it. Encrypted conversations can't receive forwards."
 msgstr "The forward keeps a copy of the message as it is right now — later edits or deletion of the original won't change it. Encrypted conversations can't receive forwards."
+
+#: components/modal/modals/FriendGroups.tsx
+msgid "Manage friend groups"
+msgstr "Manage friend groups"
+
+#. placeholder {0}: name()
+#: components/modal/modals/FriendGroups.tsx
+msgid "Choose groups for {0}"
+msgstr "Choose groups for {0}"
+
+#: components/modal/modals/FriendGroups.tsx
+msgid "You don't have any groups yet. Create one below to organize your friends."
+msgstr "You don't have any groups yet. Create one below to organize your friends."
+
+#: components/modal/modals/FriendGroups.tsx
+msgid "Rename group"
+msgstr "Rename group"
+
+#: components/modal/modals/FriendGroups.tsx
+msgid "Move up"
+msgstr "Move up"
+
+#: components/modal/modals/FriendGroups.tsx
+msgid "Move down"
+msgstr "Move down"
+
+#: components/modal/modals/FriendGroups.tsx
+#: components/modal/modals/FriendGroups.tsx
+msgid "New group name"
+msgstr "New group name"
+
+#: components/modal/modals/FriendGroups.tsx
+msgid "You've reached the limit of 50 groups. Delete one to make room."
+msgstr "You've reached the limit of 50 groups. Delete one to make room."
+
+#: components/modal/modals/FriendGroups.tsx
+msgid "Couldn't create that group."
+msgstr "Couldn't create that group."
 
 #: components/auth/src/flows/FlowOAuthCallback.tsx
 msgid "The Google sign-in was canceled."

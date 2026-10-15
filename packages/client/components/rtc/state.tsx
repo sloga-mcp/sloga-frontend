@@ -8,6 +8,7 @@ import {
   createRoot,
   createSignal,
   JSX,
+  mapArray,
   onCleanup,
   Setter,
   untrack,
@@ -89,6 +90,9 @@ import {
   KEYBIND_MIN_INTERVAL_MS,
   KEYBIND_REQUIREMENT,
 } from "@revolt/keybinds/globalKeybinds";
+// Already in this file's graph through the `@revolt/modal` barrel below; named
+// directly for push-to-talk's chat-window listeners (`#bindPttChildWindows`).
+import { boundKeybindWindows } from "@revolt/keybinds/keybindHandler";
 import { ModalControllerExtended, useModals } from "@revolt/modal";
 import { useNavigate } from "@revolt/routing";
 import { useState } from "@revolt/state";
@@ -868,6 +872,9 @@ class Voice {
   #micPipeline: VoiceAudioPipeline | undefined;
   #pttKeydown: ((e: KeyboardEvent) => void) | undefined;
   #pttKeyup: ((e: KeyboardEvent) => void) | undefined;
+  /** Detaches the PTT listeners from every chat window
+   *  ({@link #bindPttChildWindows}); set while push-to-talk is started. */
+  #pttChildWindowsOff: (() => void) | undefined;
   /** EL-PTT: key the desktop shell's global hook is armed to (undefined =
    * not armed — web build, unmappable key, or shell without the commands) */
   #pttNativeKey: string | undefined;
@@ -895,6 +902,7 @@ class Voice {
    *   too;
    * - `window` blur, because a DOM key-up is delivered only to the focused
    *   window — alt-tabbing mid-hold means that up never arrives at all.
+   *   Main's and each chat window's ({@link #bindPttChildWindows}).
    *
    * The native layer treats the same latch as unacceptable for the same
    * reason: `fire_panic` (`ptt.rs`) force-clears `IS_DOWN` "rather than
@@ -11923,8 +11931,57 @@ class Voice {
 
     window.addEventListener("keydown", this.#pttKeydown);
     window.addEventListener("keyup", this.#pttKeyup);
+    this.#pttChildWindowsOff = this.#bindPttChildWindows(
+      this.#pttKeydown,
+      this.#pttKeyup,
+    );
 
     if (this.#settings.pushToTalk) void this.#ensureNativePtt(room);
+  }
+
+  /**
+   * The same two handlers on every chat window, for as long as its keys are
+   * bound: the set `KeybindsWorker` serves, from `boundKeybindWindows`.
+   * Main's are attached by the caller.
+   *
+   * A DOM key event reaches only the focused window, and a chat window is a
+   * window of its own. Without these, a hold started in main and released
+   * in a chat window sends its `keyup` there and the microphone stays hot,
+   * and the native hook cannot help: it is blind while any Sloga window has
+   * focus (`ptt.rs`). Each window also gets main's `blur` clear of
+   * `#pttHeld`, for main's reason: a hold started here and alt-tabbed away
+   * from sends its up nowhere. Like main's, it leaves the microphone alone.
+   *
+   * @returns detach from every window; idempotent
+   */
+  #bindPttChildWindows(
+    keydown: (e: KeyboardEvent) => void,
+    keyup: (e: KeyboardEvent) => void,
+  ): () => void {
+    return createRoot((dispose) => {
+      createEffect(
+        mapArray(boundKeybindWindows, (ctx) => {
+          const win = ctx.win;
+          const onBlur = () => {
+            this.#pttHeld = false;
+          };
+          win.addEventListener("keydown", keydown);
+          win.addEventListener("keyup", keyup);
+          win.addEventListener("blur", onBlur);
+
+          onCleanup(() => {
+            try {
+              win.removeEventListener("keydown", keydown);
+              win.removeEventListener("keyup", keyup);
+              win.removeEventListener("blur", onBlur);
+            } catch {
+              // A closed window's listeners die with it.
+            }
+          });
+        }),
+      );
+      return dispose;
+    });
   }
 
   /**
@@ -12035,6 +12092,8 @@ class Voice {
     if (this.#pttKeydown)
       window.removeEventListener("keydown", this.#pttKeydown);
     if (this.#pttKeyup) window.removeEventListener("keyup", this.#pttKeyup);
+    this.#pttChildWindowsOff?.();
+    this.#pttChildWindowsOff = undefined;
     this.#pttKeydown = undefined;
     this.#pttKeyup = undefined;
     void this.#disarmNativePtt();

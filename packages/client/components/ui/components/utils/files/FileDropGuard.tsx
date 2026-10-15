@@ -1,5 +1,7 @@
 import { onCleanup, onMount } from "solid-js";
 
+import { useWindowCtx } from "@revolt/client/windowCtx";
+
 /**
  * Whether a drag event is carrying files in from outside the app.
  *
@@ -29,8 +31,15 @@ export function isFileDrag(event: DragEvent) {
  * FileDropAnywhereCollector still receives the very same events and attaches
  * wherever the files can genuinely be accepted; anywhere else the drop is
  * simply swallowed.
+ *
+ * Mounted once for the main window and once inside every chat window, each
+ * guarding the window it renders in. Chat windows share the main realm, so
+ * the global `window` would be the wrong one there; the target is captured
+ * once here so cleanup detaches from the same window it attached to.
  */
 export function FileDropGuard() {
+  const win = useWindowCtx().win;
+
   /**
    * Claim the drag so the browser doesn't
    * @param event Drag event
@@ -53,15 +62,19 @@ export function FileDropGuard() {
   }
 
   onMount(() => {
-    window.addEventListener("dragenter", onDragOver, true);
-    window.addEventListener("dragover", onDragOver, true);
-    window.addEventListener("drop", onDrop, true);
+    win.addEventListener("dragenter", onDragOver, true);
+    win.addEventListener("dragover", onDragOver, true);
+    win.addEventListener("drop", onDrop, true);
   });
 
   onCleanup(() => {
-    window.removeEventListener("dragenter", onDragOver, true);
-    window.removeEventListener("dragover", onDragOver, true);
-    window.removeEventListener("drop", onDrop, true);
+    try {
+      win.removeEventListener("dragenter", onDragOver, true);
+      win.removeEventListener("dragover", onDragOver, true);
+      win.removeEventListener("drop", onDrop, true);
+    } catch {
+      // A closed chat window's listeners die with it.
+    }
   });
 
   return <></>;

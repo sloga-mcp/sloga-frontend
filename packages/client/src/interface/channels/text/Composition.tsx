@@ -10,6 +10,7 @@ import {
   createSignal,
   on,
   onCleanup,
+  onMount,
 } from "solid-js";
 
 import { useLingui } from "@lingui-solid/solid/macro";
@@ -20,6 +21,8 @@ import { styled } from "styled-system/jsx";
 
 import { SOFTRES_CREATION_ENABLED } from "@revolt/app";
 import { E2EESendError, useClient, useE2EE, useSound } from "@revolt/client";
+import { composerE2EEModeFor } from "@revolt/client/e2eeBadge";
+import { useWindowCtx } from "@revolt/client/windowCtx";
 import { CONFIGURATION, debounce, useDevice } from "@revolt/common";
 import { pickUploadLimit } from "@revolt/common/lib/uploadLimit";
 import { useTime } from "@revolt/i18n";
@@ -72,6 +75,12 @@ export function MessageComposition(props: Props) {
   const sound = useSound();
   const { openModal } = useModals();
   const { layout } = useDevice();
+
+  /**
+   * Window this composer renders in: the main window, or a chat window whose
+   * document differs from the global `document`
+   */
+  const windowCtx = useWindowCtx();
 
   /**
    * On phones and tablets the composer splits into two bars (see MessageBox);
@@ -129,24 +138,23 @@ export function MessageComposition(props: Props) {
    *                   red open lock (a genuine mismatch)
    * - "blocked"     → peer identity change pending acceptance → amber warning
    * - undefined     → neither side is using E2EE (or non-DM) → no indicator
+   *
+   * Derived from the shared encryption badge (`e2eeBadge.ts`) so this and
+   * the chat-window badge cannot disagree; its spec pins it to the logic
+   * that lived here before.
    */
   const e2eeMode = createMemo(() => {
     const conv = conversationId();
     if (!conv) return undefined;
-    const mode = e2ee?.sendModes.get(conv);
-    if (mode === "encrypt" || mode === "blocked" || mode === "peer_downgraded")
-      return mode;
-    // Groups have no per-peer advertise hint — an unencrypted group shows no
-    // indicator (encryption is opt-in via the group's Security settings).
-    if (isGroup()) return undefined;
-    // A plaintext DM only warrants an indicator when THIS device is opted in
-    // — otherwise the user isn't using encryption and needs no nag.
-    // Distinguish "peer is set up, just not established yet" from "peer
-    // hasn't turned encryption on at all".
-    if (mode === "plaintext" && selfE2EEEnabled()) {
-      return peerE2EEEnabled() ? "pending" : "unencrypted";
-    }
-    return undefined;
+    return composerE2EEModeFor({
+      mode: e2ee?.sendModes.get(conv),
+      isGroup: isGroup(),
+      selfEnabled: selfE2EEEnabled(),
+      peerAdvertises: peerE2EEEnabled(),
+      // Known off with no native layer; `selfE2EEEnabled` reads this same
+      // status, so it can only be true once this is
+      e2eeLoaded: !e2ee || !!e2ee.status.get("state"),
+    });
   });
 
   /** Material symbol for the current indicator state */
@@ -451,9 +459,66 @@ export function MessageComposition(props: Props) {
   const [nodeReplacement, setNodeReplacement] =
     createSignal<readonly [string | "_focus"]>();
 
-  // bind this composition instance to the global node replacement signal
-  state.draft._setNodeReplacement = setNodeReplacement;
-  onCleanup(() => (state.draft._setNodeReplacement = undefined));
+  /**
+   * Empty markers rendered either side of the message box. MessageBox takes
+   * no ref and swaps its root element between layouts, so "inside the
+   * composer" means "between the markers"
+   */
+  let composerStart: HTMLSpanElement | undefined;
+  let composerEnd: HTMLSpanElement | undefined;
+
+  function isInComposer(node: Node | null) {
+    if (!node || !composerStart || !composerEnd) return false;
+    return (
+      !!(
+        composerStart.compareDocumentPosition(node) &
+        Node.DOCUMENT_POSITION_FOLLOWING
+      ) &&
+      !!(
+        composerEnd.compareDocumentPosition(node) &
+        Node.DOCUMENT_POSITION_PRECEDING
+      )
+    );
+  }
+
+  // Focus anywhere in the message box marks this composer as the one
+  // mentions go to. The listener sits on the markers' parent (the channel
+  // pane), which outlives MessageBox's layout swaps, rather than on the
+  // document, where other composers' focus would also arrive.
+  onMount(() => {
+    const parent = composerStart?.parentElement;
+    if (!parent) return;
+
+    const onFocusIn = (event: FocusEvent) => {
+      if (isInComposer(event.target as Node | null)) {
+        state.draft.noteComposerFocus(props.channel.id, windowCtx.id);
+      }
+    };
+
+    parent.addEventListener("focusin", onFocusIn);
+    onCleanup(() => parent.removeEventListener("focusin", onFocusIn));
+  });
+
+  // Register this composer for its channel so replies, edits and mentions
+  // reach it. The channel prop can change while mounted, so re-register on
+  // change; the unregister removes only this registration, not a composer
+  // another window mounted since.
+  createEffect(
+    on(
+      () => props.channel.id,
+      (channelId) => {
+        onCleanup(
+          state.draft.registerNodeReplacement(channelId, setNodeReplacement),
+        );
+
+        // A focused composer that switches channel won't see a new focus
+        // event, so the last-focused channel would still name the old one
+        if (isInComposer(windowCtx.doc.activeElement)) {
+          state.draft.noteComposerFocus(channelId, windowCtx.id);
+        }
+      },
+    ),
+  );
 
   createEffect(
     on(
@@ -1003,7 +1068,10 @@ export function MessageComposition(props: Props) {
    * Add a file to the message
    */
   function addFile() {
-    const input = document.createElement("input");
+    // In a chat window the picker must open over that window, so the input
+    // lives in its document
+    const doc = windowCtx.doc;
+    const input = doc.createElement("input");
     input.accept = "*";
     input.type = "file";
     input.multiple = true;
@@ -1023,7 +1091,7 @@ export function MessageComposition(props: Props) {
 
     // iOS requires us to append the file input
     // to DOM to allow us to add any images
-    document.body.appendChild(input);
+    doc.body.appendChild(input);
     input.click();
   }
 
@@ -1309,13 +1377,16 @@ export function MessageComposition(props: Props) {
           );
         }}
       </For>
+      <span ref={composerStart} hidden />
       <MessageBox
         tone={e2eeMode() === "encrypt" ? "encrypted" : "plain"}
         initialValue={initialValue()}
         nodeReplacement={nodeReplacement()}
         onSendMessage={() => sendMessage()}
         onTyping={delayedStopTyping}
-        onEditLastMessage={() => state.draft.setEditingMessage(true)}
+        onEditLastMessage={() =>
+          state.draft.setEditingMessage(true, props.channel.id)
+        }
         content={draft()?.content ?? ""}
         setContent={setContent}
         actionsStart={
@@ -1881,8 +1952,17 @@ export function MessageComposition(props: Props) {
           </Show>
         }
       />
-      <FilePasteCollector onFiles={onFiles} />
-      <FileDropAnywhereCollector onFiles={onFiles} />
+      <span ref={composerEnd} hidden />
+      <FilePasteCollector
+        onFiles={onFiles}
+        ctx={windowCtx}
+        active={() => true}
+      />
+      <FileDropAnywhereCollector
+        onFiles={onFiles}
+        ctx={windowCtx}
+        active={() => true}
+      />
     </>
   );
 }

@@ -5,6 +5,7 @@ import {
   Match,
   Show,
   Switch,
+  createMemo,
   createSignal,
   onCleanup,
   onMount,
@@ -14,19 +15,24 @@ import { Motion, Presence } from "solid-motionone";
 
 import { autoUpdate, flip, offset, shift } from "@floating-ui/dom";
 
+import { useWindowCtx } from "@revolt/client/windowCtx";
 import { Keybind, KeybindAction } from "@revolt/keybinds";
 
 import { FloatingElement, floatingElements } from "../../directives";
 
-import { dismissFloatingElements } from ".";
 import { AutoComplete } from "./AutoComplete";
 import { TooltipBase } from "./Tooltip";
 import { UserCard } from "./UserCard";
 
 /**
  * Render the actual floating elements
+ *
+ * One instance runs per window; each renders only the elements registered
+ * from its own window, into that window's #floating.
  */
 export function FloatingManager() {
+  const ctx = useWindowCtx();
+
   let mouseX = 0,
     mouseY = 0;
 
@@ -38,19 +44,31 @@ export function FloatingManager() {
     mouseY = clientY;
   }
 
-  onMount(() => document.addEventListener("mousemove", onMouseMove));
-  onCleanup(() => document.removeEventListener("mousemove", onMouseMove));
+  onMount(() => ctx.doc.addEventListener("mousemove", onMouseMove));
+  onCleanup(() => ctx.doc.removeEventListener("mousemove", onMouseMove));
+
+  const elements = createMemo(() =>
+    floatingElements().filter((el) => el.ctxId === ctx.id),
+  );
 
   /**
    * Whether a floating element is visible
    */
   function anyVisible() {
-    return floatingElements().find((el) => el.show());
+    return elements().find((el) => el.show());
+  }
+
+  /**
+   * Run the close logic of this window's floating elements; the same as
+   * `dismissFloatingElements`, but on this window's document
+   */
+  function dismiss() {
+    ctx.doc.dispatchEvent(new Event("mousedown"));
   }
 
   return (
-    <Portal mount={document.getElementById("floating")!}>
-      <For each={floatingElements()}>
+    <Portal mount={ctx.floatingMount()}>
+      <For each={elements()}>
         {(element) => (
           <Presence>
             <Show when={element.show()}>
@@ -61,10 +79,7 @@ export function FloatingManager() {
       </For>
 
       <Show when={anyVisible()}>
-        <Keybind
-          keybind={KeybindAction.CLOSE_FLOATING}
-          onPressed={dismissFloatingElements}
-        />
+        <Keybind keybind={KeybindAction.CLOSE_FLOATING} onPressed={dismiss} />
       </Show>
     </Portal>
   );
@@ -142,9 +157,12 @@ function Floating(props: FloatingElement & { mouseX: number; mouseY: number }) {
     props.hide();
   }
 
+  // Rendered by its own window's FloatingManager, so this is that window
+  const { doc } = useWindowCtx();
+
   if (props.config().contextMenu || props.config().userCard) {
-    onMount(() => document.addEventListener("mousedown", onMouseDown));
-    onCleanup(() => document.removeEventListener("mousedown", onMouseDown));
+    onMount(() => doc.addEventListener("mousedown", onMouseDown));
+    onCleanup(() => doc.removeEventListener("mousedown", onMouseDown));
   }
 
   /**
@@ -158,8 +176,8 @@ function Floating(props: FloatingElement & { mouseX: number; mouseY: number }) {
   }
 
   if (props.config().contextMenu) {
-    onMount(() => document.addEventListener("click", onClick));
-    onCleanup(() => document.removeEventListener("click", onClick));
+    onMount(() => doc.addEventListener("click", onClick));
+    onCleanup(() => doc.removeEventListener("click", onClick));
   }
 
   return (

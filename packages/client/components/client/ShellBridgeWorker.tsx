@@ -2,15 +2,12 @@ import { type JSX, onCleanup, onMount } from "solid-js";
 
 import { tauriInvoke } from "@revolt/common";
 import { useNavigate } from "@revolt/routing";
+import { useState } from "@revolt/state";
 
 import { useClient, useClientLifecycle } from ".";
-import {
-  POPOUT_WEB_MESSAGE_TYPE,
-  ULID_RE,
-  isPopoutAction,
-  isShellToMain,
-  useUserActions,
-} from "./popoutBridge";
+import { routeConversation } from "../chatWindows/openConversation";
+import { useUserActions } from "./popoutBridge";
+import { isShellToMain, validateWebPopoutMessage } from "./shellToMain";
 import { clearAllToasts, useToastShell } from "./toastShell";
 
 /**
@@ -28,7 +25,7 @@ type TauriGlobal = {
 };
 
 /**
- * Whether a `message` event came from this app's own friends popout. The
+ * Whether a `message` event came from this app's own web friends popout. The
  * origin check alone would also pass any other same-origin window holding a
  * reference to this one, and `event.source` can be a MessagePort or a service
  * worker, neither of which has a `location`. Reading `location` off a window
@@ -49,22 +46,33 @@ function fromFriendsPopout(event: MessageEvent): boolean {
 }
 
 /**
- * Receives what other windows ask the main window to do: a friends-popout
- * action (open a DM, start a call), a click on a desktop notification, and a
- * reply typed into (or a click on) the Windows shell's Sloga toast.
+ * A DM or group path, `/channel/<id>` with an optional message id; server
+ * channel paths start with `/server/` and never match.
+ */
+const CONVERSATION_PATH_RE =
+  /^\/channel\/([0-9A-HJKMNP-TV-Z]{26})(?:\/[0-9A-HJKMNP-TV-Z]{26})?$/;
+
+/**
+ * Receives what other windows ask the main window to do: a click on a
+ * desktop notification, a reply typed into (or a click on) the Windows
+ * shell's Sloga toast, and, on the web, a friends-popout action (open a DM,
+ * start a call).
  *
- * Mounted in the main window only. Every input is untrusted until
- * `isShellToMain` accepts it, whichever transport it came in on.
+ * Mounted in the main window only. Every input is untrusted until its
+ * validator accepts it: `isShellToMain` for the shell transports,
+ * `validateWebPopoutMessage` plus `fromFriendsPopout` for the web one.
  *
  * - Tauri: a `tauri::ipc::Channel` this window registers with the shell. Only
  *   Rust can write to it; any webview holding `core:default` can emit events
  *   to `main`, so an event is not a trustworthy channel for these.
  * - Electron: the preload's `onShellToMain`, fed by the main process.
  * - Web: the popout's `opener.postMessage`, checked by `fromFriendsPopout`.
+ *   Desktop shells have no popout; their friends window is a chat window.
  */
 export function ShellBridgeWorker(): JSX.Element | null {
   const client = useClient();
   const navigate = useNavigate();
+  const state = useState();
   const actions = useUserActions();
   const toastShell = useToastShell();
   const { lifecycle } = useClientLifecycle();
@@ -94,18 +102,16 @@ export function ShellBridgeWorker(): JSX.Element | null {
     }
 
     switch (message.kind) {
-      case "popoutOpenInMain": {
-        // A user this session has never seen is not someone the popout
-        // could have listed, so the request did not come from its UI.
-        if (!client()?.users.get(message.userId)) return;
-        actions
-          .run(message.action, message.userId)
-          .catch((error) => console.error("[shell-bridge]", error));
+      case "notificationOpen": {
+        // Chat-windows mode opens a DM or group as a chat-window tab; server
+        // channels, and channels this session doesn't know, open in main.
+        const channelId = CONVERSATION_PATH_RE.exec(message.path)?.[1];
+        const channel = channelId ? client()?.channels.get(channelId) : null;
+        if (channel?.type === "DirectMessage" || channel?.type === "Group")
+          routeConversation(state, channel.id, () => navigate(message.path));
+        else navigate(message.path);
         return;
       }
-      case "notificationOpen":
-        navigate(message.path);
-        return;
       // No `users.get` check: these name a toast id this window minted, and
       // toastShell resolves the channel from its own map, never the payload.
       case "toastReply":
@@ -173,23 +179,19 @@ export function ShellBridgeWorker(): JSX.Element | null {
   });
 
   // Web. Not gated on the platform: the checks below are the whole trust
-  // rule, and a shell's popout has no opener to post from anyway.
+  // rule, and a desktop shell never opens a popout to post from anyway.
   onMount(() => {
     const onMessage = (event: MessageEvent) => {
-      const data = event.data as
-        | { type?: unknown; action?: unknown; userId?: unknown }
-        | null
-        | undefined;
-      if (data?.type !== POPOUT_WEB_MESSAGE_TYPE) return;
-      if (!isPopoutAction(data.action)) return;
-      if (typeof data.userId !== "string" || !ULID_RE.test(data.userId)) return;
+      const request = validateWebPopoutMessage(event.data);
+      if (!request) return;
       if (!fromFriendsPopout(event)) return;
 
-      handle({
-        kind: "popoutOpenInMain",
-        action: data.action,
-        userId: data.userId,
-      });
+      // A user this session has never seen is not someone the popout
+      // could have listed, so the request did not come from its UI.
+      if (!client()?.users.get(request.userId)) return;
+      actions
+        .run(request.action, request.userId)
+        .catch((error) => console.error("[shell-bridge]", error));
     };
 
     window.addEventListener("message", onMessage);

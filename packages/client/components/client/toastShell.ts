@@ -21,6 +21,7 @@ import { useState } from "@revolt/state";
 import { streamerModeActive } from "@revolt/state/streamer";
 
 import { useClient } from ".";
+import { routeConversation } from "../chatWindows/openConversation";
 import { DM_PREVIEW_DEFAULT } from "./notificationPreviewPolicy";
 import {
   type ReplyError,
@@ -351,10 +352,14 @@ export function useToastShell(): {
   function handleOpen(toastId: string): void {
     const entry = replies.open(toastId);
     if (!entry) return;
-    navigate(
-      client()?.channels.get(entry.channelId)?.path ??
-        `/channel/${entry.channelId}`,
-    );
+    const channel = client()?.channels.get(entry.channelId);
+    const openInMain = () =>
+      navigate(channel?.path ?? `/channel/${entry.channelId}`);
+    // Chat-windows mode opens a DM or group as a chat-window tab; server
+    // channels, and channels this session doesn't know, open in main.
+    if (channel?.type === "DirectMessage" || channel?.type === "Group")
+      routeConversation(state, channel.id, openInMain);
+    else openInMain();
   }
 
   /**

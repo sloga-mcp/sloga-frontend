@@ -5,6 +5,7 @@ import { CONFIGURATION } from "@revolt/common";
 import { type ActiveModal } from ".";
 import { AddBotModal } from "./modals/AddBot";
 import { AddFriendModal } from "./modals/AddFriend";
+import { AddFriendToGroupModal } from "./modals/AddFriendToGroup";
 import { AddMembersToGroupModal } from "./modals/AddMembersToGroup";
 import { AndroidScreenShareSheetModal } from "./modals/AndroidScreenShareSheet";
 import { BanMemberModal } from "./modals/BanMember";
@@ -52,6 +53,7 @@ import { EmojiPreviewModal } from "./modals/EmojiPreview";
 import { Error2Modal } from "./modals/Error2";
 import { FollowChannelModal } from "./modals/FollowChannel";
 import { ForwardMessageModal } from "./modals/ForwardMessage";
+import { FriendGroupsModal } from "./modals/FriendGroups";
 import { ImageEditorModal } from "./modals/ImageEditor";
 import { ImageViewerModal } from "./modals/ImageViewer";
 import { ImportDiscordModal } from "./modals/ImportDiscord";
@@ -126,6 +128,10 @@ export function RenderModal(props: ActiveModal & { onClose: () => void }) {
       return <ChangelogHistoryModal {...modalProps} />;
     case "add_members_to_group":
       return <AddMembersToGroupModal {...modalProps} />;
+    case "add_friend_to_group":
+      return <AddFriendToGroupModal {...modalProps} />;
+    case "friend_groups":
+      return <FriendGroupsModal {...modalProps} />;
     case "channel_info":
       return <ChannelInfoModal {...modalProps} />;
     case "channel_toggle_mature":

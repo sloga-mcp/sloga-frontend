@@ -13,6 +13,7 @@ import { TextWithEmoji } from "@revolt/markdown";
 import { useModals } from "@revolt/modal";
 import { useLocation, useNavigate } from "@revolt/routing";
 import { incomingCall } from "@revolt/rtc";
+import { type State, useState } from "@revolt/state";
 import {
   Avatar,
   Deferred,
@@ -32,6 +33,11 @@ import { Symbol } from "@revolt/ui/components/utils/Symbol";
 import MdClose from "@material-design-icons/svg/outlined/close.svg?component-solid";
 
 import { useDevice } from "@revolt/common";
+import {
+  chatWindowsMode,
+  routeConversation,
+  routeFriends,
+} from "../../../../components/chatWindows/openConversation";
 import { SlogaWordmark } from "../../Home";
 import { SidebarBase } from "./common";
 
@@ -60,6 +66,7 @@ interface Props {
 export const HomeSidebar = (props: Props) => {
   const { t } = useLingui();
   const client = useClient();
+  const state = useState();
   const navigate = useNavigate();
   const location = useLocation();
   const { openModal } = useModals();
@@ -92,6 +99,11 @@ export const HomeSidebar = (props: Props) => {
 
           <MenuButton
             href="/friends"
+            onClick={(e: MouseEvent) =>
+              chatModeClick(e, state, () =>
+                routeFriends(state, () => navigate("/friends")),
+              )
+            }
             size="normal"
             icon={<Symbol>group</Symbol>}
             attention={location.pathname === "/friends" ? "selected" : "normal"}
@@ -195,6 +207,29 @@ export const HomeSidebar = (props: Props) => {
 };
 
 /**
+ * In chat-windows mode, a plain left click on a sidebar link runs `open`
+ * instead of following the link. Otherwise, and for clicks the router would
+ * also leave alone (modified, non-primary, already handled), the link's own
+ * navigation runs exactly as before.
+ */
+function chatModeClick(e: MouseEvent, state: State, open: () => void) {
+  if (
+    e.defaultPrevented ||
+    e.button !== 0 ||
+    e.metaKey ||
+    e.altKey ||
+    e.ctrlKey ||
+    e.shiftKey ||
+    !chatWindowsMode(state)
+  ) {
+    return;
+  }
+
+  e.preventDefault();
+  open();
+}
+
+/**
  * Sidebar title
  */
 const SidebarTitle = styled("a", {
@@ -279,6 +314,8 @@ function Entry(
   const presence = usePresenceText();
   const { openModal } = useModals();
   const client = useClient();
+  const state = useState();
+  const navigate = useNavigate();
 
   /**
    * Whether this conversation has a call ringing us right now
@@ -314,6 +351,12 @@ function Entry(
     <MenuButton
       {...remote}
       href={`/channel/${local.channel.id}`}
+      onClick={(e: MouseEvent) => {
+        const id = local.channel.id;
+        chatModeClick(e, state, () =>
+          routeConversation(state, id, () => navigate(`/channel/${id}`)),
+        );
+      }}
       size="normal"
       alert={
         (!local.active && ringing()) ||

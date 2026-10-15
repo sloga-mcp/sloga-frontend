@@ -39,6 +39,7 @@ import { RAIL_ACCENT_PRESETS } from "@revolt/ui/themes/railAccent";
 
 import MDPalette from "@material-design-icons/svg/outlined/palette.svg?component-solid";
 
+import { DmWindowsChoice } from "./DmWindowsChoice";
 import { LayoutArrangement } from "./LayoutArrangement";
 
 /**
@@ -674,6 +675,8 @@ export function AppearanceMenu() {
             </Trans>
           </Show>
         </Text>
+
+        <DmWindowsChoice />
       </Column>
 
       <Column>

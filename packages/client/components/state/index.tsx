@@ -11,11 +11,15 @@ import { SetStoreFunction, createStore } from "solid-js/store";
 import equal from "fast-deep-equal";
 import localforage from "localforage";
 
+import { IS_POPOUT_WINDOW } from "@revolt/client/popout";
 import { SlideDrawer } from "@revolt/ui/components/navigation/SlideDrawer";
+
+import { shouldPersistKey } from "./accountReset";
 import { AbstractStore, Store } from "./stores";
 import { Auth } from "./stores/Auth";
 import { Draft } from "./stores/Draft";
 import { Experiments } from "./stores/Experiments";
+import { FriendGroups } from "./stores/FriendGroups";
 import { Friends } from "./stores/Friends";
 import { Keybinds } from "./stores/Keybinds";
 import { Layout } from "./stores/Layout";
@@ -63,6 +67,7 @@ export class State {
   draft = new Draft(this);
   experiments = new Experiments(this);
   friends = new Friends(this);
+  "friend-groups" = new FriendGroups(this);
   keybinds = new Keybinds(this);
   layout = new Layout(this);
   linkSafety = new LinkSafety(this);
@@ -75,6 +80,17 @@ export class State {
   theme = new Theme(this);
   voice = new Voice(this);
   sounds = new Sounds(this);
+
+  /**
+   * Friend groups store
+   *
+   * The field above must be named after its store key: iterStores() and
+   * Sync.merge() look stores up as `state[key]`. A prototype getter is not an
+   * own key, so iterStores() still sees this store only once.
+   */
+  get friendGroups(): FriendGroups {
+    return this["friend-groups"];
+  }
 
   /**
    * Iterate over all available stores
@@ -134,6 +150,19 @@ export class State {
 
     // touch the key if syncable
     this.sync.touchIfSyncable(key);
+
+    // The friends popout keeps the synced stores and `sync` in memory only:
+    // it never syncs or checks the owner, so its copy can belong to an
+    // account that has since signed out (see shouldPersistKey)
+    if (
+      !shouldPersistKey(
+        key,
+        IS_POPOUT_WINDOW,
+        Object.keys(this.sync.default().revision),
+      )
+    ) {
+      return;
+    }
 
     // remove existing queued task if it exists
     if (this.writeQueue[key]) {

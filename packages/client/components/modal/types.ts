@@ -45,6 +45,10 @@ export type Modals =
       user?: User;
     }
   | {
+      type: "add_friend_to_group";
+      userId: string;
+    }
+  | {
       type: "add_members_to_group";
       client: Client;
       group: Channel;
@@ -100,6 +104,8 @@ export type Modals =
   | {
       type: "create_group";
       client: Client;
+      /** Users to pre-select (e.g. "New group chat" from a friend row) */
+      initialUsers?: string[];
     }
   | {
       type: "create_thread";
@@ -155,6 +161,11 @@ export type Modals =
       type: "softres_export";
       /** Sheet message to export (creator / moderator only) */
       message: Message;
+    }
+  | {
+      type: "friend_groups";
+      /** When set, show per-group checkboxes assigning this friend */
+      userId?: string;
     }
   | {
       type: "forward_message";
