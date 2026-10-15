@@ -10509,3 +10509,42 @@ msgstr "YouTube"
 msgid "Zap"
 msgstr "Zap"
 
+#: components/auth/src/CipherPromo.tsx
+msgid "$99"
+msgstr "$99"
+
+#: components/auth/src/CipherPromo.tsx
+msgid "Become a Cipher"
+msgstr "Become a Cipher"
+
+#: components/auth/src/CipherPromo.tsx
+msgid "Ciphers fund the audit"
+msgstr "Ciphers fund the audit"
+
+#: components/auth/src/CipherPromo.tsx
+msgid "Coming soon"
+msgstr "Coming soon"
+
+#: components/auth/src/CipherPromo.tsx
+msgid "End-to-end encryption for a whole server or a single channel. Not even Sloga can read it, and the encryption code goes open source on launch day."
+msgstr "End-to-end encryption for a whole server or a single channel. Not even Sloga can read it, and the encryption code goes open source on launch day."
+
+#: components/auth/src/CipherPromo.tsx
+msgid "End-to-end encryption for a whole server or a single channel. The encryption code goes open source on launch day, and at 675 Ciphers an outside firm audits it."
+msgstr "End-to-end encryption for a whole server or a single channel. The encryption code goes open source on launch day, and at 675 Ciphers an outside firm audits it."
+
+#: components/auth/src/CipherPromo.tsx
+msgid "End-to-end encryption, open source at launch."
+msgstr "End-to-end encryption, open source at launch."
+
+#: components/auth/src/CipherPromo.tsx
+msgid "numbered Cipher badges"
+msgstr "numbered Cipher badges"
+
+#: components/auth/src/CipherPromo.tsx
+msgid "Protected servers and channels"
+msgstr "Protected servers and channels"
+
+#: components/auth/src/CipherPromo.tsx
+msgid "to become a Cipher"
+msgstr "to become a Cipher"

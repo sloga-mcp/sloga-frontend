@@ -8842,3 +8842,43 @@ msgstr ""
 #: components/ui/components/features/voice/minigame/MinigameChip.tsx
 msgid "Zap"
 msgstr ""
+
+#: components/auth/src/CipherPromo.tsx
+msgid "$99"
+msgstr "US$ 99"
+
+#: components/auth/src/CipherPromo.tsx
+msgid "Become a Cipher"
+msgstr "Hazte Cipher"
+
+#: components/auth/src/CipherPromo.tsx
+msgid "Ciphers fund the audit"
+msgstr "Ciphers financian la auditoría"
+
+#: components/auth/src/CipherPromo.tsx
+msgid "Coming soon"
+msgstr "Próximamente"
+
+#: components/auth/src/CipherPromo.tsx
+msgid "End-to-end encryption for a whole server or a single channel. Not even Sloga can read it, and the encryption code goes open source on launch day."
+msgstr "Cifrado de extremo a extremo para un servidor entero o un solo canal. Ni Sloga puede leerlo, y el código de cifrado será de código abierto el día del lanzamiento."
+
+#: components/auth/src/CipherPromo.tsx
+msgid "End-to-end encryption for a whole server or a single channel. The encryption code goes open source on launch day, and at 675 Ciphers an outside firm audits it."
+msgstr "Cifrado de extremo a extremo para un servidor entero o un solo canal. El código de cifrado será de código abierto el día del lanzamiento, y con 675 Ciphers una empresa externa lo audita."
+
+#: components/auth/src/CipherPromo.tsx
+msgid "End-to-end encryption, open source at launch."
+msgstr "Cifrado de extremo a extremo, código abierto en el lanzamiento."
+
+#: components/auth/src/CipherPromo.tsx
+msgid "numbered Cipher badges"
+msgstr "insignias Cipher numeradas"
+
+#: components/auth/src/CipherPromo.tsx
+msgid "Protected servers and channels"
+msgstr "Servidores y canales Protected"
+
+#: components/auth/src/CipherPromo.tsx
+msgid "to become a Cipher"
+msgstr "para ser Cipher"
