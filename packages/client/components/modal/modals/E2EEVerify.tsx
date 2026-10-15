@@ -1,13 +1,24 @@
 import { For, Show, createResource, createSignal } from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
+import { styled } from "styled-system/jsx";
 
 import type { SafetyNumber } from "@revolt/client";
 import { useClient, useE2EE } from "@revolt/client";
+import { nativeE2EEAvailable } from "@revolt/client/e2ee";
 import { Column, Dialog, DialogProps, Text } from "@revolt/ui";
 
 import { useModals } from "..";
 import { Modals } from "../types";
+
+import {
+  IdentityConfirmNotice,
+  IdentityConfirmStep,
+  identityConfirmErrorStep,
+  identityConfirmOutcomeStep,
+  identityConfirmRefetches,
+  offersMarkVerified,
+} from "./e2eeIdentityConfirm.copy";
 
 /**
  * Safety-number verification screen (implementation plan slice 5, design §3).
@@ -24,6 +35,10 @@ import { Modals } from "../types";
  * The number is computed natively from PINNED keys only (a server swapping
  * bundles cannot change it) and only the digits cross the IPC — never key
  * bytes.
+ *
+ * This screen is not the gate. On the native shells "Mark as verified"
+ * opens a system dialog that shows the safety number for that device; that
+ * dialog is the confirm, and native commits only the keys it showed.
  */
 export function E2EEVerifyModal(
   props: DialogProps & Modals & { type: "e2ee_verify" },
@@ -34,6 +49,7 @@ export function E2EEVerifyModal(
   const { showError } = useModals();
 
   const [busy, setBusy] = createSignal(false);
+  const [notice, setNotice] = createSignal<IdentityConfirmNotice | null>(null);
 
   const peer = () => client().users.get(props.peerUserId);
 
@@ -43,10 +59,10 @@ export function E2EEVerifyModal(
       const conv = await e2ee?.conversationState(peerUserId);
       if (!conv) return [];
       // A safety number can be computed only for a device whose identity
-      // binding is signature-proven (both key types pinned).
-      const verifiable = conv.devices.filter(
-        (d) => d.status !== "revoked" && d.binding_verified,
-      );
+      // binding is signature-proven (both key types pinned), and only an
+      // Active pin can be marked verified: an identity-changed device is
+      // accepted first, on its own screen.
+      const verifiable = conv.devices.filter(offersMarkVerified);
       const out: Array<{ device_id: string; number: SafetyNumber }> = [];
       for (const device of verifiable) {
         try {
@@ -62,17 +78,42 @@ export function E2EEVerifyModal(
     },
   );
 
+  function noticeText(shown: IdentityConfirmNotice): string {
+    switch (shown) {
+      case "busy":
+        return t`Try again in a moment.`;
+      case "keys_changed":
+        return t`The keys changed while the system dialog was open. Check them again.`;
+      default: {
+        const exhaustive: never = shown;
+        return exhaustive;
+      }
+    }
+  }
+
   async function markVerified(deviceId: string) {
     if (!e2ee) return;
     setBusy(true);
+    setNotice(null);
+    let step: IdentityConfirmStep;
     try {
-      await e2ee.markVerified(props.peerUserId, deviceId);
-      await refetch();
+      step = identityConfirmOutcomeStep(
+        await e2ee.markVerified(props.peerUserId, deviceId),
+      );
+    } catch (error) {
+      // A decline is the user's answer, not an error: only a real failure
+      // reaches showError
+      step = identityConfirmErrorStep(error);
+      if (step.kind === "error") showError(error);
+    }
+    try {
+      if (identityConfirmRefetches(step)) await refetch();
     } catch (error) {
       showError(error);
     } finally {
       setBusy(false);
     }
+    if (step.kind === "stay") setNotice(step.notice);
   }
 
   /**
@@ -203,6 +244,21 @@ export function E2EEVerifyModal(
           </For>
         </Show>
 
+        <Show when={notice()}>
+          {(shown) => <NoticeText>{noticeText(shown())}</NoticeText>}
+        </Show>
+
+        <Show
+          when={
+            nativeE2EEAvailable() &&
+            state()?.some((entry) => !entry.number.user_verified)
+          }
+        >
+          <Text size="small">
+            <Trans>You'll confirm this in a system dialog.</Trans>
+          </Text>
+        </Show>
+
         <Text size="small">
           <Trans>
             Verifying protects against someone swapping this contact's keys. In
@@ -236,3 +292,9 @@ export function E2EEVerifyModal(
     </Dialog>
   );
 }
+
+const NoticeText = styled("span", {
+  base: {
+    color: "var(--md-sys-color-error)",
+  },
+});
