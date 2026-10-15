@@ -35,7 +35,20 @@
 //   K5. A plugin-level `val G = AtomicBoolean(…)` (declared directly in the
 //       `class E2eePlugin` body, not in a function or an inner class) on
 //       which BOTH methods call `G.compareAndSet(false, true)` (unqualified)
-//       before their preview, and `G.set(false)` somewhere in the method.
+//       before their preview, and that every path releases. A release is a
+//       statement (not under an `if`, `else`, `when` arm or operator) that is
+//       `G.set(false)`, or a call to a no-argument function local to the
+//       method whose whole body is `G.set(false)` or
+//       `if (H.compareAndSet(true, false)) G.set(false)` (`H` = a
+//       method-local `val H = AtomicBoolean(true)`). Every settling site after
+//       the busy branch (`call.reject(` / `call.resolve(` / `resolveJson(` /
+//       `rejectScrubbed(`) is preceded in its own block by a release (or by a
+//       `try` whose `finally` releases), or sits inside a `try`, in the same
+//       lambda, whose `finally` releases. The plugin's `run(call) { … }`,
+//       which rejects when its body throws, must open its body with a release
+//       or with a `try` whose `finally` releases. Settling sites before the
+//       busy branch ends (argument checks, the busy reject) are exempt: the
+//       guard is not held there.
 //   K6. Each method has a `setOnDismissListener` (or `OnDismissListener {`)
 //       lambda that claims a method-local `val O = AtomicBoolean(false)`
 //       with `O.compareAndSet(false, true)` and rejects with the `declined`
@@ -44,6 +57,25 @@
 //       the call (reject / resolve) makes the same claim.
 //   K7. Each method has `if (!G.compareAndSet(false, true)) { … }` whose body
 //       rejects with the `busy` literal and returns.
+//   K8. The decline lockout and teardown. In each method, with `C` = the val
+//       holding the "conversationId" argument:
+//         - an `if (growthLockedOut(C))` statement after the preview, outside
+//           the no-prompt branch, in the same block as the `runOnUiThread`
+//           that builds the dialog and before it, whose body rejects with the
+//           `busy` literal and returns;
+//         - a dismiss listener whose `if (O.compareAndSet(false, true))`
+//           branch calls `noteGrowthDecline(C)` as a statement;
+//         - `growthDialog = <dialog>` inside that `runOnUiThread`.
+//       And one `handleOnDestroy()` whose body calls `growthDialog?.dismiss()`
+//       as a top-level statement.
+//   K9. The input delay. In each method, a `setOnShowListener` lambda takes
+//       the positive button, as `val B = ….getButton(AlertDialog.BUTTON_POSITIVE)`
+//       or `….getButton(AlertDialog.BUTTON_POSITIVE)?.let { B -> … }` (`also`
+//       and `it` too; or `apply` / `run`, the button as receiver), and on it
+//       sets `filterTouchesWhenObscured = true` and `isEnabled = false`
+//       outside any `postDelayed(`, and calls a `postDelayed(` whose
+//       arguments set `isEnabled = true` and whose delay is at least 700 ms
+//       (a literal, or a `val` / `const val` holding one).
 // e2ee.ts:
 //   T8. `CapacitorTransport.invoke` has exactly one
 //       `if (command === "e2ee_enable_group")` route calling
@@ -321,6 +353,8 @@ function ktBranch(code: string, k: number): Span {
 }
 
 interface KtIf {
+  /** Index of the `if` keyword. */
+  at: number;
   /** The condition (string contents kept), whitespace removed. */
   cond: string;
   then: Span;
@@ -339,6 +373,7 @@ function ktIfs(m: Masked, body: Span): KtIf[] {
     const hasElse =
       code.startsWith("else", after) && !/\w/.test(code[after + 4] ?? "");
     out.push({
+      at: match.index,
       cond: squash(text.slice(paren + 1, condClose)),
       then,
       otherwise: hasElse ? ktBranch(code, skipWs(code, after + 4)) : null,
@@ -387,6 +422,257 @@ const ATOMIC_VAL =
 function claimAt(code: string, name: string, span: Span): number {
   const found = casOn(name).exec(code.slice(span[0], span[1] + 1));
   return found ? span[0] + found.index : -1;
+}
+
+/** Index of the bracket opening the one at `close` (masked code), or -1. */
+function matchOpen(code: string, close: number): number {
+  const pairs: Record<string, string> = { ")": "(", "}": "{", "]": "[" };
+  const open = pairs[code[close]];
+  let depth = 0;
+  for (let i = close; i >= 0; i--) {
+    if (code[i] === code[close]) depth++;
+    else if (code[i] === open && --depth === 0) return i;
+  }
+  return -1;
+}
+
+/** Index of the last non-space character before `i`, or -1. */
+function prevSignificant(code: string, i: number): number {
+  let j = i - 1;
+  while (j >= 0 && /\s/.test(code[j])) j--;
+  return j;
+}
+
+/** The identifier ending at `j` (inclusive), or "". */
+function wordEndingAt(code: string, j: number): string {
+  let k = j;
+  while (k >= 0 && /\w/.test(code[k])) k--;
+  return code.slice(k + 1, j + 1);
+}
+
+interface KtBlock {
+  open: number;
+  close: number;
+  /**
+   * `scope`: a lambda or function body, which may run at another time than
+   * the code around it. The rest run in line with it.
+   */
+  kind: "scope" | "try" | "catch" | "finally" | "control";
+  parent: KtBlock | null;
+}
+
+const CONTROL_HEADS = new Set(["if", "while", "for", "when"]);
+
+/** What the `{` at `open` (masked code) opens. */
+function ktBlockKind(code: string, open: number): KtBlock["kind"] {
+  const j = prevSignificant(code, open);
+  if (j < 0) return "scope";
+  if (/\w/.test(code[j])) {
+    const word = wordEndingAt(code, j);
+    if (word === "try") return "try";
+    if (word === "finally") return "finally";
+    return word === "else" || word === "do" ? "control" : "scope";
+  }
+  if (code[j] === ")") {
+    const paren = matchOpen(code, j);
+    const head = wordEndingAt(code, prevSignificant(code, paren));
+    if (head === "catch") return "catch";
+    return CONTROL_HEADS.has(head) ? "control" : "scope";
+  }
+  // `x -> {`: a `when` arm.
+  if (code[j] === ">" && code[j - 1] === "-") return "control";
+  return "scope";
+}
+
+/** Every `{…}` block in `body` (its own braces included), in source order. */
+function ktBlocks(code: string, body: Span): KtBlock[] {
+  const out: KtBlock[] = [];
+  const stack: KtBlock[] = [];
+  for (let i = body[0]; i <= body[1]; i++) {
+    if (code[i] === "{") {
+      const block: KtBlock = {
+        open: i,
+        close: matchClose(code, i),
+        kind: i === body[0] ? "scope" : ktBlockKind(code, i),
+        parent: stack.length ? stack[stack.length - 1] : null,
+      };
+      out.push(block);
+      stack.push(block);
+    } else if (code[i] === "}") {
+      stack.pop();
+    }
+  }
+  return out;
+}
+
+/** The innermost block strictly containing `i`, or null. */
+function innermost(blocks: KtBlock[], i: number): KtBlock | null {
+  let found: KtBlock | null = null;
+  for (const b of blocks) if (b.open < i && i < b.close) found = b;
+  return found;
+}
+
+/** The `finally { … }` of the `try {` at `tryOpen`, past any `catch`es. */
+function ktFinallyOf(code: string, tryOpen: number): Span | null {
+  let k = skipWs(code, matchClose(code, tryOpen) + 1);
+  while (/^catch\b/.test(code.slice(k, k + 6))) {
+    k = skipWs(code, k + 5);
+    if (code[k] === "(") k = skipWs(code, matchClose(code, k) + 1);
+    if (code[k] !== "{") return null;
+    k = skipWs(code, matchClose(code, k) + 1);
+  }
+  if (!/^finally\b/.test(code.slice(k, k + 8))) return null;
+  k = skipWs(code, k + 7);
+  return code[k] === "{" ? [k, matchClose(code, k)] : null;
+}
+
+const NOT_A_STATEMENT_AFTER = new Set([
+  "else",
+  "do",
+  "return",
+  "throw",
+  "in",
+  "is",
+  "as",
+  "fun",
+  "try",
+  "finally",
+]);
+
+/**
+ * Whether the expression at `i` starts a statement of its own: not the body
+ * of a brace-less `if` / `else` / `when` arm, and not an operand.
+ */
+function ktStatementStart(code: string, blocks: KtBlock[], i: number): boolean {
+  const j = prevSignificant(code, i);
+  if (j < 0) return true;
+  const c = code[j];
+  if (c === "{" || c === "}" || c === ";") return true;
+  if (c === ">" && code[j - 1] === "-") {
+    // `{ a, b -> x()`: the first statement of a lambda, not a `when` arm.
+    const b = innermost(blocks, i);
+    return (
+      b !== null &&
+      b.kind === "scope" &&
+      /^[\w\s,:<>?.]*$/.test(code.slice(b.open + 1, j - 1))
+    );
+  }
+  if (!code.slice(j + 1, i).includes("\n")) return false;
+  if (c === ")") {
+    const head = wordEndingAt(code, prevSignificant(code, matchOpen(code, j)));
+    return !CONTROL_HEADS.has(head) && head !== "catch";
+  }
+  if (/[\w"'\]]/.test(c)) {
+    return !NOT_A_STATEMENT_AFTER.has(wordEndingAt(code, j));
+  }
+  return false;
+}
+
+const POSITIVE_BUTTON = String.raw`getButton\s*\(\s*(?:(?:AlertDialog|DialogInterface)\s*\.\s*)?BUTTON_POSITIVE\s*\)`;
+
+/** The plan's positive-button input delay, a floor. */
+const CONFIRM_DELAY_FLOOR_MS = 700;
+
+interface KtButton {
+  /** Where the button is taken. */
+  at: number;
+  /** The name it goes by; null when it is the implicit receiver. */
+  name: string | null;
+  /** Where that name refers to it. */
+  scope: Span;
+}
+
+/** Each positive button taken inside `span`, and where it is in scope. */
+function positiveButtons(code: string, span: Span): KtButton[] {
+  const out: KtButton[] = [];
+  const inner = code.slice(span[0], span[1] + 1);
+  const bound = new RegExp(
+    String.raw`\bval\s+(\w+)\s*(?::\s*[\w.?]+\s*)?=\s*(?:\w+\s*(?:\?|!!)?\s*\.\s*)?${POSITIVE_BUTTON}`,
+    "g",
+  );
+  for (const b of inner.matchAll(bound)) {
+    out.push({ at: span[0] + b.index, name: b[1], scope: span });
+  }
+  const scoped = new RegExp(
+    String.raw`${POSITIVE_BUTTON}\s*(?:\?|!!)?\s*\.\s*(let|also|apply|run)\s*\{`,
+    "g",
+  );
+  for (const s of inner.matchAll(scoped)) {
+    const open = span[0] + s.index + s[0].length - 1;
+    const scope: Span = [open, matchClose(code, open)];
+    const param = /^\{\s*(\w+)\s*->/.exec(code.slice(open, scope[1]));
+    const receiver = s[1] === "apply" || s[1] === "run";
+    out.push({
+      at: span[0] + s.index,
+      name: receiver ? null : (param?.[1] ?? "it"),
+      scope,
+    });
+  }
+  return out;
+}
+
+/** A `postDelayed(` delay in ms: a literal, or a `val` holding one; else -1. */
+function delayMs(code: string, arg: string): number {
+  const literal = /^(\d[\d_]*)L?$/.exec(arg);
+  if (literal) return Number(literal[1].replace(/_/g, ""));
+  if (!/^\w+$/.test(arg)) return -1;
+  const held = new RegExp(
+    String.raw`\bval\s+${arg}\s*(?::\s*\w+\s*)?=\s*(\d[\d_]*)L?\b`,
+  ).exec(code);
+  return held ? Number(held[1].replace(/_/g, "")) : -1;
+}
+
+/** What the input delay on `button` lacks; empty when it has it all. */
+function delayMissing(code: string, button: KtButton): string[] {
+  const receiver =
+    button.name === null
+      ? String.raw`(?<![\w.?])(?:this\s*\.\s*)?`
+      : String.raw`\b${button.name}\s*(?:\?|!!)?\s*\.\s*`;
+  const sets = (prop: string, setter: string, value: string) =>
+    new RegExp(
+      String.raw`${receiver}(?:${prop}\s*=(?!=)\s*${value}\b|${setter}\s*\(\s*${value}\s*\))`,
+      "g",
+    );
+  const [from, to] = button.scope;
+  const inner = code.slice(from, to + 1);
+  const delayed: Span[] = [];
+  let reEnabled = false;
+  let longEnough = false;
+  for (const p of inner.matchAll(/\bpostDelayed\s*\(/g)) {
+    const paren = from + p.index + p[0].length - 1;
+    const close = matchClose(code, paren);
+    delayed.push([paren, close]);
+    if (
+      !sets("isEnabled", "setEnabled", "true").test(code.slice(paren, close))
+    ) {
+      continue;
+    }
+    reEnabled = true;
+    const args = callArgs(code, paren);
+    if (delayMs(code, args[args.length - 1] ?? "") >= CONFIRM_DELAY_FLOOR_MS) {
+      longEnough = true;
+    }
+  }
+  const outsideDelay = (re: RegExp) =>
+    [...inner.matchAll(re)].some((x) => !inSpan(delayed, from + x.index));
+  const missing: string[] = [];
+  if (
+    !outsideDelay(
+      sets("filterTouchesWhenObscured", "setFilterTouchesWhenObscured", "true"),
+    )
+  ) {
+    missing.push("filterTouchesWhenObscured = true");
+  }
+  if (!outsideDelay(sets("isEnabled", "setEnabled", "false"))) {
+    missing.push("isEnabled = false outside postDelayed(");
+  }
+  if (!reEnabled) missing.push("isEnabled = true inside a postDelayed(");
+  else if (!longEnough) {
+    missing.push(
+      `a postDelayed( delay of at least ${CONFIRM_DELAY_FLOOR_MS} ms`,
+    );
+  }
+  return missing;
 }
 
 // ---- Kotlin rules -----------------------------------------------------------
@@ -449,7 +735,7 @@ function ktViolations(src: string): string[] {
       methods.set(g.method, defs[0]);
       continue;
     }
-    for (const rule of ["K3", "K4", "K5", "K6", "K7"]) {
+    for (const rule of ["K3", "K4", "K5", "K6", "K7", "K8", "K9"]) {
       fail(rule, `${g.method}: no @PluginMethod to check`);
     }
   }
@@ -621,7 +907,19 @@ function ktViolations(src: string): string[] {
       fail("K3", `${g.method}: no engine commit in the !needsPrompt branch`);
     }
 
-    // K5: the single-in-flight guard.
+    // K7's busy branch, found first: where it ends bounds K5's exemption.
+    const busy =
+      guard &&
+      ktIfs(m, body).find((s) =>
+        [
+          `!${guard}.compareAndSet(false,true)`,
+          `${guard}.compareAndSet(false,true)==false`,
+        ].includes(s.cond),
+      );
+    const blocks = ktBlocks(code, body);
+    const callName = squash(f.params).split(":")[0];
+
+    // K5: the single-in-flight guard, released on every path.
     if (!guard) {
       fail(
         "K5",
@@ -635,11 +933,129 @@ function ktViolations(src: string): string[] {
           `${g.method}: ${guard}.compareAndSet runs after the preview`,
         );
       }
-      const released = new RegExp(
-        String.raw`\b${guard}\s*\.\s*set\s*\(\s*false\s*\)`,
+      // A local release helper, possibly behind a per-request latch.
+      const plain = `${guard}.set(false)`;
+      const latches = [...code.matchAll(ATOMIC_VAL)]
+        .filter(
+          (a) =>
+            a[1] === "val" &&
+            within(a.index) &&
+            /^\s*true\s*\)/.test(code.slice(a.index + a[0].length)),
+        )
+        .map((a) => a[2]);
+      const helpers = funs
+        .filter(
+          (h) =>
+            h.open > f.open && h.close < f.close && squash(h.params) === "",
+        )
+        .filter((h) => {
+          const inner = squash(code.slice(h.open + 1, h.close));
+          return (
+            inner === plain ||
+            latches.some((l) => {
+              const cas = `if(${l}.compareAndSet(true,false))`;
+              return inner === cas + plain || inner === `${cas}{${plain}}`;
+            })
+          );
+        })
+        .map((h) => h.name);
+      const setFalse = String.raw`\b${guard}\s*\.\s*set\s*\(\s*false\s*\)`;
+      const releaseRe = new RegExp(
+        helpers.length
+          ? String.raw`${setFalse}|\b(?:${helpers.join("|")})\s*\(\s*\)`
+          : setFalse,
+        "g",
       );
-      if (!released.test(code.slice(f.open, f.close + 1))) {
-        fail("K5", `${g.method}: never releases ${guard} (set(false))`);
+      const releases = [...code.slice(f.open, f.close + 1).matchAll(releaseRe)]
+        .map((r) => f.open + r.index)
+        .filter((i) => ktStatementStart(code, blocks, i));
+      /** A release in `b` before `i`, directly or in a sibling's finally. */
+      const releasedBefore = (b: KtBlock, i: number) =>
+        releases.some((r) => {
+          if (r <= b.open || r >= i) return false;
+          const home = innermost(blocks, r);
+          return (
+            home === b ||
+            (home !== null && home.kind === "finally" && home.parent === b)
+          );
+        });
+      const releasesIn = (fin: Span | null) =>
+        fin !== null &&
+        releases.some((r) => innermost(blocks, r)?.open === fin[0]);
+      /** Inside a try (or catch), in the same lambda, whose finally releases. */
+      const underFinally = (i: number) => {
+        for (let b = innermost(blocks, i); b && b.kind !== "scope"; ) {
+          if (
+            (b.kind === "try" || b.kind === "catch") &&
+            releasesIn(ktFinallyOf(code, b.open))
+          ) {
+            return true;
+          }
+          b = b.parent;
+        }
+        return false;
+      };
+      // Before the busy branch ends, the guard is not this request's.
+      const exemptUntil = busy ? busy.then[1] : first;
+      const settles = new RegExp(
+        String.raw`\b(?:${callName}\s*\.\s*(?:reject|resolve)|resolveJson|rejectScrubbed|run(?=\s*\(\s*${callName}\s*[,)]))\s*\(`,
+        "g",
+      );
+      if (!releases.length) {
+        fail(
+          "K5",
+          `${g.method}: never releases ${guard} (${plain}, or a local release helper)`,
+        );
+      } else {
+        for (const s of code.slice(f.open, f.close + 1).matchAll(settles)) {
+          const i = f.open + s.index;
+          if (i <= exemptUntil) continue;
+          const what = squash(s[0]);
+          if (what === "run(") {
+            // `run(call) { … }` rejects when its body throws, so the body
+            // must release before anything in it can throw.
+            const paren = i + s[0].length - 1;
+            const close = matchClose(code, paren);
+            let lambda = skipWs(code, close + 1);
+            if (code[lambda] !== "{") {
+              lambda = -1;
+              for (let k = paren + 1; k < close; k++) {
+                if (code[k] === "{") {
+                  lambda = k;
+                  k = matchClose(code, k);
+                } else if (code[k] === "(" || code[k] === "[") {
+                  k = matchClose(code, k);
+                }
+              }
+            }
+            let opens = false;
+            if (lambda >= 0) {
+              const start = skipWs(code, lambda + 1);
+              const tried =
+                /^(?:(?:val|var)\s+\w+\s*(?::\s*[\w.<>?]+\s*)?=\s*)?try\s*\{/.exec(
+                  code.slice(start, matchClose(code, lambda)),
+                );
+              opens =
+                releases.includes(start) ||
+                (tried !== null &&
+                  releasesIn(ktFinallyOf(code, start + tried[0].length - 1)));
+            }
+            if (!opens) {
+              fail(
+                "K5",
+                `${g.method}: run(${callName}) at ${at(i)} rejects if its body throws, and the body does not open with a release of ${guard} or a try whose finally releases it`,
+              );
+            }
+            continue;
+          }
+          const home = innermost(blocks, i);
+          if (!(home && releasedBefore(home, i)) && !underFinally(i)) {
+            fail(
+              "K5",
+              `${g.method}: ${what} at ${at(i)} settles the call without releasing ${guard} first (a release earlier in its own block, or an enclosing try in the same lambda whose finally releases)`,
+            );
+          }
+        }
       }
     }
 
@@ -697,31 +1113,155 @@ function ktViolations(src: string): string[] {
     }
 
     // K7: busy when the guard is taken.
-    const busy =
-      guard &&
-      ktIfs(m, body).find((s) =>
-        [
-          `!${guard}.compareAndSet(false,true)`,
-          `${guard}.compareAndSet(false,true)==false`,
-        ].includes(s.cond),
-      );
+    const rejectsBusy = ([from, to]: Span) =>
+      REJECT.test(code.slice(from, to + 1)) &&
+      BUSY.test(text.slice(from, to + 1)) &&
+      /\breturn\b/.test(code.slice(from, to + 1));
     if (!busy) {
       fail(
         "K7",
         `${g.method}: no \`if (!<guard>.compareAndSet(false, true))\` busy branch`,
       );
+    } else if (!rejectsBusy(busy.then)) {
+      fail(
+        "K7",
+        `${g.method}: the taken-guard branch must reject {"type":"busy"} and return`,
+      );
+    }
+
+    // K8: the decline lockout, and a dialog teardown can reach.
+    const idVal = /\bval\s+(\w+)\s*(?::[^=\n]*)?=[^\n]*"conversationId"/.exec(
+      text.slice(f.open, f.close + 1),
+    );
+    const host = listenerLambdas(code, "runOnUiThread", body).find((s) =>
+      positive.some((p) => inSpan([s], p[0])),
+    );
+    if (!host) {
+      fail(
+        "K8",
+        `${g.method}: the setPositiveButton dialog is not built inside a runOnUiThread lambda`,
+      );
     } else {
-      const [from, to] = busy.then;
-      if (
-        !REJECT.test(code.slice(from, to + 1)) ||
-        !BUSY.test(text.slice(from, to + 1)) ||
-        !/\breturn\b/.test(code.slice(from, to + 1))
-      ) {
+      const tracked = [
+        ...code
+          .slice(host[0], host[1] + 1)
+          .matchAll(/\bgrowthDialog\s*=(?!=)\s*(\w+)/g),
+      ].some((t) => t[1] !== "null");
+      if (!tracked) {
         fail(
-          "K7",
-          `${g.method}: the taken-guard branch must reject {"type":"busy"} and return`,
+          "K8",
+          `${g.method}: never records its dialog in growthDialog inside runOnUiThread (handleOnDestroy could not dismiss it)`,
         );
       }
+    }
+    if (!idVal) {
+      fail("K8", `${g.method}: no val holding the "conversationId" argument`);
+    } else {
+      const id = idVal[1];
+      const lockouts = ktIfs(m, body).filter(
+        (s) => s.cond === `growthLockedOut(${id})`,
+      );
+      const lockout = lockouts.find(
+        (s) =>
+          host !== undefined &&
+          s.at > previewAt &&
+          s.at < host[0] &&
+          !inSpan(noPrompt, s.at) &&
+          innermost(blocks, s.at) === innermost(blocks, host[0]) &&
+          ktStatementStart(code, blocks, s.at),
+      );
+      if (!lockouts.length) {
+        fail(
+          "K8",
+          `${g.method}: no \`if (growthLockedOut(${id}))\` lockout check`,
+        );
+      } else if (!lockout) {
+        fail(
+          "K8",
+          `${g.method}: the growthLockedOut(${id}) check at ${at(lockouts[0].at)} is not a statement after the preview, in the block of the dialog's runOnUiThread and before it`,
+        );
+      } else if (!rejectsBusy(lockout.then)) {
+        fail(
+          "K8",
+          `${g.method}: the lockout branch must reject {"type":"busy"} and return`,
+        );
+      }
+      const note = new RegExp(
+        String.raw`\bnoteGrowthDecline\s*\(\s*${id}\s*\)`,
+        "g",
+      );
+      const noted =
+        once !== undefined &&
+        dismiss.some((s) =>
+          ktIfs(m, s).some((branch) => {
+            if (branch.cond !== `${once}.compareAndSet(false,true)`) {
+              return false;
+            }
+            const [from, to] = branch.then;
+            return [...code.slice(from, to + 1).matchAll(note)].some((n) => {
+              const k = from + n.index;
+              return code[from] === "{"
+                ? innermost(blocks, k)?.open === from &&
+                    ktStatementStart(code, blocks, k)
+                : k === from;
+            });
+          }),
+        );
+      if (!noted) {
+        fail(
+          "K8",
+          `${g.method}: the dismiss listener does not call noteGrowthDecline(${id}) in its ${once ?? "<once>"}.compareAndSet(false, true) branch`,
+        );
+      }
+    }
+
+    // K9: the positive button is input-delayed.
+    const shows = [
+      ...listenerLambdas(code, "setOnShowListener", body),
+      ...listenerLambdas(code, "OnShowListener", body),
+    ];
+    const buttons = shows
+      .flatMap((s) => positiveButtons(code, s))
+      .map((b) => ({ b, missing: delayMissing(code, b) }));
+    if (!shows.length) {
+      fail("K9", `${g.method}: no setOnShowListener`);
+    } else if (!buttons.length) {
+      fail(
+        "K9",
+        `${g.method}: no setOnShowListener that takes getButton(AlertDialog.BUTTON_POSITIVE)`,
+      );
+    } else if (buttons.every((r) => r.missing.length)) {
+      fail(
+        "K9",
+        `${g.method}: the positive button taken at ${at(buttons[0].b.at)} lacks ${buttons[0].missing.join("; ")}`,
+      );
+    }
+  }
+
+  // K8 (file): activity teardown dismisses the open growth dialog.
+  const destroy = funs.filter(
+    (f) => f.name === "handleOnDestroy" && f.open >= 0,
+  );
+  if (destroy.length !== 1) {
+    fail(
+      "K8",
+      `expected one handleOnDestroy() with a body, found ${destroy.length}`,
+    );
+  } else {
+    const d = destroy[0];
+    const own = ktBlocks(code, [d.open, d.close]);
+    const dismissed = [
+      ...code
+        .slice(d.open, d.close + 1)
+        .matchAll(/\bgrowthDialog\s*(?:\?|!!)?\s*\.\s*dismiss\s*\(\s*\)/g),
+    ].some((x) => {
+      const k = d.open + x.index;
+      return (
+        innermost(own, k)?.open === d.open && ktStatementStart(code, own, k)
+      );
+    });
+    if (!dismissed) {
+      fail("K8", "handleOnDestroy() does not dismiss growthDialog");
     }
   }
   return out;
@@ -1118,6 +1658,8 @@ package com.acutest.app.e2ee
 
 import java.util.concurrent.atomic.AtomicBoolean
 
+private const val GROWTH_CONFIRM_DELAY_MS: Long = 700L
+
 @CapacitorPlugin(name = "E2ee")
 class E2eePlugin : Plugin() {
     private val executor: ExecutorService = Executors.newCachedThreadPool()
@@ -1125,7 +1667,18 @@ class E2eePlugin : Plugin() {
     /** One growth dialog at a time; enableGroup( and addGroupMember( share it. */
     private val growthInFlight = AtomicBoolean(false)
 
+    private val growthDeclinedUntil = HashMap<String, Long>()
+
+    private var growthDialog: AlertDialog? = null
+
     private fun engine() = E2eeNative.engine(context)
+
+    private fun growthLockedOut(conversationId: String): Boolean =
+        synchronized(growthDeclinedUntil) { growthDeclinedUntil.containsKey(conversationId) }
+
+    private fun noteGrowthDecline(conversationId: String) {
+        synchronized(growthDeclinedUntil) { growthDeclinedUntil[conversationId] = 1L }
+    }
 
     private fun run(call: PluginCall, body: () -> Unit) {
         executor.execute {
@@ -1178,9 +1731,14 @@ class E2eePlugin : Plugin() {
                     }
                     return@execute
                 }
-                activity.runOnUiThread {
+                if (growthLockedOut(conversationId)) { // enable-lockout
+                    growthInFlight.set(false)
+                    call.reject("{\\"type\\":\\"busy\\"}") // enable-lockout-busy
+                    return@execute
+                }
+                activity.runOnUiThread { // enable-ui
                     val settled = AtomicBoolean(false)
-                    AlertDialog.Builder(activity)
+                    val dialog = AlertDialog.Builder(activity)
                         .setTitle(prompt.title)
                         .setMessage("\${prompt.message} {")
                         .setPositiveButton(prompt.confirmLabel) { _, _ -> // enable-positive
@@ -1197,12 +1755,21 @@ class E2eePlugin : Plugin() {
                         .setNegativeButton(prompt.cancelLabel, null) // enable-negative
                         .setOnDismissListener { // enable-dismiss
                             if (settled.compareAndSet(false, true)) { // enable-dismiss-claim
-                                growthInFlight.set(false)
+                                noteGrowthDecline(conversationId) // enable-note-decline
+                                growthInFlight.set(false) // enable-dismiss-release
                                 call.reject("{\\"type\\":\\"declined\\"}") // enable-declined
                             }
                         }
-                        .show()
-                }
+                        .create()
+                    dialog.setOnShowListener { // enable-show
+                        val confirm = dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+                        confirm.filterTouchesWhenObscured = true // enable-filter
+                        confirm.isEnabled = false // enable-disable
+                        confirm.postDelayed({ confirm.isEnabled = true }, 700L) // enable-delay
+                    }
+                    dialog.show()
+                    growthDialog = dialog
+                } // enable-ui-end
             } catch (error: Throwable) {
                 growthInFlight.set(false)
                 rejectScrubbed(call, error)
@@ -1221,48 +1788,79 @@ class E2eePlugin : Plugin() {
             call.reject("{\\"type\\":\\"busy\\"}")
             return
         }
+        val held = AtomicBoolean(true)
+        fun release() {
+            if (held.compareAndSet(true, false)) growthInFlight.set(false) // add-release-helper
+        }
         executor.execute {
             try {
                 val preview: GroupGrowthPrompt = engine().previewGroupAdd(conversationId, userId, selfUserId, labels)
                 if (preview.needsPrompt) { // add-needs-prompt
+                    if (growthLockedOut(conversationId)) { // add-lockout
+                        release()
+                        call.reject("{\\"type\\":\\"busy\\"}") // add-lockout-busy
+                        return@execute
+                    }
                     activity.runOnUiThread {
                         val answered = AtomicBoolean(false)
-                        AlertDialog.Builder(activity)
+                        val dialog = AlertDialog.Builder(activity)
                             .setMessage(preview.message)
                             .setPositiveButton(preview.confirmLabel, DialogInterface.OnClickListener { _, _ -> // add-positive
                                 if (answered.compareAndSet(false, true)) {
-                                    run(call) {
-                                        try {
-                                            resolveJson(call, engine().addGroupMember(conversationId, userId, selfUserId, bundles, expectedAfter = preview.expectedAfter, prompted = true))
+                                    run(call) { // add-run
+                                        val json = try {
+                                            engine().addGroupMember(conversationId, userId, selfUserId, bundles, expectedAfter = preview.expectedAfter, prompted = true)
                                         } finally {
-                                            growthInFlight.set(false)
+                                            release()
                                         }
+                                        resolveJson(call, json)
                                     }
                                 }
                             })
                             .setOnCancelListener { // add-cancel
-                                if (answered.compareAndSet(false, true)) call.reject("{\\"type\\":\\"declined\\"}")
+                                if (answered.compareAndSet(false, true)) { // add-cancel-claim
+                                    noteGrowthDecline(conversationId)
+                                    release() // add-cancel-release
+                                    call.reject("{\\"type\\":\\"declined\\"}")
+                                }
                             }
                             .setOnDismissListener(DialogInterface.OnDismissListener { // add-dismiss
+                                growthDialog = null
                                 if (answered.compareAndSet(false, true)) {
-                                    growthInFlight.set(false)
+                                    noteGrowthDecline(conversationId) // add-note-decline
+                                    release()
                                     call.reject("{\\"type\\":\\"declined\\"}")
                                 }
                             })
-                            .show()
+                            .create()
+                        dialog.setOnShowListener {
+                            dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.apply { // add-button
+                                filterTouchesWhenObscured = true // add-filter
+                                isEnabled = false // add-disable
+                                postDelayed({ isEnabled = true }, GROWTH_CONFIRM_DELAY_MS) // add-delay
+                            }
+                        }
+                        dialog.show()
+                        growthDialog = dialog // add-track
                     }
                 } else {
                     try {
                         resolveJson(call, engine().addGroupMember(conversationId, userId, selfUserId, bundles, preview.expectedAfter, false)) // add-commit-direct
                     } finally {
-                        growthInFlight.set(false)
+                        release()
                     }
                 }
             } catch (error: Throwable) {
-                growthInFlight.set(false)
+                release()
                 rejectScrubbed(call, error)
             }
         }
+    }
+
+    override fun handleOnDestroy() {
+        growthDialog?.dismiss() // destroy-dismiss
+        growthDialog = null
+        super.handleOnDestroy()
     }
 }
 `;
@@ -1284,7 +1882,28 @@ test("kotlin scanner: equivalent shapes still conform", () => {
     [
       [
         ".setNegativeButton(prompt.cancelLabel, null) // enable-negative",
-        '.setNegativeButton(prompt.cancelLabel) { _, _ -> if (settled.compareAndSet(false, true)) call.reject("x") }',
+        '.setNegativeButton(prompt.cancelLabel) { _, _ -> if (settled.compareAndSet(false, true)) { growthInFlight.set(false); call.reject("x") } }',
+      ],
+    ],
+    // K5: a direct release in place of the helper; a commit held in a val.
+    [
+      ["release() // add-cancel-release", "growthInFlight.set(false)"],
+      [
+        "resolveJson(call, engine().enableGroup(conversationId, roster, selfUserId, bundles, prompt.expectedAfter, true)) // enable-commit-confirmed",
+        "val json = engine().enableGroup(conversationId, roster, selfUserId, bundles, prompt.expectedAfter, true)\ngrowthInFlight.set(false)\nresolveJson(call, json)",
+      ],
+    ],
+    // K9: a named let binding; the setter spelling.
+    [
+      ["?.apply { // add-button", "?.let { button ->"],
+      [
+        "filterTouchesWhenObscured = true // add-filter",
+        "button.setFilterTouchesWhenObscured(true)",
+      ],
+      ["isEnabled = false // add-disable", "button.isEnabled = false"],
+      [
+        "postDelayed({ isEnabled = true }, GROWTH_CONFIRM_DELAY_MS) // add-delay",
+        "button.postDelayed({ button.isEnabled = true }, GROWTH_CONFIRM_DELAY_MS)",
       ],
     ],
   ];
@@ -1489,6 +2108,64 @@ test("kotlin scanner: each rule fires on its own violation", () => {
       /^K5 addGroupMember: growthInFlight\.compareAndSet runs after the preview/,
     ],
     [
+      "K5: a cancel listener that settles without releasing (the old fixture's shape)",
+      [
+        [
+          'if (answered.compareAndSet(false, true)) { // add-cancel-claim\n                                    noteGrowthDecline(conversationId)\n                                    release() // add-cancel-release\n                                    call.reject("{\\"type\\":\\"declined\\"}")\n                                }',
+          'if (answered.compareAndSet(false, true)) call.reject("{\\"type\\":\\"declined\\"}")',
+        ],
+      ],
+      /^K5 addGroupMember: call\.reject\( at line \d+ settles the call without releasing growthInFlight/,
+    ],
+    [
+      "K5: a dismiss listener that settles without releasing",
+      [["growthInFlight.set(false) // enable-dismiss-release", ""]],
+      /^K5 enableGroup: call\.reject\( at line \d+ settles the call without releasing/,
+    ],
+    [
+      "K5: a release after the settle does not count",
+      [
+        ["growthInFlight.set(false) // enable-dismiss-release", ""],
+        [
+          'call.reject("{\\"type\\":\\"declined\\"}") // enable-declined',
+          'call.reject("{\\"type\\":\\"declined\\"}")\ngrowthInFlight.set(false)',
+        ],
+      ],
+      /^K5 enableGroup: call\.reject\( at line \d+ settles the call without releasing/,
+    ],
+    [
+      "K5: a release under a condition does not count",
+      [["release() // add-cancel-release", "if (labels.isEmpty()) release()"]],
+      /^K5 addGroupMember: call\.reject\( at line \d+ settles the call without releasing/,
+    ],
+    [
+      "K5: a finally across a lambda boundary does not count",
+      [
+        ["growthInFlight.set(false) // enable-dismiss-release", ""],
+        [
+          "activity.runOnUiThread { // enable-ui",
+          "try {\nactivity.runOnUiThread {",
+        ],
+        ["} // enable-ui-end", "}\n} finally {\ngrowthInFlight.set(false)\n}"],
+      ],
+      /^K5 enableGroup: call\.reject\( at line \d+ settles the call without releasing/,
+    ],
+    [
+      "K5: a release helper that does not release",
+      [
+        [
+          "if (held.compareAndSet(true, false)) growthInFlight.set(false) // add-release-helper",
+          'if (held.compareAndSet(true, false)) Log.d("E2ee", "released")',
+        ],
+      ],
+      /^K5 addGroupMember: never releases growthInFlight/,
+    ],
+    [
+      "K5: a run(call) body that can throw before it releases",
+      [["run(call) { // add-run", "run(call) {\nval warm = engine().status()"]],
+      /^K5 addGroupMember: run\(call\) at line \d+ rejects if its body throws/,
+    ],
+    [
       "K6: no dismiss listener",
       [[".setOnDismissListener { // enable-dismiss", ".setOnCancelListener {"]],
       /^K6 enableGroup: no setOnDismissListener/,
@@ -1527,8 +2204,8 @@ test("kotlin scanner: each rule fires on its own violation", () => {
       "K6: a cancel listener that settles without the once guard",
       [
         [
-          'if (answered.compareAndSet(false, true)) call.reject("{\\"type\\":\\"declined\\"}")',
-          'call.reject("{\\"type\\":\\"declined\\"}")',
+          "if (answered.compareAndSet(false, true)) { // add-cancel-claim",
+          "if (true) {",
         ],
       ],
       /^K6 addGroupMember: setOnCancelListener at line \d+ settles the call/,
@@ -1547,6 +2224,182 @@ test("kotlin scanner: each rule fires on its own violation", () => {
       "K7: a taken guard falls through to the preview",
       [["return // enable-busy-return", ""]],
       /^K7 enableGroup: the taken-guard branch must reject/,
+    ],
+    [
+      "K8: the lockout check is gone",
+      [
+        [
+          "if (growthLockedOut(conversationId)) { // enable-lockout",
+          "if (false) {",
+        ],
+      ],
+      /^K8 enableGroup: no `if \(growthLockedOut\(conversationId\)\)` lockout check/,
+    ],
+    [
+      "K8: the lockout keyed on the wrong id",
+      [
+        [
+          "if (growthLockedOut(conversationId)) { // add-lockout",
+          "if (growthLockedOut(userId)) {",
+        ],
+      ],
+      /^K8 addGroupMember: no `if \(growthLockedOut\(conversationId\)\)`/,
+    ],
+    [
+      "K8: the lockout check behind another condition",
+      [
+        [
+          "if (growthLockedOut(conversationId)) { // enable-lockout",
+          "if (names.isEmpty()) if (growthLockedOut(conversationId)) {",
+        ],
+      ],
+      /^K8 enableGroup: the growthLockedOut\(conversationId\) check at line \d+ is not a statement/,
+    ],
+    [
+      "K8: the lockout check inside the dialog's runOnUiThread",
+      [
+        [
+          "if (growthLockedOut(conversationId)) { // add-lockout",
+          "if (labels.isEmpty()) { // add-lockout",
+        ],
+        [
+          "val answered = AtomicBoolean(false)",
+          'val answered = AtomicBoolean(false)\nif (growthLockedOut(conversationId)) {\nrelease()\ncall.reject("{\\"type\\":\\"busy\\"}")\nreturn@runOnUiThread\n}',
+        ],
+      ],
+      /^K8 addGroupMember: the growthLockedOut\(conversationId\) check at line \d+ is not a statement/,
+    ],
+    [
+      "K8: a lockout that rejects the wrong type",
+      [
+        [
+          'call.reject("{\\"type\\":\\"busy\\"}") // add-lockout-busy',
+          'call.reject("{\\"type\\":\\"declined\\"}")',
+        ],
+      ],
+      /^K8 addGroupMember: the lockout branch must reject/,
+    ],
+    [
+      "K8: a dismiss that does not start the lockout",
+      [["noteGrowthDecline(conversationId) // enable-note-decline", ""]],
+      /^K8 enableGroup: the dismiss listener does not call noteGrowthDecline\(conversationId\)/,
+    ],
+    [
+      "K8: a decline noted outside the resolve-once branch",
+      [
+        ["noteGrowthDecline(conversationId) // add-note-decline", ""],
+        [
+          ".setOnDismissListener(DialogInterface.OnDismissListener { // add-dismiss",
+          ".setOnDismissListener(DialogInterface.OnDismissListener {\nnoteGrowthDecline(conversationId)",
+        ],
+      ],
+      /^K8 addGroupMember: the dismiss listener does not call noteGrowthDecline/,
+    ],
+    [
+      "K8: the dialog is never recorded for teardown",
+      [["growthDialog = dialog // add-track", ""]],
+      /^K8 addGroupMember: never records its dialog in growthDialog/,
+    ],
+    [
+      "K8: teardown does not dismiss the dialog",
+      [["growthDialog?.dismiss() // destroy-dismiss", ""]],
+      /^K8 handleOnDestroy\(\) does not dismiss growthDialog/,
+    ],
+    [
+      "K8: no teardown hook",
+      [["override fun handleOnDestroy()", "override fun handleOnPause()"]],
+      /^K8 expected one handleOnDestroy\(\) with a body, found 0/,
+    ],
+    [
+      "K9: no touch filter",
+      [["confirm.filterTouchesWhenObscured = true // enable-filter", ""]],
+      /^K9 enableGroup: the positive button taken at line \d+ lacks filterTouchesWhenObscured = true/,
+    ],
+    [
+      "K9: the touch filter switched off",
+      [
+        [
+          "filterTouchesWhenObscured = true // add-filter",
+          "filterTouchesWhenObscured = false",
+        ],
+      ],
+      /^K9 addGroupMember: .* lacks filterTouchesWhenObscured = true/,
+    ],
+    [
+      "K9: the button is never disabled",
+      [["confirm.isEnabled = false // enable-disable", ""]],
+      /^K9 enableGroup: .* lacks isEnabled = false outside postDelayed\(/,
+    ],
+    [
+      "K9: the button disabled only after the delay",
+      [
+        ["isEnabled = false // add-disable", ""],
+        [
+          "postDelayed({ isEnabled = true }, GROWTH_CONFIRM_DELAY_MS) // add-delay",
+          "postDelayed({ isEnabled = false; isEnabled = true }, GROWTH_CONFIRM_DELAY_MS)",
+        ],
+      ],
+      /^K9 addGroupMember: .* lacks isEnabled = false outside postDelayed\(/,
+    ],
+    [
+      "K9: re-enabled at once, no delay",
+      [
+        [
+          "confirm.postDelayed({ confirm.isEnabled = true }, 700L) // enable-delay",
+          "confirm.isEnabled = true",
+        ],
+      ],
+      /^K9 enableGroup: .* lacks isEnabled = true inside a postDelayed\(/,
+    ],
+    [
+      "K9: the delayed re-enable is of another button",
+      [
+        [
+          "confirm.postDelayed({ confirm.isEnabled = true }, 700L) // enable-delay",
+          "confirm.postDelayed({ other.isEnabled = true }, 700L)",
+        ],
+      ],
+      /^K9 enableGroup: .* lacks isEnabled = true inside a postDelayed\(/,
+    ],
+    [
+      "K9: a literal delay under the floor",
+      [["}, 700L) // enable-delay", "}, 100L)"]],
+      /^K9 enableGroup: .* lacks a postDelayed\( delay of at least 700 ms/,
+    ],
+    [
+      "K9: a constant delay under the floor",
+      [
+        [
+          "private const val GROWTH_CONFIRM_DELAY_MS: Long = 700L",
+          "private const val GROWTH_CONFIRM_DELAY_MS: Long = 0L",
+        ],
+      ],
+      /^K9 addGroupMember: .* lacks a postDelayed\( delay of at least 700 ms/,
+    ],
+    [
+      "K9: a delay that is not a literal or a val",
+      [["GROWTH_CONFIRM_DELAY_MS) // add-delay", "delayMs())"]],
+      /^K9 addGroupMember: .* lacks a postDelayed\( delay of at least 700 ms/,
+    ],
+    [
+      "K9: the negative button is delayed instead",
+      [
+        [
+          "dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.apply { // add-button",
+          "dialog.getButton(AlertDialog.BUTTON_NEGATIVE)?.apply {",
+        ],
+      ],
+      /^K9 addGroupMember: no setOnShowListener that takes getButton/,
+    ],
+    [
+      "K9: no show listener",
+      [
+        [
+          "dialog.setOnShowListener { // enable-show",
+          "dialog.setOnKeyListener {",
+        ],
+      ],
+      /^K9 enableGroup: no setOnShowListener$/,
     ],
   ];
   for (const [label, swaps, expected] of cases) {
@@ -1748,9 +2601,14 @@ const KT_RULES: [string, string][] = [
   ["K2", "@PluginMethod enableGroup and addGroupMember exist"],
   ["K3", "engine commits only in setPositiveButton or the !needsPrompt branch"],
   ["K4", "expectedAfter comes from the preview result"],
-  ["K5", "a plugin-level AtomicBoolean single-in-flight guard in both"],
+  [
+    "K5",
+    "a plugin-level AtomicBoolean guard in both, released before every settle",
+  ],
   ["K6", "an OnDismissListener rejects declined behind a resolve-once guard"],
   ["K7", "a taken guard rejects busy"],
+  ["K8", "the decline lockout is checked and started; teardown dismisses"],
+  ["K9", "the positive button is input-delayed and touch-filtered"],
 ];
 
 const TS_RULES: [string, string][] = [

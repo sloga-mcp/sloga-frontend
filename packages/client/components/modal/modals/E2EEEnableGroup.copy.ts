@@ -48,12 +48,13 @@ export function enableGroupOutcomeStep(
     case "busy":
       return { kind: "stay", notice: "busy" };
     default: {
-      // A value outside the union means the bridge broke its contract. A
-      // resolve has always meant the enable completed (the pre-contract
-      // `Promise<void>` resolved only after the send), so keep that.
+      // A value outside the union means the bridge broke its contract, so
+      // nothing proves the enable went through. Closing would read as
+      // success; keep the modal open, silently, and let the user retry
+      // (a confirmed enable with the same roster resumes natively).
       const exhaustive: never = outcome;
       void exhaustive;
-      return { kind: "close" };
+      return STAY_SILENT;
     }
   }
 }

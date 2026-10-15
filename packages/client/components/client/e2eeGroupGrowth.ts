@@ -86,13 +86,38 @@ export function groupEnableRoster(
 }
 
 /**
+ * The ids an enable's native dialog may list, for its `displayNames`: the
+ * roster it asserts plus every member in native `group_state`. A
+ * re-enable's "will stop receiving" lines name members who are in the
+ * native state but not in the roster; left out, those lines show a bare id.
+ */
+export function groupEnableNamedIds(
+  roster: Iterable<string>,
+  state: GroupRosterState | null,
+): Set<string> {
+  const ids = new Set(roster);
+  if (Array.isArray(state?.members)) {
+    for (const m of state.members) {
+      if (typeof m?.user_id === "string") ids.add(m.user_id);
+    }
+  }
+  return ids;
+}
+
+/**
  * Whether a group-growth preflight fetches a user's key bundle. Each fetch
  * spends one of that user's one-time keys, so only where native would
- * otherwise answer `needs_bundle`: a member with no Active pinned device,
- * or an Active device without an active session. Self skips the local
- * device and needs no other device (own-device fan-out may be empty). A
- * user with an identity-changed device is skipped: native refuses the send
- * with `peer_identity_changed` whatever bundle it is given.
+ * otherwise answer `needs_bundle`, or cannot ask for one:
+ * - self while `selfUnpinned` (a reconcile reported own devices not yet
+ *   pinned): native pins own devices only from a self bundle and never
+ *   answers `needs_bundle` for self, so this fetches whatever `devices`
+ *   holds;
+ * - a member with no Active pinned device (none at all, or all revoked);
+ * - an Active device without an active session.
+ * Self skips the local device and needs no other device (own-device
+ * fan-out may be empty). Otherwise a user with an identity-changed device
+ * is skipped: native refuses the send with `peer_identity_changed`
+ * whatever bundle it is given.
  */
 export function groupGrowthNeedsBundle(
   devices: {
@@ -102,7 +127,9 @@ export function groupGrowthNeedsBundle(
   }[],
   isSelf: boolean,
   localDeviceId: string | null | undefined,
+  selfUnpinned: boolean,
 ): boolean {
+  if (isSelf && selfUnpinned) return true;
   if (devices.some((d) => d.status === "identity_changed")) return false;
   const active = devices.filter(
     (d) => d.status === "active" && !(isSelf && d.device_id === localDeviceId),

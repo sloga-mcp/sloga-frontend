@@ -44,6 +44,7 @@ import type { ResumeCommitRef, ResumePrefetch } from "../rtc/mlsRejoinPolicy";
 import { decryptBump } from "./e2eeConversationBump";
 import {
   type GroupGrowthOutcome,
+  groupEnableNamedIds,
   groupEnableRoster,
   groupGrowthDisplayNames,
   groupGrowthNeedsBundle,
@@ -219,6 +220,7 @@ type GroupState = {
 // Group-growth decisions live in a loadable, spec'd module
 export {
   type GroupGrowthOutcome,
+  groupEnableNamedIds,
   groupEnableRoster,
   groupGrowthDisplayNames,
   groupGrowthNeedsBundle,
@@ -3161,8 +3163,8 @@ export class E2EEBridge implements E2EEAdapter {
 
     let asserted = roster;
     let bundles: KeyBundle[] = [];
+    let state: GroupState | null = null;
     if (enabled) {
-      let state: GroupState | null = null;
       try {
         state = await this.groupState(channel.id);
       } catch (error) {
@@ -3174,10 +3176,14 @@ export class E2EEBridge implements E2EEAdapter {
       asserted = groupEnableRoster(state, roster);
       bundles = await this.groupGrowthBundlePreflight(channel, asserted);
     }
-    const displayNames = groupGrowthDisplayNames(asserted, (id) =>
-      this.#client.users.get(id),
+    // Names for every line the dialog may show: the asserted roster, and
+    // the native members a re-enable drops ("will stop receiving")
+    const displayNames = groupGrowthDisplayNames(
+      groupEnableNamedIds(asserted, state),
+      (id) => this.#client.users.get(id),
     );
     const fetched = new Set(bundles.map((b) => b.user_id));
+    const selfPrefetched = bundles.some((b) => b.user_id === selfUserId);
 
     for (let attempt = 0; attempt < asserted.length + 2; attempt++) {
       let result: EncryptResult;
@@ -3206,6 +3212,8 @@ export class E2EEBridge implements E2EEAdapter {
         }
         throw raw;
       }
+      // Pins are durable in the native store: stop prefetching (DM parity)
+      if (selfPrefetched) this.#selfDevicesUnpinned = false;
       await this.#api("POST", "/e2ee/messages", result.payload);
       await this.#refreshGroupMode(channel.id);
       await this.#syncRecentConversation(channel.id, channel.id);
@@ -3217,14 +3225,19 @@ export class E2EEBridge implements E2EEAdapter {
     );
   }
 
+  // group-growth preflight: begin
   /**
    * Bundle preflight for group growth (enable, include), run BEFORE the
    * native confirm so `needs_bundle` rarely fires after the user said yes;
    * the callers' `needs_bundle` re-invoke stays as the fallback. Fetches
-   * only for the users `groupGrowthNeedsBundle` names, self included for
-   * own-device fan-out: each fetch spends one of that user's one-time keys.
-   * Availability-only: a failed read or fetch leaves that user to the
-   * fallback. Not on an un-enabled device (nothing to fan out from).
+   * only for the users `groupGrowthNeedsBundle` names, self always
+   * considered (own-device fan-out; on `#selfDevicesUnpinned` without
+   * reading state, as native never asks for a self bundle): each fetch
+   * spends one of that user's one-time keys. A caller whose send included
+   * a self bundle clears `#selfDevicesUnpinned` once native succeeds.
+   * Availability-only and never throws: a failed read or fetch leaves that
+   * user to the fallback. Not on an un-enabled device (nothing to fan out
+   * from, and the state read can open the engine).
    */
   async groupGrowthBundlePreflight(
     channel: Channel,
@@ -3234,22 +3247,37 @@ export class E2EEBridge implements E2EEAdapter {
     const status = this.status.get("state");
     if (!status?.enabled) return [];
     const selfId = this.#client.user!.id;
+    const selfUnpinned = this.#selfDevicesUnpinned;
     const bundles: KeyBundle[] = [];
     for (const userId of new Set([...userIds, selfId])) {
       try {
-        const state = await this.conversationState(userId);
         const isSelf = userId === selfId;
-        if (groupGrowthNeedsBundle(state.devices, isSelf, status.device_id)) {
+        const devices =
+          isSelf && selfUnpinned
+            ? []
+            : (await this.conversationState(userId)).devices;
+        if (
+          groupGrowthNeedsBundle(
+            devices,
+            isSelf,
+            status.device_id,
+            selfUnpinned,
+          )
+        ) {
           bundles.push(
             await this.#api<KeyBundle>("GET", `/e2ee/keys/${userId}`),
           );
         }
       } catch (error) {
-        console.warn("[e2ee] group growth preflight skipped a user", error);
+        console.warn(
+          "[e2ee] group growth preflight skipped a user",
+          errorName(error),
+        );
       }
     }
     return bundles;
   }
+  // group-growth preflight: end
 
   /** Native group state (roster + sticky state) for the UI. */
   async groupState(conversationId: string): Promise<GroupState> {

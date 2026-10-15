@@ -4,6 +4,8 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
+import type { GroupGrowthOutcome } from "../../client/e2eeGroupGrowth.ts";
+
 import {
   enableGroupErrorStep,
   enableGroupOutcomeStep,
@@ -27,6 +29,18 @@ describe("enableGroupOutcomeStep", () => {
       kind: "stay",
       notice: "busy",
     });
+  });
+
+  test("an outcome outside the union stays open, silently", () => {
+    // A bridge that broke the contract proves nothing was enabled; closing
+    // would read as success
+    for (const outcome of [undefined, null, "", "OK", "cancelled", 0, {}]) {
+      assert.deepEqual(
+        enableGroupOutcomeStep(outcome as unknown as GroupGrowthOutcome),
+        { kind: "stay", notice: null },
+        String(outcome),
+      );
+    }
   });
 });
 

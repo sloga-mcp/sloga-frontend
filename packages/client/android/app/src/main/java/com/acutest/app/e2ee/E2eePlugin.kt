@@ -50,6 +50,23 @@ private const val MAX_ATTACHMENT_CIPHERTEXT: Long = 21L * 1024 * 1024
 private const val GROWTH_DECLINE_LOCKOUT_MS: Long = 30_000L
 
 /**
+ * How long a group-growth dialog's confirm button stays disabled after the
+ * dialog shows (tapjacking). A tap the user aimed at whatever was on screen
+ * before the dialog appeared, or one a hostile overlay times to its arrival,
+ * lands on a disabled button instead of committing. The button also ignores
+ * touches while another window covers it (`filterTouchesWhenObscured`).
+ */
+private const val GROWTH_CONFIRM_DELAY_MS: Long = 700L
+
+/**
+ * The same input delay for the plaintext-direction dialogs (`downgrade`,
+ * `confirmPeerDowngradeAccept` and the call downgrade). Equal to
+ * [GROWTH_CONFIRM_DELAY_MS], under its own name so tuning one is a visible
+ * decision about the other.
+ */
+private const val DOWNGRADE_CONFIRM_DELAY_MS: Long = GROWTH_CONFIRM_DELAY_MS
+
+/**
  * Capacitor bridge for the native E2EE layer (slice 4) — the Android analog
  * of the desktop Tauri command surface (`src-tauri/src/e2ee.rs`).
  *
@@ -754,7 +771,25 @@ class E2eePlugin : Plugin() {
                 .setNegativeButton("Cancel") { _, _ -> call.reject("{\"type\":\"declined\"}") }
                 .setOnCancelListener { call.reject("{\"type\":\"declined\"}") }
                 .show()
+                .also { guardDowngradeButtons(it) }
         }
+    }
+
+    /**
+     * Tapjacking guard for the plaintext-direction dialogs ([downgrade],
+     * [confirmPeerDowngradeAccept], [showConfirmDowngradeDialog]). Applied
+     * right after `show()`, which has built the buttons by the time it
+     * returns: both buttons ignore touches while another window covers them,
+     * and the positive one stays disabled for [DOWNGRADE_CONFIRM_DELAY_MS].
+     * Nothing else about those dialogs changes.
+     */
+    private fun guardDowngradeButtons(dialog: AlertDialog) {
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.let { confirm ->
+            confirm.isEnabled = false
+            confirm.filterTouchesWhenObscured = true
+            confirm.postDelayed({ confirm.isEnabled = true }, DOWNGRADE_CONFIRM_DELAY_MS)
+        }
+        dialog.getButton(AlertDialog.BUTTON_NEGATIVE)?.filterTouchesWhenObscured = true
     }
 
     // ================================================================
@@ -927,23 +962,28 @@ class E2eePlugin : Plugin() {
                         call.reject("{\"type\":\"busy\"}")
                         return@execute
                     }
-                    val confirmLabel = prompt.confirmLabel.ifBlank { "Confirm" }
-                    val cancelLabel = prompt.cancelLabel.ifBlank { "Cancel" }
                     activity.runOnUiThread {
                         // Resolve-once: the positive button and the dismiss
                         // listener race to settle the call; one wins.
                         val settled = AtomicBoolean(false)
                         try {
-                            // Nothing to consent to: fail closed rather than
-                            // show a dialog with no member list.
-                            if (prompt.title.isBlank() || prompt.message.isBlank()) {
+                            // Nothing to consent to, or a button with no
+                            // label: fail closed rather than show a dialog
+                            // with no member list or button copy the core
+                            // did not write.
+                            if (
+                                prompt.title.isBlank() ||
+                                    prompt.message.isBlank() ||
+                                    prompt.confirmLabel.isBlank() ||
+                                    prompt.cancelLabel.isBlank()
+                            ) {
                                 throw E2eeException.Failure("{\"type\":\"crypto_failure\"}")
                             }
                             val dialog =
                                 AlertDialog.Builder(activity)
                                     .setTitle(prompt.title)
                                     .setMessage(prompt.message)
-                                    .setPositiveButton(confirmLabel) { _, _ ->
+                                    .setPositiveButton(prompt.confirmLabel) { _, _ ->
                                         if (settled.compareAndSet(false, true)) {
                                             try {
                                                 run(call) {
@@ -970,7 +1010,7 @@ class E2eePlugin : Plugin() {
                                     }
                                     // No listener: the button dismisses the
                                     // dialog, and the dismiss listener declines.
-                                    .setNegativeButton(cancelLabel, null)
+                                    .setNegativeButton(prompt.cancelLabel, null)
                                     .create()
                             // Back and an outside tap cancel, and a cancel
                             // dismisses: both reach the dismiss listener.
@@ -984,9 +1024,25 @@ class E2eePlugin : Plugin() {
                                     call.reject("{\"type\":\"declined\"}")
                                 }
                             }
-                            // Cancel is the default: keyboard focus starts there.
                             dialog.setOnShowListener {
-                                dialog.getButton(AlertDialog.BUTTON_NEGATIVE)?.requestFocus()
+                                // Tapjacking: confirm ignores touches while
+                                // another window covers it, and stays disabled
+                                // for the first GROWTH_CONFIRM_DELAY_MS, so a
+                                // tap aimed at what was under the dialog, or
+                                // timed to its arrival, cannot commit.
+                                dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.let { confirm ->
+                                    confirm.isEnabled = false
+                                    confirm.filterTouchesWhenObscured = true
+                                    confirm.postDelayed(
+                                        { confirm.isEnabled = true },
+                                        GROWTH_CONFIRM_DELAY_MS,
+                                    )
+                                }
+                                // Cancel is the default: keyboard focus starts there.
+                                dialog.getButton(AlertDialog.BUTTON_NEGATIVE)?.let { cancel ->
+                                    cancel.filterTouchesWhenObscured = true
+                                    cancel.requestFocus()
+                                }
                             }
                             dialog.show()
                             growthDialog = dialog
@@ -1068,23 +1124,28 @@ class E2eePlugin : Plugin() {
                         call.reject("{\"type\":\"busy\"}")
                         return@execute
                     }
-                    val confirmLabel = prompt.confirmLabel.ifBlank { "Confirm" }
-                    val cancelLabel = prompt.cancelLabel.ifBlank { "Cancel" }
                     activity.runOnUiThread {
                         // Resolve-once: the positive button and the dismiss
                         // listener race to settle the call; one wins.
                         val settled = AtomicBoolean(false)
                         try {
-                            // Nothing to consent to: fail closed rather than
-                            // show a dialog with no member list.
-                            if (prompt.title.isBlank() || prompt.message.isBlank()) {
+                            // Nothing to consent to, or a button with no
+                            // label: fail closed rather than show a dialog
+                            // with no member list or button copy the core
+                            // did not write.
+                            if (
+                                prompt.title.isBlank() ||
+                                    prompt.message.isBlank() ||
+                                    prompt.confirmLabel.isBlank() ||
+                                    prompt.cancelLabel.isBlank()
+                            ) {
                                 throw E2eeException.Failure("{\"type\":\"crypto_failure\"}")
                             }
                             val dialog =
                                 AlertDialog.Builder(activity)
                                     .setTitle(prompt.title)
                                     .setMessage(prompt.message)
-                                    .setPositiveButton(confirmLabel) { _, _ ->
+                                    .setPositiveButton(prompt.confirmLabel) { _, _ ->
                                         if (settled.compareAndSet(false, true)) {
                                             try {
                                                 run(call) {
@@ -1111,7 +1172,7 @@ class E2eePlugin : Plugin() {
                                     }
                                     // No listener: the button dismisses the
                                     // dialog, and the dismiss listener declines.
-                                    .setNegativeButton(cancelLabel, null)
+                                    .setNegativeButton(prompt.cancelLabel, null)
                                     .create()
                             // Back and an outside tap cancel, and a cancel
                             // dismisses: both reach the dismiss listener.
@@ -1125,9 +1186,25 @@ class E2eePlugin : Plugin() {
                                     call.reject("{\"type\":\"declined\"}")
                                 }
                             }
-                            // Cancel is the default: keyboard focus starts there.
                             dialog.setOnShowListener {
-                                dialog.getButton(AlertDialog.BUTTON_NEGATIVE)?.requestFocus()
+                                // Tapjacking: confirm ignores touches while
+                                // another window covers it, and stays disabled
+                                // for the first GROWTH_CONFIRM_DELAY_MS, so a
+                                // tap aimed at what was under the dialog, or
+                                // timed to its arrival, cannot commit.
+                                dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.let { confirm ->
+                                    confirm.isEnabled = false
+                                    confirm.filterTouchesWhenObscured = true
+                                    confirm.postDelayed(
+                                        { confirm.isEnabled = true },
+                                        GROWTH_CONFIRM_DELAY_MS,
+                                    )
+                                }
+                                // Cancel is the default: keyboard focus starts there.
+                                dialog.getButton(AlertDialog.BUTTON_NEGATIVE)?.let { cancel ->
+                                    cancel.filterTouchesWhenObscured = true
+                                    cancel.requestFocus()
+                                }
                             }
                             dialog.show()
                             growthDialog = dialog
@@ -1197,6 +1274,7 @@ class E2eePlugin : Plugin() {
                     }
                 }
                 .show()
+                .also { guardDowngradeButtons(it) }
         }
     }
 
@@ -1283,6 +1361,7 @@ class E2eePlugin : Plugin() {
             .setNegativeButton("Cancel") { _, _ -> call.reject("{\"type\":\"declined\"}") }
             .setOnCancelListener { call.reject("{\"type\":\"declined\"}") }
             .show()
+            .also { guardDowngradeButtons(it) }
     }
 
     // ================================================================

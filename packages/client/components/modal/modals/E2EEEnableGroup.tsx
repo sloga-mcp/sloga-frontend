@@ -63,7 +63,7 @@ export function E2EEEnableGroupModal(
       case "roster_changed":
         return t`The member list changed. Check it and try again.`;
       case "roster_mismatch":
-        return t`This group is already encrypted with a different member list. Use Include to add someone.`;
+        return t`This group is already encrypted with a different member list. Check the member list and try again.`;
       case "self_user_id":
         return t`This device isn't part of this group's encryption yet. Wait for another member to re-send the member list.`;
       case "mls_store_owned_by_another_account":

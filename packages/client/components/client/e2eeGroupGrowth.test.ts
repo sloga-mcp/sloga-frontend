@@ -2,14 +2,16 @@
 //   node --conditions=browser --test components/client/e2eeGroupGrowth.test.ts
 // Focus: only `declined` / `busy` resolve (everything else is rethrown);
 // dialog labels never invent a name; an encrypted group asserts native's
-// Active set while a fresh or downgraded one keeps the confirmed roster; a
-// bundle (one of the peer's one-time keys) is fetched only where native
-// would demand it.
+// Active set while a fresh or downgraded one keeps the confirmed roster; the
+// dialog's names cover the members a re-enable drops; a bundle (one of the
+// peer's one-time keys) is fetched only where native would demand it, or
+// for unpinned own devices it cannot ask for.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
   type GroupRosterState,
+  groupEnableNamedIds,
   groupEnableRoster,
   groupGrowthDisplayNames,
   groupGrowthNeedsBundle,
@@ -192,10 +194,45 @@ test("roster: a malformed state keeps the confirmed roster", () => {
   }
 });
 
+// ---- groupEnableNamedIds -----------------------------------------------------
+
+test("named ids: roster plus every native member, removed ones included", () => {
+  const state: GroupRosterState = {
+    encrypted_since: null,
+    members: [
+      { user_id: SELF, status: "active" },
+      { user_id: A, status: "active" },
+      { user_id: B, status: "removed" },
+      { user_id: C, status: "announced" },
+    ],
+  };
+  // A re-enable confirming [SELF, A] drops B and C: their "will stop
+  // receiving" lines need names too
+  assert.deepEqual([...groupEnableNamedIds([SELF, A], state)], [SELF, A, B, C]);
+});
+
+test("named ids: no native state names the roster alone", () => {
+  assert.deepEqual([...groupEnableNamedIds([SELF, A, A], null)], [SELF, A]);
+});
+
+test("named ids: a malformed state adds nothing", () => {
+  for (const state of [
+    { encrypted_since: 5 },
+    { encrypted_since: 5, members: "x" },
+    { encrypted_since: 5, members: [null, {}, { user_id: 7 }] },
+  ]) {
+    assert.deepEqual(
+      [...groupEnableNamedIds([SELF], state as unknown as GroupRosterState)],
+      [SELF],
+      JSON.stringify(state),
+    );
+  }
+});
+
 // ---- groupGrowthNeedsBundle --------------------------------------------------
 
 test("bundle: a member with no pinned device needs one", () => {
-  assert.equal(groupGrowthNeedsBundle([], false, LOCAL_DEVICE), true);
+  assert.equal(groupGrowthNeedsBundle([], false, LOCAL_DEVICE, false), true);
 });
 
 test("bundle: a member whose devices are all revoked needs one", () => {
@@ -204,6 +241,16 @@ test("bundle: a member whose devices are all revoked needs one", () => {
       [device(OTHER_DEVICE, false, "revoked")],
       false,
       LOCAL_DEVICE,
+      false,
+    ),
+    true,
+  );
+  assert.equal(
+    groupGrowthNeedsBundle(
+      [device("d1", true, "revoked"), device("d2", true, "revoked")],
+      false,
+      LOCAL_DEVICE,
+      false,
     ),
     true,
   );
@@ -215,6 +262,7 @@ test("bundle: an Active device without a session needs one", () => {
       [device("d1", true), device("d2", false)],
       false,
       LOCAL_DEVICE,
+      false,
     ),
     true,
   );
@@ -226,6 +274,7 @@ test("bundle: every Active device in session spares the one-time keys", () => {
       [device("d1", true), device("d2", true), device("d3", false, "revoked")],
       false,
       LOCAL_DEVICE,
+      false,
     ),
     false,
   );
@@ -237,6 +286,17 @@ test("bundle: an identity-changed device skips the fetch", () => {
       [device("d1", false), device("d2", true, "identity_changed")],
       false,
       LOCAL_DEVICE,
+      false,
+    ),
+    false,
+  );
+  // It outranks the all-revoked rule too
+  assert.equal(
+    groupGrowthNeedsBundle(
+      [device("d1", false, "revoked"), device("d2", false, "identity_changed")],
+      false,
+      LOCAL_DEVICE,
+      false,
     ),
     false,
   );
@@ -245,15 +305,31 @@ test("bundle: an identity-changed device skips the fetch", () => {
       [device(OTHER_DEVICE, false, "identity_changed")],
       true,
       LOCAL_DEVICE,
+      false,
     ),
     false,
   );
 });
 
 test("bundle: self with only this device needs none", () => {
-  assert.equal(groupGrowthNeedsBundle([], true, LOCAL_DEVICE), false);
+  assert.equal(groupGrowthNeedsBundle([], true, LOCAL_DEVICE, false), false);
   assert.equal(
-    groupGrowthNeedsBundle([device(LOCAL_DEVICE, false)], true, LOCAL_DEVICE),
+    groupGrowthNeedsBundle(
+      [device(LOCAL_DEVICE, false)],
+      true,
+      LOCAL_DEVICE,
+      false,
+    ),
+    false,
+  );
+  // Self is not a deviceless member: all-revoked others fetch nothing
+  assert.equal(
+    groupGrowthNeedsBundle(
+      [device(LOCAL_DEVICE, true), device(OTHER_DEVICE, false, "revoked")],
+      true,
+      LOCAL_DEVICE,
+      false,
+    ),
     false,
   );
 });
@@ -264,6 +340,7 @@ test("bundle: self with a sessionless other device needs one", () => {
       [device(LOCAL_DEVICE, false), device(OTHER_DEVICE, false)],
       true,
       LOCAL_DEVICE,
+      false,
     ),
     true,
   );
@@ -272,6 +349,42 @@ test("bundle: self with a sessionless other device needs one", () => {
       [device(LOCAL_DEVICE, false), device(OTHER_DEVICE, true)],
       true,
       LOCAL_DEVICE,
+      false,
+    ),
+    false,
+  );
+});
+
+test("bundle: unpinned own devices fetch the self bundle whatever the state", () => {
+  // Native pins own devices only from a self bundle and never asks for one,
+  // so the pinned state cannot tell; every shape fetches
+  for (const devices of [
+    [],
+    [device(LOCAL_DEVICE, false)],
+    [device(LOCAL_DEVICE, true), device(OTHER_DEVICE, true)],
+    [device(OTHER_DEVICE, false, "revoked")],
+    [device(OTHER_DEVICE, true, "identity_changed")],
+  ]) {
+    assert.equal(
+      groupGrowthNeedsBundle(devices, true, LOCAL_DEVICE, true),
+      true,
+      JSON.stringify(devices),
+    );
+  }
+});
+
+test("bundle: the unpinned flag is for self only", () => {
+  // A member in session, or with a changed identity, still fetches nothing
+  assert.equal(
+    groupGrowthNeedsBundle([device("d1", true)], false, LOCAL_DEVICE, true),
+    false,
+  );
+  assert.equal(
+    groupGrowthNeedsBundle(
+      [device("d1", false, "identity_changed")],
+      false,
+      LOCAL_DEVICE,
+      true,
     ),
     false,
   );
@@ -282,7 +395,12 @@ test("bundle: the local-device exclusion is for self only", () => {
   // kept, it is in session (no fetch); dropped, the peer would look
   // deviceless and spend a one-time key
   assert.equal(
-    groupGrowthNeedsBundle([device(LOCAL_DEVICE, true)], false, LOCAL_DEVICE),
+    groupGrowthNeedsBundle(
+      [device(LOCAL_DEVICE, true)],
+      false,
+      LOCAL_DEVICE,
+      false,
+    ),
     false,
   );
 });
@@ -290,7 +408,7 @@ test("bundle: the local-device exclusion is for self only", () => {
 test("bundle: an unknown local device id excludes nothing", () => {
   for (const local of [null, undefined]) {
     assert.equal(
-      groupGrowthNeedsBundle([device(LOCAL_DEVICE, false)], true, local),
+      groupGrowthNeedsBundle([device(LOCAL_DEVICE, false)], true, local, false),
       true,
     );
   }
