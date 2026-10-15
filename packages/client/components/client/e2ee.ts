@@ -43,6 +43,13 @@ import type {
 import type { ResumeCommitRef, ResumePrefetch } from "../rtc/mlsRejoinPolicy";
 import { decryptBump } from "./e2eeConversationBump";
 import {
+  type GroupGrowthOutcome,
+  groupEnableRoster,
+  groupGrowthDisplayNames,
+  groupGrowthNeedsBundle,
+  groupGrowthOutcomeOf,
+} from "./e2eeGroupGrowth.ts";
+import {
   type GroupSendDecision,
   type PlaintextProof,
   type ProofCacheEntry,
@@ -109,11 +116,20 @@ type TauriGlobal = {
   };
 };
 
-/** Scrubbed, typed error crossing the IPC (see e2ee-core `Error`) */
+/**
+ * Scrubbed, typed error crossing the IPC (see e2ee-core `Error`). `type` is
+ * an open string, not a closed union: callers match the tags they handle
+ * and rethrow the rest. Group growth adds `busy` (another growth dialog is
+ * open, or a decline locked the group's prompt) beside `declined`; its
+ * refusals are `invalid_argument` with `field` `roster_changed`,
+ * `roster_mismatch` or `self_user_id`, and
+ * `mls_store_owned_by_another_account`.
+ */
 type NativeError = {
   type?: string;
   user_id?: string;
   device_ids?: string[];
+  field?: string;
 };
 
 type NativeStatus = {
@@ -199,6 +215,15 @@ type GroupState = {
   pending_downgrade: boolean;
   members: GroupMember[];
 };
+
+// Group-growth decisions live in a loadable, spec'd module
+export {
+  type GroupGrowthOutcome,
+  groupEnableRoster,
+  groupGrowthDisplayNames,
+  groupGrowthNeedsBundle,
+  groupGrowthOutcomeOf,
+} from "./e2eeGroupGrowth.ts";
 
 /** Native `SafetyNumber` (digits + verification flags — never key bytes) */
 export type SafetyNumber = {
@@ -999,6 +1024,13 @@ type E2eeCapacitorPlugin = {
   confirmPeerDowngradeAccept(
     options: Record<string, unknown>,
   ): Promise<{ json: string }>;
+  /**
+   * Native-dialog-gated group enable / include (group growth): the dialog
+   * lists the whole audience the ctl asserts. Rejects `declined` on
+   * cancel, `busy` while another growth dialog is open.
+   */
+  enableGroup(options: Record<string, unknown>): Promise<{ json: string }>;
+  addGroupMember(options: Record<string, unknown>): Promise<{ json: string }>;
   attachmentUpload(options: Record<string, unknown>): Promise<{ json: string }>;
   attachmentFetch(options: Record<string, unknown>): Promise<{ json: string }>;
   /** Native-dialog CREATE: mints + displays the code, returns the bundle */
@@ -1080,6 +1112,22 @@ class CapacitorTransport implements NativeTransport {
         (args as { accept?: boolean })?.accept
       ) {
         const { json } = await this.#plugin.confirmPeerDowngradeAccept(
+          (args as Record<string, unknown>) ?? {},
+        );
+        return JSON.parse(json) as T;
+      }
+
+      // Group audience growth (enable, include) → dedicated native-dialog
+      // methods, downgrade parity: a member set grows on every member's
+      // device only after a tap on a dialog the webview cannot draw.
+      if (command === "e2ee_enable_group") {
+        const { json } = await this.#plugin.enableGroup(
+          (args as Record<string, unknown>) ?? {},
+        );
+        return JSON.parse(json) as T;
+      }
+      if (command === "e2ee_add_group_member") {
+        const { json } = await this.#plugin.addGroupMember(
           (args as Record<string, unknown>) ?? {},
         );
         return JSON.parse(json) as T;
@@ -3076,32 +3124,78 @@ export class E2EEBridge implements E2EEAdapter {
   }
 
   /**
-   * Enable end-to-end encryption for a group (design §2.5). The caller
-   * (settings UI) has shown the asserted-roster checklist and confirmed.
-   * `roster` MUST be the exact member set the user is asserting.
+   * Enable end-to-end encryption for a group (design §2.5), or re-send a
+   * confirmed enable. The shells gate this on a NATIVE OS dialog listing
+   * the whole audience the `group_enable` asserts (ids, count and trust
+   * come from native code; `displayNames` only label the lines). `roster`
+   * is the member set the user is asserting; for a group native already
+   * holds as encrypted it is replaced by native's Active set
+   * (`groupEnableRoster`), the only roster such a group accepts.
+   *
+   * Resolves `"ok"` once the enable is sent, `"declined"` when the user
+   * cancelled the dialog and `"busy"` when another growth dialog is open
+   * or a decline locked the prompt (nothing was written natively in
+   * either case). Every other failure throws its typed native error as
+   * before, among them `invalid_argument` with `field` `roster_changed`,
+   * `roster_mismatch` or `self_user_id`, and
+   * `mls_store_owned_by_another_account`.
    */
   async enableGroupEncryption(
     channel: Channel,
     roster: string[],
-  ): Promise<void> {
+  ): Promise<GroupGrowthOutcome> {
     if (channel.type !== "Group") throw new Error("not a group");
-    const bundles: KeyBundle[] = [];
-    const fetched = new Set<string>();
+    const selfUserId = this.#client.user!.id;
 
-    for (let attempt = 0; attempt < roster.length + 2; attempt++) {
+    // The state reads below open the engine (`e2ee_group_state` can
+    // create a store); the native enable never does. So read only on a
+    // device known to be enabled. Anywhere else the enable goes straight
+    // to native, which refuses it with nothing written.
+    let enabled = false;
+    try {
+      await this.#ensureBootStatus();
+      enabled = !!this.status.get("state")?.enabled;
+    } catch {
+      // Unresolved status: native decides.
+    }
+
+    let asserted = roster;
+    let bundles: KeyBundle[] = [];
+    if (enabled) {
+      let state: GroupState | null = null;
       try {
-        const result = await this.#invoke<EncryptResult>("e2ee_enable_group", {
+        state = await this.groupState(channel.id);
+      } catch (error) {
+        // No native row yet is a fresh enable; anything else is a failure.
+        if ((error as NativeError)?.type !== "group_not_established") {
+          throw error;
+        }
+      }
+      asserted = groupEnableRoster(state, roster);
+      bundles = await this.groupGrowthBundlePreflight(channel, asserted);
+    }
+    const displayNames = groupGrowthDisplayNames(asserted, (id) =>
+      this.#client.users.get(id),
+    );
+    const fetched = new Set(bundles.map((b) => b.user_id));
+
+    for (let attempt = 0; attempt < asserted.length + 2; attempt++) {
+      let result: EncryptResult;
+      try {
+        result = await this.#invoke<EncryptResult>("e2ee_enable_group", {
           conversationId: channel.id,
-          roster,
-          selfUserId: this.#client.user!.id,
+          roster: asserted,
+          selfUserId,
           bundles,
+          displayNames,
         });
-        await this.#api("POST", "/e2ee/messages", result.payload);
-        await this.#refreshGroupMode(channel.id);
-        await this.#syncRecentConversation(channel.id, channel.id);
-        return;
       } catch (raw) {
+        const outcome = groupGrowthOutcomeOf(raw);
+        if (outcome) return outcome;
         const native = raw as NativeError;
+        // Fallback for a device the preflight missed. A confirmed dialog
+        // leaves a native consent record for this exact roster, so the
+        // re-invoke does not prompt again.
         if (native.type === "needs_bundle" && native.user_id) {
           if (fetched.has(native.user_id)) throw raw;
           fetched.add(native.user_id);
@@ -3112,7 +3206,49 @@ export class E2EEBridge implements E2EEAdapter {
         }
         throw raw;
       }
+      await this.#api("POST", "/e2ee/messages", result.payload);
+      await this.#refreshGroupMode(channel.id);
+      await this.#syncRecentConversation(channel.id, channel.id);
+      return "ok";
     }
+    throw new E2EESendError(
+      "Could not gather encryption keys for every group member.",
+      "native",
+    );
+  }
+
+  /**
+   * Bundle preflight for group growth (enable, include), run BEFORE the
+   * native confirm so `needs_bundle` rarely fires after the user said yes;
+   * the callers' `needs_bundle` re-invoke stays as the fallback. Fetches
+   * only for the users `groupGrowthNeedsBundle` names, self included for
+   * own-device fan-out: each fetch spends one of that user's one-time keys.
+   * Availability-only: a failed read or fetch leaves that user to the
+   * fallback. Not on an un-enabled device (nothing to fan out from).
+   */
+  async groupGrowthBundlePreflight(
+    channel: Channel,
+    userIds: Iterable<string>,
+  ): Promise<KeyBundle[]> {
+    if (channel.type !== "Group") return [];
+    const status = this.status.get("state");
+    if (!status?.enabled) return [];
+    const selfId = this.#client.user!.id;
+    const bundles: KeyBundle[] = [];
+    for (const userId of new Set([...userIds, selfId])) {
+      try {
+        const state = await this.conversationState(userId);
+        const isSelf = userId === selfId;
+        if (groupGrowthNeedsBundle(state.devices, isSelf, status.device_id)) {
+          bundles.push(
+            await this.#api<KeyBundle>("GET", `/e2ee/keys/${userId}`),
+          );
+        }
+      } catch (error) {
+        console.warn("[e2ee] group growth preflight skipped a user", error);
+      }
+    }
+    return bundles;
   }
 
   /** Native group state (roster + sticky state) for the UI. */
