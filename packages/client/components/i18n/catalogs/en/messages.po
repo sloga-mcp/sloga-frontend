@@ -2109,6 +2109,10 @@ msgstr "Contested items"
 msgid "Continue"
 msgstr "Continue"
 
+#: components/modal/modals/AddFriendToGroup.tsx
+msgid "You'll confirm this in a system dialog."
+msgstr "You'll confirm this in a system dialog."
+
 #: src/AndroidNag.tsx
 msgid "Continue in browser"
 msgstr "Continue in browser"
@@ -8497,8 +8501,32 @@ msgid "Couldn't prepare encryption for {name}, so nobody was added. Try again."
 msgstr "Couldn't prepare encryption for {name}, so nobody was added. Try again."
 
 #: components/modal/modals/AddFriendToGroup.tsx
+msgid "{name} was added to the group but not included in its encryption. They can't read encrypted messages."
+msgstr "{name} was added to the group but not included in its encryption. They can't read encrypted messages."
+
+#: components/modal/modals/AddFriendToGroup.tsx
 msgid "{name} couldn't be included in this group chat's encryption. Remove them from the group chat, or review their security identity."
 msgstr "{name} couldn't be included in this group chat's encryption. Remove them from the group chat, or review their security identity."
+
+#: components/modal/modals/AddFriendToGroup.tsx
+msgid "Try again in a moment."
+msgstr "Try again in a moment."
+
+#: components/modal/modals/AddFriendToGroup.tsx
+msgid "The member list changed. Check it and try again."
+msgstr "The member list changed. Check it and try again."
+
+#: components/modal/modals/AddFriendToGroup.tsx
+msgid "This group is already encrypted with a different member list. Check the member list and try again."
+msgstr "This group is already encrypted with a different member list. Check the member list and try again."
+
+#: components/modal/modals/AddFriendToGroup.tsx
+msgid "This device isn't part of this group's encryption yet. Wait for another member to re-send the member list."
+msgstr "This device isn't part of this group's encryption yet. Wait for another member to re-send the member list."
+
+#: components/modal/modals/AddFriendToGroup.tsx
+msgid "This device's encryption is set up for a different account."
+msgstr "This device's encryption is set up for a different account."
 
 #: components/modal/modals/AddFriendToGroup.tsx
 msgid "{name} was added to the group chat, but couldn't be included in its encryption yet."
