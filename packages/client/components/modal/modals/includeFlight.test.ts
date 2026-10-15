@@ -3,19 +3,40 @@
 //   node --conditions=browser --test components/modal/modals/includeFlight.test.ts
 // Focus: one flight per group + friend pair. A second begin joins instead of
 // starting another run, a committing flight is never dropped from outside, a
-// failure stays until dismissed, only a half-done failure can be retried,
-// and a modal mounting for the friend finds the flight it has to show.
+// failure stays until dismissed, every failure but a terminal one can be
+// retried (a Cancel on the native confirm dialog included), and a modal
+// mounting for the friend finds the flight it has to show.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  TERMINAL_INCLUDE_ERROR_TYPES,
+  isTerminalIncludeError,
+} from "../../client/groupInclude.ts";
+
+import {
+  type IncludeFailureKind,
   type IncludeFlightEvent,
   IncludeFlights,
+  includeFailureForError,
+  includeFailureForOutcome,
   includeFlightKey,
   includeFlights,
 } from "./includeFlight.ts";
 
 const KEY = includeFlightKey("G1", "U1");
+
+/** Every failure kind; the loops below run over all of them. */
+const KINDS = [
+  "half_done",
+  "declined",
+  "terminal",
+] as const satisfies readonly IncludeFailureKind[];
+
+// A kind added to IncludeFailureKind but not to KINDS fails tsc here.
+type MissingKind = Exclude<IncludeFailureKind, (typeof KINDS)[number]>;
+const noMissingKind: [MissingKind] extends [never] ? true : never = true;
+void noMissingKind;
 
 function recorded(flights: IncludeFlights) {
   const events: IncludeFlightEvent[] = [];
@@ -55,7 +76,7 @@ test("begin: a second confirm for the same pair joins, never runs twice", () => 
 });
 
 test("begin: a failed pair offers no fresh include", () => {
-  for (const kind of ["half_done", "terminal"] as const) {
+  for (const kind of KINDS) {
     const flights = new IncludeFlights();
     flights.begin("G1", "U1");
     flights.fail(KEY, kind);
@@ -70,7 +91,7 @@ test("begin: a failed pair offers no fresh include", () => {
 });
 
 test("fail: committing becomes failed with its kind", () => {
-  for (const kind of ["half_done", "terminal"] as const) {
+  for (const kind of KINDS) {
     const flights = new IncludeFlights();
     flights.begin("G1", "U1");
     const events = recorded(flights);
@@ -94,10 +115,34 @@ test("fail: only from committing", () => {
   flights.fail(KEY, "terminal");
   // A late failure can't turn a terminal one back into a retryable one.
   assert.equal(flights.fail(KEY, "half_done"), false);
+  assert.equal(flights.fail(KEY, "declined"), false);
   assert.equal(flights.get(KEY)?.phase, "failed");
   assert.equal(
     (flights.get(KEY) as { kind?: string } | undefined)?.kind,
     "terminal",
+  );
+});
+
+test("fail: a detail rides on the flight and the event", () => {
+  const flights = new IncludeFlights();
+  flights.begin("G1", "U1");
+  const events = recorded(flights);
+  assert.equal(flights.fail(KEY, "half_done", "busy"), true);
+  assert.deepEqual(flights.get(KEY), {
+    channelId: "G1",
+    userId: "U1",
+    phase: "failed",
+    kind: "half_done",
+    detail: "busy",
+  });
+  assert.deepEqual(events, [
+    { key: KEY, type: "failed", kind: "half_done", detail: "busy" },
+  ]);
+  // A Retry from it drops the detail: it described the attempt that failed.
+  assert.equal(flights.retry(KEY), true);
+  assert.equal(
+    (flights.get(KEY) as { detail?: string } | undefined)?.detail,
+    undefined,
   );
 });
 
@@ -149,6 +194,7 @@ test("retry: a half-done failure goes back to committing", () => {
     userId: "U1",
     phase: "committing",
     retrying: true,
+    retried: "half_done",
   });
   assert.deepEqual(events, [{ key: KEY, type: "committing" }]);
   // A second Retry while that one runs joins it.
@@ -156,6 +202,40 @@ test("retry: a half-done failure goes back to committing", () => {
   // And it can fail again, and be retried again.
   assert.equal(flights.fail(KEY, "half_done"), true);
   assert.equal(flights.retry(KEY), true);
+});
+
+test("retry: a declined include goes back to committing and prompts again", () => {
+  const flights = new IncludeFlights();
+  flights.begin("G1", "U1");
+  flights.fail(KEY, "declined");
+  const events = recorded(flights);
+  assert.equal(flights.retry(KEY), true);
+  assert.deepEqual(flights.get(KEY), {
+    channelId: "G1",
+    userId: "U1",
+    phase: "committing",
+    retrying: true,
+    retried: "declined",
+  });
+  assert.deepEqual(events, [{ key: KEY, type: "committing" }]);
+  // Declined again on the new prompt: still retryable, as often as it takes.
+  assert.equal(flights.fail(KEY, "declined"), true);
+  assert.equal(flights.retry(KEY), true);
+  assert.equal(flights.succeed(KEY), true);
+});
+
+test("retry: allowed from every kind but terminal", () => {
+  for (const kind of KINDS) {
+    const flights = new IncludeFlights();
+    flights.begin("G1", "U1");
+    flights.fail(KEY, kind);
+    assert.equal(flights.retry(KEY), kind !== "terminal", kind);
+    assert.equal(
+      flights.get(KEY)?.phase,
+      kind === "terminal" ? "failed" : "committing",
+      kind,
+    );
+  }
 });
 
 test("retry: never from terminal, committing or absent", () => {
@@ -180,7 +260,7 @@ test("dismiss: a failure is dropped, a committing flight is never cut", () => {
   assert.equal(flights.dismiss(KEY), false);
   assert.equal(flights.get(KEY)?.phase, "committing");
 
-  for (const kind of ["half_done", "terminal"] as const) {
+  for (const kind of KINDS) {
     flights.fail(KEY, kind);
     const events = recorded(flights);
     assert.equal(flights.dismiss(KEY), true);
@@ -228,6 +308,89 @@ test("subscribe: unsubscribe stops events; a throwing listener can't starve the 
   }
   assert.deepEqual(seen, ["committing"]);
   assert.equal(flights.get(KEY)?.phase, "failed");
+});
+
+test("declined: not a terminal include error, so Retry stays [m8]", () => {
+  assert.ok(!TERMINAL_INCLUDE_ERROR_TYPES.includes("declined"));
+  assert.ok(!TERMINAL_INCLUDE_ERROR_TYPES.includes("busy"));
+  assert.equal(isTerminalIncludeError({ type: "declined" }), false);
+  assert.equal(isTerminalIncludeError({ type: "busy" }), false);
+});
+
+test("outcome: declined is its own retryable kind, busy is retryable", () => {
+  assert.deepEqual(includeFailureForOutcome("declined"), { kind: "declined" });
+  assert.deepEqual(includeFailureForOutcome("busy"), {
+    kind: "half_done",
+    detail: "busy",
+  });
+  // An outcome this build does not know is never a success, nor terminal.
+  assert.deepEqual(includeFailureForOutcome("later" as unknown as "busy"), {
+    kind: "half_done",
+  });
+});
+
+test("error: a declined or busy throw is still that outcome", () => {
+  assert.deepEqual(includeFailureForError({ type: "declined" }), {
+    kind: "declined",
+  });
+  assert.deepEqual(includeFailureForError({ type: "busy" }), {
+    kind: "half_done",
+    detail: "busy",
+  });
+  // Wrapped the way addGroupMemberEncrypted wraps native errors.
+  assert.deepEqual(
+    includeFailureForError(Object.assign(new Error("x"), { type: "declined" })),
+    { kind: "declined" },
+  );
+});
+
+test("error: the native growth gate's refusals keep their copy", () => {
+  for (const field of [
+    "roster_changed",
+    "roster_mismatch",
+    "self_user_id",
+  ] as const) {
+    assert.deepEqual(
+      includeFailureForError({ type: "invalid_argument", field }),
+      { kind: "half_done", detail: field },
+      field,
+    );
+  }
+  // Another invalid_argument field is a plain half-done failure.
+  assert.deepEqual(
+    includeFailureForError({ type: "invalid_argument", field: "user_id" }),
+    { kind: "half_done" },
+  );
+  assert.deepEqual(
+    includeFailureForError({
+      type: "mls_store_owned_by_another_account",
+      owner_user_id: "A",
+      requested_user_id: "B",
+    }),
+    { kind: "terminal", detail: "other_account" },
+  );
+});
+
+test("error: terminal only for the native tags a Retry can't fix", () => {
+  for (const type of TERMINAL_INCLUDE_ERROR_TYPES) {
+    assert.deepEqual(includeFailureForError({ type }), { kind: "terminal" });
+  }
+  for (const error of [
+    new Error("network"),
+    { type: "needs_bundle" },
+    { type: "include_in_flight" },
+    null,
+    undefined,
+    "text",
+  ]) {
+    assert.deepEqual(includeFailureForError(error), { kind: "half_done" });
+  }
+  const throwing = {
+    get type(): string {
+      throw new Error("getter");
+    },
+  };
+  assert.deepEqual(includeFailureForError(throwing), { kind: "half_done" });
 });
 
 test("includeFlights: one shared store", () => {

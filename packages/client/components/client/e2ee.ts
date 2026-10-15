@@ -112,11 +112,19 @@ type TauriGlobal = {
   };
 };
 
-/** Scrubbed, typed error crossing the IPC (see e2ee-core `Error`) */
+/**
+ * Scrubbed, typed error crossing the IPC (see e2ee-core `Error`). `type` is
+ * open: callers match the tags they handle and rethrow the rest. The
+ * native-dialog commands add `declined` (the user pressed Cancel) and, for
+ * the group-growth commands, `busy` (another growth dialog is open, or this
+ * group's prompt is locked for a while after a decline).
+ */
 type NativeError = {
   type?: string;
   user_id?: string;
   device_ids?: string[];
+  /** `invalid_argument` only: the refused input (e.g. `roster_changed`) */
+  field?: string;
 };
 
 type NativeStatus = {
@@ -154,6 +162,16 @@ export type SafetyNumber = {
 };
 
 export type KeyBundle = { user_id: string; devices: unknown[] };
+
+/**
+ * How an audience-growth command ended (`addGroupMemberEncrypted`). The
+ * native shell confirms the growth in an OS dialog: `declined` means the
+ * user pressed Cancel there and nothing changed, a silent outcome that is
+ * never a toast; `busy` means another growth dialog is open, or this
+ * group's prompt is locked for a while after a decline. Every other
+ * failure still throws.
+ */
+export type GroupGrowthOutcome = "ok" | "declined" | "busy";
 
 /**
  * Whether a member can be included in an encrypted group's encryption
@@ -3151,15 +3169,23 @@ export class E2EEBridge implements E2EEAdapter {
    * Include `userId` in `channel`'s encryption (steps 3b and 4 of the
    * pinned order). They must already be a member server-side AND in the
    * local member list. `bundle` comes from `groupIncludePreflight`, fresh
-   * for every attempt. Throws on failure; `isTerminalIncludeError`
-   * (groupInclude.ts) tells the failures a Retry cannot fix, and the
-   * wrapped native errors keep their `type` for it.
+   * for every attempt.
+   *
+   * The native shell confirms the include in an OS dialog the webview
+   * cannot draw or answer. Resolves `"ok"` once the include was delivered,
+   * `"declined"` when the user pressed Cancel there and `"busy"` when
+   * another growth dialog is open or this group's prompt is locked after a
+   * decline: in both of those nothing was pinned, marked or sent (a first
+   * include leaves the member announced) and a Retry prompts again. Every
+   * other failure throws;
+   * `isTerminalIncludeError` (groupInclude.ts) tells the failures a Retry
+   * cannot fix, and the wrapped native errors keep their `type` for it.
    */
   async addGroupMemberEncrypted(
     channel: Channel,
     userId: string,
     bundle: KeyBundle,
-  ): Promise<void> {
+  ): Promise<GroupGrowthOutcome> {
     if (channel.type !== "Group") throw new Error("not a group");
     if (!channel.recipientIds.has(userId)) {
       throw new Error("not in the local member list yet");
@@ -3194,26 +3220,34 @@ export class E2EEBridge implements E2EEAdapter {
         selfUserId: selfId,
       });
 
-      const bundles: KeyBundle[] = [bundle];
-      const fetched = new Set<string>([userId]);
-
-      // Own devices are pinned only from a self bundle (see
-      // #selfDevicesUnpinned). Availability-only, as in the group send path.
-      let selfPrefetched = false;
-      if (this.#selfDevicesUnpinned) {
-        try {
-          bundles.push(
-            await this.#api<KeyBundle>("GET", `/e2ee/keys/${selfId}`),
-          );
-          fetched.add(selfId);
-          selfPrefetched = true;
-        } catch (error) {
-          console.warn(
-            "[e2ee] self bundle prefetch failed; including without own-device fan-out",
-            error,
-          );
-        }
+      // Bundles for the rest of the audience go in BEFORE the attempt loop:
+      // a needs_bundle after the user confirmed the native dialog means a
+      // re-invoke, which can prompt again. The audience is the roster the
+      // add sends, this device's Active members after the reconcile above;
+      // the new member's bundle is the caller's. Self is added by the
+      // preflight (own devices pin only from a self bundle). A failed read
+      // leaves the members to the needs_bundle loop below.
+      let audience: string[] = [];
+      try {
+        audience = (await this.groupState(conversationId)).members
+          .filter((m) => m.status === "active" && m.user_id !== userId)
+          .map((m) => m.user_id);
+      } catch (error) {
+        console.warn(
+          "[e2ee] include preflight could not read the roster",
+          errorName(error),
+        );
       }
+      const preflight = await this.groupGrowthBundlePreflight(
+        channel,
+        audience,
+      );
+      const bundles: KeyBundle[] = [bundle, ...preflight];
+      const fetched = new Set<string>([
+        userId,
+        ...preflight.map((b) => b.user_id),
+      ]);
+      const selfPrefetched = preflight.some((b) => b.user_id === selfId);
 
       let result: EncryptResult | undefined;
       for (
@@ -3235,10 +3269,15 @@ export class E2EEBridge implements E2EEAdapter {
         // live list NOW, with nothing awaited between this and the add, so
         // the roster it sends is the one on screen. Errors throw. Reconcile
         // only removes or announces, so the verdict above cannot worsen.
+        // The add itself waits on the native confirm dialog, and native
+        // takes no displayed list (plan D7): a member removed while that
+        // dialog is open is still in the roster it sends if the user
+        // confirms, until the next reconcile. That gap is the accepted one.
         if (!channel.recipientIds.has(userId)) {
           throw new Error("no longer in the local member list");
         }
         const displayed = [...channel.recipientIds.values()];
+        const displayNames = this.#growthDisplayNames(displayed);
         await this.#invoke("e2ee_group_reconcile", {
           conversationId,
           displayed,
@@ -3250,10 +3289,16 @@ export class E2EEBridge implements E2EEAdapter {
             userId,
             selfUserId: selfId,
             bundles,
+            displayNames,
           });
           break;
         } catch (raw) {
           const native = raw as NativeError;
+          // Cancel in the native dialog, or another growth dialog holds it
+          // (or this group's prompt is locked after a decline). Nothing was
+          // pinned, marked or sent: a silent outcome, not an error.
+          if (native.type === "declined") return "declined";
+          if (native.type === "busy") return "busy";
           if (native.type === "needs_bundle" && native.user_id) {
             if (fetched.has(native.user_id)) throw raw;
             fetched.add(native.user_id);
@@ -3338,9 +3383,29 @@ export class E2EEBridge implements E2EEAdapter {
           "delivery_failed",
         );
       }
+      return "ok";
     } finally {
       release();
     }
+  }
+
+  /**
+   * Labels for the native growth dialog, keyed by user id:
+   * `username#discriminator` (unique on the server, so harder to imitate
+   * than a display name), the username alone when there is no
+   * discriminator, and no entry for a user this client has not loaded (the
+   * dialog then shows the id). The dialog says the names come from the app
+   * and are not verified.
+   */
+  #growthDisplayNames(userIds: string[]): Record<string, string> {
+    const names: Record<string, string> = {};
+    for (const id of userIds) {
+      const user = this.#client.users.get(id);
+      if (!user?.username) continue;
+      const tag = user.discriminator;
+      names[id] = tag ? `${user.username}#${tag}` : user.username;
+    }
+    return names;
   }
 
   /**
@@ -3475,6 +3540,59 @@ export class E2EEBridge implements E2EEAdapter {
         }
       } catch (error) {
         console.warn("[e2ee] downgrade preflight skipped a user", error);
+      }
+    }
+    return bundles;
+  }
+
+  /**
+   * Preflight for the audience-growth commands (`e2ee_enable_group`,
+   * `e2ee_add_group_member`). Native confirms a growth in an OS dialog, and
+   * a `needs_bundle` after the user confirmed means a re-invoke, so the
+   * bundles go in up front and the common case shows ONE dialog.
+   *
+   * Fetches ONLY where this device cannot encrypt from its own pins,
+   * because every fetch spends one of that user's one-time keys:
+   * - a user in `userIds` with no pinned device at all, or with an Active
+   *   device that has no session;
+   * - self (always considered) when `#selfDevicesUnpinned` is set, since
+   *   the core pins own devices only from a self bundle and never raises
+   *   `needs_bundle` for self, or when one of our OTHER Active devices has
+   *   no session. The local device never counts.
+   * Availability-only and never throws: a failed read or fetch skips that
+   * user and leaves them to the caller's `needs_bundle` loop.
+   */
+  async groupGrowthBundlePreflight(
+    channel: Channel,
+    userIds: string[],
+  ): Promise<KeyBundle[]> {
+    if (channel.type !== "Group") return [];
+    const selfId = this.#client.user!.id;
+    const localDevice = this.status.get("state")?.device_id;
+    const bundles: KeyBundle[] = [];
+    for (const userId of new Set([...userIds, selfId])) {
+      try {
+        let needs = userId === selfId && this.#selfDevicesUnpinned;
+        if (!needs) {
+          const { devices } = await this.conversationState(userId);
+          const sessionless = devices.some(
+            (d) =>
+              d.status === "active" &&
+              !d.has_active_session &&
+              !(userId === selfId && d.device_id === localDevice),
+          );
+          needs = sessionless || (userId !== selfId && devices.length === 0);
+        }
+        if (needs) {
+          bundles.push(
+            await this.#api<KeyBundle>("GET", `/e2ee/keys/${userId}`),
+          );
+        }
+      } catch (error) {
+        console.warn(
+          "[e2ee] group growth preflight skipped a user",
+          errorName(error),
+        );
       }
     }
     return bundles;

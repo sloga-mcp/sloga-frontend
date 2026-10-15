@@ -11,9 +11,9 @@
  *
  *   (none) --begin--> committing --succeed--> (none, "done")
  *                         |      --abandon--> (none, nobody was added)
- *                         +--fail--> failed(half_done | terminal)
- *   failed(half_done) --retry--> committing (retrying)
- *   failed(any)       --dismiss--> (none)
+ *                         +--fail--> failed(half_done | declined | terminal)
+ *   failed(half_done | declined) --retry--> committing (retrying)
+ *   failed(any)                  --dismiss--> (none)
  *
  * A committing flight is never dropped from outside: closing the modal does
  * not cut the steps after the server add.
@@ -21,12 +21,51 @@
  * Kept free of Solid and the DOM so it loads under `node --test`.
  */
 
-/** "half_done": added but not included yet, Retry allowed. "terminal": no Retry. */
-export type IncludeFailureKind = "half_done" | "terminal";
+import type { GroupGrowthOutcome } from "@revolt/client/e2ee";
+
+import { isTerminalIncludeError } from "../../client/groupInclude.ts";
 
 /**
- * `retrying`: the run started from a Retry, so the half-done failure it
- * retries stays on screen while it runs.
+ * After the server add, so the friend is in the group either way.
+ * - "half_done": not included yet; Retry allowed.
+ * - "declined": the user pressed Cancel on the native confirm dialog. The
+ *   friend stays `announced` (plan D5); Retry allowed, and it prompts again.
+ * - "terminal": no Retry.
+ */
+export type IncludeFailureKind = "half_done" | "declined" | "terminal";
+
+/** The failure kinds a Retry may start from: every one but "terminal". */
+export type RetryableIncludeFailureKind = Exclude<
+  IncludeFailureKind,
+  "terminal"
+>;
+
+/**
+ * Why the include failed, when the copy says more than the kind does.
+ * - "busy": another growth dialog is open, or this group's prompt is locked
+ *   for a while after a decline.
+ * - "roster_changed": the member set changed while the dialog was open.
+ * - "roster_mismatch": native refused the roster as not this group's.
+ * - "self_user_id": this device is not an active member of the group's
+ *   encryption.
+ * - "other_account": the native store belongs to another account.
+ */
+export type IncludeFailureDetail =
+  | "busy"
+  | "roster_changed"
+  | "roster_mismatch"
+  | "self_user_id"
+  | "other_account";
+
+export type IncludeFailure = {
+  kind: IncludeFailureKind;
+  detail?: IncludeFailureDetail;
+};
+
+/**
+ * `retrying`: the run started from a Retry, so the failure it retries stays
+ * on screen while it runs. `retried` is that failure's kind, present only
+ * while retrying.
  */
 export type IncludeFlight =
   | {
@@ -34,23 +73,102 @@ export type IncludeFlight =
       userId: string;
       phase: "committing";
       retrying: boolean;
+      retried?: RetryableIncludeFailureKind;
     }
   | {
       channelId: string;
       userId: string;
       phase: "failed";
       kind: IncludeFailureKind;
+      detail?: IncludeFailureDetail;
     };
 
 export type IncludeFlightEvent =
   | { key: string; type: "committing" }
-  | { key: string; type: "failed"; kind: IncludeFailureKind }
+  | {
+      key: string;
+      type: "failed";
+      kind: IncludeFailureKind;
+      detail?: IncludeFailureDetail;
+    }
   | { key: string; type: "done" }
   | { key: string; type: "abandoned"; message?: string }
   | { key: string; type: "dismissed" };
 
 export function includeFlightKey(channelId: string, userId: string): string {
   return `${channelId}:${userId}`;
+}
+
+/**
+ * The failure for an `addGroupMemberEncrypted` outcome other than "ok".
+ * Neither is terminal: nothing was sent, and a Retry prompts again.
+ */
+export function includeFailureForOutcome(
+  outcome: Exclude<GroupGrowthOutcome, "ok">,
+): IncludeFailure {
+  switch (outcome) {
+    case "declined":
+      return { kind: "declined" };
+    case "busy":
+      return { kind: "half_done", detail: "busy" };
+    default: {
+      // An outcome this build does not know is no success: retryable.
+      const unknown: never = outcome;
+      void unknown;
+      return { kind: "half_done" };
+    }
+  }
+}
+
+/** `invalid_argument` fields the native growth gate refuses with */
+const ROSTER_FIELDS: ReadonlySet<string> = new Set([
+  "roster_changed",
+  "roster_mismatch",
+  "self_user_id",
+]);
+
+/**
+ * The failure for an error `addGroupMemberEncrypted` threw. Reads the
+ * native `type` tag (and an `invalid_argument`'s `field`), which the
+ * wrapped errors keep. Never throws.
+ *
+ * - `declined` / `busy` arriving as a throw instead of an outcome are still
+ *   that outcome: a Cancel is never a terminal failure.
+ * - `mls_store_owned_by_another_account` is terminal: the store belongs to
+ *   another account, nothing a Retry in this session does changes that, and
+ *   every Retry would still spend one of the friend's one-time keys on its
+ *   fresh bundle.
+ * - `roster_changed`, `roster_mismatch` and `self_user_id` stay retryable:
+ *   the member list can settle, and another member can re-send it.
+ * - Anything else is terminal only when `isTerminalIncludeError` says so.
+ */
+export function includeFailureForError(error: unknown): IncludeFailure {
+  let type: unknown;
+  let field: unknown;
+  try {
+    const shape = error as { type?: unknown; field?: unknown } | null;
+    type = shape?.type;
+    field = shape?.field;
+  } catch {
+    // a throwing getter is no evidence of a terminal failure
+    return { kind: "half_done" };
+  }
+  if (type === "declined") return includeFailureForOutcome("declined");
+  if (type === "busy") return includeFailureForOutcome("busy");
+  if (type === "mls_store_owned_by_another_account") {
+    return { kind: "terminal", detail: "other_account" };
+  }
+  if (
+    type === "invalid_argument" &&
+    typeof field === "string" &&
+    ROSTER_FIELDS.has(field)
+  ) {
+    return {
+      kind: "half_done",
+      detail: field as "roster_changed" | "roster_mismatch" | "self_user_id",
+    };
+  }
+  return { kind: isTerminalIncludeError(error) ? "terminal" : "half_done" };
 }
 
 export class IncludeFlights {
@@ -79,10 +197,13 @@ export class IncludeFlights {
     return true;
   }
 
-  /** Go again from a half-done failure. True when the caller owns the run. */
+  /**
+   * Go again from a failure that is not terminal (half-done or declined).
+   * True when the caller owns the run.
+   */
   retry(key: string): boolean {
     const flight = this.#flights.get(key);
-    if (flight?.phase !== "failed" || flight.kind !== "half_done") {
+    if (flight?.phase !== "failed" || flight.kind === "terminal") {
       return false;
     }
     this.#flights.set(key, {
@@ -90,13 +211,21 @@ export class IncludeFlights {
       userId: flight.userId,
       phase: "committing",
       retrying: true,
+      retried: flight.kind,
     });
     this.#emit({ key, type: "committing" });
     return true;
   }
 
-  /** The run failed after the server add: the friend may be in the group. */
-  fail(key: string, kind: IncludeFailureKind): boolean {
+  /**
+   * The run failed after the server add: the friend may be in the group.
+   * `detail` says why, when the copy says more than the kind does.
+   */
+  fail(
+    key: string,
+    kind: IncludeFailureKind,
+    detail?: IncludeFailureDetail,
+  ): boolean {
     const flight = this.#flights.get(key);
     if (flight?.phase !== "committing") return false;
     this.#flights.set(key, {
@@ -104,8 +233,9 @@ export class IncludeFlights {
       userId: flight.userId,
       phase: "failed",
       kind,
+      ...(detail ? { detail } : {}),
     });
-    this.#emit({ key, type: "failed", kind });
+    this.#emit({ key, type: "failed", kind, ...(detail ? { detail } : {}) });
     return true;
   }
 
