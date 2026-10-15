@@ -77,6 +77,19 @@ export function useError() {
       // review (same lag pattern; stoat-api's union predates it).
       if (errType === "DirectMessagesPaused")
         return t`Your messages to people who aren't your friends are paused while our team reviews your account. You can still message your friends.`;
+      // Import from another platform (same lag pattern). The import modals
+      // map these with the source's name (`useImportErrorMessage` in
+      // `ImportShell.tsx`); this is the neutral copy for anywhere else.
+      if (errType === "ImportSourceNotFound")
+        return t`We couldn't find that server. Check the link and try again.`;
+      if (errType === "ImportVerificationMissing")
+        return t`We couldn't find your verification code on that server. Add your code to the server, then try again.`;
+      if (errType === "ImportBotNotInServer")
+        return t`Our importer bot isn't in that server yet. Add it, then try again.`;
+      if (errType === "ImportUpstreamUnavailable")
+        return t`We couldn't reach the server you're importing from right now. Try again in a few minutes.`;
+      if (errType === "ImportSourceUnavailable")
+        return t`Importing from this platform is not available right now.`;
 
       switch (err.type) {
         case "AlreadyFriends":

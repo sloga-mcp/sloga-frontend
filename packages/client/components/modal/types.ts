@@ -1,4 +1,5 @@
 import { TrackReference } from "solid-livekit-components";
+import type { ImportSource } from "stoat.js";
 import {
   API,
   Bot,
@@ -231,7 +232,7 @@ export type Modals =
       /**
        * Source to open directly; when absent the modal shows the source picker.
        */
-      source?: "stoat" | "fluxer" | "matrix";
+      source?: ImportSource;
     }
   | {
       type: "create_webhook";

@@ -613,6 +613,34 @@ msgstr "Copy code and open Ko-fi"
 msgid "Couldn't copy to the clipboard. Select the code and copy it yourself."
 msgstr "Couldn't copy to the clipboard. Select the code and copy it yourself."
 
+#: components/modal/modals/ImportSource.tsx
+msgid "Paste this anywhere in your Stoat server's description (Server Settings → Overview). You can remove it after the import."
+msgstr "Paste this anywhere in your Stoat server's description (Server Settings → Overview). You can remove it after the import."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "Paste your Stoat server's invite link or ID."
+msgstr "Paste your Stoat server's invite link or ID."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "Stoat invite link or server ID"
+msgstr "Stoat invite link or server ID"
+
+#: components/modal/modals/ImportSource.tsx
+msgid "The server's name, description, icon and banner, its categories and channels, its roles and permissions, and its custom emoji."
+msgstr "The server's name, description, icon and banner, its categories and channels, its roles and permissions, and its custom emoji."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "Members, messages, bans, invites and webhooks stay on Stoat."
+msgstr "Members, messages, bans, invites and webhooks stay on Stoat."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "The bot leaves your Stoat server when the import finishes."
+msgstr "The bot leaves your Stoat server when the import finishes."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "Your server is ready. Share this invite to bring your members over."
+msgstr "Your server is ready. Share this invite to bring your members over."
+
 #: components/modal/modals/SupportSloga.tsx
 msgid "Couldn't get your supporter code."
 msgstr "Couldn't get your supporter code."
@@ -1261,6 +1289,11 @@ msgstr "Auto-redact"
 #: components/modal/modals/ImageEditorCore.tsx
 msgid "Auto-redact couldn't run on this image."
 msgstr "Auto-redact couldn't run on this image."
+
+#: components/modal/modals/ImportDiscord.tsx
+#: components/modal/modals/ImportSource.tsx
+msgid "You already have an import from {sourceLabel} running."
+msgstr "You already have an import from {sourceLabel} running."
 
 #: components/modal/modals/ReportQueue.tsx
 msgid "Automated detection"
@@ -2361,6 +2394,11 @@ msgstr "Could not start the import. Try again shortly."
 #: components/modal/modals/ImportDiscord.tsx
 msgid "Could not start the sticker import. Try again shortly."
 msgstr "Could not start the sticker import. Try again shortly."
+
+#: components/modal/modals/ImportDiscord.tsx
+#: components/modal/modals/ImportSource.tsx
+msgid "View it"
+msgstr "View it"
 
 #: components/app/interface/settings/user/Connections.tsx
 msgid "Could not unlink the channel, try again."
@@ -4214,11 +4252,57 @@ msgstr "Impersonation"
 msgid "Import"
 msgstr "Import"
 
+#: components/modal/modals/ImportSource.tsx
+msgid "No import sources are available right now."
+msgstr "No import sources are available right now."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "Pick the app your server is on. We'll rebuild it here."
+msgstr "Pick the app your server is on. We'll rebuild it here."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "Rebuild a server you manage on Stoat here, in four steps."
+msgstr "Rebuild a server you manage on Stoat here, in four steps."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "Add the importer bot to your Stoat server."
+msgstr "Add the importer bot to your Stoat server."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "Add the importer bot"
+msgstr "Add the importer bot"
+
+#: components/modal/modals/ImportSource.tsx
+msgid "Requires Manage Server on Stoat."
+msgstr "Requires Manage Server on Stoat."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "Let it see your private channels."
+msgstr "Let it see your private channels."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "Give the bot a role that can view every channel you want imported (your admin role is fine). Channels it can't see are skipped."
+msgstr "Give the bot a role that can view every channel you want imported (your admin role is fine). Channels it can't see are skipped."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "Prove you manage it."
+msgstr "Prove you manage it."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "Couldn't load your verification code."
+msgstr "Couldn't load your verification code."
+
 #: components/modal/modals/ImportDiscord.tsx
 #: components/modal/modals/CreateOrJoinServer.tsx
 #: components/modal/modals/CreateGroupOrServer.tsx
 msgid "Import from Discord"
 msgstr "Import from Discord"
+
+#: components/modal/modals/CreateGroupOrServer.tsx
+#: components/modal/modals/CreateOrJoinServer.tsx
+#: components/modal/modals/ImportSource.tsx
+msgid "Import a server"
+msgstr "Import a server"
 
 #: src/interface/ServerEvents.tsx
 #: src/interface/ServerEvents.tsx
@@ -6552,6 +6636,14 @@ msgstr "Read this aloud. If it does not match their code, stop the session. This
 msgid "Reading the Discord template…"
 msgstr "Reading the Discord template…"
 
+#: components/modal/modals/ImportShell.tsx
+msgid "Reading your Stoat server…"
+msgstr "Reading your Stoat server…"
+
+#: components/modal/modals/ImportShell.tsx
+msgid "Reading the source server…"
+msgstr "Reading the source server…"
+
 #: components/app/interface/settings/server/stickers/StickerList.tsx
 #: components/app/interface/settings/server/soundboard/SoundboardList.tsx
 msgid "Ready to upload"
@@ -6655,6 +6747,10 @@ msgstr "Recovery Code"
 #: components/modal/modals/ImportDiscord.tsx
 msgid "Recreating channels…"
 msgstr "Recreating channels…"
+
+#: components/modal/modals/ImportShell.tsx
+msgid "Copying icons and emoji…"
+msgstr "Copying icons and emoji…"
 
 #: components/modal/modals/ImportDiscord.tsx
 msgid "Recreating roles and permissions…"
@@ -8707,6 +8803,10 @@ msgstr "The bot did not respond in time."
 msgid "The bot only reads stickers, and you can kick it as soon as they're in."
 msgstr "The bot only reads stickers, and you can kick it as soon as they're in."
 
+#: components/modal/modals/ImportShell.tsx
+msgid "Checking your verification code…"
+msgstr "Checking your verification code…"
+
 #: src/interface/ServerEvents.tsx
 msgid "The calendar feature is not enabled on this server."
 msgstr "The calendar feature is not enabled on this server."
@@ -8826,6 +8926,26 @@ msgstr "The host seems to have dropped — waiting for them to come back…"
 msgid "The import didn't finish."
 msgstr "The import didn't finish."
 
+#: components/modal/modals/ImportSource.tsx
+msgid "Import from {sourceLabel}"
+msgstr "Import from {sourceLabel}"
+
+#: components/modal/modals/ImportSource.tsx
+msgid "That doesn't look like a Stoat invite link or server ID."
+msgstr "That doesn't look like a Stoat invite link or server ID."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "We couldn't find your verification code in the server description. Copy your code again, paste it there and try again."
+msgstr "We couldn't find your verification code in the server description. Copy your code again, paste it there and try again."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "You already have a Discord import running."
+msgstr "You already have a Discord import running."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "Couldn't copy to the clipboard. Select the link and copy it yourself."
+msgstr "Couldn't copy to the clipboard. Select the link and copy it yourself."
+
 #: components/modal/modals/ScheduleMessage.tsx
 msgid "The message is stored on the server and sent around the chosen time. You can cancel it from the channel until it goes out."
 msgstr "The message is stored on the server and sent around the chosen time. You can cancel it from the channel until it goes out."
@@ -8890,6 +9010,27 @@ msgstr "That referral code wasn't found. Clear it to continue without one."
 #: components/i18n/errors.ts
 msgid "This donation can't be claimed. It has already been claimed, was refunded, or is waiting for review."
 msgstr "This donation can't be claimed. It has already been claimed, was refunded, or is waiting for review."
+
+#: components/i18n/errors.ts
+msgid "We couldn't find that server. Check the link and try again."
+msgstr "We couldn't find that server. Check the link and try again."
+
+#: components/i18n/errors.ts
+msgid "We couldn't find your verification code on that server. Add your code to the server, then try again."
+msgstr "We couldn't find your verification code on that server. Add your code to the server, then try again."
+
+#: components/i18n/errors.ts
+#: components/modal/modals/ImportShell.tsx
+msgid "Our importer bot isn't in that server yet. Add it, then try again."
+msgstr "Our importer bot isn't in that server yet. Add it, then try again."
+
+#: components/i18n/errors.ts
+msgid "We couldn't reach the server you're importing from right now. Try again in a few minutes."
+msgstr "We couldn't reach the server you're importing from right now. Try again in a few minutes."
+
+#: components/i18n/errors.ts
+msgid "Importing from this platform is not available right now."
+msgstr "Importing from this platform is not available right now."
 
 #: components/i18n/errors.ts
 msgid "This account is not activated! Please check your account's inbox and try again."
@@ -9804,6 +9945,14 @@ msgstr "Video Call"
 msgid "View"
 msgstr "View"
 
+#: components/client/DiscordImportWorker.tsx
+msgid "Your {sourceLabel} import failed."
+msgstr "Your {sourceLabel} import failed."
+
+#: components/client/DiscordImportWorker.tsx
+msgid "Your {sourceLabel} import finished."
+msgstr "Your {sourceLabel} import finished."
+
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "View Channel"
 msgstr "View Channel"
@@ -10371,6 +10520,22 @@ msgstr "You've been signed out of Sloga!"
 #: components/modal/modals/ImportDiscord.tsx
 msgid "You've reached the maximum number of servers you can be in."
 msgstr "You've reached the maximum number of servers you can be in."
+
+#: components/modal/modals/ImportShell.tsx
+msgid "We couldn't find that server on {source}. Check the link and try again."
+msgstr "We couldn't find that server on {source}. Check the link and try again."
+
+#: components/modal/modals/ImportShell.tsx
+msgid "We couldn't find your verification code on that server. Copy your code again, add it as the steps above describe, and try again."
+msgstr "We couldn't find your verification code on that server. Copy your code again, add it as the steps above describe, and try again."
+
+#: components/modal/modals/ImportShell.tsx
+msgid "We couldn't reach {source} right now. Try again in a few minutes."
+msgstr "We couldn't reach {source} right now. Try again in a few minutes."
+
+#: components/modal/modals/ImportShell.tsx
+msgid "Importing from {source} is not available right now."
+msgstr "Importing from {source} is not available right now."
 
 #: components/i18n/errors.ts
 msgid "You've reached your personal bot limit."

@@ -1,15 +1,18 @@
 import { For, Match, Show, Switch, createEffect, createSignal } from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
+import type { ImportSource } from "stoat.js";
 
 import {
   clearDiscordImport,
   discordImportErrorType,
   discordImportView,
   importDiscordStickerClientId,
+  sourceLabel as importSourceLabel,
   resumeDiscordImport,
   trackDiscordImport,
   trackDiscordImportJob,
+  trackedImportSource,
 } from "@revolt/client/discordImport";
 import { inviteUrl } from "@revolt/common";
 import { useNavigate } from "@revolt/routing";
@@ -17,6 +20,7 @@ import { useState } from "@revolt/state";
 import { streamerModeHides } from "@revolt/state/streamer";
 import { Column, Dialog, DialogProps, Text, TextField } from "@revolt/ui";
 
+import { useModals } from "..";
 import { Modals } from "../types";
 
 import {
@@ -34,10 +38,16 @@ const BREADCRUMB = "Discord → Server Settings → Templates → Create Templat
 
 /**
  * Whether a job kind belongs in this modal. The import store holds one job
- * of any source, and a job from another source (a Stoat import, say) must
- * never surface here. No kind counts as a Discord job: a template job
- * tracked straight from its POST (`trackDiscordImport`) has no kind until
- * its first job fetch, and rows written before kinds existed carry none.
+ * of any source; this hides every job whose kind names another source.
+ *
+ * It cannot hide a job whose kind is not known yet, and no kind counts as a
+ * Discord job: a template job tracked straight from its POST
+ * (`trackDiscordImport(job_id)`) has no kind until a job fetch, and rows
+ * written before kinds existed carry none. Other-platform jobs are tracked
+ * with their kind from their POST, and one this device first hears of
+ * through an event (started on another device) gets its kind from the
+ * worker's job fetch; until that fetch lands, or if it fails, such a job
+ * reads kind-less and so shows here.
  *
  * The body is evaluated by `importShell.test.ts`: keep it plain JavaScript.
  * @param kind Job kind wire value
@@ -55,10 +65,19 @@ export function ImportDiscordModal(
   const { t } = useLingui();
   const state = useState();
   const navigate = useNavigate();
+  const { openModal } = useModals();
 
   const [template, setTemplate] = createSignal("");
   const [starting, setStarting] = createSignal(false);
   const [startError, setStartError] = createSignal<string | undefined>();
+  /**
+   * Another platform's import that the last start request collided with.
+   * The store then holds that job, which this modal does not show, so the
+   * explain screen names it and offers to open it in its own modal.
+   */
+  const [otherSource, setOtherSource] = createSignal<
+    ImportSource | undefined
+  >();
 
   const importErrorMessage = useImportErrorMessage();
 
@@ -130,6 +149,25 @@ export function ImportDiscordModal(
   });
 
   /**
+   * Adopt the job a start request collided with (`ImportAlreadyInProgress`),
+   * so the user lands on its progress instead of a dead-end error. When that
+   * job is another platform's, this modal cannot show it: say which source
+   * it is from instead, and let the explain screen offer to open it.
+   *
+   * The body is evaluated by `importDiscordCollision.test.ts`: keep it plain
+   * JavaScript (no type syntax inside the braces).
+   */
+  function adoptCollidedJob() {
+    resumeDiscordImport(props.client).then(() => {
+      const source = trackedImportSource();
+      if (!source) return;
+      const sourceLabel = importSourceLabel(source);
+      setOtherSource(source);
+      setStartError(t`You already have an import from ${sourceLabel} running.`);
+    });
+  }
+
+  /**
    * Kick off the import.
    */
   async function start() {
@@ -138,6 +176,7 @@ export function ImportDiscordModal(
 
     setStarting(true);
     setStartError(undefined);
+    setOtherSource(undefined);
 
     try {
       const { job_id } = await props.client.importDiscordTemplate(value);
@@ -165,7 +204,7 @@ export function ImportDiscordModal(
       }
       // Adopt the job we collided with, so the user lands on its progress
       // instead of a dead-end error.
-      if (type === "ImportAlreadyInProgress") resumeDiscordImport(props.client);
+      if (type === "ImportAlreadyInProgress") adoptCollidedJob();
     } finally {
       setStarting(false);
     }
@@ -183,6 +222,7 @@ export function ImportDiscordModal(
 
     setStarting(true);
     setStartError(undefined);
+    setOtherSource(undefined);
 
     try {
       const job = await props.client.importDiscordStickers(parentJobId);
@@ -193,7 +233,7 @@ export function ImportDiscordModal(
           setStartError(
             t`You already have an import running. Wait for it to finish before starting another.`,
           );
-          resumeDiscordImport(props.client);
+          adoptCollidedJob();
           break;
         case "InvalidOperation":
           setStartError(
@@ -218,6 +258,7 @@ export function ImportDiscordModal(
     clearDiscordImport();
     setTemplate("");
     setStartError(undefined);
+    setOtherSource(undefined);
     props.onClose();
   }
 
@@ -231,6 +272,22 @@ export function ImportDiscordModal(
       case "explain":
         return [
           { text: <Trans>Cancel</Trans> },
+          ...(otherSource()
+            ? [
+                {
+                  text: <Trans>View it</Trans>,
+                  // Returns nothing on purpose: this dialog closes as the
+                  // other source's opens, like the create-server fan-outs.
+                  onClick: () => {
+                    openModal({
+                      type: "import_source",
+                      client: props.client,
+                      source: otherSource(),
+                    });
+                  },
+                },
+              ]
+            : []),
           {
             text: <Trans>Start import</Trans>,
             onClick: () => {

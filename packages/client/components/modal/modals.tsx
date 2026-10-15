@@ -57,6 +57,7 @@ import { FriendGroupsModal } from "./modals/FriendGroups";
 import { ImageEditorModal } from "./modals/ImageEditor";
 import { ImageViewerModal } from "./modals/ImageViewer";
 import { ImportDiscordModal } from "./modals/ImportDiscord";
+import ImportSourceModal from "./modals/ImportSource";
 import { InviteModal } from "./modals/Invite";
 import { InviteToServerModal } from "./modals/InviteToServer";
 import { JoinServerModal } from "./modals/JoinServer";
@@ -156,6 +157,8 @@ export function RenderModal(props: ActiveModal & { onClose: () => void }) {
       return <CreateServerModal {...modalProps} />;
     case "import_discord":
       return <ImportDiscordModal {...modalProps} />;
+    case "import_source":
+      return <ImportSourceModal {...modalProps} />;
     case "create_thread":
       return <CreateThreadModal {...modalProps} />;
     case "create_forum_post":
