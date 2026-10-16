@@ -346,13 +346,19 @@ export function ImportDiscordModal(
                 },
               ]
             : []),
-          {
-            text: <Trans>Copy invite</Trans>,
-            onClick: () => {
-              navigator.clipboard.writeText(link());
-              return false;
-            },
-          },
+          // No invite was minted (the server had no channel to invite to):
+          // there is nothing to copy.
+          ...(link()
+            ? [
+                {
+                  text: <Trans>Copy invite</Trans>,
+                  onClick: () => {
+                    navigator.clipboard.writeText(link());
+                    return false;
+                  },
+                },
+              ]
+            : []),
           {
             text: <Trans>Done</Trans>,
             onClick: () => {
@@ -500,6 +506,7 @@ export function ImportDiscordModal(
           <ImportProgressScreen
             stage={view()!.stage}
             kind="Template"
+            status={view()!.status}
             done={view()!.done}
             total={view()!.total}
           />

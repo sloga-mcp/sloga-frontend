@@ -37,7 +37,10 @@ export function importScreen(
  * Human label for an opaque server stage string, as a hook (the copy is
  * translated with the caller's lingui context).
  *
- * The returned function takes the stage and the job's `kind` wire value.
+ * The returned function takes the stage, the job's `kind` wire value and its
+ * status. A `Queued` job is only waiting, whatever its stage: a Stoat job is
+ * born at `Verifying`, so labelling the stage would read "Checking…", then
+ * "Reading…", then "Checking…" again once a worker picks it up.
  * `kind` only changes the `Fetching` copy: `Template` reads the Discord
  * template, `StoatServer` the user's Stoat server, any other kind (or none)
  * gets the neutral copy. Unknown stages fall back to the raw value rather
@@ -47,10 +50,15 @@ export function importScreen(
  * The returned function's body is evaluated by `importShell.test.ts`: keep it
  * plain JavaScript (no type syntax inside the braces).
  */
-export function useStageLabel(): (stage: string, kind?: string) => string {
+export function useStageLabel(): (
+  stage: string,
+  kind?: string,
+  status?: string,
+) => string {
   const { t } = useLingui();
 
-  return (stage: string, kind?: string): string => {
+  return (stage: string, kind?: string, status?: string): string => {
+    if (status === "Queued") return t`Waiting for the importer…`;
     switch (stage) {
       case "Verifying":
         return t`Checking your verification code…`;
@@ -206,6 +214,8 @@ export type ImportProgressScreenProps = {
   stage: string;
   /** Job kind wire value; only picks the `Fetching` copy */
   kind?: string;
+  /** Job status; `Queued` reads as waiting whatever the stage */
+  status: DiscordImportStatus;
   /** Items completed within the current stage */
   done: number;
   /** Items in the current stage; 0 means indeterminate */
@@ -221,7 +231,7 @@ export function ImportProgressScreen(props: ImportProgressScreenProps) {
 
   return (
     <Column>
-      <Text>{stageLabel(props.stage, props.kind)}</Text>
+      <Text>{stageLabel(props.stage, props.kind, props.status)}</Text>
       <ProgressTrack>
         {/* `total` is legitimately 0 while a stage is indeterminate —
             dividing by it would render a NaN-wide bar. */}

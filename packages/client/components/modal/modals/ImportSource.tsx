@@ -456,13 +456,19 @@ export default function ImportSourceModal(
         return [{ text: <Trans>Hide</Trans> }];
       case "done":
         return [
-          {
-            text: <Trans>Copy invite</Trans>,
-            onClick: () => {
-              copyInvite();
-              return false;
-            },
-          },
+          // No invite was minted (no channel could carry one): there is
+          // nothing to copy.
+          ...(link()
+            ? [
+                {
+                  text: <Trans>Copy invite</Trans>,
+                  onClick: () => {
+                    copyInvite();
+                    return false;
+                  },
+                },
+              ]
+            : []),
           {
             text: <Trans>Done</Trans>,
             onClick: () => {
@@ -678,6 +684,7 @@ export default function ImportSourceModal(
           <ImportProgressScreen
             stage={view()!.stage}
             kind={view()!.kind}
+            status={view()!.status}
             done={view()!.done}
             total={view()!.total}
           />

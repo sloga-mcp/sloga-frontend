@@ -8808,6 +8808,10 @@ msgid "The bot only reads stickers, and you can kick it as soon as they're in."
 msgstr "The bot only reads stickers, and you can kick it as soon as they're in."
 
 #: components/modal/modals/ImportShell.tsx
+msgid "Waiting for the importer…"
+msgstr "Waiting for the importer…"
+
+#: components/modal/modals/ImportShell.tsx
 msgid "Checking your verification code…"
 msgstr "Checking your verification code…"
 

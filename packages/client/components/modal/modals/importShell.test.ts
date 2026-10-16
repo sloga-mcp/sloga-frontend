@@ -12,8 +12,9 @@
 // What this cannot see: whether the JSX renders these functions where it
 // should. The source pins at the bottom cover the wiring that matters most.
 //
-// IMPORT_SHELL_FILE / IMPORT_DISCORD_FILE point the spec at another copy of
-// either file (used to prove it fails on a known-bad one).
+// IMPORT_SHELL_FILE / IMPORT_DISCORD_FILE / IMPORT_SOURCE_FILE point the spec
+// at another copy of any of the three files (used to prove it fails on a
+// known-bad one).
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -24,6 +25,9 @@ const SHELL_FILE =
 const DISCORD_FILE =
   process.env.IMPORT_DISCORD_FILE ??
   new URL("./ImportDiscord.tsx", import.meta.url).pathname;
+const SOURCE_FILE =
+  process.env.IMPORT_SOURCE_FILE ??
+  new URL("./ImportSource.tsx", import.meta.url).pathname;
 const CATALOG_FILE = new URL(
   "../../i18n/catalogs/en/messages.po",
   import.meta.url,
@@ -31,6 +35,7 @@ const CATALOG_FILE = new URL(
 
 const shell = readFileSync(SHELL_FILE, "utf8");
 const discord = readFileSync(DISCORD_FILE, "utf8");
+const importSource = readFileSync(SOURCE_FILE, "utf8");
 
 /**
  * The text inside the ONE block `head` opens (`head` ends with its `{`),
@@ -74,7 +79,7 @@ function t(strings: TemplateStringsArray, ...values: unknown[]): string {
   );
 }
 
-type StageLabel = (stage: string, kind?: string) => string;
+type StageLabel = (stage: string, kind?: string, status?: string) => string;
 type ErrorMessage = (
   type: string | undefined,
   source: string,
@@ -84,10 +89,11 @@ const stageLabel = new Function(
   "t",
   "stage",
   "kind",
+  "status",
   blockAfter(
     SHELL_FILE,
     shell,
-    "return (stage: string, kind?: string): string => {",
+    "return (stage: string, kind?: string, status?: string): string => {",
   ),
 ).bind(null, t) as StageLabel;
 
@@ -165,6 +171,71 @@ test("the Discord stages keep their copy whatever the kind", () => {
         label,
         `${stage} / ${String(kind)}`,
       );
+});
+
+test("a queued job is waiting, whatever its stage or kind", () => {
+  // A Stoat job is born at Verifying: labelling the stage would run
+  // Checking → Reading → Checking once a worker picked it up.
+  for (const stage of ["Verifying", "Fetching", "Server", "", "Teleporting"])
+    for (const kind of ["StoatServer", "Template", undefined])
+      assert.equal(
+        stageLabel(stage, kind, "Queued"),
+        "Waiting for the importer…",
+        `${stage} / ${String(kind)}`,
+      );
+});
+
+test("a running job keeps its stage copy", () => {
+  assert.equal(
+    stageLabel("Verifying", "StoatServer", "Running"),
+    "Checking your verification code…",
+  );
+  assert.equal(
+    stageLabel("Fetching", "StoatServer", "Running"),
+    "Reading your Stoat server…",
+  );
+  for (const status of ["Running", undefined])
+    assert.equal(
+      stageLabel("Roles", "Template", status),
+      "Recreating roles and permissions…",
+    );
+});
+
+test("source pin: both progress screens pass the job status", () => {
+  assert.ok(
+    shell.includes("stageLabel(props.stage, props.kind, props.status)"),
+    `${SHELL_FILE}: the progress screen must label with the status`,
+  );
+  for (const [file, source] of [
+    [DISCORD_FILE, discord],
+    [SOURCE_FILE, importSource],
+  ])
+    assert.match(
+      source,
+      /<ImportProgressScreen\s+stage=\{view\(\)!\.stage\}\s+kind=[^\n]+\s+status=\{view\(\)!\.status\}/,
+      `${file}: ImportProgressScreen must get status={view()!.status}`,
+    );
+});
+
+test("source pin: Copy invite is offered only when an invite was minted", () => {
+  // `link()` is "" without an invite code; copying it would copy nothing and
+  // report success.
+  for (const [file, source] of [
+    [DISCORD_FILE, discord],
+    [SOURCE_FILE, importSource],
+  ]) {
+    const flat = source.replace(/\s+/g, " ");
+    assert.equal(
+      flat.split("text: <Trans>Copy invite</Trans>").length - 1,
+      1,
+      `${file}: one Copy invite action`,
+    );
+    assert.match(
+      flat,
+      /\.\.\.\(link\(\) \? \[ \{ text: <Trans>Copy invite<\/Trans>,/,
+      `${file}: Copy invite must be gated on link()`,
+    );
+  }
 });
 
 test("an unknown stage falls back to its raw value", () => {
@@ -296,4 +367,15 @@ test("every moved msgid still resolves in the en catalog", () => {
       '\nmsgid "Created {0} channels, {1} categories and {2} roles."\n',
     ),
   );
+});
+
+test("the queued label resolves in the en catalog", () => {
+  // Control first: a sibling that already shipped, so a broken read of the
+  // catalog fails here instead of reading as a missing msgid.
+  const catalog = readFileSync(CATALOG_FILE, "utf8");
+  for (const msgid of ["Waiting for a worker…", "Waiting for the importer…"])
+    assert.ok(
+      catalog.includes(`\nmsgid "${msgid}"\n`),
+      `catalog lacks: ${msgid}`,
+    );
 });
