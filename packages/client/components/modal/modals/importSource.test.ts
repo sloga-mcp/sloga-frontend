@@ -567,7 +567,7 @@ test("the shared types read from the shared copy, naming the source", () => {
 });
 
 const FLUXER_VERIFICATION_MISSING =
-  "We couldn't find a new role named exactly your code, with Manage Server, created today or yesterday. Renaming an existing role (including the \"Sloga Importer\" role) doesn't count. The importer bot also needs Administrator to read the audit log.";
+  "We couldn't verify your role. Create a new role, name it exactly your code, and give it Manage Server yourself. Renaming a role that already had Manage Server (including the \"Sloga Importer\" role) doesn't count. The importer bot also needs Administrator to read the audit log.";
 
 test("Fluxer start errors: its own copy where the steps are Fluxer's", () => {
   for (const type of ["InvalidOperation", "FailedValidation"])
@@ -576,8 +576,9 @@ test("Fluxer start errors: its own copy where the steps are Fluxer's", () => {
       "That doesn't look like a Fluxer invite link or server ID.",
       type,
     );
-  // The ownership rule, not the shared "add your code" copy: a NEW role named
-  // exactly the code with Manage Server; a renamed role never passes.
+  // The ownership rule, not the shared "add your code" copy: a new role named
+  // exactly the code, given Manage Server by the user; renaming a role that
+  // already had Manage Server never passes.
   const missing = startErrorMessage("ImportVerificationMissing", "fluxer");
   assert.equal(missing, FLUXER_VERIFICATION_MISSING);
   assert.notEqual(

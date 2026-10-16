@@ -294,7 +294,7 @@ export default function ImportSourceModal(
         return t`That doesn't look like a Fluxer invite link or server ID.`;
       }
       if (type === "ImportVerificationMissing") {
-        return t`We couldn't find a new role named exactly your code, with Manage Server, created today or yesterday. Renaming an existing role (including the "Sloga Importer" role) doesn't count. The importer bot also needs Administrator to read the audit log.`;
+        return t`We couldn't verify your role. Create a new role, name it exactly your code, and give it Manage Server yourself. Renaming a role that already had Manage Server (including the "Sloga Importer" role) doesn't count. The importer bot also needs Administrator to read the audit log.`;
       }
       // Also what a refused retry gets: Fluxer checks are rationed per user,
       // so a quick second try can be turned away while Fluxer is fine.
