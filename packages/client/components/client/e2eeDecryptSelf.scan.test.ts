@@ -9,7 +9,7 @@
 // Solid, the native bridge and stoat.js), so the wiring is pinned by reading
 // the sources. Point `E2EE_DECRYPT_SELF_TS` / `E2EE_DECRYPT_SELF_KT` at other
 // copies (the known-bad control: the 03ab5d03 files) to scan those instead;
-// they must fail.
+// they must fail. The cf78f6c4 e2ee.ts passes S1-S3 and fails S4 and S5.
 //
 // The lexers are copied from e2eeIdentityConfirm.scan.test.ts (it exports
 // nothing). Comments are stripped before every check, and string contents
@@ -28,6 +28,21 @@
 //       `envelope.self_user_id` (dotted, optional or bracketed), no
 //       `Object.assign(envelope, ...)`, and no object literal assigned to an
 //       `envelope` names `selfUserId`, `self_user_id` or `#client.user`.
+//   S4. Native refuses a decrypt with `mls_store_owned_by_another_account`
+//       when the store's owner of record is another account, and has not
+//       processed the envelope, so it must not be acked. `#handleEnvelope`
+//       (defined once) holds the decrypt call inside a `try` whose
+//       `catch (e)`:
+//       - has an `if` comparing `e`'s `.type` (or that of an alias declared
+//         from `e` in the catch, or `(e as T)`) with that tag, and the `if`
+//         calls a `this.#method()` that sets `storeOwnedByAnotherAccount`;
+//       - ends with an unconditional `throw e;`.
+//       No `E2EEAck` sits in `#handleEnvelope` before that try statement
+//       (catch and any `finally` included) ends, and no `.catch(` chained
+//       on a `this.#handleEnvelope(` call acks either.
+//   S5. `storeOwnedByAnotherAccount.set(` appears once outside comments,
+//       inside a method `#checkStoreOwner` calls: the connect check and the
+//       decrypt refusal share one raise rather than two copies.
 // E2eePlugin.kt:
 //   K1. `"e2ee_decrypt"` appears exactly once outside comments, as a `when`
 //       arm head (`"e2ee_decrypt" ->`).
@@ -455,7 +470,214 @@ function tsViolations(src: string): string[] {
       );
     }
   }
+
+  if (open >= 0) out.push(...refusalViolations(src, m, open));
+  out.push(...raiseViolations(src, m));
   return out;
+}
+
+// ---- e2ee.ts rules: the other-account refusal -------------------------------
+
+const OWNER_TAG = "mls_store_owned_by_another_account";
+const RAISE_SET = /\.\s*storeOwnedByAnotherAccount\s*\.\s*set\s*\(/g;
+const THIS_CALL = /this\s*\.\s*#([\w$]+)\s*(?:<[^()]*>)?\s*\(/g;
+const ACK = /E2EEAck/g;
+
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * `[open, close]` of the body of each definition of class method `#name`
+ * (masked code): `#name(` not reached through a `.`, so calls never count.
+ */
+function methodBodies(code: string, name: string): [number, number][] {
+  const def = new RegExp(
+    `(?<!\\.\\s*)#${escapeRe(name)}\\s*(?:<[^()]*>)?\\s*\\(`,
+    "g",
+  );
+  const out: [number, number][] = [];
+  for (const hit of code.matchAll(def)) {
+    const params = matchClose(code, hit.index! + hit[0].length - 1);
+    const open = code.indexOf("{", params);
+    if (open >= 0) out.push([open, matchClose(code, open)]);
+  }
+  return out;
+}
+
+/** Names of the `this.#method(` calls between `from` and `to`. */
+function thisCalls(code: string, from: number, to: number): string[] {
+  return [...code.slice(from, to).matchAll(THIS_CALL)].map((c) => c[1]);
+}
+
+/** Whether method `#name`'s body contains the code index `at`. */
+function methodContains(code: string, name: string, at: number): boolean {
+  return methodBodies(code, name).some(([o, c]) => o < at && at < c);
+}
+
+/** Whether method `#name`'s body sets `storeOwnedByAnotherAccount`. */
+function methodRaises(code: string, name: string): boolean {
+  return methodBodies(code, name).some(([o, c]) =>
+    new RegExp(RAISE_SET.source).test(code.slice(o, c)),
+  );
+}
+
+/** Whether a condition compares one of `names`' `.type` with the tag. */
+function testsOwnerTag(cond: string, names: string[]): boolean {
+  const alias = names.map(escapeRe).join("|");
+  const subject =
+    `(?:\\(\\s*(?:${alias})\\s+as\\s+[\\w$.<>|\\s]+?\\)|\\b(?:${alias})\\b)` +
+    `\\s*!?\\s*(?:\\?\\.|\\.)\\s*type`;
+  const tag = `["'\`]${OWNER_TAG}["'\`]`;
+  return (
+    new RegExp(`${subject}\\s*===?\\s*${tag}`).test(cond) ||
+    new RegExp(`${tag}\\s*===?\\s*${subject}\\b`).test(cond)
+  );
+}
+
+/** S4, given the `(` of the one decrypt call. */
+function refusalViolations(src: string, m: Masked, call: number): string[] {
+  const out: string[] = [];
+  const line = lineOf(src, call);
+
+  const defs = methodBodies(m.code, "handleEnvelope");
+  if (defs.length !== 1) {
+    return [`S4 #handleEnvelope is defined ${defs.length} times, want 1`];
+  }
+  const [bodyOpen, bodyClose] = defs[0];
+  if (call < bodyOpen || call > bodyClose) {
+    return [`S4 line ${line}: the decrypt call is not in #handleEnvelope`];
+  }
+
+  // The innermost `try` block holding the call.
+  let tryClose = -1;
+  for (const hit of m.code.slice(bodyOpen, bodyClose).matchAll(/\btry\s*\{/g)) {
+    const open = bodyOpen + hit.index! + hit[0].length - 1;
+    const close = matchClose(m.code, open);
+    if (open < call && call < close) tryClose = close;
+  }
+  if (tryClose < 0) {
+    return [`S4 line ${line}: the decrypt call is not inside a try`];
+  }
+  let at = skipWs(m.code, tryClose + 1);
+  if (!m.code.startsWith("catch", at)) {
+    return [`S4 line ${line}: the decrypt try has no catch`];
+  }
+  at = skipWs(m.code, at + "catch".length);
+  const binding =
+    m.code[at] === "("
+      ? /^\(\s*([\w$]+)/.exec(m.code.slice(at, matchClose(m.code, at) + 1))
+      : null;
+  if (!binding) {
+    return [
+      `S4 line ${line}: the decrypt catch binds no error, so it can neither` +
+        " test nor rethrow it",
+    ];
+  }
+  const caught = binding[1];
+  const catchOpen = skipWs(m.code, matchClose(m.code, at) + 1);
+  const catchClose = matchClose(m.code, catchOpen);
+  let end = catchClose;
+  const fin = skipWs(m.code, catchClose + 1);
+  if (m.code.startsWith("finally", fin)) {
+    end = matchClose(m.code, skipWs(m.code, fin + "finally".length));
+  }
+  const catchCode = m.code.slice(catchOpen + 1, catchClose);
+
+  // The caught error, and any alias the catch declares from it.
+  const names = [caught];
+  const decl = /\b(?:const|let|var)\s+([\w$]+)\s*(?::[^=;]*)?=([^;]*)/g;
+  for (const d of catchCode.matchAll(decl)) {
+    if (new RegExp(`\\b${escapeRe(caught)}\\b`).test(d[2])) names.push(d[1]);
+  }
+
+  // An `if` testing the tag, whose consequent calls a raising method.
+  let tested = false;
+  let raised = false;
+  for (const hit of catchCode.matchAll(/\bif\s*\(/g)) {
+    const paren = catchOpen + 1 + hit.index! + hit[0].length - 1;
+    const parenClose = matchClose(m.code, paren);
+    const cond = m.text.slice(paren + 1, parenClose).replace(/\s+/g, " ");
+    if (!testsOwnerTag(cond, names)) continue;
+    tested = true;
+    const thenAt = skipWs(m.code, parenClose + 1);
+    const thenEnd =
+      m.code[thenAt] === "{"
+        ? matchClose(m.code, thenAt)
+        : m.code.indexOf(";", thenAt);
+    if (
+      thisCalls(m.code, thenAt, thenEnd).some((n) => methodRaises(m.code, n))
+    ) {
+      raised = true;
+    }
+  }
+  if (!tested) {
+    out.push(
+      `S4 line ${line}: the decrypt catch never compares ${caught}'s .type` +
+        ` with "${OWNER_TAG}"`,
+    );
+  } else if (!raised) {
+    out.push(
+      `S4 line ${line}: the ${OWNER_TAG} test raises no` +
+        " storeOwnedByAnotherAccount state (no this.#method() that sets it)",
+    );
+  }
+
+  // The catch ends by rethrowing, unconditionally.
+  const last = /(?:^|[;{}])throw([\w$]+);?$/.exec(squash(catchCode));
+  if (!last || last[1] !== caught) {
+    out.push(
+      `S4 line ${line}: the decrypt catch does not end by rethrowing ${caught}`,
+    );
+  }
+
+  // Nothing acks before the try statement is over.
+  for (const hit of m.text.slice(bodyOpen, end + 1).matchAll(ACK)) {
+    out.push(
+      `S4 line ${lineOf(src, bodyOpen + hit.index!)}: an E2EEAck before the` +
+        " decrypt try statement ends, so a failed decrypt can ack",
+    );
+  }
+  // Nor does the queue's catch.
+  const calls = /this\s*\.\s*#handleEnvelope\s*\(/g;
+  for (const hit of m.code.matchAll(calls)) {
+    const after = matchClose(m.code, hit.index! + hit[0].length - 1) + 1;
+    const chained = /^\s*\.\s*catch\s*\(/.exec(m.code.slice(after));
+    if (!chained) continue;
+    const open = after + chained[0].length - 1;
+    if (
+      new RegExp(ACK.source).test(m.text.slice(open, matchClose(m.code, open)))
+    ) {
+      out.push(
+        `S4 line ${lineOf(src, hit.index!)}: the catch on #handleEnvelope acks`,
+      );
+    }
+  }
+  return out;
+}
+
+/** S5: one raise, shared with the connect check. */
+function raiseViolations(src: string, m: Masked): string[] {
+  const sets = [...m.code.matchAll(RAISE_SET)];
+  if (sets.length !== 1) {
+    return [
+      `S5 storeOwnedByAnotherAccount.set( appears ${sets.length} times` +
+        ` outside comments (lines ${sets.map((s) => lineOf(src, s.index!)).join(", ")}), want 1`,
+    ];
+  }
+  const defs = methodBodies(m.code, "checkStoreOwner");
+  if (defs.length !== 1) {
+    return [`S5 #checkStoreOwner is defined ${defs.length} times, want 1`];
+  }
+  const [open, close] = defs[0];
+  const at = sets[0].index!;
+  if (
+    !thisCalls(m.code, open, close).some((n) => methodContains(m.code, n, at))
+  ) {
+    return [
+      `S5 line ${lineOf(src, open)}: #checkStoreOwner does not call the method` +
+        ` that sets storeOwnedByAnotherAccount (line ${lineOf(src, at)})`,
+    ];
+  }
+  return [];
 }
 
 // ---- E2eePlugin.kt rules ----------------------------------------------------
@@ -555,22 +777,66 @@ function assertOnly(
   );
 }
 
+/** The decrypt call and its refusal handling, as in the conforming e2ee.ts. */
+const DECRYPT_TRY = `    let outcome: DecryptOutcome;
+    try {
+      outcome = await this.#invoke<DecryptOutcome>("e2ee_decrypt", {
+        envelope,
+        selfUserId: this.#client.user?.id,
+      });
+    } catch (error) {
+      if (
+        (error as NativeError)?.type === "mls_store_owned_by_another_account"
+      ) {
+        this.#raiseStoreOwnedByAnotherAccount();
+      }
+      throw error;
+    }
+`;
+
+/** The cf78f6c4 decrypt call: no catch, so a refusal raises nothing. */
+const DECRYPT_BARE = `    const outcome = await this.#invoke<DecryptOutcome>("e2ee_decrypt", {
+      envelope,
+      selfUserId: this.#client.user?.id,
+    });
+`;
+
 /** A conforming e2ee.ts; trailing comments only make swap targets unique. */
 const TS_FIXTURE = `
 // A comment naming e2ee_decrypt does not count.
 class E2EEBridge {
+  readonly storeOwnedByAnotherAccount = new ReactiveMap<"state", number>();
+
   #onEvent(event: Record<string, unknown>) {
     const envelope = { ...event, type: undefined };
     delete envelope.type;
-    void this.#handleEnvelope(envelope);
+    this.#queue = this.#queue.then(() =>
+      this.#handleEnvelope(envelope).catch((error) =>
+        console.error("[e2ee] envelope handling failed", error),
+      ),
+    );
+  }
+
+  async #checkStoreOwner(): Promise<void> {
+    const owner = await this.#invoke<string | null>("e2ee_store_owner");
+    if (!owner) return;
+    if (owner === this.#client.user?.id) {
+      this.storeOwnedByAnotherAccount.delete("state");
+      return;
+    }
+    this.#raiseStoreOwnedByAnotherAccount();
+  }
+
+  #raiseStoreOwnedByAnotherAccount(): void {
+    this.#mlsBuffer.clear();
+    if (!this.storeOwnedByAnotherAccount.has("state")) {
+      this.storeOwnedByAnotherAccount.set("state", Date.now());
+    }
   }
 
   async #handleEnvelope(envelope: Record<string, unknown>): Promise<void> {
     if (envelope.recipient_device_id !== "d") return;
-    const outcome = await this.#invoke<DecryptOutcome>("e2ee_decrypt", {
-      envelope,
-      selfUserId: this.#client.user?.id,
-    });
+${DECRYPT_TRY}
     this.#client.events.send({ type: "E2EEAck", ids: [outcome.id] });
   }
 }
@@ -612,6 +878,16 @@ class E2eePlugin : Plugin() {
 
 test("fixture: the conforming e2ee.ts passes", () => {
   assert.deepEqual(tsViolations(TS_FIXTURE), []);
+});
+
+test("fixture: the tag tested through an alias of the caught error passes", () => {
+  const aliased = swapped(TS_FIXTURE, [
+    [
+      "      if (\n        (error as NativeError)?.type",
+      "      const native = error as NativeError;\n      if (\n        native.type",
+    ],
+  ]);
+  assert.deepEqual(tsViolations(aliased), []);
 });
 
 test("fixture: the conforming plugin passes", () => {
@@ -703,8 +979,8 @@ const TS_MUTATIONS: {
         "this.#invoke<DecryptOutcome>(DECRYPT, {",
       ],
       [
-        "    const outcome",
-        '    const DECRYPT = "e2ee_decrypt";\n    const outcome',
+        "    let outcome",
+        '    const DECRYPT = "e2ee_decrypt";\n    let outcome',
       ],
     ],
     rules: ["S1"],
@@ -765,6 +1041,168 @@ const TS_MUTATIONS: {
     ],
     rules: ["S3"],
     expected: /envelope literal names a self id/,
+  },
+  {
+    label: "the decrypt outside any try (the cf78f6c4 call)",
+    swaps: [[DECRYPT_TRY, DECRYPT_BARE]],
+    rules: ["S4"],
+    expected: /not inside a try/,
+  },
+  {
+    label: "the catch binds no error",
+    swaps: [["    } catch (error) {\n", "    } catch {\n"]],
+    rules: ["S4"],
+    expected: /binds no error/,
+  },
+  {
+    label: "the catch tests another tag",
+    swaps: [
+      [
+        '=== "mls_store_owned_by_another_account"',
+        '=== "owner_of_record_unknown"',
+      ],
+    ],
+    rules: ["S4"],
+    expected: /never compares error's \.type/,
+  },
+  {
+    label: "the tag test only in a comment",
+    swaps: [
+      [
+        '        (error as NativeError)?.type === "mls_store_owned_by_another_account"\n',
+        '        // (error as NativeError)?.type === "mls_store_owned_by_another_account"\n' +
+          "        error\n",
+      ],
+    ],
+    rules: ["S4"],
+    expected: /never compares/,
+  },
+  {
+    label: "the tag compared with another field",
+    swaps: [
+      ["(error as NativeError)?.type ===", "(error as NativeError)?.field ==="],
+    ],
+    rules: ["S4"],
+    expected: /never compares/,
+  },
+  {
+    label: "the tag tested on something other than the caught error",
+    swaps: [
+      [
+        "(error as NativeError)?.type ===",
+        "(this.#last as NativeError)?.type ===",
+      ],
+    ],
+    rules: ["S4"],
+    expected: /never compares/,
+  },
+  {
+    label: "the tag test raises nothing",
+    swaps: [
+      [
+        "        this.#raiseStoreOwnedByAnotherAccount();\n      }\n      throw error;",
+        "        this.#mlsBuffer.clear();\n      }\n      throw error;",
+      ],
+    ],
+    rules: ["S4"],
+    expected: /raises no storeOwnedByAnotherAccount state/,
+  },
+  {
+    label: "the catch swallows the refusal",
+    swaps: [["      throw error;\n", ""]],
+    rules: ["S4"],
+    expected: /does not end by rethrowing error/,
+  },
+  {
+    label: "the catch throws a different error",
+    swaps: [
+      ["      throw error;\n", '      throw new Error("decrypt failed");\n'],
+    ],
+    rules: ["S4"],
+    expected: /does not end by rethrowing/,
+  },
+  {
+    label: "the rethrow is conditional",
+    swaps: [["      throw error;\n", "      if (this.#strict) throw error;\n"]],
+    rules: ["S4"],
+    expected: /does not end by rethrowing/,
+  },
+  {
+    label: "the catch acks",
+    swaps: [
+      [
+        "      throw error;\n",
+        '      this.#client.events.send({ type: "E2EEAck", ids: [] });\n' +
+          "      throw error;\n",
+      ],
+    ],
+    rules: ["S4"],
+    expected: /E2EEAck before the decrypt try statement ends/,
+  },
+  {
+    label: "a finally acks",
+    swaps: [
+      [
+        "      throw error;\n    }\n",
+        "      throw error;\n    } finally {\n" +
+          '      this.#client.events.send({ type: "E2EEAck", ids: [] });\n' +
+          "    }\n",
+      ],
+    ],
+    rules: ["S4"],
+    expected: /E2EEAck before the decrypt try statement ends/,
+  },
+  {
+    label: "an ack before the decrypt",
+    swaps: [
+      [
+        "    let outcome: DecryptOutcome;\n",
+        '    this.#client.events.send({ type: "E2EEAck", ids: [] });\n' +
+          "    let outcome: DecryptOutcome;\n",
+      ],
+    ],
+    rules: ["S4"],
+    expected: /E2EEAck before the decrypt try statement ends/,
+  },
+  {
+    label: "the queue's catch acks",
+    swaps: [
+      [
+        '        console.error("[e2ee] envelope handling failed", error),',
+        '        this.#client.events.send({ type: "E2EEAck", ids: [] }),',
+      ],
+    ],
+    rules: ["S4"],
+    expected: /the catch on #handleEnvelope acks/,
+  },
+  {
+    label: "#checkStoreOwner raises inline again (the cf78f6c4 shape)",
+    swaps: [
+      [
+        "    this.#raiseStoreOwnedByAnotherAccount();\n  }\n",
+        '    this.storeOwnedByAnotherAccount.set("state", Date.now());\n  }\n',
+      ],
+    ],
+    rules: ["S5"],
+    expected: /appears 2 times/,
+  },
+  {
+    label: "#checkStoreOwner no longer raises",
+    swaps: [["    this.#raiseStoreOwnedByAnotherAccount();\n  }\n", "  }\n"]],
+    rules: ["S5"],
+    expected: /does not call the method/,
+  },
+  {
+    label: "the decrypt catch raises inline instead of the shared method",
+    swaps: [
+      [
+        "        this.#raiseStoreOwnedByAnotherAccount();\n      }\n      throw error;",
+        '        this.storeOwnedByAnotherAccount.set("state", Date.now());\n' +
+          "      }\n      throw error;",
+      ],
+    ],
+    rules: ["S4", "S5"],
+    expected: /S5 .*appears 2 times/,
   },
 ];
 
@@ -866,6 +1304,14 @@ for (const { label, swaps, rules, expected } of KT_MUTATIONS) {
 
 test("e2ee.ts: decrypt passes our own id beside the envelope, never in it", () => {
   assert.deepEqual(tsViolations(readFileSync(TS_FILE, "utf8")), []);
+});
+
+test("e2ee.ts: a decrypt refused for another account's store raises the state and is not acked", () => {
+  const found = tsViolations(readFileSync(TS_FILE, "utf8"));
+  assert.deepEqual(
+    found.filter((v) => ["S4", "S5"].includes(ruleOf(v))),
+    [],
+  );
 });
 
 test("E2eePlugin.kt: the decrypt arm forwards selfUserId to engine.decrypt", () => {
