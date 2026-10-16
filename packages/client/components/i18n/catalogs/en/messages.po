@@ -4694,6 +4694,10 @@ msgstr "Live call captions"
 msgid "Load file ({0})"
 msgstr "Load file ({0})"
 
+#: components/ui/components/features/profiles/ProfileActions.tsx
+msgid "Edit profile"
+msgstr "Edit profile"
+
 #: src/interface/Discover.tsx
 #: src/interface/channels/forum/ForumChannel.tsx
 msgid "Load more"
