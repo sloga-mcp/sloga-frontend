@@ -26,7 +26,20 @@
 //       inside the plugin method of the same name and inside a
 //       `setPositiveButton` listener lambda (the trailing lambda, or a lambda
 //       argument; NOT the label argument). Each method has at least one, and
-//       neither method reads `needsPrompt` (there is no no-prompt commit).
+//       neither method reads `needsPrompt` (there is no no-prompt commit);
+//       `acceptIdentityChange` does not read `alreadyVerified` either (no
+//       preview may skip its tap). Only a user's tap confirms: none of the
+//       four consent methods (these two, `enableGroup`, `addGroupMember`),
+//       nor anything else in the file (a helper could tap for them), calls
+//       `performClick(`, `callOnClick(`, `performLongClick(`,
+//       `performContextClick(`, `performAccessibilityAction(`,
+//       `dispatchTouchEvent(`, `dispatchKeyEvent(`,
+//       `dispatchGenericMotionEvent(`, `onTouchEvent(`, `onKeyDown(` or
+//       `onKeyUp(`. And the file uses no reflection (`getMethod(`,
+//       `getDeclaredMethod(`, `.javaClass.methods`, `::class.java.methods`,
+//       `.methods.first`, `KFunction`, `callBy(`, and kin; see REFLECTION):
+//       a method looked up by a string name escapes every rule here, since
+//       string contents are masked.
 //   I4. Each method calls its preview (`previewMarkVerified` /
 //       `previewAcceptIdentityChange`) exactly once, as
 //       `val P = <receiver>.preview…(`, and declares `P` nowhere else (no
@@ -74,7 +87,12 @@
 //       whose delay is at least 700 ms (a literal, or a `val` / `const val`
 //       holding one, e.g. GROWTH_CONFIRM_DELAY_MS); and takes the negative
 //       button the same ways and sets `filterTouchesWhenObscured = true` on
-//       it.
+//       it. In all four consent methods, every `isEnabled = …` /
+//       `setEnabled(…)` whose value is not the literal `false` sits inside a
+//       `postDelayed(` (its arguments or its trailing lambda) whose delay
+//       is at least 700 ms, and no function defined elsewhere in the file
+//       that enables a view outside one is called: nothing enables the
+//       button early.
 // e2ee.ts:
 //   T1. `CapacitorTransport.invoke` has exactly one
 //       `if (command === "e2ee_mark_verified")` route calling
@@ -710,6 +728,74 @@ function delayMissing(code: string, button: KtButton): string[] {
   return missing;
 }
 
+/**
+ * A view clicked, touched or keyed from code: a synthetic tap on Confirm
+ * would commit with no user ever tapping it (masked code).
+ */
+const SYNTHETIC_TAP =
+  /\b(performClick|callOnClick|performLongClick|performContextClick|performAccessibilityAction|dispatchTouchEvent|dispatchKeyEvent|dispatchGenericMotionEvent|onTouchEvent|onKeyDown|onKeyUp)\s*\(/g;
+
+/**
+ * Reflection (masked code). It reaches a method by a string name, and
+ * string contents are masked, so a reflective commit escapes every
+ * placement rule.
+ */
+const REFLECTION = new RegExp(
+  [
+    String.raw`\b(?:getMethod|getDeclaredMethod|getMethods|getDeclaredMethods|getConstructor|getDeclaredConstructor)\s*\(`,
+    String.raw`\.\s*javaClass\s*\.\s*(?:declaredMethods|methods)\b`,
+    String.raw`::\s*class\s*\.\s*java\s*\.\s*(?:declaredMethods|methods)\b`,
+    String.raw`\.\s*(?:declaredMethods|methods)\b`,
+    String.raw`\.\s*(?:memberFunctions|declaredFunctions|declaredMemberFunctions|staticFunctions)\b`,
+    String.raw`\bKFunction\w*`,
+    String.raw`\bKCallable\b`,
+    String.raw`\bcallBy\s*\(`,
+    String.raw`\bClass\s*\.\s*forName\s*\(`,
+    String.raw`\b(?:java\s*\.\s*lang|kotlin)\s*\.\s*reflect\b`,
+    String.raw`\bMethodHandles?\b`,
+  ].join("|"),
+  "g",
+);
+
+/**
+ * Every `isEnabled = …` / `setEnabled(…)` in `span` (masked code) that can
+ * enable a view before the input delay: any value but the literal `false`,
+ * outside a `postDelayed(` (its arguments, or its trailing lambda) whose
+ * delay is at least the floor. A `::isEnabled` / `::setEnabled` reference
+ * counts as an enable of unknown value.
+ */
+function earlyEnables(
+  code: string,
+  span: Span,
+): { at: number; value: string }[] {
+  const inner = code.slice(span[0], span[1] + 1);
+  const delayed: Span[] = [];
+  for (const p of inner.matchAll(/\bpostDelayed\s*\(/g)) {
+    const paren = span[0] + p.index + p[0].length - 1;
+    const args = callArgs(code, paren);
+    if (delayMs(code, args[args.length - 1] ?? "") < CONFIRM_DELAY_FLOOR_MS) {
+      continue;
+    }
+    const close = matchClose(code, paren);
+    const k = skipWs(code, close + 1);
+    delayed.push([paren, code[k] === "{" ? matchClose(code, k) : close]);
+  }
+  const writes =
+    /\bisEnabled\s*=(?!=)\s*|\bsetEnabled\s*\(|::\s*(?:isEnabled|setEnabled)\b/g;
+  const out: { at: number; value: string }[] = [];
+  for (const w of inner.matchAll(writes)) {
+    const at = span[0] + w.index;
+    const end = at + w[0].length;
+    const value = w[0].startsWith("::")
+      ? squash(w[0])
+      : w[0].startsWith("setEnabled")
+        ? callArgs(code, end - 1).join(",")
+        : squash(code.slice(end, ktStatementEnd(code, end) + 1));
+    if (value !== "false" && !inSpan(delayed, at)) out.push({ at, value });
+  }
+  return out;
+}
+
 // ---- Kotlin rules -----------------------------------------------------------
 
 const CAS_ON = (name: string) => `${name}.compareAndSet(false,true)`;
@@ -1008,6 +1094,17 @@ function ktViolations(src: string): string[] {
       fail(
         "I3",
         `${g.method}: reads needsPrompt at ${at(flag[0].at)}; an identity confirm has no no-prompt branch`,
+      );
+    }
+    // Accept has no already-verified step: no preview may skip its tap.
+    const skip =
+      g.method === "acceptIdentityChange"
+        ? names(/\balreadyVerified\b/g, body)
+        : [];
+    if (skip.length) {
+      fail(
+        "I3",
+        `${g.method}: reads alreadyVerified at ${at(skip[0].at)}; accept has no already-verified skip`,
       );
     }
 
@@ -1439,7 +1536,101 @@ function ktViolations(src: string): string[] {
       fail("I8", "handleOnDestroy() does not dismiss identityDialog");
     }
   }
+
+  // I3 (file): no reflection.
+  for (const r of code.matchAll(REFLECTION)) {
+    fail(
+      "I3",
+      `reflection (${squash(r[0])}) at ${at(r.index)}; a commit looked up by name escapes every placement rule`,
+    );
+  }
+
+  // I3 (file): only a user's tap confirms. File-wide, so a helper outside
+  // the consent methods cannot tap Confirm for them.
+  for (const t of code.matchAll(SYNTHETIC_TAP)) {
+    fail(
+      "I3",
+      `${t[1]}( at ${at(t.index)} acts on a view from code; only a user's tap may confirm`,
+    );
+  }
+
+  // I9 (the four consent methods): nothing enables a button before the
+  // input delay, directly or through a helper defined elsewhere in the file.
+  const consent: string[] = [
+    ...IDENTITY.map((g) => g.method),
+    ...GROWTH_METHODS,
+  ];
+  const consentFuns = funs.filter(
+    (f) => consent.includes(f.name) && f.open >= 0,
+  );
+  for (const f of consentFuns) {
+    for (const e of earlyEnables(code, [f.open, f.close])) {
+      fail(
+        "I9",
+        `${f.name}: isEnabled = ${e.value} at ${at(e.at)} is outside a postDelayed( of at least ${CONFIRM_DELAY_FLOOR_MS} ms`,
+      );
+    }
+  }
+  for (const h of enablingHelpers(code, funs, consentFuns)) {
+    for (const f of consentFuns) {
+      for (const c of names(h.call, [f.open, f.close])) {
+        fail(
+          "I9",
+          `${f.name}: calls ${h.name} at ${at(c.at)}, which enables a view outside a postDelayed( of at least ${CONFIRM_DELAY_FLOOR_MS} ms`,
+        );
+      }
+    }
+  }
   return out;
+}
+
+/**
+ * The functions outside `consentFuns` that enable a view early
+ * (`earlyEnables`), directly or by calling one that does, each with a
+ * RegExp matching a call or reference to it: unqualified, or qualified too
+ * for an extension function.
+ */
+function enablingHelpers(
+  code: string,
+  funs: KtFun[],
+  consentFuns: KtFun[],
+): { name: string; call: RegExp }[] {
+  const inConsent = (i: number) =>
+    consentFuns.some((c) => i >= c.at && i <= c.close);
+  const bodyOf = (f: KtFun): Span | null => {
+    if (f.open >= 0) return [f.open, f.close];
+    if (f.expr < 0) return null;
+    const k = skipWs(code, f.expr + 1);
+    return [k, ktStatementEnd(code, k)];
+  };
+  const callOf = (f: KtFun) => {
+    // `fun View.unlock()` is called qualified: `confirm.unlock()`.
+    const extension = code.slice(f.at, code.indexOf("(", f.at)).includes(".");
+    const unqualified = extension ? "" : String.raw`(?<!\.\s*)`;
+    return new RegExp(
+      String.raw`(?<!\bfun\s+)${unqualified}\b${f.name}\s*[({]|::\s*${f.name}\b`,
+      "g",
+    );
+  };
+  const candidates = funs.filter((f) => !inConsent(f.at));
+  const found = new Map<string, RegExp>();
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const f of candidates) {
+      if (found.has(f.name)) continue;
+      const span = bodyOf(f);
+      if (!span) continue;
+      const inner = code.slice(span[0], span[1] + 1);
+      const calls = [...found.values()].some((re) =>
+        new RegExp(re.source).test(inner),
+      );
+      if (earlyEnables(code, span).length || calls) {
+        found.set(f.name, callOf(f));
+        grew = true;
+      }
+    }
+  }
+  return [...found].map(([name, call]) => ({ name, call }));
 }
 
 // ---- TypeScript lexer (as in e2eeGroupSendGate.scan.test.ts) ---------------
@@ -2110,6 +2301,25 @@ test("kotlin scanner: equivalent shapes still conform", () => {
     ],
     // I5: a direct release in place of the helper on the dismiss path.
     [["release() // verify-dismiss-release", "consentInFlight.set(false)"]],
+    // I3: a tap or a reflective lookup in a comment or a string is no code.
+    [
+      [
+        "confirm.filterTouchesWhenObscured = true // verify-filter",
+        'confirm.filterTouchesWhenObscured = true // never confirm.performClick()\n                                    Log.d("E2ee", "getMethod( .javaClass.methods callBy(")',
+      ],
+    ],
+    // I9: a disable anywhere; a long trailing-lambda postDelayed; an enable
+    // in a helper no consent method calls.
+    [
+      [
+        "confirm.isEnabled = false // verify-disable",
+        "confirm.isEnabled = false\n                                    confirm.setEnabled(false)\n                                    handler.postDelayed(700L) { confirm.isEnabled = true }",
+      ],
+      [
+        "private fun engine() =",
+        "private fun restoreReady(button: Button) {\n        button.isEnabled = true\n    }\n    private fun engine() =",
+      ],
+    ],
   ];
   for (const swaps of variants) {
     assert.deepEqual(ktViolations(ktFixture(...swaps)), [], swaps[0][1]);
@@ -2732,6 +2942,234 @@ test("kotlin scanner: each rule fires on its own violation, and only it", () => 
       ],
       /^I9 markVerified: no setOnShowListener$/,
     ],
+    [
+      "I3: accept skips its dialog when already verified",
+      [
+        [
+          "selfUserId, displayName)\n                if (synchronized",
+          "selfUserId, displayName)\n                if (preview.alreadyVerified) {\n                    consentInFlight.set(false)\n                    call.resolve()\n                    return@execute\n                }\n                if (synchronized",
+        ],
+      ],
+      /^I3 acceptIdentityChange: reads alreadyVerified at line \d+/,
+    ],
+    [
+      "I3: Confirm clicked from the show listener (audit mutation a)",
+      [
+        [
+          "confirm.filterTouchesWhenObscured = true // verify-filter",
+          "confirm.filterTouchesWhenObscured = true\n                                    confirm.performClick()",
+        ],
+      ],
+      /^I3 performClick\( at line \d+ acts on a view from code/,
+    ],
+    [
+      "I3: callOnClick",
+      [
+        [
+          "isEnabled = false // accept-disable",
+          "isEnabled = false\n                            callOnClick()",
+        ],
+      ],
+      /^I3 callOnClick\( at line \d+ acts on a view from code/,
+    ],
+    [
+      "I3: an accessibility click",
+      [
+        [
+          "keep.setFilterTouchesWhenObscured(true) // accept-cancel-filter",
+          "keep.setFilterTouchesWhenObscured(true)\n                        dialog.getButton(AlertDialog.BUTTON_POSITIVE).performAccessibilityAction(AccessibilityNodeInfo.ACTION_CLICK, null)",
+        ],
+      ],
+      /^I3 performAccessibilityAction\( at line \d+ acts on a view from code/,
+    ],
+    [
+      "I3: a synthetic touch",
+      [
+        [
+          "cancel.requestFocus()",
+          "cancel.requestFocus()\n                                    dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.dispatchTouchEvent(down)",
+        ],
+      ],
+      /^I3 dispatchTouchEvent\( at line \d+ acts on a view from code/,
+    ],
+    [
+      "I3: a growth method clicks its own Confirm",
+      [
+        [
+          "consentInFlight.set(false)\n        call.resolve()\n    }\n\n    @PluginMethod\n    fun addGroupMember(",
+          "consentInFlight.set(false)\n        growthDialog?.getButton(AlertDialog.BUTTON_POSITIVE)?.performClick()\n        call.resolve()\n    }\n\n    @PluginMethod\n    fun addGroupMember(",
+        ],
+      ],
+      /^I3 performClick\( at line \d+ acts on a view from code/,
+    ],
+    [
+      "I3: a helper outside the methods taps Confirm",
+      [
+        [
+          "private fun engine() =",
+          "private fun tap(button: Button) = button.performClick()\n    private fun engine() =",
+        ],
+      ],
+      /^I3 performClick\( at line \d+ acts on a view from code/,
+    ],
+    [
+      "I3: a reflective commit in call() (audit mutation c)",
+      [
+        [
+          '"e2ee_status" ->',
+          '"e2ee_x" -> engine.javaClass.methods.first { it.name == "markVerified" }.invoke(engine, a, b, c)\n"e2ee_status" ->',
+        ],
+      ],
+      /^I3 reflection \(\.javaClass\.methods\) at line \d+/,
+    ],
+    [
+      "I3: reflection by getMethod",
+      [
+        [
+          '"e2ee_status" ->',
+          '"e2ee_x" -> engine.javaClass.getMethod("markVerified", A::class.java).invoke(engine, a)\n"e2ee_status" ->',
+        ],
+      ],
+      /^I3 reflection \(getMethod\(\) at line \d+/,
+    ],
+    [
+      "I3: reflection by getDeclaredMethod",
+      [
+        [
+          '"e2ee_status" ->',
+          '"e2ee_x" -> E2eeEngine::class.java.getDeclaredMethod(name).invoke(engine)\n"e2ee_status" ->',
+        ],
+      ],
+      /^I3 reflection \(getDeclaredMethod\(\) at line \d+/,
+    ],
+    [
+      "I3: reflection by ::class.java.methods",
+      [
+        [
+          '"e2ee_status" ->',
+          '"e2ee_x" -> E2eeEngine::class.java.methods.single { it.name == name }\n"e2ee_status" ->',
+        ],
+      ],
+      /^I3 reflection \(::class\.java\.methods\) at line \d+/,
+    ],
+    [
+      "I3: reflection by .methods.first",
+      [
+        [
+          '"e2ee_status" ->',
+          '"e2ee_x" -> engineType.methods.first { it.name == name }.invoke(engine)\n"e2ee_status" ->',
+        ],
+      ],
+      /^I3 reflection \(\.methods\) at line \d+/,
+    ],
+    [
+      "I3: reflection by KFunction",
+      [
+        [
+          "private fun engine() =",
+          "private val commit: KFunction<*>? = null\n    private fun engine() =",
+        ],
+      ],
+      /^I3 reflection \(KFunction\) at line \d+/,
+    ],
+    [
+      "I3: reflection by callBy",
+      [
+        [
+          '"e2ee_status" ->',
+          '"e2ee_x" -> commit.callBy(args)\n"e2ee_status" ->',
+        ],
+      ],
+      /^I3 reflection \(callBy\(\) at line \d+/,
+    ],
+    [
+      "I9: Confirm enabled at once after the disable (audit mutation b)",
+      [
+        [
+          "confirm.isEnabled = false // verify-disable",
+          "confirm.isEnabled = false\n                                    confirm.isEnabled = true",
+        ],
+      ],
+      /^I9 markVerified: isEnabled = true at line \d+ is outside a postDelayed\( of at least 700 ms/,
+    ],
+    [
+      "I9: Confirm enabled by the setter",
+      [
+        [
+          "isEnabled = false // accept-disable",
+          "isEnabled = false\n                            setEnabled(true)",
+        ],
+      ],
+      /^I9 acceptIdentityChange: isEnabled = true at line \d+ is outside a postDelayed\(/,
+    ],
+    [
+      "I9: Confirm enabled by a computed value",
+      [
+        [
+          "confirm.isEnabled = false // verify-disable",
+          "confirm.isEnabled = false\n                                    confirm.isEnabled = !false",
+        ],
+      ],
+      /^I9 markVerified: isEnabled = !false at line \d+ is outside a postDelayed\(/,
+    ],
+    [
+      "I9: a second, short postDelayed enables early",
+      [
+        [
+          "isEnabled = false // accept-disable",
+          "isEnabled = false\n                            postDelayed({ isEnabled = true }, 50L)",
+        ],
+      ],
+      /^I9 acceptIdentityChange: isEnabled = true at line \d+ is outside a postDelayed\( of at least 700 ms/,
+    ],
+    [
+      "I9: enabled in a post, not a postDelayed",
+      [
+        [
+          "confirm.isEnabled = false // verify-disable",
+          "confirm.isEnabled = false\n                                    confirm.post { confirm.isEnabled = true }",
+        ],
+      ],
+      /^I9 markVerified: isEnabled = true at line \d+ is outside a postDelayed\(/,
+    ],
+    [
+      "I9: a growth method enables a button",
+      [
+        [
+          "if (!consentInFlight.compareAndSet(false, true)) { // enable-busy",
+          "growthDialog?.getButton(AlertDialog.BUTTON_POSITIVE)?.isEnabled = true\n        if (!consentInFlight.compareAndSet(false, true)) {",
+        ],
+      ],
+      /^I9 enableGroup: isEnabled = true at line \d+ is outside a postDelayed\(/,
+    ],
+    [
+      "I9: a helper outside the methods enables Confirm",
+      [
+        [
+          "private fun engine() =",
+          "private fun unlock(button: Button) {\n        button.isEnabled = true\n    }\n    private fun engine() =",
+        ],
+        [
+          "confirm.isEnabled = false // verify-disable",
+          "confirm.isEnabled = false\n                                    unlock(confirm)",
+        ],
+      ],
+      /^I9 markVerified: calls unlock at line \d+, which enables a view/,
+    ],
+    [
+      "I9: an extension helper, through a second helper",
+      [
+        [
+          "private fun engine() =",
+          "private fun View.unlock() { isEnabled = true }\n    private fun ready(button: View) = button.unlock()\n    private fun engine() =",
+        ],
+        [
+          "isEnabled = false // accept-disable",
+          "isEnabled = false\n                            ready(this)",
+        ],
+      ],
+      /^I9 acceptIdentityChange: calls ready at line \d+, which enables a view/,
+    ],
   ];
   const covered = new Set<string>();
   for (const [label, swaps, expected, also] of cases) {
@@ -2918,7 +3356,10 @@ function tsFound(rule: string): string[] {
 const KT_RULES: [string, string][] = [
   ["I1", "call() has no e2ee_mark_verified / e2ee_accept_identity_change arm"],
   ["I2", "@PluginMethod markVerified and acceptIdentityChange exist"],
-  ["I3", "engine commits only in the same-named method's setPositiveButton"],
+  [
+    "I3",
+    "engine commits only in the same-named method's setPositiveButton; no synthetic tap, no reflection",
+  ],
   ["I4", "expectedIdentity comes from the one preview result"],
   [
     "I5",
@@ -2927,7 +3368,10 @@ const KT_RULES: [string, string][] = [
   ["I6", "an OnDismissListener rejects declined behind a resolve-once guard"],
   ["I7", "a taken guard rejects busy"],
   ["I8", "the decline lockout is checked and noted; teardown dismisses"],
-  ["I9", "Confirm is input-delayed; both buttons are touch-filtered"],
+  [
+    "I9",
+    "Confirm is input-delayed and never enabled early; both buttons are touch-filtered",
+  ],
 ];
 
 for (const [rule, title] of KT_RULES) {

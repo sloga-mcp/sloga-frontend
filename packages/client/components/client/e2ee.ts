@@ -69,6 +69,7 @@ import {
   MLS_REQUEST_DEADLINE_MS,
   settleCallRosterReconcile,
 } from "./e2eeRatelimitPolicy";
+import { isNoteToSelfConversation, resolveDmConversation } from "./e2eeSelfDm";
 import { errorName, settleDelivered } from "./e2eeSendSettle";
 import {
   adoptTrustedRow,
@@ -97,7 +98,16 @@ const SYSTEM_AUTHOR = "00000000000000000000000000";
 
 /**
  * What an own-account device marker tells the user to do about a device
- * that isn't theirs. "Log Out Other Sessions" (Settings > Sessions) sends
+ * that isn't theirs.
+ *
+ * Native records own-account device rows (`device_added`, `device_readded`,
+ * `device_revoked`) under note-to-self, whose conversation id is our own
+ * id. Those rows are not yet shown in a dedicated place, and this client
+ * never files them into a DM or group (`e2eeSelfDm`). Inside a DM or group
+ * view the text is reached only by a row whose detail names our own id
+ * (`#isOwnDeviceRow`).
+ *
+ * "Log Out Other Sessions" (Settings > Sessions) sends
  * `DELETE /auth/session/all` with an MFA ticket, and the server revokes
  * every E2EE device not bound to the surviving session
  * (`Account::delete_all_sessions`). Changing the password alone ends no
@@ -4207,13 +4217,17 @@ export class E2EEBridge implements E2EEAdapter {
 
   /**
    * Group-aware analog of `#syncRecent` (keyed by conversation id). Returns
-   * the rows it injected, oldest first.
+   * the rows it injected, oldest first. Never note-to-self rows: those are
+   * not shown in any DM or group (`e2eeSelfDm`).
    */
   async #syncRecentConversation(
     conversationId: string,
     channelId: string,
     live = false,
   ): Promise<HistoryRow[]> {
+    if (isNoteToSelfConversation(conversationId, this.#client.user?.id)) {
+      return [];
+    }
     const rows = await this.#invoke<HistoryRow[]>("e2ee_history", {
       peerUserId: conversationId,
       before: null,
@@ -4529,11 +4543,19 @@ export class E2EEBridge implements E2EEAdapter {
    * decrypts and device events to surface new messages AND the marker rows
    * the native layer recorded alongside them. Returns the DM channel (when
    * one resolved) and the rows it injected, oldest first.
+   *
+   * Note-to-self (`peerId` = our own id) has no channel here: own-account
+   * device rows stay in the native transcript and are never injected into
+   * a DM (`e2eeSelfDm`). Own-device reconciles, own-device deletes and a
+   * verify of our own device all land here with our own id.
    */
   async #syncRecent(
     peerId: string,
     live = false,
   ): Promise<{ channel?: Channel; rows: HistoryRow[] }> {
+    if (isNoteToSelfConversation(peerId, this.#client.user?.id)) {
+      return { rows: [] };
+    }
     const channel = await this.#dmChannel(peerId);
     if (!channel) return { rows: [] };
 
@@ -4559,12 +4581,19 @@ export class E2EEBridge implements E2EEAdapter {
     );
   }
 
+  /**
+   * The DM with `peerId`, opening one when none is cached. Never a channel
+   * for our own id: every DM contains us, so a recipient match on it would
+   * return whichever DM came first (`resolveDmConversation`).
+   */
   async #dmChannel(peerId: string): Promise<Channel | undefined> {
-    const existing = [...this.#client.channels.values()].find(
-      (channel) =>
-        channel.type === "DirectMessage" && channel.recipientIds.has(peerId),
+    const resolved = resolveDmConversation(
+      peerId,
+      this.#client.user?.id,
+      this.#client.channels.values(),
     );
-    if (existing) return existing;
+    if (resolved.kind === "none") return undefined;
+    if (resolved.kind === "existing") return resolved.channel;
 
     try {
       const user =
@@ -4664,6 +4693,9 @@ export class E2EEBridge implements E2EEAdapter {
    * Whether a device marker is about this account's own devices: filed in
    * note-to-self (conversation = own id), or naming the own id (native
    * files a pin whose owner it cannot establish as a peer's, louder).
+   * Note-to-self rows are recorded natively and are not yet shown in a
+   * dedicated place: `#syncRecent` never injects them into a DM or group,
+   * so in a DM or group view only the second case reaches this.
    */
   #isOwnDeviceRow(row: HistoryRow): boolean {
     const self = this.#client.user?.id;
@@ -4676,9 +4708,10 @@ export class E2EEBridge implements E2EEAdapter {
 
   /**
    * `device_added` text by where native filed it: note-to-self (own
-   * account), the user's DM (conversation = their id), or an encrypted
-   * group. Rows from before D6 have no detail and were DM-only, so the
-   * user falls back to `row.conversation`.
+   * account; recorded natively, not yet shown in a dedicated place), the
+   * user's DM (conversation = their id), or an encrypted group. Rows from
+   * before D6 have no detail and were DM-only, so the user falls back to
+   * `row.conversation`.
    */
   #deviceAddedText(row: HistoryRow): string {
     const count = row.detail?.device_ids?.length ?? 0;

@@ -6,6 +6,7 @@ import { styled } from "styled-system/jsx";
 import type { SafetyNumber } from "@revolt/client";
 import { useClient, useE2EE } from "@revolt/client";
 import { nativeE2EEAvailable } from "@revolt/client/e2ee";
+import { resolveDmConversation } from "@revolt/client/e2eeSelfDm";
 import { Column, Dialog, DialogProps, Text } from "@revolt/ui";
 
 import { useModals } from "..";
@@ -123,10 +124,15 @@ export function E2EEVerifyModal(
    */
   async function turnOff() {
     if (!e2ee) return;
-    const channel = [...client().channels.values()].find(
-      (c) => c.type === "DirectMessage" && c.recipientIds.has(props.peerUserId),
+    // Never our own id: every DM contains it, so a plain recipient lookup
+    // would pick (and offer to downgrade) the first DM in the cache.
+    const found = resolveDmConversation(
+      props.peerUserId,
+      client().user?.id,
+      client().channels.values(),
     );
-    if (!channel) return;
+    if (found.kind !== "existing") return;
+    const channel = found.channel;
     setBusy(true);
     try {
       await e2ee.downgradeConversation(channel);
