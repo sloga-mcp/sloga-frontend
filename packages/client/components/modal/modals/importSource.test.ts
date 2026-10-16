@@ -195,6 +195,66 @@ const AsyncFunction = (async () => {}).constructor as new (
   ...args: string[]
 ) => (...args: unknown[]) => Promise<void>;
 
+type Challenge = { source: string; code: unknown };
+
+/**
+ * Run the modal's `fetchChallenge` with a stand-in client. Lifted on use, so
+ * a copy of the modal without it fails only the tests that need it.
+ */
+function fetchChallenge(
+  client: { fetchImportChallenge: (source: string) => Promise<unknown> },
+  source: string,
+) {
+  return new AsyncFunction(
+    "client",
+    "source",
+    modalBlock(
+      'async function fetchChallenge(\n  client: Pick<Client, "fetchImportChallenge">,\n  source: ImportSource,\n) {',
+    ),
+  )(client, source) as unknown as Promise<Challenge>;
+}
+
+/**
+ * Run the modal's `challengeCode()` with the resource in `state` holding
+ * `latest`, and the modal on `source`. Reading `latest` of an errored
+ * resource throws, as Solid's does.
+ */
+function challengeCode(
+  state: string,
+  latest: Challenge | undefined,
+  source: string | undefined,
+) {
+  const challenge = {
+    state,
+    get latest() {
+      if (state === "errored") throw new Error("read an errored resource");
+      return latest;
+    },
+  };
+  return new Function(
+    "challenge",
+    "source",
+    modalBlock("  const challengeCode = () => {"),
+  )(challenge, () => source) as string | undefined;
+}
+
+/** Run the modal's `botUrl()` with the modal on `source`. */
+function botUrl(source: string | undefined) {
+  const asked: string[] = [];
+  const url = new Function(
+    "source",
+    "importSourceBotUrl",
+    modalBlock("  const botUrl = () => {"),
+  )(
+    () => source,
+    (wanted: string) => {
+      asked.push(wanted);
+      return `https://bot.example/${wanted}`;
+    },
+  ) as string | undefined;
+  return { url, asked };
+}
+
 /**
  * Run `adoptCollidedJob` with `job` in the store once the resume lands.
  * Until then the store holds a job of no known kind, which a read made
@@ -321,15 +381,26 @@ test("a job of the source shows its own screen", () => {
 test("no job: the explain screen, or a notice when it can't be offered", () => {
   assert.equal(modalScreen("stoat", undefined, true), "explain");
   assert.equal(modalScreen("stoat", undefined, false), "unavailable");
+  assert.equal(modalScreen("fluxer", undefined, true), "explain");
+  assert.equal(modalScreen("fluxer", undefined, false), "unavailable");
   assert.equal(modalScreen("matrix", undefined, false), "unavailable");
 });
 
-test("only Stoat has an explain screen, and only when the instance offers it", () => {
+test("Stoat and Fluxer have an explain screen, only when the instance offers them", () => {
   const on = () => true;
   const off = () => false;
-  assert.equal(hasExplainScreen("stoat", on), true);
-  assert.equal(hasExplainScreen("stoat", off), false);
-  for (const source of ["fluxer", "matrix", undefined])
+  for (const source of ["stoat", "fluxer"]) {
+    assert.equal(hasExplainScreen(source, on), true, source);
+    assert.equal(hasExplainScreen(source, off), false, source);
+    // The store is asked about this source, not another one.
+    const asked: string[] = [];
+    hasExplainScreen(source, (wanted) => {
+      asked.push(wanted);
+      return true;
+    });
+    assert.deepEqual(asked, [source]);
+  }
+  for (const source of ["matrix", undefined])
     assert.equal(hasExplainScreen(source, on), false, String(source));
 });
 
@@ -385,6 +456,18 @@ test("start trims the input and tracks the job with its kind", async () => {
   assert.deepEqual(run.startingLog, [true, false]);
   assert.deepEqual(run.errors, [undefined], "only the reset");
   assert.deepEqual(run.collided, [undefined], "only the reset");
+  assert.equal(run.adopted, 0);
+});
+
+test("a Fluxer start sends the trimmed input to Fluxer and tracks a Fluxer job", async () => {
+  const run = await start({
+    source: "fluxer",
+    input: "\t123456789012345678  ",
+  });
+  assert.deepEqual(run.requests, [["fluxer", "123456789012345678"]]);
+  assert.deepEqual(run.tracked, [["job-1", "FluxerServer"]]);
+  assert.deepEqual(run.startingLog, [true, false]);
+  assert.deepEqual(run.errors, [undefined], "only the reset");
   assert.equal(run.adopted, 0);
 });
 
@@ -468,11 +551,157 @@ test("the shared types read from the shared copy, naming the source", () => {
     startErrorMessage("ImportAlreadyInProgress", "stoat"),
     "You already have an import running. Wait for it to finish before starting another.",
   );
-  // The Stoat-specific copy does not leak onto another source.
-  assert.equal(
-    startErrorMessage("ImportVerificationMissing", "fluxer"),
+  // A source with no copy of its own gets the shared copy, not Stoat's or
+  // Fluxer's. (Fluxer's own verification copy is pinned below.)
+  for (const type of [
+    "InvalidOperation",
+    "ImportVerificationMissing",
+    "ImportUpstreamUnavailable",
+  ])
+    assert.equal(
+      startErrorMessage(type, "matrix"),
+      importErrorMessage(type, "Matrix") ??
+        "Could not start the import. Try again shortly.",
+      type,
+    );
+});
+
+const FLUXER_VERIFICATION_MISSING =
+  "We couldn't find a new role named exactly your code, with Manage Server, created today or yesterday. Renaming an existing role (including the \"Sloga Importer\" role) doesn't count. The importer bot also needs Administrator to read the audit log.";
+
+test("Fluxer start errors: its own copy where the steps are Fluxer's", () => {
+  for (const type of ["InvalidOperation", "FailedValidation"])
+    assert.equal(
+      startErrorMessage(type, "fluxer"),
+      "That doesn't look like a Fluxer invite link or server ID.",
+      type,
+    );
+  // The ownership rule, not the shared "add your code" copy: a NEW role named
+  // exactly the code with Manage Server; a renamed role never passes.
+  const missing = startErrorMessage("ImportVerificationMissing", "fluxer");
+  assert.equal(missing, FLUXER_VERIFICATION_MISSING);
+  assert.notEqual(
+    missing,
     importErrorMessage("ImportVerificationMissing", "Fluxer"),
   );
+  assert.notEqual(
+    missing,
+    startErrorMessage("ImportVerificationMissing", "stoat"),
+  );
+  // A refused quick retry reads as Fluxer being unreachable: say how long.
+  assert.equal(
+    startErrorMessage("ImportUpstreamUnavailable", "fluxer"),
+    "We couldn't reach Fluxer right now. Wait 30 seconds before trying again.",
+  );
+});
+
+test("Fluxer's other start errors read from the shared copy, naming Fluxer", () => {
+  assert.equal(
+    startErrorMessage("ImportSourceNotFound", "fluxer"),
+    "We couldn't find that server on Fluxer. Check the link and try again.",
+  );
+  for (const type of [
+    "ImportBotNotInServer",
+    "ImportAlreadyInProgress",
+    "TooManyServers",
+  ])
+    assert.equal(
+      startErrorMessage(type, "fluxer"),
+      importErrorMessage(type, "Fluxer"),
+      type,
+    );
+  for (const type of ["Bogus", undefined])
+    assert.equal(
+      startErrorMessage(type, "fluxer"),
+      "Could not start the import. Try again shortly.",
+      String(type),
+    );
+});
+
+test("Fluxer's copy does not leak onto Stoat", () => {
+  assert.equal(
+    startErrorMessage("ImportUpstreamUnavailable", "stoat"),
+    importErrorMessage("ImportUpstreamUnavailable", "Stoat"),
+  );
+  assert.notEqual(
+    startErrorMessage("ImportVerificationMissing", "stoat"),
+    FLUXER_VERIFICATION_MISSING,
+  );
+});
+
+// ------------------------------------------------------ verification code --
+
+test("the code fetch tags the code with the source it is for", async () => {
+  const asked: string[] = [];
+  const client = {
+    fetchImportChallenge: async (source: string) => {
+      asked.push(source);
+      return { code: `code-${source}` };
+    },
+  };
+  assert.deepEqual(await fetchChallenge(client, "fluxer"), {
+    source: "fluxer",
+    code: "code-fluxer",
+  });
+  assert.deepEqual(await fetchChallenge(client, "stoat"), {
+    source: "stoat",
+    code: "code-stoat",
+  });
+  assert.deepEqual(asked, ["fluxer", "stoat"]);
+  // A reply with no body still says which source it was for.
+  const empty = { fetchImportChallenge: async () => null };
+  assert.deepEqual(await fetchChallenge(empty, "fluxer"), {
+    source: "fluxer",
+    code: undefined,
+  });
+  // What it returns is what the screen checks: Stoat's code, still held
+  // while Fluxer's loads, is not shown on Fluxer's screen.
+  const stoat = await fetchChallenge(client, "stoat");
+  assert.equal(challengeCode("refreshing", stoat, "fluxer"), undefined);
+  assert.equal(challengeCode("refreshing", stoat, "stoat"), "code-stoat");
+});
+
+test("a code is shown only on the screen of the source it was fetched for", () => {
+  const stoat = { source: "stoat", code: "code-stoat" };
+  const fluxer = { source: "fluxer", code: "code-fluxer" };
+
+  assert.equal(challengeCode("ready", stoat, "stoat"), "code-stoat");
+  assert.equal(challengeCode("ready", fluxer, "fluxer"), "code-fluxer");
+  // After switching from Stoat to Fluxer the resource still holds Stoat's
+  // code while Fluxer's loads: show nothing, never Stoat's code.
+  assert.equal(challengeCode("refreshing", stoat, "fluxer"), undefined);
+  assert.equal(challengeCode("ready", stoat, "fluxer"), undefined);
+  assert.equal(challengeCode("refreshing", fluxer, "stoat"), undefined);
+  assert.equal(challengeCode("ready", stoat, undefined), undefined);
+  // Refetching the same source keeps its code up meanwhile.
+  assert.equal(challengeCode("refreshing", fluxer, "fluxer"), "code-fluxer");
+});
+
+test("a code is shown only once fetched and well-formed", () => {
+  for (const state of ["unresolved", "pending", "errored"])
+    assert.equal(
+      challengeCode(state, { source: "fluxer", code: "abc" }, "fluxer"),
+      undefined,
+      state,
+    );
+  assert.equal(challengeCode("ready", undefined, "fluxer"), undefined);
+  for (const code of ["", 42, null, undefined, { code: "abc" }])
+    assert.equal(
+      challengeCode("ready", { source: "fluxer", code }, "fluxer"),
+      undefined,
+      JSON.stringify(code),
+    );
+});
+
+test("the add-the-bot button reads the current source's page", () => {
+  for (const source of ["stoat", "fluxer"]) {
+    const run = botUrl(source);
+    assert.equal(run.url, `https://bot.example/${source}`);
+    assert.deepEqual(run.asked, [source]);
+  }
+  const none = botUrl(undefined);
+  assert.equal(none.url, undefined);
+  assert.deepEqual(none.asked, [], "no source, no lookup");
 });
 
 test("unknown errors get the generic copy", () => {
@@ -680,6 +909,101 @@ test("source pin: the store is only cleared when it holds this modal's job", () 
 test("source pin: the bot page opens through a new window, which the shells route out", () => {
   assert.ok(modal.includes('if (url) window.open(url, "_blank", "noopener");'));
   assert.ok(modal.includes("importSourceBotUrl(wanted)"));
+  assert.ok(modal.includes("const url = botUrl();"));
+});
+
+/**
+ * The text of the ONE local JSX helper `head` opens (`head` ends with
+ * `=> (`), up to its closing `);` at the component's indent.
+ */
+function helperJsx(head: string): string {
+  const found = modal.split(head).length - 1;
+  assert.equal(found, 1, `${SOURCE_FILE} must contain this once:\n${head}`);
+  const open = modal.indexOf(head) + head.length;
+  const close = modal.indexOf("\n  );\n", open);
+  assert.ok(close > open, `${SOURCE_FILE}: helper never closed:\n${head}`);
+  return modal.slice(open, close);
+}
+
+/** Every local JSX helper the explain screens share. */
+const SHARED_EXPLAIN_PARTS = [
+  "  const botButton = () => (",
+  "  const codeBlock = () => (",
+  "  const inviteField = (fieldLabel: string, placeholder: string) => (",
+  "  const startErrorLine = () => (",
+];
+
+test("source pin: the explain screens' shared parts name no source", () => {
+  for (const head of SHARED_EXPLAIN_PARTS) {
+    const body = helperJsx(head);
+    assert.ok(!/stoat|fluxer|matrix/i.test(body), `${head} names a source`);
+  }
+  assert.ok(
+    helperJsx(SHARED_EXPLAIN_PARTS[0]).includes("isDisabled={!botUrl()}"),
+    "the bot button is enabled by the current source's page",
+  );
+  // No source's bot page is hard-coded anywhere in the modal.
+  assert.equal(modal.split('importSourceBotUrl("').length - 1, 0);
+  // The code shown is the one fetched for, and checked against, the source.
+  assert.ok(
+    modal.includes("(wanted) => fetchChallenge(props.client, wanted),"),
+  );
+  assert.ok(
+    modal.includes("{(code) => ("),
+    "the code renders from challengeCode()",
+  );
+  assert.ok(modal.includes("<Match when={challengeCode()}>"));
+});
+
+/** The explain screen of `source`: its `<Match>` up to its `</Match>`. */
+function explainScreen(source: string): string {
+  const head = `<Match when={screen() === "explain" && source() === "${source}"}>`;
+  assert.equal(modal.split(head).length - 1, 1, head);
+  const open = modal.indexOf(head);
+  const close = modal.indexOf("\n        </Match>", open);
+  assert.ok(close > open, `${head} never closed`);
+  return modal.slice(open, close);
+}
+
+test("source pin: each explain screen is gated by its own source", () => {
+  const heads = [
+    ...modal.matchAll(/<Match\s+when=\{[^}]*screen\(\) === "explain"[^}]*\}>/g),
+  ].map(([head]) => head);
+  assert.deepEqual(heads, [
+    '<Match when={screen() === "explain" && source() === "stoat"}>',
+    '<Match when={screen() === "explain" && source() === "fluxer"}>',
+  ]);
+
+  for (const [own, other] of [
+    ["stoat", "fluxer"],
+    ["fluxer", "stoat"],
+  ]) {
+    const body = explainScreen(own);
+    assert.ok(
+      !new RegExp(other, "i").test(body),
+      `${own} screen names ${other}`,
+    );
+    for (const part of [
+      "{botButton()}",
+      "{codeBlock()}",
+      "{inviteField(",
+      "{startErrorLine()}",
+    ])
+      assert.equal(body.split(part).length - 1, 1, `${own}: ${part}`);
+  }
+
+  // Stoat's screen keeps its field; Fluxer's has no guessed invite host.
+  assert.ok(
+    explainScreen("stoat").includes(
+      'inviteField(\n              t`Stoat invite link or server ID`,\n              "https://stoat.chat/invite/xxxxxxxx",\n            )',
+    ),
+  );
+  assert.ok(
+    explainScreen("fluxer").includes(
+      "inviteField(\n              t`Fluxer invite link or server ID`,\n              t`Invite link or server ID`,\n            )",
+    ),
+  );
+  assert.ok(!modal.includes("fluxer.gg"));
 });
 
 test("source pin: copy goes through the clipboard helper that reports failure", () => {

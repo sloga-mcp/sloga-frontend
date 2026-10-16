@@ -70,22 +70,22 @@ export type ImportSourcesFeature = {
  * but this build cannot import from stays hidden: servers update ahead of
  * installed clients, so a newer instance may well advertise one.
  */
-const IMPLEMENTED_IMPORT_SOURCES: readonly ImportSource[] = ["stoat"];
+const IMPLEMENTED_IMPORT_SOURCES: readonly ImportSource[] = ["stoat", "fluxer"];
 
 /**
  * Read `features.import_sources` defensively. Anything malformed reads as
  * `{}` (every source dark); unknown keys are ignored; a source whose entry
- * lacks its field, or whose bot URL is not an http(s) URL, is left out.
+ * lacks its field, or whose bot URL is not an https URL, is left out.
  * @param raw The `features.import_sources` value, whatever it is
  */
 export function parseImportSources(raw: unknown): ImportSourcesFeature {
   const parsed: ImportSourcesFeature = {};
   if (!isRecord(raw)) return parsed;
 
-  const stoat = httpUrl(isRecord(raw.stoat) ? raw.stoat.add_bot_url : null);
+  const stoat = httpsUrl(isRecord(raw.stoat) ? raw.stoat.add_bot_url : null);
   if (stoat) parsed.stoat = { add_bot_url: stoat };
 
-  const fluxer = httpUrl(isRecord(raw.fluxer) ? raw.fluxer.add_bot_url : null);
+  const fluxer = httpsUrl(isRecord(raw.fluxer) ? raw.fluxer.add_bot_url : null);
   if (fluxer) parsed.fluxer = { add_bot_url: fluxer };
 
   const matrix = isRecord(raw.matrix) ? raw.matrix.bot_user_id : null;
@@ -105,15 +105,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * The value, if it is an absolute http(s) URL. The bot URL is opened in a new
- * window, so anything else (`javascript:`, a relative path) is refused.
+ * The value, if it is an absolute https URL. The bot URL is opened in a new
+ * window and leads to the source's authorize page, so anything else
+ * (`javascript:`, a relative path, plain `http:`) is refused.
  * @param value Anything
  */
-function httpUrl(value: unknown): string | undefined {
+function httpsUrl(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   try {
     const { protocol } = new URL(value);
-    return protocol === "https:" || protocol === "http:" ? value : undefined;
+    return protocol === "https:" ? value : undefined;
   } catch {
     return undefined;
   }
