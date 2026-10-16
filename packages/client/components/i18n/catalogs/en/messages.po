@@ -641,6 +641,10 @@ msgstr "The bot leaves your Stoat server when the import finishes."
 msgid "Your server is ready. Share this invite to bring your members over."
 msgstr "Your server is ready. Share this invite to bring your members over."
 
+#: components/modal/modals/ImportShell.tsx
+msgid "Your server is ready."
+msgstr "Your server is ready."
+
 #: components/modal/modals/SupportSloga.tsx
 msgid "Couldn't get your supporter code."
 msgstr "Couldn't get your supporter code."

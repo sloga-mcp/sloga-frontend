@@ -282,19 +282,29 @@ export function ImportDoneScreen(props: ImportDoneScreenProps) {
 
   return (
     <Column>
-      <Text>{props.intro}</Text>
-
-      <Invite concealed={props.concealed}>
-        <code>{props.inviteLink}</code>
-        <Show when={props.concealed}>
-          <Text class="label">
-            <Trans>
-              Streamer Mode is hiding your invite link — hover over it to
-              reveal.
-            </Trans>
+      {/* No invite when the server has no channel everyone can view */}
+      <Show
+        when={props.inviteLink}
+        fallback={
+          <Text>
+            <Trans>Your server is ready.</Trans>
           </Text>
-        </Show>
-      </Invite>
+        }
+      >
+        <Text>{props.intro}</Text>
+
+        <Invite concealed={props.concealed}>
+          <code>{props.inviteLink}</code>
+          <Show when={props.concealed}>
+            <Text class="label">
+              <Trans>
+                Streamer Mode is hiding your invite link — hover over it to
+                reveal.
+              </Trans>
+            </Text>
+          </Show>
+        </Invite>
+      </Show>
 
       <Show when={props.summary}>
         <Text class="label">
