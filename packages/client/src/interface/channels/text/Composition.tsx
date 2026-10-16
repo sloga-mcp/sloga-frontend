@@ -52,6 +52,16 @@ import { UserSlowmodes } from "stoat.js/lib/events/v1";
 
 import { createTimedOutUntil } from "../../../lib/timedOut";
 
+import { GameLookupPicker } from "./GameLookupPicker";
+import {
+  type GameCommand,
+  type GameLookupOutcome,
+  type GameLookupResult,
+  isPrivateConversation,
+  parseGameCommand,
+  runGameLookup,
+} from "./gameLookup";
+
 interface Props {
   /**
    * Channel to compose for
@@ -639,6 +649,147 @@ export function MessageComposition(props: Props) {
   }
 
   /**
+   * Game lookups (`/game`, `/wowitem`, `/champion`): a short status line
+   * above the composer, and the open result picker, if any. Both close when
+   * the draft is edited or the channel changes, so they never describe text
+   * that is no longer there.
+   */
+  const [lookupNotice, setLookupNotice] = createSignal<string | null>(null);
+  const [lookupPending, setLookupPending] = createSignal(false);
+  const [gameResults, setGameResults] = createSignal<GameLookupResult[] | null>(
+    null,
+  );
+  const draftText = createMemo(() => currentValue());
+
+  createEffect(
+    on(
+      [draftText, () => props.channel.id],
+      () => {
+        setLookupNotice(null);
+        setGameResults(null);
+      },
+      { defer: true },
+    ),
+  );
+
+  /**
+   * Run a game lookup command and open the picker on its results.
+   *
+   * The privacy gate inside `runGameLookup` (copied from `sendInteraction`)
+   * fails closed: a DM or group is looked up only when the native layer says
+   * it is exactly plaintext, and a refused lookup makes no request. Either
+   * way the command is never sent as a message, and the draft stays.
+   * Uses raw fetch like `sendRoll`.
+   */
+  async function runGameCommand(command: GameCommand) {
+    if (lookupPending()) return;
+
+    const channel = props.channel;
+    const draftAtStart = currentValue();
+    setGameResults(null);
+    setLookupNotice(null);
+    setLookupPending(true);
+
+    let outcome: GameLookupOutcome;
+    try {
+      const c = client();
+      outcome = await runGameLookup({
+        channelType: channel.type,
+        getSendMode: e2ee ? () => e2ee.sendModeNowFor(channel) : undefined,
+        fetchImpl: (input, init) => fetch(input, init),
+        baseURL: c.options.baseURL,
+        authHeader: c.authenticationHeader,
+        command,
+      });
+    } catch {
+      outcome = { kind: "failed" };
+    }
+    setLookupPending(false);
+
+    // The user moved on while the lookup ran: drop the answer
+    if (props.channel.id !== channel.id || currentValue() !== draftAtStart) {
+      return;
+    }
+
+    switch (outcome.kind) {
+      case "denied":
+        setLookupNotice(
+          e2ee && isPrivateConversation(channel.type)
+            ? t`Game lookup isn't available in encrypted chats.`
+            : t`Game lookup isn't available in this conversation.`,
+        );
+        break;
+      case "empty-query":
+        setLookupNotice(t`Type a name to look up after the command.`);
+        break;
+      case "results":
+        if (outcome.results.length) {
+          setGameResults(outcome.results);
+        } else {
+          const query = command.query;
+          setLookupNotice(t`No results for “${query}”.`);
+        }
+        break;
+      case "busy":
+        setLookupNotice(t`Too many lookups, try again in a moment.`);
+        break;
+      case "disabled":
+        setLookupNotice(t`That lookup isn't available right now.`);
+        break;
+      case "failed":
+        setLookupNotice(t`Lookup failed. Try again.`);
+        break;
+    }
+  }
+
+  /**
+   * Send the picked result's URL as an ordinary message, through the normal
+   * send path (replies, E2EE pre-send guard, slowmode, outbox); the embed
+   * pipeline draws the card. The command text is put back if nothing was
+   * sent, so the draft is cleared only by a successful send.
+   */
+  async function pickGameResult(result: GameLookupResult) {
+    setGameResults(null);
+
+    const channelId = props.channel.id;
+    const command = draft().content ?? "";
+    state.draft.setDraft(channelId, { ...draft(), content: result.url });
+
+    /**
+     * `sendDraft` takes the draft as its first step, so the URL still being
+     * in the draft means the send stopped before that
+     */
+    const restoreIfUnsent = () => {
+      const current = state.draft.getDraft(channelId);
+      if (current.content === result.url) {
+        state.draft.setDraft(channelId, { ...current, content: command });
+      }
+    };
+
+    try {
+      await sendMessage();
+    } catch (error) {
+      restoreIfUnsent();
+      openModal({
+        type: "error2",
+        error: error instanceof Error ? error : new Error(String(error)),
+      });
+      return;
+    }
+
+    restoreIfUnsent();
+    setNodeReplacement(["_focus"]);
+  }
+
+  /**
+   * Close the picker without sending; the draft was never changed
+   */
+  function cancelGameLookup() {
+    setGameResults(null);
+    setNodeReplacement(["_focus"]);
+  }
+
+  /**
    * Parse the argument string of a slash invocation into option values.
    *
    * Accepts `name:value` tokens (values may be double-quoted to contain
@@ -798,6 +949,14 @@ export function MessageComposition(props: Props) {
     const trimmed = rawContent.trim();
     if (/^\/roll(\s|$)/i.test(trimmed)) {
       await sendRoll(trimmed.slice(5).trim() || "1d20");
+      return;
+    }
+
+    // Intercept game lookups (/game, /wowitem, /champion): the text is a
+    // search, never a plain message, whether or not the gate lets it run
+    const gameCommand = parseGameCommand(trimmed);
+    if (gameCommand) {
+      await runGameCommand(gameCommand);
       return;
     }
 
@@ -1377,6 +1536,23 @@ export function MessageComposition(props: Props) {
           );
         }}
       </For>
+      <Show when={lookupPending() || lookupNotice()}>
+        <LookupNotice role="status">
+          <Symbol style={{ "font-size": "1rem" }}>
+            {lookupPending() ? "hourglass_top" : "info"}
+          </Symbol>
+          <span>{lookupPending() ? t`Looking up…` : lookupNotice()}</span>
+        </LookupNotice>
+      </Show>
+      <Show when={gameResults()}>
+        {(results) => (
+          <GameLookupPicker
+            results={results()}
+            onPick={(result) => void pickGameResult(result)}
+            onCancel={cancelGameLookup}
+          />
+        )}
+      </Show>
       <span ref={composerStart} hidden />
       <MessageBox
         tone={e2eeMode() === "encrypt" ? "encrypted" : "plain"}
@@ -1987,6 +2163,21 @@ const SlowmodeText = styled("span", {
   base: {
     fontSize: "0.75rem",
     fontWeight: "600",
+  },
+});
+
+/**
+ * Status line for game lookups (searching, no results, refused, failed)
+ */
+const LookupNotice = styled("div", {
+  base: {
+    display: "flex",
+    alignItems: "center",
+    gap: "var(--gap-sm)",
+    padding: "4px 12px",
+    fontSize: "0.75rem",
+    fontWeight: "600",
+    color: "var(--md-sys-color-on-surface-variant)",
   },
 });
 
