@@ -2020,6 +2020,10 @@ msgid "Colors"
 msgstr "Colors"
 
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
+msgid "Your colors and fonts sync to every device you sign in on. Blur and message sizes are set per device."
+msgstr "Your colors and fonts sync to every device you sign in on. Blur and message sizes are set per device."
+
+#: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Comfortable"
 msgstr "Comfortable"
 

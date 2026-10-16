@@ -148,9 +148,17 @@ export class State {
     // resolve key
     const key = args[0] as string;
 
-    // touch the key if syncable
-    this.sync.touchIfSyncable(key);
+    // touch the key if syncable; args[1] is the field when the write names one
+    this.sync.touchIfSyncable(key, args[1]);
 
+    this.persist(key);
+  };
+
+  /**
+   * Queue a key for writing to disk
+   * @param key Store key
+   */
+  private persist(key: string) {
     // The friends popout keeps the synced stores and `sync` in memory only:
     // it never syncs or checks the owner, so its copy can belong to an
     // account that has since signed out (see shouldPersistKey)
@@ -189,7 +197,7 @@ export class State {
       },
       IGNORE_WRITE_DELAY.includes(key) ? 0 : DISK_WRITE_WAIT_MS,
     ) as unknown as number;
-  };
+  }
 
   /**
    * Write data to store / disk and then synchronise it
@@ -226,8 +234,12 @@ export class State {
         const cleanData = store.clean(data);
 
         if (!equal(data, cleanData)) {
-          // write back to disk if it has changed
-          this.write(store.getKey(), cleanData);
+          // write back to disk if it has changed, without touching the key:
+          // a repaired disk copy is not an edit, and a fresh revision on it
+          // would let this device's old data overwrite newer edits made on
+          // another device
+          this.setStore(store.getKey(), cleanData);
+          this.persist(store.getKey());
         } else {
           this.setStore(store.getKey(), data);
         }

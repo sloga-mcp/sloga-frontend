@@ -12,13 +12,15 @@ import { TypeFriends } from "./Friends";
 import { TypeNotificationOptions } from "./NotificationOptions";
 import { TypeOrdering } from "./Ordering";
 import { TypeReleaseNotes } from "./ReleaseNotes";
+import { TypeTheme } from "./Theme";
 
 type SynchronisedStores =
   | "ordering"
   | "notifications"
   | "release-notes"
   | "friends"
-  | "friend-groups";
+  | "friend-groups"
+  | "theme";
 
 const STORE_KEYS: SynchronisedStores[] = [
   "ordering",
@@ -26,7 +28,94 @@ const STORE_KEYS: SynchronisedStores[] = [
   "release-notes",
   "friends",
   "friend-groups",
+  "theme",
 ];
+
+/**
+ * Theme fields that stay on the device they were set on
+ *
+ * Text, spacing and avatar sizes suit the screen they were picked on, so a
+ * phone should not take a desktop's, and blur is turned off for the machine
+ * that is too slow for it. They are left out of the upload, kept from this
+ * device when a remote copy is adopted, and editing one does not queue an
+ * upload. The appearance menu says so; keep its wording in step.
+ */
+export const DEVICE_LOCAL_THEME_FIELDS = [
+  "blur",
+  "messageSize",
+  "messageGroupSpacing",
+  "messageAvatarSize",
+] as const satisfies readonly (keyof TypeTheme)[];
+
+/**
+ * Keys this device kept to itself before they synchronised
+ *
+ * An account with no copy yet gets this device's data on the first sync,
+ * unless it is still the default, instead of waiting for the next edit.
+ * Without that, colors picked before the update would never leave the
+ * device they were picked on.
+ */
+const SEED_IF_ABSENT: SynchronisedStores[] = ["theme"];
+
+/**
+ * The part of a store's data that is uploaded for its key
+ * @param key Store key
+ * @param data The store's data
+ * @returns Data to upload
+ */
+export function syncedData(key: string, data: unknown): unknown {
+  if (key !== "theme") return data;
+
+  const synced = { ...(data as Record<string, unknown>) };
+  for (const field of DEVICE_LOCAL_THEME_FIELDS) delete synced[field];
+  return synced;
+}
+
+/**
+ * The part of a key's data that decides whether it is worth seeding an
+ * account with (`SEED_IF_ABSENT`): the synced data, less what the active
+ * choice ignores
+ *
+ * Installs from before the Sloga preset still carry the old Material You
+ * accent (#FF5733), which nobody chose (see `TypeTheme.slogaAccent`). Under
+ * the Sloga preset no Material You control shows, and counting them would
+ * seed the account from an untouched install ahead of a customized device.
+ * @param key Store key
+ * @param data The store's data
+ * @returns Data to compare against the default
+ */
+export function seedView(key: string, data: unknown): unknown {
+  const synced = syncedData(key, data);
+  if (key !== "theme") return synced;
+
+  // a copy of its own: the deletes below must never reach the store
+  const theme = { ...(synced as Partial<TypeTheme>) };
+  if (theme.preset === "stoat") {
+    delete theme.m3Accent;
+    delete theme.m3Contrast;
+    delete theme.m3Variant;
+  }
+  return theme;
+}
+
+/**
+ * Whether a remote copy of a key is in the format this client uploads
+ *
+ * Revite synced a "theme" key of its own, in a different shape, and clean()
+ * would turn one into the default theme. Every client that uploads this
+ * format writes `presetMigrated` (`Theme.clean()` always sets it).
+ * @param key Store key
+ * @param remote Parsed remote data
+ * @returns Whether to merge it
+ */
+export function isOwnFormat(key: string, remote: unknown): boolean {
+  if (key !== "theme") return true;
+  return (
+    typeof remote === "object" &&
+    remote !== null &&
+    (remote as Partial<TypeTheme>).presetMigrated === true
+  );
+}
 
 export interface TypeSynchronisation {
   revision: Record<SynchronisedStores, number>;
@@ -117,6 +206,7 @@ export class Sync extends AbstractStore<"sync", TypeSynchronisation> {
         "release-notes": 0,
         friends: 0,
         "friend-groups": 0,
+        theme: 0,
       },
     };
   }
@@ -187,9 +277,20 @@ export class Sync extends AbstractStore<"sync", TypeSynchronisation> {
       return;
     }
 
+    const merged = new Set<string>();
     for (const key in response) {
       const [ts, data] = response[key];
-      this.merge(ts, key as SynchronisedStores, data);
+      if (this.merge(ts, key as SynchronisedStores, data)) merged.add(key);
+    }
+
+    // the account has no usable copy of a key this device kept to itself
+    // before it synchronised: upload this device's, if it has one
+    for (const key of SEED_IF_ABSENT) {
+      if (merged.has(key)) continue;
+
+      const ours = seedView(key, this.state.get(key));
+      const fallback = seedView(key, this.state[key].default());
+      if (!isEqual(ours, fallback)) this.touch(key);
     }
   }
 
@@ -208,7 +309,7 @@ export class Sync extends AbstractStore<"sync", TypeSynchronisation> {
     const payload = keys.reduce(
       (d, k) => ({
         ...d,
-        [k]: JSON.stringify(this.state.get(k)),
+        [k]: JSON.stringify(syncedData(k, this.state.get(k))),
       }),
       {
         timestamp: ts,
@@ -253,10 +354,37 @@ export class Sync extends AbstractStore<"sync", TypeSynchronisation> {
   /**
    * Update timestamp for key
    * @param key Key
+   * @param field Field of the store being written, when the write names one
    */
-  touchIfSyncable(key: string) {
+  touchIfSyncable(key: string, field?: unknown) {
+    if (
+      key === "theme" &&
+      (DEVICE_LOCAL_THEME_FIELDS as readonly unknown[]).includes(field)
+    ) {
+      return;
+    }
+
     if (STORE_KEYS.includes(key as SynchronisedStores)) {
       this.touch(key as SynchronisedStores);
+    }
+  }
+
+  /**
+   * Write to a key without stamping a revision or queuing an upload
+   *
+   * For changes made with no account signed in, such as the light/dark
+   * toggle on the sign-in page: a fresh revision there would make this
+   * device's whole copy beat the account's own on the first sync.
+   * @param key Key the write goes to
+   * @param write The write
+   */
+  untracked(key: SynchronisedStores, write: () => void) {
+    this.#blockSync.add(key);
+    try {
+      write();
+    } finally {
+      // spent by the write's touch; dropped anyway, as in reset()
+      this.#blockSync.delete(key);
     }
   }
 
@@ -302,20 +430,38 @@ export class Sync extends AbstractStore<"sync", TypeSynchronisation> {
    * @param ts Timestamp
    * @param key Store key
    * @param data Data to merge
+   * @returns Whether the remote copy was in this client's format; one that
+   *   was not is ignored
    */
-  merge(ts: number, key: SynchronisedStores, data: string) {
+  merge(ts: number, key: SynchronisedStores, data: string): boolean {
     if (import.meta.env.DEV)
       console.info(`[sync] merge ${key} at ${ts} with`, data);
 
-    const parsed = this.state[key].clean(JSON.parse(data));
+    const remote = JSON.parse(data);
+    if (!isOwnFormat(key, remote)) {
+      if (import.meta.env.DEV)
+        console.info(`[sync] ignored a ${key} copy in another format`);
+      return false;
+    }
+
+    // the uploaded theme has no device-local fields; this device keeps its own
+    if (key === "theme") {
+      const local = this.state.get(key);
+      for (const field of DEVICE_LOCAL_THEME_FIELDS) {
+        remote[field] = local[field];
+      }
+    }
+
+    const parsed = this.state[key].clean(remote);
     const decision = syncMergeDecision(ts, this.ts(key), () =>
       isEqual(
-        this.state[key].get(),
+        this.state.get(key),
         parsed as TypeOrdering &
           TypeNotificationOptions &
           TypeReleaseNotes &
           TypeFriends &
-          TypeFriendGroups,
+          TypeFriendGroups &
+          TypeTheme,
       ),
     );
 
@@ -329,6 +475,8 @@ export class Sync extends AbstractStore<"sync", TypeSynchronisation> {
       // remote is older and our data differs, so synchronise it to remote
       this.touch(key);
     }
+
+    return true;
   }
 
   /**
