@@ -7,8 +7,9 @@
 // return the first cached DM, and the rows were injected there). A peer id
 // resolves to the DM with that peer only, never to a group they are in. The
 // last tests pin the wiring in `e2ee.ts` (`#dmChannel`, `#syncRecent`,
-// `#syncRecentConversation`); `E2EE_SELFDM_TS` points them at another copy
-// for controls.
+// `#syncRecentConversation`) and in `E2EEVerify.tsx`'s turn-off path;
+// `E2EE_SELFDM_TS` / `E2EE_VERIFY_TSX` point them at other copies for
+// controls.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -140,4 +141,30 @@ test("(10) #syncRecentConversation returns before the history read on note-to-se
   );
   assert.notEqual(guard, -1, "guard missing");
   assert.ok(guard < body.indexOf('"e2ee_history"'));
+});
+
+// ---- wiring in E2EEVerify.tsx (`E2EE_VERIFY_TSX` for controls) ----
+
+const VERIFY_TSX =
+  process.env.E2EE_VERIFY_TSX ??
+  new URL("../modal/modals/E2EEVerify.tsx", import.meta.url);
+const verify = readFileSync(VERIFY_TSX, "utf8");
+
+test("(11) E2EEVerify turns off only the DM resolveDmConversation finds", () => {
+  assert.match(
+    verify,
+    /^import \{ resolveDmConversation \} from "@revolt\/client\/e2eeSelfDm";$/m,
+  );
+  assert.equal(verify.match(/recipientIds\.has\(/g)?.length ?? 0, 0);
+  const start = verify.indexOf("async function turnOff(");
+  assert.notEqual(start, -1, "turnOff not found");
+  const body = verify.slice(start, verify.indexOf("\n  }\n", start));
+  const resolved = body.search(
+    /=\s*resolveDmConversation\(\s*props\.peerUserId,\s*client\(\)\.user\?\.id,/,
+  );
+  assert.notEqual(resolved, -1, "turnOff does not resolve the DM");
+  const stop = body.search(/if \(\w+\.kind !== "existing"\) return;/);
+  assert.notEqual(stop, -1, "turnOff does not stop unless a DM resolved");
+  const downgrade = body.indexOf("downgradeConversation(");
+  assert.ok(resolved < stop && stop < downgrade);
 });
