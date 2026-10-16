@@ -220,7 +220,19 @@ class E2eePlugin : Plugin() {
                             call.getArray("attachments")?.toList<String>() ?: emptyList(),
                         ),
                     )
-                "e2ee_decrypt" -> resolveJson(call, engine.decrypt(objectJson(call, "envelope")))
+                // The self id is its own argument from the webview and is never
+                // read from the envelope, which is built from a server event.
+                // Native records it trust-on-first-use as the store's owner.
+                // Absent (an older frontend) passes null, and native then holds
+                // own copies until the owner is known.
+                "e2ee_decrypt" ->
+                    resolveJson(
+                        call,
+                        engine.decrypt(
+                            objectJson(call, "envelope"),
+                            call.getString("selfUserId"),
+                        ),
+                    )
                 "e2ee_history" ->
                     resolveJson(
                         call,

@@ -1161,7 +1161,7 @@ fun uniffi_acutest_e2ee_fn_method_e2eeengine_confirm_peer_downgrade(`ptr`: Point
 ): Unit
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_conversation_state(`ptr`: Pointer,`peerUserId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
-fun uniffi_acutest_e2ee_fn_method_e2eeengine_decrypt(`ptr`: Pointer,`envelopeJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_decrypt(`ptr`: Pointer,`envelopeJson`: RustBuffer.ByValue,`selfUserId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_device_removed(`ptr`: Pointer,`userId`: RustBuffer.ByValue,`deviceId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
@@ -1465,7 +1465,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_conversation_state() != 51294.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_decrypt() != 47904.toShort()) {
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_decrypt() != 64294.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_device_removed() != 62585.toShort()) {
@@ -2229,8 +2229,24 @@ public interface E2eeEngineInterface {
      * Never-provision fast path (post-wipe design rev 2, HIGH-1 belt): a
      * stale-enabled webview routing an envelope here in the wipe window
      * gets what a fresh store gives (`NotEnabled`), never a reprovision.
+     *
+     * `self_user_id` is the webview's claim of the signed-in account, the
+     * same claim every send passes. It is a separate argument, never a
+     * field of `envelope_json`: the envelope is built from a server event,
+     * so an id read from it would be the server's to choose. The core
+     * records it trust-on-first-use before decrypting
+     * ([`E2ee::decrypt_with_self`]: never overwrites, never contradicts
+     * the MLS owner, never fails), and the owner of record, not the
+     * envelope's routing, then decides whether an envelope is this
+     * account's own copy. `None` (a webview that sends no `selfUserId`,
+     * such as an older frontend) records nothing, and an envelope claiming
+     * to be an own copy is refused with `owner_of_record_unknown`,
+     * unprocessed and not to be acked, until the owner is learned. No
+     * id-shape check here, as on desktop: a refusal would hold the
+     * envelope, while the core simply declines to record an empty or
+     * padded id.
      */
-    fun `decrypt`(`envelopeJson`: kotlin.String): kotlin.String
+    fun `decrypt`(`envelopeJson`: kotlin.String, `selfUserId`: kotlin.String?): kotlin.String
     
     /**
      * A bonfire `E2EEDeviceDelete` event for a peer (or own) device.
@@ -3159,13 +3175,29 @@ open class E2eeEngine: Disposable, AutoCloseable, E2eeEngineInterface
      * Never-provision fast path (post-wipe design rev 2, HIGH-1 belt): a
      * stale-enabled webview routing an envelope here in the wipe window
      * gets what a fresh store gives (`NotEnabled`), never a reprovision.
+     *
+     * `self_user_id` is the webview's claim of the signed-in account, the
+     * same claim every send passes. It is a separate argument, never a
+     * field of `envelope_json`: the envelope is built from a server event,
+     * so an id read from it would be the server's to choose. The core
+     * records it trust-on-first-use before decrypting
+     * ([`E2ee::decrypt_with_self`]: never overwrites, never contradicts
+     * the MLS owner, never fails), and the owner of record, not the
+     * envelope's routing, then decides whether an envelope is this
+     * account's own copy. `None` (a webview that sends no `selfUserId`,
+     * such as an older frontend) records nothing, and an envelope claiming
+     * to be an own copy is refused with `owner_of_record_unknown`,
+     * unprocessed and not to be acked, until the owner is learned. No
+     * id-shape check here, as on desktop: a refusal would hold the
+     * envelope, while the core simply declines to record an empty or
+     * padded id.
      */
-    @Throws(E2eeException::class)override fun `decrypt`(`envelopeJson`: kotlin.String): kotlin.String {
+    @Throws(E2eeException::class)override fun `decrypt`(`envelopeJson`: kotlin.String, `selfUserId`: kotlin.String?): kotlin.String {
             return FfiConverterString.lift(
     callWithPointer {
     uniffiRustCallWithError(E2eeException) { _status ->
     UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_decrypt(
-        it, FfiConverterString.lower(`envelopeJson`),_status)
+        it, FfiConverterString.lower(`envelopeJson`),FfiConverterOptionalString.lower(`selfUserId`),_status)
 }
     }
     )

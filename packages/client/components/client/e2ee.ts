@@ -2697,8 +2697,17 @@ export class E2EEBridge implements E2EEAdapter {
       return;
     }
 
+    // Our own id goes as its own argument, the same one every send passes:
+    // native records it as the store's owner on first use, so the store
+    // knows its owner before the first copy of our own message arrives
+    // (without one it holds that copy, unacked: `owner_of_record_unknown`,
+    // logged by the queue's catch and re-delivered next connection). Never
+    // put it in or read it from `envelope`, which is built from the
+    // server's event. With no user loaded it is undefined, which every
+    // shell drops as an absent key (native then holds, as above).
     const outcome = await this.#invoke<DecryptOutcome>("e2ee_decrypt", {
       envelope,
+      selfUserId: this.#client.user?.id,
     });
 
     // EVERY outcome is durably processed native-side → always ack
