@@ -1,16 +1,18 @@
 import { For, Match, Show, Switch, createEffect, createSignal } from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
-import { styled } from "styled-system/jsx";
+import type { ImportSource } from "stoat.js";
 
 import {
   clearDiscordImport,
   discordImportErrorType,
   discordImportView,
   importDiscordStickerClientId,
+  sourceLabel as importSourceLabel,
   resumeDiscordImport,
   trackDiscordImport,
   trackDiscordImportJob,
+  trackedImportSource,
 } from "@revolt/client/discordImport";
 import { inviteUrl } from "@revolt/common";
 import { useNavigate } from "@revolt/routing";
@@ -18,7 +20,16 @@ import { useState } from "@revolt/state";
 import { streamerModeHides } from "@revolt/state/streamer";
 import { Column, Dialog, DialogProps, Text, TextField } from "@revolt/ui";
 
+import { useModals } from "..";
 import { Modals } from "../types";
+
+import {
+  ImportDoneScreen,
+  ImportFailedScreen,
+  ImportProgressScreen,
+  importScreen,
+  useImportErrorMessage,
+} from "./ImportShell";
 
 /**
  * Where the user finds a template link in Discord.
@@ -26,78 +37,24 @@ import { Modals } from "../types";
 const BREADCRUMB = "Discord → Server Settings → Templates → Create Template";
 
 /**
- * Track that reads as indeterminate when the server has not told us how many
- * items the current stage has.
+ * Whether a job kind belongs in this modal. The import store holds one job
+ * of any source; this hides every job whose kind names another source.
+ *
+ * It cannot hide a job whose kind is not known yet, and no kind counts as a
+ * Discord job: a template job tracked straight from its POST
+ * (`trackDiscordImport(job_id)`) has no kind until a job fetch, and rows
+ * written before kinds existed carry none. Other-platform jobs are tracked
+ * with their kind from their POST, and one this device first hears of
+ * through an event (started on another device) gets its kind from the
+ * worker's job fetch; until that fetch lands, or if it fails, such a job
+ * reads kind-less and so shows here.
+ *
+ * The body is evaluated by `importShell.test.ts`: keep it plain JavaScript.
+ * @param kind Job kind wire value
  */
-const ProgressTrack = styled("div", {
-  base: {
-    height: "6px",
-    width: "100%",
-    overflow: "hidden",
-    borderRadius: "999px",
-    background: "var(--md-sys-color-surface-container-highest)",
-  },
-});
-
-const ProgressFill = styled("div", {
-  base: {
-    height: "100%",
-    borderRadius: "999px",
-    background: "var(--md-sys-color-primary)",
-    transition: "width 0.3s ease",
-  },
-  variants: {
-    // No usable total: sweep instead of pretending to know a percentage.
-    // Reuses the existing `skeletonShimmer` keyframe rather than adding a new
-    // one, so this needs no panda config change.
-    indeterminate: {
-      true: {
-        width: "100%",
-        background: "transparent",
-        backgroundImage:
-          "linear-gradient(90deg, transparent 0%, var(--md-sys-color-primary) 50%, transparent 100%)",
-        backgroundSize: "200% 100%",
-        animationName: "skeletonShimmer",
-        animationDuration: "1.4s",
-        animationIterationCount: "infinite",
-        animationTimingFunction: "linear",
-      },
-    },
-  },
-});
-
-/**
- * Invite block, mirroring the create-invite modal (including the Streamer Mode
- * blur, so finishing an import on stream does not leak the link).
- */
-const Invite = styled("div", {
-  base: {
-    display: "flex",
-    flexDirection: "column",
-
-    "& code": {
-      padding: "1em",
-      userSelect: "all",
-      wordBreak: "break-all",
-      fontSize: "1.1em",
-      textAlign: "center",
-      fontFamily: "var(--fonts-monospace)",
-    },
-  },
-  variants: {
-    concealed: {
-      true: {
-        "& code": {
-          filter: "blur(8px)",
-          transition: "filter 0.15s ease",
-          _hover: {
-            filter: "none",
-          },
-        },
-      },
-    },
-  },
-});
+function isDiscordJobKind(kind: string | undefined): boolean {
+  return kind === undefined || kind === "Template" || kind === "Stickers";
+}
 
 /**
  * Import a Discord server's structure from a guild-template link.
@@ -108,55 +65,40 @@ export function ImportDiscordModal(
   const { t } = useLingui();
   const state = useState();
   const navigate = useNavigate();
+  const { openModal } = useModals();
 
   const [template, setTemplate] = createSignal("");
   const [starting, setStarting] = createSignal(false);
   const [startError, setStartError] = createSignal<string | undefined>();
+  /**
+   * Another platform's import that the last start request collided with.
+   * The store then holds that job, which this modal does not show, so the
+   * explain screen names it and offers to open it in its own modal.
+   */
+  const [otherSource, setOtherSource] = createSignal<
+    ImportSource | undefined
+  >();
 
-  const view = discordImportView;
+  const importErrorMessage = useImportErrorMessage();
+
+  /**
+   * The tracked job, if it is a Discord one. Every read of the store in this
+   * modal goes through here, so the three `kind` branches below (the sticker
+   * screens, the navigate-on-complete effect and the failed screen's retry)
+   * only ever see Template or Sticker jobs; another source's job leaves this
+   * modal on its explain screen.
+   */
+  const view = () => {
+    const current = discordImportView();
+    return current && isDiscordJobKind(current.kind) ? current : undefined;
+  };
   const concealed = () => streamerModeHides(state.settings, "invites");
 
   /**
    * Which screen to show. Derived entirely from the shared store so the modal
    * can be dismissed and reopened without losing the job.
    */
-  const screen = () => {
-    const current = view();
-    if (!current) return "explain" as const;
-    if (current.status === "Completed") return "done" as const;
-    if (current.status === "Failed") return "failed" as const;
-    return "importing" as const;
-  };
-
-  /**
-   * Human label for an opaque server stage string. Unknown stages fall back to
-   * the raw value rather than rendering "undefined" — later slices add stages
-   * that this build has never heard of.
-   */
-  function stageLabel(stage: string): string {
-    switch (stage) {
-      case "Fetching":
-        return t`Reading the Discord template…`;
-      case "Server":
-        return t`Creating your server…`;
-      case "Roles":
-        return t`Recreating roles and permissions…`;
-      case "Channels":
-        return t`Recreating channels…`;
-      case "Membership":
-        return t`Setting you up as the owner…`;
-      case "Invite":
-        return t`Generating an invite…`;
-      case "Stickers":
-        return t`Importing stickers…`;
-      case "Done":
-        return t`Finishing up…`;
-      case "":
-        return t`Waiting for a worker…`;
-      default:
-        return stage;
-    }
-  }
+  const screen = () => importScreen(view());
 
   const link = () => {
     const code = view()?.inviteCode;
@@ -207,6 +149,25 @@ export function ImportDiscordModal(
   });
 
   /**
+   * Adopt the job a start request collided with (`ImportAlreadyInProgress`),
+   * so the user lands on its progress instead of a dead-end error. When that
+   * job is another platform's, this modal cannot show it: say which source
+   * it is from instead, and let the explain screen offer to open it.
+   *
+   * The body is evaluated by `importDiscordCollision.test.ts`: keep it plain
+   * JavaScript (no type syntax inside the braces).
+   */
+  function adoptCollidedJob() {
+    resumeDiscordImport(props.client).then(() => {
+      const source = trackedImportSource();
+      if (!source) return;
+      const sourceLabel = importSourceLabel(source);
+      setOtherSource(source);
+      setStartError(t`You already have an import from ${sourceLabel} running.`);
+    });
+  }
+
+  /**
    * Kick off the import.
    */
   async function start() {
@@ -215,6 +176,7 @@ export function ImportDiscordModal(
 
     setStarting(true);
     setStartError(undefined);
+    setOtherSource(undefined);
 
     try {
       const { job_id } = await props.client.importDiscordTemplate(value);
@@ -222,20 +184,8 @@ export function ImportDiscordModal(
     } catch (error) {
       // The raw-fetch helper throws the PARSED BODY, not an Error, and drops
       // the status code — 409 is only identifiable by this tag.
-      switch (discordImportErrorType(error)) {
-        case "ImportAlreadyInProgress":
-          setStartError(
-            t`You already have an import running. Wait for it to finish before starting another.`,
-          );
-          // Adopt the job we collided with, so the user lands on its progress
-          // instead of a dead-end error.
-          resumeDiscordImport(props.client);
-          break;
-        case "TooManyServers":
-          setStartError(
-            t`You've reached the maximum number of servers you can be in.`,
-          );
-          break;
+      const type = discordImportErrorType(error);
+      switch (type) {
         case "InvalidOperation":
           setStartError(
             t`That doesn't look like a Discord server template link.`,
@@ -245,8 +195,16 @@ export function ImportDiscordModal(
           setStartError(t`Importing from Discord is not available right now.`);
           break;
         default:
-          setStartError(t`Could not start the import. Try again shortly.`);
+          // The shared types (ImportAlreadyInProgress, TooManyServers, …)
+          // read the same from every source.
+          setStartError(
+            importErrorMessage(type, "Discord") ??
+              t`Could not start the import. Try again shortly.`,
+          );
       }
+      // Adopt the job we collided with, so the user lands on its progress
+      // instead of a dead-end error.
+      if (type === "ImportAlreadyInProgress") adoptCollidedJob();
     } finally {
       setStarting(false);
     }
@@ -264,6 +222,7 @@ export function ImportDiscordModal(
 
     setStarting(true);
     setStartError(undefined);
+    setOtherSource(undefined);
 
     try {
       const job = await props.client.importDiscordStickers(parentJobId);
@@ -274,7 +233,7 @@ export function ImportDiscordModal(
           setStartError(
             t`You already have an import running. Wait for it to finish before starting another.`,
           );
-          resumeDiscordImport(props.client);
+          adoptCollidedJob();
           break;
         case "InvalidOperation":
           setStartError(
@@ -299,6 +258,7 @@ export function ImportDiscordModal(
     clearDiscordImport();
     setTemplate("");
     setStartError(undefined);
+    setOtherSource(undefined);
     props.onClose();
   }
 
@@ -312,6 +272,22 @@ export function ImportDiscordModal(
       case "explain":
         return [
           { text: <Trans>Cancel</Trans> },
+          ...(otherSource()
+            ? [
+                {
+                  text: <Trans>View it</Trans>,
+                  // Returns nothing on purpose: this dialog closes as the
+                  // other source's opens, like the create-server fan-outs.
+                  onClick: () => {
+                    openModal({
+                      type: "import_source",
+                      client: props.client,
+                      source: otherSource(),
+                    });
+                  },
+                },
+              ]
+            : []),
           {
             text: <Trans>Start import</Trans>,
             onClick: () => {
@@ -370,13 +346,19 @@ export function ImportDiscordModal(
                 },
               ]
             : []),
-          {
-            text: <Trans>Copy invite</Trans>,
-            onClick: () => {
-              navigator.clipboard.writeText(link());
-              return false;
-            },
-          },
+          // No invite was minted (the server had no channel to invite to):
+          // there is nothing to copy.
+          ...(link()
+            ? [
+                {
+                  text: <Trans>Copy invite</Trans>,
+                  onClick: () => {
+                    navigator.clipboard.writeText(link());
+                    return false;
+                  },
+                },
+              ]
+            : []),
           {
             text: <Trans>Done</Trans>,
             onClick: () => {
@@ -516,37 +498,18 @@ export function ImportDiscordModal(
 
         {/* -------------------------------------------------- importing -- */}
         <Match when={screen() === "importing"}>
-          <Column>
-            <Text>{stageLabel(view()!.stage)}</Text>
-            <ProgressTrack>
-              {/* `total` is legitimately 0 while a stage is indeterminate —
-                  dividing by it would render a NaN-wide bar. */}
-              <ProgressFill
-                indeterminate={!(view()!.total > 0)}
-                style={
-                  view()!.total > 0
-                    ? {
-                        width: `${Math.min(
-                          100,
-                          Math.round((view()!.done / view()!.total) * 100),
-                        )}%`,
-                      }
-                    : undefined
-                }
-              />
-            </ProgressTrack>
-            <Show when={view()!.total > 0}>
-              <Text class="label">
-                {view()!.done} / {view()!.total}
-              </Text>
-            </Show>
-            <Text class="label">
-              <Trans>
-                You can close this — the import keeps going and we'll let you
-                know when it's ready.
-              </Trans>
-            </Text>
-          </Column>
+          {/* `kind` is pinned to Template, not read from the job: every job
+              here is a Discord one, the only Discord job that reads
+              `Fetching` is a template job (sticker jobs are born at
+              `Stickers`), and a template job has no kind until its first
+              job fetch. */}
+          <ImportProgressScreen
+            stage={view()!.stage}
+            kind="Template"
+            status={view()!.status}
+            done={view()!.done}
+            total={view()!.total}
+          />
         </Match>
 
         {/* ------------------------------------------------- done: stickers */}
@@ -575,39 +538,18 @@ export function ImportDiscordModal(
 
         {/* ------------------------------------------------------- done -- */}
         <Match when={screen() === "done"}>
-          <Column>
-            <Text>
+          <ImportDoneScreen
+            intro={
               <Trans>
-                Your server is ready. Paste this invite in Discord to bring
-                your members over.
+                Your server is ready. Paste this invite in Discord to bring your
+                members over.
               </Trans>
-            </Text>
-
-            <Invite concealed={concealed()}>
-              <code>{link()}</code>
-              <Show when={concealed()}>
-                <Text class="label">
-                  <Trans>
-                    Streamer Mode is hiding your invite link — hover over it to
-                    reveal.
-                  </Trans>
-                </Text>
-              </Show>
-            </Invite>
-
-            <Show when={view()!.summary}>
-              <Text class="label">
-                <Trans>Notes</Trans>
-              </Text>
-              <Text>
-                {t`Created ${view()!.summary!.channels_created} channels, ${view()!.summary!.categories_created} categories and ${view()!.summary!.roles_created ?? 0} roles.`}
-              </Text>
-              {/* Server-generated English; intentionally rendered verbatim. */}
-              <For each={view()!.summary!.notes}>
-                {(note) => <Text class="label">{note}</Text>}
-              </For>
-            </Show>
-
+            }
+            inviteLink={link()}
+            concealed={concealed()}
+            summary={view()!.summary}
+            actionError={startError()}
+          >
             <Show when={stickerOffer()}>
               <Text class="label">
                 <Trans>Stickers</Trans>
@@ -633,21 +575,12 @@ export function ImportDiscordModal(
                 </Trans>
               </Text>
             </Show>
-
-            <Show when={startError()}>
-              <Text class="label">{startError()}</Text>
-            </Show>
-          </Column>
+          </ImportDoneScreen>
         </Match>
 
         {/* ----------------------------------------------------- failed -- */}
         <Match when={screen() === "failed"}>
-          <Column>
-            <Text>
-              <Trans>The import didn't finish.</Trans>
-            </Text>
-            {/* Already user-safe server-side; shown verbatim. */}
-            <Text>{view()!.error}</Text>
+          <ImportFailedScreen error={view()!.error} actionError={startError()}>
             {/* Live-smoke finding: the "bot not added yet" failure tells the
                 user to add the bot but gave them nowhere to do it — the
                 invite link lived only on the parent's done screen, which is
@@ -659,10 +592,7 @@ export function ImportDiscordModal(
                 </a>
               </Text>
             </Show>
-            <Show when={startError()}>
-              <Text class="label">{startError()}</Text>
-            </Show>
-          </Column>
+          </ImportFailedScreen>
         </Match>
       </Switch>
     </Dialog>

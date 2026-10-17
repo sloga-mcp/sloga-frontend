@@ -1,4 +1,5 @@
 import { TrackReference } from "solid-livekit-components";
+import type { ImportSource } from "stoat.js";
 import {
   API,
   Bot,
@@ -219,6 +220,19 @@ export type Modals =
        */
       type: "import_discord";
       client: Client;
+    }
+  | {
+      /**
+       * Import a server from another platform (Stoat, Fluxer, Matrix) via the
+       * per-source import bot. Flag-gated per source on
+       * `features.import_sources`.
+       */
+      type: "import_source";
+      client: Client;
+      /**
+       * Source to open directly; when absent the modal shows the source picker.
+       */
+      source?: ImportSource;
     }
   | {
       type: "create_webhook";
