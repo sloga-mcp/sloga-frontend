@@ -645,6 +645,62 @@ msgstr "Your server is ready. Share this invite to bring your members over."
 msgid "Your server is ready."
 msgstr "Your server is ready."
 
+#: components/modal/modals/ImportSource.tsx
+msgid "Rebuild a server you manage on Fluxer here, in three steps."
+msgstr "Rebuild a server you manage on Fluxer here, in three steps."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "Add the importer bot to your Fluxer server."
+msgstr "Add the importer bot to your Fluxer server."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "You need Administrator on Fluxer, or to own the server. The bot asks for Administrator so it can see private channels and the audit log."
+msgstr "You need Administrator on Fluxer, or to own the server. The bot asks for Administrator so it can see private channels and the audit log."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "Create a new role named exactly the code below and give it Manage Server."
+msgstr "Create a new role named exactly the code below and give it Manage Server."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "Keep it and the \"Sloga Importer\" role until the import finishes, then delete both. Finish within a day of adding the bot."
+msgstr "Keep it and the \"Sloga Importer\" role until the import finishes, then delete both. Finish within a day of adding the bot."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "Paste your Fluxer server's invite link or server ID."
+msgstr "Paste your Fluxer server's invite link or server ID."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "The server's name, icon and banner, its categories and channels, its roles and permissions, and its custom emoji."
+msgstr "The server's name, icon and banner, its categories and channels, its roles and permissions, and its custom emoji."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "Members, messages, bans, invites and webhooks stay on Fluxer. Fluxer servers have no description, so there is none to bring."
+msgstr "Members, messages, bans, invites and webhooks stay on Fluxer. Fluxer servers have no description, so there is none to bring."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "The bot leaves your Fluxer server when the import ends."
+msgstr "The bot leaves your Fluxer server when the import ends."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "That doesn't look like a Fluxer invite link or server ID."
+msgstr "That doesn't look like a Fluxer invite link or server ID."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "We couldn't verify your role. Create a new role, name it exactly your code, and give it Manage Server yourself. Renaming a role that already had Manage Server (including the \"Sloga Importer\" role) doesn't count. The importer bot also needs Administrator to read the audit log."
+msgstr "We couldn't verify your role. Create a new role, name it exactly your code, and give it Manage Server yourself. Renaming a role that already had Manage Server (including the \"Sloga Importer\" role) doesn't count. The importer bot also needs Administrator to read the audit log."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "We couldn't reach Fluxer right now. Wait 30 seconds before trying again."
+msgstr "We couldn't reach Fluxer right now. Wait 30 seconds before trying again."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "Fluxer invite link or server ID"
+msgstr "Fluxer invite link or server ID"
+
+#: components/modal/modals/ImportSource.tsx
+msgid "Invite link or server ID"
+msgstr "Invite link or server ID"
+
 #: components/modal/modals/SupportSloga.tsx
 msgid "Couldn't get your supporter code."
 msgstr "Couldn't get your supporter code."

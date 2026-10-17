@@ -9,7 +9,7 @@ import {
 } from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
-import type { DiscordImportStatus, ImportSource } from "stoat.js";
+import type { Client, DiscordImportStatus, ImportSource } from "stoat.js";
 import { css } from "styled-system/css";
 
 import {
@@ -95,14 +95,33 @@ function modalScreen(
 
 /**
  * Whether a source has an explain screen in this modal that can be offered
- * now. Only Stoat has one in this release; the store's own check also
- * requires the instance to have the source ready.
+ * now. Stoat and Fluxer have one; the store's own check also requires the
+ * instance to have the source ready.
  *
  * The body is evaluated by `importSource.test.ts`: keep it plain JavaScript.
  * @param source Import source
  */
 function hasExplainScreen(source: ImportSource | undefined): boolean {
-  return source === "stoat" && importSourceEnabled(source);
+  return (
+    (source === "stoat" || source === "fluxer") && importSourceEnabled(source)
+  );
+}
+
+/**
+ * Fetch today's verification code for `source`, tagged with the source it is
+ * for: codes are per source, and the modal's resource keeps the previous
+ * source's code while the next one loads.
+ *
+ * The body is evaluated by `importSource.test.ts`: keep it plain JavaScript.
+ * @param client Client to fetch with
+ * @param source Source to fetch the code for
+ */
+async function fetchChallenge(
+  client: Pick<Client, "fetchImportChallenge">,
+  source: ImportSource,
+) {
+  const reply = await client.fetchImportChallenge(source);
+  return { source, code: reply?.code };
 }
 
 /**
@@ -122,7 +141,7 @@ async function copyToClipboard(text: string): Promise<boolean> {
 }
 
 /**
- * Import a server from another platform (Stoat in this release) through the
+ * Import a server from another platform (Stoat or Fluxer) through the
  * instance's importer bot. Without a `source` prop it opens on a picker of
  * the sources the instance has ready, led by Discord when the instance
  * offers it (picking Discord hands over to the Discord import modal).
@@ -211,15 +230,23 @@ export default function ImportSourceModal(
   const [challenge, { refetch: refetchChallenge }] = createResource(
     () => (screen() === "explain" ? source() : undefined),
     // The modal's client never changes, so reading it here is safe.
-    (wanted) => props.client.fetchImportChallenge(wanted),
+    (wanted) => fetchChallenge(props.client, wanted),
   );
 
-  /** The code, once fetched and well-formed. Never reads an errored resource. */
+  /**
+   * The code, once fetched and well-formed, and only if it is the current
+   * source's: after switching sources the resource still holds the previous
+   * source's code until the new one lands. Never reads an errored resource.
+   *
+   * The body is evaluated by `importSource.test.ts`: keep it plain JavaScript.
+   */
   const challengeCode = () => {
     if (challenge.state !== "ready" && challenge.state !== "refreshing") {
       return undefined;
     }
-    const code = challenge.latest?.code;
+    const latest = challenge.latest;
+    if (!latest || latest.source !== source()) return undefined;
+    const code = latest.code;
     return typeof code === "string" && code ? code : undefined;
   };
 
@@ -260,6 +287,19 @@ export default function ImportSourceModal(
       }
       if (type === "ImportVerificationMissing") {
         return t`We couldn't find your verification code in the server description. Copy your code again, paste it there and try again.`;
+      }
+    }
+    if (wanted === "fluxer") {
+      if (type === "InvalidOperation" || type === "FailedValidation") {
+        return t`That doesn't look like a Fluxer invite link or server ID.`;
+      }
+      if (type === "ImportVerificationMissing") {
+        return t`We couldn't verify your role. Create a new role, name it exactly your code, and give it Manage Server yourself. Renaming a role that already had Manage Server (including the "Sloga Importer" role) doesn't count. The importer bot also needs Administrator to read the audit log.`;
+      }
+      // Also what a refused retry gets: Fluxer checks are rationed per user,
+      // so a quick second try can be turned away while Fluxer is fine.
+      if (type === "ImportUpstreamUnavailable") {
+        return t`We couldn't reach Fluxer right now. Wait 30 seconds before trying again.`;
       }
     }
     return (
@@ -373,10 +413,19 @@ export default function ImportSourceModal(
     );
   }
 
+  /**
+   * The instance's add-the-bot page for the current source, if it has one.
+   *
+   * The body is evaluated by `importSource.test.ts`: keep it plain JavaScript.
+   */
+  const botUrl = () => {
+    const wanted = source();
+    return wanted ? importSourceBotUrl(wanted) : undefined;
+  };
+
   /** Open the instance's add-the-bot page for the current source. */
   function openBotPage() {
-    const wanted = source();
-    const url = wanted ? importSourceBotUrl(wanted) : undefined;
+    const url = botUrl();
     // The desktop shells route a `_blank` window to the system browser.
     if (url) window.open(url, "_blank", "noopener");
   }
@@ -501,6 +550,87 @@ export default function ImportSourceModal(
     }
   };
 
+  // Parts every explain screen shares. Each is source-neutral: the copy
+  // around them is the source's own. Local closures over this modal's state,
+  // never module-scope styled components.
+
+  /** Button that opens the current source's add-the-bot page. */
+  const botButton = () => (
+    <div>
+      <Button variant="tonal" onPress={openBotPage} isDisabled={!botUrl()}>
+        <Trans>Add the importer bot</Trans>
+      </Button>
+    </div>
+  );
+
+  /** The verification code to copy, or a retry when it could not load. */
+  const codeBlock = () => (
+    <>
+      <Switch
+        fallback={
+          <div class={css({ height: "56px" })}>
+            <CircularProgress />
+          </div>
+        }
+      >
+        <Match when={challengeCode()}>
+          {(code) => (
+            <CategoryButton
+              icon={<Symbol size={22}>key</Symbol>}
+              action="copy"
+              onClick={copyCode}
+            >
+              <span class={css({ userSelect: "all" })}>{code()}</span>
+            </CategoryButton>
+          )}
+        </Match>
+        <Match when={challengeFailed()}>
+          <Text class="label">
+            <Trans>Couldn't load your verification code.</Trans>
+          </Text>
+          <div>
+            <Button variant="text" onPress={() => refetchChallenge()}>
+              <Trans>Try again</Trans>
+            </Button>
+          </div>
+        </Match>
+      </Switch>
+      <Show when={codeCopyFailed()}>
+        <Text class="label">
+          <Trans>
+            Couldn't copy to the clipboard. Select the code and copy it
+            yourself.
+          </Trans>
+        </Text>
+      </Show>
+    </>
+  );
+
+  /**
+   * The invite link or server ID field.
+   * @param fieldLabel Field label, naming the source
+   * @param placeholder Example of what to paste
+   */
+  const inviteField = (fieldLabel: string, placeholder: string) => (
+    <TextField
+      value={input()}
+      variant="filled"
+      label={fieldLabel}
+      placeholder={placeholder}
+      // `onInput` catches a paste (the normal way a link arrives here);
+      // `onChange` catches blur/enter on the mdui custom element.
+      onInput={(e) => setInput(e.currentTarget.value)}
+      onChange={(e) => setInput(e.currentTarget.value)}
+    />
+  );
+
+  /** Why the last start request failed, if it did. */
+  const startErrorLine = () => (
+    <Show when={startError()}>
+      <Text class="label">{startError()}</Text>
+    </Show>
+  );
+
   return (
     <Dialog
       minWidth={420}
@@ -548,7 +678,7 @@ export default function ImportSourceModal(
         </Match>
 
         {/* ---------------------------------------------- explain: Stoat -- */}
-        <Match when={screen() === "explain"}>
+        <Match when={screen() === "explain" && source() === "stoat"}>
           <Column>
             <Text>
               <Trans>
@@ -562,15 +692,7 @@ export default function ImportSourceModal(
               {"1. "}
               <Trans>Add the importer bot to your Stoat server.</Trans>
             </Text>
-            <div>
-              <Button
-                variant="tonal"
-                onPress={openBotPage}
-                isDisabled={!importSourceBotUrl("stoat")}
-              >
-                <Trans>Add the importer bot</Trans>
-              </Button>
-            </div>
+            {botButton()}
             <Text>
               <Trans>Requires Manage Server on Stoat.</Trans>
             </Text>
@@ -591,43 +713,7 @@ export default function ImportSourceModal(
               {"3. "}
               <Trans>Prove you manage it.</Trans>
             </Text>
-            <Switch
-              fallback={
-                <div class={css({ height: "56px" })}>
-                  <CircularProgress />
-                </div>
-              }
-            >
-              <Match when={challengeCode()}>
-                {(code) => (
-                  <CategoryButton
-                    icon={<Symbol size={22}>key</Symbol>}
-                    action="copy"
-                    onClick={copyCode}
-                  >
-                    <span class={css({ userSelect: "all" })}>{code()}</span>
-                  </CategoryButton>
-                )}
-              </Match>
-              <Match when={challengeFailed()}>
-                <Text class="label">
-                  <Trans>Couldn't load your verification code.</Trans>
-                </Text>
-                <div>
-                  <Button variant="text" onPress={() => refetchChallenge()}>
-                    <Trans>Try again</Trans>
-                  </Button>
-                </div>
-              </Match>
-            </Switch>
-            <Show when={codeCopyFailed()}>
-              <Text class="label">
-                <Trans>
-                  Couldn't copy to the clipboard. Select the code and copy it
-                  yourself.
-                </Trans>
-              </Text>
-            </Show>
+            {codeBlock()}
             <Text>
               <Trans>
                 Paste this anywhere in your Stoat server's description (Server
@@ -639,20 +725,12 @@ export default function ImportSourceModal(
               {"4. "}
               <Trans>Paste your Stoat server's invite link or ID.</Trans>
             </Text>
-            <TextField
-              value={input()}
-              variant="filled"
-              label={t`Stoat invite link or server ID`}
-              placeholder="https://stoat.chat/invite/xxxxxxxx"
-              // `onInput` catches a paste (the normal way a link arrives here);
-              // `onChange` catches blur/enter on the mdui custom element.
-              onInput={(e) => setInput(e.currentTarget.value)}
-              onChange={(e) => setInput(e.currentTarget.value)}
-            />
+            {inviteField(
+              t`Stoat invite link or server ID`,
+              "https://stoat.chat/invite/xxxxxxxx",
+            )}
 
-            <Show when={startError()}>
-              <Text class="label">{startError()}</Text>
-            </Show>
+            {startErrorLine()}
 
             <Text class="label">
               <Trans>What comes across</Trans>
@@ -674,6 +752,84 @@ export default function ImportSourceModal(
             <Text>
               <Trans>
                 The bot leaves your Stoat server when the import finishes.
+              </Trans>
+            </Text>
+          </Column>
+        </Match>
+
+        {/* --------------------------------------------- explain: Fluxer -- */}
+        <Match when={screen() === "explain" && source() === "fluxer"}>
+          <Column>
+            <Text>
+              <Trans>
+                Rebuild a server you manage on Fluxer here, in three steps.
+              </Trans>
+            </Text>
+
+            {/* Step numbers and every element stay OUTSIDE the Trans
+                blocks: an element inside one is rendered once per branch. */}
+            <Text class="label">
+              {"1. "}
+              <Trans>Add the importer bot to your Fluxer server.</Trans>
+            </Text>
+            {botButton()}
+            <Text>
+              <Trans>
+                You need Administrator on Fluxer, or to own the server. The bot
+                asks for Administrator so it can see private channels and the
+                audit log.
+              </Trans>
+            </Text>
+
+            <Text class="label">
+              {"2. "}
+              <Trans>
+                Create a new role named exactly the code below and give it
+                Manage Server.
+              </Trans>
+            </Text>
+            {codeBlock()}
+            <Text>
+              <Trans>
+                Keep it and the "Sloga Importer" role until the import finishes,
+                then delete both. Finish within a day of adding the bot.
+              </Trans>
+            </Text>
+
+            <Text class="label">
+              {"3. "}
+              <Trans>
+                Paste your Fluxer server's invite link or server ID.
+              </Trans>
+            </Text>
+            {inviteField(
+              t`Fluxer invite link or server ID`,
+              t`Invite link or server ID`,
+            )}
+
+            {startErrorLine()}
+
+            <Text class="label">
+              <Trans>What comes across</Trans>
+            </Text>
+            <Text>
+              <Trans>
+                The server's name, icon and banner, its categories and channels,
+                its roles and permissions, and its custom emoji.
+              </Trans>
+            </Text>
+            <Text class="label">
+              <Trans>What doesn't</Trans>
+            </Text>
+            <Text>
+              <Trans>
+                Members, messages, bans, invites and webhooks stay on Fluxer.
+                Fluxer servers have no description, so there is none to bring.
+              </Trans>
+            </Text>
+            <Text>
+              <Trans>
+                The bot leaves your Fluxer server when the import ends.
               </Trans>
             </Text>
           </Column>

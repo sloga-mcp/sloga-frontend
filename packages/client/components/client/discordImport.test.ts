@@ -14,9 +14,9 @@
  * resolve) for the API URL, so that one specifier is swapped for a fixed
  * configuration via `module.registerHooks`, the approach
  * `../common/lib/appOrigin.test.ts` uses. The hook matches only an import from
- * the exact module under test; if it stops matching, the dynamic import below
- * throws and this file fails loudly. `fetch` and `localStorage` are stubbed
- * per spec.
+ * the exact module under test (or a fresh copy of it, the same URL plus a
+ * query string); if it stops matching, the dynamic import below throws and
+ * this file fails loudly. `fetch` and `localStorage` are stubbed per spec.
  *
  * Known-bad control: set `DISCORD_IMPORT_UNDER_TEST` to the path of a copy of
  * `discordImport.ts` (kept next to it, so `solid-js` still resolves) with a
@@ -36,7 +36,10 @@ const API_URL = "https://api-host.test/api";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
-    if (specifier === "@revolt/common" && context.parentURL === UNDER_TEST) {
+    if (
+      specifier === "@revolt/common" &&
+      context.parentURL?.split("?")[0] === UNDER_TEST
+    ) {
       return { url: COMMON_STUB, shortCircuit: true };
     }
 
@@ -153,13 +156,15 @@ describe("parseImportSources", () => {
       );
   });
 
-  it("refuses a bot URL that is not absolute http(s)", () => {
+  it("refuses a bot URL that is not absolute https", () => {
     for (const add_bot_url of [
       "javascript:alert(1)",
       "data:text/html,<p>hi</p>",
       "/bot/add",
       "stoat.example/bot",
       "ftp://stoat.example/bot",
+      "http://stoat.test/bot",
+      "http://fluxer.test/v1/oauth2/authorize?client_id=1",
     ]) {
       assert.deepEqual(
         parseImportSources({ stoat: { add_bot_url } }),
@@ -173,8 +178,8 @@ describe("parseImportSources", () => {
       );
     }
     assert.deepEqual(
-      parseImportSources({ stoat: { add_bot_url: "http://stoat.test/bot" } }),
-      { stoat: { add_bot_url: "http://stoat.test/bot" } },
+      parseImportSources({ stoat: { add_bot_url: "https://stoat.test/bot" } }),
+      { stoat: { add_bot_url: "https://stoat.test/bot" } },
     );
   });
 
@@ -217,8 +222,8 @@ describe("the root config probe", () => {
 
   it("offers only the sources this build can import from", () => {
     assert.equal(store.importSourceEnabled("stoat"), true);
-    // Advertised, but release 1 has no Fluxer screen.
-    assert.equal(store.importSourceEnabled("fluxer"), false);
+    assert.equal(store.importSourceEnabled("fluxer"), true);
+    // Not advertised, and this build has no Matrix screen either.
     assert.equal(store.importSourceEnabled("matrix"), false);
     assert.equal(store.anyImportSourceEnabled(), true);
   });
@@ -276,6 +281,97 @@ describe("the root config probe", () => {
       enabled: false,
       importSources: {},
     });
+  });
+});
+
+// --------------------------------------------------------- offered sources --
+
+/** Fresh store copies loaded so far, so each gets its own URL. */
+let freshCopies = 0;
+
+/**
+ * A fresh copy of the store (own signals, own one-time probe) after its probe
+ * has landed with `importSources` as `features.import_sources`.
+ * @param importSources The advertised value, whatever it is
+ */
+async function storeAdvertising(importSources: unknown): Promise<typeof store> {
+  stubFetch({ features: { import_sources: importSources } });
+  const before = fetched.length;
+  const fresh: typeof store = await import(
+    `${UNDER_TEST}?fresh=${++freshCopies}`
+  );
+  // Primed at the first read; give the probe's promise chain a turn.
+  assert.equal(fresh.importSourceEnabled("fluxer"), false);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(fetched.length, before + 1, "the copy probed GET / once");
+  return fresh;
+}
+
+describe("which sources are offered", () => {
+  const FLUXER_AUTHORIZE =
+    "https://api.fluxer.example/v1/oauth2/authorize?client_id=1&scope=bot&permissions=8";
+
+  it("offers Fluxer when it advertises an https bot URL", async () => {
+    const fresh = await storeAdvertising({
+      fluxer: { add_bot_url: FLUXER_AUTHORIZE },
+    });
+    assert.equal(fresh.importSourceEnabled("fluxer"), true);
+    assert.equal(fresh.importSourceBotUrl("fluxer"), FLUXER_AUTHORIZE);
+    assert.equal(fresh.importSourceEnabled("stoat"), false);
+    assert.equal(fresh.anyImportSourceEnabled(), true);
+  });
+
+  it("hides Fluxer when it is not advertised", async () => {
+    const fresh = await storeAdvertising({
+      stoat: { add_bot_url: STOAT_BOT },
+    });
+    assert.equal(fresh.importSourceEnabled("fluxer"), false);
+    assert.equal(fresh.importSourceBotUrl("fluxer"), undefined);
+    assert.equal(fresh.importSourceEnabled("stoat"), true);
+  });
+
+  it("hides Fluxer when its bot URL is not https", async () => {
+    for (const add_bot_url of [
+      "http://api.fluxer.example/v1/oauth2/authorize?client_id=1",
+      "javascript:alert(1)",
+      "java\tscript:alert(1)",
+      "data:text/html,<p>hi</p>",
+      "//api.fluxer.example/v1/oauth2/authorize",
+      "api.fluxer.example/v1/oauth2/authorize",
+      "https//api.fluxer.example",
+      "not a url",
+      "",
+      5,
+      null,
+    ]) {
+      const fresh = await storeAdvertising({
+        fluxer: { add_bot_url },
+        stoat: { add_bot_url: STOAT_BOT },
+      });
+      const label = JSON.stringify(add_bot_url);
+      assert.equal(fresh.importSourceEnabled("fluxer"), false, label);
+      assert.equal(fresh.importSourceBotUrl("fluxer"), undefined, label);
+      // A bad Fluxer entry never takes Stoat down with it.
+      assert.equal(fresh.importSourceEnabled("stoat"), true, label);
+    }
+  });
+
+  it("hides Fluxer when its entry is malformed", async () => {
+    for (const fluxer of [null, FLUXER_AUTHORIZE, [], {}, { url: "x" }]) {
+      const fresh = await storeAdvertising({ fluxer });
+      const label = JSON.stringify(fluxer);
+      assert.equal(fresh.importSourceEnabled("fluxer"), false, label);
+      assert.equal(fresh.anyImportSourceEnabled(), false, label);
+    }
+  });
+
+  it("hides Stoat on a plain http bot URL too", async () => {
+    const fresh = await storeAdvertising({
+      stoat: { add_bot_url: "http://stoat.example/bot/add?app=importer" },
+    });
+    assert.equal(fresh.importSourceEnabled("stoat"), false);
+    assert.equal(fresh.importSourceBotUrl("stoat"), undefined);
+    assert.equal(fresh.anyImportSourceEnabled(), false);
   });
 });
 
