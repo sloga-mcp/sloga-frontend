@@ -3104,6 +3104,10 @@ msgstr "Done"
 msgid "Double-click a voice channel to join it"
 msgstr "Double-click a voice channel to join it"
 
+#: src/AndroidNag.tsx
+msgid "Download APK"
+msgstr "Download APK"
+
 #. placeholder {0}: Math.round(progress * 100)
 #: components/ui/components/features/voice/callCard/VoiceTranscribeButton.tsx
 msgid "Downloading the speech model… {0}%"
@@ -3921,6 +3925,10 @@ msgid "Get active recovery codes"
 msgstr "Get active recovery codes"
 
 #: src/AndroidNag.tsx
+msgid "Get it on Google Play"
+msgstr "Get it on Google Play"
+
+#: src/AndroidNag.tsx
 msgid "Get the Android app"
 msgstr "Get the Android app"
 
@@ -3986,6 +3994,10 @@ msgstr "Going"
 #: components/modal/modals/Onboarding.tsx
 msgid "Good"
 msgstr "Good"
+
+#: src/AndroidNag.tsx
+msgid "Google-free APK"
+msgstr "Google-free APK"
 
 #. placeholder {0}: countBits(props.context.rolePermissions![role.id].a)
 #. placeholder {1}: countBits(props.context.rolePermissions![role.id].d)
@@ -6006,6 +6018,10 @@ msgstr "Other"
 #: components/app/interface/settings/user/voice/AttenuationOptions.tsx
 msgid "Other applications drop to {0}% while someone speaks."
 msgstr "Other applications drop to {0}% while someone speaks."
+
+#: src/AndroidNag.tsx
+msgid "Other ways to install:"
+msgstr "Other ways to install:"
 
 #: components/ui/components/features/voice/minigame/MinigameChip.tsx
 msgid "Out of balls!"
