@@ -1763,6 +1763,10 @@ msgstr "Can't verify"
 msgid "Cancel"
 msgstr "Cancel"
 
+#: src/interface/channels/text/GameLookupPicker.tsx
+msgid "Enter to send, Esc to cancel"
+msgstr "Enter to send, Esc to cancel"
+
 #: src/interface/ServerEvents.tsx
 msgid "Cancel (can't attend)"
 msgstr "Cancel (can't attend)"
@@ -3039,6 +3043,34 @@ msgstr "Dice"
 #: src/interface/channels/text/Composition.tsx
 msgid "Dice roll failed ({0})"
 msgstr "Dice roll failed ({0})"
+
+#: src/interface/channels/text/Composition.tsx
+msgid "Game lookup isn't available in encrypted chats."
+msgstr "Game lookup isn't available in encrypted chats."
+
+#: src/interface/channels/text/Composition.tsx
+msgid "Game lookup isn't available in this conversation."
+msgstr "Game lookup isn't available in this conversation."
+
+#: src/interface/channels/text/Composition.tsx
+msgid "Type a name to look up after the command."
+msgstr "Type a name to look up after the command."
+
+#: src/interface/channels/text/Composition.tsx
+msgid "No results for “{query}”."
+msgstr "No results for “{query}”."
+
+#: src/interface/channels/text/Composition.tsx
+msgid "Too many lookups, try again in a moment."
+msgstr "Too many lookups, try again in a moment."
+
+#: src/interface/channels/text/Composition.tsx
+msgid "That lookup isn't available right now."
+msgstr "That lookup isn't available right now."
+
+#: src/interface/channels/text/Composition.tsx
+msgid "Lookup failed. Try again."
+msgstr "Lookup failed. Try again."
 
 #: src/interface/channels/text/Composition.tsx
 msgid "Dice rolls are only available in server channels."
@@ -5241,6 +5273,10 @@ msgstr "Message"
 #: src/interface/channels/text/Composition.tsx
 msgid "Message {0}"
 msgstr "Message {0}"
+
+#: src/interface/channels/text/GameLookupPicker.tsx
+msgid "Pick a result to send"
+msgstr "Pick a result to send"
 
 #: src/interface/channels/text/MemberSidebar.tsx
 msgid "Timed out until {time}"
@@ -9697,6 +9733,10 @@ msgstr "Turn on end-to-end encrypted direct messages for this device."
 #: src/interface/channels/text/Composition.tsx
 msgid "Turn on end-to-end encryption for this group."
 msgstr "Turn on end-to-end encryption for this group."
+
+#: src/interface/channels/text/Composition.tsx
+msgid "Looking up…"
+msgstr "Looking up…"
 
 #: components/app/interface/settings/user/voice/CameraPreview.tsx
 msgid "Turn on your camera to check it works and preview brightness and background effects."
