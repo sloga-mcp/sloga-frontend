@@ -9,6 +9,65 @@ import type { ChangelogResponse } from "./Changelog";
  */
 export const CHANGELOGS: ChangelogResponse[] = [
   // ==========================================================================
+  // v0.68.0 (written 2026-10-17 by the merge steward from the v0.68 inbox,
+  // ~/.claude/plans/v068-release-inbox.md section 0, every bullet checked
+  // against the landed code). User go 2026-10-17 "all recommended".
+  // Copy constraints, load-bearing — READ BEFORE EDITING:
+  // - These notes also show in the Play and App Store builds.
+  // - Friends window and chat windows are desktop-app only; web keeps its own
+  //   friends pop-out.
+  // - Imports: only Stoat and Fluxer are new (Matrix is not implemented). They
+  //   are lit on heart1 by its overrides; never claim members or messages copy.
+  // - Game cards: no World of Warcraft claim (no Blizzard credentials, user
+  //   10-17). Cards need [api.gamedata] on heart1, set at the v0.68 deploy.
+  // - The held E2EE fixes (ledger H-18..H-21) are NOT in this release; no
+  //   security bullets.
+  {
+    id: "sloga-2026-10-17",
+    title: "Patch Notes",
+    published_at: "2026-10-17T12:00:00.000Z",
+    web_version: "0.68.0",
+    markdown_content: `## v0.68.0: Friends Window, Chat Windows and Server Imports
+
+### 👥 A friends window, like Steam (desktop app)
+- **Pop your friends list into its own window.** On the Friends page, click the pop-out button at the top.
+- Friends are sorted into **In game**, **Favorites**, **your own groups**, **Online** and **Offline**.
+- **Make your own friend groups**, like "Roblox Friends" or "WoW Friends", to organize friends by game or anything else. Your groups sync across your devices.
+- **See who messaged you at a glance:** unread badges on friends and group chats.
+- Your group chats sit in a dock at the bottom of the window.
+- Hover over a friend to message or call them, share your screen, or add them to a group chat.
+
+### 💬 Chat windows (desktop app)
+- **Want DMs in their own tabbed windows too?** In Settings → Appearance → Layout, set direct messages to open in **Chat windows**.
+- Conversations open as **tabs in their own window**, with the full chat bar: replies, edits, emoji, GIFs, files, polls and scheduled messages.
+- **Drag a tab out to pop it into its own window, or drag it onto another window to merge it back.**
+- Each chat shows clearly whether it's **end-to-end encrypted**.
+- Needs the v0.68 desktop app.
+
+### 👥 Friends page (all apps)
+- The Friends page also shows your custom groups, unread badges and a list of your group chats.
+
+### 📦 Import a server from Stoat or Fluxer
+- **"Import a server"** in the create and join menus now brings over a server you manage from **Discord, Stoat or Fluxer**.
+- What comes across: the server's name, icon, banner, categories, channels, roles and permissions, and custom emoji. Stoat imports also bring the description. Members, messages, bans, invites and webhooks stay behind.
+- You prove you manage the server with a one-time code. On Fluxer the importer bot needs Administrator while the import runs, and it leaves when the import finishes.
+- Private channels stay private, and the welcome invite only goes in a channel everyone can see (Discord imports too).
+- Imported images have their hidden metadata, like location data, removed.
+
+### 🎮 Game cards
+- **Steam store links and League of Legends champion links** (leagueoflegends.com, op.gg) now show as rich cards.
+- **New /game and /champion commands** look up a game or champion and post its card. They work in server channels, and in the apps also in DMs and group chats that aren't end-to-end encrypted.
+
+### 🎨 Your theme follows you
+- Your theme, accent colors, light/dark mode and fonts now sync across your devices. Blur, message size, spacing and avatar size stay set per device.
+- The first device you open with a custom theme sets it for your account.
+
+### ✨ Small improvements
+- An **Edit profile** button on your own profile card.
+- On Android in a browser, the "get the app" prompt now links to **Google Play**, plus the APK and Google-free APK downloads.
+`,
+  },
+  // ==========================================================================
   // v0.67.0 (written 2026-10-13 by the merge steward from the v0.67 inbox,
   // ~/.claude/plans/v067-release-inbox.md, consolidated draft rev 3 + the
   // DM-order owner's "and group chats" correction). User go 2026-10-13
