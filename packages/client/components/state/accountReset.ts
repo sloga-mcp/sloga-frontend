@@ -2,7 +2,8 @@
  * Keep one account's device-local data away from the next account to sign
  * in on the same device.
  *
- * The friend stores, their sync revisions and the chat-window layout are
+ * The friend stores, the theme, their sync revisions and the chat-window
+ * layout are
  * stored per device, not per account. The synced stores record the account
  * they belong to (`Sync.owner`), and `SyncWorker` checks it against every
  * new session before any sync runs. A different account gets them reset.
@@ -22,12 +23,13 @@ import { resetChatWindows } from "../chatWindows/chatWindowsStore";
 import type { State } from ".";
 
 /**
- * Synchronised stores holding one account's private data
+ * Synchronised stores holding one account's own data: its friend lists, and
+ * the theme, which follows the account since it synchronises
  *
  * The other synced stores (ordering, notifications, release notes) are not
  * reset.
  */
-const ACCOUNT_KEYS = ["friends", "friend-groups"] as const;
+const ACCOUNT_KEYS = ["friends", "friend-groups", "theme"] as const;
 
 type PersistedKey = (typeof ACCOUNT_KEYS)[number] | "sync";
 
@@ -53,9 +55,11 @@ function persistNow(state: State, keys: PersistedKey[]) {
 /**
  * Drop everything this device holds for the account that last used it
  *
- * Resets the friend stores to their defaults with no revision and nothing
- * queued for upload, so the next account's first sync adopts its own remote
- * copy, and closes and forgets the chat windows.
+ * Resets the friend stores and the theme to their defaults with no revision
+ * and nothing queued for upload, so the next account's first sync adopts its
+ * own remote copy, and closes and forgets the chat windows. The theme is not
+ * seeded from the reset default (`Sync.initialSync`), so an account with no
+ * theme of its own keeps the default.
  * @param state State
  */
 export function resetAccountLocalState(state: State) {

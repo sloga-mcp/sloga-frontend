@@ -36,6 +36,12 @@
  * `initialSync` lost its stale-response check. The signed-out and
  * same-account specs also fail on a copy that checks only the owner and
  * ignores `isCurrent`: the owner does not change in either.
+ *
+ * The "theme" specs fail on ab7455e7 (no theme key) and on a copy that
+ * uploads the device-local fields, adopts a remote copy without keeping
+ * them, queues an upload for an edit to one, merges a copy in another
+ * format, never seeds an account, counts the Material You fields under the
+ * Sloga preset when seeding, or leaves `untracked()`'s block behind.
  */
 import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
@@ -68,6 +74,7 @@ const STUBS: Record<string, string> = {
   "./NotificationOptions": `export const TypeNotificationOptions = undefined;`,
   "./Ordering": `export const TypeOrdering = undefined;`,
   "./ReleaseNotes": `export const TypeReleaseNotes = undefined;`,
+  "./Theme": `export const TypeTheme = undefined;`,
 };
 
 registerHooks({
@@ -142,7 +149,47 @@ describe("syncMergeDecision()", () => {
   });
 });
 
+/** A stand-in theme default; Sync only compares against whatever it is */
+const THEME_DEFAULT = {
+  preset: "stoat",
+  presetMigrated: true,
+  mode: "dark",
+  slogaAccent: "#5470ec",
+  m3Accent: "#5470ec",
+  m3Contrast: 0,
+  m3Variant: "tonal_spot",
+  interfaceFont: "Inter",
+  monospaceFont: "Fira Code",
+  blur: true,
+  railAccent: "#f59e0b",
+  messageSize: 14,
+  messageGroupSpacing: 12,
+  messageAvatarSize: 36,
+};
+
+/** Fields Sync keeps on the device (`DEVICE_LOCAL_THEME_FIELDS`) */
+const DEVICE_LOCAL = [
+  "blur",
+  "messageSize",
+  "messageGroupSpacing",
+  "messageAvatarSize",
+];
+
 const KEYS = {
+  theme: {
+    empty: THEME_DEFAULT,
+    // same device-local fields as the default, so the generic specs below
+    // can compare whole copies
+    remote: {
+      ...THEME_DEFAULT,
+      preset: "you",
+      mode: "light",
+      m3Accent: "#8c5fd3",
+      m3Variant: "vibrant",
+      railAccent: "#54ecc1",
+      interfaceFont: "Atkinson Hyperlegible",
+    },
+  },
   friends: {
     empty: { favourites: [], collapsed: [] },
     remote: { favourites: ["u1"], collapsed: ["online"] },
@@ -169,23 +216,30 @@ function world(
   local: unknown,
   diskRevision?: Record<string, number>,
 ) {
+  // the theme is always there, as in State: initialSync reads it to decide
+  // whether to seed the account with it
   const [store, setStore] = createStore<Record<string, unknown>>({
     sync: new Sync({} as never).default(),
+    theme: structuredClone(KEYS.theme.empty),
     [key]: structuredClone(local),
+  });
+
+  const stub = (k: Key) => ({
+    clean: (input: unknown) => input,
+    get: () => store[k],
+    default: () => structuredClone(KEYS[k].empty),
   });
 
   const state: Record<string, unknown> = {
     get: (k: string) => store[k],
-    // State.write(): every write touches the key if it is syncable
+    // State.write(): every write touches the key if it is syncable, passing
+    // the field when the write names one
     set: (...args: unknown[]) => {
       (setStore as unknown as (...args: unknown[]) => void)(...args);
-      sync.touchIfSyncable(args[0] as string);
+      sync.touchIfSyncable(args[0] as string, args[1]);
     },
-    [key]: {
-      clean: (input: unknown) => input,
-      get: () => store[key],
-      default: () => structuredClone(KEYS[key].empty),
-    },
+    theme: stub("theme"),
+    [key]: stub(key),
   };
 
   const sync = new Sync(state as never);
@@ -202,7 +256,7 @@ function world(
   return {
     sync,
     state,
-    data: () => structuredClone(unwrap(store[key])),
+    data: () => structuredClone(unwrap(store[key])) as Record<string, unknown>,
     revision: () => revisions()[key],
   };
 }
@@ -333,6 +387,264 @@ describe('"friend-groups" registration', () => {
     assert.equal(w.sync.shouldSync, false);
   });
 });
+
+describe('"theme" sync', () => {
+  const theme = KEYS.theme;
+  const set = (w: ReturnType<typeof world>) =>
+    w.state.set as (...args: unknown[]) => void;
+
+  /** A client recording uploads and answering the fetch with `response` */
+  function recorder(response: Record<string, [number, string]> = {}) {
+    const sent: Record<string, unknown>[] = [];
+    let asked: string[] = [];
+    const client = {
+      api: {
+        post: async (route: string, body: Record<string, unknown>) => {
+          if (route === "/sync/settings/fetch") {
+            asked = body.keys as string[];
+            return response;
+          }
+          sent.push(body);
+        },
+      },
+    };
+    return { client: client as never, sent, asked: () => asked };
+  }
+
+  it("is registered: default revision, clean() and the fetch", async () => {
+    const sync = new Sync({} as never);
+    assert.equal(sync.default().revision.theme, 0);
+    assert.deepEqual(sync.clean({ revision: { theme: 7 } }).revision, {
+      theme: 7,
+    });
+
+    const w = world("theme", theme.empty);
+    const r = recorder();
+    await w.sync.initialSync(r.client);
+    assert.ok(r.asked().includes("theme"));
+  });
+
+  it("a theme set on one device reaches another on its next sign-in", async () => {
+    // desktop: an edit, uploaded
+    const desktop = world("theme", theme.empty, { theme: 5_000 });
+    set(desktop)("theme", "slogaAccent", "#ff0000");
+    set(desktop)("theme", "mode", "light");
+    set(desktop)("theme", "messageSize", 20);
+    const up = recorder();
+    await desktop.sync.save(up.client);
+    const [ts, data] = [
+      up.sent[0].timestamp as number,
+      up.sent[0].theme as string,
+    ];
+
+    // phone: never synced the theme, smaller text of its own
+    const phone = world(
+      "theme",
+      { ...structuredClone(theme.empty), messageSize: 12 },
+      olderDisk("theme"),
+    );
+    await phone.sync.initialSync(recorder({ theme: [ts, data] }).client);
+
+    const got = phone.data();
+    assert.equal(got.slogaAccent, "#ff0000");
+    assert.equal(got.mode, "light");
+    assert.equal(got.messageSize, 12, "took the desktop's text size");
+    assert.equal(phone.revision(), ts);
+    assert.equal(phone.sync.shouldSync, false, "echoed the theme back");
+  });
+
+  it("uploads without the device-local fields", async () => {
+    const w = world("theme", theme.empty, { theme: 5_000 });
+    set(w)("theme", { ...structuredClone(theme.remote), messageSize: 20 });
+    assert.equal(w.sync.shouldSync, true);
+
+    const r = recorder();
+    await w.sync.save(r.client);
+
+    const uploaded = JSON.parse(r.sent[0].theme as string);
+    for (const field of DEVICE_LOCAL) {
+      assert.ok(!(field in uploaded), `uploaded ${field}`);
+    }
+    assert.equal(uploaded.m3Accent, theme.remote.m3Accent);
+    assert.equal(uploaded.presetMigrated, true);
+    // the store itself keeps them
+    assert.equal(w.data().messageSize, 20);
+  });
+
+  it("adopting a remote copy keeps this device's sizes and blur", () => {
+    const local = {
+      ...structuredClone(theme.empty),
+      blur: false,
+      messageSize: 20,
+      messageGroupSpacing: 4,
+      messageAvatarSize: 48,
+    };
+    const w = world("theme", local, { theme: 5_000 });
+
+    // a copy that carries device-local fields of its own still loses them
+    w.sync.merge(
+      9_000,
+      "theme",
+      JSON.stringify({ ...theme.remote, blur: true, messageSize: 11 }),
+    );
+
+    const data = w.data();
+    for (const field of DEVICE_LOCAL) {
+      assert.equal(data[field], local[field as keyof typeof local], field);
+    }
+    assert.equal(data.m3Accent, theme.remote.m3Accent);
+    assert.equal(data.mode, "light");
+    assert.equal(w.revision(), 9_000);
+    assert.equal(w.sync.shouldSync, false);
+  });
+
+  it("an older remote differing only in device-local fields is left alone", () => {
+    const local = { ...structuredClone(theme.remote), messageSize: 20 };
+    const w = world("theme", local, { theme: 5_000 });
+
+    w.sync.merge(1_000, "theme", JSON.stringify(syncedPart(theme.remote)));
+
+    assert.equal(w.sync.shouldSync, false, "re-uploaded an equal theme");
+    assert.equal(w.revision(), 5_000);
+  });
+
+  it("editing a device-local field queues nothing; a synced field does", () => {
+    const w = world("theme", theme.empty, { theme: 5_000 });
+    set(w)("theme", "messageSize", 18);
+    set(w)("theme", "messageAvatarSize", 40);
+    set(w)("theme", "messageGroupSpacing", 2);
+    set(w)("theme", "blur", false);
+    assert.equal(w.sync.shouldSync, false);
+    assert.equal(w.revision(), 5_000);
+
+    set(w)("theme", "slogaAccent", "#ff0000");
+    assert.equal(w.sync.shouldSync, true);
+    assert.ok((w.revision() ?? 0) > 5_000);
+  });
+
+  it("ignores a remote copy in another format (Revite's theme key)", () => {
+    const w = world("theme", theme.remote, { theme: 5_000 });
+    const revite = { "appearance:theme:base": "light", custom: {} };
+
+    for (const copy of [revite, null, [], "x", { ...theme.remote }]) {
+      if (copy !== null && typeof copy === "object" && "preset" in copy) {
+        delete (copy as Record<string, unknown>).presetMigrated;
+      }
+      const merged = w.sync.merge(9_000, "theme", JSON.stringify(copy));
+      assert.equal(merged, false, JSON.stringify(copy));
+    }
+
+    assert.deepEqual(w.data(), theme.remote);
+    assert.equal(w.revision(), 5_000);
+    assert.equal(w.sync.shouldSync, false);
+  });
+
+  describe("first sync on an account with no theme copy", () => {
+    it("seeds it from a device whose theme was customized", async () => {
+      const w = world("theme", theme.remote, olderDisk("theme"));
+      assert.equal(w.revision(), undefined, "precondition: never synced");
+
+      const r = recorder();
+      await w.sync.initialSync(r.client);
+      assert.equal(w.sync.shouldSync, true);
+
+      await w.sync.save(r.client);
+      assert.deepEqual(
+        JSON.parse(r.sent[0].theme as string),
+        syncedPart(theme.remote),
+      );
+    });
+
+    it("seeds nothing from a device on the default theme", async () => {
+      // sizes are not part of the account's theme, so changing them alone
+      // does not count as customizing it
+      const w = world(
+        "theme",
+        { ...structuredClone(theme.empty), messageSize: 20, blur: false },
+        olderDisk("theme"),
+      );
+      await w.sync.initialSync(recorder().client);
+      assert.equal(w.sync.shouldSync, false);
+    });
+
+    it("seeds nothing from an untouched install with the legacy m3 accent", async () => {
+      const legacy = { ...structuredClone(theme.empty), m3Accent: "#FF5733" };
+      const w = world("theme", legacy, olderDisk("theme"));
+      await w.sync.initialSync(recorder().client);
+      assert.equal(w.sync.shouldSync, false);
+
+      // the same accent under Material You is on screen, so it counts
+      const you = world(
+        "theme",
+        { ...legacy, preset: "you" },
+        olderDisk("theme"),
+      );
+      await you.sync.initialSync(recorder().client);
+      assert.equal(you.sync.shouldSync, true);
+    });
+
+    it("treats a copy in another format as no copy", async () => {
+      const w = world("theme", theme.remote, olderDisk("theme"));
+      const r = recorder({
+        theme: [9_000, JSON.stringify({ "appearance:theme:base": "light" })],
+      });
+      await w.sync.initialSync(r.client);
+
+      assert.deepEqual(w.data(), theme.remote);
+      assert.equal(w.sync.shouldSync, true);
+    });
+
+    it("an account that has a copy is adopted, not seeded over", async () => {
+      const w = world("theme", theme.remote, olderDisk("theme"));
+      const r = recorder({
+        theme: [1_000, JSON.stringify(syncedPart(theme.empty))],
+      });
+      await w.sync.initialSync(r.client);
+
+      assert.deepEqual(w.data(), theme.empty);
+      assert.equal(w.revision(), 1_000);
+      assert.equal(w.sync.shouldSync, false);
+    });
+  });
+
+  describe("untracked()", () => {
+    it("writes without a revision or an upload, and a later edit still goes out", () => {
+      const w = world("theme", theme.empty, olderDisk("theme"));
+      w.sync.untracked("theme", () => set(w)("theme", "mode", "light"));
+
+      assert.equal(w.data().mode, "light");
+      assert.equal(w.revision(), undefined);
+      assert.equal(w.sync.shouldSync, false);
+
+      // the account's copy then wins on a fresh device
+      w.sync.merge(1_000, "theme", JSON.stringify(syncedPart(theme.remote)));
+      assert.equal(w.data().mode, theme.remote.mode);
+
+      set(w)("theme", "mode", "dark");
+      assert.equal(w.sync.shouldSync, true);
+    });
+
+    it("spends the block even when the write throws or does not touch", () => {
+      const w = world("theme", theme.empty, olderDisk("theme"));
+      assert.throws(() =>
+        w.sync.untracked("theme", () => {
+          throw new Error("write failed");
+        }),
+      );
+      w.sync.untracked("theme", () => {});
+
+      set(w)("theme", "mode", "light");
+      assert.equal(w.sync.shouldSync, true);
+    });
+  });
+});
+
+/** A theme copy as another device uploads it: no device-local fields */
+function syncedPart(data: Record<string, unknown>) {
+  const copy = structuredClone(data);
+  for (const field of DEVICE_LOCAL) delete copy[field];
+  return copy;
+}
 
 describe("Sync.forget()", () => {
   /** A world with a "friends" edit and a "friend-groups" edit both queued */

@@ -105,6 +105,14 @@ export function AppearanceMenu() {
         <Text class="title" size="small">
           <Trans>Colors</Trans>
         </Text>
+        {/* What Sync.ts uploads for "theme": everything but
+            DEVICE_LOCAL_THEME_FIELDS */}
+        <Text class="label" size="small">
+          <Trans>
+            Your colors and fonts sync to every device you sign in on. Blur and
+            message sizes are set per device.
+          </Trans>
+        </Text>
 
         <Row justify="stretch">
           <Button

@@ -10,6 +10,11 @@ import { useState } from ".";
 import { ensureAccountOwner } from "./accountReset";
 
 /**
+ * How long a local edit waits before it is uploaded (ms)
+ */
+const SAVE_DELAY_MS = 1_000;
+
+/**
  * Manage synchronisation of settings to-from API
  */
 export function SyncWorker() {
@@ -83,15 +88,30 @@ export function SyncWorker() {
   );
 
   // sync LOCAL->REMOTE settings
+  //
+  // Held back briefly so a burst of edits goes out as one upload: dragging
+  // the accent picker writes the theme on every input event. Edits made while
+  // the timer runs join the same upload. Anything that stops the save (sign
+  // out, a new session, the queue being forgotten) re-runs this and the
+  // cleanup cancels the timer.
   createEffect(
     on(
       [() => state.sync.shouldSync, isLoggedIn, checked],
-      ([shouldSync, isLoggedIn, checked]) =>
-        shouldSync &&
-        isLoggedIn &&
-        checked !== undefined &&
-        checked === client() &&
-        state.sync.save(checked),
+      ([shouldSync, isLoggedIn, checked]) => {
+        if (
+          !shouldSync ||
+          !isLoggedIn ||
+          checked === undefined ||
+          checked !== client()
+        ) {
+          return;
+        }
+
+        const timer = setTimeout(() => {
+          if (checked === client()) state.sync.save(checked);
+        }, SAVE_DELAY_MS);
+        onCleanup(() => clearTimeout(timer));
+      },
     ),
   );
 

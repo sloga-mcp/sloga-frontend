@@ -387,11 +387,6 @@ const Config: SettingsConfiguration<{ server: Server }> = {
               icon: <MdLanguage {...iconSize(20)} />,
               title: <Trans>Language</Trans>,
             },
-            // {
-            //   id: "sync",
-            //   icon: <MdSync {...iconSize(20)} />,
-            //   title: t("app.settings.pages.sync.title"),
-            // },
             {
               id: "native",
               // Electron exposes window.native; the Windows (Tauri) shell

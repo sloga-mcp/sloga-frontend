@@ -3,7 +3,8 @@
  *
  *     node --conditions=browser --test components/state/accountReset.test.ts
  *
- * Covers `./accountReset.ts`: the synced friend stores, their revisions and
+ * Covers `./accountReset.ts`: the synced friend stores and theme, their
+ * revisions and
  * the chat-window layout belong to the account recorded as `Sync.owner`, and
  * a different account signing in gets them reset before any sync runs.
  *
@@ -15,7 +16,8 @@
  *
  * Known-bad control: point `ACCOUNT_RESET_UNDER_TEST` (or `SYNC_UNDER_TEST`)
  * at an absolute path to another copy. A copy whose `ensureAccountOwner`
- * never resets fails the account-switch specs; one that also resets for an
+ * never resets, or resets the friend stores but not the theme, fails the
+ * account-switch specs; one that also resets for an
  * unknown owner fails the upgrade spec; one that resets for the same owner
  * fails the same-account spec. A copy that writes the reset data before
  * `sync` (the order this file had before the crash-order fix) fails the
@@ -88,6 +90,7 @@ const STUBS: Record<string, Record<string, string>> = {
     "./NotificationOptions": `export const TypeNotificationOptions = undefined;`,
     "./Ordering": `export const TypeOrdering = undefined;`,
     "./ReleaseNotes": `export const TypeReleaseNotes = undefined;`,
+    "./Theme": `export const TypeTheme = undefined;`,
   },
 };
 
@@ -126,9 +129,22 @@ const resetModule = await import(RESET_URL);
 const { ensureAccountOwner, resetAccountLocalState } = resetModule;
 const { Sync } = await import(SYNC_URL);
 
+/** A stand-in theme; Sync only needs its own format marker and the sizes */
+const THEME = {
+  preset: "stoat",
+  presetMigrated: true,
+  mode: "dark",
+  slogaAccent: "#5470ec",
+  blur: true,
+  messageSize: 14,
+  messageGroupSpacing: 12,
+  messageAvatarSize: 36,
+};
+
 const DEFAULTS = {
   friends: { favourites: [], collapsed: [] },
   "friend-groups": { groups: [], members: {} },
+  theme: THEME,
 };
 
 const ACCOUNT_A = {
@@ -137,6 +153,7 @@ const ACCOUNT_A = {
     groups: [{ id: "g1", name: "A's raid night", order: 0 }],
     members: { g1: ["friend-of-a"] },
   },
+  theme: { ...THEME, mode: "light", slogaAccent: "#ff5733" },
 };
 
 const ACCOUNT_B = {
@@ -145,6 +162,7 @@ const ACCOUNT_B = {
     groups: [{ id: "g9", name: "B's book club", order: 0 }],
     members: { g9: ["friend-of-b"] },
   },
+  theme: { ...THEME, slogaAccent: "#9bf088" },
 };
 
 type Key = keyof typeof DEFAULTS;
@@ -166,7 +184,7 @@ function device(owner: string | undefined, data = ACCOUNT_A) {
     // State.write(): every write touches the key if it is syncable
     set: (...args: unknown[]) => {
       (setStore as unknown as (...args: unknown[]) => void)(...args);
-      sync.touchIfSyncable(args[0] as string);
+      sync.touchIfSyncable(args[0] as string, args[1]);
     },
   };
   for (const key of KEYS) {
@@ -184,7 +202,12 @@ function device(owner: string | undefined, data = ACCOUNT_A) {
   setStore(
     "sync",
     sync.clean({
-      revision: { ordering: 4_000, friends: 5_000, "friend-groups": 5_000 },
+      revision: {
+        ordering: 4_000,
+        friends: 5_000,
+        "friend-groups": 5_000,
+        theme: 5_000,
+      },
       owner,
     }),
   );
@@ -286,7 +309,12 @@ describe("ensureAccountOwner()", () => {
       const disk: Record<string, unknown> = {
         ...structuredClone(ACCOUNT_A),
         sync: {
-          revision: { ordering: 4_000, friends: 5_000, "friend-groups": 5_000 },
+          revision: {
+            ordering: 4_000,
+            friends: 5_000,
+            "friend-groups": 5_000,
+            theme: 5_000,
+          },
           owner: "user-a",
         },
       };
@@ -390,7 +418,7 @@ describe("shouldPersistKey()", () => {
 
   it("the friends popout writes neither sync nor any synchronised store", () => {
     // precondition: the list State passes in is Sync's full revision map
-    for (const key of ["friends", "friend-groups", "ordering"]) {
+    for (const key of ["friends", "friend-groups", "theme", "ordering"]) {
       assert.ok(SYNCED.includes(key), `${key} missing from ${SYNCED}`);
     }
     for (const key of [...SYNCED, "sync"]) {
@@ -399,7 +427,7 @@ describe("shouldPersistKey()", () => {
   });
 
   it("the friends popout still writes its device-local keys", () => {
-    for (const key of ["auth", "settings", "layout", "draft", "theme"]) {
+    for (const key of ["auth", "settings", "layout", "draft"]) {
       assert.equal(persists(key, true), true, key);
     }
   });

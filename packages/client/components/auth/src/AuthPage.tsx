@@ -208,9 +208,12 @@ export function AuthPage(props: { children: JSX.Element }) {
               <div />
               <IconButton
                 variant="tonal"
+                // nobody is signed in here, so the account's synced theme wins
                 onPress={() =>
-                  state.theme.setMode(
-                    state.theme.activeTheme.darkMode ? "light" : "dark",
+                  state.sync.untracked("theme", () =>
+                    state.theme.setMode(
+                      state.theme.activeTheme.darkMode ? "light" : "dark",
+                    ),
                   )
                 }
               >
