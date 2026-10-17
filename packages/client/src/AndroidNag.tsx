@@ -68,7 +68,12 @@ export function AndroidNag() {
     <Show when={show()}>
       <Base>
         <Hero>
-          <img src={AndroidPromo} alt="Sloga on Android" />
+          <img
+            src={AndroidPromo}
+            alt="Sloga on Android"
+            width={450}
+            height={512}
+          />
 
           <Heading>
             <Text class="headline" size="large">
@@ -179,9 +184,13 @@ const Hero = styled("div", {
     justifyContent: "center",
     gap: "var(--gap-md)",
 
+    // The width/height attributes reserve the box before the image loads;
+    // these caps keep it from crowding out the copy on short screens.
     "& img": {
-      width: "min(60vw, 240px)",
+      width: "auto",
       height: "auto",
+      maxWidth: "min(60vw, 240px)",
+      maxHeight: "34vh",
       marginBottom: "var(--gap-md)",
     },
   },
