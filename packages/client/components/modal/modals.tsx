@@ -53,6 +53,7 @@ import { EmojiPreviewModal } from "./modals/EmojiPreview";
 import { Error2Modal } from "./modals/Error2";
 import { FollowChannelModal } from "./modals/FollowChannel";
 import { ForwardMessageModal } from "./modals/ForwardMessage";
+import { FriendCategoryModal } from "./modals/FriendCategory";
 import { FriendGroupsModal } from "./modals/FriendGroups";
 import { ImageEditorModal } from "./modals/ImageEditor";
 import { ImageViewerModal } from "./modals/ImageViewer";
@@ -133,6 +134,8 @@ export function RenderModal(props: ActiveModal & { onClose: () => void }) {
       return <AddFriendToGroupModal {...modalProps} />;
     case "friend_groups":
       return <FriendGroupsModal {...modalProps} />;
+    case "friend_category":
+      return <FriendCategoryModal {...modalProps} />;
     case "channel_info":
       return <ChannelInfoModal {...modalProps} />;
     case "channel_toggle_mature":

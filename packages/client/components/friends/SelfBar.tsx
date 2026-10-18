@@ -12,7 +12,7 @@ import { UserMenu } from "../../src/interface/navigation/servers/UserMenu";
 /**
  * Your own avatar, name and presence; clicking it opens the same menu as
  * the avatar in the server rail. This is the only way to change presence
- * from the popout window, which has no app chrome of its own.
+ * from the friends window, which has no app chrome of its own.
  */
 export function SelfBar() {
   const user = useUser();
@@ -45,7 +45,9 @@ export function SelfBar() {
           </div>
         </div>
       </div>
-      <UserMenu anchor={anchor} />
+      {/* Below the bar: the bar spans the whole friends window, so the rail's
+          right-hand placement put the menu past the window's edge */}
+      <UserMenu anchor={anchor} placement="bottom-start" />
     </>
   );
 }

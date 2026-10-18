@@ -5,6 +5,7 @@ import type { User } from "stoat.js";
 import { cva } from "styled-system/css";
 
 import { UserContextMenu } from "@revolt/app";
+import { FriendContextMenu } from "@revolt/app/menus/FriendContextMenu";
 import { useClient } from "@revolt/client";
 import * as chatShell from "@revolt/client/chatShell";
 import { type PopoutAction, useUserActions } from "@revolt/client/popoutBridge";
@@ -190,7 +191,13 @@ export function FriendRow(props: {
       role="listitem"
       tabIndex={props.tabIndex}
       use:floating={{
-        contextMenu: () => <UserContextMenu user={props.user} />,
+        // Steam-style for a friend; pending and blocked rows keep the full menu
+        contextMenu: () =>
+          isFriend() ? (
+            <FriendContextMenu user={props.user} />
+          ) : (
+            <UserContextMenu user={props.user} />
+          ),
       }}
       onPointerDown={(e) => (lastPointer = e.pointerType)}
       onClick={onClick}

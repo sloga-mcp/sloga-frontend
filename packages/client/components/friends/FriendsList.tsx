@@ -1,4 +1,4 @@
-import { For, Match, Show, Switch, createMemo, createSignal } from "solid-js";
+import { For, Show, createMemo, createSignal } from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
 import type { User } from "stoat.js";
@@ -9,37 +9,41 @@ import { useClient } from "@revolt/client";
 import { IS_POPOUT_WINDOW } from "@revolt/client/popout";
 import { useModals } from "@revolt/modal";
 import { useState } from "@revolt/state";
-import { MAX_FRIEND_GROUP_NAME } from "@revolt/state/stores/FriendGroups";
 import { IconButton } from "@revolt/ui";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
 
+import MdCreateNewFolder from "@material-design-icons/svg/outlined/create_new_folder.svg?component-solid";
 import MdDelete from "@material-design-icons/svg/outlined/delete.svg?component-solid";
-import MdEdit from "@material-design-icons/svg/outlined/edit.svg?component-solid";
-import MdTune from "@material-design-icons/svg/outlined/tune.svg?component-solid";
+import MdFolder from "@material-design-icons/svg/outlined/folder.svg?component-solid";
+import MdFolderOpen from "@material-design-icons/svg/outlined/folder_open.svg?component-solid";
 
 import { FriendRow } from "./FriendRow";
 import { FriendSection } from "./FriendSection";
 import { conversationUnread, createDmMap, isInGame } from "./friendData";
 
 /**
- * Collapse key of a custom group's section in the `friends` store
+ * Collapse key of a category's section in the `friends` store
  */
 const groupKey = (id: string) => `group:${id}`;
 
 /**
- * The legacy friends popout never persists or syncs its stores, so a group
- * edited there would be silently lost; it shows groups but cannot change them
+ * A window booted as the retired web popout never persists or syncs its
+ * stores, so a category edited there would be silently lost; it shows
+ * categories but cannot change them
  */
 const GROUPS_READ_ONLY = IS_POPOUT_WINDOW;
 
 /**
- * Steam-style friends list: search, then In game, Favorites, each custom
- * group, Online and Offline.
+ * Steam-style friends list: search, then In game, Favorites, each category,
+ * Online and Offline.
  *
- * In game, Favorites and the custom groups are views a friend can appear in
+ * Categories are stored as friend groups (the synced `friend-groups` key);
+ * the UI says "category" so "group" stays free for group chats.
+ *
+ * In game, Favorites and the categories are views a friend can appear in
  * several of; Online and Offline hold whoever is in none of In game or
- * Favorites (the page has always kept favourites out of them). Custom groups
- * are left out of that rule on purpose: a group is a tag, and hiding its
+ * Favorites (the page has always kept favourites out of them). Categories
+ * are left out of that rule on purpose: a category is a tag, and hiding its
  * members from Online would make the count lie about who is around.
  */
 export function FriendsList(props: {
@@ -58,14 +62,9 @@ export function FriendsList(props: {
   const [query, setQuery] = createSignal("");
 
   /**
-   * Group whose section is swapped for a rename field or a delete prompt
+   * Category whose section is swapped for a "Remove …?" prompt
    */
-  const [editing, setEditing] = createSignal<{
-    id: string;
-    mode: "rename" | "delete";
-  }>();
-  const [editName, setEditName] = createSignal("");
-  const [renameFailed, setRenameFailed] = createSignal(false);
+  const [removing, setRemoving] = createSignal<string>();
 
   /**
    * Match a user against the current search query
@@ -130,45 +129,43 @@ export function FriendsList(props: {
       .sort(onlineFirst);
   }
 
-  function manageGroups(userId?: string) {
+  /** Every category, or (with a friend) the "Categorize …" checklist */
+  function manageCategories(userId?: string) {
     openModal({ type: "friend_groups", userId });
   }
 
-  function startRename(id: string) {
-    setRenameFailed(false);
-    setEditName(groupName(id));
-    setEditing({ id, mode: "rename" });
+  /** Create a category, or manage one's name and friends */
+  function editCategory(groupId?: string) {
+    openModal({ type: "friend_category", groupId });
   }
 
-  function stopEditing() {
-    setEditing(undefined);
-    setRenameFailed(false);
-  }
-
-  function saveRename(id: string) {
-    // an unchanged name just closes the field, whatever the store answers
-    if (editName().trim() === groupName(id)) return stopEditing();
-
-    if (state.friendGroups.rename(id, editName())) {
-      stopEditing();
-    } else {
-      setRenameFailed(true);
-    }
-  }
-
-  function deleteGroup(id: string) {
-    stopEditing();
+  function removeCategory(id: string) {
+    setRemoving(undefined);
     state.friendGroups.remove(id);
 
-    // the collapse key is synced too, so it should not outlive the group
+    // the collapse key is synced too, so it should not outlive the category
     if (state.friends.isCollapsed(groupKey(id))) {
       state.friends.toggleCollapsed(groupKey(id));
     }
   }
 
   /**
-   * Row with the unread pill, hover actions and a "Groups…" button that
-   * assigns this friend to custom groups
+   * "Create category", the right-click menu of the built-in sections
+   */
+  const createMenu = () => (
+    <ContextMenu>
+      <ContextMenuButton
+        icon={MdCreateNewFolder}
+        onClick={() => editCategory()}
+      >
+        <Trans>Create category</Trans>
+      </ContextMenuButton>
+    </ContextMenu>
+  );
+
+  /**
+   * Row with the unread pill, hover actions and a "Categorize…" button that
+   * puts this friend in categories
    */
   function renderRow(user: User, tabIndex: () => number | undefined) {
     return (
@@ -186,13 +183,13 @@ export function FriendsList(props: {
         <Show when={!GROUPS_READ_ONLY}>
           <button
             class={`groups ${iconButton()}`}
-            aria-label={t`Friend groups…`}
-            onClick={() => manageGroups(user.id)}
+            aria-label={t`Categorize…`}
+            onClick={() => manageCategories(user.id)}
             use:floating={{
-              tooltip: { placement: "left", content: t`Friend groups…` },
+              tooltip: { placement: "left", content: t`Categorize…` },
             }}
           >
-            <Symbol size={18}>label</Symbol>
+            <Symbol size={18}>folder</Symbol>
           </button>
         </Show>
       </div>
@@ -212,21 +209,27 @@ export function FriendsList(props: {
       <Show
         when={!(sectionProps.hideWhenEmpty && sectionProps.users.length === 0)}
       >
-        <FriendSection
-          key={sectionProps.id}
-          title={sectionProps.title}
-          users={sectionProps.users}
-          collapsed={state.friends.isCollapsed(sectionProps.id)}
-          onToggle={() => state.friends.toggleCollapsed(sectionProps.id)}
-          renderRow={renderRow}
-          scrollTarget={scroller}
-        />
+        <div
+          use:floating={{
+            contextMenu: GROUPS_READ_ONLY ? undefined : createMenu,
+          }}
+        >
+          <FriendSection
+            key={sectionProps.id}
+            title={sectionProps.title}
+            users={sectionProps.users}
+            collapsed={state.friends.isCollapsed(sectionProps.id)}
+            onToggle={() => state.friends.toggleCollapsed(sectionProps.id)}
+            renderRow={renderRow}
+            scrollTarget={scroller}
+          />
+        </div>
       </Show>
     );
   }
 
   /**
-   * Custom group section with its Rename / Delete / Manage groups menu
+   * Category section with Steam's Manage / Remove / Create category menu
    */
   function GroupSection(groupProps: { id: string }) {
     const users = createMemo(() => groupMembers(groupProps.id));
@@ -235,29 +238,30 @@ export function FriendsList(props: {
     const menu = () => (
       <ContextMenu>
         <ContextMenuButton
-          icon={MdEdit}
-          onClick={() => startRename(groupProps.id)}
+          icon={MdFolderOpen}
+          onClick={() => editCategory(groupProps.id)}
         >
-          <Trans>Rename</Trans>
+          <Trans>Manage category</Trans>
         </ContextMenuButton>
         <ContextMenuButton
           icon={MdDelete}
           destructive
-          onClick={() => {
-            setRenameFailed(false);
-            setEditing({ id: groupProps.id, mode: "delete" });
-          }}
+          onClick={() => setRemoving(groupProps.id)}
         >
-          <Trans>Delete group</Trans>
+          <Trans>Remove category</Trans>
         </ContextMenuButton>
-        <ContextMenuButton icon={MdTune} onClick={() => manageGroups()}>
-          <Trans>Manage groups</Trans>
+        <ContextMenuButton
+          icon={MdCreateNewFolder}
+          onClick={() => editCategory()}
+        >
+          <Trans>Create category</Trans>
         </ContextMenuButton>
       </ContextMenu>
     );
 
     return (
-      <Switch
+      <Show
+        when={removing() === groupProps.id}
         fallback={
           // an empty group stays visible so it can be found and filled, but
           // not while it only means "no match for the search"
@@ -293,75 +297,26 @@ export function FriendsList(props: {
           </Show>
         }
       >
-        <Match
-          when={editing()?.id === groupProps.id && editing()?.mode === "rename"}
-        >
-          <div class={editRow()}>
-            <div class={editLine()}>
-              <input
-                class={editInput()}
-                ref={(el) => queueMicrotask(() => el.focus())}
-                value={editName()}
-                maxlength={MAX_FRIEND_GROUP_NAME}
-                aria-label={t`Group name`}
-                onInput={(event) => setEditName(event.currentTarget.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    saveRename(groupProps.id);
-                  } else if (event.key === "Escape") {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    stopEditing();
-                  }
-                }}
-              />
-              <button
-                class={iconButton()}
-                aria-label={t`Save`}
-                onClick={() => saveRename(groupProps.id)}
-              >
-                <Symbol size={18}>check</Symbol>
-              </button>
-              <button
-                class={iconButton()}
-                aria-label={t`Cancel`}
-                onClick={stopEditing}
-              >
-                <Symbol size={18}>close</Symbol>
-              </button>
-            </div>
-            <Show when={renameFailed()}>
-              <span class={errorText()}>
-                <Trans>Group names need 1 to 40 characters.</Trans>
-              </span>
-            </Show>
+        <div class={editRow()}>
+          <span>
+            <Trans>
+              Remove {groupName(groupProps.id)}? Your friends stay on your
+              friends list.
+            </Trans>
+          </span>
+          <div class={confirmActions()}>
+            <button class={textButton()} onClick={() => setRemoving(undefined)}>
+              <Trans>Cancel</Trans>
+            </button>
+            <button
+              class={textButton({ destructive: true })}
+              onClick={() => removeCategory(groupProps.id)}
+            >
+              <Trans>Remove</Trans>
+            </button>
           </div>
-        </Match>
-        <Match
-          when={editing()?.id === groupProps.id && editing()?.mode === "delete"}
-        >
-          <div class={editRow()}>
-            <span>
-              <Trans>
-                Delete {groupName(groupProps.id)}? Your friends stay on your
-                friends list.
-              </Trans>
-            </span>
-            <div class={confirmActions()}>
-              <button class={textButton()} onClick={stopEditing}>
-                <Trans>Cancel</Trans>
-              </button>
-              <button
-                class={textButton({ destructive: true })}
-                onClick={() => deleteGroup(groupProps.id)}
-              >
-                <Trans>Delete</Trans>
-              </button>
-            </div>
-          </div>
-        </Match>
-      </Switch>
+        </div>
+      </Show>
     );
   }
 
@@ -406,17 +361,32 @@ export function FriendsList(props: {
         </div>
 
         <Show when={!GROUPS_READ_ONLY}>
-          <IconButton
-            onPress={() => manageGroups()}
+          <button
+            class={categoriesButton()}
+            aria-label={t`Categories`}
             use:floating={{
-              tooltip: {
-                placement: "bottom",
-                content: t`Manage friend groups`,
-              },
+              tooltip: { placement: "bottom", content: t`Categories` },
+              contextMenu: () => (
+                <ContextMenu>
+                  <ContextMenuButton
+                    icon={MdCreateNewFolder}
+                    onClick={() => editCategory()}
+                  >
+                    <Trans>Create category</Trans>
+                  </ContextMenuButton>
+                  <ContextMenuButton
+                    icon={MdFolder}
+                    onClick={() => manageCategories()}
+                  >
+                    <Trans>Manage categories</Trans>
+                  </ContextMenuButton>
+                </ContextMenu>
+              ),
+              contextMenuHandler: "click",
             }}
           >
-            <Symbol>label</Symbol>
-          </IconButton>
+            <Symbol>folder</Symbol>
+          </button>
         </Show>
       </div>
 
@@ -434,12 +404,12 @@ export function FriendsList(props: {
           hideWhenEmpty
         />
         <For each={groupIds()}>{(id) => <GroupSection id={id} />}</For>
-        {/* Spelled out: the label icon by the search box alone was not
-            enough for people to find friend groups */}
+        {/* Spelled out: an icon by the search box alone was not enough for
+            people to find categories */}
         <Show when={!GROUPS_READ_ONLY && !query().trim()}>
-          <button class={newGroupButton()} onClick={() => manageGroups()}>
-            <Symbol size={18}>add</Symbol>
-            <Trans>New friend group</Trans>
+          <button class={newGroupButton()} onClick={() => editCategory()}>
+            <Symbol size={18}>create_new_folder</Symbol>
+            <Trans>Create category</Trans>
           </button>
         </Show>
         <Section
@@ -636,33 +606,6 @@ const editRow = cva({
   },
 });
 
-const editLine = cva({
-  base: {
-    display: "flex",
-    alignItems: "center",
-    gap: "var(--gap-xs)",
-  },
-});
-
-const editInput = cva({
-  base: {
-    flexGrow: 1,
-    minWidth: 0,
-    paddingBlock: "4px",
-    paddingInline: "8px",
-    borderRadius: "var(--borderRadius-sm)",
-    background: "var(--md-sys-color-surface-container-highest)",
-    border: "1px solid var(--md-sys-color-outline-variant)",
-    color: "var(--md-sys-color-on-surface)",
-    fontSize: "13px",
-
-    "&:focus": {
-      outline: "none",
-      borderColor: "var(--md-sys-color-primary)",
-    },
-  },
-});
-
 const confirmActions = cva({
   base: {
     display: "flex",
@@ -699,9 +642,30 @@ const textButton = cva({
   },
 });
 
-const errorText = cva({
+/**
+ * The folder button by the search box: a plain button, not `IconButton`,
+ * because its menu opens from the `floating` directive's click handler
+ */
+const categoriesButton = cva({
   base: {
-    fontSize: "12px",
-    color: "var(--md-sys-color-error)",
+    all: "unset",
+    display: "flex",
+    flexShrink: 0,
+    alignItems: "center",
+    justifyContent: "center",
+    width: "40px",
+    height: "40px",
+    borderRadius: "var(--borderRadius-full)",
+    cursor: "pointer",
+    color: "var(--md-sys-color-on-surface-variant)",
+
+    "&:hover": {
+      color: "var(--md-sys-color-on-surface)",
+      background: "var(--md-sys-color-surface-container-high)",
+    },
+
+    "&:focus-visible": {
+      outline: "2px solid var(--md-sys-color-primary)",
+    },
   },
 });

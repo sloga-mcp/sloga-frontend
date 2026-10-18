@@ -12,6 +12,7 @@ overrides:
 
 patchedDependencies:
   '@capacitor/android@8.4.3': 038207ccea7f18c908e5ca94dd818a98c3a219de150d8b46f2f6c8812f86ac57
+  '@solid-aria/interactions@0.1.4': af51cab83f24c461c7dcf7a2e670c14c5a043044064edb8d269a0256d41946e1
   livekit-client@2.15.13: f2afef1e493c4877d7e3ccc7e6d82b2a896366894bc02fc4341ce0e3c1bb3a9e
 
 importers:
@@ -11181,7 +11182,7 @@ snapshots:
   '@solid-aria/button@0.1.3(solid-js@1.9.15)':
     dependencies:
       '@solid-aria/focus': 0.1.4(solid-js@1.9.15)
-      '@solid-aria/interactions': 0.1.4(solid-js@1.9.15)
+      '@solid-aria/interactions': 0.1.4(patch_hash=af51cab83f24c461c7dcf7a2e670c14c5a043044064edb8d269a0256d41946e1)(solid-js@1.9.15)
       '@solid-aria/toggle': 0.1.3(solid-js@1.9.15)
       '@solid-aria/types': 0.1.4(solid-js@1.9.15)
       '@solid-aria/utils': 0.2.1(solid-js@1.9.15)
@@ -11191,14 +11192,14 @@ snapshots:
 
   '@solid-aria/focus@0.1.4(solid-js@1.9.15)':
     dependencies:
-      '@solid-aria/interactions': 0.1.4(solid-js@1.9.15)
+      '@solid-aria/interactions': 0.1.4(patch_hash=af51cab83f24c461c7dcf7a2e670c14c5a043044064edb8d269a0256d41946e1)(solid-js@1.9.15)
       '@solid-aria/types': 0.1.4(solid-js@1.9.15)
       '@solid-aria/utils': 0.2.1(solid-js@1.9.15)
       '@solid-primitives/props': 2.2.2(solid-js@1.9.15)
       '@solid-primitives/utils': 2.2.1(solid-js@1.9.15)
       solid-js: 1.9.15
 
-  '@solid-aria/interactions@0.1.4(solid-js@1.9.15)':
+  '@solid-aria/interactions@0.1.4(patch_hash=af51cab83f24c461c7dcf7a2e670c14c5a043044064edb8d269a0256d41946e1)(solid-js@1.9.15)':
     dependencies:
       '@solid-aria/types': 0.1.4(solid-js@1.9.15)
       '@solid-aria/utils': 0.2.1(solid-js@1.9.15)
@@ -11210,7 +11211,7 @@ snapshots:
   '@solid-aria/toggle@0.1.3(solid-js@1.9.15)':
     dependencies:
       '@solid-aria/focus': 0.1.4(solid-js@1.9.15)
-      '@solid-aria/interactions': 0.1.4(solid-js@1.9.15)
+      '@solid-aria/interactions': 0.1.4(patch_hash=af51cab83f24c461c7dcf7a2e670c14c5a043044064edb8d269a0256d41946e1)(solid-js@1.9.15)
       '@solid-aria/types': 0.1.4(solid-js@1.9.15)
       '@solid-aria/utils': 0.2.1(solid-js@1.9.15)
       '@solid-primitives/props': 2.2.2(solid-js@1.9.15)
