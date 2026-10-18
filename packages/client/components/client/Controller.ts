@@ -9,6 +9,11 @@ import { ModalControllerExtended } from "@revolt/modal";
 import type { State as ApplicationState } from "@revolt/state";
 import type { Session } from "@revolt/state/stores/Auth";
 import { killServiceWorkerSubscription } from "./NotificationsController";
+import {
+  classifyClientError,
+  dismissMayDropSession,
+  probeConfirmsRevoked,
+} from "./connectionPolicy";
 import { E2EEBridge, nativeE2EEAvailable } from "./e2ee";
 import {
   type LoggingInEvent,
@@ -97,6 +102,13 @@ class Lifecycle {
 
   client: Client;
 
+  /**
+   * Failed connection attempts since the last successful connection or
+   * sign-out, for the loading screen.
+   */
+  readonly connectionFailures: Accessor<number>;
+  #setConnectionFailures: Setter<number>;
+
   #connectionFailures = 0;
   #permanentError: string | undefined;
   #retryTimeout: number | undefined;
@@ -111,6 +123,7 @@ class Lifecycle {
     this.onEvent = this.onEvent.bind(this);
     this.onReady = this.onReady.bind(this);
     this.onPolicyChanges = this.onPolicyChanges.bind(this);
+    this.onError = this.onError.bind(this);
 
     const [state, setState] = createSignal(State.Ready);
     this.state = state;
@@ -119,6 +132,10 @@ class Lifecycle {
     const [loadedOnce, setLoadedOnce] = createSignal(false);
     this.loadedOnce = loadedOnce;
     this.#setLoadedOnce = setLoadedOnce;
+
+    const [connectionFailures, setConnectionFailures] = createSignal(0);
+    this.connectionFailures = connectionFailures;
+    this.#setConnectionFailures = setConnectionFailures;
 
     const [policyAttentionRequired, setPolicyAttentionRequired] = createSignal<
       undefined | PolicyAttentionRequired
@@ -160,6 +177,7 @@ class Lifecycle {
       this.client.events.off("event", this.onEvent);
       this.client.off("ready", this.onReady);
       this.client.off("policyChanges", this.onPolicyChanges);
+      this.client.off("error", this.onError);
       this.client.on("error", () => {}); // suppress stale unhandled errors
     }
 
@@ -214,6 +232,7 @@ class Lifecycle {
     this.client.events.on("event", this.onEvent);
     this.client.on("ready", this.onReady);
     this.client.on("policyChanges", this.onPolicyChanges);
+    this.client.on("error", this.onError);
   }
 
   #enter(nextState: State) {
@@ -277,6 +296,7 @@ class Lifecycle {
         this.#controller.state.auth.markValid();
         this.#setLoadedOnce(true);
         this.#connectionFailures = 0;
+        this.#setConnectionFailures(this.#connectionFailures);
 
         // A referral code only applies when creating an account, so once
         // signed in a stored one is spent. Checked first so reconnects don't
@@ -285,17 +305,26 @@ class Lifecycle {
           this.#controller.state.layout.setReferralCode(undefined);
         }
         break;
-      case State.Dispose:
+      case State.Dispose: {
+        // dispose() detaches our listeners and builds a new client, but
+        // never closes the old one's socket. That socket (open, or still
+        // opening when signing out from the loading screen) would otherwise
+        // stay connected under the signed-out session.
+        const previous = this.client;
         this.dispose();
+        previous.events.disconnect();
         // A fresh login starts its reconnect backoff from the bottom.
         this.#connectionFailures = 0;
+        this.#setConnectionFailures(this.#connectionFailures);
         this.transition({
           type: TransitionType.Ready,
         });
         this.#setLoadedOnce(false);
         break;
+      }
       case State.Disconnected:
         this.#connectionFailures++;
+        this.#setConnectionFailures(this.#connectionFailures);
 
         if (!navigator.onLine) {
           this.transition({
@@ -323,6 +352,36 @@ class Lifecycle {
         }
         break;
     }
+  }
+
+  /**
+   * Drop the stored session if the server confirms it is gone.
+   *
+   * Called when the user dismisses an InvalidSession error. The server also
+   * answers InvalidSession when its database lookup fails, so the notice
+   * alone is not proof the session was revoked. Ask again with a REST call
+   * behind the session guard, and drop the session only on a second
+   * InvalidSession for the same stored session (a new login in the meantime
+   * has a new id). Any other outcome, a network failure or a 5xx included,
+   * keeps it. Not awaited, and a failed probe is handled here, so it does
+   * not throw.
+   */
+  #dropSessionIfRevoked() {
+    const api = this.client.api;
+    const sessionId = this.#controller.state.auth.getSession()?._id;
+    if (sessionId === undefined) return;
+
+    api.get("/onboard/hello").then(
+      () => {},
+      (error) => {
+        if (
+          probeConfirmsRevoked(error) &&
+          this.#controller.state.auth.getSession()?._id === sessionId
+        ) {
+          this.#controller.state.auth.removeSession();
+        }
+      },
+    );
   }
 
   /**
@@ -460,6 +519,15 @@ class Lifecycle {
           transition.type === TransitionType.Dismiss ||
           transition.type === TransitionType.Logout
         ) {
+          // Started before Dispose, while this.client is still the old,
+          // signed-in client.
+          if (
+            transition.type === TransitionType.Dismiss &&
+            dismissMayDropSession(this.#permanentError)
+          ) {
+            this.#dropSessionIfRevoked();
+          }
+
           this.#enter(State.Dispose);
         }
         break;
@@ -571,6 +639,32 @@ class Lifecycle {
         type: TransitionType.PermanentFailure,
         error: "InvalidSession",
       });
+    }
+  }
+
+  /**
+   * The client emits `error` for a socket error, for an `Error` frame from
+   * the server, and for an event handler that rejected. With no listener the
+   * emitter throws "Unhandled 'error' event". For an `Error` frame that throw
+   * also skipped the disconnect() after the emit, so a server that did not
+   * close the socket left the client connecting for good.
+   *
+   * Socket and server errors need no transition here: the events client
+   * records them as `lastError`, and onState maps the close that follows.
+   * Anything else is a rejected event handler, re-raised so it stays an
+   * uncaught exception, as it was before this listener existed.
+   */
+  private onError(error: unknown) {
+    switch (classifyClientError(error)) {
+      case "socket":
+      case "server":
+        console.warn("[lifecycle] socket error", error);
+        break;
+      case "other":
+        setTimeout(() => {
+          throw error;
+        }, 0);
+        break;
     }
   }
 
