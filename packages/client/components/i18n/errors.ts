@@ -90,6 +90,19 @@ export function useError() {
         return t`We couldn't reach the server you're importing from right now. Try again in a few minutes.`;
       if (errType === "ImportSourceUnavailable")
         return t`Importing from this platform is not available right now.`;
+      // Cipher checkout (same lag pattern).
+      if (errType === "PaymentsDisabled")
+        return t`Payments are not available right now.`;
+      if (errType === "CipherSalesClosed")
+        return t`The Cipher founding sale is closed.`;
+      if (errType === "CipherSoldOut")
+        return t`All 1,000 Cipher numbers have been claimed.`;
+      if (errType === "CipherTierInvalid")
+        return t`That Cipher tier isn't available for your account.`;
+      if (errType === "PaymentPending")
+        return t`You already have a checkout in progress. Finish it or wait a few minutes.`;
+      if (errType === "PaymentProviderError")
+        return t`The payment provider didn't respond. Please try again.`;
 
       switch (err.type) {
         case "AlreadyFriends":

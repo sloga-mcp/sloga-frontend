@@ -4067,6 +4067,10 @@ msgstr "Subtítulos de llamadas en vivo"
 msgid "Load file ({0})"
 msgstr "Cargar archivo ({0})"
 
+#: components/ui/components/features/profiles/ProfileBadges.tsx
+msgid "Cipher founding supporter #{number}"
+msgstr "Patrocinador fundador Cipher #{number}"
+
 #: src/interface/Discover.tsx
 #: src/interface/channels/forum/ForumChannel.tsx
 msgid "Load more"
@@ -5457,6 +5461,10 @@ msgstr "Canal Privado"
 msgid "Profile"
 msgstr "Perfil"
 
+#: components/app/interface/settings/UserSettings.tsx
+msgid "Cipher"
+msgstr "Cipher"
+
 #: components/app/interface/settings/user/profile/UserProfileEditor.tsx
 msgid "Profile Bio"
 msgstr "Biografía del perfil"
@@ -6588,6 +6596,62 @@ msgstr ""
 msgid "Show 'copy ID' in context menus"
 msgstr ""
 
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Checkout couldn't be started. Try again in a moment."
+msgstr "No se pudo iniciar el pago. Vuelve a intentarlo en un momento."
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Cipher {label}"
+msgstr "Cipher {label}"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "{price} tier"
+msgstr "Nivel de {price}"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "{amount} Prot at launch"
+msgstr "{amount} Prot en el lanzamiento"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Thank you! You're Cipher {label}."
+msgstr "¡Gracias! Eres el Cipher {label}."
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Checkout open: {name}"
+msgstr "Pago pendiente: {name}"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "You can pick a different tier after {expires}, when your open checkout expires."
+msgstr "Podrás elegir otro nivel después de las {expires}, cuando venza tu pago pendiente."
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "{claimed} of {cap} claimed"
+msgstr "{claimed} de {cap} adquiridos"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "All {cap} Cipher numbers have been claimed."
+msgstr "Ya se adquirieron los {cap} números Cipher."
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Continue checkout"
+msgstr "Continuar con el pago"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Upgrade for {price}"
+msgstr "Mejorar por {price}"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Buy for {price}"
+msgstr "Comprar por {price}"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "You're on the top tier. Thank you for backing Sloga!"
+msgstr "Estás en el nivel más alto. ¡Gracias por apoyar a Sloga!"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Upgrade your tier"
+msgstr "Mejora tu nivel"
+
 #: components/app/interface/settings/user/Advanced.tsx
 #~ msgid "Show admin panel shortcuts in context menus"
 #~ msgstr ""
@@ -7409,6 +7473,30 @@ msgstr "Esta cuenta ha sido deshabilitada."
 #: components/i18n/errors.ts
 msgid "This account has been suspended. Contact a moderator if you believe this is a mistake."
 msgstr "Esta Cuenta Ha Sido Suspendida. Póngase en contacto con un moderador si cree que esto es un error."
+
+#: components/i18n/errors.ts
+msgid "Payments are not available right now."
+msgstr "Los pagos no están disponibles en este momento."
+
+#: components/i18n/errors.ts
+msgid "The Cipher founding sale is closed."
+msgstr "La venta fundacional de Cipher está cerrada."
+
+#: components/i18n/errors.ts
+msgid "All 1,000 Cipher numbers have been claimed."
+msgstr "Ya se adquirieron los 1000 números Cipher."
+
+#: components/i18n/errors.ts
+msgid "That Cipher tier isn't available for your account."
+msgstr "Ese nivel de Cipher no está disponible para tu cuenta."
+
+#: components/i18n/errors.ts
+msgid "You already have a checkout in progress. Finish it or wait a few minutes."
+msgstr "Ya tienes un pago en curso. Termínalo o espera unos minutos."
+
+#: components/i18n/errors.ts
+msgid "The payment provider didn't respond. Please try again."
+msgstr "El proveedor de pagos no respondió. Inténtalo de nuevo."
 
 #: components/i18n/errors.ts
 msgid "This account is not activated! Please check your account's inbox and try again."
@@ -8850,6 +8938,74 @@ msgstr "US$ 99"
 #: components/auth/src/CipherPromo.tsx
 msgid "Become a Cipher"
 msgstr "Hazte Cipher"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Cipher sales are closed."
+msgstr "Las ventas de Cipher están cerradas."
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Selected"
+msgstr "Seleccionado"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Numbered Cipher badge"
+msgstr "Insignia Cipher numerada"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Animated Cipher badge"
+msgstr "Insignia Cipher animada"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "You'll pay on Stripe's secure checkout page."
+msgstr "Pagarás en la página de pago segura de Stripe."
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "It opens in your browser."
+msgstr "Se abre en tu navegador."
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Ciphers are the founding backers of Protected servers and channels. Each Cipher gets a numbered badge and Prot to spend when Protected launches."
+msgstr "Los Ciphers son los patrocinadores fundadores de los servidores y canales Protected. Cada Cipher recibe una insignia numerada y Prot para gastar cuando se lance Protected."
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Checkout canceled. You weren't charged."
+msgstr "Pago cancelado. No se te cobró nada."
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "This usually takes a few seconds."
+msgstr "Esto suele tardar unos segundos."
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Confirming your payment…"
+msgstr "Confirmando tu pago…"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "If you finished checking out, it can take a few minutes to show up here."
+msgstr "Si completaste el pago, puede tardar unos minutos en aparecer aquí."
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Check again"
+msgstr "Verificar de nuevo"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "We haven't seen your payment yet"
+msgstr "Todavía no recibimos tu pago"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Your badge is hidden and upgrades are paused until the review is over."
+msgstr "Tu insignia está oculta y las mejoras están en pausa hasta que termine la revisión."
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Your payment is under review"
+msgstr "Tu pago está en revisión"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Finish paying in your browser. This page updates when you come back."
+msgstr "Termina el pago en tu navegador. Esta página se actualiza cuando regreses."
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "About Ciphers"
+msgstr "Acerca de los Ciphers"
 
 #: components/auth/src/CipherPromo.tsx
 msgid "Ciphers fund the audit"

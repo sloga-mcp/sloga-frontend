@@ -28,6 +28,7 @@ import FlowVerify from "@revolt/auth/src/flows/FlowVerify";
 import {
   ClientContext,
   SoundContext,
+  allowsDonationLinks,
   useClient,
   useClientLifecycle,
 } from "@revolt/client";
@@ -71,6 +72,7 @@ import { ServerHome } from "./interface/ServerHome";
 import { VoiceOverlayWindow } from "./interface/VoiceOverlayWindow";
 import { ChannelPage } from "./interface/channels/ChannelPage";
 import { mountIosViewportFix } from "./iosViewport";
+import { cipherSettingsContext } from "./lib/deepLinks";
 import "./serviceWorkerInterface";
 
 // Best-effort: the devtools debugger throws at module eval when its setup
@@ -142,7 +144,19 @@ function SettingsRedirect() {
       });
     }
 
-    openModal({ type: "settings", config: "user" });
+    // Cipher deep links: `?cipher_tier=` (sloga.gg Cipher page, preselects a
+    // tier) and `?cipher=success|cancel` (the Stripe return URL). Either
+    // opens the Cipher page. Store builds ignore both and open settings as
+    // usual, since the Cipher page is not listed there.
+    const cipher = allowsDonationLinks()
+      ? cipherSettingsContext(window.location.search)
+      : undefined;
+
+    if (cipher) {
+      openModal({ type: "settings", config: "user", context: cipher });
+    } else {
+      openModal({ type: "settings", config: "user" });
+    }
   });
   return <PWARedirect />;
 }
