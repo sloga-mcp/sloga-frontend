@@ -87,9 +87,10 @@ export const POLL_INTERVAL_MS = 5000;
 export const POLL_TIMEOUT_MS = 2 * 60_000;
 
 /**
- * How long the standing stays unread after a checkout request settles. The
- * standing is not read at all while one is in flight: the buy is the request
- * that matters, and it never shares its moment with a poll read.
+ * How long the standing stays unread after a checkout request settles. No
+ * new read starts while one is in flight either (a read already in flight
+ * still lands): the buy is the request that matters, and no poll read is
+ * started alongside it.
  */
 export const CHECKOUT_PAUSE_MS = 1000;
 
@@ -424,21 +425,29 @@ export function checkoutReturnTo(nativeShell: boolean): "web" | "shell" {
  * server sent. `host` (not `hostname`) so an explicit port is refused, and no
  * credentials, so `https://checkout.stripe.com@evil.com` (whose host is
  * evil.com) and `https://x@checkout.stripe.com` are both refused.
+ *
+ * Returns the page as the URL parser serialized it (`url.href`), and that is
+ * what gets opened: the URL that was checked, never the raw string.
  */
-export function isCheckoutUrl(value: unknown): value is string {
-  if (typeof value !== "string") return false;
+export function checkoutHref(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
   let url: URL;
   try {
     url = new URL(value);
   } catch {
-    return false;
+    return undefined;
   }
-  return (
+  const allowed =
     url.protocol === "https:" &&
     url.username === "" &&
     url.password === "" &&
-    CHECKOUT_HOSTS.includes(url.host)
-  );
+    CHECKOUT_HOSTS.includes(url.host);
+  return allowed ? url.href : undefined;
+}
+
+/** See {@link checkoutHref} */
+export function isCheckoutUrl(value: unknown): value is string {
+  return checkoutHref(value) !== undefined;
 }
 
 /**
@@ -556,8 +565,12 @@ export function thankedMembership(
  *   again if the poll gives up. Only for a return Stripe sent as paid
  *   (`checkout: "success"`), or when the buyer asks to check again.
  * - `quiet`: a checkout this tab started may still be open (its intent
- *   survived, or a shell window came back). It runs only while the standing
- *   shows an open checkout, and only its result (a thank-you) is shown.
+ *   survived, or a shell window came back), and only its result (a
+ *   thank-you) is shown. While this tab's intent for the tier it waits on is
+ *   stored, it runs until that tier arrives or it times out: `@me` stops
+ *   listing an order once it is paid, before the membership is written, so
+ *   "no open checkout" alone does not end it. Without one, it runs only
+ *   while the standing shows an open checkout.
  */
 export type PollMode = "announced" | "quiet";
 
@@ -674,9 +687,9 @@ export async function postCheckout(
   const body = (await response.json().catch(() => undefined)) as
     | { url?: unknown }
     | undefined;
-  const url = body?.url;
-  if (!isCheckoutUrl(url)) throw new CipherClientError("badResponse");
-  return url;
+  const href = checkoutHref(body?.url);
+  if (href === undefined) throw new CipherClientError("badResponse");
+  return href;
 }
 
 // ---------------------------------------------------------------------------
@@ -703,6 +716,11 @@ export type StandingDeps = {
   now: () => number;
   setTimer: (run: () => void, ms: number) => unknown;
   clearTimer: (handle: unknown) => void;
+  /**
+   * The tier of the checkout this tab started, while its intent is still
+   * stored and fresh; read again after every poll read (see PollMode)
+   */
+  intendedTier?: () => CipherTier | undefined;
 };
 
 /**
@@ -769,8 +787,16 @@ export function createCipherStanding(deps: StandingDeps) {
       update({ poll: "confirmed" });
       return;
     }
-    // A quiet poll only waits on a checkout that is still open
-    if (me && state.mode === "quiet" && !livePending(me, deps.now())) {
+    // A quiet poll waits on a checkout that is still open or, while this
+    // tab's intent for its tier is stored, on that tier: a paid order leaves
+    // `@me` before its membership shows up
+    const intended = target !== undefined && deps.intendedTier?.() === target;
+    if (
+      me &&
+      state.mode === "quiet" &&
+      !intended &&
+      !livePending(me, deps.now())
+    ) {
       cancelTimer();
       update({ poll: "idle" });
       return;

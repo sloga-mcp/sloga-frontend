@@ -142,6 +142,7 @@ function CipherPage(props: { context?: unknown }) {
     setTimer: (run, ms) => setTimeout(run, ms),
     clearTimer: (handle) =>
       clearTimeout(handle as ReturnType<typeof setTimeout>),
+    intendedTier: () => storedIntent()?.tier,
   });
   onCleanup(() => controller.dispose());
 
@@ -292,7 +293,13 @@ function CipherPage(props: { context?: unknown }) {
 
   // Re-enables the buttons if a navigation to Stripe never happens
   let leavingTimer: ReturnType<typeof setTimeout> | undefined;
-  onCleanup(() => clearTimeout(leavingTimer));
+  // Set once the page is gone: a checkout answer that arrives after that
+  // opens nothing, remembers nothing and arms nothing
+  let unmounted = false;
+  onCleanup(() => {
+    unmounted = true;
+    clearTimeout(leavingTimer);
+  });
 
   async function buy(tier: CipherTier) {
     if (buying()) return;
@@ -300,11 +307,15 @@ function CipherPage(props: { context?: unknown }) {
     let leaving = false;
 
     try {
-      // Through the controller: the standing is not read while the request
-      // is in flight, and a rate-limited attempt is retried once
+      // Through the controller: no new read of the standing starts while
+      // the request is in flight or for a moment after (one already in
+      // flight still lands), and a rate-limited attempt is retried once
       const url = await controller.checkout(() =>
         postCheckout(api, tier, native),
       );
+      // The buyer left the page while the request ran: no navigation, and
+      // no system browser opening on its own
+      if (unmounted) return;
       rememberIntent(tier);
       leaving = !native;
       if (native) setOpenedUrl(url);
@@ -323,7 +334,7 @@ function CipherPage(props: { context?: unknown }) {
         controller.refresh();
       }
     } finally {
-      if (leaving) {
+      if (leaving && !unmounted) {
         // On its way to Stripe; if the navigation never happens, let the
         // buyer try again
         clearTimeout(leavingTimer);

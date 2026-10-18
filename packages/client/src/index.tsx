@@ -4,7 +4,7 @@
 import "./polyfills";
 import "./sentry";
 
-import { JSX, createEffect, createRoot, onMount, untrack } from "solid-js";
+import { JSX, createEffect, createRoot, on, onMount, untrack } from "solid-js";
 import { render } from "solid-js/web";
 
 import { useLingui } from "@lingui-solid/solid/macro";
@@ -185,9 +185,13 @@ function SettingsRedirect() {
         dispose();
         openSettings(context);
       }
-      createEffect(() => {
-        if (allowsDonationLinks()) decide(cipher);
-      });
+      // Tracks the channel only: opening settings must never become a
+      // dependency of this effect
+      createEffect(
+        on(allowsDonationLinks, (allowed) => {
+          if (allowed) decide(cipher);
+        }),
+      );
     });
   });
   return <PWARedirect />;

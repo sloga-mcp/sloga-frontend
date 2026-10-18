@@ -15,7 +15,9 @@
  *   window to Stripe;
  * - the standing controller: the poll after checkout (every 5 s) stops when
  *   the tier it waits for arrives or after two minutes, a quiet poll never
- *   says it is confirming anything, a restarted poll is still one poll, no
+ *   says it is confirming anything (and, while this tab's intent is stored,
+ *   outlasts a paid order until its tier arrives), a restarted poll is still
+ *   one poll, no
  *   burst of reads spends more than half the `payments_me` bucket (10 per
  *   10 s), and a buy is never starved by the poll: reads pause while the
  *   checkout request runs and for 1 s after, and a 429 is retried once;
@@ -32,6 +34,7 @@ import {
   type CipherApi,
   type CipherMe,
   type CipherOffer,
+  type CipherTier,
   type StandingState,
   CHECKOUT_HOSTS,
   CHECKOUT_PAUSE_MS,
@@ -41,6 +44,7 @@ import {
   MIN_REQUEST_GAP_MS,
   POLL_INTERVAL_MS,
   POLL_TIMEOUT_MS,
+  checkoutHref,
   checkoutReturnTo,
   checkoutSettled,
   cipherOffers,
@@ -378,6 +382,20 @@ describe("checkout: names a tier and a return target, opens safely", () => {
     assert.equal(isCheckoutUrl("https://CHECKOUT.stripe.com/c/1"), true);
   });
 
+  it("hands the opener the parsed URL, not the server's string", async () => {
+    const odd = api(() =>
+      json(200, { url: "https://CHECKOUT.stripe.com:443/c/pay/cs_1#x" }),
+    );
+    assert.equal(
+      await postCheckout(odd, "T99", false),
+      "https://checkout.stripe.com/c/pay/cs_1#x",
+    );
+    assert.equal(
+      checkoutHref("https://checkout.stripe.com/c/pay/cs 1"),
+      "https://checkout.stripe.com/c/pay/cs%201",
+    );
+  });
+
   it("refuses anything but https://checkout.stripe.com", async () => {
     for (const url of [
       "javascript:alert(1)",
@@ -400,6 +418,7 @@ describe("checkout: names a tier and a return target, opens safely", () => {
       undefined,
     ]) {
       assert.equal(isCheckoutUrl(url), false, String(url));
+      assert.equal(checkoutHref(url), undefined, String(url));
       const bad = api(() => json(200, { url }));
       await assert.rejects(postCheckout(bad, "T99", false), (error) => {
         assert.ok(error instanceof CipherClientError);
@@ -515,10 +534,14 @@ describe("a checkout is settled when the tier it bought shows up", () => {
 /**
  * The controller on a fake clock. `respond` decides each read's answer from
  * its 1-based index; reads resolve on the next turn unless `hold` is set.
+ * `intendedTier` stands in for this tab's stored intent (none by default).
  */
 function harness(
   respond: (call: number) => CipherMe | Error,
-  options: { hold?: boolean } = {},
+  options: {
+    hold?: boolean;
+    intendedTier?: () => CipherTier | undefined;
+  } = {},
 ) {
   let now = NOW;
   let nextId = 1;
@@ -553,6 +576,7 @@ function harness(
       const index = timers.findIndex((timer) => timer.id === id);
       if (index >= 0) timers.splice(index, 1);
     },
+    intendedTier: options.intendedTier,
   });
 
   const flush = () => new Promise((resolve) => setImmediate(resolve));
@@ -749,7 +773,7 @@ describe("a quiet poll never says it is confirming a payment", () => {
     }
   });
 
-  it("a quiet poll runs only while a checkout is open", async () => {
+  it("without a stored intent, a quiet poll runs only while a checkout is open", async () => {
     const h = harness((call) => (call < 3 ? pendingFor("T99") : {}));
     h.standing.startPoll("T99", "quiet");
     await h.advance(60_000);
@@ -782,6 +806,88 @@ describe("a quiet poll never says it is confirming a payment", () => {
     await h.flush();
     h.standing.startPoll("T99", "quiet");
     assert.equal(h.standing.state().mode, "announced");
+  });
+});
+
+describe("a quiet poll with this tab's intent stored outlasts the paid order", () => {
+  // `@me` stops listing an order once it is paid, before the membership is
+  // written. A quiet poll that stopped on "no open checkout" there would
+  // miss the thank-you for the very purchase it was started for.
+
+  it("keeps reading through the gap until the intended tier arrives", async () => {
+    const h = harness(
+      (call) =>
+        call < 3 ? pendingFor("T149") : call < 6 ? {} : member("T149"),
+      { intendedTier: () => "T149" },
+    );
+    h.standing.startPoll("T149", "quiet");
+    await h.advance(60_000);
+
+    assert.deepEqual(h.offsets(), [0, 5000, 10_000, 15_000, 20_000, 25_000]);
+    assert.equal(h.last()?.poll, "confirmed");
+    assert.equal(thankedMembership(h.standing.state(), null)?.tier, "T149");
+    assert.equal(h.timers.length, 0, "no timer left behind");
+  });
+
+  it("an upgrade waits past the old tier for the new one", async () => {
+    const upgrading: CipherMe = {
+      ...member("T99"),
+      pending: {
+        order_id: "o1",
+        sku: { type: "CipherUpgrade", from: "T99", to: "T149" },
+        expires_at: NOW + 60 * 60_000,
+      },
+    };
+    const h = harness(
+      (call) =>
+        call < 2 ? upgrading : call < 4 ? member("T99") : member("T149"),
+      { intendedTier: () => "T149" },
+    );
+    h.standing.startPoll("T149", "quiet");
+    await h.advance(60_000);
+
+    assert.equal(h.reads.length, 4);
+    assert.equal(h.last()?.poll, "confirmed");
+    assert.equal(thankedMembership(h.standing.state(), "T99")?.tier, "T149");
+  });
+
+  it("with nothing arriving, it reads until its deadline and says nothing", async () => {
+    const h = harness(() => ({}), { intendedTier: () => "T99" });
+    h.standing.startPoll("T99", "quiet");
+    await h.advance(POLL_TIMEOUT_MS + 30_000);
+
+    assert.equal(h.last()?.poll, "timedOut");
+    assert.equal(h.reads.length, POLL_TIMEOUT_MS / POLL_INTERVAL_MS + 1);
+    for (const state of h.states) {
+      assert.equal(pollNote(state), undefined, JSON.stringify(state));
+    }
+    const count = h.reads.length;
+    await h.advance(60_000);
+    assert.equal(h.reads.length, count, "no read after giving up");
+    assert.equal(h.timers.length, 0);
+  });
+
+  it("stops at the first read after the intent is gone", async () => {
+    // Dropped, or past its TTL (the page reads it through readIntent)
+    let intent: CipherTier | undefined = "T149";
+    const h = harness(() => ({}), { intendedTier: () => intent });
+    h.standing.startPoll("T149", "quiet");
+    await h.advance(12_000);
+    assert.equal(h.last()?.poll, "polling");
+
+    intent = undefined;
+    await h.advance(60_000);
+    assert.deepEqual(h.offsets(), [0, 5000, 10_000, 15_000]);
+    assert.equal(h.last()?.poll, "idle");
+    assert.equal(h.timers.length, 0);
+  });
+
+  it("an intent for another tier does not hold it open", async () => {
+    const h = harness(() => ({}), { intendedTier: () => "T299" });
+    h.standing.startPoll("T149", "quiet");
+    await h.advance(60_000);
+    assert.equal(h.reads.length, 1);
+    assert.equal(h.last()?.poll, "idle");
   });
 });
 
