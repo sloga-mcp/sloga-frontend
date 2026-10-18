@@ -346,7 +346,7 @@ async function fetchOauthGoogleEnabled() {
 export default function FlowLogin() {
   const state = useState();
   const modals = useModals();
-  const { lifecycle, isLoggedIn, login } = useClientLifecycle();
+  const { lifecycle, isLoggedIn, isError, login } = useClientLifecycle();
 
   const [keepLoggedIn, setKeepLoggedIn] = createSignal(true);
   const [oauthGoogle] = createResource(fetchOauthGoogleEnabled);
@@ -475,6 +475,29 @@ export default function FlowLogin() {
       >
         <Match when={isLoggedIn()}>
           <Navigate href={state.layout.popNextPath() ?? "/app"} />
+        </Match>
+        {/* A failure right after login used to fall through to the form with
+            no message; show the same notice FlowHome renders on /login. */}
+        <Match when={isError()}>
+          <Switch fallback={"an unknown error occurred"}>
+            <Match when={lifecycle.permanentError === "InvalidSession"}>
+              <h1>
+                <Trans>You were logged out!</Trans>
+              </h1>
+            </Match>
+          </Switch>
+
+          <Button
+            variant="filled"
+            bg="#FF8A00"
+            onPress={() =>
+              lifecycle.transition({
+                type: TransitionType.Dismiss,
+              })
+            }
+          >
+            <Trans>OK</Trans>
+          </Button>
         </Match>
         <Match when={lifecycle.state() === State.LoggingIn}>
           <CircularProgress />
