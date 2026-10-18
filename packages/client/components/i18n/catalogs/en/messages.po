@@ -5237,6 +5237,12 @@ msgstr "Members must choose to reveal a spoiler channel before its contents are 
 msgid "Mention"
 msgstr "Mention"
 
+#: components/app/menus/UserContextMenu.tsx
+#: components/friends/FriendsList.tsx
+#: components/friends/FriendsList.tsx
+msgid "Friend groups…"
+msgstr "Friend groups…"
+
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "Mention Everyone"
 msgstr "Mention Everyone"
@@ -7521,6 +7527,10 @@ msgstr "In game"
 #: components/friends/FriendsList.tsx
 msgid "Favorites"
 msgstr "Favorites"
+
+#: components/friends/FriendsList.tsx
+msgid "New friend group"
+msgstr "New friend group"
 
 #: components/modal/modals/SoftResReserve.tsx
 msgid "Search items or bosses…"
