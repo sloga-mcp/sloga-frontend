@@ -8,8 +8,10 @@ import { useState } from "@revolt/state";
 import { FloatingSelect, MenuItem, Text } from "@revolt/ui";
 
 /**
- * Where direct messages open: the main window, or the shell's own chat
- * windows. `supported()` only says a bridge exists, and a shell from before
+ * Where the friends list and direct messages open, as one choice: both in
+ * the main window, or both in the shell's own windows (the friends window
+ * plus tabbed chat windows). Calls still run in the main window either way.
+ * `supported()` only says a bridge exists, and a shell from before
  * chat windows has one too, so `chatShell` asks the shell to do something
  * harmless once per session and caches the answer. The row stays hidden
  * until it answers, and for good if it cannot, unless chat windows are
@@ -39,7 +41,7 @@ export function DmWindowsChoice() {
   return (
     <Show when={visible()}>
       <FloatingSelect
-        label={t`Open direct messages in`}
+        label={t`Friends and direct messages`}
         value={state.settings.getValue("appearance:dm_windows")}
         onChange={(e) => {
           const value = e.currentTarget.value;
@@ -49,18 +51,17 @@ export function DmWindowsChoice() {
         }}
       >
         <MenuItem value="main">
-          <Trans>Main window</Trans>
+          <Trans>In the main window</Trans>
         </MenuItem>
         <MenuItem value="chat_windows">
-          <Trans>
-            Chat windows (separate friends and chat windows, like Steam)
-          </Trans>
+          <Trans>In their own windows, like Steam</Trans>
         </MenuItem>
       </FloatingSelect>
       <Text class="label" size="small">
         <Trans>
-          Chat windows let you keep conversations open in their own windows.
-          Drag a tab out to pop it out, or drag it onto another window to merge.
+          In their own windows, the friends list and your conversations open
+          outside the main window. Drag a tab out to pop it out, or onto another
+          window to merge. Calls still show in the main window.
         </Trans>
       </Text>
     </Show>

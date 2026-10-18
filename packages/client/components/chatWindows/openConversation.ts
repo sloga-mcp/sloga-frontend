@@ -2,8 +2,8 @@
  * Where "open this conversation" and "open friends" go. In chat-windows mode
  * on a desktop shell they become tabs in a chat window (or the friends
  * window); everywhere else, including the web, the caller's own navigation
- * runs exactly as before. The friends window itself needs only the shell, so
- * the Friends page can pop it out in either mode.
+ * runs exactly as before. The friends window opens only in chat-windows mode
+ * too: the host shows no child window in "main window" mode.
  *
  * Kept free of Solid components, lingui and the app contexts so `node --test`
  * can load it; `State` is a type-only import.
@@ -63,9 +63,8 @@ export function chatWindowsMode(state: State): boolean {
 }
 
 /**
- * The friends window can open: a desktop shell that can make chat windows, in
- * either mode. False on the web and Android, which keep their own friends
- * popout or page.
+ * This shell can make the friends window (it is shown only in chat-windows
+ * mode). False on the web and Android, which keep the friends page.
  */
 export function friendsWindowAvailable(): boolean {
   return shellCanOpenWindows();

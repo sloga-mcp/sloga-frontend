@@ -4,9 +4,9 @@
 // Declared test count: 25 (the runner also exits 0 when it finds no tests at
 // all, so compare this against its pass count).
 //
-// Focus: nothing opens unless the shell is active; chat windows need
-// chat-windows mode while the friends window works in either mode, and a
-// mode flip closes the chat windows but keeps it; restore keys are tracked
+// Focus: nothing opens unless the shell is active; chat windows and the
+// friends window all need chat-windows mode, and a mode flip closes and
+// reopens them together; restore keys are tracked
 // per kind; exactly one child per store window plus the friends window; a
 // child still opening is neither reopened nor closed; only a close the user
 // made changes the store (never one the host made, nor the main window
@@ -58,28 +58,30 @@ test("chat-windows mode wants every store window, plus friends when open", () =>
   assert.deepEqual(desiredKeys(true, true, [], true), [FRIENDS_KEY]);
 });
 
-test("main-window mode wants the friends window when open, never a chat window", () => {
-  assert.deepEqual(desiredKeys(true, false, [W1, W2], true), [FRIENDS_KEY]);
+test("main-window mode wants no child window, not even an open friends window", () => {
+  assert.deepEqual(desiredKeys(true, false, [W1, W2], true), []);
   assert.deepEqual(desiredKeys(true, false, [W1, W2], false), []);
+  assert.deepEqual(desiredKeys(true, false, [], true), []);
 });
 
-test("switching the mode off closes the chat windows and keeps friends", () => {
+test("switching the mode off closes every child; back on reopens them all", () => {
   const desired = desiredKeys(true, false, [W1, W2], true);
   assert.deepEqual(planHost(desired, ["w-1", "w-2", FRIENDS_KEY], new Set()), {
     open: [],
-    close: ["w-1", "w-2"],
+    close: ["w-1", "w-2", FRIENDS_KEY],
   });
-  // And back on: the chat windows reopen beside the friends window.
+  // And back on: the chat windows reopen together with the friends window.
   assert.deepEqual(
-    planHost(desiredKeys(true, true, [W1, W2], true), [FRIENDS_KEY], new Set()),
-    { open: ["w-1", "w-2"], close: [] },
+    planHost(desiredKeys(true, true, [W1, W2], true), [], new Set()),
+    { open: ["w-1", "w-2", FRIENDS_KEY], close: [] },
   );
 });
 
-test("each kind is active on its own condition", () => {
+test("both kinds are active only in chat-windows mode on an active shell", () => {
   assert.equal(kindOf(FRIENDS_KEY), "friends");
   assert.equal(kindOf("w-1"), "chat");
-  assert.equal(keyActive(FRIENDS_KEY, true, false), true);
+  assert.equal(keyActive(FRIENDS_KEY, true, false), false);
+  assert.equal(keyActive(FRIENDS_KEY, true, true), true);
   assert.equal(keyActive("w-1", true, false), false);
   assert.equal(keyActive("w-1", true, true), true);
   assert.equal(keyActive(FRIENDS_KEY, false, true), false);

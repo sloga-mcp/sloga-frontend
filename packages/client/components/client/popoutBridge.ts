@@ -1,21 +1,9 @@
 /**
- * Message / call actions on a user, and the hand-off that lets the friends
- * popout run them in the main window.
+ * Message / call actions on a user, run in the realm that asked: the main
+ * window, or a chat window or the friends window (same realm as main).
  *
- * The popout cannot run them itself. A navigation inside it is bounced
- * straight back to `/friends-popout` (see `Interface`), and a call started
- * there joins from a window the E2EE engine treats as web — an UNENCRYPTED
- * call with no controls that can evict the main window's membership. So the
- * popout only forwards `{action, userId}`; the main window validates it
- * (ShellBridgeWorker) and runs the same path a context menu in the main
- * window would.
- *
- * | shell | popout → main                                         |
- * | ----- | ----------------------------------------------------- |
- * | Web   | `opener.postMessage` (origin + source checked in main) |
- *
- * The desktop shells have no popout: their friends list is a chat window
- * in the main realm, so `run` takes the `runHere` path there.
+ * The name is historical: the web friends popout that used to forward these
+ * to main by `postMessage` is retired (see src/interface/FriendsPopout.tsx).
  */
 import { useLingui } from "@lingui-solid/solid/macro";
 import { useNavigate } from "@solidjs/router";
@@ -37,13 +25,7 @@ import {
 } from "../chatWindows/openConversation";
 import { apiErrorType } from "./apiErrorType";
 import * as chatShell from "./chatShell";
-import { IS_POPOUT_WINDOW } from "./popout";
-import {
-  type PopoutAction,
-  POPOUT_WEB_MESSAGE_TYPE,
-  ULID_RE,
-  isPopoutAction,
-} from "./shellToMain";
+import { type PopoutAction } from "./shellToMain";
 import { useWindowCtx } from "./windowCtx";
 
 // The validator lives in an import-free module so node can spec it; every
@@ -51,47 +33,13 @@ import { useWindowCtx } from "./windowCtx";
 export {
   type PopoutAction,
   type ShellToMain,
+  isPopoutAction,
+  isShellToMain,
   POPOUT_ACTIONS,
   POPOUT_WEB_MESSAGE_TYPE,
   TOAST_ID_RE,
   ULID_RE,
-  isPopoutAction,
-  isShellToMain,
 } from "./shellToMain";
-
-/**
- * Popout window only: hand the action to the main window. Never opens a DM
- * or touches voice here. Rejects when the action is malformed or no route to
- * the main window exists (closed opener), and always on a desktop shell.
- */
-export async function forwardToMain(
-  action: PopoutAction,
-  userId: string,
-): Promise<void> {
-  if (!isPopoutAction(action) || !ULID_RE.test(userId))
-    throw new Error("popout bridge: invalid action");
-
-  // A desktop shell never opens the popout, so getting here is a bug. The
-  // opener path would hand the action to whatever window opened this one;
-  // fail instead. (A loose cast: `Window` types `__TAURI__` as always set.)
-  const shell = window as { __TAURI__?: unknown; slogaShell?: unknown };
-  if (shell.__TAURI__ || shell.slogaShell)
-    throw new Error("popout bridge: desktop shells have no popout");
-
-  const opener = window.opener as Window | null;
-  if (!opener || opener.closed)
-    throw new Error("popout bridge: main window is gone");
-  opener.postMessage(
-    { type: POPOUT_WEB_MESSAGE_TYPE, action, userId },
-    location.origin,
-  );
-  try {
-    // Browsers mostly refuse to raise another window; worth the try.
-    opener.focus();
-  } catch {
-    // best effort
-  }
-}
 
 /**
  * Message / call actions on a user. Call in component setup (it takes the
@@ -146,7 +94,7 @@ export function useUserActions(): {
 
   async function runHere(action: PopoutAction, userId: string) {
     // Video and screen share are build-gated; their entries are hidden when
-    // off, so only a forwarded action can get here.
+    // off, so this is a guard against a stray caller.
     if (
       (action === "video" || action === "screenshare") &&
       !CONFIGURATION.ENABLE_VIDEO
@@ -159,9 +107,8 @@ export function useUserActions(): {
       const user = client().users.get(userId);
       if (!user) throw new Error("popout bridge: unknown user");
 
-      // Every call entry is offered only for a user we can DM. The
-      // forwarded path holds the same line rather than trusting the window
-      // that sent it.
+      // Every call entry is offered only for a user we can DM; hold the
+      // same line here rather than trust the caller.
       if (
         action !== "dm" &&
         (user.self ||
@@ -202,18 +149,5 @@ export function useUserActions(): {
     }
   }
 
-  async function run(action: PopoutAction, userId: string) {
-    if (!IS_POPOUT_WINDOW) return runHere(action, userId);
-
-    try {
-      await forwardToMain(action, userId);
-    } catch (err) {
-      console.error(err);
-      snackbar.show({
-        message: t`Couldn't open this in the main Sloga window.`,
-      });
-    }
-  }
-
-  return { run };
+  return { run: runHere };
 }

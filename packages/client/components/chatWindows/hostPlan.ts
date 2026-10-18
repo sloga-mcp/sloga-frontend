@@ -43,24 +43,25 @@ export function kindOf(key: string): WindowKind {
 }
 
 /**
- * Whether the child for `key` may be shown. The friends window needs only
- * the shell to be active (main shown, signed in, a shell with the chat-window
- * commands, the layout confirmed as this account's, the client ready), so it
- * works in "main window" mode too. A chat window also needs chat-windows
- * mode, which is never on without an active shell.
+ * Whether the child for `key` may be shown: the shell is active (main shown,
+ * signed in, a shell with the chat-window commands, the layout confirmed as
+ * this account's, the client ready) and chat-windows mode is on, which is
+ * never on without an active shell. The friends window follows the mode like
+ * every chat window: one setting moves the friends list and the
+ * conversations together, so "main window" mode has no friends window whose
+ * conversations would open behind it in main.
  */
 export function keyActive(
-  key: string,
+  _key: string,
   shellActive: boolean,
   chatActive: boolean,
 ): boolean {
-  return shellActive && (kindOf(key) === "friends" || chatActive);
+  return shellActive && chatActive;
 }
 
 /**
- * The child windows that should exist: one per store window while chat
- * windows are active, plus the friends window when it is open and the shell
- * is active, in either mode.
+ * The child windows that should exist while chat windows are active: one per
+ * store window, plus the friends window when it is open.
  */
 export function desiredKeys(
   shellActive: boolean,
@@ -68,8 +69,9 @@ export function desiredKeys(
   windows: readonly Pick<WinLike, "id">[],
   friendsOpen: boolean,
 ): string[] {
-  const keys = shellActive && chatActive ? windows.map((w) => w.id) : [];
-  if (shellActive && friendsOpen) keys.push(FRIENDS_KEY);
+  if (!shellActive || !chatActive) return [];
+  const keys = windows.map((w) => w.id);
+  if (friendsOpen) keys.push(FRIENDS_KEY);
   return keys;
 }
 

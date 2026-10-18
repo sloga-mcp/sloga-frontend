@@ -225,7 +225,7 @@ let internalLinkHandler: ((href: string, from: WindowCtx) => void) | null =
 /**
  * Who handles a same-origin link clicked in a chat window (e.g. opening a
  * DM as a tab). `null` restores the default: focus main and let main's router
- * navigate there.
+ * navigate there ({@link openInMain}, which a handler can fall back to).
  */
 export function setInternalLinkHandler(
   fn: ((href: string, from: WindowCtx) => void) | null,
@@ -238,7 +238,7 @@ export function setInternalLinkHandler(
  * document goes through the router's document-level anchor handler, exactly
  * like a link in main, so there is no reload.
  */
-async function openInMain(href: string) {
+export async function openInMain(href: string): Promise<void> {
   const focused = await chatShell.focusMain();
   if (!focused.ok) window.focus();
 
