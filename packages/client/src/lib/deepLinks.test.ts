@@ -9,9 +9,11 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  CHANNEL_WAIT_MS,
   CIPHER_RETURNS,
   CIPHER_TIERS,
   MAX_RETURN_SEARCH_LENGTH,
+  cipherLinkAction,
   cipherSettingsContext,
   loginReturnPath,
   parseCipherReturn,
@@ -213,5 +215,38 @@ test("every result resolves to the current origin", () => {
       assert.ok(result.startsWith("/"), `${pathname} ${search}`);
       assert.equal(new URL(result, base).origin, base, `${pathname} ${search}`);
     }
+  }
+});
+
+test("a Cipher link opens the Cipher page only where payment links are allowed", () => {
+  const link = cipherSettingsContext("?cipher_tier=T149");
+  assert.equal(
+    cipherLinkAction(link, { allowsLinks: true, mayStillResolve: false }),
+    "open",
+  );
+  // A resolved store build: plain settings, at once
+  assert.equal(
+    cipherLinkAction(link, { allowsLinks: false, mayStillResolve: false }),
+    "plain",
+  );
+});
+
+test("an unresolved channel waits instead of deciding on the default", () => {
+  const link = cipherSettingsContext("?cipher=success");
+  assert.equal(
+    cipherLinkAction(link, { allowsLinks: false, mayStillResolve: true }),
+    "wait",
+  );
+  // The wait is bounded, so a channel that never resolves fails closed
+  assert.ok(CHANNEL_WAIT_MS > 0 && CHANNEL_WAIT_MS <= 5000);
+});
+
+test("without a Cipher link, settings open plain and never wait", () => {
+  for (const channel of [
+    { allowsLinks: true, mayStillResolve: false },
+    { allowsLinks: false, mayStillResolve: true },
+    { allowsLinks: false, mayStillResolve: false },
+  ]) {
+    assert.equal(cipherLinkAction(undefined, channel), "plain");
   }
 });

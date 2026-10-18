@@ -96,11 +96,11 @@ export function useError() {
       if (errType === "CipherSalesClosed")
         return t`The Cipher founding sale is closed.`;
       if (errType === "CipherSoldOut")
-        return t`All 1,000 Cipher numbers have been claimed.`;
+        return t`All Cipher numbers have been claimed.`;
       if (errType === "CipherTierInvalid")
         return t`That Cipher tier isn't available for your account.`;
       if (errType === "PaymentPending")
-        return t`You already have a checkout in progress. Finish it or wait a few minutes.`;
+        return t`You already have a checkout in progress. Finish it, or pick again after it expires.`;
       if (errType === "PaymentProviderError")
         return t`The payment provider didn't respond. Please try again.`;
 

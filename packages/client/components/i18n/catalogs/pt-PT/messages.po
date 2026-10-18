@@ -7483,16 +7483,16 @@ msgid "The Cipher founding sale is closed."
 msgstr "A venda fundadora dos Ciphers está encerrada."
 
 #: components/i18n/errors.ts
-msgid "All 1,000 Cipher numbers have been claimed."
-msgstr "Todos os 1000 números Cipher já foram adquiridos."
+msgid "All Cipher numbers have been claimed."
+msgstr "Todos os números Cipher já foram adquiridos."
 
 #: components/i18n/errors.ts
 msgid "That Cipher tier isn't available for your account."
 msgstr "Esse nível de Cipher não está disponível para a tua conta."
 
 #: components/i18n/errors.ts
-msgid "You already have a checkout in progress. Finish it or wait a few minutes."
-msgstr "Já tens um pagamento em curso. Conclui-o ou aguarda alguns minutos."
+msgid "You already have a checkout in progress. Finish it, or pick again after it expires."
+msgstr "Já tens um pagamento em curso. Conclui-o ou escolhe de novo depois de expirar."
 
 #: components/i18n/errors.ts
 msgid "The payment provider didn't respond. Please try again."

@@ -10,11 +10,16 @@
  *
  * - offers: never the same tier or a downgrade, and an upgrade charges the
  *   difference (the server refuses the rest, but the page must not offer it);
- * - the checkout request names a tier and a return target only, and a shell
- *   never navigates its own window to Stripe;
- * - the standing controller: the poll after checkout stops when the tier it
- *   waits for arrives or after two minutes, and no burst of reads ever
- *   spends more than the `payments` bucket's 3 requests per 10 s;
+ * - the checkout request names a tier and a return target only, only ever
+ *   opens https://checkout.stripe.com, and a shell never navigates its own
+ *   window to Stripe;
+ * - the standing controller: the poll after checkout (every 5 s) stops when
+ *   the tier it waits for arrives or after two minutes, a quiet poll never
+ *   says it is confirming anything, a restarted poll is still one poll, no
+ *   burst of reads spends more than half the `payments_me` bucket (10 per
+ *   10 s), and a buy is never starved by the poll: reads pause while the
+ *   checkout request runs and for 1 s after, and a 429 is retried once;
+ * - prices and times follow the app locale;
  * - the store gate (source level): the `cipher` settings row and page sit
  *   behind `allowsDonationLinks()`, so Play and App Store builds never list
  *   or render it.
@@ -28,9 +33,13 @@ import {
   type CipherMe,
   type CipherOffer,
   type StandingState,
+  CHECKOUT_HOSTS,
+  CHECKOUT_PAUSE_MS,
+  CHECKOUT_RETRY_MAX_MS,
   CipherClientError,
   INTENT_TTL_MS,
   MIN_REQUEST_GAP_MS,
+  POLL_INTERVAL_MS,
   POLL_TIMEOUT_MS,
   checkoutReturnTo,
   checkoutSettled,
@@ -40,8 +49,11 @@ import {
   fetchCipherMe,
   fetchCipherStats,
   formatCipherNumber,
+  formatShortTime,
+  formatUsd,
   isCheckoutUrl,
   livePending,
+  mountPollMode,
   offerAction,
   openCheckout,
   pageOffers,
@@ -50,6 +62,7 @@ import {
   parseCipherStats,
   parseUserCipher,
   pollBaselineOf,
+  pollNote,
   postCheckout,
   readIntent,
   saleStatus,
@@ -358,10 +371,29 @@ describe("checkout: names a tier and a return target, opens safely", () => {
     });
   });
 
-  it("refuses to open anything but an https page", async () => {
+  it("opens a Stripe checkout page", () => {
+    assert.deepEqual([...CHECKOUT_HOSTS], ["checkout.stripe.com"]);
+    assert.equal(isCheckoutUrl("https://checkout.stripe.com/c/pay/cs_1"), true);
+    assert.equal(isCheckoutUrl("https://checkout.stripe.com:443/c/1"), true);
+    assert.equal(isCheckoutUrl("https://CHECKOUT.stripe.com/c/1"), true);
+  });
+
+  it("refuses anything but https://checkout.stripe.com", async () => {
     for (const url of [
       "javascript:alert(1)",
       "http://checkout.stripe.com/x",
+      "https://evil.com/c/pay/cs_1",
+      "https://stripe.com/c/1",
+      "https://pay.checkout.stripe.com/c/1",
+      "https://checkout.stripe.com.evil.com/c/1",
+      "https://checkout.stripe.com.@evil.com/c/1",
+      "https://checkout.stripe.com@evil.com/c/1",
+      "https://user@checkout.stripe.com/c/1",
+      "https://user:pass@checkout.stripe.com/c/1",
+      "https://checkout.stripe.com:8443/c/1",
+      "https://checkout.stripe.com./c/1",
+      "https://evil.com/?https://checkout.stripe.com/",
+      "//checkout.stripe.com/c/1",
       "data:text/html,hi",
       "/settings",
       42,
@@ -490,6 +522,7 @@ function harness(
 ) {
   let now = NOW;
   let nextId = 1;
+  let maxTimers = 0;
   const timers: { id: number; due: number; run: () => void }[] = [];
   const reads: number[] = [];
   const held: (() => void)[] = [];
@@ -513,6 +546,7 @@ function harness(
     setTimer: (run, ms) => {
       const id = nextId++;
       timers.push({ id, due: now + ms, run });
+      maxTimers = Math.max(maxTimers, timers.length);
       return id;
     },
     clearTimer: (id) => {
@@ -528,6 +562,11 @@ function harness(
     reads,
     states,
     timers,
+    now: () => now,
+    /** Most timers ever pending at once */
+    maxTimers: () => maxTimers,
+    /** Reads as offsets from the start */
+    offsets: () => reads.map((at) => at - NOW),
     last: () => states[states.length - 1],
     flush,
     release: async () => {
@@ -564,19 +603,26 @@ function busiestWindow(reads: number[]): number {
   return most;
 }
 
+/** A standing with a checkout open for `tier` until well after any test */
+const pendingFor = (tier: "T99" | "T149" | "T299"): CipherMe => ({
+  pending: {
+    order_id: "o1",
+    sku: { type: "CipherNew", tier },
+    expires_at: NOW + 60 * 60_000,
+  },
+});
+
 describe("standing controller: the poll after checkout", () => {
-  it("polls until the bought tier appears, then stops", async () => {
+  it("polls every 5 s until the bought tier appears, then stops", async () => {
+    assert.equal(POLL_INTERVAL_MS, 5000);
     const h = harness((call) => (call < 4 ? member("T99") : member("T299")));
     h.standing.startPoll("T299");
     await h.advance(60_000);
 
-    assert.equal(h.reads.length, 4);
+    assert.deepEqual(h.offsets(), [0, 5000, 10_000, 15_000]);
     assert.equal(h.last()?.poll, "confirmed");
     assert.equal(h.last()?.me?.membership?.tier, "T299");
     assert.equal(h.timers.length, 0, "no timer left behind");
-    for (let i = 1; i < h.reads.length; i++) {
-      assert.equal((h.reads[i] as number) - (h.reads[i - 1] as number), 3500);
-    }
   });
 
   it("gives up after two minutes and reads no more", async () => {
@@ -586,7 +632,7 @@ describe("standing controller: the poll after checkout", () => {
 
     assert.equal(h.last()?.poll, "timedOut");
     const lastRead = h.reads[h.reads.length - 1] as number;
-    assert.ok(lastRead - NOW <= POLL_TIMEOUT_MS + MIN_REQUEST_GAP_MS);
+    assert.ok(lastRead - NOW <= POLL_TIMEOUT_MS + POLL_INTERVAL_MS);
     const count = h.reads.length;
     await h.advance(60_000);
     assert.equal(h.reads.length, count, "no read after giving up");
@@ -609,8 +655,7 @@ describe("standing controller: the poll after checkout", () => {
     );
     h.standing.startPoll("T149");
     await h.advance(30_000);
-    assert.equal(h.reads.length, 2);
-    assert.equal((h.reads[1] as number) - (h.reads[0] as number), 8000);
+    assert.deepEqual(h.offsets(), [0, 8000]);
     assert.equal(h.last()?.poll, "confirmed");
   });
 
@@ -627,7 +672,281 @@ describe("standing controller: the poll after checkout", () => {
   });
 });
 
-describe("standing controller: never more than the payments bucket allows", () => {
+describe("standing controller: one poll, however often it is (re)started", () => {
+  it("two focus events at once start one poll, not two", async () => {
+    const h = harness(() => pendingFor("T149"));
+    // Focus and visibilitychange fire together when a shell window comes
+    // back; even if both start the poll, it stays one poll on one timer
+    h.standing.startPoll("T149", "quiet");
+    h.standing.startPoll("T149", "quiet");
+    h.standing.refresh();
+    await h.advance(31_000);
+
+    assert.deepEqual(
+      h.offsets(),
+      [0, 5000, 10_000, 15_000, 20_000, 25_000, 30_000],
+    );
+    assert.ok(h.maxTimers() <= 1, `${h.maxTimers()} timers at once`);
+  });
+
+  it("focus events during a running poll never add a second timer", async () => {
+    const h = harness(() => pendingFor("T149"));
+    h.standing.startPoll("T149", "quiet");
+    for (const at of [1200, 2600, 4100, 7300, 7400]) {
+      await h.advance(at - (h.now() - NOW));
+      h.standing.startPoll("T149", "quiet");
+      h.standing.refresh();
+    }
+    await h.advance(20_000 - (h.now() - NOW));
+    for (let i = 1; i < h.reads.length; i++) {
+      const gap = (h.reads[i] as number) - (h.reads[i - 1] as number);
+      assert.ok(gap >= MIN_REQUEST_GAP_MS, `reads ${gap} ms apart`);
+    }
+    assert.ok(h.maxTimers() <= 1, `${h.maxTimers()} timers at once`);
+  });
+
+  it("restarting resets the two minutes", async () => {
+    const h = harness(() => pendingFor("T149"));
+    h.standing.startPoll("T149", "quiet");
+    await h.advance(100_000);
+    h.standing.startPoll("T149", "quiet");
+    await h.advance(POLL_TIMEOUT_MS - 5000);
+    assert.equal(h.last()?.poll, "polling");
+    await h.advance(10_000);
+    assert.equal(h.last()?.poll, "timedOut");
+  });
+});
+
+describe("a quiet poll never says it is confirming a payment", () => {
+  it("only a return marked as paid announces its poll", () => {
+    assert.equal(mountPollMode("success", true), "announced");
+    assert.equal(mountPollMode("success", false), "announced");
+    assert.equal(mountPollMode(undefined, true), "quiet");
+    assert.equal(mountPollMode(undefined, false), undefined);
+    assert.equal(mountPollMode("cancel", true), undefined);
+  });
+
+  it("an announced poll shows confirming, then not seen yet", async () => {
+    const h = harness(() => ({}));
+    h.standing.startPoll("T99", "announced");
+    await h.flush();
+    assert.equal(pollNote(h.standing.state()), "confirming");
+    await h.advance(POLL_TIMEOUT_MS + 10_000);
+    assert.equal(h.last()?.poll, "timedOut");
+    assert.equal(pollNote(h.standing.state()), "notSeen");
+  });
+
+  it("a quiet poll that gives up shows nothing", async () => {
+    const h = harness(() => pendingFor("T99"));
+    h.standing.startPoll("T99", "quiet");
+    await h.flush();
+    assert.equal(pollNote(h.standing.state()), undefined);
+    await h.advance(POLL_TIMEOUT_MS + 10_000);
+    assert.equal(h.last()?.poll, "timedOut");
+    assert.equal(h.last()?.mode, "quiet");
+    for (const state of h.states) {
+      assert.equal(pollNote(state), undefined, JSON.stringify(state));
+    }
+  });
+
+  it("a quiet poll runs only while a checkout is open", async () => {
+    const h = harness((call) => (call < 3 ? pendingFor("T99") : {}));
+    h.standing.startPoll("T99", "quiet");
+    await h.advance(60_000);
+    assert.deepEqual(h.offsets(), [0, 5000, 10_000]);
+    assert.equal(h.last()?.poll, "idle");
+    assert.equal(h.timers.length, 0);
+  });
+
+  it("a quiet poll with no open checkout reads once and stops", async () => {
+    const h = harness(() => ({}));
+    h.standing.startPoll(undefined, "quiet");
+    await h.advance(60_000);
+    assert.equal(h.reads.length, 1);
+    assert.equal(h.last()?.poll, "idle");
+  });
+
+  it("a quiet poll still ends in the thank-you when the tier arrives", async () => {
+    const h = harness((call) =>
+      call < 3 ? pendingFor("T149") : member("T149"),
+    );
+    h.standing.startPoll("T149", "quiet");
+    await h.advance(60_000);
+    assert.equal(h.last()?.poll, "confirmed");
+    assert.equal(thankedMembership(h.standing.state(), null)?.tier, "T149");
+  });
+
+  it("a quiet restart leaves an announced poll announced", async () => {
+    const h = harness(() => ({}));
+    h.standing.startPoll("T99", "announced");
+    await h.flush();
+    h.standing.startPoll("T99", "quiet");
+    assert.equal(h.standing.state().mode, "announced");
+  });
+});
+
+describe("a buy is never starved by the poll", () => {
+  /** A checkout request whose answers the test hands out one at a time */
+  function checkoutRequests(h: ReturnType<typeof harness>) {
+    const attempts: number[] = [];
+    const pending: {
+      resolve: (url: string) => void;
+      reject: (e: unknown) => void;
+    }[] = [];
+    const attempt = () =>
+      new Promise<string>((resolve, reject) => {
+        attempts.push(h.now());
+        pending.push({ resolve, reject });
+      });
+    return {
+      attempts: () => attempts.map((at) => at - NOW),
+      /**
+       * Buy through the controller. A rejection is asserted by the test
+       * later, so it is marked handled here rather than reported as
+       * unhandled the moment it happens.
+       */
+      start() {
+        const result = h.standing.checkout(attempt);
+        result.catch(() => undefined);
+        return result;
+      },
+      async answer(value: string | Error) {
+        const next = pending.shift();
+        if (value instanceof Error) next?.reject(value);
+        else next?.resolve(value);
+        await h.flush();
+      },
+    };
+  }
+
+  it("a buy during a poll goes out at once, and the poll waits for it", async () => {
+    const h = harness((call) => (call < 3 ? {} : member("T149")));
+    const req = checkoutRequests(h);
+    h.standing.startPoll("T149");
+    await h.advance(4900);
+    assert.deepEqual(h.offsets(), [0]);
+
+    // Just before the poll's next read is due
+    const result = req.start();
+    assert.deepEqual(req.attempts(), [4900], "the buy is sent at once");
+
+    // In flight across the poll's due time: no read
+    await h.advance(2000);
+    assert.deepEqual(h.offsets(), [0]);
+    await req.answer("https://checkout.stripe.com/c/1");
+    assert.equal(await result, "https://checkout.stripe.com/c/1");
+
+    // Settled at 6900: still no read for CHECKOUT_PAUSE_MS
+    assert.equal(CHECKOUT_PAUSE_MS, 1000);
+    await h.advance(999);
+    assert.deepEqual(h.offsets(), [0]);
+    await h.advance(1);
+    assert.deepEqual(h.offsets(), [0, 7900], "the poll resumes after it");
+
+    await h.advance(10_000);
+    assert.deepEqual(h.offsets(), [0, 7900, 12_900]);
+    assert.equal(h.last()?.poll, "confirmed");
+  });
+
+  it("a read already in flight does not hold the buy back", async () => {
+    const h = harness(() => ({}), { hold: true });
+    const req = checkoutRequests(h);
+    h.standing.startPoll("T149");
+    await h.flush();
+    void req.start();
+    assert.deepEqual(req.attempts(), [0]);
+    await h.release();
+    await h.advance(POLL_INTERVAL_MS * 2);
+    assert.equal(h.reads.length, 1, "no read while the buy is out");
+    await req.answer("https://checkout.stripe.com/c/1");
+    await h.advance(CHECKOUT_PAUSE_MS);
+    assert.equal(h.reads.length, 2);
+  });
+
+  it("a rate-limited buy waits out retry_after and retries once", async () => {
+    const h = harness(() => ({}));
+    const req = checkoutRequests(h);
+    h.standing.startPoll("T149");
+    await h.flush();
+    const result = req.start();
+    await req.answer(new CipherClientError("rateLimited", 3000));
+    await h.advance(2999);
+    assert.deepEqual(req.attempts(), [0]);
+    await h.advance(1);
+    assert.deepEqual(req.attempts(), [0, 3000], "retried after retry_after");
+    await req.answer("https://checkout.stripe.com/c/2");
+    assert.equal(await result, "https://checkout.stripe.com/c/2");
+    assert.deepEqual(h.offsets(), [0], "no read during the wait");
+    await h.advance(CHECKOUT_PAUSE_MS);
+    assert.deepEqual(h.offsets(), [0, 4000]);
+  });
+
+  it("a second 429 is reported, not retried again", async () => {
+    const h = harness(() => ({}));
+    const req = checkoutRequests(h);
+    const result = req.start();
+    await req.answer(new CipherClientError("rateLimited", 2000));
+    await h.advance(2000);
+    await req.answer(new CipherClientError("rateLimited", 2000));
+    await assert.rejects(result, (error) => {
+      assert.ok(error instanceof CipherClientError);
+      assert.equal(error.kind, "rateLimited");
+      return true;
+    });
+    await h.advance(30_000);
+    assert.equal(req.attempts().length, 2);
+  });
+
+  it("a wait longer than one window is reported at once", async () => {
+    const h = harness(() => ({}));
+    const req = checkoutRequests(h);
+    const result = req.start();
+    await req.answer(
+      new CipherClientError("rateLimited", CHECKOUT_RETRY_MAX_MS + 1),
+    );
+    await assert.rejects(result, CipherClientError);
+    await h.advance(60_000);
+    assert.equal(req.attempts().length, 1);
+  });
+
+  it("any other failure is reported at once, and the poll resumes", async () => {
+    const h = harness(() => ({}));
+    const req = checkoutRequests(h);
+    h.standing.startPoll("T149");
+    await h.flush();
+    const result = req.start();
+    await h.advance(6000);
+    await req.answer(
+      Object.assign(new Error("409"), { type: "PaymentPending" }),
+    );
+    await assert.rejects(result, { type: "PaymentPending" });
+    assert.equal(req.attempts().length, 1);
+    await h.advance(CHECKOUT_PAUSE_MS);
+    assert.deepEqual(h.offsets(), [0, 7000]);
+  });
+
+  it("one checkout request at a time", async () => {
+    const h = harness(() => ({}));
+    const req = checkoutRequests(h);
+    void req.start();
+    await assert.rejects(req.start());
+    assert.equal(req.attempts().length, 1);
+  });
+
+  it("dispose during the retry wait ends it without a second attempt", async () => {
+    const h = harness(() => ({}));
+    const req = checkoutRequests(h);
+    const result = req.start();
+    await req.answer(new CipherClientError("rateLimited", 5000));
+    h.standing.dispose();
+    await assert.rejects(result, CipherClientError);
+    await h.advance(30_000);
+    assert.equal(req.attempts().length, 1);
+    assert.equal(h.timers.length, 0);
+  });
+});
+
+describe("standing controller: well within the payments_me bucket", () => {
   it("asks made while a read is in flight share one follow-up read", async () => {
     const h = harness(() => ({}), { hold: true });
     h.standing.refresh();
@@ -640,7 +959,7 @@ describe("standing controller: never more than the payments bucket allows", () =
     assert.equal(h.reads.length, 2);
   });
 
-  it("a burst of focus refreshes and poll restarts stays within 3 per 10 s", async () => {
+  it("a burst of focus refreshes and poll restarts stays within 5 per 10 s", async () => {
     const h = harness(() => ({}));
     h.standing.refresh();
     for (let i = 0; i < 40; i++) {
@@ -651,8 +970,9 @@ describe("standing controller: never more than the payments bucket allows", () =
     }
     await h.advance(POLL_TIMEOUT_MS);
     assert.ok(h.reads.length > 5, "it did read");
+    // Half of payments_me (10 per 10 s), so a second tab still fits
     assert.ok(
-      busiestWindow(h.reads) <= 3,
+      busiestWindow(h.reads) <= 5,
       `busiest 10 s window held ${busiestWindow(h.reads)} reads`,
     );
   });
@@ -662,14 +982,33 @@ describe("standing controller: never more than the payments bucket allows", () =
     h.standing.refresh();
     await h.advance(1000);
     h.standing.refresh();
-    await h.advance(1000);
+    await h.advance(500);
     assert.equal(h.reads.length, 1);
-    await h.advance(2000);
+    await h.advance(500);
     assert.equal(h.reads.length, 2);
     assert.equal(
       (h.reads[1] as number) - (h.reads[0] as number),
       MIN_REQUEST_GAP_MS,
     );
+  });
+});
+
+describe("prices and times follow the app locale", () => {
+  it("formats prices in the app locale, whole dollars without cents", () => {
+    assert.equal(formatUsd(9900, "en"), "$99");
+    assert.equal(formatUsd(5050, "en"), "$50.50");
+    // lingui's `pt_BR`-style tags are read as formatCount reads them
+    assert.match(formatUsd(14900, "pt_BR"), /^US\$\s149$/);
+    assert.match(formatUsd(5050, "de"), /^50,50\s\$$/);
+    assert.equal(formatUsd(9900, "not a locale!"), "$99");
+    assert.equal(formatUsd(9900, undefined), "$99");
+  });
+
+  it("formats times in the app locale", () => {
+    const at = Date.UTC(2026, 9, 18, 15, 0);
+    assert.match(formatShortTime(at, "en"), /AM|PM/);
+    assert.doesNotMatch(formatShortTime(at, "de"), /AM|PM/);
+    assert.match(formatShortTime(at, "not a locale!"), /AM|PM/);
   });
 });
 

@@ -13,7 +13,7 @@ import {
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
 import { i18n } from "@lingui/core";
-import type { Client } from "stoat.js";
+import type { CipherTier, Client } from "stoat.js";
 import { styled } from "styled-system/jsx";
 
 import { cipherPromoUrl, formatCount } from "@revolt/auth/src/cipherPromo";
@@ -37,8 +37,8 @@ import {
   type CipherMe,
   type CipherOffer,
   type CipherStats,
-  type CipherTier,
   type OfferAction,
+  type PollMode,
   type StandingState,
   CipherClientError,
   INTENT_KEY,
@@ -47,13 +47,17 @@ import {
   fetchCipherMe,
   fetchCipherStats,
   formatCipherNumber,
+  formatShortTime,
+  formatUsd,
   livePending,
+  mountPollMode,
   offerAction,
   openCheckout,
   pageOffers,
   parseCipherContext,
   parseUserCipher,
   pollBaselineOf,
+  pollNote,
   postCheckout,
   readIntent,
   saleStatus,
@@ -145,19 +149,18 @@ function CipherPage(props: { context?: unknown }) {
   const [buying, setBuying] = createSignal<CipherTier>();
   const [openedUrl, setOpenedUrl] = createSignal<string>();
 
-  // Whether a running poll says so on screen. A shell polls quietly when its
-  // window regains focus (the buyer may only be switching windows), and
-  // only its result is shown.
-  const [announcePoll, setAnnouncePoll] = createSignal(false);
-
   // The tier held when the poll started (see thankedMembership)
   const [pollBaseline, setPollBaseline] = createSignal<CipherTier | null>();
 
-  function startPoll(tier: CipherTier | undefined, announce: boolean) {
-    setAnnouncePoll(announce);
+  // Only a return Stripe sent as paid (or "Check again") announces its poll.
+  // A shell polls quietly when its window regains focus (the buyer may only
+  // be switching windows), and only its result is shown (see PollMode).
+  function startPoll(tier: CipherTier | undefined, mode: PollMode) {
     setPollBaseline(pollBaselineOf(standing().me));
-    controller.startPoll(tier);
+    controller.startPoll(tier, mode);
   }
+
+  const note = () => pollNote(standing());
 
   const newMembership = () => thankedMembership(standing(), pollBaseline());
 
@@ -213,11 +216,13 @@ function CipherPage(props: { context?: unknown }) {
   onMount(() => {
     if (returned === "cancel") forgetIntent();
 
-    // A checkout this tab started recently also polls: it covers a return
-    // that reached settings without the `checkout` context
+    // A checkout this tab started recently also polls, quietly and only while
+    // it is still open: it covers a return that reached settings without the
+    // `checkout` context, and never claims a payment is being confirmed
     const intent = storedIntent();
-    if (returned === "success" || intent) {
-      startPoll(intent?.tier, true);
+    const mode = mountPollMode(returned, intent !== undefined);
+    if (mode) {
+      startPoll(intent?.tier, mode);
     } else {
       controller.refresh();
     }
@@ -251,7 +256,9 @@ function CipherPage(props: { context?: unknown }) {
   createEffect(on(storeCipher, () => controller.refresh(), { defer: true }));
 
   // Shells pay in the system browser and never come back through a URL, so
-  // read the standing again whenever the window comes back
+  // read the standing again whenever the window comes back. Focus and
+  // visibility usually fire together: the first starts (or restarts) the one
+  // poll, and the second only asks for a read, which that poll shares.
   if (native) {
     const onReturn = () => {
       if (document.visibilityState === "hidden") return;
@@ -261,7 +268,7 @@ function CipherPage(props: { context?: unknown }) {
         state.poll !== "polling" &&
         (intent || livePending(state.me, Date.now()))
       ) {
-        startPoll(intent?.tier, false);
+        startPoll(intent?.tier, "quiet");
       } else {
         controller.refresh();
       }
@@ -283,13 +290,21 @@ function CipherPage(props: { context?: unknown }) {
     return err(error);
   }
 
+  // Re-enables the buttons if a navigation to Stripe never happens
+  let leavingTimer: ReturnType<typeof setTimeout> | undefined;
+  onCleanup(() => clearTimeout(leavingTimer));
+
   async function buy(tier: CipherTier) {
     if (buying()) return;
     setBuying(tier);
     let leaving = false;
 
     try {
-      const url = await postCheckout(api, tier, native);
+      // Through the controller: the standing is not read while the request
+      // is in flight, and a rate-limited attempt is retried once
+      const url = await controller.checkout(() =>
+        postCheckout(api, tier, native),
+      );
       rememberIntent(tier);
       leaving = !native;
       if (native) setOpenedUrl(url);
@@ -311,22 +326,17 @@ function CipherPage(props: { context?: unknown }) {
       if (leaving) {
         // On its way to Stripe; if the navigation never happens, let the
         // buyer try again
-        setTimeout(() => setBuying(undefined), 10_000);
+        clearTimeout(leavingTimer);
+        leavingTimer = setTimeout(() => setBuying(undefined), 10_000);
       } else {
         setBuying(undefined);
       }
     }
   }
 
-  const usd = (cents: number) =>
-    new Intl.NumberFormat(undefined, {
-      style: "currency",
-      currency: "USD",
-      minimumFractionDigits: cents % 100 === 0 ? 0 : 2,
-    }).format(cents / 100);
-
-  const time = (ms: number) =>
-    new Intl.DateTimeFormat(undefined, { timeStyle: "short" }).format(ms);
+  // In the app locale, as formatCount
+  const usd = (cents: number) => formatUsd(cents, i18n.locale);
+  const time = (ms: number) => formatShortTime(ms, i18n.locale);
 
   function cipherName(number: number) {
     const label = formatCipherNumber(number);
@@ -533,7 +543,7 @@ function CipherPage(props: { context?: unknown }) {
           </CategoryButton>
         </Show>
         <Switch>
-          <Match when={announcePoll() && standing().poll === "polling"}>
+          <Match when={note() === "confirming"}>
             <CategoryButton
               icon={<Symbol size={22}>hourglass_top</Symbol>}
               description={<Trans>This usually takes a few seconds.</Trans>}
@@ -548,7 +558,7 @@ function CipherPage(props: { context?: unknown }) {
               </CategoryButton>
             )}
           </Match>
-          <Match when={announcePoll() && standing().poll === "timedOut"}>
+          <Match when={note() === "notSeen"}>
             <CategoryButton
               icon={<Symbol size={22}>schedule</Symbol>}
               description={
@@ -560,7 +570,7 @@ function CipherPage(props: { context?: unknown }) {
               action={
                 <Button
                   size="sm"
-                  onPress={() => startPoll(storedIntent()?.tier, true)}
+                  onPress={() => startPoll(storedIntent()?.tier, "announced")}
                 >
                   <Trans>Check again</Trans>
                 </Button>

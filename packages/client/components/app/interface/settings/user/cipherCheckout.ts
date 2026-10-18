@@ -8,18 +8,21 @@
  *
  * `CipherSettings.tsx` reaches `solid-js`, lingui, `@revolt/ui` and the
  * client, so nothing declared inside it is loadable by `node --test`. This
- * module has no imports at all, and the page keeps only the composition.
+ * module imports types only (erased at runtime), and the page keeps only the
+ * composition.
  *
  * The server owns prices and decides every purchase (same tier, downgrades,
  * disputes, one live checkout per user, sales open, numbers left). The
  * figures here are for display, and every gate here only decides what is
  * offered, never what is allowed.
  */
+import type { CipherTier, UserCipher } from "stoat.js";
 
-export type CipherTier = "T99" | "T149" | "T299";
-
-/** `User.cipher`: the public badge (absent while a payment is disputed) */
-export type UserCipher = { number: number; tier: CipherTier };
+/**
+ * The tier, and `User.cipher` (the public badge, absent while a payment is
+ * disputed), as stoat.js defines them for the whole client
+ */
+export type { CipherTier, UserCipher };
 
 export type CipherSku =
   | { type: "CipherNew"; tier: CipherTier }
@@ -70,24 +73,44 @@ const TIER_PROT: Record<CipherTier, number> = {
 };
 
 /**
- * `@me` shares the `payments` bucket with checkout: 3 requests per fixed
- * 10 s window per session. Any 10 s span holds at most three requests spaced
- * more than 3.34 s apart, so the poll and every other read of the standing
- * keep at least this gap and never spend a fourth.
+ * `@me` has its own rate-limit bucket, `payments_me`: 10 requests per fixed
+ * 10 s window per session. Reads of the standing keep at least this gap, so
+ * one page spends at most 5 of them in any 10 s and leaves the rest to
+ * another tab on the same session.
  */
-export const MIN_REQUEST_GAP_MS = 3500;
+export const MIN_REQUEST_GAP_MS = 2000;
 
-/** Poll interval after a checkout (see {@link MIN_REQUEST_GAP_MS}) */
-export const POLL_INTERVAL_MS = MIN_REQUEST_GAP_MS;
+/** Poll interval after a checkout */
+export const POLL_INTERVAL_MS = 5000;
 
 /** How long a poll runs before it gives up */
 export const POLL_TIMEOUT_MS = 2 * 60_000;
+
+/**
+ * How long the standing stays unread after a checkout request settles. The
+ * standing is not read at all while one is in flight: the buy is the request
+ * that matters, and it never shares its moment with a poll read.
+ */
+export const CHECKOUT_PAUSE_MS = 1000;
+
+/**
+ * Longest `retry_after` a rate-limited checkout waits out before its one
+ * automatic retry (a `payments` window: 3 per 10 s). A longer wait is
+ * reported instead, so the buy button never sits disabled for a minute.
+ */
+export const CHECKOUT_RETRY_MAX_MS = 10_000;
 
 /** Wait after a 429 that carries no usable `retry_after` (one window) */
 const RATE_LIMIT_FALLBACK_MS = 10_000;
 
 /** Longest wait honored from a `retry_after` */
 const RATE_LIMIT_MAX_MS = 60_000;
+
+/**
+ * Hosts a checkout page may be on, compared exactly: no subdomain, port or
+ * credentials, and nothing that merely starts or ends with one of them
+ */
+export const CHECKOUT_HOSTS: readonly string[] = ["checkout.stripe.com"];
 
 export function isCipherTier(value: unknown): value is CipherTier {
   return value === "T99" || value === "T149" || value === "T299";
@@ -106,6 +129,44 @@ export function tierCents(tier: CipherTier): number {
 /** The badge number as it is shown everywhere: `#0042` */
 export function formatCipherNumber(number: number): string {
   return `#${String(number).padStart(4, "0")}`;
+}
+
+/**
+ * The app locale (`i18n.locale`, which may use `_`) as an Intl tag, as
+ * `formatCount` reads it
+ */
+function intlLocale(locale: string | undefined): string {
+  return (locale ?? "en").replace(/_/g, "-");
+}
+
+/** A price in US cents, in the app locale: `$99`, `US$ 149,50` */
+export function formatUsd(cents: number, locale: string | undefined): string {
+  const options: Intl.NumberFormatOptions = {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: cents % 100 === 0 ? 0 : 2,
+  };
+  try {
+    return new Intl.NumberFormat(intlLocale(locale), options).format(
+      cents / 100,
+    );
+  } catch {
+    return new Intl.NumberFormat("en", options).format(cents / 100);
+  }
+}
+
+/** A time of day (epoch ms), short, in the app locale */
+export function formatShortTime(
+  ms: number,
+  locale: string | undefined,
+): string {
+  try {
+    return new Intl.DateTimeFormat(intlLocale(locale), {
+      timeStyle: "short",
+    }).format(ms);
+  } catch {
+    return new Intl.DateTimeFormat("en", { timeStyle: "short" }).format(ms);
+  }
 }
 
 /** The tier a checkout is for, whether a new membership or an upgrade */
@@ -358,14 +419,26 @@ export function checkoutReturnTo(nativeShell: boolean): "web" | "shell" {
   return nativeShell ? "shell" : "web";
 }
 
-/** Only ever open an https page, whatever the server sent */
+/**
+ * Only ever open an https page on a {@link CHECKOUT_HOSTS} host, whatever the
+ * server sent. `host` (not `hostname`) so an explicit port is refused, and no
+ * credentials, so `https://checkout.stripe.com@evil.com` (whose host is
+ * evil.com) and `https://x@checkout.stripe.com` are both refused.
+ */
 export function isCheckoutUrl(value: unknown): value is string {
   if (typeof value !== "string") return false;
+  let url: URL;
   try {
-    return new URL(value).protocol === "https:";
+    url = new URL(value);
   } catch {
     return false;
   }
+  return (
+    url.protocol === "https:" &&
+    url.username === "" &&
+    url.password === "" &&
+    CHECKOUT_HOSTS.includes(url.host)
+  );
 }
 
 /**
@@ -475,6 +548,37 @@ export function thankedMembership(
   return tierRank(membership.tier) > tierRank(baseline)
     ? membership
     : undefined;
+}
+
+/**
+ * How a poll shows itself:
+ * - `announced`: the page says it is confirming the payment, and says so
+ *   again if the poll gives up. Only for a return Stripe sent as paid
+ *   (`checkout: "success"`), or when the buyer asks to check again.
+ * - `quiet`: a checkout this tab started may still be open (its intent
+ *   survived, or a shell window came back). It runs only while the standing
+ *   shows an open checkout, and only its result (a thank-you) is shown.
+ */
+export type PollMode = "announced" | "quiet";
+
+/** The poll a page starts as it opens, if any */
+export function mountPollMode(
+  returned: CheckoutReturn | undefined,
+  hasIntent: boolean,
+): PollMode | undefined {
+  if (returned === "success") return "announced";
+  if (returned === "cancel") return undefined;
+  return hasIntent ? "quiet" : undefined;
+}
+
+/** The note a poll puts on screen, if any; a quiet poll never has one */
+export function pollNote(
+  state: Pick<StandingState, "poll" | "mode">,
+): "confirming" | "notSeen" | undefined {
+  if (state.mode !== "announced") return undefined;
+  if (state.poll === "polling") return "confirming";
+  if (state.poll === "timedOut") return "notSeen";
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -589,6 +693,8 @@ export type StandingState = {
   /** A read is in flight */
   loading: boolean;
   poll: PollPhase;
+  /** How the current (or last) poll shows itself */
+  mode?: PollMode;
 };
 
 export type StandingDeps = {
@@ -604,7 +710,11 @@ export type StandingDeps = {
  * {@link MIN_REQUEST_GAP_MS} (or than a 429 asked), and after a checkout
  * polls it every {@link POLL_INTERVAL_MS} until {@link checkoutSettled} or
  * {@link POLL_TIMEOUT_MS}. A read asked for too soon is deferred, and reads
- * asked for while one is waiting or in flight share it.
+ * asked for while one is waiting or in flight share it: there is one timer
+ * and one poll per controller, however often the poll is (re)started.
+ *
+ * A checkout request goes through {@link checkout}, which pauses every read
+ * while it is in flight and for {@link CHECKOUT_PAUSE_MS} after.
  */
 export function createCipherStanding(deps: StandingDeps) {
   let state: StandingState = { loading: false, poll: "idle" };
@@ -620,6 +730,12 @@ export function createCipherStanding(deps: StandingDeps) {
 
   let target: CipherTier | undefined;
   let deadline = 0;
+
+  let checkoutRunning = false;
+  /** A read came due while the checkout ran; it is taken after the pause */
+  let readOwed = false;
+  let sleepTimer: unknown;
+  let wake: (() => void) | undefined;
 
   function update(patch: Partial<StandingState>) {
     state = { ...state, ...patch };
@@ -653,6 +769,12 @@ export function createCipherStanding(deps: StandingDeps) {
       update({ poll: "confirmed" });
       return;
     }
+    // A quiet poll only waits on a checkout that is still open
+    if (me && state.mode === "quiet" && !livePending(me, deps.now())) {
+      cancelTimer();
+      update({ poll: "idle" });
+      return;
+    }
     if (deps.now() >= deadline) {
       cancelTimer();
       update({ poll: "timedOut" });
@@ -663,6 +785,10 @@ export function createCipherStanding(deps: StandingDeps) {
 
   async function request(): Promise<void> {
     if (disposed) return;
+    if (checkoutRunning) {
+      readOwed = true;
+      return;
+    }
     if (state.loading) {
       again = true;
       return;
@@ -699,6 +825,29 @@ export function createCipherStanding(deps: StandingDeps) {
 
     if (again) {
       again = false;
+      // A running poll has its next read scheduled, and that read serves
+      // whatever asked meanwhile: a focus and a visibility event arriving
+      // together, or a restart, never add a read of their own
+      if (state.poll !== "polling") void request();
+    }
+  }
+
+  function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      wake = () => {
+        wake = undefined;
+        resolve();
+      };
+      sleepTimer = deps.setTimer(() => wake?.(), ms);
+    });
+  }
+
+  function endCheckout() {
+    checkoutRunning = false;
+    if (disposed) return;
+    notBefore = Math.max(notBefore, deps.now() + CHECKOUT_PAUSE_MS);
+    if (readOwed) {
+      readOwed = false;
       void request();
     }
   }
@@ -713,19 +862,63 @@ export function createCipherStanding(deps: StandingDeps) {
 
     /**
      * Poll after a checkout, waiting for `tier` when it is known. Restarting
-     * a running poll extends it.
+     * a running poll resets its two minutes and never adds a second one; a
+     * quiet restart leaves an announced poll announced.
      */
-    startPoll(tier?: CipherTier) {
+    startPoll(tier?: CipherTier, mode: PollMode = "announced") {
       if (disposed) return;
       target = tier;
       deadline = deps.now() + POLL_TIMEOUT_MS;
-      update({ poll: "polling" });
+      const keepAnnounced =
+        state.poll === "polling" && state.mode === "announced";
+      update({ poll: "polling", mode: keepAnnounced ? "announced" : mode });
       void request();
+    },
+
+    /**
+     * Run a checkout request with the standing paused around it: no read
+     * while it is in flight or for {@link CHECKOUT_PAUSE_MS} after, so a poll
+     * never competes with the buy. A rate-limited attempt is retried once,
+     * after its `retry_after` (when that is at most
+     * {@link CHECKOUT_RETRY_MAX_MS}); any other failure, or a second one, is
+     * thrown for the page to report.
+     */
+    async checkout<T>(attempt: () => Promise<T>): Promise<T> {
+      if (disposed || checkoutRunning) {
+        throw new Error("A checkout request is already running");
+      }
+      checkoutRunning = true;
+      if (hasTimer) {
+        cancelTimer();
+        readOwed = true;
+      }
+      try {
+        try {
+          return await attempt();
+        } catch (error) {
+          if (
+            !(error instanceof CipherClientError) ||
+            error.kind !== "rateLimited" ||
+            error.retryAfterMs > CHECKOUT_RETRY_MAX_MS
+          ) {
+            throw error;
+          }
+          await sleep(error.retryAfterMs);
+          if (disposed) throw error;
+          return await attempt();
+        }
+      } finally {
+        endCheckout();
+      }
     },
 
     dispose() {
       disposed = true;
       cancelTimer();
+      if (wake) {
+        deps.clearTimer(sleepTimer);
+        wake();
+      }
     },
   };
 }

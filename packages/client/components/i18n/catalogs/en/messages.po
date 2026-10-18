@@ -9229,16 +9229,16 @@ msgid "The Cipher founding sale is closed."
 msgstr "The Cipher founding sale is closed."
 
 #: components/i18n/errors.ts
-msgid "All 1,000 Cipher numbers have been claimed."
-msgstr "All 1,000 Cipher numbers have been claimed."
+msgid "All Cipher numbers have been claimed."
+msgstr "All Cipher numbers have been claimed."
 
 #: components/i18n/errors.ts
 msgid "That Cipher tier isn't available for your account."
 msgstr "That Cipher tier isn't available for your account."
 
 #: components/i18n/errors.ts
-msgid "You already have a checkout in progress. Finish it or wait a few minutes."
-msgstr "You already have a checkout in progress. Finish it or wait a few minutes."
+msgid "You already have a checkout in progress. Finish it, or pick again after it expires."
+msgstr "You already have a checkout in progress. Finish it, or pick again after it expires."
 
 #: components/i18n/errors.ts
 msgid "The payment provider didn't respond. Please try again."

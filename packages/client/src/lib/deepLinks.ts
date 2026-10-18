@@ -2,13 +2,17 @@
  * Query-string deep links that have to survive the login redirect.
  *
  * Pure: no DOM, no client, no Solid, so `node --test` can load it
- * (see deepLinks.test.ts).
+ * (see deepLinks.test.ts). The stoat.js import is a type and is erased.
  */
+import type { CipherTier } from "stoat.js";
 
-/** Cipher tiers a `/settings?cipher_tier=` link may preselect. */
-export const CIPHER_TIERS = ["T99", "T149", "T299"] as const;
+export type { CipherTier };
 
-export type CipherTier = (typeof CIPHER_TIERS)[number];
+/**
+ * Cipher tiers a `/settings?cipher_tier=` link may preselect: the literals
+ * to match, typed by the stoat.js definition (the spec pins the full list).
+ */
+export const CIPHER_TIERS: readonly CipherTier[] = ["T99", "T149", "T299"];
 
 /**
  * Tier from a `?cipher_tier=` query string. Only the three exact literals
@@ -66,6 +70,31 @@ export function cipherSettingsContext(
     ...(tier ? { tier } : {}),
     ...(checkout ? { checkout } : {}),
   };
+}
+
+/** Longest `wait` (see {@link cipherLinkAction}) before settings open plain */
+export const CHANNEL_WAIT_MS = 3000;
+
+/**
+ * What a `/settings` visit does with a Cipher deep link:
+ * - `open`: open the Cipher page with the link's context;
+ * - `plain`: open settings as usual (no link, or a build that may not link
+ *   out to payments);
+ * - `wait`: the links are not allowed yet, but the build may still be
+ *   learning its distribution channel (an Android build asks its native
+ *   layer and reads as "play" until it answers). The caller waits for the
+ *   links to be allowed, for a bounded time, and otherwise opens `plain`.
+ * @param context From {@link cipherSettingsContext}
+ * @param channel Whether payment links are allowed now, and whether the
+ *   channel that forbids them could still change
+ */
+export function cipherLinkAction(
+  context: CipherSettingsContext | undefined,
+  channel: { allowsLinks: boolean; mayStillResolve: boolean },
+): "open" | "plain" | "wait" {
+  if (!context) return "plain";
+  if (channel.allowsLinks) return "open";
+  return channel.mayStillResolve ? "wait" : "plain";
 }
 
 /**
