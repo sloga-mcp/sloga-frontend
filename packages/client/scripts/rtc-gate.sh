@@ -185,8 +185,8 @@ EXPECTED=(
   # at 10.
   "components/rtc/shareAudioBadge.test.ts 10 0"
   # Mid-call microphone-mode switch (push to talk -> voice activity left the
-  # mic muted for the rest of the call). First measured at 13.
-  "components/rtc/micModePolicy.test.ts 13 0"
+  # mic muted for the rest of the call). First measured at 18.
+  "components/rtc/micModePolicy.test.ts 18 0"
 )
 
 # --- skips -------------------------------------------------------------------

@@ -36,6 +36,12 @@ export type MicModeSwitchPlan = {
   nativePtt: "arm" | "disarm";
   /** What happens to the published microphone this instant. */
   mic: "on" | "off" | "keep";
+  /**
+   * What the room mic returns to when a whisper in progress ends, replacing
+   * the state saved when it began; `undefined` keeps the saved one. Read only
+   * while whispering.
+   */
+  afterWhisper: boolean | undefined;
 };
 
 /**
@@ -62,27 +68,46 @@ export type MicModeSwitchPlan = {
  *   not want it on. A whisper or a refused publish leaves it alone: the
  *   whisper restores the room mic itself when it ends, and a refused enable is
  *   off already.
+ *
+ * A whisper saves the room mic's state when it begins and restores it when it
+ * ends, so a switch made mid-whisper also rewrites what it restores
+ * (`afterWhisper`). Left alone, the restore would undo the switch: Open Mic ->
+ * push to talk mid-whisper turned the mic back on, hot, with no key held, and
+ * push to talk -> Open Mic left it off while the button read live.
  */
 export function micModeSwitchPlan(
   inputs: MicModeSwitchInputs,
 ): MicModeSwitchPlan {
   switch (inputs.next) {
     case "vad":
-      return { vad: "start", nativePtt: "disarm", mic: "keep" };
+      // The gate opens and closes the mic itself once the whisper is over.
+      return {
+        vad: "start",
+        nativePtt: "disarm",
+        mic: "keep",
+        afterWhisper: undefined,
+      };
     case "pushToTalk":
       return {
         vad: "stop",
         nativePtt: "arm",
         mic: inputs.pttHeld ? "keep" : "off",
+        afterWhisper: false,
       };
     case "openMic":
       if (!inputs.intentOn) {
-        return { vad: "stop", nativePtt: "disarm", mic: "off" };
+        return {
+          vad: "stop",
+          nativePtt: "disarm",
+          mic: "off",
+          afterWhisper: false,
+        };
       }
       return {
         vad: "stop",
         nativePtt: "disarm",
         mic: inputs.whispering || inputs.publishRefused ? "keep" : "on",
+        afterWhisper: !inputs.publishRefused,
       };
   }
 }

@@ -12544,15 +12544,17 @@ class Voice {
   /**
    * Apply a microphone-mode switch to the call in progress
    * ({@link micModeSwitchPlan}). A switch made before the call is connected
-   * needs nothing here: the `connected` handler reads the mode itself.
+   * is left to the `connected` handler, which starts the voice-activity gate
+   * and the push-to-talk listeners from the mode as it then stands.
    */
   #applyMicMode(mode: MicMode) {
     const room = this.room();
     if (!room || this.state() !== "CONNECTED") return;
+    const whispering = !!this.whisper.target();
     const plan = micModeSwitchPlan({
       next: mode,
       intentOn: this.#settings.micOn && !this.#settings.deafen,
-      whispering: !!this.whisper.target(),
+      whispering,
       publishRefused: !!publishToggleRefusal({
         enabling: true,
         isAfkChannel: this.isAfkChannel,
@@ -12567,12 +12569,16 @@ class Voice {
     if (plan.nativePtt === "arm") void this.#ensureNativePtt(room);
     else void this.#disarmNativePtt();
 
+    // The whisper's restore would otherwise undo the switch when it ends.
+    if (whispering && plan.afterWhisper !== undefined)
+      this.#whisperPriorMic = plan.afterWhisper;
+
     if (plan.mic === "on") {
       void this.#setMicEnabled(room, true).catch(() => {});
-    } else if (
-      plan.mic === "off" &&
-      room.localParticipant.isMicrophoneEnabled
-    ) {
+    } else if (plan.mic === "off") {
+      // Unconditionally, not behind `isMicrophoneEnabled`: an enable still in
+      // flight (the gate opening, the join's first publish) reads as off, and
+      // livekit orders this mute after it only if it is issued.
       void room.localParticipant.setMicrophoneEnabled(false).catch(() => {});
     }
   }
