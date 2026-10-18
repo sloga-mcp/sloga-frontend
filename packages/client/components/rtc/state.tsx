@@ -6709,8 +6709,9 @@ class Voice {
   }
 
   /**
-   * Every mic enable goes through here: `setMicrophoneEnabled` plus the
-   * exact-pin rescue. When `connect()` pinned the saved mic `{ exact }` and
+   * Every mic capture gets the exact-pin rescue (`#unpinMicAfterFailure`):
+   * `#setMicEnabled`'s `setMicrophoneEnabled`, and `#captureMutedMic`'s
+   * hand-made capture for push to talk. When `connect()` pinned the saved mic `{ exact }` and
    * that device has since vanished while no live track existed (unplugged
    * while muted — livekit's own ended-track fallback only runs for a live
    * track), every plain enable would reject with OverconstrainedError
@@ -6847,13 +6848,10 @@ class Voice {
     // 🔴 Behind any muted publish in flight. livekit guards concurrent
     // enables with its own `pendingPublishing` set, which a publish made by
     // hand (`#publishMicMuted`) is not in: an enable that ran alongside it
-    // would capture and publish a SECOND microphone track.
-    for (
-      let p = this.#micMutedLanding(room);
-      p;
-      p = this.#micMutedLanding(room)
-    )
-      await p;
+    // would capture and publish a SECOND microphone track. A disable waits
+    // too, so a talk-key release queues BEHIND an enable that was already
+    // waiting and lands after it.
+    await this.#mutedMicLanded(room);
     try {
       return await room.localParticipant.setMicrophoneEnabled(enabled);
     } catch (error) {
@@ -6891,6 +6889,10 @@ class Voice {
    * @returns whether it worked, for the `micOn` reconcile ({@link micEnableTook})
    */
   async #enableMic(room: Room): Promise<boolean> {
+    // The mode is read AFTER any muted publish lands: a key held while it
+    // was landing may have been released since, and a live enable chosen
+    // before the wait would then unmute with no key down.
+    await this.#mutedMicLanded(room);
     const mode = micEnableMode({
       pushToTalk: this.#settings.pushToTalk,
       pttHeld: this.#pttHeld,
@@ -6898,7 +6900,7 @@ class Voice {
     if (mode === "muted") await this.#publishMicMuted(room);
     else await this.#setMicEnabled(room, true);
     return micEnableTook({
-      mode,
+      pushToTalk: this.#settings.pushToTalk,
       live: room.localParticipant.isMicrophoneEnabled,
       captured: !!room.localParticipant.getTrackPublication(
         Track.Source.Microphone,
@@ -6910,6 +6912,16 @@ class Voice {
   #micMutedLanding(room: Room): Promise<void> | undefined {
     const inFlight = this.#micMutedPublish;
     return inFlight?.room === room ? inFlight.landed : undefined;
+  }
+
+  /** Once no muted publish is in flight in `room`, including later ones. */
+  async #mutedMicLanded(room: Room) {
+    for (
+      let p = this.#micMutedLanding(room);
+      p;
+      p = this.#micMutedLanding(room)
+    )
+      await p;
   }
 
   /**
@@ -12061,7 +12073,9 @@ class Voice {
       // lands, so the mic does not read as live yet and a guarded mute
       // skipped it, leaving it live once it landed. A disable waits for that
       // publish and mutes it, and is a no-op on a mic that is already muted.
-      void room.localParticipant.setMicrophoneEnabled(false).catch(() => {});
+      // Through `#setMicEnabled`, so it also queues behind a muted publish
+      // and any enable already waiting on it.
+      void this.#setMicEnabled(room, false).catch(() => {});
     };
 
     window.addEventListener("keydown", this.#pttKeydown);
@@ -12082,12 +12096,7 @@ class Voice {
    * after its release.
    */
   async #pttOpen(room: Room) {
-    for (
-      let p = this.#micMutedLanding(room);
-      p;
-      p = this.#micMutedLanding(room)
-    )
-      await p;
+    await this.#mutedMicLanded(room);
     if (
       !pttPressOpens({
         held: this.#pttHeld,
@@ -12210,10 +12219,8 @@ class Voice {
           // key-up still ends.
           this.#pttHeld = false;
           if (!this.#settings.pushToTalk) return;
-          // Unconditional, for `#pttKeyup`'s reason.
-          void room.localParticipant
-            .setMicrophoneEnabled(false)
-            .catch(() => {});
+          // Unconditional and queued, for `#pttKeyup`'s reasons.
+          void this.#setMicEnabled(room, false).catch(() => {});
         });
         this.#pttNativeUnlisten.push(down, up);
       }

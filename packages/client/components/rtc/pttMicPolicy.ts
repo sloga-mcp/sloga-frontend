@@ -38,18 +38,22 @@ export function micEnableMode(input: {
 /**
  * Whether a turn-on worked, which is what `micOn` is reconciled to.
  *
- * A live turn-on worked when the mic is live. A muted one worked when the mic
- * was captured and published: reading `isMicrophoneEnabled` there would
- * report every push-to-talk unmute as a failure and write `micOn = false`.
+ * Under push to talk it worked when the mic was captured and published,
+ * whatever the talk key did: reading `isMicrophoneEnabled` there would report
+ * every muted Unmute as a failure, and so would a live one (key held) whose
+ * key was released before the publish landed. Either wrote `micOn = false`,
+ * played the mute sound for an Unmute click, and joined the next call with no
+ * mic. Otherwise it worked when the mic is live.
  */
 export function micEnableTook(input: {
-  mode: MicEnable;
+  /** The persisted setting, read when the turn-on finished. */
+  pushToTalk: boolean;
   /** `isMicrophoneEnabled`: published and not muted. */
   live: boolean;
   /** A microphone publication with a track exists, muted or not. */
   captured: boolean;
 }): boolean {
-  return input.mode === "muted" ? input.captured : input.live;
+  return input.pushToTalk ? input.captured : input.live;
 }
 
 /**

@@ -44,24 +44,32 @@ test("micEnableMode: only push to talk with no key held is ever muted", () => {
       );
 });
 
-test("micEnableTook: a muted turn-on worked when the mic was captured", () => {
+test("micEnableTook: under push to talk a turn-on worked when captured", () => {
   // Reading `isMicrophoneEnabled` here wrote micOn = false on every push to
-  // talk Unmute.
-  assert.equal(
-    micEnableTook({ mode: "muted", live: false, captured: true }),
-    true,
-  );
-  assert.equal(
-    micEnableTook({ mode: "muted", live: false, captured: false }),
-    false,
-  );
+  // talk Unmute, and on a held-key Unmute released before it landed.
+  for (const live of BOOLS) {
+    assert.equal(
+      micEnableTook({ pushToTalk: true, live, captured: true }),
+      true,
+    );
+    assert.equal(
+      micEnableTook({ pushToTalk: true, live, captured: false }),
+      false,
+    );
+  }
 });
 
-test("micEnableTook: a live turn-on worked only when the mic is live", () => {
+test("micEnableTook: otherwise a turn-on worked only when the mic is live", () => {
   // A capture that failed must not read as live.
   for (const captured of BOOLS) {
-    assert.equal(micEnableTook({ mode: "live", live: true, captured }), true);
-    assert.equal(micEnableTook({ mode: "live", live: false, captured }), false);
+    assert.equal(
+      micEnableTook({ pushToTalk: false, live: true, captured }),
+      true,
+    );
+    assert.equal(
+      micEnableTook({ pushToTalk: false, live: false, captured }),
+      false,
+    );
   }
 });
 
@@ -130,13 +138,47 @@ test("state.tsx: the join turns the mic on through #enableMic", () => {
 });
 
 test("state.tsx: #enableMic asks the policy, from the setting and the hold", () => {
+  // The wait comes FIRST: a live mode chosen before it, with the key released
+  // during it, unmuted with no key down.
   assertWired(
-    "the mode and its two paths",
-    'const mode = micEnableMode({ pushToTalk: this.#settings.pushToTalk, pttHeld: this.#pttHeld, }); if (mode === "muted") await this.#publishMicMuted(room); else await this.#setMicEnabled(room, true);',
+    "the wait, the mode and its two paths",
+    'await this.#mutedMicLanded(room); const mode = micEnableMode({ pushToTalk: this.#settings.pushToTalk, pttHeld: this.#pttHeld, }); if (mode === "muted") await this.#publishMicMuted(room); else await this.#setMicEnabled(room, true);',
   );
   assertWired(
     "the reconcile",
-    "return micEnableTook({ mode, live: room.localParticipant.isMicrophoneEnabled, captured: !!room.localParticipant.getTrackPublication( Track.Source.Microphone, )?.track, });",
+    "return micEnableTook({ pushToTalk: this.#settings.pushToTalk, live: room.localParticipant.isMicrophoneEnabled, captured: !!room.localParticipant.getTrackPublication( Track.Source.Microphone, )?.track, });",
+  );
+});
+
+test("state.tsx: a failed or hung-up muted capture stops what it captured", () => {
+  // Without the stop the mic stays captured (the indicator stays on).
+  const body = bodyOf("async #captureMutedMic(room: Room) {");
+  assert.equal(
+    countWired(body, 'if (this.room() !== room) throw "invalid state";'),
+    1,
+    "the hang-up check before the publish",
+  );
+  assert.equal(
+    countWired(
+      body,
+      "} catch (error) { for (const track of tracks) track.stop(); throw error;",
+    ),
+    1,
+    "the stop on failure",
+  );
+});
+
+test("state.tsx: a settled muted publish clears its record", () => {
+  // Left set, every `#mutedMicLanded` loop spins forever on a settled promise.
+  assertWired(
+    "the clear",
+    "return done.finally(() => { if (this.#micMutedPublish === entry) this.#micMutedPublish = undefined; });",
+  );
+  assert.equal(
+    bodyOf("async #mutedMicLanded(room: Room) {"),
+    codeOf(
+      "for (let p = this.#micMutedLanding(room); p; p = this.#micMutedLanding(room)) await p",
+    ),
   );
 });
 
@@ -167,7 +209,7 @@ test("state.tsx: every enable waits behind a muted publish in flight", () => {
   assert.ok(
     body.startsWith(
       codeOf(
-        "for (let p = this.#micMutedLanding(room); p; p = this.#micMutedLanding(room)) await p; try { return await room.localParticipant.setMicrophoneEnabled(enabled)",
+        "await this.#mutedMicLanded(room); try { return await room.localParticipant.setMicrophoneEnabled(enabled)",
       ),
     ),
     "#setMicEnabled must wait before it calls livekit",
@@ -224,21 +266,22 @@ test("state.tsx: #pttOpen waits for the landing, then asks the policy", () => {
   assert.equal(
     bodyOf("async #pttOpen(room: Room) {"),
     codeOf(
-      "for (let p = this.#micMutedLanding(room); p; p = this.#micMutedLanding(room)) await p; if ( !pttPressOpens({ held: this.#pttHeld, whispering: !!this.whisper.target(), micLive: room.localParticipant.isMicrophoneEnabled, }) ) return; await this.#setMicEnabled(room, true).catch(() => {})",
+      "await this.#mutedMicLanded(room); if ( !pttPressOpens({ held: this.#pttHeld, whispering: !!this.whisper.target(), micLive: room.localParticipant.isMicrophoneEnabled, }) ) return; await this.#setMicEnabled(room, true).catch(() => {})",
     ),
   );
 });
 
 test("state.tsx: both talk-key releases mute whatever the mic reads", () => {
   // Guarded on `isMicrophoneEnabled`, a release during a press's publish was
-  // skipped and the mic landed live.
+  // skipped and the mic landed live. Through `#setMicEnabled`, so a release
+  // queues behind an enable already waiting on a muted publish.
   assertWired(
     "the focused keyup",
-    "if (e.code !== this.#settings.pushToTalkKey) return; void room.localParticipant.setMicrophoneEnabled(false).catch(() => {});",
+    "if (e.code !== this.#settings.pushToTalkKey) return; void this.#setMicEnabled(room, false).catch(() => {});",
   );
   assertWired(
     "the native ptt:up",
-    "if (!this.#settings.pushToTalk) return; void room.localParticipant.setMicrophoneEnabled(false).catch(() => {});",
+    "if (!this.#settings.pushToTalk) return; void this.#setMicEnabled(room, false).catch(() => {});",
   );
   assert.equal(
     countWired(
