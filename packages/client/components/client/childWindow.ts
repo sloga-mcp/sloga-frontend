@@ -215,6 +215,20 @@ export function isReloadShortcut(event: ReloadKeyEvent): boolean {
   );
 }
 
+/**
+ * Whether a close main made still needs the shell to finish it
+ * (`chatShell.closeWindow`): for a window the shell labelled, unless main is
+ * unloading. Then the shells close every child themselves, and a call from
+ * the dying realm could land on a window the reloaded main opened under the
+ * same label (the friends window's label never changes).
+ */
+export function shellCloseNeeded(
+  shellLabel: string | undefined,
+  mainUnloading: boolean,
+): boolean {
+  return shellLabel !== undefined && !mainUnloading;
+}
+
 /* ------------------------------------------------------------------------ *
  * Internal link routing
  * ------------------------------------------------------------------------ */
@@ -550,11 +564,24 @@ function keepFloatingLast(body: HTMLElement, floating: HTMLElement) {
 
 const live = new Set<ChildWindowHandle>();
 let mainPagehideBound = false;
+let mainUnloading = false;
 
 /** A main reload or close takes every chat window with it. */
 function bindMainPagehide() {
   if (mainPagehideBound) return;
   mainPagehideBound = true;
+  // Capture, so any close made during the unload already sees it.
+  window.addEventListener(
+    "pagehide",
+    () => {
+      mainUnloading = true;
+    },
+    true,
+  );
+  // Back from the back/forward cache: not unloading after all.
+  window.addEventListener("pageshow", () => {
+    mainUnloading = false;
+  });
   window.addEventListener("pagehide", () => {
     for (const handle of Array.from(live)) handle.close();
   });
@@ -789,6 +816,17 @@ async function openNow(
     callbacks.clear();
   };
 
+  // On Tauri, `childWin.close()` takes down only the webview and leaves the
+  // native window open and blank, so the shell finishes the close.
+  const closeInShell = () => {
+    const label = shellLabel;
+    if (label === undefined || !shellCloseNeeded(label, mainUnloading)) return;
+    void chatShell.closeWindow(label).then((result) => {
+      if (!result.ok)
+        console.warn("[chat-window] shell could not close", label, result.err);
+    });
+  };
+
   const handle: ChildWindowHandle = {
     id,
     kind,
@@ -805,6 +843,7 @@ async function openNow(
         // Already gone.
       }
       finish();
+      closeInShell();
     },
     closed() {
       return finished || isClosed();
@@ -837,6 +876,7 @@ async function openNow(
       } catch {
         // Already gone.
       }
+      closeInShell();
     }, 0);
   };
   childWin.addEventListener("pagehide", onPagehide);
