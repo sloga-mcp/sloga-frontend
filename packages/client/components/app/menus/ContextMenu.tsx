@@ -23,8 +23,9 @@ const Base = styled("div", {
     display: "flex",
     flexDirection: "column",
     padding: "var(--gap-md) 0",
-    // Set by contextMenuMiddleware when the menu is taller than the room
-    // beside the pointer: the menu scrolls rather than covering the pointer
+    // Set by contextMenuMiddleware: the window's height, or in a window too
+    // narrow to open beside the pointer, the room on the pointer's side; a
+    // taller menu scrolls rather than covering the pointer
     maxHeight: "var(--context-menu-max-height, none)",
     overflowX: "hidden",
     overflowY: "auto",

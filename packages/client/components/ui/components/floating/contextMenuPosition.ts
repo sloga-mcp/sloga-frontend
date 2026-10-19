@@ -1,4 +1,12 @@
-import { type Middleware, flip, offset, shift, size } from "@floating-ui/dom";
+import {
+  type Middleware,
+  type MiddlewareState,
+  detectOverflow,
+  flip,
+  offset,
+  shift,
+  size,
+} from "@floating-ui/dom";
 
 /**
  * Space kept between a context menu and the window edge
@@ -11,19 +19,47 @@ const EDGE_PADDING = 8;
 export const CONTEXT_MENU_MAX_HEIGHT = "--context-menu-max-height";
 
 /**
+ * Records whether the menu fits beside the pointer, left or right of it,
+ * without covering it
+ */
+const besidePointer: Middleware = {
+  name: "besidePointer",
+  async fn(state) {
+    const overflow = await detectOverflow(state, { padding: EDGE_PADDING });
+    return { data: { fits: overflow.left <= 0 && overflow.right <= 0 } };
+  },
+};
+
+function fitsBeside(state: MiddlewareState) {
+  return state.middlewareData.besidePointer?.fits === true;
+}
+
+/**
  * Positioning for a context menu opened at the pointer.
  *
- * The menu's top or bottom edge stays exactly at the pointer, so the pointer
- * can only ever rest on the menu's padding, never on an item. A menu taller
- * than the room on that side scrolls instead of sliding up over the pointer
- * (the default `shift()` moves it vertically). Only then may the menu move
- * sideways to stay inside a narrow window, like the 300px friends window.
+ * A menu that fits beside the pointer slides up or down into view at full
+ * height, as menus always have: beside the pointer, no vertical position can
+ * put an item under it.
+ *
+ * A menu that does not fit beside it (a narrow window, like the 300px
+ * friends window) must move sideways over the pointer. Then its top or
+ * bottom edge stays exactly at the pointer, so the pointer can only rest on
+ * the menu's padding, never on an item, and a menu taller than the room on
+ * that side scrolls instead of sliding up over the pointer.
  */
 export function contextMenuMiddleware(): Middleware[] {
   return [
     offset(5),
-    // Below or above the pointer, whichever side has more room
+    // Right or left, then below or above the pointer, whichever has room
     flip({ padding: EDGE_PADDING }),
+    besidePointer,
+    shift((state) => ({
+      mainAxis: fitsBeside(state),
+      crossAxis: true,
+      padding: EDGE_PADDING,
+    })),
+    // After shift: with the vertical shift on, the room is the whole window
+    // height; with it off, only the side of the pointer the menu opens on
     size({
       padding: EDGE_PADDING,
       apply({ availableHeight, elements }) {
@@ -33,7 +69,5 @@ export function contextMenuMiddleware(): Middleware[] {
         );
       },
     }),
-    // Sideways only: a vertical shift would move an item under the pointer
-    shift({ mainAxis: false, crossAxis: true, padding: EDGE_PADDING }),
   ];
 }
