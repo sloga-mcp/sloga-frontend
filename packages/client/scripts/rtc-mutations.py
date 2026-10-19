@@ -89,7 +89,9 @@ HARNESS = "mlsCallSession.harness.ts"
 #: suggestions block (wave 7) and the Android screen-leg block at the end of
 #: this table (screen-share flip wave 4c: `state-leg-*`,
 #: `state-keyprovider-*`, `state-encryptedlegs-*`, `state-sfu-*`,
-#: `state-trackpublished-*`, `state-pausegate-*`). They reach nothing but the
+#: `state-trackpublished-*`, `state-pausegate-*`), and the push-to-talk block
+#: (`state-ptt-*`, killed by `pttMicPolicy.test.ts`'s pins of the same
+#: kind). They reach nothing but the
 #: statements `stateWiring.test.ts` pins as TEXT — the voice-move and
 #: chip-publication wiring, and since wave 4 the screen leg's roster inputs,
 #: its stop and gate notices, the start path's mode re-reads and binding key
@@ -11743,6 +11745,514 @@ MUTATIONS += [
 """,
         specs=[LEG_POLICY_SPEC],
         must_red=[LEG_POLICY_SPEC],
+    ),
+]
+
+
+# ---- push to talk: muted unless the key is held (fix/ptt-join-hot-mic) ----
+# The policy entries break `pttMicPolicy.ts` and are killed by its unit tests.
+# The `state-ptt-*` entries break state.tsx and are killed by that spec's
+# SOURCE PINS over the comment-stripped file (`codeOf`), with the limits the
+# file=STATE rule in the header states: a kill proves the pinned text changed,
+# never what a call does. The first thirteen are the branch's known-bad
+# controls (`ctl2.sh`), retargeted to exact-once anchors; the rest cover
+# fix/ptt-followups (the bounded capture, the post-landing re-check, the
+# Muted/Deafened talk key and the blur release).
+PTT_POLICY = "pttMicPolicy.ts"
+PTT_SPEC = "components/rtc/pttMicPolicy.test.ts"
+
+#: `#captureMutedMic`'s capture, bounded, and as it was before the bound.
+_PTT_CAPTURE_BOUNDED = """    const tracks = await captureWithin(
+      async (expired) => {
+        try {
+          return await lp.createTracks({ audio: true });
+        } catch (error) {
+          if (expired() || !this.#unpinMicAfterFailure(room)) throw error;
+          return lp.createTracks({ audio: true });
+        }
+      },
+      MUTED_CAPTURE_TIMEOUT_MS,
+      (track) => track.stop(),
+    );
+"""
+_PTT_CAPTURE_UNBOUNDED = """    let tracks;
+    try {
+      tracks = await lp.createTracks({ audio: true });
+    } catch (error) {
+      if (!this.#unpinMicAfterFailure(room)) throw error;
+      tracks = await lp.createTracks({ audio: true });
+    }
+"""
+
+MUTATIONS += [
+    # ---- the branch's thirteen controls (ctl2.sh) ---------------------------
+    Mutation(
+        id="state-ptt-join-live",
+        what="the join turns the mic on with a bare live enable, so under push to talk it joins hot until the first press and release",
+        file=STATE,
+        search="""          ? this.#enableMic(room)
+""",
+        replace="""          ? this.#setMicEnabled(room, true).then(() => true)
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-publish-before-mute",
+        what="the muted capture publishes the track and only then mutes it, so its first RTP packets leave live",
+        file=STATE,
+        search="""        await track.mute();
+        await lp.publishTrack(track);
+""",
+        replace="""        await lp.publishTrack(track);
+        await track.mute();
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-capture-never-muted",
+        what="the muted capture publishes the track without muting it, so push to talk joins hot",
+        file=STATE,
+        search="""        await track.mute();
+        await lp.publishTrack(track);
+""",
+        replace="""        await lp.publishTrack(track);
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-setmic-no-wait",
+        what="#setMicEnabled no longer waits behind a muted publish, so an enable beside it captures and publishes a second mic track",
+        file=STATE,
+        search="""    // waiting and lands after it.
+    await this.#mutedMicLanded(room);
+""",
+        replace="""    // waiting and lands after it.
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-enablemic-no-wait",
+        what="#enableMic reads the mode before a muted publish lands, so a key released during it still gets a live enable",
+        file=STATE,
+        search="""    // before the wait would then unmute with no key down.
+    await this.#mutedMicLanded(room);
+""",
+        replace="""    // before the wait would then unmute with no key down.
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-unmute-live",
+        what="Unmute turns the mic on with a bare live enable and reconciles micOn to isMicrophoneEnabled, so a push-to-talk Unmute goes hot",
+        file=STATE,
+        search="""      if (want) took = await this.#enableMic(room);
+""",
+        replace="""      if (want) {
+        await this.#setMicEnabled(room, true);
+        took = room.localParticipant.isMicrophoneEnabled;
+      }
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-release-guarded",
+        what="the focused key-up mutes only a mic that already reads live, so a release during a press's publish leaves it live once it lands",
+        file=STATE,
+        search="""      void this.#setMicEnabled(room, false).catch(() => {});
+    };
+""",
+        replace="""      if (!room.localParticipant.isMicrophoneEnabled) return;
+      room.localParticipant.setMicrophoneEnabled(false);
+    };
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-press-ignores-release",
+        what="#pttOpen reads the key as held after the muted publish lands, so a tap during the join opens the mic after its release",
+        file=STATE,
+        search="""      !pttPressOpens({
+        held: this.#pttHeld,
+""",
+        replace="""      !pttPressOpens({
+        held: true,
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-capture-not-stopped",
+        what="a muted capture whose publish fails is not stopped, so the mic stays captured (the indicator stays on)",
+        file=STATE,
+        search="""      // livekit's own enable stops what it captured when the publish fails.
+      for (const track of tracks) track.stop();
+""",
+        replace="""      // livekit's own enable stops what it captured when the publish fails.
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-hangup-unchecked",
+        what="a muted capture that finishes after the hang-up is published into the dead room instead of stopped",
+        file=STATE,
+        search="""      if (this.room() !== room) throw "invalid state";
+      for (const track of tracks) {
+""",
+        replace="""      for (const track of tracks) {
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-record-not-cleared",
+        what="a settled muted publish never clears its record, so every #mutedMicLanded loop spins on it forever",
+        file=STATE,
+        search="""      if (this.#micMutedPublish === entry) this.#micMutedPublish = undefined;
+""",
+        replace="""      void entry;
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="ptt-policy-mode-always-live",
+        what="micEnableMode turns the mic on live under push to talk with no key held",
+        file=PTT_POLICY,
+        search="""  return input.pushToTalk && !input.pttHeld ? "muted" : "live";
+""",
+        replace="""  return input.pushToTalk && !input.pttHeld ? "live" : "live";
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="ptt-policy-took-reads-live",
+        what="micEnableTook reads isMicrophoneEnabled under push to talk, so every muted Unmute writes micOn = false",
+        file=PTT_POLICY,
+        search="""  return input.pushToTalk ? input.captured : input.live;
+""",
+        replace="""  return input.pushToTalk ? input.live : input.live;
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    # ---- fix/ptt-followups: the bounded muted capture -----------------------
+    Mutation(
+        id="ptt-policy-capture-never-gives-up",
+        what="captureWithin never rejects at the bound, so a capture at an unanswered permission prompt holds every Mute, Deafen and talk-key write",
+        file=PTT_POLICY,
+        search="""      reject(new MicCaptureTimeoutError(ms));
+""",
+        replace="""      void ms;
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="ptt-policy-late-capture-not-stopped",
+        what="a capture that lands after the bound is dropped without being stopped, so the mic stays captured",
+        file=PTT_POLICY,
+        search="""          for (const track of tracks) stop(track);
+""",
+        replace="",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="ptt-policy-late-capture-handed-over",
+        what="a capture that lands after the bound is handed to the caller instead of stopped (a second mic track, or a live one)",
+        file=PTT_POLICY,
+        search="""    const timer = setTimeout(() => {
+      late = true;
+      reject(new MicCaptureTimeoutError(ms));
+    }, ms);
+""",
+        replace="""    const timer = setTimeout(() => {}, ms);
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-capture-unbounded",
+        what="the muted capture is awaited with no bound again, so a permission prompt left open holds Mute and Deafen",
+        file=STATE,
+        search=_PTT_CAPTURE_BOUNDED,
+        replace=_PTT_CAPTURE_UNBOUNDED,
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-late-capture-kept",
+        what="the bounded capture's late tracks are never stopped, so a prompt answered after the bound leaves the mic captured",
+        file=STATE,
+        search="""      (track) => track.stop(),
+""",
+        replace="""      () => {},
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-timeout-thrown",
+        what="#enableMic lets a capture given up on at the prompt throw, so Unmute shows an error and Undeafen leaves the user deafened",
+        file=STATE,
+        search="""      } catch (error) {
+        if (!isMicCaptureTimeout(error)) throw error;
+        return false;
+      }
+""",
+        replace="""      } catch (error) {
+        throw error;
+      }
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-capture-retry-after-expiry",
+        what="a capture that fails after the bound still un-pins the shared mic pin and retries a second getUserMedia",
+        file=STATE,
+        search="""          if (expired() || !this.#unpinMicAfterFailure(room)) throw error;
+""",
+        replace="""          if (!this.#unpinMicAfterFailure(room)) throw error;
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="ptt-policy-expired-never-true",
+        what="captureWithin tells the capture it never expired, so a late failure still un-pins and retries",
+        file=PTT_POLICY,
+        search="""    capture(() => late).then(
+""",
+        replace="""    capture(() => false).then(
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    # ---- the post-landing re-check -------------------------------------------
+    Mutation(
+        id="ptt-policy-live-stays-ignores-release",
+        what="pttLiveStays keeps a landed open live after the key went up, so a press stuck at a permission prompt lands hot",
+        file=PTT_POLICY,
+        search="""  return input.held && !input.whispering && !input.userMuted;
+""",
+        replace="""  return !input.whispering && !input.userMuted;
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="ptt-policy-live-stays-mutes-open-mic",
+        what="pttLiveStays answers outside push to talk too, so an open-mic turn-on is muted again",
+        file=PTT_POLICY,
+        search="""  if (!input.pushToTalk) return true;
+""",
+        replace="""  if (!input.pushToTalk) return false;
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-press-no-recheck",
+        what="#pttOpen no longer re-checks once its open lands, so a release or Mute that livekit's disable gave up on leaves the mic live",
+        file=STATE,
+        search="""    await this.#setMicEnabled(room, true).catch(() => {});
+    await this.#keepPttMicLiveOnlyIfWanted(
+      room,
+      !this.#settings.micOn || this.#settings.deafen,
+    ).catch(() => {});
+""",
+        replace="""    await this.#setMicEnabled(room, true).catch(() => {});
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-enablemic-no-recheck",
+        what="#enableMic's live arm no longer re-checks once it lands, so an Unmute made mid-hold and released before it landed stays live",
+        file=STATE,
+        search="""      await this.#keepPttMicLiveOnlyIfWanted(room, mutedMeanwhile);
+""",
+        replace="",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-enablemic-recheck-ignores-mute",
+        what="#enableMic's re-check passes userMuted false, so a Mute or Deafen pressed while a held-key join or Unmute landed leaves the mic live",
+        file=STATE,
+        search="""      await this.#keepPttMicLiveOnlyIfWanted(room, mutedMeanwhile);
+""",
+        replace="""      await this.#keepPttMicLiveOnlyIfWanted(room, false);
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-enablemic-mute-overwritten",
+        what="#enableMic reports a turn-on the re-check muted as taken, so the caller writes micOn = true over the user's Mute",
+        file=STATE,
+        search="""      if (mutedMeanwhile && this.#settings.pushToTalk) return false;
+""",
+        replace="",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="ptt-policy-mute-while-landing-ignored",
+        what="mutedWhileLanding ignores a Mute pressed while the turn-on landed (only a Deafen counts)",
+        file=PTT_POLICY,
+        search="""  return (before.micOn && !after.micOn) || (!before.deafen && after.deafen);
+""",
+        replace="""  return !before.deafen && after.deafen;
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-recheck-never-mutes",
+        what="the re-check asks the policy and then does nothing, so a landed open it rejects stays live",
+        file=STATE,
+        search="""      return;
+    await this.#setMicEnabled(room, false);
+  }
+""",
+        replace="""      return;
+  }
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    # ---- the Muted/Deafened talk key -----------------------------------------
+    Mutation(
+        id="ptt-policy-press-ignores-mute",
+        what="pttPressOpens ignores the user's mute, so the talk key transmits while Muted or Deafened",
+        file=PTT_POLICY,
+        search="""  return input.held && !input.whispering && !input.micLive && !input.userMuted;
+""",
+        replace="""  return input.held && !input.whispering && !input.micLive;
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-press-mute-unread",
+        what="#pttOpen passes userMuted false, so the talk key transmits while Muted or Deafened",
+        file=STATE,
+        search="""        micLive: room.localParticipant.isMicrophoneEnabled,
+        userMuted: !this.#settings.micOn || this.#settings.deafen,
+""",
+        replace="""        micLive: room.localParticipant.isMicrophoneEnabled,
+        userMuted: false,
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    # ---- the blur release ----------------------------------------------------
+    Mutation(
+        id="ptt-policy-blur-ignores-native-hold",
+        what="pttBlurMutes mutes a hold the native hook delivered too, so a Tauri hold begun in a game that passes through Sloga is cut",
+        file=PTT_POLICY,
+        search="""  return input.pushToTalk && input.held && !input.nativeSawHold;
+""",
+        replace="""  return input.pushToTalk && input.held;
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="ptt-policy-blur-never-mutes",
+        what="pttBlurMutes never mutes, so a web or Electron hold that alt-tabs away stays live",
+        file=PTT_POLICY,
+        search="""  return input.pushToTalk && input.held && !input.nativeSawHold;
+""",
+        replace="""  return input.pushToTalk && input.held && false;
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-blur-reads-armed-hook",
+        what="#pttBlur trusts the native hook whenever it is armed, so a Tauri hold begun in Sloga and alt-tabbed away from stays live (the hook never saw its down)",
+        file=STATE,
+        search="""        nativeSawHold: this.#pttNativeHeld,
+""",
+        replace="""        nativeSawHold: this.#pttNativeKey !== undefined,
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-native-hold-never-recorded",
+        what="ptt:down no longer records that the hook delivered the hold, so an unfocused hold that passes through Sloga is cut at the blur",
+        file=STATE,
+        search="""          // A hold the hook delivered: its `ptt:up` is coming (`#pttBlur`).
+          this.#pttNativeHeld = true;
+""",
+        replace="""          // A hold the hook delivered: its `ptt:up` is coming (`#pttBlur`).
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-focused-press-keeps-native-flag",
+        what="a focused press keeps a stale native-hold flag, so its alt-tab is left to a ptt:up that never comes and the mic stays live",
+        file=STATE,
+        search="""      this.#pttHeld = true;
+      this.#pttNativeHeld = false;
+""",
+        replace="""      this.#pttHeld = true;
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-main-blur-clear-only",
+        what="main's blur only clears #pttHeld again and leaves the mic alone, so an alt-tab mid-hold stays live",
+        file=STATE,
+        search="""      window.addEventListener("blur", () => this.#pttBlur());
+""",
+        replace="""      window.addEventListener("blur", () => {
+        this.#pttHeld = false;
+      });
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-child-blur-clear-only",
+        what="a chat window's blur only clears #pttHeld again, so a hold that alt-tabs away from a chat window stays live",
+        file=STATE,
+        search="""          const onBlur = () => this.#pttBlur();
+""",
+        replace="""          const onBlur = () => {
+            this.#pttHeld = false;
+          };
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-blur-reads-cleared-hold",
+        what="#pttBlur reads the hold after clearing it, so it never sees one and never mutes",
+        file=STATE,
+        search="""    const held = this.#pttHeld;
+    this.#pttHeld = false;
+""",
+        replace="""    this.#pttHeld = false;
+    const held = this.#pttHeld;
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
     ),
 ]
 

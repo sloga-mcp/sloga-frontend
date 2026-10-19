@@ -131,8 +131,10 @@ EXPECTED=(
   "components/rtc/micPipelinePolicy.test.ts 4 0"
   # Push to talk's "muted unless the key is held" on the join, Unmute,
   # Undeafen and the whisper restore, and its state.tsx pins. First measured
-  # at 19; 21 after its review added the muted capture's stop and clear pins.
-  "components/rtc/pttMicPolicy.test.ts 21 0"
+  # at 19; 21 after its review added the muted capture's stop and clear pins;
+  # 41 with the capture bound, the post-landing re-check, the Muted/Deafened
+  # talk key and the blur release (fix/ptt-followups, after its review).
+  "components/rtc/pttMicPolicy.test.ts 41 0"
   "components/rtc/publishKickPolicy.test.ts 4 0"
   "components/rtc/decodeWitnessListener.test.ts 42 0"
   "components/rtc/chipInputs.test.ts 50 0"
