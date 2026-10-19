@@ -14,6 +14,7 @@ import { CameraSettingsModal } from "./modals/CameraSettings";
 import { ChangelogHistoryModal, ChangelogModal } from "./modals/Changelog";
 import { ChannelInfoModal } from "./modals/ChannelInfo";
 import { ChannelToggleMatureModal } from "./modals/ChannelToggleMature";
+import { ConfirmRelationshipModal } from "./modals/ConfirmRelationship";
 import { CreateBotModal } from "./modals/CreateBot";
 import { CreateCategoryModal } from "./modals/CreateCategory";
 import { CreateChannelModal } from "./modals/CreateChannel";
@@ -136,6 +137,9 @@ export function RenderModal(props: ActiveModal & { onClose: () => void }) {
       return <FriendGroupsModal {...modalProps} />;
     case "friend_category":
       return <FriendCategoryModal {...modalProps} />;
+    case "unfriend_user":
+    case "block_user":
+      return <ConfirmRelationshipModal {...modalProps} />;
     case "channel_info":
       return <ChannelInfoModal {...modalProps} />;
     case "channel_toggle_mature":

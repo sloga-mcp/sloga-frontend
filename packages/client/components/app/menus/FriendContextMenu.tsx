@@ -129,17 +129,19 @@ export function FriendContextMenu(props: {
       >
         <Trans>Categorize…</Trans>
       </ContextMenuButton>
+      {/* Both confirm first: the menu opens at the pointer, so a stray
+          click must not end a friendship */}
       <ContextMenuButton
         icon={MdPersonRemove}
         destructive
-        onClick={() => props.user.removeFriend()}
+        onClick={() => openModal({ type: "unfriend_user", user: props.user })}
       >
         <Trans>Remove friend</Trans>
       </ContextMenuButton>
       <ContextMenuButton
         icon={MdBlock}
         destructive
-        onClick={() => props.user.blockUser()}
+        onClick={() => openModal({ type: "block_user", user: props.user })}
       >
         <Trans>Block user</Trans>
       </ContextMenuButton>

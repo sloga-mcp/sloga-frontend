@@ -21,6 +21,7 @@ import { Keybind, KeybindAction } from "@revolt/keybinds";
 import { FloatingElement, floatingElements } from "../../directives";
 
 import { AutoComplete } from "./AutoComplete";
+import { contextMenuMiddleware } from "./contextMenuPosition";
 import { TooltipBase } from "./Tooltip";
 import { UserCard } from "./UserCard";
 
@@ -140,7 +141,9 @@ function Floating(props: FloatingElement & { mouseX: number; mouseY: number }) {
 
   const position = useFloating(element, floating, {
     placement: placement(),
-    middleware: [offset(5), flip(), shift()],
+    middleware: props.show()?.contextMenu
+      ? contextMenuMiddleware()
+      : [offset(5), flip(), shift()],
     whileElementsMounted:
       props.show()?.tooltip || props.show()?.autoComplete
         ? autoUpdate
