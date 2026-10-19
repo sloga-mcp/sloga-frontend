@@ -30,6 +30,7 @@ import { useState } from "@revolt/state";
 import { ChatWindowView } from "./ChatWindowView";
 import { FriendsWindow } from "./FriendsWindow";
 import { TabStrip } from "./TabStrip";
+import { clearStaleTabDrag, forgetWindow } from "./chatWindowFrame";
 import {
   chatWindows,
   closeTab,
@@ -281,6 +282,10 @@ export function ChatWindowsHost(): JSX.Element {
         return;
       }
 
+      // A new native window always starts not maximized, and the friends
+      // window's label is reused: a state left from an earlier window with
+      // this label would show restore on a window that is not maximized.
+      if (handle.shellLabel !== undefined) forgetWindow(handle.shellLabel);
       keyOf.set(handle, key);
       handle.onClose(() => childGone(key, handle));
       setHandles((prev) => new Map(prev).set(key, handle));
@@ -473,14 +478,22 @@ export function ChatWindowsHost(): JSX.Element {
     <For each={[...handles().values()]}>
       {(handle) => {
         const key = keyOf.get(handle)!;
+        watchStaleTabDrag(handle.ctx.doc);
         return (
           <Portal mount={handle.ctx.doc.body}>
             <ChildWindowChrome ctx={handle.ctx}>
               <Fill>
                 {key === FRIENDS_KEY ? (
-                  <FriendsWindow />
+                  <FriendsWindow
+                    frame={handle.frame}
+                    shellLabel={handle.shellLabel}
+                  />
                 ) : (
-                  <ChatWindowContent windowId={key} />
+                  <ChatWindowContent
+                    windowId={key}
+                    frame={handle.frame}
+                    shellLabel={handle.shellLabel}
+                  />
                 )}
               </Fill>
             </ChildWindowChrome>
@@ -491,8 +504,37 @@ export function ChatWindowsHost(): JSX.Element {
   );
 }
 
+/**
+ * Clear a tab drag flag whose drag ended without telling us (see
+ * `clearStaleTabDrag`), on any press or buttonless move in the child
+ * document `doc`, for as long as the calling owner (one rendered window)
+ * lives. A child's pointer events never reach main's document, so each
+ * window gets its own listeners.
+ */
+function watchStaleTabDrag(doc: Document) {
+  const onPointerDown = () => clearStaleTabDrag();
+  const onPointerMove = (event: PointerEvent) => {
+    if (event.buttons === 0) clearStaleTabDrag();
+  };
+  const opts = { capture: true, passive: true } as const;
+  doc.addEventListener("pointerdown", onPointerDown, opts);
+  doc.addEventListener("pointermove", onPointerMove, opts);
+  onCleanup(() => {
+    try {
+      doc.removeEventListener("pointerdown", onPointerDown, opts);
+      doc.removeEventListener("pointermove", onPointerMove, opts);
+    } catch {
+      // A closed window's listeners die with it.
+    }
+  });
+}
+
 /** The tab strip over the active tab's conversation. */
-function ChatWindowContent(props: { windowId: string }) {
+function ChatWindowContent(props: {
+  windowId: string;
+  frame: ChildWindowHandle["frame"];
+  shellLabel?: string;
+}) {
   const client = useClient();
   const activeId = createMemo(
     () => chatWindows.windows().find((w) => w.id === props.windowId)?.active,
@@ -502,7 +544,12 @@ function ChatWindowContent(props: { windowId: string }) {
   // change that keeps the active tab leaves it alone.
   return (
     <>
-      <TabStrip windowId={props.windowId} />
+      <TabStrip
+        windowId={props.windowId}
+        frame={props.frame}
+        shellLabel={props.shellLabel}
+        onCloseWindow={() => closeWindow(props.windowId)}
+      />
       <Body>
         <Show when={activeId()} keyed>
           {(id) => (

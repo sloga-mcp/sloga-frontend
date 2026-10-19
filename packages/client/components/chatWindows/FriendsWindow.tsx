@@ -1,4 +1,4 @@
-import { JSX, createEffect } from "solid-js";
+import { JSX, Show, createEffect } from "solid-js";
 
 import { useLingui } from "@lingui-solid/solid/macro";
 import { useNavigate } from "@solidjs/router";
@@ -14,6 +14,9 @@ import { FriendsList } from "../friends/FriendsList";
 import { GroupChatsDock } from "../friends/GroupChatsDock";
 import { SelfBar } from "../friends/SelfBar";
 
+import { MAC_INSET_PADDING, WindowControls } from "./WindowControls";
+import { TITLEBAR_HEIGHT } from "./chatWindowFrame";
+import { setFriendsOpen } from "./chatWindowsStore";
 import { routeConversation } from "./openConversation";
 
 /**
@@ -23,8 +26,18 @@ import { routeConversation } from "./openConversation";
  *
  * Rendered from the main tree into the child document (inside
  * `ChildWindowChrome`), so the router here is MAIN's router.
+ *
+ * In a window without an OS title bar (frame `buttons` or `inset`) a bar of
+ * its own sits on top: a caption region (`data-app-region`, see
+ * `ui/styles.css`) titled "Friends", with the window controls on `buttons`
+ * and the traffic lights' corner kept clear on `inset`.
  */
-export function FriendsWindow(): JSX.Element {
+export function FriendsWindow(props: {
+  /** What the shell built around the window (`ChildWindowHandle.frame`) */
+  frame: chatShell.ChatWindowFrame;
+  /** The shell's label for the window, for the window controls */
+  shellLabel?: string;
+}): JSX.Element {
   const client = useClient();
   const state = useState();
   const navigate = useNavigate();
@@ -69,6 +82,27 @@ export function FriendsWindow(): JSX.Element {
 
   return (
     <div class={column()}>
+      <Show when={props.frame === "buttons" || props.frame === "inset"}>
+        <div
+          class={titleBar()}
+          data-app-region="drag"
+          style={{
+            height: `${TITLEBAR_HEIGHT}px`,
+            "padding-inline-start":
+              props.frame === "inset" ? MAC_INSET_PADDING : undefined,
+          }}
+        >
+          <span class={titleText()}>{t`Friends`}</span>
+          <Show when={props.frame === "buttons" && props.shellLabel}>
+            {(label) => (
+              <WindowControls
+                label={label()}
+                onClose={() => setFriendsOpen(false)}
+              />
+            )}
+          </Show>
+        </div>
+      </Show>
       <div class={top()}>
         <SelfBar />
       </div>
@@ -91,6 +125,30 @@ const column = cva({
     overflow: "hidden",
     background: "var(--md-sys-color-surface)",
     color: "var(--md-sys-color-on-surface)",
+  },
+});
+
+/** The window's own title bar; its height is `TITLEBAR_HEIGHT`. */
+const titleBar = cva({
+  base: {
+    display: "flex",
+    alignItems: "stretch",
+    flexShrink: 0,
+    paddingInlineStart: "var(--gap-md)",
+    userSelect: "none",
+  },
+});
+
+const titleText = cva({
+  base: {
+    flexGrow: 1,
+    minWidth: 0,
+    alignSelf: "center",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+    fontSize: "12px",
+    color: "var(--md-sys-color-on-surface-variant)",
   },
 });
 

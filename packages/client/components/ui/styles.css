@@ -73,6 +73,41 @@ html[data-overlay="1"] #root {
   background: transparent !important;
 }
 
+/*
+ * Caption regions for the desktop chat windows' own title bars (friends and
+ * chat; components/chatWindows). A frameless window is moved by the OS: on
+ * Windows, WebView2 answers a press inside an `app-region: drag` area as the
+ * window caption (move, double-click to maximize, snap, system menu), and
+ * Electron on macOS does the same. The child windows have no IPC of their
+ * own, so this CSS is the only way they can say where the caption is.
+ *
+ * Elements opt in through `data-app-region` rather than a Panda style:
+ * Panda has no type for the property, and the attribute lets a bar flip a
+ * region at runtime (the tab strip's spacer turns no-drag during a tab drag,
+ * as a caption region never receives an HTML5 drop). Both spellings are set:
+ * Chromium reads the prefixed one, the unprefixed one is the standard name.
+ */
+[data-app-region="drag"] {
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+
+[data-app-region="no-drag"] {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+/*
+ * Menus, tooltips and modals render in #floating, which can paint over a
+ * title bar. A caption region underneath still wins the hit test unless the
+ * floating UI is explicitly no-drag, which would leave a menu item over the
+ * bar unclickable (it would move the window instead).
+ */
+#floating * {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
 /* HighlightJs */
 /*!
   Theme: GitHub Dark

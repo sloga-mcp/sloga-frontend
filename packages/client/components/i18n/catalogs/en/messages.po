@@ -2099,6 +2099,11 @@ msgstr "Close chat"
 msgid "Close conversation with {0}?"
 msgstr "Close conversation with {0}?"
 
+#: components/chatWindows/WindowControls.tsx
+#: components/chatWindows/WindowControls.tsx
+msgid "Close window"
+msgstr "Close window"
+
 #: components/app/interface/channels/text/PollMessage.tsx
 msgid "Closing…"
 msgstr "Closing…"
@@ -5180,6 +5185,10 @@ msgstr "Max bitrate: {0} Mbps"
 msgid "Max bitrate: Auto"
 msgstr "Max bitrate: Auto"
 
+#: components/chatWindows/WindowControls.tsx
+msgid "Maximize"
+msgstr "Maximize"
+
 #: components/ui/components/features/voice/callCard/VoiceCallCardActiveRoom.tsx
 #: components/ui/components/features/voice/callCard/RemoteControlOverlays.tsx
 msgid "Maximize & hide participants"
@@ -5431,6 +5440,11 @@ msgstr "Middle left"
 #: components/app/interface/settings/user/voice/OverlaySettings.tsx
 msgid "Middle right"
 msgstr "Middle right"
+
+#: components/chatWindows/WindowControls.tsx
+#: components/chatWindows/WindowControls.tsx
+msgid "Minimize"
+msgstr "Minimize"
 
 #: components/app/interface/settings/user/Native.tsx
 msgid "Minimize to Tray"
@@ -7255,6 +7269,10 @@ msgstr "Respect"
 #: components/ui/components/features/profiles/ProfileBadges.tsx
 msgid "Responsibly disclosed security issues"
 msgstr "Responsibly disclosed security issues"
+
+#: components/chatWindows/WindowControls.tsx
+msgid "Restore"
+msgstr "Restore"
 
 #: components/modal/modals/E2EEEnable.tsx
 msgid "Restore from a recovery code"

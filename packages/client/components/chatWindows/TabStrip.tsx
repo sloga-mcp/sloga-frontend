@@ -16,6 +16,7 @@ import { cva } from "styled-system/css";
 import { ContextMenu, ContextMenuButton } from "@revolt/app/menus/ContextMenu";
 import { FriendContextMenu } from "@revolt/app/menus/FriendContextMenu";
 import { useClient } from "@revolt/client";
+import type { ChatWindowFrame } from "@revolt/client/chatShell";
 import { useConversationE2EE } from "@revolt/client/useConversationE2EE";
 import { allWindowCtxs, useWindowCtx } from "@revolt/client/windowCtx";
 import { TextWithEmoji } from "@revolt/markdown";
@@ -33,6 +34,12 @@ import MdClose from "@material-design-icons/svg/outlined/close.svg?component-sol
 
 import { conversationUnread } from "../friends/friendData";
 
+import { MAC_INSET_PADDING, WindowControls } from "./WindowControls";
+import {
+  markTabDragEnd,
+  markTabDragStart,
+  tabDragActive,
+} from "./chatWindowFrame";
 import {
   chatWindows,
   closeTab,
@@ -135,10 +142,13 @@ function releaseDragGuards() {
 
 /**
  * The guards only matter until a drop: release them once no live drag is
- * left, i.e. at the drop a strip took, or at a `dragend` with none.
+ * left, i.e. at the drop a strip took, or at a `dragend` with none. The title
+ * bars' drag spacers go back to being caption regions at the same point.
  */
 function releaseGuardsIfIdle() {
-  if (!tabDragLive()) releaseDragGuards();
+  if (tabDragLive()) return;
+  releaseDragGuards();
+  markTabDragEnd();
 }
 
 /** `dragend`: forget the drag of `channelId`, and drop its guards. */
@@ -183,8 +193,26 @@ function appWindowBounds(): ScreenRect[] {
  * window's document, and the drop guard on this window's document from
  * `useWindowCtx()`, never on a global `document` / `window`: the strip renders
  * inside a child window, and the global ones are main's.
+ *
+ * In a window without an OS title bar (frame `buttons` or `inset`), the strip
+ * is the title bar too:
+ * `[mac inset] [tab scroller] [drag spacer] [window controls, buttons only]`.
+ * The bar is a caption region (`data-app-region`, see `ui/styles.css`), so a
+ * press on it moves the window; the scroller, and with it every tab and tab
+ * button, is no-drag. The spacer turns no-drag while a tab drag is live, as
+ * a caption region never receives an HTML5 drop, and the spacer is part of
+ * the drop area, where it counts as dropping after the last tab. With the
+ * `native` frame the strip is exactly the plain strip.
  */
-export function TabStrip(props: { windowId: string }) {
+export function TabStrip(props: {
+  windowId: string;
+  /** What the shell built around the window (`ChildWindowHandle.frame`) */
+  frame: ChatWindowFrame;
+  /** The shell's label for the window, for the window controls */
+  shellLabel?: string;
+  /** Close this window (the window controls' close button) */
+  onCloseWindow: () => void;
+}) {
   const { t } = useLingui();
   const windowCtx = useWindowCtx();
 
@@ -246,18 +274,9 @@ export function TabStrip(props: { windowId: string }) {
     moveTab(channelId, props.windowId, { index });
   }
 
-  return (
-    <div
-      ref={strip}
-      data-chat-tab-strip
-      class={stripStyle()}
-      role="tablist"
-      aria-label={t`Conversations`}
-      onDragEnter={onDragOver}
-      onDragOver={onDragOver}
-      onDragLeave={onDragLeave}
-      onDrop={onDrop}
-    >
+  /** The tabs, then the free space after them (the end drop slot). */
+  const tabList = () => (
+    <>
       <For each={tabs()}>
         {(channelId, index) => (
           <Tab
@@ -273,7 +292,72 @@ export function TabStrip(props: { windowId: string }) {
         class={dropEndStyle()}
         data-drop-target={dropSlot() !== null && dropSlot() === tabs().length}
       />
-    </div>
+    </>
+  );
+
+  const titlebar = () => props.frame === "buttons" || props.frame === "inset";
+
+  return (
+    <Show
+      when={titlebar()}
+      fallback={
+        <div
+          ref={strip}
+          data-chat-tab-strip
+          class={stripStyle()}
+          role="tablist"
+          aria-label={t`Conversations`}
+          onDragEnter={onDragOver}
+          onDragOver={onDragOver}
+          onDragLeave={onDragLeave}
+          onDrop={onDrop}
+        >
+          {tabList()}
+        </div>
+      }
+    >
+      <div
+        class={barStyle()}
+        data-app-region="drag"
+        style={
+          props.frame === "inset"
+            ? { "padding-inline-start": MAC_INSET_PADDING }
+            : undefined
+        }
+      >
+        {/* The drop area: the tabs, and the spacer, which drops at the end */}
+        <div
+          ref={strip}
+          data-chat-tab-strip
+          class={dropAreaStyle()}
+          onDragEnter={onDragOver}
+          onDragOver={onDragOver}
+          onDragLeave={onDragLeave}
+          onDrop={onDrop}
+        >
+          <div
+            class={stripStyle({ bar: true })}
+            data-app-region="no-drag"
+            role="tablist"
+            aria-label={t`Conversations`}
+          >
+            {tabList()}
+          </div>
+          <div
+            class={spacerStyle()}
+            data-app-region={tabDragActive() ? "no-drag" : "drag"}
+          />
+        </div>
+        <Show when={props.frame === "buttons" && props.shellLabel}>
+          {(label) => (
+            <WindowControls
+              label={label()}
+              onClose={() => props.onCloseWindow()}
+            />
+          )}
+        </Show>
+      </div>
+    </Show>
   );
 }
 
@@ -337,11 +421,14 @@ function Tab(props: {
     e.dataTransfer.effectAllowed = "move";
     beginTabDrag(props.channelId, props.windowId);
     guardAllWindows();
+    // The title bars' drag spacers turn no-drag, so a drop there lands.
+    markTabDragStart();
   }
 
   function onDragEnd(e: DragEvent) {
     const channelId = props.channelId;
     finishTabDrag(channelId);
+    markTabDragEnd();
 
     const at = tearOffAt(
       e.dataTransfer?.dropEffect,
@@ -562,6 +649,51 @@ const stripStyle = cva({
     scrollbarWidth: "thin",
     background: "var(--md-sys-color-surface-container)",
     borderBottom: "1px solid var(--md-sys-color-outline-variant)",
+  },
+  variants: {
+    // The tab scroller inside a title bar: as wide as its tabs, shrinking
+    // (and scrolling) to leave the drag spacer its room; the bar paints.
+    bar: {
+      true: {
+        flexGrow: 0,
+        flexShrink: 1,
+        flexBasis: "auto",
+        minWidth: 0,
+        background: "transparent",
+        borderBottom: "none",
+      },
+    },
+  },
+});
+
+/** A chat window's own title bar: the strip, a drag spacer, the controls. */
+const barStyle = cva({
+  base: {
+    display: "flex",
+    alignItems: "stretch",
+    flexShrink: 0,
+    userSelect: "none",
+    background: "var(--md-sys-color-surface-container)",
+    borderBottom: "1px solid var(--md-sys-color-outline-variant)",
+  },
+});
+
+/** The scroller and the spacer: everything in the bar a tab can drop on. */
+const dropAreaStyle = cva({
+  base: {
+    display: "flex",
+    alignItems: "stretch",
+    flexGrow: 1,
+    minWidth: 0,
+  },
+});
+
+/** Free bar space that moves the window (and drops at the end in a drag). */
+const spacerStyle = cva({
+  base: {
+    flexGrow: 1,
+    flexShrink: 0,
+    minWidth: "48px",
   },
 });
 

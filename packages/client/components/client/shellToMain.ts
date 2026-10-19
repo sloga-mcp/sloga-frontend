@@ -54,7 +54,17 @@ export function validateWebPopoutMessage(
 export type ShellToMain =
   | { kind: "notificationOpen"; path: string }
   | { kind: "toastReply"; toastId: string; text: string }
-  | { kind: "toastOpen"; toastId: string };
+  | { kind: "toastOpen"; toastId: string }
+  | { kind: "chatWindowState"; label: string; maximized: boolean };
+
+/**
+ * A chat window label the shells hand out: the friends window, or `chat-`
+ * and a decimal counter (at most 20 digits, a u64). Defined here because
+ * this module stays import-free; `chatWindowFrame` re-exports it. No `g`
+ * flag: `test` stays stateless.
+ */
+export const CHAT_WINDOW_LABEL_RE: RegExp =
+  /^(friends-window|chat-[0-9]{1,20})$/;
 
 /**
  * A toast id the main window minted for the Sloga toast. Same rule as the
@@ -115,6 +125,13 @@ export function isShellToMain(value: unknown): value is ShellToMain {
         hasExactKeys(msg, ["kind", "toastId"]) &&
         typeof msg.toastId === "string" &&
         TOAST_ID_RE.test(msg.toastId)
+      );
+    case "chatWindowState":
+      return (
+        hasExactKeys(msg, ["kind", "label", "maximized"]) &&
+        typeof msg.label === "string" &&
+        CHAT_WINDOW_LABEL_RE.test(msg.label) &&
+        typeof msg.maximized === "boolean"
       );
     default:
       return false;

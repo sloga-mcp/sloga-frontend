@@ -28,6 +28,13 @@ export type ChildWindowHandle = {
   kind: ChildWindowKind;
   /** Label returned by chatShell.arm (undefined on web). */
   shellLabel?: string;
+  /**
+   * What the shell built around the window, from chatShell.arm: `buttons`
+   * (no OS title bar; the window draws minimize, maximize and close),
+   * `inset` (macOS traffic lights over the window's own bar), or `native`
+   * (the OS frame; also web and older shells).
+   */
+  frame: chatShell.ChatWindowFrame;
   ctx: WindowCtx;
   focus(): void;
   close(): void;
@@ -642,8 +649,14 @@ let openQueue: Promise<void> = Promise.resolve();
  */
 export const ARM_TIMEOUT_MS = 5000;
 
+/**
+ * `call`, or `{ ok: false, err: "timeout" }` after {@link ARM_TIMEOUT_MS}.
+ * When the timeout wins, `late` (if given) gets the answer the call still
+ * comes back with, if it ever does; a late rejection is dropped.
+ */
 function withShellTimeout<T>(
   call: () => Promise<chatShell.ShellResult<T>>,
+  late?: (result: chatShell.ShellResult<T>) => void,
 ): Promise<chatShell.ShellResult<T>> {
   // A synchronous throw becomes a rejection here, so the timer below is
   // always cleared.
@@ -651,27 +664,78 @@ function withShellTimeout<T>(
     resolve(call()),
   );
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
   const timeout = new Promise<chatShell.ShellResult<T>>((resolve) => {
-    timer = setTimeout(
-      () => resolve({ ok: false, err: "timeout" }),
-      ARM_TIMEOUT_MS,
-    );
+    timer = setTimeout(() => {
+      timedOut = true;
+      resolve({ ok: false, err: "timeout" });
+    }, ARM_TIMEOUT_MS);
   });
+  if (late) {
+    void pending.then(
+      (result) => {
+        if (timedOut) late(result);
+      },
+      () => {
+        // The race below reports a rejection that beats the timeout.
+      },
+    );
+  }
   return Promise.race([pending, timeout]).finally(() => clearTimeout(timer));
 }
 
-function armWithTimeout(
-  kind: ChildWindowKind,
-): Promise<chatShell.ShellResult<{ label: string }>> {
-  return withShellTimeout(() => chatShell.arm(kind));
+/**
+ * Arm the shell, giving up after {@link ARM_TIMEOUT_MS}. An arm that answers
+ * after the open gave up has still armed the shell, possibly for a frameless
+ * window: left alone, the next `about:blank` open from main's realm (an
+ * embed's iframe) would become a chat window main never tracks. So a late
+ * success is discarded, best effort and without holding the queue: the open
+ * that gave up has already resolved null.
+ */
+function armWithTimeout(kind: ChildWindowKind): Promise<chatShell.ArmResult> {
+  return withShellTimeout(
+    () => chatShell.arm(kind),
+    (late) => {
+      if (late.ok) void discardUnusedArm(late.label);
+    },
+  );
+}
+
+/**
+ * The frame an arm reported, normalized: only `buttons` and `inset` change
+ * how the window draws, and anything else (no shell, a refused arm, a
+ * malformed answer) is the OS frame.
+ */
+function armedFrame(armed: chatShell.ArmResult): chatShell.ChatWindowFrame {
+  if (!armed.ok) return "native";
+  return armed.frame === "buttons" || armed.frame === "inset"
+    ? armed.frame
+    : "native";
+}
+
+/**
+ * The window opened but could not be prepared, and main has closed it. On
+ * Tauri that close leaves the native window open and blank, and a frameless
+ * one has no close button of its own, so the shell finishes it. Best effort:
+ * a failure is logged, never raised, and the open still resolves null.
+ */
+async function closeUnpreparedWindow(label: string): Promise<void> {
+  try {
+    const result = await withShellTimeout(() => chatShell.closeWindow(label));
+    if (!result.ok)
+      console.warn("[chat-window] shell could not close", label, result.err);
+  } catch (err) {
+    console.warn("[chat-window] shell could not close", label, err);
+  }
 }
 
 /**
  * Main's `window.open` came back null after a successful arm: another frame
  * (an embed) opened first and consumed the arm, so the shell may have built
  * the window carrying `label` for it. Nothing renders into that window, and
- * it must not outlive this open. Best effort: a failure is logged, never
- * raised, and the open still resolves null.
+ * it must not outlive this open. Also used for an arm that answered after its
+ * open timed out ({@link armWithTimeout}). Best effort: a failure is logged,
+ * never raised, and the open still resolves null.
  */
 async function discardUnusedArm(label: string): Promise<void> {
   try {
@@ -719,6 +783,7 @@ async function openNow(
     return null;
   }
   const shellLabel = armed.ok ? armed.label : undefined;
+  const frame = armedFrame(armed);
 
   // 2. Open. The shell turns an armed about:blank request into a chat window.
   const id = nextChildWindowId(kind);
@@ -786,6 +851,9 @@ async function openNow(
     } catch {
       // Already gone.
     }
+    // Awaited like the discard above, so the queue stays ordered.
+    if (shellLabel !== undefined && shellCloseNeeded(shellLabel, mainUnloading))
+      await closeUnpreparedWindow(shellLabel);
     return null;
   }
 
@@ -831,6 +899,7 @@ async function openNow(
     id,
     kind,
     shellLabel,
+    frame,
     ctx,
     focus() {
       if (!finished && !isClosed()) childWin.focus();
