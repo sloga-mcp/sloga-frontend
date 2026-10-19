@@ -915,7 +915,8 @@ class Voice {
    * - `window` blur (`#pttBlur`), because a DOM key-up is delivered only to
    *   the focused window — alt-tabbing mid-hold means that up never arrives
    *   at all. Main's and each chat window's ({@link #bindPttChildWindows}).
-   *   Without the native hook the blur also mutes, as the release would.
+   *   Unless the native hook delivered this hold (`#pttNativeHeld`), the
+   *   blur also mutes, as the release would.
    *
    * The native layer treats the same latch as unacceptable for the same
    * reason: `fire_panic` (`ptt.rs`) force-clears `IS_DOWN` "rather than
@@ -2557,9 +2558,9 @@ class Voice {
       // this listener is the only clear there is. Fail-safe direction: the
       // cost of clearing early is that the mute keybind starts working again
       // mid-hold, which is strictly better than a mute key that is dead for
-      // the rest of the session. Where the native hook is not armed the blur
-      // is also the release and mutes the mic (`#pttBlur`): without it, a
-      // hold that alt-tabbed away stayed live.
+      // the rest of the session. Unless the native hook delivered this hold,
+      // the blur is also the release and mutes the mic (`#pttBlur`): without
+      // it, a hold that alt-tabbed away stayed live.
       window.addEventListener("blur", () => this.#pttBlur());
 
       // AFK idle watch (D-5b2-7): input in the VISIBLE window is activity.
