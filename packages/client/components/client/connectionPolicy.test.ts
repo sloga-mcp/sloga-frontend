@@ -5,8 +5,8 @@
 // tests at all, so compare this against its pass count).
 //
 // Focus: dismissing the error screen may only consider dropping the session
-// for an exact "InvalidSession", and only a REST probe answering
-// InvalidSession confirms it (a network failure or HTML must keep the
+// for an exact "InvalidSession", and only a REST probe answering HTTP 401
+// confirms it (a network failure or any other status must keep the
 // session). The loading spinner offers "Sign out" after enough failures OR a
 // long wait, never once the client has loaded. A Client "error" event is
 // sorted into a server Error frame, a socket Event, or anything else, which
@@ -48,28 +48,26 @@ test("dismissing a differently cased invalidsession keeps the session", () => {
   assert.equal(dismissMayDropSession("invalidsession"), false);
 });
 
-test("a probe rejected with an InvalidSession body string confirms revocation", () => {
-  assert.equal(probeConfirmsRevoked('{"type":"InvalidSession"}'), true);
+test("a probe answered with 401 confirms revocation", () => {
+  assert.equal(probeConfirmsRevoked(401), true);
 });
 
-test("a probe rejected with a parsed InvalidSession body confirms revocation", () => {
-  assert.equal(probeConfirmsRevoked({ type: "InvalidSession" }), true);
+test("a probe answered with 200 does not confirm revocation", () => {
+  assert.equal(probeConfirmsRevoked(200), false);
+});
+
+test("a probe answered with a server error does not confirm revocation", () => {
+  assert.equal(probeConfirmsRevoked(500), false);
 });
 
 test("a probe that failed to fetch does not confirm revocation", () => {
-  assert.equal(probeConfirmsRevoked(new TypeError("Failed to fetch")), false);
+  assert.equal(probeConfirmsRevoked(undefined), false);
 });
 
-test("a probe rejected with HTML does not confirm revocation", () => {
-  assert.equal(
-    probeConfirmsRevoked("<html><body>502 Bad Gateway</body></html>"),
-    false,
-  );
-});
-
-test("a probe rejected with another API error does not confirm revocation", () => {
-  assert.equal(probeConfirmsRevoked('{"type":"InternalError"}'), false);
-  assert.equal(probeConfirmsRevoked({ type: "NotFound" }), false);
+test("a probe answered with another client or proxy status does not confirm revocation", () => {
+  assert.equal(probeConfirmsRevoked(403), false);
+  assert.equal(probeConfirmsRevoked(404), false);
+  assert.equal(probeConfirmsRevoked(502), false);
 });
 
 test("no sign-out offer with no failures and no long wait", () => {

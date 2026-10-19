@@ -360,28 +360,45 @@ class Lifecycle {
    * Called when the user dismisses an InvalidSession error. The server also
    * answers InvalidSession when its database lookup fails, so the notice
    * alone is not proof the session was revoked. Ask again with a REST call
-   * behind the session guard, and drop the session only on a second
-   * InvalidSession for the same stored session (a new login in the meantime
-   * has a new id). Any other outcome, a network failure or a 5xx included,
-   * keeps it. Not awaited, and a failed probe is handled here, so it does
-   * not throw.
+   * behind the session guard, and drop the session only on a 401 for the
+   * same stored session (a new login in the meantime has a new id). Any other
+   * outcome, a network failure or a 5xx included, keeps it. Servers that
+   * still answer 401 for a failed database lookup make this a narrower
+   * window, not a full fix.
+   *
+   * Plain fetch with the old client's credentials, because the API client
+   * throws only the response body, and the guard's 401 body carries no error
+   * type. It only asks with the stored session's own token: without one the
+   * guard answers 401 for the missing header, which says nothing about the
+   * session. Not awaited, and every failure is handled here.
    */
   #dropSessionIfRevoked() {
-    const api = this.client.api;
-    const sessionId = this.#controller.state.auth.getSession()?._id;
-    if (sessionId === undefined) return;
+    const { baseURL, headers } = this.client.api.config;
+    const session = this.#controller.state.auth.getSession();
+    if (
+      session === undefined ||
+      (headers as Record<string, string> | undefined)?.["X-Session-Token"] !==
+        session.token
+    ) {
+      return;
+    }
 
-    api.get("/onboard/hello").then(
-      () => {},
-      (error) => {
+    const sessionId = session._id;
+
+    fetch(`${baseURL}/onboard/hello`, { headers })
+      .then(
+        (response) => response.status,
+        () => undefined,
+      )
+      .then((status) => {
         if (
-          probeConfirmsRevoked(error) &&
+          probeConfirmsRevoked(status) &&
           this.#controller.state.auth.getSession()?._id === sessionId
         ) {
           this.#controller.state.auth.removeSession();
         }
-      },
-    );
+      })
+      .catch(console.error);
   }
 
   /**

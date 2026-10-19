@@ -1,11 +1,9 @@
-import { apiErrorType } from "./apiErrorType.ts";
-
 /**
  * Connection and session policy for the client lifecycle: when a dismissed
  * error may drop the stored session, when the loading spinner offers a way
  * out, and what kind of thing a Client "error" event carries.
  *
- * Kept free of solid-js and stoat.js (it imports only `apiErrorType`) so the
+ * Kept import-free (no solid-js, no stoat.js) so the
  * rules can be pinned under `node --test`: the controller and the loading
  * screen call these instead of inlining the checks, so a rule changed here is
  * a rule the spec catches.
@@ -33,14 +31,16 @@ export function dismissMayDropSession(
 }
 
 /**
- * Whether the REST probe's rejection proves the session is gone.
+ * Whether the REST probe's HTTP status proves the session is gone.
  *
- * Only an API error body of type `InvalidSession` does. A network failure, a
- * 5xx, or HTML from a proxy says nothing about the session, so the session
- * is kept.
+ * Only a 401 from the session guard does. The probe reads the status, not an
+ * error type in the body: the server registers no error catchers, so a
+ * failed guard answers with a generic body that carries no `type`. A network
+ * failure (no status), a 5xx, or any other status says nothing about the
+ * session, so the session is kept.
  */
-export function probeConfirmsRevoked(error: unknown): boolean {
-  return apiErrorType(error) === "InvalidSession";
+export function probeConfirmsRevoked(status: number | undefined): boolean {
+  return status === 401;
 }
 
 /**
