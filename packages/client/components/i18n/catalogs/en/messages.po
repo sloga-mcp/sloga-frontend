@@ -4890,6 +4890,10 @@ msgstr "Load file ({0})"
 msgid "Edit profile"
 msgstr "Edit profile"
 
+#: components/ui/components/features/profiles/ProfileBadges.tsx
+msgid "Cipher founding supporter #{number}"
+msgstr "Cipher founding supporter #{number}"
+
 #: src/interface/Discover.tsx
 #: src/interface/channels/forum/ForumChannel.tsx
 msgid "Load more"
@@ -6631,6 +6635,10 @@ msgstr "Referrals"
 msgid "Supporter"
 msgstr "Supporter"
 
+#: components/app/interface/settings/UserSettings.tsx
+msgid "Cipher"
+msgstr "Cipher"
+
 #: components/app/interface/settings/user/profile/UserProfileEditor.tsx
 msgid "Profile Bio"
 msgstr "Profile Bio"
@@ -7954,6 +7962,38 @@ msgstr "Active until {until}"
 msgid "Expires {expires}"
 msgstr "Expires {expires}"
 
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "You can pick a different tier after {expires}, when your open checkout expires."
+msgstr "You can pick a different tier after {expires}, when your open checkout expires."
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "{claimed} of {cap} claimed"
+msgstr "{claimed} of {cap} claimed"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "All {cap} Cipher numbers have been claimed."
+msgstr "All {cap} Cipher numbers have been claimed."
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Continue checkout"
+msgstr "Continue checkout"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Upgrade for {price}"
+msgstr "Upgrade for {price}"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Buy for {price}"
+msgstr "Buy for {price}"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "You're on the top tier. Thank you for backing Sloga!"
+msgstr "You're on the top tier. Thank you for backing Sloga!"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Upgrade your tier"
+msgstr "Upgrade your tier"
+
 #: components/app/interface/settings/user/Supporter.tsx
 msgid "{remaining} more to unlock {reward}"
 msgstr "{remaining} more to unlock {reward}"
@@ -8116,6 +8156,30 @@ msgstr "Slogatron minigame"
 #: components/client/toastShell.ts
 msgid "Slow down — try again in a moment"
 msgstr "Slow down — try again in a moment"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Checkout couldn't be started. Try again in a moment."
+msgstr "Checkout couldn't be started. Try again in a moment."
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Cipher {label}"
+msgstr "Cipher {label}"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "{price} tier"
+msgstr "{price} tier"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "{amount} Prot at launch"
+msgstr "{amount} Prot at launch"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Thank you! You're Cipher {label}."
+msgstr "Thank you! You're Cipher {label}."
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Checkout open: {name}"
+msgstr "Checkout open: {name}"
 
 #: components/client/toastShell.ts
 msgid "Couldn't confirm it sent. Open Sloga to check."
@@ -9155,6 +9219,30 @@ msgstr "We couldn't reach the server you're importing from right now. Try again 
 #: components/i18n/errors.ts
 msgid "Importing from this platform is not available right now."
 msgstr "Importing from this platform is not available right now."
+
+#: components/i18n/errors.ts
+msgid "Payments are not available right now."
+msgstr "Payments are not available right now."
+
+#: components/i18n/errors.ts
+msgid "The Cipher founding sale is closed."
+msgstr "The Cipher founding sale is closed."
+
+#: components/i18n/errors.ts
+msgid "All Cipher numbers have been claimed."
+msgstr "All Cipher numbers have been claimed."
+
+#: components/i18n/errors.ts
+msgid "That Cipher tier isn't available for your account."
+msgstr "That Cipher tier isn't available for your account."
+
+#: components/i18n/errors.ts
+msgid "You already have a checkout in progress. Finish it, or pick again after it expires."
+msgstr "You already have a checkout in progress. Finish it, or pick again after it expires."
+
+#: components/i18n/errors.ts
+msgid "The payment provider didn't respond. Please try again."
+msgstr "The payment provider didn't respond. Please try again."
 
 #: components/i18n/errors.ts
 msgid "This account is not activated! Please check your account's inbox and try again."
@@ -10809,6 +10897,74 @@ msgstr "$99"
 #: components/auth/src/CipherPromo.tsx
 msgid "Become a Cipher"
 msgstr "Become a Cipher"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Cipher sales are closed."
+msgstr "Cipher sales are closed."
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Selected"
+msgstr "Selected"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Numbered Cipher badge"
+msgstr "Numbered Cipher badge"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Animated Cipher badge"
+msgstr "Animated Cipher badge"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "You'll pay on Stripe's secure checkout page."
+msgstr "You'll pay on Stripe's secure checkout page."
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "It opens in your browser."
+msgstr "It opens in your browser."
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Ciphers are the founding backers of Protected servers and channels. Each Cipher gets a numbered badge and Prot to spend when Protected launches."
+msgstr "Ciphers are the founding backers of Protected servers and channels. Each Cipher gets a numbered badge and Prot to spend when Protected launches."
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Checkout canceled. You weren't charged."
+msgstr "Checkout canceled. You weren't charged."
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "This usually takes a few seconds."
+msgstr "This usually takes a few seconds."
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Confirming your payment…"
+msgstr "Confirming your payment…"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "If you finished checking out, it can take a few minutes to show up here."
+msgstr "If you finished checking out, it can take a few minutes to show up here."
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Check again"
+msgstr "Check again"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "We haven't seen your payment yet"
+msgstr "We haven't seen your payment yet"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Your badge is hidden and upgrades are paused until the review is over."
+msgstr "Your badge is hidden and upgrades are paused until the review is over."
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Your payment is under review"
+msgstr "Your payment is under review"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Finish paying in your browser. This page updates when you come back."
+msgstr "Finish paying in your browser. This page updates when you come back."
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "About Ciphers"
+msgstr "About Ciphers"
 
 #: components/auth/src/CipherPromo.tsx
 msgid "Ciphers fund the audit"

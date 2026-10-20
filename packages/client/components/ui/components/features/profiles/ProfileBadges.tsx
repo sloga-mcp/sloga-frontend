@@ -1,7 +1,8 @@
-import { Show } from "solid-js";
+import { Show, createEffect } from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
 import { User, UserBadges } from "stoat.js";
+import { cva, cx } from "styled-system/css";
 import { styled } from "styled-system/jsx";
 
 import badgeActiveSupporter from "../../../../../scripts/assets_fallback/badges/active_supporter.svg";
@@ -20,15 +21,40 @@ import badgeRecruiterElite from "../../../../../scripts/assets_fallback/badges/r
 import badgeSupporter from "../../../../../scripts/assets_fallback/badges/supporter.svg";
 import badgeTranslator from "../../../../../scripts/assets_fallback/badges/translator.svg";
 import badgeWelcomed from "../../../../../scripts/assets_fallback/badges/welcomed.svg";
-import { Text } from "../../design";
+import { Text, typography } from "../../design";
 
 import { ProfileCard } from "./ProfileCard";
+import {
+  CIPHER_BADGE_SHINE_CLASS,
+  cipherBadgeLabel,
+  ensureCipherBadgeSheet,
+  formatCipherNumber,
+  isAnimatedCipherTier,
+  readUserCipher,
+} from "./cipherBadge";
 
 export function ProfileBadges(props: { user: User }) {
   const { t } = useLingui();
 
+  // Display only: the server assigns the membership and strips it from user
+  // edits, so this never decides anything.
+  const cipher = () => readUserCipher(props.user);
+  const cipherAnimated = () => {
+    const current = cipher();
+    return !!current && isAnimatedCipherTier(current.tier);
+  };
+
+  createEffect(() => {
+    if (cipherAnimated()) ensureCipherBadgeSheet();
+  });
+
+  function cipherTooltip(cipherNumber: number) {
+    const number = formatCipherNumber(cipherNumber);
+    return t`Cipher founding supporter #${number}`;
+  }
+
   return (
-    <Show when={props.user.badges || props.user.customBadge}>
+    <Show when={props.user.badges || props.user.customBadge || cipher()}>
       <ProfileCard>
         <Text class="title" size="large">
           <Trans>Badges</Trans>
@@ -70,6 +96,26 @@ export function ProfileBadges(props: { user: User }) {
               }}
               src={badgeDeveloper}
             />
+          </Show>
+          <Show when={cipher()}>
+            {(current) => (
+              <span
+                role="img"
+                aria-label={cipherTooltip(current().number)}
+                class={cx(
+                  cipherBadge({ featured: cipherAnimated() }),
+                  cipherAnimated() && CIPHER_BADGE_SHINE_CLASS,
+                )}
+                use:floating={{
+                  tooltip: {
+                    placement: "top",
+                    content: cipherTooltip(current().number),
+                  },
+                }}
+              >
+                {cipherBadgeLabel(current().number)}
+              </span>
+            )}
           </Show>
           <Show when={props.user.badges & UserBadges.Supporter}>
             <img
@@ -253,6 +299,37 @@ const BadgeRow = styled("div", {
       height: "24px",
       aspectRatio: "1/1",
       objectFit: "contain",
+    },
+  },
+});
+
+/**
+ * Text pill sized to sit in line with the 24px icon badges. The animated
+ * tier's shine comes from CIPHER_BADGE_SHINE_CLASS (see cipherBadge.ts).
+ */
+const cipherBadge = cva({
+  base: {
+    ...typography.raw({ class: "label", size: "small" }),
+    display: "inline-flex",
+    alignItems: "center",
+    height: "24px",
+    paddingInline: "8px",
+    borderRadius: "var(--borderRadius-full)",
+    border: "1px solid var(--md-sys-color-outline-variant)",
+    backgroundColor: "var(--md-sys-color-surface-container-highest)",
+    color: "var(--md-sys-color-on-surface)",
+    fontVariantNumeric: "tabular-nums",
+    whiteSpace: "nowrap",
+    userSelect: "none",
+  },
+  variants: {
+    featured: {
+      true: {
+        borderColor: "var(--md-sys-color-primary)",
+        backgroundColor: "var(--md-sys-color-primary-container)",
+        color: "var(--md-sys-color-on-primary-container)",
+      },
+      false: {},
     },
   },
 });

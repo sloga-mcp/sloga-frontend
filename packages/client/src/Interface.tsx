@@ -45,6 +45,7 @@ import { ChatWindowsHost } from "../components/chatWindows/ChatWindowsHost";
 import { SlideDrawer } from "../components/ui/components/navigation/SlideDrawer";
 import { PaneErrorBoundary } from "./interface/PaneErrorBoundary";
 import { Sidebar } from "./interface/Sidebar";
+import { loginReturnPath } from "./lib/deepLinks";
 
 // DEV only: a dynamic import behind the folded constant, so production
 // bundles don't carry the harness at all.
@@ -88,7 +89,7 @@ const Interface = (props: { children: JSX.Element }) => {
   const { t } = useLingui();
   const { openModal } = useModals();
   const { isLoggedIn, lifecycle } = useClientLifecycle();
-  const { pathname } = useLocation();
+  const { pathname, search } = useLocation();
   const sides = useLayoutSides();
 
   useBeforeLeave((e) => {
@@ -104,7 +105,10 @@ const Interface = (props: { children: JSX.Element }) => {
 
   createEffect(() => {
     if (!isLoggedIn()) {
-      state.layout.setNextPath(pathname);
+      // Keeps the query string for settings deep links
+      // (`/settings?cipher_tier=T149`), and never stores a path that
+      // resolves to another origin (see src/lib/deepLinks.ts).
+      state.layout.setNextPath(loginReturnPath(pathname, search));
       console.debug("WAITING... currently", lifecycle.state());
     }
   });
