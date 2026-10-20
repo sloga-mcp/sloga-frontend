@@ -1,4 +1,11 @@
-import { Show, createEffect } from "solid-js";
+import {
+  Show,
+  createEffect,
+  createSignal,
+  on,
+  onCleanup,
+  onMount,
+} from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
 import { User, UserBadges } from "stoat.js";
@@ -25,8 +32,13 @@ import { Text, typography } from "../../design";
 
 import { ProfileCard } from "./ProfileCard";
 import {
+  CIPHER_BADGE_OPEN_CLASS,
+  CIPHER_BADGE_SHACKLE_CLASS,
   CIPHER_BADGE_SHINE_CLASS,
+  CIPHER_DECRYPT_EVERY_MS,
+  CIPHER_DECRYPT_MS,
   cipherBadgeLabel,
+  cipherScrambleFrame,
   ensureCipherBadgeSheet,
   formatCipherNumber,
   isAnimatedCipherTier,
@@ -113,7 +125,12 @@ export function ProfileBadges(props: { user: User }) {
                   },
                 }}
               >
-                {cipherBadgeLabel(current().number)}
+                <Show
+                  when={cipherAnimated()}
+                  fallback={cipherBadgeLabel(current().number)}
+                >
+                  <CipherDecryptLabel number={current().number} />
+                </Show>
               </span>
             )}
           </Show>
@@ -302,6 +319,125 @@ const BadgeRow = styled("div", {
     },
   },
 });
+
+/**
+ * The top tier's lock and label. The label starts as scrambled symbols and
+ * decrypts left to right; the lock opens once it reads in full. It runs when
+ * the badge appears, again every CIPHER_DECRYPT_EVERY_MS while the page is
+ * visible, and on hover. Under reduced motion it shows the plain label with
+ * the lock open. The real label sits underneath, hidden, to hold the width so
+ * the badge never jumps; the parent's aria-label is what screen readers read.
+ */
+function CipherDecryptLabel(props: { number: number }) {
+  const target = () => cipherBadgeLabel(props.number);
+  const [text, setText] = createSignal(target());
+  const [locked, setLocked] = createSignal(false);
+
+  const reducedMotion =
+    typeof matchMedia === "function" &&
+    matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  let frame = 0;
+  let timer: ReturnType<typeof setInterval> | undefined;
+
+  function decrypt() {
+    if (reducedMotion || frame) return;
+    const goal = target();
+    const start = performance.now();
+    setLocked(true);
+
+    const step = (now: number) => {
+      const progress = Math.min(1, (now - start) / CIPHER_DECRYPT_MS);
+      const revealed = Math.floor(progress * (goal.length + 1));
+      if (progress < 1) {
+        setText(cipherScrambleFrame(goal, revealed, Math.random));
+        frame = requestAnimationFrame(step);
+      } else {
+        frame = 0;
+        setText(target());
+        setLocked(false);
+      }
+    };
+    frame = requestAnimationFrame(step);
+  }
+
+  onMount(() => {
+    decrypt();
+    timer = setInterval(() => {
+      if (!document.hidden) decrypt();
+    }, CIPHER_DECRYPT_EVERY_MS);
+  });
+
+  onCleanup(() => {
+    if (frame) cancelAnimationFrame(frame);
+    if (timer) clearInterval(timer);
+  });
+
+  // A new number while idle shows at once; mid-decrypt the last frame does it
+  createEffect(
+    on(
+      target,
+      (goal) => {
+        if (!frame) setText(goal);
+      },
+      { defer: true },
+    ),
+  );
+
+  return (
+    <span
+      onPointerEnter={decrypt}
+      style={{ display: "inline-flex", "align-items": "center", gap: "5px" }}
+    >
+      <svg
+        width="13"
+        height="13"
+        viewBox="0 0 16 16"
+        aria-hidden="true"
+        class={locked() ? undefined : CIPHER_BADGE_OPEN_CLASS}
+        style={{ "flex-shrink": 0, overflow: "visible" }}
+      >
+        <path
+          class={CIPHER_BADGE_SHACKLE_CLASS}
+          d="M5 7V5.2a3 3 0 0 1 6 0V7"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+        />
+        <rect
+          x="3.2"
+          y="6.8"
+          width="9.6"
+          height="7.4"
+          rx="1.8"
+          fill="currentColor"
+        />
+        <circle cx="8" cy="10.3" r="1.1" fill="#7fd9c0" />
+      </svg>
+      <span
+        style={{
+          position: "relative",
+          display: "inline-block",
+          overflow: "hidden",
+        }}
+      >
+        <span style={{ visibility: "hidden" }}>{target()}</span>
+        <span
+          aria-hidden="true"
+          style={{
+            position: "absolute",
+            left: 0,
+            top: 0,
+            "white-space": "nowrap",
+          }}
+        >
+          {text()}
+        </span>
+      </span>
+    </span>
+  );
+}
 
 /**
  * Text pill sized to sit in line with the 24px icon badges. The animated

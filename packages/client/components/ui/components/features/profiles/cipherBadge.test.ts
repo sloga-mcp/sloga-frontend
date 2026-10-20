@@ -5,9 +5,15 @@ import { test } from "node:test";
 
 import {
   ANIMATED_CIPHER_TIER,
+  CIPHER_BADGE_OPEN_CLASS,
+  CIPHER_BADGE_SHACKLE_CLASS,
   CIPHER_BADGE_SHEET,
   CIPHER_BADGE_SHINE_CLASS,
+  CIPHER_DECRYPT_EVERY_MS,
+  CIPHER_DECRYPT_MS,
+  CIPHER_SCRAMBLE_GLYPHS,
   cipherBadgeLabel,
+  cipherScrambleFrame,
   ensureCipherBadgeSheet,
   formatCipherNumber,
   isAnimatedCipherTier,
@@ -81,22 +87,102 @@ test("only T299 animates", () => {
   assert.equal(isAnimatedCipherTier("t299"), false);
 });
 
-test("the sheet animates the shine class and defines its keyframes", () => {
+test("the sheet animates the shine layer and defines its keyframes", () => {
   assert.match(
     CIPHER_BADGE_SHEET,
     new RegExp(
-      `\\.${CIPHER_BADGE_SHINE_CLASS} \\{[^}]*animation: sloga-cipher-badge-shine `,
+      `\\.${CIPHER_BADGE_SHINE_CLASS}::after \\{[^}]*z-index: -1;[^}]*animation: sloga-cipher-badge-shine 3s `,
     ),
   );
   assert.ok(CIPHER_BADGE_SHEET.includes("@keyframes sloga-cipher-badge-shine"));
 });
 
-test("reduced motion removes the animation and the highlight", () => {
+test("the top tier gets the blue to green fill with dark ink, above the badge's own colors", () => {
   assert.match(
     CIPHER_BADGE_SHEET,
     new RegExp(
-      `@media \\(prefers-reduced-motion: reduce\\) \\{\\s*\\.${CIPHER_BADGE_SHINE_CLASS} \\{[^}]*animation: none;[^}]*background-image: none;`,
+      `\\.${CIPHER_BADGE_SHINE_CLASS}\\.${CIPHER_BADGE_SHINE_CLASS} \\{[^}]*isolation: isolate;[^}]*color: #04222e;[^}]*linear-gradient\\(120deg, #3bb8ed 0%, #27a163 100%\\)`,
     ),
+  );
+});
+
+test("reduced motion removes the sweep and keeps the fill", () => {
+  assert.match(
+    CIPHER_BADGE_SHEET,
+    new RegExp(
+      `@media \\(prefers-reduced-motion: reduce\\) \\{\\s*\\.${CIPHER_BADGE_SHINE_CLASS}::after \\{[^}]*animation: none;[^}]*background-image: none;`,
+    ),
+  );
+  const reduced = CIPHER_BADGE_SHEET.slice(
+    CIPHER_BADGE_SHEET.indexOf("@media (prefers-reduced-motion"),
+  );
+  assert.ok(
+    !reduced.includes("#3bb8ed"),
+    "the fill is not removed under reduced motion",
+  );
+});
+
+test("a scramble frame keeps the revealed part and the spaces", () => {
+  const label = "Cipher #0042";
+  const first = () => 0;
+
+  const none = cipherScrambleFrame(label, 0, first);
+  assert.equal(none.length, label.length);
+  assert.equal(none[6], " ");
+  for (let i = 0; i < label.length; i++) {
+    if (i !== 6) assert.equal(none[i], CIPHER_SCRAMBLE_GLYPHS[0], `index ${i}`);
+  }
+
+  assert.equal(
+    cipherScrambleFrame(label, 3, first),
+    "Cip" +
+      CIPHER_SCRAMBLE_GLYPHS[0].repeat(3) +
+      " " +
+      CIPHER_SCRAMBLE_GLYPHS[0].repeat(5),
+  );
+  assert.equal(cipherScrambleFrame(label, label.length, first), label);
+  assert.equal(cipherScrambleFrame(label, label.length + 5, first), label);
+});
+
+test("scramble symbols stay in range for any random value", () => {
+  for (const value of [0, 0.5, 0.999999, 1, -1, NaN]) {
+    const frame = cipherScrambleFrame("ab", 0, () => value);
+    for (const char of frame) {
+      assert.ok(CIPHER_SCRAMBLE_GLYPHS.includes(char), `value ${value}`);
+    }
+  }
+});
+
+test("scramble symbols are single code units with no direction controls", () => {
+  for (const glyph of CIPHER_SCRAMBLE_GLYPHS) {
+    assert.equal(glyph.length, 1, glyph);
+    const code = glyph.codePointAt(0) ?? 0;
+    const control =
+      (code >= 0x200b && code <= 0x200f) ||
+      (code >= 0x202a && code <= 0x202e) ||
+      (code >= 0x2066 && code <= 0x2069);
+    assert.ok(!control, "no zero width or direction control");
+  }
+});
+
+test("the decrypt is slow and repeats with a rest between runs", () => {
+  assert.equal(CIPHER_DECRYPT_MS, 3000);
+  assert.ok(CIPHER_DECRYPT_EVERY_MS > CIPHER_DECRYPT_MS);
+});
+
+test("the lock opens under the open class and snaps under reduced motion", () => {
+  assert.match(
+    CIPHER_BADGE_SHEET,
+    new RegExp(
+      `\\.${CIPHER_BADGE_OPEN_CLASS} \\.${CIPHER_BADGE_SHACKLE_CLASS} \\{[^}]*transform: translateY`,
+    ),
+  );
+  const reduced = CIPHER_BADGE_SHEET.slice(
+    CIPHER_BADGE_SHEET.indexOf("@media (prefers-reduced-motion"),
+  );
+  assert.match(
+    reduced,
+    new RegExp(`\\.${CIPHER_BADGE_SHACKLE_CLASS} \\{\\s*transition: none;`),
   );
 });
 
