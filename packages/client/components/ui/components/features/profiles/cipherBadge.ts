@@ -111,8 +111,11 @@ export function cipherScrambleFrame(
 }
 
 /**
- * The top tier's badge: Sloga blue fading into green with dark ink and a soft
- * glow, so it reads the same on light and dark themes. A bright highlight
+ * The top tier's badge: the light blue of the Sloga logo fading into its
+ * orange, with dark ink and a soft glow, so it reads the same on light and
+ * dark themes. The blend takes the long way round the hue wheel in oklch, so
+ * it passes through violet and pink; the plain gradient before it, through
+ * the logo's purple, is for browsers without oklch gradients. A bright highlight
  * sweeps across it every three seconds; the sweep sits on a layer under the
  * text (z-index -1 inside the isolated badge), and both ends of it sit outside
  * the badge, so the resting frame is clean. The doubled class outranks the
@@ -126,11 +129,12 @@ export const CIPHER_BADGE_SHEET = `
   isolation: isolate;
   gap: 5px;
   padding-inline: 7px 9px;
-  color: #04222e;
+  color: #11190e;
   background-color: #3bb8ed;
-  background-image: linear-gradient(120deg, #3bb8ed 0%, #27a163 100%);
+  background-image: linear-gradient(120deg, #3bb8ed 0%, #c05fc8 55%, #f5870d 100%);
+  background-image: linear-gradient(in oklch longer hue 120deg, #3bb8ed 0%, #f5870d 100%);
   border-color: rgba(255, 255, 255, 0.45);
-  box-shadow: 0 0 0 1px rgba(59, 184, 237, 0.35), 0 0 10px rgba(59, 184, 237, 0.45);
+  box-shadow: 0 0 0 1px rgba(245, 135, 13, 0.35), 0 0 10px rgba(245, 135, 13, 0.45);
 }
 
 .${CIPHER_BADGE_SHINE_CLASS}::after {

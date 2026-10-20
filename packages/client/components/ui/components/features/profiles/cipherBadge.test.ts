@@ -97,11 +97,11 @@ test("the sheet animates the shine layer and defines its keyframes", () => {
   assert.ok(CIPHER_BADGE_SHEET.includes("@keyframes sloga-cipher-badge-shine"));
 });
 
-test("the top tier gets the blue to green fill with dark ink, above the badge's own colors", () => {
+test("the top tier gets the blue to orange fill with dark ink, above the badge's own colors", () => {
   assert.match(
     CIPHER_BADGE_SHEET,
     new RegExp(
-      `\\.${CIPHER_BADGE_SHINE_CLASS}\\.${CIPHER_BADGE_SHINE_CLASS} \\{[^}]*isolation: isolate;[^}]*color: #04222e;[^}]*linear-gradient\\(120deg, #3bb8ed 0%, #27a163 100%\\)`,
+      `\\.${CIPHER_BADGE_SHINE_CLASS}\\.${CIPHER_BADGE_SHINE_CLASS} \\{[^}]*isolation: isolate;[^}]*color: #11190e;[^}]*linear-gradient\\(120deg, #3bb8ed 0%, #c05fc8 55%, #f5870d 100%\\);[^}]*linear-gradient\\(in oklch longer hue 120deg, #3bb8ed 0%, #f5870d 100%\\)`,
     ),
   );
 });
@@ -117,7 +117,7 @@ test("reduced motion removes the sweep and keeps the fill", () => {
     CIPHER_BADGE_SHEET.indexOf("@media (prefers-reduced-motion"),
   );
   assert.ok(
-    !reduced.includes("#3bb8ed"),
+    !reduced.includes("#f5870d"),
     "the fill is not removed under reduced motion",
   );
 });

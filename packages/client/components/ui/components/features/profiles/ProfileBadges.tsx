@@ -413,7 +413,7 @@ function CipherDecryptLabel(props: { number: number }) {
           rx="1.8"
           fill="currentColor"
         />
-        <circle cx="8" cy="10.3" r="1.1" fill="#7fd9c0" />
+        <circle cx="8" cy="10.3" r="1.1" fill="#ffd08a" />
       </svg>
       <span
         style={{
