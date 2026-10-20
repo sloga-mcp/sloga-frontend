@@ -138,7 +138,8 @@ export function useNotifications() {
   };
 
   /**
-   * Re-register the native FCM subscription with the backend. Runs on every
+   * Re-register the native push subscription (FCM on Android, APNs on iOS)
+   * with the backend. Runs on every
    * logged-in launch: a session's subscription can be lost with no signal to
    * this device (the one-shot first-run flow failed or was interrupted, the
    * backend dropped it, the token changed) and the first-run flow never
@@ -156,7 +157,7 @@ export function useNotifications() {
    */
   const resyncPushSubscription = async (): Promise<boolean> => {
     if (isWebPushPlatform()) return resyncWebPushSubscription();
-    if (!PushTokenNative) return true;
+    if (!PushTokenNative && !IS_IOS_NATIVE) return true;
     if (settings.pushNotificationsState === "denied") return true;
     if (pushProvider() === "unifiedpush") {
       return resyncUnifiedPushSubscription();
@@ -385,12 +386,22 @@ function retryWebPushOnGesture(): boolean {
   return true;
 }
 
+/** True in the native iOS shell, where push is APNs rather than FCM or web push */
+const IS_IOS_NATIVE =
+  Capacitor.isNativePlatform() && Capacitor.getPlatform() === "ios";
+
+/** How long to wait for APNs to hand back a device token before giving up */
+const APNS_TOKEN_TIMEOUT = 30_000;
+
 /**
  * Native bridge to fetch the FCM device token (Android app only). The foss
  * build's getToken rejects with PUSH_UNAVAILABLE and is never called there:
  * foss push rides UnifiedPush instead.
+ *
+ * Gated on the platform, not on `isNativePlatform()`: this plugin does not
+ * exist in the iOS shell, so every method there rejects with UNIMPLEMENTED.
  */
-const PushTokenNative = Capacitor.isNativePlatform()
+const PushTokenNative = Capacitor.getPlatform() === "android"
   ? registerPlugin<{
       getToken(): Promise<{ token: string }>;
       saveSubscription(opts: {
@@ -618,12 +629,13 @@ async function killUnifiedPushSubscription() {
 
 /**
  * Whether push rides a browser service worker (VAPID web push): not any
- * native Android build (FCM or UnifiedPush), not the Tauri or Electron
- * desktop shells (no service worker there).
+ * native Android build (FCM or UnifiedPush), not the native iOS shell (APNs),
+ * not the Tauri or Electron desktop shells (no service worker there).
  */
 export function isWebPushPlatform(): boolean {
   return (
     !PushTokenNative &&
+    !IS_IOS_NATIVE &&
     !("__TAURI__" in window) &&
     !("slogaShell" in window) &&
     "serviceWorker" in navigator &&
@@ -661,6 +673,62 @@ export function openFullScreenCallAlertSettings() {
 }
 
 /**
+ * Register with APNs and resolve the device token.
+ *
+ * `register()` does not return the token — it arrives asynchronously on the
+ * `registration` listener. Racing that against a timeout matters because the
+ * two ways this is normally broken (an AppDelegate that never forwards
+ * `didRegisterForRemoteNotificationsWithDeviceToken`, or a build signed
+ * without the aps-environment entitlement) both present as neither event ever
+ * firing. Without the timeout that is an unresolved promise, so the settings
+ * toggle spins forever instead of reporting a failure.
+ */
+async function registerForApns(): Promise<string> {
+  const { PushNotifications } = await import("@capacitor/push-notifications");
+
+  let status = await PushNotifications.checkPermissions();
+  if (
+    status.receive === "prompt" ||
+    status.receive === "prompt-with-rationale"
+  ) {
+    status = await PushNotifications.requestPermissions();
+  }
+  if (status.receive !== "granted") {
+    throw "Notification permission was not granted";
+  }
+
+  let onToken!: (value: string) => void;
+  let onError!: (reason: unknown) => void;
+  const token = new Promise<string>((resolve, reject) => {
+    onToken = resolve;
+    onError = reject;
+  });
+
+  // Listener handles are kept so only these two are removed on the way out —
+  // removeAllListeners() would also drop any tap handler registered elsewhere.
+  const handles = await Promise.all([
+    PushNotifications.addListener("registration", (t) => onToken(t.value)),
+    PushNotifications.addListener("registrationError", (e) => onError(e.error)),
+  ]);
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject("Timed out waiting for an APNs device token"),
+      APNS_TOKEN_TIMEOUT,
+    );
+  });
+
+  try {
+    await PushNotifications.register();
+    return await Promise.race([token, timeout]);
+  } finally {
+    clearTimeout(timer);
+    await Promise.all(handles.map((h) => h.remove()));
+  }
+}
+
+/**
  * @param gate Web only, re-checked under the lock; when false nothing is
  * subscribed or posted. Only the re-sync passes one: the enable flow must
  * never be gated.
@@ -674,6 +742,20 @@ async function setUpServiceWorkerSubscription(
   // the manual settings toggle into the existing failure snackbar/reset.
   if ("__TAURI__" in window) {
     throw "Web push is not supported in the desktop app";
+  }
+
+  // Native iOS app: WKWebView has no service worker and no FCM — register
+  // with APNs and hand that device token to the same endpoint. `endpoint`
+  // is what pushd routes on, so "apn" is load-bearing, not a label.
+  // Ignores gate, which is web only.
+  if (IS_IOS_NATIVE) {
+    const token = await registerForApns();
+    await client.api.post("/push/subscribe", {
+      endpoint: "apn",
+      p256dh: "",
+      auth: token,
+    });
+    return;
   }
 
   // Google-free Android app (foss): push rides the UnifiedPush distributor.
@@ -866,6 +948,15 @@ export async function killServiceWorkerSubscription(
   client: Client,
   loggingOut?: boolean,
 ) {
+  if (IS_IOS_NATIVE) {
+    const { PushNotifications } = await import("@capacitor/push-notifications");
+    // Best-effort: a failed unregister must not strand the caller in a state
+    // where the server still believes this session is subscribed.
+    await PushNotifications.unregister().catch(console.error);
+    if (!loggingOut) await client.api.post("/push/unsubscribe");
+    return;
+  }
+
   if (PushTokenNative) {
     try {
       if (!loggingOut) await client.api.post("/push/unsubscribe");
