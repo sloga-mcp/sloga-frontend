@@ -5,8 +5,17 @@ import { test } from "node:test";
 
 import {
   CIPHER_BANNER_SNOOZE_MS,
+  collectEvents,
+  eventLink,
   isNewUser,
+  JUMP_EVENT_LIMIT,
+  JUMP_UNREAD_LIMIT,
+  JUMP_VOICE_LIMIT,
+  parseEventLink,
   parseStoredTime,
+  pickUnreads,
+  pickUpcoming,
+  pickVoiceRooms,
   primaryConnection,
   releaseOf,
   showCipherBanner,
@@ -148,5 +157,191 @@ test("thumbnails load only from platform CDNs over https while live", () => {
     {},
   ]) {
     assert.equal(live(bad), undefined, String(bad).slice(0, 60));
+  }
+});
+
+const unread = (
+  id: string,
+  overrides: Partial<{ unread: boolean; muted: boolean; mention: boolean }>,
+) => ({ id, unread: true, muted: false, mention: false, ...overrides });
+
+test("Unread lists the rail's unread items, mentions first, then rail order", () => {
+  const picked = pickUnreads([
+    unread("dm", { mention: true }),
+    unread("quiet", {}),
+    unread("read", { unread: false }),
+    unread("muted", { muted: true, mention: true }),
+    unread("pinged", { mention: true }),
+    unread("later", {}),
+  ]);
+  assert.deepEqual(
+    picked.map((item) => item.id),
+    ["dm", "pinged", "quiet", "later"],
+  );
+});
+
+test("Unread stops at its limit", () => {
+  const many = Array.from({ length: 9 }, (_, i) => unread(`s${i}`, {}));
+  assert.equal(pickUnreads(many).length, JUMP_UNREAD_LIMIT);
+  assert.equal(JUMP_UNREAD_LIMIT, 4);
+  assert.deepEqual(pickUnreads([]), []);
+});
+
+test("In voice lists rooms with friends, busiest first", () => {
+  const friends = new Set(["alice", "bob", "cara", "me"]);
+  const rooms = [
+    { channelId: "one", participantIds: ["alice", "stranger"] },
+    { channelId: "strangers", participantIds: ["stranger"] },
+    { channelId: "two", participantIds: ["bob", "cara", "me"] },
+    { channelId: "empty", participantIds: [] },
+  ];
+  const picked = pickVoiceRooms(rooms, friends, { viewerId: "me" });
+  assert.deepEqual(
+    picked.map((entry) => [entry.room.channelId, entry.friendIds]),
+    [
+      ["two", ["bob", "cara"]],
+      ["one", ["alice"]],
+    ],
+  );
+});
+
+test("In voice leaves out the viewer and the call they are in", () => {
+  const friends = new Set(["alice", "me"]);
+  const rooms = [
+    { channelId: "mine", participantIds: ["alice", "me"] },
+    { channelId: "alone", participantIds: ["me"] },
+  ];
+  assert.deepEqual(
+    pickVoiceRooms(rooms, friends, {
+      viewerId: "me",
+      currentChannelId: "mine",
+    }),
+    [],
+  );
+});
+
+test("In voice stops at its limit", () => {
+  const rooms = Array.from({ length: 7 }, (_, i) => ({
+    channelId: `c${i}`,
+    participantIds: ["alice"],
+  }));
+  assert.equal(
+    pickVoiceRooms(rooms, new Set(["alice"])).length,
+    JUMP_VOICE_LIMIT,
+  );
+});
+
+const event = (id: string, cancelled = false) => ({ id, cancelled });
+
+test("Upcoming shows the soonest events that have not started", () => {
+  const picked = pickUpcoming(
+    [
+      { event: event("later"), occurrences: [NOW + 3000] },
+      { event: event("past"), occurrences: [NOW - 1] },
+      { event: event("soon"), occurrences: [NOW + 1000] },
+      { event: event("off", true), occurrences: [NOW + 10] },
+      { event: event("now"), occurrences: [NOW] },
+      { event: event("last"), occurrences: [NOW + 9000] },
+    ],
+    NOW,
+  );
+  assert.deepEqual(
+    picked.map((entry) => [entry.event.id, entry.start]),
+    [
+      ["now", NOW],
+      ["soon", NOW + 1000],
+      ["later", NOW + 3000],
+    ],
+  );
+  assert.equal(JUMP_EVENT_LIMIT, 3);
+});
+
+test("Upcoming shows a repeating event once, at its next occurrence", () => {
+  const picked = pickUpcoming(
+    [
+      {
+        event: event("daily"),
+        occurrences: [NOW - 1000, NOW + 5000, NOW + 2000, Number.NaN],
+      },
+      { event: event("weekly"), occurrences: [NOW + 9000] },
+    ],
+    NOW,
+  );
+  assert.deepEqual(
+    picked.map((entry) => [entry.event.id, entry.start]),
+    [
+      ["daily", NOW + 2000],
+      ["weekly", NOW + 9000],
+    ],
+  );
+});
+
+test("calendars are fetched a few at a time and failures are skipped", async () => {
+  let inFlight = 0;
+  let most = 0;
+  const asked: string[] = [];
+  const rows = await collectEvents(
+    ["a", "b", "c", "a", "d"],
+    async (id) => {
+      asked.push(id);
+      inFlight++;
+      most = Math.max(most, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      inFlight--;
+      if (id === "b") throw { type: "NotFound" };
+      return [{ event: event(id), occurrences: [NOW] }];
+    },
+    2,
+  );
+  assert.deepEqual(asked, ["a", "b", "c", "d"]);
+  assert.equal(most, 2);
+  assert.deepEqual(rows.map((row) => row.event.id).sort(), ["a", "c", "d"]);
+});
+
+test("events switched off stops asking other servers", async () => {
+  const asked: string[] = [];
+  const rows = await collectEvents(
+    ["a", "b", "c", "d"],
+    async (id) => {
+      asked.push(id);
+      throw { type: "FeatureDisabled" };
+    },
+    1,
+  );
+  assert.deepEqual(asked, ["a"]);
+  assert.deepEqual(rows, []);
+  assert.deepEqual(await collectEvents([], async () => []), []);
+});
+
+const EVENT_ID = "01JAXQ7ZK3M5N8P2R4T6V8W0YZ";
+
+test("event links round-trip through the calendar's query", () => {
+  const link = eventLink("01JAXQ7ZK3M5N8P2R4T6V8W0SV", EVENT_ID, NOW);
+  assert.equal(
+    link,
+    `/server/01JAXQ7ZK3M5N8P2R4T6V8W0SV/events?event=${EVENT_ID}&at=${NOW}`,
+  );
+  const query = Object.fromEntries(new URL(link, "https://x").searchParams);
+  assert.deepEqual(parseEventLink(query), { eventId: EVENT_ID, start: NOW });
+});
+
+test("a calendar query without a usable event id opens nothing", () => {
+  assert.deepEqual(parseEventLink({ event: EVENT_ID }), {
+    eventId: EVENT_ID,
+    start: undefined,
+  });
+  assert.deepEqual(parseEventLink({ event: EVENT_ID, at: "-5" }), {
+    eventId: EVENT_ID,
+    start: undefined,
+  });
+  for (const bad of [
+    {},
+    { event: "" },
+    { event: "not-an-id" },
+    { event: EVENT_ID.toLowerCase() },
+    { event: [EVENT_ID] },
+    { event: `${EVENT_ID}/x` },
+  ]) {
+    assert.equal(parseEventLink(bad), undefined, JSON.stringify(bad));
   }
 });

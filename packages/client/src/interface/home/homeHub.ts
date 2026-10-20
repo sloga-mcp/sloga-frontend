@@ -142,3 +142,178 @@ export function streamThumbnail(
   }
   return url.href;
 }
+
+/** Most rows each "Jump back in" card shows */
+export const JUMP_UNREAD_LIMIT = 4;
+export const JUMP_VOICE_LIMIT = 4;
+export const JUMP_EVENT_LIMIT = 3;
+
+/**
+ * Servers whose calendars Home asks about. There is no route that lists
+ * events across servers, so this is one request per server, and they share
+ * the "events" rate limit (30 per 10 s) with the calendar page.
+ */
+export const JUMP_EVENT_SERVER_LIMIT = 10;
+
+/** Calendar requests in flight at once */
+export const JUMP_EVENT_CONCURRENCY = 2;
+
+/** How far ahead Upcoming looks */
+export const JUMP_EVENT_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
+
+/** How long fetched calendars are reused before Home asks again */
+export const JUMP_EVENT_CACHE_MS = 5 * 60 * 1000;
+
+/** A server or conversation as far as the Unread card reads it */
+export type UnreadCandidate = {
+  /** Whether the rail shows it as unread */
+  unread: boolean;
+  /** Muted servers raise no badge on the rail, so none here either */
+  muted: boolean;
+  /** Mentions (and direct messages) go first */
+  mention: boolean;
+};
+
+/**
+ * What the Unread card lists: the rail's unread items, mentions first, then
+ * in the order the rail shows them (callers pass conversations before
+ * servers, as the rail does).
+ */
+export function pickUnreads<T extends UnreadCandidate>(
+  items: readonly T[],
+  limit = JUMP_UNREAD_LIMIT,
+): T[] {
+  const open = items.filter((item) => item.unread && !item.muted);
+  return [
+    ...open.filter((item) => item.mention),
+    ...open.filter((item) => !item.mention),
+  ].slice(0, limit);
+}
+
+/** A voice channel and who is in it */
+export type VoiceRoomCandidate = {
+  channelId: string;
+  participantIds: readonly string[];
+};
+
+/**
+ * Voice channels with friends in them, busiest first. The viewer is never
+ * counted, and the call the viewer is already in is left out.
+ */
+export function pickVoiceRooms<T extends VoiceRoomCandidate>(
+  rooms: readonly T[],
+  friendIds: ReadonlySet<string>,
+  options: {
+    viewerId?: string;
+    currentChannelId?: string;
+    limit?: number;
+  } = {},
+): { room: T; friendIds: string[] }[] {
+  return rooms
+    .filter((room) => room.channelId !== options.currentChannelId)
+    .map((room) => ({
+      room,
+      friendIds: room.participantIds.filter(
+        (id) => id !== options.viewerId && friendIds.has(id),
+      ),
+    }))
+    .filter((entry) => entry.friendIds.length > 0)
+    .sort((a, b) => b.friendIds.length - a.friendIds.length)
+    .slice(0, options.limit ?? JUMP_VOICE_LIMIT);
+}
+
+/** A calendar series and its occurrence starts (ms epoch) */
+export type OccurrenceRow<E> = {
+  event: E;
+  occurrences: readonly number[];
+};
+
+/** The parts of an event the Upcoming card decides on */
+export type UpcomingCandidate = { id: string; cancelled: boolean };
+
+/**
+ * The next events to show: not cancelled, not started yet, soonest first,
+ * and one entry per event so a daily series cannot fill the card.
+ */
+export function pickUpcoming<E extends UpcomingCandidate>(
+  rows: readonly OccurrenceRow<E>[],
+  now: number,
+  limit = JUMP_EVENT_LIMIT,
+): { event: E; start: number }[] {
+  const next = new Map<string, { event: E; start: number }>();
+  for (const row of rows) {
+    if (row.event.cancelled) continue;
+    for (const start of row.occurrences) {
+      if (!Number.isFinite(start) || start < now) continue;
+      const seen = next.get(row.event.id);
+      if (!seen || start < seen.start) {
+        next.set(row.event.id, { event: row.event, start });
+      }
+    }
+  }
+  return [...next.values()]
+    .sort(
+      (a, b) =>
+        a.start - b.start ||
+        (a.event.id < b.event.id ? -1 : a.event.id > b.event.id ? 1 : 0),
+    )
+    .slice(0, limit);
+}
+
+/**
+ * Ask each server for its calendar, a few at a time. A server that fails is
+ * skipped; "FeatureDisabled" means events are off everywhere, so nothing
+ * more is asked.
+ */
+export async function collectEvents<E>(
+  serverIds: readonly string[],
+  fetchServer: (serverId: string) => Promise<OccurrenceRow<E>[]>,
+  concurrency = JUMP_EVENT_CONCURRENCY,
+): Promise<OccurrenceRow<E>[]> {
+  const queue = [...new Set(serverIds)];
+  const out: OccurrenceRow<E>[] = [];
+  let disabled = false;
+
+  const worker = async () => {
+    while (!disabled && queue.length > 0) {
+      const serverId = queue.shift()!;
+      try {
+        out.push(...(await fetchServer(serverId)));
+      } catch (error) {
+        if ((error as { type?: string } | null)?.type === "FeatureDisabled") {
+          disabled = true;
+        }
+      }
+    }
+  };
+
+  await Promise.all(
+    Array.from(
+      { length: Math.max(1, Math.min(concurrency, queue.length)) },
+      worker,
+    ),
+  );
+  return out;
+}
+
+/** Link that opens one event occurrence on its server's calendar */
+export function eventLink(serverId: string, eventId: string, start: number) {
+  return `/server/${serverId}/events?event=${encodeURIComponent(eventId)}&at=${start}`;
+}
+
+/**
+ * The occurrence a calendar link asks for, or undefined when the query is
+ * not one. `at` is optional; without it the event's first occurrence opens.
+ */
+export function parseEventLink(query: {
+  event?: unknown;
+  at?: unknown;
+}): { eventId: string; start?: number } | undefined {
+  const eventId = query.event;
+  if (typeof eventId !== "string" || !/^[0-9A-Z]{26}$/.test(eventId)) {
+    return undefined;
+  }
+  const at = typeof query.at === "string" ? query.at : "";
+  const start = /^\d{1,15}$/.test(at) ? Number(at) : undefined;
+  return { eventId, start };
+}
