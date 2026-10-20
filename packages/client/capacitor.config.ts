@@ -5,6 +5,12 @@ const config: CapacitorConfig = {
   appName: "Sloga",
   webDir: "dist",
   android: {
+    // No npm Capacitor plugin ships on Android. The iOS shell depends on
+    // @capacitor/push-notifications (APNs), whose Android module brings in
+    // firebase-messaging and a second FCM MessagingService: it would compete
+    // with SlogaMessagingService and put Firebase into the Google-free build.
+    // Android's native plugins are registered in MainActivity, not from npm.
+    includePlugins: [],
     // E2EE (slice-4 gate): the WebView origin can reach decrypted DM
     // history and the /_e2ee-att attachment renderer, so the release build
     // must NOT be debuggable and must not load cleartext subresources — a
