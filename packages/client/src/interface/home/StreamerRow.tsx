@@ -77,7 +77,8 @@ const Heading = styled("h2", {
     fontWeight: 700,
     color: "var(--md-sys-color-on-surface)",
 
-    "& svg": { fill: FOUNDING_STREAMER_COLOUR },
+    // Panda only extracts literals; the violet arrives through `style`
+    "& svg": { fill: "var(--home-streamer-colour)" },
   },
 });
 
@@ -186,7 +187,7 @@ const Name = styled("div", {
     whiteSpace: "nowrap",
     fontSize: "14px",
     fontWeight: 600,
-    color: FOUNDING_STREAMER_COLOUR,
+    color: "var(--home-streamer-colour)",
   },
 });
 
@@ -358,7 +359,10 @@ export function StreamerRow() {
 
   return (
     <Show when={tiles().length}>
-      <Section aria-labelledby="home-streamers-title">
+      <Section
+        aria-labelledby="home-streamers-title"
+        style={{ "--home-streamer-colour": FOUNDING_STREAMER_COLOUR }}
+      >
         <Head>
           <Heading id="home-streamers-title">
             <MdLiveTv {...iconSize(20)} />

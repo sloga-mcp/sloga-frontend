@@ -192,6 +192,7 @@ const Close = styled("button", {
     color: "var(--md-sys-color-on-surface-variant)",
     cursor: "pointer",
 
+    "& svg": { fill: "currentColor" },
     "&:hover": {
       background: "var(--md-sys-color-surface-container-highest)",
     },
