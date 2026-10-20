@@ -4,11 +4,18 @@
 // Focus: a zero rect (a node that is not laid out) and an off-screen rect (the
 // channel pane parked behind the phone drawer) are never dock targets, and the
 // rect comparator never reports a real geometry change as "same".
+//
+// Also: the docking decision (`dockDecision`) rule by rule, and source pins
+// holding VoiceCallCard.tsx (Solid JSX, which no spec can load) to feeding it
+// the live drawer and call, and to drawing the full card from ONE Match.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
+import { codeOf, countWired } from "../../../../../rtc/sourcePins.harness.ts";
 import {
   MIN_DOCK_WIDTH,
+  dockDecision,
   sameDock,
   sameRect,
   usableDockRect,
@@ -114,4 +121,146 @@ test("sameDock: another channel, or a moved rect, is a change", () => {
     ),
     false,
   );
+});
+
+// --- dockDecision ----------------------------------------------------------
+
+// Stand-ins for SlideState (a component file no spec can load). HIDDEN is 0
+// here on purpose: a falsy drawer state must still count as "not settled".
+const DRAWER = { HIDDEN: 0, SHOWN: 2, HIDING: 3, SHOWING: 4, MOVING: 5 };
+
+const voiceChannel = { id: "VOICE" };
+const otherChannel = { id: "OTHER" };
+
+/** Everything in place for a dock over `voiceChannel`, with no call. */
+function input(over: Partial<Parameters<typeof dockDecision>[0]> = {}) {
+  return {
+    mount: { channel: voiceChannel },
+    rect: docked,
+    viewport: PHONE,
+    drawer: undefined as number | undefined,
+    drawerShown: DRAWER.SHOWN,
+    callChannelId: undefined as string | undefined,
+    ...over,
+  };
+}
+
+test("dockDecision: docks the join preview over a voice page with no call", () => {
+  const got = dockDecision(input());
+  assert.ok(got);
+  assert.equal(got.channel, voiceChannel);
+  assert.equal(got.rect, docked);
+});
+
+test("dockDecision: docks over the call's own page", () => {
+  const got = dockDecision(input({ callChannelId: "VOICE" }));
+  assert.equal(got?.channel, voiceChannel);
+});
+
+test("dockDecision: never over a page that is not the call's channel", () => {
+  assert.equal(dockDecision(input({ callChannelId: "OTHER" })), undefined);
+  assert.equal(
+    dockDecision(
+      input({ mount: { channel: otherChannel }, callChannelId: "VOICE" }),
+    ),
+    undefined,
+  );
+});
+
+test("dockDecision: no mount marker, no dock", () => {
+  assert.equal(dockDecision(input({ mount: undefined })), undefined);
+  assert.equal(
+    dockDecision(input({ mount: undefined, callChannelId: "VOICE" })),
+    undefined,
+  );
+});
+
+test("dockDecision: docks with the drawer settled on the channel pane", () => {
+  assert.equal(
+    dockDecision(input({ drawer: DRAWER.SHOWN }))?.channel,
+    voiceChannel,
+  );
+});
+
+test("dockDecision: every other drawer state is not a dock", () => {
+  for (const [name, state] of Object.entries(DRAWER)) {
+    if (state === DRAWER.SHOWN) continue;
+    assert.equal(
+      dockDecision(input({ drawer: state, callChannelId: "VOICE" })),
+      undefined,
+      name,
+    );
+  }
+});
+
+test("dockDecision: an unusable rect is not a dock, even with all else in place", () => {
+  for (const rect of [
+    undefined,
+    { x: 0, y: 0, width: 0, height: 0 },
+    { ...docked, x: 375 + 8 },
+  ]) {
+    assert.equal(
+      dockDecision(
+        input({ rect, drawer: DRAWER.SHOWN, callChannelId: "VOICE" }),
+      ),
+      undefined,
+      JSON.stringify(rect),
+    );
+  }
+});
+
+test("dockDecision: the rect is judged against the viewport it is given", () => {
+  assert.equal(
+    dockDecision(input({ viewport: { width: 200, height: 812 } })),
+    undefined,
+  );
+});
+
+// --- VoiceCallCard.tsx source pins ------------------------------------------
+
+const CARD = codeOf(
+  readFileSync(new URL("./VoiceCallCard.tsx", import.meta.url), "utf8"),
+);
+
+test("the dock memo feeds dockDecision the live mount, drawer and call", () => {
+  assert.equal(
+    countWired(
+      CARD,
+      `dockDecision({
+        mount: mount(),
+        rect: rect(),
+        viewport: { width: innerWidth, height: innerHeight },
+        drawer: state.appDrawer()?.state,
+        drawerShown: SlideState.SHOWN,
+        callChannelId: voice.channel()?.id,
+      })`,
+    ),
+    1,
+  );
+});
+
+test("the full card is ONE non-keyed Match, for the dock or a controller away", () => {
+  assert.equal(
+    countWired(
+      CARD,
+      `const fullCard = () =>
+        docked()?.channel ??
+        (voice.remoteControl.controlling() ? voice.channel() : undefined);`,
+    ),
+    1,
+  );
+  assert.equal(
+    countWired(
+      CARD,
+      `<Match when={fullCard()}>
+        {(channel) => <VoiceCallCard channel={channel()} />}
+      </Match>`,
+    ),
+    1,
+  );
+  // No second Match draws the card: that is what remounted it.
+  // (`<VoiceCallCard channel=`, so the PiP's `<VoiceCallCardPiP` is not
+  // counted.)
+  assert.equal(countWired(CARD, "<VoiceCallCard channel="), 1);
+  assert.equal(countWired(CARD, "keyed"), 0);
 });

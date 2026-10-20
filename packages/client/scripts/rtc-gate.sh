@@ -152,6 +152,10 @@ EXPECTED=(
   "components/rtc/callModerationPolicy.test.ts 22 0"
   "components/rtc/callRecorder.test.ts 25 0"
   "components/ui/components/features/voice/callCard/callTileSelection.test.ts 23 0"
+  # Where the call card docks (the Android stuck-card fix and its follow-ups):
+  # usable rects, the memo comparators, the docking decision, and the source
+  # pins over VoiceCallCard.tsx. First measured at 24.
+  "components/ui/components/features/voice/callCard/callCardDock.test.ts 24 0"
   # Source pins over the state.tsx wiring of member moves and the chip's
   # publication read (wave 7): no spec can load state.tsx itself. Re-measured
   # (44 -> 48) by slice 4 wave 3a: the leg connect tail now carries `audio`,
@@ -377,6 +381,9 @@ SPECS=(components/rtc/mls*.test.ts components/rtc/rosterReconcile.test.ts
   components/rtc/callRecorder.test.ts
   # Outside components/rtc: which tiles the video-only grid shows.
   components/ui/components/features/voice/callCard/callTileSelection.test.ts
+  # Same directory: where the call card docks, and the pins holding
+  # VoiceCallCard.tsx to that decision.
+  components/ui/components/features/voice/callCard/callCardDock.test.ts
   # The state.tsx move and chip wiring, pinned as comment-stripped source.
   components/rtc/stateWiring.test.ts
   # The AFK channel and its merge with member moves (FE-2). The move ladder
@@ -501,6 +508,13 @@ FILES=(components/rtc/mlsCallSession.ts components/rtc/mlsCallModePolicy.ts
   components/rtc/stateWiring.test.ts components/rtc/sourcePins.harness.ts
   components/ui/components/features/voice/callCard/callTileSelection.ts
   components/ui/components/features/voice/callCard/callTileSelection.test.ts
+  # The call card's dock module, its spec, and the card that uses both.
+  # Enrolled because each is clean: `prettier --check` and `eslint
+  # --max-warnings 0` both exit 0 on it, one file at a time (measured on the
+  # stuck-card follow-ups branch).
+  components/ui/components/features/voice/callCard/callCardDock.ts
+  components/ui/components/features/voice/callCard/callCardDock.test.ts
+  components/ui/components/features/voice/callCard/VoiceCallCard.tsx
   # The files this work edits to wire those policies in. Same rule as
   # VoiceCallDowngradeBanner.tsx above: a file the branch modifies is linted
   # and formatted, or nothing is. RoomAudioManager.tsx failed `prettier
