@@ -20,9 +20,9 @@ import { ChildWindowChrome } from "@revolt/client/ChildWindowChrome";
 import * as chatShell from "@revolt/client/chatShell";
 import {
   type ChildWindowHandle,
-  openChildWindow,
   openInMain,
   setInternalLinkHandler,
+  tryOpenChildWindow,
 } from "@revolt/client/childWindow";
 import { useVoice } from "@revolt/rtc";
 import { useState } from "@revolt/state";
@@ -247,21 +247,25 @@ export function ChatWindowsHost(): JSX.Element {
         : chatWindows.windows().find((w) => w.id === key);
     const { kind, opts } = childWindowRequest(key, win);
 
-    // openChildWindow queues opens, so they arm and open one at a time.
-    void openChildWindow(kind, opts).then((handle) => {
+    // tryOpenChildWindow queues opens, so they arm and open one at a time.
+    void tryOpenChildWindow(kind, opts).then((result) => {
       pending.delete(key);
       const stillWanted =
         !disposed && !mainUnloading && untrack(wanted).includes(key);
 
-      if (!handle) {
+      if (!result.ok) {
         if (!stillWanted) {
           restoreKeys.delete(key);
           return;
         }
-        // Refused by the shell or blocked.
-        const action = openFailureAction(restoreKeys.has(key), attempt);
+        // Refused by the shell, blocked, or not prepared.
+        const action = openFailureAction(
+          restoreKeys.has(key),
+          attempt,
+          result.err,
+        );
         if (action.type === "retry") {
-          console.warn("[chat-windows] retrying the restore of", key);
+          console.warn("[chat-windows] retrying the open of", key, result.err);
           // Still pending, so the reconcile does not reopen it meanwhile.
           pending.add(key);
           const timer = setTimeout(() => {
@@ -282,6 +286,7 @@ export function ChatWindowsHost(): JSX.Element {
         return;
       }
 
+      const handle = result.handle;
       restoreKeys.delete(key);
       // Closed, switched off or signed out while it was opening.
       if (!stillWanted) {

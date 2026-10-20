@@ -1,7 +1,7 @@
 // Unit spec for the chat-window host's decisions. Run with Node's built-in
 // runner from packages/client:
 //   node --test --conditions=browser components/chatWindows/hostPlan.test.ts
-// Declared test count: 25 (the runner also exits 0 when it finds no tests at
+// Declared test count: 26 (the runner also exits 0 when it finds no tests at
 // all, so compare this against its pass count).
 //
 // Focus: nothing opens unless the shell is active; chat windows and the
@@ -12,8 +12,9 @@
 // made changes the store (never one the host made, nor the main window
 // unloading); the owner check fails closed; dead and unprimed tabs are found
 // in every window; nothing opens before main has been shown; a restore
-// retries once while a live open drops; a window the store removed waits out
-// a tab drag (bounded).
+// retries once while a live open drops, unless the shell refused it with
+// `exists` (the friends window's discard not landed yet), which retries once
+// sooner; a window the store removed waits out a tab drag (bounded).
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
@@ -21,6 +22,7 @@ import { FRIENDS_WINDOW_ID } from "./chatWindowsStore.ts";
 import {
   CHAT_WINDOW_SIZE,
   DRAG_CLOSE_MAX_DEFER_MS,
+  EXISTS_RETRY_DELAY_MS,
   FRIENDS_KEY,
   FRIENDS_WINDOW_SIZE,
   RESTORE_RETRY_DELAY_MS,
@@ -265,9 +267,29 @@ test("a failed restore retries once, after a delay, then drops", () => {
   assert.deepEqual(openFailureAction(true, 2), { type: "drop" });
 });
 
-test("a failed live open drops at once", () => {
+test("a failed live open drops at once, unless refused with `exists`", () => {
   assert.deepEqual(openFailureAction(false, 0), { type: "drop" });
   assert.deepEqual(openFailureAction(false, 1), { type: "drop" });
+  for (const err of ["timeout", "blocked", "prepare", "failed", "invalid"]) {
+    assert.deepEqual(openFailureAction(false, 0, err), { type: "drop" }, err);
+  }
+});
+
+test("a live open refused with `exists` retries once, sooner than a restore", () => {
+  assert.deepEqual(openFailureAction(false, 0, "exists"), {
+    type: "retry",
+    delayMs: EXISTS_RETRY_DELAY_MS,
+  });
+  assert.ok(EXISTS_RETRY_DELAY_MS >= 100 && EXISTS_RETRY_DELAY_MS <= 1000);
+  assert.ok(EXISTS_RETRY_DELAY_MS < RESTORE_RETRY_DELAY_MS);
+  // Once only: a second `exists` drops.
+  assert.deepEqual(openFailureAction(false, 1, "exists"), { type: "drop" });
+  // A restore keeps its own, longer, single retry whatever the error.
+  assert.deepEqual(openFailureAction(true, 0, "exists"), {
+    type: "retry",
+    delayMs: RESTORE_RETRY_DELAY_MS,
+  });
+  assert.deepEqual(openFailureAction(true, 1, "exists"), { type: "drop" });
 });
 
 test("an unwanted window waits out a tab drag, but never forever", () => {

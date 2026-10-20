@@ -4,7 +4,8 @@
  * - Maximized, per window label: the Windows shell pushes it as
  *   `chatWindowState` whenever a frameless window's maximized state changes
  *   (button, double-click, snap, Win+arrows), and ShellBridgeWorker stores it
- *   here, so the maximize button shows maximize or restore.
+ *   here, so the maximize button shows maximize or restore. The button's own
+ *   toggle reply counts only if no push overtook it.
  * - Whether a drag is live: a tab drag, or files dragged in from Explorer or
  *   Finder. While one is, the bar's free space (the drag spacer, the macOS
  *   inset, the friends window's bar) turns no-drag so an HTML5 drop still
@@ -170,19 +171,88 @@ export function dragFlagAction(e: {
 /** Labels of the windows the shell last reported maximized. */
 const [maximized, setMaximized] = createSignal<ReadonlySet<string>>(new Set());
 
-/** Whether the shell last reported the window `label` maximized (reactive). */
-export function windowMaximized(label: string): boolean {
-  return maximized().has(label);
+/*
+ * Two sources report the state, by different routes: the shell's push (a
+ * Channel message, sent on every change however it was made) and the reply
+ * to our own maximize button's toggle (the invoke's answer). They can arrive
+ * in either order, so with two quick clicks the first toggle's reply could
+ * land after the second toggle's push and leave the wrong icon until the
+ * next change. The push carries only `{ label, maximized }`, no sequence, so
+ * the order is kept here: each push, each toggle sent and each forget takes
+ * a stamp from one counter, and a toggle's reply counts only if nothing has
+ * stamped its label since that toggle was sent. Otherwise a newer push has
+ * already landed, or one will: the shell pushes every change, so the pushes
+ * alone settle on the real state. The reply is kept for the one case pushes
+ * miss, a shell bridge that is not registered (a push that finds none is not
+ * retried).
+ */
+let lastStamp = 0;
+/** Per label, the stamp of the last push, toggle sent or forget. */
+const stamps = new Map<string, number>();
+
+function stamp(label: string): number {
+  lastStamp += 1;
+  stamps.set(label, lastStamp);
+  return lastStamp;
 }
 
-/** Record the shell's maximized state for the window `label`. */
-export function setWindowMaximized(label: string, value: boolean): void {
+function writeMaximized(label: string, value: boolean): void {
   const current = maximized();
   if (current.has(label) === value) return;
   const next = new Set(current);
   if (value) next.add(label);
   else next.delete(label);
   setMaximized(next);
+}
+
+/** Whether the shell last reported the window `label` maximized (reactive). */
+export function windowMaximized(label: string): boolean {
+  return maximized().has(label);
+}
+
+/**
+ * Record the shell's push of the maximized state for the window `label`. It
+ * always wins, and voids the reply of any toggle still in flight.
+ */
+export function setWindowMaximized(label: string, value: boolean): void {
+  stamp(label);
+  writeMaximized(label, value);
+}
+
+/**
+ * Whether a toggle reply may still be applied: the toggle was sent with
+ * `ticket`, and `latest` is its label's stamp now (undefined once the label
+ * was forgotten). Only when nothing stamped the label since.
+ */
+export function toggleReplyCurrent(
+  ticket: number,
+  latest: number | undefined,
+): boolean {
+  return latest === ticket;
+}
+
+/**
+ * Our maximize button is about to ask the shell to toggle the window
+ * `label`. Pass the ticket, with the reply, to {@link settleMaximizeToggle}.
+ */
+export function beginMaximizeToggle(label: string): number {
+  return stamp(label);
+}
+
+/**
+ * The toggle sent with `ticket` answered `value`. Applied only if no push,
+ * newer toggle or forget for `label` came in between
+ * ({@link toggleReplyCurrent}).
+ * @returns Whether the reply was applied
+ */
+export function settleMaximizeToggle(
+  label: string,
+  ticket: number,
+  value: boolean,
+): boolean {
+  if (!toggleReplyCurrent(ticket, stamps.get(label))) return false;
+  writeMaximized(label, value);
+  return true;
 }
 
 /**
@@ -192,10 +262,12 @@ export function setWindowMaximized(label: string, value: boolean): void {
  * changes, so a new window would otherwise inherit the last one's state;
  * the host calls this when a window closes, so closed labels do not linger,
  * and again when it adopts a new handle for a label, in case a close was
- * missed.
+ * missed. A toggle still in flight for the old window is voided too, as
+ * stamps never repeat.
  */
 export function forgetWindow(label: string): void {
-  setWindowMaximized(label, false);
+  stamps.delete(label);
+  writeMaximized(label, false);
 }
 
 /* ------------------------------------------------------------------------ *

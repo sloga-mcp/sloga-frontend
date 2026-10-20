@@ -20,6 +20,12 @@ export const FRIENDS_KEY = "friends";
 export const RESTORE_RETRY_DELAY_MS = 1000;
 
 /**
+ * How long a live open the shell refused with `exists` waits before its one
+ * retry: long enough for the discard of the window it replaces to land.
+ */
+export const EXISTS_RETRY_DELAY_MS = 300;
+
+/**
  * The longest a window the store removed is kept open while a tab drag is
  * in progress. A drag whose end was never reported must not leave an empty
  * window behind for good.
@@ -210,18 +216,26 @@ export type OpenFailureAction =
   | { type: "drop" };
 
 /**
- * A child window failed to open. A restore keeps its store entry and retries
- * once, since the shell may still be settling at startup. A second failure,
- * or a failed open the user just asked for, drops the entry: retrying on
+ * A child window failed to open, with the shell's error `err`. A restore
+ * keeps its store entry and retries once, since the shell may still be
+ * settling at startup. A live open (one the user just asked for) retries
+ * once only when the shell refused it with `exists`: the friends window
+ * reopened right after the host closed it can arm while the old one is still
+ * going away (Tauri destroys it on a thread after the discard answers;
+ * Electron's closing window lives until its close completes). A
+ * second failure, or any other failed live open, drops the entry: retrying on
  * every store change would loop, and opening it again retries.
  */
 export function openFailureAction(
   restore: boolean,
   attempt: number,
+  err?: string,
 ): OpenFailureAction {
-  return restore && attempt === 0
-    ? { type: "retry", delayMs: RESTORE_RETRY_DELAY_MS }
-    : { type: "drop" };
+  if (attempt !== 0) return { type: "drop" };
+  if (restore) return { type: "retry", delayMs: RESTORE_RETRY_DELAY_MS };
+  if (err === "exists")
+    return { type: "retry", delayMs: EXISTS_RETRY_DELAY_MS };
+  return { type: "drop" };
 }
 
 /**

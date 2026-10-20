@@ -1,13 +1,16 @@
 // Unit spec for the chat windows' title bar state. Run with Node's built-in
 // runner from packages/client:
 //   node --test --conditions=browser components/chatWindows/chatWindowFrame.test.ts
-// Declared test count: 16 (the runner also exits 0 when it finds no tests at
+// Declared test count: 22 (the runner also exits 0 when it finds no tests at
 // all, so compare this against its pass count).
 //
 // Focus (plan C7, audit M4): the per-label maximized state the shell pushes
-// is reactive, per window, and forgotten on close; the tab drag flag is
-// reactive, cleared by its end, by `clearStaleTabDrag`, and by itself after
-// `TAB_DRAG_FLAG_TTL_MS`, and an old drag's timer never clears a newer drag.
+// is reactive, per window, and forgotten on close; our maximize button's
+// toggle reply counts only if no push, newer toggle or forget for its label
+// came in between, so a double click never leaves the wrong icon (Stage 6
+// NIT); the tab drag flag is reactive, cleared by its end, by
+// `clearStaleTabDrag`, and by itself after `TAB_DRAG_FLAG_TTL_MS`, and an old
+// drag's timer never clears a newer drag.
 // Timers are node:test's mock timers; the module reads `setTimeout` at call
 // time, so it gets them. The bar's layout decisions (Wave 2 audit m2): which
 // frame draws a bar, controls and the physical mac inset; the free space's
@@ -224,6 +227,74 @@ test("forgetWindow: a closed window's state is dropped, reactively", () => {
   chat2.dispose();
   assert.deepEqual(chat2.seen, [true, false]);
   assert.equal(frame.windowMaximized("chat-2"), false);
+});
+
+test("toggleReplyCurrent: only while the label still holds the ticket", () => {
+  assert.equal(frame.toggleReplyCurrent(3, 3), true);
+  assert.equal(frame.toggleReplyCurrent(3, 4), false);
+  assert.equal(frame.toggleReplyCurrent(3, undefined), false);
+});
+
+test("toggle reply: applied when nothing overtook it (no shell push)", () => {
+  const chat1 = watch(() => frame.windowMaximized("chat-1"));
+  const ticket = frame.beginMaximizeToggle("chat-1");
+  assert.equal(frame.settleMaximizeToggle("chat-1", ticket, true), true);
+  assert.equal(frame.windowMaximized("chat-1"), true);
+  const back = frame.beginMaximizeToggle("chat-1");
+  assert.equal(frame.settleMaximizeToggle("chat-1", back, false), true);
+  chat1.dispose();
+  assert.deepEqual(chat1.seen, [false, true, false]);
+});
+
+test("toggle reply: a double click whose replies land after the pushes keeps the push", () => {
+  // Click 1 maximizes, click 2 restores. Both pushes reach main before
+  // click 1's reply, the order that used to leave the restore icon on a
+  // window that is not maximized.
+  const first = frame.beginMaximizeToggle("chat-1");
+  frame.setWindowMaximized("chat-1", true);
+  const second = frame.beginMaximizeToggle("chat-1");
+  frame.setWindowMaximized("chat-1", false);
+  assert.equal(frame.settleMaximizeToggle("chat-1", first, true), false);
+  assert.equal(frame.windowMaximized("chat-1"), false);
+  assert.equal(frame.settleMaximizeToggle("chat-1", second, false), false);
+  assert.equal(frame.windowMaximized("chat-1"), false);
+});
+
+test("toggle reply: a push that lands after the reply still wins", () => {
+  const ticket = frame.beginMaximizeToggle("chat-1");
+  assert.equal(frame.settleMaximizeToggle("chat-1", ticket, true), true);
+  // The window was restored again (snap, Win+Down) before anything else.
+  frame.setWindowMaximized("chat-1", false);
+  assert.equal(frame.windowMaximized("chat-1"), false);
+});
+
+test("toggle reply: a newer click voids an older click's reply", () => {
+  const first = frame.beginMaximizeToggle("chat-1");
+  const second = frame.beginMaximizeToggle("chat-1");
+  assert.equal(frame.settleMaximizeToggle("chat-1", second, false), true);
+  // Replies out of order: the older one must not undo the newer.
+  assert.equal(frame.settleMaximizeToggle("chat-1", first, true), false);
+  assert.equal(frame.windowMaximized("chat-1"), false);
+});
+
+test("toggle reply: per label; a forgotten window's reply never reaches the next one", () => {
+  const chat1 = frame.beginMaximizeToggle("chat-1");
+  frame.setWindowMaximized("chat-2", true);
+  assert.equal(frame.settleMaximizeToggle("chat-1", chat1, true), true);
+  assert.equal(frame.windowMaximized("chat-1"), true);
+
+  // The friends window closes with a toggle in flight; a new one reuses the
+  // label and is toggled too. The old reply is dropped, the new one counts.
+  const old = frame.beginMaximizeToggle("friends-window");
+  frame.forgetWindow("friends-window");
+  assert.equal(frame.settleMaximizeToggle("friends-window", old, true), false);
+  assert.equal(frame.windowMaximized("friends-window"), false);
+  const fresh = frame.beginMaximizeToggle("friends-window");
+  assert.notEqual(fresh, old);
+  assert.equal(frame.settleMaximizeToggle("friends-window", old, true), false);
+  assert.equal(frame.windowMaximized("friends-window"), false);
+  assert.equal(frame.settleMaximizeToggle("friends-window", fresh, true), true);
+  assert.equal(frame.windowMaximized("friends-window"), true);
 });
 
 test("tab drag: start and end, reactively", () => {
