@@ -14,8 +14,13 @@ import { FriendsList } from "../friends/FriendsList";
 import { GroupChatsDock } from "../friends/GroupChatsDock";
 import { SelfBar } from "../friends/SelfBar";
 
-import { MAC_INSET_PADDING, WindowControls } from "./WindowControls";
-import { TITLEBAR_HEIGHT } from "./chatWindowFrame";
+import { WindowControls } from "./WindowControls";
+import {
+  TITLEBAR_HEIGHT,
+  spacerRegion,
+  tabDragActive,
+  titleBarLayout,
+} from "./chatWindowFrame";
 import { setFriendsOpen } from "./chatWindowsStore";
 import { routeConversation } from "./openConversation";
 
@@ -30,7 +35,9 @@ import { routeConversation } from "./openConversation";
  * In a window without an OS title bar (frame `buttons` or `inset`) a bar of
  * its own sits on top: a caption region (`data-app-region`, see
  * `ui/styles.css`) titled "Friends", with the window controls on `buttons`
- * and the traffic lights' corner kept clear on `inset`.
+ * and the traffic lights' corner kept clear on `inset` (`titleBarLayout`).
+ * Like the chat windows' bars it turns no-drag while a drag is live, so
+ * files dragged in from outside are not refused over it.
  */
 export function FriendsWindow(props: {
   /** What the shell built around the window (`ChildWindowHandle.frame`) */
@@ -80,20 +87,18 @@ export function FriendsWindow(props: {
     );
   }
 
+  const layout = () => titleBarLayout(props.frame, props.shellLabel);
+
   return (
     <div class={column()}>
-      <Show when={props.frame === "buttons" || props.frame === "inset"}>
+      <Show when={layout().bar}>
         <div
           class={titleBar()}
-          data-app-region="drag"
-          style={{
-            height: `${TITLEBAR_HEIGHT}px`,
-            "padding-inline-start":
-              props.frame === "inset" ? MAC_INSET_PADDING : undefined,
-          }}
+          data-app-region={spacerRegion(tabDragActive())}
+          style={{ height: `${TITLEBAR_HEIGHT}px`, ...layout().style }}
         >
           <span class={titleText()}>{t`Friends`}</span>
-          <Show when={props.frame === "buttons" && props.shellLabel}>
+          <Show when={layout().controls && props.shellLabel}>
             {(label) => (
               <WindowControls
                 label={label()}

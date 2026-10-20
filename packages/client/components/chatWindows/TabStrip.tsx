@@ -34,11 +34,13 @@ import MdClose from "@material-design-icons/svg/outlined/close.svg?component-sol
 
 import { conversationUnread } from "../friends/friendData";
 
-import { MAC_INSET_PADDING, WindowControls } from "./WindowControls";
+import { WindowControls } from "./WindowControls";
 import {
   markTabDragEnd,
   markTabDragStart,
+  spacerRegion,
   tabDragActive,
+  titleBarLayout,
 } from "./chatWindowFrame";
 import {
   chatWindows,
@@ -199,10 +201,12 @@ function appWindowBounds(): ScreenRect[] {
  * `[mac inset] [tab scroller] [drag spacer] [window controls, buttons only]`.
  * The bar is a caption region (`data-app-region`, see `ui/styles.css`), so a
  * press on it moves the window; the scroller, and with it every tab and tab
- * button, is no-drag. The spacer turns no-drag while a tab drag is live, as
- * a caption region never receives an HTML5 drop, and the spacer is part of
- * the drop area, where it counts as dropping after the last tab. With the
- * `native` frame the strip is exactly the plain strip.
+ * button, is no-drag. The bar's free space (the spacer, and the mac inset)
+ * turns no-drag while a tab drag or a drag of files is live, as a caption
+ * region never receives an HTML5 drop; the spacer is part of the drop area,
+ * where a tab counts as dropped after the last tab. With the `native` frame
+ * the strip is exactly the plain strip. Which frame draws what is
+ * `titleBarLayout`'s.
  */
 export function TabStrip(props: {
   windowId: string;
@@ -295,11 +299,11 @@ export function TabStrip(props: {
     </>
   );
 
-  const titlebar = () => props.frame === "buttons" || props.frame === "inset";
+  const layout = () => titleBarLayout(props.frame, props.shellLabel);
 
   return (
     <Show
-      when={titlebar()}
+      when={layout().bar}
       fallback={
         <div
           ref={strip}
@@ -318,12 +322,8 @@ export function TabStrip(props: {
     >
       <div
         class={barStyle()}
-        data-app-region="drag"
-        style={
-          props.frame === "inset"
-            ? { "padding-inline-start": MAC_INSET_PADDING }
-            : undefined
-        }
+        data-app-region={spacerRegion(tabDragActive())}
+        style={layout().style}
       >
         {/* The drop area: the tabs, and the spacer, which drops at the end */}
         <div
@@ -345,10 +345,10 @@ export function TabStrip(props: {
           </div>
           <div
             class={spacerStyle()}
-            data-app-region={tabDragActive() ? "no-drag" : "drag"}
+            data-app-region={spacerRegion(tabDragActive())}
           />
         </div>
-        <Show when={props.frame === "buttons" && props.shellLabel}>
+        <Show when={layout().controls && props.shellLabel}>
           {(label) => (
             <WindowControls
               label={label()}

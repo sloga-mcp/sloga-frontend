@@ -687,10 +687,12 @@ function withShellTimeout<T>(
 /**
  * Arm the shell, giving up after {@link ARM_TIMEOUT_MS}. An arm that answers
  * after the open gave up has still armed the shell, possibly for a frameless
- * window: left alone, the next `about:blank` open from main's realm (an
- * embed's iframe) would become a chat window main never tracks. So a late
+ * window. On Tauri, left alone, the next `about:blank` open from main's realm
+ * (an embed's iframe) would become a chat window main never tracks. So a late
  * success is discarded, best effort and without holding the queue: the open
- * that gave up has already resolved null.
+ * that gave up has already resolved null. The discard only matters on Tauri:
+ * Electron already destroys any child main's own frame did not open, so its
+ * `discard` answers ok without doing anything.
  */
 function armWithTimeout(kind: ChildWindowKind): Promise<chatShell.ArmResult> {
   return withShellTimeout(
