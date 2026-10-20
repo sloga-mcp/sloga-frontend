@@ -359,6 +359,39 @@ describe("checkout: names a tier and a return target, opens safely", () => {
     });
   });
 
+  it("a region refusal reaches the page as its own message", async () => {
+    // The 400 body is passed through untouched, so `describe` hands it to
+    // `useError` rather than reading it as a CipherClientError
+    const region = api(() => json(400, { type: "CipherRegionUnavailable" }));
+    await assert.rejects(postCheckout(region, "T99", false), (error) => {
+      assert.ok(!(error instanceof CipherClientError));
+      assert.deepEqual(error, { type: "CipherRegionUnavailable" });
+      return true;
+    });
+
+    // ... and `useError` maps it on the string chain, ahead of the typed
+    // switch (stoat-api's union does not carry it), to copy of its own
+    const errors = readFileSync(
+      new URL("../../../../i18n/errors.ts", import.meta.url),
+      "utf8",
+    );
+    const copy = "Ciphers aren't on sale in your country yet.";
+    const mapped = errors.match(
+      /if \(errType === "CipherRegionUnavailable"\)\s*return t`([^`]*)`;/,
+    );
+    assert.equal(mapped?.[1], copy);
+    assert.ok(
+      errors.indexOf('"CipherRegionUnavailable"') <
+        errors.indexOf("switch (err.type)"),
+    );
+    // A msgid missing from the catalog renders as its hash
+    const en = readFileSync(
+      new URL("../../../../i18n/catalogs/en/messages.po", import.meta.url),
+      "utf8",
+    );
+    assert.ok(en.includes(`msgid "${copy}"\nmsgstr "${copy}"\n`));
+  });
+
   it("turns a 429 into a rate-limit error carrying its wait", async () => {
     const limited = api(() => json(429, { retry_after: 4200 }));
     await assert.rejects(postCheckout(limited, "T99", false), (error) => {

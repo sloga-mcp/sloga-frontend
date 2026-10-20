@@ -7491,6 +7491,10 @@ msgid "That Cipher tier isn't available for your account."
 msgstr "Esse nível de Cipher não está disponível para sua conta."
 
 #: components/i18n/errors.ts
+msgid "Ciphers aren't on sale in your country yet."
+msgstr "Os Ciphers ainda não estão à venda no seu país."
+
+#: components/i18n/errors.ts
 msgid "You already have a checkout in progress. Finish it, or pick again after it expires."
 msgstr "Você já tem um pagamento em andamento. Conclua-o ou escolha de novo depois que ele expirar."
 

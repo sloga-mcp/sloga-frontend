@@ -99,6 +99,10 @@ export function useError() {
         return t`All Cipher numbers have been claimed.`;
       if (errType === "CipherTierInvalid")
         return t`That Cipher tier isn't available for your account.`;
+      // The buyer is in a country Ciphers are not sold in yet (the EU and
+      // the UK at launch).
+      if (errType === "CipherRegionUnavailable")
+        return t`Ciphers aren't on sale in your country yet.`;
       if (errType === "PaymentPending")
         return t`You already have a checkout in progress. Finish it, or pick again after it expires.`;
       if (errType === "PaymentProviderError")
