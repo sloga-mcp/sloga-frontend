@@ -9791,6 +9791,18 @@ msgstr "Protected servers are coming to Sloga"
 msgid "End-to-end encryption for a whole server or a single channel. We can't read any of it."
 msgstr "End-to-end encryption for a whole server or a single channel. We can't read any of it."
 
+#: src/interface/home/JumpBackIn.tsx
+msgid "Jump back in"
+msgstr "Jump back in"
+
+#: src/interface/home/JumpBackIn.tsx
+msgid "Unread"
+msgstr "Unread"
+
+#: src/interface/home/JumpBackIn.tsx
+msgid "In voice now"
+msgstr "In voice now"
+
 #: src/interface/home/StreamerRow.tsx
 msgid "See all"
 msgstr "See all"

@@ -29,6 +29,7 @@ import MdTravelExplore from "@material-design-icons/svg/filled/travel_explore.sv
 import { HeaderIcon } from "./common/CommonHeader";
 import { CipherBanner } from "./home/CipherBanner";
 import { isNewUser } from "./home/homeHub";
+import { JumpBackIn } from "./home/JumpBackIn";
 import { StreamerRow } from "./home/StreamerRow";
 import { WelcomeTiles } from "./home/WelcomeTiles";
 import { WhatsNewCard } from "./home/WhatsNewCard";
@@ -270,7 +271,8 @@ const Staff = styled("section", {
 
 /**
  * Home page: welcome tiles for new accounts, the Cipher banner, this
- * release's highlights, Founding Streamers, and the moderation queues for
+ * release's highlights, Founding Streamers, "Jump back in" (unreads, friends
+ * in voice, upcoming events), and the moderation queues for
  * staff. Everything else that used to sit here (settings, discover, support)
  * already has its own button in the app.
  */
@@ -375,6 +377,7 @@ export function HomePage() {
           <CipherBanner />
           <WhatsNewCard />
           <StreamerRow />
+          <JumpBackIn />
           <Show when={isPrivileged()}>
             <Staff aria-label={t`Moderation`}>
               <CategoryButton
