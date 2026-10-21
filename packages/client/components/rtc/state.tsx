@@ -323,7 +323,17 @@ import {
   sessionSetupDecision,
 } from "./mlsSessionSetupPolicy";
 import { pauseVerdictReaders } from "./pauseVerdict";
-import { micEnableMode, micEnableTook, pttPressOpens } from "./pttMicPolicy";
+import {
+  captureWithin,
+  isMicCaptureTimeout,
+  micEnableMode,
+  micEnableTook,
+  MUTED_CAPTURE_TIMEOUT_MS,
+  mutedWhileLanding,
+  pttBlurMutes,
+  pttLiveStays,
+  pttPressOpens,
+} from "./pttMicPolicy";
 import {
   applyPublishGate,
   coalescingSweeper,
@@ -904,9 +914,11 @@ class Voice {
    * - `#stopPushToTalk`, which is also where the DOM listeners go away;
    * - `disconnect()`, above its no-room guard, so a half-set-up call clears
    *   too;
-   * - `window` blur, because a DOM key-up is delivered only to the focused
-   *   window — alt-tabbing mid-hold means that up never arrives at all.
-   *   Main's and each chat window's ({@link #bindPttChildWindows}).
+   * - `window` blur (`#pttBlur`), because a DOM key-up is delivered only to
+   *   the focused window — alt-tabbing mid-hold means that up never arrives
+   *   at all. Main's and each chat window's ({@link #bindPttChildWindows}).
+   *   Unless the native hook delivered this hold (`#pttNativeHeld`), the
+   *   blur also mutes, as the release would.
    *
    * The native layer treats the same latch as unacceptable for the same
    * reason: `fire_panic` (`ptt.rs`) force-clears `IS_DOWN` "rather than
@@ -915,6 +927,15 @@ class Voice {
    * user can see.
    */
   #pttHeld = false;
+  /**
+   * The current hold is one the native hook delivered (`ptt:down`), so its
+   * `ptt:up` is still coming and a blur need not stand in for it
+   * ({@link pttBlurMutes}). Set by `ptt:down`; cleared by `ptt:up`, by
+   * `#disarmNativePtt`, by `disconnect()`, and by both focused edges (the hook is blind while
+   * Sloga has focus, so a focused press is a hold it never saw, and a
+   * focused release ends the hold it did see).
+   */
+  #pttNativeHeld = false;
   /**
    * The muted microphone publish in flight (`#publishMicMuted`), and the room
    * it is for. `landed` never rejects. Cleared when it settles.
@@ -2539,11 +2560,10 @@ class Voice {
       // this listener is the only clear there is. Fail-safe direction: the
       // cost of clearing early is that the mute keybind starts working again
       // mid-hold, which is strictly better than a mute key that is dead for
-      // the rest of the session. Deliberately does NOT touch the microphone —
-      // that would be a behavior change to push-to-talk itself.
-      window.addEventListener("blur", () => {
-        this.#pttHeld = false;
-      });
+      // the rest of the session. Unless the native hook delivered this hold,
+      // the blur is also the release and mutes the mic (`#pttBlur`): without
+      // it, a hold that alt-tabbed away stayed live.
+      window.addEventListener("blur", () => this.#pttBlur());
 
       // AFK idle watch (D-5b2-7): input in the VISIBLE window is activity.
       // App-lifetime like the blur listener above, and just as cheap — each
@@ -5373,6 +5393,7 @@ class Voice {
       // against a call that never got a room must not outlive it. The
       // `#stopPushToTalk()` below clears it too, but that is under the guard.
       this.#pttHeld = false;
+      this.#pttNativeHeld = false;
       // Click-to-watch: every watch ends with the call (plan decision A).
       // Above the room guard for the same reason as the hold above.
       this.#clearWatchedShares();
@@ -6908,9 +6929,19 @@ class Voice {
    * come through here; the talk key and voice activity open the mic
    * themselves.
    *
+   * A muted capture given up on at an unanswered permission prompt
+   * (`captureWithin`) is not reported: the prompt is still on screen, and
+   * "blocked" would be wrong. It returns false, so the mic reads Muted and
+   * the user unmutes once they have answered.
+   *
    * @returns whether it worked, for the `micOn` reconcile ({@link micEnableTook})
    */
   async #enableMic(room: Room): Promise<boolean> {
+    // Read before anything is awaited, for `mutedWhileLanding`.
+    const before = {
+      micOn: this.#settings.micOn,
+      deafen: this.#settings.deafen,
+    };
     // The mode is read AFTER any muted publish lands: a key held while it
     // was landing may have been released since, and a live enable chosen
     // before the wait would then unmute with no key down.
@@ -6919,8 +6950,29 @@ class Voice {
       pushToTalk: this.#settings.pushToTalk,
       pttHeld: this.#pttHeld,
     });
-    if (mode === "muted") await this.#publishMicMuted(room);
-    else await this.#setMicEnabled(room, true);
+    if (mode === "muted") {
+      try {
+        await this.#publishMicMuted(room);
+      } catch (error) {
+        if (!isMicCaptureTimeout(error)) throw error;
+        return false;
+      }
+    } else {
+      await this.#setMicEnabled(room, true);
+      // A Mute or Deafen pressed while it landed, which livekit's disable may
+      // have given up on. Not the settings as they stand: every caller writes
+      // its own `micOn` / `deafen` once this returns.
+      const mutedMeanwhile = mutedWhileLanding(before, {
+        micOn: this.#settings.micOn,
+        deafen: this.#settings.deafen,
+      });
+      await this.#keepPttMicLiveOnlyIfWanted(room, mutedMeanwhile);
+      // The re-check has just muted it: report the turn-on as not taken, so
+      // the caller's `micOn` write keeps the user's Mute instead of undoing
+      // it. Outside push to talk nothing re-muted it, and a live mic must
+      // never read as off.
+      if (mutedMeanwhile && this.#settings.pushToTalk) return false;
+    }
     return micEnableTook({
       pushToTalk: this.#settings.pushToTalk,
       live: room.localParticipant.isMicrophoneEnabled,
@@ -6979,16 +7031,48 @@ class Voice {
     });
   }
 
+  /**
+   * After a live turn-on under push to talk lands: mute it again unless it is
+   * still wanted ({@link pttLiveStays}). livekit's own disable gives up on a
+   * publish still waiting at a permission prompt, so the release, Mute or
+   * whisper that came meanwhile may not have taken.
+   *
+   * @param userMuted Muted or Deafened, from a caller that is not itself
+   *   turning the mic on
+   */
+  async #keepPttMicLiveOnlyIfWanted(room: Room, userMuted: boolean) {
+    if (
+      pttLiveStays({
+        pushToTalk: this.#settings.pushToTalk,
+        held: this.#pttHeld,
+        whispering: !!this.whisper.target(),
+        userMuted,
+      })
+    )
+      return;
+    await this.#setMicEnabled(room, false);
+  }
+
   /** `#publishMicMuted`'s capture: mute, then publish. */
   async #captureMutedMic(room: Room) {
     const lp = room.localParticipant;
-    let tracks;
-    try {
-      tracks = await lp.createTracks({ audio: true });
-    } catch (error) {
-      if (!this.#unpinMicAfterFailure(room)) throw error;
-      tracks = await lp.createTracks({ audio: true });
-    }
+    // Bounded (`captureWithin`): a capture waiting on a mic-permission prompt
+    // held every Mute, Deafen and talk-key write behind this publish until
+    // the prompt was answered. One that lands after the bound is stopped
+    // there and never published. A capture already given up on does not
+    // un-pin or retry: the pin is shared, and the user may have rejoined.
+    const tracks = await captureWithin(
+      async (expired) => {
+        try {
+          return await lp.createTracks({ audio: true });
+        } catch (error) {
+          if (expired() || !this.#unpinMicAfterFailure(room)) throw error;
+          return lp.createTracks({ audio: true });
+        }
+      },
+      MUTED_CAPTURE_TIMEOUT_MS,
+      (track) => track.stop(),
+    );
     try {
       // Hung up during the capture: nothing to publish into.
       if (this.room() !== room) throw "invalid state";
@@ -12074,6 +12158,7 @@ class Voice {
       // after the setting/key/repeat guards so a press that PTT ignores
       // outright cannot set a flag nothing will clear.
       this.#pttHeld = true;
+      this.#pttNativeHeld = false;
       // EL-PTT: the user can only change the setting/keybind while focused,
       // so a focused keydown is the perfect lazy re-arm point for the
       // global hook (covers mid-call enable + keybind changes).
@@ -12094,7 +12179,10 @@ class Voice {
       // matches releases (see `bindingMatchesRelease` in `globalKeybinds`):
       // this handler already compares no modifiers, so a chord released in
       // any order still lands here.
-      if (e.code === this.#settings.pushToTalkKey) this.#pttHeld = false;
+      if (e.code === this.#settings.pushToTalkKey) {
+        this.#pttHeld = false;
+        this.#pttNativeHeld = false;
+      }
       if (!this.#settings.pushToTalk) return;
       if (e.code !== this.#settings.pushToTalkKey) return;
       // Unconditional, not on `isMicrophoneEnabled`: a press that published
@@ -12122,7 +12210,9 @@ class Voice {
    * focused handler and the native `ptt:down` alike. A muted publish still
    * in flight (the join's, or an Unmute's) is waited for first, and then the
    * key must still be down: a tap during the join used to open the mic
-   * after its release.
+   * after its release. Muted or Deafened, the press opens nothing. Once the
+   * open lands, it is re-checked, because the release or Mute that came
+   * meanwhile may not have taken (`#keepPttMicLiveOnlyIfWanted`).
    */
   async #pttOpen(room: Room) {
     await this.#mutedMicLanded(room);
@@ -12131,10 +12221,41 @@ class Voice {
         held: this.#pttHeld,
         whispering: !!this.whisper.target(),
         micLive: room.localParticipant.isMicrophoneEnabled,
+        userMuted: !this.#settings.micOn || this.#settings.deafen,
       })
     )
       return;
     await this.#setMicEnabled(room, true).catch(() => {});
+    await this.#keepPttMicLiveOnlyIfWanted(
+      room,
+      !this.#settings.micOn || this.#settings.deafen,
+    ).catch(() => {});
+  }
+
+  /**
+   * A window lost focus, so a talk-key release made now goes somewhere else.
+   * Clears `#pttHeld` (one of the field's mandatory clears). Unless the
+   * native hook delivered this hold (`#pttNativeHeld`), the blur also counts
+   * as the release and mutes ({@link pttBlurMutes}): otherwise a hold that
+   * alt-tabbed away left the mic live until the user came back and pressed
+   * the key again. Main's `blur` and each chat window's come here.
+   */
+  #pttBlur() {
+    const held = this.#pttHeld;
+    this.#pttHeld = false;
+    const room = this.room();
+    if (
+      !room ||
+      !pttBlurMutes({
+        pushToTalk: this.#settings.pushToTalk,
+        held,
+        nativeSawHold: this.#pttNativeHeld,
+      })
+    )
+      return;
+    // Queued like a key-up, behind a muted publish and any enable waiting
+    // on it.
+    void this.#setMicEnabled(room, false).catch(() => {});
   }
 
   /**
@@ -12146,9 +12267,9 @@ class Voice {
    * window of its own. Without these, a hold started in main and released
    * in a chat window sends its `keyup` there and the microphone stays hot,
    * and the native hook cannot help: it is blind while any Sloga window has
-   * focus (`ptt.rs`). Each window also gets main's `blur` clear of
-   * `#pttHeld`, for main's reason: a hold started here and alt-tabbed away
-   * from sends its up nowhere. Like main's, it leaves the microphone alone.
+   * focus (`ptt.rs`). Each window also gets main's `blur` handling
+   * (`#pttBlur`), for main's reason: a hold started here and alt-tabbed away
+   * from sends its up nowhere.
    *
    * @returns detach from every window; idempotent
    */
@@ -12160,9 +12281,7 @@ class Voice {
       createEffect(
         mapArray(boundKeybindWindows, (ctx) => {
           const win = ctx.win;
-          const onBlur = () => {
-            this.#pttHeld = false;
-          };
+          const onBlur = () => this.#pttBlur();
           win.addEventListener("keydown", keydown);
           win.addEventListener("keyup", keyup);
           win.addEventListener("blur", onBlur);
@@ -12235,6 +12354,8 @@ class Voice {
           // AFK idle watch: a talk-key press is activity even with the window
           // unfocused, which is the whole reason the global hook exists.
           this.#noteIdleActivity();
+          // A hold the hook delivered: its `ptt:up` is coming (`#pttBlur`).
+          this.#pttNativeHeld = true;
           // Suppressed during a whisper, same as the focused handler.
           if (this.whisper.target()) return;
           if (room.localParticipant.isMicrophoneEnabled) return;
@@ -12247,6 +12368,7 @@ class Voice {
           // `fire_panic`, which exist precisely so a hold that lost its real
           // key-up still ends.
           this.#pttHeld = false;
+          this.#pttNativeHeld = false;
           if (!this.#settings.pushToTalk) return;
           // Unconditional and queued, for `#pttKeyup`'s reasons.
           void this.#setMicEnabled(room, false).catch(() => {});
@@ -12268,6 +12390,7 @@ class Voice {
     // latch is not coming, and the drop has to happen HERE — before the
     // listeners go away, so it cannot depend on one of them.
     this.#pttHeld = false;
+    this.#pttNativeHeld = false;
     for (const unlisten of this.#pttNativeUnlisten) unlisten();
     this.#pttNativeUnlisten = [];
     if (this.#pttNativeKey === undefined) return;

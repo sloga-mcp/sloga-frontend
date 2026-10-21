@@ -5,12 +5,25 @@
 // Focus: joining, Unmute, Undeafen and a whisper's restore under push to talk
 // must not publish a live microphone, a press made while that muted publish
 // is landing must not open the mic after its release, and state.tsx must
-// actually route those paths through the policy.
+// actually route those paths through the policy. Also: the muted capture is
+// bounded, a live open that lands after its release is muted again, the talk
+// key does nothing while Muted or Deafened, and a blur mid-hold without the
+// native hook mutes.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
-import { micEnableMode, micEnableTook, pttPressOpens } from "./pttMicPolicy.ts";
+import {
+  MUTED_CAPTURE_TIMEOUT_MS,
+  captureWithin,
+  isMicCaptureTimeout,
+  micEnableMode,
+  micEnableTook,
+  mutedWhileLanding,
+  pttBlurMutes,
+  pttLiveStays,
+  pttPressOpens,
+} from "./pttMicPolicy.ts";
 import {
   bodiesAfter,
   codeOf,
@@ -73,40 +86,263 @@ test("micEnableTook: otherwise a turn-on worked only when the mic is live", () =
   }
 });
 
+const OPEN = {
+  held: true,
+  whispering: false,
+  micLive: false,
+  userMuted: false,
+};
+
 test("pttPressOpens: a press opens the mic while the key is still down", () => {
-  assert.equal(
-    pttPressOpens({ held: true, whispering: false, micLive: false }),
-    true,
-  );
+  assert.equal(pttPressOpens(OPEN), true);
 });
 
 test("pttPressOpens: a key released while the publish landed opens nothing", () => {
   // A tap during the join: the release came before the muted publish landed.
-  assert.equal(
-    pttPressOpens({ held: false, whispering: false, micLive: false }),
-    false,
-  );
+  assert.equal(pttPressOpens({ ...OPEN, held: false }), false);
 });
 
 test("pttPressOpens: a whisper or an already-live mic is left alone", () => {
+  assert.equal(pttPressOpens({ ...OPEN, whispering: true }), false);
+  assert.equal(pttPressOpens({ ...OPEN, micLive: true }), false);
+});
+
+test("pttPressOpens: Muted or Deafened, the talk key opens nothing", () => {
+  // It used to: a Muted user went on the wire while the button read Muted.
+  assert.equal(pttPressOpens({ ...OPEN, userMuted: true }), false);
+});
+
+test("pttPressOpens: nothing but a held key over a shut, unmuted mic opens it", () => {
+  for (const held of BOOLS)
+    for (const whispering of BOOLS)
+      for (const micLive of BOOLS)
+        for (const userMuted of BOOLS)
+          assert.equal(
+            pttPressOpens({ held, whispering, micLive, userMuted }),
+            held && !whispering && !micLive && !userMuted,
+          );
+});
+
+const STAYS = {
+  pushToTalk: true,
+  held: true,
+  whispering: false,
+  userMuted: false,
+};
+
+test("pttLiveStays: a release, Mute or whisper during the landing mutes it", () => {
+  // livekit's disable gives up on a capture still at a permission prompt, so
+  // each of these could land the mic live with no key held.
+  assert.equal(pttLiveStays({ ...STAYS, held: false }), false);
+  assert.equal(pttLiveStays({ ...STAYS, userMuted: true }), false);
+  assert.equal(pttLiveStays({ ...STAYS, whispering: true }), false);
+});
+
+test("pttLiveStays: a key still held keeps it, and outside push to talk it is left alone", () => {
+  assert.equal(pttLiveStays(STAYS), true);
+  for (const held of BOOLS)
+    for (const whispering of BOOLS)
+      for (const userMuted of BOOLS)
+        assert.equal(
+          pttLiveStays({ pushToTalk: false, held, whispering, userMuted }),
+          true,
+        );
+});
+
+test("pttLiveStays: under push to talk only a held key over no mute or whisper stays", () => {
+  for (const held of BOOLS)
+    for (const whispering of BOOLS)
+      for (const userMuted of BOOLS)
+        assert.equal(
+          pttLiveStays({ pushToTalk: true, held, whispering, userMuted }),
+          held && !whispering && !userMuted,
+        );
+});
+
+test("pttBlurMutes: a blur mid-hold the native hook did not deliver mutes", () => {
+  // Web, Electron, and a Tauri hold begun while Sloga had focus (the hook is
+  // blind then): the release goes to another app and never arrives.
   assert.equal(
-    pttPressOpens({ held: true, whispering: true, micLive: false }),
-    false,
+    pttBlurMutes({ pushToTalk: true, held: true, nativeSawHold: false }),
+    true,
   );
+  // A hold the hook delivered gets its `ptt:up` from the hook.
   assert.equal(
-    pttPressOpens({ held: true, whispering: false, micLive: true }),
+    pttBlurMutes({ pushToTalk: true, held: true, nativeSawHold: true }),
     false,
   );
 });
 
-test("pttPressOpens: nothing but a held key over a shut mic opens it", () => {
-  for (const held of BOOLS)
-    for (const whispering of BOOLS)
-      for (const micLive of BOOLS)
+test("pttBlurMutes: only push to talk, a hold and no native delivery together mute", () => {
+  for (const pushToTalk of BOOLS)
+    for (const held of BOOLS)
+      for (const nativeSawHold of BOOLS)
         assert.equal(
-          pttPressOpens({ held, whispering, micLive }),
-          held && !whispering && !micLive,
+          pttBlurMutes({ pushToTalk, held, nativeSawHold }),
+          pushToTalk && held && !nativeSawHold,
         );
+});
+
+test("mutedWhileLanding: a Mute or Deafen pressed while it landed counts", () => {
+  // The join: micOn was true, the user pressed Mute during the landing.
+  assert.equal(
+    mutedWhileLanding(
+      { micOn: true, deafen: false },
+      { micOn: false, deafen: false },
+    ),
+    true,
+  );
+  // An Unmute, then Deafen during the landing.
+  assert.equal(
+    mutedWhileLanding(
+      { micOn: false, deafen: false },
+      { micOn: false, deafen: true },
+    ),
+    true,
+  );
+});
+
+test("mutedWhileLanding: the caller's own unwritten state is not a mute", () => {
+  // Unmute still reads micOn false, Undeafen still reads deafen true: both
+  // write theirs after the turn-on returns.
+  for (const micOn of BOOLS)
+    for (const deafen of BOOLS)
+      assert.equal(
+        mutedWhileLanding({ micOn, deafen }, { micOn, deafen }),
+        false,
+      );
+});
+
+test("mutedWhileLanding: only micOn going off or deafen going on counts", () => {
+  for (const a of BOOLS)
+    for (const b of BOOLS)
+      for (const c of BOOLS)
+        for (const d of BOOLS)
+          assert.equal(
+            mutedWhileLanding({ micOn: a, deafen: b }, { micOn: c, deafen: d }),
+            (a && !c) || (!b && d),
+          );
+});
+
+// --- captureWithin ------------------------------------------------------------
+
+/** Lets settled promises run their handlers (setImmediate is not mocked). */
+const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+/**
+ * A capture the test lands or fails by hand, and the `expired` it was
+ * handed.
+ */
+function pending<T>() {
+  let land!: (tracks: T[]) => void;
+  let fail!: (error: unknown) => void;
+  const promise = new Promise<T[]>((resolve, reject) => {
+    land = resolve;
+    fail = reject;
+  });
+  let handed: (() => boolean) | undefined;
+  const capture = (expired: () => boolean) => {
+    handed = expired;
+    return promise;
+  };
+  const expired = () => {
+    assert.ok(handed, "captureWithin never started the capture");
+    return handed();
+  };
+  return { capture, land, fail, expired };
+}
+
+test("captureWithin: the bound is livekit's 10 s", () => {
+  assert.equal(MUTED_CAPTURE_TIMEOUT_MS, 10_000);
+});
+
+/**
+ * How `promise` has settled so far, read without awaiting it: a mutant that
+ * never settles must fail its assertion, not hang the run.
+ */
+function watch<T>(promise: Promise<T>) {
+  const seen: { state: "pending" | "resolved" | "rejected"; value?: unknown } =
+    { state: "pending" };
+  promise.then(
+    (value) => Object.assign(seen, { state: "resolved", value }),
+    (value) => Object.assign(seen, { state: "rejected", value }),
+  );
+  return seen;
+}
+
+test("captureWithin: a capture inside the bound is handed over, and nothing is stopped", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const stopped: string[] = [];
+  const { capture, land } = pending<string>();
+  const result = watch(captureWithin(capture, 100, (x) => stopped.push(x)));
+  t.mock.timers.tick(99);
+  land(["mic"]);
+  await flush();
+  assert.deepEqual(result, { state: "resolved", value: ["mic"] });
+  t.mock.timers.tick(100);
+  await flush();
+  assert.deepEqual(stopped, []);
+});
+
+test("captureWithin: a capture still waiting at the bound is given up on", async (t) => {
+  // A permission prompt left open held every Mute, Deafen and talk-key write.
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { capture } = pending<string>();
+  const result = watch(captureWithin(capture, 100, () => {}));
+  t.mock.timers.tick(99);
+  await flush();
+  assert.equal(result.state, "pending", "given up on before the bound");
+  t.mock.timers.tick(1);
+  await flush();
+  assert.equal(result.state, "rejected", "still waiting at the bound");
+  assert.ok(isMicCaptureTimeout(result.value));
+});
+
+test("captureWithin: a capture that lands after the bound is stopped, never handed over", async (t) => {
+  // Published, it would be a second mic track, or a live one.
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const stopped: string[] = [];
+  const { capture, land } = pending<string>();
+  const result = watch(captureWithin(capture, 100, (x) => stopped.push(x)));
+  t.mock.timers.tick(100);
+  land(["mic", "second"]);
+  await flush();
+  assert.equal(result.state, "rejected", "the late capture was handed over");
+  assert.ok(isMicCaptureTimeout(result.value));
+  assert.deepEqual(stopped, ["mic", "second"]);
+});
+
+test("captureWithin: a failure inside the bound is passed on, and one after it is swallowed", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const denied = Object.assign(new Error("denied"), {
+    name: "NotAllowedError",
+  });
+  const early = pending<string>();
+  const first = watch(captureWithin(early.capture, 100, () => {}));
+  early.fail(denied);
+  await flush();
+  assert.deepEqual(first, { state: "rejected", value: denied });
+
+  const late = pending<string>();
+  const second = watch(captureWithin(late.capture, 100, () => {}));
+  t.mock.timers.tick(100);
+  late.fail(denied);
+  await flush();
+  assert.equal(second.state, "rejected");
+  assert.ok(isMicCaptureTimeout(second.value), "the late failure won");
+  assert.equal(isMicCaptureTimeout(denied), false);
+});
+
+test("captureWithin: the capture is told once it has been given up on", (t) => {
+  // So a late failure skips the un-pin and the retry: the pin is shared, and
+  // the user may have rejoined since.
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { capture, expired } = pending<string>();
+  watch(captureWithin(capture, 100, () => {}));
+  t.mock.timers.tick(99);
+  assert.equal(expired(), false, "expired inside the bound");
+  t.mock.timers.tick(1);
+  assert.equal(expired(), true, "not expired at the bound");
 });
 
 // --- state.tsx wiring ---------------------------------------------------------
@@ -141,8 +377,16 @@ test("state.tsx: #enableMic asks the policy, from the setting and the hold", () 
   // The wait comes FIRST: a live mode chosen before it, with the key released
   // during it, unmuted with no key down.
   assertWired(
-    "the wait, the mode and its two paths",
-    'await this.#mutedMicLanded(room); const mode = micEnableMode({ pushToTalk: this.#settings.pushToTalk, pttHeld: this.#pttHeld, }); if (mode === "muted") await this.#publishMicMuted(room); else await this.#setMicEnabled(room, true);',
+    "the snapshot, the wait and the mode",
+    "const before = { micOn: this.#settings.micOn, deafen: this.#settings.deafen, }; await this.#mutedMicLanded(room); const mode = micEnableMode({ pushToTalk: this.#settings.pushToTalk, pttHeld: this.#pttHeld, });",
+  );
+  assertWired(
+    "the muted path, with a capture given up on read as not taken",
+    'if (mode === "muted") { try { await this.#publishMicMuted(room); } catch (error) { if (!isMicCaptureTimeout(error)) throw error; return false; } }',
+  );
+  assertWired(
+    "the live path, re-checked for a Mute or Deafen made while it landed",
+    "else { await this.#setMicEnabled(room, true); const mutedMeanwhile = mutedWhileLanding(before, { micOn: this.#settings.micOn, deafen: this.#settings.deafen, }); await this.#keepPttMicLiveOnlyIfWanted(room, mutedMeanwhile); if (mutedMeanwhile && this.#settings.pushToTalk) return false; }",
   );
   assertWired(
     "the reconcile",
@@ -262,11 +506,107 @@ test("state.tsx: both talk-key presses open through #pttOpen", () => {
     );
 });
 
-test("state.tsx: #pttOpen waits for the landing, then asks the policy", () => {
+test("state.tsx: #pttOpen waits for the landing, asks the policy, then re-checks", () => {
+  // The user's mute is read from the settings at both points: Muted or
+  // Deafened, the press opens nothing, and a Mute made while it landed mutes
+  // it again.
   assert.equal(
     bodyOf("async #pttOpen(room: Room) {"),
     codeOf(
-      "await this.#mutedMicLanded(room); if ( !pttPressOpens({ held: this.#pttHeld, whispering: !!this.whisper.target(), micLive: room.localParticipant.isMicrophoneEnabled, }) ) return; await this.#setMicEnabled(room, true).catch(() => {})",
+      "await this.#mutedMicLanded(room); if ( !pttPressOpens({ held: this.#pttHeld, whispering: !!this.whisper.target(), micLive: room.localParticipant.isMicrophoneEnabled, userMuted: !this.#settings.micOn || this.#settings.deafen, }) ) return; await this.#setMicEnabled(room, true).catch(() => {}); await this.#keepPttMicLiveOnlyIfWanted( room, !this.#settings.micOn || this.#settings.deafen, ).catch(() => {})",
+    ),
+  );
+});
+
+test("state.tsx: a landed live open is muted unless the policy keeps it", () => {
+  assert.equal(
+    bodyOf(
+      "async #keepPttMicLiveOnlyIfWanted(room: Room, userMuted: boolean) {",
+    ),
+    codeOf(
+      "if ( pttLiveStays({ pushToTalk: this.#settings.pushToTalk, held: this.#pttHeld, whispering: !!this.whisper.target(), userMuted, }) ) return; await this.#setMicEnabled(room, false)",
+    ),
+  );
+});
+
+test("state.tsx: the muted capture is bounded, and a late one is stopped", () => {
+  const body = bodyOf("async #captureMutedMic(room: Room) {");
+  assert.equal(
+    countWired(
+      body,
+      "const tracks = await captureWithin( async (expired) => { try { return await lp.createTracks({ audio: true }); } catch (error) { if (expired() || !this.#unpinMicAfterFailure(room)) throw error; return lp.createTracks({ audio: true }); } }, MUTED_CAPTURE_TIMEOUT_MS, (track) => track.stop(), );",
+    ),
+    1,
+    "both capture attempts inside captureWithin, the retry skipped once expired, with the bound and the stop",
+  );
+  assert.equal(
+    countWired(body, "await lp.createTracks"),
+    1,
+    "a capture outside the bound",
+  );
+});
+
+test("state.tsx: a capture given up on is not reported as blocked access", () => {
+  // The prompt is still on screen: "blocked, change your settings" would be
+  // wrong. `#enableMic` reads it as not taken instead (pinned above), and
+  // nothing else looks at it.
+  assert.equal(countWired(STATE_CODE, "isMicCaptureTimeout("), 1);
+  assert.equal(countWired(STATE_CODE, "isPermissionDeniedError(error) ||"), 0);
+});
+
+test("state.tsx: the native hold flag is set by ptt:down alone, and every hold end clears it", () => {
+  const native = bodyOf("async #ensureNativePtt(room: Room) {");
+  assert.equal(
+    countWired(
+      native,
+      "this.#pttHeld = true; this.#noteIdleActivity(); this.#pttNativeHeld = true;",
+    ),
+    1,
+    "ptt:down records a hold the hook delivered",
+  );
+  assert.equal(
+    countWired(native, "this.#pttHeld = false; this.#pttNativeHeld = false;"),
+    1,
+    "ptt:up clears it",
+  );
+  assert.equal(countWired(STATE_CODE, "this.#pttNativeHeld = true;"), 1);
+  const focused = bodyOf("#startPushToTalk(room: Room) {");
+  assert.equal(
+    countWired(focused, "this.#pttHeld = true; this.#pttNativeHeld = false;"),
+    1,
+    "a focused press is a hold the hook never saw",
+  );
+  assert.equal(
+    countWired(
+      focused,
+      "if (e.code === this.#settings.pushToTalkKey) { this.#pttHeld = false; this.#pttNativeHeld = false; }",
+    ),
+    1,
+    "a focused release ends the hold",
+  );
+  assert.equal(
+    countWired(
+      bodyOf("async #disarmNativePtt() {"),
+      "this.#pttHeld = false; this.#pttNativeHeld = false;",
+    ),
+    1,
+    "a disarm sends no ptt:up",
+  );
+});
+
+test("state.tsx: every blur goes through #pttBlur, which mutes as the policy says", () => {
+  assertWired(
+    "main's blur",
+    'window.addEventListener("blur", () => this.#pttBlur());',
+  );
+  assertWired(
+    "each chat window's blur",
+    "const onBlur = () => this.#pttBlur();",
+  );
+  assert.equal(
+    bodyOf("#pttBlur() {"),
+    codeOf(
+      "const held = this.#pttHeld; this.#pttHeld = false; const room = this.room(); if ( !room || !pttBlurMutes({ pushToTalk: this.#settings.pushToTalk, held, nativeSawHold: this.#pttNativeHeld, }) ) return; void this.#setMicEnabled(room, false).catch(() => {})",
     ),
   );
 });
