@@ -323,6 +323,7 @@ import {
   sessionSetupDecision,
 } from "./mlsSessionSetupPolicy";
 import { pauseVerdictReaders } from "./pauseVerdict";
+import { micEnableMode, micEnableTook, pttPressOpens } from "./pttMicPolicy";
 import {
   applyPublishGate,
   coalescingSweeper,
@@ -884,8 +885,9 @@ class Voice {
   #pttNativeArming = false;
   /**
    * A push-to-talk key is HELD, so the microphone being hot is the hold's
-   * doing and not the user's mute preference. Read only by
-   * {@link pttActive} / {@link dispatchKeybind}.
+   * doing and not the user's mute preference. Read by
+   * {@link pttActive} / {@link dispatchKeybind}, and by `#enableMic` and
+   * `#pttOpen`, which keep the mic muted unless a key is down.
    *
    * 🔴 **A latch, and the clears are the feature.** It cannot be derived
    * honestly: "is the talk key down" exists nowhere else in this process —
@@ -913,6 +915,11 @@ class Voice {
    * user can see.
    */
   #pttHeld = false;
+  /**
+   * The muted microphone publish in flight (`#publishMicMuted`), and the room
+   * it is for. `landed` never rejects. Cleared when it settles.
+   */
+  #micMutedPublish: { room: Room; landed: Promise<void> } | undefined;
   /**
    * Keybind actions whose dispatch is awaiting an async call right now.
    *
@@ -3989,10 +3996,20 @@ class Voice {
         deafened: this.#settings.deafen,
         micOn: this.#settings.micOn,
       });
+      // `#enableMic`, not a bare enable: under push to talk the mic is
+      // published MUTED (`micEnableMode`). A live publish here stayed live
+      // until the first press and release of the talk key. The mode is read
+      // now, so a switch made while CONNECTING is honored too.
       if (this.speakingPermission)
-        this.#setMicEnabled(room, wantMic)
-          .then((track) => {
-            if (wantMic) this.#settings.micOn = track != null;
+        (wantMic
+          ? this.#enableMic(room)
+          : this.#setMicEnabled(room, false).then(() => false)
+        )
+          .then((took) => {
+            if (wantMic) this.#settings.micOn = took;
+            const track = room.localParticipant.getTrackPublication(
+              Track.Source.Microphone,
+            );
             if (attachMicPipeline && track?.audioTrack) {
               // Processor/E2EE ordering (§4.3) — DO NOT REORDER: the mic
               // pipeline (RNNoise AudioWorklet + voice shaper + gain) and
@@ -6714,8 +6731,9 @@ class Voice {
   }
 
   /**
-   * Every mic enable goes through here: `setMicrophoneEnabled` plus the
-   * exact-pin rescue. When `connect()` pinned the saved mic `{ exact }` and
+   * Every mic capture gets the exact-pin rescue (`#unpinMicAfterFailure`):
+   * `#setMicEnabled`'s `setMicrophoneEnabled`, and `#captureMutedMic`'s
+   * hand-made capture for push to talk. When `connect()` pinned the saved mic `{ exact }` and
    * that device has since vanished while no live track existed (unplugged
    * while muted — livekit's own ended-track fallback only runs for a live
    * track), every plain enable would reject with OverconstrainedError
@@ -6849,21 +6867,139 @@ class Voice {
   }
 
   async #setMicEnabled(room: Room, enabled: boolean) {
+    // 🔴 Behind any muted publish in flight. livekit guards concurrent
+    // enables with its own `pendingPublishing` set, which a publish made by
+    // hand (`#publishMicMuted`) is not in: an enable that ran alongside it
+    // would capture and publish a SECOND microphone track. A disable waits
+    // too, so a talk-key release queues BEHIND an enable that was already
+    // waiting and lands after it.
+    await this.#mutedMicLanded(room);
     try {
       return await room.localParticipant.setMicrophoneEnabled(enabled);
     } catch (error) {
-      const defaults = room.options.audioCaptureDefaults;
-      const pinned = this.#pinnedMicId;
-      if (
-        !enabled ||
-        !pinned ||
-        typeof defaults?.deviceId !== "object" ||
-        (defaults.deviceId as { exact?: string }).exact !== pinned
-      )
-        throw error;
-      this.#pinnedMicId = undefined;
-      defaults.deviceId = undefined;
+      if (!enabled || !this.#unpinMicAfterFailure(room)) throw error;
       return room.localParticipant.setMicrophoneEnabled(enabled);
+    }
+  }
+
+  /**
+   * After a failed capture: drop OUR `{ exact }` pin on the mic (see
+   * `#pinnedMicId`) so the retry runs on browser defaults. False when the
+   * failure was not on our pin, and the caller rethrows.
+   */
+  #unpinMicAfterFailure(room: Room): boolean {
+    const defaults = room.options.audioCaptureDefaults;
+    const pinned = this.#pinnedMicId;
+    if (
+      !pinned ||
+      typeof defaults?.deviceId !== "object" ||
+      (defaults.deviceId as { exact?: string }).exact !== pinned
+    )
+      return false;
+    this.#pinnedMicId = undefined;
+    defaults.deviceId = undefined;
+    return true;
+  }
+
+  /**
+   * Turn the microphone on the way the mic mode wants it
+   * ({@link micEnableMode}): live, or under push to talk with no key held,
+   * published muted. The join, Unmute, Undeafen and a whisper's restore all
+   * come through here; the talk key and voice activity open the mic
+   * themselves.
+   *
+   * @returns whether it worked, for the `micOn` reconcile ({@link micEnableTook})
+   */
+  async #enableMic(room: Room): Promise<boolean> {
+    // The mode is read AFTER any muted publish lands: a key held while it
+    // was landing may have been released since, and a live enable chosen
+    // before the wait would then unmute with no key down.
+    await this.#mutedMicLanded(room);
+    const mode = micEnableMode({
+      pushToTalk: this.#settings.pushToTalk,
+      pttHeld: this.#pttHeld,
+    });
+    if (mode === "muted") await this.#publishMicMuted(room);
+    else await this.#setMicEnabled(room, true);
+    return micEnableTook({
+      pushToTalk: this.#settings.pushToTalk,
+      live: room.localParticipant.isMicrophoneEnabled,
+      captured: !!room.localParticipant.getTrackPublication(
+        Track.Source.Microphone,
+      )?.track,
+    });
+  }
+
+  /** The muted publish in flight in `room`, if there is one; never rejects. */
+  #micMutedLanding(room: Room): Promise<void> | undefined {
+    const inFlight = this.#micMutedPublish;
+    return inFlight?.room === room ? inFlight.landed : undefined;
+  }
+
+  /** Once no muted publish is in flight in `room`, including later ones. */
+  async #mutedMicLanded(room: Room) {
+    for (
+      let p = this.#micMutedLanding(room);
+      p;
+      p = this.#micMutedLanding(room)
+    )
+      await p;
+  }
+
+  /**
+   * Make sure the microphone is captured and published MUTED: push to
+   * talk's resting state ({@link micEnableMode}).
+   *
+   * An existing publication is muted (`setMicrophoneEnabled(false)` also
+   * waits for a livekit publish in flight and mutes that one). With none,
+   * the track is captured, muted, and only THEN published: livekit sends
+   * the publish request with `muted: true` and the sender's first RTP
+   * packet is silence. Muting after `setMicrophoneEnabled(true)` resolves
+   * is too late, because RTP starts when the answer is applied, before
+   * livekit emits `LocalTrackPublished` (the 1-4 packets measured at the
+   * `LocalSenderCreated` listener). Mute disables the SOURCE track
+   * (`LocalTrack.setTrackMuted`), so the pipeline `#syncMicPipelineIfLanded`
+   * attaches at the landing passes silence until the talk key unmutes.
+   *
+   * Calls are chained, so two never capture two tracks, and recorded in
+   * `#micMutedPublish` for `#setMicEnabled` and `#pttOpen` to wait behind.
+   */
+  #publishMicMuted(room: Room): Promise<void> {
+    const before = this.#micMutedLanding(room);
+    const done = (async () => {
+      await before;
+      const existing = await room.localParticipant.setMicrophoneEnabled(false);
+      if (existing?.track) return;
+      await this.#captureMutedMic(room);
+    })();
+    const entry = { room, landed: done.catch(() => undefined) };
+    this.#micMutedPublish = entry;
+    return done.finally(() => {
+      if (this.#micMutedPublish === entry) this.#micMutedPublish = undefined;
+    });
+  }
+
+  /** `#publishMicMuted`'s capture: mute, then publish. */
+  async #captureMutedMic(room: Room) {
+    const lp = room.localParticipant;
+    let tracks;
+    try {
+      tracks = await lp.createTracks({ audio: true });
+    } catch (error) {
+      if (!this.#unpinMicAfterFailure(room)) throw error;
+      tracks = await lp.createTracks({ audio: true });
+    }
+    try {
+      // Hung up during the capture: nothing to publish into.
+      if (this.room() !== room) throw "invalid state";
+      for (const track of tracks) {
+        await track.mute();
+        await lp.publishTrack(track);
+      }
+    } catch (error) {
+      // livekit's own enable stops what it captured when the publish fails.
+      for (const track of tracks) track.stop();
+      throw error;
     }
   }
 
@@ -6983,16 +7119,17 @@ class Voice {
           isAfkChannel: this.isAfkChannel,
           permitted: this.speakingPermission,
         });
-      await this.#setMicEnabled(room, wantMic);
+      // Under push to talk the restored mic comes back muted (`#enableMic`).
+      let took = false;
+      if (wantMic) took = await this.#enableMic(room);
+      else await this.#setMicEnabled(room, false);
 
       this.#settings.deafen = !undeafening;
       if (fromMute) {
         // Only the ON direction is reconciled against the real track: an
         // unmute that could not capture must not read as live, but a mute
         // always takes.
-        this.#settings.micOn = wantMic
-          ? room.localParticipant.isMicrophoneEnabled
-          : false;
+        this.#settings.micOn = took;
       }
       if (this.#settings.deafen) {
         this.sound.playSound("deafen");
@@ -7039,14 +7176,16 @@ class Voice {
         this.onErr(new Error(this.#publishRefusalText(refusal, "microphone")));
         return;
       }
-      await this.#setMicEnabled(room, want);
+      // Under push to talk, Unmute publishes the mic muted (`#enableMic`):
+      // the talk key opens it.
+      let took = false;
+      if (want) took = await this.#enableMic(room);
+      else await this.#setMicEnabled(room, false);
 
       // Muting always takes. Unmuting can fail (permission denied, no
       // capture device), and a microphone that never came up must not be
       // shown as live — so only the ON direction is reconciled.
-      this.#settings.micOn = want
-        ? room.localParticipant.isMicrophoneEnabled
-        : false;
+      this.#settings.micOn = took;
 
       if (this.#settings.micOn) {
         this.sound.playSound("unmute");
@@ -7130,10 +7269,15 @@ class Voice {
     if (room) await this.#restoreWhisperMic(room);
   }
 
-  /** Re-enable the primary mic to its pre-whisper state, if it was on. */
+  /**
+   * Re-enable the primary mic to its pre-whisper state, if it was on. Under
+   * push to talk it comes back live only while the key is still down
+   * (`#enableMic`): a whisper begun mid-hold used to restore a live mic after
+   * the key was released.
+   */
   async #restoreWhisperMic(room: Room) {
     if (this.#whisperPriorMic && !room.localParticipant.isMicrophoneEnabled) {
-      await this.#setMicEnabled(room, true).catch(() => undefined);
+      await this.#enableMic(room).catch(() => undefined);
     }
     this.#whisperPriorMic = false;
   }
@@ -11922,9 +12066,9 @@ class Voice {
       if (e.code !== this.#settings.pushToTalkKey) return;
       if (e.repeat) return;
       // Record the hold HERE — above the whisper and already-hot early
-      // returns, not next to the `#setMicEnabled` call below. The flag means
+      // returns, not next to the `#pttOpen` call below. The flag means
       // "a talk key is down", not "this edge turned the mic on": the matching
-      // `#pttKeyup` mutes on `isMicrophoneEnabled` alone, so a hold that
+      // `#pttKeyup` mutes whatever the mic's state, so a hold that
       // found the mic already hot still ends in a mute, and a mute keybind
       // pressed in between would still be inverting against the wire. Set
       // after the setting/key/repeat guards so a press that PTT ignores
@@ -11938,15 +12082,14 @@ class Voice {
       // key must not unmute it into the room behind the aside.
       if (this.whisper.target()) return;
       if (room.localParticipant.isMicrophoneEnabled) return;
-      void this.#setMicEnabled(room, true).catch(() => {});
+      void this.#pttOpen(room);
     };
 
     this.#pttKeyup = (e: KeyboardEvent) => {
       // 🔴 The clear is ABOVE both remaining guards, and the asymmetry
       // against the set in `#pttKeydown` is deliberate: clear more eagerly
       // than you set. Turning push-to-talk off mid-hold makes the
-      // `!pushToTalk` guard below return early, and the mic-state guard does
-      // the same for a hold during a whisper — either would strand the latch.
+      // `!pushToTalk` guard below return early, which would strand the latch.
       // Matched on physical key identity alone, exactly as the native hook
       // matches releases (see `bindingMatchesRelease` in `globalKeybinds`):
       // this handler already compares no modifiers, so a chord released in
@@ -11954,8 +12097,14 @@ class Voice {
       if (e.code === this.#settings.pushToTalkKey) this.#pttHeld = false;
       if (!this.#settings.pushToTalk) return;
       if (e.code !== this.#settings.pushToTalkKey) return;
-      if (!room.localParticipant.isMicrophoneEnabled) return;
-      room.localParticipant.setMicrophoneEnabled(false);
+      // Unconditional, not on `isMicrophoneEnabled`: a press that published
+      // the mic is still in livekit's capture/offer when a quick release
+      // lands, so the mic does not read as live yet and a guarded mute
+      // skipped it, leaving it live once it landed. A disable waits for that
+      // publish and mutes it, and is a no-op on a mic that is already muted.
+      // Through `#setMicEnabled`, so it also queues behind a muted publish
+      // and any enable already waiting on it.
+      void this.#setMicEnabled(room, false).catch(() => {});
     };
 
     window.addEventListener("keydown", this.#pttKeydown);
@@ -11966,6 +12115,26 @@ class Voice {
     );
 
     if (this.#settings.pushToTalk) void this.#ensureNativePtt(room);
+  }
+
+  /**
+   * A talk-key press opens the microphone ({@link pttPressOpens}), from the
+   * focused handler and the native `ptt:down` alike. A muted publish still
+   * in flight (the join's, or an Unmute's) is waited for first, and then the
+   * key must still be down: a tap during the join used to open the mic
+   * after its release.
+   */
+  async #pttOpen(room: Room) {
+    await this.#mutedMicLanded(room);
+    if (
+      !pttPressOpens({
+        held: this.#pttHeld,
+        whispering: !!this.whisper.target(),
+        micLive: room.localParticipant.isMicrophoneEnabled,
+      })
+    )
+      return;
+    await this.#setMicEnabled(room, true).catch(() => {});
   }
 
   /**
@@ -12069,7 +12238,7 @@ class Voice {
           // Suppressed during a whisper, same as the focused handler.
           if (this.whisper.target()) return;
           if (room.localParticipant.isMicrophoneEnabled) return;
-          void this.#setMicEnabled(room, true).catch(() => {});
+          void this.#pttOpen(room);
         });
         const up = await tauri.event.listen<void>("ptt:up", () => {
           // Above the guards, same eager-clear rule as `#pttKeyup`. This is
@@ -12079,8 +12248,8 @@ class Voice {
           // key-up still ends.
           this.#pttHeld = false;
           if (!this.#settings.pushToTalk) return;
-          if (!room.localParticipant.isMicrophoneEnabled) return;
-          room.localParticipant.setMicrophoneEnabled(false);
+          // Unconditional and queued, for `#pttKeyup`'s reasons.
+          void this.#setMicEnabled(room, false).catch(() => {});
         });
         this.#pttNativeUnlisten.push(down, up);
       }
