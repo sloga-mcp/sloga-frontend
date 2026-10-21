@@ -1632,7 +1632,10 @@ export class E2EEBridge implements E2EEAdapter {
   /**
    * When this install's E2EE store was first seen to name a DIFFERENT account
    * as its owner — `mls_signature_key.user_id` via the native
-   * `e2ee_store_owner` accessor, compared against the signed-in user.
+   * `e2ee_store_owner` accessor, compared against the signed-in user. Also
+   * raised when native refuses a decrypt with
+   * `mls_store_owned_by_another_account` (`#handleEnvelope`): the store's
+   * owner of record names another account than the `selfUserId` passed.
    *
    * Distinct from `deviceOwnedElsewhere` because the two are cleared by
    * different evidence: that one by the server (a present directory row, an
@@ -1878,6 +1881,17 @@ export class E2EEBridge implements E2EEAdapter {
       return;
     }
 
+    this.#raiseStoreOwnedByAnotherAccount();
+  }
+
+  /**
+   * Raise `storeOwnedByAnotherAccount`: this install's E2EE store belongs to
+   * a different account than the signed-in one. Two sources: the connect
+   * check above (the MLS owner), and native refusing a decrypt with
+   * `mls_store_owned_by_another_account` (its owner of record is another
+   * account, or its two owner records disagree; see `#handleEnvelope`).
+   */
+  #raiseStoreOwnedByAnotherAccount(): void {
     // Nothing the signed-in account's call could use: the store holding the
     // groups these envelopes name is somebody else's.
     this.#mlsBuffer.clear();
@@ -2732,9 +2746,33 @@ export class E2EEBridge implements E2EEAdapter {
       return;
     }
 
-    const outcome = await this.#invoke<DecryptOutcome>("e2ee_decrypt", {
-      envelope,
-    });
+    // Our own id goes as its own argument, the same one every send passes:
+    // native records it as the store's owner on first use, so the store
+    // knows its owner before the first copy of our own message arrives
+    // (without one it holds that copy, unacked: `owner_of_record_unknown`,
+    // logged by the queue's catch and re-delivered next connection). Never
+    // put it in or read it from `envelope`, which is built from the
+    // server's event. With no user loaded it is undefined, which every
+    // shell drops as an absent key (native then holds, as above).
+    let outcome: DecryptOutcome;
+    try {
+      outcome = await this.#invoke<DecryptOutcome>("e2ee_decrypt", {
+        envelope,
+        selfUserId: this.#client.user?.id,
+      });
+    } catch (error) {
+      // Native refused before processing the envelope: the store's owner of
+      // record is another account (or its owner records disagree). Raise
+      // the same state the connect check does. No ack: nothing was
+      // processed, so the envelope stays queued server-side and comes back
+      // on a later drain. Rethrown for the queue's catch to log.
+      if (
+        (error as NativeError)?.type === "mls_store_owned_by_another_account"
+      ) {
+        this.#raiseStoreOwnedByAnotherAccount();
+      }
+      throw error;
+    }
 
     // EVERY outcome is durably processed native-side → always ack
     this.#client.events.send({ type: "E2EEAck", ids: [outcome.id] });
