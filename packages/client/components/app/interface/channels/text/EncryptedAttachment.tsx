@@ -164,6 +164,13 @@ export function EncryptedAttachment(props: {
       <Match when={props.meta.state === "ready" && kind() === "image"}>
         <img
           class={css({
+            // a column parent stretches the box to full width while maxHeight
+            // caps the height, squashing tall images; keep the natural ratio
+            display: "block",
+            width: "auto",
+            height: "auto",
+            alignSelf: "flex-start",
+            objectFit: "contain",
             maxWidth: "min(420px, 100%)",
             maxHeight: "420px",
             borderRadius: "var(--borderRadius-md)",
@@ -190,6 +197,11 @@ export function EncryptedAttachment(props: {
       <Match when={props.meta.state === "ready" && kind() === "video"}>
         <video
           class={css({
+            display: "block",
+            width: "auto",
+            height: "auto",
+            alignSelf: "flex-start",
+            objectFit: "contain",
             maxWidth: "min(420px, 100%)",
             maxHeight: "420px",
             borderRadius: "var(--borderRadius-md)",
