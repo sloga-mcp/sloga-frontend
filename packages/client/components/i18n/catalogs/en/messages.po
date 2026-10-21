@@ -3511,6 +3511,11 @@ msgstr "Encrypt my calls"
 msgid "Try again in a moment."
 msgstr "Try again in a moment."
 
+#: components/modal/modals/E2EEIdentityChange.tsx
+#: components/modal/modals/E2EEVerify.tsx
+msgid "The keys changed while the system dialog was open. Check them again."
+msgstr "The keys changed while the system dialog was open. Check them again."
+
 #: components/modal/modals/E2EEEnableGroup.tsx
 msgid "The member list changed. Check it and try again."
 msgstr "The member list changed. Check it and try again."

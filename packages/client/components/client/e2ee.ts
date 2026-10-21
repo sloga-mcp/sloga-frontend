@@ -69,6 +69,7 @@ import {
   MLS_REQUEST_DEADLINE_MS,
   settleCallRosterReconcile,
 } from "./e2eeRatelimitPolicy";
+import { isNoteToSelfConversation, resolveDmConversation } from "./e2eeSelfDm";
 import { errorName, settleDelivered } from "./e2eeSendSettle";
 import {
   adoptTrustedRow,
@@ -107,6 +108,28 @@ import { IS_OVERLAY_WINDOW, IS_POPOUT_WINDOW } from "./popout";
 
 /** Author id used for locally-injected system/marker messages */
 const SYSTEM_AUTHOR = "00000000000000000000000000";
+
+/**
+ * What an own-account device marker tells the user to do about a device
+ * that isn't theirs.
+ *
+ * Native records own-account device rows (`device_added`, `device_readded`,
+ * `device_revoked`) under note-to-self, whose conversation id is our own
+ * id. Those rows are not yet shown in a dedicated place, and this client
+ * never files them into a DM or group (`e2eeSelfDm`). Inside a DM or group
+ * view the text is reached only by a row whose detail names our own id
+ * (`#isOwnDeviceRow`).
+ *
+ * "Log Out Other Sessions" (Settings > Sessions) sends
+ * `DELETE /auth/session/all` with an MFA ticket, and the server revokes
+ * every E2EE device not bound to the surviving session
+ * (`Account::delete_all_sessions`). Changing the password alone ends no
+ * session and revokes no device, but without it whoever added the device
+ * can sign in again. Not the per-session "Log Out" button: it sends no MFA
+ * ticket, which `DELETE /auth/session/{id}` requires.
+ */
+const OWN_DEVICE_REMEDY =
+  "change your password, then choose Log Out Other Sessions in Settings > Sessions";
 
 /** Tauri IPC surface (global, `withGlobalTauri`) */
 type TauriGlobal = {
@@ -266,6 +289,38 @@ export type GroupIncludePreflight =
         | "unavailable";
     };
 
+/**
+ * How a native-confirm-gated "mark verified" or "accept new key" ended.
+ * The shells show a NATIVE dialog with the safety number and bind the
+ * commit to the keys it showed. `declined` (the user cancelled), `busy`
+ * (another consent dialog is open, or a recent decline locked this
+ * peer's prompt) and `keys_changed` (the keys moved while the dialog was
+ * open) are answers, not failures: nothing was written natively.
+ */
+export type IdentityConfirmOutcome =
+  | "ok"
+  | "declined"
+  | "busy"
+  | "keys_changed";
+
+/**
+ * The outcome a native identity-confirm rejection resolves as, or null
+ * when it is a real failure the caller rethrows. `declined` and `busy`
+ * read as group growth reads them; the binding refusal is
+ * `invalid_argument` with `field` `keys_changed`.
+ */
+function identityConfirmOutcomeOf(
+  error: unknown,
+): Exclude<IdentityConfirmOutcome, "ok"> | null {
+  const answer = groupGrowthOutcomeOf(error);
+  if (answer) return answer;
+  if (typeof error !== "object" || error === null) return null;
+  const { type, field } = error as { type?: unknown; field?: unknown };
+  return type === "invalid_argument" && field === "keys_changed"
+    ? "keys_changed"
+    : null;
+}
+
 /** A key-backup upload bundle produced natively (opaque ciphertext) */
 type BackupBundle = {
   header: string;
@@ -327,6 +382,10 @@ type HistoryRow = {
     user_id?: string;
     actor?: string;
     roster?: string[];
+    /** `device_added` / `device_readded`: the devices, and whether a
+     *  `device_added` pin came from the call plane's listing only */
+    device_ids?: string[];
+    call_only?: boolean;
   } | null;
   created_at: number;
   attachments?: E2EEAttachmentMeta[];
@@ -1062,6 +1121,16 @@ type E2eeCapacitorPlugin = {
    */
   enableGroup(options: Record<string, unknown>): Promise<{ json: string }>;
   addGroupMember(options: Record<string, unknown>): Promise<{ json: string }>;
+  /**
+   * Native-dialog-gated "mark verified" and "accept new key": the dialog
+   * shows the safety number for exactly that device, and the commit is
+   * bound to the keys it showed. Resolve `{}` on confirm; reject
+   * `declined` on cancel, `busy` while another consent dialog is open or
+   * a decline locked the peer's prompt, and `invalid_argument` with
+   * `field` `keys_changed` when the keys moved while it was open.
+   */
+  markVerified(options: Record<string, unknown>): Promise<unknown>;
+  acceptIdentityChange(options: Record<string, unknown>): Promise<unknown>;
   attachmentUpload(options: Record<string, unknown>): Promise<{ json: string }>;
   attachmentFetch(options: Record<string, unknown>): Promise<{ json: string }>;
   /** Native-dialog CREATE: mints + displays the code, returns the bundle */
@@ -1162,6 +1231,23 @@ class CapacitorTransport implements NativeTransport {
           (args as Record<string, unknown>) ?? {},
         );
         return JSON.parse(json) as T;
+      }
+
+      // Verify and accept-new-key → dedicated native-dialog methods: trust
+      // in a device changes only after a tap on a dialog the webview cannot
+      // draw, showing the safety number the commit is bound to. They
+      // resolve an empty object, so there is no `json` to parse.
+      if (command === "e2ee_mark_verified") {
+        await this.#plugin.markVerified(
+          (args as Record<string, unknown>) ?? {},
+        );
+        return undefined as T;
+      }
+      if (command === "e2ee_accept_identity_change") {
+        await this.#plugin.acceptIdentityChange(
+          (args as Record<string, unknown>) ?? {},
+        );
+        return undefined as T;
       }
 
       // Whole-call downgrade (media E2EE 6.7a): plaintext-direction
@@ -3348,10 +3434,10 @@ export class E2EEBridge implements E2EEAdapter {
         selfUserId: this.#client.user!.id,
       });
 
-      // Verify every member's device identities from their signed listing
-      // (self included, so our OWN other devices' roster/downgrade controls
-      // also carry authority). A forged device can't produce a valid
-      // signature, so this only ever upgrades genuine bindings.
+      // Check every member's device identities against their signed
+      // listing (self included, so our OWN other devices' roster/downgrade
+      // controls also carry authority). The signature proves each device's
+      // keys are self-consistent; it does not prove who owns the device.
       const reports = await Promise.all(
         displayed.map((id) =>
           this.#reconcileDevices(id).catch(() => null as null),
@@ -3719,10 +3805,50 @@ export class E2EEBridge implements E2EEAdapter {
     });
   }
 
-  /** Mark a peer device user-verified after an in-person comparison. */
-  async markVerified(peerUserId: string, deviceId: string): Promise<void> {
-    await this.#invoke("e2ee_mark_verified", { peerUserId, deviceId });
+  /**
+   * Mark a peer device user-verified after an in-person comparison. The
+   * shells gate this on a NATIVE dialog showing the safety number for
+   * exactly that device. Resolves `"ok"` once marked, or the
+   * `IdentityConfirmOutcome` answer the dialog gave (nothing written);
+   * every other failure throws its typed native error.
+   */
+  async markVerified(
+    peerUserId: string,
+    deviceId: string,
+  ): Promise<IdentityConfirmOutcome> {
+    try {
+      await this.#invoke(
+        "e2ee_mark_verified",
+        this.#identityConfirmArgs(peerUserId, deviceId),
+      );
+    } catch (error) {
+      const outcome = identityConfirmOutcomeOf(error);
+      if (outcome) return outcome;
+      throw error;
+    }
     await this.#syncRecent(peerUserId);
+    return "ok";
+  }
+
+  /**
+   * Args for the native identity confirms: `selfUserId` for the safety
+   * number, and the peer's `username#discriminator` (the growth dialog's
+   * label) as `displayName`. A label only: native code sanitizes it, and
+   * the ids and digits the dialog shows come from native state.
+   */
+  #identityConfirmArgs(
+    peerUserId: string,
+    deviceId: string,
+  ): Record<string, unknown> {
+    const displayName = groupGrowthDisplayNames([peerUserId], (id) =>
+      this.#client.users.get(id),
+    )[peerUserId];
+    return {
+      peerUserId,
+      deviceId,
+      selfUserId: this.#client.user!.id,
+      ...(displayName ? { displayName } : {}),
+    };
   }
 
   /**
@@ -4444,13 +4570,17 @@ export class E2EEBridge implements E2EEAdapter {
 
   /**
    * Group-aware analog of `#syncRecent` (keyed by conversation id). Returns
-   * the rows it injected, oldest first.
+   * the rows it injected, oldest first. Never note-to-self rows: those are
+   * not shown in any DM or group (`e2eeSelfDm`).
    */
   async #syncRecentConversation(
     conversationId: string,
     channelId: string,
     live = false,
   ): Promise<HistoryRow[]> {
+    if (isNoteToSelfConversation(conversationId, this.#client.user?.id)) {
+      return [];
+    }
     const rows = await this.#invoke<HistoryRow[]>("e2ee_history", {
       peerUserId: conversationId,
       before: null,
@@ -4766,11 +4896,19 @@ export class E2EEBridge implements E2EEAdapter {
    * decrypts and device events to surface new messages AND the marker rows
    * the native layer recorded alongside them. Returns the DM channel (when
    * one resolved) and the rows it injected, oldest first.
+   *
+   * Note-to-self (`peerId` = our own id) has no channel here: own-account
+   * device rows stay in the native transcript and are never injected into
+   * a DM (`e2eeSelfDm`). Own-device reconciles, own-device deletes and a
+   * verify of our own device all land here with our own id.
    */
   async #syncRecent(
     peerId: string,
     live = false,
   ): Promise<{ channel?: Channel; rows: HistoryRow[] }> {
+    if (isNoteToSelfConversation(peerId, this.#client.user?.id)) {
+      return { rows: [] };
+    }
     const channel = await this.#dmChannel(peerId);
     if (!channel) return { rows: [] };
 
@@ -4796,12 +4934,19 @@ export class E2EEBridge implements E2EEAdapter {
     );
   }
 
+  /**
+   * The DM with `peerId`, opening one when none is cached. Never a channel
+   * for our own id: every DM contains us, so a recipient match on it would
+   * return whichever DM came first (`resolveDmConversation`).
+   */
   async #dmChannel(peerId: string): Promise<Channel | undefined> {
-    const existing = [...this.#client.channels.values()].find(
-      (channel) =>
-        channel.type === "DirectMessage" && channel.recipientIds.has(peerId),
+    const resolved = resolveDmConversation(
+      peerId,
+      this.#client.user?.id,
+      this.#client.channels.values(),
     );
-    if (existing) return existing;
+    if (resolved.kind === "none") return undefined;
+    if (resolved.kind === "existing") return resolved.channel;
 
     try {
       const user =
@@ -4860,8 +5005,17 @@ export class E2EEBridge implements E2EEAdapter {
         return "This contact's security identity changed. Verify with them out-of-band, then accept the new identity to resume sending.";
       case "device_revoked":
         return "A device was removed from this conversation.";
-      case "device_readded":
-        return "A previously removed device was re-added to this conversation.";
+      case "device_added":
+        return this.#deviceAddedText(row);
+      case "device_readded": {
+        // Rows from before D6 carry no detail: keep their wording
+        if (!row.detail?.user_id) {
+          return "A previously removed device was re-added to this conversation.";
+        }
+        return this.#isOwnDeviceRow(row)
+          ? `A previously removed device of your account was re-added. If it isn't yours, ${OWN_DEVICE_REMEDY}.`
+          : `A previously removed device of ${this.#displayName(row.detail.user_id)} was re-added to this conversation.`;
+      }
       case "session_reset":
         return "The secure session was reset after repeated undecryptable messages.";
       case "history_start":
@@ -4886,6 +5040,48 @@ export class E2EEBridge implements E2EEAdapter {
       default:
         return "Encrypted conversation event.";
     }
+  }
+
+  /**
+   * Whether a device marker is about this account's own devices: filed in
+   * note-to-self (conversation = own id), or naming the own id (native
+   * files a pin whose owner it cannot establish as a peer's, louder).
+   * Note-to-self rows are recorded natively and are not yet shown in a
+   * dedicated place: `#syncRecent` never injects them into a DM or group,
+   * so in a DM or group view only the second case reaches this.
+   */
+  #isOwnDeviceRow(row: HistoryRow): boolean {
+    const self = this.#client.user?.id;
+    if (!self) return false;
+    return (
+      row.conversation === self ||
+      (row.detail?.user_id ?? row.conversation) === self
+    );
+  }
+
+  /**
+   * `device_added` text by where native filed it: note-to-self (own
+   * account; recorded natively, not yet shown in a dedicated place), the
+   * user's DM (conversation = their id), or an encrypted group. Rows from
+   * before D6 have no detail and were DM-only, so the user falls back to
+   * `row.conversation`.
+   */
+  #deviceAddedText(row: HistoryRow): string {
+    const count = row.detail?.device_ids?.length ?? 0;
+    if (this.#isOwnDeviceRow(row)) {
+      return count > 1
+        ? `Your account has ${count} new devices. If they aren't yours, ${OWN_DEVICE_REMEDY}.`
+        : `Your account has a new device. If it isn't yours, ${OWN_DEVICE_REMEDY}.`;
+    }
+    const userId = row.detail?.user_id ?? row.conversation;
+    const name = this.#displayName(userId);
+    const devices = count > 1 ? `${count} new devices` : "a new device";
+    if (row.detail?.call_only === true) {
+      return `${name} has ${devices} for calls.`;
+    }
+    return userId === row.conversation
+      ? `${name} has ${devices}. If you didn't expect this, compare safety numbers.`
+      : `${name} has ${devices}.`;
   }
 
   #displayName(userId?: string): string {
@@ -6047,17 +6243,31 @@ export class E2EEBridge implements E2EEAdapter {
     return this.#invoke("e2ee_conversation_state", { peerUserId });
   }
 
-  /** Explicitly accept a changed peer identity (the ONLY unblock path) */
+  /**
+   * Explicitly accept a changed peer identity (the ONLY unblock path). The
+   * shells gate this on a NATIVE dialog naming the member and showing the
+   * safety number over the pending keys; the commit is bound to those
+   * keys. Resolves `"ok"` once accepted, or the `IdentityConfirmOutcome`
+   * answer the dialog gave (nothing written); every other failure throws
+   * its typed native error.
+   */
   async acceptIdentityChange(
     peerUserId: string,
     deviceId: string,
-  ): Promise<void> {
-    await this.#invoke("e2ee_accept_identity_change", {
-      peerUserId,
-      deviceId,
-    });
+  ): Promise<IdentityConfirmOutcome> {
+    try {
+      await this.#invoke(
+        "e2ee_accept_identity_change",
+        this.#identityConfirmArgs(peerUserId, deviceId),
+      );
+    } catch (error) {
+      const outcome = identityConfirmOutcomeOf(error);
+      if (outcome) return outcome;
+      throw error;
+    }
     await this.#refreshMode(peerUserId);
     await this.#syncRecent(peerUserId);
+    return "ok";
   }
 
   /** Decrypted plaintext rows for a reported message (reporter-side) */

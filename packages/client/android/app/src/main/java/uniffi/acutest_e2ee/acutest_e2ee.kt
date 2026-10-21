@@ -894,6 +894,10 @@ internal open class UniffiVTableCallbackInterfaceKeyProtector(
 
 
 
+
+
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -1029,9 +1033,13 @@ fun uniffi_acutest_e2ee_checksum_method_e2eeengine_pin_call_identities(
 ): Short
 fun uniffi_acutest_e2ee_checksum_method_e2eeengine_post_restore_rekey(
 ): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_preview_accept_identity_change(
+): Short
 fun uniffi_acutest_e2ee_checksum_method_e2eeengine_preview_group_add(
 ): Short
 fun uniffi_acutest_e2ee_checksum_method_e2eeengine_preview_group_enable(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_preview_mark_verified(
 ): Short
 fun uniffi_acutest_e2ee_checksum_method_e2eeengine_reconcile_devices(
 ): Short
@@ -1117,7 +1125,7 @@ fun uniffi_acutest_e2ee_fn_free_e2eeengine(`ptr`: Pointer,uniffi_out_err: Uniffi
 ): Unit
 fun uniffi_acutest_e2ee_fn_constructor_e2eeengine_new(`dir`: RustBuffer.ByValue,`protector`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Pointer
-fun uniffi_acutest_e2ee_fn_method_e2eeengine_accept_identity_change(`ptr`: Pointer,`peerUserId`: RustBuffer.ByValue,`deviceId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_accept_identity_change(`ptr`: Pointer,`peerUserId`: RustBuffer.ByValue,`deviceId`: RustBuffer.ByValue,`expectedIdentity`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_acknowledge_group_plaintext(`ptr`: Pointer,`conversationId`: RustBuffer.ByValue,`expected`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
@@ -1183,7 +1191,7 @@ fun uniffi_acutest_e2ee_fn_method_e2eeengine_mark_downgrade_delivered(`ptr`: Poi
 ): Unit
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_mark_published(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
-fun uniffi_acutest_e2ee_fn_method_e2eeengine_mark_verified(`ptr`: Pointer,`peerUserId`: RustBuffer.ByValue,`deviceId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_mark_verified(`ptr`: Pointer,`peerUserId`: RustBuffer.ByValue,`deviceId`: RustBuffer.ByValue,`expectedIdentity`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_mls_call_admit(`ptr`: Pointer,`requestJson`: RustBuffer.ByValue,`claimedJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
@@ -1237,9 +1245,13 @@ fun uniffi_acutest_e2ee_fn_method_e2eeengine_pin_call_identities(`ptr`: Pointer,
 ): RustBuffer.ByValue
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_post_restore_rekey(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_preview_accept_identity_change(`ptr`: Pointer,`peerUserId`: RustBuffer.ByValue,`deviceId`: RustBuffer.ByValue,`selfUserId`: RustBuffer.ByValue,`displayName`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_preview_group_add(`ptr`: Pointer,`conversationId`: RustBuffer.ByValue,`userId`: RustBuffer.ByValue,`selfUserId`: RustBuffer.ByValue,`displayNames`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_preview_group_enable(`ptr`: Pointer,`conversationId`: RustBuffer.ByValue,`roster`: RustBuffer.ByValue,`selfUserId`: RustBuffer.ByValue,`displayNames`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_preview_mark_verified(`ptr`: Pointer,`peerUserId`: RustBuffer.ByValue,`deviceId`: RustBuffer.ByValue,`selfUserId`: RustBuffer.ByValue,`displayName`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_reconcile_devices(`ptr`: Pointer,`userId`: RustBuffer.ByValue,`devicesJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
@@ -1399,7 +1411,7 @@ private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
 }
 @Suppress("UNUSED_PARAMETER")
 private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
-    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_accept_identity_change() != 60024.toShort()) {
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_accept_identity_change() != 51466.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_acknowledge_group_plaintext() != 11994.toShort()) {
@@ -1480,7 +1492,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_group_reconcile() != 58081.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_group_state() != 36195.toShort()) {
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_group_state() != 32663.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_handle_receipts() != 39596.toShort()) {
@@ -1498,7 +1510,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_mark_published() != 9981.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_mark_verified() != 15851.toShort()) {
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_mark_verified() != 44162.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_call_admit() != 19066.toShort()) {
@@ -1579,10 +1591,16 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_post_restore_rekey() != 44810.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_preview_accept_identity_change() != 48856.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_preview_group_add() != 11896.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_preview_group_enable() != 20985.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_preview_mark_verified() != 32910.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_reconcile_devices() != 25250.toShort()) {
@@ -1597,7 +1615,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_restore() != 19265.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_safety_number() != 35238.toShort()) {
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_safety_number() != 25612.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_send_mode() != 25123.toShort()) {
@@ -2077,10 +2095,19 @@ public object FfiConverterByteArray: FfiConverterRustBuffer<ByteArray> {
 public interface E2eeEngineInterface {
     
     /**
-     * Explicit user acceptance of a changed peer identity (the ONLY exit
-     * from the send-blocked state). Wire only to the confirmation UI.
+     * Accept a pinned device's new key (the ONLY exit from the
+     * send-blocked state): the CHECKED COMMIT after
+     * [`Self::preview_accept_identity_change`]. Kotlin calls it only from
+     * that dialog's positive button, passing the preview's
+     * `expected_identity`; this binding never shows UI and must never be
+     * reachable from the webview by any other route. The engine re-reads
+     * the pin and refuses `keys_changed`, writing nothing, when the pending
+     * keys were swapped after the preview (reconcile and bundles overwrite
+     * them); the device then stays blocked. Same id checks as the preview;
+     * never provisions (a device wiped while the dialog was open answers
+     * `NotEnabled`).
      */
-    fun `acceptIdentityChange`(`peerUserId`: kotlin.String, `deviceId`: kotlin.String)
+    fun `acceptIdentityChange`(`peerUserId`: kotlin.String, `deviceId`: kotlin.String, `expectedIdentity`: kotlin.String)
     
     /**
      * Record that the user chose plaintext for a group this device holds
@@ -2274,7 +2301,10 @@ public interface E2eeEngineInterface {
     fun `groupReconcile`(`conversationId`: kotlin.String, `displayed`: List<kotlin.String>, `selfUserId`: kotlin.String): kotlin.String
     
     /**
-     * JSON `GroupState`.
+     * JSON `GroupState`. Never-provision fast path (D6 §4, desktop
+     * `ShellEngine::group_state`): a fresh store has no group row, so an
+     * unprovisioned device answers the same typed `GroupNotEstablished` as
+     * `group_reconcile`, minus the store-creating open.
      */
     fun `groupState`(`conversationId`: kotlin.String): kotlin.String
     
@@ -2314,9 +2344,17 @@ public interface E2eeEngineInterface {
     fun `markPublished`()
     
     /**
-     * Mark a peer device user-verified after an in-person comparison.
+     * Mark a pinned device "verified by you": the CHECKED COMMIT after
+     * [`Self::preview_mark_verified`], called by Kotlin only from that
+     * dialog's positive button with the preview's `expected_identity`. The
+     * engine refuses `keys_changed`, writing nothing, when the pin changed
+     * after the preview (a reconcile, a bundle, an accepted key change), so
+     * the record names exactly the keys whose number the dialog showed. An
+     * already-verified pin with a matching binding is Ok with no write. Same
+     * id checks and never-provision answer as
+     * [`Self::accept_identity_change`].
      */
-    fun `markVerified`(`peerUserId`: kotlin.String, `deviceId`: kotlin.String)
+    fun `markVerified`(`peerUserId`: kotlin.String, `deviceId`: kotlin.String, `expectedIdentity`: kotlin.String)
     
     /**
      * Admit a joiner: verify their fanned-out intent against OUR pins,
@@ -2537,6 +2575,23 @@ public interface E2eeEngineInterface {
     fun `postRestoreRekey`(): kotlin.String
     
     /**
+     * Preview of accepting a pinned device's new key, with the native
+     * dialog copy for it (`IdentityPrompt`, `already_verified` always
+     * false). Writes nothing on any path.
+     *
+     * Refused first, as on desktop: a `peer_user_id` / `self_user_id` that
+     * is not ULID-shaped, or a `device_id` that is not 32 lowercase hex
+     * (`InvalidArgument` naming the field). Never-provision: an
+     * unprovisioned device answers `NotEnabled` and creates no files. Then
+     * the engine's own checks, all before Kotlin could show a dialog: no
+     * pin (`device_id`), a pin that is not IdentityChanged (`status`), a
+     * `self_user_id` the owner of record contradicts
+     * (`mls_store_owned_by_another_account`). `display_name` labels the
+     * peer's id in the dialog and decides nothing.
+     */
+    fun `previewAcceptIdentityChange`(`peerUserId`: kotlin.String, `deviceId`: kotlin.String, `selfUserId`: kotlin.String, `displayName`: kotlin.String?): IdentityPrompt
+    
+    /**
      * Preview of including `user_id` in an encrypted group, with the native
      * dialog copy for it. Same id and self checks (`user_id` for the added
      * user), the same never-provision answer and the same role for
@@ -2561,6 +2616,20 @@ public interface E2eeEngineInterface {
      * `roster_mismatch`, …) answer before any dialog could be shown.
      */
     fun `previewGroupEnable`(`conversationId`: kotlin.String, `roster`: List<kotlin.String>, `selfUserId`: kotlin.String, `displayNames`: Map<kotlin.String, kotlin.String>): GroupGrowthPrompt
+    
+    /**
+     * Preview of marking a pinned device "verified by you", with the native
+     * dialog copy for it (`IdentityPrompt`): the device's safety number, the
+     * same digits `safety_number` returns. Writes nothing on any path.
+     *
+     * Same id checks, never-provision answer and role for `display_name`
+     * as [`Self::preview_accept_identity_change`]; the engine refuses a
+     * missing pin (`device_id`), a pin that is not Active with its keys
+     * bound by their own self-signature (`status`), and a contradicted self
+     * (`mls_store_owned_by_another_account`) before Kotlin could show a
+     * dialog. `already_verified`: Kotlin resolves with no dialog.
+     */
+    fun `previewMarkVerified`(`peerUserId`: kotlin.String, `deviceId`: kotlin.String, `selfUserId`: kotlin.String, `displayName`: kotlin.String?): IdentityPrompt
     
     /**
      * Reconcile a JSON `GET /e2ee/devices/{user}` listing; returns the
@@ -2599,6 +2668,9 @@ public interface E2eeEngineInterface {
     
     /**
      * JSON `SafetyNumber` for a pinned peer device (digits + flags only).
+     * Never-provision fast path (D6 §4, desktop
+     * `ShellEngine::safety_number`): an unprovisioned device has no pins,
+     * so `NotEnabled`, never a store-creating open.
      */
     fun `safetyNumber`(`selfUserId`: kotlin.String, `peerUserId`: kotlin.String, `deviceId`: kotlin.String): kotlin.String
     
@@ -2763,15 +2835,24 @@ open class E2eeEngine: Disposable, AutoCloseable, E2eeEngineInterface
 
     
     /**
-     * Explicit user acceptance of a changed peer identity (the ONLY exit
-     * from the send-blocked state). Wire only to the confirmation UI.
+     * Accept a pinned device's new key (the ONLY exit from the
+     * send-blocked state): the CHECKED COMMIT after
+     * [`Self::preview_accept_identity_change`]. Kotlin calls it only from
+     * that dialog's positive button, passing the preview's
+     * `expected_identity`; this binding never shows UI and must never be
+     * reachable from the webview by any other route. The engine re-reads
+     * the pin and refuses `keys_changed`, writing nothing, when the pending
+     * keys were swapped after the preview (reconcile and bundles overwrite
+     * them); the device then stays blocked. Same id checks as the preview;
+     * never provisions (a device wiped while the dialog was open answers
+     * `NotEnabled`).
      */
-    @Throws(E2eeException::class)override fun `acceptIdentityChange`(`peerUserId`: kotlin.String, `deviceId`: kotlin.String)
+    @Throws(E2eeException::class)override fun `acceptIdentityChange`(`peerUserId`: kotlin.String, `deviceId`: kotlin.String, `expectedIdentity`: kotlin.String)
         = 
     callWithPointer {
     uniffiRustCallWithError(E2eeException) { _status ->
     UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_accept_identity_change(
-        it, FfiConverterString.lower(`peerUserId`),FfiConverterString.lower(`deviceId`),_status)
+        it, FfiConverterString.lower(`peerUserId`),FfiConverterString.lower(`deviceId`),FfiConverterString.lower(`expectedIdentity`),_status)
 }
     }
     
@@ -3248,7 +3329,10 @@ open class E2eeEngine: Disposable, AutoCloseable, E2eeEngineInterface
 
     
     /**
-     * JSON `GroupState`.
+     * JSON `GroupState`. Never-provision fast path (D6 §4, desktop
+     * `ShellEngine::group_state`): a fresh store has no group row, so an
+     * unprovisioned device answers the same typed `GroupNotEstablished` as
+     * `group_reconcile`, minus the store-creating open.
      */
     @Throws(E2eeException::class)override fun `groupState`(`conversationId`: kotlin.String): kotlin.String {
             return FfiConverterString.lift(
@@ -3352,14 +3436,22 @@ open class E2eeEngine: Disposable, AutoCloseable, E2eeEngineInterface
 
     
     /**
-     * Mark a peer device user-verified after an in-person comparison.
+     * Mark a pinned device "verified by you": the CHECKED COMMIT after
+     * [`Self::preview_mark_verified`], called by Kotlin only from that
+     * dialog's positive button with the preview's `expected_identity`. The
+     * engine refuses `keys_changed`, writing nothing, when the pin changed
+     * after the preview (a reconcile, a bundle, an accepted key change), so
+     * the record names exactly the keys whose number the dialog showed. An
+     * already-verified pin with a matching binding is Ok with no write. Same
+     * id checks and never-provision answer as
+     * [`Self::accept_identity_change`].
      */
-    @Throws(E2eeException::class)override fun `markVerified`(`peerUserId`: kotlin.String, `deviceId`: kotlin.String)
+    @Throws(E2eeException::class)override fun `markVerified`(`peerUserId`: kotlin.String, `deviceId`: kotlin.String, `expectedIdentity`: kotlin.String)
         = 
     callWithPointer {
     uniffiRustCallWithError(E2eeException) { _status ->
     UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_mark_verified(
-        it, FfiConverterString.lower(`peerUserId`),FfiConverterString.lower(`deviceId`),_status)
+        it, FfiConverterString.lower(`peerUserId`),FfiConverterString.lower(`deviceId`),FfiConverterString.lower(`expectedIdentity`),_status)
 }
     }
     
@@ -3865,6 +3957,34 @@ open class E2eeEngine: Disposable, AutoCloseable, E2eeEngineInterface
 
     
     /**
+     * Preview of accepting a pinned device's new key, with the native
+     * dialog copy for it (`IdentityPrompt`, `already_verified` always
+     * false). Writes nothing on any path.
+     *
+     * Refused first, as on desktop: a `peer_user_id` / `self_user_id` that
+     * is not ULID-shaped, or a `device_id` that is not 32 lowercase hex
+     * (`InvalidArgument` naming the field). Never-provision: an
+     * unprovisioned device answers `NotEnabled` and creates no files. Then
+     * the engine's own checks, all before Kotlin could show a dialog: no
+     * pin (`device_id`), a pin that is not IdentityChanged (`status`), a
+     * `self_user_id` the owner of record contradicts
+     * (`mls_store_owned_by_another_account`). `display_name` labels the
+     * peer's id in the dialog and decides nothing.
+     */
+    @Throws(E2eeException::class)override fun `previewAcceptIdentityChange`(`peerUserId`: kotlin.String, `deviceId`: kotlin.String, `selfUserId`: kotlin.String, `displayName`: kotlin.String?): IdentityPrompt {
+            return FfiConverterTypeIdentityPrompt.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_preview_accept_identity_change(
+        it, FfiConverterString.lower(`peerUserId`),FfiConverterString.lower(`deviceId`),FfiConverterString.lower(`selfUserId`),FfiConverterOptionalString.lower(`displayName`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
      * Preview of including `user_id` in an encrypted group, with the native
      * dialog copy for it. Same id and self checks (`user_id` for the added
      * user), the same never-provision answer and the same role for
@@ -3905,6 +4025,31 @@ open class E2eeEngine: Disposable, AutoCloseable, E2eeEngineInterface
     uniffiRustCallWithError(E2eeException) { _status ->
     UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_preview_group_enable(
         it, FfiConverterString.lower(`conversationId`),FfiConverterSequenceString.lower(`roster`),FfiConverterString.lower(`selfUserId`),FfiConverterMapStringString.lower(`displayNames`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Preview of marking a pinned device "verified by you", with the native
+     * dialog copy for it (`IdentityPrompt`): the device's safety number, the
+     * same digits `safety_number` returns. Writes nothing on any path.
+     *
+     * Same id checks, never-provision answer and role for `display_name`
+     * as [`Self::preview_accept_identity_change`]; the engine refuses a
+     * missing pin (`device_id`), a pin that is not Active with its keys
+     * bound by their own self-signature (`status`), and a contradicted self
+     * (`mls_store_owned_by_another_account`) before Kotlin could show a
+     * dialog. `already_verified`: Kotlin resolves with no dialog.
+     */
+    @Throws(E2eeException::class)override fun `previewMarkVerified`(`peerUserId`: kotlin.String, `deviceId`: kotlin.String, `selfUserId`: kotlin.String, `displayName`: kotlin.String?): IdentityPrompt {
+            return FfiConverterTypeIdentityPrompt.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_preview_mark_verified(
+        it, FfiConverterString.lower(`peerUserId`),FfiConverterString.lower(`deviceId`),FfiConverterString.lower(`selfUserId`),FfiConverterOptionalString.lower(`displayName`),_status)
 }
     }
     )
@@ -3993,6 +4138,9 @@ open class E2eeEngine: Disposable, AutoCloseable, E2eeEngineInterface
     
     /**
      * JSON `SafetyNumber` for a pinned peer device (digits + flags only).
+     * Never-provision fast path (D6 §4, desktop
+     * `ShellEngine::safety_number`): an unprovisioned device has no pins,
+     * so `NotEnabled`, never a store-creating open.
      */
     @Throws(E2eeException::class)override fun `safetyNumber`(`selfUserId`: kotlin.String, `peerUserId`: kotlin.String, `deviceId`: kotlin.String): kotlin.String {
             return FfiConverterString.lift(
@@ -4536,11 +4684,15 @@ public object FfiConverterTypeAttachmentContent: FfiConverterRustBuffer<Attachme
  * `AlertDialog`: whether a dialog is required, its core-owned copy, and the
  * audience the commit must be bound to.
  *
- * Everything here is native. The "You (id)" line, member ids, count,
- * new/removed marks and verification labels in `message` come from the
- * engine's preview, whose self id is bound to the store's owner of record
- * (a mismatch never reaches a prompt: `mls_store_owned_by_another_account`);
- * only the names beside the ids come from the webview (keyed by id,
+ * Everything here is native. The "You (id)" line, member ids, count and
+ * new/removed marks in `message` come from the engine's preview, whose self
+ * id is bound to the store's owner of record (a mismatch never reaches a
+ * prompt: `mls_store_owned_by_another_account`). The verification labels
+ * come from that preview too, read from `user_verified` records that only
+ * the native verify confirm (`preview_mark_verified` → Kotlin dialog →
+ * `mark_verified`) or a key-backup restore sets; a record says the user
+ * confirmed that dialog, not that a comparison happened. Only the names
+ * beside the ids come from the webview (keyed by id,
  * sanitized, unable to carry an id or the line punctuation, and the copy
  * says so). The copy is the desktop dialog's, from the same
  * `ConfirmRequest::copy()`, so Kotlin carries no strings of its own,
@@ -4607,6 +4759,85 @@ public object FfiConverterTypeGroupGrowthPrompt: FfiConverterRustBuffer<GroupGro
             FfiConverterString.write(value.`confirmLabel`, buf)
             FfiConverterString.write(value.`cancelLabel`, buf)
             FfiConverterSequenceString.write(value.`expectedAfter`, buf)
+    }
+}
+
+
+
+/**
+ * What the Kotlin plugin needs to gate a trust-raising identity change
+ * (`mark_verified`, `accept_identity_change`) on an OS `AlertDialog`: the
+ * core-owned copy and the binding the commit must carry.
+ *
+ * Everything but the peer's display name is native: the peer and device
+ * ids in full, the safety number (for accept: over the PENDING keys, or a
+ * sentence saying none can be shown for an unsigned key), whether it is
+ * this account's own device, and the counts. The copy is the desktop
+ * dialog's (`mark_verified_request` / `accept_identity_request`, then
+ * `ConfirmRequest::copy()`), so Kotlin carries no strings of its own. Both
+ * are warnings whose default button is Cancel.
+ *
+ * `expected_identity` is the preview's binding: a hash over the pin's ids,
+ * status, keys and pending keys as the dialog showed them. Kotlin passes it,
+ * unchanged, to the commit from the positive button only; the engine
+ * refuses `keys_changed` (nothing written) if the pin changed in between.
+ * It is NOT a secret and NOT a capability (it is computed from public
+ * keys), so it binds the commit to what was shown but cannot by itself
+ * prove a dialog was shown: that is the Kotlin plugin's routing, which must
+ * never expose either commit to the webview.
+ *
+ * `already_verified` (verify only; always `false` for accept): the device
+ * is already verified by this user, so Kotlin resolves with no dialog and no
+ * commit. The desktop shell's 30 s per-peer decline lockout
+ * (`verify:{user}` / `accept:{user}`) lives in `ShellEngine`, not here, so
+ * the Kotlin plugin has to mirror it.
+ */
+data class IdentityPrompt (
+    var `title`: kotlin.String, 
+    var `message`: kotlin.String, 
+    /**
+     * Label of the button whose press is consent.
+     */
+    var `confirmLabel`: kotlin.String, 
+    var `cancelLabel`: kotlin.String, 
+    var `expectedIdentity`: kotlin.String, 
+    var `alreadyVerified`: kotlin.Boolean
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeIdentityPrompt: FfiConverterRustBuffer<IdentityPrompt> {
+    override fun read(buf: ByteBuffer): IdentityPrompt {
+        return IdentityPrompt(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterBoolean.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: IdentityPrompt) = (
+            FfiConverterString.allocationSize(value.`title`) +
+            FfiConverterString.allocationSize(value.`message`) +
+            FfiConverterString.allocationSize(value.`confirmLabel`) +
+            FfiConverterString.allocationSize(value.`cancelLabel`) +
+            FfiConverterString.allocationSize(value.`expectedIdentity`) +
+            FfiConverterBoolean.allocationSize(value.`alreadyVerified`)
+    )
+
+    override fun write(value: IdentityPrompt, buf: ByteBuffer) {
+            FfiConverterString.write(value.`title`, buf)
+            FfiConverterString.write(value.`message`, buf)
+            FfiConverterString.write(value.`confirmLabel`, buf)
+            FfiConverterString.write(value.`cancelLabel`, buf)
+            FfiConverterString.write(value.`expectedIdentity`, buf)
+            FfiConverterBoolean.write(value.`alreadyVerified`, buf)
     }
 }
 

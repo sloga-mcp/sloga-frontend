@@ -50,6 +50,16 @@ private const val MAX_ATTACHMENT_CIPHERTEXT: Long = 21L * 1024 * 1024
 private const val GROWTH_DECLINE_LOCKOUT_MS: Long = 30_000L
 
 /**
+ * How long a declined mark-verified or accept-new-key dialog keeps that PEER
+ * from prompting again for the same action: the desktop
+ * `IDENTITY_DECLINE_LOCKOUT` (e2ee-core `shell.rs`). Keyed per peer user
+ * (`verify:<user>` / `accept:<user>`), not per device, so a
+ * webview cycling device ids gets `busy` rather than a fresh dialog. Its own
+ * constant and map, separate from the growth lockout.
+ */
+private const val IDENTITY_DECLINE_LOCKOUT_MS: Long = 30_000L
+
+/**
  * How long a group-growth dialog's confirm button stays disabled after the
  * dialog shows (tapjacking). A tap the user aimed at whatever was on screen
  * before the dialog appeared, or one a hostile overlay times to its arrival,
@@ -76,13 +86,19 @@ private const val DOWNGRADE_CONFIRM_DELAY_MS: Long = GROWTH_CONFIRM_DELAY_MS
  * typed, scrubbed JSON, rejected verbatim so the webview bridge sees the
  * same error objects as on desktop.
  *
- * `call()` is the COMPLETE command allowlist — one explicit `when` arm per
- * command, mirroring the desktop allowlist; anything not listed does not
- * exist. Three operations are NOT routed through `call()`:
- *  - `wipe` has its own method because it must show a BLOCKING NATIVE
- *    confirmation dialog (design §9a / slice-2 gate MEDIUM #4): the webview
- *    can only REQUEST a wipe; destruction requires a physical tap on an OS
- *    dialog this plugin owns.
+ * `call()` is the generic command allowlist — one explicit `when` arm per
+ * command, mirroring the desktop allowlist; a command that is neither an
+ * arm there nor one of the dedicated methods below does not exist. The
+ * dedicated `@PluginMethod`s are NOT routed through `call()` (the list at
+ * the end of its `when` names each command and why):
+ *  - Methods behind a BLOCKING NATIVE dialog this plugin owns, so the
+ *    webview can only REQUEST them and the change needs a physical tap on
+ *    an OS dialog it cannot draw, dismiss or answer: `wipe` (design §9a /
+ *    slice-2 gate MEDIUM #4), `downgrade`, `confirmPeerDowngradeAccept`,
+ *    `callConfirmDowngrade`, the growth pair `enableGroup` /
+ *    `addGroupMember`, the trust pair `markVerified` /
+ *    `acceptIdentityChange`, and the recovery-code flows `backupCreate` /
+ *    `backupRotate` / `backupRestore`.
  *  - `attachmentUpload` / `attachmentFetch` move attachment CIPHERTEXT
  *    between the Rust core and Autumn natively, so multi-megabyte payloads
  *    never transit the JS bridge (and fetched bytes go straight into the
@@ -218,13 +234,6 @@ class E2eePlugin : Plugin() {
                     resolveJson(call, engine.sendMode(requireString(call, "peerUserId")))
                 "e2ee_conversation_state" ->
                     resolveJson(call, engine.conversationState(requireString(call, "peerUserId")))
-                "e2ee_accept_identity_change" -> {
-                    engine.acceptIdentityChange(
-                        requireString(call, "peerUserId"),
-                        requireString(call, "deviceId"),
-                    )
-                    resolveJson(call, "null")
-                }
                 "e2ee_reconcile_devices" ->
                     resolveJson(
                         call,
@@ -341,13 +350,6 @@ class E2eePlugin : Plugin() {
                             requireString(call, "deviceId"),
                         ),
                     )
-                "e2ee_mark_verified" -> {
-                    engine.markVerified(
-                        requireString(call, "peerUserId"),
-                        requireString(call, "deviceId"),
-                    )
-                    resolveJson(call, "null")
-                }
                 "e2ee_confirm_peer_downgrade" -> {
                     engine.confirmPeerDowngrade(
                         requireString(call, "conversationId"),
@@ -565,7 +567,14 @@ class E2eePlugin : Plugin() {
                     engine.mlsExpireKeyPackages()
                     resolveJson(call, "null")
                 }
-                // NOT here by design: e2ee_enable_group + e2ee_add_group_member
+                // NOT here by design: e2ee_mark_verified +
+                // e2ee_accept_identity_change (they raise how far this device
+                // trusts a peer's keys: "verified by you", or a new key that
+                // then receives their messages; so they are native-dialog-gated
+                // like growth: the dedicated markVerified / acceptIdentityChange
+                // methods below, whose commit is bound to the keys the dialog
+                // showed);
+                // e2ee_enable_group + e2ee_add_group_member
                 // (they grow an encrypted group's audience on every member's
                 // device, so they are native-dialog-gated like downgrade: the
                 // dedicated enableGroup / addGroupMember methods below);
@@ -798,8 +807,13 @@ class E2eePlugin : Plugin() {
     // `e2ee_enable_group` and `e2ee_add_group_member` widen who can read an
     // encrypted group's FUTURE messages, on every member's device, so the
     // webview can only REQUEST them. The core previews the change (the full
-    // resulting member list with ids, who is new, each member's verification
-    // status on this device, and the dialog copy). Unless the change is a
+    // resulting member list with ids, who is new, each member's trust label
+    // on this device, and the dialog copy). "Verified by you" records that
+    // this device's user confirmed the native verify dialog ([markVerified])
+    // showing that device's safety number, or is an earlier or restored
+    // record; it does not prove they compared the number. A member with only
+    // some devices verified reads "not all of their devices are verified by
+    // you". Unless the change is a
     // re-send the user already confirmed on this device, the commit needs a
     // tap on the positive button of an OS dialog the webview cannot draw,
     // dismiss or answer. Desktop analog: `ShellEngine::group_growth_gated`
@@ -809,8 +823,9 @@ class E2eePlugin : Plugin() {
     // sites are visible where they are gated (the scan spec
     // `e2eeGroupGrowth.scan.test.ts` pins that shape):
     //  1. Validate the args.
-    //  2. ONE request in flight ([growthInFlight]); a second is rejected
-    //     `busy`, with no preview and no dialog.
+    //  2. ONE request in flight ([consentInFlight], shared with the trust
+    //     pair below); a second is rejected `busy`, with no preview and no
+    //     dialog.
     //  3. On the executor, the core preview. It binds `selfUserId` to this
     //     device's owner of record and checks the request (ids, cap,
     //     enablement, membership) before any dialog.
@@ -835,13 +850,15 @@ class E2eePlugin : Plugin() {
     // ================================================================
 
     /**
-     * One group-growth request in flight, prompt or not, across BOTH methods
-     * (desktop `growth_in_flight`). Claimed before the preview; each request
-     * releases it exactly once, through its own `held` flag, so a path that
-     * releases early and a catch-all that releases again can never clear a
-     * LATER request's claim.
+     * One consent request in flight, prompt or not, across all FOUR consent
+     * methods: the growth pair ([enableGroup], [addGroupMember]) and the
+     * trust pair ([markVerified], [acceptIdentityChange]), so their dialogs
+     * never stack (desktop `consent_in_flight`). Claimed before the preview;
+     * each request releases it exactly once, through its own `held` flag, so
+     * a path that releases early and a catch-all that releases again can
+     * never clear a LATER request's claim.
      */
-    private val growthInFlight = AtomicBoolean(false)
+    private val consentInFlight = AtomicBoolean(false)
 
     /**
      * The decline lockout (desktop `growth_declined_until`): conversation id
@@ -926,13 +943,13 @@ class E2eePlugin : Plugin() {
         val bundles = call.getArray("bundles")?.toString()
         val displayNames = displayNamesArg(call)
 
-        if (!growthInFlight.compareAndSet(false, true)) {
+        if (!consentInFlight.compareAndSet(false, true)) {
             call.reject("{\"type\":\"busy\"}")
             return
         }
         val held = AtomicBoolean(true)
         fun release() {
-            if (held.compareAndSet(true, false)) growthInFlight.set(false)
+            if (held.compareAndSet(true, false)) consentInFlight.set(false)
         }
 
         try {
@@ -1088,13 +1105,13 @@ class E2eePlugin : Plugin() {
         val bundles = call.getArray("bundles")?.toString()
         val displayNames = displayNamesArg(call)
 
-        if (!growthInFlight.compareAndSet(false, true)) {
+        if (!consentInFlight.compareAndSet(false, true)) {
             call.reject("{\"type\":\"busy\"}")
             return
         }
         val held = AtomicBoolean(true)
         fun release() {
-            if (held.compareAndSet(true, false)) growthInFlight.set(false)
+            if (held.compareAndSet(true, false)) consentInFlight.set(false)
         }
 
         try {
@@ -1226,12 +1243,385 @@ class E2eePlugin : Plugin() {
         }
     }
 
+    // ================================================================
+    // Trust-raising transitions (D6, identity native confirm)
+    //
+    // `e2ee_mark_verified` records one pinned device as "verified by you" on
+    // this device. `e2ee_accept_identity_change` is the only exit from the
+    // identity-changed state: the new key then receives what this device
+    // sends that member, in the DM and in every encrypted group with them
+    // (for one's own account, everything this device sends), and messages
+    // from it are treated as theirs. So the webview can only REQUEST either;
+    // the commit needs a tap on the positive button of an OS dialog the
+    // webview cannot draw, dismiss or answer. Desktop analog:
+    // `ShellEngine::mark_verified` / `ShellEngine::accept_identity_change`
+    // (e2ee-core `shell.rs`).
+    //
+    // Both methods run the growth steps above WITHOUT a no-prompt commit,
+    // each in its own body so the commit site is visible where it is gated:
+    //  1. Validate the args.
+    //  2. Claim [consentInFlight], the slot the growth pair also uses; a
+    //     second consent request of any of the four is rejected `busy`, with
+    //     no preview and no dialog.
+    //  3. On the executor, the core preview (`previewMarkVerified` /
+    //     `previewAcceptIdentityChange`). It checks the ids, the pin's state
+    //     and `selfUserId` against this device's owner of record before any
+    //     dialog, never provisions a store, and writes the dialog copy,
+    //     including the safety number over the exact keys the commit is
+    //     bound to (for an accept, the PENDING keys, or a statement that no
+    //     number can be shown for an unsigned key).
+    //  4. Verify only: a device already verified by you resolves with no
+    //     dialog and no write.
+    //  5. Unless this peer is in its decline lockout for this action
+    //     ([IDENTITY_DECLINE_LOCKOUT_MS]; `busy`, no dialog), the dialog.
+    //     Only its positive button commits. Cancel, back, an outside tap and
+    //     a dismiss from activity teardown ([handleOnDestroy]) all end in the
+    //     dismiss listener: `declined`, and the lockout starts.
+    // Every commit passes the PREVIEW's `expectedIdentity`, never anything
+    // from the call: if the pin changed after the preview (a reconcile or a
+    // bundle swapped its keys while the dialog was open), the core refuses
+    // `keys_changed` and writes nothing. Core errors reach the webview
+    // verbatim through [rejectScrubbed]. The hold is released exactly once on
+    // every outcome, before the call settles.
+    //
+    // What the dialog proves: a person tapped confirm, after the input
+    // delay, on core-written copy showing that device's safety number. It
+    // does not prove they compared the number with the other person. The
+    // name beside the ids comes from the webview, and the webview still
+    // chooses which peer and device it asks about.
+    // ================================================================
+
+    /**
+     * The identity decline lockout (desktop `identity_declined_until`):
+     * `"verify:<user>"` / `"accept:<user>"` → the
+     * `SystemClock.elapsedRealtime()` until which that request is rejected
+     * `busy` instead of showing another dialog. Per peer and action, so
+     * declining one peer does not silence another; memory only; separate
+     * from [growthDeclinedUntil]. Guarded by its own monitor.
+     */
+    private val identityDeclinedUntil = HashMap<String, Long>()
+
+    /**
+     * The open identity dialog, if any. UI thread only. Kept so
+     * [handleOnDestroy] can dismiss it, as for [growthDialog].
+     */
+    private var identityDialog: AlertDialog? = null
+
+    /** Whether [key] is inside its identity decline lockout. Prunes lapsed entries. */
+    private fun identityLockedOut(key: String): Boolean =
+        synchronized(identityDeclinedUntil) {
+            val now = SystemClock.elapsedRealtime()
+            identityDeclinedUntil.values.removeAll { until -> now >= until }
+            identityDeclinedUntil.containsKey(key)
+        }
+
+    /** Start (or restart) [key]'s identity decline lockout. */
+    private fun noteIdentityDecline(key: String) {
+        synchronized(identityDeclinedUntil) {
+            identityDeclinedUntil[key] =
+                SystemClock.elapsedRealtime() + IDENTITY_DECLINE_LOCKOUT_MS
+        }
+    }
+
+    /**
+     * Mark one pinned device "verified by you": the `e2ee_mark_verified`
+     * command, behind the native verify dialog showing that device's safety
+     * number (steps in the section comment above). Args: `peerUserId`,
+     * `deviceId`, `selfUserId` and optional `displayName` (labels the peer's
+     * id in the dialog; decides nothing). Resolves `{}`.
+     */
+    @PluginMethod
+    fun markVerified(call: PluginCall) {
+        val peerUserId = call.getString("peerUserId") ?: run {
+            call.reject("{\"type\":\"invalid_argument\",\"field\":\"peerUserId\"}")
+            return
+        }
+        val deviceId = call.getString("deviceId") ?: run {
+            call.reject("{\"type\":\"invalid_argument\",\"field\":\"deviceId\"}")
+            return
+        }
+        val selfUserId = call.getString("selfUserId") ?: run {
+            call.reject("{\"type\":\"invalid_argument\",\"field\":\"selfUserId\"}")
+            return
+        }
+        val displayName = call.getString("displayName")
+
+        if (!consentInFlight.compareAndSet(false, true)) {
+            call.reject("{\"type\":\"busy\"}")
+            return
+        }
+        val held = AtomicBoolean(true)
+        fun release() {
+            if (held.compareAndSet(true, false)) consentInFlight.set(false)
+        }
+
+        try {
+            executor.execute {
+                try {
+                    val prompt =
+                        engine().previewMarkVerified(peerUserId, deviceId, selfUserId, displayName)
+                    // Already verified by you: nothing to raise, no dialog,
+                    // no write (the desktop step 4).
+                    if (prompt.alreadyVerified) {
+                        release()
+                        call.resolve(JSObject())
+                        return@execute
+                    }
+                    if (identityLockedOut("verify:$peerUserId")) {
+                        release()
+                        call.reject("{\"type\":\"busy\"}")
+                        return@execute
+                    }
+                    activity.runOnUiThread {
+                        // Resolve-once: the positive button and the dismiss
+                        // listener race to settle the call; one wins.
+                        val settled = AtomicBoolean(false)
+                        try {
+                            // A dialog with no safety number or no button
+                            // copy the core wrote is no consent: fail closed.
+                            if (
+                                prompt.title.isBlank() ||
+                                    prompt.message.isBlank() ||
+                                    prompt.confirmLabel.isBlank() ||
+                                    prompt.cancelLabel.isBlank()
+                            ) {
+                                throw E2eeException.Failure("{\"type\":\"crypto_failure\"}")
+                            }
+                            val dialog =
+                                AlertDialog.Builder(activity)
+                                    .setTitle(prompt.title)
+                                    .setMessage(prompt.message)
+                                    .setPositiveButton(prompt.confirmLabel) { _, _ ->
+                                        if (settled.compareAndSet(false, true)) {
+                                            try {
+                                                run(call) {
+                                                    try {
+                                                        engine().markVerified(
+                                                            peerUserId,
+                                                            deviceId,
+                                                            expectedIdentity = prompt.expectedIdentity,
+                                                        )
+                                                    } finally {
+                                                        release()
+                                                    }
+                                                    call.resolve(JSObject())
+                                                }
+                                            } catch (error: Throwable) {
+                                                release()
+                                                rejectScrubbed(call, error)
+                                            }
+                                        }
+                                    }
+                                    // No listener: the button dismisses the
+                                    // dialog, and the dismiss listener declines.
+                                    .setNegativeButton(prompt.cancelLabel, null)
+                                    .create()
+                            // Back and an outside tap cancel, and a cancel
+                            // dismisses: both reach the dismiss listener.
+                            dialog.setCanceledOnTouchOutside(true)
+                            dialog.setOnDismissListener {
+                                if (identityDialog === dialog) identityDialog = null
+                                // Lost the race to a confirm: already settled.
+                                if (settled.compareAndSet(false, true)) {
+                                    noteIdentityDecline("verify:$peerUserId")
+                                    release()
+                                    call.reject("{\"type\":\"declined\"}")
+                                }
+                            }
+                            dialog.setOnShowListener {
+                                // Tapjacking: confirm ignores touches while
+                                // another window covers it, and stays disabled
+                                // for the first GROWTH_CONFIRM_DELAY_MS, so a
+                                // tap aimed at what was under the dialog, or
+                                // timed to its arrival, cannot commit.
+                                dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.let { confirm ->
+                                    confirm.isEnabled = false
+                                    confirm.filterTouchesWhenObscured = true
+                                    confirm.postDelayed(
+                                        { confirm.isEnabled = true },
+                                        GROWTH_CONFIRM_DELAY_MS,
+                                    )
+                                }
+                                // Cancel is the default: keyboard focus starts there.
+                                dialog.getButton(AlertDialog.BUTTON_NEGATIVE)?.let { cancel ->
+                                    cancel.filterTouchesWhenObscured = true
+                                    cancel.requestFocus()
+                                }
+                            }
+                            dialog.show()
+                            identityDialog = dialog
+                        } catch (error: Throwable) {
+                            if (settled.compareAndSet(false, true)) {
+                                release()
+                                rejectScrubbed(call, error)
+                            }
+                        }
+                    }
+                } catch (error: Throwable) {
+                    release()
+                    rejectScrubbed(call, error)
+                }
+            }
+        } catch (error: Throwable) {
+            release()
+            rejectScrubbed(call, error)
+        }
+    }
+
+    /**
+     * Accept a pinned device's new key: the `e2ee_accept_identity_change`
+     * command, behind the native accept dialog. The same steps as
+     * [markVerified], with the accept preview and commit, the `accept:`
+     * lockout, and no already-verified step: the core refuses any pin that
+     * is not identity-changed before a dialog, and `alreadyVerified` is
+     * deliberately not read here, so no preview can skip the tap. Args as
+     * for [markVerified]. Resolves `{}`.
+     */
+    @PluginMethod
+    fun acceptIdentityChange(call: PluginCall) {
+        val peerUserId = call.getString("peerUserId") ?: run {
+            call.reject("{\"type\":\"invalid_argument\",\"field\":\"peerUserId\"}")
+            return
+        }
+        val deviceId = call.getString("deviceId") ?: run {
+            call.reject("{\"type\":\"invalid_argument\",\"field\":\"deviceId\"}")
+            return
+        }
+        val selfUserId = call.getString("selfUserId") ?: run {
+            call.reject("{\"type\":\"invalid_argument\",\"field\":\"selfUserId\"}")
+            return
+        }
+        val displayName = call.getString("displayName")
+
+        if (!consentInFlight.compareAndSet(false, true)) {
+            call.reject("{\"type\":\"busy\"}")
+            return
+        }
+        val held = AtomicBoolean(true)
+        fun release() {
+            if (held.compareAndSet(true, false)) consentInFlight.set(false)
+        }
+
+        try {
+            executor.execute {
+                try {
+                    val prompt =
+                        engine().previewAcceptIdentityChange(
+                            peerUserId,
+                            deviceId,
+                            selfUserId,
+                            displayName,
+                        )
+                    if (identityLockedOut("accept:$peerUserId")) {
+                        release()
+                        call.reject("{\"type\":\"busy\"}")
+                        return@execute
+                    }
+                    activity.runOnUiThread {
+                        // Resolve-once: the positive button and the dismiss
+                        // listener race to settle the call; one wins.
+                        val settled = AtomicBoolean(false)
+                        try {
+                            // A dialog with no key-change copy or no button
+                            // copy the core wrote is no consent: fail closed.
+                            if (
+                                prompt.title.isBlank() ||
+                                    prompt.message.isBlank() ||
+                                    prompt.confirmLabel.isBlank() ||
+                                    prompt.cancelLabel.isBlank()
+                            ) {
+                                throw E2eeException.Failure("{\"type\":\"crypto_failure\"}")
+                            }
+                            val dialog =
+                                AlertDialog.Builder(activity)
+                                    .setTitle(prompt.title)
+                                    .setMessage(prompt.message)
+                                    .setPositiveButton(prompt.confirmLabel) { _, _ ->
+                                        if (settled.compareAndSet(false, true)) {
+                                            try {
+                                                run(call) {
+                                                    try {
+                                                        engine().acceptIdentityChange(
+                                                            peerUserId,
+                                                            deviceId,
+                                                            expectedIdentity = prompt.expectedIdentity,
+                                                        )
+                                                    } finally {
+                                                        release()
+                                                    }
+                                                    call.resolve(JSObject())
+                                                }
+                                            } catch (error: Throwable) {
+                                                release()
+                                                rejectScrubbed(call, error)
+                                            }
+                                        }
+                                    }
+                                    // No listener: the button dismisses the
+                                    // dialog, and the dismiss listener declines.
+                                    .setNegativeButton(prompt.cancelLabel, null)
+                                    .create()
+                            // Back and an outside tap cancel, and a cancel
+                            // dismisses: both reach the dismiss listener.
+                            dialog.setCanceledOnTouchOutside(true)
+                            dialog.setOnDismissListener {
+                                if (identityDialog === dialog) identityDialog = null
+                                // Lost the race to a confirm: already settled.
+                                if (settled.compareAndSet(false, true)) {
+                                    noteIdentityDecline("accept:$peerUserId")
+                                    release()
+                                    call.reject("{\"type\":\"declined\"}")
+                                }
+                            }
+                            dialog.setOnShowListener {
+                                // Tapjacking: confirm ignores touches while
+                                // another window covers it, and stays disabled
+                                // for the first GROWTH_CONFIRM_DELAY_MS, so a
+                                // tap aimed at what was under the dialog, or
+                                // timed to its arrival, cannot commit.
+                                dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.let { confirm ->
+                                    confirm.isEnabled = false
+                                    confirm.filterTouchesWhenObscured = true
+                                    confirm.postDelayed(
+                                        { confirm.isEnabled = true },
+                                        GROWTH_CONFIRM_DELAY_MS,
+                                    )
+                                }
+                                // Cancel is the default: keyboard focus starts there.
+                                dialog.getButton(AlertDialog.BUTTON_NEGATIVE)?.let { cancel ->
+                                    cancel.filterTouchesWhenObscured = true
+                                    cancel.requestFocus()
+                                }
+                            }
+                            dialog.show()
+                            identityDialog = dialog
+                        } catch (error: Throwable) {
+                            if (settled.compareAndSet(false, true)) {
+                                release()
+                                rejectScrubbed(call, error)
+                            }
+                        }
+                    }
+                } catch (error: Throwable) {
+                    release()
+                    rejectScrubbed(call, error)
+                }
+            }
+        } catch (error: Throwable) {
+            release()
+            rejectScrubbed(call, error)
+        }
+    }
+
     override fun handleOnDestroy() {
-        // Activity teardown would remove the dialog's window without running
-        // its listeners, leaving the request unanswered and the hold taken.
-        // Dismissing it runs the dismiss listener: `declined`, hold released.
+        // Activity teardown would remove a consent dialog's window without
+        // running its listeners, leaving the request unanswered and the hold
+        // taken. Dismissing it runs the dismiss listener: `declined`, hold
+        // released. At most one of the two is open (one shared hold).
         growthDialog?.dismiss()
         growthDialog = null
+        identityDialog?.dismiss()
+        identityDialog = null
         super.handleOnDestroy()
     }
 
