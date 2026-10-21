@@ -750,6 +750,34 @@ async function discardUnusedArm(label: string): Promise<void> {
 }
 
 /**
+ * Shell closes main started for its own closes (a handle's `close()`), still
+ * in flight. They run outside the open queue, so a close never waits for an
+ * open.
+ */
+const shellCloses = new Set<Promise<void>>();
+
+/**
+ * Wait for the shell closes in flight, each bounded by
+ * {@link ARM_TIMEOUT_MS}. A friends window reopened right after the host
+ * closed the last one would otherwise arm before that close's discard
+ * reaches the shell. The shell may still be destroying the old window after
+ * the discard answers, so the host also retries an `exists` refusal once.
+ */
+async function settleShellCloses(): Promise<void> {
+  if (shellCloses.size) await Promise.all([...shellCloses]);
+}
+
+/**
+ * How an open came out: the window, or why there is none. `err` is the
+ * shell's own error when it refused the arm (`exists`, `timeout`, ...),
+ * `blocked` when `window.open` came back null, `prepare` when the window
+ * opened but could not be prepared, and `failed` for anything that threw.
+ */
+export type ChildWindowOpen =
+  | { ok: true; handle: ChildWindowHandle }
+  | { ok: false; err: string };
+
+/**
  * Open a chat window and prepare its document for rendering. Resolves null if
  * the shell refuses the arm or the window does not open. Render into it with
  * `<Portal mount={handle.ctx.doc.body}><ChildWindowChrome ctx={handle.ctx}>`
@@ -759,11 +787,24 @@ export function openChildWindow(
   kind: ChildWindowKind,
   opts: ChildWindowOptions,
 ): Promise<ChildWindowHandle | null> {
+  return tryOpenChildWindow(kind, opts).then((result) =>
+    result.ok ? result.handle : null,
+  );
+}
+
+/**
+ * {@link openChildWindow}, saying why when there is no window, so a caller
+ * can tell a refusal worth retrying from one that is not.
+ */
+export function tryOpenChildWindow(
+  kind: ChildWindowKind,
+  opts: ChildWindowOptions,
+): Promise<ChildWindowOpen> {
   const run = openQueue
     .then(() => openNow(kind, opts))
-    .catch((err) => {
+    .catch((err): ChildWindowOpen => {
       console.error("[chat-window] open failed", err);
-      return null;
+      return { ok: false, err: "failed" };
     });
   // The queue only orders opens; it must not keep the last handle alive.
   openQueue = run.then(
@@ -776,13 +817,17 @@ export function openChildWindow(
 async function openNow(
   kind: ChildWindowKind,
   opts: ChildWindowOptions,
-): Promise<ChildWindowHandle | null> {
+): Promise<ChildWindowOpen> {
+  // 0. The friends window's label is reused, so its arm is refused (`exists`)
+  // while the previous one is still closing.
+  if (kind === "friends") await settleShellCloses();
+
   // 1. Arm the shell. Without a shell (web dev harness) open a plain popup.
   // A timed-out arm is a refusal, never "unsupported".
   const armed = await armWithTimeout(kind);
   if (!armed.ok && armed.err !== "unsupported") {
     console.warn("[chat-window] shell refused to arm", armed.err);
-    return null;
+    return { ok: false, err: armed.err };
   }
   const shellLabel = armed.ok ? armed.label : undefined;
   const frame = armedFrame(armed);
@@ -793,7 +838,7 @@ async function openNow(
   if (!childWin) {
     // Awaited, so the next open in the queue cannot arm before this settles.
     if (shellLabel !== undefined) await discardUnusedArm(shellLabel);
-    return null;
+    return { ok: false, err: "blocked" };
   }
 
   const cleanups: (() => void)[] = [];
@@ -856,7 +901,7 @@ async function openNow(
     // Awaited like the discard above, so the queue stays ordered.
     if (shellLabel !== undefined && shellCloseNeeded(shellLabel, mainUnloading))
       await closeUnpreparedWindow(shellLabel);
-    return null;
+    return { ok: false, err: "prepare" };
   }
 
   // 6. Close tracking.
@@ -891,10 +936,20 @@ async function openNow(
   const closeInShell = () => {
     const label = shellLabel;
     if (label === undefined || !shellCloseNeeded(label, mainUnloading)) return;
-    void chatShell.closeWindow(label).then((result) => {
-      if (!result.ok)
-        console.warn("[chat-window] shell could not close", label, result.err);
-    });
+    // Bounded, as a friends open waits for it (settleShellCloses).
+    const closing = withShellTimeout(() => chatShell.closeWindow(label)).then(
+      (result) => {
+        if (!result.ok)
+          console.warn(
+            "[chat-window] shell could not close",
+            label,
+            result.err,
+          );
+      },
+      (err) => console.warn("[chat-window] shell could not close", label, err),
+    );
+    shellCloses.add(closing);
+    void closing.finally(() => shellCloses.delete(closing));
   };
 
   const handle: ChildWindowHandle = {
@@ -959,5 +1014,5 @@ async function openNow(
 
   live.add(handle);
   bindMainPagehide();
-  return handle;
+  return { ok: true, handle };
 }

@@ -924,6 +924,153 @@ describe("openChildWindow", () => {
     assert.deepEqual(recorder.discardCalls, []);
   });
 
+  it("a friends open arms only after main's shell closes in flight settle", async () => {
+    reset();
+    const log: string[] = [];
+    let settle: (() => void) | undefined;
+    recorder.closeWindow = (label) => {
+      log.push(`close:${label}`);
+      return new Promise((resolve) => {
+        settle = () => {
+          log.push("closed");
+          resolve({ ok: true });
+        };
+      });
+    };
+    recorder.arm = async (kind) => {
+      log.push(`arm:${kind}`);
+      return { ok: true, label: `${kind}-label` };
+    };
+
+    const old = makeChild();
+    nextChild = old;
+    const oldHandle = await mod.openChildWindow("friends", {
+      width: 1,
+      height: 1,
+    });
+    assert.ok(oldHandle);
+    log.length = 0;
+    oldHandle.close();
+
+    const fresh = makeChild();
+    nextChild = fresh;
+    const reopen = mod.openChildWindow("friends", { width: 1, height: 1 });
+    await flush();
+    assert.deepEqual(log, ["close:friends-label"], "armed before the close");
+    settle!();
+    const handle = await reopen;
+    assert.ok(handle, "reopen dropped");
+    assert.deepEqual(log, ["close:friends-label", "closed", "arm:friends"]);
+
+    // A chat open never waits for a close.
+    log.length = 0;
+    handle.close();
+    nextChild = makeChild();
+    const chatOpen = mod.openChildWindow("chat", { width: 1, height: 1 });
+    await flush();
+    // Armed while the friends close is still in flight.
+    assert.deepEqual(log, ["close:friends-label", "arm:chat"]);
+    settle!();
+    const chat = await chatOpen;
+    assert.ok(chat);
+    await flush();
+    chat.close();
+    settle!();
+    await flush();
+  });
+
+  it("a hung shell close holds a friends open only until the timeout", async (t) => {
+    reset();
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const warn = t.mock.method(console, "warn", () => {});
+    recorder.closeWindow = () => new Promise(() => {});
+    const old = makeChild();
+    nextChild = old;
+    const oldHandle = await mod.openChildWindow("friends", {
+      width: 1,
+      height: 1,
+    });
+    assert.ok(oldHandle);
+    oldHandle.close();
+    recorder.armCalls = [];
+
+    nextChild = makeChild();
+    const reopen = mod.openChildWindow("friends", { width: 1, height: 1 });
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    assert.deepEqual(recorder.armCalls, []);
+    t.mock.timers.tick(mod.ARM_TIMEOUT_MS);
+    const handle = await reopen;
+    assert.ok(handle, "reopen dropped after a hung close");
+    assert.deepEqual(recorder.armCalls, ["friends"]);
+    assert.ok(
+      warn.mock.calls.some((call) =>
+        (call.arguments as unknown[]).includes("timeout"),
+      ),
+      "the hung close is logged",
+    );
+    t.mock.timers.reset();
+    recorder.closeWindow = async () => ({ ok: true });
+    handle.close();
+  });
+
+  it("tryOpenChildWindow says why there is no window", async () => {
+    reset();
+    const warn = mock.method(console, "warn", () => {});
+    const errors = mock.method(console, "error", () => {});
+    try {
+      // The shell's own refusal comes through as is (the host retries
+      // `exists` once).
+      recorder.arm = async () => ({ ok: false, err: "exists" });
+      assert.deepEqual(
+        await mod.tryOpenChildWindow("friends", { width: 1, height: 1 }),
+        { ok: false, err: "exists" },
+      );
+      assert.equal(opened.length, 0);
+
+      // Armed, but window.open came back null.
+      recorder.arm = async (kind) => ({ ok: true, label: `${kind}-label` });
+      nextChild = null;
+      assert.deepEqual(
+        await mod.tryOpenChildWindow("chat", { width: 1, height: 1 }),
+        { ok: false, err: "blocked" },
+      );
+
+      // Opened, but could not be prepared (the opener write did not take).
+      const sticky = makeChild();
+      sticky.stickyOpener = true;
+      nextChild = sticky;
+      assert.deepEqual(
+        await mod.tryOpenChildWindow("chat", { width: 1, height: 1 }),
+        { ok: false, err: "prepare" },
+      );
+
+      // Anything that threw.
+      recorder.arm = async () => {
+        throw new Error("bridge exploded");
+      };
+      assert.deepEqual(
+        await mod.tryOpenChildWindow("chat", { width: 1, height: 1 }),
+        { ok: false, err: "failed" },
+      );
+    } finally {
+      warn.mock.restore();
+      errors.mock.restore();
+    }
+
+    // A window: the same handle openChildWindow would resolve.
+    recorder.arm = async (kind) => ({ ok: true, label: `${kind}-label` });
+    const child = makeChild();
+    nextChild = child;
+    const result = await mod.tryOpenChildWindow("chat", {
+      width: 1,
+      height: 1,
+    });
+    assert.ok(result.ok, "no window");
+    assert.equal(result.handle.shellLabel, "chat-label");
+    assert.equal(result.handle.ctx.win, child.win);
+    result.handle.close();
+  });
+
   it("holds the open, and the queue, until the discard settles", async () => {
     reset();
     const log: string[] = [];

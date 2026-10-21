@@ -5,7 +5,11 @@ import { cva } from "styled-system/css";
 
 import * as chatShell from "@revolt/client/chatShell";
 
-import { setWindowMaximized, windowMaximized } from "./chatWindowFrame";
+import {
+  beginMaximizeToggle,
+  settleMaximizeToggle,
+  windowMaximized,
+} from "./chatWindowFrame";
 
 /**
  * Minimize, maximize / restore and close for a frameless chat window (the
@@ -41,9 +45,11 @@ export function WindowControls(props: {
 
   function toggleMaximize() {
     const label = props.label;
+    const ticket = beginMaximizeToggle(label);
     void chatShell.toggleMaximize(label).then((result) => {
-      // The shell also pushes the new state; the reply makes it immediate.
-      if (result.ok) setWindowMaximized(label, result.maximized);
+      // The shell also pushes the new state, and its push may land first: a
+      // reply that a push (or a newer click) overtook is dropped.
+      if (result.ok) settleMaximizeToggle(label, ticket, result.maximized);
       else console.warn("[chat-window] could not maximize", label, result.err);
     });
   }
