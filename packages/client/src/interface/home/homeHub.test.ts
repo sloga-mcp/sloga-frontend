@@ -21,6 +21,7 @@ import {
   showCipherBanner,
   showWhatsNew,
   streamThumbnail,
+  upcomingRows,
 } from "./homeHub.ts";
 
 const NOW = 1_800_000_000_000;
@@ -311,6 +312,72 @@ test("events switched off stops asking other servers", async () => {
   assert.deepEqual(asked, ["a"]);
   assert.deepEqual(rows, []);
   assert.deepEqual(await collectEvents([], async () => []), []);
+});
+
+/** A fan-out that counts its calls */
+function countingFanOut(rows: string[]) {
+  const counter = { calls: 0 };
+  const fanOut = async () => {
+    counter.calls++;
+    return rows;
+  };
+  return { counter, fanOut };
+}
+
+/** Asserts the route's failure comes back out and nothing fell back */
+async function assertRethrows(failure: unknown) {
+  const { counter, fanOut } = countingFanOut(["fan"]);
+  await assert.rejects(
+    upcomingRows<string>(async () => {
+      throw failure;
+    }, fanOut),
+    (error) => {
+      assert.deepEqual(error, failure);
+      return true;
+    },
+  );
+  assert.equal(counter.calls, 0);
+}
+
+test("Upcoming uses the cross-server route's rows when it answers", async () => {
+  const { counter, fanOut } = countingFanOut(["fan"]);
+  assert.deepEqual(await upcomingRows(async () => ["a", "b"], fanOut), [
+    "a",
+    "b",
+  ]);
+  assert.deepEqual(await upcomingRows(async () => [], fanOut), []);
+  assert.equal(counter.calls, 0);
+});
+
+test("Upcoming falls back to asking each server when the route is missing", async () => {
+  const { counter, fanOut } = countingFanOut(["fan"]);
+  assert.deepEqual(await upcomingRows(async () => undefined, fanOut), ["fan"]);
+  assert.equal(counter.calls, 1);
+});
+
+test("Upcoming shows nothing when events are switched off", async () => {
+  const { counter, fanOut } = countingFanOut(["fan"]);
+  const rows = await upcomingRows<string>(async () => {
+    throw { type: "FeatureDisabled" };
+  }, fanOut);
+  assert.deepEqual(rows, []);
+  assert.equal(counter.calls, 0);
+});
+
+test("Upcoming rethrows a rate limit without falling back", async () => {
+  await assertRethrows({ retry_after: 5000 });
+});
+
+test("Upcoming rethrows an HTML error page without falling back", async () => {
+  await assertRethrows(
+    "<!DOCTYPE html><html><body>401 Unauthorized</body></html>",
+  );
+});
+
+test("Upcoming rethrows other typed and untyped failures", async () => {
+  await assertRethrows({ type: "NotFound" });
+  await assertRethrows({ type: "InternalError" });
+  await assertRethrows(null);
 });
 
 const EVENT_ID = "01JAXQ7ZK3M5N8P2R4T6V8W0YZ";

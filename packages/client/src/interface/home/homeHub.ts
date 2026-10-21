@@ -149,9 +149,16 @@ export const JUMP_VOICE_LIMIT = 4;
 export const JUMP_EVENT_LIMIT = 3;
 
 /**
- * Servers whose calendars Home asks about. There is no route that lists
- * events across servers, so this is one request per server, and they share
- * the "events" rate limit (30 per 10 s) with the calendar page.
+ * Most events Home asks the cross-server upcoming route for. It returns them
+ * soonest first, so a few spare cover events the card later drops.
+ */
+export const JUMP_EVENT_FETCH_LIMIT = 20;
+
+/**
+ * Servers whose calendars Home asks about when the server has no
+ * cross-server upcoming route (an older backend). That fallback is one
+ * request per server, and they share the "events" rate limit (30 per 10 s)
+ * with the calendar page.
  */
 export const JUMP_EVENT_SERVER_LIMIT = 10;
 
@@ -294,6 +301,28 @@ export async function collectEvents<E>(
     ),
   );
   return out;
+}
+
+/**
+ * Upcoming events from the cross-server route, or from `fanOut` (asking
+ * servers a few at a time) when the route resolves `undefined` because the
+ * server does not have it. "FeatureDisabled" means events are off, so there
+ * is nothing to show; any other failure is thrown so nothing gets cached.
+ */
+export async function upcomingRows<T>(
+  fetchUpcoming: () => Promise<T[] | undefined>,
+  fanOut: () => Promise<T[]>,
+): Promise<T[]> {
+  let rows: T[] | undefined;
+  try {
+    rows = await fetchUpcoming();
+  } catch (error) {
+    if ((error as { type?: string } | null)?.type === "FeatureDisabled") {
+      return [];
+    }
+    throw error;
+  }
+  return rows === undefined ? fanOut() : rows;
 }
 
 /** Link that opens one event occurrence on its server's calendar */
