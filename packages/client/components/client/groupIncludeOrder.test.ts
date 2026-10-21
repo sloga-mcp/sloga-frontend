@@ -9,6 +9,16 @@
 // read in that same attempt, and then add with nothing else awaited in
 // between. Self is refused before any reconcile or native call.
 //
+// The add itself waits on the native confirm dialog (plan D7): it sits
+// between the reconcile and native's commit, inside the one add invoke, and
+// nothing else is awaited there. The bundle preflight runs once, before the
+// attempt loop, so a confirmed dialog rarely meets a needs_bundle. The dialog
+// labels are built in the attempt from the list it reconciles. A Cancel
+// ("declined") or a held dialog ("busy") resolves at once, before any
+// needs_bundle retry; only a delivered include resolves "ok". The labels
+// and the outcome tag come from e2eeGroupGrowth.ts, whose own spec pins
+// what they produce; this one pins where and on what they are called.
+//
 // e2ee.ts cannot load under node (Capacitor, Solid primitives, extensionless
 // sibling imports, and #invoke is private), so this scans the source.
 // Comments and literal text are masked first: prose cannot satisfy a check,
@@ -149,9 +159,34 @@ const INLINE_DISPLAYED = new RegExp(
 );
 const SHORTHAND_DISPLAYED = /\bdisplayed\s*[,}]/;
 const SUSPENDS = /\bawait\b|\byield\b|\.then\s*\(/;
+const RETURNS_OUTCOME = /\)\s*:\s*Promise\s*<\s*GroupGrowthOutcome\s*>\s*$/;
+const AWAITED_PREFLIGHT = /\bawait\s+this\.groupGrowthBundlePreflight\s*\(/;
+const PREFLIGHT = /\bgroupGrowthBundlePreflight\b/;
+const DISPLAY_NAMES_DECL =
+  /\bconst\s+displayNames\s*=\s*groupGrowthDisplayNames\(\s*displayed\s*,\s*\(\s*id\s*\)\s*=>\s*this\.#client\.users\.get\(\s*id\s*\)\s*,?\s*\)\s*;/;
+const DISPLAY_NAMES_ARG = /\bdisplayNames\s*[,}]/;
+/** `outcome` read from the add's own catch binding, returned as is */
+const outcomeReturn = (caught: string) =>
+  new RegExp(
+    String.raw`\bconst\s+outcome\s*=\s*groupGrowthOutcomeOf\(\s*` +
+      caught +
+      String.raw`\s*\)\s*;\s*if\s*\(\s*outcome\s*\)\s*\{?\s*return\s+outcome\b`,
+  );
+const OUTCOME_RETURN = /\breturn\s+(?:"(?:ok|declined|busy)"|outcome\b)/;
+const MODULE_IMPORT = (name: string) =>
+  new RegExp(
+    String.raw`\nimport\s*\{[^}]*\b` +
+      name +
+      String.raw`\b[^}]*\}\s*from\s*"\.\/e2eeGroupGrowth\.ts";`,
+  );
+const OK_RETURN = /\breturn\s+"ok"/;
+const DELIVERY_POST = /\bthis\.#api\b[^;]*"POST"\s*,\s*"\/e2ee\/messages"/;
 
-/** The method body, both views, offsets relative to its opening brace. */
-function method(): Views {
+/**
+ * The method body, both views, offsets relative to its opening brace, and
+ * `head`: the masked declaration up to (not including) that brace.
+ */
+function method(): Views & { head: string } {
   const decl = /^[ \t]*async\s+addGroupMemberEncrypted\s*\(/gm;
   const hits = [...SOURCE.matchAll(decl)];
   assert.equal(hits.length, 1, "one addGroupMemberEncrypted declaration");
@@ -165,6 +200,7 @@ function method(): Views {
   return {
     code: code.slice(open, close + 1),
     skel: skel.slice(open, close + 1),
+    head: skel.slice(0, open),
   };
 }
 
@@ -205,6 +241,33 @@ function attemptSteps(m: Views) {
     loop.end,
   );
   return { loop, gate, listed, reconcile, argsOpen, argsClose, add };
+}
+
+/** The add's argument list and the `catch` block of its `try`, as offsets. */
+function addCall(m: Views) {
+  const steps = attemptSteps(m);
+  const addArgsOpen = m.skel.indexOf("(", steps.add.at);
+  const addArgsClose = closeOf(m.skel, addArgsOpen);
+  const catchHead = find(
+    m.skel,
+    /\}\s*catch\s*\(\s*\w+\s*\)\s*\{/,
+    "the catch of the add's try",
+    addArgsClose,
+    steps.loop.end,
+  );
+  const catchOpen = catchHead.end - 1;
+  const caught = /catch\s*\(\s*(\w+)/.exec(
+    m.skel.slice(catchHead.at, catchHead.end),
+  )?.[1];
+  assert.ok(caught, "the add's catch binds the rejection");
+  return {
+    ...steps,
+    addArgsOpen,
+    addArgsClose,
+    caught,
+    catchOpen,
+    catchClose: closeOf(m.skel, catchOpen),
+  };
 }
 
 describe("addGroupMemberEncrypted include order", () => {
@@ -277,6 +340,121 @@ describe("addGroupMemberEncrypted include order", () => {
       m.skel.slice(argsClose, add.at),
       SUSPENDS,
       "nothing awaited between the reconcile and the add",
+    );
+  });
+
+  test("resolves a GroupGrowthOutcome", () => {
+    assert.match(method().head, RETURNS_OUTCOME);
+  });
+
+  test("the bundle preflight runs once, after the early reconcile, before the attempt loop", () => {
+    const m = method();
+    const loop = attemptLoop(m);
+    assert.equal(countIn(m.code, PREFLIGHT), 1, "one bundle preflight");
+    const firstReconcile = find(m.code, RECONCILE, "a reconcile");
+    const preflight = find(
+      m.code,
+      AWAITED_PREFLIGHT,
+      "awaited groupGrowthBundlePreflight before the attempt loop",
+      firstReconcile.end,
+      loop.at,
+    );
+    assert.ok(preflight.at < loop.at, "preflight is outside the loop");
+  });
+
+  test("the dialog labels come from this attempt's list, and the add carries them", () => {
+    const m = method();
+    const { listed, add, addArgsOpen, addArgsClose } = addCall(m);
+    // Built in the attempt, after the re-check, from the same `displayed`
+    // the reconcile sends; the ranges either side of the reconcile are
+    // proven await-free above.
+    const decl = find(
+      m.code,
+      DISPLAY_NAMES_DECL,
+      "displayNames built from displayed in the attempt",
+      listed.end,
+      add.at,
+    );
+    assert.ok(decl.end <= add.at, "displayNames is built before the add");
+    assert.equal(
+      countIn(m.code, /\bdisplayNames\s*=[^=]/),
+      1,
+      "displayNames is assigned once, in the attempt",
+    );
+    assert.match(
+      m.code.slice(addArgsOpen, addArgsClose + 1),
+      DISPLAY_NAMES_ARG,
+      "the add passes displayNames",
+    );
+  });
+
+  test("a Cancel or a held dialog resolves at once, before any needs_bundle retry", () => {
+    const m = method();
+    const { caught, catchOpen, catchClose } = addCall(m);
+    const code = m.code.slice(catchOpen, catchClose + 1);
+    const skel = m.skel.slice(catchOpen, catchClose + 1);
+    // groupGrowthOutcomeOf maps exactly declined and busy (its own spec)
+    const outcome = find(
+      code,
+      outcomeReturn(caught),
+      `return groupGrowthOutcomeOf(${caught}) when set`,
+    );
+    const firstAwait = skel.search(/\bawait\b/);
+    const firstContinue = skel.search(/\bcontinue\b/);
+    const firstThrow = skel.search(/\bthrow\b/);
+    for (const [step, at] of [
+      ["await", firstAwait],
+      ["continue", firstContinue],
+      ["throw", firstThrow],
+    ] as const) {
+      assert.ok(
+        at < 0 || outcome.at < at,
+        `declined/busy resolve before any ${step}`,
+      );
+    }
+    assert.equal(
+      countIn(m.code, /\bgroupGrowthOutcomeOf\b/),
+      1,
+      "only the add's rejection is read as an outcome",
+    );
+    assert.equal(
+      countIn(m.code, /\breturn\s+"(?:declined|busy)"/),
+      0,
+      "no other path resolves declined or busy",
+    );
+  });
+
+  test("the labels and the outcome tag are e2eeGroupGrowth.ts's", () => {
+    for (const name of [
+      "groupGrowthDisplayNames",
+      "groupGrowthOutcomeOf",
+      "GroupGrowthOutcome",
+    ]) {
+      assert.match(SOURCE, MODULE_IMPORT(name), `${name} is imported`);
+      assert.doesNotMatch(
+        SOURCE,
+        new RegExp(
+          String.raw`\b(?:(?:function|const|let|var|class)\s+` +
+            name +
+            String.raw`\b|type\s+` +
+            name +
+            String.raw`\s*[=<])`,
+        ),
+        `${name} is not redeclared locally`,
+      );
+    }
+  });
+
+  test('only a delivered include resolves "ok"', () => {
+    const m = method();
+    const { loop } = addCall(m);
+    assert.equal(countIn(m.code, OK_RETURN), 1, 'one return "ok"');
+    const post = find(m.code, DELIVERY_POST, "the delivery POST", loop.end);
+    find(m.code, OK_RETURN, 'return "ok" after the delivery POST', post.end);
+    assert.equal(
+      countIn(m.code, OUTCOME_RETURN),
+      2,
+      "the outcomes are ok and the add's declined/busy, once each",
     );
   });
 });

@@ -2215,6 +2215,11 @@ msgstr "Contested items"
 msgid "Continue"
 msgstr "Continue"
 
+#: components/modal/modals/AddFriendToGroup.tsx
+#: components/modal/modals/E2EEEnableGroup.tsx
+msgid "You'll confirm this in a system dialog."
+msgstr "You'll confirm this in a system dialog."
+
 #: src/AndroidNag.tsx
 msgid "Continue in browser"
 msgstr "Continue in browser"
@@ -3508,6 +3513,7 @@ msgid "Encrypt my calls"
 msgstr "Encrypt my calls"
 
 #: components/modal/modals/E2EEEnableGroup.tsx
+#: components/modal/modals/AddFriendToGroup.tsx
 msgid "Try again in a moment."
 msgstr "Try again in a moment."
 
@@ -3517,18 +3523,22 @@ msgid "The keys changed while the system dialog was open. Check them again."
 msgstr "The keys changed while the system dialog was open. Check them again."
 
 #: components/modal/modals/E2EEEnableGroup.tsx
+#: components/modal/modals/AddFriendToGroup.tsx
 msgid "The member list changed. Check it and try again."
 msgstr "The member list changed. Check it and try again."
 
 #: components/modal/modals/E2EEEnableGroup.tsx
+#: components/modal/modals/AddFriendToGroup.tsx
 msgid "This group is already encrypted with a different member list. Check the member list and try again."
 msgstr "This group is already encrypted with a different member list. Check the member list and try again."
 
 #: components/modal/modals/E2EEEnableGroup.tsx
+#: components/modal/modals/AddFriendToGroup.tsx
 msgid "This device isn't part of this group's encryption yet. Wait for another member to re-send the member list."
 msgstr "This device isn't part of this group's encryption yet. Wait for another member to re-send the member list."
 
 #: components/modal/modals/E2EEEnableGroup.tsx
+#: components/modal/modals/AddFriendToGroup.tsx
 msgid "This device's encryption is set up for a different account."
 msgstr "This device's encryption is set up for a different account."
 
@@ -4093,10 +4103,6 @@ msgstr "Game Overlay"
 #: components/modal/modals/E2EEEnableGroup.tsx
 msgid "Gathering keys for every member…"
 msgstr "Gathering keys for every member…"
-
-#: components/modal/modals/E2EEEnableGroup.tsx
-msgid "You'll confirm this in a system dialog."
-msgstr "You'll confirm this in a system dialog."
 
 #: components/modal/modals/E2EEGroupPlaintextConfirm.tsx
 msgid "Send unencrypted?"
@@ -8940,6 +8946,10 @@ msgstr "This encrypted group chat is full."
 #: components/modal/modals/AddFriendToGroup.tsx
 msgid "Couldn't prepare encryption for {name}, so nobody was added. Try again."
 msgstr "Couldn't prepare encryption for {name}, so nobody was added. Try again."
+
+#: components/modal/modals/AddFriendToGroup.tsx
+msgid "{name} was added to the group but not included in its encryption. They can't read encrypted messages."
+msgstr "{name} was added to the group but not included in its encryption. They can't read encrypted messages."
 
 #: components/modal/modals/AddFriendToGroup.tsx
 msgid "{name} couldn't be included in this group chat's encryption. Remove them from the group chat, or review their security identity."

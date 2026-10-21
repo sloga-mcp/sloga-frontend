@@ -19,7 +19,6 @@ import { useClient, useE2EE } from "@revolt/client";
 import * as chatShell from "@revolt/client/chatShell";
 import type { GroupIncludePreflight, KeyBundle } from "@revolt/client/e2ee";
 import { fetchWithRatelimitPolicy } from "@revolt/client/e2eeRatelimitPolicy";
-import { isTerminalIncludeError } from "@revolt/client/groupInclude";
 import { useWindowCtx } from "@revolt/client/windowCtx";
 import { useError } from "@revolt/i18n";
 import { Button, Column, Dialog, DialogProps } from "@revolt/ui";
@@ -40,7 +39,14 @@ import {
   tooManyToVerify,
   waitForMember,
 } from "./addFriendToGroupPolicy";
-import { includeFlightKey, includeFlights } from "./includeFlight";
+import {
+  type IncludeFailureDetail,
+  type IncludeFailureKind,
+  includeFailureForError,
+  includeFailureForOutcome,
+  includeFlightKey,
+  includeFlights,
+} from "./includeFlight";
 
 /** Groups at or above this size can't take another member */
 const MAX_GROUP_SIZE = 100;
@@ -65,7 +71,11 @@ const TERMINAL_RETRY_REFUSALS: ReadonlySet<IncludeRefusal> = new Set([
 ]);
 
 /** A failure after the server add: the friend is in, but not encrypted to */
-type IncludeFailure = { channelId: string; terminal: boolean };
+type ShownFailure = {
+  channelId: string;
+  kind: IncludeFailureKind;
+  detail?: IncludeFailureDetail;
+};
 
 /**
  * Add one friend to an existing group chat, or start a new one with them
@@ -141,18 +151,20 @@ export function AddFriendToGroupModal(
   // already be in the group, so the dialog stays up to say how it went.
   const committing = () => flight()?.phase === "committing";
 
-  // A Retry keeps the half-done failure it retries on screen until it
-  // settles, with "Checking…" beside a disabled Retry.
-  const includeFailure = (): IncludeFailure | undefined => {
+  // A Retry keeps the failure it retries on screen (its kind, without the
+  // detail of the attempt that failed) until it settles, with "Checking…"
+  // beside a disabled Retry.
+  const includeFailure = (): ShownFailure | undefined => {
     const current = flight();
     if (current?.phase === "failed") {
       return {
         channelId: current.channelId,
-        terminal: current.kind === "terminal",
+        kind: current.kind,
+        detail: current.detail,
       };
     }
     return current?.retrying
-      ? { channelId: current.channelId, terminal: false }
+      ? { channelId: current.channelId, kind: current.retried ?? "half_done" }
       : undefined;
   };
 
@@ -505,9 +517,11 @@ export function AddFriendToGroupModal(
   /**
    * Everything after the server add: wait until the local channel lists the
    * member (a reconcile without them would mark them removed), then the
-   * native include. A Retry passes no bundle and fetches a fresh one, since
-   * its one-time keys are single-use. Never cut by a close, and settles the
-   * flight whatever happens.
+   * native include, which shows the native confirm dialog. A Retry passes no
+   * bundle and fetches a fresh one, since its one-time keys are single-use.
+   * Never cut by a close, and settles the flight whatever happens: only an
+   * "ok" outcome succeeds, and a Cancel on the dialog ("declined") leaves the
+   * friend added but not included, with a Retry that prompts again.
    */
   async function finishInclude(
     channel: Channel,
@@ -540,24 +554,31 @@ export function AddFriendToGroupModal(
         bundle = preflight.bundle;
       }
 
-      await e2ee!.addGroupMemberEncrypted(channel, userId, bundle);
-      includeFlights.succeed(key);
-    } catch (err) {
-      includeFlights.fail(
-        key,
-        isTerminalIncludeError(err) ? "terminal" : "half_done",
+      const outcome = await e2ee!.addGroupMemberEncrypted(
+        channel,
+        userId,
+        bundle,
       );
+      if (outcome === "ok") {
+        includeFlights.succeed(key);
+        return;
+      }
+      const failure = includeFailureForOutcome(outcome);
+      includeFlights.fail(key, failure.kind, failure.detail);
+    } catch (err) {
+      const failure = includeFailureForError(err);
+      includeFlights.fail(key, failure.kind, failure.detail);
     }
   }
 
   /** The group a failure is about, while this client still has it */
-  const failureChannel = (failure: IncludeFailure) =>
+  const failureChannel = (failure: ShownFailure) =>
     client().channels.get(failure.channelId);
 
   function retryInclude() {
     const key = attached();
     const failure = includeFailure();
-    if (!key || !failure || failure.terminal || pending()) return;
+    if (!key || !failure || failure.kind === "terminal" || pending()) return;
     const channel = failureChannel(failure);
     if (!channel || !includeFlights.retry(key)) return;
     void finishInclude(channel, props.userId, key);
@@ -578,12 +599,57 @@ export function AddFriendToGroupModal(
     });
   }
 
-  /** Copy for a failure after the server add */
-  function includeFailureText(failure: IncludeFailure): string {
+  /**
+   * Copy for a failure after the server add: what happened to the friend,
+   * then why, when the failure says. A store owned by another account is
+   * terminal, but nothing about the friend needs reviewing, so it reads as
+   * "not included" rather than the remove-or-review copy.
+   */
+  function includeFailureText(failure: ShownFailure): string {
     const name = friendName();
-    return failure.terminal
-      ? t`${name} couldn't be included in this group chat's encryption. Remove them from the group chat, or review their security identity.`
-      : t`${name} was added to the group chat, but couldn't be included in its encryption yet.`;
+    const declined = t`${name} was added to the group but not included in its encryption. They can't read encrypted messages.`;
+    let headline: string;
+    switch (failure.kind) {
+      case "declined":
+        headline = declined;
+        break;
+      case "half_done":
+        headline = t`${name} was added to the group chat, but couldn't be included in its encryption yet.`;
+        break;
+      case "terminal":
+        headline =
+          failure.detail === "other_account"
+            ? declined
+            : t`${name} couldn't be included in this group chat's encryption. Remove them from the group chat, or review their security identity.`;
+        break;
+      default: {
+        const exhaustive: never = failure.kind;
+        return exhaustive;
+      }
+    }
+    return failure.detail
+      ? `${headline} ${includeDetailText(failure.detail)}`
+      : headline;
+  }
+
+  /** Why an include failed, for the failures that say */
+  function includeDetailText(detail: IncludeFailureDetail): string {
+    switch (detail) {
+      case "busy":
+        return t`Try again in a moment.`;
+      case "roster_changed":
+        return t`The member list changed. Check it and try again.`;
+      case "roster_mismatch":
+        return t`This group is already encrypted with a different member list. Check the member list and try again.`;
+      case "self_user_id":
+        return t`This device isn't part of this group's encryption yet. Wait for another member to re-send the member list.`;
+      case "other_account":
+        return t`This device's encryption is set up for a different account.`;
+      default: {
+        const exhaustive: never = detail;
+        return exhaustive;
+      }
+    }
   }
 
   function confirmTitle(): string {
@@ -698,7 +764,7 @@ export function AddFriendToGroupModal(
                 <ErrorText role="alert">
                   {includeFailureText(failure())}
                 </ErrorText>
-                <Show when={!failure().terminal}>
+                <Show when={failure().kind !== "terminal"}>
                   <PanelActions>
                     <Show when={pending()}>
                       <RowStatus>
@@ -743,9 +809,16 @@ export function AddFriendToGroupModal(
                     isDisabled={!!pending()}
                     onPress={() => void include(channel())}
                   >
-                    <Trans>Add and include</Trans>
+                    <Trans>Continue</Trans>
                   </Button>
                 </PanelActions>
+                {/* The bridge exists only in the native shells, and so does
+                    their OS confirm dialog. */}
+                <Show when={e2ee}>
+                  <PanelHint>
+                    <Trans>You'll confirm this in a system dialog.</Trans>
+                  </PanelHint>
+                </Show>
               </Panel>
             )}
           </Match>
@@ -846,6 +919,14 @@ const PanelActions = styled("div", {
     alignItems: "center",
     justifyContent: "flex-end",
     gap: "var(--gap-sm)",
+  },
+});
+
+const PanelHint = styled("div", {
+  base: {
+    fontSize: "0.8125rem",
+    textAlign: "right",
+    color: "var(--md-sys-color-on-surface-variant)",
   },
 });
 
