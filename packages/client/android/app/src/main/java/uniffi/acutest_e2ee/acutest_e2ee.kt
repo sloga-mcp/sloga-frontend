@@ -1465,7 +1465,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_conversation_state() != 51294.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_decrypt() != 64294.toShort()) {
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_decrypt() != 556.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_device_removed() != 62585.toShort()) {
@@ -2236,7 +2236,9 @@ public interface E2eeEngineInterface {
      * so an id read from it would be the server's to choose. The core
      * records it trust-on-first-use before decrypting
      * ([`E2ee::decrypt_with_self`]: never overwrites, never contradicts
-     * the MLS owner, never fails), and the owner of record, not the
+     * the MLS owner; an id that disagrees with the owner of record is
+     * refused with `mls_store_owned_by_another_account`, unprocessed and
+     * not to be acked), and the owner of record, not the
      * envelope's routing, then decides whether an envelope is this
      * account's own copy. `None` (a webview that sends no `selfUserId`,
      * such as an older frontend) records nothing, and an envelope claiming
@@ -3182,7 +3184,9 @@ open class E2eeEngine: Disposable, AutoCloseable, E2eeEngineInterface
      * so an id read from it would be the server's to choose. The core
      * records it trust-on-first-use before decrypting
      * ([`E2ee::decrypt_with_self`]: never overwrites, never contradicts
-     * the MLS owner, never fails), and the owner of record, not the
+     * the MLS owner; an id that disagrees with the owner of record is
+     * refused with `mls_store_owned_by_another_account`, unprocessed and
+     * not to be acked), and the owner of record, not the
      * envelope's routing, then decides whether an envelope is this
      * account's own copy. `None` (a webview that sends no `selfUserId`,
      * such as an older frontend) records nothing, and an envelope claiming
