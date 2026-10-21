@@ -1,11 +1,11 @@
 import { Show } from "solid-js";
 
-import { Trans } from "@lingui-solid/solid/macro";
+import { Trans, useLingui } from "@lingui-solid/solid/macro";
 import { i18n } from "@lingui/core";
 import { styled } from "styled-system/jsx";
 
 import { allowsDonationLinks } from "@revolt/client";
-import { Button } from "@revolt/ui";
+import { Button, Profile } from "@revolt/ui";
 
 import { CipherLock } from "./CipherLock";
 import { cipherPromoUrl, formatCount } from "./cipherPromo";
@@ -104,6 +104,28 @@ const Stats = styled("div", {
     flexWrap: "wrap",
     rowGap: "12px",
     margin: "0 0 28px",
+  },
+});
+
+/** The animated top-tier badge with a one-line teaser; no price here */
+const Teaser = styled("div", {
+  base: {
+    display: "flex",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: "10px 16px",
+    margin: "-12px 0 26px",
+  },
+});
+
+const TeaserText = styled("p", {
+  base: {
+    flex: "1 1 180px",
+    minWidth: 0,
+    margin: 0,
+    fontSize: "13px",
+    lineHeight: 1.45,
+    color: "var(--md-sys-color-on-surface-variant)",
   },
 });
 
@@ -208,6 +230,7 @@ const BannerText = styled("div", {
  * numbers and no link to the sale, under the same rule as the Ko-fi links.
  */
 export function CipherPromo(props: { variant: "panel" | "banner" }) {
+  const { t } = useLingui();
   const purchase = () => allowsDonationLinks();
 
   return (
@@ -233,6 +256,15 @@ export function CipherPromo(props: { variant: "panel" | "banner" }) {
             </div>
           </BannerRow>
           <Show when={purchase()}>
+            <Teaser style={{ margin: 0 }}>
+              <Profile.CipherPreview label={t`Animated Cipher badge preview`} />
+              <TeaserText>
+                <Trans>
+                  Every Cipher gets a numbered badge, and the top tier's badge
+                  decrypts like this.
+                </Trans>
+              </TeaserText>
+            </Teaser>
             <CipherButton />
           </Show>
         </Banner>
@@ -292,6 +324,18 @@ export function CipherPromo(props: { variant: "panel" | "banner" }) {
                 </StatLabel>
               </Stat>
             </Stats>
+            <Teaser>
+              <Profile.CipherPreview
+                zoom={1.35}
+                label={t`Animated Cipher badge preview`}
+              />
+              <TeaserText>
+                <Trans>
+                  Every Cipher gets a numbered badge, and the top tier's badge
+                  decrypts like this.
+                </Trans>
+              </TeaserText>
+            </Teaser>
             <div>
               <CipherButton />
             </div>

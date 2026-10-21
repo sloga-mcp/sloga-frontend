@@ -1,4 +1,11 @@
-import { Show, createEffect } from "solid-js";
+import {
+  Show,
+  createEffect,
+  createSignal,
+  on,
+  onCleanup,
+  onMount,
+} from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
 import { User, UserBadges } from "stoat.js";
@@ -25,8 +32,14 @@ import { Text, typography } from "../../design";
 
 import { ProfileCard } from "./ProfileCard";
 import {
+  CIPHER_BADGE_OPEN_CLASS,
+  CIPHER_BADGE_SHACKLE_CLASS,
   CIPHER_BADGE_SHINE_CLASS,
+  CIPHER_DECRYPT_EVERY_MS,
+  CIPHER_DECRYPT_MS,
+  CIPHER_PREVIEW_NUMBER,
   cipherBadgeLabel,
+  cipherScrambleFrame,
   ensureCipherBadgeSheet,
   formatCipherNumber,
   isAnimatedCipherTier,
@@ -113,7 +126,12 @@ export function ProfileBadges(props: { user: User }) {
                   },
                 }}
               >
-                {cipherBadgeLabel(current().number)}
+                <Show
+                  when={cipherAnimated()}
+                  fallback={cipherBadgeLabel(current().number)}
+                >
+                  <CipherDecryptLabel number={current().number} />
+                </Show>
               </span>
             )}
           </Show>
@@ -302,6 +320,175 @@ const BadgeRow = styled("div", {
     },
   },
 });
+
+/**
+ * The top tier's lock and label. The label starts as scrambled symbols and
+ * decrypts left to right; the lock opens once it reads in full. It runs when
+ * the badge appears, again every CIPHER_DECRYPT_EVERY_MS while the page is
+ * visible, and on hover. Under reduced motion it shows the plain label with
+ * the lock open. The real label sits underneath, hidden, to hold the width so
+ * the badge never jumps; the parent's aria-label is what screen readers read.
+ */
+function CipherDecryptLabel(props: { number: number }) {
+  const target = () => cipherBadgeLabel(props.number);
+  const [text, setText] = createSignal(target());
+  const [locked, setLocked] = createSignal(false);
+
+  const motionQuery =
+    typeof matchMedia === "function"
+      ? matchMedia("(prefers-reduced-motion: reduce)")
+      : undefined;
+  const [reducedMotion, setReducedMotion] = createSignal(
+    !!motionQuery?.matches,
+  );
+
+  let root: HTMLSpanElement | undefined;
+  let frame = 0;
+  let timer: ReturnType<typeof setInterval> | undefined;
+
+  function stop() {
+    if (frame) cancelAnimationFrame(frame);
+    frame = 0;
+    setText(target());
+    setLocked(false);
+  }
+
+  // Turning reduced motion on mid-run settles the badge at once
+  function onMotionChange(event: MediaQueryListEvent) {
+    setReducedMotion(event.matches);
+    if (event.matches) stop();
+  }
+
+  function decrypt() {
+    if (reducedMotion() || frame) return;
+    // A copy that isn't laid out (the login page mounts the promo twice and
+    // hides one per breakpoint) skips the animation
+    if (!root || root.getClientRects().length === 0) return;
+    const goal = target();
+    const start = performance.now();
+    setLocked(true);
+
+    const step = (now: number) => {
+      const progress = Math.min(1, (now - start) / CIPHER_DECRYPT_MS);
+      const revealed = Math.floor(progress * (goal.length + 1));
+      if (progress < 1) {
+        setText(cipherScrambleFrame(goal, revealed, Math.random));
+        frame = requestAnimationFrame(step);
+      } else {
+        frame = 0;
+        setText(target());
+        setLocked(false);
+      }
+    };
+    frame = requestAnimationFrame(step);
+  }
+
+  onMount(() => {
+    motionQuery?.addEventListener("change", onMotionChange);
+    decrypt();
+    timer = setInterval(() => {
+      if (!document.hidden) decrypt();
+    }, CIPHER_DECRYPT_EVERY_MS);
+  });
+
+  onCleanup(() => {
+    motionQuery?.removeEventListener("change", onMotionChange);
+    if (frame) cancelAnimationFrame(frame);
+    if (timer) clearInterval(timer);
+  });
+
+  // A new number while idle shows at once; mid-decrypt the last frame does it
+  createEffect(
+    on(
+      target,
+      (goal) => {
+        if (!frame) setText(goal);
+      },
+      { defer: true },
+    ),
+  );
+
+  return (
+    <span
+      ref={root}
+      onPointerEnter={decrypt}
+      style={{ display: "inline-flex", "align-items": "center", gap: "5px" }}
+    >
+      <svg
+        width="13"
+        height="13"
+        viewBox="0 0 16 16"
+        aria-hidden="true"
+        class={locked() ? undefined : CIPHER_BADGE_OPEN_CLASS}
+        style={{ "flex-shrink": 0, overflow: "visible" }}
+      >
+        <path
+          class={CIPHER_BADGE_SHACKLE_CLASS}
+          d="M5 7V5.2a3 3 0 0 1 6 0V7"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+        />
+        <rect
+          x="3.2"
+          y="6.8"
+          width="9.6"
+          height="7.4"
+          rx="1.8"
+          fill="currentColor"
+        />
+        <circle cx="8" cy="10.3" r="1.1" fill="#27a163" />
+      </svg>
+      <span
+        style={{
+          position: "relative",
+          display: "inline-block",
+          overflow: "hidden",
+        }}
+      >
+        <span style={{ visibility: "hidden" }}>{target()}</span>
+        <span
+          aria-hidden="true"
+          style={{
+            position: "absolute",
+            left: 0,
+            top: 0,
+            "white-space": "nowrap",
+          }}
+        >
+          {text()}
+        </span>
+      </span>
+    </span>
+  );
+}
+
+/**
+ * The top tier's badge on its own, for promotion (login screen, Cipher
+ * settings): the same pill, shine, decrypt and lock as on a profile. `zoom`
+ * enlarges it as a whole so the lock, glow and padding scale together.
+ * Display only; it never says anything about the viewer's own membership.
+ */
+export function CipherBadgePreview(props: {
+  /** Defaults to CIPHER_PREVIEW_NUMBER */
+  number?: number;
+  label: string;
+  zoom?: number;
+}) {
+  onMount(() => ensureCipherBadgeSheet());
+
+  return (
+    <span
+      role="img"
+      aria-label={props.label}
+      class={cx(cipherBadge({ featured: true }), CIPHER_BADGE_SHINE_CLASS)}
+      style={{ zoom: props.zoom ?? 1, "flex-shrink": 0 }}
+    >
+      <CipherDecryptLabel number={props.number ?? CIPHER_PREVIEW_NUMBER} />
+    </span>
+  );
+}
 
 /**
  * Text pill sized to sit in line with the 24px icon badges. The animated
