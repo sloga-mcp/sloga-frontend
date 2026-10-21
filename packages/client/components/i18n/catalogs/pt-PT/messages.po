@@ -9038,3 +9038,12 @@ msgstr "Servidores e canais Protected"
 #: components/auth/src/CipherPromo.tsx
 msgid "to become a Cipher"
 msgstr "para seres um Cipher"
+
+#: components/auth/src/CipherPromo.tsx
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Animated Cipher badge preview"
+msgstr "Pré-visualização do emblema Cipher animado"
+
+#: components/auth/src/CipherPromo.tsx
+msgid "Every Cipher gets a numbered badge, and the top tier's badge decrypts like this."
+msgstr "Cada Cipher recebe um emblema numerado, e o do nível mais alto decifra-se assim."

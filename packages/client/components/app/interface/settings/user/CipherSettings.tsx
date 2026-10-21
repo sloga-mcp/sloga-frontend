@@ -25,6 +25,7 @@ import {
   CategoryButton,
   CircularProgress,
   Column,
+  Profile,
   Row,
   Text,
   useSnackbar,
@@ -500,6 +501,12 @@ function CipherPage(props: { context?: unknown }) {
                       <Text class="label">
                         <Trans>Animated Cipher badge</Trans>
                       </Text>
+                      <div>
+                        <Profile.CipherPreview
+                          number={47}
+                          label={t`Animated Cipher badge preview`}
+                        />
+                      </div>
                     </Show>
                     <CardAction>
                       <Button

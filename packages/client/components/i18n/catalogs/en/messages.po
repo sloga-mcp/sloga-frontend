@@ -10997,3 +10997,12 @@ msgstr "Protected servers and channels"
 #: components/auth/src/CipherPromo.tsx
 msgid "to become a Cipher"
 msgstr "to become a Cipher"
+
+#: components/auth/src/CipherPromo.tsx
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Animated Cipher badge preview"
+msgstr "Animated Cipher badge preview"
+
+#: components/auth/src/CipherPromo.tsx
+msgid "Every Cipher gets a numbered badge, and the top tier's badge decrypts like this."
+msgstr "Every Cipher gets a numbered badge, and the top tier's badge decrypts like this."

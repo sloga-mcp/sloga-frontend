@@ -440,6 +440,31 @@ function CipherDecryptLabel(props: { number: number }) {
 }
 
 /**
+ * The top tier's badge on its own, for promotion (login screen, Cipher
+ * settings): the same pill, shine, decrypt and lock as on a profile. `zoom`
+ * enlarges it as a whole so the lock, glow and padding scale together.
+ * Display only; it never says anything about the viewer's own membership.
+ */
+export function CipherBadgePreview(props: {
+  number: number;
+  label: string;
+  zoom?: number;
+}) {
+  onMount(() => ensureCipherBadgeSheet());
+
+  return (
+    <span
+      role="img"
+      aria-label={props.label}
+      class={cx(cipherBadge({ featured: true }), CIPHER_BADGE_SHINE_CLASS)}
+      style={{ zoom: props.zoom ?? 1, "flex-shrink": 0 }}
+    >
+      <CipherDecryptLabel number={props.number} />
+    </span>
+  );
+}
+
+/**
  * Text pill sized to sit in line with the 24px icon badges. The animated
  * tier's shine comes from CIPHER_BADGE_SHINE_CLASS (see cipherBadge.ts).
  */
