@@ -10,6 +10,11 @@ import type { State as ApplicationState } from "@revolt/state";
 import type { Session } from "@revolt/state/stores/Auth";
 import { killServiceWorkerSubscription } from "./NotificationsController";
 import { E2EEBridge, nativeE2EEAvailable } from "./e2ee";
+import {
+  type LoggingInEvent,
+  helloFailureError,
+  loggingInTarget,
+} from "./loggingInTransition";
 import { IS_OVERLAY_WINDOW } from "./popout";
 import { createSignOutHooks, transitionEndsSession } from "./signOutHooks";
 
@@ -225,18 +230,45 @@ class Lifecycle {
     }
 
     switch (nextState) {
-      case State.LoggingIn:
-        this.client.api.get("/onboard/hello").then(({ onboarding }) => {
-          if (onboarding) {
+      case State.LoggingIn: {
+        // Both handlers check that this is still the same client and that we
+        // are still logging in: a late reply for a disposed client must not
+        // drive the new one, or fire sign-out hooks through the catch.
+        const client = this.client;
+        client.api
+          .get("/onboard/hello")
+          .then(({ onboarding }) => {
+            if (this.client !== client || this.state() !== State.LoggingIn) {
+              return;
+            }
+
+            if (onboarding) {
+              this.transition({
+                type: TransitionType.NoUser,
+              });
+            } else {
+              // hello runs behind the Session guard, so a 200 proves the
+              // session is real. Without this, a reload before the socket
+              // connects drops the `valid: false` session in Auth.clean and
+              // sends the user back to the login form.
+              this.#controller.state.auth.markValid();
+              client.connect();
+            }
+          })
+          .catch((err) => {
+            // Also reached by a throw from markValid() or connect() above.
+            if (this.client !== client || this.state() !== State.LoggingIn) {
+              return;
+            }
+
             this.transition({
-              type: TransitionType.NoUser,
+              type: TransitionType.PermanentFailure,
+              error: helloFailureError(err),
             });
-          } else {
-            this.client.connect();
-          }
-        });
+          });
 
         break;
+      }
       case State.Connecting:
       case State.Reconnecting:
         this.client.connect();
@@ -255,6 +287,8 @@ class Lifecycle {
         break;
       case State.Dispose:
         this.dispose();
+        // A fresh login starts its reconnect backoff from the bottom.
+        this.#connectionFailures = 0;
         this.transition({
           type: TransitionType.Ready,
         });
@@ -365,23 +399,51 @@ class Lifecycle {
           this.#enter(State.Connecting);
         }
         break;
-      case State.LoggingIn:
-        switch (transition.type) {
-          case TransitionType.SocketConnected:
+      case State.LoggingIn: {
+        // A socket that failed right after a successful login used to land in
+        // State.Error, which /login/auth did not render, so the user was sent
+        // back to the login form with no message (reported 2026-10-18). The
+        // session is valid by then, so a temporary failure now goes to
+        // Disconnected and retries with backoff, as a cached login does. The
+        // mapping lives in loggingInTransition.ts, where it is tested.
+        const event: LoggingInEvent =
+          transition.type === TransitionType.SocketConnected
+            ? "socket-connected"
+            : transition.type === TransitionType.NoUser
+              ? "no-user"
+              : transition.type === TransitionType.PermanentFailure
+                ? "permanent-failure"
+                : transition.type === TransitionType.TemporaryFailure
+                  ? "temporary-failure"
+                  : "other";
+
+        const target = loggingInTarget(event);
+        switch (target) {
+          case "connected":
             this.#enter(State.Connected);
             break;
-          case TransitionType.NoUser:
+          case "onboarding":
             this.#enter(State.Onboarding);
             break;
-          case TransitionType.PermanentFailure:
-            this.#permanentError = transition.error;
+          case "error":
+            if (transition.type === TransitionType.PermanentFailure) {
+              this.#permanentError = transition.error;
+            }
             this.#enter(State.Error);
             break;
-          case TransitionType.TemporaryFailure:
-            this.#enter(State.Error);
+          case "disconnected":
+            this.#enter(State.Disconnected);
             break;
+          case undefined:
+            // Not handled here; the log below reports it.
+            break;
+          default: {
+            const exhaustive: never = target;
+            return exhaustive;
+          }
         }
         break;
+      }
       case State.Onboarding:
         if (transition.type === TransitionType.UserCreated) {
           this.#enter(State.Connecting);
