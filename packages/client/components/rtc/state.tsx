@@ -229,6 +229,7 @@ import {
   VAD_AUDIO_CONSTRAINTS,
   VAD_FFT_SIZE,
   VAD_FRAME_MS,
+  VAD_RESUME_TIMEOUT_MS,
   VAD_TICK_MS,
 } from "./vadLevel";
 import { VoiceAudioPipeline } from "./voiceAudioPipeline";
@@ -6929,6 +6930,13 @@ class Voice {
   async startCallAudio() {
     const room = this.room();
     if (!room) return;
+    // The same click is the gesture the voice-activity analyser may be
+    // waiting on: its context is created outside one too. Its `statechange`
+    // listener re-arms the gate, so nothing here needs to wait for it.
+    const vadCtx = this.#vadCtx;
+    if (vadCtx && vadCtx.state !== "running" && vadCtx.state !== "closed") {
+      void vadCtx.resume().catch(() => {});
+    }
     try {
       await room.startAudio();
     } catch (error) {
@@ -12444,10 +12452,29 @@ class Voice {
       stream.getAudioTracks()[0]?.addEventListener("ended", () => {
         if (gen === this.#vadGen) void this.#startVAD(room);
       });
-      this.#vadCtx = new AudioContext();
-      const analyser = this.#vadCtx.createAnalyser();
+      const ctx = new AudioContext();
+      this.#vadCtx = ctx;
+      // Created after an await, outside any user gesture, so Chromium's
+      // autoplay policy (web, WebView2) can hand it over `suspended`. A
+      // suspended analyser reads silence, which the gate must never mistake
+      // for a quiet room (see `vadGatePolicy.ts`). BOUNDED: without a
+      // gesture `resume()` may never settle, and the gate fails open while
+      // it waits, so a late start costs nothing and a hung one would.
+      if (ctx.state !== "running") {
+        let bound: ReturnType<typeof setTimeout> | undefined;
+        await Promise.race([
+          ctx.resume().catch(() => {}),
+          new Promise<void>((resolve) => {
+            bound = setTimeout(resolve, VAD_RESUME_TIMEOUT_MS);
+          }),
+        ]);
+        clearTimeout(bound);
+        // `#stopVAD` has already closed `ctx` and stopped the stream.
+        if (gen !== this.#vadGen) return;
+      }
+      const analyser = ctx.createAnalyser();
       analyser.fftSize = VAD_FFT_SIZE;
-      this.#vadCtx.createMediaStreamSource(this.#vadStream).connect(analyser);
+      ctx.createMediaStreamSource(stream).connect(analyser);
       const buf = new Uint8Array(analyser.frequencyBinCount);
       // "Automatically adjust input sensitivity": the gate follows the room's
       // noise floor instead of the hand-set threshold. Same tracker the
@@ -12458,6 +12485,10 @@ class Voice {
       // keeps an already-open gate open (resets the silence countdown).
       let openStreak = 0;
       let lastTick = performance.now();
+      // One fail-open attempt per suspended spell. The policy asks for the
+      // mic every tick it is down, and an enable that is refused must not
+      // turn into a retry loop at tick rate.
+      let failOpenSpent = false;
 
       const tick = () => {
         // Frames this tick stands in for. On a timer that a throttled window
@@ -12467,12 +12498,19 @@ class Voice {
         const frames = Math.max(1, (now - lastTick) / VAD_FRAME_MS);
         lastTick = now;
 
-        analyser.getByteFrequencyData(buf);
-        const level = levelFromFrequencyData(buf);
-        const autoThreshold = auto.update(level, frames);
-        const threshold = this.#settings.vadAuto
-          ? autoThreshold
-          : this.#settings.vadThreshold;
+        // Read only from a running context: a suspended one holds zeros or a
+        // frozen frame, and feeding either to the automatic noise floor
+        // would skew it for when the context comes back.
+        const analyserLive = ctx.state === "running";
+        let level = 0;
+        let threshold = this.#settings.vadThreshold;
+        if (analyserLive) {
+          failOpenSpent = false;
+          analyser.getByteFrequencyData(buf);
+          level = levelFromFrequencyData(buf);
+          const autoThreshold = auto.update(level, frames);
+          if (this.#settings.vadAuto) threshold = autoThreshold;
+        }
 
         const decision = vadGateDecision({
           level,
@@ -12487,13 +12525,15 @@ class Voice {
           // Voice-activity must not open the room mic while whispering — the
           // aside would otherwise be spoken to the whole call.
           whispering: !!this.whisper.target(),
+          analyserLive,
         });
         openStreak = decision.openStreak;
 
-        if (decision.speaking) {
+        if (!decision.countdown) {
           clearTimeout(this.#vadSilenceTimer);
           this.#vadSilenceTimer = undefined;
-          if (decision.open) {
+          if (decision.open && (analyserLive || !failOpenSpent)) {
+            if (!analyserLive) failOpenSpent = true;
             void this.#setMicEnabled(room, true).catch(() => {});
           }
         } else if (
@@ -12501,11 +12541,24 @@ class Voice {
           !this.#vadSilenceTimer
         ) {
           this.#vadSilenceTimer = setTimeout(() => {
-            room.localParticipant.setMicrophoneEnabled(false);
             this.#vadSilenceTimer = undefined;
+            // Re-checked at the cut: a context suspended since the countdown
+            // started has no silence verdict left to act on.
+            if (ctx.state !== "running") return;
+            room.localParticipant.setMicrophoneEnabled(false);
           }, 600);
         }
       };
+
+      // A context that comes up later (a gesture, the OS handing the device
+      // back) resumes gating, and one suspended mid-call stops muting at
+      // once rather than on the next tick a throttled window allows. Try to
+      // win it back too; nothing awaits this resume, so it may stay pending.
+      ctx.addEventListener("statechange", () => {
+        if (gen !== this.#vadGen) return;
+        if (ctx.state === "suspended") void ctx.resume().catch(() => {});
+        tick();
+      });
 
       // A TIMER, not requestAnimationFrame: rAF does not fire at all while
       // the window is hidden or minimized, which is most of a call for anyone

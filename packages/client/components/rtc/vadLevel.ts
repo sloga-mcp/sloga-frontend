@@ -55,6 +55,14 @@ export const VAD_FRAME_MS = 1000 / 60;
 export const VAD_TICK_MS = Math.round(VAD_FRAME_MS);
 
 /**
+ * How long the call gate waits for its analyser context to leave
+ * `suspended` before it starts ticking anyway. Without a user gesture
+ * Chromium may hold `resume()` pending indefinitely; the gate fails open
+ * while the context is not running, so starting late costs nothing.
+ */
+export const VAD_RESUME_TIMEOUT_MS = 1500;
+
+/**
  * Ceiling on how many frames one late `update()` may stand in for. Beyond
  * about half a second of catch-up the floor has no useful history left, and
  * an unbounded exponent lets a single resumed tick settle it straight onto
