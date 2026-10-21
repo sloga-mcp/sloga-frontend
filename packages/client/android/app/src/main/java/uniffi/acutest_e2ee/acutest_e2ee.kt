@@ -890,6 +890,10 @@ internal open class UniffiVTableCallbackInterfaceKeyProtector(
 
 
 
+
+
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -1025,6 +1029,10 @@ fun uniffi_acutest_e2ee_checksum_method_e2eeengine_pin_call_identities(
 ): Short
 fun uniffi_acutest_e2ee_checksum_method_e2eeengine_post_restore_rekey(
 ): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_preview_group_add(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_preview_group_enable(
+): Short
 fun uniffi_acutest_e2ee_checksum_method_e2eeengine_reconcile_devices(
 ): Short
 fun uniffi_acutest_e2ee_checksum_method_e2eeengine_replenish(
@@ -1113,7 +1121,7 @@ fun uniffi_acutest_e2ee_fn_method_e2eeengine_accept_identity_change(`ptr`: Point
 ): Unit
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_acknowledge_group_plaintext(`ptr`: Pointer,`conversationId`: RustBuffer.ByValue,`expected`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
-fun uniffi_acutest_e2ee_fn_method_e2eeengine_add_group_member(`ptr`: Pointer,`conversationId`: RustBuffer.ByValue,`userId`: RustBuffer.ByValue,`selfUserId`: RustBuffer.ByValue,`bundlesJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_add_group_member(`ptr`: Pointer,`conversationId`: RustBuffer.ByValue,`userId`: RustBuffer.ByValue,`selfUserId`: RustBuffer.ByValue,`bundlesJson`: RustBuffer.ByValue,`expectedAfter`: RustBuffer.ByValue,`prompted`: Byte,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_attachment_attach_blob(`ptr`: Pointer,`localId`: RustBuffer.ByValue,`blobId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
@@ -1155,7 +1163,7 @@ fun uniffi_acutest_e2ee_fn_method_e2eeengine_downgraded_conversations(`ptr`: Poi
 ): RustBuffer.ByValue
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_enable(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
-fun uniffi_acutest_e2ee_fn_method_e2eeengine_enable_group(`ptr`: Pointer,`conversationId`: RustBuffer.ByValue,`roster`: RustBuffer.ByValue,`selfUserId`: RustBuffer.ByValue,`bundlesJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_enable_group(`ptr`: Pointer,`conversationId`: RustBuffer.ByValue,`roster`: RustBuffer.ByValue,`selfUserId`: RustBuffer.ByValue,`bundlesJson`: RustBuffer.ByValue,`expectedAfter`: RustBuffer.ByValue,`prompted`: Byte,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_encrypt(`ptr`: Pointer,`peerUserId`: RustBuffer.ByValue,`selfUserId`: RustBuffer.ByValue,`peerBundleJson`: RustBuffer.ByValue,`selfBundleJson`: RustBuffer.ByValue,`content`: RustBuffer.ByValue,`attachments`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
@@ -1228,6 +1236,10 @@ fun uniffi_acutest_e2ee_fn_method_e2eeengine_pending_downgrades(`ptr`: Pointer,u
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_pin_call_identities(`ptr`: Pointer,`selfUserId`: RustBuffer.ByValue,`userId`: RustBuffer.ByValue,`targets`: RustBuffer.ByValue,`devicesJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_post_restore_rekey(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_preview_group_add(`ptr`: Pointer,`conversationId`: RustBuffer.ByValue,`userId`: RustBuffer.ByValue,`selfUserId`: RustBuffer.ByValue,`displayNames`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_preview_group_enable(`ptr`: Pointer,`conversationId`: RustBuffer.ByValue,`roster`: RustBuffer.ByValue,`selfUserId`: RustBuffer.ByValue,`displayNames`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_reconcile_devices(`ptr`: Pointer,`userId`: RustBuffer.ByValue,`devicesJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
@@ -1393,7 +1405,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_acknowledge_group_plaintext() != 11994.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_add_group_member() != 3315.toShort()) {
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_add_group_member() != 26232.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_attachment_attach_blob() != 5852.toShort()) {
@@ -1456,7 +1468,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_enable() != 42257.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_enable_group() != 30312.toShort()) {
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_enable_group() != 1366.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_encrypt() != 913.toShort()) {
@@ -1565,6 +1577,12 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_post_restore_rekey() != 44810.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_preview_group_add() != 11896.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_preview_group_enable() != 20985.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_reconcile_devices() != 25250.toShort()) {
@@ -2077,9 +2095,12 @@ public interface E2eeEngineInterface {
     fun `acknowledgeGroupPlaintext`(`conversationId`: kotlin.String, `expected`: kotlin.String)
     
     /**
-     * Add a member to an encrypted group's audience (design §2.3).
+     * Add a member to an encrypted group's audience (design §2.3): the
+     * checked commit after [`Self::preview_group_add`]. Same contract as
+     * [`Self::enable_group`] for `expected_after`, `prompted`, the id
+     * checks and never-provision.
      */
-    fun `addGroupMember`(`conversationId`: kotlin.String, `userId`: kotlin.String, `selfUserId`: kotlin.String, `bundlesJson`: kotlin.String?): kotlin.String
+    fun `addGroupMember`(`conversationId`: kotlin.String, `userId`: kotlin.String, `selfUserId`: kotlin.String, `bundlesJson`: kotlin.String?, `expectedAfter`: List<kotlin.String>, `prompted`: kotlin.Boolean): kotlin.String
     
     /**
      * Record the Autumn blob id after a successful upload.
@@ -2214,10 +2235,20 @@ public interface E2eeEngineInterface {
     fun `enable`(): kotlin.String
     
     /**
-     * Enable encryption for a group (design §2.5). The Kotlin side has
-     * shown the asserted-roster checklist + confirm.
+     * Enable encryption for a group (design §2.5): the CHECKED COMMIT after
+     * [`Self::preview_group_enable`]. Kotlin calls it in exactly two
+     * places: with `prompted = false` when the preview said
+     * `!needs_prompt`, and from the `AlertDialog`'s positive button with
+     * `prompted = true`. `expected_after` is the preview's, never call
+     * data from the webview.
+     *
+     * The engine re-runs the preview under its lock and refuses
+     * `roster_changed` when a prompt is needed and `prompted` is false, or
+     * when the audience grew past `expected_after`. Same ULID checks as the
+     * preview; never provisions (an unprovisioned device, e.g. one wiped
+     * while the dialog was open, answers `NotEnabled`).
      */
-    fun `enableGroup`(`conversationId`: kotlin.String, `roster`: List<kotlin.String>, `selfUserId`: kotlin.String, `bundlesJson`: kotlin.String?): kotlin.String
+    fun `enableGroup`(`conversationId`: kotlin.String, `roster`: List<kotlin.String>, `selfUserId`: kotlin.String, `bundlesJson`: kotlin.String?, `expectedAfter`: List<kotlin.String>, `prompted`: kotlin.Boolean): kotlin.String
     
     /**
      * JSON `EncryptResult`. Bundles are the JSON `GET /e2ee/keys/{user}`
@@ -2506,6 +2537,32 @@ public interface E2eeEngineInterface {
     fun `postRestoreRekey`(): kotlin.String
     
     /**
+     * Preview of including `user_id` in an encrypted group, with the native
+     * dialog copy for it. Same id and self checks (`user_id` for the added
+     * user), the same never-provision answer and the same role for
+     * `display_names` as [`Self::preview_group_enable`].
+     */
+    fun `previewGroupAdd`(`conversationId`: kotlin.String, `userId`: kotlin.String, `selfUserId`: kotlin.String, `displayNames`: Map<kotlin.String, kotlin.String>): GroupGrowthPrompt
+    
+    /**
+     * Preview of turning on encryption for a group (or re-sending a
+     * confirmed enable), with the native dialog copy for it. Writes nothing
+     * about the group; on a store with no owner of record yet,
+     * `self_user_id` becomes it (trust on first use, as on desktop).
+     * `display_names` maps user id → name for the dialog lines only and
+     * decides nothing.
+     *
+     * Refused first, as on desktop: a conversation id, self id or roster
+     * entry that is not ULID-shaped (`InvalidArgument` `conversation_id` /
+     * `self_user_id` / `roster`). Never-provision: an unprovisioned device
+     * answers `NotEnabled` and creates no files. Otherwise the engine's own
+     * pre-checks (`NotPublished`, a `self_user_id` other than the owner of
+     * record → `MlsStoreOwnedByAnotherAccount`, roster size, D1
+     * `roster_mismatch`, …) answer before any dialog could be shown.
+     */
+    fun `previewGroupEnable`(`conversationId`: kotlin.String, `roster`: List<kotlin.String>, `selfUserId`: kotlin.String, `displayNames`: Map<kotlin.String, kotlin.String>): GroupGrowthPrompt
+    
+    /**
      * Reconcile a JSON `GET /e2ee/devices/{user}` listing; returns the
      * JSON `ReconcileReport`. Never-provision fast path (post-wipe design
      * §1): device events and DM-open reconciles fire without user action;
@@ -2744,14 +2801,17 @@ open class E2eeEngine: Disposable, AutoCloseable, E2eeEngineInterface
 
     
     /**
-     * Add a member to an encrypted group's audience (design §2.3).
+     * Add a member to an encrypted group's audience (design §2.3): the
+     * checked commit after [`Self::preview_group_add`]. Same contract as
+     * [`Self::enable_group`] for `expected_after`, `prompted`, the id
+     * checks and never-provision.
      */
-    @Throws(E2eeException::class)override fun `addGroupMember`(`conversationId`: kotlin.String, `userId`: kotlin.String, `selfUserId`: kotlin.String, `bundlesJson`: kotlin.String?): kotlin.String {
+    @Throws(E2eeException::class)override fun `addGroupMember`(`conversationId`: kotlin.String, `userId`: kotlin.String, `selfUserId`: kotlin.String, `bundlesJson`: kotlin.String?, `expectedAfter`: List<kotlin.String>, `prompted`: kotlin.Boolean): kotlin.String {
             return FfiConverterString.lift(
     callWithPointer {
     uniffiRustCallWithError(E2eeException) { _status ->
     UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_add_group_member(
-        it, FfiConverterString.lower(`conversationId`),FfiConverterString.lower(`userId`),FfiConverterString.lower(`selfUserId`),FfiConverterOptionalString.lower(`bundlesJson`),_status)
+        it, FfiConverterString.lower(`conversationId`),FfiConverterString.lower(`userId`),FfiConverterString.lower(`selfUserId`),FfiConverterOptionalString.lower(`bundlesJson`),FfiConverterSequenceString.lower(`expectedAfter`),FfiConverterBoolean.lower(`prompted`),_status)
 }
     }
     )
@@ -3105,15 +3165,25 @@ open class E2eeEngine: Disposable, AutoCloseable, E2eeEngineInterface
 
     
     /**
-     * Enable encryption for a group (design §2.5). The Kotlin side has
-     * shown the asserted-roster checklist + confirm.
+     * Enable encryption for a group (design §2.5): the CHECKED COMMIT after
+     * [`Self::preview_group_enable`]. Kotlin calls it in exactly two
+     * places: with `prompted = false` when the preview said
+     * `!needs_prompt`, and from the `AlertDialog`'s positive button with
+     * `prompted = true`. `expected_after` is the preview's, never call
+     * data from the webview.
+     *
+     * The engine re-runs the preview under its lock and refuses
+     * `roster_changed` when a prompt is needed and `prompted` is false, or
+     * when the audience grew past `expected_after`. Same ULID checks as the
+     * preview; never provisions (an unprovisioned device, e.g. one wiped
+     * while the dialog was open, answers `NotEnabled`).
      */
-    @Throws(E2eeException::class)override fun `enableGroup`(`conversationId`: kotlin.String, `roster`: List<kotlin.String>, `selfUserId`: kotlin.String, `bundlesJson`: kotlin.String?): kotlin.String {
+    @Throws(E2eeException::class)override fun `enableGroup`(`conversationId`: kotlin.String, `roster`: List<kotlin.String>, `selfUserId`: kotlin.String, `bundlesJson`: kotlin.String?, `expectedAfter`: List<kotlin.String>, `prompted`: kotlin.Boolean): kotlin.String {
             return FfiConverterString.lift(
     callWithPointer {
     uniffiRustCallWithError(E2eeException) { _status ->
     UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_enable_group(
-        it, FfiConverterString.lower(`conversationId`),FfiConverterSequenceString.lower(`roster`),FfiConverterString.lower(`selfUserId`),FfiConverterOptionalString.lower(`bundlesJson`),_status)
+        it, FfiConverterString.lower(`conversationId`),FfiConverterSequenceString.lower(`roster`),FfiConverterString.lower(`selfUserId`),FfiConverterOptionalString.lower(`bundlesJson`),FfiConverterSequenceString.lower(`expectedAfter`),FfiConverterBoolean.lower(`prompted`),_status)
 }
     }
     )
@@ -3795,6 +3865,54 @@ open class E2eeEngine: Disposable, AutoCloseable, E2eeEngineInterface
 
     
     /**
+     * Preview of including `user_id` in an encrypted group, with the native
+     * dialog copy for it. Same id and self checks (`user_id` for the added
+     * user), the same never-provision answer and the same role for
+     * `display_names` as [`Self::preview_group_enable`].
+     */
+    @Throws(E2eeException::class)override fun `previewGroupAdd`(`conversationId`: kotlin.String, `userId`: kotlin.String, `selfUserId`: kotlin.String, `displayNames`: Map<kotlin.String, kotlin.String>): GroupGrowthPrompt {
+            return FfiConverterTypeGroupGrowthPrompt.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_preview_group_add(
+        it, FfiConverterString.lower(`conversationId`),FfiConverterString.lower(`userId`),FfiConverterString.lower(`selfUserId`),FfiConverterMapStringString.lower(`displayNames`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Preview of turning on encryption for a group (or re-sending a
+     * confirmed enable), with the native dialog copy for it. Writes nothing
+     * about the group; on a store with no owner of record yet,
+     * `self_user_id` becomes it (trust on first use, as on desktop).
+     * `display_names` maps user id → name for the dialog lines only and
+     * decides nothing.
+     *
+     * Refused first, as on desktop: a conversation id, self id or roster
+     * entry that is not ULID-shaped (`InvalidArgument` `conversation_id` /
+     * `self_user_id` / `roster`). Never-provision: an unprovisioned device
+     * answers `NotEnabled` and creates no files. Otherwise the engine's own
+     * pre-checks (`NotPublished`, a `self_user_id` other than the owner of
+     * record → `MlsStoreOwnedByAnotherAccount`, roster size, D1
+     * `roster_mismatch`, …) answer before any dialog could be shown.
+     */
+    @Throws(E2eeException::class)override fun `previewGroupEnable`(`conversationId`: kotlin.String, `roster`: List<kotlin.String>, `selfUserId`: kotlin.String, `displayNames`: Map<kotlin.String, kotlin.String>): GroupGrowthPrompt {
+            return FfiConverterTypeGroupGrowthPrompt.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_preview_group_enable(
+        it, FfiConverterString.lower(`conversationId`),FfiConverterSequenceString.lower(`roster`),FfiConverterString.lower(`selfUserId`),FfiConverterMapStringString.lower(`displayNames`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
      * Reconcile a JSON `GET /e2ee/devices/{user}` listing; returns the
      * JSON `ReconcileReport`. Never-provision fast path (post-wipe design
      * §1): device events and DM-open reconciles fire without user action;
@@ -4413,6 +4531,87 @@ public object FfiConverterTypeAttachmentContent: FfiConverterRustBuffer<Attachme
 
 
 
+/**
+ * What the Kotlin plugin needs to gate a group audience change on an OS
+ * `AlertDialog`: whether a dialog is required, its core-owned copy, and the
+ * audience the commit must be bound to.
+ *
+ * Everything here is native. The "You (id)" line, member ids, count,
+ * new/removed marks and verification labels in `message` come from the
+ * engine's preview, whose self id is bound to the store's owner of record
+ * (a mismatch never reaches a prompt: `mls_store_owned_by_another_account`);
+ * only the names beside the ids come from the webview (keyed by id,
+ * sanitized, unable to carry an id or the line punctuation, and the copy
+ * says so). The copy is the desktop dialog's, from the same
+ * `ConfirmRequest::copy()`, so Kotlin carries no strings of its own,
+ * including the distinct re-send copy for a Retry / already-Active
+ * include. Every variant is a warning whose default button is Cancel.
+ *
+ * The desktop shell also locks a conversation's growth prompts out for
+ * 30 s after a decline (`busy`); that lockout lives in `ShellEngine`, not
+ * here, so the Kotlin plugin has to mirror it to match.
+ *
+ * `expected_after` is the previewed audience. Kotlin passes it, unchanged,
+ * to `enable_group` / `add_group_member` together with `prompted = true`
+ * once the user presses the confirm button; the engine then refuses
+ * `roster_changed` if the audience grew past it in between.
+ */
+data class GroupGrowthPrompt (
+    /**
+     * `false` only for a re-send of a change the user already confirmed on
+     * this device (a matching native consent record). Kotlin then commits
+     * with `prompted = false` and shows no dialog.
+     */
+    var `needsPrompt`: kotlin.Boolean, 
+    var `title`: kotlin.String, 
+    var `message`: kotlin.String, 
+    /**
+     * Label of the button whose press is consent.
+     */
+    var `confirmLabel`: kotlin.String, 
+    var `cancelLabel`: kotlin.String, 
+    var `expectedAfter`: List<kotlin.String>
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeGroupGrowthPrompt: FfiConverterRustBuffer<GroupGrowthPrompt> {
+    override fun read(buf: ByteBuffer): GroupGrowthPrompt {
+        return GroupGrowthPrompt(
+            FfiConverterBoolean.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterSequenceString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: GroupGrowthPrompt) = (
+            FfiConverterBoolean.allocationSize(value.`needsPrompt`) +
+            FfiConverterString.allocationSize(value.`title`) +
+            FfiConverterString.allocationSize(value.`message`) +
+            FfiConverterString.allocationSize(value.`confirmLabel`) +
+            FfiConverterString.allocationSize(value.`cancelLabel`) +
+            FfiConverterSequenceString.allocationSize(value.`expectedAfter`)
+    )
+
+    override fun write(value: GroupGrowthPrompt, buf: ByteBuffer) {
+            FfiConverterBoolean.write(value.`needsPrompt`, buf)
+            FfiConverterString.write(value.`title`, buf)
+            FfiConverterString.write(value.`message`, buf)
+            FfiConverterString.write(value.`confirmLabel`, buf)
+            FfiConverterString.write(value.`cancelLabel`, buf)
+            FfiConverterSequenceString.write(value.`expectedAfter`, buf)
+    }
+}
+
+
+
 
 
 /**
@@ -4577,6 +4776,45 @@ public object FfiConverterSequenceString: FfiConverterRustBuffer<List<kotlin.Str
         buf.putInt(value.size)
         value.iterator().forEach {
             FfiConverterString.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterMapStringString: FfiConverterRustBuffer<Map<kotlin.String, kotlin.String>> {
+    override fun read(buf: ByteBuffer): Map<kotlin.String, kotlin.String> {
+        val len = buf.getInt()
+        return buildMap<kotlin.String, kotlin.String>(len) {
+            repeat(len) {
+                val k = FfiConverterString.read(buf)
+                val v = FfiConverterString.read(buf)
+                this[k] = v
+            }
+        }
+    }
+
+    override fun allocationSize(value: Map<kotlin.String, kotlin.String>): ULong {
+        val spaceForMapSize = 4UL
+        val spaceForChildren = value.map { (k, v) ->
+            FfiConverterString.allocationSize(k) +
+            FfiConverterString.allocationSize(v)
+        }.sum()
+        return spaceForMapSize + spaceForChildren
+    }
+
+    override fun write(value: Map<kotlin.String, kotlin.String>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        // The parens on `(k, v)` here ensure we're calling the right method,
+        // which is important for compatibility with older android devices.
+        // Ref https://blog.danlew.net/2017/03/16/kotlin-puzzler-whose-line-is-it-anyways/
+        value.forEach { (k, v) ->
+            FfiConverterString.write(k, buf)
+            FfiConverterString.write(v, buf)
         }
     }
 }

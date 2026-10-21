@@ -7,6 +7,7 @@ import android.content.Context
 import android.graphics.Typeface
 import android.os.Build
 import android.os.PersistableBundle
+import android.os.SystemClock
 import android.text.InputType
 import android.util.Base64
 import android.view.View
@@ -24,7 +25,9 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 import uniffi.acutest_e2ee.E2eeException
+import uniffi.acutest_e2ee.GroupGrowthPrompt
 
 /**
  * Bounds the inbound attachment ciphertext GET. The native core bundled in
@@ -37,6 +40,31 @@ import uniffi.acutest_e2ee.E2eeException
  * Autumn's larger blob ceiling.
  */
 private const val MAX_ATTACHMENT_CIPHERTEXT: Long = 21L * 1024 * 1024
+
+/**
+ * How long a declined group-growth dialog keeps that conversation from
+ * prompting again: the desktop `GROWTH_DECLINE_LOCKOUT` (e2ee-core
+ * `shell.rs`). A webview that re-asks in a loop gets `busy` rather than a
+ * fresh dialog for the user to click through.
+ */
+private const val GROWTH_DECLINE_LOCKOUT_MS: Long = 30_000L
+
+/**
+ * How long a group-growth dialog's confirm button stays disabled after the
+ * dialog shows (tapjacking). A tap the user aimed at whatever was on screen
+ * before the dialog appeared, or one a hostile overlay times to its arrival,
+ * lands on a disabled button instead of committing. The button also ignores
+ * touches while another window covers it (`filterTouchesWhenObscured`).
+ */
+private const val GROWTH_CONFIRM_DELAY_MS: Long = 700L
+
+/**
+ * The same input delay for the plaintext-direction dialogs (`downgrade`,
+ * `confirmPeerDowngradeAccept` and the call downgrade). Equal to
+ * [GROWTH_CONFIRM_DELAY_MS], under its own name so tuning one is a visible
+ * decision about the other.
+ */
+private const val DOWNGRADE_CONFIRM_DELAY_MS: Long = GROWTH_CONFIRM_DELAY_MS
 
 /**
  * Capacitor bridge for the native E2EE layer (slice 4) — the Android analog
@@ -293,26 +321,6 @@ class E2eePlugin : Plugin() {
                             call.getArray("attachments")?.toList<String>() ?: emptyList(),
                         ),
                     )
-                "e2ee_enable_group" ->
-                    resolveJson(
-                        call,
-                        engine.enableGroup(
-                            requireString(call, "conversationId"),
-                            call.getArray("roster")?.toList<String>() ?: emptyList(),
-                            requireString(call, "selfUserId"),
-                            call.getArray("bundles")?.toString(),
-                        ),
-                    )
-                "e2ee_add_group_member" ->
-                    resolveJson(
-                        call,
-                        engine.addGroupMember(
-                            requireString(call, "conversationId"),
-                            requireString(call, "userId"),
-                            requireString(call, "selfUserId"),
-                            call.getArray("bundles")?.toString(),
-                        ),
-                    )
                 "e2ee_group_reconcile" ->
                     resolveJson(
                         call,
@@ -557,7 +565,11 @@ class E2eePlugin : Plugin() {
                     engine.mlsExpireKeyPackages()
                     resolveJson(call, "null")
                 }
-                // NOT here by design: e2ee_wipe + e2ee_downgrade +
+                // NOT here by design: e2ee_enable_group + e2ee_add_group_member
+                // (they grow an encrypted group's audience on every member's
+                // device, so they are native-dialog-gated like downgrade: the
+                // dedicated enableGroup / addGroupMember methods below);
+                // e2ee_wipe + e2ee_downgrade +
                 // e2ee_confirm_peer_downgrade-ACCEPT (native dialog methods;
                 // the generic `confirm_peer_downgrade` arm above only handles
                 // DECLINE — the JS transport routes accept + downgrade to the
@@ -759,7 +771,468 @@ class E2eePlugin : Plugin() {
                 .setNegativeButton("Cancel") { _, _ -> call.reject("{\"type\":\"declined\"}") }
                 .setOnCancelListener { call.reject("{\"type\":\"declined\"}") }
                 .show()
+                .also { guardDowngradeButtons(it) }
         }
+    }
+
+    /**
+     * Tapjacking guard for the plaintext-direction dialogs ([downgrade],
+     * [confirmPeerDowngradeAccept], [showConfirmDowngradeDialog]). Applied
+     * right after `show()`, which has built the buttons by the time it
+     * returns: both buttons ignore touches while another window covers them,
+     * and the positive one stays disabled for [DOWNGRADE_CONFIRM_DELAY_MS].
+     * Nothing else about those dialogs changes.
+     */
+    private fun guardDowngradeButtons(dialog: AlertDialog) {
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.let { confirm ->
+            confirm.isEnabled = false
+            confirm.filterTouchesWhenObscured = true
+            confirm.postDelayed({ confirm.isEnabled = true }, DOWNGRADE_CONFIRM_DELAY_MS)
+        }
+        dialog.getButton(AlertDialog.BUTTON_NEGATIVE)?.filterTouchesWhenObscured = true
+    }
+
+    // ================================================================
+    // Group audience growth (group-growth native confirm, design §9)
+    //
+    // `e2ee_enable_group` and `e2ee_add_group_member` widen who can read an
+    // encrypted group's FUTURE messages, on every member's device, so the
+    // webview can only REQUEST them. The core previews the change (the full
+    // resulting member list with ids, who is new, each member's verification
+    // status on this device, and the dialog copy). Unless the change is a
+    // re-send the user already confirmed on this device, the commit needs a
+    // tap on the positive button of an OS dialog the webview cannot draw,
+    // dismiss or answer. Desktop analog: `ShellEngine::group_growth_gated`
+    // (e2ee-core `shell.rs`).
+    //
+    // Both methods run the same steps, each in its own body so the commit
+    // sites are visible where they are gated (the scan spec
+    // `e2eeGroupGrowth.scan.test.ts` pins that shape):
+    //  1. Validate the args.
+    //  2. ONE request in flight ([growthInFlight]); a second is rejected
+    //     `busy`, with no preview and no dialog.
+    //  3. On the executor, the core preview. It binds `selfUserId` to this
+    //     device's owner of record and checks the request (ids, cap,
+    //     enablement, membership) before any dialog.
+    //  4. No prompt needed (a re-send the user already confirmed on this
+    //     device): commit with `prompted = false`. The core re-runs the
+    //     preview under its own lock and refuses `roster_changed` if a prompt
+    //     became necessary in between.
+    //  5. Otherwise, unless this conversation is in its decline lockout
+    //     (`busy`, no dialog), the dialog. Only its positive button commits,
+    //     with `prompted = true`. Cancel, back, an outside tap and a dismiss
+    //     from activity teardown ([handleOnDestroy]) all end in the dismiss
+    //     listener: `declined`, and the lockout starts.
+    // Every commit passes the PREVIEW's `expectedAfter`, never anything from
+    // the call; the core refuses `roster_changed` if the audience grew past
+    // what the dialog showed. The hold is released exactly once on every
+    // outcome, before the call settles, so an immediate retry by the webview
+    // is never refused `busy` by its own finished request.
+    //
+    // What the dialog cannot prove: the NAMES beside the ids come from the
+    // webview, the webview still chooses which group it asks about, and it
+    // covers members, not the devices webview-supplied bundles pin.
+    // ================================================================
+
+    /**
+     * One group-growth request in flight, prompt or not, across BOTH methods
+     * (desktop `growth_in_flight`). Claimed before the preview; each request
+     * releases it exactly once, through its own `held` flag, so a path that
+     * releases early and a catch-all that releases again can never clear a
+     * LATER request's claim.
+     */
+    private val growthInFlight = AtomicBoolean(false)
+
+    /**
+     * The decline lockout (desktop `growth_declined_until`): conversation id
+     * → the `SystemClock.elapsedRealtime()` until which a request for that
+     * conversation that NEEDS the dialog is rejected `busy` instead of
+     * showing another. Per conversation, so declining one group does not
+     * silence another; memory only. Guarded by its own monitor.
+     */
+    private val growthDeclinedUntil = HashMap<String, Long>()
+
+    /**
+     * The open growth dialog, if any. UI thread only. Kept so
+     * [handleOnDestroy] can dismiss it: activity teardown removes a showing
+     * dialog's window WITHOUT dismissing it, so its listeners would never run.
+     */
+    private var growthDialog: AlertDialog? = null
+
+    /** Whether [conversationId] is inside its decline lockout. Prunes lapsed entries. */
+    private fun growthLockedOut(conversationId: String): Boolean =
+        synchronized(growthDeclinedUntil) {
+            val now = SystemClock.elapsedRealtime()
+            growthDeclinedUntil.values.removeAll { until -> now >= until }
+            growthDeclinedUntil.containsKey(conversationId)
+        }
+
+    /** Start (or restart) [conversationId]'s decline lockout. */
+    private fun noteGrowthDecline(conversationId: String) {
+        synchronized(growthDeclinedUntil) {
+            growthDeclinedUntil[conversationId] =
+                SystemClock.elapsedRealtime() + GROWTH_DECLINE_LOCKOUT_MS
+        }
+    }
+
+    /** A string array argument, or null when it is absent or any element is not a string. */
+    private fun stringsOrNull(call: PluginCall, key: String): List<String>? {
+        val array = call.getArray(key) ?: return null
+        val strings = ArrayList<String>(array.length())
+        for (i in 0 until array.length()) {
+            strings.add(array.opt(i) as? String ?: return null)
+        }
+        return strings
+    }
+
+    /**
+     * The optional `displayNames` argument (user id → label), for the dialog
+     * only. Absent, or not an object, is an empty map; a non-string value is
+     * dropped, so that member renders as the id alone. The core sanitizes and
+     * clamps every name and always prints the id beside it.
+     */
+    private fun displayNamesArg(call: PluginCall): Map<String, String> {
+        val names = call.getObject("displayNames") ?: return emptyMap()
+        val map = HashMap<String, String>()
+        for (key in names.keys()) {
+            val name = names.opt(key)
+            if (name is String) map[key] = name
+        }
+        return map
+    }
+
+    /**
+     * Turn on (or re-enable, or re-assert) encryption for a group: the
+     * `e2ee_enable_group` command, behind the native growth dialog (steps in
+     * the section comment above). Args: `conversationId`, `roster` (the
+     * member ids the user is asserting, self included), `selfUserId`,
+     * optional `bundles` (a JSON array of key bundles, as for [downgrade])
+     * and optional `displayNames`.
+     */
+    @PluginMethod
+    fun enableGroup(call: PluginCall) {
+        val conversationId = call.getString("conversationId") ?: run {
+            call.reject("{\"type\":\"invalid_argument\",\"field\":\"conversationId\"}")
+            return
+        }
+        val roster = stringsOrNull(call, "roster") ?: run {
+            call.reject("{\"type\":\"invalid_argument\",\"field\":\"roster\"}")
+            return
+        }
+        val selfUserId = call.getString("selfUserId") ?: run {
+            call.reject("{\"type\":\"invalid_argument\",\"field\":\"selfUserId\"}")
+            return
+        }
+        val bundles = call.getArray("bundles")?.toString()
+        val displayNames = displayNamesArg(call)
+
+        if (!growthInFlight.compareAndSet(false, true)) {
+            call.reject("{\"type\":\"busy\"}")
+            return
+        }
+        val held = AtomicBoolean(true)
+        fun release() {
+            if (held.compareAndSet(true, false)) growthInFlight.set(false)
+        }
+
+        try {
+            executor.execute {
+                try {
+                    val prompt =
+                        engine().previewGroupEnable(conversationId, roster, selfUserId, displayNames)
+                    if (!prompt.needsPrompt) {
+                        val json =
+                            try {
+                                engine().enableGroup(
+                                    conversationId,
+                                    roster,
+                                    selfUserId,
+                                    bundles,
+                                    expectedAfter = prompt.expectedAfter,
+                                    prompted = false,
+                                )
+                            } finally {
+                                release()
+                            }
+                        resolveJson(call, json)
+                        return@execute
+                    }
+                    if (growthLockedOut(conversationId)) {
+                        release()
+                        call.reject("{\"type\":\"busy\"}")
+                        return@execute
+                    }
+                    activity.runOnUiThread {
+                        // Resolve-once: the positive button and the dismiss
+                        // listener race to settle the call; one wins.
+                        val settled = AtomicBoolean(false)
+                        try {
+                            // Nothing to consent to, or a button with no
+                            // label: fail closed rather than show a dialog
+                            // with no member list or button copy the core
+                            // did not write.
+                            if (
+                                prompt.title.isBlank() ||
+                                    prompt.message.isBlank() ||
+                                    prompt.confirmLabel.isBlank() ||
+                                    prompt.cancelLabel.isBlank()
+                            ) {
+                                throw E2eeException.Failure("{\"type\":\"crypto_failure\"}")
+                            }
+                            val dialog =
+                                AlertDialog.Builder(activity)
+                                    .setTitle(prompt.title)
+                                    .setMessage(prompt.message)
+                                    .setPositiveButton(prompt.confirmLabel) { _, _ ->
+                                        if (settled.compareAndSet(false, true)) {
+                                            try {
+                                                run(call) {
+                                                    val json =
+                                                        try {
+                                                            engine().enableGroup(
+                                                                conversationId,
+                                                                roster,
+                                                                selfUserId,
+                                                                bundles,
+                                                                expectedAfter = prompt.expectedAfter,
+                                                                prompted = true,
+                                                            )
+                                                        } finally {
+                                                            release()
+                                                        }
+                                                    resolveJson(call, json)
+                                                }
+                                            } catch (error: Throwable) {
+                                                release()
+                                                rejectScrubbed(call, error)
+                                            }
+                                        }
+                                    }
+                                    // No listener: the button dismisses the
+                                    // dialog, and the dismiss listener declines.
+                                    .setNegativeButton(prompt.cancelLabel, null)
+                                    .create()
+                            // Back and an outside tap cancel, and a cancel
+                            // dismisses: both reach the dismiss listener.
+                            dialog.setCanceledOnTouchOutside(true)
+                            dialog.setOnDismissListener {
+                                if (growthDialog === dialog) growthDialog = null
+                                // Lost the race to a confirm: already settled.
+                                if (settled.compareAndSet(false, true)) {
+                                    noteGrowthDecline(conversationId)
+                                    release()
+                                    call.reject("{\"type\":\"declined\"}")
+                                }
+                            }
+                            dialog.setOnShowListener {
+                                // Tapjacking: confirm ignores touches while
+                                // another window covers it, and stays disabled
+                                // for the first GROWTH_CONFIRM_DELAY_MS, so a
+                                // tap aimed at what was under the dialog, or
+                                // timed to its arrival, cannot commit.
+                                dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.let { confirm ->
+                                    confirm.isEnabled = false
+                                    confirm.filterTouchesWhenObscured = true
+                                    confirm.postDelayed(
+                                        { confirm.isEnabled = true },
+                                        GROWTH_CONFIRM_DELAY_MS,
+                                    )
+                                }
+                                // Cancel is the default: keyboard focus starts there.
+                                dialog.getButton(AlertDialog.BUTTON_NEGATIVE)?.let { cancel ->
+                                    cancel.filterTouchesWhenObscured = true
+                                    cancel.requestFocus()
+                                }
+                            }
+                            dialog.show()
+                            growthDialog = dialog
+                        } catch (error: Throwable) {
+                            if (settled.compareAndSet(false, true)) {
+                                release()
+                                rejectScrubbed(call, error)
+                            }
+                        }
+                    }
+                } catch (error: Throwable) {
+                    release()
+                    rejectScrubbed(call, error)
+                }
+            }
+        } catch (error: Throwable) {
+            release()
+            rejectScrubbed(call, error)
+        }
+    }
+
+    /**
+     * Include a member in an encrypted group: the `e2ee_add_group_member`
+     * command, behind the native growth dialog. The same steps as
+     * [enableGroup], with the add preview and commit. Args: `conversationId`,
+     * `userId`, `selfUserId`, optional `bundles` (as for [enableGroup]) and
+     * optional `displayNames`.
+     */
+    @PluginMethod
+    fun addGroupMember(call: PluginCall) {
+        val conversationId = call.getString("conversationId") ?: run {
+            call.reject("{\"type\":\"invalid_argument\",\"field\":\"conversationId\"}")
+            return
+        }
+        val userId = call.getString("userId") ?: run {
+            call.reject("{\"type\":\"invalid_argument\",\"field\":\"userId\"}")
+            return
+        }
+        val selfUserId = call.getString("selfUserId") ?: run {
+            call.reject("{\"type\":\"invalid_argument\",\"field\":\"selfUserId\"}")
+            return
+        }
+        val bundles = call.getArray("bundles")?.toString()
+        val displayNames = displayNamesArg(call)
+
+        if (!growthInFlight.compareAndSet(false, true)) {
+            call.reject("{\"type\":\"busy\"}")
+            return
+        }
+        val held = AtomicBoolean(true)
+        fun release() {
+            if (held.compareAndSet(true, false)) growthInFlight.set(false)
+        }
+
+        try {
+            executor.execute {
+                try {
+                    val prompt =
+                        engine().previewGroupAdd(conversationId, userId, selfUserId, displayNames)
+                    if (!prompt.needsPrompt) {
+                        val json =
+                            try {
+                                engine().addGroupMember(
+                                    conversationId,
+                                    userId,
+                                    selfUserId,
+                                    bundles,
+                                    expectedAfter = prompt.expectedAfter,
+                                    prompted = false,
+                                )
+                            } finally {
+                                release()
+                            }
+                        resolveJson(call, json)
+                        return@execute
+                    }
+                    if (growthLockedOut(conversationId)) {
+                        release()
+                        call.reject("{\"type\":\"busy\"}")
+                        return@execute
+                    }
+                    activity.runOnUiThread {
+                        // Resolve-once: the positive button and the dismiss
+                        // listener race to settle the call; one wins.
+                        val settled = AtomicBoolean(false)
+                        try {
+                            // Nothing to consent to, or a button with no
+                            // label: fail closed rather than show a dialog
+                            // with no member list or button copy the core
+                            // did not write.
+                            if (
+                                prompt.title.isBlank() ||
+                                    prompt.message.isBlank() ||
+                                    prompt.confirmLabel.isBlank() ||
+                                    prompt.cancelLabel.isBlank()
+                            ) {
+                                throw E2eeException.Failure("{\"type\":\"crypto_failure\"}")
+                            }
+                            val dialog =
+                                AlertDialog.Builder(activity)
+                                    .setTitle(prompt.title)
+                                    .setMessage(prompt.message)
+                                    .setPositiveButton(prompt.confirmLabel) { _, _ ->
+                                        if (settled.compareAndSet(false, true)) {
+                                            try {
+                                                run(call) {
+                                                    val json =
+                                                        try {
+                                                            engine().addGroupMember(
+                                                                conversationId,
+                                                                userId,
+                                                                selfUserId,
+                                                                bundles,
+                                                                expectedAfter = prompt.expectedAfter,
+                                                                prompted = true,
+                                                            )
+                                                        } finally {
+                                                            release()
+                                                        }
+                                                    resolveJson(call, json)
+                                                }
+                                            } catch (error: Throwable) {
+                                                release()
+                                                rejectScrubbed(call, error)
+                                            }
+                                        }
+                                    }
+                                    // No listener: the button dismisses the
+                                    // dialog, and the dismiss listener declines.
+                                    .setNegativeButton(prompt.cancelLabel, null)
+                                    .create()
+                            // Back and an outside tap cancel, and a cancel
+                            // dismisses: both reach the dismiss listener.
+                            dialog.setCanceledOnTouchOutside(true)
+                            dialog.setOnDismissListener {
+                                if (growthDialog === dialog) growthDialog = null
+                                // Lost the race to a confirm: already settled.
+                                if (settled.compareAndSet(false, true)) {
+                                    noteGrowthDecline(conversationId)
+                                    release()
+                                    call.reject("{\"type\":\"declined\"}")
+                                }
+                            }
+                            dialog.setOnShowListener {
+                                // Tapjacking: confirm ignores touches while
+                                // another window covers it, and stays disabled
+                                // for the first GROWTH_CONFIRM_DELAY_MS, so a
+                                // tap aimed at what was under the dialog, or
+                                // timed to its arrival, cannot commit.
+                                dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.let { confirm ->
+                                    confirm.isEnabled = false
+                                    confirm.filterTouchesWhenObscured = true
+                                    confirm.postDelayed(
+                                        { confirm.isEnabled = true },
+                                        GROWTH_CONFIRM_DELAY_MS,
+                                    )
+                                }
+                                // Cancel is the default: keyboard focus starts there.
+                                dialog.getButton(AlertDialog.BUTTON_NEGATIVE)?.let { cancel ->
+                                    cancel.filterTouchesWhenObscured = true
+                                    cancel.requestFocus()
+                                }
+                            }
+                            dialog.show()
+                            growthDialog = dialog
+                        } catch (error: Throwable) {
+                            if (settled.compareAndSet(false, true)) {
+                                release()
+                                rejectScrubbed(call, error)
+                            }
+                        }
+                    }
+                } catch (error: Throwable) {
+                    release()
+                    rejectScrubbed(call, error)
+                }
+            }
+        } catch (error: Throwable) {
+            release()
+            rejectScrubbed(call, error)
+        }
+    }
+
+    override fun handleOnDestroy() {
+        // Activity teardown would remove the dialog's window without running
+        // its listeners, leaving the request unanswered and the hold taken.
+        // Dismissing it runs the dismiss listener: `declined`, hold released.
+        growthDialog?.dismiss()
+        growthDialog = null
+        super.handleOnDestroy()
     }
 
     /**
@@ -801,6 +1274,7 @@ class E2eePlugin : Plugin() {
                     }
                 }
                 .show()
+                .also { guardDowngradeButtons(it) }
         }
     }
 
@@ -887,6 +1361,7 @@ class E2eePlugin : Plugin() {
             .setNegativeButton("Cancel") { _, _ -> call.reject("{\"type\":\"declined\"}") }
             .setOnCancelListener { call.reject("{\"type\":\"declined\"}") }
             .show()
+            .also { guardDowngradeButtons(it) }
     }
 
     // ================================================================

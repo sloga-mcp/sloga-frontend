@@ -1,12 +1,22 @@
 import { For, Show, createMemo, createSignal } from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
+import { styled } from "styled-system/jsx";
 
 import { useClient, useE2EE } from "@revolt/client";
+import { nativeE2EEAvailable } from "@revolt/client/e2ee";
 import { Column, Dialog, DialogProps, Text } from "@revolt/ui";
 
 import { useModals } from "..";
 import { Modals } from "../types";
+
+import {
+  EnableGroupNotice,
+  EnableGroupStep,
+  enableGroupErrorStep,
+  enableGroupOutcomeStep,
+  memberLabel,
+} from "./E2EEEnableGroup.copy";
 
 /**
  * Turn on end-to-end encryption for a GROUP (implementation plan slice 5,
@@ -19,6 +29,11 @@ import { Modals } from "../types";
  * check it against the member list they expect. Encryption succeeds only if
  * EVERY listed member has verifiable keys (the native layer fails closed
  * otherwise); the group cannot be partially encrypted.
+ *
+ * This screen is not the gate. On the native shells "Continue" opens a
+ * system dialog the webview cannot draw, dismiss or answer. That dialog is
+ * the confirm: it lists the roster native will commit, with names this app
+ * supplies.
  */
 export function E2EEEnableGroupModal(
   props: DialogProps & Modals & { type: "e2ee_enable_group" },
@@ -28,34 +43,64 @@ export function E2EEEnableGroupModal(
   const e2ee = useE2EE();
   const { showError } = useModals();
 
-  const [busy, setBusy] = createSignal(false);
+  // `working`, not `busy`: "busy" is also a native outcome, shown below
+  const [working, setWorking] = createSignal(false);
+  const [notice, setNotice] = createSignal<EnableGroupNotice | null>(null);
 
   const channel = () => client().channels.get(props.channelId);
 
   const members = createMemo(() =>
     [...(channel()?.recipientIds ?? [])].map((id) => ({
       id,
-      username: client().users.get(id)?.username ?? id.slice(0, 8),
+      label: memberLabel(id, client().users.get(id)),
     })),
   );
+
+  function noticeText(shown: EnableGroupNotice): string {
+    switch (shown) {
+      case "busy":
+        return t`Try again in a moment.`;
+      case "roster_changed":
+        return t`The member list changed. Check it and try again.`;
+      case "roster_mismatch":
+        return t`This group is already encrypted with a different member list. Check the member list and try again.`;
+      case "self_user_id":
+        return t`This device isn't part of this group's encryption yet. Wait for another member to re-send the member list.`;
+      case "mls_store_owned_by_another_account":
+        return t`This device's encryption is set up for a different account.`;
+      default: {
+        const exhaustive: never = shown;
+        return exhaustive;
+      }
+    }
+  }
 
   async function enable() {
     const ch = channel();
     if (!e2ee || !ch) return;
-    setBusy(true);
+    setWorking(true);
+    setNotice(null);
+    let step: EnableGroupStep;
     try {
-      await e2ee.enableGroupEncryption(
-        ch,
-        members().map((m) => m.id),
+      step = enableGroupOutcomeStep(
+        await e2ee.enableGroupEncryption(
+          ch,
+          members().map((m) => m.id),
+        ),
       );
-      props.onClose();
     } catch (error) {
-      // Fail closed: a member without verifiable keys aborts the whole
-      // enable (nothing was pinned) — surface it, do not partially encrypt.
-      showError(error);
+      // Fail closed: the group is never partially encrypted. Native checks
+      // the roster before it writes anything, but it pins the roster BEFORE
+      // the send, so a later failure (a key fetch, the POST) can leave it
+      // pinned locally. Pressing Continue again with the same roster resumes
+      // that confirmed enable.
+      step = enableGroupErrorStep(error);
+      if (step.kind === "error") showError(error);
     } finally {
-      setBusy(false);
+      setWorking(false);
     }
+    if (step.kind === "close") props.onClose();
+    else if (step.kind === "stay") setNotice(step.notice);
   }
 
   return (
@@ -63,7 +108,7 @@ export function E2EEEnableGroupModal(
       show={props.show}
       onClose={props.onClose}
       title={<Trans>Encrypt this group</Trans>}
-      isDisabled={busy()}
+      isDisabled={working()}
       actions={[
         {
           text: <Trans>Cancel</Trans>,
@@ -73,12 +118,12 @@ export function E2EEEnableGroupModal(
           },
         },
         {
-          text: <Trans>Turn on encryption</Trans>,
+          text: <Trans>Continue</Trans>,
           onClick: () => {
             void enable();
             return false;
           },
-          isDisabled: busy(),
+          isDisabled: working(),
         },
       ]}
     >
@@ -102,7 +147,7 @@ export function E2EEEnableGroupModal(
         >
           <For each={members()}>
             {(member) => (
-              <span style={{ "font-weight": "500" }}>{member.username}</span>
+              <span style={{ "font-weight": "500" }}>{member.label}</span>
             )}
           </For>
         </Column>
@@ -115,12 +160,28 @@ export function E2EEEnableGroupModal(
           </Trans>
         </Text>
 
-        <Show when={busy()}>
+        <Show when={working()}>
           <Text size="small">
             <Trans>Gathering keys for every member…</Trans>
+          </Text>
+        </Show>
+
+        <Show when={notice()}>
+          {(shown) => <NoticeText>{noticeText(shown())}</NoticeText>}
+        </Show>
+
+        <Show when={nativeE2EEAvailable()}>
+          <Text size="small">
+            <Trans>You'll confirm this in a system dialog.</Trans>
           </Text>
         </Show>
       </Column>
     </Dialog>
   );
 }
+
+const NoticeText = styled("span", {
+  base: {
+    color: "var(--md-sys-color-error)",
+  },
+});
