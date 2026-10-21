@@ -37,9 +37,11 @@ type Recorder = {
   arm: (kind: string) => Promise<ShellResult>;
   focusMain: () => Promise<ShellResult>;
   discard: (label: string) => Promise<ShellResult>;
+  closeWindow: (label: string) => Promise<ShellResult>;
   armCalls: string[];
   focusMainCalls: number;
   discardCalls: string[];
+  closeWindowCalls: string[];
   delegated: { names: string[]; doc: Document }[];
   clipboardInstalls: number;
   adoptedInstalls: number;
@@ -51,9 +53,11 @@ const recorder: Recorder = {
   arm: async (kind) => ({ ok: true, label: `${kind}-label` }),
   focusMain: async () => ({ ok: true }),
   discard: async () => ({ ok: true }),
+  closeWindow: async () => ({ ok: true }),
   armCalls: [],
   focusMainCalls: 0,
   discardCalls: [],
+  closeWindowCalls: [],
   delegated: [],
   clipboardInstalls: 0,
   adoptedInstalls: 0,
@@ -79,6 +83,7 @@ const STUBS: Record<string, string> = {
     export function arm(kind) { ${R}.armCalls.push(kind); return ${R}.arm(kind); }
     export function focusMain() { ${R}.focusMainCalls++; return ${R}.focusMain(); }
     export function discard(label) { ${R}.discardCalls.push(label); return ${R}.discard(label); }
+    export function closeWindow(label) { ${R}.closeWindowCalls.push(label); return ${R}.closeWindow(label); }
     export const saveBounds = async () => ({ ok: false, err: "unsupported" });`,
   "./clipboardShim.ts": `
     export function installClipboardShim() { ${R}.clipboardInstalls++; }`,
@@ -217,9 +222,13 @@ function reset() {
   recorder.arm = async (kind) => ({ ok: true, label: `${kind}-label` });
   recorder.focusMain = async () => ({ ok: true });
   recorder.discard = async () => ({ ok: true });
+  recorder.closeWindow = async () => ({ ok: true });
   recorder.armCalls = [];
   recorder.focusMainCalls = 0;
   recorder.discardCalls = [];
+  recorder.closeWindowCalls = [];
+  // A spec that unloaded main leaves the next one a live main again.
+  mainWin.dispatchEvent(new mainWin.Event("pageshow"));
   recorder.delegated = [];
   recorder.clipboardInstalls = 0;
   recorder.adoptedInstalls = 0;
@@ -1426,11 +1435,62 @@ describe("close tracking", () => {
     a.handle.onClose(() => closes[0]++);
     b.handle.onClose(() => closes[1]++);
 
+    assert.deepEqual(recorder.closeWindowCalls, ["chat-label"]);
+
     mainWin.dispatchEvent(new mainWin.Event("pagehide"));
     assert.deepEqual(closes, [1, 1]);
     assert.equal(a.child.closeCalls, 1);
     assert.equal(b.child.closeCalls, 1);
     assert.equal(done.child.closeCalls, 1);
+    // The shells close the children with main; no call leaves the unload.
+    await flush();
+    assert.deepEqual(recorder.closeWindowCalls, ["chat-label"]);
+  });
+
+  it("close() has the shell finish the close, by the window's label", async () => {
+    reset();
+    const { child, handle } = await openWithChild();
+    assert.deepEqual(recorder.closeWindowCalls, []);
+    handle.close();
+    assert.equal(child.closeCalls, 1);
+    assert.deepEqual(recorder.closeWindowCalls, ["chat-label"]);
+    handle.close();
+    assert.deepEqual(recorder.closeWindowCalls, ["chat-label"], "only once");
+  });
+
+  it("a window with no shell label (web) is never closed through the shell", async () => {
+    reset();
+    recorder.arm = async () => ({ ok: false, err: "unsupported" });
+    const { child, handle } = await openWithChild();
+    assert.equal(handle.shellLabel, undefined);
+    handle.close();
+    assert.equal(child.closeCalls, 1);
+    assert.deepEqual(recorder.closeWindowCalls, []);
+  });
+
+  it("a failed shell close only warns", async (t) => {
+    reset();
+    const warn = t.mock.method(console, "warn", () => {});
+    recorder.closeWindow = async () => ({ ok: false, err: "not main" });
+    const { handle } = await openWithChild();
+    let runs = 0;
+    handle.onClose(() => runs++);
+    handle.close();
+    await flush();
+    assert.equal(runs, 1);
+    assert.equal(handle.closed(), true);
+    assert.equal(warn.mock.callCount(), 1);
+    assert.ok(
+      String(warn.mock.calls[0].arguments.join(" ")).includes("not main"),
+    );
+  });
+
+  it("shellCloseNeeded: a shell label, and main not unloading", () => {
+    assert.equal(mod.shellCloseNeeded("chat-3", false), true);
+    assert.equal(mod.shellCloseNeeded("friends-window", false), true);
+    assert.equal(mod.shellCloseNeeded("chat-3", true), false);
+    assert.equal(mod.shellCloseNeeded(undefined, false), false);
+    assert.equal(mod.shellCloseNeeded(undefined, true), false);
   });
 
   it("a reloaded child (pagehide, still open) is closed on main's next task", async () => {
@@ -1443,9 +1503,11 @@ describe("close tracking", () => {
     assert.equal(runs, 1);
     assert.deepEqual(recorder.unregistered, [handle.id]);
     assert.equal(child.closeCalls, 0, "closed inside the child's pagehide");
+    assert.deepEqual(recorder.closeWindowCalls, []);
     await flush();
     assert.equal(child.closeCalls, 1);
     assert.equal(runs, 1);
+    assert.deepEqual(recorder.closeWindowCalls, ["chat-label"]);
   });
 
   it("a child that really closed is not closed a second time", async () => {
@@ -1456,5 +1518,7 @@ describe("close tracking", () => {
     await flush();
     assert.equal(child.closeCalls, 0);
     assert.equal(handle.closed(), true);
+    // The user's own close (the titlebar X) needs nothing from the shell.
+    assert.deepEqual(recorder.closeWindowCalls, []);
   });
 });

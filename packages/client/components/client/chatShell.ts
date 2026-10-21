@@ -1,8 +1,8 @@
 /**
  * The main window's bridge to the desktop shells' chat windows: arm the next
  * `window.open("about:blank")` so the shell builds it as a chat window,
- * remember where one sat, pull the main window forward, and throw away a
- * window built for an arm main never got to use.
+ * remember where one sat, pull the main window forward, throw away a window
+ * built for an arm main never got to use, and finish closing one main closed.
  *
  * Windows (Tauri) and the Electron shell (macOS, Linux) take the same verbs
  * through different bridges; every answer comes back as one `ShellResult`
@@ -191,6 +191,29 @@ export function discard(label: string): Promise<ShellResult> {
         tauriVoid("chat_window_discard", { label }) ??
         (electronChatWindows() ? { ok: true } : UNSUPPORTED),
     )
+    .catch((reason): ShellResult => ({ ok: false, err: errText(reason) }));
+}
+
+/**
+ * Finish closing the chat window `label` after main's `close()` on it.
+ *
+ * On Tauri that close only takes the webview down: wry answers WebView2's
+ * `WindowCloseRequested` by destroying its own container inside the window,
+ * so the native window stays open, blank and still titled. Its geometry is
+ * saved first (`chat_window_bounds`; a destroy skips the save the titlebar X
+ * gets), then it is destroyed by label (`chat_window_discard`, main-only).
+ * A failed save still destroys. Electron closes a child that main closed by
+ * itself, so this answers `{ ok: true }` without a round trip.
+ */
+export function closeWindow(label: string): Promise<ShellResult> {
+  // Wrapped like discard: callers fire and forget this on a close path.
+  return Promise.resolve()
+    .then(async (): Promise<ShellResult> => {
+      const saved = tauriVoid("chat_window_bounds", { label });
+      if (!saved) return electronChatWindows() ? { ok: true } : UNSUPPORTED;
+      await saved;
+      return tauriVoid("chat_window_discard", { label }) ?? UNSUPPORTED;
+    })
     .catch((reason): ShellResult => ({ ok: false, err: errText(reason) }));
 }
 

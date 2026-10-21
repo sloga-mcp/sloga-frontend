@@ -1,7 +1,7 @@
 // Unit spec for the chat-window shell bridge. Run with Node's built-in runner
 // from packages/client:
 //   node --test --conditions=browser components/client/chatShell.test.ts
-// Declared test count: 19 (the runner also exits 0 when it finds no tests at
+// Declared test count: 23 (the runner also exits 0 when it finds no tests at
 // all, so compare this against its pass count).
 //
 // Focus: whatever a shell hands back (or throws), each verb resolves exactly
@@ -344,6 +344,91 @@ test("discard, no shell: unsupported; a throwing global never escapes", async ()
   let result: unknown;
   assert.doesNotThrow(() => {
     result = direct("chat-3");
+  });
+  assert.deepEqual(await result, { ok: false, err: "preload torn down" });
+});
+
+/** `closeWindow`, looked up on the module for the same reason as `discard`. */
+async function loadCloseWindow(): Promise<Discard> {
+  const shell = (await import("./chatShell.ts")) as { closeWindow?: Discard };
+  assert.equal(typeof shell.closeWindow, "function", "no closeWindow");
+  return shell.closeWindow!;
+}
+
+async function closeWindow(label: string): Promise<unknown> {
+  return (await loadCloseWindow())(label);
+}
+
+test("closeWindow, tauri: saves the bounds, then destroys by label", async () => {
+  const tauri = fakeTauri(() => Promise.resolve(null));
+  g.window = { __TAURI__: tauri.global };
+  assert.deepEqual(await closeWindow("chat-4"), { ok: true });
+  assert.deepEqual(tauri.calls, [
+    { cmd: "chat_window_bounds", args: { label: "chat-4" } },
+    { cmd: "chat_window_discard", args: { label: "chat-4" } },
+  ]);
+});
+
+test("closeWindow, tauri: a failed save still destroys; the destroy's answer comes back", async () => {
+  const saveFails = fakeTauri((cmd) =>
+    cmd === "chat_window_bounds"
+      ? Promise.reject("no such window")
+      : Promise.resolve(null),
+  );
+  g.window = { __TAURI__: saveFails.global };
+  assert.deepEqual(await closeWindow("friends-window"), { ok: true });
+  assert.deepEqual(
+    saveFails.calls.map((c) => c.cmd),
+    ["chat_window_bounds", "chat_window_discard"],
+  );
+
+  const syncThrow = fakeTauri((cmd) => {
+    if (cmd === "chat_window_bounds") throw new Error("sync");
+    return Promise.reject("not a chat window");
+  });
+  g.window = { __TAURI__: syncThrow.global };
+  assert.deepEqual(await closeWindow("chat-4"), {
+    ok: false,
+    err: "not a chat window",
+  });
+  assert.equal(syncThrow.calls.length, 2);
+});
+
+test("closeWindow, electron: ok without a round trip; tauri preferred", async () => {
+  const electron = fakeElectron(() => Promise.reject(new Error("called")));
+  g.window = { slogaShell: { chatWindows: electron.bridge } };
+  assert.deepEqual(await closeWindow("chat-4"), { ok: true });
+  assert.equal(electron.calls.length, 0);
+
+  const tauri = fakeTauri(() => Promise.resolve(null));
+  g.window = {
+    __TAURI__: tauri.global,
+    slogaShell: { chatWindows: electron.bridge },
+  };
+  assert.deepEqual(await closeWindow("chat-4"), { ok: true });
+  assert.equal(tauri.calls.length, 2);
+  assert.equal(electron.calls.length, 0);
+});
+
+test("closeWindow, no shell: unsupported; a throwing global never escapes", async () => {
+  for (const win of [undefined, {}, { __TAURI__: {} }, { slogaShell: {} }]) {
+    if (win === undefined) delete g.window;
+    else g.window = win;
+    assert.deepEqual(await closeWindow("chat-4"), {
+      ok: false,
+      err: "unsupported",
+    });
+  }
+
+  g.window = {
+    get slogaShell() {
+      throw new Error("preload torn down");
+    },
+  };
+  const direct = await loadCloseWindow();
+  let result: unknown;
+  assert.doesNotThrow(() => {
+    result = direct("chat-4");
   });
   assert.deepEqual(await result, { ok: false, err: "preload torn down" });
 });
