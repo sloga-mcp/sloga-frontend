@@ -3410,6 +3410,22 @@ msgid "Emoji Pack (affects your messages only)"
 msgstr "Emoji Pack (affects your messages only)"
 
 #: components/app/interface/settings/user/appearance/DmWindowsChoice.tsx
+msgid "Friends and direct messages"
+msgstr "Friends and direct messages"
+
+#: components/app/interface/settings/user/appearance/DmWindowsChoice.tsx
+msgid "In the main window"
+msgstr "In the main window"
+
+#: components/app/interface/settings/user/appearance/DmWindowsChoice.tsx
+msgid "In their own windows, like Steam"
+msgstr "In their own windows, like Steam"
+
+#: components/app/interface/settings/user/appearance/DmWindowsChoice.tsx
+msgid "In their own windows, the friends list and your conversations open outside the main window. Drag a tab out to pop it out, or onto another window to merge. Calls still show in the main window."
+msgstr "In their own windows, the friends list and your conversations open outside the main window. Drag a tab out to pop it out, or onto another window to merge. Calls still show in the main window."
+
+#: components/app/interface/settings/user/appearance/DmWindowsChoice.tsx
 msgid "Open direct messages in"
 msgstr "Open direct messages in"
 

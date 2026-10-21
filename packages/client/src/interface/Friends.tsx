@@ -14,10 +14,7 @@ import { cva } from "styled-system/css";
 import { styled } from "styled-system/jsx";
 
 import { useClient } from "@revolt/client";
-import * as chatShell from "@revolt/client/chatShell";
-import { IS_POPOUT_WINDOW } from "@revolt/client/popout";
 import { useUserActions } from "@revolt/client/popoutBridge";
-import { useDevice } from "@revolt/common";
 import { useModals } from "@revolt/modal";
 import { useState } from "@revolt/state";
 import {
@@ -32,11 +29,7 @@ import {
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
 
 // Relative: tsconfig has no `@revolt/friends` path (Vite would resolve it)
-import {
-  friendsWindowAvailable,
-  openFriendsWindow,
-  routeConversation,
-} from "../../components/chatWindows/openConversation";
+import { routeConversation } from "../../components/chatWindows/openConversation";
 import { FriendSection } from "../../components/friends/FriendSection";
 import { FriendsList } from "../../components/friends/FriendsList";
 import { GroupChatsDock } from "../../components/friends/GroupChatsDock";
@@ -62,49 +55,29 @@ const Base = styled("div", {
 });
 
 /**
- * Open the web's detachable friends-list popup. Web only: a desktop shell
- * would hand this URL to the system browser (Tauri) or refuse it (Electron).
+ * Friends menu, mounted directly on the `/friends` route. There is no
+ * pop-out: the "Friends and direct messages" setting decides whether the
+ * friends list lives here or in its own window, together with the DMs.
  */
-function openPopout() {
-  window.open(
-    "/friends-popout",
-    "friends-popout",
-    "width=420,height=650,resizable=yes,popup=yes",
-  );
-}
-
-/**
- * Friends menu (also mounted directly on the `/friends` route, so the
- * props must stay route-component compatible)
- */
-export function Friends(
-  props: Partial<RouteSectionProps> & { popout?: boolean },
-) {
+export function Friends(_props: Partial<RouteSectionProps>) {
   const { t } = useLingui();
   const client = useClient();
   const state = useState();
   const { openModal } = useModals();
   const navigate = useNavigate();
   const userActions = useUserActions();
-  // The popout opens a second window; there is nowhere to put one on mobile.
-  const { isMobile } = useDevice();
-
-  // The web popout renders this page too, and bounces any navigation back
-  // to itself, so nothing here may navigate from inside it.
-  const inPopout = () => !!props.popout || IS_POPOUT_WINDOW;
 
   /**
    * Open the DM with a friend. `run("dm")` is the shared path: it resolves
    * the DM with `user.openDM()` and routes it with `routeConversation`
-   * (chat window, or today's navigation), reports a denied or paused DM,
-   * and from the popout hands the DM to the main window instead.
+   * (chat window, or today's navigation) and reports a denied or paused DM.
    */
   function openConversation(userId: string) {
     void userActions.run("dm", userId);
   }
 
   /**
-   * Open a group chat from the dock (never shown in the popout)
+   * Open a group chat from the dock
    */
   function openGroup(channelId: string) {
     const channel = client().channels.get(channelId);
@@ -114,15 +87,6 @@ export function Friends(
       // slid off-screen behind the sidebar
       state.appDrawer()?.setShown(true);
     });
-  }
-
-  /**
-   * Pop-out button: on a desktop shell, in either DM mode, the friends
-   * window; on the web, today's popout
-   */
-  function popOut() {
-    if (chatShell.supported()) openFriendsWindow();
-    else openPopout();
   }
 
   /**
@@ -188,28 +152,6 @@ export function Friends(
           <Symbol>group</Symbol>
         </HeaderIcon>
         <Trans>Friends</Trans>
-        {/* A shell without the friends window gets no button: it must never
-            fall back to window.open */}
-        <Show
-          when={
-            !props.popout &&
-            !window.opener &&
-            !isMobile &&
-            (!chatShell.supported() || friendsWindowAvailable())
-          }
-        >
-          <IconButton
-            onPress={popOut}
-            use:floating={{
-              tooltip: {
-                placement: "bottom",
-                content: t`Pop out friends list`,
-              },
-            }}
-          >
-            <Symbol>open_in_new</Symbol>
-          </IconButton>
-        </Show>
       </Header>
 
       <main class={main()}>
@@ -292,11 +234,7 @@ export function Friends(
                   <div class={friendsListArea()}>
                     <FriendsList onOpenConversation={openConversation} />
                   </div>
-                  {/* The popout cannot navigate and has no channel hand-off
-                      to main, so a group there would be a dead row */}
-                  <Show when={!inPopout()}>
-                    <GroupChatsDock onOpen={openGroup} />
-                  </Show>
+                  <GroupChatsDock onOpen={openGroup} />
                 </div>
               }
             >

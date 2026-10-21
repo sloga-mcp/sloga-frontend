@@ -17,7 +17,7 @@ import { SelfBar } from "../friends/SelfBar";
 import { routeConversation } from "./openConversation";
 
 /**
- * The desktop friends window, in both "Open DMs in" modes: your own presence
+ * The desktop friends window, shown in chat-windows mode: your own presence
  * on top, the friends list in the middle and the group chats dock at the
  * bottom.
  *

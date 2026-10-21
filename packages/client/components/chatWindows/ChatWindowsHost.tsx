@@ -21,7 +21,10 @@ import * as chatShell from "@revolt/client/chatShell";
 import {
   type ChildWindowHandle,
   openChildWindow,
+  openInMain,
+  setInternalLinkHandler,
 } from "@revolt/client/childWindow";
+import { useVoice } from "@revolt/rtc";
 import { useState } from "@revolt/state";
 
 import { ChatWindowView } from "./ChatWindowView";
@@ -32,8 +35,10 @@ import {
   closeTab,
   closeWindow,
   onFocusRequest,
+  openConversation,
   setFriendsOpen,
 } from "./chatWindowsStore";
+import { bareConversationIdFromHref } from "./dmLinks";
 import {
   FRIENDS_KEY,
   childGoneAction,
@@ -62,15 +67,15 @@ const DRAG_POLL_MS = 100;
  *
  * Mounted once, in the main window. Inert until main has been shown, and
  * unless the shell has answered the capability probe and the device-local
- * layout has been confirmed as this account's. The friends window then works
- * in either mode ("main window" mode opens it from the Friends page); chat
- * windows also need chat-windows mode. Switching the mode off closes the
- * chat windows, keeping their layout for when it comes back on, and leaves
- * the friends window open.
+ * layout has been confirmed as this account's. Every child, the friends
+ * window included, also needs chat-windows mode: one setting moves the
+ * friends list and the conversations together. Switching the mode off closes
+ * them all, keeping their layout for when it comes back on.
  */
 export function ChatWindowsHost(): JSX.Element {
   const state = useState();
   const client = useClient();
+  const voice = useVoice();
   const { isLoggedIn } = useClientLifecycle();
 
   /** Live children by key (store window id, or FRIENDS_KEY). */
@@ -142,9 +147,9 @@ export function ChatWindowsHost(): JSX.Element {
       state.auth.getSession()?.userId ?? client().user?.id,
     );
 
-  // The friends window may be shown (in either mode). Requires a probed
-  // shell, where chatWindowsMode counts an unprobed one as able: a restore
-  // must not race the probe on a shell without the commands.
+  // The shell can host child windows. Requires a probed shell, where
+  // chatWindowsMode counts an unprobed one as able: a restore must not race
+  // the probe on a shell without the commands.
   const shellActive = createMemo(
     () =>
       mainShown() &&
@@ -153,7 +158,8 @@ export function ChatWindowsHost(): JSX.Element {
       ownerOk() &&
       readyClient() === client(),
   );
-  // Chat windows may be shown: the shell is active and the mode is on.
+  // Chat windows and the friends window may be shown: the shell is active
+  // and the mode is on.
   const chatActive = createMemo(() => shellActive() && chatWindowsMode(state));
 
   const wanted = createMemo(() =>
@@ -165,36 +171,26 @@ export function ChatWindowsHost(): JSX.Element {
     ),
   );
 
-  // Restore keys, per kind: the friends window restores when the shell
-  // becomes active, chat windows when chat-windows mode does (so switching
-  // the mode on restores them and leaves the friends window alone). Only an
-  // open's settling reads them, and that is always asynchronous, so the
-  // reconcile below running first in the same flush cannot fail an open
-  // before its restore keys are recorded.
-  let wasShellActive = false;
+  // Restore keys, per kind: both the friends window and the chat windows
+  // restore when chat-windows mode becomes active (at startup, or when the
+  // mode is switched on). Only an open's settling reads them, and that is
+  // always asynchronous, so the reconcile below running first in the same
+  // flush cannot fail an open before its restore keys are recorded.
   let wasChatActive = false;
   createEffect(() => {
-    const isShellActive = shellActive();
     const isChatActive = chatActive();
     const desired = untrack(wanted);
     let keys = restoreKeys;
-    keys =
-      restoreKeysOnActivate(
-        keys,
-        "friends",
-        wasShellActive,
-        isShellActive,
-        desired,
-      ) ?? keys;
-    keys =
-      restoreKeysOnActivate(
-        keys,
-        "chat",
-        wasChatActive,
-        isChatActive,
-        desired,
-      ) ?? keys;
-    wasShellActive = isShellActive;
+    for (const kind of ["friends", "chat"] as const) {
+      keys =
+        restoreKeysOnActivate(
+          keys,
+          kind,
+          wasChatActive,
+          isChatActive,
+          desired,
+        ) ?? keys;
+    }
     wasChatActive = isChatActive;
     restoreKeys = keys;
   });
@@ -393,6 +389,59 @@ export function ChatWindowsHost(): JSX.Element {
         primed.add(id);
       }
     }
+  });
+
+  /**
+   * The conversation a link should open as a chat-window tab: a link to a
+   * DM or group itself (not to a message in it, which only main can jump
+   * to) that this session knows. Not the one whose call is live: a call
+   * shows in main, and its links must keep going there.
+   */
+  function tabForLink(href: string): string | undefined {
+    const id = bareConversationIdFromHref(href, window.location.href);
+    if (!id) return undefined;
+    const type = client().channels.get(id)?.type;
+    if (type !== "DirectMessage" && type !== "Group") return undefined;
+    if (voice.channel()?.id === id) return undefined;
+    return id;
+  }
+
+  // In chat-windows mode a link to a conversation opens it as a tab,
+  // wherever it is clicked: a chat window (a DM link in a message) or main
+  // itself (a modified click on a sidebar row). Links to a message keep
+  // their old route: a chat window hands them to main, which jumps there.
+  createEffect(() => {
+    if (!chatActive()) return;
+
+    setInternalLinkHandler((href) => {
+      const id = tabForLink(href);
+      if (id) openConversation(id);
+      else
+        void openInMain(href).catch((err) =>
+          console.error("[chat-windows] internal link failed", err),
+        );
+    });
+
+    // Capture runs before the router's document-level anchor handler,
+    // which leaves a click alone once it has been handled.
+    const onMainClick = (event: MouseEvent) => {
+      if (event.defaultPrevented || event.button !== 0) return;
+      const anchor = (event.target as Element | null)?.closest?.("a[href]");
+      if (!anchor || anchor.hasAttribute("download")) return;
+      const target = anchor.getAttribute("target");
+      if (target && target !== "_self") return;
+
+      const id = tabForLink(anchor.getAttribute("href") ?? "");
+      if (!id) return;
+      event.preventDefault();
+      openConversation(id);
+    };
+    document.addEventListener("click", onMainClick, true);
+
+    onCleanup(() => {
+      setInternalLinkHandler(null);
+      document.removeEventListener("click", onMainClick, true);
+    });
   });
 
   // openConversation of a tab that is already open asks for its window, and
