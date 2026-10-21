@@ -1,7 +1,17 @@
 import { createFormControl, createFormGroup } from "solid-forms";
-import { Match, Switch, createMemo, createSignal, untrack } from "solid-js";
+import {
+  Match,
+  Switch,
+  batch,
+  createEffect,
+  createMemo,
+  createSignal,
+  on,
+  untrack,
+} from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
+import { styled } from "styled-system/jsx";
 
 import { useClient } from "@revolt/client";
 import { useState } from "@revolt/state";
@@ -22,7 +32,7 @@ import {
 
 import { Modals } from "../types";
 
-type SaveError = "limit" | "name" | "unknown";
+type SaveError = "limit" | "name" | "members" | "unknown";
 
 /**
  * Create a friend category, or manage one (`groupId`): its name and the
@@ -39,10 +49,20 @@ export function FriendCategoryModal(
   const client = useClient();
   const state = useState();
 
-  const existing = () =>
-    props.groupId
-      ? state.friendGroups.ordered().find((group) => group.id === props.groupId)
+  // The category being edited. A create that could not add every friend
+  // keeps the new category, so a second Confirm edits it instead of making
+  // another one.
+  const [groupId, setGroupId] = createSignal(untrack(() => props.groupId));
+
+  const existing = () => {
+    const id = groupId();
+    return id
+      ? state.friendGroups.ordered().find((group) => group.id === id)
       : undefined;
+  };
+
+  // Removed (in another dialog or on another device) while this one is open
+  const gone = () => groupId() !== undefined && !existing();
 
   const isFriend = (id: string) =>
     client().users.get(id)?.relationship === "Friend";
@@ -60,7 +80,21 @@ export function FriendCategoryModal(
     }),
   );
 
+  // The name as this dialog last saw it saved. Rename only when the field
+  // differs from it: comparing with the live name would undo a rename made
+  // on another device whenever only the members were edited here.
+  let savedName = untrack(() => existing()?.name ?? "");
+
   const [error, setError] = createSignal<SaveError>();
+
+  // An error describes the last attempt; editing starts a new one
+  createEffect(
+    on(
+      () => [form.controls.name.value, form.controls.users.value],
+      () => setError(undefined),
+      { defer: true },
+    ),
+  );
 
   const [filter, setFilter] = createSignal("");
 
@@ -83,18 +117,18 @@ export function FriendCategoryModal(
    */
   function save(): boolean {
     const name = form.controls.name.value.trim();
-    let id = props.groupId;
+    let id = groupId();
 
     if (id) {
-      const current = existing();
-      if (!current) {
-        // Removed (here or on another device) while the dialog was open
-        setError("unknown");
-        return false;
-      }
-      if (name !== current.name && !state.friendGroups.rename(id, name)) {
-        setError("name");
-        return false;
+      // The dialog already says so, and Confirm is disabled
+      if (gone()) return false;
+
+      if (name !== savedName) {
+        if (!state.friendGroups.rename(id, name)) {
+          setError("name");
+          return false;
+        }
+        savedName = name;
       }
     } else {
       id = state.friendGroups.create(name) ?? undefined;
@@ -108,18 +142,36 @@ export function FriendCategoryModal(
         );
         return false;
       }
+      setGroupId(id);
+      savedName = name;
     }
 
+    const target = id;
     const wanted = new Set(form.controls.users.value);
-    const current = new Set(state.friendGroups.membersOf(id));
-    for (const userId of wanted) {
-      if (!current.has(userId)) state.friendGroups.assign(id, userId, true);
-    }
-    // Members who are no longer friends were never shown, so stay as they are
-    for (const userId of current) {
-      if (!wanted.has(userId) && isFriend(userId)) {
-        state.friendGroups.assign(id, userId, false);
+    const current = new Set(state.friendGroups.membersOf(target));
+    let complete = true;
+
+    batch(() => {
+      // Removals first, so a full category has room for the additions.
+      // Members who are no longer friends were never shown, so stay as
+      // they are.
+      for (const userId of current) {
+        if (!wanted.has(userId) && isFriend(userId)) {
+          complete =
+            state.friendGroups.assign(target, userId, false) && complete;
+        }
       }
+      for (const userId of wanted) {
+        if (!current.has(userId)) {
+          complete =
+            state.friendGroups.assign(target, userId, true) && complete;
+        }
+      }
+    });
+
+    if (!complete) {
+      setError("members");
+      return false;
     }
     return true;
   }
@@ -130,7 +182,7 @@ export function FriendCategoryModal(
       show={props.show}
       onClose={props.onClose}
       title={
-        props.groupId ? (
+        groupId() ? (
           <Trans>Manage category</Trans>
         ) : (
           <Trans>Create category</Trans>
@@ -141,7 +193,7 @@ export function FriendCategoryModal(
         {
           text: <Trans>Confirm</Trans>,
           onClick: save,
-          isDisabled: !form.controls.name.value.trim(),
+          isDisabled: gone() || !form.controls.name.value.trim(),
         },
       ]}
     >
@@ -184,26 +236,49 @@ export function FriendCategoryModal(
         </Form2.VirtualSelect>
 
         <Switch>
+          <Match when={gone()}>
+            <ErrorText>
+              <Trans>
+                This category no longer exists. It may have been removed on
+                another device.
+              </Trans>
+            </ErrorText>
+          </Match>
           <Match when={error() === "limit"}>
-            <Text class="label">
+            <ErrorText>
               <Trans>
                 You've reached the limit of 50 categories. Remove one to make
                 room.
               </Trans>
-            </Text>
+            </ErrorText>
           </Match>
           <Match when={error() === "name"}>
-            <Text class="label">
+            <ErrorText>
               <Trans>Category names need 1 to 40 characters.</Trans>
-            </Text>
+            </ErrorText>
+          </Match>
+          <Match when={error() === "members"}>
+            <ErrorText>
+              <Trans>
+                A category holds up to 1000 friends, so some weren't added.
+              </Trans>
+            </ErrorText>
           </Match>
           <Match when={error() === "unknown"}>
-            <Text class="label">
+            <ErrorText>
               <Trans>Couldn't save that category.</Trans>
-            </Text>
+            </ErrorText>
           </Match>
         </Switch>
       </Column>
     </Dialog>
   );
 }
+
+// Same as the categories dialog's (FriendGroups.tsx)
+const ErrorText = styled("span", {
+  base: {
+    fontSize: "0.8125rem",
+    color: "var(--md-sys-color-error)",
+  },
+});

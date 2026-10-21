@@ -18,6 +18,8 @@ export interface DialogAction {
   text: JSX.Element;
   onClick?: () => void | Promise<unknown> | true | false;
   isDisabled?: boolean;
+  /** Error-colored button, for an action that removes or blocks */
+  destructive?: boolean;
 }
 
 type Props = DialogProps & {
@@ -90,7 +92,7 @@ export function Dialog(props: Props) {
                     <For each={props.actions}>
                       {(action) => (
                         <Button
-                          variant="text"
+                          variant={action.destructive ? "_error" : "text"}
                           size="small"
                           onPress={() => {
                             if (action.isDisabled) return;

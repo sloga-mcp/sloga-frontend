@@ -9151,6 +9151,10 @@ msgid "Start typing a name…"
 msgstr "Start typing a name…"
 
 #: components/modal/modals/FriendCategory.tsx
+msgid "This category no longer exists. It may have been removed on another device."
+msgstr "This category no longer exists. It may have been removed on another device."
+
+#: components/modal/modals/FriendCategory.tsx
 #: components/modal/modals/FriendGroups.tsx
 msgid "You've reached the limit of 50 categories. Remove one to make room."
 msgstr "You've reached the limit of 50 categories. Remove one to make room."
@@ -9160,6 +9164,10 @@ msgstr "You've reached the limit of 50 categories. Remove one to make room."
 #: components/modal/modals/FriendGroups.tsx
 msgid "Category names need 1 to 40 characters."
 msgstr "Category names need 1 to 40 characters."
+
+#: components/modal/modals/FriendCategory.tsx
+msgid "A category holds up to 1000 friends, so some weren't added."
+msgstr "A category holds up to 1000 friends, so some weren't added."
 
 #: components/modal/modals/FriendCategory.tsx
 msgid "Couldn't save that category."
@@ -10234,6 +10242,20 @@ msgstr "Users will be asked to confirm their age before opening this channel."
 #: components/modal/modals/ChannelToggleMature.tsx
 msgid "Users will no longer be asked to confirm their age before joining this channel.<0/> Please ensure the content is appropriate for all ages."
 msgstr "Users will no longer be asked to confirm their age before joining this channel.<0/> Please ensure the content is appropriate for all ages."
+
+#: components/modal/modals/ConfirmRelationship.tsx
+msgid "Block"
+msgstr "Block"
+
+#. placeholder {0}: props.user.displayName
+#: components/modal/modals/ConfirmRelationship.tsx
+msgid "Block {0}? They'll be removed from your friends and can't send you direct messages."
+msgstr "Block {0}? They'll be removed from your friends and can't send you direct messages."
+
+#. placeholder {0}: props.user.displayName
+#: components/modal/modals/ConfirmRelationship.tsx
+msgid "Remove {0} from your friends?"
+msgstr "Remove {0} from your friends?"
 
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
 #~ msgid "VAD Threshold"
