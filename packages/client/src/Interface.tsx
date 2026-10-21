@@ -26,6 +26,10 @@ import { KeybindsWorker } from "@revolt/client/KeybindsWorker";
 import { NotificationsWorker } from "@revolt/client/NotificationsWorker";
 import { ShellBridgeWorker } from "@revolt/client/ShellBridgeWorker";
 import { StreamerModeWorker } from "@revolt/client/StreamerModeWorker";
+import {
+  offerSignOutWhileLoading,
+  SIGN_OUT_OFFER_AFTER_MS,
+} from "@revolt/client/connectionPolicy";
 import { IS_OVERLAY_WINDOW, IS_POPOUT_WINDOW } from "@revolt/client/popout";
 import { useModals } from "@revolt/modal";
 import { Navigate, useBeforeLeave, useLocation } from "@revolt/routing";
@@ -33,7 +37,7 @@ import { OverlayBridgeWorker } from "@revolt/rtc/overlay/OverlayBridgeWorker";
 import { useState } from "@revolt/state";
 import { LAYOUT_SECTIONS } from "@revolt/state/stores/Layout";
 import { streamerModeActive } from "@revolt/state/streamer";
-import { CircularProgress, useLayoutSides } from "@revolt/ui";
+import { Button, CircularProgress, Column, useLayoutSides } from "@revolt/ui";
 import { IncomingCallOverlay } from "@revolt/ui/components/features/voice/IncomingCallOverlay";
 import { CallRecordingNotices } from "@revolt/ui/components/features/voice/callCard/CallRecordingNotices";
 import { RemoteControlOverlays } from "@revolt/ui/components/features/voice/callCard/RemoteControlOverlays";
@@ -174,7 +178,7 @@ const Interface = (props: { children: JSX.Element }) => {
             </BannerClose>
           </StreamerBanner>
         </Show>
-        <Switch fallback={<CircularProgress />}>
+        <Switch fallback={<LoadingScreen />}>
           <Match when={!isLoggedIn()}>
             <Navigate href="/login" />
           </Match>
@@ -284,6 +288,39 @@ const Interface = (props: { children: JSX.Element }) => {
     </MessageCache>
   );
 };
+
+/**
+ * Spinner shown until the client loads for the first time. Before that first
+ * load the user menu, which holds the only "Sign out", is not rendered, so a
+ * device whose socket never connects had no way to sign out. The button
+ * appears after a few failed attempts or a long wait, and goes through the
+ * usual confirmation.
+ */
+function LoadingScreen() {
+  const { openModal } = useModals();
+  const { lifecycle } = useClientLifecycle();
+  const [waitedLong, setWaitedLong] = createSignal(false);
+
+  const timer = setTimeout(() => setWaitedLong(true), SIGN_OUT_OFFER_AFTER_MS);
+  onCleanup(() => clearTimeout(timer));
+
+  return (
+    <Column align justify grow>
+      <CircularProgress />
+      <Show
+        when={offerSignOutWhileLoading(
+          lifecycle.loadedOnce(),
+          lifecycle.connectionFailures(),
+          waitedLong(),
+        )}
+      >
+        <Button variant="text" onPress={() => openModal({ type: "sign_out" })}>
+          <Trans>Sign out</Trans>
+        </Button>
+      </Show>
+    </Column>
+  );
+}
 
 const AppRoot = styled("div", {
   base: {
