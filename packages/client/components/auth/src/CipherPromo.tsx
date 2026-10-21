@@ -257,10 +257,7 @@ export function CipherPromo(props: { variant: "panel" | "banner" }) {
           </BannerRow>
           <Show when={purchase()}>
             <Teaser style={{ margin: 0 }}>
-              <Profile.CipherPreview
-                number={47}
-                label={t`Animated Cipher badge preview`}
-              />
+              <Profile.CipherPreview label={t`Animated Cipher badge preview`} />
               <TeaserText>
                 <Trans>
                   Every Cipher gets a numbered badge, and the top tier's badge
@@ -329,7 +326,6 @@ export function CipherPromo(props: { variant: "panel" | "banner" }) {
             </Stats>
             <Teaser>
               <Profile.CipherPreview
-                number={47}
                 zoom={1.35}
                 label={t`Animated Cipher badge preview`}
               />

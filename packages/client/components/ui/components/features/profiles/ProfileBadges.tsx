@@ -37,6 +37,7 @@ import {
   CIPHER_BADGE_SHINE_CLASS,
   CIPHER_DECRYPT_EVERY_MS,
   CIPHER_DECRYPT_MS,
+  CIPHER_PREVIEW_NUMBER,
   cipherBadgeLabel,
   cipherScrambleFrame,
   ensureCipherBadgeSheet,
@@ -333,15 +334,36 @@ function CipherDecryptLabel(props: { number: number }) {
   const [text, setText] = createSignal(target());
   const [locked, setLocked] = createSignal(false);
 
-  const reducedMotion =
-    typeof matchMedia === "function" &&
-    matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const motionQuery =
+    typeof matchMedia === "function"
+      ? matchMedia("(prefers-reduced-motion: reduce)")
+      : undefined;
+  const [reducedMotion, setReducedMotion] = createSignal(
+    !!motionQuery?.matches,
+  );
 
+  let root: HTMLSpanElement | undefined;
   let frame = 0;
   let timer: ReturnType<typeof setInterval> | undefined;
 
+  function stop() {
+    if (frame) cancelAnimationFrame(frame);
+    frame = 0;
+    setText(target());
+    setLocked(false);
+  }
+
+  // Turning reduced motion on mid-run settles the badge at once
+  function onMotionChange(event: MediaQueryListEvent) {
+    setReducedMotion(event.matches);
+    if (event.matches) stop();
+  }
+
   function decrypt() {
-    if (reducedMotion || frame) return;
+    if (reducedMotion() || frame) return;
+    // A copy that isn't laid out (the login page mounts the promo twice and
+    // hides one per breakpoint) skips the animation
+    if (!root || root.getClientRects().length === 0) return;
     const goal = target();
     const start = performance.now();
     setLocked(true);
@@ -362,6 +384,7 @@ function CipherDecryptLabel(props: { number: number }) {
   }
 
   onMount(() => {
+    motionQuery?.addEventListener("change", onMotionChange);
     decrypt();
     timer = setInterval(() => {
       if (!document.hidden) decrypt();
@@ -369,6 +392,7 @@ function CipherDecryptLabel(props: { number: number }) {
   });
 
   onCleanup(() => {
+    motionQuery?.removeEventListener("change", onMotionChange);
     if (frame) cancelAnimationFrame(frame);
     if (timer) clearInterval(timer);
   });
@@ -386,6 +410,7 @@ function CipherDecryptLabel(props: { number: number }) {
 
   return (
     <span
+      ref={root}
       onPointerEnter={decrypt}
       style={{ display: "inline-flex", "align-items": "center", gap: "5px" }}
     >
@@ -446,7 +471,8 @@ function CipherDecryptLabel(props: { number: number }) {
  * Display only; it never says anything about the viewer's own membership.
  */
 export function CipherBadgePreview(props: {
-  number: number;
+  /** Defaults to CIPHER_PREVIEW_NUMBER */
+  number?: number;
   label: string;
   zoom?: number;
 }) {
@@ -459,7 +485,7 @@ export function CipherBadgePreview(props: {
       class={cx(cipherBadge({ featured: true }), CIPHER_BADGE_SHINE_CLASS)}
       style={{ zoom: props.zoom ?? 1, "flex-shrink": 0 }}
     >
-      <CipherDecryptLabel number={props.number} />
+      <CipherDecryptLabel number={props.number ?? CIPHER_PREVIEW_NUMBER} />
     </span>
   );
 }

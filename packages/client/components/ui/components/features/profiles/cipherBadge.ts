@@ -58,6 +58,9 @@ export function isAnimatedCipherTier(tier: string): boolean {
   return tier === ANIMATED_CIPHER_TIER;
 }
 
+/** The sample number on promotional previews of the top tier's badge */
+export const CIPHER_PREVIEW_NUMBER = 47;
+
 /** How long the top tier's label takes to decrypt, left to right */
 export const CIPHER_DECRYPT_MS = 3000;
 

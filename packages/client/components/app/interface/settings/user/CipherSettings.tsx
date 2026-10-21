@@ -503,7 +503,6 @@ function CipherPage(props: { context?: unknown }) {
                       </Text>
                       <div>
                         <Profile.CipherPreview
-                          number={47}
                           label={t`Animated Cipher badge preview`}
                         />
                       </div>
