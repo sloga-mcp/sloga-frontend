@@ -29,6 +29,7 @@ import { routeConversation } from "../../../components/chatWindows/openConversat
 import {
   type OccurrenceRow,
   JUMP_EVENT_CACHE_MS,
+  JUMP_EVENT_FETCH_LIMIT,
   JUMP_EVENT_SERVER_LIMIT,
   JUMP_EVENT_WINDOW_MS,
   collectEvents,
@@ -36,6 +37,7 @@ import {
   pickUnreads,
   pickUpcoming,
   pickVoiceRooms,
+  upcomingRows,
 } from "./homeHub";
 
 /** How often Upcoming drops events that have started */
@@ -51,6 +53,13 @@ const eventCache = new WeakMap<
   Client,
   { key: string; at: number; rows: OccurrenceRow<CalendarEvent>[] }
 >();
+
+/**
+ * Clients whose server has no cross-server upcoming route. Once it has
+ * answered that way, Home asks each server instead without trying the route
+ * again. Kept per client for the same reason as the cache above.
+ */
+const upcomingRouteMissing = new WeakMap<Client, true>();
 
 const Section = styled("section", {
   base: {
@@ -288,14 +297,17 @@ export function JumpBackIn() {
     });
   });
 
-  /** The first servers on the rail, whose calendars Upcoming reads */
+  /**
+   * Every server the user is in, sorted, so joining or leaving any of them
+   * asks again; undefined (nothing to ask) when there are none
+   */
   const eventServers = createMemo(() => {
     const c = client();
     if (!c) return undefined;
     const ids = state.ordering
       .orderedServers(c)
-      .slice(0, JUMP_EVENT_SERVER_LIMIT)
-      .map((server) => server.id);
+      .map((server) => server.id)
+      .sort();
     return ids.length > 0 ? ids.join(",") : undefined;
   });
 
@@ -306,12 +318,28 @@ export function JumpBackIn() {
       return cached.rows;
     }
     const from = Date.now();
-    const rows = await collectEvents(key.split(","), (serverId) =>
-      c.calendarEvents.listForServer(
-        serverId,
-        from,
-        from + JUMP_EVENT_WINDOW_MS,
-      ),
+    const to = from + JUMP_EVENT_WINDOW_MS;
+    const rows = await upcomingRows<OccurrenceRow<CalendarEvent>>(
+      upcomingRouteMissing.has(c)
+        ? async () => undefined
+        : async () => {
+            const found = await c.calendarEvents.listUpcoming(
+              from,
+              to,
+              JUMP_EVENT_FETCH_LIMIT,
+            );
+            if (found === undefined) upcomingRouteMissing.set(c, true);
+            return found;
+          },
+      // Without the route, ask the first servers on the rail a few at a time
+      () =>
+        collectEvents(
+          state.ordering
+            .orderedServers(c)
+            .slice(0, JUMP_EVENT_SERVER_LIMIT)
+            .map((server) => server.id),
+          (serverId) => c.calendarEvents.listForServer(serverId, from, to),
+        ),
     );
     eventCache.set(c, { key, at: Date.now(), rows });
     return rows;
