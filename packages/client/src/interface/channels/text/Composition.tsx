@@ -20,6 +20,8 @@ import { Channel } from "stoat.js";
 import { styled } from "styled-system/jsx";
 
 import { SOFTRES_CREATION_ENABLED } from "@revolt/app";
+import { serverActionsBlocked } from "@revolt/app/interface/channels/text/e2eeTranscriptTrust";
+import type { E2EEBridge } from "@revolt/client";
 import { E2EESendError, useClient, useE2EE, useSound } from "@revolt/client";
 import { composerE2EEModeFor } from "@revolt/client/e2eeBadge";
 import { useWindowCtx } from "@revolt/client/windowCtx";
@@ -147,6 +149,9 @@ export function MessageComposition(props: Props) {
    * - "unencrypted" → THIS device is on but the peer has NOT opted in →
    *                   red open lock (a genuine mismatch)
    * - "blocked"     → peer identity change pending acceptance → amber warning
+   * - "unconfirmed" → groups only: this device has no group state and cannot
+   *                   show the group is unencrypted → amber warning; sends
+   *                   wait for an explicit plaintext confirmation
    * - undefined     → neither side is using E2EE (or non-DM) → no indicator
    *
    * Derived from the shared encryption badge (`e2eeBadge.ts`) so this and
@@ -171,6 +176,7 @@ export function MessageComposition(props: Props) {
   const e2eeIcon = () => {
     switch (e2eeMode()) {
       case "blocked":
+      case "unconfirmed":
         return "gpp_maybe";
       case "peer_downgraded":
         return "lock_open";
@@ -188,13 +194,14 @@ export function MessageComposition(props: Props) {
    * The only entry point to group E2EE — shown as an affordance next to the
    * composer. Groups have no per-peer advertise hint, so this appears
    * whenever this device is E2EE-capable and the group is not yet encrypted.
+   * An "unconfirmed" group (no group state on this device, plaintext not
+   * proven) is offered it too.
    */
-  const groupCanEnable = createMemo(
-    () =>
-      isGroup() &&
-      selfE2EEEnabled() &&
-      e2ee?.sendModes.get(props.channel.id) === "plaintext",
-  );
+  const groupCanEnable = createMemo(() => {
+    if (!isGroup() || !selfE2EEEnabled()) return false;
+    const mode = e2ee?.sendModes.get(props.channel.id);
+    return mode === "plaintext" || mode === "unconfirmed";
+  });
 
   // `currentSlowmode` must be declared BEFORE `pollAllowed`: the latter's
   // createMemo evaluates eagerly and reads `currentSlowmode()`, so declaring
@@ -203,6 +210,22 @@ export function MessageComposition(props: Props) {
   const currentSlowmode = (): UserSlowmodes | undefined => {
     return client().userSlowmodes.get(props.channel.id);
   };
+
+  /**
+   * Whether features that put new plaintext on the server (polls, scheduled
+   * messages, the disappearing timer, slash commands) are withheld here.
+   * The trust module decides this for every send mode, so an "unconfirmed"
+   * group, a mode that has not loaded yet, and any mode added later fail
+   * closed instead of slipping past a list of known encrypted modes. Server
+   * channels, threads and web are never blocked. The "unconfirmed" check is
+   * a second key on this composer's own reading of the same cache.
+   * Declared before `pollAllowed`, which reads it eagerly (see above).
+   */
+  const plaintextFeaturesBlocked = createMemo(
+    () =>
+      serverActionsBlocked(e2ee, props.channel, client().user?.id) ||
+      e2eeMode() === "unconfirmed",
+  );
 
   /**
    * Polls are server-counted plaintext by construction, so the composer
@@ -216,6 +239,7 @@ export function MessageComposition(props: Props) {
         props.channel.type,
       ) &&
       props.channel.havePermission("SendMessage") &&
+      !plaintextFeaturesBlocked() &&
       e2eeMode() !== "encrypt" &&
       e2eeMode() !== "blocked" &&
       // Peer downgraded but this side hasn't consented to plaintext yet —
@@ -248,6 +272,7 @@ export function MessageComposition(props: Props) {
         props.channel.type,
       ) &&
       props.channel.havePermission("SendMessage") &&
+      !plaintextFeaturesBlocked() &&
       e2eeMode() !== "encrypt" &&
       e2eeMode() !== "blocked" &&
       e2eeMode() !== "peer_downgraded",
@@ -262,6 +287,7 @@ export function MessageComposition(props: Props) {
    */
   const disappearAllowed = createMemo(
     () =>
+      !plaintextFeaturesBlocked() &&
       e2eeMode() !== "encrypt" &&
       e2eeMode() !== "blocked" &&
       e2eeMode() !== "peer_downgraded",
@@ -865,14 +891,17 @@ export function MessageComposition(props: Props) {
     // conversation as plaintext, and never invoke interactions there either.
     // Like the plaintext send path, this awaits the AUTHORITATIVE native
     // verdict (an awaited round-trip, not the cached indicator, which can
-    // lag right after app launch); a native error also fails closed.
+    // lag right after app launch); a native error also fails closed. Only a
+    // proven "plaintext" lets the interaction through; an "unconfirmed"
+    // group asks for the plaintext confirmation first.
     if (
       e2ee &&
       (props.channel.type === "DirectMessage" || props.channel.type === "Group")
     ) {
-      let mode: "encrypt" | "blocked" | "plaintext" | "peer_downgraded" | null;
+      const target = props.channel;
+      let mode: Awaited<ReturnType<E2EEBridge["sendModeNowFor"]>>;
       try {
-        mode = await e2ee.sendModeNowFor(props.channel);
+        mode = await e2ee.sendModeNowFor(target, { proof: true });
       } catch {
         openModal({
           type: "error2",
@@ -880,10 +909,16 @@ export function MessageComposition(props: Props) {
         });
         return;
       }
+      if (mode === "unconfirmed" && target.type === "Group") {
+        openModal({
+          type: "e2ee_group_plaintext_confirm",
+          channelId: target.id,
+        });
+        return;
+      }
       if (
-        mode === "encrypt" ||
-        mode === "blocked" ||
-        mode === "peer_downgraded"
+        (mode !== null && mode !== "plaintext") ||
+        plaintextFeaturesBlocked()
       ) {
         openModal({
           type: "error2",
@@ -1014,7 +1049,7 @@ export function MessageComposition(props: Props) {
     // sendDraft (attachments now ride the encrypted path, slice 3.5).
     const peer = peerUserId();
     if (peer && e2ee) {
-      let mode: "encrypt" | "blocked" | "plaintext" | "peer_downgraded";
+      let mode: Awaited<ReturnType<E2EEBridge["sendModeNow"]>>;
       try {
         mode = await e2ee.sendModeNow(peer);
       } catch {
@@ -1048,12 +1083,50 @@ export function MessageComposition(props: Props) {
       }
     }
 
+    // Group pre-send guard, the group half of the guard above. A group this
+    // device holds no state for comes back "unconfirmed" unless the device
+    // listings prove nobody in it uses E2EE; that send waits for an explicit
+    // plaintext confirmation. This runs BEFORE sendDraft pops the draft, so
+    // the text and files stay put while the dialog is open. The throws
+    // inside the e2ee send path stay as the backstop. This protects an
+    // honest server and local state loss; a malicious server can still pass
+    // the proof for a fresh device.
+    if (e2ee && isGroup()) {
+      const group = props.channel;
+      let mode: Awaited<ReturnType<E2EEBridge["sendModeNowFor"]>>;
+      try {
+        mode = await e2ee.sendModeNowFor(group, { proof: true });
+      } catch {
+        // Native layer unreachable: fail closed
+        openModal({
+          type: "error2",
+          error: t`Encryption status could not be verified. Nothing was sent.`,
+        });
+        return;
+      }
+
+      // The proof can take seconds. If the composer moved to another
+      // channel meanwhile, sending now would pop and send THAT channel's
+      // draft on this group's verdict, so send nothing; this group's draft
+      // is still there.
+      if (props.channel.id !== group.id) return;
+
+      if (mode === "unconfirmed") {
+        openModal({
+          type: "e2ee_group_plaintext_confirm",
+          channelId: group.id,
+        });
+        return;
+      }
+    }
+
     // Disappearing-message timer. Re-checked here, not only by hiding the
     // icon: a timer picked while the conversation was plaintext must not arm
     // once it has become encrypted. The indicator mode is a cache, and for a
     // group it stays unset if priming failed, so ask the native layer
     // authoritatively (only when a timer is set; plain sends skip the
-    // round-trip). An unverifiable mode does not arm.
+    // round-trip). An unverifiable mode does not arm, and neither does an
+    // "unconfirmed" group: only "plaintext" (or a non-E2EE channel) arms.
     let timer = disappearAllowed() ? disappearOption().seconds : null;
     if (
       timer !== null &&
@@ -1061,7 +1134,7 @@ export function MessageComposition(props: Props) {
       (props.channel.type === "DirectMessage" || props.channel.type === "Group")
     ) {
       try {
-        const mode = await e2ee.sendModeNowFor(props.channel);
+        const mode = await e2ee.sendModeNowFor(props.channel, { proof: true });
         if (mode !== null && mode !== "plaintext") timer = null;
       } catch {
         timer = null;
@@ -1093,6 +1166,8 @@ export function MessageComposition(props: Props) {
       setTimeout(() => client().removeListener("messageCreate", onMsg), 15000);
     }
 
+    // The channel this send targets, kept for the error routing below
+    const sendChannel = props.channel;
     try {
       if (typeof useContent === "string") {
         const currentDraft = draft();
@@ -1116,6 +1191,19 @@ export function MessageComposition(props: Props) {
       // the message was NOT sent in plaintext. Surface it and restore the
       // draft so the user does not lose their text.
       if (error instanceof E2EESendError) {
+        // The backstop in the group send path refused a group that still
+        // needs the plaintext confirmation: route it to that dialog.
+        if (
+          (error.kind === "group_unconfirmed" ||
+            error.kind === "group_unestablished") &&
+          sendChannel.type === "Group"
+        ) {
+          openModal({
+            type: "e2ee_group_plaintext_confirm",
+            channelId: sendChannel.id,
+          });
+          return;
+        }
         openModal({ type: "error2", error: error.message });
         return;
       }
@@ -1138,9 +1226,9 @@ export function MessageComposition(props: Props) {
    * and whole-buffer, capped at 20 MiB in e2ee-core (mirrored just under by
    * E2EE_MAX_ATTACHMENT_SIZE), and chunked uploads are plaintext-only for
    * now. The server's E2EE blob route is not the binding limit.
-   * Fail closed: "pending"/"blocked"/"peer_downgraded" can still resolve
-   * to an encrypted send, so they get the small cap too — only a
-   * definitively-plaintext conversation may admit large files.
+   * Fail closed: "pending"/"blocked"/"peer_downgraded"/"unconfirmed" can
+   * still resolve to an encrypted send, so they get the small cap too — only
+   * a definitively-plaintext conversation may admit large files.
    *
    * Plaintext conversations clamp to the server limit that applies to this
    * account (the upload perk, the new-account tier, or the default): files
@@ -1167,7 +1255,8 @@ export function MessageComposition(props: Props) {
       e2eeMode() === "encrypt" ||
       e2eeMode() === "blocked" ||
       e2eeMode() === "pending" ||
-      e2eeMode() === "peer_downgraded";
+      e2eeMode() === "peer_downgraded" ||
+      e2eeMode() === "unconfirmed";
 
     return maybeEncrypted
       ? Math.min(serverLimit, CONFIGURATION.E2EE_MAX_ATTACHMENT_SIZE)
@@ -1306,16 +1395,20 @@ export function MessageComposition(props: Props) {
    * EMPTY (facet hidden, fail-closed) in encrypted or blocked conversations
    * — interactions never get a plaintext fallback inside E2EE — and in
    * DMs / saved messages, which the server structurally rejects anyway.
+   * The same goes for any conversation the trust gate withholds plaintext
+   * features from, an "unconfirmed" group included.
    */
   const [availableCommands] = createResource(
     () =>
-      [props.channel.id, props.channel.type, e2eeMode()] as [
-        string,
-        string,
-        string | undefined,
-      ],
-    async ([, type, mode]) => {
+      [
+        props.channel.id,
+        props.channel.type,
+        e2eeMode(),
+        plaintextFeaturesBlocked(),
+      ] as [string, string, string | undefined, boolean],
+    async ([, type, mode, blocked]) => {
       if (
+        blocked ||
         mode === "encrypt" ||
         mode === "blocked" ||
         mode === "peer_downgraded"
@@ -1451,6 +1544,12 @@ export function MessageComposition(props: Props) {
                 channelId: props.channel.id,
                 peerUserId: peerUserId(),
               });
+            } else if (e2eeMode() === "unconfirmed" && isGroup()) {
+              // The same plaintext confirmation a send in this group asks for
+              openModal({
+                type: "e2ee_group_plaintext_confirm",
+                channelId: props.channel.id,
+              });
             } else if (e2eeMode() === "encrypt" && peerUserId()) {
               // Green lock → the safety-number verification screen (slice 5).
               // Groups verify per member via the member list, not here.
@@ -1475,6 +1574,9 @@ export function MessageComposition(props: Props) {
               </Match>
               <Match when={e2eeMode() === "peer_downgraded"}>
                 {t`Encryption was turned off — choose how to continue.`}
+              </Match>
+              <Match when={e2eeMode() === "unconfirmed"}>
+                {t`This device can't confirm this group is unencrypted — review before sending.`}
               </Match>
             </Switch>
           </span>
@@ -2183,7 +2285,8 @@ const LookupNotice = styled("div", {
 
 /**
  * Composer encryption indicator. Green lock for an encrypted conversation;
- * amber warning (clickable) when a peer identity change is blocking sends.
+ * amber warning (clickable) when a peer identity change is blocking sends,
+ * or when a group's sends wait on a plaintext confirmation.
  */
 const E2EEIndicator = styled("div", {
   base: {
@@ -2205,6 +2308,11 @@ const E2EEIndicator = styled("div", {
     },
     // peer identity change pending acceptance: amber, clickable
     "&[data-mode='blocked']": {
+      color: "#FF8A00",
+      cursor: "pointer",
+    },
+    // group sends wait on a plaintext confirmation: amber, clickable
+    "&[data-mode='unconfirmed']": {
       color: "#FF8A00",
       cursor: "pointer",
     },

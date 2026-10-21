@@ -24,6 +24,7 @@
  * | encrypt         | any     | any    | any  | any  | encrypted     | encrypt         |
  * | blocked         | any     | any    | any  | any  | warning       | blocked         |
  * | peer_downgraded | any     | any    | any  | any  | warning       | peer_downgraded |
+ * | unconfirmed     | any     | any    | any  | any  | warning       | unconfirmed     |
  * | plaintext       | group   | any    | any  | any  | not_encrypted | (none)          |
  * | plaintext       | DM      | no     | any  | any  | null          | (none) [1]      |
  * | plaintext       | DM      | yes    | yes  | yes  | pending       | pending         |
@@ -43,13 +44,19 @@
  * [1] Unreachable from the hook (an unloaded status reads as self off). The
  * pure composer view below treats `selfEnabled` as false until loaded so the
  * two stay consistent on every input.
+ *
+ * "unconfirmed" (groups only in practice) is a group this device holds no
+ * record of and has not proven unencrypted: sends wait for an explicit
+ * plaintext confirmation, so it is a warning, never "not_encrypted".
  */
 
-export type E2EESendMode =
-  | "encrypt"
-  | "blocked"
-  | "plaintext"
-  | "peer_downgraded";
+import type { ComposerE2EEMode as NativeSendMode } from "./e2ee";
+
+/**
+ * The native send modes, taken from the bridge's own type so a new mode
+ * cannot be missed here: `e2eeBadgeFor`'s exhaustive switch stops compiling.
+ */
+export type E2EESendMode = NativeSendMode;
 
 export type E2EEBadge = "encrypted" | "not_encrypted" | "pending" | "warning";
 
@@ -67,6 +74,7 @@ export function e2eeBadgeFor(i: E2EEBadgeInput): E2EEBadge | null {
       return "encrypted";
     case "blocked":
     case "peer_downgraded":
+    case "unconfirmed":
       return "warning";
     case "plaintext":
       if (i.isGroup) return "not_encrypted";
@@ -89,6 +97,7 @@ export type ComposerE2EEMode =
   | "encrypt"
   | "blocked"
   | "peer_downgraded"
+  | "unconfirmed"
   | "pending"
   | "unencrypted"
   | undefined;
@@ -105,7 +114,9 @@ export function composerE2EEModeFor(i: E2EEBadgeInput): ComposerE2EEMode {
     case "encrypted":
       return "encrypt";
     case "warning":
-      return i.mode === "peer_downgraded" ? "peer_downgraded" : "blocked";
+      if (i.mode === "peer_downgraded" || i.mode === "unconfirmed")
+        return i.mode;
+      return "blocked";
     case "pending":
       return "pending";
     case "not_encrypted":

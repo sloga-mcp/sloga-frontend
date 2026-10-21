@@ -18,6 +18,15 @@
  * Doing so would hide every message in a plaintext DM whose mode has not been
  * settled, and a plaintext DM is the normal state for a peer without E2EE.
  *
+ * A group with no local record on this device is "unconfirmed": its other
+ * members may have it plain or encrypted, and nothing here can tell which.
+ * Its history comes from the server, so it renders and restores like
+ * plaintext, with no markers and nothing refused. New server-side actions are
+ * still withheld (`serverActionsBlocked`) until the user confirms plaintext
+ * for the group or it is established. This guards against lost client state
+ * behind an honest server; a malicious server can still pass the proof that
+ * skips the confirmation on a fresh device.
+ *
  * `pending` is a label the composer derives for display. It is never a
  * sendModes value, so it has no trust case here. `serverActionsBlocked`
  * re-derives it the way the composer does, because Edit and React must stop
@@ -28,18 +37,25 @@
 export type ConversationTrust =
   | "not_e2ee"
   | "plaintext"
+  | "unconfirmed"
   | "encrypted"
   | "unknown";
 
 /** The values e2ee `sendModes` can hold for a conversation. */
-type SendMode = "encrypt" | "blocked" | "plaintext" | "peer_downgraded";
+type SendMode =
+  | "encrypt"
+  | "blocked"
+  | "plaintext"
+  | "peer_downgraded"
+  | "unconfirmed";
 
 /**
  * Not a DM or group, or no E2EE on this device: "not_e2ee". No conversation
  * key (a DM whose peer cannot be derived) or no mode recorded yet: "unknown".
- * A plaintext verdict: "plaintext". Encrypt, blocked and peer_downgraded are
- * all "encrypted": blocked and downgraded conversations still only render
- * rows this device decrypted.
+ * A plaintext verdict: "plaintext". An unconfirmed group: "unconfirmed".
+ * Encrypt, blocked and peer_downgraded are all "encrypted": blocked and
+ * downgraded conversations still only render rows this device decrypted. Any
+ * other value is "unknown", so a mode this module does not know fails closed.
  */
 export function conversationTrust(input: {
   hasE2EE: boolean;
@@ -52,6 +68,8 @@ export function conversationTrust(input: {
   switch (input.mode) {
     case "plaintext":
       return "plaintext";
+    case "unconfirmed":
+      return "unconfirmed";
     case "encrypt":
     case "blocked":
     case "peer_downgraded":
@@ -85,12 +103,13 @@ export function splitUntrusted<
 }
 
 /**
- * Decides whether a cached entry may be restored as is. For "not_e2ee" and
- * "plaintext" the entry comes back unchanged. For "encrypted" and "unknown"
- * it comes back only if every row is trusted; otherwise it is refused
- * (undefined, so the caller refetches). A refused "encrypted" entry reports
- * how many non-system rows were untrusted; a refused "unknown" entry reports
- * 0, because the refetch decides what is shown.
+ * Decides whether a cached entry may be restored as is. For "not_e2ee",
+ * "plaintext" and "unconfirmed" the entry comes back unchanged: their history
+ * is the server's. For "encrypted" and "unknown" it comes back only if every
+ * row is trusted; otherwise it is refused (undefined, so the caller
+ * refetches). A refused "encrypted" entry reports how many non-system rows
+ * were untrusted; a refused "unknown" entry reports 0, because the refetch
+ * decides what is shown.
  */
 export function restorableForTrust<
   T extends { messages: readonly { id: string; systemMessage?: unknown }[] },
@@ -100,7 +119,11 @@ export function restorableForTrust<
   isTrusted: (id: string) => boolean,
 ): { entry: T | undefined; hiddenVisible: number } {
   if (!entry) return { entry: undefined, hiddenVisible: 0 };
-  if (trust === "not_e2ee" || trust === "plaintext") {
+  if (
+    trust === "not_e2ee" ||
+    trust === "plaintext" ||
+    trust === "unconfirmed"
+  ) {
     return { entry, hiddenVisible: 0 };
   }
   const { trusted, hiddenVisible } = splitUntrusted(entry.messages, isTrusted);
@@ -171,6 +194,10 @@ export function channelTrust(
  * only stops new content from leaving the device in plaintext.
  *
  * - "encrypted": blocked. The server must never see new content here.
+ * - "unconfirmed": blocked, whatever the E2EE status. A group this device has
+ *   no record of may be encrypted by every other member, and an edit, a
+ *   reaction or a vote would reach them as server plaintext. It clears when
+ *   the user confirms plaintext for the group or the group is established.
  * - "unknown": blocked while E2EE is enabled on this device or its status
  *   has not loaded yet (one IPC call at boot), since the mode may still
  *   settle to encrypted. With E2EE turned off the controller never records a
@@ -190,6 +217,7 @@ export function serverActionsBlocked(
   if (!e2ee) return false;
   switch (channelTrust(e2ee, channel, selfId)) {
     case "encrypted":
+    case "unconfirmed":
       return true;
     case "unknown":
       return e2ee.status.get("state")?.enabled !== false;

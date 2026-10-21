@@ -124,7 +124,9 @@ export function NotificationsWorker() {
    * The E2EE state of a message's conversation, for `e2eeNotificationGate`.
    * The send-mode cache only fills when a conversation is opened, sent to or
    * synced, so a miss asks the native layer, which also fills the cache. A
-   * failed lookup is "unknown", never a guess.
+   * failed lookup is "unknown", never a guess. The lookup never runs the
+   * group plaintext proof: its device listings would tell the server when
+   * this device saw a message, and an unconfirmed group notifies normally.
    */
   async function conversationE2EEMode(
     channel: Channel,
@@ -136,7 +138,7 @@ export function NotificationsWorker() {
     const key = channel.type === "Group" ? channel.id : channel.recipient?.id;
     const cached = key ? e2ee.sendModes.get(key) : undefined;
     try {
-      return cached ?? (await e2ee.sendModeNowFor(channel));
+      return cached ?? (await e2ee.sendModeNowFor(channel, { proof: false }));
     } catch {
       return "unknown";
     }

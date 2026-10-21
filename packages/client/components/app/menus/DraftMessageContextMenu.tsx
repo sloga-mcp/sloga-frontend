@@ -2,7 +2,8 @@ import { Trans } from "@lingui-solid/solid/macro";
 import { Show } from "solid-js";
 import type { Channel } from "stoat.js";
 
-import { useClient } from "@revolt/client";
+import { E2EESendError, useClient } from "@revolt/client";
+import { useModals } from "@revolt/modal";
 import { useState } from "@revolt/state";
 import type { UnsentMessage } from "@revolt/state/stores/Draft";
 
@@ -28,12 +29,35 @@ interface Props {
 export function DraftMessageContextMenu(props: Props) {
   const state = useState();
   const client = useClient();
+  const { openModal } = useModals();
 
   /**
    * Retry sending the draft message
    */
   function retrySend() {
-    state.draft.retrySend(client(), props.channel, props.draft.idempotencyKey);
+    const channel = props.channel;
+    state.draft.retrySend(
+      client(),
+      channel,
+      props.draft.idempotencyKey,
+      (error) => {
+        // A group this device cannot confirm is unencrypted refuses the
+        // retry before anything leaves the device. Ask for consent; the
+        // entry stays failed and nothing is resent automatically. Any other
+        // refusal already shows on the entry.
+        if (
+          error instanceof E2EESendError &&
+          (error.kind === "group_unconfirmed" ||
+            error.kind === "group_unestablished") &&
+          channel.type === "Group"
+        ) {
+          openModal({
+            type: "e2ee_group_plaintext_confirm",
+            channelId: channel.id,
+          });
+        }
+      },
+    );
   }
 
   /**

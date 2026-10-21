@@ -23,10 +23,11 @@ const MODES: (E2EESendMode | undefined)[] = [
   "blocked",
   "plaintext",
   "peer_downgraded",
+  "unconfirmed",
 ];
 const BOOLS = [false, true];
 
-/** Every input combination (5 modes x 2^4 flags = 80) */
+/** Every input combination (6 modes x 2^4 flags = 96) */
 function allInputs(): E2EEBadgeInput[] {
   const out: E2EEBadgeInput[] = [];
   for (const mode of MODES)
@@ -60,6 +61,7 @@ const TABLE: Row[] = [
   ["encrypt", "*", "*", "*", "*", "encrypted"],
   ["blocked", "*", "*", "*", "*", "warning"],
   ["peer_downgraded", "*", "*", "*", "*", "warning"],
+  ["unconfirmed", "*", "*", "*", "*", "warning"],
   ["plaintext", true, "*", "*", "*", "not_encrypted"],
   ["plaintext", false, false, "*", "*", null],
   ["plaintext", false, true, true, true, "pending"],
@@ -85,8 +87,8 @@ function rowsFor(i: E2EEBadgeInput): Row[] {
 
 const label = (i: E2EEBadgeInput) => JSON.stringify(i);
 
-test("covers 80 input combinations", () => {
-  assert.equal(allInputs().length, 80);
+test("covers 96 input combinations", () => {
+  assert.equal(allInputs().length, 96);
 });
 
 test("every combination matches exactly one table row and its badge", () => {
@@ -107,9 +109,13 @@ test("fails closed: encrypted ONLY from the native encrypt mode", () => {
   }
 });
 
-test("blocked and peer_downgraded are always a warning", () => {
+test("blocked, peer_downgraded and unconfirmed are always a warning", () => {
   for (const i of allInputs()) {
-    if (i.mode === "blocked" || i.mode === "peer_downgraded") {
+    if (
+      i.mode === "blocked" ||
+      i.mode === "peer_downgraded" ||
+      i.mode === "unconfirmed"
+    ) {
       assert.equal(e2eeBadgeFor(i), "warning", label(i));
     }
   }
@@ -134,9 +140,10 @@ test("E2EE known off on this device always gets an answer", () => {
 });
 
 /**
- * Verbatim logic of `Composition.tsx` `e2eeMode` before the refactor, for a
- * DM/group with a resolved conversation id. `self` is its
- * `selfE2EEEnabled`, which reads false while the status is unloaded.
+ * Verbatim logic of `Composition.tsx` `e2eeMode` before the refactor (with
+ * the group fail-closed fix's "unconfirmed" pass-through), for a DM/group
+ * with a resolved conversation id. `self` is its `selfE2EEEnabled`, which
+ * reads false while the status is unloaded.
  */
 function legacyComposer(
   mode: E2EESendMode | undefined,
@@ -144,7 +151,12 @@ function legacyComposer(
   self: boolean,
   peer: boolean,
 ): ComposerE2EEMode {
-  if (mode === "encrypt" || mode === "blocked" || mode === "peer_downgraded")
+  if (
+    mode === "encrypt" ||
+    mode === "blocked" ||
+    mode === "peer_downgraded" ||
+    mode === "unconfirmed"
+  )
     return mode;
   if (isGroup) return undefined;
   if (mode === "plaintext" && self) {
@@ -173,6 +185,7 @@ test("composer view and badge agree on every input", () => {
     encrypt: ["encrypted"],
     blocked: ["warning"],
     peer_downgraded: ["warning"],
+    unconfirmed: ["warning"],
     pending: ["pending"],
     unencrypted: ["not_encrypted"],
     none: ["not_encrypted", null],

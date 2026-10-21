@@ -129,6 +129,7 @@ test("only a plaintext verdict can add", () => {
     undefined,
     "blocked",
     "peer_downgraded",
+    "unconfirmed",
   ] as const) {
     assert.deepEqual(
       decideAdd({ ...input([["A", empty]]), verdict }),
@@ -186,6 +187,8 @@ test("rowStateFor: every verdict on a ready and an unready device", () => {
     ["blocked", false, "unverified"],
     ["peer_downgraded", true, "unverified"],
     ["peer_downgraded", false, "unverified"],
+    ["unconfirmed", true, "unverified"],
+    ["unconfirmed", false, "unverified"],
     [null, true, "unverified"],
     [null, false, "unverified"],
     [undefined, true, "unverified"],

@@ -41,6 +41,7 @@ import { DiscoveryQueueModal } from "./modals/DiscoveryQueue";
 import { E2EEDisableModal } from "./modals/E2EEDisable";
 import { E2EEEnableModal } from "./modals/E2EEEnable";
 import { E2EEEnableGroupModal } from "./modals/E2EEEnableGroup";
+import { E2EEGroupPlaintextConfirmModal } from "./modals/E2EEGroupPlaintextConfirm";
 import { E2EEIdentityChangeModal } from "./modals/E2EEIdentityChange";
 import { E2EEPeerDowngradeModal } from "./modals/E2EEPeerDowngrade";
 import { E2EEReenrollModal } from "./modals/E2EEReenroll";
@@ -230,6 +231,8 @@ export function RenderModal(props: ActiveModal & { onClose: () => void }) {
       return <E2EEVerifyModal {...modalProps} />;
     case "e2ee_enable_group":
       return <E2EEEnableGroupModal {...modalProps} />;
+    case "e2ee_group_plaintext_confirm":
+      return <E2EEGroupPlaintextConfirmModal {...modalProps} />;
     case "image_editor":
       return <ImageEditorModal {...modalProps} />;
     case "image_viewer":

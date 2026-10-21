@@ -387,6 +387,7 @@ const LOCKED_MODES: readonly ConversationE2EEMode[] = [
 const ALL_E2EE_MODES: readonly ConversationE2EEMode[] = [
   ...LOCKED_MODES,
   "plaintext",
+  "unconfirmed",
   "unknown",
   null,
 ];
@@ -412,6 +413,10 @@ test("e2ee gate: a conversation whose state could not be read announces the send
 
 test("e2ee gate: a plaintext conversation notifies as before", () => {
   assert.equal(e2eeNotificationGate("plaintext", false), "normal");
+});
+
+test("e2ee gate: an unconfirmed group notifies as before", () => {
+  assert.equal(e2eeNotificationGate("unconfirmed", false), "normal");
 });
 
 test("e2ee gate: an unrecognized mode fails closed to sender-only", () => {

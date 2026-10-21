@@ -267,6 +267,21 @@ class E2eePlugin : Plugin() {
                 // ---- Group DMs, verification, downgrade (slice 5) ----
                 "e2ee_send_mode_group" ->
                     resolveJson(call, engine.sendModeGroup(requireString(call, "conversationId")))
+                // The one plaintext-direction transition with NO native dialog
+                // (desktop `e2ee_acknowledge_group_plaintext` parity). It only
+                // records that the user chose plaintext for a group this device
+                // holds NO conversation row for: the core refuses the ack once
+                // any row exists, so no encrypted conversation is reachable from
+                // here, and the webview already owns the plaintext POST it
+                // unblocks. `expected` goes through the core's one strict
+                // parser; nothing is mapped here. Never provisions a store.
+                "e2ee_acknowledge_group_plaintext" -> {
+                    engine.acknowledgeGroupPlaintext(
+                        requireString(call, "conversationId"),
+                        requireString(call, "expected"),
+                    )
+                    resolveJson(call, "null")
+                }
                 "e2ee_encrypt_group" ->
                     resolveJson(
                         call,
@@ -562,6 +577,9 @@ class E2eePlugin : Plugin() {
                 // that could arm the announce gate directly would reduce the
                 // dialog to decoration; the core `mls_not_confirmed` gate is
                 // the backstop).
+                //
+                // e2ee_acknowledge_group_plaintext IS routed here, without a
+                // dialog: the documented exception, see its arm above.
                 else ->
                     call.reject("{\"type\":\"invalid_argument\",\"field\":\"name\"}")
             }

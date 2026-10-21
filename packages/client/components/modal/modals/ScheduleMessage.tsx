@@ -4,6 +4,7 @@ import { Trans, useLingui } from "@lingui-solid/solid/macro";
 
 import { styled } from "styled-system/jsx";
 
+import { useE2EE } from "@revolt/client";
 import { useState } from "@revolt/state";
 import { Column, Dialog, DialogProps } from "@revolt/ui";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
@@ -25,9 +26,11 @@ export function ScheduleMessageModal(
 ) {
   const { t } = useLingui();
   const state = useState();
+  const e2ee = useE2EE();
   const { showError } = useModals();
 
   const [pending, setPending] = createSignal(false);
+  const [refusal, setRefusal] = createSignal<string | undefined>();
   const [custom, setCustom] = createSignal<string>("");
   const [presetMs, setPresetMs] = createSignal<number | undefined>(
     60 * 60 * 1000,
@@ -73,10 +76,41 @@ export function ScheduleMessageModal(
   const canSchedule = () =>
     !pending() && !!draft().content?.trim() && validWindow();
 
+  /**
+   * The scheduled payload sits on the server as plaintext until it fires,
+   * so the conversation is re-checked against the authoritative native
+   * verdict right before the request. The composer's indicator may be
+   * stale, and the conversation may have turned encrypted (or become a
+   * group this device cannot confirm is unencrypted) after this modal
+   * opened. Allowed only on web, for channels that can never be E2EE
+   * (null) and for a plaintext verdict; any other value, a throw included,
+   * refuses. Returns the refusal copy, or undefined when allowed.
+   */
+  async function e2eeRefusal(): Promise<string | undefined> {
+    if (!e2ee) return undefined;
+    let mode: unknown;
+    try {
+      mode = await e2ee.sendModeNowFor(props.channel, { proof: true });
+    } catch {
+      return t`Encryption status could not be verified. Nothing was sent.`;
+    }
+    if (mode === null || mode === "plaintext") return undefined;
+    return t`Scheduled messages are stored unencrypted on the server, so they can't be used in this conversation right now. Nothing was scheduled.`;
+  }
+
   async function schedule() {
     if (!canSchedule()) return;
     setPending(true);
+    setRefusal(undefined);
     try {
+      // Refused: no request is made and the modal stays open with the
+      // chosen time and the draft untouched
+      const refused = await e2eeRefusal();
+      if (refused !== undefined) {
+        setRefusal(refused);
+        return;
+      }
+
       await props.channel.scheduleMessage(
         {
           content: draft().content,
@@ -156,6 +190,13 @@ export function ScheduleMessageModal(
             <Trans>
               Pick a time between 30 seconds and 30 days from now.
             </Trans>
+          </Warning>
+        </Show>
+
+        <Show when={refusal()}>
+          <Warning role="alert">
+            <Symbol size={16}>lock</Symbol>
+            {refusal()}
           </Warning>
         </Show>
 

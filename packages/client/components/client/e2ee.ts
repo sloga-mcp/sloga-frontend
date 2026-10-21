@@ -43,6 +43,16 @@ import type {
 import type { ResumeCommitRef, ResumePrefetch } from "../rtc/mlsRejoinPolicy";
 import { decryptBump } from "./e2eeConversationBump";
 import {
+  type GroupSendDecision,
+  type PlaintextProof,
+  type ProofCacheEntry,
+  groupSendDecision,
+  historySource,
+  listingHasDevices,
+  planProof,
+  PROBE_WINDOW_CAP,
+} from "./e2eeGroupSendGate.ts";
+import {
   type CallRosterOutcome,
   type RatelimitTransportOptions,
   CALL_PLANE_RATELIMIT_RETRIES,
@@ -126,11 +136,68 @@ type NativeStatus = {
   protocol_version: number;
 };
 
+/**
+ * Native send-mode verdict. The two `group_*` modes come only from
+ * `e2ee_send_mode_group`, for a group this device holds no record of:
+ * `group_unconfirmed` (no evidence either way) and `group_unestablished`
+ * (encrypted traffic for the group reached this device, but no
+ * `group_enable` did). Neither is plaintext: see `#groupPlaintextProof`.
+ */
 type SendModeVerdict =
   | { mode: "encrypt" }
   | { mode: "blocked"; device_ids: string[] }
   | { mode: "plaintext" }
-  | { mode: "peer_downgraded"; user_id: string };
+  | { mode: "peer_downgraded"; user_id: string }
+  | { mode: "group_unconfirmed" }
+  | { mode: "group_unestablished" };
+
+/**
+ * Composer-facing send mode (the `sendModes` values). `"unconfirmed"` is a
+ * group this device holds no record of and has not proven unencrypted. It
+ * counts as encrypted for sending and for server actions; only history is
+ * the server's, because there is no local transcript to show.
+ */
+export type ComposerE2EEMode =
+  | "encrypt"
+  | "blocked"
+  | "plaintext"
+  | "peer_downgraded"
+  | "unconfirmed";
+
+/**
+ * The `mode` of a native verdict, read defensively: the IPC hands back
+ * untyped JSON, and a malformed verdict must decide nothing.
+ */
+function verdictMode(verdict: unknown): unknown {
+  return typeof verdict === "object" && verdict !== null
+    ? (verdict as { mode?: unknown }).mode
+    : undefined;
+}
+
+/** Per-listing deadline for the group plaintext proof [M5]. */
+const PROOF_LISTING_DEADLINE_MS = 5_000;
+
+/** The window `PROBE_WINDOW_CAP` counts proof listings over. */
+const PROOF_WINDOW_MS = 10_000;
+
+/**
+ * How long a proof waits, once per connection, for this connection's
+ * device claim: peer listings before it are refused (401).
+ */
+const PROOF_CLAIM_WAIT_MS = 5_000;
+
+/**
+ * How long a proven "plaintext" survives a reconnect's cache drop while
+ * the post-claim re-probe runs: the claim wait plus one listing deadline,
+ * with slack. Re-armed by the claim's own invalidation.
+ */
+const PROOF_HOLD_MS = 15_000;
+
+/** Send-path copy for the two group confirm decisions. */
+const GROUP_UNCONFIRMED_COPY =
+  "This device can't confirm this group is unencrypted. Other members may have turned on encryption. Confirm before sending unencrypted. Nothing was sent.";
+const GROUP_UNESTABLISHED_COPY =
+  "Encrypted messages for this group reached this device, but it doesn't have the group's keys. Confirm before sending unencrypted. Nothing was sent.";
 
 /** Group roster entry + state (native `GroupState`) */
 type GroupMember = {
@@ -258,6 +325,11 @@ type DecryptOutcome =
       id: string;
       conversation: string;
       reason: string;
+      /**
+       * The AUTHENTICATED group id of a `group_not_established` rejection
+       * (native-checked ULID); absent on every other path.
+       */
+      group_conversation?: string;
     };
 
 type EncryptResult = {
@@ -279,7 +351,12 @@ export class E2EESendError extends Error {
       | "no_devices"
       | "attachments_unsupported"
       | "delivery_failed"
-      | "native",
+      | "native"
+      /** A group this device holds no record of and could not prove
+       *  unencrypted: nothing was sent; the user must confirm first. */
+      | "group_unconfirmed"
+      /** As above, with encrypted traffic for the group seen here. */
+      | "group_unestablished",
   ) {
     super(message);
     this.name = "E2EESendError";
@@ -1249,10 +1326,59 @@ export class E2EEBridge implements E2EEAdapter {
   #seedOnly = new Set<string>();
 
   /** Reactive per-peer send-mode cache for the composer indicator */
-  readonly sendModes = new ReactiveMap<
-    string,
-    "encrypt" | "blocked" | "plaintext" | "peer_downgraded"
-  >();
+  readonly sendModes = new ReactiveMap<string, ComposerE2EEMode>();
+
+  /**
+   * Group plaintext proof state (`#groupPlaintextProof`): per-user answers
+   * to "does this account list an E2EE device", from server listings.
+   * Only successful listings are written; a failure leaves no entry.
+   */
+  #proofCache = new Map<string, ProofCacheEntry>();
+
+  /** In-flight proof listings, one per user (single-flight). */
+  #proofInflight = new Map<string, Promise<void>>();
+
+  /**
+   * Invalidation counters: a listing that started before an invalidation
+   * is not written when it lands, so it cannot restore a stale answer.
+   */
+  #proofEpoch = 0;
+  #proofUserEpoch = new Map<string, number>();
+
+  /** Proof listings spent in the current `PROOF_WINDOW_MS` window. */
+  #proofWindow = { start: 0, used: 0 };
+
+  /**
+   * Groups whose composer probe did not prove them since the last accepted
+   * device claim. Peer listings need a device-bound session, so a probe
+   * that ran before the claim was expected to fail; they all run again
+   * once the next claim lands (bounded by the window cap).
+   */
+  #reprobeOnClaim = new Set<string>();
+
+  /** Groups whose "plaintext" indicator rests on a device-listing proof. */
+  #provenPlain = new Set<string>();
+
+  /**
+   * Proven-plaintext groups whose cached listings a reconnect or claim
+   * dropped, until `#holdUntil`. That drop is no evidence against the
+   * proof, so a passive refresh keeps "plaintext" while the only gap is
+   * missing entries; the post-claim re-probe decides. Any per-user
+   * invalidation, a rejected claim or the deadline ends every hold.
+   * Indicator only: sends always re-read native and re-prove.
+   */
+  #heldPlain = new Set<string>();
+  #holdUntil = 0;
+  #holdTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /**
+   * This connection's device claim: null until its result lands (reset
+   * on every `ready`). Set from `#onClaimResult`.
+   */
+  #claimAccepted: boolean | null = null;
+  #claimWaiters = new Set<() => void>();
+  /** A proof already waited out `PROOF_CLAIM_WAIT_MS` this connection. */
+  #claimWaitSpent = false;
 
   /**
    * Reactive attachment metadata per message id (no key material — see
@@ -1398,7 +1524,17 @@ export class E2EEBridge implements E2EEAdapter {
     this.#client = client;
     this.#transport = createNativeTransport();
 
-    client.on("ready", () => void this.#onReady());
+    client.on("ready", () => {
+      // A new connection: its device claim has not landed yet
+      this.#claimAccepted = null;
+      this.#claimWaitSpent = false;
+      // A (re)connect may follow any amount of missed device traffic
+      this.#invalidateProof();
+      void this.#onReady();
+    });
+    client.on("channelGroupJoin", (channel, user) =>
+      this.#onGroupJoin(channel, user.id),
+    );
   }
 
   /**
@@ -1748,10 +1884,13 @@ export class E2EEBridge implements E2EEAdapter {
       for (const channel of channels) {
         if (!current()) return;
         try {
-          // Pending, blocked and peer_downgraded still count as encrypted
+          // Pending, blocked and peer_downgraded still count as encrypted.
+          // An unconfirmed group has no local record, so nothing to seed
+          // from; and no proof here, which would list devices on connect.
           const mode = await this.sendModeNowFor(channel);
           if (!current()) return;
-          if (mode === null || mode === "plaintext") continue;
+          if (mode === null || mode === "plaintext" || mode === "unconfirmed")
+            continue;
 
           const conversationId =
             channel.type === "Group" ? channel.id : this.#peerOf(channel);
@@ -1908,6 +2047,9 @@ export class E2EEBridge implements E2EEAdapter {
         // it. A rejected claim gets no drain and clears nothing.
         if (event.accepted) this.#mlsBuffer.clear();
         void this.#onClaimResult(event.accepted);
+        // Peer listings need the device-bound session this binds: drop
+        // anything learned before it and re-run the probes it failed.
+        if (event.accepted) this.#reprobeAfterClaim();
         break;
       case "E2EEMessage": {
         // The mailbox drain carries MLS envelopes under this same event. An
@@ -1932,6 +2074,8 @@ export class E2EEBridge implements E2EEAdapter {
         break;
       }
       case "E2EEDeviceCreate":
+        // The server fans this to the user's DM peers and group co-members
+        this.#invalidateProof(event.user_id);
         void this.#onDeviceCreate(event.user_id);
         break;
       case "E2EEDeviceDelete":
@@ -1999,6 +2143,7 @@ export class E2EEBridge implements E2EEAdapter {
   async #onClaimResult(accepted: boolean): Promise<void> {
     const state = this.status.get("state");
     if (state) this.status.set("state", { ...state, claimed: accepted });
+    this.#settleClaim(accepted);
 
     if (!accepted) {
       // §6.4 revoked-device restore. A rejected claim WITH a stashed
@@ -2487,6 +2632,19 @@ export class E2EEBridge implements E2EEAdapter {
       ));
     }
 
+    // Encrypted traffic for a group this device holds no record of: native
+    // filed it as evidence, so the group's indicator moves to the stronger
+    // state. Only for a group this client knows [m3], and from the cached
+    // proof alone: listing devices now would tell the server when the
+    // rejection happened [wave-1 audit NIT 9].
+    if (
+      outcome.kind === "undecryptable" &&
+      typeof outcome.group_conversation === "string"
+    ) {
+      const group = this.#groupChannel(outcome.group_conversation);
+      if (group) await this.#refreshGroupMode(group.id);
+    }
+
     // Order + unread for the conversation list, once per decrypt (a
     // duplicate returned above): the `incoming` count is not idempotent.
     // Only a real text message bumps. No server ack here; for `own` the
@@ -2720,31 +2878,70 @@ export class E2EEBridge implements E2EEAdapter {
         "native",
       );
     }
-    this.sendModes.set(conversationId, this.#composerMode(verdict));
 
-    if (verdict.mode === "plaintext") {
+    // A group this device holds no record of is plaintext only when the
+    // device listings prove it (`#groupPlaintextProof`) or the user has
+    // confirmed it natively. Decided before the indicator is written, so
+    // it never flickers through a mode the send does not use.
+    const proof =
+      verdictMode(verdict) === "group_unconfirmed"
+        ? await this.#groupPlaintextProof(channel)
+        : null;
+    let decision = groupSendDecision(verdict, proof);
+    let provenPlain = false;
+    if (decision === "plaintext" && proof === "proven") {
+      // The proof took network round trips. Re-read the verdict right
+      // before handing the send to the plaintext path: a `group_enable`
+      // or new evidence that landed meanwhile must win [M6].
+      let fresh: SendModeVerdict;
+      try {
+        fresh = await this.#invoke<SendModeVerdict>("e2ee_send_mode_group", {
+          conversationId,
+        });
+      } catch {
+        throw new E2EESendError(
+          "Encryption status could not be verified. The message was NOT sent.",
+          "native",
+        );
+      }
+      provenPlain = verdictMode(fresh) === "group_unconfirmed";
+      decision = provenPlain ? "plaintext" : groupSendDecision(fresh, null);
+    }
+    const mode = this.#decisionMode(decision);
+    if (mode) this.#setGroupMode(conversationId, mode, provenPlain);
+    const gateError = this.#groupGateError(
+      decision,
+      "Encryption status could not be verified. The message was NOT sent.",
+    );
+    if (gateError) throw gateError;
+
+    if (decision === "plaintext") {
       if (data.e2eeAttachments?.length) {
         throw new E2EESendError(
           "The encryption state changed while sending. Nothing was sent.",
           "native",
         );
       }
-      return null; // never-encrypted group: ordinary plaintext path
+      // Never-encrypted group (proven, confirmed, or no E2EE account
+      // here): the ordinary plaintext path
+      return null;
     }
 
-    if (verdict.mode === "peer_downgraded") {
+    if (decision === "peer_downgraded") {
       throw new E2EESendError(
         "A member turned off encryption for this group. Confirm before sending unencrypted.",
         "blocked",
       );
     }
 
-    if (verdict.mode === "blocked") {
+    if (decision === "blocked") {
       throw new E2EESendError(
         "A member's security identity changed. Review the warning before sending.",
         "blocked",
       );
     }
+
+    // ---- decision === "encrypt": every failure from here is a hard error ----
 
     if (data.attachments?.length) {
       throw new E2EESendError(
@@ -3578,22 +3775,155 @@ export class E2EEBridge implements E2EEAdapter {
    * routed the peer-downgrade prompt to the (empty) identity modal, a
    * send dead-end on the receiving side (gate sitting bug 5).
    */
-  #composerMode(
-    verdict: SendModeVerdict,
-  ): "encrypt" | "blocked" | "plaintext" | "peer_downgraded" {
+  #composerMode(verdict: SendModeVerdict): ComposerE2EEMode {
     if (verdict.mode === "encrypt") return "encrypt";
     if (verdict.mode === "plaintext") return "plaintext";
     if (verdict.mode === "peer_downgraded") return "peer_downgraded";
+    // A group with no local record is never "plaintext" from the verdict
+    // alone; only a proof (send paths) or the native ack makes it so.
+    if (
+      verdict.mode === "group_unconfirmed" ||
+      verdict.mode === "group_unestablished"
+    ) {
+      return "unconfirmed";
+    }
     return "blocked";
   }
 
-  async #refreshGroupMode(conversationId: string): Promise<void> {
+  /** Composer mode for a group send decision; null for `"invalid"`. */
+  #decisionMode(decision: GroupSendDecision): ComposerE2EEMode | null {
+    switch (decision) {
+      case "plaintext":
+      case "encrypt":
+      case "blocked":
+      case "peer_downgraded":
+        return decision;
+      case "confirm_unconfirmed":
+      case "confirm_unestablished":
+        return "unconfirmed";
+      case "invalid":
+        return null;
+      default: {
+        const exhaustive: never = decision;
+        return exhaustive;
+      }
+    }
+  }
+
+  /**
+   * The send-path error for a group decision that must not send: the two
+   * confirm decisions (the composer routes their kinds to the confirm
+   * modal) and `"invalid"` (a verdict this build cannot read is never
+   * plaintext). Null for every other decision.
+   */
+  #groupGateError(
+    decision: GroupSendDecision,
+    invalidMessage: string,
+  ): E2EESendError | null {
+    if (decision === "confirm_unconfirmed") {
+      return new E2EESendError(GROUP_UNCONFIRMED_COPY, "group_unconfirmed");
+    }
+    if (decision === "confirm_unestablished") {
+      return new E2EESendError(GROUP_UNESTABLISHED_COPY, "group_unestablished");
+    }
+    if (decision === "invalid") {
+      return new E2EESendError(invalidMessage, "native");
+    }
+    return null;
+  }
+
+  /**
+   * Write a group's indicator mode. `provenPlain` marks a "plaintext" that
+   * rests on a device-listing proof (not on a native `plaintext` verdict).
+   * Every write except a held one (`keepHold`) ends the group's hold.
+   */
+  #setGroupMode(
+    conversationId: string,
+    mode: ComposerE2EEMode,
+    provenPlain: boolean,
+    keepHold = false,
+  ): void {
+    if (mode === "plaintext" && provenPlain) {
+      this.#provenPlain.add(conversationId);
+    } else {
+      this.#provenPlain.delete(conversationId);
+    }
+    if (!keepHold) this.#heldPlain.delete(conversationId);
+    this.sendModes.set(conversationId, mode);
+  }
+
+  /**
+   * Write a group's indicator mode WITHOUT listing anything: a rowless
+   * group whose proof still stands in the cache stays "plaintext", so a
+   * passive refresh never undoes a fresh proof; so does a held one (see
+   * `#heldPlain`); otherwise the verdict's own mode. Display and
+   * server-action gating only: every send re-proves and re-reads the
+   * verdict.
+   */
+  #writeGroupModeCached(
+    conversationId: string,
+    channel: Channel | undefined,
+    verdict: SendModeVerdict,
+  ): void {
+    if (channel && verdictMode(verdict) === "group_unconfirmed") {
+      if (this.#cachedGroupProof(channel) === "proven") {
+        this.#setGroupMode(conversationId, "plaintext", true);
+        return;
+      }
+      if (this.#plainHeld(conversationId, channel)) {
+        this.#setGroupMode(conversationId, "plaintext", true, true);
+        return;
+      }
+    }
+    this.#setGroupMode(conversationId, this.#composerMode(verdict), false);
+  }
+
+  /**
+   * Whether a held "plaintext" still holds: before the deadline, still
+   * shown, and missing cache entries are the ONLY gap. An advertised
+   * member, a cached device, a group too large to list or no device id
+   * is evidence, and no hold survives it.
+   */
+  #plainHeld(conversationId: string, channel: Channel): boolean {
+    if (!this.#heldPlain.has(conversationId)) return false;
+    const input = this.#proofInput(channel);
+    const holds =
+      input !== null &&
+      Date.now() < this.#holdUntil &&
+      this.sendModes.get(conversationId) === "plaintext" &&
+      "fetch" in
+        planProof({
+          ...input,
+          now: Date.now(),
+          windowBudget: Number.MAX_SAFE_INTEGER,
+        });
+    if (!holds) this.#heldPlain.delete(conversationId);
+    return holds;
+  }
+
+  /**
+   * Re-read a group's mode into the indicator cache. `probe` runs the
+   * device-listing proof (composer priming only); every other caller uses
+   * the cached proof, so server-driven events never trigger listings.
+   */
+  async #refreshGroupMode(
+    conversationId: string,
+    probe = false,
+  ): Promise<void> {
     try {
+      const channel = this.#groupChannel(conversationId);
+      if (probe && channel) {
+        const mode = await this.sendModeNowFor(channel, { proof: true });
+        // Not `status.claimed`: that flag carries the previous connection's
+        // claim until this one's lands, which is the window that matters.
+        if (mode === "unconfirmed") this.#reprobeOnClaim.add(conversationId);
+        return;
+      }
       const verdict = await this.#invoke<SendModeVerdict>(
         "e2ee_send_mode_group",
         { conversationId },
       );
-      this.sendModes.set(conversationId, this.#composerMode(verdict));
+      this.#writeGroupModeCached(conversationId, channel, verdict);
     } catch {
       /* leave the last known mode */
     }
@@ -3602,10 +3932,350 @@ export class E2EEBridge implements E2EEAdapter {
   /**
    * Populate the group send-mode cache for the composer (idempotent). Unlike
    * groupReconcile this works for a never-encrypted group too, so the
-   * "Encrypt this group" affordance can appear.
+   * "Encrypt this group" affordance can appear. Runs the plaintext proof
+   * for a group this device holds no record of.
    */
   primeGroupMode(conversationId: string): Promise<void> {
-    return this.#refreshGroupMode(conversationId);
+    return this.#refreshGroupMode(conversationId, true);
+  }
+
+  // ================================================================
+  // Group plaintext proof (rowless groups)
+  //
+  // A device with no record of a group (new device, wiped store, missed
+  // `group_enable`) cannot tell "never encrypted" from "encrypted by every
+  // other member". Native says `group_unconfirmed`; the send may go
+  // plaintext without asking ONLY if the server's device listings show no
+  // other member with an E2EE device and none of our own other devices.
+  //
+  // Threat model: this protects against an honest server combined with
+  // client state loss. A malicious server can still pass the proof for a
+  // fresh device (empty listings plus a withheld `group_enable`); only
+  // local pinned state resists that, and a fresh device has none.
+  // Server-sourced signals here only ever SKIP a prompt: they never touch
+  // an existing conversation row, and a row's verdict always wins.
+  // ================================================================
+
+  /**
+   * Prove a rowless group unencrypted, or not. Listings go through
+   * `#fetchRatelimited` with no retries and a 5 s deadline [M5], at most
+   * `PROBE_WINDOW_CAP` per window and never a partial batch (`planProof`).
+   * Any failure (429, 401, 404, timeout, a malformed listing) is
+   * `not_proven` and caches nothing. Never throws.
+   */
+  async #groupPlaintextProof(channel: Channel): Promise<PlaintextProof> {
+    try {
+      // Peer listings are refused until this connection's device claim is
+      // accepted; a refusal would read as not proven and prompt the user
+      // for a group that would pass. Wait for the claim (bounded, once per
+      // connection); without it, decide from the cache alone, listing
+      // nothing. No wait while E2EE is off or the device is unpublished.
+      const state = this.status.get("state");
+      if (
+        state?.enabled &&
+        state.published &&
+        state.device_id &&
+        !this.#claimLanded()
+      ) {
+        await this.#awaitClaim();
+        // Re-read through a call: the claim result lands during the await
+        if (!this.#claimLanded()) return this.#cachedGroupProof(channel);
+      }
+
+      const input = this.#proofInput(channel);
+      if (!input) return "not_proven";
+      const now = Date.now();
+      const plan = planProof({
+        ...input,
+        now,
+        windowBudget: this.#proofBudget(now),
+      });
+      if ("decided" in plan) return plan.decided;
+
+      await Promise.all(
+        plan.fetch.map((userId) =>
+          this.#proofListing(userId, input.selfId, input.selfDeviceId),
+        ),
+      );
+      // Decide from the cache alone: a listing that failed, or that an
+      // invalidation overtook, left no entry and so cannot prove anything.
+      return this.#cachedGroupProof(channel);
+    } catch {
+      return "not_proven";
+    }
+  }
+
+  /** The proof decided from cached listings only; never lists anything. */
+  #cachedGroupProof(channel: Channel): PlaintextProof {
+    const input = this.#proofInput(channel);
+    if (!input) return "not_proven";
+    const plan = planProof({ ...input, now: Date.now(), windowBudget: 0 });
+    return "decided" in plan ? plan.decided : "not_proven";
+  }
+
+  /**
+   * `planProof` inputs for a group. `advertised` is the members whose
+   * cached profile says they opted into E2EE: one is enough to need
+   * the prompt, with no listing spent.
+   */
+  #proofInput(channel: Channel): {
+    selfId: string;
+    selfDeviceId: string | null;
+    otherIds: string[];
+    advertised: Set<string>;
+    cache: ReadonlyMap<string, ProofCacheEntry>;
+  } | null {
+    const selfId = this.#client.user?.id;
+    if (!selfId || channel.type !== "Group") return null;
+    const otherIds = [...channel.recipientIds.values()].filter(
+      (id) => id !== selfId,
+    );
+    return {
+      selfId,
+      selfDeviceId: this.status.get("state")?.device_id ?? null,
+      otherIds,
+      advertised: new Set(
+        otherIds.filter(
+          (id) => this.#client.users.get(id)?.e2eeEnabled === true,
+        ),
+      ),
+      cache: this.#proofCache,
+    };
+  }
+
+  /** Listings still allowed in the current window (rolls it over). */
+  #proofBudget(now: number): number {
+    if (now - this.#proofWindow.start >= PROOF_WINDOW_MS) {
+      this.#proofWindow = { start: now, used: 0 };
+    }
+    return Math.max(0, PROBE_WINDOW_CAP - this.#proofWindow.used);
+  }
+
+  /**
+   * One user's listing into the proof cache, single-flight per user.
+   * Resolves either way; only a well-formed listing that no invalidation
+   * overtook is written.
+   */
+  #proofListing(
+    userId: string,
+    selfId: string,
+    selfDeviceId: string | null,
+  ): Promise<void> {
+    const pending = this.#proofInflight.get(userId);
+    if (pending) return pending;
+
+    const epoch = this.#proofEpoch;
+    const userEpoch = this.#proofUserEpoch.get(userId) ?? 0;
+    const at = Date.now();
+    this.#proofWindow.used++;
+
+    const run = (async () => {
+      try {
+        const listing = await this.#api<unknown>(
+          "GET",
+          `/e2ee/devices/${encodeURIComponent(userId)}`,
+          undefined,
+          undefined,
+          { maxRetries: 0, deadlineMs: PROOF_LISTING_DEADLINE_MS },
+        );
+        // Anything but an array of device rows is not an empty listing
+        if (
+          !Array.isArray(listing) ||
+          !listing.every(
+            (device) =>
+              typeof device === "object" &&
+              device !== null &&
+              typeof (device as { device_id?: unknown }).device_id === "string",
+          )
+        ) {
+          return;
+        }
+        if (
+          epoch !== this.#proofEpoch ||
+          userEpoch !== (this.#proofUserEpoch.get(userId) ?? 0)
+        ) {
+          return;
+        }
+        this.#proofCache.set(userId, {
+          hasDevices: listingHasDevices(
+            userId,
+            selfId,
+            selfDeviceId,
+            listing as { device_id: string }[],
+          ),
+          at,
+        });
+      } catch {
+        // Not cached: the next proof asks again
+      }
+    })();
+    const tracked: Promise<void> = run.finally(() => {
+      if (this.#proofInflight.get(userId) === tracked) {
+        this.#proofInflight.delete(userId);
+      }
+    });
+    this.#proofInflight.set(userId, tracked);
+    return tracked;
+  }
+
+  /**
+   * Forget proof listings: one user's (their devices changed), or all of
+   * them (reconnect, device claim, wipe). In-flight listings for them are
+   * not written when they land.
+   */
+  #invalidateProof(userId?: string): void {
+    if (userId === undefined) {
+      // A reconnect or claim is no evidence against a proof: hold every
+      // proven "plaintext" until the post-claim re-probe decides it
+      // (`#reprobeAfterClaim`, window-capped), instead of letting the
+      // seed or history read it back as "unconfirmed" from an empty cache.
+      // An active hold window is NOT extended here (a reconnect loop that
+      // never lands a claim must not hold forever); only an accepted
+      // claim re-arms it, right before its re-probe.
+      const windowOpen =
+        this.#heldPlain.size > 0 && Date.now() < this.#holdUntil;
+      for (const conversationId of this.#provenPlain) {
+        if (this.sendModes.get(conversationId) !== "plaintext") continue;
+        this.#heldPlain.add(conversationId);
+        this.#reprobeOnClaim.add(conversationId);
+      }
+      if (!windowOpen && this.#heldPlain.size > 0) this.#armHold();
+      this.#proofEpoch++;
+      this.#proofCache.clear();
+      this.#proofInflight.clear();
+      return;
+    }
+    // Evidence about one user's devices: no hold survives it
+    this.#dropHolds();
+    this.#proofUserEpoch.set(
+      userId,
+      (this.#proofUserEpoch.get(userId) ?? 0) + 1,
+    );
+    this.#proofCache.delete(userId);
+    this.#proofInflight.delete(userId);
+  }
+
+  /** (Re)start the hold window; `#dropHolds` runs when it closes. */
+  #armHold(): void {
+    this.#holdUntil = Date.now() + PROOF_HOLD_MS;
+    clearTimeout(this.#holdTimer);
+    this.#holdTimer = setTimeout(() => this.#dropHolds(), PROOF_HOLD_MS);
+  }
+
+  /**
+   * End every hold and re-read those groups from the cache alone, which
+   * now reads them "unconfirmed" unless a re-probe already proved them.
+   */
+  #dropHolds(): void {
+    const held = [...this.#heldPlain];
+    this.#heldPlain.clear();
+    for (const conversationId of held) {
+      void this.#refreshGroupMode(conversationId);
+    }
+  }
+
+  /**
+   * Record this connection's claim result (from `#onClaimResult`) and
+   * wake every proof waiting on it. A rejected claim ends every hold: no
+   * re-probe can list peers on this connection.
+   */
+  #settleClaim(accepted: boolean): void {
+    this.#claimAccepted = accepted;
+    for (const wake of [...this.#claimWaiters]) wake();
+    if (!accepted) this.#dropHolds();
+  }
+
+  /** Whether this connection's device claim has been accepted. */
+  #claimLanded(): boolean {
+    return this.#claimAccepted === true;
+  }
+
+  /**
+   * Resolves when this connection's claim result lands, or after
+   * `PROOF_CLAIM_WAIT_MS`. Waits at most once per connection: after one
+   * timeout, later proofs do not wait again.
+   */
+  #awaitClaim(): Promise<void> {
+    if (this.#claimAccepted !== null || this.#claimWaitSpent) {
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+      const wake = () => {
+        clearTimeout(timer);
+        this.#claimWaiters.delete(wake);
+        resolve();
+      };
+      const timer = setTimeout(() => {
+        this.#claimWaitSpent = true;
+        wake();
+      }, PROOF_CLAIM_WAIT_MS);
+      this.#claimWaiters.add(wake);
+    });
+  }
+
+  /** Accepted device claim: forget, then re-run the probes it failed. */
+  #reprobeAfterClaim(): void {
+    this.#invalidateProof();
+    // The re-probe below decides every held group; give it the full window
+    if (this.#heldPlain.size > 0) this.#armHold();
+    const groups = [...this.#reprobeOnClaim];
+    this.#reprobeOnClaim.clear();
+    for (const conversationId of groups) {
+      void this.#refreshGroupMode(conversationId, true);
+    }
+  }
+
+  /**
+   * A member joined a group [m9]: their listing is not known for this
+   * group's proof. A group showing "plaintext" re-reads its mode from the
+   * cache, which now lacks the new member, so it reads "unconfirmed" until
+   * the next probe. No listing here: a server event never triggers one.
+   */
+  #onGroupJoin(channel: Channel, userId: string): void {
+    this.#invalidateProof(userId);
+    if (
+      channel.type === "Group" &&
+      this.sendModes.get(channel.id) === "plaintext"
+    ) {
+      void this.#refreshGroupMode(channel.id);
+    }
+  }
+
+  /**
+   * Which confirm prompt a group needs, from a FRESH native verdict (no
+   * proof): `"unconfirmed"`, `"unestablished"`, or null when neither
+   * applies. Throws on native error.
+   */
+  async groupPlaintextPromptKind(
+    channelId: string,
+  ): Promise<"unconfirmed" | "unestablished" | null> {
+    const verdict = await this.#invoke<SendModeVerdict>(
+      "e2ee_send_mode_group",
+      { conversationId: channelId },
+    );
+    const mode = verdictMode(verdict);
+    if (mode === "group_unconfirmed") return "unconfirmed";
+    if (mode === "group_unestablished") return "unestablished";
+    return null;
+  }
+
+  /**
+   * The user confirmed sending unencrypted to a group this device holds no
+   * record of. `expected` is the prompt they saw; native refuses with a
+   * typed `invalid_argument` when the state moved since (`field: "reason"`
+   * for new evidence, `"conversation_id"` for a row that now exists), and
+   * that error is rethrown unchanged for the modal to inspect. Nothing is
+   * resent here.
+   */
+  async acknowledgeGroupPlaintext(
+    conversationId: string,
+    expected: "unconfirmed" | "unestablished",
+  ): Promise<void> {
+    await this.#invoke<null>("e2ee_acknowledge_group_plaintext", {
+      conversationId,
+      expected,
+    });
+    await this.#refreshGroupMode(conversationId);
   }
 
   /**
@@ -3883,8 +4553,13 @@ export class E2EEBridge implements E2EEAdapter {
       isGroup ? "e2ee_send_mode_group" : "e2ee_send_mode",
       isGroup ? { conversationId } : { peerUserId: conversationId },
     );
-    this.sendModes.set(conversationId, this.#composerMode(verdict));
-    if (verdict.mode === "plaintext") return null;
+    // Cached proof only, never a listing: opening history must not undo a
+    // standing proof's "plaintext" [B1].
+    if (isGroup) this.#writeGroupModeCached(conversationId, channel, verdict);
+    else this.sendModes.set(conversationId, this.#composerMode(verdict));
+    // A group with no local record has no local transcript: its history is
+    // the server's, exactly as for plaintext [B1].
+    if (historySource(verdict) === "server") return null;
 
     const limit = params?.limit ?? 50;
     const rows = await this.#invoke<HistoryRow[]>("e2ee_history", {
@@ -4176,19 +4851,71 @@ export class E2EEBridge implements E2EEAdapter {
     if (!conversationId) return null;
 
     let mode: "encrypt" | "blocked" | "plaintext" | "peer_downgraded";
-    try {
-      mode = isGroup
-        ? this.#composerMode(
-            await this.#invoke<SendModeVerdict>("e2ee_send_mode_group", {
-              conversationId,
-            }),
-          )
-        : await this.sendModeNow(conversationId);
-    } catch {
-      throw new E2EESendError(
+    if (isGroup) {
+      let verdict: SendModeVerdict;
+      try {
+        verdict = await this.#invoke<SendModeVerdict>("e2ee_send_mode_group", {
+          conversationId,
+        });
+      } catch {
+        throw new E2EESendError(
+          "Encryption status could not be verified. Nothing was sent.",
+          "native",
+        );
+      }
+      // The same gate as `handleGroupMessageSend`, BEFORE the plaintext
+      // return below hands the files to the ordinary Autumn upload: no file
+      // bytes leave for a group not proven or confirmed unencrypted [M6].
+      const proof =
+        verdictMode(verdict) === "group_unconfirmed"
+          ? await this.#groupPlaintextProof(channel)
+          : null;
+      let decision = groupSendDecision(verdict, proof);
+      let provenPlain = false;
+      if (decision === "plaintext" && proof === "proven") {
+        let fresh: SendModeVerdict;
+        try {
+          fresh = await this.#invoke<SendModeVerdict>("e2ee_send_mode_group", {
+            conversationId,
+          });
+        } catch {
+          throw new E2EESendError(
+            "Encryption status could not be verified. Nothing was sent.",
+            "native",
+          );
+        }
+        provenPlain = verdictMode(fresh) === "group_unconfirmed";
+        decision = provenPlain ? "plaintext" : groupSendDecision(fresh, null);
+      }
+      const groupMode = this.#decisionMode(decision);
+      if (groupMode) this.#setGroupMode(conversationId, groupMode, provenPlain);
+      const gateError = this.#groupGateError(
+        decision,
         "Encryption status could not be verified. Nothing was sent.",
-        "native",
       );
+      if (gateError) throw gateError;
+      if (
+        decision !== "plaintext" &&
+        decision !== "encrypt" &&
+        decision !== "blocked" &&
+        decision !== "peer_downgraded"
+      ) {
+        // Unreachable: every other decision has a gate error above
+        throw new E2EESendError(
+          "Encryption status could not be verified. Nothing was sent.",
+          "native",
+        );
+      }
+      mode = decision;
+    } else {
+      try {
+        mode = await this.sendModeNow(conversationId);
+      } catch {
+        throw new E2EESendError(
+          "Encryption status could not be verified. Nothing was sent.",
+          "native",
+        );
+      }
     }
 
     if (mode === "blocked") {
@@ -4522,7 +5249,9 @@ export class E2EEBridge implements E2EEAdapter {
     });
     const mode = this.#composerMode(verdict);
     this.sendModes.set(peerId, mode);
-    return mode;
+    // A DM verdict never carries the group-only modes; one that did is no
+    // plaintext proof, so it reads as blocked (fail closed).
+    return mode === "unconfirmed" ? "blocked" : mode;
   }
 
   /**
@@ -4531,23 +5260,60 @@ export class E2EEBridge implements E2EEAdapter {
    * cache). Returns null for channel types that can never be E2EE (server
    * channels, threads, saved messages). Throws on native error — callers
    * must treat a throw as fail-closed.
+   *
+   * A group this device holds no record of reads `"unconfirmed"`. With
+   * `proof: true` (send, submit, interaction and composer-priming paths
+   * only) it reads `"plaintext"` when the device listings prove the group
+   * unencrypted AND an immediate re-read of the verdict still says
+   * `group_unconfirmed` [re-review MAJOR 2]; otherwise the fresh mode.
+   * Without it nothing is listed.
    */
   async sendModeNowFor(
     channel: Channel,
-  ): Promise<"encrypt" | "blocked" | "plaintext" | "peer_downgraded" | null> {
+    opts?: { proof?: boolean },
+  ): Promise<ComposerE2EEMode | null> {
     const isGroup = channel.type === "Group";
     if (channel.type !== "DirectMessage" && !isGroup) return null;
 
     const conversationId = isGroup ? channel.id : this.#peerOf(channel);
     if (!conversationId) return null;
 
+    if (!isGroup) {
+      const verdict = await this.#invoke<SendModeVerdict>("e2ee_send_mode", {
+        peerUserId: conversationId,
+      });
+      const mode = this.#composerMode(verdict);
+      this.sendModes.set(conversationId, mode);
+      return mode;
+    }
+
     const verdict = await this.#invoke<SendModeVerdict>(
-      isGroup ? "e2ee_send_mode_group" : "e2ee_send_mode",
-      isGroup ? { conversationId } : { peerUserId: conversationId },
+      "e2ee_send_mode_group",
+      { conversationId },
     );
-    const mode = this.#composerMode(verdict);
-    this.sendModes.set(conversationId, mode);
-    return mode;
+    if (opts?.proof === true && verdictMode(verdict) === "group_unconfirmed") {
+      if ((await this.#groupPlaintextProof(channel)) === "proven") {
+        // Callers POST straight after this returns: re-read the verdict so
+        // a `group_enable` or new evidence that landed during the proof
+        // wins.
+        const fresh = await this.#invoke<SendModeVerdict>(
+          "e2ee_send_mode_group",
+          { conversationId },
+        );
+        const provenPlain = verdictMode(fresh) === "group_unconfirmed";
+        const mode: ComposerE2EEMode = provenPlain
+          ? "plaintext"
+          : this.#composerMode(fresh);
+        this.#setGroupMode(conversationId, mode, provenPlain);
+        return mode;
+      }
+      // The probe decided: this also ends any hold on a "plaintext"
+      this.#setGroupMode(conversationId, "unconfirmed", false);
+      return "unconfirmed";
+    }
+    // The indicator keeps a standing cached proof; the answer does not
+    this.#writeGroupModeCached(conversationId, channel, verdict);
+    return this.#composerMode(verdict);
   }
 
   // ================================================================
@@ -4658,6 +5424,11 @@ export class E2EEBridge implements E2EEAdapter {
     this.#reconciledAt.clear();
     this.#selfDevicesUnpinned = false;
     this.sendModes.clear();
+    // The own-device half of every cached proof named the wiped device
+    this.#provenPlain.clear();
+    this.#heldPlain.clear();
+    this.#invalidateProof();
+    this.#reprobeOnClaim.clear();
     // Held MLS envelopes name groups the wipe just destroyed; the next call
     // must not be fed them.
     this.#mlsBuffer.clear();

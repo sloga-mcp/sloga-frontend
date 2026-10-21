@@ -5,6 +5,7 @@ import { createFormControl, createFormGroup } from "solid-forms";
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
 import { styled } from "styled-system/jsx";
 
+import { useE2EE } from "@revolt/client";
 import { Column, Dialog, DialogProps, Form2, IconButton, MenuItem } from "@revolt/ui";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
 
@@ -23,6 +24,7 @@ export function CreatePollModal(
   props: DialogProps & Modals & { type: "create_poll" },
 ) {
   const { t } = useLingui();
+  const e2ee = useE2EE();
   const { showError } = useModals();
 
   const group = createFormGroup({
@@ -33,6 +35,10 @@ export function CreatePollModal(
   const [answers, setAnswers] = createSignal<string[]>(["", ""]);
   const [multiselect, setMultiselect] = createSignal(false);
   const [pending, setPending] = createSignal(false);
+  // Why the last submit was refused before anything was sent
+  const [refused, setRefused] = createSignal<"encrypted" | "unverified" | null>(
+    null,
+  );
 
   function setAnswer(index: number, value: string) {
     setAnswers((current) =>
@@ -66,10 +72,41 @@ export function CreatePollModal(
     // No blank rows in between — every present row must be filled
     validAnswers().length === answers().length;
 
+  /**
+   * A poll is server-counted plaintext, so it is only created where new
+   * content may leave the device unencrypted. The composer hides the action
+   * otherwise, but that gate was read when this modal opened; this awaits a
+   * fresh native verdict at submit time. Allowed only on web (no E2EE), for
+   * a channel that can never be E2EE (null) or a plaintext verdict. Any
+   * other value, including undefined and an unconfirmed group, and any
+   * native error, refuses.
+   */
+  async function encryptionCheck(): Promise<
+    "allowed" | "encrypted" | "unverified"
+  > {
+    try {
+      const mode = e2ee
+        ? await e2ee.sendModeNowFor(props.channel, { proof: true })
+        : null;
+      return !e2ee || mode === null || mode === "plaintext"
+        ? "allowed"
+        : "encrypted";
+    } catch {
+      return "unverified";
+    }
+  }
+
   async function onSubmit() {
     if (!canSubmit()) return;
     setPending(true);
+    setRefused(null);
     try {
+      const check = await encryptionCheck();
+      if (check !== "allowed") {
+        // Nothing was sent; the modal stays open with the input intact
+        setRefused(check);
+        return;
+      }
       await props.channel.createPoll({
         question: group.controls.question.value.trim(),
         answers: validAnswers().map((text) => ({ text })),
@@ -196,6 +233,17 @@ export function CreatePollModal(
             </Trans>
           </Notice>
         </Show>
+
+        <Show when={refused()}>
+          {(reason) => (
+            <ErrorNotice role="alert">
+              <Symbol size={16}>error</Symbol>
+              {reason() === "unverified"
+                ? t`Encryption status could not be verified. Nothing was sent.`
+                : t`Polls are not available in encrypted conversations — votes are counted by the server.`}
+            </ErrorNotice>
+          )}
+        </Show>
       </Column>
     </Dialog>
   );
@@ -286,5 +334,18 @@ const Notice = styled("div", {
     fontSize: "0.8125rem",
     background: "var(--md-sys-color-surface-container-high)",
     color: "var(--md-sys-color-on-surface-variant)",
+  },
+});
+
+const ErrorNotice = styled("div", {
+  base: {
+    display: "flex",
+    gap: "var(--gap-sm)",
+    alignItems: "flex-start",
+    padding: "10px 12px",
+    borderRadius: "8px",
+    fontSize: "0.8125rem",
+    background: "var(--md-sys-color-error-container)",
+    color: "var(--md-sys-color-on-error-container)",
   },
 });

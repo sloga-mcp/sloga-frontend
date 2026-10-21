@@ -23,6 +23,8 @@
  * `waitForMember`), and `decideAdd` still refuses it.
  */
 
+import type { ComposerE2EEMode as NativeSendMode } from "../../client/e2ee";
+
 /**
  * The most other members one add will fetch listings for. Every listing
  * spends the shared `e2ee_devices` budget (120 per 10 s) that calls draw on
@@ -36,14 +38,13 @@ export function tooManyToVerify(memberIds: readonly string[]): boolean {
   return memberIds.length > MAX_VERIFIED_OTHER_MEMBERS;
 }
 
-/** The native send-mode verdict for the group, or null when unavailable */
-export type GroupVerdict =
-  | "encrypt"
-  | "blocked"
-  | "plaintext"
-  | "peer_downgraded"
-  | null
-  | undefined;
+/**
+ * The native send-mode verdict for the group, or null when unavailable.
+ * Taken from the bridge's own type, so a new mode (like "unconfirmed": no
+ * local record, not proven plaintext) lands in the fail-closed branches below
+ * instead of breaking the build somewhere else.
+ */
+export type GroupVerdict = NativeSendMode | null | undefined;
 
 /** One member's `GET /e2ee/devices/{id}` outcome */
 export type MemberListing =
