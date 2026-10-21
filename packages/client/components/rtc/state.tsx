@@ -173,6 +173,7 @@ import {
 import { decideKeybindDispatch } from "./keybindDispatchPolicy";
 import { watchLocalUserId } from "./localUserIdentity";
 import { isPermissionDeniedError } from "./mediaAccessPolicy";
+import { type MicMode, micModeOf, micModeSwitchPlan } from "./micModePolicy";
 import { anyPeerCouldEncrypt } from "./mlsRosterPolicy";
 import {
   CONN_NONCE_ATTRIBUTE,
@@ -2809,6 +2810,26 @@ class Voice {
         const room = this.room();
         if (room && this.state() === "CONNECTED") void this.#startVAD(room);
       });
+    });
+
+    // Apply a microphone-mode switch to the call in progress. Without this a
+    // switch waited for the next join (`micModePolicy.ts` lists what each one
+    // did instead): push to talk -> voice activity left the microphone muted
+    // for the rest of the call.
+    let lastMicMode: MicMode | undefined;
+    createEffect(() => {
+      const mode = micModeOf({
+        vadEnabled: this.#settings.vadEnabled,
+        pushToTalk: this.#settings.pushToTalk,
+      });
+      const previous = lastMicMode;
+      lastMicMode = mode;
+      // The first run is the mode the app started in, not a switch, and a
+      // write that leaves the mode where it was is not one either.
+      if (previous === undefined || previous === mode) return;
+      // Untracked for the device effect's reason above: `#startVAD` and the
+      // plan's inputs read settings that must not join this effect.
+      untrack(() => this.#applyMicMode(mode));
     });
 
     // Identify this device to native as soon as the session is hydrated.
@@ -12518,6 +12539,48 @@ class Voice {
         return;
       void channel.triggerSound(soundId).catch(() => {});
     }, 800);
+  }
+
+  /**
+   * Apply a microphone-mode switch to the call in progress
+   * ({@link micModeSwitchPlan}). A switch made before the call is connected
+   * is left to the `connected` handler, which starts the voice-activity gate
+   * and the push-to-talk listeners from the mode as it then stands.
+   */
+  #applyMicMode(mode: MicMode) {
+    const room = this.room();
+    if (!room || this.state() !== "CONNECTED") return;
+    const whispering = !!this.whisper.target();
+    const plan = micModeSwitchPlan({
+      next: mode,
+      intentOn: this.#settings.micOn && !this.#settings.deafen,
+      whispering,
+      publishRefused: !!publishToggleRefusal({
+        enabling: true,
+        isAfkChannel: this.isAfkChannel,
+        permitted: this.speakingPermission,
+      }),
+      pttHeld: this.#pttHeld,
+    });
+
+    if (plan.vad === "start") void this.#startVAD(room);
+    else this.#stopVAD();
+
+    if (plan.nativePtt === "arm") void this.#ensureNativePtt(room);
+    else void this.#disarmNativePtt();
+
+    // The whisper's restore would otherwise undo the switch when it ends.
+    if (whispering && plan.afterWhisper !== undefined)
+      this.#whisperPriorMic = plan.afterWhisper;
+
+    if (plan.mic === "on") {
+      void this.#setMicEnabled(room, true).catch(() => {});
+    } else if (plan.mic === "off") {
+      // Unconditionally, not behind `isMicrophoneEnabled`: an enable still in
+      // flight (the gate opening, the join's first publish) reads as off, and
+      // livekit orders this mute after it only if it is issued.
+      void room.localParticipant.setMicrophoneEnabled(false).catch(() => {});
+    }
   }
 
   #stopVAD() {

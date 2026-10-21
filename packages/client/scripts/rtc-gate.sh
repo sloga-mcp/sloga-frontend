@@ -184,6 +184,9 @@ EXPECTED=(
   # badge truth table and its ParticipantTile.tsx source pins. First measured
   # at 10.
   "components/rtc/shareAudioBadge.test.ts 10 0"
+  # Mid-call microphone-mode switch (push to talk -> voice activity left the
+  # mic muted for the rest of the call). First measured at 18.
+  "components/rtc/micModePolicy.test.ts 18 0"
 )
 
 # --- skips -------------------------------------------------------------------
@@ -401,7 +404,10 @@ SPECS=(components/rtc/mls*.test.ts components/rtc/rosterReconcile.test.ts
   # NOT matched by any glob either: the share-audio badge's spec (slice 4).
   # Without this literal it runs nowhere and its EXPECTED row trips "never
   # ran".
-  components/rtc/shareAudioBadge.test.ts)
+  components/rtc/shareAudioBadge.test.ts
+  # NOT matched by any glob: the mid-call microphone-mode switch and its pins
+  # over the state.tsx effect that runs it.
+  components/rtc/micModePolicy.test.ts)
 # 🔴 Arguments ADD to that set; they do not replace it. They used to replace
 # it, so the natural invocation for this branch —
 #   rtc-gate.sh components/rtc/mls*.test.ts
@@ -552,7 +558,9 @@ FILES=(components/rtc/mlsCallSession.ts components/rtc/mlsCallModePolicy.ts
   # the slice also edits or pins, were already enrolled above.
   components/modal/modals/AndroidScreenShareSheet.tsx
   components/modal/types.ts components/common/lib/env.ts
-  components/rtc/shareAudioBadge.ts components/rtc/shareAudioBadge.test.ts)
+  components/rtc/shareAudioBadge.ts components/rtc/shareAudioBadge.test.ts
+  # Mid-call microphone-mode switch: the pure plan and its spec.
+  components/rtc/micModePolicy.ts components/rtc/micModePolicy.test.ts)
 # 🔴 NOT in FILES: components/app/interface/settings/channel/Overview.tsx.
 # FE-2 edits it (the AFK channel's check rules), but eslint reports two
 # pre-existing solid/reactivity warnings on it, present before that edit in
