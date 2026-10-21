@@ -9,6 +9,72 @@ import type { ChangelogResponse } from "./Changelog";
  */
 export const CHANGELOGS: ChangelogResponse[] = [
   // ==========================================================================
+  // v0.69.0 (written 2026-10-21 by the merge steward from the v0.69 inbox,
+  // ~/.claude/plans/v069-release-inbox.md section 0-FINAL, every bullet
+  // checked against the landed code). User go 2026-10-21 (full sweep).
+  // Copy constraints, load-bearing — READ BEFORE EDITING:
+  // - These notes also show in the Play and App Store builds: no Cipher,
+  //   purchase or pricing lines (the checkout is hidden in store builds).
+  // - No "Steam" comparisons (user 10-21).
+  // - Encryption bullets describe only the dialogs users will see (held
+  //   E2EE fixes H-18..H-21 ship here); never add attack details.
+  // - "A brief server hiccup no longer signs you out" relies on backend
+  //   fix/invalid-session-db-errors, live on heart1 since 2026-10-21.
+  {
+    id: "sloga-2026-10-22",
+    title: "Patch Notes",
+    published_at: "2026-10-22T12:00:00.000Z",
+    web_version: "0.69.0",
+    markdown_content: `## v0.69.0: Friend Categories, a New Home and a New Title Bar
+
+### 🏠 A new Home
+- **Jump back in:** your unread channels (mentions first), friends who are in voice right now, and upcoming events from your servers over the next two weeks.
+- **Founding Streamers** have their own row on Home.
+- New here? Home shows a few ways to start: bring your server from Discord, Stoat or Fluxer, add a friend, discover communities or create a server.
+
+### 👥 Friends list
+- **Double-clicking a friend opens your DM every time.** Before, it only worked on the first friend in each section.
+- **Friend groups are now called categories**, with folder icons. Your existing groups carry over.
+- **Make a category** from the folder button next to the search box, the **Create category** button in the list, or by right-clicking a section. Pick its friends from a searchable list. Right-click a category to manage or remove it.
+- **Right-click a friend** for Send Message, Call, Video Call, Screen Share and Profile, plus Favorites, Categorize…, Remove friend and Block user. **Remove friend and Block user now ask you to confirm first.**
+
+### 💬 Friends window and chat windows (desktop app)
+- **One setting for both:** in Settings → Appearance → Layout, choose where **Friends and direct messages** open: in the main window, or in their own windows. The friends window now comes with chat windows, so messages no longer open hidden behind it.
+- **A new title bar:** drag the empty space next to your tabs to move a window, double-click it to maximize, and use the minimize, maximize and close buttons in the corner (Windows). On macOS the window keeps its traffic lights; Linux keeps the usual title bar for now.
+- **Buttons in chat windows work again:** the chat bar (including the arrow for more options) and the buttons in dialogs opened from a chat window.
+- **Clicking your name** at the top of the friends window now opens your status menu.
+- **Right-click a tab, or the person's name** at the top of a chat window, for the same friend menu. On a tab, Close tab comes first.
+- With chat windows on, **links to a DM or group chat open in its chat window.** Links to a specific message still jump to it in the main window.
+- Closing the last tab now closes the window instead of leaving a blank white one behind.
+- Closing the friends window and reopening it straight away works now, and the maximize button's icon keeps up with the window.
+- The pop-out button on the Friends page is gone, along with the web app's pop-out friends list.
+
+### 🎙️ Voice and calls
+- **Voice activity can no longer leave you muted in a call.**
+- **Changing your microphone mode during a call** now takes effect straight away.
+- **Push to talk:** joining a call, unmuting or undeafening no longer turns your microphone on before you press the talk key. A talk key held while you join no longer transmits; press it again to talk.
+- **Push to talk:** the talk key does nothing while you're muted or deafened.
+- **Push to talk:** switching away from Sloga while you hold the talk key now stops transmitting. Press the key again to keep talking.
+- **A hang-up button** now sits next to your mute and deafen buttons while you're in a call.
+- **Calls on phones:** switching channels or pressing Back during a call no longer leaves the call card stuck full-size over the wrong page, squeezed to nothing, or gone. Away from the call's channel it's always the small floating card.
+- The collapsed sidebar's user bar no longer hides your last server while you're in a call.
+
+### 🔐 Encrypted chats (desktop and Android)
+- **Turning on encryption for a group chat, adding someone to an encrypted group, marking a contact as verified and accepting a contact's new key now ask you to confirm in a system dialog** that shows the member list or the safety number.
+- If this device can't tell whether a group chat is encrypted, Sloga now asks you before sending instead of guessing.
+- Images in encrypted chats no longer look squished before you open them.
+
+### 🔑 Logging in
+- **No more silent bounce back to the login screen.** If the app can't connect after you log in, it shows the usual "Disconnected" screen and keeps retrying.
+- **A brief server hiccup no longer signs you out.**
+
+### ✨ Small improvements
+- **Invite links show a server card** in chat, and say plainly when an invite has expired or doesn't exist.
+- **Import a server** now accepts Stoat's new **stt.gg** invite links.
+- Windows: Sloga's taskbar and tray icon no longer sit on a black square.
+`,
+  },
+  // ==========================================================================
   // v0.68.0 (written 2026-10-17 by the merge steward from the v0.68 inbox,
   // ~/.claude/plans/v068-release-inbox.md section 0, every bullet checked
   // against the landed code). User go 2026-10-17 "all recommended".
