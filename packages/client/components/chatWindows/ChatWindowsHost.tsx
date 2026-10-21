@@ -30,7 +30,14 @@ import { useState } from "@revolt/state";
 import { ChatWindowView } from "./ChatWindowView";
 import { FriendsWindow } from "./FriendsWindow";
 import { TabStrip } from "./TabStrip";
-import { clearStaleTabDrag, forgetWindow } from "./chatWindowFrame";
+import {
+  DRAG_FLAG_EVENTS,
+  clearStaleTabDrag,
+  dragFlagAction,
+  forgetWindow,
+  markTabDragEnd,
+  markTabDragStart,
+} from "./chatWindowFrame";
 import {
   chatWindows,
   closeTab,
@@ -225,6 +232,7 @@ export function ChatWindowsHost(): JSX.Element {
       if (action.type === "closeWindow") closeWindow(action.id);
       else if (action.type === "closeFriends") setFriendsOpen(false);
       forget(key, handle);
+      if (handle.shellLabel !== undefined) forgetWindow(handle.shellLabel);
     });
   }
 
@@ -478,7 +486,7 @@ export function ChatWindowsHost(): JSX.Element {
     <For each={[...handles().values()]}>
       {(handle) => {
         const key = keyOf.get(handle)!;
-        watchStaleTabDrag(handle.ctx.doc);
+        watchDragFlag(handle.ctx.doc);
         return (
           <Portal mount={handle.ctx.doc.body}>
             <ChildWindowChrome ctx={handle.ctx}>
@@ -505,24 +513,32 @@ export function ChatWindowsHost(): JSX.Element {
 }
 
 /**
- * Clear a tab drag flag whose drag ended without telling us (see
- * `clearStaleTabDrag`), on any press or buttonless move in the child
- * document `doc`, for as long as the calling owner (one rendered window)
- * lives. A child's pointer events never reach main's document, so each
- * window gets its own listeners.
+ * Keep the drag flag (`tabDragActive`) right in the child document `doc`,
+ * for as long as the calling owner (one rendered window) lives: raised
+ * while files dragged in from outside the app are over the window, so the
+ * title bars' free space stops refusing them; ended at a `drop` or
+ * `dragend`; cleared when a pointer event shows a drag ended without telling
+ * us. Which event does what is `dragFlagAction`'s.
+ *
+ * Capture phase, so a listener that stops propagation cannot hide an event.
+ * A child's events never reach main's document, so each window gets its own
+ * listeners.
  */
-function watchStaleTabDrag(doc: Document) {
-  const onPointerDown = () => clearStaleTabDrag();
-  const onPointerMove = (event: PointerEvent) => {
-    if (event.buttons === 0) clearStaleTabDrag();
+function watchDragFlag(doc: Document) {
+  const onEvent = (event: Event) => {
+    const action = dragFlagAction(event as DragEvent & PointerEvent);
+    if (action === "raise") markTabDragStart();
+    else if (action === "end") markTabDragEnd();
+    else if (action === "stale") clearStaleTabDrag();
   };
   const opts = { capture: true, passive: true } as const;
-  doc.addEventListener("pointerdown", onPointerDown, opts);
-  doc.addEventListener("pointermove", onPointerMove, opts);
+  for (const type of DRAG_FLAG_EVENTS)
+    doc.addEventListener(type, onEvent, opts);
   onCleanup(() => {
     try {
-      doc.removeEventListener("pointerdown", onPointerDown, opts);
-      doc.removeEventListener("pointermove", onPointerMove, opts);
+      for (const type of DRAG_FLAG_EVENTS) {
+        doc.removeEventListener(type, onEvent, opts);
+      }
     } catch {
       // A closed window's listeners die with it.
     }

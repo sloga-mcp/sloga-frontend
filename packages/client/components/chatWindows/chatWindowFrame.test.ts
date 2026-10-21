@@ -1,7 +1,7 @@
 // Unit spec for the chat windows' title bar state. Run with Node's built-in
 // runner from packages/client:
 //   node --test --conditions=browser components/chatWindows/chatWindowFrame.test.ts
-// Declared test count: 9 (the runner also exits 0 when it finds no tests at
+// Declared test count: 16 (the runner also exits 0 when it finds no tests at
 // all, so compare this against its pass count).
 //
 // Focus (plan C7, audit M4): the per-label maximized state the shell pushes
@@ -9,7 +9,11 @@
 // reactive, cleared by its end, by `clearStaleTabDrag`, and by itself after
 // `TAB_DRAG_FLAG_TTL_MS`, and an old drag's timer never clears a newer drag.
 // Timers are node:test's mock timers; the module reads `setTimeout` at call
-// time, so it gets them.
+// time, so it gets them. The bar's layout decisions (Wave 2 audit m2): which
+// frame draws a bar, controls and the physical mac inset; the free space's
+// region; which pointer events prove a drag stale; which drag events are
+// files from outside over the window, and what each event a window reports
+// does to the flag (Wave 2 audit m1).
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 
@@ -43,6 +47,137 @@ test("constants: bar height, mac inset fallback, drag TTL, shared label rule", (
   // Re-exported, not a second copy that could drift.
   assert.ok(frame.CHAT_WINDOW_LABEL_RE instanceof RegExp);
   assert.equal(frame.CHAT_WINDOW_LABEL_RE, shellToMain.CHAT_WINDOW_LABEL_RE);
+  assert.equal(frame.MAC_INSET_PADDING, "env(titlebar-area-x, 78px)");
+});
+
+test("titleBarLayout: native draws nothing of ours", () => {
+  for (const label of ["chat-1", undefined]) {
+    assert.deepEqual(frame.titleBarLayout("native", label), {
+      bar: false,
+      controls: false,
+      style: undefined,
+    });
+  }
+});
+
+test("titleBarLayout: buttons draws the controls only with a label", () => {
+  assert.deepEqual(frame.titleBarLayout("buttons", "chat-1"), {
+    bar: true,
+    controls: true,
+    style: undefined,
+  });
+  assert.deepEqual(frame.titleBarLayout("buttons", "friends-window"), {
+    bar: true,
+    controls: true,
+    style: undefined,
+  });
+  // No label to address: still a bar (the window has no OS one), no buttons.
+  assert.deepEqual(frame.titleBarLayout("buttons", undefined), {
+    bar: true,
+    controls: false,
+    style: undefined,
+  });
+});
+
+test("titleBarLayout: inset keeps the traffic lights clear, physically left", () => {
+  for (const label of ["chat-1", undefined]) {
+    const layout = frame.titleBarLayout("inset", label);
+    // The OS draws the controls; never two sets.
+    assert.equal(layout.bar, true);
+    assert.equal(layout.controls, false);
+    // Exactly `padding-left`: a logical `padding-inline-start` would move
+    // the space to the right on an RTL page, away from the lights.
+    assert.deepEqual(layout.style, { "padding-left": frame.MAC_INSET_PADDING });
+  }
+});
+
+test("spacerRegion: a caption region unless a drag is live", () => {
+  assert.equal(frame.spacerRegion(false), "drag");
+  assert.equal(frame.spacerRegion(true), "no-drag");
+});
+
+test("isStaleDragPointer: a press, or a move with no button held", () => {
+  const stale = (type: string, buttons: number) =>
+    frame.isStaleDragPointer({ type, buttons });
+  assert.equal(stale("pointerdown", 1), true);
+  assert.equal(stale("pointerdown", 0), true);
+  assert.equal(stale("pointermove", 0), true);
+  // A move with a button held may be the drag itself (or a selection).
+  assert.equal(stale("pointermove", 1), false);
+  assert.equal(stale("pointermove", 2), false);
+  // Anything else proves nothing.
+  assert.equal(stale("pointerup", 0), false);
+  assert.equal(stale("pointerleave", 0), false);
+});
+
+test("isFileDragOver: a dragenter or dragover that carries Files", () => {
+  const enter = (types?: ArrayLike<string> | null) =>
+    frame.isFileDragOver({
+      type: "dragenter",
+      dataTransfer: types === undefined ? undefined : types && { types },
+    });
+  assert.equal(enter(["Files", "application/x-moz-file"]), true);
+  // An older engine's DOMStringList: array-like, not an array.
+  assert.equal(enter({ length: 2, 0: "text/uri-list", 1: "Files" }), true);
+  // A tab drag carries only text/plain.
+  assert.equal(enter(["text/plain"]), false);
+  assert.equal(enter([]), false);
+  assert.equal(enter(null), false);
+  assert.equal(enter(undefined), false);
+  // Hovering keeps it raised (the TTL restarts on each dragover).
+  const files = { types: ["Files"] };
+  assert.equal(
+    frame.isFileDragOver({ type: "dragover", dataTransfer: files }),
+    true,
+  );
+  assert.equal(
+    frame.isFileDragOver({ type: "dragover", dataTransfer: { types: [] } }),
+    false,
+  );
+  // Leaving or ending is not files being over the window.
+  for (const type of ["drop", "dragleave", "dragend", "pointermove"]) {
+    assert.equal(
+      frame.isFileDragOver({ type, dataTransfer: files }),
+      false,
+      type,
+    );
+  }
+});
+
+test("dragFlagAction: each event a chat window reports, mapped", () => {
+  const files = { types: ["Files"] };
+  const tab = { types: ["text/plain"] };
+  const act = (
+    type: string,
+    extra: Partial<Parameters<typeof frame.dragFlagAction>[0]> = {},
+  ) => frame.dragFlagAction({ type, ...extra });
+
+  // Files from outside raise it, on entering and while hovering.
+  assert.equal(act("dragenter", { dataTransfer: files, buttons: 1 }), "raise");
+  assert.equal(act("dragover", { dataTransfer: files, buttons: 1 }), "raise");
+  // A tab drag's own events leave it to TabStrip.
+  assert.equal(act("dragenter", { dataTransfer: tab, buttons: 1 }), null);
+  assert.equal(act("dragover", { dataTransfer: tab, buttons: 0 }), null);
+  // A drop or dragend ends any drag, files or tab.
+  assert.equal(act("drop", { dataTransfer: files, buttons: 0 }), "end");
+  assert.equal(act("drop", { dataTransfer: tab }), "end");
+  assert.equal(act("dragend", { dataTransfer: tab, buttons: 0 }), "end");
+  // The pointer: as isStaleDragPointer.
+  assert.equal(act("pointerdown", { buttons: 1 }), "stale");
+  assert.equal(act("pointermove", { buttons: 0 }), "stale");
+  assert.equal(act("pointermove", { buttons: 1 }), null);
+  assert.equal(act("pointermove"), null);
+  assert.equal(act("dragleave", { dataTransfer: files, buttons: 0 }), null);
+
+  // The host listens for exactly the events that map to something.
+  assert.deepEqual([...frame.DRAG_FLAG_EVENTS].sort(), [
+    "dragend",
+    "dragenter",
+    "dragover",
+    "drop",
+    "pointerdown",
+    "pointermove",
+  ]);
 });
 
 test("maximized: per label, restored until the shell says otherwise", () => {

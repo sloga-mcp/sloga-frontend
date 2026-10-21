@@ -5,18 +5,7 @@ import { cva } from "styled-system/css";
 
 import * as chatShell from "@revolt/client/chatShell";
 
-import {
-  MAC_INSET_FALLBACK_PX,
-  setWindowMaximized,
-  windowMaximized,
-} from "./chatWindowFrame";
-
-/**
- * Leading padding for a title bar under the macOS traffic lights (the
- * `inset` frame): the space the overlay reports, or a fixed fallback where
- * the environment variable is unavailable.
- */
-export const MAC_INSET_PADDING = `env(titlebar-area-x, ${MAC_INSET_FALLBACK_PX}px)`;
+import { setWindowMaximized, windowMaximized } from "./chatWindowFrame";
 
 /**
  * Minimize, maximize / restore and close for a frameless chat window (the
@@ -158,6 +147,10 @@ const captionButton = cva({
     },
   },
   variants: {
+    // Hardcoded on purpose, not a theme token: Windows 11 draws its close
+    // button's hover in this red (#c42b1c) with a white glyph in every theme
+    // and accent, and a drawn caption button should match the OS's own.
+    // Windows 10's is #e81123; the bar follows Windows 11's design.
     close: {
       true: {
         "&:hover": {
