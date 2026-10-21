@@ -1,7 +1,7 @@
 // Unit spec for the chat-window shell bridge. Run with Node's built-in runner
 // from packages/client:
 //   node --test --conditions=browser components/client/chatShell.test.ts
-// Declared test count: 23 (the runner also exits 0 when it finds no tests at
+// Declared test count: 36 (the runner also exits 0 when it finds no tests at
 // all, so compare this against its pass count).
 //
 // Focus: whatever a shell hands back (or throws), each verb resolves exactly
@@ -14,6 +14,15 @@
 // The capability probe caches for the life of the module, so its tests each
 // load a fresh copy (`freshShell`, a query-string import Node keys as a new
 // module) rather than sharing the static import's cache.
+//
+// Frameless title bars (plan C1, C2, C3, C5, C6, audit M1): the Tauri arm
+// carries `frameless: true` only after a probe that answered exactly a plain
+// object with `frameless === true`, and reports `buttons` then. The arm runs
+// that probe itself when it is the first caller (Wave 1 audit MINOR-2), so
+// the opt-in never depends on who probed first; the Electron
+// arm always passes `{ frame: "custom" }` and reports `inset` only for that
+// reply (an older preload answers without `frame`: `native`).
+// `minimize` / `toggleMaximize` are Tauri-only and never reject.
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 
@@ -79,6 +88,14 @@ function fakeElectron(answer: (verb: string, args: unknown[]) => unknown) {
   };
 }
 
+let fresh = 0;
+
+/** A copy of the module with its own probe cache. */
+async function freshShell(): Promise<typeof ChatShell> {
+  fresh += 1;
+  return (await import(`./chatShell.ts?probe=${fresh}`)) as typeof ChatShell;
+}
+
 async function allThree() {
   return [await arm("chat"), await saveBounds("chat-1"), await focusMain()];
 }
@@ -105,12 +122,21 @@ test("tauri: exact commands and args, label passed through", async () => {
     Promise.resolve(cmd === "chat_window_arm" ? "chat-7" : null),
   );
   g.window = { __TAURI__: tauri.global };
-  assert.equal(supported(), true);
+  // A copy with no cached probe, so the probe call below is this test's.
+  const shell = await freshShell();
+  assert.equal(shell.supported(), true);
 
-  assert.deepEqual(await arm("friends"), { ok: true, label: "chat-7" });
-  assert.deepEqual(await saveBounds("chat-7"), { ok: true });
-  assert.deepEqual(await focusMain(), { ok: true });
+  // The first arm runs the probe itself; an older shell's `null` answer
+  // does not opt in.
+  assert.deepEqual(await shell.arm("friends"), {
+    ok: true,
+    label: "chat-7",
+    frame: "native",
+  });
+  assert.deepEqual(await shell.saveBounds("chat-7"), { ok: true });
+  assert.deepEqual(await shell.focusMain(), { ok: true });
   assert.deepEqual(tauri.calls, [
+    { cmd: "chat_window_probe", args: undefined },
     { cmd: "chat_window_arm", args: { kind: "friends" } },
     { cmd: "chat_window_bounds", args: { label: "chat-7" } },
     { cmd: "chat_window_focus_main", args: undefined },
@@ -154,7 +180,12 @@ test("tauri is preferred when both bridges are present", async () => {
     slogaShell: { chatWindows: electron.bridge },
   };
   await allThree();
-  assert.equal(tauri.calls.length, 3);
+  // The arm may run the probe first (once per module), also on Tauri.
+  const cmds = tauri.calls.map((c) => c.cmd);
+  assert.deepEqual(
+    cmds.filter((cmd) => cmd !== "chat_window_probe"),
+    ["chat_window_arm", "chat_window_bounds", "chat_window_focus_main"],
+  );
   assert.equal(electron.calls.length, 0);
 });
 
@@ -172,11 +203,12 @@ test("electron: exact verbs and args, envelopes rebuilt", async () => {
   assert.deepEqual(await arm("friends"), {
     ok: true,
     label: "friends-window",
+    frame: "native",
   });
   assert.deepEqual(await saveBounds("friends-window"), { ok: true });
   assert.deepEqual(await focusMain(), { ok: true });
   assert.deepEqual(electron.calls, [
-    { verb: "arm", args: ["friends"] },
+    { verb: "arm", args: ["friends", { frame: "custom" }] },
     { verb: "bounds", args: ["friends-window"] },
     { verb: "focusMain", args: [] },
   ]);
@@ -433,14 +465,6 @@ test("closeWindow, no shell: unsupported; a throwing global never escapes", asyn
   assert.deepEqual(await result, { ok: false, err: "preload torn down" });
 });
 
-let fresh = 0;
-
-/** A copy of the module with its own probe cache. */
-async function freshShell(): Promise<typeof ChatShell> {
-  fresh += 1;
-  return (await import(`./chatShell.ts?probe=${fresh}`)) as typeof ChatShell;
-}
-
 test("probe, electron: the preload's arm decides, with no IPC", async () => {
   const electron = fakeElectron(() => Promise.resolve({ ok: true }));
   g.window = { slogaShell: { chatWindows: electron.bridge } };
@@ -559,4 +583,416 @@ test("probe: chatWindowsAvailable is reactive", async () => {
   await shell.probeChatWindows();
   dispose();
   assert.deepEqual(seen, [undefined, true]);
+});
+
+/* Frameless title bars ---------------------------------------------------- */
+
+type Verbs = {
+  minimize?: (label: string) => Promise<unknown>;
+  toggleMaximize?: (label: string) => Promise<unknown>;
+  isFramelessProbeAnswer?: (answer: unknown) => boolean;
+};
+
+/**
+ * A verb looked up on the (same, cached) module, like `discard`: a module
+ * without it still loads, and only the specs that need it fail.
+ */
+async function verb<K extends keyof Verbs>(
+  name: K,
+): Promise<NonNullable<Verbs[K]>> {
+  const shell = (await import("./chatShell.ts")) as Verbs;
+  assert.equal(typeof shell[name], "function", `chatShell has no ${name}`);
+  return shell[name]!;
+}
+
+class FramelessAnswer {
+  frameless = true;
+}
+
+/** Probe answers, and whether each one opts the arm in (audit M1). */
+const PROBE_ANSWERS: [string, unknown, boolean][] = [
+  ["the new shell", { frameless: true }, true],
+  ["the new shell, a later key added", { frameless: true, snap: true }, true],
+  ["parsed wire JSON", JSON.parse('{"frameless":true}'), true],
+  [
+    "a null-prototype object",
+    Object.assign(Object.create(null), { frameless: true }),
+    true,
+  ],
+  ["an older shell (unit)", null, false],
+  ["undefined", undefined, false],
+  ["empty object", {}, false],
+  ["frameless false (macOS / Linux build)", { frameless: false }, false],
+  ['frameless "true"', { frameless: "true" }, false],
+  ["frameless 1", { frameless: 1 }, false],
+  ["frameless null", { frameless: null }, false],
+  ["a string", "x", false],
+  ['the string "frameless"', "frameless", false],
+  ["true", true, false],
+  ["a number", 1, false],
+  ["an array", [true], false],
+  ["an array carrying the key", Object.assign([], { frameless: true }), false],
+  ["inherited frameless", Object.create({ frameless: true }), false],
+  ["a class instance", new FramelessAnswer(), false],
+  ["a function", Object.assign(() => 1, { frameless: true }), false],
+];
+
+test("probe answer: only a plain object whose own frameless is true opts in", async () => {
+  const isFrameless = await verb("isFramelessProbeAnswer");
+  for (const [name, answer, expected] of PROBE_ANSWERS) {
+    assert.equal(isFrameless(answer), expected, name);
+  }
+});
+
+test("arm, tauri: the probe answer decides the opt-in; exact invoke args both ways", async () => {
+  for (const [name, answer, frameless] of PROBE_ANSWERS) {
+    const tauri = fakeTauri((cmd) =>
+      Promise.resolve(cmd === "chat_window_probe" ? answer : "chat-9"),
+    );
+    g.window = { __TAURI__: tauri.global };
+    const shell = await freshShell();
+    // Any answer at all means the shell has the commands.
+    assert.equal(await shell.probeChatWindows(), true, name);
+
+    assert.deepEqual(
+      await shell.arm("chat"),
+      { ok: true, label: "chat-9", frame: frameless ? "buttons" : "native" },
+      name,
+    );
+    assert.deepEqual(
+      tauri.calls,
+      [
+        { cmd: "chat_window_probe", args: undefined },
+        {
+          cmd: "chat_window_arm",
+          args: frameless
+            ? { kind: "chat", frameless: true }
+            : { kind: "chat" },
+        },
+      ],
+      name,
+    );
+  }
+});
+
+test("arm, tauri: a first arm probes itself and opts in on { frameless: true }", async () => {
+  // Nobody has probed this module copy; the arm is the first call.
+  const tauri = fakeTauri((cmd) =>
+    Promise.resolve(
+      cmd === "chat_window_probe" ? { frameless: true } : "chat-8",
+    ),
+  );
+  g.window = { __TAURI__: tauri.global };
+  const shell = await freshShell();
+  assert.deepEqual(await shell.arm("chat"), {
+    ok: true,
+    label: "chat-8",
+    frame: "buttons",
+  });
+  assert.deepEqual(tauri.calls, [
+    { cmd: "chat_window_probe", args: undefined },
+    { cmd: "chat_window_arm", args: { kind: "chat", frameless: true } },
+  ]);
+  // The arm's probe is the cached one: no second probe, by a later arm or a
+  // later caller, and its answer is published.
+  assert.equal(shell.chatWindowsAvailable(), true);
+  assert.equal(await shell.probeChatWindows(), true);
+  assert.deepEqual(await shell.arm("friends"), {
+    ok: true,
+    label: "chat-8",
+    frame: "buttons",
+  });
+  assert.deepEqual(
+    tauri.calls.map((c) => c.cmd),
+    ["chat_window_probe", "chat_window_arm", "chat_window_arm"],
+  );
+});
+
+test("arm, tauri: an older shell's probe, or a failed one, never opts in", async () => {
+  // An older shell answers the probe `null`; the arm the probe ran for is
+  // plain.
+  const older = fakeTauri((cmd) =>
+    Promise.resolve(cmd === "chat_window_probe" ? null : "chat-2"),
+  );
+  g.window = { __TAURI__: older.global };
+  let shell = await freshShell();
+  assert.deepEqual(await shell.arm("friends"), {
+    ok: true,
+    label: "chat-2",
+    frame: "native",
+  });
+  assert.deepEqual(older.calls, [
+    { cmd: "chat_window_probe", args: undefined },
+    { cmd: "chat_window_arm", args: { kind: "friends" } },
+  ]);
+
+  // A probe that failed reads as unavailable; an arm made anyway is plain.
+  const failed = fakeTauri((cmd) =>
+    cmd === "chat_window_probe"
+      ? Promise.reject("command chat_window_probe not found")
+      : Promise.resolve("chat-3"),
+  );
+  g.window = { __TAURI__: failed.global };
+  shell = await freshShell();
+  assert.equal(await shell.probeChatWindows(), false);
+  assert.deepEqual(await shell.arm("chat"), {
+    ok: true,
+    label: "chat-3",
+    frame: "native",
+  });
+  assert.deepEqual(failed.calls[1], {
+    cmd: "chat_window_arm",
+    args: { kind: "chat" },
+  });
+});
+
+test("arm, tauri: waits for a probe still in flight", async () => {
+  let settle!: (value: unknown) => void;
+  const tauri = fakeTauri((cmd) =>
+    cmd === "chat_window_probe"
+      ? new Promise((resolve) => (settle = resolve))
+      : Promise.resolve("chat-5"),
+  );
+  g.window = { __TAURI__: tauri.global };
+  const shell = await freshShell();
+  void shell.probeChatWindows();
+  const armed = shell.arm("chat");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(
+    tauri.calls.map((c) => c.cmd),
+    ["chat_window_probe"],
+    "armed before the probe answered",
+  );
+  settle({ frameless: true });
+  assert.deepEqual(await armed, {
+    ok: true,
+    label: "chat-5",
+    frame: "buttons",
+  });
+  assert.deepEqual(tauri.calls[1], {
+    cmd: "chat_window_arm",
+    args: { kind: "chat", frameless: true },
+  });
+});
+
+test("arm, tauri: an opted-in arm still reports refusals and bad labels", async () => {
+  const cases: [() => Promise<unknown>, unknown][] = [
+    [() => Promise.reject("exists"), { ok: false, err: "exists" }],
+    [() => Promise.reject(undefined), { ok: false, err: "failed" }],
+    [() => Promise.resolve(""), { ok: false, err: "invalid" }],
+    [() => Promise.resolve(null), { ok: false, err: "invalid" }],
+    [() => Promise.resolve({ label: "chat-1" }), { ok: false, err: "invalid" }],
+  ];
+  for (const [answer, expected] of cases) {
+    const tauri = fakeTauri((cmd) =>
+      cmd === "chat_window_probe"
+        ? Promise.resolve({ frameless: true })
+        : answer(),
+    );
+    g.window = { __TAURI__: tauri.global };
+    const shell = await freshShell();
+    await shell.probeChatWindows();
+    assert.deepEqual(await shell.arm("chat"), expected);
+    assert.deepEqual(tauri.calls[1].args, { kind: "chat", frameless: true });
+  }
+});
+
+test("arm, electron: asks for a custom frame; only an inset reply is inset", async () => {
+  const replies: [unknown, string][] = [
+    ["inset", "inset"],
+    ["native", "native"],
+    // An older preload drops the option and answers without `frame`.
+    [undefined, "native"],
+    // Electron never builds a frameless window with its own buttons.
+    ["buttons", "native"],
+    ["INSET", "native"],
+    [" inset", "native"],
+    [null, "native"],
+    [1, "native"],
+    [{ frame: "inset" }, "native"],
+  ];
+  for (const [frame, expected] of replies) {
+    const electron = fakeElectron(() =>
+      Promise.resolve(
+        frame === undefined
+          ? { ok: true, label: "chat-4" }
+          : { ok: true, label: "chat-4", frame },
+      ),
+    );
+    g.window = { slogaShell: { chatWindows: electron.bridge } };
+    assert.deepEqual(
+      await arm("chat"),
+      { ok: true, label: "chat-4", frame: expected },
+      String(frame),
+    );
+    assert.deepEqual(electron.calls, [
+      { verb: "arm", args: ["chat", { frame: "custom" }] },
+    ]);
+  }
+
+  // A fresh options object each time: the preload cannot keep and edit one.
+  const electron = fakeElectron(() =>
+    Promise.resolve({ ok: true, label: "chat-4" }),
+  );
+  g.window = { slogaShell: { chatWindows: electron.bridge } };
+  await arm("chat");
+  await arm("friends");
+  assert.notEqual(electron.calls[0].args[1], electron.calls[1].args[1]);
+});
+
+test("arm, electron: a refusal or a malformed envelope ignores frame", async () => {
+  const invalid = { ok: false, err: "invalid" };
+  const cases: [unknown, unknown][] = [
+    [
+      { ok: false, err: "exists", frame: "inset" },
+      { ok: false, err: "exists" },
+    ],
+    [{ ok: true, frame: "inset" }, invalid],
+    [{ ok: true, label: "", frame: "inset" }, invalid],
+    [{ ok: "true", label: "chat-1", frame: "inset" }, invalid],
+    [{ frame: "inset" }, invalid],
+    ["inset", invalid],
+    [null, invalid],
+  ];
+  for (const [envelope, expected] of cases) {
+    g.window = {
+      slogaShell: {
+        chatWindows: fakeElectron(() => Promise.resolve(envelope)).bridge,
+      },
+    };
+    assert.deepEqual(await arm("chat"), expected, JSON.stringify(envelope));
+  }
+});
+
+test("arm: a throwing global never escapes", async () => {
+  const throwing = [
+    {
+      get slogaShell() {
+        throw new Error("preload torn down");
+      },
+    },
+    {
+      get __TAURI__() {
+        throw new Error("tauri torn down");
+      },
+    },
+  ];
+  const errs: unknown[] = [];
+  for (const win of throwing) {
+    g.window = win;
+    let result: unknown;
+    assert.doesNotThrow(() => {
+      result = arm("chat");
+    });
+    errs.push(await result);
+  }
+  assert.deepEqual(errs, [
+    { ok: false, err: "preload torn down" },
+    { ok: false, err: "tauri torn down" },
+  ]);
+});
+
+test("minimize, tauri: chat_window_minimize with the label, envelope back", async () => {
+  const minimize = await verb("minimize");
+  const tauri = fakeTauri(() => Promise.resolve(null));
+  g.window = { __TAURI__: tauri.global };
+  assert.deepEqual(await minimize("chat-3"), { ok: true });
+  assert.deepEqual(await minimize("friends-window"), { ok: true });
+  assert.deepEqual(tauri.calls, [
+    { cmd: "chat_window_minimize", args: { label: "chat-3" } },
+    { cmd: "chat_window_minimize", args: { label: "friends-window" } },
+  ]);
+});
+
+test("toggleMaximize, tauri: the new state comes back; a non-boolean is invalid", async () => {
+  const toggleMaximize = await verb("toggleMaximize");
+  for (const state of [true, false]) {
+    const tauri = fakeTauri(() => Promise.resolve(state));
+    g.window = { __TAURI__: tauri.global };
+    assert.deepEqual(await toggleMaximize("chat-3"), {
+      ok: true,
+      maximized: state,
+    });
+    assert.deepEqual(tauri.calls, [
+      { cmd: "chat_window_toggle_maximize", args: { label: "chat-3" } },
+    ]);
+  }
+  const bad = [null, undefined, "true", 1, 0, {}, { maximized: true }, [true]];
+  for (const answer of bad) {
+    g.window = { __TAURI__: fakeTauri(() => Promise.resolve(answer)).global };
+    assert.deepEqual(
+      await toggleMaximize("chat-3"),
+      { ok: false, err: "invalid" },
+      JSON.stringify(answer) ?? String(answer),
+    );
+  }
+});
+
+test("minimize and toggleMaximize: electron and no shell are unsupported, no calls", async () => {
+  const minimize = await verb("minimize");
+  const toggleMaximize = await verb("toggleMaximize");
+  const unsupported = { ok: false, err: "unsupported" };
+  const electron = fakeElectron(() => Promise.resolve({ ok: true }));
+  const windows = [
+    undefined,
+    {},
+    { __TAURI__: {} },
+    { slogaShell: { name: "x" } },
+    { slogaShell: { chatWindows: electron.bridge } },
+  ];
+  for (const win of windows) {
+    if (win === undefined) delete g.window;
+    else g.window = win;
+    assert.deepEqual(await minimize("chat-1"), unsupported);
+    assert.deepEqual(await toggleMaximize("chat-1"), unsupported);
+  }
+  assert.equal(electron.calls.length, 0);
+
+  // Tauri wins when both bridges are present.
+  const tauri = fakeTauri(() => Promise.resolve(true));
+  g.window = {
+    __TAURI__: tauri.global,
+    slogaShell: { chatWindows: electron.bridge },
+  };
+  assert.deepEqual(await minimize("chat-1"), { ok: true });
+  assert.deepEqual(await toggleMaximize("chat-1"), {
+    ok: true,
+    maximized: true,
+  });
+  assert.equal(tauri.calls.length, 2);
+  assert.equal(electron.calls.length, 0);
+});
+
+test("minimize and toggleMaximize: rejections and throws never escape", async () => {
+  const minimize = await verb("minimize");
+  const toggleMaximize = await verb("toggleMaximize");
+  const cases: [() => unknown, string][] = [
+    [() => Promise.reject("no such window"), "no such window"],
+    [() => Promise.reject(new Error("not main")), "not main"],
+    [() => Promise.reject(undefined), "failed"],
+    [
+      () => {
+        throw new Error("sync");
+      },
+      "sync",
+    ],
+  ];
+  for (const [answer, err] of cases) {
+    g.window = { __TAURI__: fakeTauri(answer).global };
+    assert.deepEqual(await minimize("chat-1"), { ok: false, err });
+    assert.deepEqual(await toggleMaximize("chat-1"), { ok: false, err });
+  }
+
+  g.window = {
+    get __TAURI__() {
+      throw new Error("tauri torn down");
+    },
+  };
+  for (const fn of [minimize, toggleMaximize]) {
+    let result: unknown;
+    assert.doesNotThrow(() => {
+      result = fn("chat-1");
+    });
+    assert.deepEqual(await result, { ok: false, err: "tauri torn down" });
+  }
 });

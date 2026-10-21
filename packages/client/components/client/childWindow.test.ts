@@ -31,7 +31,9 @@ type WindowCtxLike = {
   isActive: () => boolean;
 };
 
-type ShellResult = { ok: true; label?: string } | { ok: false; err: string };
+type ShellResult =
+  | { ok: true; label?: string; frame?: string }
+  | { ok: false; err: string };
 
 type Recorder = {
   arm: (kind: string) => Promise<ShellResult>;
@@ -675,6 +677,55 @@ describe("openChildWindow", () => {
     handle.close();
   });
 
+  // An arm that answers after its open gave up has still armed the shell
+  // (possibly frameless): the next about:blank open in main's realm, an
+  // embed's iframe, would get a chat window main never tracks. A late label
+  // is discarded; a late refusal has nothing to discard. The discard never
+  // holds the queue: here it hangs, and the next open still runs.
+  it("discards an arm that answers late", { timeout: 10_000 }, async (t) => {
+    const lateAnswers: [ShellResult, string[]][] = [
+      [{ ok: true, label: "chat-late", frame: "buttons" }, ["chat-late"]],
+      [{ ok: false, err: "exists" }, []],
+    ];
+    const microtasks = async (n: number) => {
+      for (let i = 0; i < n; i++) await Promise.resolve();
+    };
+    for (const [answer, discards] of lateAnswers) {
+      const name = JSON.stringify(answer);
+      reset();
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      let answerArm: ((result: ShellResult) => void) | undefined;
+      recorder.arm = () =>
+        new Promise<ShellResult>((resolve) => (answerArm = resolve));
+      recorder.discard = () => new Promise<ShellResult>(() => {});
+      nextChild = makeChild();
+      const warn = mock.method(console, "warn", () => {});
+      try {
+        const pending = mod.openChildWindow("chat", { width: 1, height: 1 });
+        await microtasks(20);
+        assert.deepEqual(recorder.armCalls, ["chat"], name);
+        t.mock.timers.tick(mod.ARM_TIMEOUT_MS);
+        assert.ok((await pending) === null, "opened after a timed-out arm");
+        assert.equal(opened.length, 0, "opened after a timeout");
+        assert.deepEqual(recorder.discardCalls, [], "discarded too early");
+
+        answerArm!(answer);
+        await microtasks(20);
+        assert.deepEqual(recorder.discardCalls, discards, name);
+      } finally {
+        warn.mock.restore();
+        t.mock.timers.reset();
+        nextChild = null;
+      }
+
+      recorder.arm = async (kind) => ({ ok: true, label: `${kind}-label` });
+      const { handle } = await openWithChild();
+      assert.equal(handle.shellLabel, "chat-label", name);
+      handle.close();
+      assert.deepEqual(recorder.discardCalls, discards, name);
+    }
+  });
+
   it("continues without a shell (web) and has no shell label", async () => {
     reset();
     recorder.arm = async () => ({ ok: false, err: "unsupported" });
@@ -742,8 +793,102 @@ describe("openChildWindow", () => {
         child.win.document.getElementById("floating") === null,
         "prepared the document before clearing the opener",
       );
+      // main's close leaves a Tauri window blank (and a frameless one has no
+      // close button), so the shell finishes it; nothing is discarded.
+      assert.deepEqual(recorder.closeWindowCalls, ["chat-label"]);
+      assert.deepEqual(recorder.discardCalls, []);
     } finally {
       handle?.close();
+    }
+  });
+
+  it("an unprepared window without a shell label (web) is not closed through the shell", async () => {
+    reset();
+    recorder.arm = async () => ({ ok: false, err: "unsupported" });
+    const child = makeChild();
+    child.stickyOpener = true;
+    nextChild = child;
+    const errors = mock.method(console, "error", () => {});
+    const handle = await mod.openChildWindow("chat", { width: 1, height: 1 });
+    errors.mock.restore();
+    assert.ok(handle === null, "kept a window that can reach main");
+    assert.equal(child.closeCalls, 1);
+    assert.deepEqual(recorder.closeWindowCalls, []);
+  });
+
+  it("an unprepared window is left to the shell while main unloads", async () => {
+    reset();
+    // A successful open binds main's pagehide listeners.
+    const first = await openWithChild();
+    first.handle.close();
+    recorder.closeWindowCalls = [];
+    mainWin.dispatchEvent(new mainWin.Event("pagehide"));
+
+    const child = makeChild();
+    child.stickyOpener = true;
+    nextChild = child;
+    const errors = mock.method(console, "error", () => {});
+    const handle = await mod.openChildWindow("chat", { width: 1, height: 1 });
+    errors.mock.restore();
+    assert.ok(handle === null, "kept a window that can reach main");
+    assert.equal(child.closeCalls, 1);
+    assert.deepEqual(recorder.closeWindowCalls, []);
+    reset();
+  });
+
+  it("a failed, throwing or rejected shell close of an unprepared window still resolves null and frees the queue", async () => {
+    const answers: (() => Promise<ShellResult>)[] = [
+      async () => ({ ok: false, err: "not main" }),
+      () => Promise.reject(new Error("bridge down")),
+      () => {
+        throw new Error("sync");
+      },
+    ];
+    for (const answer of answers) {
+      reset();
+      recorder.closeWindow = answer;
+      const child = makeChild();
+      child.stickyOpener = true;
+      nextChild = child;
+      const errors = mock.method(console, "error", () => {});
+      const warn = mock.method(console, "warn", () => {});
+      const handle = await mod
+        .openChildWindow("chat", { width: 1, height: 1 })
+        .finally(() => {
+          errors.mock.restore();
+          warn.mock.restore();
+        });
+      assert.ok(handle === null, "kept a window that can reach main");
+      assert.deepEqual(recorder.closeWindowCalls, ["chat-label"]);
+      assert.equal(warn.mock.callCount(), 1, "the failure is logged once");
+
+      recorder.closeWindow = async () => ({ ok: true });
+      const next = await openWithChild();
+      next.handle.close();
+    }
+  });
+
+  it("handle.frame is what the arm reported, and native otherwise", async () => {
+    const cases: [ShellResult, string][] = [
+      [{ ok: true, label: "chat-label", frame: "buttons" }, "buttons"],
+      [{ ok: true, label: "chat-label", frame: "inset" }, "inset"],
+      [{ ok: true, label: "chat-label", frame: "native" }, "native"],
+      // An answer without a frame, or one this build does not know.
+      [{ ok: true, label: "chat-label" }, "native"],
+      [{ ok: true, label: "chat-label", frame: "custom" }, "native"],
+      [{ ok: true, label: "chat-label", frame: "BUTTONS" }, "native"],
+      // Web: no shell, no label.
+      [{ ok: false, err: "unsupported" }, "native"],
+    ];
+    for (const [answer, frame] of cases) {
+      reset();
+      recorder.arm = async () => answer;
+      const { handle } = await openWithChild();
+      try {
+        assert.equal(handle.frame, frame, JSON.stringify(answer));
+      } finally {
+        handle.close();
+      }
     }
   });
 

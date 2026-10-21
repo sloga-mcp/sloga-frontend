@@ -86,11 +86,18 @@ declare global {
       /** Chat windows (main window only; absent on child windows and on
        * preloads that predate them). `arm` must precede the matching
        * `window.open("about:blank")` and resolves the label that window will
-       * get. Every call resolves an envelope and never rejects. */
+       * get. With `{ frame: "custom" }` the reply's `frame` says what the
+       * shell built (`inset`: macOS hidden-inset title bar); a preload that
+       * predates it drops the option and answers without `frame` (native).
+       * Every call resolves an envelope and never rejects. */
       chatWindows?: {
         arm(
           kind: "friends" | "chat",
-        ): Promise<{ ok: true; label: string } | { ok: false; err: string }>;
+          opts?: { frame: "custom" },
+        ): Promise<
+          | { ok: true; label: string; frame?: "inset" | "native" }
+          | { ok: false; err: string }
+        >;
         bounds(
           label: string,
         ): Promise<{ ok: true } | { ok: false; err: string }>;

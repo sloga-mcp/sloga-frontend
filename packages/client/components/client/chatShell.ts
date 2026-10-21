@@ -2,7 +2,8 @@
  * The main window's bridge to the desktop shells' chat windows: arm the next
  * `window.open("about:blank")` so the shell builds it as a chat window,
  * remember where one sat, pull the main window forward, throw away a window
- * built for an arm main never got to use, and finish closing one main closed.
+ * built for an arm main never got to use, finish closing one main closed, and
+ * minimize or maximize a frameless one for its own title bar buttons.
  *
  * Windows (Tauri) and the Electron shell (macOS, Linux) take the same verbs
  * through different bridges; every answer comes back as one `ShellResult`
@@ -30,12 +31,23 @@ export type ShellResult<T = Record<never, never>> =
 export type ChatWindowKind = "friends" | "chat";
 
 /**
+ * What the shell built around a chat window, as {@link arm} reports it:
+ * - `buttons`: no OS title bar (Tauri, Windows); the window draws its own bar
+ *   with minimize, maximize and close.
+ * - `inset`: macOS hidden-inset title bar (Electron); the OS draws the
+ *   traffic lights and the window keeps their corner clear.
+ * - `native`: the OS frame, as before. Web, older shells, and every answer
+ *   this module cannot read land here.
+ */
+export type ChatWindowFrame = "buttons" | "inset" | "native";
+
+/**
  * The Electron preload's `slogaShell.chatWindows`, main window only. Its
  * answers are typed `unknown` on purpose: an older or broken preload may hand
  * back anything, so each one is checked before it becomes a `ShellResult`.
  */
 interface ChatWindowsBridge {
-  arm?(kind: ChatWindowKind): Promise<unknown>;
+  arm?(kind: ChatWindowKind, opts?: { frame: "custom" }): Promise<unknown>;
   bounds?(label: string): Promise<unknown>;
   focusMain?(): Promise<unknown>;
 }
@@ -120,36 +132,60 @@ function electronCall(
     );
 }
 
+export type ArmResult = ShellResult<{ label: string; frame: ChatWindowFrame }>;
+
 /**
  * Tell the shell the next `window.open("about:blank")` from this window is a
  * chat window of `kind`. The arm is short-lived and consumed by the first new
  * window, so open the window straight after this resolves.
- * @returns The label the shell will give that window
+ *
+ * The frameless opt-in is decided here, so a new frontend on an old shell
+ * keeps the OS frame and an old frontend on a new shell never gets a window
+ * without controls:
+ * - Tauri: `frameless: true` is sent only after {@link probeChatWindows}
+ *   read `{ frameless: true }` from this shell (the arm runs the probe
+ *   itself if none has run, and waits for one in flight); otherwise the arm
+ *   is `{ kind }` exactly as before. An opted-in arm builds a `buttons`
+ *   window.
+ * - Electron: always asks for `{ frame: "custom" }`; the preload answers what
+ *   it built. `frame: "inset"` is `inset`; anything else, or none (an older
+ *   preload drops the second argument), is `native`.
+ * @returns The label the shell will give that window, and its frame
  */
-export function arm(
-  kind: ChatWindowKind,
-): Promise<ShellResult<{ label: string }>> {
+export function arm(kind: ChatWindowKind): Promise<ArmResult> {
   if (kind !== "friends" && kind !== "chat") return Promise.resolve(INVALID);
+  // Wrapped so even a throwing global becomes an envelope.
+  return Promise.resolve()
+    .then(() => armNow(kind))
+    .catch((reason): ArmResult => ({ ok: false, err: errText(reason) }));
+}
 
+async function armNow(kind: ChatWindowKind): Promise<ArmResult> {
   const invoke = tauriInvoke();
   if (invoke) {
-    return Promise.resolve()
-      .then(() => invoke<unknown>("chat_window_arm", { kind }))
-      .then(
-        (label): ShellResult<{ label: string }> =>
-          typeof label === "string" && label ? { ok: true, label } : INVALID,
-        (reason): ShellResult<{ label: string }> => ({
-          ok: false,
-          err: errText(reason),
-        }),
-      );
+    // Runs the probe if nobody has yet, else reuses its cached answer, so
+    // the opt-in never depends on who asked first. It never rejects.
+    await probeChatWindows();
+    const frame: ChatWindowFrame = framelessSupported ? "buttons" : "native";
+    const label = await invoke<unknown>(
+      "chat_window_arm",
+      frame === "buttons" ? { kind, frameless: true } : { kind },
+    );
+    return typeof label === "string" && label
+      ? { ok: true, label, frame }
+      : INVALID;
   }
 
-  return (
-    (electronCall("arm", [kind], true) as
-      | Promise<ShellResult<{ label: string }>>
-      | undefined) ?? Promise.resolve(UNSUPPORTED)
-  );
+  const bridge = electronChatWindows();
+  if (!bridge) return UNSUPPORTED;
+  if (typeof bridge.arm !== "function") return UNSUPPORTED;
+  const envelope = await bridge.arm(kind, { frame: "custom" });
+  const result = fromEnvelope(envelope, true);
+  if (!result.ok) return result;
+  // fromEnvelope answers ok only with a non-empty label when asked for one.
+  const label = result.label as string;
+  const inset = (envelope as { frame?: unknown }).frame === "inset";
+  return { ok: true, label, frame: inset ? "inset" : "native" };
 }
 
 /** Save where the chat window `label` sits, for the next one of its kind. */
@@ -217,8 +253,67 @@ export function closeWindow(label: string): Promise<ShellResult> {
     .catch((reason): ShellResult => ({ ok: false, err: errText(reason) }));
 }
 
+/**
+ * Minimize the chat window `label` (Tauri `chat_window_minimize`, main-only).
+ * The frameless window's own minimize button lands here; Electron windows
+ * keep OS controls, so it and web answer `unsupported`.
+ */
+export function minimize(label: string): Promise<ShellResult> {
+  return Promise.resolve()
+    .then(
+      (): Promise<ShellResult> | ShellResult =>
+        tauriVoid("chat_window_minimize", { label }) ?? UNSUPPORTED,
+    )
+    .catch((reason): ShellResult => ({ ok: false, err: errText(reason) }));
+}
+
+/**
+ * Maximize the chat window `label`, or restore it if it is maximized (Tauri
+ * `chat_window_toggle_maximize`, main-only). The shell answers the NEW state;
+ * any answer that is not a boolean is `invalid`. Electron and web answer
+ * `unsupported`. The shell also pushes the state as `chatWindowState` on
+ * every change, which covers snaps and double-clicks this call never sees.
+ */
+export function toggleMaximize(
+  label: string,
+): Promise<ShellResult<{ maximized: boolean }>> {
+  return Promise.resolve()
+    .then(async (): Promise<ShellResult<{ maximized: boolean }>> => {
+      const invoke = tauriInvoke();
+      if (!invoke) return UNSUPPORTED;
+      const maximized = await invoke<unknown>("chat_window_toggle_maximize", {
+        label,
+      });
+      return typeof maximized === "boolean" ? { ok: true, maximized } : INVALID;
+    })
+    .catch(
+      (reason): ShellResult<{ maximized: boolean }> => ({
+        ok: false,
+        err: errText(reason),
+      }),
+    );
+}
+
+/**
+ * Whether a `chat_window_probe` answer says this shell builds frameless chat
+ * windows: a plain object whose own `frameless` is exactly `true`. An older
+ * shell answers `null`; `{}`, `{ frameless: false }`, a string, an array or
+ * anything else keeps the OS frame.
+ */
+export function isFramelessProbeAnswer(answer: unknown): boolean {
+  if (typeof answer !== "object" || answer === null) return false;
+  const proto = Object.getPrototypeOf(answer);
+  if (proto !== Object.prototype && proto !== null) return false;
+  return (
+    Object.prototype.hasOwnProperty.call(answer, "frameless") &&
+    (answer as { frameless?: unknown }).frameless === true
+  );
+}
+
 const [available, setAvailable] = createSignal<boolean | undefined>();
 let probe: Promise<boolean> | undefined;
+/** Set once by a Tauri probe that read `{ frameless: true }`; see {@link arm}. */
+let framelessSupported = false;
 
 /**
  * Whether the shell really answers chat-window calls, as opposed to merely
@@ -234,14 +329,22 @@ let probe: Promise<boolean> | undefined;
  * older shell) or the ACL refuses it. Tauri wins when both bridges are
  * present, as everywhere else.
  *
+ * The Tauri answer also carries the frameless capability
+ * ({@link isFramelessProbeAnswer}); an older shell answers `null`, which is
+ * available without it.
+ *
  * Runs once per session: concurrent callers share the same promise, and a
  * failure caches `false` until reload.
  */
 export function probeChatWindows(): Promise<boolean> {
   probe ??= Promise.resolve()
-    .then(() => {
-      const answer = tauriVoid("chat_window_probe");
-      if (answer) return answer.then((result) => result.ok);
+    .then(async () => {
+      const invoke = tauriInvoke();
+      if (invoke) {
+        const answer = await invoke<unknown>("chat_window_probe");
+        framelessSupported = isFramelessProbeAnswer(answer);
+        return true;
+      }
       return typeof electronChatWindows()?.arm === "function";
     })
     .catch(() => false)

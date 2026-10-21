@@ -5,6 +5,7 @@ import { useNavigate } from "@revolt/routing";
 import { useState } from "@revolt/state";
 
 import { useClient, useClientLifecycle } from ".";
+import { setWindowMaximized } from "../chatWindows/chatWindowFrame";
 import { conversationIdFromPath } from "../chatWindows/dmLinks";
 import { routeConversation } from "../chatWindows/openConversation";
 import { isShellToMain } from "./shellToMain";
@@ -26,8 +27,8 @@ type TauriGlobal = {
 
 /**
  * Receives what the desktop shell asks the main window to do: a click on a
- * desktop notification, and a reply typed into (or a click on) the Windows
- * shell's Sloga toast.
+ * desktop notification, a reply typed into (or a click on) the Windows
+ * shell's Sloga toast, and a frameless chat window's maximized state.
  *
  * Mounted in the main window only. Every input is untrusted until
  * `isShellToMain` accepts it.
@@ -97,6 +98,11 @@ export function ShellBridgeWorker(): JSX.Element | null {
         return;
       case "toastOpen":
         toastShell.handleOpen(message.toastId);
+        return;
+      // A frameless chat window's maximized state changed (Tauri only); its
+      // title bar shows maximize or restore from this.
+      case "chatWindowState":
+        setWindowMaximized(message.label, message.maximized);
         return;
       default: {
         // A kind added to `ShellToMain` without a case here fails to compile

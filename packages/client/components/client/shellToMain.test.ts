@@ -1,7 +1,7 @@
 // Unit spec for the shell-to-main validator and the web popout message
 // validator. Run with Node's built-in runner from packages/client:
 //   node --test --conditions=browser components/client/shellToMain.test.ts
-// Declared test count: 13 (the runner also exits 0 when it finds no tests at
+// Declared test count: 15 (the runner also exits 0 when it finds no tests at
 // all, so compare this against its pass count).
 //
 // Focus: `isShellToMain` is the only check between a shell bridge payload and
@@ -11,6 +11,8 @@
 // `__proto__`), in-app paths that can't become protocol-relative, toast ids in
 // the Rust `is_toast_id` alphabet, and reply text of 1..2000 UTF-16 units. The
 // shells no longer carry `popoutOpenInMain`, so the shell validator rejects it.
+// `chatWindowState` (Tauri, frameless chat windows) needs a chat window label
+// (`friends-window` or `chat-` and 1..20 ASCII digits) and a real boolean.
 //
 // `validateWebPopoutMessage` is the payload half of the web popout's
 // `postMessage` trust rule (the sender check stays in ShellBridgeWorker): the
@@ -67,7 +69,13 @@ const open = (o: Record<string, unknown> = {}) => ({
   toastId: ULID,
   ...o,
 });
-const MAKERS = [notify, reply, open];
+const state = (o: Record<string, unknown> = {}) => ({
+  kind: "chatWindowState",
+  label: "chat-3",
+  maximized: true,
+  ...o,
+});
+const MAKERS = [notify, reply, open, state];
 
 test("exported constants: stateless regexes, actions, web message type", () => {
   for (const re of [ULID_RE, TOAST_ID_RE]) {
@@ -87,6 +95,8 @@ test("accepts every shell kind in the exact Rust wire JSON", () => {
     '{"kind":"toastReply","toastId":"01ARZ3NDEKTSV4RRFFQ69G5FAV","text":"on my way"}',
     '{"kind":"toastOpen","toastId":"x_1-2"}',
     '{"kind":"toastOpen","toastId":"01ARZ3NDEKTSV4RRFFQ69G5FAV"}',
+    '{"kind":"chatWindowState","label":"chat-3","maximized":true}',
+    '{"kind":"chatWindowState","label":"friends-window","maximized":false}',
   ])
     assert.equal(isShellToMain(JSON.parse(wire)), true, wire);
 });
@@ -357,6 +367,104 @@ test("exact own keys: extra, missing, inherited and __proto__ rejected", () => {
   assert.equal(isShellToMain(open({ text: "hi" })), false);
   assert.equal(isShellToMain(open({ path: "/channel/x" })), false);
   assert.equal(isShellToMain(notify({ toastId: ULID })), false);
+  assert.equal(isShellToMain(state({ toastId: ULID })), false);
+  assert.equal(isShellToMain(open({ maximized: true })), false);
+});
+
+test("chat window state labels: friends-window or chat- and 1..20 digits", async () => {
+  // Looked up on the module, so a build without it fails here alone.
+  const { CHAT_WINDOW_LABEL_RE: re } = (await import("./shellToMain.ts")) as {
+    CHAT_WINDOW_LABEL_RE?: RegExp;
+  };
+  assert.ok(re instanceof RegExp, "no CHAT_WINDOW_LABEL_RE");
+  assert.equal(re.flags, "");
+  assert.equal(re.source, "^(friends-window|chat-[0-9]{1,20})$");
+
+  for (const good of [
+    "friends-window",
+    "chat-0",
+    "chat-1",
+    "chat-3",
+    "chat-" + "9".repeat(20),
+  ]) {
+    assert.equal(re.test(good), true, good);
+    for (const maximized of [true, false])
+      assert.equal(isShellToMain(state({ label: good, maximized })), true);
+  }
+  for (const bad of [
+    "",
+    "main",
+    "chat",
+    "chat-",
+    "chat-1a",
+    "chat-a",
+    "chat--1",
+    "chat-+1",
+    "chat-1 ",
+    " chat-1",
+    "chat-1\n",
+    "Chat-1",
+    "CHAT-1",
+    "chat_1",
+    "chat1",
+    "chat-" + "1".repeat(21),
+    "chat-" + String.fromCharCode(0x0661), // Arabic-Indic one
+    "friends-window2",
+    "friends-window ",
+    "friends",
+    "Friends-window",
+    "friends-window-1",
+    "xfriends-window",
+    "voice-overlay",
+    "chat-1/../main",
+  ]) {
+    assert.equal(re.test(bad), false, JSON.stringify(bad));
+    assert.equal(
+      isShellToMain(state({ label: bad })),
+      false,
+      JSON.stringify(bad),
+    );
+  }
+  for (const bad of [
+    undefined,
+    null,
+    1,
+    ["chat-1"],
+    { toString: () => "chat-1" },
+  ])
+    assert.equal(isShellToMain(state({ label: bad })), false, String(bad));
+  // Stateless: a `g` flag would fail alternate calls through lastIndex.
+  for (let i = 0; i < 3; i++) assert.equal(re.test("chat-1"), true);
+});
+
+test("chat window state: maximized is a boolean, nothing looser", () => {
+  for (const bad of [
+    "true",
+    "false",
+    1,
+    0,
+    null,
+    undefined,
+    [true],
+    {},
+    { valueOf: () => true },
+  ])
+    assert.equal(
+      isShellToMain(state({ maximized: bad })),
+      false,
+      JSON.stringify(bad) ?? String(bad),
+    );
+  // The wire spelling only: no snake case, no `state` / `value` aliases.
+  for (const wire of [
+    '{"kind":"chatWindowState","label":"chat-3","is_maximized":true}',
+    '{"kind":"chatWindowState","label":"chat-3","value":true}',
+    '{"kind":"chat_window_state","label":"chat-3","maximized":true}',
+    '{"kind":"ChatWindowState","label":"chat-3","maximized":true}',
+    '{"kind":"chatWindowState","label":"chat-3","maximized":true,"minimized":false}',
+    '{"kind":"chatWindowState","label":"chat-3"}',
+    '{"kind":"chatWindowState","maximized":true}',
+  ])
+    assert.equal(isShellToMain(JSON.parse(wire)), false, wire);
 });
 
 test("unknown kinds and non-object payloads rejected", () => {
