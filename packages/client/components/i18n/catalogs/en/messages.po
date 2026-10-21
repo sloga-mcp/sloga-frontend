@@ -3684,6 +3684,11 @@ msgstr "Enter your preferred username."
 msgid "Entrance Sound"
 msgstr "Entrance Sound"
 
+#. placeholder {0}: established()
+#: components/ui/components/features/messaging/elements/Invite.tsx
+msgid "Est. {0}"
+msgstr "Est. {0}"
+
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
 msgid "Evens out loud and quiet people automatically. Only voices are leveled — music and screen share audio are never touched."
 msgstr "Evens out loud and quiet people automatically. Only voices are leveled — music and screen share audio are never touched."
@@ -4580,6 +4585,10 @@ msgstr "Interactions are unavailable in encrypted conversations."
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Interface Font"
 msgstr "Interface Font"
+
+#: components/ui/components/features/messaging/elements/Invite.tsx
+msgid "Invalid invite"
+msgstr "Invalid invite"
 
 #: src/interface/navigation/servers/UserMenu.tsx
 msgid "Invisible"
@@ -9554,6 +9563,10 @@ msgstr "This group is too large, you can have up to {0} users."
 #: components/i18n/errors.ts
 msgid "This has already been sent."
 msgstr "This has already been sent."
+
+#: components/ui/components/features/messaging/elements/Invite.tsx
+msgid "This invite has expired or doesn't exist."
+msgstr "This invite has expired or doesn't exist."
 
 #: components/app/interface/settings/user/Keybinds.tsx
 msgid "This is also a Sloga shortcut while the app is focused. It is saved, and both may fire."
