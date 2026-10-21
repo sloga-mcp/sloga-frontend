@@ -24,7 +24,7 @@ import { SlideState } from "@revolt/ui/components/navigation/SlideDrawer";
 import { VoiceCallCardActiveRoom } from "./VoiceCallCardActiveRoom";
 import { VoiceCallCardPiP } from "./VoiceCallCardPiP";
 import { VoiceCallCardPreview } from "./VoiceCallCardPreview";
-import { type DockRect, sameDock, usableDockRect } from "./callCardDock";
+import { type DockRect, dockDecision, sameDock } from "./callCardDock";
 
 type Mode = "floating" | "moving";
 // Corners plus the midpoint of each screen edge; "c" in either slot means
@@ -147,30 +147,35 @@ export function VoiceCallCardContext(props: { children: JSX.Element }) {
   });
   onCleanup(() => cancelAnimationFrame(frame));
 
-  /**
-   * The page the card docks over, or nothing. Docked only when the page is
-   * the call's channel (or any channel while not in a call, for the preview),
-   * the phone drawer is settled on the channel pane, and the rect is one the
-   * card can actually be drawn in. Anything else is the PiP.
-   */
+  /** The page the card docks over, or nothing: see `dockDecision`. */
   const docked = createMemo(
-    () => {
-      const m = mount();
-      const r = rect();
-      if (!m || !usableDockRect(r, { width: innerWidth, height: innerHeight }))
-        return;
-
-      const drawer = state.appDrawer()?.state;
-      if (drawer !== undefined && drawer !== SlideState.SHOWN) return;
-
-      const vc = voice.channel();
-      if (vc && vc.id !== m.channel.id) return;
-
-      return { channel: m.channel, rect: r };
-    },
+    () =>
+      dockDecision({
+        mount: mount(),
+        rect: rect(),
+        viewport: { width: innerWidth, height: innerHeight },
+        drawer: state.appDrawer()?.state,
+        drawerShown: SlideState.SHOWN,
+        callChannelId: voice.channel()?.id,
+      }),
     undefined,
     { equals: sameDock },
   );
+
+  /**
+   * The channel the FULL card is drawn for, or nothing (then the PiP while in
+   * a call). That is the dock's channel when docked; and while this user is
+   * CONTROLLING someone's screen it is also the call's channel when not
+   * docked, because PiP is blocked for a controller (see the Switch below).
+   *
+   * One value for both, so a controller moving between the call's page and
+   * anywhere else stays in ONE `<Match>`: only the Float's styles change. Two
+   * Matches remounted the whole card on every such move — the active room,
+   * every video tile, and the remote-control capture with it.
+   */
+  const fullCard = () =>
+    docked()?.channel ??
+    (voice.remoteControl.controlling() ? voice.channel() : undefined);
 
   const mode = (): Mode | undefined =>
     docked()
@@ -338,8 +343,16 @@ export function VoiceCallCardContext(props: { children: JSX.Element }) {
           onPointerDown={mouseDown}
         >
           <Switch>
-            <Match when={docked()}>
-              {(dock) => <VoiceCallCard channel={dock().channel} />}
+            {/* Non-keyed on purpose: Solid remounts a Match's children only
+                when WHICH Match is chosen changes, so a new channel (or the
+                same one, docked vs away) reaches the mounted card through
+                the accessor. A controller who navigated away keeps the full
+                card here, in the larger float (see `Float`'s `controlling`
+                variant); anyone else away from the call's page gets the PiP
+                below, never a docked card drawn over a page that is not its
+                channel. */}
+            <Match when={fullCard()}>
+              {(channel) => <VoiceCallCard channel={channel()} />}
             </Match>
             {/* PiP is BLOCKED while this user is CONTROLLING someone, and it
                 is a different path rather than a smaller one: `MiniVideo`
@@ -357,14 +370,6 @@ export function VoiceCallCardContext(props: { children: JSX.Element }) {
                 it is needed. */}
             <Match when={voice.channel() && !voice.remoteControl.controlling()}>
               <VoiceCallCardPiP />
-            </Match>
-            {/* A controller who navigated away keeps the full card, in the
-                larger float (see `Float`'s `controlling` variant). Only for a
-                controller: anyone else away from the call's page gets the PiP
-                above, never a docked card drawn over a page that is not its
-                channel. */}
-            <Match when={voice.channel()}>
-              {(inCall) => <VoiceCallCard channel={inCall()} />}
             </Match>
           </Switch>
           {/* Watch-together player host (plan §2.1): a DIRECT child of the

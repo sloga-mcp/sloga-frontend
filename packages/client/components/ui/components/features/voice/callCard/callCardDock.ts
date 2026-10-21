@@ -57,6 +57,41 @@ export function usableDockRect(
 }
 
 /**
+ * The page the docked card is drawn over, or nothing (then the PiP while in a
+ * call, and no card otherwise). Docked only when ALL of these hold:
+ *
+ * - A channel page has registered its mount marker.
+ * - The phone drawer is absent (desktop) or settled on the channel pane. While
+ *   it is opening, closing or showing the channel list, the pane is moving or
+ *   parked off screen, and a rect read now is wrong by the next frame. `drawer`
+ *   is the drawer's state and `drawerShown` the value that means "settled on
+ *   the pane"; they are passed in because the enum lives in a component file a
+ *   spec cannot load.
+ * - There is no call (the card is this channel's join preview), or the call is
+ *   on this very channel. A call elsewhere is never drawn over this page.
+ * - The measured rect is one the card can be drawn in (`usableDockRect`).
+ */
+export function dockDecision<C extends { id: string }, S>(input: {
+  mount: { channel: C } | undefined;
+  rect: DockRect | undefined;
+  viewport: { width: number; height: number };
+  drawer: S | undefined;
+  drawerShown: S;
+  callChannelId: string | undefined;
+}): { channel: C; rect: DockRect } | undefined {
+  const { mount, rect } = input;
+  if (!mount) return;
+  if (input.drawer !== undefined && input.drawer !== input.drawerShown) return;
+  if (
+    input.callChannelId !== undefined &&
+    input.callChannelId !== mount.channel.id
+  )
+    return;
+  if (!usableDockRect(rect, input.viewport)) return;
+  return { channel: mount.channel, rect };
+}
+
+/**
  * Whether two measured rects are the same to the pixel (both absent counts as
  * the same).
  */

@@ -53,8 +53,12 @@ const MainBar = styled("div", {
      * floating user bar, which overlays the bottom of the nav block.
      *
      * "bar" is the horizontal pill; "stack" is the vertical variant used
-     * when only the icons-only server rail remains, which is taller than
-     * the pill so it reserves more.
+     * when only the icons-only server rail remains. The column's height
+     * depends on what it holds (the hang-up while in a call, the update
+     * arrow), so it reserves the height the footer measures and publishes
+     * as `--user-footer-height` (UserFooter.tsx), plus the footer's own
+     * 10px bottom offset and a little air. The fallback, before the first
+     * measurement, is the out-of-call height.
      */
     footer: {
       none: {},
@@ -65,7 +69,7 @@ const MainBar = styled("div", {
       },
       stack: {
         "& > *:not([data-user-footer])": {
-          paddingBottom: "168px",
+          paddingBottom: "calc(var(--user-footer-height, 152px) + 16px)",
         },
       },
     },
