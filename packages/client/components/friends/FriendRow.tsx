@@ -45,6 +45,12 @@ export function FriendRow(props: {
   unread?: { count: number; mention: boolean } | null;
   /** Show the Message / call / screen share / add-to-group hover buttons */
   quickActions?: boolean;
+  /**
+   * Steam-style mouse clicks: a single click only selects (focuses) the row,
+   * a double click or Enter opens the conversation, and the avatar opens
+   * the profile. Touch keeps tap for the profile and double tap for the DM.
+   */
+  selectOnClick?: boolean;
 }) {
   const { t } = useLingui();
   const presence = usePresenceText();
@@ -57,7 +63,19 @@ export function FriendRow(props: {
   // Delay single-click so a double-click can cancel it and open the DM instead
   let clickTimer: number | undefined;
 
+  // Pointer type of the press that led to the latest click. Read from
+  // pointerdown because WebKit's click events carry no pointerType.
+  let lastPointer = "mouse";
+
+  function openProfile() {
+    openModal({ type: "user_profile", user: props.user });
+  }
+
   function onClick() {
+    // A delayed profile here would beat a normal-speed double click (the
+    // OS window is up to 500 ms) and its modal would take the second click
+    if (props.selectOnClick && lastPointer !== "touch") return;
+
     if (clickTimer !== undefined) return;
     // capture now: virtualisation can recycle this row onto another user
     // before the timer fires
@@ -89,6 +107,18 @@ export function FriendRow(props: {
     }
 
     open();
+  }
+
+  function onKeyDown(event: KeyboardEvent) {
+    // Only the row itself: Enter on a quick-action button is that button's
+    if (
+      props.selectOnClick &&
+      event.key === "Enter" &&
+      event.target === event.currentTarget
+    ) {
+      event.preventDefault();
+      open();
+    }
   }
 
   /**
@@ -162,20 +192,36 @@ export function FriendRow(props: {
       use:floating={{
         contextMenu: () => <UserContextMenu user={props.user} />,
       }}
+      onPointerDown={(e) => (lastPointer = e.pointerType)}
       onClick={onClick}
       onDblClick={onDblClick}
+      onKeyDown={onKeyDown}
     >
-      <Avatar
-        size={28}
-        src={props.user.animatedAvatarURL}
-        fallback={props.user.username}
-        holepunch={isFriend() ? "bottom-right" : "none"}
-        overlay={
-          <Show when={isFriend()}>
-            <UserStatus.Graphic status={props.user.presence} />
-          </Show>
-        }
-      />
+      {/* The avatar is the mouse way to the profile once a single click on
+          the row only selects it */}
+      <div
+        class={avatarHit()}
+        onClick={(e) => {
+          if (!props.selectOnClick) return;
+          e.stopPropagation();
+          openProfile();
+        }}
+        onDblClick={(e) => {
+          if (props.selectOnClick) e.stopPropagation();
+        }}
+      >
+        <Avatar
+          size={28}
+          src={props.user.animatedAvatarURL}
+          fallback={props.user.username}
+          holepunch={isFriend() ? "bottom-right" : "none"}
+          overlay={
+            <Show when={isFriend()}>
+              <UserStatus.Graphic status={props.user.presence} />
+            </Show>
+          }
+        />
+      </div>
 
       <div class={nameStack()}>
         <div class={`name ${name()} ${ellipsis()}`}>
@@ -208,7 +254,8 @@ export function FriendRow(props: {
 
       <Show when={props.quickActions && isFriend()}>
         {/* Buttons keep their clicks to themselves: the row's single click
-            opens the profile and its double click opens the DM */}
+            selects it (or opens the profile) and its double click opens the
+            DM */}
         <div
           class={`quick-actions ${quickActions()}`}
           onClick={(e) => e.stopPropagation()}
@@ -246,12 +293,12 @@ export function FriendRow(props: {
           </Show>
           <button
             class={iconButton()}
-            aria-label={t`Add to group`}
+            aria-label={t`Add to group chat`}
             onClick={() =>
               openModal({ type: "add_friend_to_group", userId: props.user.id })
             }
             use:floating={{
-              tooltip: { placement: "top", content: t`Add to group` },
+              tooltip: { placement: "top", content: t`Add to group chat` },
             }}
           >
             <Symbol size={18}>group_add</Symbol>
@@ -333,14 +380,27 @@ const row = cva({
       background: "var(--md-sys-color-surface-container-high)",
     },
 
-    "&:hover .favourite, & .favourite[data-active='true']": {
-      opacity: 1,
+    // The selected row (a single click focuses it)
+    "&:focus": {
+      outline: "none",
+      background: "var(--md-sys-color-surface-container-highest)",
     },
 
-    "&:hover .quick-actions, & .quick-actions:focus-within": {
-      width: "auto",
-      overflow: "visible",
+    "&:focus-visible": {
+      outline: "2px solid var(--md-sys-color-primary)",
+      outlineOffset: "-2px",
     },
+
+    "&:hover .favourite, &:focus .favourite, & .favourite[data-active='true']":
+      {
+        opacity: 1,
+      },
+
+    "&:hover .quick-actions, &:focus .quick-actions, & .quick-actions:focus-within":
+      {
+        width: "auto",
+        overflow: "visible",
+      },
   },
   variants: {
     dim: {
@@ -350,6 +410,13 @@ const row = cva({
         },
       },
     },
+  },
+});
+
+const avatarHit = cva({
+  base: {
+    display: "flex",
+    flexShrink: 0,
   },
 });
 

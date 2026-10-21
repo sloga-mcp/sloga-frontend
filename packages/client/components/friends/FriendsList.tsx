@@ -170,25 +170,26 @@ export function FriendsList(props: {
    * Row with the unread pill, hover actions and a "Groups…" button that
    * assigns this friend to custom groups
    */
-  function renderRow(user: User, tabIndex?: number) {
+  function renderRow(user: User, tabIndex: () => number | undefined) {
     return (
       <div class={rowWrap()}>
         <div class={rowMain()}>
           <FriendRow
             user={user}
-            tabIndex={tabIndex}
+            tabIndex={tabIndex()}
             unread={conversationUnread(dmMap().get(user.id))}
             quickActions
+            selectOnClick
             onOpen={(u) => props.onOpenConversation(u.id)}
           />
         </div>
         <Show when={!GROUPS_READ_ONLY}>
           <button
             class={`groups ${iconButton()}`}
-            aria-label={t`Groups…`}
+            aria-label={t`Friend groups…`}
             onClick={() => manageGroups(user.id)}
             use:floating={{
-              tooltip: { placement: "left", content: t`Groups…` },
+              tooltip: { placement: "left", content: t`Friend groups…` },
             }}
           >
             <Symbol size={18}>label</Symbol>
@@ -410,7 +411,7 @@ export function FriendsList(props: {
             use:floating={{
               tooltip: {
                 placement: "bottom",
-                content: t`Manage groups`,
+                content: t`Manage friend groups`,
               },
             }}
           >
@@ -433,6 +434,14 @@ export function FriendsList(props: {
           hideWhenEmpty
         />
         <For each={groupIds()}>{(id) => <GroupSection id={id} />}</For>
+        {/* Spelled out: the label icon by the search box alone was not
+            enough for people to find friend groups */}
+        <Show when={!GROUPS_READ_ONLY && !query().trim()}>
+          <button class={newGroupButton()} onClick={() => manageGroups()}>
+            <Symbol size={18}>add</Symbol>
+            <Trans>New friend group</Trans>
+          </button>
+        </Show>
         <Section
           id="online"
           title={t`Online`}
@@ -532,9 +541,34 @@ const rowWrap = cva({
       overflow: "hidden",
     },
 
-    "&:hover .groups, & .groups:focus-visible": {
+    "&:hover .groups, &:focus-within .groups, & .groups:focus-visible": {
       width: "28px",
       overflow: "visible",
+    },
+  },
+});
+
+const newGroupButton = cva({
+  base: {
+    all: "unset",
+    display: "flex",
+    alignItems: "center",
+    gap: "var(--gap-sm)",
+    marginBlockStart: "var(--gap-sm)",
+    paddingInline: "var(--gap-sm)",
+    paddingBlock: "var(--gap-xs)",
+    borderRadius: "var(--borderRadius-md)",
+    cursor: "pointer",
+    fontSize: "12px",
+    fontWeight: 500,
+    color: "var(--md-sys-color-primary)",
+
+    "&:hover": {
+      background: "var(--md-sys-color-surface-container-high)",
+    },
+
+    "&:focus-visible": {
+      outline: "2px solid var(--md-sys-color-primary)",
     },
   },
 });

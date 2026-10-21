@@ -21,9 +21,10 @@ export function FriendSection(props: {
   onToggle(): void;
   /**
    * Row for one user; a plain `FriendRow` when omitted. `tabIndex` is the
-   * virtual list's roving tab stop and belongs on the row's root.
+   * virtual list's roving tab stop and belongs on the row's root. It is an
+   * accessor so the row is not rebuilt when the tab stop moves.
    */
-  renderRow?: (u: User, tabIndex?: number) => JSX.Element;
+  renderRow?: (u: User, tabIndex: () => number | undefined) => JSX.Element;
   /** Shown instead of the rows when `users` is empty */
   empty?: JSX.Element;
   /** Element that scrolls the list, when it is not the section's own parent */
@@ -63,11 +64,19 @@ export function FriendSection(props: {
         >
           {(item) => (
             <div style={{ ...item.style, width: "100%" }}>
-              {props.renderRow ? (
-                props.renderRow(item.item, item.tabIndex)
-              ) : (
-                <FriendRow user={item.item} tabIndex={item.tabIndex} />
-              )}
+              {/* Rebuilt only when the slot shows another user. Focusing a
+                  row moves the roving tab stop to it, and a rebuild on that
+                  change replaced the row being clicked: focus fell to the
+                  page and a double click or right click lost its target. */}
+              <Show when={item.item} keyed>
+                {(user) =>
+                  props.renderRow ? (
+                    props.renderRow(user, () => item.tabIndex)
+                  ) : (
+                    <FriendRow user={user} tabIndex={item.tabIndex} />
+                  )
+                }
+              </Show>
             </div>
           )}
         </VirtualContainer>

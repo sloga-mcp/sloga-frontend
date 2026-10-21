@@ -5,6 +5,7 @@ import type { Channel, Message, ServerMember, User } from "stoat.js";
 
 import { useClient } from "@revolt/client";
 import * as chatShell from "@revolt/client/chatShell";
+import { IS_POPOUT_WINDOW } from "@revolt/client/popout";
 import { type PopoutAction, useUserActions } from "@revolt/client/popoutBridge";
 import { useWindowCtx } from "@revolt/client/windowCtx";
 import { CONFIGURATION } from "@revolt/common";
@@ -44,6 +45,7 @@ import MdFace from "@material-design-icons/svg/outlined/face.svg?component-solid
 import MdHeadphones from "@material-design-icons/svg/outlined/headphones.svg?component-solid";
 import MdHeadsetOff from "@material-design-icons/svg/outlined/headset_off.svg?component-solid";
 import MdHearing from "@material-design-icons/svg/outlined/hearing.svg?component-solid";
+import MdLabel from "@material-design-icons/svg/outlined/label.svg?component-solid";
 import MdMicOff from "@material-design-icons/svg/outlined/mic_off.svg?component-solid";
 import MdMoveDown from "@material-design-icons/svg/outlined/move_down.svg?component-solid";
 import MdPersonAddAlt from "@material-design-icons/svg/outlined/person_add_alt.svg?component-solid";
@@ -1121,6 +1123,18 @@ export function UserContextMenu(props: {
       <Show when={mentionShown()}>
         <ContextMenuButton icon={MdAlternateEmail} onClick={mention}>
           <Trans>Mention</Trans>
+        </ContextMenuButton>
+      </Show>
+      {/* The legacy web popout never persists friend groups, so it cannot
+          edit them (same rule as FriendsList) */}
+      <Show when={props.user.relationship === "Friend" && !IS_POPOUT_WINDOW}>
+        <ContextMenuButton
+          icon={MdLabel}
+          onClick={() =>
+            openModal({ type: "friend_groups", userId: props.user.id })
+          }
+        >
+          <Trans>Friend groups…</Trans>
         </ContextMenuButton>
       </Show>
 
