@@ -12923,8 +12923,10 @@ class Voice {
     } else if (plan.mic === "off") {
       // Unconditionally, not behind `isMicrophoneEnabled`: an enable still in
       // flight (the gate opening, the join's first publish) reads as off, and
-      // livekit orders this mute after it only if it is issued.
-      void room.localParticipant.setMicrophoneEnabled(false).catch(() => {});
+      // livekit orders this mute after it only if it is issued. Through
+      // `#setMicEnabled`, so it also queues behind a muted push-to-talk publish
+      // still landing, which would otherwise come up live after this mute.
+      void this.#setMicEnabled(room, false).catch(() => {});
     }
   }
 

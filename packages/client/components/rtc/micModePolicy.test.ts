@@ -213,7 +213,7 @@ test("state.tsx carries out every part of the plan", () => {
     "if (whispering && plan.afterWhisper !== undefined) this.#whisperPriorMic = plan.afterWhisper;",
   );
   assertWired(
-    "the mic follows the plan, the mute unconditionally",
-    'if (plan.mic === "on") { void this.#setMicEnabled(room, true).catch(() => {}); } else if (plan.mic === "off") { void room.localParticipant.setMicrophoneEnabled(false).catch(() => {}); }',
+    "the mic follows the plan, the mute unconditionally and behind a muted publish",
+    'if (plan.mic === "on") { void this.#setMicEnabled(room, true).catch(() => {}); } else if (plan.mic === "off") { void this.#setMicEnabled(room, false).catch(() => {}); }',
   );
 });
