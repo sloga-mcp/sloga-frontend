@@ -4279,6 +4279,10 @@ msgstr "Hold the rim, clear the web."
 msgid "Home"
 msgstr "Home"
 
+#: src/interface/Home.tsx
+msgid "Moderation"
+msgstr "Moderation"
+
 #: components/ui/components/features/voice/watch/WatchOverlay.tsx
 msgid "Hosted by {name}"
 msgstr "Hosted by {name}"
@@ -9774,6 +9778,106 @@ msgstr "To share screen audio, rejoin the call after allowing microphone access.
 #: src/interface/common/CommonHeader.tsx
 msgid "Toggle main sidebar"
 msgstr "Toggle main sidebar"
+
+#: src/interface/home/CipherBanner.tsx
+msgid "Hide for now"
+msgstr "Hide for now"
+
+#: src/interface/home/CipherBanner.tsx
+msgid "Protected servers are coming to Sloga"
+msgstr "Protected servers are coming to Sloga"
+
+#: src/interface/home/CipherBanner.tsx
+msgid "End-to-end encryption for a whole server or a single channel. We can't read any of it."
+msgstr "End-to-end encryption for a whole server or a single channel. We can't read any of it."
+
+#: src/interface/home/StreamerRow.tsx
+msgid "See all"
+msgstr "See all"
+
+#. placeholder {0}: name()
+#: src/interface/home/StreamerRow.tsx
+msgid "Show what {0} is streaming"
+msgstr "Show what {0} is streaming"
+
+#. placeholder {0}: name()
+#: src/interface/home/StreamerRow.tsx
+msgid "Watch {0} live"
+msgstr "Watch {0} live"
+
+#. placeholder {0}: name()
+#: src/interface/home/StreamerRow.tsx
+msgid "Back to {0}"
+msgstr "Back to {0}"
+
+#. placeholder {0}: connection()?.platform
+#: src/interface/home/StreamerRow.tsx
+msgid "Watch on {0}"
+msgstr "Watch on {0}"
+
+#: src/interface/home/WelcomeTiles.tsx
+msgid "Welcome to Sloga"
+msgstr "Welcome to Sloga"
+
+#: src/interface/home/WelcomeTiles.tsx
+msgid "A few ways to get started."
+msgstr "A few ways to get started."
+
+#: src/interface/home/WelcomeTiles.tsx
+msgid "Import from Discord, Stoat or Fluxer."
+msgstr "Import from Discord, Stoat or Fluxer."
+
+#: src/interface/home/WelcomeTiles.tsx
+msgid "Bring your server"
+msgstr "Bring your server"
+
+#: src/interface/home/WelcomeTiles.tsx
+msgid "Find people by their username."
+msgstr "Find people by their username."
+
+#: src/interface/home/WelcomeTiles.tsx
+msgid "Add a friend"
+msgstr "Add a friend"
+
+#: src/interface/home/WelcomeTiles.tsx
+msgid "Browse communities by interest."
+msgstr "Browse communities by interest."
+
+#: src/interface/home/WelcomeTiles.tsx
+msgid "Discover communities"
+msgstr "Discover communities"
+
+#: src/interface/home/WelcomeTiles.tsx
+msgid "Start your own space for your friends."
+msgstr "Start your own space for your friends."
+
+#: src/interface/home/WelcomeTiles.tsx
+msgid "Create a server"
+msgstr "Create a server"
+
+#: src/interface/home/WhatsNewCard.tsx
+msgid "Sort your friends into categories"
+msgstr "Sort your friends into categories"
+
+#: src/interface/home/WhatsNewCard.tsx
+msgid "A new title bar for chat windows"
+msgstr "A new title bar for chat windows"
+
+#: src/interface/home/WhatsNewCard.tsx
+msgid "Push to talk fixes and a hang-up button"
+msgstr "Push to talk fixes and a hang-up button"
+
+#: src/interface/home/WhatsNewCard.tsx
+msgid "New in v{HIGHLIGHTS_RELEASE}"
+msgstr "New in v{HIGHLIGHTS_RELEASE}"
+
+#: src/interface/home/WhatsNewCard.tsx
+msgid "Friend categories, a new title bar and call fixes"
+msgstr "Friend categories, a new title bar and call fixes"
+
+#: src/interface/home/WhatsNewCard.tsx
+msgid "Read the patch notes"
+msgstr "Read the patch notes"
 
 #: components/app/interface/settings/user/bots/ViewBot.tsx
 msgid "Token copied to clipboard"

@@ -3,49 +3,35 @@ import {
   createMemo,
   createResource,
   createSignal,
-  Match,
   onCleanup,
   onMount,
   Show,
-  Switch,
 } from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
-import { PublicChannelInvite } from "stoat.js";
 import { cva } from "styled-system/css";
 import { styled } from "styled-system/jsx";
 
-import { allowsDonationLinks, useClient } from "@revolt/client";
-import {
-  type FoundingStreamer,
-  fetchFoundingStreamers,
-  isLive,
-} from "@revolt/client/foundingStreamers";
-import { CONFIGURATION } from "@revolt/common";
+import { useClient } from "@revolt/client";
 import { useModals } from "@revolt/modal";
-import { useNavigate } from "@revolt/routing";
 import {
   CategoryButton,
-  Column,
-  FOUNDING_STREAMER_COLOUR,
   Header,
   iconSize,
   main,
   slogaBurstKeyframes,
-  SupportSlogaIcon,
 } from "@revolt/ui";
 
-import MdAddCircle from "@material-design-icons/svg/filled/add_circle.svg?component-solid";
-import MdExplore from "@material-design-icons/svg/filled/explore.svg?component-solid";
-import MdGroups3 from "@material-design-icons/svg/filled/groups_3.svg?component-solid";
 import MdHome from "@material-design-icons/svg/filled/home.svg?component-solid";
-import MdLiveTv from "@material-design-icons/svg/filled/live_tv.svg?component-solid";
-import MdPersonAdd from "@material-design-icons/svg/filled/person_add.svg?component-solid";
 import MdReport from "@material-design-icons/svg/filled/report.svg?component-solid";
-import MdSettings from "@material-design-icons/svg/filled/settings.svg?component-solid";
 import MdTravelExplore from "@material-design-icons/svg/filled/travel_explore.svg?component-solid";
 
 import { HeaderIcon } from "./common/CommonHeader";
+import { CipherBanner } from "./home/CipherBanner";
+import { isNewUser } from "./home/homeHub";
+import { StreamerRow } from "./home/StreamerRow";
+import { WelcomeTiles } from "./home/WelcomeTiles";
+import { WhatsNewCard } from "./home/WhatsNewCard";
 
 // Satellite colors clockwise from the top, matching the brand mark.
 const DOT_COLORS = [
@@ -74,17 +60,6 @@ const O = { cx: 115, cy: 55, ring: 29, core: 10 };
  * closes, so this is just the backstop for items filed by someone else.
  */
 const QUEUE_POLL_INTERVAL = 60_000;
-
-/**
- * How often the Founding Streamers tile refreshes its live count. Matches
- * STREAMER_POLL_INTERVAL on the directory page so the two age the same way.
- *
- * A live flag is already stale by up to ~150s by the time it reaches this
- * badge (this 60s poll, the 30s server-side cache, and the 60s platform
- * poller behind that), which is why the label reads "in the last few
- * minutes" rather than anything that sounds like a stopwatch.
- */
-const STREAMER_POLL_INTERVAL = 60_000;
 
 /** Length of one click-burst; long enough to read the spiral, short enough to feel like a flourish. */
 const BURST_DURATION = "2400ms";
@@ -210,10 +185,9 @@ export function SlogaWordmark(props: {
 }
 
 /**
- * Small count badge on a tile: items still awaiting a decision on the
- * moderation tiles, and streamers last seen live on the Founding Streamers
- * tile. Hidden entirely at zero, so a badge only ever means "there is
- * something here" and never shows a misleading 0.
+ * Count badge on a staff moderation tile: items still awaiting a decision.
+ * Hidden entirely at zero, so a badge only ever means "there is something
+ * here" and never shows a misleading 0.
  */
 const QueueBadge = styled("div", {
   base: {
@@ -230,36 +204,9 @@ const QueueBadge = styled("div", {
     fontSize: "12px",
     fontWeight: 600,
     lineHeight: 1,
-  },
-  variants: {
-    /**
-     * Which palette the chip borrows.
-     *
-     * `error` is the moderation default: red means unreviewed work. `accent`
-     * is for a chip that is a count and not an alert, and takes the palette
-     * of whatever tile it sits on.
-     *
-     * Note the pairing on `accent` is inverted, and must stay that way.
-     * `CategoryButton variant="filled"` already paints its background with
-     * `--md-sys-color-primary` (CategoryButton.tsx:145-148), so a chip that
-     * also used `--md-sys-color-primary` as its background would be the exact
-     * same colour as the tile behind it — 1.00:1, invisible. Swapping the
-     * pair makes it a dark chip in the tile's own accent: 4.71:1 both against
-     * the tile and for its own text on the Founding Streamer violet.
-     */
-    tone: {
-      error: {
-        background: "var(--md-sys-color-error)",
-        color: "var(--md-sys-color-on-error)",
-      },
-      accent: {
-        background: "var(--md-sys-color-on-primary)",
-        color: "var(--md-sys-color-primary)",
-      },
-    },
-  },
-  defaultVariants: {
-    tone: "error",
+
+    background: "var(--md-sys-color-error)",
+    color: "var(--md-sys-color-on-error)",
   },
 });
 
@@ -277,58 +224,59 @@ const Base = styled("div", {
 });
 
 /**
- * Layout of the content as a whole
+ * Scrolling area; the column inside it caps the line length on wide windows
  */
 const content = cva({
   base: {
     ...main.raw(),
 
-    padding: "48px 0",
+    padding: "24px 24px 48px",
 
-    gap: "32px",
-    alignItems: "center",
-    justifyContent: "center",
+    "@media (max-width: 640px)": {
+      padding: "12px 12px 32px",
+    },
   },
 });
 
-/**
- * Layout of the buttons
- */
-const Buttons = styled("div", {
+const Sections = styled("div", {
   base: {
-    gap: "8px",
-    padding: "8px",
+    width: "100%",
+    maxWidth: "780px",
+    marginInline: "auto",
     display: "flex",
-    flexWrap: "wrap",
-    justifyContent: "center",
-    borderRadius: "var(--borderRadius-lg)",
+    flexDirection: "column",
+    gap: "20px",
 
-    color: "var(--md-sys-color-on-surface-variant)",
-    background: "var(--md-sys-color-surface-variant)",
-  },
-});
-
-/**
- * Make sure the columns are separated
- */
-const SeparatedColumn = styled(Column, {
-  base: {
-    justifyContent: "stretch",
-    marginInline: "0.25em",
-    width: "260px",
-    "& > *": {
-      flexGrow: 1,
+    "@media (max-width: 640px)": {
+      gap: "14px",
     },
   },
 });
 
 /**
- * Home page
+ * Staff-only moderation queues
+ */
+const Staff = styled("section", {
+  base: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+    gap: "8px",
+    padding: "8px",
+    borderRadius: "var(--borderRadius-lg)",
+    background: "var(--md-sys-color-surface-variant)",
+    color: "var(--md-sys-color-on-surface-variant)",
+  },
+});
+
+/**
+ * Home page: welcome tiles for new accounts, the Cipher banner, this
+ * release's highlights, Founding Streamers, and the moderation queues for
+ * staff. Everything else that used to sit here (settings, discover, support)
+ * already has its own button in the app.
  */
 export function HomePage() {
   const { openModal, isOpen } = useModals();
   const { t } = useLingui();
-  const navigate = useNavigate();
   const client = useClient();
 
   const isPrivileged = () => !!client()!.user?.privileged;
@@ -401,93 +349,15 @@ export function HomePage() {
     queueModalWasOpen = open;
   });
 
-  /**
-   * The Founding Streamers directory, behind the tile below.
-   *
-   * Ungated, unlike the queue resource above: `/discover/streamers` is
-   * anonymous, and this tile exists for exactly the brand-new account that
-   * lands on this screen with nothing else on it.
-   *
-   * `client()!` matches the rest of this component, which already dereferences
-   * the client unconditionally below — Home cannot render without one.
-   */
-  const [streamers, { refetch: refetchStreamers }] = createResource(
-    () => client()!.options.baseURL,
-    (baseURL) => fetchFoundingStreamers(baseURL),
-  );
-
-  onMount(() => {
-    let lastFetch = Date.now();
-
-    const poll = () => {
-      lastFetch = Date.now();
-      refetchStreamers();
-    };
-
-    const timer = setInterval(() => {
-      // Don't poll a screen nobody is looking at.
-      if (!document.hidden) poll();
-    }, STREAMER_POLL_INTERVAL);
-
-    // Without this the badge's own label is false: the interval above skips
-    // every poll while the tab is hidden, so a tab hidden for an hour comes
-    // back showing an hour-old count under "seen live in the last few
-    // minutes", and keeps it for up to another 60s.
-    //
-    // Throttled to the poll interval because there is no in-flight dedupe
-    // across the network round trip: an unthrottled listener turns n
-    // alt-tabs into n requests against an IP-rate-limited route, and tripping
-    // that bucket is itself what puts the resource into the errored state.
-    const onVisibilityChange = () => {
-      if (document.hidden) return;
-      if (Date.now() - lastFetch < STREAMER_POLL_INTERVAL) return;
-      poll();
-    };
-
-    document.addEventListener("visibilitychange", onVisibilityChange);
-
-    onCleanup(() => {
-      clearInterval(timer);
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-    });
+  /** No servers or no friends yet: lead with the first steps */
+  const newUser = createMemo(() => {
+    const c = client();
+    if (!c) return false;
+    return isNewUser(
+      c.servers.toList().length,
+      c.users.toList().filter((user) => user.relationship === "Friend").length,
+    );
   });
-
-  /**
-   * The directory as the tile sees it.
-   *
-   * `streamers.error` is the ONLY accessor that is safe to read while the
-   * resource is errored: `streamers()` and `streamers.latest` both THROW in
-   * that state (solid-js 1.9.6, `solid.cjs:320` and `:382` — a failed
-   * `loadEnd` clears `pr`, so the `!pr` guard stops holding the throw back).
-   * It matters more here than on the directory page, which wraps itself in an
-   * ErrorBoundary: Home has none, and this memo is created before any JSX
-   * exists, so an unguarded read would take down the entire home screen
-   * rather than one tile.
-   *
-   * A failure keeps the PREVIOUS value rather than falling back to `[]`, so a
-   * single dropped request does not make the tile disappear and reappear a
-   * minute later. The initial value is `[]`, so nothing renders until a load
-   * has actually succeeded.
-   */
-  const streamerList = createMemo<FoundingStreamer[]>(
-    (prev) => (streamers.error ? prev : (streamers.latest ?? [])),
-    [],
-  );
-
-  /**
-   * How many of them a platform poller last reported live.
-   *
-   * `isLive` is imported rather than re-derived: it is the data layer's single
-   * definition of the predicate, and the wire omits `live` entirely when it is
-   * false, so a copy written from the type alone would drift. Zero renders no
-   * badge at all, the same way a settled queue does.
-   */
-  const liveStreamerCount = () => streamerList().filter(isLive).length;
-
-  // check if we're stoat.chat; if so, check if the user is in the Lounge
-  const showLoungeButton = CONFIGURATION.IS_STOAT;
-  const isInLounge =
-    client()!.servers.get("01F7ZSBSFHQ8TA81725KQCSDDP") !== undefined;
 
   return (
     <Base>
@@ -498,178 +368,15 @@ export function HomePage() {
         <Trans>Home</Trans>
       </Header>
       <div use:scrollable={{ class: content() }}>
-        <Column>
-          <SlogaWordmark height={64} interactive />
-        </Column>
-        <Buttons>
-          <SeparatedColumn>
-            <div
-              style={{
-                "--md-sys-color-primary": "#00B2FF",
-                "--md-sys-color-on-primary": "#05090F",
-              }}
-            >
-              <CategoryButton
-                variant="filled"
-                onClick={() =>
-                  openModal({
-                    type: "create_group_or_server",
-                    client: client()!,
-                  })
-                }
-                description={
-                  <Trans>
-                    Invite all of your friends, some cool bots, and throw a big
-                    party.
-                  </Trans>
-                }
-                icon={<MdAddCircle />}
-              >
-                <Trans>Start a Chat Room/Server</Trans>
-              </CategoryButton>
-            </div>
-            <Switch fallback={null}>
-              <Match when={showLoungeButton && isInLounge}>
-                <CategoryButton
-                  onClick={() => navigate("/server/01F7ZSBSFHQ8TA81725KQCSDDP")}
-                  description={
-                    <Trans>
-                      You can report issues and discuss improvements with us
-                      directly here.
-                    </Trans>
-                  }
-                  icon={<MdGroups3 />}
-                >
-                  <Trans>Go to the Sloga Lounge</Trans>
-                </CategoryButton>
-              </Match>
-              <Match when={showLoungeButton && !isInLounge}>
-                <CategoryButton
-                  onClick={() => {
-                    client()
-                      .api.get("/invites/Testers")
-                      .then((invite) =>
-                        PublicChannelInvite.from(client(), invite),
-                      )
-                      .then((invite) => openModal({ type: "invite", invite }));
-                  }}
-                  description={
-                    <Trans>
-                      You can report issues and discuss improvements with us
-                      directly here.
-                    </Trans>
-                  }
-                  icon={<MdGroups3 />}
-                >
-                  <Trans>Join the Sloga Lounge</Trans>
-                </CategoryButton>
-              </Match>
-            </Switch>
-            {/* Hands out the supporter code, then opens Ko-fi. Hidden in Play
-                and App Store builds: both stores restrict linking out to
-                payments outside their own billing, and Sloga is not a
-                registered nonprofit. Web, desktop and the sloga.gg APK still
-                show it. */}
-            <Show when={allowsDonationLinks()}>
-              <div
-                style={{
-                  "--md-sys-color-primary": "#FF8A00",
-                  "--md-sys-color-on-primary": "#05090F",
-                }}
-              >
-                <CategoryButton
-                  variant="filled"
-                  onClick={() => openModal({ type: "support_sloga" })}
-                  description={<Trans>Support the project - thank you!</Trans>}
-                  // Inverted on the orange button: dark bag, orange $.
-                  icon={<SupportSlogaIcon bag="#05090F" sign="#FF8A00" />}
-                >
-                  <Trans>Support Sloga</Trans>
-                </CategoryButton>
-              </div>
-            </Show>
-          </SeparatedColumn>
-          <SeparatedColumn>
-            <div
-              style={{
-                "--md-sys-color-primary": "#00B2FF",
-                "--md-sys-color-on-primary": "#05090F",
-              }}
-            >
-              <CategoryButton
-                variant="filled"
-                onClick={() =>
-                  openModal({ type: "add_friend", client: client()! })
-                }
-                description={
-                  <Trans>
-                    Connect with someone by adding them as a friend.
-                  </Trans>
-                }
-                icon={<MdPersonAdd />}
-              >
-                <Trans>Add a Friend</Trans>
-              </CategoryButton>
-            </div>
-            <div
-              style={{
-                "--md-sys-color-primary": "#27A163",
-                "--md-sys-color-on-primary": "#05090F",
-              }}
-            >
-              <CategoryButton
-                variant="filled"
-                onClick={() => navigate("/discover")}
-                description={
-                  <Trans>
-                    Find a community based on your hobbies or interests.
-                  </Trans>
-                }
-                icon={<MdExplore />}
-              >
-                <Trans>Discover Sloga</Trans>
-              </CategoryButton>
-            </div>
-            {/* Gated on the route actually returning someone, not on the
-                `oauth_*` feature flags: those are false in production and
-                fetchStreamingFlags fails closed, so a flag-gated tile would
-                never appear at all. An empty directory — or one whose fetch
-                failed — renders nothing here. */}
-            <Show when={streamerList().length}>
-              <div
-                style={{
-                  "--md-sys-color-primary": FOUNDING_STREAMER_COLOUR,
-                  "--md-sys-color-on-primary": "#05090F",
-                }}
-              >
-                <CategoryButton
-                  variant="filled"
-                  onClick={() => navigate("/streamers")}
-                  description={
-                    <Trans>
-                      Meet the creators streaming on Sloga and follow them
-                      wherever they go live.
-                    </Trans>
-                  }
-                  icon={<MdLiveTv />}
-                  action={
-                    <Show when={liveStreamerCount()}>
-                      {(count) => (
-                        <QueueBadge
-                          tone="accent"
-                          aria-label={t`${count()} Founding Streamers seen live in the last few minutes`}
-                        >
-                          {count()}
-                        </QueueBadge>
-                      )}
-                    </Show>
-                  }
-                >
-                  <Trans>Founding Streamers</Trans>
-                </CategoryButton>
-              </div>
-            </Show>
-            <Show when={client()!.user?.privileged}>
+        <Sections>
+          <Show when={newUser()}>
+            <WelcomeTiles />
+          </Show>
+          <CipherBanner />
+          <WhatsNewCard />
+          <StreamerRow />
+          <Show when={isPrivileged()}>
+            <Staff aria-label={t`Moderation`}>
               <CategoryButton
                 onClick={() =>
                   openModal({ type: "report_queue", client: client()! })
@@ -716,28 +423,9 @@ export function HomePage() {
               >
                 <Trans>Listing requests</Trans>
               </CategoryButton>
-            </Show>
-            <div
-              style={{
-                "--md-sys-color-primary": "#00B2FF",
-                "--md-sys-color-on-primary": "#05090F",
-              }}
-            >
-              <CategoryButton
-                variant="filled"
-                onClick={() => openModal({ type: "settings", config: "user" })}
-                description={
-                  <Trans>
-                    You can also click the gear icon in the bottom left.
-                  </Trans>
-                }
-                icon={<MdSettings />}
-              >
-                <Trans>Open settings</Trans>
-              </CategoryButton>
-            </div>
-          </SeparatedColumn>
-        </Buttons>
+            </Staff>
+          </Show>
+        </Sections>
       </div>
     </Base>
   );
