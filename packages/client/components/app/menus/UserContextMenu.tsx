@@ -42,10 +42,10 @@ import MdClose from "@material-design-icons/svg/outlined/close.svg?component-sol
 import MdDoNotDisturbOn from "@material-design-icons/svg/outlined/do_not_disturb_on.svg?component-solid";
 import MdDraw from "@material-design-icons/svg/outlined/draw.svg?component-solid";
 import MdFace from "@material-design-icons/svg/outlined/face.svg?component-solid";
+import MdFolder from "@material-design-icons/svg/outlined/folder.svg?component-solid";
 import MdHeadphones from "@material-design-icons/svg/outlined/headphones.svg?component-solid";
 import MdHeadsetOff from "@material-design-icons/svg/outlined/headset_off.svg?component-solid";
 import MdHearing from "@material-design-icons/svg/outlined/hearing.svg?component-solid";
-import MdLabel from "@material-design-icons/svg/outlined/label.svg?component-solid";
 import MdMicOff from "@material-design-icons/svg/outlined/mic_off.svg?component-solid";
 import MdMoveDown from "@material-design-icons/svg/outlined/move_down.svg?component-solid";
 import MdPersonAddAlt from "@material-design-icons/svg/outlined/person_add_alt.svg?component-solid";
@@ -1125,16 +1125,16 @@ export function UserContextMenu(props: {
           <Trans>Mention</Trans>
         </ContextMenuButton>
       </Show>
-      {/* The legacy web popout never persists friend groups, so it cannot
-          edit them (same rule as FriendsList) */}
+      {/* A window booted as the retired web popout never persists friend
+          categories, so it cannot edit them (same rule as FriendsList) */}
       <Show when={props.user.relationship === "Friend" && !IS_POPOUT_WINDOW}>
         <ContextMenuButton
-          icon={MdLabel}
+          icon={MdFolder}
           onClick={() =>
             openModal({ type: "friend_groups", userId: props.user.id })
           }
         >
-          <Trans>Friend groups…</Trans>
+          <Trans>Categorize…</Trans>
         </ContextMenuButton>
       </Show>
 

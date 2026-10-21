@@ -25,8 +25,9 @@ import { Modals } from "../types";
 type CreateError = "limit" | "name" | "unknown";
 
 /**
- * Create, rename, reorder and delete custom friend groups. Given a userId,
- * also assigns that friend to groups.
+ * Create, rename, reorder and remove friend categories (stored as friend
+ * groups). Given a userId, also assigns that friend to categories: the
+ * "Categorize…" dialog.
  */
 export function FriendGroupsModal(
   props: DialogProps & Modals & { type: "friend_groups" },
@@ -103,11 +104,8 @@ export function FriendGroupsModal(
       show={props.show}
       onClose={props.onClose}
       title={
-        <Show
-          when={friendName()}
-          fallback={<Trans>Manage friend groups</Trans>}
-        >
-          {(name) => <Trans>Choose groups for {name()}</Trans>}
+        <Show when={friendName()} fallback={<Trans>Manage categories</Trans>}>
+          {(name) => <Trans>Categorize {name()}</Trans>}
         </Show>
       }
       actions={[{ text: <Trans>Done</Trans> }]}
@@ -118,8 +116,8 @@ export function FriendGroupsModal(
           fallback={
             <Text class="label">
               <Trans>
-                You don't have any groups yet. Create one below to organize your
-                friends.
+                You don't have any categories yet. Create one below to organize
+                your friends.
               </Trans>
             </Text>
           }
@@ -156,7 +154,7 @@ export function FriendGroupsModal(
                       </Show>
                       <IconButton
                         size="xs"
-                        aria-label={t`Rename group`}
+                        aria-label={t`Rename category`}
                         onPress={() => startRename(group.id, group.name)}
                       >
                         <Symbol size={18}>edit</Symbol>
@@ -183,7 +181,7 @@ export function FriendGroupsModal(
                       </IconButton>
                       <IconButton
                         size="xs"
-                        aria-label={t`Delete group`}
+                        aria-label={t`Remove category`}
                         onPress={() => {
                           cancelRename();
                           setConfirmDelete(group.id);
@@ -201,7 +199,7 @@ export function FriendGroupsModal(
                           ref={(el) => queueMicrotask(() => el.focus())}
                           value={editName()}
                           maxlength={MAX_FRIEND_GROUP_NAME}
-                          aria-label={t`Group name`}
+                          aria-label={t`Category name`}
                           onInput={(event) =>
                             setEditName(event.currentTarget.value)
                           }
@@ -233,7 +231,7 @@ export function FriendGroupsModal(
                       </GroupRow>
                       <Show when={renameFailed()}>
                         <ErrorText>
-                          <Trans>Group names need 1 to 40 characters.</Trans>
+                          <Trans>Category names need 1 to 40 characters.</Trans>
                         </ErrorText>
                       </Show>
                     </Column>
@@ -242,7 +240,7 @@ export function FriendGroupsModal(
                     <ConfirmRow>
                       <Text>
                         <Trans>
-                          Delete {group.name}? Your friends stay on your friends
+                          Remove {group.name}? Your friends stay on your friends
                           list.
                         </Trans>
                       </Text>
@@ -259,7 +257,7 @@ export function FriendGroupsModal(
                           size="xs"
                           onPress={() => deleteGroup(group.id)}
                         >
-                          <Trans>Delete</Trans>
+                          <Trans>Remove</Trans>
                         </Button>
                       </GroupRow>
                     </ConfirmRow>
@@ -275,8 +273,8 @@ export function FriendGroupsModal(
             <GroupInput
               value={draft()}
               maxlength={MAX_FRIEND_GROUP_NAME}
-              placeholder={t`New group name`}
-              aria-label={t`New group name`}
+              placeholder={t`New category name`}
+              aria-label={t`New category name`}
               onInput={(event) => {
                 setDraft(event.currentTarget.value);
                 setCreateError(undefined);
@@ -301,19 +299,19 @@ export function FriendGroupsModal(
             <Match when={createError() === "limit"}>
               <ErrorText>
                 <Trans>
-                  You've reached the limit of 50 groups. Delete one to make
+                  You've reached the limit of 50 categories. Remove one to make
                   room.
                 </Trans>
               </ErrorText>
             </Match>
             <Match when={createError() === "name"}>
               <ErrorText>
-                <Trans>Group names need 1 to 40 characters.</Trans>
+                <Trans>Category names need 1 to 40 characters.</Trans>
               </ErrorText>
             </Match>
             <Match when={createError() === "unknown"}>
               <ErrorText>
-                <Trans>Couldn't create that group.</Trans>
+                <Trans>Couldn't create that category.</Trans>
               </ErrorText>
             </Match>
           </Switch>

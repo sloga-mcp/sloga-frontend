@@ -13,7 +13,13 @@ import type { Channel } from "stoat.js";
 import { cva } from "styled-system/css";
 import { decodeTime, ulid } from "ulid";
 
-import { DraftMessages, Messages, ScheduledMessagesBar } from "@revolt/app";
+import {
+  DraftMessages,
+  Messages,
+  ScheduledMessagesBar,
+  UserContextMenu,
+} from "@revolt/app";
+import { FriendContextMenu } from "@revolt/app/menus/FriendContextMenu";
 import { useClient } from "@revolt/client";
 import * as chatShell from "@revolt/client/chatShell";
 import type { E2EEBadge } from "@revolt/client/e2eeBadge";
@@ -292,6 +298,18 @@ function ChatWindowHeader(props: { channel: Channel; windowId: string }) {
     }
   };
 
+  /**
+   * Right-click menu for the person in a DM: the Steam-style friend menu, or
+   * the full user menu for someone who is not a friend; none for a group
+   */
+  const whoMenu = () => {
+    const user = recipient();
+    if (!user) return undefined;
+    return user.relationship === "Friend"
+      ? () => <FriendContextMenu user={user} inConversation />
+      : () => <UserContextMenu user={user} channel={props.channel} />;
+  };
+
   // The composer's icons for the same states
   const badgeIcon = (b: E2EEBadge) => {
     switch (b) {
@@ -308,61 +326,64 @@ function ChatWindowHeader(props: { channel: Channel; windowId: string }) {
 
   return (
     <header class={header()}>
-      <Switch
-        fallback={
-          <Avatar
-            size={32}
-            shape="rounded-square"
-            fallback={props.channel.name ?? ""}
-            src={props.channel.iconURL}
-            primaryContrast
-          />
-        }
-      >
-        <Match when={recipient()}>
-          {(user) => (
+      {/* Right-clicking the person opens the friend menu, as in Steam */}
+      <div class={who()} use:floating={{ contextMenu: whoMenu() }}>
+        <Switch
+          fallback={
             <Avatar
               size={32}
-              src={user().animatedAvatarURL}
-              fallback={user().username}
-              holepunch="bottom-right"
-              overlay={<UserStatus.Graphic status={user().presence} />}
+              shape="rounded-square"
+              fallback={props.channel.name ?? ""}
+              src={props.channel.iconURL}
+              primaryContrast
             />
-          )}
-        </Match>
-      </Switch>
-
-      <div class={nameStack()}>
-        <OverflowingText class={title()}>
-          <Show
-            when={recipient()}
-            fallback={<TextWithEmoji content={props.channel.name ?? ""} />}
-          >
+          }
+        >
+          <Match when={recipient()}>
             {(user) => (
-              <DisplayName
-                user={user()}
-                name={user().displayName}
-                brand={isSlogaStaff(user())}
+              <Avatar
+                size={32}
+                src={user().animatedAvatarURL}
+                fallback={user().username}
+                holepunch="bottom-right"
+                overlay={<UserStatus.Graphic status={user().presence} />}
               />
             )}
-          </Show>
-        </OverflowingText>
-        <Switch>
-          <Match when={isDm()}>
-            <span class={subtitle()}>{dmStatus()}</span>
-          </Match>
-          <Match when={isGroup()}>
-            <span class={subtitle()}>
-              <Plural
-                value={props.channel.recipientIds.size}
-                one="# member"
-                other="# members"
-              />
-              {" · "}
-              {t`${onlineCount()} online`}
-            </span>
           </Match>
         </Switch>
+
+        <div class={nameStack()}>
+          <OverflowingText class={title()}>
+            <Show
+              when={recipient()}
+              fallback={<TextWithEmoji content={props.channel.name ?? ""} />}
+            >
+              {(user) => (
+                <DisplayName
+                  user={user()}
+                  name={user().displayName}
+                  brand={isSlogaStaff(user())}
+                />
+              )}
+            </Show>
+          </OverflowingText>
+          <Switch>
+            <Match when={isDm()}>
+              <span class={subtitle()}>{dmStatus()}</span>
+            </Match>
+            <Match when={isGroup()}>
+              <span class={subtitle()}>
+                <Plural
+                  value={props.channel.recipientIds.size}
+                  one="# member"
+                  other="# members"
+                />
+                {" · "}
+                {t`${onlineCount()} online`}
+              </span>
+            </Match>
+          </Switch>
+        </div>
       </div>
 
       <Show when={badge()}>
@@ -465,6 +486,13 @@ const column = cva({
     flex: "1 1 0",
     minHeight: 0,
     background: "var(--md-sys-color-surface)",
+  },
+});
+
+/** Avatar and name as one right-click target, without changing the layout */
+const who = cva({
+  base: {
+    display: "contents",
   },
 });
 

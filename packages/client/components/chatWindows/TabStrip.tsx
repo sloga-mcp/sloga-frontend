@@ -10,9 +10,11 @@ import {
   onMount,
 } from "solid-js";
 
-import { useLingui } from "@lingui-solid/solid/macro";
+import { Trans, useLingui } from "@lingui-solid/solid/macro";
 import { cva } from "styled-system/css";
 
+import { ContextMenu, ContextMenuButton } from "@revolt/app/menus/ContextMenu";
+import { FriendContextMenu } from "@revolt/app/menus/FriendContextMenu";
 import { useClient } from "@revolt/client";
 import { useConversationE2EE } from "@revolt/client/useConversationE2EE";
 import { allWindowCtxs, useWindowCtx } from "@revolt/client/windowCtx";
@@ -26,6 +28,8 @@ import {
 } from "@revolt/ui";
 import { DisplayName } from "@revolt/ui/components/features/DisplayName";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
+
+import MdClose from "@material-design-icons/svg/outlined/close.svg?component-solid";
 
 import { conversationUnread } from "../friends/friendData";
 
@@ -350,6 +354,25 @@ function Tab(props: {
     if (at && windowOf(channelId)) moveTab(channelId, "new", { at });
   }
 
+  /**
+   * Right-click: for a DM with a friend, the Steam-style friend menu with
+   * "Close tab" first; for anything else, just "Close tab"
+   */
+  const tabMenu = () => {
+    const recipient =
+      channel()?.type === "DirectMessage" ? channel()?.recipient : undefined;
+    const close = () => closeTab(props.channelId);
+    return recipient?.relationship === "Friend" ? (
+      <FriendContextMenu user={recipient} onCloseTab={close} inConversation />
+    ) : (
+      <ContextMenu>
+        <ContextMenuButton icon={MdClose} onClick={close}>
+          <Trans>Close tab</Trans>
+        </ContextMenuButton>
+      </ContextMenu>
+    );
+  };
+
   /** Next to this window, so the new one does not open on top of it. */
   function popOut() {
     let at: { left: number; top: number } | undefined;
@@ -377,6 +400,7 @@ function Tab(props: {
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
       onClick={() => setActive(props.windowId, props.channelId)}
+      use:floating={{ contextMenu: tabMenu }}
       onKeyDown={(e) => {
         // Keys bubbling up from the pop-out / close buttons are theirs
         if (e.target !== e.currentTarget) return;

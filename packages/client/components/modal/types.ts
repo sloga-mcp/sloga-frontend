@@ -169,6 +169,11 @@ export type Modals =
       userId?: string;
     }
   | {
+      type: "friend_category";
+      /** Manage this category; create a new one when omitted */
+      groupId?: string;
+    }
+  | {
       type: "forward_message";
       /** Message to forward (server copies an immutable snapshot) */
       message: Message;

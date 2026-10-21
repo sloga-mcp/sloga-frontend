@@ -2401,6 +2401,11 @@ msgstr "Copy server ID"
 msgid "Copy text"
 msgstr "Copy text"
 
+#: components/app/menus/FriendContextMenu.tsx
+#: components/chatWindows/TabStrip.tsx
+msgid "Close tab"
+msgstr "Close tab"
+
 #: components/ui/components/features/voice/callCard/VoiceTranscriptPanel.tsx
 msgid "Copy the transcript to the clipboard"
 msgstr "Copy the transcript to the clipboard"
@@ -5490,6 +5495,13 @@ msgstr "More Contrast"
 msgid "More options"
 msgstr "More options"
 
+#. placeholder {0}: group.name
+#. placeholder {0}: groupName(groupProps.id)
+#: components/friends/FriendsList.tsx
+#: components/modal/modals/FriendGroups.tsx
+msgid "Remove {0}? Your friends stay on your friends list."
+msgstr "Remove {0}? Your friends stay on your friends list."
+
 #: components/friends/FriendsList.tsx
 #: components/modal/modals/FriendGroups.tsx
 msgid "Group name"
@@ -5883,6 +5895,16 @@ msgstr "Nobody else is in this call yet."
 #: src/interface/Friends.tsx
 msgid "Nobody here right now!"
 msgstr "Nobody here right now!"
+
+#: components/friends/FriendsList.tsx
+#: components/modal/modals/FriendCategory.tsx
+msgid "Manage category"
+msgstr "Manage category"
+
+#: components/friends/FriendsList.tsx
+#: components/modal/modals/FriendGroups.tsx
+msgid "Remove category"
+msgstr "Remove category"
 
 #: components/friends/FriendsList.tsx
 #: components/friends/FriendsList.tsx
@@ -7460,6 +7482,21 @@ msgstr "Screen position"
 msgid "Screen Share"
 msgstr "Screen Share"
 
+#: components/app/menus/FriendContextMenu.tsx
+msgid "Add to favorites"
+msgstr "Add to favorites"
+
+#: components/app/menus/FriendContextMenu.tsx
+msgid "Remove from favorites"
+msgstr "Remove from favorites"
+
+#: components/app/menus/FriendContextMenu.tsx
+#: components/app/menus/UserContextMenu.tsx
+#: components/friends/FriendsList.tsx
+#: components/friends/FriendsList.tsx
+msgid "Categorize…"
+msgstr "Categorize…"
+
 #: components/modal/modals/ScreenShareSettings.tsx
 #: components/app/interface/settings/user/voice/CameraOptions.tsx
 msgid "Screen Share Settings"
@@ -7543,6 +7580,16 @@ msgstr "Search friends..."
 #: components/friends/FriendsList.tsx
 msgid "Clear search"
 msgstr "Clear search"
+
+#: components/friends/FriendsList.tsx
+#: components/friends/FriendsList.tsx
+msgid "Categories"
+msgstr "Categories"
+
+#: components/friends/FriendsList.tsx
+#: components/modal/modals/FriendGroups.tsx
+msgid "Manage categories"
+msgstr "Manage categories"
 
 #: components/friends/FriendsList.tsx
 msgid "In game"
@@ -9090,6 +9137,43 @@ msgstr "The file \"{0}\" ({fileSize}) exceeds the maximum size limit of {maxSize
 msgid "The forward keeps a copy of the message as it is right now — later edits or deletion of the original won't change it. Encrypted conversations can't receive forwards."
 msgstr "The forward keeps a copy of the message as it is right now — later edits or deletion of the original won't change it. Encrypted conversations can't receive forwards."
 
+#: components/modal/modals/FriendCategory.tsx
+#: components/modal/modals/FriendGroups.tsx
+msgid "Category name"
+msgstr "Category name"
+
+#: components/modal/modals/FriendCategory.tsx
+msgid "Friends in category"
+msgstr "Friends in category"
+
+#: components/modal/modals/FriendCategory.tsx
+msgid "Start typing a name…"
+msgstr "Start typing a name…"
+
+#: components/modal/modals/FriendCategory.tsx
+#: components/modal/modals/FriendGroups.tsx
+msgid "You've reached the limit of 50 categories. Remove one to make room."
+msgstr "You've reached the limit of 50 categories. Remove one to make room."
+
+#: components/modal/modals/FriendCategory.tsx
+#: components/modal/modals/FriendGroups.tsx
+#: components/modal/modals/FriendGroups.tsx
+msgid "Category names need 1 to 40 characters."
+msgstr "Category names need 1 to 40 characters."
+
+#: components/modal/modals/FriendCategory.tsx
+msgid "Couldn't save that category."
+msgstr "Couldn't save that category."
+
+#. placeholder {0}: name()
+#: components/modal/modals/FriendGroups.tsx
+msgid "Categorize {0}"
+msgstr "Categorize {0}"
+
+#: components/modal/modals/FriendGroups.tsx
+msgid "You don't have any categories yet. Create one below to organize your friends."
+msgstr "You don't have any categories yet. Create one below to organize your friends."
+
 #: components/modal/modals/FriendGroups.tsx
 msgid "Manage friend groups"
 msgstr "Manage friend groups"
@@ -9114,6 +9198,15 @@ msgstr "Move up"
 #: components/modal/modals/FriendGroups.tsx
 msgid "Move down"
 msgstr "Move down"
+
+#: components/modal/modals/FriendGroups.tsx
+#: components/modal/modals/FriendGroups.tsx
+msgid "New category name"
+msgstr "New category name"
+
+#: components/modal/modals/FriendGroups.tsx
+msgid "Couldn't create that category."
+msgstr "Couldn't create that category."
 
 #: components/modal/modals/FriendGroups.tsx
 #: components/modal/modals/FriendGroups.tsx
