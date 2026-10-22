@@ -123,8 +123,10 @@ function TauriNative() {
       if (await mainShell.setSystemFrame(!current)) {
         setSystemFrameOn(!current);
       } else {
-        // Show what the shell actually has stored, and say it did not save
-        setSystemFrameOn(await mainShell.systemFrame());
+        // Show what the shell actually has stored, and say it did not save.
+        // A re-read that fails too keeps the previous value: null would
+        // hide the row, and the error with it.
+        setSystemFrameOn((await mainShell.systemFrame()) ?? current);
         setSystemFrameFailed(true);
       }
     } finally {
