@@ -11,7 +11,7 @@ import { i18n } from "@lingui/core";
 import { styled } from "styled-system/jsx";
 
 import { CipherLock } from "@revolt/auth/src/CipherLock";
-import { formatCount } from "@revolt/auth/src/cipherPromo";
+import { formatCount } from "@revolt/auth/src/cipherPromoPolicy";
 import { allowsDonationLinks, useClient } from "@revolt/client";
 import { CONFIGURATION } from "@revolt/common";
 import { useModals } from "@revolt/modal";

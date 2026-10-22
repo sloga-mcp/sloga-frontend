@@ -1,5 +1,5 @@
 // Unit spec for the Cipher promo helpers — run with Node's built-in runner:
-//   node --conditions=browser --test components/auth/src/cipherPromo.test.ts
+//   node --conditions=browser --test components/auth/src/cipherPromoPolicy.test.ts
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
@@ -8,7 +8,7 @@ import {
   CIPHER_URL_PT,
   cipherPromoUrl,
   formatCount,
-} from "./cipherPromo.ts";
+} from "./cipherPromoPolicy.ts";
 
 test("Portuguese locales open the pt-BR Cipher page", () => {
   for (const locale of ["pt_BR", "pt-BR", "pt_PT", "pt-PT", "pt", "PT_br"]) {
