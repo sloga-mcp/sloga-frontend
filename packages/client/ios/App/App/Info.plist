@@ -23,7 +23,7 @@
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
-	<false/>
+	<true/>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSCameraUsageDescription</key>
@@ -34,6 +34,8 @@
 	<string>Sloga saves images you choose to download to your photo library.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Sloga accesses your photo library so you can attach images and videos to messages.</string>
+	<key>SlogaAutumnOrigin</key>
+	<string>$(SLOGA_AUTUMN_ORIGIN)</string>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>

@@ -9,13 +9,32 @@
 /* Begin PBXBuildFile section */
 		2FAD9763203C412B000D30F8 /* config.xml in Resources */ = {isa = PBXBuildFile; fileRef = 2FAD9762203C412B000D30F8 /* config.xml */; };
 		4D22ABE92AF431CB00220026 /* CapApp-SPM in Frameworks */ = {isa = PBXBuildFile; productRef = 4D22ABE82AF431CB00220026 /* CapApp-SPM */; };
+		E2EE00012EA8000000000001 /* SlogaE2ee in Frameworks */ = {isa = PBXBuildFile; productRef = E2EE00022EA8000000000001 /* SlogaE2ee */; };
 		50379B232058CBB4000EE86E /* capacitor.config.json in Resources */ = {isa = PBXBuildFile; fileRef = 50379B222058CBB4000EE86E /* capacitor.config.json */; };
 		504EC3081FED79650016851F /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 504EC3071FED79650016851F /* AppDelegate.swift */; };
 		504EC30D1FED79650016851F /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 504EC30B1FED79650016851F /* Main.storyboard */; };
 		504EC30F1FED79650016851F /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 504EC30E1FED79650016851F /* Assets.xcassets */; };
 		504EC3121FED79650016851F /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 504EC3101FED79650016851F /* LaunchScreen.storyboard */; };
 		50B271D11FEDC1A000F3C39B /* public in Resources */ = {isa = PBXBuildFile; fileRef = 50B271D01FEDC1A000F3C39B /* public */; };
+		E2EE02012EA8000000000001 /* KeychainProtectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2EE01012EA8000000000001 /* KeychainProtectorTests.swift */; };
+		E2EE02022EA8000000000001 /* SchemeHandlerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2EE01022EA8000000000001 /* SchemeHandlerTests.swift */; };
+		E2EE02032EA8000000000001 /* NativeConfirmTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2EE01032EA8000000000001 /* NativeConfirmTests.swift */; };
+		E2EE02042EA8000000000001 /* BridgeGuardTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2EE01042EA8000000000001 /* BridgeGuardTests.swift */; };
+		E2EE02052EA8000000000001 /* StoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2EE01052EA8000000000001 /* StoreTests.swift */; };
+		E2EE02062EA8000000000001 /* CommandTableTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2EE01062EA8000000000001 /* CommandTableTests.swift */; };
+		E2EE02072EA8000000000001 /* TransferTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2EE01072EA8000000000001 /* TransferTests.swift */; };
+		E2EE02082EA8000000000001 /* RecoverySheetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2EE01082EA8000000000001 /* RecoverySheetTests.swift */; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		E2EE001A2EA8000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 504EC2FC1FED79650016851F /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 504EC3031FED79650016851F;
+			remoteInfo = App;
+		};
+/* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		2FAD9762203C412B000D30F8 /* config.xml */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = config.xml; sourceTree = "<group>"; };
@@ -28,6 +47,15 @@
 		504EC3131FED79650016851F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		50B271D01FEDC1A000F3C39B /* public */ = {isa = PBXFileReference; lastKnownFileType = folder; path = public; sourceTree = "<group>"; };
 		958DCC722DB07C7200EA8C5F /* debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = debug.xcconfig; path = ../debug.xcconfig; sourceTree = SOURCE_ROOT; };
+		E2EE01012EA8000000000001 /* KeychainProtectorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainProtectorTests.swift; sourceTree = "<group>"; };
+		E2EE01022EA8000000000001 /* SchemeHandlerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SchemeHandlerTests.swift; sourceTree = "<group>"; };
+		E2EE01032EA8000000000001 /* NativeConfirmTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeConfirmTests.swift; sourceTree = "<group>"; };
+		E2EE01042EA8000000000001 /* BridgeGuardTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeGuardTests.swift; sourceTree = "<group>"; };
+		E2EE01052EA8000000000001 /* StoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StoreTests.swift; sourceTree = "<group>"; };
+		E2EE01062EA8000000000001 /* CommandTableTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandTableTests.swift; sourceTree = "<group>"; };
+		E2EE01072EA8000000000001 /* TransferTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransferTests.swift; sourceTree = "<group>"; };
+		E2EE01082EA8000000000001 /* RecoverySheetTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoverySheetTests.swift; sourceTree = "<group>"; };
+		E2EE00102EA8000000000001 /* AppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -36,6 +64,14 @@
 			buildActionMask = 2147483647;
 			files = (
 				4D22ABE92AF431CB00220026 /* CapApp-SPM in Frameworks */,
+				E2EE00012EA8000000000001 /* SlogaE2ee in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E2EE00142EA8000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -47,6 +83,7 @@
 			children = (
 				958DCC722DB07C7200EA8C5F /* debug.xcconfig */,
 				504EC3061FED79650016851F /* App */,
+				E2EE00112EA8000000000001 /* AppTests */,
 				504EC3051FED79650016851F /* Products */,
 			);
 			sourceTree = "<group>";
@@ -55,6 +92,7 @@
 			isa = PBXGroup;
 			children = (
 				504EC3041FED79650016851F /* App.app */,
+				E2EE00102EA8000000000001 /* AppTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -72,6 +110,22 @@
 				50B271D01FEDC1A000F3C39B /* public */,
 			);
 			path = App;
+			sourceTree = "<group>";
+		};
+		E2EE00112EA8000000000001 /* AppTests */ = {
+			isa = PBXGroup;
+			children = (
+				E2EE01012EA8000000000001 /* KeychainProtectorTests.swift */,
+				E2EE01022EA8000000000001 /* SchemeHandlerTests.swift */,
+				E2EE01032EA8000000000001 /* NativeConfirmTests.swift */,
+				E2EE01042EA8000000000001 /* BridgeGuardTests.swift */,
+				E2EE01052EA8000000000001 /* StoreTests.swift */,
+				E2EE01062EA8000000000001 /* CommandTableTests.swift */,
+				E2EE01072EA8000000000001 /* TransferTests.swift */,
+				E2EE01082EA8000000000001 /* RecoverySheetTests.swift */,
+			);
+			name = AppTests;
+			path = SlogaE2ee/Tests/AppTests;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -92,10 +146,29 @@
 			name = App;
 			packageProductDependencies = (
 				4D22ABE82AF431CB00220026 /* CapApp-SPM */,
+				E2EE00022EA8000000000001 /* SlogaE2ee */,
 			);
 			productName = App;
 			productReference = 504EC3041FED79650016851F /* App.app */;
 			productType = "com.apple.product-type.application";
+		};
+		E2EE00122EA8000000000001 /* AppTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E2EE00162EA8000000000001 /* Build configuration list for PBXNativeTarget "AppTests" */;
+			buildPhases = (
+				E2EE00132EA8000000000001 /* Sources */,
+				E2EE00142EA8000000000001 /* Frameworks */,
+				E2EE00152EA8000000000001 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				E2EE00192EA8000000000001 /* PBXTargetDependency */,
+			);
+			name = AppTests;
+			productName = AppTests;
+			productReference = E2EE00102EA8000000000001 /* AppTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
 		};
 /* End PBXNativeTarget section */
 
@@ -111,6 +184,10 @@
 						LastSwiftMigration = 1100;
 						ProvisioningStyle = Automatic;
 					};
+					E2EE00122EA8000000000001 = {
+						CreatedOnToolsVersion = 26.0;
+						TestTargetID = 504EC3031FED79650016851F;
+					};
 				};
 			};
 			buildConfigurationList = 504EC2FF1FED79650016851F /* Build configuration list for PBXProject "App" */;
@@ -124,12 +201,14 @@
 			mainGroup = 504EC2FB1FED79650016851F;
 			packageReferences = (
 				D4C12C0A2AAA248700AAC8A2 /* XCLocalSwiftPackageReference "CapApp-SPM" */,
+				E2EE00032EA8000000000001 /* XCLocalSwiftPackageReference "SlogaE2ee" */,
 			);
 			productRefGroup = 504EC3051FED79650016851F /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
 				504EC3031FED79650016851F /* App */,
+				E2EE00122EA8000000000001 /* AppTests */,
 			);
 		};
 /* End PBXProject section */
@@ -148,6 +227,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		E2EE00152EA8000000000001 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -159,7 +245,30 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		E2EE00132EA8000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E2EE02012EA8000000000001 /* KeychainProtectorTests.swift in Sources */,
+				E2EE02022EA8000000000001 /* SchemeHandlerTests.swift in Sources */,
+				E2EE02032EA8000000000001 /* NativeConfirmTests.swift in Sources */,
+				E2EE02042EA8000000000001 /* BridgeGuardTests.swift in Sources */,
+				E2EE02052EA8000000000001 /* StoreTests.swift in Sources */,
+				E2EE02062EA8000000000001 /* CommandTableTests.swift in Sources */,
+				E2EE02072EA8000000000001 /* TransferTests.swift in Sources */,
+				E2EE02082EA8000000000001 /* RecoverySheetTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		E2EE00192EA8000000000001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 504EC3031FED79650016851F /* App */;
+			targetProxy = E2EE001A2EA8000000000001 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin PBXVariantGroup section */
 		504EC30B1FED79650016851F /* Main.storyboard */ = {
@@ -299,6 +408,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = M6UUDLK2XQ;
 				CURRENT_PROJECT_VERSION = 2;
+				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
 				INFOPLIST_FILE = App/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -306,6 +416,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 0.58.0;
+				SLOGA_AUTUMN_ORIGIN = "https://app.sloga.gg/media";
 				OTHER_SWIFT_FLAGS = "$(inherited) \"-D\" \"COCOAPODS\" \"-DDEBUG\"";
 				PRODUCT_BUNDLE_IDENTIFIER = gg.sloga.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -323,6 +434,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = M6UUDLK2XQ;
 				CURRENT_PROJECT_VERSION = 2;
+				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
 				INFOPLIST_FILE = App/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -330,11 +442,46 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 0.58.0;
+				SLOGA_AUTUMN_ORIGIN = "https://app.sloga.gg/media";
 				PRODUCT_BUNDLE_IDENTIFIER = gg.sloga.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1";
+			};
+			name = Release;
+		};
+		E2EE00172EA8000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = M6UUDLK2XQ;
+				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				PRODUCT_BUNDLE_IDENTIFIER = gg.sloga.app.AppTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/App.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/App";
+			};
+			name = Debug;
+		};
+		E2EE00182EA8000000000001 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = M6UUDLK2XQ;
+				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				PRODUCT_BUNDLE_IDENTIFIER = gg.sloga.app.AppTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/App.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/App";
 			};
 			name = Release;
 		};
@@ -359,12 +506,25 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		E2EE00162EA8000000000001 /* Build configuration list for PBXNativeTarget "AppTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E2EE00172EA8000000000001 /* Debug */,
+				E2EE00182EA8000000000001 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
 		D4C12C0A2AAA248700AAC8A2 /* XCLocalSwiftPackageReference "CapApp-SPM" */ = {
 			isa = XCLocalSwiftPackageReference;
 			relativePath = "CapApp-SPM";
+		};
+		E2EE00032EA8000000000001 /* XCLocalSwiftPackageReference "SlogaE2ee" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = SlogaE2ee;
 		};
 /* End XCLocalSwiftPackageReference section */
 
@@ -373,6 +533,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = D4C12C0A2AAA248700AAC8A2 /* XCLocalSwiftPackageReference "CapApp-SPM" */;
 			productName = "CapApp-SPM";
+		};
+		E2EE00022EA8000000000001 /* SlogaE2ee */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = E2EE00032EA8000000000001 /* XCLocalSwiftPackageReference "SlogaE2ee" */;
+			productName = SlogaE2ee;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
