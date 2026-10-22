@@ -15,6 +15,7 @@ import "material-symbols";
 import "mdui/mdui.css";
 import { DiscoverableServer, PublicBot, PublicChannelInvite } from "stoat.js";
 
+import { MainTitleBar } from "@revolt/app/interface/desktop/MainTitleBar";
 import FlowCheck from "@revolt/auth/src/flows/FlowCheck";
 import FlowConfirmReset from "@revolt/auth/src/flows/FlowConfirmReset";
 import FlowCreate from "@revolt/auth/src/flows/FlowCreate";
@@ -35,7 +36,7 @@ import {
 } from "@revolt/client";
 import { AndroidBackWorker } from "@revolt/client/AndroidBackWorker";
 import { State } from "@revolt/client/Controller";
-import { IS_OVERLAY_WINDOW } from "@revolt/client/popout";
+import { IS_OVERLAY_WINDOW, IS_POPOUT_WINDOW } from "@revolt/client/popout";
 import { completeStreamLink } from "@revolt/client/streamConnections";
 import { DeviceContext } from "@revolt/common";
 import { normalizeReferralCode } from "@revolt/common/lib/referralCode";
@@ -373,6 +374,26 @@ function MountContext(props: { children?: JSX.Element }) {
       </ModalContext>
     </KeybindContext>
   );
+}
+
+// The main window's own title bar, in its own root (and its own i18n
+// provider, on the same global catalog), so nothing that goes wrong in the
+// app tree can take the window's only title bar down with it. Mounted before
+// the app, so it claims the frame as early as it can. It draws only where
+// the shell built main without an OS title bar (MainTitleBar), never in the
+// voice overlay or the friends popout, which are not the main window.
+if (!IS_OVERLAY_WINDOW && !IS_POPOUT_WINDOW) {
+  const titlebar = document.getElementById("titlebar");
+  if (titlebar) {
+    render(
+      () => (
+        <I18nProvider>
+          <MainTitleBar />
+        </I18nProvider>
+      ),
+      titlebar,
+    );
+  }
 }
 
 render(

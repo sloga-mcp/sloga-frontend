@@ -1,5 +1,5 @@
 import { useWindowCtx } from "@revolt/client/windowCtx";
-import type { JSX } from "solid-js";
+import type { ComponentProps, JSX } from "solid-js";
 import { For, Show } from "solid-js";
 import { Portal } from "solid-js/web";
 import { Motion, Presence } from "solid-motionone";
@@ -122,12 +122,8 @@ export function Dialog(props: Props) {
   );
 }
 
-/**
- * Full-screen scrim shown below dialogs
- *
- * @specification https://m3.material.io/components/dialogs
- */
-Dialog.Scrim = styled("div", {
+/** The scrim's look; use `Dialog.Scrim`, which marks it. */
+const ScrimBase = styled("div", {
   base: {
     top: 0,
     left: 0,
@@ -184,6 +180,18 @@ Dialog.Scrim = styled("div", {
     dark: false,
   },
 });
+
+/**
+ * Full-screen scrim shown below dialogs
+ *
+ * Marked `data-scrim` on every use, so `ui/styles.css` can keep it from
+ * cancelling the desktop main window's title bar drag region.
+ *
+ * @specification https://m3.material.io/components/dialogs
+ */
+Dialog.Scrim = (props: ComponentProps<typeof ScrimBase>) => (
+  <ScrimBase data-scrim="" {...props} />
+);
 
 const Container = styled("div", {
   base: {

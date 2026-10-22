@@ -55,7 +55,8 @@ export type ShellToMain =
   | { kind: "notificationOpen"; path: string }
   | { kind: "toastReply"; toastId: string; text: string }
   | { kind: "toastOpen"; toastId: string }
-  | { kind: "chatWindowState"; label: string; maximized: boolean };
+  | { kind: "chatWindowState"; label: string; maximized: boolean }
+  | { kind: "mainFrameRevoked" };
 
 /**
  * A chat window label the shells hand out: the friends window, or `chat-`
@@ -133,6 +134,10 @@ export function isShellToMain(value: unknown): value is ShellToMain {
         CHAT_WINDOW_LABEL_RE.test(msg.label) &&
         typeof msg.maximized === "boolean"
       );
+    // The Windows shell took main's frame back (its watchdog or a release);
+    // nothing rides along.
+    case "mainFrameRevoked":
+      return hasExactKeys(msg, ["kind"]);
     default:
       return false;
   }

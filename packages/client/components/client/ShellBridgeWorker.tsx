@@ -8,6 +8,7 @@ import { useClient, useClientLifecycle } from ".";
 import { setWindowMaximized } from "../chatWindows/chatWindowFrame";
 import { conversationIdFromPath } from "../chatWindows/dmLinks";
 import { routeConversation } from "../chatWindows/openConversation";
+import { noteRevoked } from "./mainShell";
 import { isShellToMain } from "./shellToMain";
 import { clearAllToasts, useToastShell } from "./toastShell";
 
@@ -28,7 +29,8 @@ type TauriGlobal = {
 /**
  * Receives what the desktop shell asks the main window to do: a click on a
  * desktop notification, a reply typed into (or a click on) the Windows
- * shell's Sloga toast, and a frameless chat window's maximized state.
+ * shell's Sloga toast, a frameless chat window's maximized state, and the
+ * shell taking main's own frame back.
  *
  * Mounted in the main window only. Every input is untrusted until
  * `isShellToMain` accepts it.
@@ -103,6 +105,11 @@ export function ShellBridgeWorker(): JSX.Element | null {
       // title bar shows maximize or restore from this.
       case "chatWindowState":
         setWindowMaximized(message.label, message.maximized);
+        return;
+      // The Windows shell gave main its OS title bar back; ours goes, for
+      // the rest of this page's life.
+      case "mainFrameRevoked":
+        noteRevoked();
         return;
       default: {
         // A kind added to `ShellToMain` without a case here fails to compile

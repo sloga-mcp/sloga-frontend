@@ -8,6 +8,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, interactive-widget=resizes-content">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="theme-color" content="#000000">
+    <!-- Tells the desktop shells this page draws the main window's own title
+         bar (MainTitleBar), so they may build main without an OS one. Read at
+         attribute level (name + content), never as bytes. -->
+    <meta name="sloga-titlebar" content="v1" />
     <link
       rel="icon"
       type="image/svg+xml"
@@ -23,6 +27,9 @@
   <body>
     <noscript>You need to enable JavaScript to run this app.</noscript>
     <div id="root"></div>
+    <!-- Before #floating: drag regions follow document order, so menus in
+         #floating must come later to stay clickable over the title bar. -->
+    <div id="titlebar"></div>
     <div id="floating"></div>
     <script src="/src/index.tsx" type="module"></script>
   </body>

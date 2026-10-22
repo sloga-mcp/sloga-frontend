@@ -1030,6 +1030,18 @@ msgstr "Allow multiple answers"
 msgid "Allow Multiple Instances"
 msgstr "Allow Multiple Instances"
 
+#: components/app/interface/settings/user/Native.tsx
+msgid "Applies after you quit Sloga from the tray and open it again."
+msgstr "Applies after you quit Sloga from the tray and open it again."
+
+#: components/app/interface/settings/user/Native.tsx
+msgid "Could not save this setting. Try again."
+msgstr "Could not save this setting. Try again."
+
+#: components/app/interface/settings/user/Native.tsx
+msgid "Use the Windows title bar"
+msgstr "Use the Windows title bar"
+
 #: components/app/interface/settings/user/bots/ViewBot.tsx
 msgid "Allow others to add your bot to their servers from Discover"
 msgstr "Allow others to add your bot to their servers from Discover"

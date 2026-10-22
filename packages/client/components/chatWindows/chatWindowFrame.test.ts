@@ -1,7 +1,7 @@
 // Unit spec for the chat windows' title bar state. Run with Node's built-in
 // runner from packages/client:
 //   node --test --conditions=browser components/chatWindows/chatWindowFrame.test.ts
-// Declared test count: 22 (the runner also exits 0 when it finds no tests at
+// Declared test count: 27 (the runner also exits 0 when it finds no tests at
 // all, so compare this against its pass count).
 //
 // Focus (plan C7, audit M4): the per-label maximized state the shell pushes
@@ -17,6 +17,14 @@
 // region; which pointer events prove a drag stale; which drag events are
 // files from outside over the window, and what each event a window reports
 // does to the flag (Wave 2 audit m1).
+//
+// Main-titlebar plan M5, M8 (A9, A11): window fullscreen per label (`main`
+// included) is reactive, forgotten with the window, and an `inset` bar drops
+// the traffic lights' space only while its own window is fullscreen;
+// `watchDragFlag` (moved here from ChatWindowsHost so main's bar can use it)
+// listens in the capture phase for exactly DRAG_FLAG_EVENTS and drives the
+// flag through dragFlagAction, and its listeners go with the owner or the
+// returned stop, once.
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 
@@ -31,6 +39,7 @@ const LABELS = ["chat-1", "chat-2", "friends-window"];
 afterEach(() => {
   frame.markTabDragEnd();
   for (const label of LABELS) frame.forgetWindow(label);
+  frame.forgetWindow("main");
 });
 
 /** Every value `read` yields, starting with the current one, until disposed. */
@@ -365,4 +374,162 @@ test("clearStaleTabDrag: clears a live flag and its timer; idle is a no-op", (t)
   frame.clearStaleTabDrag();
   active.dispose();
   assert.deepEqual(active.seen, [false, true, false, true, false]);
+});
+
+test("fullscreen: per label, reactive, a repeated value notifies nobody", () => {
+  for (const label of [...LABELS, "main"]) {
+    assert.equal(frame.windowFullscreen(label), false, label);
+  }
+  const main = watch(() => frame.windowFullscreen("main"));
+  frame.setWindowFullscreen("main", true);
+  frame.setWindowFullscreen("main", true);
+  assert.equal(frame.windowFullscreen("main"), true);
+  assert.equal(frame.windowFullscreen("chat-1"), false);
+  frame.setWindowFullscreen("chat-1", true);
+  frame.setWindowFullscreen("main", false);
+  frame.setWindowFullscreen("main", false);
+  assert.equal(frame.windowFullscreen("chat-1"), true);
+  main.dispose();
+  // One run per real change of main's own value, plus the one chat-1's
+  // change caused (same value).
+  assert.deepEqual(main.seen, [false, true, true, false]);
+  // Maximized and fullscreen are separate.
+  assert.equal(frame.windowMaximized("chat-1"), false);
+});
+
+test("forgetWindow: drops the fullscreen state too", () => {
+  frame.setWindowFullscreen("friends-window", true);
+  frame.setWindowMaximized("friends-window", true);
+  frame.forgetWindow("friends-window");
+  assert.equal(frame.windowFullscreen("friends-window"), false);
+  assert.equal(frame.windowMaximized("friends-window"), false);
+});
+
+test("titleBarLayout: an inset window in fullscreen keeps no traffic-light space", () => {
+  const style = { "padding-left": frame.MAC_INSET_PADDING };
+  const layout = watch(() => frame.titleBarLayout("inset", "chat-1"));
+  frame.setWindowFullscreen("chat-1", true);
+  // Still a bar of ours, never controls; just no inset.
+  assert.deepEqual(frame.titleBarLayout("inset", "chat-1"), {
+    bar: true,
+    controls: false,
+    style: undefined,
+  });
+  // Another window's fullscreen, or no label, keeps the space.
+  assert.deepEqual(frame.titleBarLayout("inset", "chat-2").style, style);
+  assert.deepEqual(frame.titleBarLayout("inset", undefined).style, style);
+  // Only inset changes: buttons and native are as before.
+  assert.deepEqual(frame.titleBarLayout("buttons", "chat-1"), {
+    bar: true,
+    controls: true,
+    style: undefined,
+  });
+  assert.deepEqual(frame.titleBarLayout("native", "chat-1"), {
+    bar: false,
+    controls: false,
+    style: undefined,
+  });
+  frame.setWindowFullscreen("chat-1", false);
+  layout.dispose();
+  assert.deepEqual(
+    layout.seen.map((value) => value.style),
+    [style, undefined, style],
+  );
+  // `main` (the main window's own bar) reads the same map.
+  frame.setWindowFullscreen("main", true);
+  assert.equal(frame.titleBarLayout("inset", "main").style, undefined);
+});
+
+/** A document stand-in that records its listeners. */
+function fakeDoc(opts: { throwOnRemove?: boolean } = {}) {
+  type Entry = { type: string; fn: (e: Event) => void; opts: unknown };
+  const added: Entry[] = [];
+  const removed: Entry[] = [];
+  const doc = {
+    addEventListener: (
+      type: string,
+      fn: (e: Event) => void,
+      options: unknown,
+    ) => added.push({ type, fn, opts: options }),
+    removeEventListener: (
+      type: string,
+      fn: (e: Event) => void,
+      options: unknown,
+    ) => {
+      if (opts.throwOnRemove) throw new Error("window closed");
+      removed.push({ type, fn, opts: options });
+    },
+  };
+  const fire = (event: Record<string, unknown>) => {
+    for (const entry of added) {
+      if (entry.type === event.type) entry.fn(event as unknown as Event);
+    }
+  };
+  return { doc: doc as unknown as Document, added, removed, fire };
+}
+
+test("watchDragFlag: capture listeners for exactly DRAG_FLAG_EVENTS, driving the flag", () => {
+  const { doc, added, removed, fire } = fakeDoc();
+  const stop = frame.watchDragFlag(doc);
+  assert.deepEqual(
+    added.map((entry) => entry.type).sort(),
+    [...frame.DRAG_FLAG_EVENTS].sort(),
+  );
+  for (const entry of added) {
+    assert.deepEqual(entry.opts, { capture: true, passive: true });
+  }
+
+  const files = { types: ["Files"] };
+  fire({ type: "dragenter", dataTransfer: files, buttons: 1 });
+  assert.equal(frame.tabDragActive(), true, "files over the window");
+  fire({ type: "drop", dataTransfer: files, buttons: 0 });
+  assert.equal(frame.tabDragActive(), false, "dropped");
+  frame.markTabDragStart();
+  fire({ type: "pointermove", buttons: 0 });
+  assert.equal(frame.tabDragActive(), false, "a stale flag survived");
+  frame.markTabDragStart();
+  fire({ type: "dragover", dataTransfer: { types: ["text/plain"] } });
+  assert.equal(frame.tabDragActive(), true, "a tab drag's dragover ended it");
+
+  // The stop removes the same listeners with the same options, once.
+  stop();
+  stop();
+  assert.equal(removed.length, added.length);
+  for (const entry of added) {
+    assert.ok(
+      removed.some(
+        (gone) =>
+          gone.type === entry.type &&
+          gone.fn === entry.fn &&
+          JSON.stringify(gone.opts) === JSON.stringify(entry.opts),
+      ),
+      entry.type,
+    );
+  }
+});
+
+test("watchDragFlag: listeners go with the owner; a closed window's throw is swallowed", () => {
+  const owned = fakeDoc();
+  const dispose = createRoot((dispose) => {
+    frame.watchDragFlag(owned.doc);
+    return dispose;
+  });
+  assert.equal(owned.removed.length, 0);
+  dispose();
+  assert.equal(owned.removed.length, frame.DRAG_FLAG_EVENTS.length);
+
+  // An owner and the stop both: removed once.
+  const both = fakeDoc();
+  let stop!: () => void;
+  const disposeBoth = createRoot((dispose) => {
+    stop = frame.watchDragFlag(both.doc);
+    return dispose;
+  });
+  stop();
+  disposeBoth();
+  assert.equal(both.removed.length, frame.DRAG_FLAG_EVENTS.length);
+
+  const closed = fakeDoc({ throwOnRemove: true });
+  const closedStop = frame.watchDragFlag(closed.doc);
+  assert.doesNotThrow(closedStop);
 });

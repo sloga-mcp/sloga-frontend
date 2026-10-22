@@ -416,11 +416,13 @@ const Sheet = styled("div", {
  * Fixed to the top-centre of the viewport, above the call card's own float
  * layer. These panels must be reachable from anywhere in the app, so they
  * cannot be laid out inside anything that scrolls or unmounts with a route.
+ * Kept below the desktop main window's own title bar (`--titlebar-height`,
+ * 0 without one), which paints over everything else at the top edge.
  */
 const Stack = styled("div", {
   base: {
     position: "fixed",
-    top: "var(--gap-lg)",
+    top: "calc(var(--gap-lg) + var(--titlebar-height, 0px))",
     left: "50%",
     transform: "translateX(-50%)",
     zIndex: 200,

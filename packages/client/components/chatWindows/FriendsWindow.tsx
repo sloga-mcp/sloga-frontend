@@ -34,8 +34,9 @@ import { routeConversation } from "./openConversation";
  *
  * In a window without an OS title bar (frame `buttons` or `inset`) a bar of
  * its own sits on top: a caption region (`data-app-region`, see
- * `ui/styles.css`) titled "Friends", with the window controls on `buttons`
- * and the traffic lights' corner kept clear on `inset` (`titleBarLayout`).
+ * `ui/styles.css`) titled "Friends" in its center, with the window controls
+ * on `buttons` and the traffic lights' corner kept clear on `inset`
+ * (`titleBarLayout`).
  * Like the chat windows' bars it turns no-drag while a drag is live, so
  * files dragged in from outside are not refused over it.
  */
@@ -95,17 +96,20 @@ export function FriendsWindow(props: {
         <div
           class={titleBar()}
           data-app-region={spacerRegion(tabDragActive())}
-          style={{ height: `${TITLEBAR_HEIGHT}px`, ...layout().style }}
+          style={{ height: `${TITLEBAR_HEIGHT}px` }}
         >
+          <div class={barSide()} style={layout().style} />
           <span class={titleText()}>{t`Friends`}</span>
-          <Show when={layout().controls && props.shellLabel}>
-            {(label) => (
-              <WindowControls
-                label={label()}
-                onClose={() => setFriendsOpen(false)}
-              />
-            )}
-          </Show>
+          <div class={barSide({ end: true })}>
+            <Show when={layout().controls && props.shellLabel}>
+              {(label) => (
+                <WindowControls
+                  label={label()}
+                  onClose={() => setFriendsOpen(false)}
+                />
+              )}
+            </Show>
+          </div>
         </div>
       </Show>
       <div class={top()}>
@@ -133,20 +137,44 @@ const column = cva({
   },
 });
 
-/** The window's own title bar; its height is `TITLEBAR_HEIGHT`. */
+/**
+ * The window's own title bar; its height is `TITLEBAR_HEIGHT`. The same grid
+ * as main's (MainTitleBar): the side columns share the free space equally,
+ * so the title sits on the window's center while there is room and moves
+ * aside (then ellipsizes) when there is not. Left to right whatever the
+ * page's direction, as the traffic lights and the controls are physical
+ * places.
+ */
 const titleBar = cva({
+  base: {
+    display: "grid",
+    gridTemplateColumns:
+      "minmax(max-content, 1fr) minmax(0, max-content) minmax(max-content, 1fr)",
+    alignItems: "stretch",
+    direction: "ltr",
+    flexShrink: 0,
+    userSelect: "none",
+  },
+});
+
+/** A side column: the traffic lights' space, or the window controls. */
+const barSide = cva({
   base: {
     display: "flex",
     alignItems: "stretch",
-    flexShrink: 0,
-    paddingInlineStart: "var(--gap-md)",
-    userSelect: "none",
+    minWidth: 0,
+  },
+  variants: {
+    end: {
+      true: {
+        justifyContent: "flex-end",
+      },
+    },
   },
 });
 
 const titleText = cva({
   base: {
-    flexGrow: 1,
     minWidth: 0,
     alignSelf: "center",
     overflow: "hidden",

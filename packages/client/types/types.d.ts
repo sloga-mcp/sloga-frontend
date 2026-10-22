@@ -107,6 +107,24 @@ declare global {
        * toast replies and opens). Payloads are untrusted until validated.
        * Returns the unsubscribe. */
       onShellToMain?(callback: (message: unknown) => void): () => void;
+      /** Window frames (main window only; absent on the overlay window and
+       * on preloads that predate them). `main` is what the shell built main
+       * with: `"inset"` is the macOS hidden-inset title bar, anything else
+       * the OS frame. `state(label)` resolves `label`'s window fullscreen
+       * (`"main"`, `"friends-window"` or `"chat-N"`) and never rejects;
+       * `onState` delivers `{ kind: "windowFrameState", label, fullscreen }`
+       * on every change for the hidden-inset windows and returns the
+       * unsubscribe. Read through `mainShell`, which validates everything,
+       * as an older or broken preload may hand back anything. */
+      windowFrame?: {
+        main: "inset" | "native";
+        state(
+          label: string,
+        ): Promise<
+          { ok: true; fullscreen: boolean } | { ok: false; err: string }
+        >;
+        onState(callback: (payload: unknown) => void): () => void;
+      };
     };
   }
 }
