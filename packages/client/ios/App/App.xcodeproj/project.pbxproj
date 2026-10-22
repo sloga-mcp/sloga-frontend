@@ -23,6 +23,7 @@
 		E2EE02052EA8000000000001 /* StoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2EE01052EA8000000000001 /* StoreTests.swift */; };
 		E2EE02062EA8000000000001 /* CommandTableTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2EE01062EA8000000000001 /* CommandTableTests.swift */; };
 		E2EE02072EA8000000000001 /* TransferTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2EE01072EA8000000000001 /* TransferTests.swift */; };
+		E2EE02082EA8000000000001 /* RecoverySheetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2EE01082EA8000000000001 /* RecoverySheetTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -53,6 +54,7 @@
 		E2EE01052EA8000000000001 /* StoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StoreTests.swift; sourceTree = "<group>"; };
 		E2EE01062EA8000000000001 /* CommandTableTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandTableTests.swift; sourceTree = "<group>"; };
 		E2EE01072EA8000000000001 /* TransferTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransferTests.swift; sourceTree = "<group>"; };
+		E2EE01082EA8000000000001 /* RecoverySheetTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoverySheetTests.swift; sourceTree = "<group>"; };
 		E2EE00102EA8000000000001 /* AppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -120,6 +122,7 @@
 				E2EE01052EA8000000000001 /* StoreTests.swift */,
 				E2EE01062EA8000000000001 /* CommandTableTests.swift */,
 				E2EE01072EA8000000000001 /* TransferTests.swift */,
+				E2EE01082EA8000000000001 /* RecoverySheetTests.swift */,
 			);
 			name = AppTests;
 			path = SlogaE2ee/Tests/AppTests;
@@ -253,6 +256,7 @@
 				E2EE02052EA8000000000001 /* StoreTests.swift in Sources */,
 				E2EE02062EA8000000000001 /* CommandTableTests.swift in Sources */,
 				E2EE02072EA8000000000001 /* TransferTests.swift in Sources */,
+				E2EE02082EA8000000000001 /* RecoverySheetTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

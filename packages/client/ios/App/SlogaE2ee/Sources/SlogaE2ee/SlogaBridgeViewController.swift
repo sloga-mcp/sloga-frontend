@@ -8,8 +8,9 @@
 //     final, and WKWebView refuses handlers for http/https);
 //   - the main-frame bridge guard, and the E2ee plugin ONLY when the guard
 //     is in place;
-//   - teardown of any open consent dialog or recovery sheet whenever the
-//     main frame starts loading a new page;
+//   - teardown of any open consent dialog, save folder picker and
+//     not-yet-minting recovery sheet whenever the main frame starts loading
+//     a new page;
 //   - backup exclusion of `Library/WebKit`, once per process.
 //
 // It never constructs the engine and never calls into it: the engine is
@@ -73,16 +74,22 @@ open class SlogaBridgeViewController: CAPBridgeViewController {
         // reload Capacitor issues after the web content process dies) means
         // the page that asked for an open dialog or recovery sheet is gone.
         // Decline and dismiss them, so a tap can never commit a wipe,
-        // downgrade, verify or backup for a caller that no longer exists.
+        // downgrade, verify or save for a caller that no longer exists.
+        // A recovery sheet that has started minting or restoring is the one
+        // exception and stays up (RecoverySheet.teardownForNavigation): core
+        // has already stored the new backup state, so the code must still be
+        // shown and the bundle couriered when the sheet closes (F3), or a
+        // rotate would silently break the user's saved code.
         // Acting on every notification whose new value is true (not only a
         // false-to-true change) errs toward declining, which is the safe side.
-        // Both calls are safe from any thread and never wait on main.
+        // All three calls are safe from any thread and never wait on main.
         loadingObservation = webView?.observe(\.isLoading, options: [.new]) { _, change in
             guard change.newValue == true else {
                 return
             }
             NativeConfirmPresenter.shared.declineAll()
-            RecoverySheet.teardown()
+            RecoverySheet.teardownForNavigation()
+            AttachmentTransfer.teardownForNavigation()
         }
 
         // IndexedDB drafts and the outbox can hold E2EE plaintext; an iCloud or

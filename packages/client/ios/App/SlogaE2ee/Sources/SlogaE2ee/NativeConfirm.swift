@@ -4,7 +4,8 @@
 //
 // The core's adapter treats only `Ok(true)` as consent, so every path here
 // that is not a deliberate tap on the confirm button answers `false`: bad
-// copy, a busy slot, a failed presentation, teardown, timeout.
+// copy, a busy slot, a failed presentation, teardown, timeout, and the
+// alert being removed from outside (someone dismissing what it sits on).
 //
 // Threading: `confirm` runs on the engine-calling thread (never main), hops
 // to main with `DispatchQueue.main.async` to present, and waits on a
@@ -73,18 +74,83 @@ private enum ConsentTone {
     case info
 }
 
+/// How long after the alert leaves the screen an unanswered request is
+/// declined. A button tap also takes the alert off screen, and UIKit runs the
+/// action's handler only when that dismissal completes, after
+/// `viewDidDisappear`; the grace lets the tap's own answer land first. Should
+/// a handler ever come later than this, the tap counts as a decline.
+private let removalGrace: TimeInterval = 0.25
+
+/// How often a covered (or not frontmost) alert is looked at again before its
+/// confirm may be enabled.
+private let coveredRecheck: TimeInterval = 0.1
+
+/// The alert actually shown. It reports its own appearance changes, so a
+/// dismissal from outside (another presenter dismissing what it presented)
+/// still answers, and a re-appearance restarts the confirm delay.
+private final class ConsentAlertController: UIAlertController {
+    weak var session: ConsentSession?
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        session?.restartEnableGuard()
+    }
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        // Covered by a full-screen presentation: still ours, not an answer.
+        // Removed (being dismissed, or no presenter any more): the caller
+        // must not wait out the timeout, which would also keep core's
+        // consent latch busy and turn every other prompt into a decline.
+        if isBeingDismissed || presentingViewController == nil {
+            session?.alertRemoved()
+        }
+    }
+
+    override func present(
+        _ viewControllerToPresent: UIViewController,
+        animated flag: Bool,
+        completion: (() -> Void)? = nil
+    ) {
+        // Something is about to cover the alert; a sheet over it gives the
+        // alert no appearance callbacks, so the guard starts over now.
+        session?.restartEnableGuard()
+        super.present(viewControllerToPresent, animated: flag, completion: completion)
+    }
+}
+
+/// Whether the app is frontmost, as told by the resign/become-active
+/// notifications this presenter observes (main thread only). Starts true: a
+/// presenter is first used from a live session, and any later trip to the
+/// background is reported to it.
+private final class ForegroundState: @unchecked Sendable {
+    var resigned = false
+}
+
 /// One consent request, from the slot being taken to its answer. `settlement`
 /// is thread-safe; every other field is touched on the main thread only.
 private final class ConsentSession: @unchecked Sendable {
     let settlement = ConsentSettlement()
+    let enableDelay: TimeInterval
+    private let foreground: ForegroundState
 
-    var alert: UIAlertController?
+    var alert: ConsentAlertController?
     var confirmAction: UIAlertAction?
     /// The present completion ran: the alert is on screen.
     var presented = false
     /// A settle arrived while the presentation was still animating in; UIKit
     /// ignores a dismiss issued mid-presentation, so the completion does it.
     var dismissWhenPresented = false
+    /// Bumped on every restart, so only the newest scheduled check can enable.
+    private var guardGeneration = 0
+    /// A check found the alert covered or the app not frontmost; once it is
+    /// visible again the full delay runs again before confirm is enabled.
+    private var hiddenDuringGuard = false
+
+    init(enableDelay: TimeInterval, foreground: ForegroundState) {
+        self.enableDelay = enableDelay
+        self.foreground = foreground
+    }
 
     var isSettled: Bool {
         settlement.wait(timeout: 0) != nil
@@ -129,12 +195,80 @@ private final class ConsentSession: @unchecked Sendable {
         confirmAction = nil
     }
 
-    /// Lift the anti-tap-jacking delay, unless the dialog already ended.
-    @MainActor func enableConfirm() {
+    /// The alert left the screen without our dismissal. Decline it unless a
+    /// button handler answers within the grace.
+    @MainActor func alertRemoved() {
+        guard !isSettled else {
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + removalGrace) { [self] in
+            MainActor.assumeIsolated {
+                if !isSettled {
+                    settle(false)
+                }
+            }
+        }
+    }
+
+    /// Disable confirm and start the anti-tap-jacking delay over: on first
+    /// appearance, on every re-appearance, when something is presented over
+    /// the alert, and when the app becomes active again. The user must have
+    /// had the alert in view for the whole delay before confirm works.
+    @MainActor func restartEnableGuard() {
         guard !isSettled, let action = confirmAction else {
             return
         }
+        guardGeneration &+= 1
+        hiddenDuringGuard = false
+        action.isEnabled = false
+        scheduleEnableCheck(guardGeneration, after: enableDelay)
+    }
+
+    @MainActor private func scheduleEnableCheck(_ generation: Int, after delay: TimeInterval) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [self] in
+            MainActor.assumeIsolated {
+                enableCheck(generation)
+            }
+        }
+    }
+
+    /// Lift the delay, unless the dialog already ended, a newer restart owns
+    /// it, or the alert is not actually in view right now.
+    @MainActor private func enableCheck(_ generation: Int) {
+        guard generation == guardGeneration, !isSettled, let alert = alert, let action = confirmAction else {
+            return
+        }
+        if !isInView(alert) {
+            hiddenDuringGuard = true
+            scheduleEnableCheck(generation, after: coveredRecheck)
+            return
+        }
+        if hiddenDuringGuard {
+            restartEnableGuard()
+            return
+        }
         action.isEnabled = true
+    }
+
+    /// On screen and frontmost, judged only from what this code observes: the
+    /// alert's view is in a window (a full-screen cover takes it out), nothing
+    /// is presented over it (a sheet), it is not leaving, and the app has not
+    /// resigned active since it last became active.
+    @MainActor private func isInView(_ alert: UIAlertController) -> Bool {
+        alert.viewIfLoaded?.window != nil
+            && alert.presentedViewController == nil
+            && !alert.isBeingDismissed
+            && !foreground.resigned
+    }
+
+    /// The app is leaving the foreground: confirm goes dark at once, so the
+    /// first touch after returning cannot land on it.
+    @MainActor func disableUntilActive() {
+        guard !isSettled, let action = confirmAction else {
+            return
+        }
+        action.isEnabled = false
+        hiddenDuringGuard = true
     }
 }
 
@@ -151,7 +285,8 @@ final class NativeConfirmPresenter: NativeConfirm, @unchecked Sendable {
     private let lock = NSLock()
     private var current: ConsentSession?
 
-    private var terminateObserver: NSObjectProtocol?
+    private var observers: [NSObjectProtocol] = []
+    private let foreground = ForegroundState()
 
     /// `presenter` is called on the main thread; nil means presentation failure (answer false).
     init(
@@ -164,17 +299,55 @@ final class NativeConfirmPresenter: NativeConfirm, @unchecked Sendable {
         self.timeout = boundedInterval(timeout, fallback: 600)
         // No scene delegate, so app exit is the only teardown UIKit reports
         // to us; a dialog must not outlive the process's caller (D1).
-        terminateObserver = NotificationCenter.default.addObserver(
+        let center = NotificationCenter.default
+        observers.append(center.addObserver(
             forName: UIApplication.willTerminateNotification,
             object: nil,
             queue: nil
         ) { [weak self] _ in
             self?.declineAll()
-        }
+        })
+        // Backgrounding, the app switcher or a system overlay hides the alert
+        // without any appearance callback; the confirm delay must not run
+        // out unseen, so it goes dark on resign and starts over on return.
+        observers.append(center.addObserver(
+            forName: UIApplication.willResignActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self else {
+                return
+            }
+            self.foreground.resigned = true
+            guard let session = self.currentSession() else {
+                return
+            }
+            MainActor.assumeIsolated {
+                session.disableUntilActive()
+            }
+        })
+        observers.append(center.addObserver(
+            forName: UIApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self else {
+                return
+            }
+            self.foreground.resigned = false
+            guard let session = self.currentSession() else {
+                return
+            }
+            MainActor.assumeIsolated {
+                if session.presented {
+                    session.restartEnableGuard()
+                }
+            }
+        })
     }
 
     deinit {
-        if let observer = terminateObserver {
+        for observer in observers {
             NotificationCenter.default.removeObserver(observer)
         }
     }
@@ -189,7 +362,7 @@ final class NativeConfirmPresenter: NativeConfirm, @unchecked Sendable {
             return false
         }
 
-        let session = ConsentSession()
+        let session = ConsentSession(enableDelay: enableDelay, foreground: foreground)
         lock.lock()
         if current != nil {
             lock.unlock()
@@ -231,10 +404,7 @@ final class NativeConfirmPresenter: NativeConfirm, @unchecked Sendable {
     /// Dismiss the open consent alert (if any) and answer it false. Any thread; never blocks
     /// waiting on main.
     func declineAll() {
-        lock.lock()
-        let session = current
-        lock.unlock()
-        guard let session = session else {
+        guard let session = currentSession() else {
             return
         }
         // Settle here, not on main: the waiting caller is released at once
@@ -246,6 +416,11 @@ final class NativeConfirmPresenter: NativeConfirm, @unchecked Sendable {
                 session.dismissIfNeeded()
             }
         }
+    }
+
+    /// Thread-safe: true while a request holds the one slot (pending or presented).
+    var isBusy: Bool {
+        currentSession() != nil
     }
 
     /// Main thread only: the top-most view controller of the key window, or nil.
@@ -271,10 +446,7 @@ final class NativeConfirmPresenter: NativeConfirm, @unchecked Sendable {
     /// Main thread only. TEST HOOK: the alert currently presented by this instance.
     var presentedAlertForTesting: UIAlertController? {
         dispatchPrecondition(condition: .onQueue(.main))
-        lock.lock()
-        let session = current
-        lock.unlock()
-        guard let session = session else {
+        guard let session = currentSession() else {
             return nil
         }
         return MainActor.assumeIsolated {
@@ -291,10 +463,7 @@ final class NativeConfirmPresenter: NativeConfirm, @unchecked Sendable {
     /// Like a real tap, a confirm during the `enableDelay` window is ignored.
     func completeForTesting(confirmed: Bool) {
         dispatchPrecondition(condition: .onQueue(.main))
-        lock.lock()
-        let session = current
-        lock.unlock()
-        guard let session = session else {
+        guard let session = currentSession() else {
             return
         }
         MainActor.assumeIsolated {
@@ -303,6 +472,12 @@ final class NativeConfirmPresenter: NativeConfirm, @unchecked Sendable {
     }
 
     // MARK: - Private
+
+    private func currentSession() -> ConsentSession? {
+        lock.lock()
+        defer { lock.unlock() }
+        return current
+    }
 
     private static func renderableTone(_ req: ConfirmPayload) -> ConsentTone? {
         for text in [req.title, req.message, req.confirmLabel, req.cancelLabel]
@@ -345,7 +520,8 @@ final class NativeConfirmPresenter: NativeConfirm, @unchecked Sendable {
             return
         }
 
-        let alert = UIAlertController(title: req.title, message: req.message, preferredStyle: .alert)
+        let alert = ConsentAlertController(title: req.title, message: req.message, preferredStyle: .alert)
+        alert.session = session
         let cancel = UIAlertAction(title: req.cancelLabel, style: .cancel) { _ in
             MainActor.assumeIsolated {
                 session.buttonPressed(confirmed: false)
@@ -357,9 +533,9 @@ final class NativeConfirmPresenter: NativeConfirm, @unchecked Sendable {
                 session.buttonPressed(confirmed: true)
             }
         }
-        // Disabled until `enableDelay` after the alert is on screen, so a tap
-        // aimed at what was under it, or timed to its arrival, cannot consent
-        // (Android's 700 ms guard).
+        // Disabled until the alert has been in view for `enableDelay`, so a
+        // tap aimed at what was under it, or timed to its arrival or its
+        // re-appearance, cannot consent (Android's 700 ms guard).
         confirm.isEnabled = false
         alert.addAction(cancel)
         alert.addAction(confirm)
@@ -368,7 +544,6 @@ final class NativeConfirmPresenter: NativeConfirm, @unchecked Sendable {
         session.alert = alert
         session.confirmAction = confirm
 
-        let delay = enableDelay
         host.present(alert, animated: true) {
             MainActor.assumeIsolated {
                 session.presented = true
@@ -376,11 +551,7 @@ final class NativeConfirmPresenter: NativeConfirm, @unchecked Sendable {
                     session.dismissIfNeeded()
                     return
                 }
-                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                    MainActor.assumeIsolated {
-                        session.enableConfirm()
-                    }
-                }
+                session.restartEnableGuard()
             }
         }
 

@@ -1,5 +1,6 @@
 // TransferTests.swift: IE Wave 3 lane T7. D6 native ciphertext transfer:
-// the Autumn host pin, refused redirects, header checks and the fetch cap.
+// the Autumn host pin, refused redirects, header checks (incl. the authHeader
+// allowlist) and the fetch cap.
 //
 // Every request AttachmentTransfer makes goes through T7ScriptedProtocol
 // (installed via `AttachmentTransfer.protocolClassesForTesting`), which
@@ -445,12 +446,68 @@ final class TransferTests: XCTestCase {
         XCTAssertNil(sent.value("Cookie"), "the fetch carried a Cookie header")
     }
 
-    func testFetchAcceptsA64ByteHeaderName() {
-        let header = String(repeating: "C", count: 64)
-        assertResolved(fetch(t7Pin + "/e2ee/T7h64", header: header), "pending", "64-byte header name")
-        let requests = T7Log.shared.requests
-        XCTAssertEqual(requests.count, 1)
-        XCTAssertEqual(requests.first?.value(header), t7Value)
+    // MARK: authHeader allowlist (audit n3)
+
+    /// Exactly the names stoat.js's `client.authenticationHeader` returns
+    /// (stoat.js 3f65a1e5 src/Client.ts:789-792), in any ASCII case.
+    func testAllowlistedAuthHeadersAreSentInAnyCase() {
+        let accepted: [(sent: String, canonical: String)] = [
+            ("X-Session-Token", "X-Session-Token"),
+            ("x-session-token", "X-Session-Token"),
+            ("X-SESSION-TOKEN", "X-Session-Token"),
+            ("x-SeSsIoN-tOkEn", "X-Session-Token"),
+            ("X-Bot-Token", "X-Bot-Token"),
+            ("x-bot-token", "X-Bot-Token"),
+            ("X-BOT-TOKEN", "X-Bot-Token"),
+        ]
+        for (index, entry) in accepted.enumerated() {
+            T7Log.shared.reset()
+            assertResolved(fetch(t7Pin + "/e2ee/T7allow\(index)", header: entry.sent), "pending", "header \(entry.sent)")
+            let requests = T7Log.shared.requests
+            XCTAssertEqual(requests.count, 1, "header \(entry.sent)")
+            XCTAssertEqual(requests.first?.value(entry.canonical), t7Value, "header \(entry.sent)")
+            let other = entry.canonical == "X-Bot-Token" ? "X-Session-Token" : "X-Bot-Token"
+            XCTAssertNil(requests.first?.value(other), "header \(entry.sent) also sent as \(other)")
+        }
+    }
+
+    /// Anything else is refused before a request exists: the token must not
+    /// be aimable at Host, Authorization, Cookie or any other header.
+    func testNonAllowlistedAuthHeadersAreRefusedBeforeAnyRequest() {
+        let refused = [
+            "Host",
+            "host",
+            "Authorization",
+            "Cookie",
+            "Set-Cookie",
+            "Proxy-Authorization",
+            "Content-Type",
+            "Content-Length",
+            "Transfer-Encoding",
+            "Connection",
+            "Origin",
+            "Referer",
+            "X-Forwarded-For",
+            "X-Session",
+            "Session-Token",
+            "X-Session-Token2",
+            "X-Session-Tokens",
+            "XX-Session-Token",
+            "X-Bot-Token-",
+            "-X-Bot-Token",
+            "X-Bot",
+            "X_Session_Token",
+            "XSessionToken",
+            String(repeating: "C", count: 64),
+            // The Kelvin sign lowercases to an ASCII "k".
+            "X-Bot-To\u{212A}en",
+            "X-Session-To\u{212A}en",
+        ]
+        for header in refused {
+            assertRejected(fetch(t7Pin + "/e2ee/abcDEF123", header: header), field: "authHeader", "fetch header \(header.debugDescription)")
+            assertRejected(upload(t7Pin + "/e2ee", header: header), field: "authHeader", "upload header \(header.debugDescription)")
+        }
+        XCTAssertEqual(T7Log.shared.requests.count, 0, "a refused auth header produced a request")
     }
 
     func testFetchNon200StatusesStayPending() {

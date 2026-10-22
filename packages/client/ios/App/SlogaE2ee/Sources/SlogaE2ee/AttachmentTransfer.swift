@@ -17,7 +17,7 @@ enum AttachmentTransfer {
     static func upload(localId: String, url: String, authHeader: String, authValue: String, recipientsJson: String) throws -> String {
         dispatchPrecondition(condition: .notOnQueue(.main))
         let target = try allowedURL(url, blob: false)
-        try validateAuth(header: authHeader, value: authValue)
+        let headerName = try validateAuth(header: authHeader, value: authValue)
         let engine = try E2eeRuntime.shared.engine()
         return try E2eeRuntime.shared.withBackgroundTask("gg.sloga.e2ee.attachment-upload") { () throws -> String in
             dispatchPrecondition(condition: .notOnQueue(.main))
@@ -30,7 +30,7 @@ enum AttachmentTransfer {
                 throw E2eeReject.invalidArgument("recipientsJson")
             }
 
-            var request = autumnRequest(target, authHeader: authHeader, authValue: authValue)
+            var request = autumnRequest(target, authHeader: headerName, authValue: authValue)
             request.httpMethod = "POST"
             request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
             let body = multipartBody(boundary: boundary, ciphertext: ciphertext, recipientsJson: recipientsJson)
@@ -53,11 +53,11 @@ enum AttachmentTransfer {
     static func fetch(localId: String, url: String, authHeader: String, authValue: String) throws -> String {
         dispatchPrecondition(condition: .notOnQueue(.main))
         let target = try allowedURL(url, blob: true)
-        try validateAuth(header: authHeader, value: authValue)
+        let headerName = try validateAuth(header: authHeader, value: authValue)
         let engine = try E2eeRuntime.shared.engine()
         return try E2eeRuntime.shared.withBackgroundTask("gg.sloga.e2ee.attachment-fetch") { () throws -> String in
             dispatchPrecondition(condition: .notOnQueue(.main))
-            var request = autumnRequest(target, authHeader: authHeader, authValue: authValue)
+            var request = autumnRequest(target, authHeader: headerName, authValue: authValue)
             request.httpMethod = "GET"
 
             switch perform(request, uploadBody: nil, cap: fetchCiphertextCap) {
@@ -117,11 +117,15 @@ enum AttachmentTransfer {
     /// Resolves "true" (written) or "false" (the user cancelled).
     static func save(messageId: String, idx: UInt32) throws -> String {
         dispatchPrecondition(condition: .notOnQueue(.main))
-        // One picker at a time: a webview cannot stack save dialogs.
-        guard saveGate.enter() else {
+        // One save at a time: a webview cannot stack save dialogs.
+        guard let session = saveGate.enter() else {
             throw busy
         }
-        defer { saveGate.leave() }
+        defer { saveGate.leave(session) }
+        // Never queue behind, or stack on top of, another consent dialog.
+        if NativeConfirmPresenter.shared.isBusy {
+            throw busy
+        }
 
         let engine = try E2eeRuntime.shared.engine()
         // Metadata only: checks the ids and that the attachment is ready.
@@ -131,7 +135,27 @@ enum AttachmentTransfer {
             return try engine.attachmentExportName(messageId: messageId, idx: idx)
         }
 
-        guard let folder = try pickFolder() else {
+        // The consent names the file. The webview picks the (messageId, idx),
+        // and the folder picker shows no name, so without this a compromised
+        // webview could save a different attachment than the one tapped.
+        let consent = ConfirmPayload(
+            title: "Save attachment?",
+            message: "\u{201C}\(name)\u{201D} will be decrypted and saved to the folder you choose.",
+            confirmLabel: "Choose folder",
+            cancelLabel: "Cancel",
+            kind: "info",
+            defaultButton: "cancel"
+        )
+        // A navigation teardown settles the session; checked on both sides
+        // of the consent so a torn-down save shows nothing further.
+        guard !session.outcome.isSettled,
+              try NativeConfirmPresenter.shared.confirm(req: consent),
+              !session.outcome.isSettled
+        else {
+            return "false"
+        }
+
+        guard let folder = try pickFolder(session) else {
             return "false"
         }
 
@@ -201,6 +225,23 @@ enum AttachmentTransfer {
     /// TEST SEAM: URLProtocol classes prepended to the ephemeral session configuration.
     static var protocolClassesForTesting: [AnyClass]? = nil
 
+    /// Main-frame load: dismiss an open folder picker as a cancel (the save
+    /// resolves "false"), and stop a save between its consent and its picker
+    /// from showing one. A write already under way finishes: the user chose
+    /// that folder. Any thread; never waits on main.
+    static func teardownForNavigation() {
+        guard let session = saveGate.current() else {
+            return
+        }
+        // Settle here, not on main, so the waiting save is released at once.
+        session.outcome.settle(nil)
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                session.handle.dismissAndRelease()
+            }
+        }
+    }
+
     // MARK: - Limits and fixed answers
 
     /// Upload response: a tiny `{id}`.
@@ -210,6 +251,10 @@ enum AttachmentTransfer {
     private static let pasteboardLifetime: TimeInterval = 120
     /// A picker nobody answers stops holding the save slot after this long.
     private static let pickerTimeout: TimeInterval = 600
+    /// How long the picker waits for the consent alert's dismissal to finish
+    /// (40 x 50 ms) before treating the screen as busy.
+    private static let pickerPresentAttempts = 40
+    private static let pickerPresentRetryDelay: TimeInterval = 0.05
     /// Backstop on top of URLSession's own 300 s resource timeout.
     private static let transferWaitLimit: TimeInterval = 330
 
@@ -258,18 +303,29 @@ enum AttachmentTransfer {
         (byte >= 0x30 && byte <= 0x39) || (byte >= 0x41 && byte <= 0x5A) || (byte >= 0x61 && byte <= 0x7A)
     }
 
-    /// The header name must be a plain HTTP token and the value must not be
-    /// able to split the request (CR, LF, NUL).
-    private static func validateAuth(header: String, value: String) throws {
+    /// The only names stoat.js's `client.authenticationHeader` returns
+    /// (stoat.js src/Client.ts): a user session or a bot token.
+    private static let authHeaderNames = ["X-Session-Token", "X-Bot-Token"]
+
+    /// The header name must be one of `authHeaderNames` (ASCII,
+    /// case-insensitive; the canonical spelling is returned and sent), so a
+    /// compromised webview cannot aim the session token at `Host`, `Cookie`,
+    /// `Authorization` or any other header. The value must not be able to
+    /// split the request (CR, LF, NUL).
+    private static func validateAuth(header: String, value: String) throws -> String {
         let name = header.utf8
+        // ASCII first: `lowercased()` folds some non-ASCII letters (the
+        // Kelvin sign) onto ASCII ones.
         guard (1...64).contains(name.count),
-              name.allSatisfy({ isAsciiAlphanumeric($0) || $0 == UInt8(ascii: "-") })
+              name.allSatisfy({ isAsciiAlphanumeric($0) || $0 == UInt8(ascii: "-") }),
+              let canonical = authHeaderNames.first(where: { $0.lowercased() == header.lowercased() })
         else {
             throw E2eeReject.invalidArgument("authHeader")
         }
         guard !value.utf8.contains(where: { $0 == 0x0D || $0 == 0x0A || $0 == 0x00 }) else {
             throw E2eeReject.invalidArgument("authValue")
         }
+        return canonical
     }
 
     // MARK: - HTTP
@@ -352,27 +408,45 @@ enum AttachmentTransfer {
 
     // MARK: - Save
 
-    /// Shows the folder picker (the consent) and waits for it. nil = cancelled
-    /// or unanswered. Throws when the picker could not be presented.
-    private static func pickFolder() throws -> URL? {
-        let outcome = PickerOutcome()
-        let handle = PickerHandle()
+    /// Shows the folder picker and waits for it. nil = cancelled, torn down or
+    /// unanswered. Throws `busy` when another dialog is up, `crypto_failure`
+    /// when the picker could not be presented.
+    private static func pickFolder(_ session: SaveSession) throws -> URL? {
+        let outcome = session.outcome
+        let handle = session.handle
 
-        let shown = DispatchSemaphore(value: 0)
-        DispatchQueue.main.async {
-            MainActor.assumeIsolated {
-                handle.present(outcome: outcome)
+        var presentation = PickerPresentation.retry
+        for _ in 0..<pickerPresentAttempts {
+            // Checked again here: a consent request may be queued but not yet
+            // on screen, and the picker must not hide it.
+            if NativeConfirmPresenter.shared.isBusy {
+                throw busy
             }
-            shown.signal()
-        }
-        shown.wait()
-
-        guard handle.didPresent else {
+            let shown = DispatchSemaphore(value: 0)
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
-                    handle.release()
+                    handle.present(outcome: outcome)
                 }
+                shown.signal()
             }
+            shown.wait()
+            presentation = handle.presentation
+            guard presentation == .retry else {
+                break
+            }
+            // Our own consent alert is still animating out. Wait here, off
+            // main, and look again.
+            Thread.sleep(forTimeInterval: pickerPresentRetryDelay)
+        }
+
+        switch presentation {
+        case .presented:
+            break
+        case .cancelled:
+            return nil
+        case .busy, .retry:
+            throw busy
+        case .failed:
             throw E2eeReject.cryptoFailure
         }
 
@@ -585,29 +659,47 @@ private final class TransferDelegate: NSObject, URLSessionDataDelegate, @uncheck
 
 // MARK: - Save helpers
 
-/// Allows one save (one folder picker) at a time.
+/// One save in flight: its picker answer and the picker itself, reachable
+/// by `teardownForNavigation`.
+private final class SaveSession: @unchecked Sendable {
+    let outcome = PickerOutcome()
+    let handle = PickerHandle()
+}
+
+/// Allows one save (one consent, one folder picker) at a time.
 private final class SaveGate: @unchecked Sendable {
     private let lock = NSLock()
-    private var inFlight = false
+    private var session: SaveSession?
 
-    func enter() -> Bool {
+    /// The new session, or nil when a save is already in flight.
+    func enter() -> SaveSession? {
         lock.lock()
         defer { lock.unlock() }
-        if inFlight {
-            return false
+        if session != nil {
+            return nil
         }
-        inFlight = true
-        return true
+        let fresh = SaveSession()
+        session = fresh
+        return fresh
     }
 
-    func leave() {
+    func leave(_ finished: SaveSession) {
         lock.lock()
-        inFlight = false
+        if session === finished {
+            session = nil
+        }
         lock.unlock()
+    }
+
+    func current() -> SaveSession? {
+        lock.lock()
+        defer { lock.unlock() }
+        return session
     }
 }
 
-/// The picker's answer, settled exactly once (pick, cancel or timeout).
+/// The picker's answer, settled exactly once (pick, cancel, teardown or
+/// timeout).
 private final class PickerOutcome: @unchecked Sendable {
     private let condition = NSCondition()
     private var settled = false
@@ -624,6 +716,12 @@ private final class PickerOutcome: @unchecked Sendable {
         condition.broadcast()
     }
 
+    var isSettled: Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        return settled
+    }
+
     /// The picked folder; nil when cancelled or not answered in time.
     func wait(timeout: TimeInterval) -> URL? {
         let deadline = Date().addingTimeInterval(timeout)
@@ -638,21 +736,50 @@ private final class PickerOutcome: @unchecked Sendable {
     }
 }
 
+/// How one attempt to show the folder picker went.
+private enum PickerPresentation: Equatable {
+    case presented
+    /// The save was torn down (navigation) before the picker showed.
+    case cancelled
+    /// Someone else's alert is on screen.
+    case busy
+    /// A transition (our consent alert leaving) is still running: try again.
+    case retry
+    case failed
+}
+
 /// Owns the picker and its (weakly referenced) delegate while it is up.
-/// Properties are touched on main only; `didPresent` is written on main
+/// Properties are touched on main only; `presentation` is written on main
 /// before the presenting semaphore is signalled and read after it.
 private final class PickerHandle: @unchecked Sendable {
-    private(set) var didPresent = false
+    private(set) var presentation = PickerPresentation.retry
     private var controller: UIDocumentPickerViewController?
     private var delegate: FolderPickerDelegate?
 
     @MainActor
     func present(outcome: PickerOutcome) {
-        guard let top = NativeConfirmPresenter.topMostViewController(),
-              top.viewIfLoaded?.window != nil,
-              !top.isBeingDismissed
-        else {
-            return
+        presentation = attemptPresent(outcome: outcome)
+    }
+
+    @MainActor
+    private func attemptPresent(outcome: PickerOutcome) -> PickerPresentation {
+        // Torn down while this block was queued: show nothing.
+        if outcome.isSettled {
+            return .cancelled
+        }
+        guard let top = NativeConfirmPresenter.topMostViewController() else {
+            return .failed
+        }
+        // Never stack on an alert: a picker over a consent dialog hides it.
+        // Our own consent alert may still be on its way out.
+        if let alert = top as? UIAlertController {
+            return alert.isBeingDismissed ? .retry : .busy
+        }
+        if top.isBeingPresented || top.isBeingDismissed {
+            return .retry
+        }
+        guard top.viewIfLoaded?.window != nil else {
+            return .failed
         }
         // Folders only: the user picks WHERE, and only then is anything
         // decrypted and written there. No plaintext temp file ever exists.
@@ -665,11 +792,11 @@ private final class PickerHandle: @unchecked Sendable {
         picker.delegate = pickerDelegate
         top.present(picker, animated: true)
         guard top.presentedViewController === picker || picker.presentingViewController != nil else {
-            return
+            return .failed
         }
         controller = picker
         delegate = pickerDelegate
-        didPresent = true
+        return .presented
     }
 
     @MainActor
@@ -677,11 +804,6 @@ private final class PickerHandle: @unchecked Sendable {
         if let picker = controller, picker.presentingViewController != nil, !picker.isBeingDismissed {
             picker.dismiss(animated: true)
         }
-        release()
-    }
-
-    @MainActor
-    func release() {
         controller = nil
         delegate = nil
     }

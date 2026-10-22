@@ -871,6 +871,171 @@ final class NativeConfirmTests: XCTestCase {
         )
     }
 
+    // MARK: Removal from outside, re-appearance, isBusy (Stage 5 m1)
+
+    func testAlertDismissedFromOutsideAnswersFalsePromptly() {
+        // A long timeout: only the removal path can answer inside the bound.
+        guard let presenter = makePresenter(enableDelay: 0.2, timeout: 60),
+              let session = present(presenter, payload(title: "T3 removed from outside")),
+              let root = root
+        else {
+            return
+        }
+        let removedAt = Date()
+        // What another presenter (recovery sheet, folder picker) does when it
+        // dismisses whatever its host presented: the alert goes with it.
+        ui { () -> Void in root.dismiss(animated: true) }
+        XCTAssertEqual(answer(session, timeout: 5), false, "an alert removed from outside answers false")
+        XCTAssertLessThan(Date().timeIntervalSince(removedAt), 5, "the removal answered, not the 60 s timeout")
+        waitOnMain("the removed alert is gone") { isGone(session.alert) }
+        XCTAssertNil(presenter.presentedAlertForTesting, "nothing is open after the removal")
+        XCTAssertFalse(presenter.isBusy, "the slot is free after the removal answered")
+    }
+
+    func testTapThatDismissesBeforeItsHandlerStillConfirms() {
+        guard let presenter = makePresenter(enableDelay: 0.2, timeout: 60),
+              let session = present(presenter, payload(title: "T3 UIKit tap order")),
+              let root = root
+        else {
+            return
+        }
+        waitOnMain("confirm enabled after enableDelay") { confirmEnabled(session.alert) }
+        // A real tap's order: UIKit dismisses the alert first and runs the
+        // action handler in the dismissal's completion, after
+        // viewDidDisappear. The removal decline must not beat it.
+        ui { () -> Void in
+            root.dismiss(animated: true) {
+                presenter.completeForTesting(confirmed: true)
+            }
+        }
+        XCTAssertEqual(answer(session), true, "a tap whose handler runs after the dismissal still confirms")
+        waitOnMain("the confirmed alert is gone") { isGone(session.alert) }
+        XCTAssertFalse(presenter.isBusy, "the slot is free after the answer")
+    }
+
+    private func assertDelayRestartsAfterCover(
+        _ style: UIModalPresentationStyle,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let delay: TimeInterval = 0.6
+        guard let presenter = makePresenter(enableDelay: delay, timeout: 60),
+              let session = present(presenter, payload(title: "T3 cover \(style.rawValue)"), file: file, line: line)
+        else {
+            return
+        }
+        let alert = session.alert
+        waitOnMain("confirm enabled before the cover", file: file, line: line) { confirmEnabled(alert) }
+        let cover = ui { () -> UIViewController in
+            let vc = UIViewController()
+            vc.modalPresentationStyle = style
+            return vc
+        }
+        ui { () -> Void in alert.present(cover, animated: false) }
+        waitOnMain("the cover is on screen", file: file, line: line) {
+            ui { cover.presentingViewController === alert && !cover.isBeingPresented }
+        }
+        XCTAssertFalse(confirmEnabled(alert), "confirm goes dark while covered", file: file, line: line)
+        spinMain(delay * 2)
+        XCTAssertFalse(confirmEnabled(alert), "the delay does not run out while covered", file: file, line: line)
+        XCTAssertNil(session.box.bool, "being covered is not an answer", file: file, line: line)
+
+        ui { () -> Void in cover.dismiss(animated: false) }
+        waitOnMain("the cover is gone", file: file, line: line) {
+            ui { alert.presentedViewController == nil && cover.presentingViewController == nil }
+        }
+        let uncoveredAt = Date()
+        XCTAssertFalse(confirmEnabled(alert), "confirm is still disabled right after the alert re-appears", file: file, line: line)
+        presenter.completeForTesting(confirmed: true)
+        spinMain(0.1)
+        XCTAssertNil(session.box.bool, "a confirm right after re-appearance is ignored", file: file, line: line)
+        XCTAssertTrue(presenter.presentedAlertForTesting === alert, "the alert is still the open request", file: file, line: line)
+
+        waitOnMain("confirm enabled again after the delay", file: file, line: line) { confirmEnabled(alert) }
+        XCTAssertGreaterThanOrEqual(
+            Date().timeIntervalSince(uncoveredAt), delay - 0.15,
+            "the full delay ran again after the alert re-appeared", file: file, line: line
+        )
+        presenter.completeForTesting(confirmed: true)
+        XCTAssertEqual(answer(session, file: file, line: line), true, "confirm works after the restarted delay", file: file, line: line)
+        waitOnMain("the alert is dismissed", file: file, line: line) { isGone(alert) }
+    }
+
+    func testEnableDelayRestartsAfterFullScreenCover() {
+        // Full screen: the alert disappears and re-appears (viewDidAppear).
+        assertDelayRestartsAfterCover(.fullScreen)
+    }
+
+    func testEnableDelayRestartsAfterSheetCover() {
+        // A sheet gives the alert no appearance callbacks at all.
+        assertDelayRestartsAfterCover(.pageSheet)
+    }
+
+    func testBecomingActiveRestartsTheEnableDelay() {
+        let delay: TimeInterval = 0.6
+        guard let presenter = makePresenter(enableDelay: delay, timeout: 60),
+              let session = present(presenter, payload(title: "T3 became active"))
+        else {
+            return
+        }
+        let alert = session.alert
+        waitOnMain("confirm enabled after enableDelay") { confirmEnabled(alert) }
+        ui { () -> Void in
+            NotificationCenter.default.post(name: UIApplication.didBecomeActiveNotification, object: UIApplication.shared)
+        }
+        let activeAt = Date()
+        waitOnMain("confirm goes dark when the app becomes active", timeout: 1) { !confirmEnabled(alert) }
+        waitOnMain("confirm enabled again after the delay") { confirmEnabled(alert) }
+        XCTAssertGreaterThanOrEqual(
+            Date().timeIntervalSince(activeAt), delay - 0.15,
+            "the full delay ran again after becoming active"
+        )
+        XCTAssertNil(session.box.bool, "becoming active is not an answer")
+        presenter.completeForTesting(confirmed: false)
+        XCTAssertEqual(answer(session), false, "the alert still answers its own cancel")
+        waitOnMain("the alert is dismissed") { isGone(alert) }
+    }
+
+    func testIsBusyWhilePendingAndPresentedAndFreeAfter() {
+        guard let presenter = makePresenter(enableDelay: 0.2) else {
+            return
+        }
+        XCTAssertFalse(presenter.isBusy, "an idle presenter is not busy")
+        let done = expectation(description: "confirm answered")
+        let box = startConfirm(presenter, payload(title: "T3 isBusy"), done: done)
+        // Main does not run its run loop here, so the presentation the
+        // request queued on main cannot run yet: the request is pending.
+        let deadline = Date(timeIntervalSinceNow: 5)
+        while !presenter.isBusy && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.005)
+        }
+        XCTAssertTrue(presenter.isBusy, "busy while the request is pending")
+        XCTAssertNil(presenter.presentedAlertForTesting, "nothing is presented yet")
+
+        var shown: UIAlertController?
+        waitOnMain("the consent alert is presented") {
+            shown = presenter.presentedAlertForTesting
+            return shown != nil
+        }
+        XCTAssertTrue(presenter.isBusy, "busy while presented")
+        let offMain = LockedList<Bool>()
+        let probed = expectation(description: "isBusy read off main")
+        Thread {
+            offMain.append(presenter.isBusy)
+            probed.fulfill()
+        }.start()
+        wait(for: [probed], timeout: 5)
+        XCTAssertEqual(offMain.all, [true], "isBusy reads the same off main")
+
+        presenter.completeForTesting(confirmed: false)
+        wait(for: [done], timeout: 10)
+        XCTAssertEqual(box.bool, false, "the request answered its cancel")
+        XCTAssertFalse(presenter.isBusy, "the slot is free once the request answered")
+        if let alert = shown {
+            waitOnMain("the alert is dismissed") { isGone(alert) }
+        }
+    }
+
     // MARK: m7: a throwing / declining NativeConfirm through the real ABI
 
     private func wipeScenario(_ confirm: FakeConfirm, file: StaticString, line: UInt) throws -> WipeReport? {

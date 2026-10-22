@@ -22,6 +22,30 @@
 //     self-heal with a forced recovery_closed(nil), then open again.
 //   - recovery_closed / recovery_finish return the core-derived outcome;
 //     a minted and displayed code is still couriered on close (F3).
+//   - The mint persists the new local backup_state at once (backup.rs
+//     put_backup_state in backup_create). A code minted but never shown is
+//     a live backup key nobody holds, so that branch deletes the local
+//     state again (backup_forget_local; Android rollback parity).
+//
+// Two teardowns. `teardown()` (wipe, app termination) closes the sheet in
+// any stage. `teardownForNavigation()` (every main-frame load, including a
+// WebContent process the system killed and Capacitor reloaded) closes it
+// only before a mint or restore has started: once Argon2 runs or the code is
+// on screen, the native sheet outlives the page, so the user still sees and
+// saves the code that the store now holds.
+//
+// Test hooks (internal, for the app-hosted RecoverySheetTests):
+//   - `RecoverySheet.engineForTesting`: engine provider; nil = the
+//     process engine (`E2eeRuntime.shared.engine()`).
+//   - `RecoverySheet.stageForTesting` (main thread): the open sheet's stage
+//     name, one of "intro", "minting", "code", "finishing", "mintFailed",
+//     "entry", "restoring", "restoreFailed", "closing"; nil = no sheet.
+//   - `RecoverySheet.tapForTesting(_:)` (main thread): taps a button if it
+//     is visible and enabled, through the same handler as a real tap.
+//     Names: "create", "saved" (I saved it), "restore" (the primary
+//     button), "cancel", "close" (the secondary button), "copy".
+//   - `RecoverySheet.enterCodeForTesting(_:)` (main thread): sets the
+//     restore field's text.
 import AcutestE2eeBindings
 import Foundation
 import UIKit
@@ -37,7 +61,7 @@ enum RecoverySheet {
         let mode = rotate ? "rotate" : "create"
         let flow = try registry.claim()
         defer { registry.release(flow) }
-        let engine = try E2eeRuntime.shared.engine()
+        let engine = try currentEngine()
         let generation = try openFlow(engine, mode: mode, userId: userId, blobsJson: nil)
         let kind: RecoverySheetController.Kind = rotate ? .rotate : .create
         DispatchQueue.main.async {
@@ -53,7 +77,7 @@ enum RecoverySheet {
         dispatchPrecondition(condition: .notOnQueue(.main))
         let flow = try registry.claim()
         defer { registry.release(flow) }
-        let engine = try E2eeRuntime.shared.engine()
+        let engine = try currentEngine()
         let generation = try openFlow(engine, mode: "restore", userId: userId, blobsJson: blobsJson)
         DispatchQueue.main.async {
             flow.presentSheet(kind: .restore)
@@ -71,6 +95,50 @@ enum RecoverySheet {
         DispatchQueue.main.async {
             flow.closeFromMain()
         }
+    }
+
+    /// Main-frame load: close the sheet only if no mint or restore has
+    /// started. The stage is read on main, in order with the button taps,
+    /// so a tap on Create that came first always wins. Any thread; never
+    /// blocks waiting on main.
+    static func teardownForNavigation() {
+        guard let flow = registry.active() else {
+            return
+        }
+        DispatchQueue.main.async {
+            flow.navigationCloseFromMain()
+        }
+    }
+
+    // MARK: - Test hooks
+
+    /// TEST HOOK: engine provider; nil = `E2eeRuntime.shared.engine()`.
+    static var engineForTesting: (() throws -> E2eeEngine)? {
+        get { registry.engineProvider }
+        set { registry.engineProvider = newValue }
+    }
+
+    /// Main thread only. TEST HOOK: the open sheet's stage name, nil when none.
+    @MainActor static var stageForTesting: String? {
+        registry.active()?.stageForTesting
+    }
+
+    /// Main thread only. TEST HOOK: tap a sheet button by name (see the file header).
+    @MainActor static func tapForTesting(_ button: String) {
+        registry.active()?.tapForTesting(button)
+    }
+
+    /// Main thread only. TEST HOOK: set the restore field's text.
+    @MainActor static func enterCodeForTesting(_ code: String) {
+        registry.active()?.enterCodeForTesting(code)
+    }
+
+    private static func currentEngine() throws -> E2eeEngine {
+        dispatchPrecondition(condition: .notOnQueue(.main))
+        if let provider = registry.engineProvider {
+            return try provider()
+        }
+        return try E2eeRuntime.shared.engine()
     }
 
     // MARK: - Flow loops (flow thread)
@@ -115,6 +183,9 @@ enum RecoverySheet {
                 return try courierUpload(engine, outcome: outcome, mode: mode)
             case .restore:
                 continue
+            case .refused:
+                _ = try closeFlow(engine, generation: generation)
+                throw busyReject
             case .finish, .close:
                 let outcome = try closeFlow(engine, generation: generation)
                 if let mintError {
@@ -122,11 +193,19 @@ enum RecoverySheet {
                 }
                 // F3: a code the user has seen must not be left without a
                 // server backup, so a close after display still couriers.
-                // A code minted but never displayed (teardown during the
-                // mint) is not couriered: nobody holds it, and with no
-                // server backup the frontend asks again.
                 if minted, flow.codeWasShown, let outcome {
                     return try courierUpload(engine, outcome: outcome, mode: mode)
+                }
+                // Minted but never displayed (full teardown during the mint,
+                // or the sheet dismissed by someone else first). The mint
+                // already stored a backup key derived from a code nobody
+                // holds; left alone, the next refresh would upload under it
+                // (on rotate, replacing the server copy the user's saved
+                // code opens). Only when core still had this flow live
+                // (outcome == mode): a nil outcome means a wipe reset the
+                // handoff, and there is no store left to clean.
+                if minted, outcome == mode {
+                    forgetMintedState(engine)
                 }
                 throw E2eeReject.declined
             }
@@ -165,6 +244,9 @@ enum RecoverySheet {
                 continue
             case .mint:
                 continue
+            case .refused:
+                _ = try closeFlow(engine, generation: generation)
+                throw busyReject
             case .finish, .close:
                 _ = try closeFlow(engine, generation: generation)
                 if let endError {
@@ -292,6 +374,24 @@ enum RecoverySheet {
         return bundle
     }
 
+    /// Best effort: delete the local backup_state the mint just wrote (local
+    /// only; the server copy is untouched). Guarded by is_provisioned:
+    /// backup_forget_local goes through core's opening path, which on a
+    /// store a wipe just deleted would create a fresh one.
+    private static func forgetMintedState(_ engine: E2eeEngine) {
+        dispatchPrecondition(condition: .notOnQueue(.main))
+        E2eeRuntime.shared.withBackgroundTask("gg.sloga.e2ee.recovery") {
+            dispatchPrecondition(condition: .notOnQueue(.main))
+            // Drop the bundle core still holds for the courier, too: it is
+            // sealed under the key being forgotten, so nothing may send it.
+            _ = try? engine.backupTakePendingUpload()
+            guard (try? engine.isProvisioned()) == true else {
+                return
+            }
+            try? engine.backupForgetLocal()
+        }
+    }
+
     private static func takeRepublish(_ engine: E2eeEngine) throws -> String {
         dispatchPrecondition(condition: .notOnQueue(.main))
         return try E2eeRuntime.shared.withBackgroundTask("gg.sloga.e2ee.recovery") {
@@ -340,6 +440,20 @@ private enum RestoreFailure: Equatable {
 private final class FlowRegistry: @unchecked Sendable {
     private let lock = NSLock()
     private var current: RecoveryFlow?
+    private var provider: (() throws -> E2eeEngine)?
+
+    var engineProvider: (() throws -> E2eeEngine)? {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return provider
+        }
+        set {
+            lock.lock()
+            provider = newValue
+            lock.unlock()
+        }
+    }
 
     func claim() throws -> RecoveryFlow {
         lock.lock()
@@ -400,6 +514,8 @@ private final class RecoveryFlow: @unchecked Sendable {
         case finish
         case close
         case restore(String)
+        /// The sheet was never shown because a consent alert is up.
+        case refused
     }
 
     private let condition = NSCondition()
@@ -437,6 +553,15 @@ private final class RecoveryFlow: @unchecked Sendable {
         guard !closedOnMain else {
             return
         }
+        // Never stack over a consent alert (ours or another lane's): the
+        // sheet would hide the alert's buttons, or the alert the sheet's.
+        // The caller gets `busy` after the flow is closed in core.
+        if NativeConfirmPresenter.shared.isBusy
+            || NativeConfirmPresenter.topMostViewController() is UIAlertController {
+            closedOnMain = true
+            post(.refused)
+            return
+        }
         let sheet = RecoverySheetController(kind: kind, flow: self)
         controller = sheet
         guard let top = NativeConfirmPresenter.topMostViewController(),
@@ -460,6 +585,30 @@ private final class RecoveryFlow: @unchecked Sendable {
         closedOnMain = true
         controller?.dismissSheet {}
         post(.close)
+    }
+
+    /// A main-frame load: close only while nothing has started (a sheet not
+    /// yet presented counts as not started).
+    @MainActor func navigationCloseFromMain() {
+        guard !closedOnMain else {
+            return
+        }
+        if let controller, !controller.closableOnNavigation {
+            return
+        }
+        closeFromMain()
+    }
+
+    @MainActor var stageForTesting: String? {
+        controller?.stageName
+    }
+
+    @MainActor func tapForTesting(_ button: String) {
+        controller?.tapForTesting(button)
+    }
+
+    @MainActor func enterCodeForTesting(_ code: String) {
+        controller?.enterCodeForTesting(code)
     }
 
     @MainActor func finishFromMain() {
@@ -736,6 +885,62 @@ private final class RecoverySheetController: UIViewController, UITextFieldDelega
         codeLabel.text = nil
         field.text = nil
         endReveal()
+    }
+
+    /// Navigation may close the sheet only while nothing is in flight and no
+    /// code is on screen: before Create or Restore, or after either failed
+    /// (nothing was minted or restored then, so nothing is lost).
+    var closableOnNavigation: Bool {
+        switch stage {
+        case .intro, .entry, .mintFailed, .restoreFailed:
+            return true
+        case .minting, .code, .finishing, .restoring, .closing:
+            return false
+        }
+    }
+
+    var stageName: String {
+        switch stage {
+        case .intro: return "intro"
+        case .minting: return "minting"
+        case .code: return "code"
+        case .finishing: return "finishing"
+        case .mintFailed: return "mintFailed"
+        case .entry: return "entry"
+        case .restoring: return "restoring"
+        case .restoreFailed: return "restoreFailed"
+        case .closing: return "closing"
+        }
+    }
+
+    /// TEST HOOK: a tap on the named button, only if a user could make it
+    /// now (visible, enabled, showing that label), sent through the
+    /// button's own target-action.
+    func tapForTesting(_ name: String) {
+        let target: (button: UIButton, title: String)
+        switch name {
+        case "create": target = (primaryButton, "Create code")
+        case "saved": target = (primaryButton, "I saved it")
+        case "restore": target = (primaryButton, "Restore")
+        case "cancel": target = (secondaryButton, "Cancel")
+        case "close": target = (secondaryButton, "Close")
+        case "copy": target = (copyButton, "Copy")
+        default: return
+        }
+        guard isViewLoaded, !target.button.isHidden, target.button.isEnabled,
+              target.button.configuration?.title == target.title
+        else {
+            return
+        }
+        target.button.sendActions(for: .touchUpInside)
+    }
+
+    /// TEST HOOK: type a code into the restore field.
+    func enterCodeForTesting(_ code: String) {
+        guard isViewLoaded, stage == .entry else {
+            return
+        }
+        field.text = code
     }
 
     // MARK: Actions
