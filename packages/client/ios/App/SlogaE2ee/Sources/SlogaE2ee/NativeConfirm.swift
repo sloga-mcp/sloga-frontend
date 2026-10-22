@@ -501,6 +501,12 @@ final class NativeConfirmPresenter: NativeConfirm, @unchecked Sendable {
         if host is UIAlertController {
             return false
         }
+        // Never on top of an open recovery sheet: the sheet's own dismissal
+        // would take the alert with it, and nothing the webview asks for while
+        // the modal sheet is up was tapped by the user.
+        if RecoverySheet.hasActiveFlow {
+            return false
+        }
         if host.isBeingPresented || host.isBeingDismissed {
             return false
         }

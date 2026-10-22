@@ -122,8 +122,10 @@ enum AttachmentTransfer {
             throw busy
         }
         defer { saveGate.leave(session) }
-        // Never queue behind, or stack on top of, another consent dialog.
-        if NativeConfirmPresenter.shared.isBusy {
+        // Never queue behind, or stack on top of, another consent dialog,
+        // and never open over a recovery sheet (its dismissal would take the
+        // picker with it and leave this save waiting).
+        if NativeConfirmPresenter.shared.isBusy || RecoverySheet.hasActiveFlow {
             throw busy
         }
 
@@ -419,7 +421,7 @@ enum AttachmentTransfer {
         for _ in 0..<pickerPresentAttempts {
             // Checked again here: a consent request may be queued but not yet
             // on screen, and the picker must not hide it.
-            if NativeConfirmPresenter.shared.isBusy {
+            if NativeConfirmPresenter.shared.isBusy || RecoverySheet.hasActiveFlow {
                 throw busy
             }
             let shown = DispatchSemaphore(value: 0)

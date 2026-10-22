@@ -561,7 +561,14 @@ private extension E2eePlugin {
         case "e2ee_backup_status":
             return try engine.backupStatus()
         case "e2ee_backup_refresh_if_due":
-            return try engine.backupRefreshIfDue(userId: args.string("userId"))
+            let userId = try args.string("userId")
+            // A recovery sheet that outlived a page load couriered its bundle
+            // to the page that is gone; hand it to this page's next refresh,
+            // which uploads whatever this returns.
+            if let orphaned = RecoverySheet.takeOrphanedBundle() {
+                return orphaned
+            }
+            return try engine.backupRefreshIfDue(userId: userId)
         case "e2ee_backup_mark_uploaded":
             try engine.backupMarkUploaded(generation: args.int64("generation"))
             return "null"

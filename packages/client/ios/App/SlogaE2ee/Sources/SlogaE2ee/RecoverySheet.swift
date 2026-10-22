@@ -27,12 +27,24 @@
 //     a live backup key nobody holds, so that branch deletes the local
 //     state again (backup_forget_local; Android rollback parity).
 //
-// Two teardowns. `teardown()` (wipe, app termination) closes the sheet in
-// any stage. `teardownForNavigation()` (every main-frame load, including a
-// WebContent process the system killed and Capacitor reloaded) closes it
-// only before a mint or restore has started: once Argon2 runs or the code is
-// on screen, the native sheet outlives the page, so the user still sees and
-// saves the code that the store now holds.
+// Two teardowns. `teardown()` (called only by E2eePlugin's wipe) closes the
+// sheet in any stage. `teardownForNavigation()` (every main-frame load,
+// including a WebContent process the system killed and Capacitor reloaded)
+// closes it only before a mint or restore has started: once Argon2 runs or
+// the code is on screen, the native sheet outlives the page, so the user
+// still sees and saves the code that the store now holds.
+//
+// Orphaned bundle. A sheet that outlived its page still resolves the old
+// plugin call, but that page is gone and nothing would upload the bundle
+// (on rotate the server would keep the old code's copy until a due
+// refresh). So a bundle couriered after a navigation is also kept here;
+// the plugin's `e2ee_backup_refresh_if_due` arm returns it first
+// (`takeOrphanedBundle()`), and the new page uploads it. A restore needs no
+// such stash: the new page re-derives its republish payload on demand
+// (`e2ee_backup_rederive_republish`).
+//
+// `hasActiveFlow` is true from the one-sheet claim until the sheet has gone;
+// the consent alert and the save picker refuse to open over it.
 //
 // Test hooks (internal, for the app-hosted RecoverySheetTests):
 //   - `RecoverySheet.engineForTesting`: engine provider; nil = the
@@ -89,12 +101,29 @@ enum RecoverySheet {
     /// Dismiss any open recovery sheet; its flow then ends through the normal close path
     /// (`recovery_closed`). Any thread; never blocks waiting on main.
     static func teardown() {
+        // Called by wipe: a bundle kept for a later upload belongs to the
+        // identity being destroyed, and so does anything the open flow
+        // couriers from here on.
+        registry.clearOrphanedBundle()
         guard let flow = registry.active() else {
             return
         }
+        flow.markFullTeardown()
         DispatchQueue.main.async {
             flow.closeFromMain()
         }
+    }
+
+    /// The bundle of a create/rotate sheet that finished after its page was
+    /// reloaded, or nil. Returns it once and clears it. Any thread.
+    static func takeOrphanedBundle() -> String? {
+        registry.takeOrphanedBundle()
+    }
+
+    /// True from the one-sheet claim until the sheet's flow has ended and the
+    /// sheet has gone. Any thread.
+    static var hasActiveFlow: Bool {
+        registry.active() != nil
     }
 
     /// Main-frame load: close the sheet only if no mint or restore has
@@ -164,6 +193,9 @@ enum RecoverySheet {
                 do {
                     let record = try mintCode(engine, rotate: mode == "rotate")
                     minted = true
+                    // A bundle an earlier sheet left for the next page is
+                    // superseded by this mint (newer generation, new key).
+                    registry.clearOrphanedBundle()
                     let secret = SecretBox(record.code)
                     let truncated = record.truncated
                     DispatchQueue.main.async {
@@ -180,7 +212,7 @@ enum RecoverySheet {
                 }
             case .finish where minted && mintError == nil && flow.codeWasShown:
                 let outcome = try finishFlow(engine)
-                return try courierUpload(engine, outcome: outcome, mode: mode)
+                return try courierUpload(engine, flow: flow, outcome: outcome, mode: mode)
             case .restore:
                 continue
             case .refused:
@@ -194,7 +226,7 @@ enum RecoverySheet {
                 // F3: a code the user has seen must not be left without a
                 // server backup, so a close after display still couriers.
                 if minted, flow.codeWasShown, let outcome {
-                    return try courierUpload(engine, outcome: outcome, mode: mode)
+                    return try courierUpload(engine, flow: flow, outcome: outcome, mode: mode)
                 }
                 // Minted but never displayed (full teardown during the mint,
                 // or the sheet dismissed by someone else first). The mint
@@ -359,7 +391,12 @@ enum RecoverySheet {
     /// flow minted it (outcome == mode). Any other outcome, or nothing left
     /// to take (a wipe reset the handoff), is a decline, never a "null"
     /// bundle the courier would try to upload.
-    private static func courierUpload(_ engine: E2eeEngine, outcome: String, mode: String) throws -> String {
+    private static func courierUpload(
+        _ engine: E2eeEngine,
+        flow: RecoveryFlow,
+        outcome: String,
+        mode: String
+    ) throws -> String {
         dispatchPrecondition(condition: .notOnQueue(.main))
         guard outcome == mode else {
             throw E2eeReject.declined
@@ -370,6 +407,13 @@ enum RecoverySheet {
         }
         guard bundle != "null" else {
             throw E2eeReject.declined
+        }
+        // The page that asked was reloaded while the sheet stayed up: the
+        // old call's resolve reaches nobody, so keep the bundle for the new
+        // page's next refresh. Never after a wipe's teardown: the bundle
+        // then belongs to the destroyed identity.
+        if flow.outlivedItsPage {
+            registry.keepOrphanedBundle(bundle)
         }
         return bundle
     }
@@ -441,6 +485,27 @@ private final class FlowRegistry: @unchecked Sendable {
     private let lock = NSLock()
     private var current: RecoveryFlow?
     private var provider: (() throws -> E2eeEngine)?
+    private var orphanedBundle: String?
+
+    func keepOrphanedBundle(_ bundle: String) {
+        lock.lock()
+        orphanedBundle = bundle
+        lock.unlock()
+    }
+
+    func takeOrphanedBundle() -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        let bundle = orphanedBundle
+        orphanedBundle = nil
+        return bundle
+    }
+
+    func clearOrphanedBundle() {
+        lock.lock()
+        orphanedBundle = nil
+        lock.unlock()
+    }
 
     var engineProvider: (() throws -> E2eeEngine)? {
         get {
@@ -549,6 +614,24 @@ private final class RecoveryFlow: @unchecked Sendable {
         return shown
     }
 
+    // Guarded by `condition`, like `shown`.
+    private var navigatedAway = false
+    private var fullTeardown = false
+
+    func markFullTeardown() {
+        condition.lock()
+        fullTeardown = true
+        condition.unlock()
+    }
+
+    /// A main-frame load found this sheet past the point of closing, and no
+    /// wipe has torn it down since.
+    var outlivedItsPage: Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        return navigatedAway && !fullTeardown
+    }
+
     @MainActor func presentSheet(kind: RecoverySheetController.Kind) {
         guard !closedOnMain else {
             return
@@ -594,6 +677,11 @@ private final class RecoveryFlow: @unchecked Sendable {
             return
         }
         if let controller, !controller.closableOnNavigation {
+            // The sheet stays; whatever it couriers later has no page to
+            // receive it through the old call.
+            condition.lock()
+            navigatedAway = true
+            condition.unlock()
             return
         }
         closeFromMain()

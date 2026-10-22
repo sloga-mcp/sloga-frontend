@@ -105,6 +105,37 @@ private final class NeverConfirm: NativeConfirm, @unchecked Sendable {
     }
 }
 
+/// What one CAPPluginCall settled with, in order (a second settle is a bug
+/// the tests count, not trap).
+private final class SettleRecorder: @unchecked Sendable {
+    struct Settled {
+        let keys: [String]
+        let json: String?
+        let reject: String?
+    }
+
+    private let lock = NSLock()
+    private var settles: [Settled] = []
+
+    func record(_ settled: Settled) {
+        lock.lock()
+        settles.append(settled)
+        lock.unlock()
+    }
+
+    var all: [Settled] {
+        lock.lock()
+        defer { lock.unlock() }
+        return settles
+    }
+}
+
+/// The view controller a test presenter offers as its host. Set on main;
+/// read by the presenter closure (on main) without touching UIKit.
+private final class HostRef: @unchecked Sendable {
+    weak var controller: UIViewController?
+}
+
 /// One temp-dir engine. The engine is dropped off main in tearDown, before
 /// its directory is deleted.
 private final class EngineHolder: @unchecked Sendable {
@@ -273,6 +304,8 @@ final class RecoverySheetTests: XCTestCase {
             throw T8Failure(reason: "could not look up the wrap item (OSStatus \(status))")
         }
         wrapItemExisted = status == errSecSuccess
+        // A bundle another test left for "the next page" is not this test's.
+        _ = RecoverySheet.takeOrphanedBundle()
         #else
         // The engines here create the production wrap item when it is
         // missing; only the Simulator may have it removed again.
@@ -320,6 +353,7 @@ final class RecoverySheetTests: XCTestCase {
         }
         running = []
         RecoverySheet.engineForTesting = nil
+        _ = RecoverySheet.takeOrphanedBundle()
 
         if let root = root {
             let clean = waitOnMain("nothing is left presented after the test", timeout: 10) {
@@ -1062,5 +1096,273 @@ final class RecoverySheetTests: XCTestCase {
         assertRejected(checked, declinedJson, "cancel after a wrong code")
         waitOnMain("the sheet is gone") { stage == nil && !sheetOnScreen }
         XCTAssertEqual(isProvisioned(target), false, "nothing was restored")
+    }
+
+    // MARK: 7. Orphaned bundle: a sheet that outlived its page
+
+    /// Create, a page load while the code is shown (the sheet stays), then
+    /// "I saved it". The resolved bundle JSON, or nil (and a failure).
+    private func runSurvivingNavigation(file: StaticString = #filePath, line: UInt = #line) -> String? {
+        guard let flow = runToCode(file: file, line: line) else {
+            return nil
+        }
+        RecoverySheet.teardownForNavigation()
+        spinMain(0.3)
+        guard stage == "code" else {
+            XCTFail("the sheet did not survive the page load", file: file, line: line)
+            return nil
+        }
+        tap("saved")
+        return assertBundle(result(of: flow, file: file, line: line), "I saved it after a page load",
+                            file: file, line: line)?.json
+    }
+
+    // Bundle comparisons below use XCTAssertTrue: XCTAssertEqual/Nil would
+    // print the whole bundle into the test log on a failure.
+
+    func testSheetThatOutlivedItsPageLeavesItsBundleForTheNextPageOnce() {
+        guard let holder = makeEngine(provision: true) else {
+            return
+        }
+        use(holder)
+        guard let bundle = runSurvivingNavigation() else {
+            return
+        }
+        let first = subject(RecoverySheet.takeOrphanedBundle(), bad: nil)
+        XCTAssertTrue(first == bundle, "the bundle the old call resolved is kept for the next page")
+        let second = subject(RecoverySheet.takeOrphanedBundle(), bad: bundle)
+        XCTAssertTrue(second == nil, "it is handed out once")
+    }
+
+    /// The other close a code-stage sheet can get: dismissed from outside
+    /// (its presenter torn down). After a page load during the mint, the
+    /// bundle couriered on that close (F3) is kept as well.
+    func testDismissedFromOutsideAfterAPageLoadDuringTheMintLeavesTheOrphan() {
+        guard let holder = makeEngine(provision: true), let root = root else {
+            return
+        }
+        use(holder)
+        let flow = startCreate()
+        guard waitForStage("intro") else {
+            return
+        }
+        tap("create")
+        XCTAssertEqual(stage, "minting", "Create starts the mint")
+        RecoverySheet.teardownForNavigation()
+        guard waitForStage("code") else {
+            return
+        }
+        ui { () -> Void in root.dismiss(animated: false) }
+        guard let bundle = assertBundle(result(of: flow), "dismissed from outside after the code was shown") else {
+            return
+        }
+        let orphan = subject(RecoverySheet.takeOrphanedBundle(), bad: nil)
+        XCTAssertTrue(orphan == bundle.json, "the bundle is kept for the next page")
+        XCTAssertTrue(RecoverySheet.takeOrphanedBundle() == nil, "and handed out once")
+    }
+
+    func testFlowWithoutAPageLoadLeavesNoOrphan() {
+        guard let holder = makeEngine(provision: true), createBackup(on: holder) != nil else {
+            return
+        }
+        let orphan = subject(RecoverySheet.takeOrphanedBundle(), bad: "{}")
+        XCTAssertTrue(orphan == nil, "the page that asked got the bundle; nothing is kept")
+    }
+
+    func testFullTeardownClearsTheOrphanAndKeepsNone() {
+        guard let holder = makeEngine(provision: true) else {
+            return
+        }
+        use(holder)
+        // A kept bundle is dropped by the wipe's teardown, with no sheet open.
+        guard runSurvivingNavigation() != nil else {
+            return
+        }
+        RecoverySheet.teardown()
+        XCTAssertTrue(subject(RecoverySheet.takeOrphanedBundle(), bad: "{}") == nil, "teardown() dropped the kept bundle")
+
+        // A sheet that survived a page load and is then torn down by a wipe:
+        // the call still resolves (F3), but nothing is kept for later.
+        guard let flow = runToCode() else {
+            return
+        }
+        RecoverySheet.teardownForNavigation()
+        spinMain(0.3)
+        XCTAssertEqual(stage, "code", "the sheet survived the page load")
+        RecoverySheet.teardown()
+        assertBundle(result(of: flow), "full teardown after a page load")
+        XCTAssertTrue(subject(RecoverySheet.takeOrphanedBundle(), bad: "{}") == nil,
+                     "a bundle couriered after a wipe's teardown is never kept")
+    }
+
+    func testANewMintSupersedesAKeptOrphan() {
+        guard let holder = makeEngine(provision: true) else {
+            return
+        }
+        use(holder)
+        guard let old = runSurvivingNavigation() else {
+            return
+        }
+        guard let flow = runToCode() else {
+            return
+        }
+        XCTAssertTrue(subject(RecoverySheet.takeOrphanedBundle(), bad: old) == nil,
+                     "the new mint dropped the older kept bundle")
+        RecoverySheet.teardownForNavigation()
+        spinMain(0.3)
+        tap("saved")
+        guard let new = assertBundle(result(of: flow), "the second sheet after a page load") else {
+            return
+        }
+        XCTAssertTrue(new.json != old, "a new mint is a new bundle")
+        let kept: String? = subject(RecoverySheet.takeOrphanedBundle(), bad: old)
+        XCTAssertTrue(kept == new.json,
+                       "the kept bundle is the newest one")
+    }
+
+    /// The new page's refresh picks the kept bundle up through the real
+    /// generic plugin path. Hermetic enough: the generic route builds the
+    /// process engine (creating the app's store directory, never opening
+    /// the store), and this arm returns the kept bundle before any engine
+    /// method runs. Only one call is made: a call with nothing kept would
+    /// run a refresh on the app's real store.
+    func testRefreshIfDueThroughThePluginHandsOverTheOrphanOnce() {
+        guard let holder = makeEngine(provision: true) else {
+            return
+        }
+        use(holder)
+        guard let bundle = runSurvivingNavigation() else {
+            return
+        }
+        let realBefore = offMain("is the app's real store provisioned") { () -> Bool in
+            dispatchPrecondition(condition: .notOnQueue(.main))
+            return try E2eeRuntime.shared.engine().isProvisioned()
+        }
+
+        let recorder = SettleRecorder()
+        let options: [String: Any] = ["__cmd": "e2ee_backup_refresh_if_due", "userId": testUserId]
+        let jsOptions = JSTypes.coerceDictionaryToJSObject(options as NSDictionary, formattingDatesAsStrings: true) ?? [:]
+        let made: CAPPluginCall? = CAPPluginCall(
+            callbackId: "t8-\(UUID().uuidString)",
+            methodName: "call",
+            options: jsOptions,
+            success: { result, _ in
+                let data = result?.data ?? [:]
+                recorder.record(.init(keys: data.keys.sorted(), json: data["json"] as? String, reject: nil))
+            },
+            error: { error in
+                recorder.record(.init(keys: [], json: nil, reject: error?.message ?? "<nil error>"))
+            }
+        )
+        guard let pluginCall = made else {
+            XCTFail("CAPPluginCall init returned nil")
+            return
+        }
+        let plugin = E2eePlugin()
+        // Off main, as Capacitor's bridge queue would call it.
+        runOnDedicatedThread(name: "gg.sloga.t8.bridge") {
+            plugin.call(pluginCall)
+        }
+        guard waitOnMain("the plugin call settled", { !recorder.all.isEmpty }) else {
+            return
+        }
+        spinMain(0.2)
+        let settles = recorder.all
+        XCTAssertEqual(settles.count, 1, "the call settles exactly once")
+        XCTAssertNil(settles.first?.reject, "the call resolved")
+        XCTAssertEqual(settles.first?.keys, ["json"], "resolved as {json}")
+        let resolvedJson: String? = settles.first?.json
+        let checkedJson: String? = subject(resolvedJson, bad: "null")
+        XCTAssertTrue(checkedJson == bundle, "the refresh returns the kept bundle")
+        XCTAssertTrue(subject(RecoverySheet.takeOrphanedBundle(), bad: bundle) == nil, "handed over once")
+
+        let realAfter = offMain("is the app's real store provisioned") { () -> Bool in
+            dispatchPrecondition(condition: .notOnQueue(.main))
+            return try E2eeRuntime.shared.engine().isProvisioned()
+        }
+        XCTAssertEqual(realAfter, realBefore, "the arm never opened the app's real store")
+    }
+
+    // MARK: 8. hasActiveFlow keeps consent alerts off the sheet
+
+    func testHasActiveFlowSpansTheFlowAndKeepsConsentAlertsOff() {
+        guard let holder = makeEngine(provision: true), let root = root else {
+            return
+        }
+        use(holder)
+        XCTAssertFalse(subject(RecoverySheet.hasActiveFlow, bad: true), "no flow yet")
+        // A presenter of its own whose host is whatever the test points it
+        // at: the sheet while it is up, so only hasActiveFlow can refuse
+        // (the sheet itself is presenting nothing and is in a window).
+        let host = HostRef()
+        let presenter = NativeConfirmPresenter(presenter: { host.controller }, enableDelay: 0.2, timeout: 10)
+        let payload = ConfirmPayload(
+            title: "T8 sheet check",
+            message: "Must not appear over a recovery sheet.",
+            confirmLabel: "OK",
+            cancelLabel: "Cancel",
+            kind: "info",
+            defaultButton: "cancel"
+        )
+        let confirmRefused = { (what: String) in
+            let answer = startOffMain("consent") { () -> Bool in
+                dispatchPrecondition(condition: .notOnQueue(.main))
+                return try presenter.confirm(req: payload)
+            }
+            self.running.append { answer.value != nil }
+            // Well under the presenter's 10 s timeout: a refusal is immediate.
+            let settled = self.waitOnMain("\(what): the consent call returned", timeout: 5) { answer.value != nil }
+            var value: Bool?
+            if case .success(let answered)? = answer.value {
+                value = answered
+            }
+            XCTAssertTrue(settled && subject(value == false, bad: false), "\(what): confirm answers false")
+            let stacked = ui { () -> Bool in
+                presenter.presentedAlertForTesting != nil || root.presentedViewController?.presentedViewController != nil
+            }
+            XCTAssertFalse(subject(stacked, bad: true), "\(what): nothing was presented over the sheet")
+        }
+
+        let flow = startCreate()
+        guard waitForStage("intro") else {
+            return
+        }
+        XCTAssertTrue(subject(RecoverySheet.hasActiveFlow, bad: false), "true while the intro is up")
+        ui { () -> Void in host.controller = root.presentedViewController }
+        confirmRefused("intro")
+
+        tap("create")
+        guard waitForStage("code") else {
+            return
+        }
+        XCTAssertTrue(subject(RecoverySheet.hasActiveFlow, bad: false), "true while the code is up")
+        confirmRefused("code")
+
+        tap("saved")
+        assertBundle(result(of: flow), "I saved it")
+        // The flow returns only after its sheet has gone and the claim is released.
+        XCTAssertFalse(subject(RecoverySheet.hasActiveFlow, bad: true), "false once the flow has ended")
+        XCTAssertFalse(sheetOnScreen, "and the sheet is gone")
+
+        // Positive control: the same presenter does show its alert once no
+        // flow is active, so the refusals above came from the flow.
+        ui { () -> Void in host.controller = root }
+        let answer = startOffMain("consent control") { () -> Bool in
+            dispatchPrecondition(condition: .notOnQueue(.main))
+            return try presenter.confirm(req: payload)
+        }
+        running.append { answer.value != nil }
+        let shown = waitOnMain("the control alert is on screen", timeout: 5) {
+            ui { presenter.presentedAlertForTesting != nil }
+        }
+        XCTAssertTrue(shown, "with no active flow the alert is presented")
+        ui { presenter.completeForTesting(confirmed: false) }
+        waitOnMain("the control consent call returned") { answer.value != nil }
+        if case .success(let value)? = answer.value {
+            XCTAssertFalse(value, "the cancelled control alert answers false")
+        } else {
+            XCTFail("the control consent call did not answer")
+        }
+        waitOnMain("the control alert is gone") { ui { root.presentedViewController == nil } }
     }
 }
