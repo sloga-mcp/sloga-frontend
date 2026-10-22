@@ -12,8 +12,8 @@
 //     dialog must never stall decrypt and send on the engine worker (D1 a);
 //   - out: refused as an unknown command.
 // Capacitor calls these methods on its bridge queue, so each one only reads
-// its arguments and hands off. Nothing here runs on the main thread and
-// nothing here is logged.
+// its arguments and hands off. Nothing here runs on the main thread except
+// the empty `backupBundleWaiting` event, and nothing here is logged.
 import AcutestE2eeBindings
 import Capacitor
 import Foundation
@@ -54,6 +54,36 @@ public final class E2eePlugin: CAPPlugin, CAPBridgedPlugin {
             call.reject(E2eeReject.cryptoFailure.json)
         }
         return isArmed
+    }
+
+    /// Tells the page that a recovery sheet which outlived its page kept a
+    /// bundle for it (RecoverySheet, "Orphaned bundle"). Always an empty
+    /// payload: the bundle stays native until a refresh for the minting
+    /// user takes it, so a listener learns neither the bundle nor any id.
+    static let backupBundleWaitingEvent = "backupBundleWaiting"
+
+    override public func load() {
+        super.load()
+        // Weak: the hook lives in a static, which must not keep a plugin
+        // alive after Capacitor drops it. The last instance loaded wins,
+        // as in Capacitor's own plugin table (the one the page talks to).
+        RecoverySheet.bundleWaitingHook = Self.backupBundleWaitingEmitter { [weak self] event, data in
+            self?.notifyListeners(event, data: data)
+        }
+    }
+
+    /// The hook RecoverySheet runs once per kept bundle, on its flow
+    /// thread. The emit is posted to main, where Capacitor clears a page's
+    /// listeners on navigation, so it never walks the listener table while
+    /// that reset runs; the flow thread never waits for it.
+    static func backupBundleWaitingEmitter(
+        _ emit: @escaping (_ event: String, _ data: [String: Any]) -> Void
+    ) -> () -> Void {
+        return {
+            DispatchQueue.main.async {
+                emit(Self.backupBundleWaitingEvent, [:])
+            }
+        }
     }
 
     @objc func call(_ call: CAPPluginCall) {
@@ -563,9 +593,11 @@ private extension E2eePlugin {
         case "e2ee_backup_refresh_if_due":
             let userId = try args.string("userId")
             // A recovery sheet that outlived a page load couriered its bundle
-            // to the page that is gone; hand it to this page's next refresh,
-            // which uploads whatever this returns.
-            if let orphaned = RecoverySheet.takeOrphanedBundle() {
+            // to the page that is gone and kept it (the page heard
+            // `backupBundleWaiting`). Handed over only to a refresh for the
+            // user whose flow minted it, which uploads whatever this
+            // returns; a refresh for anyone else drops it.
+            if let orphaned = RecoverySheet.takeOrphanedBundle(userId: userId) {
                 return orphaned
             }
             return try engine.backupRefreshIfDue(userId: userId)

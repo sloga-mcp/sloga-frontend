@@ -111,7 +111,18 @@
  *                      each from its listed method or arm
  *                      (RecoverySheet.takeOrphanedBundle only from the
  *                      e2ee_backup_refresh_if_due arm: it returns a ciphertext
- *                      bundle, not an engine value)
+ *                      bundle, not an engine value; RecoverySheet.
+ *                      bundleWaitingHook only from `load`)
+ *   G8b-event          the only page event is "backupBundleWaiting" with an
+ *                      EMPTY payload: `notifyListeners(` appears only in
+ *                      E2eePlugin.load, inside the `[weak self] event, data in`
+ *                      closure handed to backupBundleWaitingEmitter, forwarding
+ *                      exactly `(event, data: data)`; inside that emitter every
+ *                      mention of its `emit` parameter is exactly
+ *                      `emit(Self.backupBundleWaitingEvent, [:])`; and
+ *                      backupBundleWaitingEvent is that literal name (audit M2:
+ *                      never the bundle, never an id); triggerJSEvent and the
+ *                      other page-script channels are not used anywhere
  *   G8b-reach          REACHABILITY over a call graph of every Swift function
  *                      under the sources dir (below). (a) From each root, the
  *                      only native-only methods reachable are its own:
@@ -323,6 +334,8 @@ const PLUGIN_CROSS_FILE = {
   "RecoverySheet.runCreateOrRotate": ["@backupCreate", "@backupRotate"],
   "RecoverySheet.runRestore": ["@backupRestore"],
   "RecoverySheet.takeOrphanedBundle": ["case:e2ee_backup_refresh_if_due"],
+  // M2: the plugin installs the "bundle waiting" notifier when it loads.
+  "RecoverySheet.bundleWaitingHook": ["load"],
   "AttachmentTransfer.upload": ["@attachmentUpload"],
   "AttachmentTransfer.fetch": ["@attachmentFetch"],
   "AttachmentTransfer.copyImage": ["nativeJob"],
@@ -2187,6 +2200,102 @@ function checkReach(ctx, add) {
   };
 }
 
+const EVENT_NAME = "backupBundleWaiting";
+
+/** G8b-event: the one page event and its empty payload (audit M2). */
+function checkEvents(swift, plugin, add) {
+  const fn = (name) =>
+    plugin.frames.find((f) => f.kind === "func" && f.name === name);
+  const load = fn("load");
+  const emitter = fn("backupBundleWaitingEmitter");
+  for (const f of swift) {
+    for (const m of f.code.matchAll(/\bnotifyListeners\s*\(/g)) {
+      const open = m.index + m[0].length - 1;
+      const args = f.code.slice(open, f.match.get(open) + 1);
+      const closure = frameAt(f, m.index, (fr) => fr.kind === "closure");
+      const ok =
+        f === plugin &&
+        load &&
+        closure &&
+        funcAt(f, m.index) === load &&
+        calleeOf(f, closure).name === "backupBundleWaitingEmitter" &&
+        /^\s*\[\s*weak\s+self\s*\]\s*event\s*,\s*data\s+in\b/.test(
+          f.code.slice(closure.open + 1, closure.close),
+        ) &&
+        /^\(\s*event\s*,\s*data\s*:\s*data\s*\)$/.test(args);
+      if (!ok) {
+        add(
+          "G8b-event",
+          f,
+          m.index,
+          "notifyListeners only in E2eePlugin.load's backupBundleWaitingEmitter closure, forwarding exactly (event, data: data)",
+        );
+      }
+    }
+    // Capacitor's other ways to reach the page are not used at all.
+    for (const m of f.code.matchAll(
+      /\b(?:triggerJSEvent|triggerWindowJSEvent|triggerDocumentJSEvent|evaluateJavaScript|callAsyncJavaScript)\b/g,
+    )) {
+      add(
+        "G8b-event",
+        f,
+        m.index,
+        `${m[0]} would reach the page outside the one pinned event`,
+      );
+    }
+  }
+  if (!emitter) {
+    add("G8b-event", plugin, null, "func backupBundleWaitingEmitter not found");
+  } else {
+    const param = /\(\s*_\s+(\w+)\s*:/.exec(
+      plugin.code.slice(emitter.declPos, emitter.open),
+    )?.[1];
+    let emits = 0;
+    const re = new RegExp(`\\b${param ?? "emit"}\\b`, "g");
+    re.lastIndex = emitter.open;
+    for (let m; (m = re.exec(plugin.code)) && m.index < emitter.close; ) {
+      const rest = plugin.code.slice(m.index + m[0].length, m.index + 120);
+      if (
+        /^\s*\(\s*Self\s*\.\s*backupBundleWaitingEvent\s*,\s*\[\s*:\s*\]\s*\)/.test(
+          rest,
+        )
+      ) {
+        emits++;
+        continue;
+      }
+      add(
+        "G8b-event",
+        plugin,
+        m.index,
+        `the emitter may only call ${m[0]}(Self.backupBundleWaitingEvent, [:])`,
+      );
+    }
+    if (!param || !emits) {
+      add(
+        "G8b-event",
+        plugin,
+        emitter.declPos,
+        "backupBundleWaitingEmitter emits nothing it can be checked for",
+      );
+    }
+  }
+  const decls = [
+    ...plugin.code.matchAll(/\bbackupBundleWaitingEvent\s*=\s*(?=")/g),
+  ];
+  const value =
+    decls.length === 1
+      ? plugin.strings.get(decls[0].index + decls[0][0].length)
+      : null;
+  if (!value || value.interpolated || value.value !== EVENT_NAME) {
+    add(
+      "G8b-event",
+      plugin,
+      decls[0]?.index ?? null,
+      `backupBundleWaitingEvent must be declared once as "${EVENT_NAME}"`,
+    );
+  }
+}
+
 function check(opts) {
   const violations = [];
   const add = (rule, file, p, what) => {
@@ -2792,6 +2901,7 @@ function check(opts) {
       );
     }
   }
+  checkEvents(swift, plugin, add);
   // G8b reachability and what reaches the webview.
   const reach = checkReach(
     {

@@ -1,7 +1,11 @@
 // RecoverySheetTests.swift (G9, lane T8): the native recovery sheets (IE
 // plan D5 "Recovery sheets") and the Stage 5 fixes M1 (navigation teardown,
 // rollback of a minted code nobody saw) and m1 (no sheet over a consent
-// alert).
+// alert), and the W4 audit fix M2 (a kept bundle goes only to the user
+// whose flow minted it, and the page is told with an empty event).
+//
+// setUp swaps the app's bundle-waiting hook out (tearDown puts it back), so
+// no test tells the app's real page about a bundle it kept.
 //
 // Each test runs a real E2eeEngine on a fresh temp directory (provisioned
 // with enable() where the flow needs it) and hands it to the sheet through
@@ -36,10 +40,14 @@ private func subject<T>(_ real: @autoclosure () throws -> T, bad: @autoclosure (
 private let declinedJson = #"{"type":"declined"}"#
 private let busyJson = #"{"type":"busy"}"#
 private let mismatchText = "That code did not match. Check it and try again."
+private let bundleWaitingEvent = "backupBundleWaiting"
 
 /// A ULID-shaped account id. Restore checks it against the id bound into
 /// the backup header, so create and restore must use the same one.
 private let testUserId = "01J9Z8Y7X6W5V4T3S2R1Q0P9N8"
+
+/// Another account: differs from testUserId in its last symbol only.
+private let otherUserId = "01J9Z8Y7X6W5V4T3S2R1Q0P9N9"
 
 /// Valid in shape (12 groups of 5 Crockford symbols), wrong in value.
 private let wrongCode = Array(repeating: "00000", count: 12).joined(separator: "-")
@@ -127,6 +135,33 @@ private final class SettleRecorder: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return settles
+    }
+}
+
+/// What the bundle-waiting hook sent, in order: the event name, the
+/// payload's keys, whether it ran on main, and what a refresh for the
+/// sink's user took at that moment (never printed: it is a bundle).
+private final class EventRecorder: @unchecked Sendable {
+    struct Sent {
+        let event: String
+        let keys: [String]
+        let onMain: Bool
+        let taken: String?
+    }
+
+    private let lock = NSLock()
+    private var sent: [Sent] = []
+
+    func record(_ one: Sent) {
+        lock.lock()
+        sent.append(one)
+        lock.unlock()
+    }
+
+    var all: [Sent] {
+        lock.lock()
+        defer { lock.unlock() }
+        return sent
     }
 }
 
@@ -288,6 +323,10 @@ final class RecoverySheetTests: XCTestCase {
     private var holders: [EngineHolder] = []
     private var running: [() -> Bool] = []
     private var wrapItemExisted = true
+    /// The app's bundle-waiting hook (its E2ee plugin's, installed at load),
+    /// put back in tearDown.
+    private var savedHook: (() -> Void)?
+    private var hookSaved = false
 
     @MainActor private static func appRootViewController() -> UIViewController? {
         let windows = UIApplication.shared.connectedScenes
@@ -305,7 +344,11 @@ final class RecoverySheetTests: XCTestCase {
         }
         wrapItemExisted = status == errSecSuccess
         // A bundle another test left for "the next page" is not this test's.
-        _ = RecoverySheet.takeOrphanedBundle()
+        // A take clears it whoever asks.
+        _ = RecoverySheet.takeOrphanedBundle(userId: testUserId)
+        savedHook = RecoverySheet.bundleWaitingHook
+        hookSaved = true
+        RecoverySheet.bundleWaitingHook = nil
         #else
         // The engines here create the production wrap item when it is
         // missing; only the Simulator may have it removed again.
@@ -353,7 +396,12 @@ final class RecoverySheetTests: XCTestCase {
         }
         running = []
         RecoverySheet.engineForTesting = nil
-        _ = RecoverySheet.takeOrphanedBundle()
+        _ = RecoverySheet.takeOrphanedBundle(userId: testUserId)
+        if hookSaved {
+            RecoverySheet.bundleWaitingHook = savedHook
+            savedHook = nil
+            hookSaved = false
+        }
 
         if let root = root {
             let clean = waitOnMain("nothing is left presented after the test", timeout: 10) {
@@ -1128,9 +1176,9 @@ final class RecoverySheetTests: XCTestCase {
         guard let bundle = runSurvivingNavigation() else {
             return
         }
-        let first = subject(RecoverySheet.takeOrphanedBundle(), bad: nil)
-        XCTAssertTrue(first == bundle, "the bundle the old call resolved is kept for the next page")
-        let second = subject(RecoverySheet.takeOrphanedBundle(), bad: bundle)
+        let first = subject(RecoverySheet.takeOrphanedBundle(userId: testUserId), bad: nil)
+        XCTAssertTrue(first == bundle, "the bundle the old call resolved is kept for the minting user's next page")
+        let second = subject(RecoverySheet.takeOrphanedBundle(userId: testUserId), bad: bundle)
         XCTAssertTrue(second == nil, "it is handed out once")
     }
 
@@ -1156,16 +1204,16 @@ final class RecoverySheetTests: XCTestCase {
         guard let bundle = assertBundle(result(of: flow), "dismissed from outside after the code was shown") else {
             return
         }
-        let orphan = subject(RecoverySheet.takeOrphanedBundle(), bad: nil)
+        let orphan = subject(RecoverySheet.takeOrphanedBundle(userId: testUserId), bad: nil)
         XCTAssertTrue(orphan == bundle.json, "the bundle is kept for the next page")
-        XCTAssertTrue(RecoverySheet.takeOrphanedBundle() == nil, "and handed out once")
+        XCTAssertTrue(RecoverySheet.takeOrphanedBundle(userId: testUserId) == nil, "and handed out once")
     }
 
     func testFlowWithoutAPageLoadLeavesNoOrphan() {
         guard let holder = makeEngine(provision: true), createBackup(on: holder) != nil else {
             return
         }
-        let orphan = subject(RecoverySheet.takeOrphanedBundle(), bad: "{}")
+        let orphan = subject(RecoverySheet.takeOrphanedBundle(userId: testUserId), bad: "{}")
         XCTAssertTrue(orphan == nil, "the page that asked got the bundle; nothing is kept")
     }
 
@@ -1179,7 +1227,8 @@ final class RecoverySheetTests: XCTestCase {
             return
         }
         RecoverySheet.teardown()
-        XCTAssertTrue(subject(RecoverySheet.takeOrphanedBundle(), bad: "{}") == nil, "teardown() dropped the kept bundle")
+        XCTAssertTrue(subject(RecoverySheet.takeOrphanedBundle(userId: testUserId), bad: "{}") == nil,
+                      "teardown() dropped the kept bundle")
 
         // A sheet that survived a page load and is then torn down by a wipe:
         // the call still resolves (F3), but nothing is kept for later.
@@ -1191,7 +1240,7 @@ final class RecoverySheetTests: XCTestCase {
         XCTAssertEqual(stage, "code", "the sheet survived the page load")
         RecoverySheet.teardown()
         assertBundle(result(of: flow), "full teardown after a page load")
-        XCTAssertTrue(subject(RecoverySheet.takeOrphanedBundle(), bad: "{}") == nil,
+        XCTAssertTrue(subject(RecoverySheet.takeOrphanedBundle(userId: testUserId), bad: "{}") == nil,
                      "a bundle couriered after a wipe's teardown is never kept")
     }
 
@@ -1206,7 +1255,7 @@ final class RecoverySheetTests: XCTestCase {
         guard let flow = runToCode() else {
             return
         }
-        XCTAssertTrue(subject(RecoverySheet.takeOrphanedBundle(), bad: old) == nil,
+        XCTAssertTrue(subject(RecoverySheet.takeOrphanedBundle(userId: testUserId), bad: old) == nil,
                      "the new mint dropped the older kept bundle")
         RecoverySheet.teardownForNavigation()
         spinMain(0.3)
@@ -1215,7 +1264,7 @@ final class RecoverySheetTests: XCTestCase {
             return
         }
         XCTAssertTrue(new.json != old, "a new mint is a new bundle")
-        let kept: String? = subject(RecoverySheet.takeOrphanedBundle(), bad: old)
+        let kept: String? = subject(RecoverySheet.takeOrphanedBundle(userId: testUserId), bad: old)
         XCTAssertTrue(kept == new.json,
                        "the kept bundle is the newest one")
     }
@@ -1274,13 +1323,153 @@ final class RecoverySheetTests: XCTestCase {
         let resolvedJson: String? = settles.first?.json
         let checkedJson: String? = subject(resolvedJson, bad: "null")
         XCTAssertTrue(checkedJson == bundle, "the refresh returns the kept bundle")
-        XCTAssertTrue(subject(RecoverySheet.takeOrphanedBundle(), bad: bundle) == nil, "handed over once")
+        XCTAssertTrue(subject(RecoverySheet.takeOrphanedBundle(userId: testUserId), bad: bundle) == nil, "handed over once")
 
         let realAfter = offMain("is the app's real store provisioned") { () -> Bool in
             dispatchPrecondition(condition: .notOnQueue(.main))
             return try E2eeRuntime.shared.engine().isProvisioned()
         }
         XCTAssertEqual(realAfter, realBefore, "the arm never opened the app's real store")
+    }
+
+    // MARK: 7b. M2: the kept bundle is the minting user's, and the page is told
+
+    /// Puts the plugin's real emitter, with a recording sink, where the app's
+    /// plugin hook was. The sink runs where the plugin's notifyListeners
+    /// would and, given a user, takes the kept bundle for that user right
+    /// then, as the page's refresh would.
+    private func recordBundleWaiting(takeFor userId: String? = nil) -> EventRecorder {
+        let recorder = EventRecorder()
+        RecoverySheet.bundleWaitingHook = E2eePlugin.backupBundleWaitingEmitter { event, data in
+            let taken = userId.flatMap { RecoverySheet.takeOrphanedBundle(userId: $0) }
+            recorder.record(.init(event: event, keys: data.keys.sorted(), onMain: Thread.isMainThread, taken: taken))
+        }
+        return recorder
+    }
+
+    /// The same-user take is testSheetThatOutlivedItsPageLeavesItsBundleForTheNextPageOnce.
+    func testARefreshForAnotherUserGetsNothingAndDropsTheKeptBundle() {
+        guard let holder = makeEngine(provision: true) else {
+            return
+        }
+        use(holder)
+        guard let bundle = runSurvivingNavigation() else {
+            return
+        }
+        let foreign = subject(RecoverySheet.takeOrphanedBundle(userId: otherUserId), bad: bundle)
+        XCTAssertTrue(foreign == nil, "a refresh for another account never gets the bundle")
+        let later = subject(RecoverySheet.takeOrphanedBundle(userId: testUserId), bad: bundle)
+        XCTAssertTrue(later == nil, "that refresh dropped it: the minting user's later take finds nothing")
+    }
+
+    func testAKeptBundleIsAnnouncedOnceWithAnEmptyEventAfterItIsKept() {
+        guard let holder = makeEngine(provision: true) else {
+            return
+        }
+        use(holder)
+        let recorder = recordBundleWaiting(takeFor: testUserId)
+        guard let bundle = runSurvivingNavigation() else {
+            return
+        }
+        guard waitOnMain("the page was told", timeout: 10, { !recorder.all.isEmpty }) else {
+            return
+        }
+        spinMain(0.5)
+        let heard = recorder.all
+        XCTAssertEqual(subject(heard.count, bad: 2), 1, "told exactly once for one kept bundle")
+        XCTAssertEqual(heard.first?.event, bundleWaitingEvent, "as backupBundleWaiting")
+        XCTAssertEqual(subject(heard.first?.keys, bad: ["bundle"]), [], "with nothing in the payload")
+        XCTAssertEqual(heard.first?.onMain, true, "posted to main")
+        XCTAssertTrue(subject(heard.first?.taken == bundle, bad: false),
+                      "the bundle was already kept when the page was told, and its user's refresh got it")
+        XCTAssertTrue(RecoverySheet.takeOrphanedBundle(userId: testUserId) == nil, "nothing is left after that refresh")
+    }
+
+    func testNothingKeptMeansThePageIsToldNothing() {
+        guard let holder = makeEngine(provision: true) else {
+            return
+        }
+        let recorder = recordBundleWaiting()
+        // A flow whose page never went away: the call that asked got the bundle.
+        guard createBackup(on: holder) != nil else {
+            return
+        }
+        // A sheet that outlived its page and was then torn down by a wipe:
+        // couriered on the close (F3), never kept.
+        guard let flow = runToCode() else {
+            return
+        }
+        RecoverySheet.teardownForNavigation()
+        spinMain(0.3)
+        XCTAssertEqual(stage, "code", "the sheet survived the page load")
+        RecoverySheet.teardown()
+        assertBundle(result(of: flow), "full teardown after a page load")
+        spinMain(0.5)
+        XCTAssertEqual(subject(recorder.all.count, bad: 1), 0, "no bundle was kept, so no event was sent")
+    }
+
+    func testWipeTeardownClearsABundleKeptForItsOwnUser() {
+        guard let holder = makeEngine(provision: true) else {
+            return
+        }
+        use(holder)
+        let recorder = recordBundleWaiting()
+        guard runSurvivingNavigation() != nil else {
+            return
+        }
+        RecoverySheet.teardown()
+        let kept = subject(RecoverySheet.takeOrphanedBundle(userId: testUserId), bad: "{}")
+        XCTAssertTrue(kept == nil, "teardown() dropped it, even for the user it was kept for")
+        spinMain(0.5)
+        XCTAssertEqual(subject(recorder.all.count, bad: 0), 1, "told once when it was kept; the teardown sent nothing")
+    }
+
+    /// The wiring itself: the app's plugin installed a hook when Capacitor
+    /// loaded it, and load() installs one that reaches the plugin's
+    /// listeners with an empty payload without keeping the plugin alive.
+    func testPluginLoadInstallsAWeakHookThatSendsAnEmptyEvent() {
+        XCTAssertTrue(subject(hookSaved && savedHook != nil, bad: false),
+                      "the app's E2ee plugin installed the hook when Capacitor loaded it")
+        let recorder = SettleRecorder()
+        weak var released: E2eePlugin?
+        autoreleasepool {
+            let plugin = E2eePlugin()
+            // A bridge sets this in load(on:); a bare instance has none.
+            plugin.eventListeners = NSMutableDictionary()
+            plugin.load()
+            let options: [String: Any] = ["eventName": bundleWaitingEvent]
+            let jsOptions = JSTypes.coerceDictionaryToJSObject(options as NSDictionary, formattingDatesAsStrings: true) ?? [:]
+            let made: CAPPluginCall? = CAPPluginCall(
+                callbackId: "t8-\(UUID().uuidString)",
+                methodName: "addListener",
+                options: jsOptions,
+                success: { result, _ in
+                    let data = result?.data ?? [:]
+                    recorder.record(.init(keys: data.keys.sorted(), json: nil, reject: nil))
+                },
+                error: { error in
+                    recorder.record(.init(keys: [], json: nil, reject: error?.message ?? "<nil error>"))
+                }
+            )
+            guard let listener = made else {
+                XCTFail("CAPPluginCall init returned nil")
+                return
+            }
+            plugin.addListener(listener)
+            RecoverySheet.bundleWaitingHook?()
+            waitOnMain("the listener heard the event", timeout: 10) { !recorder.all.isEmpty }
+            released = plugin
+        }
+        spinMain(0.3)
+        let heard = recorder.all
+        XCTAssertEqual(subject(heard.count, bad: 0), 1, "one event for one call of the hook")
+        XCTAssertNil(heard.first?.reject, "delivered as an event, not an error")
+        XCTAssertEqual(subject(heard.first?.keys, bad: ["bundle"]), [], "with nothing in the payload")
+        XCTAssertTrue(subject(released == nil, bad: false), "the hook does not keep the plugin alive")
+        // The hook now points at a released plugin: a no-op, never a crash.
+        RecoverySheet.bundleWaitingHook?()
+        spinMain(0.3)
+        XCTAssertEqual(recorder.all.count, 1, "a released plugin sends nothing")
     }
 
     // MARK: 8. hasActiveFlow keeps consent alerts off the sheet

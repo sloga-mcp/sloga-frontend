@@ -94,3 +94,16 @@ export function capacitorAttachmentUrl(
 export function capacitorClipboardImageInWebview(platform: string): boolean {
   return platform === "android";
 }
+
+/**
+ * Whether the webview couriers a recovery bundle that the native recovery
+ * surface kept after the page that opened it went away (audit M2). Only
+ * iOS: the recovery sheet can outlive a WebContent reload, and the plugin
+ * then keeps the minted bundle and emits `backupBundleWaiting`. Android is
+ * left as it was (no event, no new native call); the desktop shells courier
+ * through their own `e2ee:recovery-complete` event. Any other platform gets
+ * false.
+ */
+export function capacitorCouriersOrphanedRecovery(platform: string): boolean {
+  return platform === "ios";
+}

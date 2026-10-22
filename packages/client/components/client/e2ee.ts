@@ -63,6 +63,7 @@ import {
 import {
   capacitorAttachmentUrl,
   capacitorClipboardImageInWebview,
+  capacitorCouriersOrphanedRecovery,
   capacitorNativeE2EE,
   mediaE2EEPlatformSupported,
 } from "./e2eePlatform";
@@ -968,6 +969,14 @@ interface NativeTransport {
   subscribeRecoveryComplete?(
     callback: (mode: string) => void,
   ): Promise<() => void>;
+  /**
+   * iOS only (`capacitorCouriersOrphanedRecovery`): the native recovery
+   * sheet kept a minted backup bundle because the page that opened it was
+   * reloaded under it, and it waits for the next `e2ee_backup_refresh_if_due`
+   * (audit M2). The event carries nothing: no bundle, no user id. Absent on
+   * Android, the desktop shells and the web, which never subscribe.
+   */
+  subscribeBackupBundleWaiting?(callback: () => void): Promise<() => void>;
 }
 
 class TauriTransport implements NativeTransport {
@@ -1173,6 +1182,14 @@ type E2eeCapacitorPlugin = {
     eventName: "callKeysChanged",
     listenerFunc: (event: { group_id: string; epoch: number }) => void,
   ): Promise<{ remove: () => Promise<void> }>;
+  /**
+   * iOS only: the recovery sheet kept a backup bundle for the next refresh
+   * (see `subscribeBackupBundleWaiting`). The payload is empty.
+   */
+  addListener(
+    eventName: "backupBundleWaiting",
+    listenerFunc: () => void,
+  ): Promise<{ remove: () => Promise<void> }>;
 };
 
 class CapacitorTransport implements NativeTransport {
@@ -1188,6 +1205,26 @@ class CapacitorTransport implements NativeTransport {
     Capacitor.getPlatform(),
   );
   #plugin = registerPlugin<E2eeCapacitorPlugin>("E2ee");
+
+  /**
+   * iOS only, so a property rather than a method: on Android (and a plain
+   * web build) it is undefined, the bridge never subscribes, and nothing
+   * new runs there. The listener drops whatever payload arrives; the event
+   * only says "ask native for the kept bundle".
+   */
+  readonly subscribeBackupBundleWaiting = capacitorCouriersOrphanedRecovery(
+    Capacitor.getPlatform(),
+  )
+    ? async (callback: () => void): Promise<() => void> => {
+        const handle = await this.#plugin.addListener(
+          "backupBundleWaiting",
+          () => callback(),
+        );
+        return () => {
+          void handle.remove();
+        };
+      }
+    : undefined;
 
   /**
    * Reject payloads are the core's scrubbed error JSON in the exception
@@ -1704,6 +1741,9 @@ export class E2EEBridge implements E2EEAdapter {
     client.on("channelGroupJoin", (channel, user) =>
       this.#onGroupJoin(channel, user.id),
     );
+    // iOS: listen from the first moment, since the bundle this waits for is
+    // usually kept AFTER the page has loaded and claimed. A no-op elsewhere.
+    this.#watchOrphanedBackup();
   }
 
   /**
@@ -2460,6 +2500,16 @@ export class E2EEBridge implements E2EEAdapter {
       await this.#replenish();
     } catch (error) {
       console.error("[e2ee] post-claim housekeeping failed", error);
+    }
+
+    // iOS: upload a recovery bundle the native sheet kept for an earlier page
+    // (see `#watchOrphanedBackup`). The event is the main path; this picks
+    // up a bundle whose event arrived before this connection's claim was
+    // accepted, or while no page was listening. It cannot help after the app
+    // process died: the kept bundle lived only in memory. Outside the try so
+    // a failed reconcile does not skip it.
+    if (this.#transport.subscribeBackupBundleWaiting) {
+      await this.#courierOrphanedBackup();
     }
   }
 
@@ -5987,6 +6037,12 @@ export class E2EEBridge implements E2EEAdapter {
   #backupCourierReady = false;
 
   /**
+   * The iOS `backupBundleWaiting` subscription (resolves to its unsubscribe),
+   * set once per bridge by `#watchOrphanedBackup`. Null on every other shell.
+   */
+  #backupBundleWaiting: Promise<() => void> | null = null;
+
+  /**
    * Post-restore fresh-OTK republish payload, held between a RESTORE and its
    * device claim. A restore recovers the OLD device_id, so on the server the
    * republish takes the `existing.assert_bound_session` path — it is accepted
@@ -6203,8 +6259,10 @@ export class E2EEBridge implements E2EEAdapter {
 
   /**
    * Refresh the backup if native says one is due (timer / message delta), and
-   * upload the resulting blob. Called opportunistically on connect. No-op when
-   * no backup exists or none is due.
+   * upload the resulting blob. No-op when no backup exists or none is due. On
+   * iOS the native arm first returns a bundle the recovery sheet kept (see
+   * `#watchOrphanedBackup`). Only `#courierOrphanedBackup` calls it, so only
+   * iOS; the other shells do not call it yet.
    */
   async refreshBackupIfDue(): Promise<void> {
     const selfId = this.#client.user?.id;
@@ -6214,6 +6272,67 @@ export class E2EEBridge implements E2EEAdapter {
       { userId: selfId },
     );
     if (bundle) await this.#putBackup(bundle);
+  }
+
+  /**
+   * iOS (audit M2). A create or rotate whose page goes away while the native
+   * recovery sheet is up (WebContent killed, Capacitor reloads the page) has
+   * no promise left to return the minted bundle to, so native keeps it for
+   * the next `e2ee_backup_refresh_if_due`. Until this, no page ever sent that
+   * command: the server kept the old generation, which the new code cannot
+   * open, and nothing nagged. The reloaded page re-claims within seconds,
+   * usually while the code is still on screen, so the bundle is kept AFTER
+   * the claim: the native `backupBundleWaiting` event is the main path, and
+   * the post-claim call in `#onClaimResult` covers an event that came before
+   * the claim. If the app process dies first, the kept bundle (memory only)
+   * is gone; only core's regular due refresh (up to 24 h / 50 messages later)
+   * uploads under the new key. Subscribes once per bridge; the transport has
+   * no member on any other shell.
+   */
+  #watchOrphanedBackup(): void {
+    if (this.#backupBundleWaiting) return;
+    if (!this.#transport.subscribeBackupBundleWaiting) return;
+    this.#backupBundleWaiting = this.#transport
+      .subscribeBackupBundleWaiting(() => {
+        void this.#courierOrphanedBackup();
+      })
+      .catch((error: unknown) => {
+        // The post-claim courier still runs on the next claim.
+        console.error(
+          "[e2ee] backup bundle listener failed:",
+          errorName(error),
+        );
+        return () => {};
+      });
+  }
+
+  /**
+   * Upload a recovery bundle the iOS sheet kept (`#watchOrphanedBackup`)
+   * through `refreshBackupIfDue`. Guarded like the Encryption tab's
+   * `backupStatus()` caller: the core OPENS, and so provisions, the store on
+   * any engine call, so nothing reaches native unless this device is enabled
+   * and published. It also waits for THIS connection's accepted device
+   * claim: `PUT /e2ee/backup` takes only a session bound to the device
+   * (`assert_bound_session`), and the native take always clears the kept
+   * bundle, so taking it before the claim could lose it. An event that
+   * arrives first does nothing, and the post-claim call takes the bundle.
+   * Best effort: never throws, and logs only the error's name (never the
+   * bundle or an id).
+   */
+  async #courierOrphanedBackup(): Promise<void> {
+    const state = this.status.get("state");
+    if (
+      !this.#client.user?.id ||
+      !state?.enabled ||
+      !state.published ||
+      this.#claimAccepted !== true
+    )
+      return;
+    try {
+      await this.refreshBackupIfDue();
+    } catch (error) {
+      console.error("[e2ee] orphaned backup upload failed:", errorName(error));
+    }
   }
 
   /**

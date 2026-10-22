@@ -325,11 +325,83 @@ describe("G8 unreachable from the webview", () => {
   });
 
   test("the orphaned recovery bundle taken from another arm", () => {
-    expectViolation("G8b-plugin-crossfile", [
+    expectViolationWith(
+      "G8b-plugin-crossfile",
+      ["RecoverySheet.takeOrphanedBundle from case:e2ee_backup_status"],
+      [
+        PLUGIN,
+        "return try engine.backupStatus()",
+        'return try RecoverySheet.takeOrphanedBundle(userId: "x") ?? engine.backupStatus()',
+      ],
+    );
+  });
+
+  test("the bundle-waiting hook assigned from a generic arm", () => {
+    expectViolationWith(
+      "G8b-plugin-crossfile",
+      ["RecoverySheet.bundleWaitingHook from case:e2ee_backup_forget_local"],
+      [
+        PLUGIN,
+        "            try engine.backupForgetLocal()\n",
+        "            try engine.backupForgetLocal()\n            RecoverySheet.bundleWaitingHook = nil\n",
+      ],
+    );
+  });
+
+  test("load reaching a native-only method", () => {
+    expectViolationWith(
+      "G8b-reach",
+      ["E2eePlugin.load() -> RecoverySheet.runRestore(userId:blobsJson:)"],
+      [
+        PLUGIN,
+        "        super.load()\n",
+        '        super.load()\n        _ = try? RecoverySheet.runRestore(userId: "", blobsJson: "")\n',
+      ],
+    );
+  });
+
+  test("G8b-event: the emitter posting a payload instead of [:]", () => {
+    expectViolationWith(
+      "G8b-event",
+      ["the emitter may only call emit("],
+      [
+        PLUGIN,
+        "emit(Self.backupBundleWaitingEvent, [:])",
+        'emit(Self.backupBundleWaitingEvent, ["bundle": "x"])',
+      ],
+    );
+  });
+
+  test("G8b-event: notifyListeners outside the emitter closure", () => {
+    expectViolationWith(
+      "G8b-event",
+      ["notifyListeners only in"],
+      [
+        PLUGIN,
+        "        super.load()\n",
+        '        super.load()\n        notifyListeners("backupBundleWaiting", data: ["x": 1])\n',
+      ],
+    );
+  });
+
+  test("G8b-event: the event renamed", () => {
+    expectViolation("G8b-event", [
       PLUGIN,
-      "return try engine.backupStatus()",
-      "return try RecoverySheet.takeOrphanedBundle() ?? engine.backupStatus()",
+      'static let backupBundleWaitingEvent = "backupBundleWaiting"',
+      'static let backupBundleWaitingEvent = "backupBundleReady"',
     ]);
+  });
+
+  test("G8b-event: another page-script channel", () => {
+    expectViolationWith(
+      "G8b-event",
+      ["triggerJSEvent"],
+      [
+        PLUGIN,
+        "        super.load()\n",
+        '        super.load()\n        bridge?.triggerJSEvent(eventName: "x", target: "window")\n',
+      ],
+    );
   });
 
   test("the bindings export callJoin", () => {

@@ -36,12 +36,16 @@
 //
 // Orphaned bundle. A sheet that outlived its page still resolves the old
 // plugin call, but that page is gone and nothing would upload the bundle
-// (on rotate the server would keep the old code's copy until a due
-// refresh). So a bundle couriered after a navigation is also kept here;
-// the plugin's `e2ee_backup_refresh_if_due` arm returns it first
-// (`takeOrphanedBundle()`), and the new page uploads it. A restore needs no
-// such stash: the new page re-derives its republish payload on demand
-// (`e2ee_backup_rederive_republish`).
+// (on rotate the server would keep the old code's copy, which the new code
+// cannot open). So a bundle couriered after a navigation is also kept
+// here, with the user id of the flow that minted it, and the page is told
+// through `bundleWaitingHook` (E2eePlugin's `backupBundleWaiting` event,
+// which carries nothing). The page's refresh then gets it first from the
+// plugin's `e2ee_backup_refresh_if_due` arm (`takeOrphanedBundle(userId:)`)
+// and uploads it, but only when that refresh is for the same user: one for
+// any other account drops it, so it never rides another account's upload.
+// A restore needs no such stash: the new page re-derives its republish
+// payload on demand (`e2ee_backup_rederive_republish`).
 //
 // `hasActiveFlow` is true from the one-sheet claim until the sheet has gone;
 // the consent alert and the save picker refuse to open over it.
@@ -71,7 +75,7 @@ enum RecoverySheet {
     static func runCreateOrRotate(rotate: Bool, userId: String) throws -> String {
         dispatchPrecondition(condition: .notOnQueue(.main))
         let mode = rotate ? "rotate" : "create"
-        let flow = try registry.claim()
+        let flow = try registry.claim(userId: userId)
         defer { registry.release(flow) }
         let engine = try currentEngine()
         let generation = try openFlow(engine, mode: mode, userId: userId, blobsJson: nil)
@@ -87,7 +91,7 @@ enum RecoverySheet {
     /// (`backup_take_pending_republish`, may be the string "null").
     static func runRestore(userId: String, blobsJson: String) throws -> String {
         dispatchPrecondition(condition: .notOnQueue(.main))
-        let flow = try registry.claim()
+        let flow = try registry.claim(userId: userId)
         defer { registry.release(flow) }
         let engine = try currentEngine()
         let generation = try openFlow(engine, mode: "restore", userId: userId, blobsJson: blobsJson)
@@ -115,9 +119,21 @@ enum RecoverySheet {
     }
 
     /// The bundle of a create/rotate sheet that finished after its page was
-    /// reloaded, or nil. Returns it once and clears it. Any thread.
-    static func takeOrphanedBundle() -> String? {
-        registry.takeOrphanedBundle()
+    /// reloaded, only when `userId` is the user that sheet's flow was for;
+    /// nil otherwise. Clears it whoever asks, so it is handed out once and
+    /// a refresh for another account drops it. Any thread.
+    static func takeOrphanedBundle(userId: String) -> String? {
+        registry.takeOrphanedBundle(userId: userId)
+    }
+
+    /// Called once for each bundle kept for a later page, after it is
+    /// kept, on the flow thread; it must not block. E2eePlugin installs it
+    /// at load. It is told nothing: the page finds out what is waiting
+    /// only by asking for it with its own user id. nil until the plugin
+    /// loads (nothing listens then).
+    static var bundleWaitingHook: (() -> Void)? {
+        get { registry.bundleWaitingHook }
+        set { registry.bundleWaitingHook = newValue }
     }
 
     /// True from the one-sheet claim until the sheet's flow has ended and the
@@ -409,11 +425,14 @@ enum RecoverySheet {
             throw E2eeReject.declined
         }
         // The page that asked was reloaded while the sheet stayed up: the
-        // old call's resolve reaches nobody, so keep the bundle for the new
-        // page's next refresh. Never after a wipe's teardown: the bundle
-        // then belongs to the destroyed identity.
+        // old call's resolve reaches nobody, so keep the bundle for this
+        // flow's user and tell the new page, whose refresh for that user
+        // uploads it. Never after a wipe's teardown: the bundle then
+        // belongs to the destroyed identity. Told after it is kept, so a
+        // refresh the event starts always finds it.
         if flow.outlivedItsPage {
-            registry.keepOrphanedBundle(bundle)
+            let tell = registry.keepOrphanedBundle(bundle, userId: flow.userId)
+            tell?()
         }
         return bundle
     }
@@ -482,29 +501,61 @@ private enum RestoreFailure: Equatable {
 /// The one-sheet claim. Held from before recovery_open until the sheet has
 /// finished dismissing.
 private final class FlowRegistry: @unchecked Sendable {
+    /// A kept bundle and the user whose flow minted it.
+    private struct Orphan {
+        let bundle: String
+        let userId: String
+    }
+
     private let lock = NSLock()
     private var current: RecoveryFlow?
     private var provider: (() throws -> E2eeEngine)?
-    private var orphanedBundle: String?
+    private var orphan: Orphan?
+    private var waitingHook: (() -> Void)?
 
-    func keepOrphanedBundle(_ bundle: String) {
-        lock.lock()
-        orphanedBundle = bundle
-        lock.unlock()
-    }
-
-    func takeOrphanedBundle() -> String? {
+    /// Keeps `bundle` for `userId` and returns the hook to tell the page
+    /// with, read under the same lock. The caller runs it after the lock
+    /// is released, so the hook can never deadlock against the registry.
+    func keepOrphanedBundle(_ bundle: String, userId: String) -> (() -> Void)? {
         lock.lock()
         defer { lock.unlock() }
-        let bundle = orphanedBundle
-        orphanedBundle = nil
-        return bundle
+        orphan = Orphan(bundle: bundle, userId: userId)
+        return waitingHook
+    }
+
+    func takeOrphanedBundle(userId: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let kept = orphan else {
+            return nil
+        }
+        orphan = nil
+        // Byte for byte: Swift's String == treats canonically equivalent
+        // Unicode as equal, and the bundle must go only to the exact id it
+        // was minted under.
+        guard kept.userId.utf8.elementsEqual(userId.utf8) else {
+            return nil
+        }
+        return kept.bundle
     }
 
     func clearOrphanedBundle() {
         lock.lock()
-        orphanedBundle = nil
+        orphan = nil
         lock.unlock()
+    }
+
+    var bundleWaitingHook: (() -> Void)? {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return waitingHook
+        }
+        set {
+            lock.lock()
+            waitingHook = newValue
+            lock.unlock()
+        }
     }
 
     var engineProvider: (() throws -> E2eeEngine)? {
@@ -520,13 +571,13 @@ private final class FlowRegistry: @unchecked Sendable {
         }
     }
 
-    func claim() throws -> RecoveryFlow {
+    func claim(userId: String) throws -> RecoveryFlow {
         lock.lock()
         defer { lock.unlock() }
         if current != nil {
             throw busyReject
         }
-        let flow = RecoveryFlow()
+        let flow = RecoveryFlow(userId: userId)
         current = flow
         return flow
     }
@@ -583,9 +634,18 @@ private final class RecoveryFlow: @unchecked Sendable {
         case refused
     }
 
+    /// The user the plugin call opened this flow for (recovery_open's
+    /// user id). A bundle this flow keeps for a later page goes only to a
+    /// refresh for this user.
+    let userId: String
+
     private let condition = NSCondition()
     private var events: [Event] = []
     private var shown = false
+
+    init(userId: String) {
+        self.userId = userId
+    }
 
     // Main thread only.
     private var closedOnMain = false

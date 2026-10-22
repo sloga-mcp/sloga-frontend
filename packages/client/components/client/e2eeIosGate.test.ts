@@ -18,7 +18,7 @@
 // `E2EE_IOS_GATE_COMPONENTS` (a components root) at other copies to scan
 // those instead (the known-bad control: the 8821aac9 files, which fail
 // G4-G9, F1, C1, C2 and D1-D2; G1-G3 hold there, the keyPush body being
-// unchanged by design).
+// unchanged by design; and the 8f78a9ea e2ee.ts, which fails G9 and R1-R7).
 //
 // The TS lexer is the one in e2eeDecryptSelf.scan.test.ts (that file exports
 // nothing), plus one change for .tsx: a quote right after a letter or digit
@@ -52,8 +52,8 @@
 //       returning `mediaE2EEPlatformSupported(this.nativeKeyPushAvailable())`
 //       and one `nativeKeyPushAvailable()` returning
 //       `this.#transport.keyPushAvailable()`.
-//   G9. One source: the four Capacitor/media helpers are imported unaliased
-//       from `./e2eePlatform`, and e2ee.ts defines none of the five
+//   G9. One source: the five Capacitor/media helpers are imported unaliased
+//       from `./e2eePlatform`, and e2ee.ts defines none of the six
 //       e2eePlatform functions itself.
 //   F1. Every `new E2EESendError(` whose message is "Encryption status could
 //       not be verified. ..." and that sits in a `catch` (same function) binds
@@ -61,6 +61,43 @@
 //       `protectorSendErrorCopy(<the binding>, Capacitor.getPlatform()) ?? "<the old text>"`,
 //       the old text being one of the two existing messages, kind "native".
 //   F2. There are exactly PROTECTOR_SITES such catch sites (L4a wired 6).
+//   R1-R7: the iOS orphaned recovery bundle (audit M2). A recovery sheet
+//   that outlives its page keeps the minted bundle for the next
+//   `e2ee_backup_refresh_if_due`, and only the webview sends that command.
+//   R1. CapacitorTransport's one `subscribeBackupBundleWaiting` member is
+//       `readonly subscribeBackupBundleWaiting =
+//       capacitorCouriersOrphanedRecovery(Capacitor.getPlatform()) ? <fn> :
+//       undefined;` (absent off iOS, so Android never subscribes; never a
+//       method, which every platform would have).
+//   R2. CapacitorTransport calls `addListener("backupBundleWaiting", ...)`
+//       once, inside that member, as exactly
+//       `addListener("backupBundleWaiting", () => callback())` (the payload
+//       is dropped), and names the event nowhere else.
+//   R3. E2EEBridge calls `subscribeBackupBundleWaiting(` once, as
+//       `this.#backupBundleWaiting = this.#transport.subscribeBackupBundleWaiting(`
+//       inside `#watchOrphanedBackup` (one), whose body starts with
+//       `if (this.#backupBundleWaiting) return;`; its one argument is a
+//       no-parameter arrow that only does `void this.#courierOrphanedBackup()`;
+//       and `this.#watchOrphanedBackup();` is called once, as a statement of
+//       the constructor (once per bridge).
+//   R4. `#onClaimResult` (one) ends with
+//       `if (this.#transport.subscribeBackupBundleWaiting) { await this.#courierOrphanedBackup(); }`
+//       (braces optional): the last statement, so after the
+//       `#replenish()` housekeeping and outside its try.
+//   R5. `this.#courierOrphanedBackup(` is called exactly twice (R3, R4).
+//   R6. `#courierOrphanedBackup` (one) is exactly
+//       `const s = this.status.get("state"); if (<terms>) return;
+//       try { await this.refreshBackupIfDue(); } catch (e) { ... }`, the
+//       `||` terms including `!this.#client.user?.id`, `!s?.enabled`,
+//       `!s?.published` (the core opens, so provisions, the store on any
+//       engine call) and `this.#claimAccepted !== true` (this connection's
+//       accepted claim: the backup PUT needs a device-bound session and the
+//       native take always clears, so a take before the claim could lose
+//       the bundle); the catch does not throw and uses its binding only as
+//       `errorName(e)`.
+//   R7. `.refreshBackupIfDue(` is called once, inside the courier, and
+//       "e2ee_backup_refresh_if_due" appears once, inside
+//       `refreshBackupIfDue()`.
 // rtc/state.tsx:
 //   C0. The file lexes to balanced braces.
 //   C1. `const shellSupported =` (one): a pure `&&` chain with the term
@@ -100,6 +137,7 @@ import { fileURLToPath } from "node:url";
 import {
   capacitorAttachmentUrl,
   capacitorClipboardImageInWebview,
+  capacitorCouriersOrphanedRecovery,
   capacitorNativeE2EE,
   mediaE2EEPlatformSupported,
   platformMediaE2EESupported,
@@ -213,6 +251,13 @@ test("capacitorClipboardImageInWebview: only Android copies in the webview", () 
   assert.equal(capacitorClipboardImageInWebview("android"), true);
   for (const platform of ["web", "", "electron", "IOS", "Android"]) {
     assert.equal(capacitorClipboardImageInWebview(platform), false, platform);
+  }
+});
+
+test("capacitorCouriersOrphanedRecovery: only iOS couriers a kept recovery bundle (audit M2)", () => {
+  assert.equal(capacitorCouriersOrphanedRecovery("ios"), true);
+  for (const platform of ["android", "web", "", "IOS", "electron"]) {
+    assert.equal(capacitorCouriersOrphanedRecovery(platform), false, platform);
   }
 });
 
@@ -670,6 +715,7 @@ const BRIDGE_KEY_PUSH_BODY = "returnthis.#transport.keyPushAvailable();";
 const PLATFORM_IMPORTS = [
   "capacitorAttachmentUrl",
   "capacitorClipboardImageInWebview",
+  "capacitorCouriersOrphanedRecovery",
   "capacitorNativeE2EE",
   "mediaE2EEPlatformSupported",
 ];
@@ -920,6 +966,320 @@ function protectorViolations(
   return out;
 }
 
+// ---- e2ee.ts rules: the iOS orphaned recovery bundle (R) -------------------
+
+const BUNDLE_EVENT = '"backupBundleWaiting"';
+const ORPHAN_MEMBER =
+  /^readonlysubscribeBackupBundleWaiting=capacitorCouriersOrphanedRecovery\(Capacitor\.getPlatform\(\)\)\?.+:undefined;$/;
+const ORPHAN_LISTENER = [BUNDLE_EVENT, "()=>callback()"];
+const WATCH_GUARD = "if(this.#backupBundleWaiting)return;";
+const WATCH_HELD =
+  "this.#backupBundleWaiting=this.#transport.subscribeBackupBundleWaiting(";
+const WATCH_CALLBACKS = [
+  "()=>{voidthis.#courierOrphanedBackup();}",
+  "()=>voidthis.#courierOrphanedBackup()",
+];
+const WATCH_CALL = "this.#watchOrphanedBackup();";
+const CLAIM_TAILS = [
+  "if(this.#transport.subscribeBackupBundleWaiting){awaitthis.#courierOrphanedBackup();}",
+  "if(this.#transport.subscribeBackupBundleWaiting)awaitthis.#courierOrphanedBackup();",
+];
+const COURIER_BODY =
+  /^const([\w$]+)=this\.status\.get\("state"\);if\((.+?)\)return;try\{awaitthis\.refreshBackupIfDue\(\);\}catch\(([\w$]+)\)\{(.*)\}$/;
+const REFRESH_COMMAND = /["'`]e2ee_backup_refresh_if_due["'`]/g;
+
+/** Index where the statement holding index `at` starts (masked code). */
+function stmtStart(code: string, at: number): number {
+  let start = at;
+  while (start > 0 && !/[;{}]/.test(code[start - 1])) start--;
+  return skipWs(code, start);
+}
+
+/** The whole statement holding index `at`, normalized ("" if unended). */
+function statementAt(m: Masked, at: number): string {
+  const start = stmtStart(m.code, at);
+  const end = stmtEnd(m.code, start);
+  return end < 0 ? "" : norm(m.text.slice(start, end + 1));
+}
+
+/** Indices of each match of `re` (global) in the masked code. */
+function hitsOf(code: string, re: RegExp): number[] {
+  return [...code.matchAll(re)].map((h) => h.index!);
+}
+
+const within = (range: [number, number] | null, at: number) =>
+  range !== null && range[0] < at && at < range[1];
+
+/**
+ * The body `[open, close]` of a method whose name ends at `after` (masked
+ * code), or null when no parameter list follows. Unlike `methodBodyAt`, the
+ * return type may hold parens, arrows and object types.
+ */
+function methodRangeAfter(
+  code: string,
+  after: number,
+): [number, number] | null {
+  let i = skipWs(code, after);
+  if (code[i] !== "(") return null;
+  for (i = matchClose(code, i) + 1; i < code.length; i++) {
+    const c = code[i];
+    if (c === "{") {
+      // `{` after `:`, `|`, `&`, `<` or `,` opens an object type.
+      if (!/[:|&<,]/.test(code[skipBack(code, i - 1)])) {
+        return [i, matchClose(code, i)];
+      }
+      i = matchClose(code, i);
+    } else if (c === "(" || c === "[") i = matchClose(code, i);
+    else if (c === ";" || (c === "=" && code[i + 1] !== ">")) return null;
+  }
+  return null;
+}
+
+function orphanTransportViolations(src: string, m: Masked): string[] {
+  const out: string[] = [];
+  const bodies = classBodies(m.code, "CapacitorTransport");
+  if (bodies.length !== 1) return out; // G1 reports it
+  const body = bodies[0];
+  const line = lineOf(src, body[0]);
+
+  // R1: a property that is undefined off iOS, never a method.
+  let range: [number, number] | null = null;
+  const member = oneMember(m, body, "subscribeBackupBundleWaiting");
+  if (typeof member === "string") out.push(`R1 line ${line}: ${member}`);
+  else {
+    const method = methodRangeAfter(
+      m.code,
+      member + "subscribeBackupBundleWaiting".length,
+    );
+    const end = stmtEnd(m.code, member);
+    range = method ?? (end < 0 ? null : [member, end]);
+    const stmt = method ? "a method" : memberStatement(m, member);
+    if (method || !ORPHAN_MEMBER.test(stmt)) {
+      out.push(
+        `R1 line ${lineOf(src, member)}: subscribeBackupBundleWaiting is` +
+          ` \`${stmt}\`, want readonly subscribeBackupBundleWaiting =` +
+          " capacitorCouriersOrphanedRecovery(Capacitor.getPlatform()) ?" +
+          " <listener> : undefined; (absent off iOS)",
+      );
+    }
+  }
+
+  // R2: one listener, for exactly this event, payload dropped.
+  const listeners = hitsOf(
+    m.code.slice(body[0], body[1]),
+    /\.\s*addListener\s*\(/g,
+  )
+    .map((i) => m.code.indexOf("(", body[0] + i))
+    .filter((paren) => items(m, paren)[0] === BUNDLE_EVENT);
+  if (listeners.length !== 1) {
+    out.push(
+      `R2 line ${line}: ${listeners.length} addListener(${BUNDLE_EVENT})` +
+        " calls in CapacitorTransport, want 1",
+    );
+  } else {
+    const paren = listeners[0];
+    const args = items(m, paren);
+    if (JSON.stringify(args) !== JSON.stringify(ORPHAN_LISTENER)) {
+      out.push(
+        `R2 line ${lineOf(src, paren)}: the listener is` +
+          ` \`addListener(${args.join(",")})\`, want` +
+          ` addListener(${BUNDLE_EVENT}, () => callback()) (payload dropped)`,
+      );
+    }
+    if (typeof member !== "string" && !within(range, paren)) {
+      out.push(
+        `R2 line ${lineOf(src, paren)}: the listener is outside` +
+          " subscribeBackupBundleWaiting",
+      );
+    }
+  }
+  const named = m.text
+    .slice(body[0], body[1])
+    .match(/["'`]backupBundleWaiting["'`]/g);
+  if ((named?.length ?? 0) !== 1) {
+    out.push(
+      `R2 line ${line}: ${BUNDLE_EVENT} is named ${named?.length ?? 0}` +
+        " times in CapacitorTransport, want 1",
+    );
+  }
+  return out;
+}
+
+function orphanBridgeViolations(src: string, m: Masked): string[] {
+  const out: string[] = [];
+  const bridges = classBodies(m.code, "E2EEBridge");
+  if (bridges.length !== 1) return out; // G8 reports it
+  const bridge = bridges[0];
+
+  // R3: one held subscription, set up once from the constructor.
+  const watch = privateMethodBodies(m.code, "watchOrphanedBackup");
+  if (watch.length !== 1) {
+    out.push(`R3 #watchOrphanedBackup defined ${watch.length} times`);
+  } else if (!norm(m.text.slice(watch[0][0] + 1)).startsWith(WATCH_GUARD)) {
+    out.push(
+      `R3 line ${lineOf(src, watch[0][0])}: #watchOrphanedBackup does not` +
+        " start with if (this.#backupBundleWaiting) return;",
+    );
+  }
+  const subs = hitsOf(
+    m.code,
+    /\bsubscribeBackupBundleWaiting\s*(?:\?\.\s*)?\(/g,
+  ).filter((i) => within(bridge, i));
+  if (subs.length !== 1) {
+    out.push(
+      `R3 ${subs.length} subscribeBackupBundleWaiting( calls in E2EEBridge,` +
+        " want 1",
+    );
+  } else {
+    const at = subs[0];
+    const paren = m.code.indexOf("(", at);
+    const line = lineOf(src, at);
+    if (watch.length === 1 && !within(watch[0], at)) {
+      out.push(
+        `R3 line ${line}: the subscription is not in #watchOrphanedBackup`,
+      );
+    }
+    const head = norm(m.text.slice(stmtStart(m.code, at), paren + 1));
+    if (head !== WATCH_HELD) {
+      out.push(
+        `R3 line ${line}: \`${head}\` does not hold the subscription in` +
+          " this.#backupBundleWaiting",
+      );
+    }
+    const args = items(m, paren);
+    if (args.length !== 1 || !WATCH_CALLBACKS.includes(args[0])) {
+      out.push(
+        `R3 line ${line}: the callback is \`${args.join(",")}\`, want` +
+          " () => { void this.#courierOrphanedBackup(); } (no payload)",
+      );
+    }
+  }
+  const ctor = oneMember(m, bridge, "constructor");
+  const ctorBody =
+    typeof ctor === "string" ? null : methodBodyAt(m.code, ctor, "constructor");
+  const watchCalls = hitsOf(m.code, /\bthis\s*\.\s*#watchOrphanedBackup\s*\(/g);
+  if (
+    watchCalls.length !== 1 ||
+    !within(ctorBody, watchCalls[0]) ||
+    enclosingBlocks(m.code, watchCalls[0]).at(-1) !== ctorBody?.[0] ||
+    statementAt(m, watchCalls[0]) !== WATCH_CALL
+  ) {
+    out.push(
+      `R3 this.#watchOrphanedBackup( called ${watchCalls.length} times; want` +
+        " once, as a statement of the E2EEBridge constructor",
+    );
+  }
+
+  // R4: the post-claim fallback ends the successful-claim path.
+  const claim = privateMethodBodies(m.code, "onClaimResult");
+  if (claim.length !== 1) {
+    out.push(`R4 #onClaimResult defined ${claim.length} times`);
+  } else {
+    const body = norm(m.text.slice(claim[0][0] + 1, claim[0][1]));
+    if (!CLAIM_TAILS.some((t) => body.endsWith(t))) {
+      out.push(
+        `R4 line ${lineOf(src, claim[0][0])}: #onClaimResult does not end` +
+          " with if (this.#transport.subscribeBackupBundleWaiting) await" +
+          " this.#courierOrphanedBackup();",
+      );
+    }
+  }
+
+  // R5: two callers, the event and the claim.
+  const courierCalls = hitsOf(
+    m.code,
+    /\bthis\s*\.\s*#courierOrphanedBackup\s*\(/g,
+  );
+  if (courierCalls.length !== 2) {
+    out.push(
+      `R5 this.#courierOrphanedBackup( called ${courierCalls.length} times,` +
+        " want 2 (the event and the claim)",
+    );
+  }
+
+  // R6: guarded before any native call; best effort.
+  const courier = privateMethodBodies(m.code, "courierOrphanedBackup");
+  if (courier.length !== 1) {
+    out.push(`R6 #courierOrphanedBackup defined ${courier.length} times`);
+  } else {
+    const line = lineOf(src, courier[0][0]);
+    const body = norm(m.text.slice(courier[0][0] + 1, courier[0][1]));
+    const shape = COURIER_BODY.exec(body);
+    if (!shape) {
+      out.push(
+        `R6 line ${line}: #courierOrphanedBackup is \`${body}\`, want const s` +
+          ' = this.status.get("state"); if (...) return; try { await' +
+          " this.refreshBackupIfDue(); } catch (e) { ... }",
+      );
+    } else {
+      const [, s, cond, binding] = shape;
+      const terms = cond.split("||");
+      const needs: [string, string[]][] = [
+        ["user", ["!this.#client.user?.id"]],
+        ["enabled", [`!${s}?.enabled`, `!${s}.enabled`]],
+        ["published", [`!${s}?.published`, `!${s}.published`]],
+        ["the accepted claim", ["this.#claimAccepted!==true"]],
+      ];
+      for (const [what, forms] of needs) {
+        if (!forms.some((f) => terms.includes(f))) {
+          out.push(`R6 line ${line}: the guard does not check ${what}`);
+        }
+      }
+      // The handler from the masked code: strings blanked, spacing kept.
+      const [open, close] = courier[0];
+      const head = /\bcatch\s*\(\s*[\w$]+\s*\)\s*\{/.exec(
+        m.code.slice(open, close),
+      )!;
+      const brace = open + head.index + head[0].length - 1;
+      const handler = m.code.slice(brace + 1, matchClose(m.code, brace));
+      const b = escapeRe(binding);
+      const named = new RegExp(`\\berrorName\\s*\\(\\s*${b}\\s*\\)`, "g");
+      if (/\bthrow\b/.test(handler)) {
+        out.push(`R6 line ${line}: the catch throws`);
+      }
+      if (!named.test(handler)) {
+        out.push(
+          `R6 line ${line}: the catch does not log errorName(${binding})`,
+        );
+      } else if (
+        new RegExp(`(?<![\\w$.#])${b}(?![\\w$])`).test(
+          handler.replace(named, ""),
+        )
+      ) {
+        out.push(
+          `R6 line ${line}: the catch uses ${binding} beyond errorName(${binding})`,
+        );
+      }
+    }
+  }
+
+  // R7: refreshBackupIfDue has one caller, the courier.
+  const refreshCalls = hitsOf(m.code, /\.\s*refreshBackupIfDue\s*\(/g);
+  if (
+    refreshCalls.length !== 1 ||
+    courier.length !== 1 ||
+    !within(courier[0], refreshCalls[0])
+  ) {
+    out.push(
+      `R7 .refreshBackupIfDue( called ${refreshCalls.length} times; want` +
+        " once, inside #courierOrphanedBackup",
+    );
+  }
+  const refresh = oneMember(m, bridge, "refreshBackupIfDue");
+  const refreshBody =
+    typeof refresh === "string"
+      ? null
+      : methodBodyAt(m.code, refresh, "refreshBackupIfDue");
+  const commands = hitsOf(m.text, REFRESH_COMMAND);
+  if (commands.length !== 1 || !within(refreshBody, commands[0])) {
+    out.push(
+      `R7 "e2ee_backup_refresh_if_due" appears ${commands.length} times;` +
+        " want once, inside refreshBackupIfDue()",
+    );
+  }
+  return out;
+}
+
 function tsViolations(src: string, expectedSites: number): string[] {
   const m = maskTs(src);
   return [
@@ -927,6 +1287,8 @@ function tsViolations(src: string, expectedSites: number): string[] {
     ...transportViolations(src, m),
     ...gateViolations(src, m),
     ...protectorViolations(src, m, expectedSites),
+    ...orphanTransportViolations(src, m),
+    ...orphanBridgeViolations(src, m),
   ];
 }
 
@@ -1242,10 +1604,12 @@ import { Capacitor, registerPlugin } from "@capacitor/core";
 import {
   capacitorAttachmentUrl,
   capacitorClipboardImageInWebview,
+  capacitorCouriersOrphanedRecovery,
   capacitorNativeE2EE,
   mediaE2EEPlatformSupported,
 } from "./e2eePlatform";
 import { protectorSendErrorCopy } from "./e2eeProtectorCopy";
+import { errorName } from "./e2eeSendSettle";
 
 // A comment does not count: return Capacitor.getPlatform() === "android";
 export function nativeE2EEAvailable(): boolean {
@@ -1280,6 +1644,21 @@ class CapacitorTransport implements NativeTransport {
   );
   #plugin = registerPlugin<E2eeCapacitorPlugin>("E2ee");
 
+  // iOS only. A comment does not count: async subscribeBackupBundleWaiting() {}
+  readonly subscribeBackupBundleWaiting = capacitorCouriersOrphanedRecovery(
+    Capacitor.getPlatform(),
+  )
+    ? async (callback: () => void): Promise<() => void> => {
+        const handle = await this.#plugin.addListener(
+          "backupBundleWaiting",
+          () => callback(),
+        );
+        return () => {
+          void handle.remove();
+        };
+      }
+    : undefined;
+
   async invoke<T>(command: string): Promise<T> {
     try {
       const { json } = await this.#plugin.call({ __cmd: command });
@@ -1299,9 +1678,83 @@ class CapacitorTransport implements NativeTransport {
       Capacitor.isNativePlatform() && Capacitor.getPlatform() === "android"
     );
   }
+
+  async subscribeKeysChanged(
+    callback: (event: { group_id: string; epoch: number }) => void,
+  ): Promise<() => void> {
+    const handle = await this.#plugin.addListener("callKeysChanged", callback);
+    return () => {
+      void handle.remove();
+    };
+  }
 }
 
 export class E2EEBridge implements E2EEAdapter {
+  #backupBundleWaiting: Promise<() => void> | null = null;
+
+  constructor(client: Client) {
+    this.#client = client;
+    this.#transport = createNativeTransport();
+    // this.#watchOrphanedBackup(); in a comment does not count
+    this.#watchOrphanedBackup();
+  }
+
+  async #onClaimResult(accepted: boolean): Promise<void> {
+    if (!accepted) {
+      console.error("[e2ee] device claim REJECTED");
+      return;
+    }
+    try {
+      await this.#reconcileDevices(this.#client.user!.id);
+      await this.#replenish();
+    } catch (error) {
+      console.error("[e2ee] post-claim housekeeping failed", error);
+    }
+
+    if (this.#transport.subscribeBackupBundleWaiting) {
+      await this.#courierOrphanedBackup();
+    }
+  }
+
+  async refreshBackupIfDue(): Promise<void> {
+    const selfId = this.#client.user?.id;
+    if (!selfId) return;
+    const bundle = await this.#invoke<BackupBundle | null>(
+      "e2ee_backup_refresh_if_due",
+      { userId: selfId },
+    );
+    if (bundle) await this.#putBackup(bundle);
+  }
+
+  #watchOrphanedBackup(): void {
+    if (this.#backupBundleWaiting) return;
+    if (!this.#transport.subscribeBackupBundleWaiting) return;
+    this.#backupBundleWaiting = this.#transport
+      .subscribeBackupBundleWaiting(() => {
+        void this.#courierOrphanedBackup();
+      })
+      .catch((error: unknown) => {
+        console.error("[e2ee] listener failed:", errorName(error));
+        return () => {};
+      });
+  }
+
+  async #courierOrphanedBackup(): Promise<void> {
+    const state = this.status.get("state");
+    if (
+      !this.#client.user?.id ||
+      !state?.enabled ||
+      !state.published ||
+      this.#claimAccepted !== true
+    )
+      return;
+    try {
+      await this.refreshBackupIfDue();
+    } catch (error) {
+      console.error("[e2ee] orphaned backup upload failed:", errorName(error));
+    }
+  }
+
   async sendDm(peerId: string): Promise<void> {
     let verdict: SendModeVerdict;
     try {
@@ -1383,6 +1836,61 @@ const DM_SITE = `    } catch (error) {
       throw new E2EESendError(
         protectorSendErrorCopy(error, Capacitor.getPlatform()) ??
           "Encryption status could not be verified. The message was NOT sent.",`;
+const ORPHAN_GATE = `capacitorCouriersOrphanedRecovery(
+    Capacitor.getPlatform(),
+  )`;
+const ORPHAN_MEMBER_SRC = `  readonly subscribeBackupBundleWaiting = capacitorCouriersOrphanedRecovery(
+    Capacitor.getPlatform(),
+  )
+    ? async (callback: () => void): Promise<() => void> => {
+        const handle = await this.#plugin.addListener(
+          "backupBundleWaiting",
+          () => callback(),
+        );
+        return () => {
+          void handle.remove();
+        };
+      }
+    : undefined;
+`;
+const ORPHAN_METHOD_SRC = `  async subscribeBackupBundleWaiting(
+    callback: () => void,
+  ): Promise<() => void> {
+    const handle = await this.#plugin.addListener(
+      "backupBundleWaiting",
+      () => callback(),
+    );
+    return () => {
+      void handle.remove();
+    };
+  }
+`;
+const CLAIM_COURIER = `
+    if (this.#transport.subscribeBackupBundleWaiting) {
+      await this.#courierOrphanedBackup();
+    }
+`;
+const CLAIM_BEFORE = `    }
+    if (this.#transport.subscribeBackupBundleWaiting) {
+      await this.#courierOrphanedBackup();
+    }
+    try {
+      await this.#reconcileDevices(`;
+const COURIER_GUARD = `    if (
+      !this.#client.user?.id ||
+      !state?.enabled ||
+      !state.published ||
+      this.#claimAccepted !== true
+    )
+      return;
+`;
+const COURIER_LOG =
+  '      console.error("[e2ee] orphaned backup upload failed:", errorName(error));\n';
+const COURIER_TRY = `    try {
+      await this.refreshBackupIfDue();
+    } catch (error) {
+${COURIER_LOG}    }
+`;
 
 const TS_MUTATIONS: Mutation[] = [
   {
@@ -1756,6 +2264,293 @@ const TS_MUTATIONS: Mutation[] = [
     ],
     rules: ["F1", "F2"],
     expected: /F1 .*want protectorSendErrorCopy\(again/,
+  },
+  {
+    label: "the orphan predicate no longer imported",
+    swaps: [["  capacitorCouriersOrphanedRecovery,\n", ""]],
+    rules: ["G9"],
+    expected: /capacitorCouriersOrphanedRecovery is not imported/,
+  },
+  {
+    label: "the bundle listener a plain method, so on every platform",
+    swaps: [[ORPHAN_MEMBER_SRC, ORPHAN_METHOD_SRC]],
+    rules: ["R1"],
+    expected: /subscribeBackupBundleWaiting is `a method`/,
+  },
+  {
+    label: "the bundle listener gated on a fixed platform",
+    swaps: [[ORPHAN_GATE, 'capacitorCouriersOrphanedRecovery("ios")']],
+    rules: ["R1"],
+    expected: /R1 .*absent off iOS/,
+  },
+  {
+    label: "the bundle listener gated on any native platform (Android too)",
+    swaps: [[ORPHAN_GATE, "Capacitor.isNativePlatform()"]],
+    rules: ["R1"],
+    expected: /R1 .*absent off iOS/,
+  },
+  {
+    label: "the bundle listener gate negated",
+    swaps: [
+      [
+        "= capacitorCouriersOrphanedRecovery(",
+        "= !capacitorCouriersOrphanedRecovery(",
+      ],
+    ],
+    rules: ["R1"],
+    expected: /R1 .*absent off iOS/,
+  },
+  {
+    label: "a no-op listener off iOS instead of no member",
+    swaps: [["    : undefined;\n", "    : async () => () => {};\n"]],
+    rules: ["R1"],
+    expected: /R1 .*absent off iOS/,
+  },
+  {
+    label: "the listener on another event name",
+    swaps: [['"backupBundleWaiting",', '"backupBundleReady",']],
+    rules: ["R2"],
+    expected: /0 addListener\("backupBundleWaiting"\) calls/,
+  },
+  {
+    label: "the listener forwards the payload",
+    swaps: [["() => callback(),", "(event: unknown) => callback(event),"]],
+    rules: ["R2"],
+    expected: /payload dropped/,
+  },
+  {
+    label: "the callback handed straight to the plugin",
+    swaps: [["() => callback(),", "callback,"]],
+    rules: ["R2"],
+    expected: /payload dropped/,
+  },
+  {
+    label: "a second listener for the event",
+    swaps: [
+      [
+        "  keyPushAvailable(): boolean {\n    // iOS answers",
+        "  async alsoWaiting(): Promise<void> {\n" +
+          '    await this.#plugin.addListener("backupBundleWaiting", () => {});\n' +
+          "  }\n\n  keyPushAvailable(): boolean {\n    // iOS answers",
+      ],
+    ],
+    rules: ["R2"],
+    expected: /2 addListener\("backupBundleWaiting"\) calls/,
+  },
+  {
+    label: "the bridge never subscribes (constructor call removed)",
+    swaps: [["    this.#watchOrphanedBackup();\n", ""]],
+    rules: ["R3"],
+    expected: /#watchOrphanedBackup\( called 0 times/,
+  },
+  {
+    label: "the bridge subscribes on every connect",
+    swaps: [
+      [
+        "    this.#watchOrphanedBackup();\n",
+        '    client.on("ready", () => this.#watchOrphanedBackup());\n',
+      ],
+    ],
+    rules: ["R3"],
+    expected: /once, as a statement of the E2EEBridge constructor/,
+  },
+  {
+    label: "the once-guard dropped",
+    swaps: [["    if (this.#backupBundleWaiting) return;\n", ""]],
+    rules: ["R3"],
+    expected: /does not start with if \(this\.#backupBundleWaiting\)/,
+  },
+  {
+    label: "the subscription not held",
+    swaps: [
+      [
+        "    this.#backupBundleWaiting = this.#transport\n",
+        "    void this.#transport\n",
+      ],
+    ],
+    rules: ["R3"],
+    expected: /does not hold the subscription/,
+  },
+  {
+    label: "the subscription outside #watchOrphanedBackup",
+    swaps: [
+      [
+        "    if (this.#backupBundleWaiting) return;\n" +
+          "    if (!this.#transport.subscribeBackupBundleWaiting) return;\n",
+        "    if (this.#backupBundleWaiting) return;\n  }\n\n" +
+          "  #listenLater(): void {\n" +
+          "    if (!this.#transport.subscribeBackupBundleWaiting) return;\n",
+      ],
+    ],
+    rules: ["R3"],
+    expected: /the subscription is not in #watchOrphanedBackup/,
+  },
+  {
+    label: "the event callback takes the payload",
+    swaps: [
+      [
+        ".subscribeBackupBundleWaiting(() => {",
+        ".subscribeBackupBundleWaiting((payload) => {",
+      ],
+    ],
+    rules: ["R3"],
+    expected: /\(no payload\)/,
+  },
+  {
+    label: "the post-claim courier removed",
+    swaps: [[CLAIM_COURIER, ""]],
+    rules: ["R4", "R5"],
+    expected: /R4 .*does not end with/,
+  },
+  {
+    label: "the post-claim courier on every platform",
+    swaps: [[CLAIM_COURIER, "\n    await this.#courierOrphanedBackup();\n"]],
+    rules: ["R4"],
+    expected: /R4 .*does not end with/,
+  },
+  {
+    label: "the post-claim courier before the housekeeping",
+    swaps: [
+      [CLAIM_COURIER, "\n"],
+      ["    }\n    try {\n      await this.#reconcileDevices(", CLAIM_BEFORE],
+    ],
+    rules: ["R4"],
+    expected: /R4 .*does not end with/,
+  },
+  {
+    label: "the post-claim courier inside the housekeeping try",
+    swaps: [
+      [CLAIM_COURIER, "\n"],
+      [
+        "      await this.#replenish();\n",
+        "      await this.#replenish();\n" +
+          "      if (this.#transport.subscribeBackupBundleWaiting) {\n" +
+          "        await this.#courierOrphanedBackup();\n      }\n",
+      ],
+    ],
+    rules: ["R4"],
+    expected: /R4 .*does not end with/,
+  },
+  {
+    label: "the post-claim courier on the rejected path",
+    swaps: [
+      [CLAIM_COURIER, "\n"],
+      [
+        '      console.error("[e2ee] device claim REJECTED");\n',
+        '      console.error("[e2ee] device claim REJECTED");\n' +
+          "      await this.#courierOrphanedBackup();\n",
+      ],
+    ],
+    rules: ["R4"],
+    expected: /R4 .*does not end with/,
+  },
+  {
+    label: "a third courier call, on connect",
+    swaps: [
+      [
+        "    this.#watchOrphanedBackup();\n",
+        "    this.#watchOrphanedBackup();\n" +
+          "    void this.#courierOrphanedBackup();\n",
+      ],
+    ],
+    rules: ["R5"],
+    expected: /called 3 times, want 2/,
+  },
+  {
+    label: "the courier guard dropped",
+    swaps: [[COURIER_GUARD, ""]],
+    rules: ["R6"],
+    expected: /R6 .*#courierOrphanedBackup is/,
+  },
+  {
+    label: "the courier guard does not require published",
+    swaps: [["      !state.published ||\n", ""]],
+    rules: ["R6"],
+    expected: /the guard does not check published/,
+  },
+  {
+    label: "the courier does not wait for the accepted claim",
+    swaps: [[" ||\n      this.#claimAccepted !== true\n", "\n"]],
+    rules: ["R6"],
+    expected: /the guard does not check the accepted claim/,
+  },
+  {
+    label: "the courier lets a claim that has not landed (null) through",
+    swaps: [
+      ["this.#claimAccepted !== true\n", "this.#claimAccepted === false\n"],
+    ],
+    rules: ["R6"],
+    expected: /the guard does not check the accepted claim/,
+  },
+  {
+    label: "the courier guard does not require enabled",
+    swaps: [["      !state?.enabled ||\n", "      !state ||\n"]],
+    rules: ["R6"],
+    expected: /the guard does not check enabled/,
+  },
+  {
+    label: "the courier guard does not require a signed-in user",
+    swaps: [["      !this.#client.user?.id ||\n", ""]],
+    rules: ["R6"],
+    expected: /the guard does not check user/,
+  },
+  {
+    label: "the courier asks native before the guard",
+    swaps: [
+      [COURIER_GUARD, ""],
+      [
+        "    }\n  }\n\n  async sendDm(",
+        "    }\n" + COURIER_GUARD + "  }\n\n  async sendDm(",
+      ],
+    ],
+    rules: ["R6"],
+    expected: /R6 .*#courierOrphanedBackup is/,
+  },
+  {
+    label: "the courier does not catch",
+    swaps: [[COURIER_TRY, "    await this.refreshBackupIfDue();\n"]],
+    rules: ["R6"],
+    expected: /R6 .*#courierOrphanedBackup is/,
+  },
+  {
+    label: "the courier catch rethrows",
+    swaps: [[COURIER_LOG, COURIER_LOG + "      throw error;\n"]],
+    rules: ["R6"],
+    expected: /the catch throws/,
+  },
+  {
+    label: "the courier catch logs the raw error",
+    swaps: [
+      [
+        COURIER_LOG,
+        '      console.error("[e2ee] orphaned backup upload failed:", error);\n',
+      ],
+    ],
+    rules: ["R6"],
+    expected: /the catch does not log errorName\(error\)/,
+  },
+  {
+    label: "a second refreshBackupIfDue caller",
+    swaps: [
+      [
+        "    this.#watchOrphanedBackup();\n",
+        "    this.#watchOrphanedBackup();\n    void this.refreshBackupIfDue();\n",
+      ],
+    ],
+    rules: ["R7"],
+    expected: /refreshBackupIfDue\( called 2 times/,
+  },
+  {
+    label: "the refresh command sent outside refreshBackupIfDue",
+    swaps: [
+      [
+        "    this.#watchOrphanedBackup();\n",
+        "    this.#watchOrphanedBackup();\n" +
+          '    void this.#invoke("e2ee_backup_refresh_if_due", {});\n',
+      ],
+    ],
+    rules: ["R7"],
+    expected: /"e2ee_backup_refresh_if_due" appears 2 times/,
   },
 ];
 
@@ -2279,7 +3074,15 @@ test(`e2ee.ts: all ${PROTECTOR_SITES} unverifiable-status catches try the protec
   assert.deepEqual(ruleFilter(realTs(), ["F1", "F2"]), []);
 });
 
-test("e2ee.ts: the whole scan is clean (G0-G9, F1-F2; G0 = it lexed)", () => {
+test("e2ee.ts: CapacitorTransport has the backupBundleWaiting listener only on iOS, and drops its payload", () => {
+  assert.deepEqual(ruleFilter(realTs(), ["R1", "R2"]), []);
+});
+
+test("e2ee.ts: the bridge uploads an orphaned recovery bundle on the event and after a claim, guarded and best effort", () => {
+  assert.deepEqual(ruleFilter(realTs(), ["R3", "R4", "R5", "R6", "R7"]), []);
+});
+
+test("e2ee.ts: the whole scan is clean (G0-G9, F1-F2, R1-R7; G0 = it lexed)", () => {
   assert.deepEqual(realTs(), []);
 });
 
