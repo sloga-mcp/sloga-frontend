@@ -27,6 +27,11 @@ export type HomeBlockDef = {
    * others out. Every card is offered unless it says otherwise.
    */
   offered?: () => boolean;
+  /**
+   * Whether the card is still fetching what it shows, so Customize does not
+   * call it empty yet (a card switched back on fetches again)
+   */
+  loading?: () => boolean;
   /** Distance of the move/hide controls from the right edge (cards with their own X) */
   inset?: number;
   render: () => JSX.Element;

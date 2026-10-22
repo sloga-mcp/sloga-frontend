@@ -227,14 +227,17 @@ export function HappeningNow() {
                           .join(" · ")}
                       </RowName>
                       <RowMeta>
+                        {/* keyed: the name is read once per sharer, so a
+                            different person starting to share redraws it */}
                         <Show
                           when={sharer()}
+                          keyed
                           fallback={people()
                             .map((user) => user.displayName)
                             .join(", ")}
                         >
                           {(user) => {
-                            const name = user().displayName;
+                            const name = user.displayName;
                             return (
                               <Trans>{name} is sharing their screen</Trans>
                             );

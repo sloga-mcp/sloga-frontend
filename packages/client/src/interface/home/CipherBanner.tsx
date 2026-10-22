@@ -255,7 +255,11 @@ export function createCipherBannerState(enabled: () => boolean) {
     }
   }
 
-  return { visible, dismiss, stats };
+  // First load only ("pending"; a refetch with stats already here is
+  // "refreshing"). `state` never reads the value, so it cannot suspend.
+  const loading = () => stats.state === "pending";
+
+  return { visible, dismiss, stats, loading };
 }
 
 /**

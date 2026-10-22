@@ -448,6 +448,7 @@ export function HomePage() {
     cipher: {
       title: () => t`Cipher`,
       available: cipher.visible,
+      loading: cipher.loading,
       // store builds never link to payments, so never list the card there
       offered: allowsDonationLinks,
       inset: 48,
@@ -476,6 +477,7 @@ export function HomePage() {
     discover: {
       title: () => t`Servers you might like`,
       available: () => discover.picks().length > 0,
+      loading: discover.loading,
       render: () => <DiscoverPicks state={discover} />,
     },
     staff: {
@@ -492,6 +494,7 @@ export function HomePage() {
     streamers: {
       title: () => t`Founding Streamers`,
       available: () => streamers.tiles().length > 0,
+      loading: streamers.loading,
       // clear of the row's own "See all"
       inset: 76,
       render: () => <StreamerRow state={streamers} />,

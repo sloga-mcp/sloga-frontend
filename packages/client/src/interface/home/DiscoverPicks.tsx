@@ -77,7 +77,11 @@ export function createDiscoverPicksState(enabled: () => boolean) {
     );
   });
 
-  return { picks };
+  // First load only ("pending"; a refetch with a page already here is
+  // "refreshing"). `state` never reads the value, so it cannot suspend.
+  const loading = () => page.state === "pending";
+
+  return { picks, loading };
 }
 
 /**

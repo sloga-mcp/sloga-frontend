@@ -309,7 +309,11 @@ export function UpcomingBlock(props: {
   const state = useState();
   const navigate = useNavigate();
 
-  /** Where "Schedule an event" goes: the first server on the rail */
+  /**
+   * Where "Schedule an event" goes: the first server on the rail. Any member
+   * may create events today; keep this in step with `canCreate` in
+   * ServerEvents.tsx if that ever needs a permission.
+   */
   const scheduleServer = () => {
     const c = client();
     return c ? state.ordering.orderedServers(c)[0] : undefined;

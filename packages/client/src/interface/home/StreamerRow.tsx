@@ -403,7 +403,11 @@ export function createStreamerRowState(enabled: () => boolean) {
     [],
   );
 
-  return { tiles };
+  // First load only: a poll refreshing a list already here is "refreshing",
+  // not "pending". `state` never reads the value, so it cannot suspend.
+  const loading = () => streamers.state === "pending";
+
+  return { tiles, loading };
 }
 
 /**

@@ -124,7 +124,8 @@ export function CustomizeHome(props: {
               <Show
                 when={
                   !state.homeLayout.isHidden(id) &&
-                  !props.blocks[id].available()
+                  !props.blocks[id].available() &&
+                  !props.blocks[id].loading?.()
                 }
               >
                 <Note>
