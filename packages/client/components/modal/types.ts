@@ -1,4 +1,5 @@
 import { TrackReference } from "solid-livekit-components";
+import type { ImportSource } from "stoat.js";
 import {
   API,
   Bot,
@@ -43,6 +44,10 @@ export type Modals =
       /** Prefill and lock the username (e.g. from a context menu), leaving
        *  only the note to fill in */
       user?: User;
+    }
+  | {
+      type: "add_friend_to_group";
+      userId: string;
     }
   | {
       type: "add_members_to_group";
@@ -100,6 +105,8 @@ export type Modals =
   | {
       type: "create_group";
       client: Client;
+      /** Users to pre-select (e.g. "New group chat" from a friend row) */
+      initialUsers?: string[];
     }
   | {
       type: "create_thread";
@@ -157,6 +164,16 @@ export type Modals =
       message: Message;
     }
   | {
+      type: "friend_groups";
+      /** When set, show per-group checkboxes assigning this friend */
+      userId?: string;
+    }
+  | {
+      type: "friend_category";
+      /** Manage this category; create a new one when omitted */
+      groupId?: string;
+    }
+  | {
       type: "forward_message";
       /** Message to forward (server copies an immutable snapshot) */
       message: Message;
@@ -208,6 +225,19 @@ export type Modals =
        */
       type: "import_discord";
       client: Client;
+    }
+  | {
+      /**
+       * Import a server from another platform (Stoat, Fluxer, Matrix) via the
+       * per-source import bot. Flag-gated per source on
+       * `features.import_sources`.
+       */
+      type: "import_source";
+      client: Client;
+      /**
+       * Source to open directly; when absent the modal shows the source picker.
+       */
+      source?: ImportSource;
     }
   | {
       type: "create_webhook";

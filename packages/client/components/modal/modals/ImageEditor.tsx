@@ -1,3 +1,4 @@
+import { useWindowCtx } from "@revolt/client/windowCtx";
 import { Show, createSignal, onMount } from "solid-js";
 import { Dynamic, Portal } from "solid-js/web";
 
@@ -32,7 +33,7 @@ export function ImageEditorModal(
   });
 
   return (
-    <Portal mount={document.getElementById("floating")!}>
+    <Portal mount={useWindowCtx().floatingMount()}>
       <Dialog.Scrim dark padding={false} overflow={false} show={props.show}>
         <Show
           when={core()}

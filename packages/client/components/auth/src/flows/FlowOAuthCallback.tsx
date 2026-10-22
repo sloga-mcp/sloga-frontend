@@ -7,7 +7,7 @@ import { State, TransitionType } from "@revolt/client/Controller";
 import { CONFIGURATION } from "@revolt/common";
 import { normalizeReferralCode } from "@revolt/common/lib/referralCode";
 import { useModals } from "@revolt/modal";
-import { Navigate } from "@revolt/routing";
+import { Navigate, useNavigate } from "@revolt/routing";
 import {
   Button,
   CircularProgress,
@@ -314,7 +314,9 @@ function ChooseUsername() {
 export default function FlowOAuthCallback() {
   const state = useState();
   const modals = useModals();
-  const { lifecycle, isLoggedIn, completeOauth } = useClientLifecycle();
+  const navigate = useNavigate();
+  const { lifecycle, isLoggedIn, isError, completeOauth } =
+    useClientLifecycle();
 
   const [error, setError] = createSignal<string>();
 
@@ -385,6 +387,35 @@ export default function FlowOAuthCallback() {
             </Button>
           </a>
         </Row>
+      </Match>
+      {/* The login lifecycle can end in State.Error (a server error on the
+          socket, or a failed onboarding check), which would otherwise leave
+          the spinner up forever. Dismissing goes back to Ready, which this
+          page doesn't render, so the button also leads back to the login.
+          It navigates in onPress rather than through an anchor: a keyboard
+          press never clicks a wrapping link. It replaces the history entry
+          so Back does not return to the callback and resend the spent code. */}
+      <Match when={isError()}>
+        <Switch fallback={"an unknown error occurred"}>
+          <Match when={lifecycle.permanentError === "InvalidSession"}>
+            <h1>
+              <Trans>You were logged out!</Trans>
+            </h1>
+          </Match>
+        </Switch>
+
+        <Button
+          variant="filled"
+          bg="#FF8A00"
+          onPress={() => {
+            lifecycle.transition({
+              type: TransitionType.Dismiss,
+            });
+            navigate("/login/auth", { replace: true });
+          }}
+        >
+          <Trans>OK</Trans>
+        </Button>
       </Match>
       <Match when={lifecycle.state() === State.Onboarding}>
         <ChooseUsername />

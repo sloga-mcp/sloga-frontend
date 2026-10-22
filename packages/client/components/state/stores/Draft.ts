@@ -109,15 +109,36 @@ export type TypeDraft = {
   outbox: Record<string, UnsentMessage[]>;
 
   /**
-   * Current message being edited
-   * or used as a marker to load newest message as editor
+   * Message being edited, per channel. Kept per channel so a composer in one
+   * window can't start or end an edit in another window's conversation.
    */
-  editingMessageId?: string | true;
+  editing?: Record<string, EditingState>;
+};
+
+export type EditingState = {
+  /**
+   * ID of the message being edited, or `true` as a marker for the channel's
+   * message list to open the newest own message in the editor
+   */
+  id: string | true;
 
   /**
-   * Value of message currently being edited
+   * Current value of the editor
    */
-  editingMessageContent?: string;
+  content?: string;
+};
+
+/**
+ * Composer setter that replaces the editor contents (`[text]`) or focuses it
+ * (`["_focus"]`)
+ */
+export type NodeReplacementSetter = Setter<
+  readonly [string | "_focus"] | undefined
+>;
+
+type NodeReplacementEntry = {
+  channelId: string;
+  setter: NodeReplacementSetter;
 };
 
 /**
@@ -171,7 +192,38 @@ export class Draft extends AbstractStore<"draft", TypeDraft> {
    */
   private attachQueue: Promise<void> = Promise.resolve();
 
-  _setNodeReplacement?: Setter<readonly [string | "_focus"] | undefined>;
+  /**
+   * Mounted composers, oldest first. Each window renders its own composer, so
+   * the same channel may appear more than once; the newest entry wins.
+   */
+  private nodeReplacements: NodeReplacementEntry[] = [];
+
+  /**
+   * Mirror of `nodeReplacements` read only by `hasNodeReplacement()`, so menus
+   * can react to composers mounting. Registration and replacement read the
+   * plain array: a composer that registers from inside an effect must not
+   * subscribe that effect to every other composer's registration.
+   */
+  private nodeReplacementsSignal: [
+    Accessor<NodeReplacementEntry[]>,
+    Setter<NodeReplacementEntry[]>,
+  ];
+
+  /**
+   * Channels whose composer took focus, per window id, most recent last. A
+   * mention from one window's menu must only ever land in that window's
+   * composer, never in a conversation open in another window.
+   */
+  private composerFocus: Record<string, string[]> = {};
+
+  /**
+   * Mirror of `composerFocus` read only by `hasNodeReplacement()`, for the
+   * same reason as `nodeReplacementsSignal`
+   */
+  private composerFocusSignal: [
+    Accessor<Record<string, string[]>>,
+    Setter<Record<string, string[]>>,
+  ];
 
   /**
    * Construct store
@@ -180,6 +232,8 @@ export class Draft extends AbstractStore<"draft", TypeDraft> {
   constructor(state: State) {
     super(state, "draft");
     this.fileCache = {};
+    this.nodeReplacementsSignal = createSignal<NodeReplacementEntry[]>([]);
+    this.composerFocusSignal = createSignal<Record<string, string[]>>({});
 
     this.getFile = this.getFile.bind(this);
     this.setEditingMessageContent = this.setEditingMessageContent.bind(this);
@@ -199,6 +253,7 @@ export class Draft extends AbstractStore<"draft", TypeDraft> {
     return {
       drafts: {},
       outbox: {},
+      editing: {},
     };
   }
 
@@ -279,9 +334,14 @@ export class Draft extends AbstractStore<"draft", TypeDraft> {
       }
     }
 
+    // An edit in progress is never restored after a reload: a stale `true`
+    // marker would open the editor on the next visit to that channel. The
+    // legacy global `editingMessageId` / `editingMessageContent` fields are
+    // dropped by omission.
     return {
       drafts,
       outbox,
+      editing: {},
     };
   }
 
@@ -743,7 +803,7 @@ export class Draft extends AbstractStore<"draft", TypeDraft> {
    * @param selfId Own user ID
    */
   addReply(message: Message, selfId: string) {
-    this._setNodeReplacement?.(["_focus"]);
+    this.replaceNode(message.channelId, ["_focus"]);
 
     // Ignore if reply already exists
     if (
@@ -1019,41 +1079,218 @@ export class Draft extends AbstractStore<"draft", TypeDraft> {
   }
 
   /**
-   * Set message ID
-   * @param message Message ID
+   * Write one channel's editing state, leaving every other channel untouched
+   * @param channelId Channel ID
+   * @param entry New state, or undefined to stop editing
    */
-  setEditingMessage(message: Message | true | undefined) {
+  private setEditing(channelId: string, entry: EditingState | undefined) {
     batch(() => {
-      if (message instanceof Message)
-        this.set("editingMessageContent", message.content);
-      else this.set("editingMessageContent", undefined);
+      // The store can't write a path through a missing record
+      if (!this.get().editing) this.set("editing", {});
 
-      this.set(
-        "editingMessageId",
-        message instanceof Message ? message.id : message,
-      );
+      if (entry) {
+        // Writing an object over an existing one merges the two, so `content`
+        // is always passed explicitly (undefined deletes it) to drop the
+        // previous message's text
+        this.set("editing", channelId, {
+          id: entry.id,
+          content: entry.content,
+        });
+      } else {
+        // undefined deletes the key; the setter's types don't model deletion
+        this.set("editing", channelId, undefined as unknown as EditingState);
+      }
     });
   }
 
   /**
-   * Set editing message content
+   * Start editing a message in its channel
+   * @param message Message
+   */
+  setEditingMessage(message: Message): void;
+
+  /**
+   * Ask a channel's message list to edit the newest own message (`true`), or
+   * stop editing in that channel (`undefined`)
+   * @param value Marker or undefined
+   * @param channelId Channel ID
+   */
+  setEditingMessage(value: true | undefined, channelId: string): void;
+
+  setEditingMessage(value: Message | true | undefined, channelId?: string) {
+    if (typeof value === "object") {
+      this.setEditing(value.channelId, {
+        id: value.id,
+        content: value.content,
+      });
+    } else if (channelId) {
+      this.setEditing(channelId, value ? { id: true } : undefined);
+    }
+  }
+
+  /**
+   * Set the editor value for a channel's message being edited
+   * @param channelId Channel ID
    * @param content Content
    */
-  setEditingMessageContent(content: string) {
-    this.set("editingMessageContent", content);
+  setEditingMessageContent(channelId: string, content: string) {
+    // Nothing to attach the text to once the edit has ended
+    if (!this.get().editing?.[channelId]) return;
+    this.set("editing", channelId, "content", content);
   }
 
   /**
-   * Message that is currently being edited
+   * Message currently being edited in a channel
+   * @param channelId Channel ID
+   * @returns Message ID, `true` while the newest own message is looked up,
+   * or undefined
    */
-  get editingMessageId() {
-    return this.get().editingMessageId;
+  getEditingMessageId(channelId: string): string | true | undefined {
+    return this.get().editing?.[channelId]?.id;
   }
 
   /**
-   * Message edit content
+   * Editor value for a channel's message being edited
+   * @param channelId Channel ID
+   * @returns Content
    */
-  get editingMessageContent() {
-    return this.get().editingMessageContent;
+  getEditingMessageContent(channelId: string): string | undefined {
+    return this.get().editing?.[channelId]?.content;
+  }
+
+  /**
+   * Register a mounted composer so replies, edits and mentions can reach it
+   * @param channelId Channel the composer writes to
+   * @param setter Composer setter
+   * @returns Function that removes this registration (and only this one)
+   */
+  registerNodeReplacement(
+    channelId: string,
+    setter: NodeReplacementSetter,
+  ): () => void {
+    const entry: NodeReplacementEntry = { channelId, setter };
+    this.setNodeReplacements([...this.nodeReplacements, entry]);
+
+    return () => {
+      if (!this.nodeReplacements.includes(entry)) return;
+
+      batch(() => {
+        this.setNodeReplacements(
+          this.nodeReplacements.filter((other) => other !== entry),
+        );
+
+        // Registrations don't say which window they belong to, so the focus
+        // notes for this channel are dropped in every window. Otherwise a
+        // window that showed this channel could keep reaching it after the
+        // channel moved to another window. A window that still shows it
+        // picks it up again on its next focus.
+        this.setComposerFocus(
+          Object.fromEntries(
+            Object.entries(this.composerFocus).map(([ctxId, channels]) => [
+              ctxId,
+              channels.filter((other) => other !== channelId),
+            ]),
+          ),
+        );
+      });
+    };
+  }
+
+  /**
+   * Replace the focus notes and notify `hasNodeReplacement()` readers
+   * @param focus New notes
+   */
+  private setComposerFocus(focus: Record<string, string[]>) {
+    this.composerFocus = focus;
+    this.composerFocusSignal[1](focus);
+  }
+
+  /**
+   * Replace the composer list and notify `hasNodeReplacement()` readers
+   * @param entries New list
+   */
+  private setNodeReplacements(entries: NodeReplacementEntry[]) {
+    this.nodeReplacements = entries;
+    this.nodeReplacementsSignal[1](entries);
+  }
+
+  /**
+   * Newest composer registered for a channel, read without tracking
+   * @param channelId Channel ID
+   * @returns Entry, if any
+   */
+  private findNodeReplacement(channelId: string) {
+    for (let i = this.nodeReplacements.length - 1; i >= 0; i--) {
+      if (this.nodeReplacements[i].channelId === channelId) {
+        return this.nodeReplacements[i];
+      }
+    }
+  }
+
+  /**
+   * Record that a channel's composer took focus
+   * @param channelId Channel ID
+   * @param ctxId Id of the window the composer is in
+   */
+  noteComposerFocus(channelId: string, ctxId: string = "main") {
+    const channels = this.composerFocus[ctxId] ?? [];
+    if (channels[channels.length - 1] === channelId) return;
+
+    this.setComposerFocus({
+      ...this.composerFocus,
+      [ctxId]: [...channels.filter((other) => other !== channelId), channelId],
+    });
+  }
+
+  /**
+   * Whether a composer is mounted
+   * @param channelId Channel ID, or omit for any channel
+   * @param ctxId Window id; when given, only composers that took focus in
+   * that window count
+   * @returns Whether one is registered
+   */
+  hasNodeReplacement(channelId?: string, ctxId?: string): boolean {
+    const entries = this.nodeReplacementsSignal[0]();
+    const isMounted = (id: string) =>
+      entries.some((entry) => entry.channelId === id);
+
+    if (ctxId === undefined) {
+      return channelId === undefined
+        ? entries.length > 0
+        : isMounted(channelId);
+    }
+
+    return (this.composerFocusSignal[0]()[ctxId] ?? []).some(
+      (id) => (channelId === undefined || id === channelId) && isMounted(id),
+    );
+  }
+
+  /**
+   * Replace the contents of a composer, or focus it with `["_focus"]`
+   * @param channelId Channel ID, or undefined for the composer focused last
+   * in the given window (none if no composer there took focus)
+   * @param value New contents
+   * @param ctxId Window id used when no channel is given, `"main"` by default
+   * @returns Whether a composer received it
+   */
+  replaceNode(
+    channelId: string | undefined,
+    value: readonly [string | "_focus"],
+    ctxId?: string,
+  ): boolean {
+    let entry: NodeReplacementEntry | undefined;
+
+    if (channelId !== undefined) {
+      entry = this.findNodeReplacement(channelId);
+    } else {
+      const channels = this.composerFocus[ctxId ?? "main"] ?? [];
+      for (let i = channels.length - 1; i >= 0 && !entry; i--) {
+        entry = this.findNodeReplacement(channels[i]);
+      }
+    }
+
+    if (!entry) return false;
+    entry.setter(value);
+    return true;
   }
 }

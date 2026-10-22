@@ -1,15 +1,17 @@
 import { BiLogosGithub } from "solid-icons/bi";
-import { JSX } from "solid-js";
+import { JSX, Show } from "solid-js";
 
 import { Trans } from "@lingui-solid/solid/macro";
 import { styled } from "styled-system/jsx";
 
 import { Titlebar } from "@revolt/app/interface/desktop/Titlebar";
+import { useLocation } from "@revolt/routing";
 import { useState } from "@revolt/state";
 import { IconButton, iconSize } from "@revolt/ui";
 
 import MdDarkMode from "@material-design-icons/svg/filled/dark_mode.svg?component-solid";
 
+import { CipherPromo } from "./CipherPromo";
 import background from "./background.jpg";
 import { FlowBase } from "./flows/Flow";
 import bluesky from "./flows/bluesky.svg";
@@ -39,6 +41,71 @@ const Base = styled("div", {
 
     mdDown: {
       padding: "30px 20px",
+    },
+  },
+});
+
+/**
+ * Wide screens: the Cipher promo on the left, the flow on the right. Below
+ * `lg` the promo column is dropped and the page is a single column again.
+ */
+const Layout = styled("div", {
+  base: {
+    flexGrow: 1,
+    display: "grid",
+    gridTemplateColumns: "minmax(440px, 600px) 1fr",
+    gap: "32px",
+    minHeight: "100%",
+
+    lgDown: {
+      display: "flex",
+      flexDirection: "column",
+    },
+  },
+});
+
+/**
+ * Column holding the Cipher promo panel
+ */
+const PromoSide = styled("div", {
+  base: {
+    display: "flex",
+    flexDirection: "column",
+    justifyContent: "center",
+
+    lgDown: {
+      display: "none",
+    },
+  },
+});
+
+/**
+ * Column holding the navigation bars and the flow card
+ */
+const MainSide = styled("div", {
+  base: {
+    minWidth: 0,
+    display: "flex",
+    flexDirection: "column",
+    justifyContent: "space-between",
+    flexGrow: 1,
+  },
+});
+
+/**
+ * The compact Cipher banner above the card, on the first screen only, for
+ * screens too narrow for the side panel. It sits outside FlowBase so the
+ * card's height limit still fits the login and sign-up buttons.
+ */
+const NarrowBanner = styled("div", {
+  base: {
+    width: "100%",
+    maxWidth: "360px",
+    marginInline: "auto",
+    marginTop: "20px",
+
+    lg: {
+      display: "none",
     },
   },
 });
@@ -116,6 +183,8 @@ const Bullet = styled("div", {
  */
 export function AuthPage(props: { children: JSX.Element }) {
   const state = useState();
+  const location = useLocation();
+  const onHomeScreen = () => location.pathname.replace(/\/+$/, "") === "/login";
 
   return (
     <div
@@ -130,21 +199,36 @@ export function AuthPage(props: { children: JSX.Element }) {
         style={{ "--url": `url('${background}')` }}
         css={{ scrollbar: "hidden" }}
       >
-        <Nav>
-          <div />
-          <IconButton
-            variant="tonal"
-            onPress={() =>
-              state.theme.setMode(
-                state.theme.activeTheme.darkMode ? "light" : "dark",
-              )
-            }
-          >
-            <MdDarkMode {...iconSize("24px")} />
-          </IconButton>
-        </Nav>
-        <FlowBase>{props.children}</FlowBase>
-        <Nav />
+        <Layout>
+          <PromoSide>
+            <CipherPromo variant="panel" />
+          </PromoSide>
+          <MainSide>
+            <Nav>
+              <div />
+              <IconButton
+                variant="tonal"
+                // nobody is signed in here, so the account's synced theme wins
+                onPress={() =>
+                  state.sync.untracked("theme", () =>
+                    state.theme.setMode(
+                      state.theme.activeTheme.darkMode ? "light" : "dark",
+                    ),
+                  )
+                }
+              >
+                <MdDarkMode {...iconSize("24px")} />
+              </IconButton>
+            </Nav>
+            <Show when={onHomeScreen()}>
+              <NarrowBanner>
+                <CipherPromo variant="banner" />
+              </NarrowBanner>
+            </Show>
+            <FlowBase>{props.children}</FlowBase>
+            <Nav />
+          </MainSide>
+        </Layout>
       </Base>
     </div>
   );

@@ -1,3 +1,4 @@
+import { useWindowCtx } from "@revolt/client/windowCtx";
 import type { JSX } from "solid-js";
 import { For, Show } from "solid-js";
 import { Portal } from "solid-js/web";
@@ -17,6 +18,8 @@ export interface DialogAction {
   text: JSX.Element;
   onClick?: () => void | Promise<unknown> | true | false;
   isDisabled?: boolean;
+  /** Error-colored button, for an action that removes or blocks */
+  destructive?: boolean;
 }
 
 type Props = DialogProps & {
@@ -39,7 +42,7 @@ type Props = DialogProps & {
  */
 export function Dialog(props: Props) {
   return (
-    <Portal mount={document.getElementById("floating")!}>
+    <Portal mount={useWindowCtx().floatingMount()}>
       <Dialog.Scrim
         show={props.show}
         onClick={props.onClose}
@@ -87,7 +90,7 @@ export function Dialog(props: Props) {
                     <For each={props.actions}>
                       {(action) => (
                         <Button
-                          variant="text"
+                          variant={action.destructive ? "_error" : "text"}
                           size="small"
                           onPress={() => {
                             if (action.isDisabled) return;

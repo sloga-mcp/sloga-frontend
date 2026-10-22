@@ -1,5 +1,5 @@
 import { ProfileActions } from "./ProfileActions";
-import { ProfileBadges } from "./ProfileBadges";
+import { CipherBadgePreview, ProfileBadges } from "./ProfileBadges";
 import { ProfileBanner } from "./ProfileBanner";
 import { ProfileBio } from "./ProfileBio";
 
@@ -21,6 +21,7 @@ export const Profile = {
   Banner: ProfileBanner,
   Bio: ProfileBio,
   Card: ProfileCard,
+  CipherPreview: CipherBadgePreview,
   Connections: ProfileConnections,
   GameIds: ProfileGameIds,
   Joined: ProfileJoined,

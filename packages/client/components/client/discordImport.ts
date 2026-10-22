@@ -5,12 +5,15 @@ import type {
   DiscordImportJobData,
   DiscordImportStatus,
   DiscordImportSummary,
+  ImportSource,
 } from "stoat.js";
 
 import { CONFIGURATION } from "@revolt/common";
 
 /**
- * "Import from Discord" client state.
+ * "Import from Discord" client state, shared with the other-platform imports
+ * (Stoat, Fluxer, Matrix): the server allows one active import per user, of
+ * any source, so one store tracks it and each modal filters by the job kind.
  *
  * The job outlives the modal: the dialog scrim closes on any outside click,
  * and the job keeps running server-side. So the authoritative view lives here
@@ -47,11 +50,80 @@ export type ImportDiscordFlags = {
    * bot-invite URL from it.
    */
   stickerClientId?: string;
+  /** What the instance offers for importing from other platforms */
+  importSources: ImportSourcesFeature;
 };
 
 /**
+ * The root config route's `features.import_sources`: one key per source the
+ * instance has ready, each carrying what the client needs to point the user
+ * at that source's importer bot. An absent key means that source is dark.
+ */
+export type ImportSourcesFeature = {
+  stoat?: { add_bot_url: string };
+  fluxer?: { add_bot_url: string };
+  matrix?: { bot_user_id: string };
+};
+
+/**
+ * Sources this build has an import screen for. A source the instance offers
+ * but this build cannot import from stays hidden: servers update ahead of
+ * installed clients, so a newer instance may well advertise one.
+ */
+const IMPLEMENTED_IMPORT_SOURCES: readonly ImportSource[] = ["stoat", "fluxer"];
+
+/**
+ * Read `features.import_sources` defensively. Anything malformed reads as
+ * `{}` (every source dark); unknown keys are ignored; a source whose entry
+ * lacks its field, or whose bot URL is not an https URL, is left out.
+ * @param raw The `features.import_sources` value, whatever it is
+ */
+export function parseImportSources(raw: unknown): ImportSourcesFeature {
+  const parsed: ImportSourcesFeature = {};
+  if (!isRecord(raw)) return parsed;
+
+  const stoat = httpsUrl(isRecord(raw.stoat) ? raw.stoat.add_bot_url : null);
+  if (stoat) parsed.stoat = { add_bot_url: stoat };
+
+  const fluxer = httpsUrl(isRecord(raw.fluxer) ? raw.fluxer.add_bot_url : null);
+  if (fluxer) parsed.fluxer = { add_bot_url: fluxer };
+
+  const matrix = isRecord(raw.matrix) ? raw.matrix.bot_user_id : null;
+  if (typeof matrix === "string" && matrix) {
+    parsed.matrix = { bot_user_id: matrix };
+  }
+
+  return parsed;
+}
+
+/**
+ * Whether a value is a plain JSON object (not null, not an array).
+ * @param value Anything
+ */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * The value, if it is an absolute https URL. The bot URL is opened in a new
+ * window and leads to the source's authorize page, so anything else
+ * (`javascript:`, a relative path, plain `http:`) is refused.
+ * @param value Anything
+ */
+function httpsUrl(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  try {
+    const { protocol } = new URL(value);
+    return protocol === "https:" ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Whether the server has the Discord importer enabled — and, since slice 2,
- * whether the sticker step is available. One fetch primes both.
+ * whether the sticker step is available — plus which other-platform sources
+ * it offers (`features.import_sources`). One fetch primes all of them.
  *
  * Read with a raw `fetch` of the root config route, cloned from
  * `fetchStreamingFlags`. **Never read this from `client.configuration`:** the
@@ -63,7 +135,7 @@ export type ImportDiscordFlags = {
 export async function fetchImportDiscordFlags(): Promise<ImportDiscordFlags> {
   try {
     const response = await fetch(`${CONFIGURATION.DEFAULT_API_URL}/`);
-    if (!response.ok) return { enabled: false };
+    if (!response.ok) return { enabled: false, importSources: {} };
     const config = await response.json();
     const stickerClientId = config?.features?.import_discord_stickers;
     return {
@@ -72,9 +144,10 @@ export async function fetchImportDiscordFlags(): Promise<ImportDiscordFlags> {
         typeof stickerClientId === "string" && stickerClientId
           ? stickerClientId
           : undefined,
+      importSources: parseImportSources(config?.features?.import_sources),
     };
   } catch {
-    return { enabled: false };
+    return { enabled: false, importSources: {} };
   }
 }
 
@@ -82,6 +155,8 @@ const [flagEnabled, setFlagEnabled] = createSignal(false);
 const [stickerClientId, setStickerClientId] = createSignal<string | undefined>(
   undefined,
 );
+const [importSourcesFlags, setImportSourcesFlags] =
+  createSignal<ImportSourcesFeature>({});
 let flagProbed = false;
 
 /**
@@ -93,6 +168,7 @@ export function primeImportDiscordFlag(): void {
   fetchImportDiscordFlags().then((flags) => {
     setFlagEnabled(flags.enabled);
     setStickerClientId(flags.stickerClientId);
+    setImportSourcesFlags(flags.importSources);
   });
 }
 
@@ -112,6 +188,76 @@ export function importDiscordEnabled(): boolean {
 export function importDiscordStickerClientId(): string | undefined {
   primeImportDiscordFlag();
   return stickerClientId();
+}
+
+/**
+ * Reactive accessor for `features.import_sources`, as parsed; `{}` until the
+ * probe lands, and for good if it fails.
+ */
+export function importSources(): ImportSourcesFeature {
+  primeImportDiscordFlag();
+  return importSourcesFlags();
+}
+
+/**
+ * Whether importing from `source` can be offered: the instance has it ready
+ * AND this build has a screen for it. Reactive.
+ * @param source Import source
+ */
+export function importSourceEnabled(source: ImportSource): boolean {
+  return (
+    IMPLEMENTED_IMPORT_SOURCES.includes(source) && !!importSources()[source]
+  );
+}
+
+/**
+ * The instance's add-the-importer-bot URL for `source`, if it advertises
+ * one (Matrix has a bot user id instead, so it never does). Reactive.
+ * @param source Import source
+ */
+export function importSourceBotUrl(source: ImportSource): string | undefined {
+  const entry = importSources()[source];
+  return entry && "add_bot_url" in entry ? entry.add_bot_url : undefined;
+}
+
+/** Whether any other-platform import can be offered. Reactive. */
+export function anyImportSourceEnabled(): boolean {
+  return (["stoat", "fluxer", "matrix"] as const).some(importSourceEnabled);
+}
+
+/**
+ * The import source a job kind belongs to; `undefined` for the Discord kinds
+ * (`Template`, `Stickers`), no kind, and anything this build does not know.
+ * @param kind Job kind wire value
+ */
+export function kindToSource(
+  kind: string | undefined,
+): ImportSource | undefined {
+  switch (kind) {
+    case "StoatServer":
+      return "stoat";
+    case "FluxerServer":
+      return "fluxer";
+    case "MatrixSpace":
+      return "matrix";
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * Display name of an import source. Proper nouns, so not translated.
+ * @param source Import source
+ */
+export function sourceLabel(source: ImportSource): string {
+  switch (source) {
+    case "stoat":
+      return "Stoat";
+    case "fluxer":
+      return "Fluxer";
+    case "matrix":
+      return "Matrix";
+  }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -153,6 +299,14 @@ const [view, setView] = createSignal<DiscordImportView | undefined>(undefined);
 
 /** The current import, if any. Reactive. */
 export const discordImportView = view;
+
+/**
+ * The other-platform source of the tracked job, if it is one; `undefined`
+ * for no job and for Discord jobs. Reactive.
+ */
+export function trackedImportSource(): ImportSource | undefined {
+  return kindToSource(view()?.kind);
+}
 
 /** Whether an import is still running (or waiting to be claimed). */
 export function discordImportInFlight(): boolean {
@@ -230,11 +384,21 @@ function rememberedJobId(): string | null {
 /**
  * Begin tracking a job the moment the POST returns, before any event or poll
  * has landed.
+ *
+ * Pass `kind` whenever the caller knows it (every other-platform import
+ * does): the progress events carry no kind, so without it the job reads
+ * kind-less, which the Discord modal takes for a Discord job, until a job
+ * fetch fills it in. The events keep whatever kind is set here.
  * @param jobId Job id
+ * @param kind Job kind wire value, if known
  */
-export function trackDiscordImport(jobId: string): void {
+export function trackDiscordImport(jobId: string, kind?: string): void {
   persistJobId(jobId);
-  setView({ jobId, status: "Queued", stage: "", done: 0, total: 0 });
+  setView(
+    kind === undefined
+      ? { jobId, status: "Queued", stage: "", done: 0, total: 0 }
+      : { jobId, status: "Queued", stage: "", kind, done: 0, total: 0 },
+  );
 }
 
 /**

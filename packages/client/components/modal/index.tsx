@@ -4,17 +4,34 @@ import {
   Show,
   batch,
   createContext,
+  createMemo,
+  createSignal,
+  onCleanup,
   useContext,
 } from "solid-js";
 import { SetStoreFunction, createStore } from "solid-js/store";
 
 import type { MFA, MFATicket } from "stoat.js";
 
+import { lastFocusedCtx, windowCtxById } from "@revolt/client/windowCtx";
 import { Keybind, KeybindAction } from "@revolt/keybinds";
 import { dismissFloatingElements } from "@revolt/ui";
 
+import { MAIN_WINDOW_ID, modalRendersIn } from "./modalWindow";
 import { RenderModal } from "./modals";
 import { Modals } from "./types";
+
+/**
+ * A modal as passed to {@link ModalController.openModal}.
+ */
+export type ModalRequest = Modals & {
+  /**
+   * Window to open the modal in: `"main"` or a chat window's id. Defaults to
+   * the window the user was last in, so a prompt raised by background work
+   * (an E2EE identity change, say) appears where the user is looking.
+   */
+  windowId?: string;
+};
 
 export type ActiveModal = {
   /**
@@ -26,6 +43,11 @@ export type ActiveModal = {
    * Whether to show the modal
    */
   show: boolean;
+
+  /**
+   * Window the modal was opened for (see {@link ModalRequest.windowId})
+   */
+  windowId: string;
 
   /**
    * Props to pass to modal
@@ -62,10 +84,15 @@ export type ActiveModal = {
  * VoiceCallCard's own `fullscreenchange` listener clears `voice.fullscreen()`
  * from here, so the call card's state follows without a second write.
  */
-function leaveFullscreenForModal() {
-  if (typeof document === "undefined" || !document.fullscreenElement) return;
+function leaveFullscreenForModal(windowId: string) {
+  // The document the modal will paint in: a chat window's own, or main's when
+  // that window is gone (the main renderer adopts its modals).
+  const doc =
+    windowCtxById(windowId)?.doc ??
+    (typeof document === "undefined" ? undefined : document);
+  if (!doc?.fullscreenElement) return;
   // Rejects when the document already left fullscreen by some other route.
-  void document.exitFullscreen?.().catch(() => undefined);
+  void doc.exitFullscreen?.().catch(() => undefined);
 }
 
 /**
@@ -97,9 +124,12 @@ export class ModalController {
 
     this.openModal = this.openModal.bind(this);
     this.pop = this.pop.bind(this);
+    this.popWhere = this.popWhere.bind(this);
+    this.popIn = this.popIn.bind(this);
     this.remove = this.remove.bind(this);
     this.removeOfType = this.removeOfType.bind(this);
     this.isOpen = this.isOpen.bind(this);
+    this.isOpenIn = this.isOpenIn.bind(this);
     this.closeAll = this.closeAll.bind(this);
     this.lockDismiss = this.lockDismiss.bind(this);
     this.unlockDismiss = this.unlockDismiss.bind(this);
@@ -109,8 +139,20 @@ export class ModalController {
    * Add a modal to the stack
    * @param props Modal parameters
    */
-  openModal(props: Modals) {
-    leaveFullscreenForModal();
+  openModal(request: ModalRequest) {
+    // Resolved once, at open: a modal stays in the window it opened in even
+    // if the user moves to another before answering it.
+    const windowId = request.windowId ?? lastFocusedCtx().id;
+
+    // Only rebuilt when the field is present, so every caller that does not
+    // pass one hands the modal exactly the object it built, as before.
+    let props: Modals = request;
+    if ("windowId" in request) {
+      const { windowId: _, ...rest } = request;
+      props = rest as Modals;
+    }
+
+    leaveFullscreenForModal(windowId);
 
     //Unique ID from clock that can't run backwards
     const id = performance.now().toString();
@@ -119,6 +161,7 @@ export class ModalController {
       {
         id,
         show: true,
+        windowId,
         props,
       },
     ]);
@@ -140,7 +183,17 @@ export class ModalController {
    * Remove the top modal
    */
   pop() {
-    const modal = [...this.modals].reverse().find((modal) => modal.show);
+    this.popWhere(() => true);
+  }
+
+  /**
+   * Remove the top modal among those matching `include` (a window's
+   * renderer pops only the modals it draws)
+   */
+  popWhere(include: (modal: ActiveModal) => boolean) {
+    const modal = [...this.modals]
+      .reverse()
+      .find((modal) => modal.show && include(modal));
 
     if (modal) {
       // Respect an active dismissal lock: never ESC-close the specific modal
@@ -150,6 +203,14 @@ export class ModalController {
       if (modal.id === this.dismissLockedId) return;
       this.remove(modal.id);
     }
+  }
+
+  /**
+   * Remove the top modal drawn in window `windowId` (`"main"` or a chat
+   * window's id), leaving every other window's modals alone
+   */
+  popIn(windowId: string) {
+    this.popWhere((modal) => drawnIn(windowId, modal));
   }
 
   /**
@@ -226,6 +287,19 @@ export class ModalController {
     return type
       ? !!this.modals.find((x) => x.show && x.props.type === type)
       : !!this.modals.find((x) => x.show);
+  }
+
+  /**
+   * Whether a modal of `type` is open and drawn in window `windowId`.
+   *
+   * {@link isOpen} sees every window, so a caller acting on what the user
+   * can see (a confirm dialog they were just shown, say) must ask here, or a
+   * dialog sitting in another window would count as answered.
+   */
+  isOpenIn(type: Modals["type"], windowId: string) {
+    return !!this.modals.find(
+      (x) => x.show && x.props.type === type && drawnIn(windowId, x),
+    );
   }
 }
 
@@ -353,14 +427,67 @@ export function useModals() {
 }
 
 /**
- * Render modals
+ * Chat window id → how many `ModalRenderer`s are mounted for it (normally
+ * one). A chat window that is registered but has no renderer, because its
+ * chrome has not mounted yet or never will, cannot show a modal, so main
+ * keeps drawing its modals until one exists.
  */
-export function ModalRenderer() {
+const [rendererMounts, setRendererMounts] = createSignal<
+  ReadonlyMap<string, number>
+>(new Map());
+
+function countRenderer(windowId: string, delta: 1 | -1) {
+  setRendererMounts((prev) => {
+    const next = new Map(prev);
+    const count = (next.get(windowId) ?? 0) + delta;
+    if (count > 0) next.set(windowId, count);
+    else next.delete(windowId);
+    return next;
+  });
+}
+
+/** A chat window is still open and has a renderer to draw its modals. */
+function windowCanRender(windowId: string) {
+  return (
+    rendererMounts().has(windowId) && windowCtxById(windowId) !== undefined
+  );
+}
+
+/**
+ * Whether window `windowId`'s renderer draws `entry`: the same rule the
+ * renderer itself uses, so "open in this window" means "on screen in it".
+ */
+function drawnIn(windowId: string, entry: ActiveModal) {
+  return modalRendersIn(entry.windowId, windowId, windowCanRender);
+}
+
+/**
+ * Render the modals opened for one window: main (the default) or the chat
+ * window `windowId`. Main also draws the modals of any chat window that has
+ * closed or cannot draw them, so a modal is never left with no renderer.
+ */
+export function ModalRenderer(props: { windowId?: string }) {
   const modalController = useModals();
+
+  // A renderer serves one window for its whole life (ChildWindowChrome mounts
+  // one per window), so the id is read once.
+  // eslint-disable-next-line solid/reactivity
+  const windowId = props.windowId ?? MAIN_WINDOW_ID;
+
+  if (windowId !== MAIN_WINDOW_ID) {
+    // Counted during render rather than onMount, so main hands the window's
+    // modals over in the same pass instead of mounting them once first.
+    countRenderer(windowId, 1);
+    onCleanup(() => countRenderer(windowId, -1));
+  }
+
+  const draws = (entry: ActiveModal) => drawnIn(windowId, entry);
+
+  const modals = createMemo(() => modalController.modals.filter(draws));
 
   return (
     <>
-      <For each={modalController.modals}>
+      <For each={modals()}>
         {(entry) => (
           <RenderModal
             {...entry}
@@ -368,10 +495,12 @@ export function ModalRenderer() {
           />
         )}
       </For>
-      <Show when={modalController.isOpen()}>
+      {/* Escape pops this window's top modal only, never one the user
+          cannot see in another window. */}
+      <Show when={modals().some((entry) => entry.show)}>
         <Keybind
           keybind={KeybindAction.CLOSE_MODAL}
-          onPressed={() => modalController.pop()}
+          onPressed={() => modalController.popWhere(draws)}
         />
       </Show>
     </>

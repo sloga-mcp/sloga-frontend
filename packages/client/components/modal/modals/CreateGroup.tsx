@@ -28,9 +28,16 @@ export function CreateGroupModal(
   const client = useClient();
   const { showError } = useModals();
 
+  // Callers may pre-select members (e.g. "New group chat" from a friend row).
+  // Keep only ids the picker itself would offer (friends), deduplicated, so a
+  // stale or non-friend id can never be submitted without being visible.
+  const initialUsers = [...new Set(props.initialUsers ?? [])].filter(
+    (id) => client().users.get(id)?.relationship === "Friend",
+  );
+
   const group = createFormGroup({
     name: createFormControl("", { required: true }),
-    users: createFormControl([] as string[]),
+    users: createFormControl(initialUsers),
   });
 
   async function onSubmit() {

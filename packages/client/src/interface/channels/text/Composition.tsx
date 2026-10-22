@@ -10,6 +10,7 @@ import {
   createSignal,
   on,
   onCleanup,
+  onMount,
 } from "solid-js";
 
 import { useLingui } from "@lingui-solid/solid/macro";
@@ -22,6 +23,8 @@ import { SOFTRES_CREATION_ENABLED } from "@revolt/app";
 import { serverActionsBlocked } from "@revolt/app/interface/channels/text/e2eeTranscriptTrust";
 import type { E2EEBridge } from "@revolt/client";
 import { E2EESendError, useClient, useE2EE, useSound } from "@revolt/client";
+import { composerE2EEModeFor } from "@revolt/client/e2eeBadge";
+import { useWindowCtx } from "@revolt/client/windowCtx";
 import { CONFIGURATION, debounce, useDevice } from "@revolt/common";
 import { pickUploadLimit } from "@revolt/common/lib/uploadLimit";
 import { useTime } from "@revolt/i18n";
@@ -51,6 +54,16 @@ import { UserSlowmodes } from "stoat.js/lib/events/v1";
 
 import { createTimedOutUntil } from "../../../lib/timedOut";
 
+import { GameLookupPicker } from "./GameLookupPicker";
+import {
+  type GameCommand,
+  type GameLookupOutcome,
+  type GameLookupResult,
+  isPrivateConversation,
+  parseGameCommand,
+  runGameLookup,
+} from "./gameLookup";
+
 interface Props {
   /**
    * Channel to compose for
@@ -74,6 +87,12 @@ export function MessageComposition(props: Props) {
   const sound = useSound();
   const { openModal } = useModals();
   const { layout } = useDevice();
+
+  /**
+   * Window this composer renders in: the main window, or a chat window whose
+   * document differs from the global `document`
+   */
+  const windowCtx = useWindowCtx();
 
   /**
    * On phones and tablets the composer splits into two bars (see MessageBox);
@@ -134,29 +153,23 @@ export function MessageComposition(props: Props) {
    *                   show the group is unencrypted → amber warning; sends
    *                   wait for an explicit plaintext confirmation
    * - undefined     → neither side is using E2EE (or non-DM) → no indicator
+   *
+   * Derived from the shared encryption badge (`e2eeBadge.ts`) so this and
+   * the chat-window badge cannot disagree; its spec pins it to the logic
+   * that lived here before.
    */
   const e2eeMode = createMemo(() => {
     const conv = conversationId();
     if (!conv) return undefined;
-    const mode = e2ee?.sendModes.get(conv);
-    if (
-      mode === "encrypt" ||
-      mode === "blocked" ||
-      mode === "peer_downgraded" ||
-      mode === "unconfirmed"
-    )
-      return mode;
-    // Groups have no per-peer advertise hint — an unencrypted group shows no
-    // indicator (encryption is opt-in via the group's Security settings).
-    if (isGroup()) return undefined;
-    // A plaintext DM only warrants an indicator when THIS device is opted in
-    // — otherwise the user isn't using encryption and needs no nag.
-    // Distinguish "peer is set up, just not established yet" from "peer
-    // hasn't turned encryption on at all".
-    if (mode === "plaintext" && selfE2EEEnabled()) {
-      return peerE2EEEnabled() ? "pending" : "unencrypted";
-    }
-    return undefined;
+    return composerE2EEModeFor({
+      mode: e2ee?.sendModes.get(conv),
+      isGroup: isGroup(),
+      selfEnabled: selfE2EEEnabled(),
+      peerAdvertises: peerE2EEEnabled(),
+      // Known off with no native layer; `selfE2EEEnabled` reads this same
+      // status, so it can only be true once this is
+      e2eeLoaded: !e2ee || !!e2ee.status.get("state"),
+    });
   });
 
   /** Material symbol for the current indicator state */
@@ -482,9 +495,66 @@ export function MessageComposition(props: Props) {
   const [nodeReplacement, setNodeReplacement] =
     createSignal<readonly [string | "_focus"]>();
 
-  // bind this composition instance to the global node replacement signal
-  state.draft._setNodeReplacement = setNodeReplacement;
-  onCleanup(() => (state.draft._setNodeReplacement = undefined));
+  /**
+   * Empty markers rendered either side of the message box. MessageBox takes
+   * no ref and swaps its root element between layouts, so "inside the
+   * composer" means "between the markers"
+   */
+  let composerStart: HTMLSpanElement | undefined;
+  let composerEnd: HTMLSpanElement | undefined;
+
+  function isInComposer(node: Node | null) {
+    if (!node || !composerStart || !composerEnd) return false;
+    return (
+      !!(
+        composerStart.compareDocumentPosition(node) &
+        Node.DOCUMENT_POSITION_FOLLOWING
+      ) &&
+      !!(
+        composerEnd.compareDocumentPosition(node) &
+        Node.DOCUMENT_POSITION_PRECEDING
+      )
+    );
+  }
+
+  // Focus anywhere in the message box marks this composer as the one
+  // mentions go to. The listener sits on the markers' parent (the channel
+  // pane), which outlives MessageBox's layout swaps, rather than on the
+  // document, where other composers' focus would also arrive.
+  onMount(() => {
+    const parent = composerStart?.parentElement;
+    if (!parent) return;
+
+    const onFocusIn = (event: FocusEvent) => {
+      if (isInComposer(event.target as Node | null)) {
+        state.draft.noteComposerFocus(props.channel.id, windowCtx.id);
+      }
+    };
+
+    parent.addEventListener("focusin", onFocusIn);
+    onCleanup(() => parent.removeEventListener("focusin", onFocusIn));
+  });
+
+  // Register this composer for its channel so replies, edits and mentions
+  // reach it. The channel prop can change while mounted, so re-register on
+  // change; the unregister removes only this registration, not a composer
+  // another window mounted since.
+  createEffect(
+    on(
+      () => props.channel.id,
+      (channelId) => {
+        onCleanup(
+          state.draft.registerNodeReplacement(channelId, setNodeReplacement),
+        );
+
+        // A focused composer that switches channel won't see a new focus
+        // event, so the last-focused channel would still name the old one
+        if (isInComposer(windowCtx.doc.activeElement)) {
+          state.draft.noteComposerFocus(channelId, windowCtx.id);
+        }
+      },
+    ),
+  );
 
   createEffect(
     on(
@@ -602,6 +672,147 @@ export function MessageComposition(props: Props) {
         error: error instanceof Error ? error : new Error(String(error)),
       });
     }
+  }
+
+  /**
+   * Game lookups (`/game`, `/wowitem`, `/champion`): a short status line
+   * above the composer, and the open result picker, if any. Both close when
+   * the draft is edited or the channel changes, so they never describe text
+   * that is no longer there.
+   */
+  const [lookupNotice, setLookupNotice] = createSignal<string | null>(null);
+  const [lookupPending, setLookupPending] = createSignal(false);
+  const [gameResults, setGameResults] = createSignal<GameLookupResult[] | null>(
+    null,
+  );
+  const draftText = createMemo(() => currentValue());
+
+  createEffect(
+    on(
+      [draftText, () => props.channel.id],
+      () => {
+        setLookupNotice(null);
+        setGameResults(null);
+      },
+      { defer: true },
+    ),
+  );
+
+  /**
+   * Run a game lookup command and open the picker on its results.
+   *
+   * The privacy gate inside `runGameLookup` (copied from `sendInteraction`)
+   * fails closed: a DM or group is looked up only when the native layer says
+   * it is exactly plaintext, and a refused lookup makes no request. Either
+   * way the command is never sent as a message, and the draft stays.
+   * Uses raw fetch like `sendRoll`.
+   */
+  async function runGameCommand(command: GameCommand) {
+    if (lookupPending()) return;
+
+    const channel = props.channel;
+    const draftAtStart = currentValue();
+    setGameResults(null);
+    setLookupNotice(null);
+    setLookupPending(true);
+
+    let outcome: GameLookupOutcome;
+    try {
+      const c = client();
+      outcome = await runGameLookup({
+        channelType: channel.type,
+        getSendMode: e2ee ? () => e2ee.sendModeNowFor(channel) : undefined,
+        fetchImpl: (input, init) => fetch(input, init),
+        baseURL: c.options.baseURL,
+        authHeader: c.authenticationHeader,
+        command,
+      });
+    } catch {
+      outcome = { kind: "failed" };
+    }
+    setLookupPending(false);
+
+    // The user moved on while the lookup ran: drop the answer
+    if (props.channel.id !== channel.id || currentValue() !== draftAtStart) {
+      return;
+    }
+
+    switch (outcome.kind) {
+      case "denied":
+        setLookupNotice(
+          e2ee && isPrivateConversation(channel.type)
+            ? t`Game lookup isn't available in encrypted chats.`
+            : t`Game lookup isn't available in this conversation.`,
+        );
+        break;
+      case "empty-query":
+        setLookupNotice(t`Type a name to look up after the command.`);
+        break;
+      case "results":
+        if (outcome.results.length) {
+          setGameResults(outcome.results);
+        } else {
+          const query = command.query;
+          setLookupNotice(t`No results for “${query}”.`);
+        }
+        break;
+      case "busy":
+        setLookupNotice(t`Too many lookups, try again in a moment.`);
+        break;
+      case "disabled":
+        setLookupNotice(t`That lookup isn't available right now.`);
+        break;
+      case "failed":
+        setLookupNotice(t`Lookup failed. Try again.`);
+        break;
+    }
+  }
+
+  /**
+   * Send the picked result's URL as an ordinary message, through the normal
+   * send path (replies, E2EE pre-send guard, slowmode, outbox); the embed
+   * pipeline draws the card. The command text is put back if nothing was
+   * sent, so the draft is cleared only by a successful send.
+   */
+  async function pickGameResult(result: GameLookupResult) {
+    setGameResults(null);
+
+    const channelId = props.channel.id;
+    const command = draft().content ?? "";
+    state.draft.setDraft(channelId, { ...draft(), content: result.url });
+
+    /**
+     * `sendDraft` takes the draft as its first step, so the URL still being
+     * in the draft means the send stopped before that
+     */
+    const restoreIfUnsent = () => {
+      const current = state.draft.getDraft(channelId);
+      if (current.content === result.url) {
+        state.draft.setDraft(channelId, { ...current, content: command });
+      }
+    };
+
+    try {
+      await sendMessage();
+    } catch (error) {
+      restoreIfUnsent();
+      openModal({
+        type: "error2",
+        error: error instanceof Error ? error : new Error(String(error)),
+      });
+      return;
+    }
+
+    restoreIfUnsent();
+    setNodeReplacement(["_focus"]);
+  }
+
+  /**
+   * Close the picker without sending; the draft was never changed
+   */
+  function cancelGameLookup() {
+    setGameResults(null);
+    setNodeReplacement(["_focus"]);
   }
 
   /**
@@ -773,6 +984,14 @@ export function MessageComposition(props: Props) {
     const trimmed = rawContent.trim();
     if (/^\/roll(\s|$)/i.test(trimmed)) {
       await sendRoll(trimmed.slice(5).trim() || "1d20");
+      return;
+    }
+
+    // Intercept game lookups (/game, /wowitem, /champion): the text is a
+    // search, never a plain message, whether or not the gate lets it run
+    const gameCommand = parseGameCommand(trimmed);
+    if (gameCommand) {
+      await runGameCommand(gameCommand);
       return;
     }
 
@@ -1097,7 +1316,10 @@ export function MessageComposition(props: Props) {
    * Add a file to the message
    */
   function addFile() {
-    const input = document.createElement("input");
+    // In a chat window the picker must open over that window, so the input
+    // lives in its document
+    const doc = windowCtx.doc;
+    const input = doc.createElement("input");
     input.accept = "*";
     input.type = "file";
     input.multiple = true;
@@ -1117,7 +1339,7 @@ export function MessageComposition(props: Props) {
 
     // iOS requires us to append the file input
     // to DOM to allow us to add any images
-    document.body.appendChild(input);
+    doc.body.appendChild(input);
     input.click();
   }
 
@@ -1416,13 +1638,33 @@ export function MessageComposition(props: Props) {
           );
         }}
       </For>
+      <Show when={lookupPending() || lookupNotice()}>
+        <LookupNotice role="status">
+          <Symbol style={{ "font-size": "1rem" }}>
+            {lookupPending() ? "hourglass_top" : "info"}
+          </Symbol>
+          <span>{lookupPending() ? t`Looking up…` : lookupNotice()}</span>
+        </LookupNotice>
+      </Show>
+      <Show when={gameResults()}>
+        {(results) => (
+          <GameLookupPicker
+            results={results()}
+            onPick={(result) => void pickGameResult(result)}
+            onCancel={cancelGameLookup}
+          />
+        )}
+      </Show>
+      <span ref={composerStart} hidden />
       <MessageBox
         tone={e2eeMode() === "encrypt" ? "encrypted" : "plain"}
         initialValue={initialValue()}
         nodeReplacement={nodeReplacement()}
         onSendMessage={() => sendMessage()}
         onTyping={delayedStopTyping}
-        onEditLastMessage={() => state.draft.setEditingMessage(true)}
+        onEditLastMessage={() =>
+          state.draft.setEditingMessage(true, props.channel.id)
+        }
         content={draft()?.content ?? ""}
         setContent={setContent}
         actionsStart={
@@ -1988,8 +2230,17 @@ export function MessageComposition(props: Props) {
           </Show>
         }
       />
-      <FilePasteCollector onFiles={onFiles} />
-      <FileDropAnywhereCollector onFiles={onFiles} />
+      <span ref={composerEnd} hidden />
+      <FilePasteCollector
+        onFiles={onFiles}
+        ctx={windowCtx}
+        active={() => true}
+      />
+      <FileDropAnywhereCollector
+        onFiles={onFiles}
+        ctx={windowCtx}
+        active={() => true}
+      />
     </>
   );
 }
@@ -2014,6 +2265,21 @@ const SlowmodeText = styled("span", {
   base: {
     fontSize: "0.75rem",
     fontWeight: "600",
+  },
+});
+
+/**
+ * Status line for game lookups (searching, no results, refused, failed)
+ */
+const LookupNotice = styled("div", {
+  base: {
+    display: "flex",
+    alignItems: "center",
+    gap: "var(--gap-sm)",
+    padding: "4px 12px",
+    fontSize: "0.75rem",
+    fontWeight: "600",
+    color: "var(--md-sys-color-on-surface-variant)",
   },
 });
 

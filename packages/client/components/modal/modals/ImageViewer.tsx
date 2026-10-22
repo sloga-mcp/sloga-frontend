@@ -1,3 +1,4 @@
+import { useWindowCtx } from "@revolt/client/windowCtx";
 import {
   createEffect,
   createSignal,
@@ -96,10 +97,12 @@ export function ImageViewerModal(
             zoom.zoom(zoom.getScale() - event.deltaY / 1000);
           }
 
-          document.addEventListener("mousewheel", onMouseWheel as never);
+          // The viewer may be open in a chat window, a different document
+          const viewerDoc = ref.ownerDocument;
+          viewerDoc.addEventListener("mousewheel", onMouseWheel as never);
 
           onCleanup(() => {
-            document.removeEventListener("mousewheel", onMouseWheel as never);
+            viewerDoc.removeEventListener("mousewheel", onMouseWheel as never);
             zoom.destroy();
           });
         }
@@ -108,7 +111,7 @@ export function ImageViewerModal(
   );
 
   return (
-    <Portal mount={document.getElementById("floating")!}>
+    <Portal mount={useWindowCtx().floatingMount()}>
       <Dialog.Scrim
         dark
         padding={false}

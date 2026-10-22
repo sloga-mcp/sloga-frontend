@@ -25,9 +25,12 @@ import livekit.org.webrtc.FrameCryptorKeyProvider
  *    self-ratchet disabled; MLS epochs are the ONLY rotation mechanism, so a
  *    ratcheted key can never diverge from MLS-derived truth;
  *  - `keyRingSize = 16` — matches `key_index = epoch % 16`;
- *  - `discardFrameWhenCryptorNotReady = true` — nothing leaves the phone
- *    before the sender cryptor holds a key (probe (c-i): zero frames, not
- *    plaintext, with no key installed);
+ *  - `discardFrameWhenCryptorNotReady = true`: drops frames only while an
+ *    ATTACHED cryptor holds no key (probe (c-i): zero frames from a
+ *    published track with an attached, keyless cryptor). The leg therefore
+ *    starts the screen capture only after the screen sender's cryptor is
+ *    witnessed at the current key index, and keeps that sender as the
+ *    track's only one (`ScreenSharePlugin.doConnect`, `ScreenVideoGate`);
  *  - `keyDerivationAlgorithm = HKDF` — 🔴 the SDK DEFAULT IS PBKDF2 (probe
  *    (c) plan correction): without this, sender and receivers derive
  *    different AES keys from identical material and every frame drops.

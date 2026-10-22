@@ -39,6 +39,7 @@ import { RAIL_ACCENT_PRESETS } from "@revolt/ui/themes/railAccent";
 
 import MDPalette from "@material-design-icons/svg/outlined/palette.svg?component-solid";
 
+import { DmWindowsChoice } from "./DmWindowsChoice";
 import { LayoutArrangement } from "./LayoutArrangement";
 
 /**
@@ -103,6 +104,14 @@ export function AppearanceMenu() {
       <Column>
         <Text class="title" size="small">
           <Trans>Colors</Trans>
+        </Text>
+        {/* What Sync.ts uploads for "theme": everything but
+            DEVICE_LOCAL_THEME_FIELDS */}
+        <Text class="label" size="small">
+          <Trans>
+            Your colors and fonts sync to every device you sign in on. Blur and
+            message sizes are set per device.
+          </Trans>
         </Text>
 
         <Row justify="stretch">
@@ -674,6 +683,8 @@ export function AppearanceMenu() {
             </Trans>
           </Show>
         </Text>
+
+        <DmWindowsChoice />
       </Column>
 
       <Column>

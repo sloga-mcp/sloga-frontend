@@ -44,6 +44,10 @@ import MdExplore from "@material-design-icons/svg/filled/explore.svg?component-s
 import MdGroup from "@material-design-icons/svg/filled/group.svg?component-solid";
 import MdSettings from "@material-design-icons/svg/filled/settings.svg?component-solid";
 
+import {
+  routeConversation,
+  routeFriends,
+} from "../../../../components/chatWindows/openConversation";
 import { Tooltip } from "../../../../components/ui/components/floating";
 import { Draggable } from "../../../../components/ui/components/utils/Draggable";
 
@@ -225,6 +229,20 @@ export const ServerList = (props: Props) => {
   const unreadConversations = createMemo(() => props.unreadConversations);
 
   /**
+   * Rail links keep their href, so in main-window mode the link navigates
+   * as before and middle-click / open-in-new-tab still work. Only when the
+   * click is routed to a chat window is the link's navigation cancelled.
+   */
+  const routeLink = (
+    event: MouseEvent,
+    route: (fallback: () => void) => void,
+  ) => {
+    let routed = true;
+    route(() => (routed = false));
+    if (routed) event.preventDefault();
+  };
+
+  /**
    * Whether the rail is expanded to show text labels.
    *
    * Forced collapsed on phone layouts (the whole nav becomes a full-screen
@@ -323,6 +341,11 @@ export const ServerList = (props: Props) => {
                 })}
                 use:floating={props.menuGenerator(conversation)}
                 href={`/channel/${conversation.id}`}
+                onClick={(event) =>
+                  routeLink(event, (fallback) =>
+                    routeConversation(state, conversation.id, fallback),
+                  )
+                }
               >
                 <Avatar
                   size={42}
@@ -375,6 +398,9 @@ export const ServerList = (props: Props) => {
           <a
             class={entryContainer({ expanded: railExpanded() })}
             href="/friends"
+            onClick={(event) =>
+              routeLink(event, (fallback) => routeFriends(state, fallback))
+            }
           >
             <Avatar
               size={42}

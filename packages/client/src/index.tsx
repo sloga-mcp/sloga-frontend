@@ -4,7 +4,7 @@
 import "./polyfills";
 import "./sentry";
 
-import { JSX, onMount, untrack } from "solid-js";
+import { JSX, createEffect, createRoot, on, onMount, untrack } from "solid-js";
 import { render } from "solid-js/web";
 
 import { useLingui } from "@lingui-solid/solid/macro";
@@ -28,6 +28,8 @@ import FlowVerify from "@revolt/auth/src/flows/FlowVerify";
 import {
   ClientContext,
   SoundContext,
+  allowsDonationLinks,
+  distributionChannel,
   useClient,
   useClientLifecycle,
 } from "@revolt/client";
@@ -71,6 +73,12 @@ import { ServerHome } from "./interface/ServerHome";
 import { VoiceOverlayWindow } from "./interface/VoiceOverlayWindow";
 import { ChannelPage } from "./interface/channels/ChannelPage";
 import { mountIosViewportFix } from "./iosViewport";
+import {
+  type CipherSettingsContext,
+  CHANNEL_WAIT_MS,
+  cipherLinkAction,
+  cipherSettingsContext,
+} from "./lib/deepLinks";
 import "./serviceWorkerInterface";
 
 // Best-effort: the devtools debugger throws at module eval when its setup
@@ -142,7 +150,49 @@ function SettingsRedirect() {
       });
     }
 
-    openModal({ type: "settings", config: "user" });
+    // Cipher deep links: `?cipher_tier=` (sloga.gg Cipher page, preselects a
+    // tier) and `?cipher=success|cancel` (the Stripe return URL). Either
+    // opens the Cipher page. Store builds ignore both and open settings as
+    // usual, since the Cipher page is not listed there.
+    const cipher = cipherSettingsContext(window.location.search);
+    const openSettings = (context?: CipherSettingsContext) =>
+      context
+        ? openModal({ type: "settings", config: "user", context })
+        : openModal({ type: "settings", config: "user" });
+
+    const action = cipherLinkAction(cipher, {
+      allowsLinks: allowsDonationLinks(),
+      // An Android build reads as "play" until its native layer reports the
+      // flavor, and a resolved "play" looks the same, so a Play build waits
+      // out the bound before it opens plain settings ("appstore" is final)
+      mayStillResolve: distributionChannel() === "play",
+    });
+    if (action !== "wait") {
+      openSettings(action === "open" ? cipher : undefined);
+      return;
+    }
+
+    // PWARedirect leaves this route at once, so the wait lives in its own
+    // root and ends as soon as it decides. Fails closed: plain settings
+    // unless the channel allows the links within the bound.
+    createRoot((dispose) => {
+      let decided = false;
+      const timer = setTimeout(() => decide(), CHANNEL_WAIT_MS);
+      function decide(context?: CipherSettingsContext) {
+        if (decided) return;
+        decided = true;
+        clearTimeout(timer);
+        dispose();
+        openSettings(context);
+      }
+      // Tracks the channel only: opening settings must never become a
+      // dependency of this effect
+      createEffect(
+        on(allowsDonationLinks, (allowed) => {
+          if (allowed) decide(cipher);
+        }),
+      );
+    });
   });
   return <PWARedirect />;
 }

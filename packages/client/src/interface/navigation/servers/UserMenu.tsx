@@ -1,3 +1,4 @@
+import { useWindowCtx } from "@revolt/client/windowCtx";
 import { useFloating } from "solid-floating-ui";
 import {
   Accessor,
@@ -108,8 +109,10 @@ export function UserMenu(props: Props) {
     close();
   }
 
-  onMount(() => document.addEventListener("mousedown", onMouseDown));
-  onCleanup(() => document.removeEventListener("mousedown", onMouseDown));
+  // The friends window renders this menu in its own document
+  const windowDoc = useWindowCtx().doc;
+  onMount(() => windowDoc.addEventListener("mousedown", onMouseDown));
+  onCleanup(() => windowDoc.removeEventListener("mousedown", onMouseDown));
 
   createEffect(
     on(
@@ -137,7 +140,7 @@ export function UserMenu(props: Props) {
   }
 
   return (
-    <Portal mount={document.getElementById("floating")!}>
+    <Portal mount={useWindowCtx().floatingMount()}>
       <Presence>
         <Show when={show()}>
           <Motion

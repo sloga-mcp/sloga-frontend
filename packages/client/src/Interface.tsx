@@ -2,6 +2,7 @@ import {
   createEffect,
   createSignal,
   JSX,
+  lazy,
   Match,
   onCleanup,
   Show,
@@ -25,6 +26,10 @@ import { KeybindsWorker } from "@revolt/client/KeybindsWorker";
 import { NotificationsWorker } from "@revolt/client/NotificationsWorker";
 import { ShellBridgeWorker } from "@revolt/client/ShellBridgeWorker";
 import { StreamerModeWorker } from "@revolt/client/StreamerModeWorker";
+import {
+  offerSignOutWhileLoading,
+  SIGN_OUT_OFFER_AFTER_MS,
+} from "@revolt/client/connectionPolicy";
 import { IS_OVERLAY_WINDOW, IS_POPOUT_WINDOW } from "@revolt/client/popout";
 import { useModals } from "@revolt/modal";
 import { Navigate, useBeforeLeave, useLocation } from "@revolt/routing";
@@ -32,7 +37,7 @@ import { OverlayBridgeWorker } from "@revolt/rtc/overlay/OverlayBridgeWorker";
 import { useState } from "@revolt/state";
 import { LAYOUT_SECTIONS } from "@revolt/state/stores/Layout";
 import { streamerModeActive } from "@revolt/state/streamer";
-import { CircularProgress, useLayoutSides } from "@revolt/ui";
+import { Button, CircularProgress, Column, useLayoutSides } from "@revolt/ui";
 import { IncomingCallOverlay } from "@revolt/ui/components/features/voice/IncomingCallOverlay";
 import { CallRecordingNotices } from "@revolt/ui/components/features/voice/callCard/CallRecordingNotices";
 import { RemoteControlOverlays } from "@revolt/ui/components/features/voice/callCard/RemoteControlOverlays";
@@ -40,9 +45,21 @@ import { VoiceMoveNotices } from "@revolt/ui/components/features/voice/callCard/
 import { VoiceTranscriptPanel } from "@revolt/ui/components/features/voice/callCard/VoiceTranscriptPanel";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
 
+import { ChatWindowsHost } from "../components/chatWindows/ChatWindowsHost";
 import { SlideDrawer } from "../components/ui/components/navigation/SlideDrawer";
 import { PaneErrorBoundary } from "./interface/PaneErrorBoundary";
 import { Sidebar } from "./interface/Sidebar";
+import { loginReturnPath } from "./lib/deepLinks";
+
+// DEV only: a dynamic import behind the folded constant, so production
+// bundles don't carry the harness at all.
+const ChatWinDevHarness = import.meta.env.DEV
+  ? lazy(() =>
+      import("../components/chatWindows/devHarness").then((m) => ({
+        default: m.ChatWinDevHarness,
+      })),
+    )
+  : () => null;
 
 /**
  * Application layout
@@ -76,7 +93,7 @@ const Interface = (props: { children: JSX.Element }) => {
   const { t } = useLingui();
   const { openModal } = useModals();
   const { isLoggedIn, lifecycle } = useClientLifecycle();
-  const { pathname } = useLocation();
+  const { pathname, search } = useLocation();
   const sides = useLayoutSides();
 
   useBeforeLeave((e) => {
@@ -92,7 +109,10 @@ const Interface = (props: { children: JSX.Element }) => {
 
   createEffect(() => {
     if (!isLoggedIn()) {
-      state.layout.setNextPath(pathname);
+      // Keeps the query string for settings deep links
+      // (`/settings?cipher_tier=T149`), and never stores a path that
+      // resolves to another origin (see src/lib/deepLinks.ts).
+      state.layout.setNextPath(loginReturnPath(pathname, search));
       console.debug("WAITING... currently", lifecycle.state());
     }
   });
@@ -158,7 +178,7 @@ const Interface = (props: { children: JSX.Element }) => {
             </BannerClose>
           </StreamerBanner>
         </Show>
-        <Switch fallback={<CircularProgress />}>
+        <Switch fallback={<LoadingScreen />}>
           <Match when={!isLoggedIn()}>
             <Navigate href="/login" />
           </Match>
@@ -254,10 +274,53 @@ const Interface = (props: { children: JSX.Element }) => {
             and took the only route to Export with it, while the transcript sat
             intact and unreachable in memory. */}
         <VoiceTranscriptPanel />
+        {/* DEV-only console hook for chat windows (`__chatwin.open(id)`). It
+            portals each window's content from here, so the windows inherit
+            this tree's client, state and modal contexts. Main window only, as
+            above. The constant-folded guard drops it from production builds. */}
+        {import.meta.env.DEV && <ChatWinDevHarness />}
+        {/* Desktop chat windows (friends + tabbed conversations). Main window
+            only, as above: it opens and owns every child window and portals
+            their content from here. Inert unless the chat-windows mode is on
+            in a supported shell. */}
+        <ChatWindowsHost />
       </AppRoot>
     </MessageCache>
   );
 };
+
+/**
+ * Spinner shown until the client loads for the first time. Before that first
+ * load the user menu, which holds the only "Sign out", is not rendered, so a
+ * device whose socket never connects had no way to sign out. The button
+ * appears after a few failed attempts or a long wait, and goes through the
+ * usual confirmation.
+ */
+function LoadingScreen() {
+  const { openModal } = useModals();
+  const { lifecycle } = useClientLifecycle();
+  const [waitedLong, setWaitedLong] = createSignal(false);
+
+  const timer = setTimeout(() => setWaitedLong(true), SIGN_OUT_OFFER_AFTER_MS);
+  onCleanup(() => clearTimeout(timer));
+
+  return (
+    <Column align justify grow>
+      <CircularProgress />
+      <Show
+        when={offerSignOutWhileLoading(
+          lifecycle.loadedOnce(),
+          lifecycle.connectionFailures(),
+          waitedLong(),
+        )}
+      >
+        <Button variant="text" onPress={() => openModal({ type: "sign_out" })}>
+          <Trans>Sign out</Trans>
+        </Button>
+      </Show>
+    </Column>
+  );
+}
 
 const AppRoot = styled("div", {
   base: {

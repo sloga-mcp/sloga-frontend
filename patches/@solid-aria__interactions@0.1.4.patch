@@ -1,0 +1,88 @@
+diff --git a/dist/index.cjs b/dist/index.cjs
+index 1b7e51b..5e64750 100644
+--- a/dist/index.cjs
++++ b/dist/index.cjs
+@@ -803,7 +803,7 @@ function createPress(props, ref) {
+         setTarget(e.currentTarget);
+         _setIsPressed(true);
+         triggerPressStart(e, "keyboard");
+-        addGlobalListener(document, "keyup", globalOnKeyUp, false);
++        addGlobalListener(e.currentTarget.ownerDocument, "keyup", globalOnKeyUp, false);
+       }
+     }
+   };
+@@ -866,9 +866,9 @@ function createPress(props, ref) {
+         disableTextSelection(newTarget);
+       }
+       triggerPressStart(e, newPointerType);
+-      addGlobalListener(document, "pointermove", globalOnPointerMove, false);
+-      addGlobalListener(document, "pointerup", globalOnPointerUp, false);
+-      addGlobalListener(document, "pointercancel", globalOnPointerCancel, false);
++      addGlobalListener(e.currentTarget.ownerDocument, "pointermove", globalOnPointerMove, false);
++      addGlobalListener(e.currentTarget.ownerDocument, "pointerup", globalOnPointerUp, false);
++      addGlobalListener(e.currentTarget.ownerDocument, "pointercancel", globalOnPointerCancel, false);
+     };
+     pressProps.onMouseDown = (e) => {
+       if (!e.currentTarget.contains(e.target)) {
+@@ -915,7 +915,7 @@ function createPress(props, ref) {
+         (0, import_utils11.focusWithoutScrolling)(e.currentTarget);
+       }
+       triggerPressStart(e, newPointerType);
+-      addGlobalListener(document, "mouseup", globalOnMouseUp, false);
++      addGlobalListener(e.currentTarget.ownerDocument, "mouseup", globalOnMouseUp, false);
+     };
+     pressProps.onMouseEnter = (e) => {
+       if (!e.currentTarget.contains(e.target)) {
+@@ -970,7 +970,7 @@ function createPress(props, ref) {
+         disableTextSelection(newTarget);
+       }
+       triggerPressStart(e, newPointerType);
+-      addGlobalListener(window, "scroll", globalOnScroll, true);
++      addGlobalListener(e.currentTarget.ownerDocument.defaultView, "scroll", globalOnScroll, true);
+     };
+     pressProps.onTouchMove = (e) => {
+       if (!e.currentTarget.contains(e.target)) {
+diff --git a/dist/index.js b/dist/index.js
+index 2d20562..5f0a7ad 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -773,7 +773,7 @@ function createPress(props, ref) {
+         setTarget(e.currentTarget);
+         _setIsPressed(true);
+         triggerPressStart(e, "keyboard");
+-        addGlobalListener(document, "keyup", globalOnKeyUp, false);
++        addGlobalListener(e.currentTarget.ownerDocument, "keyup", globalOnKeyUp, false);
+       }
+     }
+   };
+@@ -836,9 +836,9 @@ function createPress(props, ref) {
+         disableTextSelection(newTarget);
+       }
+       triggerPressStart(e, newPointerType);
+-      addGlobalListener(document, "pointermove", globalOnPointerMove, false);
+-      addGlobalListener(document, "pointerup", globalOnPointerUp, false);
+-      addGlobalListener(document, "pointercancel", globalOnPointerCancel, false);
++      addGlobalListener(e.currentTarget.ownerDocument, "pointermove", globalOnPointerMove, false);
++      addGlobalListener(e.currentTarget.ownerDocument, "pointerup", globalOnPointerUp, false);
++      addGlobalListener(e.currentTarget.ownerDocument, "pointercancel", globalOnPointerCancel, false);
+     };
+     pressProps.onMouseDown = (e) => {
+       if (!e.currentTarget.contains(e.target)) {
+@@ -885,7 +885,7 @@ function createPress(props, ref) {
+         focusWithoutScrolling(e.currentTarget);
+       }
+       triggerPressStart(e, newPointerType);
+-      addGlobalListener(document, "mouseup", globalOnMouseUp, false);
++      addGlobalListener(e.currentTarget.ownerDocument, "mouseup", globalOnMouseUp, false);
+     };
+     pressProps.onMouseEnter = (e) => {
+       if (!e.currentTarget.contains(e.target)) {
+@@ -940,7 +940,7 @@ function createPress(props, ref) {
+         disableTextSelection(newTarget);
+       }
+       triggerPressStart(e, newPointerType);
+-      addGlobalListener(window, "scroll", globalOnScroll, true);
++      addGlobalListener(e.currentTarget.ownerDocument.defaultView, "scroll", globalOnScroll, true);
+     };
+     pressProps.onTouchMove = (e) => {
+       if (!e.currentTarget.contains(e.target)) {

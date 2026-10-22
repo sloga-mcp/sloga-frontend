@@ -89,7 +89,9 @@ HARNESS = "mlsCallSession.harness.ts"
 #: suggestions block (wave 7) and the Android screen-leg block at the end of
 #: this table (screen-share flip wave 4c: `state-leg-*`,
 #: `state-keyprovider-*`, `state-encryptedlegs-*`, `state-sfu-*`,
-#: `state-trackpublished-*`, `state-pausegate-*`). They reach nothing but the
+#: `state-trackpublished-*`, `state-pausegate-*`), and the push-to-talk block
+#: (`state-ptt-*`, killed by `pttMicPolicy.test.ts`'s pins of the same
+#: kind). They reach nothing but the
 #: statements `stateWiring.test.ts` pins as TEXT — the voice-move and
 #: chip-publication wiring, and since wave 4 the screen leg's roster inputs,
 #: its stop and gate notices, the start path's mode re-reads and binding key
@@ -10172,10 +10174,16 @@ MUTATIONS += [
         must_red=[LEG_POLICY_SPEC],
     ),
     # Retargeted with the lighting prerequisites: the arm now opens with the
-    # event-room guard, so the search carries it.
+    # event-room guard, so the search carries it. Retargeted again with the
+    # screen-capture order: the arm also closes the video gate and stops the
+    # capture, and its comment was rewritten with it. The search is the whole
+    # arm, so only the arm's code matters to the kill; the Reconnected
+    # backstop below it stays, which is exactly the residue this entry
+    # asserts is not enough. Retargeted again with the per-buffer audio
+    # sender check: the arm's comment gained a sentence.
     Mutation(
         id="native-reconnecting-branch-removed",
-        what="a full reconnect no longer releases the audio and ends the share, so republishTracks puts open-gate playback on a new audio sender whose cryptor nobody witnessed (wave-1 MAJOR-1)",
+        what="a full reconnect no longer releases the audio, closes the video gate or stops the capture when it begins, so republishTracks can put both tracks back on new senders whose cryptors nobody witnessed, with only the Reconnected backstop left to end the share",
         file=SHARE_PLUGIN_KT,
         search="""            is RoomEvent.Reconnecting -> {
                 // A FULL reconnect has begun, and the share ends here, before
@@ -10187,28 +10195,33 @@ MUTATIONS += [
                 // `onEngineResuming`, which Room does not override, so it
                 // posts no room event at all and never reaches this branch.
                 //
-                // Why not wait for Reconnected, as the video alone could:
-                // `prepareForFullReconnect` drops the publications but keeps
-                // the tracks running, and `onPostReconnect -> republishTracks`
-                // publishes them again on NEW senders, the video and then the
-                // audio, AFTER Reconnected is posted. A source whose gate is
-                // open would feed live playback into a new audio sender whose
-                // cryptor nobody has witnessed, and whether its first frames
-                // leave encrypted then depends on SDK timing. The gate must
-                // never be open on an unwitnessed sender, so the audio is
-                // released right here, synchronously and before any video
-                // stop: released, the source only paces zeros. The teardown
-                // that follows disconnects at once (not settled), and that
-                // disconnect cancels the reconnect job, which pre-empts the
-                // republish of both senders. Same reason and toast as a
-                // Reconnected that finds no screen publication (probe (c-iv)
-                // already showed a full reconnect ends the share).
+                // Why not wait for Reconnected: `prepareForFullReconnect`
+                // drops the publications but keeps the tracks running, and
+                // `onPostReconnect -> republishTracks` publishes them again
+                // on NEW senders, the video and then the audio, AFTER
+                // Reconnected is posted. Nobody has witnessed those senders'
+                // cryptors, and what reaches them first would then depend on
+                // SDK timing. Neither gate may ever be open on an unwitnessed
+                // sender, so both close right here, synchronously: the audio
+                // source is released first (released, it only paces zeros),
+                // then the video gate closes for good and the capture stops,
+                // by reference, since the publication a lookup would need is
+                // already gone. The audio source's per-buffer sender check
+                // is only a backstop; this synchronous close stays the
+                // primary one. The teardown that follows disconnects at
+                // once (not settled), and that disconnect cancels the
+                // reconnect job, which pre-empts the republish of both
+                // senders. Same reason and toast as the Reconnected backstop
+                // below (probe (c-iv) already showed a full reconnect ends
+                // the share).
                 //
                 // Launched, like every other teardown from this collector,
                 // and only if THIS share is still the live one when it runs
                 // (see the permission branch). Taking [screenAudio] out of
                 // the field first leaves the teardown nothing to release,
-                // and a queued audio-loss report nothing to report.
+                // and a queued audio-loss report nothing to report. The
+                // video fields stay set: the teardown takes them, and its
+                // second gate close and capture stop are no-ops.
                 //
                 // Only the live share's own Room may take its audio. The
                 // field read below is synchronous, ahead of the launched
@@ -10220,6 +10233,8 @@ MUTATIONS += [
                 val audio = screenAudio
                 screenAudio = null
                 releaseAudio(audio)
+                closeVideoGate(screenVideoGate)
+                stopVideoCapture(screenVideo)
                 trace("full reconnect began audioReleased=${audio != null}")
                 scope.launch {
                     if (this@ScreenSharePlugin.room === room) {
@@ -10268,31 +10283,35 @@ MUTATIONS += [
         specs=[LEG_POLICY_SPEC],
         must_red=[LEG_POLICY_SPEC],
     ),
+    # Retargeted with the per-buffer audio sender check, which the head now
+    # also asks (last); the mutant drops all three conditions.
     Mutation(
         id="native-audio-gate-read-forced-open",
-        what="the record callback copies captured playback into the ADM buffer whatever the gate and release state, so playback leaves the phone before the audio sender's cryptor is witnessed on the current key",
+        what="the record callback copies captured playback into the ADM buffer whatever the gate, release and sender-check state, so playback leaves the phone before the audio sender's cryptor is witnessed on the current key",
         file=SCREEN_AUDIO_KT,
-        search="""        if (gateOpen && !released) {
+        search="""        if (gateOpen && !released && senderGate.allows()) {
 """,
         replace="""        if (true) {
 """,
         specs=[LEG_POLICY_SPEC],
         must_red=[LEG_POLICY_SPEC],
     ),
+    # Retargeted with the per-buffer audio sender check: only the gate is
+    # dropped; the release and sender checks stay.
     Mutation(
         id="native-audio-gate-read-ignores-gate",
-        what="the record callback checks only `released`, never the gate, so captured playback leaves the phone from the first buffer, before the audio sender's cryptor is witnessed on the current key",
+        what="the record callback's buffer condition reads the audio gate, the release flag and the sender gate; this entry drops the audio gate from it",
         file=SCREEN_AUDIO_KT,
-        search="""        if (gateOpen && !released) {
+        search="""        if (gateOpen && !released && senderGate.allows()) {
 """,
-        replace="""        if (!released) {
+        replace="""        if (!released && senderGate.allows()) {
 """,
         specs=[LEG_POLICY_SPEC],
         must_red=[LEG_POLICY_SPEC],
     ),
     Mutation(
         id="native-audio-witness-skips-key-check",
-        what="the audio witness passes for any cryptor found in the manager's map, so the gate opens on a disabled cryptor (frames in the clear) or one at a stale key index (a key the wrong epoch's members hold)",
+        what="the shared sender witness passes for any cryptor found in the manager's map, so the screen capture starts, and the audio gate opens, on a sender whose cryptor is disabled or at a stale key index (a key the wrong epoch's members hold)",
         file=SHARE_PLUGIN_KT,
         search="""            cryptor.isEnabled && cryptor.keyIndex == index
 """,
@@ -10306,7 +10325,7 @@ MUTATIONS += [
     # the witness predicate above it.
     Mutation(
         id="native-audio-witness-catch-true",
-        what="a reflection failure inside the audio witness (an SDK upgrade renaming the cryptor map) reads as witnessed, so the gate opens on a sender nobody verified",
+        what="a reflection failure inside the shared sender witness (an SDK upgrade renaming the cryptor map) reads as witnessed, so the screen capture starts and the audio gate opens on senders nobody verified",
         file=SHARE_PLUGIN_KT,
         search="""            cryptor.isEnabled && cryptor.keyIndex == index
         } catch (_: Throwable) {
@@ -10388,14 +10407,16 @@ MUTATIONS += [
     # text changed, never what the plugin does on a device. The two gate
     # entries open it WITHOUT touching the `source.openGate()` line after the
     # witness, so only a pin on every opener (not on that one call) holds.
+    # Retargeted with the per-buffer audio sender check: the head it is
+    # inserted above now ends with that check.
     Mutation(
         id="native-audio-source-self-opens",
-        what="the capture source opens its own gate on its first full read, so captured playback replaces the zeros from that very buffer on, before the plugin's witness has seen the audio sender's cryptor on the current key",
+        what="the audio gate is opened only by the plugin, behind its witness; this entry has the capture source open its own gate on a full read",
         file=SCREEN_AUDIO_KT,
-        search="""        if (gateOpen && !released) {
+        search="""        if (gateOpen && !released && senderGate.allows()) {
 """,
         replace="""        if (got == capacity && !failed) openGate()
-        if (gateOpen && !released) {
+        if (gateOpen && !released && senderGate.allows()) {
 """,
         specs=[LEG_POLICY_SPEC],
         must_red=[LEG_POLICY_SPEC],
@@ -10580,16 +10601,24 @@ MUTATIONS += [
         specs=[LEG_POLICY_SPEC],
         must_red=[LEG_POLICY_SPEC],
     ),
+    # Retargeted with the screen-capture order: the Reconnected arm now
+    # carries the same room guard, so the search anchors on the line the
+    # Reconnecting arm's guard protects.
     Mutation(
         id="native-reconnecting-room-guard-dropped",
-        what="the Reconnecting arm takes and releases `screenAudio` before anything checks which Room posted the event, so a Reconnecting from a Room that is no longer the live share's (a collector that outlived its attempt) silences the live share's system audio while its video plays on (lighting prerequisites)",
+        what="the Reconnecting arm takes and releases `screenAudio`, closes the video gate and stops the capture before anything checks which Room posted the event, so a Reconnecting from a Room that is no longer the live share's (a collector that outlived its attempt) silences the live share's system audio and ends its video capture (lighting prerequisites)",
         file=SHARE_PLUGIN_KT,
         search="""                if (event.room !== room) return
+                val audio = screenAudio
 """,
-        replace="",
+        replace="""                val audio = screenAudio
+""",
         specs=[LEG_POLICY_SPEC],
         must_red=[LEG_POLICY_SPEC],
     ),
+    # Retargeted with the screen-capture order: the video gate close and the
+    # capture stop now sit between the release and the trace. Only the audio
+    # release moves; the video steps stay where they are.
     Mutation(
         id="native-reconnecting-release-deferred",
         what="the Reconnecting arm releases the audio only inside the launched teardown, so the source stays in `screenAudio` with its gate open for that whole hop and the full reconnect's republish can put live playback back on air on a new audio sender (lighting prerequisites)",
@@ -10597,10 +10626,14 @@ MUTATIONS += [
         search="""                val audio = screenAudio
                 screenAudio = null
                 releaseAudio(audio)
+                closeVideoGate(screenVideoGate)
+                stopVideoCapture(screenVideo)
                 trace("full reconnect began audioReleased=${audio != null}")
                 scope.launch {
 """,
         replace="""                val audio = screenAudio
+                closeVideoGate(screenVideoGate)
+                stopVideoCapture(screenVideo)
                 trace("full reconnect began audioReleased=${audio != null}")
                 scope.launch {
                     screenAudio = null
@@ -10608,6 +10641,1618 @@ MUTATIONS += [
 """,
         specs=[LEG_POLICY_SPEC],
         must_red=[LEG_POLICY_SPEC],
+    ),
+]
+
+
+# ---- native: the screen capture starts only behind the sender witness -----
+# The plugin owns the screen track: it creates it with a `ScreenVideoGate`
+# as its video processor, publishes it, witnesses the screen sender's
+# cryptor at the current key index (with E2EE), checks that the track has
+# that one sender and no other, admits the gate for that sender's
+# transceiver, and only then starts the capture. The gate forwards to the
+# track's video source only while the track is still on the admitted
+# transceiver with no additional one, and every stop path closes it.
+#
+# Every entry is killed by a SOURCE PIN in LEG_POLICY_SPEC over the
+# comment-stripped native files, so, as with every native entry above, a
+# kill proves the pinned text changed, never what the APK does on a device.
+# The gate's own behavior is also tested by the JVM unit test
+# `ScreenVideoGateTest.kt`, which this runner does not run and does not
+# measure. That suite drives `admitWith` with its own suppliers, so by
+# construction it cannot see the `native-video-gate-admit-*` and
+# `native-track-access-extra-count-zero` entries: only the pins hold them.
+#
+# Order entries move a statement rather than delete it: the moved code is
+# all still present, so only a pin on ORDER (by position inside doConnect,
+# or inside tearDown) can kill them, never a presence or count pin.
+
+#: Relative to `RTC`, like SHARE_PLUGIN_KT, so each of the three below
+#: climbs out of `components/rtc` and stays inside this client package.
+SCREEN_VIDEO_GATE_KT = (
+    "../../android/app/src/main/java/com/acutest/app/screenshare/"
+    "ScreenVideoGate.kt"
+)
+SCREEN_TRACK_ACCESS_JAVA = (
+    "../../android/app/src/main/java/com/acutest/app/screenshare/"
+    "ScreenTrackAccess.java"
+)
+#: The screen leg's key provider: its frame cryptor options and its raw key
+#: install.
+RAW_SCREEN_KEY_PROVIDER_KT = (
+    "../../android/app/src/main/java/com/acutest/app/screenshare/"
+    "RawScreenKeyProvider.kt"
+)
+#: The screen audio source's per-buffer sender check. Relative to `RTC`,
+#: like the three above.
+SCREEN_AUDIO_SENDER_GATE_KT = (
+    "../../android/app/src/main/java/com/acutest/app/screenshare/"
+    "ScreenAudioSenderGate.kt"
+)
+#: The compile gate, whose GATE_TESTS table LEG_POLICY_SPEC reads. Relative
+#: to `RTC`, like the native constants above: it climbs to this package's
+#: `scripts/`, so it stays inside this client package.
+ANDROID_COMPILE_GATE_SH = "../../scripts/android-compile-gate.sh"
+
+#: The block that holds the share to a single witnessed sender, moved whole
+#: by `native-layout-check-after-capture`.
+_LAYOUT_CHECK = """            if (!screenSenderLayoutOk(room, track)) {
+                throw IllegalStateException("screen share sender layout refused")
+            }
+"""
+#: The first-frame wait and its throw, moved whole by
+#: `native-first-frame-after-audio`.
+_FIRST_FRAME_WAIT = """            val firstFrameBy = SystemClock.elapsedRealtime() + FIRST_FRAME_TIMEOUT_MS
+            while (!gate.forwardedAny &&
+                generation == connectGeneration &&
+                SystemClock.elapsedRealtime() < firstFrameBy
+            ) {
+                delay(FIRST_FRAME_POLL_MS)
+            }
+            ensureConnectCurrent(generation)
+            if (!gate.forwardedAny) {
+                throw IllegalStateException("no first frame")
+            }
+"""
+#: The only capture start, with the field writes and comment above it, so a
+#: move can delete it from its place without matching the moved copy.
+_CAPTURE_START = """            screenVideoGate = gate
+            // The ONLY capture start in this plugin; the projection is
+            // obtained here.
+            track.startCapture()
+"""
+
+MUTATIONS += [
+    # ---- doConnect: what runs before the capture starts --------------------
+    Mutation(
+        id="native-capture-before-publish",
+        what="the screen capture starts right after the foreground service, before the track is published, so it runs before the screen sender's cryptor is witnessed at the current key index",
+        file=SHARE_PLUGIN_KT,
+        search="""            track.startForegroundService(NOTIFICATION_ID, buildNotification())
+""",
+        replace="""            track.startForegroundService(NOTIFICATION_ID, buildNotification())
+            track.startCapture()
+""",
+        also=[(_CAPTURE_START, "            screenVideoGate = gate\n")],
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-capture-before-witness",
+        what="the screen capture starts directly after the publish, ahead of the key-index assertion, the sender witness, the sender-layout check and admit, so it runs before the screen sender's cryptor is witnessed at the current key index",
+        file=SHARE_PLUGIN_KT,
+        search="""            if (published != true) {
+                throw IllegalStateException("screen share publish refused")
+            }
+""",
+        replace="""            if (published != true) {
+                throw IllegalStateException("screen share publish refused")
+            }
+            track.startCapture()
+""",
+        also=[(_CAPTURE_START, "            screenVideoGate = gate\n")],
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-video-witness-dropped",
+        what="doConnect no longer requires the screen sender's own cryptor to be witnessed, enabled and at the current key index, before it admits the gate and starts the capture",
+        file=SHARE_PLUGIN_KT,
+        search="""            if (provider != null &&
+                !senderCryptorWitnessed(room, Track.Source.SCREEN_SHARE, currentKeyIndex)
+            ) {
+                throw IllegalStateException("screen sender cryptor not witnessed")
+            }
+""",
+        replace="",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-video-witness-wrong-source",
+        what="the screen video's witness asks about the SCREEN_SHARE_AUDIO publication instead of its own, so the capture start rests on another sender's cryptor and never on the screen sender's; today the wrong lookup fails closed, since the audio is published only after the video's witness and the lookup finds nothing, but that holds only as long as the audio publish stays behind it",
+        file=SHARE_PLUGIN_KT,
+        search="""                !senderCryptorWitnessed(room, Track.Source.SCREEN_SHARE, currentKeyIndex)
+""",
+        replace="""                !senderCryptorWitnessed(room, Track.Source.SCREEN_SHARE_AUDIO, currentKeyIndex)
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-sdk-share-enable-restored",
+        what="the publish goes back to the SDK's one-call screen-share enable, which builds its own screen track outside the gate, so the capture no longer starts only after the screen sender's cryptor is witnessed",
+        file=SHARE_PLUGIN_KT,
+        search="""            val published = room.localParticipant.publishVideoTrack(track)
+""",
+        replace="""            val published = room.localParticipant.setScreenShareEnabled(true, ScreenCaptureParams(intent))
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-witness-source-hardcoded",
+        what="the shared sender witness looks up the SCREEN_SHARE_AUDIO publication whatever source it is asked about, so the screen video's witness reads the audio sender's cryptor instead of its own; today the wrong lookup fails closed, since the audio is published only after the video's witness and the lookup finds nothing, but that holds only as long as the audio publish stays behind it",
+        file=SHARE_PLUGIN_KT,
+        search="""                .getTrackPublication(source) ?: return false
+""",
+        replace="""                .getTrackPublication(Track.Source.SCREEN_SHARE_AUDIO) ?: return false
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # ---- doConnect: one sender, checked before admit ------------------------
+    Mutation(
+        id="native-layout-check-dropped",
+        what="doConnect no longer runs the sender-layout check before admit, so the gate is admitted for a screen track that is not guaranteed to keep the witnessed sender as its only one",
+        file=SHARE_PLUGIN_KT,
+        search=_LAYOUT_CHECK,
+        replace="",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-layout-dynacast-dropped",
+        what="the sender-layout check accepts a Room with dynacast on, so the screen track is no longer guaranteed to keep the witnessed sender as its only one",
+        file=SHARE_PLUGIN_KT,
+        search="""            if (room.dynacast) return false
+""",
+        replace="",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-layout-codec-dropped",
+        what="the sender-layout check no longer requires the publication's codec to be VP8, so the screen track is no longer guaranteed to keep the witnessed sender as its only one",
+        file=SHARE_PLUGIN_KT,
+        search="""            options.videoCodec.equals("vp8", ignoreCase = true) &&
+                options.backupCodec == null &&
+""",
+        replace="""            options.backupCodec == null &&
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-layout-backup-codec-dropped",
+        what="the sender-layout check accepts a publication with a backup codec, so the screen track is no longer guaranteed to keep the witnessed sender as its only one",
+        file=SHARE_PLUGIN_KT,
+        search="""                options.backupCodec == null &&
+""",
+        replace="",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-layout-track-identity-dropped",
+        what="the sender-layout check reads whatever SCREEN_SHARE publication the Room holds without checking that it carries this track (`pub.track === track`), so another track's publish options can vouch for this one",
+        file=SHARE_PLUGIN_KT,
+        search="""            if (pub.track !== track) return false
+""",
+        replace="",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-layout-extra-count-dropped",
+        what="the sender-layout check no longer reads the track's additional-transceiver count, so the screen track is no longer guaranteed to keep the witnessed sender as its only one",
+        file=SHARE_PLUGIN_KT,
+        search="""                options.backupCodec == null &&
+                ScreenTrackAccess.extraTransceiverCountOf(track) == 0
+""",
+        replace="""                options.backupCodec == null
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-layout-check-after-capture",
+        what="the sender-layout check runs after admit and the capture start, so frames reach the track's video source before the track is known to have the witnessed sender as its only one",
+        file=SHARE_PLUGIN_KT,
+        search=_LAYOUT_CHECK,
+        replace="",
+        also=[
+            (
+                """            track.startCapture()
+""",
+                """            track.startCapture()
+""" + _LAYOUT_CHECK,
+            ),
+        ],
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # ---- doConnect: the first frame ----------------------------------------
+    Mutation(
+        id="native-first-frame-after-audio",
+        what="the first-frame wait runs after the audio block, so the connect suspends between the audio source's gate opening and the source's hand-over to the share",
+        file=SHARE_PLUGIN_KT,
+        search=_FIRST_FRAME_WAIT,
+        replace="",
+        also=[
+            (
+                """            trace("audio state=$audioState")
+""",
+                """            trace("audio state=$audioState")
+""" + _FIRST_FRAME_WAIT,
+            ),
+        ],
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-first-frame-ignores-generation",
+        what="the first-frame wait no longer ends when a stop bumps the connect generation, so a stopped connect sits out the whole first-frame timeout before it notices",
+        file=SHARE_PLUGIN_KT,
+        search="""                generation == connectGeneration &&
+""",
+        replace="",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # ---- ScreenVideoGate / ScreenTrackAccess --------------------------------
+    Mutation(
+        id="native-video-gate-starts-admitted",
+        what="the video gate forwards frames before admit, so the capture's frames reach the track's video source before the screen sender's cryptor is witnessed and before the gate is bound to its transceiver",
+        file=SCREEN_VIDEO_GATE_KT,
+        search="""        val admitted = admission ?: return
+        if (!singleAdmittedSender(admitted)) {
+""",
+        replace="""        val admitted = admission
+        if (admitted != null && !singleAdmittedSender(admitted)) {
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-video-gate-ignores-transceiver",
+        what="the video gate no longer compares the track's current transceiver with the admitted one on each frame, so after a republish onto a new transceiver it keeps forwarding to a sender whose cryptor nobody witnessed",
+        file=SCREEN_VIDEO_GATE_KT,
+        search="""        if (now == null || now !== admitted.expected) return false
+""",
+        replace="""        if (now == null) return false
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-video-gate-ignores-extra-senders",
+        what="the video gate ignores the per-frame count of additional transceivers, so it keeps forwarding when the screen track no longer has the witnessed sender as its only one",
+        file=SCREEN_VIDEO_GATE_KT,
+        search="""        return extras == 0
+""",
+        replace="""        return true
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # The JVM suite drives `admitWith` with its own suppliers, so these three
+    # survive it; only the pin on `admit`'s exact body holds.
+    Mutation(
+        id="native-video-gate-admit-self-suppliers",
+        what="admit hands admitWith `{ transceiver }` and `{ 0 }` instead of the ScreenTrackAccess reads, so neither the admit check nor any per-frame check ever looks at the track's real transceivers",
+        file=SCREEN_VIDEO_GATE_KT,
+        search="""            { ScreenTrackAccess.transceiverOf(track) },
+            { ScreenTrackAccess.extraTransceiverCountOf(track) },
+""",
+        replace="""            { transceiver },
+            { 0 },
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-video-gate-admit-current-self",
+        what="admit hands admitWith `{ transceiver }` as the current-transceiver read, so the gate never sees the screen track move to another transceiver",
+        file=SCREEN_VIDEO_GATE_KT,
+        search="""            { ScreenTrackAccess.transceiverOf(track) },
+""",
+        replace="""            { transceiver },
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-video-gate-admit-extra-zero",
+        what="admit hands admitWith `{ 0 }` as the additional-sender read, so neither admit nor the per-frame check ever sees a second sender on the screen track",
+        file=SCREEN_VIDEO_GATE_KT,
+        search="""            { ScreenTrackAccess.extraTransceiverCountOf(track) },
+""",
+        replace="""            { 0 },
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-track-access-extra-count-zero",
+        what="ScreenTrackAccess.extraTransceiverCountOf always answers 0, so neither the sender-layout check nor the video gate ever sees a second sender on the screen track",
+        file=SCREEN_TRACK_ACCESS_JAVA,
+        search="""        return track.getSimulcastTransceivers$livekit_android_sdk_release().size();
+""",
+        replace="""        return 0;
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # ---- event arms: the gate closes at arrival -----------------------------
+    # `closeVideoGate(screenVideoGate)` occurs in three arms at three
+    # indentations, and a shallower one is a substring of a deeper, so each
+    # search carries a neighboring line.
+    Mutation(
+        id="native-reconnecting-gate-left-open",
+        what="the Reconnecting arm no longer closes the video gate at arrival, so keeping frames off the track's video source until the launched teardown runs, while the full reconnect prepares to put the track on a new sender, rests on the capture stop beside it alone (defense in depth: each of the two ends the forwarding on its own)",
+        file=SHARE_PLUGIN_KT,
+        search="""                releaseAudio(audio)
+                closeVideoGate(screenVideoGate)
+""",
+        replace="""                releaseAudio(audio)
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-reconnecting-capture-left-running",
+        what="the Reconnecting arm no longer stops the screen capture at arrival, so the capture keeps running until the launched teardown, while the full reconnect prepares to put the track on a new sender",
+        file=SHARE_PLUGIN_KT,
+        search="""                stopVideoCapture(screenVideo)
+""",
+        replace="",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-revoke-gate-left-open",
+        what="a full publish revoke no longer closes the video gate at arrival, so a revoked share keeps forwarding frames until Main reaches the settled teardown",
+        file=SHARE_PLUGIN_KT,
+        search="""                        closeVideoGate(screenVideoGate)
+                        scope.launch {
+""",
+        replace="""                        scope.launch {
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-unpublish-gate-left-open",
+        what="a local SCREEN_SHARE unpublish no longer closes the video gate at arrival, so the track keeps forwarding through the state checks and the grace after it left its witnessed sender",
+        file=SHARE_PLUGIN_KT,
+        search="""                    closeVideoGate(screenVideoGate)
+                    // Diagnostic: ties a later teardown's steps to this
+""",
+        replace="""                    // Diagnostic: ties a later teardown's steps to this
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # ---- cleanup by reference ------------------------------------------------
+    Mutation(
+        id="native-catch-unpublished-track-undisposed",
+        what="the connect's catch stops an unpublished screen track it created but never disposes it, so the track and its video source outlive the failed attempt with nothing left to release them",
+        file=SHARE_PLUGIN_KT,
+        search="""        try {
+            video.dispose()
+        } catch (_: Throwable) {}
+""",
+        replace="",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-catch-reaches-fields",
+        what="the connect's catch releases the screen track through the plugin's fields instead of its own local, so a superseded attempt closes and stops a successor's live share and leaves its own track running",
+        file=SHARE_PLUGIN_KT,
+        search="""            releaseAttemptVideo(room, video, videoGate)
+""",
+        replace="""            releaseAttemptVideo(room, screenVideo, screenVideoGate)
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # tearDown makes the same `stopShareCapture` call at the same
+    # indentation, so the search carries discardRoom's next line.
+    Mutation(
+        id="native-discard-local-track-not-stopped",
+        what="discardRoom hands stopShareCapture no track and no gate, so stopping a discarded attempt's capture by reference rests on the catch's releaseAttemptVideo alone; discardRoom's own stop then reaches the track only through the publication lookup, which misses a track that never reached the publications (defense in depth: each of the two stops ends the capture on its own)",
+        file=SHARE_PLUGIN_KT,
+        search="""        stopShareCapture(room, audio, video, gate)
+        if (pendingDisposals.any { it.room === room }) return
+""",
+        replace="""        stopShareCapture(room, audio, null, null)
+        if (pendingDisposals.any { it.room === room }) return
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-teardown-disposes-track",
+        what="tearDown disposes the screen track itself, ahead of the Room's disconnect, which then stops and disposes the published track a second time",
+        file=SHARE_PLUGIN_KT,
+        search="""        stopShareCapture(room, audio, video, gate)
+        trace("tearDown capture stopped screenPub=${hadScreenPub} byRef=${video != null}")
+""",
+        replace="""        stopShareCapture(room, audio, video, gate)
+        video?.dispose()
+        trace("tearDown capture stopped screenPub=${hadScreenPub} byRef=${video != null}")
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-teardown-capture-stop-launched",
+        what="tearDown launches its stopShareCapture call instead of making it inline, so the audio release, the gate close and the capture stop no longer happen before tearDown returns: an inline disposal disconnects the Room first, stopping the projection under a live playback capture, and the gate stays open after tearDown has cleared the share's fields",
+        file=SHARE_PLUGIN_KT,
+        search="""        stopShareCapture(room, audio, video, gate)
+        trace("tearDown capture stopped screenPub=${hadScreenPub} byRef=${video != null}")
+""",
+        replace="""        scope.launch { stopShareCapture(room, audio, video, gate) }
+        trace("tearDown capture stopped screenPub=${hadScreenPub} byRef=${video != null}")
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-teardown-capture-stop-after-disposal",
+        what="tearDown makes its stopShareCapture call only after it has handed the Room to its disposal, so an inline disposal disconnects the Room, stopping the projection under a live playback capture, before the audio is released and the gate is closed",
+        file=SHARE_PLUGIN_KT,
+        search="""        stopShareCapture(room, audio, video, gate)
+        trace("tearDown capture stopped screenPub=${hadScreenPub} byRef=${video != null}")
+""",
+        replace="",
+        also=[
+            (
+                """        // Cleared HERE, not only on a successful connect. `stopping` exists to
+""",
+                """        stopShareCapture(room, audio, video, gate)
+        trace("tearDown capture stopped screenPub=${hadScreenPub} byRef=${video != null}")
+        // Cleared HERE, not only on a successful connect. `stopping` exists to
+""",
+            ),
+        ],
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-stop-capture-lookup-only",
+        what="stopShareCapture no longer stops the capture through the screen track it is handed and reaches it only through the Room's SCREEN_SHARE publication, so a track that is not, or no longer, published (a full reconnect has dropped the publications, or the publish never completed) keeps capturing after its share ended",
+        file=SHARE_PLUGIN_KT,
+        search="""        closeVideoGate(gate)
+        if (video != null) {
+            stopVideoCapture(video)
+            return
+        }
+""",
+        replace="""        closeVideoGate(gate)
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # The existing `startCapture(` count cannot see a callable reference,
+    # which has no parenthesis; only a count of the bare name can.
+    Mutation(
+        id="native-capture-start-callable-reference",
+        what="doConnect starts the screen capture a second time through a callable reference, directly after the publish and ahead of the key-index assertion, the sender witness, the sender-layout check and admit, so the capture runs before the screen sender's cryptor is witnessed at the current key index",
+        file=SHARE_PLUGIN_KT,
+        search="""            if (published != true) {
+                throw IllegalStateException("screen share publish refused")
+            }
+""",
+        replace="""            if (published != true) {
+                throw IllegalStateException("screen share publish refused")
+            }
+            track.let(LocalScreencastVideoTrack::startCapture)
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # A coherent change, not a broken one: the snapshot compiles, and the
+    # per-frame check then compares values read once at admit.
+    Mutation(
+        id="native-video-gate-admission-snapshot",
+        what="the video gate's admission keeps the transceiver and the additional-sender count read once at admit instead of their accessors, so the per-frame check compares those stale values and keeps forwarding after the track moves to another transceiver or gains a second sender",
+        file=SCREEN_VIDEO_GATE_KT,
+        search="""        val current: () -> Any?,
+        val extraSenders: () -> Int,
+""",
+        replace="""        val current: Any?,
+        val extraSenders: Int,
+""",
+        also=[
+            (
+                """            admission = Admission(expected, current, extraSenders)
+""",
+                """            admission = Admission(expected, now, extras)
+""",
+            ),
+            (
+                """            admitted.current()
+""",
+                """            admitted.current
+""",
+            ),
+            (
+                """            admitted.extraSenders()
+""",
+                """            admitted.extraSenders
+""",
+            ),
+        ],
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # ---- the key provider, the SDK version and the destroy hook -------------
+    Mutation(
+        id="native-key-provider-discard-not-ready-off",
+        what="the screen leg's key provider is created with discardFrameWhenCryptorNotReady false, so a sender whose attached cryptor holds no key no longer drops its frames",
+        file=RAW_SCREEN_KEY_PROVIDER_KT,
+        search="""            /* discardFrameWhenCryptorNotReady = */ true,
+""",
+        replace="""            /* discardFrameWhenCryptorNotReady = */ false,
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-key-provider-refusal-dropped",
+        what="setRawKey ignores the native keyring refusing a key install, so the leg goes on as keyed at that index while the sender cryptor holds no key for it",
+        file=RAW_SCREEN_KEY_PROVIDER_KT,
+        search="""        if (!rtcKeyProvider.setKey(participantId, keyIndex, key)) {
+            throw IllegalStateException("native key install refused")
+        }
+""",
+        replace="""        rtcKeyProvider.setKey(participantId, keyIndex, key)
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-livekit-version-bumped",
+        what="the livekit-android dependency moves off 2.28.0, the version whose internals the screen leg's sender witness, transceiver accessors and frame cryptor options were checked against, without the screen leg's sender and cryptor invariants being re-checked",
+        file=APP_BUILD_GRADLE,
+        search="""    implementation 'io.livekit:livekit-android:2.28.0'
+""",
+        replace="""    implementation 'io.livekit:livekit-android:2.29.0'
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # `scope.launch { tearDown(null) }` also sits in onPageStarted, deeper,
+    # so the search carries the override's own line.
+    Mutation(
+        id="native-destroy-teardown-dropped",
+        what="handleOnDestroy no longer tears the share down, so a destroyed plugin leaves the screen capture, its gate, the system audio and the Room running with nothing left to stop them",
+        file=SHARE_PLUGIN_KT,
+        search="""    override fun handleOnDestroy() {
+        scope.launch { tearDown(null) }
+""",
+        replace="""    override fun handleOnDestroy() {
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+]
+
+
+# ---- native: a kept screen sender, the per-buffer audio sender check -----
+# A screen unpublish that leaves the track's transceiver set ends the leg's
+# connection at once, with no grace and no settle window, whether the
+# TrackUnpublished arm, the projection stop or the participant listener
+# (`ScreenUnpublishGuard`, installed before any publish) sees it first; an
+# E2EE leg starts only with that listener installed. Captured audio reaches
+# the ADM buffer only while the sender admitted behind the audio witness is
+# still the track's sender and its publication is still the participant's
+# screen-audio publication (`ScreenAudioSenderGate`), and the first buffer
+# that finds either one changed, missing or unreadable zeroes it for good.
+#
+# Every entry is killed by a SOURCE PIN in LEG_POLICY_SPEC over the
+# comment-stripped native files, so, as with every native entry above, a
+# kill proves the pinned text changed, never what the APK does on a device.
+# The JVM unit tests `ScreenAudioSenderGateTest.kt` and
+# `ScreenUnpublishGuardTest.kt` also cover the gate and the guard; this
+# runner does not run them and does not measure them. Both drive the class
+# with their own suppliers or callbacks, so by construction they cannot see
+# the `native-audio-sender-gate-admit-*` entries or any entry outside the two
+# classes' own bodies (the install, the arm, the projection stop, doConnect,
+# the source): only the pins hold those.
+
+#: The arm's two paths for a local SCREEN_SHARE unpublish while CONNECTED,
+#: replaced whole by `native-unpublish-fast-branch-graced`.
+_UNPUBLISH_ARM_PATHS = """                    if (screenSenderRetained(event.publication.track)) {
+                        // A screen unpublish that leaves the track's
+                        // transceiver set ends the leg's connection at once,
+                        // with no grace and no settle window. It reports
+                        // "system" while this Room's projection stop is in
+                        // progress ([projectionStopRoom]), else "revoked".
+                        scope.launch {
+                            if (this@ScreenSharePlugin.room === room) {
+                                tearDown(if (projectionStopRoom === room) "system" else "revoked")
+                            }
+                        }
+                    } else {
+                        scope.launch {
+                            delay(UNPUBLISH_GRACE_MS)
+                            if (this@ScreenSharePlugin.room === room &&
+                                !stopping &&
+                                room.state == Room.State.CONNECTED &&
+                                room.localParticipant
+                                    .getTrackPublication(Track.Source.SCREEN_SHARE) == null
+                            ) {
+                                // Settled like the permission branch (see
+                                // [SETTLE_MS]; a heuristic, not a crash fix). The
+                                // disposal runs UNPUBLISH_GRACE_MS + SETTLE_MS
+                                // after the unpublish.
+                                tearDown("revoked", settle = true)
+                            }
+                        }
+                    }
+"""
+#: The grace path alone, as the arm held it before the immediate path.
+_UNPUBLISH_GRACE_ONLY = """                    scope.launch {
+                        delay(UNPUBLISH_GRACE_MS)
+                        if (this@ScreenSharePlugin.room === room &&
+                            !stopping &&
+                            room.state == Room.State.CONNECTED &&
+                            room.localParticipant
+                                .getTrackPublication(Track.Source.SCREEN_SHARE) == null
+                        ) {
+                            // Settled like the permission branch (see
+                            // [SETTLE_MS]; a heuristic, not a crash fix). The
+                            // disposal runs UNPUBLISH_GRACE_MS + SETTLE_MS
+                            // after the unpublish.
+                            tearDown("revoked", settle = true)
+                        }
+                    }
+"""
+#: The audio sender and publication reads before the witness, moved whole
+#: by `native-audio-before-reads-ahead-of-key-assert`.
+_AUDIO_BEFORE_READS = """                    val sent = sentAudioTrack
+                    val audioBefore = sent?.let { ScreenTrackAccess.audioTransceiverOf(it) }
+                    val audioPubBefore = room.localParticipant.getTrackPublication(Track.Source.SCREEN_SHARE_AUDIO)
+"""
+#: The refusal of an E2EE leg without the participant listener wrapped,
+#: moved whole by `native-unpublish-guard-refusal-after-connect`.
+_GUARD_REFUSAL = """            if (provider != null && !unpublishGuarded) throw IllegalStateException("participant listener not wrapped")
+"""
+
+MUTATIONS += [
+    # ---- the TrackUnpublished arm and the projection stop ------------------
+    Mutation(
+        id="native-unpublish-fast-branch-graced",
+        what="a local SCREEN_SHARE unpublish that leaves the track's transceiver set takes the grace path like any other, so the leg's connection stays up for the grace and the settle window instead of ending at once",
+        file=SHARE_PLUGIN_KT,
+        search=_UNPUBLISH_ARM_PATHS,
+        replace=_UNPUBLISH_GRACE_ONLY,
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # The install's withheld-unpublish teardown is the same call, shallower,
+    # so this search is the arm's alone.
+    Mutation(
+        id="native-unpublish-fast-teardown-settled",
+        what="the immediate teardown for a screen unpublish that leaves the track's transceiver set is settled, so the leg's connection stays up for the settle window instead of ending at once",
+        file=SHARE_PLUGIN_KT,
+        search="""                                tearDown(if (projectionStopRoom === room) "system" else "revoked")
+""",
+        replace="""                                tearDown(if (projectionStopRoom === room) "system" else "revoked", settle = true)
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-sender-retained-inverted",
+        what="screenSenderRetained answers true for a track without a transceiver and false for one that still has it, so a screen unpublish that leaves the track's transceiver set gets the grace and the settle window and one that cleared it ends at once",
+        file=SHARE_PLUGIN_KT,
+        search="""            ScreenTrackAccess.transceiverOf(video) != null
+""",
+        replace="""            ScreenTrackAccess.transceiverOf(video) == null
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-sender-retained-reads-field",
+        what="screenSenderRetained reads the plugin's screen track field instead of the unpublished track it is handed, so an unpublish is judged by whatever track the field holds when it runs, and by none once the field is cleared",
+        file=SHARE_PLUGIN_KT,
+        search="""            val video = track as? LocalVideoTrack ?: return true
+""",
+        replace="""            val video = screenVideo ?: return true
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-projection-stop-settle-forced",
+        what="the projection stop's teardown is always settled, also when the unpublish left the track's transceiver set, so the leg's connection stays up for the settle window instead of ending at once",
+        file=SHARE_PLUGIN_KT,
+        search="""                            tearDown("system", settle = !screenSenderRetained(stopped))
+""",
+        replace="""                            tearDown("system", settle = true)
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-projection-stop-mark-after-unpublish",
+        what="the projection stop marks its Room only after the unpublish, so an immediate teardown of that Room that runs in between reports \"revoked\" for a stop the system made",
+        file=SHARE_PLUGIN_KT,
+        search="""                    projectionStopRoom = room
+                    unpublishOnProjectionStop(room, stopped)
+""",
+        replace="""                    unpublishOnProjectionStop(room, stopped)
+                    projectionStopRoom = room
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # ---- the audio source and its sender gate ------------------------------
+    Mutation(
+        id="native-audio-sender-check-dropped",
+        what="the record callback no longer asks the sender gate, so with the audio gate open captured playback keeps reaching the buffer after the audio track moves to another sender or its publication is removed or replaced",
+        file=SCREEN_AUDIO_KT,
+        search="""        if (gateOpen && !released && senderGate.allows()) {
+""",
+        replace="""        if (gateOpen && !released) {
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-audio-admit-sender-always-true",
+        what="admitSender answers true without admitting the sender gate, so the audio reads as live while the never-admitted per-buffer check keeps every buffer zeroed",
+        file=SCREEN_AUDIO_KT,
+        search="""    ): Boolean = senderGate.admit(track, transceiver, participant, publication)
+""",
+        replace="""    ): Boolean = true
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-audio-sender-gate-not-terminal",
+        what="the sender gate no longer ends for good on its first mismatch, so captured playback reaches the buffer again whenever the admitted sender and publication come back",
+        file=SCREEN_AUDIO_SENDER_GATE_KT,
+        search="""            ended = true
+""",
+        replace="",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-audio-sender-gate-transceiver-unchecked",
+        what="the sender gate compares only the publication, never the audio track's current transceiver, so admit accepts any sender and captured playback keeps reaching the buffer after the track moves to another sender under the same publication",
+        file=SCREEN_AUDIO_SENDER_GATE_KT,
+        search="""        current() === expected && currentPublication() === expectedPublication
+""",
+        replace="""        currentPublication() === expectedPublication
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-audio-sender-gate-publication-unchecked",
+        what="the sender gate compares only the audio track's transceiver, never the participant's screen-audio publication, so captured playback keeps reaching the buffer after that publication is removed or replaced while the track keeps its transceiver",
+        file=SCREEN_AUDIO_SENDER_GATE_KT,
+        search="""        current() === expected && currentPublication() === expectedPublication
+""",
+        replace="""        current() === expected
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-audio-sender-gate-catch-true",
+        what="a read that throws inside the sender gate counts as the same sender, so admit succeeds and captured playback keeps reaching the buffer on a sender and publication that could not be read",
+        file=SCREEN_AUDIO_SENDER_GATE_KT,
+        search="""    } catch (_: Throwable) {
+        false
+    }
+""",
+        replace="""    } catch (_: Throwable) {
+        true
+    }
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # The JVM suite drives `admitWith` with its own suppliers, so these two
+    # survive it; only the pin on `admit`'s exact body holds.
+    Mutation(
+        id="native-audio-sender-gate-admit-self-transceiver",
+        what="admit hands admitWith `{ transceiver }` as the current-transceiver read, so neither admit nor the per-buffer check ever sees the audio track move to another sender",
+        file=SCREEN_AUDIO_SENDER_GATE_KT,
+        search="""        { ScreenTrackAccess.audioTransceiverOf(track) },
+""",
+        replace="""        { transceiver },
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-audio-sender-gate-admit-self-publication",
+        what="admit hands admitWith `{ publication }` as the current-publication read, so neither admit nor the per-buffer check ever sees the screen-audio publication removed or replaced",
+        file=SCREEN_AUDIO_SENDER_GATE_KT,
+        search="""        { participant.getTrackPublication(Track.Source.SCREEN_SHARE_AUDIO) },
+""",
+        replace="""        { publication },
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # ---- doConnect: the reads around the audio witness ---------------------
+    Mutation(
+        id="native-audio-after-read-reuses-before",
+        what="the audio track's transceiver is read only before the witness and that value reused after it, so admission no longer requires the track to have kept the same sender across the witness",
+        file=SHARE_PLUGIN_KT,
+        search="""                    val audioAfter = sent?.let { ScreenTrackAccess.audioTransceiverOf(it) }
+""",
+        replace="""                    val audioAfter = audioBefore
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-audio-pub-after-read-reuses-before",
+        what="the screen-audio publication is read only before the witness and that value reused after it, so admission no longer requires the participant to have kept the same publication across the witness",
+        file=SHARE_PLUGIN_KT,
+        search="""                    val audioPub = room.localParticipant.getTrackPublication(Track.Source.SCREEN_SHARE_AUDIO)
+""",
+        replace="""                    val audioPub = audioPubBefore
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-audio-before-reads-ahead-of-key-assert",
+        what="the audio sender and publication are first read ahead of the key-index assertion instead of after it, so the reads that bracket the witness no longer start from a sender whose cryptor is confirmed at the current index",
+        file=SHARE_PLUGIN_KT,
+        search=_AUDIO_BEFORE_READS,
+        replace="",
+        also=[
+            (
+                """                    // audio-only catch on purpose: a throw here ends the leg.
+""",
+                """                    // audio-only catch on purpose: a throw here ends the leg.
+""" + _AUDIO_BEFORE_READS,
+            ),
+        ],
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # ---- the participant listener guard ------------------------------------
+    Mutation(
+        id="native-unpublish-guard-call-forced",
+        what="doConnect never installs the participant listener guard and treats it as installed, so an E2EE leg starts with every screen unpublish reaching the Room first",
+        file=SHARE_PLUGIN_KT,
+        search="""        val unpublishGuarded = installUnpublishGuard(room)
+""",
+        replace="""        val unpublishGuarded = true
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # Every count stays: the guard is still built once and the install still
+    # called once. Only the pin on the install's exact body holds.
+    Mutation(
+        id="native-unpublish-guard-built-not-installed",
+        what="installUnpublishGuard builds the guard but never sets it as the participant listener, and still reports it installed, so an E2EE leg starts with every screen unpublish reaching the Room first",
+        file=SHARE_PLUGIN_KT,
+        search="""                participant.internalListener = ScreenUnpublishGuard(
+""",
+        replace="""                val unusedGuard = ScreenUnpublishGuard(
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-unpublish-guard-never-withholds",
+        what="the participant listener forwards every screen unpublish to the Room, so one that leaves the track's transceiver set is never handed to the plugin",
+        file=SHARE_PLUGIN_KT,
+        search="""            if (withhold) {
+                onWithheld()
+                return
+            }
+""",
+        replace="",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-unpublish-guard-withheld-noop",
+        what="a screen unpublish the participant listener withholds from the Room is dropped without a teardown, so the leg's connection stays up with the track still on its transceiver",
+        file=SHARE_PLUGIN_KT,
+        search="""                ) {
+                    scope.launch {
+                        if (this@ScreenSharePlugin.room === room) {
+                            tearDown(if (projectionStopRoom === room) "system" else "revoked")
+                        }
+                    }
+                }
+""",
+        replace="""                ) {}
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-unpublish-guard-forwards-withheld",
+        what="the participant listener hands a withheld screen unpublish to the plugin and then forwards it to the Room as well",
+        file=SHARE_PLUGIN_KT,
+        search="""                onWithheld()
+                return
+""",
+        replace="""                onWithheld()
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-unpublish-guard-ignores-connected",
+        what="the participant listener withholds a screen unpublish in every Room state, not only while connected, so an unpublish in any other state never reaches the Room",
+        file=SHARE_PLUGIN_KT,
+        search="""                    connected() &&
+""",
+        replace="",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-unpublish-guard-fresh-inner",
+        what="the participant listener is built over a fresh listener instead of the Room's own, so every other participant callback, and every unpublish it forwards, no longer reaches the Room",
+        file=SHARE_PLUGIN_KT,
+        search="""                    inner,
+""",
+        replace="""                    object : io.livekit.android.room.participant.ParticipantListener {},
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # Still a lambda, so it compiles: it closes over the state read once, at
+    # install, before the connect.
+    Mutation(
+        id="native-unpublish-guard-state-read-once",
+        what="the participant listener's connected check is the Room state read once at install, before the connect, so it never holds and no screen unpublish is ever withheld",
+        file=SHARE_PLUGIN_KT,
+        search="""                    { room.state == Room.State.CONNECTED },
+""",
+        replace="""                    room.state.let { state -> { state == Room.State.CONNECTED } },
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-unpublish-guard-refusal-dropped",
+        what="doConnect no longer refuses an E2EE leg whose participant listener was not wrapped, so such a leg connects and publishes with every screen unpublish reaching the Room first",
+        file=SHARE_PLUGIN_KT,
+        search=_GUARD_REFUSAL,
+        replace="",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-unpublish-guard-refusal-after-connect",
+        what="doConnect refuses an E2EE leg whose participant listener was not wrapped only after room.connect, so such a leg joins the room before it is refused",
+        file=SHARE_PLUGIN_KT,
+        search=_GUARD_REFUSAL,
+        replace="",
+        also=[
+            (
+                """            room.connect(url, token, ConnectOptions(autoSubscribe = false))
+""",
+                """            room.connect(url, token, ConnectOptions(autoSubscribe = false))
+""" + _GUARD_REFUSAL,
+            ),
+        ],
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+]
+
+
+# ---- native: the participant listener, tearDown, the scope; the gate table --
+# The plugin entries are killed by SOURCE PINS in LEG_POLICY_SPEC over the
+# comment-stripped plugin, as with every native entry above: a kill proves
+# the pinned text changed, never what the APK does on a device. The two
+# compile-gate entries are killed by the spec's read of the gate's
+# GATE_TESTS table against the @Test count in each JVM test file; this
+# runner does not run the gate or the JVM tests.
+
+MUTATIONS += [
+    Mutation(
+        id="native-listener-reset-after-connect",
+        what="the Room's participant listener is written only inside the unpublish guard's install; this entry adds a write of the Room itself right after room.connect",
+        file=SHARE_PLUGIN_KT,
+        search="""            room.connect(url, token, ConnectOptions(autoSubscribe = false))
+""",
+        replace="""            room.connect(url, token, ConnectOptions(autoSubscribe = false))
+            room.localParticipant.internalListener = room
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-teardown-default-settled",
+        what="tearDown settles only when its caller passes settle = true; this entry makes the parameter default to true",
+        file=SHARE_PLUGIN_KT,
+        search="""    private fun tearDown(reason: String?, settle: Boolean = false) {
+""",
+        replace="""    private fun tearDown(reason: String?, settle: Boolean = true) {
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-scope-unconfined",
+        what="the plugin's coroutines run in one supervised scope on Dispatchers.Main; this entry moves that scope to Dispatchers.Unconfined",
+        file=SHARE_PLUGIN_KT,
+        search="""    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+""",
+        replace="""    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="native-audio-track-created-twice",
+        what="the screen leg creates one audio track and publishes it once; this entry creates and publishes a second audio track beside it",
+        file=SHARE_PLUGIN_KT,
+        search="""                    sentAudioTrack = audioTrack
+""",
+        replace="""                    sentAudioTrack = audioTrack
+                    room.localParticipant.publishAudioTrack(
+                        room.localParticipant.createAudioTrack("screen_audio"),
+                    )
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    # ---- the compile gate's GATE_TESTS table -------------------------------
+    Mutation(
+        id="compile-gate-row-removed",
+        what="the compile gate's GATE_TESTS table holds one row per screen-share JVM test class; this entry removes the ScreenUnpublishGuardTest row",
+        file=ANDROID_COMPILE_GATE_SH,
+        search="""  ScreenUnpublishGuardTest:12
+""",
+        replace="",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+    Mutation(
+        id="compile-gate-min-lowered",
+        what="each GATE_TESTS minimum equals the @Test count in its class's test file; this entry lowers the ScreenVideoGateTest minimum by one",
+        file=ANDROID_COMPILE_GATE_SH,
+        search="""  ScreenVideoGateTest:22
+""",
+        replace="""  ScreenVideoGateTest:21
+""",
+        specs=[LEG_POLICY_SPEC],
+        must_red=[LEG_POLICY_SPEC],
+    ),
+]
+
+
+# ---- push to talk: muted unless the key is held (fix/ptt-join-hot-mic) ----
+# The policy entries break `pttMicPolicy.ts` and are killed by its unit tests.
+# The `state-ptt-*` entries break state.tsx and are killed by that spec's
+# SOURCE PINS over the comment-stripped file (`codeOf`), with the limits the
+# file=STATE rule in the header states: a kill proves the pinned text changed,
+# never what a call does. The first thirteen are the branch's known-bad
+# controls (`ctl2.sh`), retargeted to exact-once anchors; the rest cover
+# fix/ptt-followups (the bounded capture, the post-landing re-check, the
+# Muted/Deafened talk key and the blur release).
+PTT_POLICY = "pttMicPolicy.ts"
+PTT_SPEC = "components/rtc/pttMicPolicy.test.ts"
+
+#: `#captureMutedMic`'s capture, bounded, and as it was before the bound.
+_PTT_CAPTURE_BOUNDED = """    const tracks = await captureWithin(
+      async (expired) => {
+        try {
+          return await lp.createTracks({ audio: true });
+        } catch (error) {
+          if (expired() || !this.#unpinMicAfterFailure(room)) throw error;
+          return lp.createTracks({ audio: true });
+        }
+      },
+      MUTED_CAPTURE_TIMEOUT_MS,
+      (track) => track.stop(),
+    );
+"""
+_PTT_CAPTURE_UNBOUNDED = """    let tracks;
+    try {
+      tracks = await lp.createTracks({ audio: true });
+    } catch (error) {
+      if (!this.#unpinMicAfterFailure(room)) throw error;
+      tracks = await lp.createTracks({ audio: true });
+    }
+"""
+
+MUTATIONS += [
+    # ---- the branch's thirteen controls (ctl2.sh) ---------------------------
+    Mutation(
+        id="state-ptt-join-live",
+        what="the join turns the mic on with a bare live enable, so under push to talk it joins hot until the first press and release",
+        file=STATE,
+        search="""          ? this.#enableMic(room)
+""",
+        replace="""          ? this.#setMicEnabled(room, true).then(() => true)
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-publish-before-mute",
+        what="the muted capture publishes the track and only then mutes it, so its first RTP packets leave live",
+        file=STATE,
+        search="""        await track.mute();
+        await lp.publishTrack(track);
+""",
+        replace="""        await lp.publishTrack(track);
+        await track.mute();
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-capture-never-muted",
+        what="the muted capture publishes the track without muting it, so push to talk joins hot",
+        file=STATE,
+        search="""        await track.mute();
+        await lp.publishTrack(track);
+""",
+        replace="""        await lp.publishTrack(track);
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-setmic-no-wait",
+        what="#setMicEnabled no longer waits behind a muted publish, so an enable beside it captures and publishes a second mic track",
+        file=STATE,
+        search="""    // waiting and lands after it.
+    await this.#mutedMicLanded(room);
+""",
+        replace="""    // waiting and lands after it.
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-enablemic-no-wait",
+        what="#enableMic reads the mode before a muted publish lands, so a key released during it still gets a live enable",
+        file=STATE,
+        search="""    // before the wait would then unmute with no key down.
+    await this.#mutedMicLanded(room);
+""",
+        replace="""    // before the wait would then unmute with no key down.
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-unmute-live",
+        what="Unmute turns the mic on with a bare live enable and reconciles micOn to isMicrophoneEnabled, so a push-to-talk Unmute goes hot",
+        file=STATE,
+        search="""      if (want) took = await this.#enableMic(room);
+""",
+        replace="""      if (want) {
+        await this.#setMicEnabled(room, true);
+        took = room.localParticipant.isMicrophoneEnabled;
+      }
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-release-guarded",
+        what="the focused key-up mutes only a mic that already reads live, so a release during a press's publish leaves it live once it lands",
+        file=STATE,
+        search="""      void this.#setMicEnabled(room, false).catch(() => {});
+    };
+""",
+        replace="""      if (!room.localParticipant.isMicrophoneEnabled) return;
+      room.localParticipant.setMicrophoneEnabled(false);
+    };
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-press-ignores-release",
+        what="#pttOpen reads the key as held after the muted publish lands, so a tap during the join opens the mic after its release",
+        file=STATE,
+        search="""      !pttPressOpens({
+        held: this.#pttHeld,
+""",
+        replace="""      !pttPressOpens({
+        held: true,
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-capture-not-stopped",
+        what="a muted capture whose publish fails is not stopped, so the mic stays captured (the indicator stays on)",
+        file=STATE,
+        search="""      // livekit's own enable stops what it captured when the publish fails.
+      for (const track of tracks) track.stop();
+""",
+        replace="""      // livekit's own enable stops what it captured when the publish fails.
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-hangup-unchecked",
+        what="a muted capture that finishes after the hang-up is published into the dead room instead of stopped",
+        file=STATE,
+        search="""      if (this.room() !== room) throw "invalid state";
+      for (const track of tracks) {
+""",
+        replace="""      for (const track of tracks) {
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-record-not-cleared",
+        what="a settled muted publish never clears its record, so every #mutedMicLanded loop spins on it forever",
+        file=STATE,
+        search="""      if (this.#micMutedPublish === entry) this.#micMutedPublish = undefined;
+""",
+        replace="""      void entry;
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="ptt-policy-mode-always-live",
+        what="micEnableMode turns the mic on live under push to talk with no key held",
+        file=PTT_POLICY,
+        search="""  return input.pushToTalk && !input.pttHeld ? "muted" : "live";
+""",
+        replace="""  return input.pushToTalk && !input.pttHeld ? "live" : "live";
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="ptt-policy-took-reads-live",
+        what="micEnableTook reads isMicrophoneEnabled under push to talk, so every muted Unmute writes micOn = false",
+        file=PTT_POLICY,
+        search="""  return input.pushToTalk ? input.captured : input.live;
+""",
+        replace="""  return input.pushToTalk ? input.live : input.live;
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    # ---- fix/ptt-followups: the bounded muted capture -----------------------
+    Mutation(
+        id="ptt-policy-capture-never-gives-up",
+        what="captureWithin never rejects at the bound, so a capture at an unanswered permission prompt holds every Mute, Deafen and talk-key write",
+        file=PTT_POLICY,
+        search="""      reject(new MicCaptureTimeoutError(ms));
+""",
+        replace="""      void ms;
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="ptt-policy-late-capture-not-stopped",
+        what="a capture that lands after the bound is dropped without being stopped, so the mic stays captured",
+        file=PTT_POLICY,
+        search="""          for (const track of tracks) stop(track);
+""",
+        replace="",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="ptt-policy-late-capture-handed-over",
+        what="a capture that lands after the bound is handed to the caller instead of stopped (a second mic track, or a live one)",
+        file=PTT_POLICY,
+        search="""    const timer = setTimeout(() => {
+      late = true;
+      reject(new MicCaptureTimeoutError(ms));
+    }, ms);
+""",
+        replace="""    const timer = setTimeout(() => {}, ms);
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-capture-unbounded",
+        what="the muted capture is awaited with no bound again, so a permission prompt left open holds Mute and Deafen",
+        file=STATE,
+        search=_PTT_CAPTURE_BOUNDED,
+        replace=_PTT_CAPTURE_UNBOUNDED,
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-late-capture-kept",
+        what="the bounded capture's late tracks are never stopped, so a prompt answered after the bound leaves the mic captured",
+        file=STATE,
+        search="""      (track) => track.stop(),
+""",
+        replace="""      () => {},
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-timeout-thrown",
+        what="#enableMic lets a capture given up on at the prompt throw, so Unmute shows an error and Undeafen leaves the user deafened",
+        file=STATE,
+        search="""      } catch (error) {
+        if (!isMicCaptureTimeout(error)) throw error;
+        return false;
+      }
+""",
+        replace="""      } catch (error) {
+        throw error;
+      }
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-capture-retry-after-expiry",
+        what="a capture that fails after the bound still un-pins the shared mic pin and retries a second getUserMedia",
+        file=STATE,
+        search="""          if (expired() || !this.#unpinMicAfterFailure(room)) throw error;
+""",
+        replace="""          if (!this.#unpinMicAfterFailure(room)) throw error;
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="ptt-policy-expired-never-true",
+        what="captureWithin tells the capture it never expired, so a late failure still un-pins and retries",
+        file=PTT_POLICY,
+        search="""    capture(() => late).then(
+""",
+        replace="""    capture(() => false).then(
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    # ---- the post-landing re-check -------------------------------------------
+    Mutation(
+        id="ptt-policy-live-stays-ignores-release",
+        what="pttLiveStays keeps a landed open live after the key went up, so a press stuck at a permission prompt lands hot",
+        file=PTT_POLICY,
+        search="""  return input.held && !input.whispering && !input.userMuted;
+""",
+        replace="""  return !input.whispering && !input.userMuted;
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="ptt-policy-live-stays-mutes-open-mic",
+        what="pttLiveStays answers outside push to talk too, so an open-mic turn-on is muted again",
+        file=PTT_POLICY,
+        search="""  if (!input.pushToTalk) return true;
+""",
+        replace="""  if (!input.pushToTalk) return false;
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-press-no-recheck",
+        what="#pttOpen no longer re-checks once its open lands, so a release or Mute that livekit's disable gave up on leaves the mic live",
+        file=STATE,
+        search="""    await this.#setMicEnabled(room, true).catch(() => {});
+    await this.#keepPttMicLiveOnlyIfWanted(
+      room,
+      !this.#settings.micOn || this.#settings.deafen,
+    ).catch(() => {});
+""",
+        replace="""    await this.#setMicEnabled(room, true).catch(() => {});
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-enablemic-no-recheck",
+        what="#enableMic's live arm no longer re-checks once it lands, so an Unmute made mid-hold and released before it landed stays live",
+        file=STATE,
+        search="""      await this.#keepPttMicLiveOnlyIfWanted(room, mutedMeanwhile);
+""",
+        replace="",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-enablemic-recheck-ignores-mute",
+        what="#enableMic's re-check passes userMuted false, so a Mute or Deafen pressed while a held-key join or Unmute landed leaves the mic live",
+        file=STATE,
+        search="""      await this.#keepPttMicLiveOnlyIfWanted(room, mutedMeanwhile);
+""",
+        replace="""      await this.#keepPttMicLiveOnlyIfWanted(room, false);
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-enablemic-mute-overwritten",
+        what="#enableMic reports a turn-on the re-check muted as taken, so the caller writes micOn = true over the user's Mute",
+        file=STATE,
+        search="""      if (mutedMeanwhile && this.#settings.pushToTalk) return false;
+""",
+        replace="",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="ptt-policy-mute-while-landing-ignored",
+        what="mutedWhileLanding ignores a Mute pressed while the turn-on landed (only a Deafen counts)",
+        file=PTT_POLICY,
+        search="""  return (before.micOn && !after.micOn) || (!before.deafen && after.deafen);
+""",
+        replace="""  return !before.deafen && after.deafen;
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-recheck-never-mutes",
+        what="the re-check asks the policy and then does nothing, so a landed open it rejects stays live",
+        file=STATE,
+        search="""      return;
+    await this.#setMicEnabled(room, false);
+  }
+""",
+        replace="""      return;
+  }
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    # ---- the Muted/Deafened talk key -----------------------------------------
+    Mutation(
+        id="ptt-policy-press-ignores-mute",
+        what="pttPressOpens ignores the user's mute, so the talk key transmits while Muted or Deafened",
+        file=PTT_POLICY,
+        search="""  return input.held && !input.whispering && !input.micLive && !input.userMuted;
+""",
+        replace="""  return input.held && !input.whispering && !input.micLive;
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-press-mute-unread",
+        what="#pttOpen passes userMuted false, so the talk key transmits while Muted or Deafened",
+        file=STATE,
+        search="""        micLive: room.localParticipant.isMicrophoneEnabled,
+        userMuted: !this.#settings.micOn || this.#settings.deafen,
+""",
+        replace="""        micLive: room.localParticipant.isMicrophoneEnabled,
+        userMuted: false,
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    # ---- the blur release ----------------------------------------------------
+    Mutation(
+        id="ptt-policy-blur-ignores-native-hold",
+        what="pttBlurMutes mutes a hold the native hook delivered too, so a Tauri hold begun in a game that passes through Sloga is cut",
+        file=PTT_POLICY,
+        search="""  return input.pushToTalk && input.held && !input.nativeSawHold;
+""",
+        replace="""  return input.pushToTalk && input.held;
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="ptt-policy-blur-never-mutes",
+        what="pttBlurMutes never mutes, so a web or Electron hold that alt-tabs away stays live",
+        file=PTT_POLICY,
+        search="""  return input.pushToTalk && input.held && !input.nativeSawHold;
+""",
+        replace="""  return input.pushToTalk && input.held && false;
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-blur-reads-armed-hook",
+        what="#pttBlur trusts the native hook whenever it is armed, so a Tauri hold begun in Sloga and alt-tabbed away from stays live (the hook never saw its down)",
+        file=STATE,
+        search="""        nativeSawHold: this.#pttNativeHeld,
+""",
+        replace="""        nativeSawHold: this.#pttNativeKey !== undefined,
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-native-hold-never-recorded",
+        what="ptt:down no longer records that the hook delivered the hold, so an unfocused hold that passes through Sloga is cut at the blur",
+        file=STATE,
+        search="""          // A hold the hook delivered: its `ptt:up` is coming (`#pttBlur`).
+          this.#pttNativeHeld = true;
+""",
+        replace="""          // A hold the hook delivered: its `ptt:up` is coming (`#pttBlur`).
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-focused-press-keeps-native-flag",
+        what="a focused press keeps a stale native-hold flag, so its alt-tab is left to a ptt:up that never comes and the mic stays live",
+        file=STATE,
+        search="""      this.#pttHeld = true;
+      this.#pttNativeHeld = false;
+""",
+        replace="""      this.#pttHeld = true;
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-main-blur-clear-only",
+        what="main's blur only clears #pttHeld again and leaves the mic alone, so an alt-tab mid-hold stays live",
+        file=STATE,
+        search="""      window.addEventListener("blur", () => this.#pttBlur());
+""",
+        replace="""      window.addEventListener("blur", () => {
+        this.#pttHeld = false;
+      });
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-child-blur-clear-only",
+        what="a chat window's blur only clears #pttHeld again, so a hold that alt-tabs away from a chat window stays live",
+        file=STATE,
+        search="""          const onBlur = () => this.#pttBlur();
+""",
+        replace="""          const onBlur = () => {
+            this.#pttHeld = false;
+          };
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
+    ),
+    Mutation(
+        id="state-ptt-blur-reads-cleared-hold",
+        what="#pttBlur reads the hold after clearing it, so it never sees one and never mutes",
+        file=STATE,
+        search="""    const held = this.#pttHeld;
+    this.#pttHeld = false;
+""",
+        replace="""    this.#pttHeld = false;
+    const held = this.#pttHeld;
+""",
+        specs=[PTT_SPEC],
+        must_red=[PTT_SPEC],
     ),
 ]
 

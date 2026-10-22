@@ -1,3 +1,4 @@
+import { useWindowCtx } from "@revolt/client/windowCtx";
 import { createEffect, createSignal, on, onCleanup, Show } from "solid-js";
 import { Portal } from "solid-js/web";
 import { Motion, Presence } from "solid-motionone";
@@ -36,7 +37,7 @@ export function SettingsModal(
   });
 
   return (
-    <Portal mount={document.getElementById("floating")!}>
+    <Portal mount={useWindowCtx().floatingMount()}>
       <div
         style={{
           "z-index": 100,

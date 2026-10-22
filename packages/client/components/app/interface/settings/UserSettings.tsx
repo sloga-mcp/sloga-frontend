@@ -48,6 +48,7 @@ import { MyAccount } from "./user/Account";
 import AdvancedSettings from "./user/Advanced";
 import { AppearanceMenu } from "./user/appearance";
 import { MyBots, ViewBot } from "./user/bots";
+import { CipherSettings } from "./user/CipherSettings";
 import { ConnectionsSettings } from "./user/Connections";
 import { EncryptionSettings } from "./user/Encryption";
 import { Feedback } from "./user/Feedback";
@@ -86,10 +87,11 @@ const Config: SettingsConfiguration<{ server: Server }> = {
   /**
    * Render the current client settings page
    */
-  // we take care of the reactivity ourselves
-  /* eslint-disable solid/reactivity */
+  // we take care of the reactivity ourselves (solid/reactivity needs no
+  // directive here: with the context argument, the rule no longer reads
+  // this function as a component)
   /* eslint-disable solid/components-return-once */
-  render(props) {
+  render(props, context) {
     const id = props.page();
     const client = useClient();
 
@@ -111,6 +113,11 @@ const Config: SettingsConfiguration<{ server: Server }> = {
         return <Referrals />;
       case "supporter":
         return allowsDonationLinks() ? <Supporter /> : null;
+      case "cipher":
+        // The context carries the preselected tier and the checkout return
+        return allowsDonationLinks() ? (
+          <CipherSettings context={context} />
+        ) : null;
       case "sessions":
         return <Sessions />;
       case "security":
@@ -151,7 +158,6 @@ const Config: SettingsConfiguration<{ server: Server }> = {
         return null;
     }
   },
-  /* eslint-enable solid/reactivity */
   /* eslint-enable solid/components-return-once */
 
   /**
@@ -244,6 +250,18 @@ const Config: SettingsConfiguration<{ server: Server }> = {
               title: <Trans>Supporter</Trans>,
               // A getter: on Android the distribution channel resolves after
               // this list is built, and the sidebar's <Show> has to see it.
+              get hidden() {
+                return !allowsDonationLinks();
+              },
+            },
+            {
+              // Buying and upgrading a Cipher membership goes through Stripe
+              // checkout, a payment link-out that Play and the App Store do
+              // not allow, so it hides with the Supporter row (a getter for
+              // the same reason).
+              id: "cipher",
+              icon: <Symbol size={20}>encrypted</Symbol>,
+              title: <Trans>Cipher</Trans>,
               get hidden() {
                 return !allowsDonationLinks();
               },
@@ -387,11 +405,6 @@ const Config: SettingsConfiguration<{ server: Server }> = {
               icon: <MdLanguage {...iconSize(20)} />,
               title: <Trans>Language</Trans>,
             },
-            // {
-            //   id: "sync",
-            //   icon: <MdSync {...iconSize(20)} />,
-            //   title: t("app.settings.pages.sync.title"),
-            // },
             {
               id: "native",
               // Electron exposes window.native; the Windows (Tauri) shell

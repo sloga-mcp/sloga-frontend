@@ -1,3 +1,4 @@
+import { useWindowCtx } from "@revolt/client/windowCtx";
 import type { Accessor, JSX, Setter } from "solid-js";
 import {
   Show,
@@ -114,7 +115,7 @@ export function SnackbarProvider(props: ProviderProps) {
   return (
     <SnackbarContext.Provider value={props.controller}>
       {props.children}
-      <Portal mount={document.getElementById("floating")!}>
+      <Portal mount={useWindowCtx().floatingMount()}>
         <Show when={props.controller.items()[0]} keyed>
           {(item) => (
             <Snackbar

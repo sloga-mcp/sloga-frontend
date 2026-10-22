@@ -65,6 +65,21 @@ msgstr "{0, plural, one {# blocked message} other {# blocked messages}}"
 msgid "{0, plural, one {# member} other {# members}}"
 msgstr "{0, plural, one {# member} other {# members}}"
 
+#. placeholder {0}: onlineCount()
+#: components/chatWindows/ChatWindowView.tsx
+msgid "{0} online"
+msgstr "{0} online"
+
+#: components/chatWindows/ChatWindowView.tsx
+#: components/chatWindows/ChatWindowView.tsx
+msgid "Voice call"
+msgstr "Voice call"
+
+#: components/chatWindows/ChatWindowView.tsx
+#: components/chatWindows/ChatWindowView.tsx
+msgid "Video call"
+msgstr "Video call"
+
 #. placeholder {0}: current().total_reserves
 #: src/interface/ServerEvents.tsx
 msgid "{0, plural, one {# raider reserved} other {# raiders reserved}}"
@@ -598,6 +613,94 @@ msgstr "Copy code and open Ko-fi"
 msgid "Couldn't copy to the clipboard. Select the code and copy it yourself."
 msgstr "Couldn't copy to the clipboard. Select the code and copy it yourself."
 
+#: components/modal/modals/ImportSource.tsx
+msgid "Paste this anywhere in your Stoat server's description (Server Settings → Overview). You can remove it after the import."
+msgstr "Paste this anywhere in your Stoat server's description (Server Settings → Overview). You can remove it after the import."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "Paste your Stoat server's invite link or ID."
+msgstr "Paste your Stoat server's invite link or ID."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "Stoat invite link or server ID"
+msgstr "Stoat invite link or server ID"
+
+#: components/modal/modals/ImportSource.tsx
+msgid "The server's name, description, icon and banner, its categories and channels, its roles and permissions, and its custom emoji."
+msgstr "The server's name, description, icon and banner, its categories and channels, its roles and permissions, and its custom emoji."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "Members, messages, bans, invites and webhooks stay on Stoat."
+msgstr "Members, messages, bans, invites and webhooks stay on Stoat."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "The bot leaves your Stoat server when the import finishes."
+msgstr "The bot leaves your Stoat server when the import finishes."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "Your server is ready. Share this invite to bring your members over."
+msgstr "Your server is ready. Share this invite to bring your members over."
+
+#: components/modal/modals/ImportShell.tsx
+msgid "Your server is ready."
+msgstr "Your server is ready."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "Rebuild a server you manage on Fluxer here, in three steps."
+msgstr "Rebuild a server you manage on Fluxer here, in three steps."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "Add the importer bot to your Fluxer server."
+msgstr "Add the importer bot to your Fluxer server."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "You need Administrator on Fluxer, or to own the server. The bot asks for Administrator so it can see private channels and the audit log."
+msgstr "You need Administrator on Fluxer, or to own the server. The bot asks for Administrator so it can see private channels and the audit log."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "Create a new role named exactly the code below and give it Manage Server."
+msgstr "Create a new role named exactly the code below and give it Manage Server."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "Keep it and the \"Sloga Importer\" role until the import finishes, then delete both. Finish within a day of adding the bot."
+msgstr "Keep it and the \"Sloga Importer\" role until the import finishes, then delete both. Finish within a day of adding the bot."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "Paste your Fluxer server's invite link or server ID."
+msgstr "Paste your Fluxer server's invite link or server ID."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "The server's name, icon and banner, its categories and channels, its roles and permissions, and its custom emoji."
+msgstr "The server's name, icon and banner, its categories and channels, its roles and permissions, and its custom emoji."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "Members, messages, bans, invites and webhooks stay on Fluxer. Fluxer servers have no description, so there is none to bring."
+msgstr "Members, messages, bans, invites and webhooks stay on Fluxer. Fluxer servers have no description, so there is none to bring."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "The bot leaves your Fluxer server when the import ends."
+msgstr "The bot leaves your Fluxer server when the import ends."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "That doesn't look like a Fluxer invite link or server ID."
+msgstr "That doesn't look like a Fluxer invite link or server ID."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "We couldn't verify your role. Create a new role, name it exactly your code, and give it Manage Server yourself. Renaming a role that already had Manage Server (including the \"Sloga Importer\" role) doesn't count. The importer bot also needs Administrator to read the audit log."
+msgstr "We couldn't verify your role. Create a new role, name it exactly your code, and give it Manage Server yourself. Renaming a role that already had Manage Server (including the \"Sloga Importer\" role) doesn't count. The importer bot also needs Administrator to read the audit log."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "We couldn't reach Fluxer right now. Wait 30 seconds before trying again."
+msgstr "We couldn't reach Fluxer right now. Wait 30 seconds before trying again."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "Fluxer invite link or server ID"
+msgstr "Fluxer invite link or server ID"
+
+#: components/modal/modals/ImportSource.tsx
+msgid "Invite link or server ID"
+msgstr "Invite link or server ID"
+
 #: components/modal/modals/SupportSloga.tsx
 msgid "Couldn't get your supporter code."
 msgstr "Couldn't get your supporter code."
@@ -811,6 +914,18 @@ msgstr "Add friend"
 #: components/modal/modals/AddMembersToGroup.tsx
 msgid "Add friends to group"
 msgstr "Add friends to group"
+
+#: components/chatWindows/ChatWindowView.tsx
+#: components/chatWindows/ChatWindowView.tsx
+#: components/friends/FriendRow.tsx
+#: components/friends/FriendRow.tsx
+msgid "Add to group"
+msgstr "Add to group"
+
+#: components/chatWindows/ChatWindowView.tsx
+#: components/chatWindows/ChatWindowView.tsx
+msgid "Pop out into a new window"
+msgstr "Pop out into a new window"
 
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "Add new members to the group"
@@ -1235,6 +1350,11 @@ msgstr "Auto-redact"
 msgid "Auto-redact couldn't run on this image."
 msgstr "Auto-redact couldn't run on this image."
 
+#: components/modal/modals/ImportDiscord.tsx
+#: components/modal/modals/ImportSource.tsx
+msgid "You already have an import from {sourceLabel} running."
+msgstr "You already have an import from {sourceLabel} running."
+
 #: components/modal/modals/ReportQueue.tsx
 msgid "Automated detection"
 msgstr "Automated detection"
@@ -1643,6 +1763,10 @@ msgstr "Can't verify"
 msgid "Cancel"
 msgstr "Cancel"
 
+#: src/interface/channels/text/GameLookupPicker.tsx
+msgid "Enter to send, Esc to cancel"
+msgstr "Enter to send, Esc to cancel"
+
 #: src/interface/ServerEvents.tsx
 msgid "Cancel (can't attend)"
 msgstr "Cancel (can't attend)"
@@ -1975,6 +2099,11 @@ msgstr "Close chat"
 msgid "Close conversation with {0}?"
 msgstr "Close conversation with {0}?"
 
+#: components/chatWindows/WindowControls.tsx
+#: components/chatWindows/WindowControls.tsx
+msgid "Close window"
+msgstr "Close window"
+
 #: components/app/interface/channels/text/PollMessage.tsx
 msgid "Closing…"
 msgstr "Closing…"
@@ -1991,6 +2120,10 @@ msgstr "Color filter"
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Colors"
 msgstr "Colors"
+
+#: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
+msgid "Your colors and fonts sync to every device you sign in on. Blur and message sizes are set per device."
+msgstr "Your colors and fonts sync to every device you sign in on. Blur and message sizes are set per device."
 
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Comfortable"
@@ -2081,6 +2214,11 @@ msgstr "Contested items"
 #: components/modal/modals/AndroidScreenShareSheet.tsx
 msgid "Continue"
 msgstr "Continue"
+
+#: components/modal/modals/AddFriendToGroup.tsx
+#: components/modal/modals/E2EEEnableGroup.tsx
+msgid "You'll confirm this in a system dialog."
+msgstr "You'll confirm this in a system dialog."
 
 #: src/AndroidNag.tsx
 msgid "Continue in browser"
@@ -2273,6 +2411,11 @@ msgstr "Copy server ID"
 msgid "Copy text"
 msgstr "Copy text"
 
+#: components/app/menus/FriendContextMenu.tsx
+#: components/chatWindows/TabStrip.tsx
+msgid "Close tab"
+msgstr "Close tab"
+
 #: components/ui/components/features/voice/callCard/VoiceTranscriptPanel.tsx
 msgid "Copy the transcript to the clipboard"
 msgstr "Copy the transcript to the clipboard"
@@ -2334,6 +2477,11 @@ msgstr "Could not start the import. Try again shortly."
 #: components/modal/modals/ImportDiscord.tsx
 msgid "Could not start the sticker import. Try again shortly."
 msgstr "Could not start the sticker import. Try again shortly."
+
+#: components/modal/modals/ImportDiscord.tsx
+#: components/modal/modals/ImportSource.tsx
+msgid "View it"
+msgstr "View it"
 
 #: components/app/interface/settings/user/Connections.tsx
 msgid "Could not unlink the channel, try again."
@@ -2416,6 +2564,10 @@ msgstr "Create a new category"
 #: components/modal/modals/CreateGroup.tsx
 msgid "Create a new group"
 msgstr "Create a new group"
+
+#: components/friends/GroupChatsDock.tsx
+msgid "No group chats yet"
+msgstr "No group chats yet"
 
 #: components/app/interface/settings/server/roles/ServerRoleOverview.tsx
 msgid "Create a new role"
@@ -2908,6 +3060,34 @@ msgid "Dice roll failed ({0})"
 msgstr "Dice roll failed ({0})"
 
 #: src/interface/channels/text/Composition.tsx
+msgid "Game lookup isn't available in encrypted chats."
+msgstr "Game lookup isn't available in encrypted chats."
+
+#: src/interface/channels/text/Composition.tsx
+msgid "Game lookup isn't available in this conversation."
+msgstr "Game lookup isn't available in this conversation."
+
+#: src/interface/channels/text/Composition.tsx
+msgid "Type a name to look up after the command."
+msgstr "Type a name to look up after the command."
+
+#: src/interface/channels/text/Composition.tsx
+msgid "No results for “{query}”."
+msgstr "No results for “{query}”."
+
+#: src/interface/channels/text/Composition.tsx
+msgid "Too many lookups, try again in a moment."
+msgstr "Too many lookups, try again in a moment."
+
+#: src/interface/channels/text/Composition.tsx
+msgid "That lookup isn't available right now."
+msgstr "That lookup isn't available right now."
+
+#: src/interface/channels/text/Composition.tsx
+msgid "Lookup failed. Try again."
+msgstr "Lookup failed. Try again."
+
+#: src/interface/channels/text/Composition.tsx
 msgid "Dice rolls are only available in server channels."
 msgstr "Dice rolls are only available in server channels."
 
@@ -3072,6 +3252,10 @@ msgstr "Done"
 #: components/app/interface/settings/user/voice/VoiceChannelOptions.tsx
 msgid "Double-click a voice channel to join it"
 msgstr "Double-click a voice channel to join it"
+
+#: src/AndroidNag.tsx
+msgid "Download APK"
+msgstr "Download APK"
 
 #. placeholder {0}: Math.round(progress * 100)
 #: components/ui/components/features/voice/callCard/VoiceTranscribeButton.tsx
@@ -3240,6 +3424,38 @@ msgstr "Emoji names can only use letters, numbers and underscores."
 msgid "Emoji Pack (affects your messages only)"
 msgstr "Emoji Pack (affects your messages only)"
 
+#: components/app/interface/settings/user/appearance/DmWindowsChoice.tsx
+msgid "Friends and direct messages"
+msgstr "Friends and direct messages"
+
+#: components/app/interface/settings/user/appearance/DmWindowsChoice.tsx
+msgid "In the main window"
+msgstr "In the main window"
+
+#: components/app/interface/settings/user/appearance/DmWindowsChoice.tsx
+msgid "In their own windows, like Steam"
+msgstr "In their own windows, like Steam"
+
+#: components/app/interface/settings/user/appearance/DmWindowsChoice.tsx
+msgid "In their own windows, the friends list and your conversations open outside the main window. Drag a tab out to pop it out, or onto another window to merge. Calls still show in the main window."
+msgstr "In their own windows, the friends list and your conversations open outside the main window. Drag a tab out to pop it out, or onto another window to merge. Calls still show in the main window."
+
+#: components/app/interface/settings/user/appearance/DmWindowsChoice.tsx
+msgid "Open direct messages in"
+msgstr "Open direct messages in"
+
+#: components/app/interface/settings/user/appearance/DmWindowsChoice.tsx
+msgid "Main window"
+msgstr "Main window"
+
+#: components/app/interface/settings/user/appearance/DmWindowsChoice.tsx
+msgid "Chat windows (separate friends and chat windows, like Steam)"
+msgstr "Chat windows (separate friends and chat windows, like Steam)"
+
+#: components/app/interface/settings/user/appearance/DmWindowsChoice.tsx
+msgid "Chat windows let you keep conversations open in their own windows. Drag a tab out to pop it out, or drag it onto another window to merge."
+msgstr "Chat windows let you keep conversations open in their own windows. Drag a tab out to pop it out, or drag it onto another window to merge."
+
 #: components/app/interface/settings/ServerSettings.tsx
 msgid "Emojis"
 msgstr "Emojis"
@@ -3297,6 +3513,7 @@ msgid "Encrypt my calls"
 msgstr "Encrypt my calls"
 
 #: components/modal/modals/E2EEEnableGroup.tsx
+#: components/modal/modals/AddFriendToGroup.tsx
 msgid "Try again in a moment."
 msgstr "Try again in a moment."
 
@@ -3306,18 +3523,22 @@ msgid "The keys changed while the system dialog was open. Check them again."
 msgstr "The keys changed while the system dialog was open. Check them again."
 
 #: components/modal/modals/E2EEEnableGroup.tsx
+#: components/modal/modals/AddFriendToGroup.tsx
 msgid "The member list changed. Check it and try again."
 msgstr "The member list changed. Check it and try again."
 
 #: components/modal/modals/E2EEEnableGroup.tsx
+#: components/modal/modals/AddFriendToGroup.tsx
 msgid "This group is already encrypted with a different member list. Check the member list and try again."
 msgstr "This group is already encrypted with a different member list. Check the member list and try again."
 
 #: components/modal/modals/E2EEEnableGroup.tsx
+#: components/modal/modals/AddFriendToGroup.tsx
 msgid "This device isn't part of this group's encryption yet. Wait for another member to re-send the member list."
 msgstr "This device isn't part of this group's encryption yet. Wait for another member to re-send the member list."
 
 #: components/modal/modals/E2EEEnableGroup.tsx
+#: components/modal/modals/AddFriendToGroup.tsx
 msgid "This device's encryption is set up for a different account."
 msgstr "This device's encryption is set up for a different account."
 
@@ -3395,6 +3616,10 @@ msgstr "This device can't confirm this group is unencrypted — review before se
 msgid "Encryption will start once a message is sent."
 msgstr "Encryption will start once a message is sent."
 
+#: components/chatWindows/ChatWindowView.tsx
+msgid "Encryption needs your attention. See the notice above the message box."
+msgstr "Encryption needs your attention. See the notice above the message box."
+
 #: components/ui/components/features/voice/callCard/VoiceCallCardActions.tsx
 msgid "End call"
 msgstr "End call"
@@ -3406,6 +3631,28 @@ msgstr "End poll now"
 #: components/ui/components/features/voice/callCard/VoiceCallCardStatus.tsx
 msgid "End-to-end encrypted"
 msgstr "End-to-end encrypted"
+
+#: components/chatWindows/TabStrip.tsx
+#: components/chatWindows/TabStrip.tsx
+msgid "Encryption needs your attention"
+msgstr "Encryption needs your attention"
+
+#: components/chatWindows/TabStrip.tsx
+#: components/friends/FriendRow.tsx
+#: components/friends/GroupChatsDock.tsx
+msgid "Unread mentions"
+msgstr "Unread mentions"
+
+#: components/chatWindows/TabStrip.tsx
+#: components/friends/FriendRow.tsx
+#: components/friends/GroupChatsDock.tsx
+msgid "Unread messages"
+msgstr "Unread messages"
+
+#: components/chatWindows/TabStrip.tsx
+#: components/chatWindows/TabStrip.tsx
+msgid "Pop out"
+msgstr "Pop out"
 
 #: components/ui/components/features/voice/callCard/VoiceCallCardPreview.tsx
 msgid "End-to-end encrypted call"
@@ -3475,6 +3722,11 @@ msgstr "Enter your preferred username."
 #: components/app/interface/settings/user/voice/EntranceSoundOptions.tsx
 msgid "Entrance Sound"
 msgstr "Entrance Sound"
+
+#. placeholder {0}: established()
+#: components/ui/components/features/messaging/elements/Invite.tsx
+msgid "Est. {0}"
+msgstr "Est. {0}"
 
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
 msgid "Evens out loud and quiet people automatically. Only voices are leveled — music and screen share audio are never touched."
@@ -3781,6 +4033,22 @@ msgstr "Friend Request"
 msgid "Friends"
 msgstr "Friends"
 
+#: components/chatWindows/TabStrip.tsx
+msgid "Conversations"
+msgstr "Conversations"
+
+#: components/chatWindows/TabStrip.tsx
+msgid "1 member"
+msgstr "1 member"
+
+#: components/chatWindows/TabStrip.tsx
+msgid "{count} members"
+msgstr "{count} members"
+
+#: components/chatWindows/TabStrip.tsx
+msgid "Unknown conversation"
+msgstr "Unknown conversation"
+
 #: components/app/interface/settings/user/Privacy.tsx
 msgid "Friends only"
 msgstr "Friends only"
@@ -3836,10 +4104,6 @@ msgstr "Game Overlay"
 msgid "Gathering keys for every member…"
 msgstr "Gathering keys for every member…"
 
-#: components/modal/modals/E2EEEnableGroup.tsx
-msgid "You'll confirm this in a system dialog."
-msgstr "You'll confirm this in a system dialog."
-
 #: components/modal/modals/E2EEGroupPlaintextConfirm.tsx
 msgid "Send unencrypted?"
 msgstr "Send unencrypted?"
@@ -3887,6 +4151,10 @@ msgstr "Get a new set of recovery codes"
 #: components/app/interface/settings/user/Account.tsx
 msgid "Get active recovery codes"
 msgstr "Get active recovery codes"
+
+#: src/AndroidNag.tsx
+msgid "Get it on Google Play"
+msgstr "Get it on Google Play"
 
 #: src/AndroidNag.tsx
 msgid "Get the Android app"
@@ -3954,6 +4222,10 @@ msgstr "Going"
 #: components/modal/modals/Onboarding.tsx
 msgid "Good"
 msgstr "Good"
+
+#: src/AndroidNag.tsx
+msgid "Google-free APK"
+msgstr "Google-free APK"
 
 #. placeholder {0}: countBits(props.context.rolePermissions![role.id].a)
 #. placeholder {1}: countBits(props.context.rolePermissions![role.id].d)
@@ -4075,6 +4347,10 @@ msgstr "Hold the rim, clear the web."
 msgid "Home"
 msgstr "Home"
 
+#: src/interface/Home.tsx
+msgid "Moderation"
+msgstr "Moderation"
+
 #: components/ui/components/features/voice/watch/WatchOverlay.tsx
 msgid "Hosted by {name}"
 msgstr "Hosted by {name}"
@@ -4182,11 +4458,57 @@ msgstr "Impersonation"
 msgid "Import"
 msgstr "Import"
 
+#: components/modal/modals/ImportSource.tsx
+msgid "No import sources are available right now."
+msgstr "No import sources are available right now."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "Pick the app your server is on. We'll rebuild it here."
+msgstr "Pick the app your server is on. We'll rebuild it here."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "Rebuild a server you manage on Stoat here, in four steps."
+msgstr "Rebuild a server you manage on Stoat here, in four steps."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "Add the importer bot to your Stoat server."
+msgstr "Add the importer bot to your Stoat server."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "Add the importer bot"
+msgstr "Add the importer bot"
+
+#: components/modal/modals/ImportSource.tsx
+msgid "Requires Manage Server on Stoat."
+msgstr "Requires Manage Server on Stoat."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "Let it see your private channels."
+msgstr "Let it see your private channels."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "Give the bot a role that can view every channel you want imported (your admin role is fine). Channels it can't see are skipped."
+msgstr "Give the bot a role that can view every channel you want imported (your admin role is fine). Channels it can't see are skipped."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "Prove you manage it."
+msgstr "Prove you manage it."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "Couldn't load your verification code."
+msgstr "Couldn't load your verification code."
+
 #: components/modal/modals/ImportDiscord.tsx
 #: components/modal/modals/CreateOrJoinServer.tsx
 #: components/modal/modals/CreateGroupOrServer.tsx
 msgid "Import from Discord"
 msgstr "Import from Discord"
+
+#: components/modal/modals/CreateGroupOrServer.tsx
+#: components/modal/modals/CreateOrJoinServer.tsx
+#: components/modal/modals/ImportSource.tsx
+msgid "Import a server"
+msgstr "Import a server"
 
 #: src/interface/ServerEvents.tsx
 #: src/interface/ServerEvents.tsx
@@ -4330,6 +4652,10 @@ msgstr "Interactions are unavailable in encrypted conversations."
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Interface Font"
 msgstr "Interface Font"
+
+#: components/ui/components/features/messaging/elements/Invite.tsx
+msgid "Invalid invite"
+msgstr "Invalid invite"
 
 #: src/interface/navigation/servers/UserMenu.tsx
 msgid "Invisible"
@@ -4666,6 +4992,14 @@ msgstr "Live call captions"
 msgid "Load file ({0})"
 msgstr "Load file ({0})"
 
+#: components/ui/components/features/profiles/ProfileActions.tsx
+msgid "Edit profile"
+msgstr "Edit profile"
+
+#: components/ui/components/features/profiles/ProfileBadges.tsx
+msgid "Cipher founding supporter #{number}"
+msgstr "Cipher founding supporter #{number}"
+
 #: src/interface/Discover.tsx
 #: src/interface/channels/forum/ForumChannel.tsx
 msgid "Load more"
@@ -4935,6 +5269,10 @@ msgstr "Max bitrate: {0} Mbps"
 msgid "Max bitrate: Auto"
 msgstr "Max bitrate: Auto"
 
+#: components/chatWindows/WindowControls.tsx
+msgid "Maximize"
+msgstr "Maximize"
+
 #: components/ui/components/features/voice/callCard/VoiceCallCardActiveRoom.tsx
 #: components/ui/components/features/voice/callCard/RemoteControlOverlays.tsx
 msgid "Maximize & hide participants"
@@ -5013,6 +5351,12 @@ msgstr "Members must choose to reveal a spoiler channel before its contents are 
 msgid "Mention"
 msgstr "Mention"
 
+#: components/app/menus/UserContextMenu.tsx
+#: components/friends/FriendsList.tsx
+#: components/friends/FriendsList.tsx
+msgid "Friend groups…"
+msgstr "Friend groups…"
+
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "Mention Everyone"
 msgstr "Mention Everyone"
@@ -5049,6 +5393,10 @@ msgstr "Message"
 #: src/interface/channels/text/Composition.tsx
 msgid "Message {0}"
 msgstr "Message {0}"
+
+#: src/interface/channels/text/GameLookupPicker.tsx
+msgid "Pick a result to send"
+msgstr "Pick a result to send"
 
 #: src/interface/channels/text/MemberSidebar.tsx
 msgid "Timed out until {time}"
@@ -5116,6 +5464,10 @@ msgstr "Messages go out around their scheduled time."
 msgid "Messages to this conversation are end-to-end encrypted."
 msgstr "Messages to this conversation are end-to-end encrypted."
 
+#: components/chatWindows/ChatWindowView.tsx
+msgid "Messages in this conversation are not end-to-end encrypted."
+msgstr "Messages in this conversation are not end-to-end encrypted."
+
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "Messaging"
 msgstr "Messaging"
@@ -5172,6 +5524,11 @@ msgstr "Middle left"
 #: components/app/interface/settings/user/voice/OverlaySettings.tsx
 msgid "Middle right"
 msgstr "Middle right"
+
+#: components/chatWindows/WindowControls.tsx
+#: components/chatWindows/WindowControls.tsx
+msgid "Minimize"
+msgstr "Minimize"
 
 #: components/app/interface/settings/user/Native.tsx
 msgid "Minimize to Tray"
@@ -5231,6 +5588,31 @@ msgstr "More Contrast"
 #: src/interface/channels/text/Composition.tsx
 msgid "More options"
 msgstr "More options"
+
+#. placeholder {0}: group.name
+#. placeholder {0}: groupName(groupProps.id)
+#: components/friends/FriendsList.tsx
+#: components/modal/modals/FriendGroups.tsx
+msgid "Remove {0}? Your friends stay on your friends list."
+msgstr "Remove {0}? Your friends stay on your friends list."
+
+#: components/friends/FriendsList.tsx
+#: components/modal/modals/FriendGroups.tsx
+msgid "Group name"
+msgstr "Group name"
+
+#: components/friends/FriendsList.tsx
+#: components/modal/modals/FriendGroups.tsx
+#: components/modal/modals/FriendGroups.tsx
+msgid "Group names need 1 to 40 characters."
+msgstr "Group names need 1 to 40 characters."
+
+#. placeholder {0}: group.name
+#. placeholder {0}: groupName(groupProps.id)
+#: components/friends/FriendsList.tsx
+#: components/modal/modals/FriendGroups.tsx
+msgid "Delete {0}? Your friends stay on your friends list."
+msgstr "Delete {0}? Your friends stay on your friends list."
 
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "Move Members"
@@ -5608,6 +5990,31 @@ msgstr "Nobody else is in this call yet."
 msgid "Nobody here right now!"
 msgstr "Nobody here right now!"
 
+#: components/friends/FriendsList.tsx
+#: components/modal/modals/FriendCategory.tsx
+msgid "Manage category"
+msgstr "Manage category"
+
+#: components/friends/FriendsList.tsx
+#: components/modal/modals/FriendGroups.tsx
+msgid "Remove category"
+msgstr "Remove category"
+
+#: components/friends/FriendsList.tsx
+#: components/friends/FriendsList.tsx
+msgid "Groups…"
+msgstr "Groups…"
+
+#: components/friends/FriendsList.tsx
+#: components/modal/modals/FriendGroups.tsx
+msgid "Delete group"
+msgstr "Delete group"
+
+#: components/friends/FriendsList.tsx
+#: components/friends/FriendsList.tsx
+msgid "Manage groups"
+msgstr "Manage groups"
+
 #: src/interface/ServerEvents.tsx
 #: src/interface/ServerEvents.tsx
 #: components/modal/modals/CameraSettings.tsx
@@ -5640,6 +6047,14 @@ msgstr "not encrypted"
 #: components/ui/components/features/voice/callCard/VoiceCallCardStatus.tsx
 msgid "Not encrypted"
 msgstr "Not encrypted"
+
+#: components/chatWindows/ChatWindowView.tsx
+msgid "Encryption pending"
+msgstr "Encryption pending"
+
+#: components/chatWindows/ChatWindowView.tsx
+msgid "Encryption needs attention"
+msgstr "Encryption needs attention"
 
 #: src/interface/channels/text/Composition.tsx
 msgid "Not encrypted — the other person hasn't turned on encryption."
@@ -5740,6 +6155,11 @@ msgstr "Official Server"
 #: components/ui/components/features/profiles/ProfileStatus.tsx
 msgid "Offline"
 msgstr "Offline"
+
+#: components/friends/GroupChatsDock.tsx
+#: components/friends/GroupChatsDock.tsx
+msgid "Group chats"
+msgstr "Group chats"
 
 #: components/modal/modals/SignedOut.tsx
 #: components/modal/modals/ImageEditorCore.tsx
@@ -5928,6 +6348,10 @@ msgstr "Other"
 #: components/app/interface/settings/user/voice/AttenuationOptions.tsx
 msgid "Other applications drop to {0}% while someone speaks."
 msgstr "Other applications drop to {0}% while someone speaks."
+
+#: src/AndroidNag.tsx
+msgid "Other ways to install:"
+msgstr "Other ways to install:"
 
 #: components/ui/components/features/voice/minigame/MinigameChip.tsx
 msgid "Out of balls!"
@@ -6201,6 +6625,10 @@ msgstr "Color"
 msgid "Playing {0}"
 msgstr "Playing {0}"
 
+#: components/chatWindows/ChatWindowView.tsx
+msgid "Encrypted"
+msgstr "Encrypted"
+
 #. placeholder {0}: props.user.activity!.name
 #. placeholder {1}: playingFor()
 #: components/ui/components/features/profiles/ProfileStatus.tsx
@@ -6345,6 +6773,10 @@ msgstr "Referrals"
 msgid "Supporter"
 msgstr "Supporter"
 
+#: components/app/interface/settings/UserSettings.tsx
+msgid "Cipher"
+msgstr "Cipher"
+
 #: components/app/interface/settings/user/profile/UserProfileEditor.tsx
 msgid "Profile Bio"
 msgstr "Profile Bio"
@@ -6470,6 +6902,14 @@ msgstr "Read this aloud. If it does not match their code, stop the session. This
 msgid "Reading the Discord template…"
 msgstr "Reading the Discord template…"
 
+#: components/modal/modals/ImportShell.tsx
+msgid "Reading your Stoat server…"
+msgstr "Reading your Stoat server…"
+
+#: components/modal/modals/ImportShell.tsx
+msgid "Reading the source server…"
+msgstr "Reading the source server…"
+
 #: components/app/interface/settings/server/stickers/StickerList.tsx
 #: components/app/interface/settings/server/soundboard/SoundboardList.tsx
 msgid "Ready to upload"
@@ -6573,6 +7013,10 @@ msgstr "Recovery Code"
 #: components/modal/modals/ImportDiscord.tsx
 msgid "Recreating channels…"
 msgstr "Recreating channels…"
+
+#: components/modal/modals/ImportShell.tsx
+msgid "Copying icons and emoji…"
+msgstr "Copying icons and emoji…"
 
 #: components/modal/modals/ImportDiscord.tsx
 msgid "Recreating roles and permissions…"
@@ -6914,6 +7358,10 @@ msgstr "Respect"
 msgid "Responsibly disclosed security issues"
 msgstr "Responsibly disclosed security issues"
 
+#: components/chatWindows/WindowControls.tsx
+msgid "Restore"
+msgstr "Restore"
+
 #: components/modal/modals/E2EEEnable.tsx
 msgid "Restore from a recovery code"
 msgstr "Restore from a recovery code"
@@ -7132,6 +7580,21 @@ msgstr "Screen position"
 msgid "Screen Share"
 msgstr "Screen Share"
 
+#: components/app/menus/FriendContextMenu.tsx
+msgid "Add to favorites"
+msgstr "Add to favorites"
+
+#: components/app/menus/FriendContextMenu.tsx
+msgid "Remove from favorites"
+msgstr "Remove from favorites"
+
+#: components/app/menus/FriendContextMenu.tsx
+#: components/app/menus/UserContextMenu.tsx
+#: components/friends/FriendsList.tsx
+#: components/friends/FriendsList.tsx
+msgid "Categorize…"
+msgstr "Categorize…"
+
 #: components/modal/modals/ScreenShareSettings.tsx
 #: components/app/interface/settings/user/voice/CameraOptions.tsx
 msgid "Screen Share Settings"
@@ -7211,6 +7674,32 @@ msgstr "Search for users..."
 #: components/modal/modals/InviteToServer.tsx
 msgid "Search friends..."
 msgstr "Search friends..."
+
+#: components/friends/FriendsList.tsx
+msgid "Clear search"
+msgstr "Clear search"
+
+#: components/friends/FriendsList.tsx
+#: components/friends/FriendsList.tsx
+msgid "Categories"
+msgstr "Categories"
+
+#: components/friends/FriendsList.tsx
+#: components/modal/modals/FriendGroups.tsx
+msgid "Manage categories"
+msgstr "Manage categories"
+
+#: components/friends/FriendsList.tsx
+msgid "In game"
+msgstr "In game"
+
+#: components/friends/FriendsList.tsx
+msgid "Favorites"
+msgstr "Favorites"
+
+#: components/friends/FriendsList.tsx
+msgid "New friend group"
+msgstr "New friend group"
 
 #: components/modal/modals/SoftResReserve.tsx
 msgid "Search items or bosses…"
@@ -7644,6 +8133,38 @@ msgstr "Active until {until}"
 msgid "Expires {expires}"
 msgstr "Expires {expires}"
 
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "You can pick a different tier after {expires}, when your open checkout expires."
+msgstr "You can pick a different tier after {expires}, when your open checkout expires."
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "{claimed} of {cap} claimed"
+msgstr "{claimed} of {cap} claimed"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "All {cap} Cipher numbers have been claimed."
+msgstr "All {cap} Cipher numbers have been claimed."
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Continue checkout"
+msgstr "Continue checkout"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Upgrade for {price}"
+msgstr "Upgrade for {price}"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Buy for {price}"
+msgstr "Buy for {price}"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "You're on the top tier. Thank you for backing Sloga!"
+msgstr "You're on the top tier. Thank you for backing Sloga!"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Upgrade your tier"
+msgstr "Upgrade your tier"
+
 #: components/app/interface/settings/user/Supporter.tsx
 msgid "{remaining} more to unlock {reward}"
 msgstr "{remaining} more to unlock {reward}"
@@ -7806,6 +8327,30 @@ msgstr "Slogatron minigame"
 #: components/client/toastShell.ts
 msgid "Slow down — try again in a moment"
 msgstr "Slow down — try again in a moment"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Checkout couldn't be started. Try again in a moment."
+msgstr "Checkout couldn't be started. Try again in a moment."
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Cipher {label}"
+msgstr "Cipher {label}"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "{price} tier"
+msgstr "{price} tier"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "{amount} Prot at launch"
+msgstr "{amount} Prot at launch"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Thank you! You're Cipher {label}."
+msgstr "Thank you! You're Cipher {label}."
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Checkout open: {name}"
+msgstr "Checkout open: {name}"
 
 #: components/client/toastShell.ts
 msgid "Couldn't confirm it sent. Open Sloga to check."
@@ -8382,6 +8927,74 @@ msgstr "Tap to start"
 msgid "Tell them why you're adding them"
 msgstr "Tell them why you're adding them"
 
+#: components/modal/modals/AddFriendToGroup.tsx
+msgid "This group chat may be encrypted, but this device can't confirm it, so nobody was added."
+msgstr "This group chat may be encrypted, but this device can't confirm it, so nobody was added."
+
+#: components/modal/modals/AddFriendToGroup.tsx
+msgid "Couldn't confirm that this group chat is unencrypted, so nobody was added."
+msgstr "Couldn't confirm that this group chat is unencrypted, so nobody was added."
+
+#: components/modal/modals/AddFriendToGroup.tsx
+msgid "{name} hasn't turned on encryption on any device, so they can't be added to an encrypted group chat."
+msgstr "{name} hasn't turned on encryption on any device, so they can't be added to an encrypted group chat."
+
+#: components/modal/modals/AddFriendToGroup.tsx
+msgid "This encrypted group chat is full."
+msgstr "This encrypted group chat is full."
+
+#: components/modal/modals/AddFriendToGroup.tsx
+msgid "Couldn't prepare encryption for {name}, so nobody was added. Try again."
+msgstr "Couldn't prepare encryption for {name}, so nobody was added. Try again."
+
+#: components/modal/modals/AddFriendToGroup.tsx
+msgid "{name} was added to the group but not included in its encryption. They can't read encrypted messages."
+msgstr "{name} was added to the group but not included in its encryption. They can't read encrypted messages."
+
+#: components/modal/modals/AddFriendToGroup.tsx
+msgid "{name} couldn't be included in this group chat's encryption. Remove them from the group chat, or review their security identity."
+msgstr "{name} couldn't be included in this group chat's encryption. Remove them from the group chat, or review their security identity."
+
+#: components/modal/modals/AddFriendToGroup.tsx
+msgid "{name} was added to the group chat, but couldn't be included in its encryption yet."
+msgstr "{name} was added to the group chat, but couldn't be included in its encryption yet."
+
+#: components/modal/modals/AddFriendToGroup.tsx
+msgid "Add {name} to an encrypted group chat?"
+msgstr "Add {name} to an encrypted group chat?"
+
+#: components/modal/modals/AddFriendToGroup.tsx
+msgid "“{group}” is end-to-end encrypted. {name} will be included in its encryption and can read messages sent from now on, but not earlier ones. Everyone in the group will see that they were added."
+msgstr "“{group}” is end-to-end encrypted. {name} will be included in its encryption and can read messages sent from now on, but not earlier ones. Everyone in the group will see that they were added."
+
+#: components/modal/modals/AddFriendToGroup.tsx
+msgid "Add to group chat"
+msgstr "Add to group chat"
+
+#: components/modal/modals/AddFriendToGroup.tsx
+msgid "New group chat"
+msgstr "New group chat"
+
+#: components/modal/modals/AddFriendToGroup.tsx
+msgid "Turn on encryption on this device to add people to encrypted group chats."
+msgstr "Turn on encryption on this device to add people to encrypted group chats."
+
+#: components/modal/modals/AddFriendToGroup.tsx
+msgid "Can't add people to this group chat from here yet."
+msgstr "Can't add people to this group chat from here yet."
+
+#: components/modal/modals/AddFriendToGroup.tsx
+msgid "Checking…"
+msgstr "Checking…"
+
+#: components/modal/modals/AddFriendToGroup.tsx
+msgid "No other group chats to add them to."
+msgstr "No other group chats to add them to."
+
+#: components/modal/modals/AddFriendToGroup.tsx
+msgid "Add and include"
+msgstr "Add and include"
+
 #: components/modal/modals/ReportContent.tsx
 msgid "Tell us what's wrong with this message"
 msgstr "Tell us what's wrong with this message"
@@ -8549,6 +9162,14 @@ msgstr "The bot did not respond in time."
 msgid "The bot only reads stickers, and you can kick it as soon as they're in."
 msgstr "The bot only reads stickers, and you can kick it as soon as they're in."
 
+#: components/modal/modals/ImportShell.tsx
+msgid "Waiting for the importer…"
+msgstr "Waiting for the importer…"
+
+#: components/modal/modals/ImportShell.tsx
+msgid "Checking your verification code…"
+msgstr "Checking your verification code…"
+
 #: src/interface/ServerEvents.tsx
 msgid "The calendar feature is not enabled on this server."
 msgstr "The calendar feature is not enabled on this server."
@@ -8618,6 +9239,98 @@ msgstr "The file \"{0}\" ({fileSize}) exceeds the maximum size limit of {maxSize
 msgid "The forward keeps a copy of the message as it is right now — later edits or deletion of the original won't change it. Encrypted conversations can't receive forwards."
 msgstr "The forward keeps a copy of the message as it is right now — later edits or deletion of the original won't change it. Encrypted conversations can't receive forwards."
 
+#: components/modal/modals/FriendCategory.tsx
+#: components/modal/modals/FriendGroups.tsx
+msgid "Category name"
+msgstr "Category name"
+
+#: components/modal/modals/FriendCategory.tsx
+msgid "Friends in category"
+msgstr "Friends in category"
+
+#: components/modal/modals/FriendCategory.tsx
+msgid "Start typing a name…"
+msgstr "Start typing a name…"
+
+#: components/modal/modals/FriendCategory.tsx
+msgid "This category no longer exists. It may have been removed on another device."
+msgstr "This category no longer exists. It may have been removed on another device."
+
+#: components/modal/modals/FriendCategory.tsx
+#: components/modal/modals/FriendGroups.tsx
+msgid "You've reached the limit of 50 categories. Remove one to make room."
+msgstr "You've reached the limit of 50 categories. Remove one to make room."
+
+#: components/modal/modals/FriendCategory.tsx
+#: components/modal/modals/FriendGroups.tsx
+#: components/modal/modals/FriendGroups.tsx
+msgid "Category names need 1 to 40 characters."
+msgstr "Category names need 1 to 40 characters."
+
+#: components/modal/modals/FriendCategory.tsx
+msgid "A category holds up to 1000 friends, so some weren't added."
+msgstr "A category holds up to 1000 friends, so some weren't added."
+
+#: components/modal/modals/FriendCategory.tsx
+msgid "Couldn't save that category."
+msgstr "Couldn't save that category."
+
+#. placeholder {0}: name()
+#: components/modal/modals/FriendGroups.tsx
+msgid "Categorize {0}"
+msgstr "Categorize {0}"
+
+#: components/modal/modals/FriendGroups.tsx
+msgid "You don't have any categories yet. Create one below to organize your friends."
+msgstr "You don't have any categories yet. Create one below to organize your friends."
+
+#: components/modal/modals/FriendGroups.tsx
+msgid "Manage friend groups"
+msgstr "Manage friend groups"
+
+#. placeholder {0}: name()
+#: components/modal/modals/FriendGroups.tsx
+msgid "Choose groups for {0}"
+msgstr "Choose groups for {0}"
+
+#: components/modal/modals/FriendGroups.tsx
+msgid "You don't have any groups yet. Create one below to organize your friends."
+msgstr "You don't have any groups yet. Create one below to organize your friends."
+
+#: components/modal/modals/FriendGroups.tsx
+msgid "Rename group"
+msgstr "Rename group"
+
+#: components/modal/modals/FriendGroups.tsx
+msgid "Move up"
+msgstr "Move up"
+
+#: components/modal/modals/FriendGroups.tsx
+msgid "Move down"
+msgstr "Move down"
+
+#: components/modal/modals/FriendGroups.tsx
+#: components/modal/modals/FriendGroups.tsx
+msgid "New category name"
+msgstr "New category name"
+
+#: components/modal/modals/FriendGroups.tsx
+msgid "Couldn't create that category."
+msgstr "Couldn't create that category."
+
+#: components/modal/modals/FriendGroups.tsx
+#: components/modal/modals/FriendGroups.tsx
+msgid "New group name"
+msgstr "New group name"
+
+#: components/modal/modals/FriendGroups.tsx
+msgid "You've reached the limit of 50 groups. Delete one to make room."
+msgstr "You've reached the limit of 50 groups. Delete one to make room."
+
+#: components/modal/modals/FriendGroups.tsx
+msgid "Couldn't create that group."
+msgstr "Couldn't create that group."
+
 #: components/auth/src/flows/FlowOAuthCallback.tsx
 msgid "The Google sign-in was canceled."
 msgstr "The Google sign-in was canceled."
@@ -8629,6 +9342,26 @@ msgstr "The host seems to have dropped — waiting for them to come back…"
 #: components/modal/modals/ImportDiscord.tsx
 msgid "The import didn't finish."
 msgstr "The import didn't finish."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "Import from {sourceLabel}"
+msgstr "Import from {sourceLabel}"
+
+#: components/modal/modals/ImportSource.tsx
+msgid "That doesn't look like a Stoat invite link or server ID."
+msgstr "That doesn't look like a Stoat invite link or server ID."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "We couldn't find your verification code in the server description. Copy your code again, paste it there and try again."
+msgstr "We couldn't find your verification code in the server description. Copy your code again, paste it there and try again."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "You already have a Discord import running."
+msgstr "You already have a Discord import running."
+
+#: components/modal/modals/ImportSource.tsx
+msgid "Couldn't copy to the clipboard. Select the link and copy it yourself."
+msgstr "Couldn't copy to the clipboard. Select the link and copy it yourself."
 
 #: components/modal/modals/ScheduleMessage.tsx
 msgid "The message is stored on the server and sent around the chosen time. You can cancel it from the channel until it goes out."
@@ -8694,6 +9427,55 @@ msgstr "That referral code wasn't found. Clear it to continue without one."
 #: components/i18n/errors.ts
 msgid "This donation can't be claimed. It has already been claimed, was refunded, or is waiting for review."
 msgstr "This donation can't be claimed. It has already been claimed, was refunded, or is waiting for review."
+
+#: components/i18n/errors.ts
+msgid "We couldn't find that server. Check the link and try again."
+msgstr "We couldn't find that server. Check the link and try again."
+
+#: components/i18n/errors.ts
+msgid "We couldn't find your verification code on that server. Add your code to the server, then try again."
+msgstr "We couldn't find your verification code on that server. Add your code to the server, then try again."
+
+#: components/i18n/errors.ts
+#: components/modal/modals/ImportShell.tsx
+msgid "Our importer bot isn't in that server yet. Add it, then try again."
+msgstr "Our importer bot isn't in that server yet. Add it, then try again."
+
+#: components/i18n/errors.ts
+msgid "We couldn't reach the server you're importing from right now. Try again in a few minutes."
+msgstr "We couldn't reach the server you're importing from right now. Try again in a few minutes."
+
+#: components/i18n/errors.ts
+msgid "Importing from this platform is not available right now."
+msgstr "Importing from this platform is not available right now."
+
+#: components/i18n/errors.ts
+msgid "Payments are not available right now."
+msgstr "Payments are not available right now."
+
+#: components/i18n/errors.ts
+msgid "The Cipher founding sale is closed."
+msgstr "The Cipher founding sale is closed."
+
+#: components/i18n/errors.ts
+msgid "All Cipher numbers have been claimed."
+msgstr "All Cipher numbers have been claimed."
+
+#: components/i18n/errors.ts
+msgid "That Cipher tier isn't available for your account."
+msgstr "That Cipher tier isn't available for your account."
+
+#: components/i18n/errors.ts
+msgid "Ciphers aren't on sale in your country yet."
+msgstr "Ciphers aren't on sale in your country yet."
+
+#: components/i18n/errors.ts
+msgid "You already have a checkout in progress. Finish it, or pick again after it expires."
+msgstr "You already have a checkout in progress. Finish it, or pick again after it expires."
+
+#: components/i18n/errors.ts
+msgid "The payment provider didn't respond. Please try again."
+msgstr "The payment provider didn't respond. Please try again."
 
 #: components/i18n/errors.ts
 msgid "This account is not activated! Please check your account's inbox and try again."
@@ -8852,6 +9634,10 @@ msgstr "This group is too large, you can have up to {0} users."
 #: components/i18n/errors.ts
 msgid "This has already been sent."
 msgstr "This has already been sent."
+
+#: components/ui/components/features/messaging/elements/Invite.tsx
+msgid "This invite has expired or doesn't exist."
+msgstr "This invite has expired or doesn't exist."
 
 #: components/app/interface/settings/user/Keybinds.tsx
 msgid "This is also a Sloga shortcut while the app is focused. It is saved, and both may fire."
@@ -9077,6 +9863,118 @@ msgstr "To share screen audio, rejoin the call after allowing microphone access.
 msgid "Toggle main sidebar"
 msgstr "Toggle main sidebar"
 
+#: src/interface/home/CipherBanner.tsx
+msgid "Hide for now"
+msgstr "Hide for now"
+
+#: src/interface/home/CipherBanner.tsx
+msgid "Protected servers are coming to Sloga"
+msgstr "Protected servers are coming to Sloga"
+
+#: src/interface/home/CipherBanner.tsx
+msgid "End-to-end encryption for a whole server or a single channel. We can't read any of it."
+msgstr "End-to-end encryption for a whole server or a single channel. We can't read any of it."
+
+#: src/interface/home/JumpBackIn.tsx
+msgid "Jump back in"
+msgstr "Jump back in"
+
+#: src/interface/home/JumpBackIn.tsx
+msgid "Unread"
+msgstr "Unread"
+
+#: src/interface/home/JumpBackIn.tsx
+msgid "In voice now"
+msgstr "In voice now"
+
+#: src/interface/home/StreamerRow.tsx
+msgid "See all"
+msgstr "See all"
+
+#. placeholder {0}: name()
+#: src/interface/home/StreamerRow.tsx
+msgid "Show what {0} is streaming"
+msgstr "Show what {0} is streaming"
+
+#. placeholder {0}: name()
+#: src/interface/home/StreamerRow.tsx
+msgid "Watch {0} live"
+msgstr "Watch {0} live"
+
+#. placeholder {0}: name()
+#: src/interface/home/StreamerRow.tsx
+msgid "Back to {0}"
+msgstr "Back to {0}"
+
+#. placeholder {0}: connection()?.platform
+#: src/interface/home/StreamerRow.tsx
+msgid "Watch on {0}"
+msgstr "Watch on {0}"
+
+#: src/interface/home/WelcomeTiles.tsx
+msgid "Welcome to Sloga"
+msgstr "Welcome to Sloga"
+
+#: src/interface/home/WelcomeTiles.tsx
+msgid "A few ways to get started."
+msgstr "A few ways to get started."
+
+#: src/interface/home/WelcomeTiles.tsx
+msgid "Import from Discord, Stoat or Fluxer."
+msgstr "Import from Discord, Stoat or Fluxer."
+
+#: src/interface/home/WelcomeTiles.tsx
+msgid "Bring your server"
+msgstr "Bring your server"
+
+#: src/interface/home/WelcomeTiles.tsx
+msgid "Find people by their username."
+msgstr "Find people by their username."
+
+#: src/interface/home/WelcomeTiles.tsx
+msgid "Add a friend"
+msgstr "Add a friend"
+
+#: src/interface/home/WelcomeTiles.tsx
+msgid "Browse communities by interest."
+msgstr "Browse communities by interest."
+
+#: src/interface/home/WelcomeTiles.tsx
+msgid "Discover communities"
+msgstr "Discover communities"
+
+#: src/interface/home/WelcomeTiles.tsx
+msgid "Start your own space for your friends."
+msgstr "Start your own space for your friends."
+
+#: src/interface/home/WelcomeTiles.tsx
+msgid "Create a server"
+msgstr "Create a server"
+
+#: src/interface/home/WhatsNewCard.tsx
+msgid "Sort your friends into categories"
+msgstr "Sort your friends into categories"
+
+#: src/interface/home/WhatsNewCard.tsx
+msgid "A new title bar for chat windows"
+msgstr "A new title bar for chat windows"
+
+#: src/interface/home/WhatsNewCard.tsx
+msgid "Push to talk fixes and a hang-up button"
+msgstr "Push to talk fixes and a hang-up button"
+
+#: src/interface/home/WhatsNewCard.tsx
+msgid "New in v{HIGHLIGHTS_RELEASE}"
+msgstr "New in v{HIGHLIGHTS_RELEASE}"
+
+#: src/interface/home/WhatsNewCard.tsx
+msgid "Friend categories, a new title bar and call fixes"
+msgstr "Friend categories, a new title bar and call fixes"
+
+#: src/interface/home/WhatsNewCard.tsx
+msgid "Read the patch notes"
+msgstr "Read the patch notes"
+
 #: components/app/interface/settings/user/bots/ViewBot.tsx
 msgid "Token copied to clipboard"
 msgstr "Token copied to clipboard"
@@ -9272,6 +10170,10 @@ msgstr "Turn on end-to-end encrypted direct messages for this device."
 #: src/interface/channels/text/Composition.tsx
 msgid "Turn on end-to-end encryption for this group."
 msgstr "Turn on end-to-end encryption for this group."
+
+#: src/interface/channels/text/Composition.tsx
+msgid "Looking up…"
+msgstr "Looking up…"
 
 #: components/app/interface/settings/user/voice/CameraPreview.tsx
 msgid "Turn on your camera to check it works and preview brightness and background effects."
@@ -9559,6 +10461,20 @@ msgstr "Users will be asked to confirm their age before opening this channel."
 msgid "Users will no longer be asked to confirm their age before joining this channel.<0/> Please ensure the content is appropriate for all ages."
 msgstr "Users will no longer be asked to confirm their age before joining this channel.<0/> Please ensure the content is appropriate for all ages."
 
+#: components/modal/modals/ConfirmRelationship.tsx
+msgid "Block"
+msgstr "Block"
+
+#. placeholder {0}: props.user.displayName
+#: components/modal/modals/ConfirmRelationship.tsx
+msgid "Block {0}? They'll be removed from your friends and can't send you direct messages."
+msgstr "Block {0}? They'll be removed from your friends and can't send you direct messages."
+
+#. placeholder {0}: props.user.displayName
+#: components/modal/modals/ConfirmRelationship.tsx
+msgid "Remove {0} from your friends?"
+msgstr "Remove {0} from your friends?"
+
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
 #~ msgid "VAD Threshold"
 #~ msgstr "VAD Threshold"
@@ -9607,6 +10523,14 @@ msgstr "Video Call"
 #: components/client/DiscordImportWorker.tsx
 msgid "View"
 msgstr "View"
+
+#: components/client/DiscordImportWorker.tsx
+msgid "Your {sourceLabel} import failed."
+msgstr "Your {sourceLabel} import failed."
+
+#: components/client/DiscordImportWorker.tsx
+msgid "Your {sourceLabel} import finished."
+msgstr "Your {sourceLabel} import finished."
 
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "View Channel"
@@ -10176,6 +11100,22 @@ msgstr "You've been signed out of Sloga!"
 msgid "You've reached the maximum number of servers you can be in."
 msgstr "You've reached the maximum number of servers you can be in."
 
+#: components/modal/modals/ImportShell.tsx
+msgid "We couldn't find that server on {source}. Check the link and try again."
+msgstr "We couldn't find that server on {source}. Check the link and try again."
+
+#: components/modal/modals/ImportShell.tsx
+msgid "We couldn't find your verification code on that server. Copy your code again, add it as the steps above describe, and try again."
+msgstr "We couldn't find your verification code on that server. Copy your code again, add it as the steps above describe, and try again."
+
+#: components/modal/modals/ImportShell.tsx
+msgid "We couldn't reach {source} right now. Try again in a few minutes."
+msgstr "We couldn't reach {source} right now. Try again in a few minutes."
+
+#: components/modal/modals/ImportShell.tsx
+msgid "Importing from {source} is not available right now."
+msgstr "Importing from {source} is not available right now."
+
 #: components/i18n/errors.ts
 msgid "You've reached your personal bot limit."
 msgstr "You've reached your personal bot limit."
@@ -10313,3 +11253,119 @@ msgstr "YouTube"
 msgid "Zap"
 msgstr "Zap"
 
+#: components/auth/src/CipherPromo.tsx
+msgid "$99"
+msgstr "$99"
+
+#: components/auth/src/CipherPromo.tsx
+msgid "Become a Cipher"
+msgstr "Become a Cipher"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Cipher sales are closed."
+msgstr "Cipher sales are closed."
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Selected"
+msgstr "Selected"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Numbered Cipher badge"
+msgstr "Numbered Cipher badge"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Animated Cipher badge"
+msgstr "Animated Cipher badge"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "You'll pay on Stripe's secure checkout page."
+msgstr "You'll pay on Stripe's secure checkout page."
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "It opens in your browser."
+msgstr "It opens in your browser."
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Ciphers are the founding backers of Protected servers and channels. Each Cipher gets a numbered badge and Prot to spend when Protected launches."
+msgstr "Ciphers are the founding backers of Protected servers and channels. Each Cipher gets a numbered badge and Prot to spend when Protected launches."
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Checkout canceled. You weren't charged."
+msgstr "Checkout canceled. You weren't charged."
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "This usually takes a few seconds."
+msgstr "This usually takes a few seconds."
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Confirming your payment…"
+msgstr "Confirming your payment…"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "If you finished checking out, it can take a few minutes to show up here."
+msgstr "If you finished checking out, it can take a few minutes to show up here."
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Check again"
+msgstr "Check again"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "We haven't seen your payment yet"
+msgstr "We haven't seen your payment yet"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Your badge is hidden and upgrades are paused until the review is over."
+msgstr "Your badge is hidden and upgrades are paused until the review is over."
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Your payment is under review"
+msgstr "Your payment is under review"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Finish paying in your browser. This page updates when you come back."
+msgstr "Finish paying in your browser. This page updates when you come back."
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "About Ciphers"
+msgstr "About Ciphers"
+
+#: components/auth/src/CipherPromo.tsx
+msgid "Ciphers fund the audit"
+msgstr "Ciphers fund the audit"
+
+#: components/auth/src/CipherPromo.tsx
+msgid "Coming soon"
+msgstr "Coming soon"
+
+#: components/auth/src/CipherPromo.tsx
+msgid "End-to-end encryption for a whole server or a single channel. Not even Sloga can read it, and the encryption code goes open source on launch day."
+msgstr "End-to-end encryption for a whole server or a single channel. Not even Sloga can read it, and the encryption code goes open source on launch day."
+
+#: components/auth/src/CipherPromo.tsx
+msgid "End-to-end encryption for a whole server or a single channel. The encryption code goes open source on launch day, and at 675 Ciphers an outside firm audits it."
+msgstr "End-to-end encryption for a whole server or a single channel. The encryption code goes open source on launch day, and at 675 Ciphers an outside firm audits it."
+
+#: components/auth/src/CipherPromo.tsx
+msgid "End-to-end encryption, open source at launch."
+msgstr "End-to-end encryption, open source at launch."
+
+#: components/auth/src/CipherPromo.tsx
+msgid "numbered Cipher badges"
+msgstr "numbered Cipher badges"
+
+#: components/auth/src/CipherPromo.tsx
+msgid "Protected servers and channels"
+msgstr "Protected servers and channels"
+
+#: components/auth/src/CipherPromo.tsx
+msgid "to become a Cipher"
+msgstr "to become a Cipher"
+
+#: components/auth/src/CipherPromo.tsx
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "Animated Cipher badge preview"
+msgstr "Animated Cipher badge preview"
+
+#: components/auth/src/CipherPromo.tsx
+msgid "Every Cipher gets a numbered badge, and the top tier's badge decrypts like this."
+msgstr "Every Cipher gets a numbered badge, and the top tier's badge decrypts like this."

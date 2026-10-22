@@ -129,6 +129,12 @@ EXPECTED=(
   "components/rtc/publishGateEpisode.test.ts 76 0"
   "components/rtc/pauseVerdict.test.ts 10 0"
   "components/rtc/micPipelinePolicy.test.ts 4 0"
+  # Push to talk's "muted unless the key is held" on the join, Unmute,
+  # Undeafen and the whisper restore, and its state.tsx pins. First measured
+  # at 19; 21 after its review added the muted capture's stop and clear pins;
+  # 41 with the capture bound, the post-landing re-check, the Muted/Deafened
+  # talk key and the blur release (fix/ptt-followups, after its review).
+  "components/rtc/pttMicPolicy.test.ts 41 0"
   "components/rtc/publishKickPolicy.test.ts 4 0"
   "components/rtc/decodeWitnessListener.test.ts 42 0"
   "components/rtc/chipInputs.test.ts 50 0"
@@ -152,6 +158,10 @@ EXPECTED=(
   "components/rtc/callModerationPolicy.test.ts 22 0"
   "components/rtc/callRecorder.test.ts 25 0"
   "components/ui/components/features/voice/callCard/callTileSelection.test.ts 23 0"
+  # Where the call card docks (the Android stuck-card fix and its follow-ups):
+  # usable rects, the memo comparators, the docking decision, and the source
+  # pins over VoiceCallCard.tsx. First measured at 24.
+  "components/ui/components/features/voice/callCard/callCardDock.test.ts 24 0"
   # Source pins over the state.tsx wiring of member moves and the chip's
   # publication read (wave 7): no spec can load state.tsx itself. Re-measured
   # (44 -> 48) by slice 4 wave 3a: the leg connect tail now carries `audio`,
@@ -172,13 +182,21 @@ EXPECTED=(
   # Neither spec ran anywhere before these rows. The start-policy row was
   # re-measured (68 -> 83) by slice 4 wave 3a: the screen-audio truth tables
   # and the TS and Kotlin source pins on the leg's audio track; then 83 -> 85
-  # for the screen-audio build flag and the self-mute skip.
-  "components/rtc/androidLegStartPolicy.test.ts 85 0"
+  # for the screen-audio build flag and the self-mute skip; then 85 -> 97 for
+  # the screen track's capture order, its frame gate and its single sender;
+  # then 97 -> 105 for the key provider, the SDK version and the stop paths;
+  # then 105 -> 118 for the screen unpublish that keeps its transceiver, the
+  # leg's participant listener, the audio source's sender check, and the
+  # compile gate's JVM test table.
+  "components/rtc/androidLegStartPolicy.test.ts 118 0"
   "components/rtc/androidScreenShareTiers.test.ts 3 0"
   # Android screen-share audio (slice 4, wave 3a): the tile's share-audio
   # badge truth table and its ParticipantTile.tsx source pins. First measured
   # at 10.
   "components/rtc/shareAudioBadge.test.ts 10 0"
+  # Mid-call microphone-mode switch (push to talk -> voice activity left the
+  # mic muted for the rest of the call). First measured at 18.
+  "components/rtc/micModePolicy.test.ts 18 0"
 )
 
 # --- skips -------------------------------------------------------------------
@@ -334,6 +352,7 @@ SPECS=(components/rtc/mls*.test.ts components/rtc/rosterReconcile.test.ts
   components/rtc/publishGateEpisode.test.ts
   components/rtc/pauseVerdict.test.ts
   components/rtc/micPipelinePolicy.test.ts
+  components/rtc/pttMicPolicy.test.ts
   components/rtc/publishKickPolicy.test.ts
   components/rtc/decodeWitnessListener.test.ts
   components/rtc/chipInputs.test.ts
@@ -372,6 +391,9 @@ SPECS=(components/rtc/mls*.test.ts components/rtc/rosterReconcile.test.ts
   components/rtc/callRecorder.test.ts
   # Outside components/rtc: which tiles the video-only grid shows.
   components/ui/components/features/voice/callCard/callTileSelection.test.ts
+  # Same directory: where the call card docks, and the pins holding
+  # VoiceCallCard.tsx to that decision.
+  components/ui/components/features/voice/callCard/callCardDock.test.ts
   # The state.tsx move and chip wiring, pinned as comment-stripped source.
   components/rtc/stateWiring.test.ts
   # The AFK channel and its merge with member moves (FE-2). The move ladder
@@ -396,7 +418,10 @@ SPECS=(components/rtc/mls*.test.ts components/rtc/rosterReconcile.test.ts
   # NOT matched by any glob either: the share-audio badge's spec (slice 4).
   # Without this literal it runs nowhere and its EXPECTED row trips "never
   # ran".
-  components/rtc/shareAudioBadge.test.ts)
+  components/rtc/shareAudioBadge.test.ts
+  # NOT matched by any glob: the mid-call microphone-mode switch and its pins
+  # over the state.tsx effect that runs it.
+  components/rtc/micModePolicy.test.ts)
 # 🔴 Arguments ADD to that set; they do not replace it. They used to replace
 # it, so the natural invocation for this branch —
 #   rtc-gate.sh components/rtc/mls*.test.ts
@@ -440,6 +465,7 @@ FILES=(components/rtc/mlsCallSession.ts components/rtc/mlsCallModePolicy.ts
   components/rtc/publishGateEpisode.test.ts
   components/rtc/pauseVerdict.ts components/rtc/pauseVerdict.test.ts
   components/rtc/micPipelinePolicy.ts components/rtc/micPipelinePolicy.test.ts
+  components/rtc/pttMicPolicy.ts components/rtc/pttMicPolicy.test.ts
   components/rtc/publishKickPolicy.ts components/rtc/publishKickPolicy.test.ts
   components/rtc/mlsCallModePolicy.test.ts
   components/rtc/decodeWitnessListener.ts
@@ -496,6 +522,13 @@ FILES=(components/rtc/mlsCallSession.ts components/rtc/mlsCallModePolicy.ts
   components/rtc/stateWiring.test.ts components/rtc/sourcePins.harness.ts
   components/ui/components/features/voice/callCard/callTileSelection.ts
   components/ui/components/features/voice/callCard/callTileSelection.test.ts
+  # The call card's dock module, its spec, and the card that uses both.
+  # Enrolled because each is clean: `prettier --check` and `eslint
+  # --max-warnings 0` both exit 0 on it, one file at a time (measured on the
+  # stuck-card follow-ups branch).
+  components/ui/components/features/voice/callCard/callCardDock.ts
+  components/ui/components/features/voice/callCard/callCardDock.test.ts
+  components/ui/components/features/voice/callCard/VoiceCallCard.tsx
   # The files this work edits to wire those policies in. Same rule as
   # VoiceCallDowngradeBanner.tsx above: a file the branch modifies is linted
   # and formatted, or nothing is. RoomAudioManager.tsx failed `prettier
@@ -547,7 +580,9 @@ FILES=(components/rtc/mlsCallSession.ts components/rtc/mlsCallModePolicy.ts
   # the slice also edits or pins, were already enrolled above.
   components/modal/modals/AndroidScreenShareSheet.tsx
   components/modal/types.ts components/common/lib/env.ts
-  components/rtc/shareAudioBadge.ts components/rtc/shareAudioBadge.test.ts)
+  components/rtc/shareAudioBadge.ts components/rtc/shareAudioBadge.test.ts
+  # Mid-call microphone-mode switch: the pure plan and its spec.
+  components/rtc/micModePolicy.ts components/rtc/micModePolicy.test.ts)
 # 🔴 NOT in FILES: components/app/interface/settings/channel/Overview.tsx.
 # FE-2 edits it (the AFK channel's check rules), but eslint reports two
 # pre-existing solid/reactivity warnings on it, present before that edit in

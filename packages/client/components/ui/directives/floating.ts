@@ -7,6 +7,8 @@ import {
   onCleanup,
 } from "solid-js";
 
+import { useWindowCtx } from "@revolt/client/windowCtx";
+
 type Props = JSX.Directives["floating"] & object;
 
 export type FloatingElement = {
@@ -14,6 +16,10 @@ export type FloatingElement = {
   element: HTMLElement;
   hide: () => void;
   show: Accessor<Props | undefined>;
+  /**
+   * Window the element lives in; only that window's FloatingManager renders it
+   */
+  ctxId: string;
 };
 
 const [floatingElements, setFloatingElements] = createSignal<FloatingElement[]>(
@@ -24,10 +30,16 @@ export { floatingElements };
 
 /**
  * Register a new floating element
+ *
+ * Without an explicit `ctxId` the window is read from context, so call this
+ * synchronously from the directive, where the element's owner is current.
  * @param element element
  */
-export function registerFloatingElement(element: FloatingElement) {
-  setFloatingElements((elements) => [...elements, element]);
+export function registerFloatingElement(
+  element: Omit<FloatingElement, "ctxId"> & { ctxId?: string },
+) {
+  const entry = { ...element, ctxId: element.ctxId ?? useWindowCtx().id };
+  setFloatingElements((elements) => [...elements, entry]);
 }
 
 /**
@@ -56,6 +68,7 @@ export function floating(element: HTMLElement, accessor: Accessor<Props>) {
     config: accessor,
     element,
     show,
+    ctxId: useWindowCtx().id,
     /**
      * Hide the element
      */

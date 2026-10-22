@@ -121,7 +121,15 @@ test("(7) #dmChannel resolves through the guard and stops on note-to-self", () =
 });
 
 test("(8) no other recipient-match DM lookup exists in e2ee.ts", () => {
-  assert.equal(source.match(/recipientIds\.has\(/g)?.length ?? 0, 0);
+  // The group include's member-list checks are not DM lookups: the method is
+  // group-only, refused for anything else before it reads the list.
+  const groupInclude = method("async addGroupMemberEncrypted(");
+  assert.match(
+    groupInclude,
+    /if \(channel\.type !== "Group"\) throw new Error\("not a group"\);/,
+  );
+  const rest = source.replace(groupInclude, "");
+  assert.equal(rest.match(/recipientIds\.has\(/g)?.length ?? 0, 0);
 });
 
 test("(9) #syncRecent returns before any lookup or history read on note-to-self", () => {

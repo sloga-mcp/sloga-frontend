@@ -133,6 +133,10 @@ export type SelectedTheme = Pick<
 
 /**
  * Manages theme information
+ *
+ * Synchronised across the account's devices as the "theme" key, apart from
+ * `DEVICE_LOCAL_THEME_FIELDS` (`./Sync.ts`), so a new field here also needs
+ * a decision there.
  */
 export class Theme extends AbstractStore<"theme", TypeTheme> {
   prefersDark: Accessor<boolean>;

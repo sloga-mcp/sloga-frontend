@@ -9,7 +9,17 @@ import { ModalControllerExtended } from "@revolt/modal";
 import type { State as ApplicationState } from "@revolt/state";
 import type { Session } from "@revolt/state/stores/Auth";
 import { killServiceWorkerSubscription } from "./NotificationsController";
+import {
+  classifyClientError,
+  dismissMayDropSession,
+  probeConfirmsRevoked,
+} from "./connectionPolicy";
 import { E2EEBridge, nativeE2EEAvailable } from "./e2ee";
+import {
+  type LoggingInEvent,
+  helloFailureError,
+  loggingInTarget,
+} from "./loggingInTransition";
 import { IS_OVERLAY_WINDOW } from "./popout";
 import { createSignOutHooks, transitionEndsSession } from "./signOutHooks";
 
@@ -92,6 +102,13 @@ class Lifecycle {
 
   client: Client;
 
+  /**
+   * Failed connection attempts since the last successful connection or
+   * sign-out, for the loading screen.
+   */
+  readonly connectionFailures: Accessor<number>;
+  #setConnectionFailures: Setter<number>;
+
   #connectionFailures = 0;
   #permanentError: string | undefined;
   #retryTimeout: number | undefined;
@@ -106,6 +123,7 @@ class Lifecycle {
     this.onEvent = this.onEvent.bind(this);
     this.onReady = this.onReady.bind(this);
     this.onPolicyChanges = this.onPolicyChanges.bind(this);
+    this.onError = this.onError.bind(this);
 
     const [state, setState] = createSignal(State.Ready);
     this.state = state;
@@ -114,6 +132,10 @@ class Lifecycle {
     const [loadedOnce, setLoadedOnce] = createSignal(false);
     this.loadedOnce = loadedOnce;
     this.#setLoadedOnce = setLoadedOnce;
+
+    const [connectionFailures, setConnectionFailures] = createSignal(0);
+    this.connectionFailures = connectionFailures;
+    this.#setConnectionFailures = setConnectionFailures;
 
     const [policyAttentionRequired, setPolicyAttentionRequired] = createSignal<
       undefined | PolicyAttentionRequired
@@ -155,6 +177,7 @@ class Lifecycle {
       this.client.events.off("event", this.onEvent);
       this.client.off("ready", this.onReady);
       this.client.off("policyChanges", this.onPolicyChanges);
+      this.client.off("error", this.onError);
       this.client.on("error", () => {}); // suppress stale unhandled errors
     }
 
@@ -209,6 +232,7 @@ class Lifecycle {
     this.client.events.on("event", this.onEvent);
     this.client.on("ready", this.onReady);
     this.client.on("policyChanges", this.onPolicyChanges);
+    this.client.on("error", this.onError);
   }
 
   #enter(nextState: State) {
@@ -225,18 +249,45 @@ class Lifecycle {
     }
 
     switch (nextState) {
-      case State.LoggingIn:
-        this.client.api.get("/onboard/hello").then(({ onboarding }) => {
-          if (onboarding) {
+      case State.LoggingIn: {
+        // Both handlers check that this is still the same client and that we
+        // are still logging in: a late reply for a disposed client must not
+        // drive the new one, or fire sign-out hooks through the catch.
+        const client = this.client;
+        client.api
+          .get("/onboard/hello")
+          .then(({ onboarding }) => {
+            if (this.client !== client || this.state() !== State.LoggingIn) {
+              return;
+            }
+
+            if (onboarding) {
+              this.transition({
+                type: TransitionType.NoUser,
+              });
+            } else {
+              // hello runs behind the Session guard, so a 200 proves the
+              // session is real. Without this, a reload before the socket
+              // connects drops the `valid: false` session in Auth.clean and
+              // sends the user back to the login form.
+              this.#controller.state.auth.markValid();
+              client.connect();
+            }
+          })
+          .catch((err) => {
+            // Also reached by a throw from markValid() or connect() above.
+            if (this.client !== client || this.state() !== State.LoggingIn) {
+              return;
+            }
+
             this.transition({
-              type: TransitionType.NoUser,
+              type: TransitionType.PermanentFailure,
+              error: helloFailureError(err),
             });
-          } else {
-            this.client.connect();
-          }
-        });
+          });
 
         break;
+      }
       case State.Connecting:
       case State.Reconnecting:
         this.client.connect();
@@ -245,6 +296,7 @@ class Lifecycle {
         this.#controller.state.auth.markValid();
         this.#setLoadedOnce(true);
         this.#connectionFailures = 0;
+        this.#setConnectionFailures(this.#connectionFailures);
 
         // A referral code only applies when creating an account, so once
         // signed in a stored one is spent. Checked first so reconnects don't
@@ -253,15 +305,26 @@ class Lifecycle {
           this.#controller.state.layout.setReferralCode(undefined);
         }
         break;
-      case State.Dispose:
+      case State.Dispose: {
+        // dispose() detaches our listeners and builds a new client, but
+        // never closes the old one's socket. That socket (open, or still
+        // opening when signing out from the loading screen) would otherwise
+        // stay connected under the signed-out session.
+        const previous = this.client;
         this.dispose();
+        previous.events.disconnect();
+        // A fresh login starts its reconnect backoff from the bottom.
+        this.#connectionFailures = 0;
+        this.#setConnectionFailures(this.#connectionFailures);
         this.transition({
           type: TransitionType.Ready,
         });
         this.#setLoadedOnce(false);
         break;
+      }
       case State.Disconnected:
         this.#connectionFailures++;
+        this.#setConnectionFailures(this.#connectionFailures);
 
         if (!navigator.onLine) {
           this.transition({
@@ -289,6 +352,53 @@ class Lifecycle {
         }
         break;
     }
+  }
+
+  /**
+   * Drop the stored session if the server confirms it is gone.
+   *
+   * Called when the user dismisses an InvalidSession error. The server also
+   * answers InvalidSession when its database lookup fails, so the notice
+   * alone is not proof the session was revoked. Ask again with a REST call
+   * behind the session guard, and drop the session only on a 401 for the
+   * same stored session (a new login in the meantime has a new id). Any other
+   * outcome, a network failure or a 5xx included, keeps it. Servers that
+   * still answer 401 for a failed database lookup make this a narrower
+   * window, not a full fix.
+   *
+   * Plain fetch with the old client's credentials, because the API client
+   * throws only the response body, and the guard's 401 body carries no error
+   * type. It only asks with the stored session's own token: without one the
+   * guard answers 401 for the missing header, which says nothing about the
+   * session. Not awaited, and every failure is handled here.
+   */
+  #dropSessionIfRevoked() {
+    const { baseURL, headers } = this.client.api.config;
+    const session = this.#controller.state.auth.getSession();
+    if (
+      session === undefined ||
+      (headers as Record<string, string> | undefined)?.["X-Session-Token"] !==
+        session.token
+    ) {
+      return;
+    }
+
+    const sessionId = session._id;
+
+    fetch(`${baseURL}/onboard/hello`, { headers })
+      .then(
+        (response) => response.status,
+        () => undefined,
+      )
+      .then((status) => {
+        if (
+          probeConfirmsRevoked(status) &&
+          this.#controller.state.auth.getSession()?._id === sessionId
+        ) {
+          this.#controller.state.auth.removeSession();
+        }
+      })
+      .catch(console.error);
   }
 
   /**
@@ -365,23 +475,51 @@ class Lifecycle {
           this.#enter(State.Connecting);
         }
         break;
-      case State.LoggingIn:
-        switch (transition.type) {
-          case TransitionType.SocketConnected:
+      case State.LoggingIn: {
+        // A socket that failed right after a successful login used to land in
+        // State.Error, which /login/auth did not render, so the user was sent
+        // back to the login form with no message (reported 2026-10-18). The
+        // session is valid by then, so a temporary failure now goes to
+        // Disconnected and retries with backoff, as a cached login does. The
+        // mapping lives in loggingInTransition.ts, where it is tested.
+        const event: LoggingInEvent =
+          transition.type === TransitionType.SocketConnected
+            ? "socket-connected"
+            : transition.type === TransitionType.NoUser
+              ? "no-user"
+              : transition.type === TransitionType.PermanentFailure
+                ? "permanent-failure"
+                : transition.type === TransitionType.TemporaryFailure
+                  ? "temporary-failure"
+                  : "other";
+
+        const target = loggingInTarget(event);
+        switch (target) {
+          case "connected":
             this.#enter(State.Connected);
             break;
-          case TransitionType.NoUser:
+          case "onboarding":
             this.#enter(State.Onboarding);
             break;
-          case TransitionType.PermanentFailure:
-            this.#permanentError = transition.error;
+          case "error":
+            if (transition.type === TransitionType.PermanentFailure) {
+              this.#permanentError = transition.error;
+            }
             this.#enter(State.Error);
             break;
-          case TransitionType.TemporaryFailure:
-            this.#enter(State.Error);
+          case "disconnected":
+            this.#enter(State.Disconnected);
             break;
+          case undefined:
+            // Not handled here; the log below reports it.
+            break;
+          default: {
+            const exhaustive: never = target;
+            return exhaustive;
+          }
         }
         break;
+      }
       case State.Onboarding:
         if (transition.type === TransitionType.UserCreated) {
           this.#enter(State.Connecting);
@@ -398,6 +536,15 @@ class Lifecycle {
           transition.type === TransitionType.Dismiss ||
           transition.type === TransitionType.Logout
         ) {
+          // Started before Dispose, while this.client is still the old,
+          // signed-in client.
+          if (
+            transition.type === TransitionType.Dismiss &&
+            dismissMayDropSession(this.#permanentError)
+          ) {
+            this.#dropSessionIfRevoked();
+          }
+
           this.#enter(State.Dispose);
         }
         break;
@@ -509,6 +656,32 @@ class Lifecycle {
         type: TransitionType.PermanentFailure,
         error: "InvalidSession",
       });
+    }
+  }
+
+  /**
+   * The client emits `error` for a socket error, for an `Error` frame from
+   * the server, and for an event handler that rejected. With no listener the
+   * emitter throws "Unhandled 'error' event". For an `Error` frame that throw
+   * also skipped the disconnect() after the emit, so a server that did not
+   * close the socket left the client connecting for good.
+   *
+   * Socket and server errors need no transition here: the events client
+   * records them as `lastError`, and onState maps the close that follows.
+   * Anything else is a rejected event handler, re-raised so it stays an
+   * uncaught exception, as it was before this listener existed.
+   */
+  private onError(error: unknown) {
+    switch (classifyClientError(error)) {
+      case "socket":
+      case "server":
+        console.warn("[lifecycle] socket error", error);
+        break;
+      case "other":
+        setTimeout(() => {
+          throw error;
+        }, 0);
+        break;
     }
   }
 

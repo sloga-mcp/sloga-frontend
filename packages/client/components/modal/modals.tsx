@@ -5,6 +5,7 @@ import { CONFIGURATION } from "@revolt/common";
 import { type ActiveModal } from ".";
 import { AddBotModal } from "./modals/AddBot";
 import { AddFriendModal } from "./modals/AddFriend";
+import { AddFriendToGroupModal } from "./modals/AddFriendToGroup";
 import { AddMembersToGroupModal } from "./modals/AddMembersToGroup";
 import { AndroidScreenShareSheetModal } from "./modals/AndroidScreenShareSheet";
 import { BanMemberModal } from "./modals/BanMember";
@@ -13,6 +14,7 @@ import { CameraSettingsModal } from "./modals/CameraSettings";
 import { ChangelogHistoryModal, ChangelogModal } from "./modals/Changelog";
 import { ChannelInfoModal } from "./modals/ChannelInfo";
 import { ChannelToggleMatureModal } from "./modals/ChannelToggleMature";
+import { ConfirmRelationshipModal } from "./modals/ConfirmRelationship";
 import { CreateBotModal } from "./modals/CreateBot";
 import { CreateCategoryModal } from "./modals/CreateCategory";
 import { CreateChannelModal } from "./modals/CreateChannel";
@@ -53,9 +55,12 @@ import { EmojiPreviewModal } from "./modals/EmojiPreview";
 import { Error2Modal } from "./modals/Error2";
 import { FollowChannelModal } from "./modals/FollowChannel";
 import { ForwardMessageModal } from "./modals/ForwardMessage";
+import { FriendCategoryModal } from "./modals/FriendCategory";
+import { FriendGroupsModal } from "./modals/FriendGroups";
 import { ImageEditorModal } from "./modals/ImageEditor";
 import { ImageViewerModal } from "./modals/ImageViewer";
 import { ImportDiscordModal } from "./modals/ImportDiscord";
+import ImportSourceModal from "./modals/ImportSource";
 import { InviteModal } from "./modals/Invite";
 import { InviteToServerModal } from "./modals/InviteToServer";
 import { JoinServerModal } from "./modals/JoinServer";
@@ -127,6 +132,15 @@ export function RenderModal(props: ActiveModal & { onClose: () => void }) {
       return <ChangelogHistoryModal {...modalProps} />;
     case "add_members_to_group":
       return <AddMembersToGroupModal {...modalProps} />;
+    case "add_friend_to_group":
+      return <AddFriendToGroupModal {...modalProps} />;
+    case "friend_groups":
+      return <FriendGroupsModal {...modalProps} />;
+    case "friend_category":
+      return <FriendCategoryModal {...modalProps} />;
+    case "unfriend_user":
+    case "block_user":
+      return <ConfirmRelationshipModal {...modalProps} />;
     case "channel_info":
       return <ChannelInfoModal {...modalProps} />;
     case "channel_toggle_mature":
@@ -151,6 +165,8 @@ export function RenderModal(props: ActiveModal & { onClose: () => void }) {
       return <CreateServerModal {...modalProps} />;
     case "import_discord":
       return <ImportDiscordModal {...modalProps} />;
+    case "import_source":
+      return <ImportSourceModal {...modalProps} />;
     case "create_thread":
       return <CreateThreadModal {...modalProps} />;
     case "create_forum_post":

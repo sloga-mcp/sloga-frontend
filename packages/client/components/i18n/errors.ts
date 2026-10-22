@@ -77,6 +77,36 @@ export function useError() {
       // review (same lag pattern; stoat-api's union predates it).
       if (errType === "DirectMessagesPaused")
         return t`Your messages to people who aren't your friends are paused while our team reviews your account. You can still message your friends.`;
+      // Import from another platform (same lag pattern). The import modals
+      // map these with the source's name (`useImportErrorMessage` in
+      // `ImportShell.tsx`); this is the neutral copy for anywhere else.
+      if (errType === "ImportSourceNotFound")
+        return t`We couldn't find that server. Check the link and try again.`;
+      if (errType === "ImportVerificationMissing")
+        return t`We couldn't find your verification code on that server. Add your code to the server, then try again.`;
+      if (errType === "ImportBotNotInServer")
+        return t`Our importer bot isn't in that server yet. Add it, then try again.`;
+      if (errType === "ImportUpstreamUnavailable")
+        return t`We couldn't reach the server you're importing from right now. Try again in a few minutes.`;
+      if (errType === "ImportSourceUnavailable")
+        return t`Importing from this platform is not available right now.`;
+      // Cipher checkout (same lag pattern).
+      if (errType === "PaymentsDisabled")
+        return t`Payments are not available right now.`;
+      if (errType === "CipherSalesClosed")
+        return t`The Cipher founding sale is closed.`;
+      if (errType === "CipherSoldOut")
+        return t`All Cipher numbers have been claimed.`;
+      if (errType === "CipherTierInvalid")
+        return t`That Cipher tier isn't available for your account.`;
+      // The buyer is in a country Ciphers are not sold in yet (the EU and
+      // the UK at launch).
+      if (errType === "CipherRegionUnavailable")
+        return t`Ciphers aren't on sale in your country yet.`;
+      if (errType === "PaymentPending")
+        return t`You already have a checkout in progress. Finish it, or pick again after it expires.`;
+      if (errType === "PaymentProviderError")
+        return t`The payment provider didn't respond. Please try again.`;
 
       switch (err.type) {
         case "AlreadyFriends":

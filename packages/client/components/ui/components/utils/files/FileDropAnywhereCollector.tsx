@@ -18,6 +18,7 @@ import { Motion } from "solid-motionone";
 import { Plural } from "@lingui-solid/solid/macro";
 import { styled } from "styled-system/jsx";
 
+import { type WindowCtx, MAIN_CTX } from "@revolt/client/windowCtx";
 import { useModals } from "@revolt/modal";
 
 // import { typography } from "../../design";
@@ -35,6 +36,18 @@ interface Props {
    * Whether to allow dropping files while in a modal
    */
   allowInModal?: boolean;
+
+  /**
+   * Window to collect drops in (defaults to the main window). Read once at
+   * mount; a chat window's composer passes its own so the listeners and the
+   * overlay land in that window's document.
+   */
+  ctx?: WindowCtx;
+
+  /**
+   * Whether drops should currently be collected (defaults to always)
+   */
+  active?: () => boolean;
 }
 
 /**
@@ -94,6 +107,15 @@ export function FileDropAnywhereCollector(props: Props) {
   const [hideIndicator, setHideIndicator] = createSignal(false);
   const [items, setItems] = createSignal<DataTransferItem[]>([]);
 
+  const ctx = () => props.ctx ?? MAIN_CTX;
+  const active = () => props.active?.() ?? true;
+
+  /**
+   * Timers run on the window the listeners are bound to: a hidden main
+   * window gets its timers throttled while a chat window is in front.
+   */
+  let win: Window = MAIN_CTX.win;
+
   /**
    * Since we get events from the whole DOM tree, we want to
    * check if we get a dragOver event immediately after dragLeave,
@@ -106,12 +128,13 @@ export function FileDropAnywhereCollector(props: Props) {
    * @param event Drag event
    */
   function onDragOver(event: DragEvent) {
-    // Dragging a server around the rail or a selection out of a message is
-    // not an attachment — don't dim the screen and offer to eat it.
-    if (!isFileDrag(event) || isOpen()) return;
+    // Dragging a server around the rail, a selection out of a message or a
+    // chat tab between windows (text/plain) is not an attachment — don't dim
+    // the screen and offer to eat it.
+    if (!isFileDrag(event) || !active() || isOpen()) return;
 
     event.preventDefault();
-    clearTimeout(deferredHide);
+    win.clearTimeout(deferredHide);
 
     if (event.dataTransfer) {
       event.dataTransfer.dropEffect = "copy";
@@ -127,14 +150,18 @@ export function FileDropAnywhereCollector(props: Props) {
   /**
    * Handle cancelled drag event
    */
-  function onDragLeave() {
-    deferredHide = setTimeout(() => {
+  function onDragLeave(event: DragEvent) {
+    // Deliberately not gated on active(): hiding is always safe, and an
+    // overlay raised just before the window went inactive must still clear.
+    if (!isFileDrag(event)) return;
+
+    deferredHide = win.setTimeout(() => {
       setHideIndicator(true);
 
-      setTimeout(() => {
+      win.setTimeout(() => {
         setShowIndicator(false);
       }, 300);
-    }) as never;
+    });
   }
 
   /**
@@ -147,6 +174,13 @@ export function FileDropAnywhereCollector(props: Props) {
     // of whatever channel is behind it.
     if (!isFileDrag(event) || isOpen()) return;
 
+    // Inactive: leave the drop to FileDropGuard, but don't strand an
+    // overlay that was raised while we were still active.
+    if (!active()) {
+      setShowIndicator(false);
+      return;
+    }
+
     event.preventDefault();
 
     const files = event.dataTransfer?.files;
@@ -158,15 +192,19 @@ export function FileDropAnywhereCollector(props: Props) {
   }
 
   onMount(() => {
-    document.addEventListener("dragover", onDragOver);
-    document.addEventListener("dragleave", onDragLeave);
-    document.addEventListener("drop", onDrop);
-  });
+    // Bound once: the ctx is fixed for this collector's lifetime.
+    const { doc } = ctx();
+    win = ctx().win;
 
-  onCleanup(() => {
-    document.removeEventListener("dragover", onDragOver);
-    document.removeEventListener("dragleave", onDragLeave);
-    document.removeEventListener("drop", onDrop);
+    doc.addEventListener("dragover", onDragOver);
+    doc.addEventListener("dragleave", onDragLeave);
+    doc.addEventListener("drop", onDrop);
+
+    onCleanup(() => {
+      doc.removeEventListener("dragover", onDragOver);
+      doc.removeEventListener("dragleave", onDragLeave);
+      doc.removeEventListener("drop", onDrop);
+    });
   });
 
   /**
@@ -184,7 +222,8 @@ export function FileDropAnywhereCollector(props: Props) {
 
   return (
     <Show when={showIndicator()}>
-      <Portal>
+      {/* the ctx body, not #floating: for main this is Portal's default */}
+      <Portal mount={ctx().doc.body}>
         <Show when={!hideIndicator()}>
           <DimScreen />
         </Show>

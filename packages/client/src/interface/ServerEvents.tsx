@@ -13,6 +13,7 @@ import {
   onCleanup,
   onMount,
   splitProps,
+  untrack,
 } from "solid-js";
 
 import { Plural, Trans, useLingui } from "@lingui-solid/solid/macro";
@@ -40,9 +41,11 @@ import { SOFTRES_CREATION_ENABLED } from "@revolt/app";
 import { useClient } from "@revolt/client";
 import { useModals } from "@revolt/modal";
 import { useVoice } from "@revolt/rtc";
-import { useNavigate, useParams } from "@revolt/routing";
+import { useLocation, useNavigate, useParams } from "@revolt/routing";
 import { Avatar, Button, Column, IconButton, Row, typography } from "@revolt/ui";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
+
+import { parseEventLink } from "./home/homeHub";
 
 /**
  * Typography text that also applies `style`. The shared `@revolt/ui` `Text`
@@ -334,6 +337,39 @@ export const ServerEvents: Component = () => {
     setCreateDate(date);
     setShowCreate(true);
   }
+
+  // ------------------------------------------------------------- deep link
+  // `?event=<id>&at=<start>` (Home's Upcoming card): show that day, then open
+  // the occurrence once the grid has loaded it. Each link opens once, so
+  // closing the detail does not bring it back.
+  const location = useLocation();
+  const linked = createMemo(() => parseEventLink(location.query));
+  let openedLink: string | undefined;
+
+  createEffect(
+    on(linked, (link) => {
+      if (link?.start === undefined) return;
+      const day = new Date(link.start);
+      setViewYear(day.getFullYear());
+      setViewMonth(day.getMonth());
+      setSelectedDate(day);
+    }),
+  );
+
+  createEffect(() => {
+    const link = linked();
+    if (!link) return;
+    const key = `${link.eventId}:${link.start ?? ""}`;
+    if (openedLink === key) return;
+    const match = occurrences().find(
+      (o) =>
+        o.event.id === link.eventId &&
+        (link.start === undefined || o.start === link.start),
+    );
+    if (!match) return;
+    openedLink = key;
+    untrack(() => void openDetail(match.event, match.start));
+  });
 
   // -------------------------------------------------------------------- edit
   const [editEvent, setEditEvent] = createSignal<CalendarEvent | undefined>();

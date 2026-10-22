@@ -288,8 +288,9 @@ test("the name-keyed AFK check is gone from state.tsx", () => {
 });
 
 test("every publish entry point consults the guard", () => {
-  // Four `publishToggleRefusal` call sites: toggleMute, toggleCamera,
-  // toggleScreenshare and toggleDeafen. The fourth is not decoration —
+  // Five `publishToggleRefusal` call sites: toggleMute, toggleCamera,
+  // toggleScreenshare, toggleDeafen and `#applyMicMode` (a mid-call switch to
+  // Open Mic must not unmute into AFK either). The fourth is not decoration —
   // pressing Unmute WHILE DEAFENED never enters toggleMute's body, it
   // delegates to toggleDeafen, so a three-site guard has a door in it. The
   // pre-AFK code had zero AFK references in any of them, which is why one
@@ -297,8 +298,8 @@ test("every publish entry point consults the guard", () => {
   const calls = STATE_CODE.match(/publishToggleRefusal\(\{/g) ?? [];
   assert.equal(
     calls.length,
-    4,
-    `expected 4 guard call sites, saw ${calls.length}`,
+    5,
+    `expected 5 guard call sites, saw ${calls.length}`,
   );
 });
 
@@ -349,14 +350,15 @@ test("🔴 no isAfkChannel property in state.tsx is wired to a constant", () => 
   }
 });
 
-test("all nine isAfkChannel property sites are still present", () => {
+test("all ten isAfkChannel property sites are still present", () => {
   // A site removed rather than falsified: every remaining value passes the
   // check above, and the consumer of the deleted one silently loses the flag.
-  // The ninth is the idle world's (Wave 5b-2, I-5).
+  // The ninth is the idle world's (Wave 5b-2, I-5); the tenth is
+  // `#applyMicMode`'s publish guard (the mid-call microphone-mode switch).
   assert.equal(
     AFK_PROPERTY_VALUES.length,
-    9,
-    `expected 9 isAfkChannel property sites, saw ${AFK_PROPERTY_VALUES.length}`,
+    10,
+    `expected 10 isAfkChannel property sites, saw ${AFK_PROPERTY_VALUES.length}`,
   );
 });
 

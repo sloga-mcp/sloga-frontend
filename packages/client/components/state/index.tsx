@@ -11,11 +11,15 @@ import { SetStoreFunction, createStore } from "solid-js/store";
 import equal from "fast-deep-equal";
 import localforage from "localforage";
 
+import { IS_POPOUT_WINDOW } from "@revolt/client/popout";
 import { SlideDrawer } from "@revolt/ui/components/navigation/SlideDrawer";
+
+import { shouldPersistKey } from "./accountReset";
 import { AbstractStore, Store } from "./stores";
 import { Auth } from "./stores/Auth";
 import { Draft } from "./stores/Draft";
 import { Experiments } from "./stores/Experiments";
+import { FriendGroups } from "./stores/FriendGroups";
 import { Friends } from "./stores/Friends";
 import { Keybinds } from "./stores/Keybinds";
 import { Layout } from "./stores/Layout";
@@ -63,6 +67,7 @@ export class State {
   draft = new Draft(this);
   experiments = new Experiments(this);
   friends = new Friends(this);
+  "friend-groups" = new FriendGroups(this);
   keybinds = new Keybinds(this);
   layout = new Layout(this);
   linkSafety = new LinkSafety(this);
@@ -75,6 +80,17 @@ export class State {
   theme = new Theme(this);
   voice = new Voice(this);
   sounds = new Sounds(this);
+
+  /**
+   * Friend groups store
+   *
+   * The field above must be named after its store key: iterStores() and
+   * Sync.merge() look stores up as `state[key]`. A prototype getter is not an
+   * own key, so iterStores() still sees this store only once.
+   */
+  get friendGroups(): FriendGroups {
+    return this["friend-groups"];
+  }
 
   /**
    * Iterate over all available stores
@@ -132,8 +148,29 @@ export class State {
     // resolve key
     const key = args[0] as string;
 
-    // touch the key if syncable
-    this.sync.touchIfSyncable(key);
+    // touch the key if syncable; args[1] is the field when the write names one
+    this.sync.touchIfSyncable(key, args[1]);
+
+    this.persist(key);
+  };
+
+  /**
+   * Queue a key for writing to disk
+   * @param key Store key
+   */
+  private persist(key: string) {
+    // The friends popout keeps the synced stores and `sync` in memory only:
+    // it never syncs or checks the owner, so its copy can belong to an
+    // account that has since signed out (see shouldPersistKey)
+    if (
+      !shouldPersistKey(
+        key,
+        IS_POPOUT_WINDOW,
+        Object.keys(this.sync.default().revision),
+      )
+    ) {
+      return;
+    }
 
     // remove existing queued task if it exists
     if (this.writeQueue[key]) {
@@ -160,7 +197,7 @@ export class State {
       },
       IGNORE_WRITE_DELAY.includes(key) ? 0 : DISK_WRITE_WAIT_MS,
     ) as unknown as number;
-  };
+  }
 
   /**
    * Write data to store / disk and then synchronise it
@@ -197,8 +234,12 @@ export class State {
         const cleanData = store.clean(data);
 
         if (!equal(data, cleanData)) {
-          // write back to disk if it has changed
-          this.write(store.getKey(), cleanData);
+          // write back to disk if it has changed, without touching the key:
+          // a repaired disk copy is not an edit, and a fresh revision on it
+          // would let this device's old data overwrite newer edits made on
+          // another device
+          this.setStore(store.getKey(), cleanData);
+          this.persist(store.getKey());
         } else {
           this.setStore(store.getKey(), data);
         }

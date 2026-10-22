@@ -1,5 +1,6 @@
 import { Show } from "solid-js";
 
+import { Trans } from "@lingui-solid/solid/macro";
 import { ServerMember, User } from "stoat.js";
 import { styled } from "styled-system/jsx";
 
@@ -68,15 +69,22 @@ export function ProfileActions(props: {
   }
 
   /**
-   * Open edit menu
+   * Open the server identity editor
    */
   function openEdit() {
-    openModal(
-      props.member
-        ? { type: "server_identity", member: props.member }
-        : { type: "settings", config: "user" },
-    );
-    if (!props.member) props.onClose();
+    openModal({ type: "server_identity", member: props.member! });
+  }
+
+  /**
+   * Open user settings straight on the Profile page
+   */
+  function openEditProfile() {
+    openModal({
+      type: "settings",
+      config: "user",
+      context: { page: "profile" },
+    });
+    props.onClose();
   }
 
   return (
@@ -122,6 +130,12 @@ export function ProfileActions(props: {
         </Show>
       </Show>
 
+      <Show when={props.user.self && !props.member}>
+        <Button onPress={openEditProfile}>
+          <Trans>Edit profile</Trans>
+        </Button>
+      </Show>
+
       <Show
         when={
           props.member
@@ -131,7 +145,7 @@ export function ProfileActions(props: {
               : (props.member.server!.havePermission("ManageNicknames") ||
                   props.member.server!.havePermission("RemoveAvatars")) &&
                 props.member.inferiorTo(props.member!.server!.member!)
-            : props.user.self
+            : false
         }
       >
         <IconButton onPress={openEdit}>

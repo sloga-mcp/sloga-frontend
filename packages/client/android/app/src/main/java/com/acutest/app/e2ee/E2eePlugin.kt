@@ -363,9 +363,18 @@ class E2eePlugin : Plugin() {
                         ),
                     )
                 "e2ee_confirm_peer_downgrade" -> {
+                    // DECLINE only. Accepting moves the conversation to
+                    // plaintext, which takes a tap on the dialog behind
+                    // `confirmPeerDowngradeAccept`; a webview asking for it
+                    // here is refused, never silently accepted.
+                    if (call.getBoolean("accept") == true) {
+                        throw E2eeException.Failure(
+                            "{\"type\":\"invalid_argument\",\"field\":\"accept\"}",
+                        )
+                    }
                     engine.confirmPeerDowngrade(
                         requireString(call, "conversationId"),
-                        call.getBoolean("accept") ?: false,
+                        false,
                     )
                     resolveJson(call, "null")
                 }

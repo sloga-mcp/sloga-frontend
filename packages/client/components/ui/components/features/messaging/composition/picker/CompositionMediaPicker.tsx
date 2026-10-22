@@ -1,3 +1,4 @@
+import { useWindowCtx } from "@revolt/client/windowCtx";
 import { useFloating } from "solid-floating-ui";
 import {
   Accessor,
@@ -96,7 +97,7 @@ export function CompositionMediaPicker(props: Props) {
       })}
       <Presence>
         <Show when={show()}>
-          <Portal mount={document.getElementById("floating")!}>
+          <Portal mount={useWindowCtx().floatingMount()}>
             <Motion
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}

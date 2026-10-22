@@ -1,3 +1,4 @@
+import { useWindowCtx } from "@revolt/client/windowCtx";
 import { useFloating } from "solid-floating-ui";
 import {
   Component,
@@ -22,7 +23,12 @@ const Base = styled("div", {
     display: "flex",
     flexDirection: "column",
     padding: "var(--gap-md) 0",
-    overflow: "hidden",
+    // Set by contextMenuMiddleware: the window's height, or in a window too
+    // narrow to open beside the pointer, the room on the pointer's side; a
+    // taller menu scrolls rather than covering the pointer
+    maxHeight: "var(--context-menu-max-height, none)",
+    overflowX: "hidden",
+    overflowY: "auto",
     borderRadius: "var(--borderRadius-xs)",
     background: "var(--md-sys-color-surface-container)",
     color: "var(--md-sys-color-on-surface)",
@@ -200,7 +206,7 @@ export function ContextMenuSubMenu(
       >
         {local.buttonContent}
       </ContextMenuButton>
-      <Portal mount={document.getElementById("floating")!}>
+      <Portal mount={useWindowCtx().floatingMount()}>
         <Presence>
           <Show when={isShowing()}>
             <Motion

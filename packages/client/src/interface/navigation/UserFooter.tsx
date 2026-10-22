@@ -61,8 +61,27 @@ export function UserFooter(props: { stacked?: boolean }) {
   // remounting (collapsing the sidebar swaps variants) starts no second poll.
   onMount(watchDesktopUpdate);
 
+  // Publish this bar's real height to the nav block it floats over, as
+  // `--user-footer-height`, so the columns under it can reserve exactly that
+  // much (Sidebar.tsx's `footer: "stack"`). The stacked column grows with
+  // whatever it holds: the hang-up while in a call, the update arrow while
+  // one is pending. A fixed reservation let the last rail item slide under it.
+  let base!: HTMLDivElement;
+  onMount(() => {
+    const host = base.parentElement;
+    if (!host) return;
+    const observer = new ResizeObserver(() =>
+      host.style.setProperty("--user-footer-height", `${base.offsetHeight}px`),
+    );
+    observer.observe(base);
+    onCleanup(() => {
+      observer.disconnect();
+      host.style.removeProperty("--user-footer-height");
+    });
+  });
+
   return (
-    <Base data-user-footer stacked={props.stacked}>
+    <Base ref={base} data-user-footer stacked={props.stacked}>
       <UserArea ref={setMenuAnchor} stacked={props.stacked}>
         <Avatar
           size={32}
@@ -202,6 +221,30 @@ export function UserFooter(props: { stacked?: boolean }) {
           }}
         >
           <Symbol>download</Symbol>
+        </IconButton>
+      </Show>
+
+      {/*
+        Hang up, from the bar that is on screen on every page and in the
+        drawer. The call card's own button is the only other way out, and the
+        card is exactly what can end up somewhere the user cannot reach (a
+        phone report: card stuck over the wrong page or squeezed to nothing,
+        no way to leave short of force-closing the app).
+      */}
+      <Show when={voice.channel()}>
+        <IconButton
+          size="xs"
+          variant="standard"
+          onPress={() => voice.disconnect()}
+          style={{ "--colour": "var(--md-sys-color-error)" }}
+          use:floating={{
+            tooltip: {
+              placement: props.stacked ? "right" : "top",
+              content: t`End call`,
+            },
+          }}
+        >
+          <Symbol>call_end</Symbol>
         </IconButton>
       </Show>
 

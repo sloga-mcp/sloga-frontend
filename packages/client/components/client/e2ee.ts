@@ -76,6 +76,19 @@ import {
   isTrustedId,
   trustEncryptedId,
 } from "./e2eeTrustedRow";
+import {
+  activeDeviceCount,
+  claimIncludeFlight,
+  classifyBundleFetchError,
+  classifyIncludeBundle,
+  groupStateIncludable,
+  hasIdentityChanged,
+  includeCountedMembers,
+  includeEnvelopeEstimate,
+  includeOverEnvelopeCap,
+  includeOverMemberCap,
+  newMemberUndelivered,
+} from "./groupInclude";
 import { classifyEnvelopeError } from "./mlsEnvelopeClassify";
 import {
   type MlsBufferedEnvelope,
@@ -153,6 +166,7 @@ type NativeError = {
   type?: string;
   user_id?: string;
   device_ids?: string[];
+  /** `invalid_argument` only: the refused input (e.g. `roster_changed`) */
   field?: string;
 };
 
@@ -257,6 +271,25 @@ export type SafetyNumber = {
   user_verified: boolean;
 };
 
+export type KeyBundle = { user_id: string; devices: unknown[] };
+
+/**
+ * Whether a member can be included in an encrypted group's encryption
+ * (`groupIncludePreflight`). `ok` carries the freshly fetched bundle the
+ * include must use; a refusal means nobody may be added.
+ */
+export type GroupIncludePreflight =
+  | { kind: "ok"; bundle: KeyBundle }
+  | {
+      kind: "refuse";
+      reason:
+        | "not_ready"
+        | "not_encrypted"
+        | "no_keys"
+        | "too_many"
+        | "unavailable";
+    };
+
 /**
  * How a native-confirm-gated "mark verified" or "accept new key" ended.
  * The shells show a NATIVE dialog with the safety number and bind the
@@ -288,8 +321,6 @@ function identityConfirmOutcomeOf(
     ? "keys_changed"
     : null;
 }
-
-type KeyBundle = { user_id: string; devices: unknown[] };
 
 /** A key-backup upload bundle produced natively (opaque ciphertext) */
 type BackupBundle = {
@@ -797,14 +828,13 @@ export { classifyEnvelopeError } from "./mlsEnvelopeClassify";
  * device claim.
  */
 export function nativeE2EEAvailable(): boolean {
-  // The friends popout window is a lean SECOND client on desktop shells —
-  // it must read as web-mode: two full clients driving the one native
-  // engine would double-process envelopes and race the ratchets. The flag
-  // is FROZEN at window boot (see popout.ts) so this answer can never
-  // drift from the boot-time engine-attach decision. (The shells enforce
-  // the posture too: the popout's Tauri capability grants no e2ee
-  // commands, and the Electron popout preload never exposes
-  // slogaShell.e2ee.)
+  // A window booted at /friends-popout is a lean SECOND client — it must
+  // read as web-mode: two full clients driving the one native engine would
+  // double-process envelopes and race the ratchets. Only the web opens that
+  // route now (desktop shells use same-realm chat windows instead), but the
+  // guard stays so a stray load on a shell still fails closed. The flag is
+  // FROZEN at window boot (see popout.ts) so this answer can never drift
+  // from the boot-time engine-attach decision.
   // The voice overlay window is a PASSIVE RENDERER with no client at all, so
   // the same one-driver rule applies even more strongly than it does to the
   // popout. Its Tauri capability grants no e2ee commands and the Electron
@@ -1519,6 +1549,12 @@ export class E2EEBridge implements E2EEAdapter {
 
   /** Per-user last DM-open reconcile (60 s TTL — §1 open-parity). */
   #reconciledAt = new Map<string, number>();
+
+  /**
+   * Encrypted-group includes running now, one per (group, member): see
+   * `claimIncludeFlight` (groupInclude.ts) and `addGroupMemberEncrypted`.
+   */
+  #includeInFlight = new Set<string>();
 
   /** Reactive native status (drives the settings consent flow) */
   readonly status = new ReactiveMap<
@@ -3472,6 +3508,354 @@ export class E2EEBridge implements E2EEAdapter {
       if (native.type !== "group_not_established") {
         console.error("[e2ee] group reconcile failed", error);
       }
+    }
+  }
+
+  // ================================================================
+  // Encrypted-group include (chat windows, plan D6): add a friend to an
+  // ENCRYPTED group and include them in its encryption. The caller runs
+  // the pinned order: preflight, server add, wait until the LOCAL member
+  // list shows them, then addGroupMemberEncrypted. The pure decisions
+  // (caps, bundle and receipt checks, terminal errors) are in
+  // groupInclude.ts.
+  // ================================================================
+
+  /**
+   * Whether `userId` can be included in `channel`'s encryption, decided
+   * BEFORE anyone is added server-side. Never throws: every failure is a
+   * refusal, and a refusal means nobody may be added. The bundle is fetched
+   * LAST because the fetch consumes the user's one-time keys, so a Retry
+   * calls this again for a fresh one.
+   */
+  async groupIncludePreflight(
+    channel: Channel,
+    userId: string,
+  ): Promise<GroupIncludePreflight> {
+    const refuse = (
+      reason: Extract<GroupIncludePreflight, { kind: "refuse" }>["reason"],
+    ): GroupIncludePreflight => ({ kind: "refuse", reason });
+
+    try {
+      await this.#ensureBootStatus();
+    } catch {
+      return refuse("not_ready");
+    }
+
+    try {
+      // The modal's selfReady test: enabled + published with a device id,
+      // on a store and device that belong to this account.
+      const status = this.status.get("state");
+      if (
+        !status?.enabled ||
+        !status.published ||
+        !status.device_id ||
+        this.storeOwnedByAnotherAccount.has("state") ||
+        this.deviceOwnedElsewhere.has("state")
+      ) {
+        return refuse("not_ready");
+      }
+
+      const selfId = this.#client.user?.id;
+      if (!selfId || !userId || userId === selfId) return refuse("unavailable");
+      if (channel.type !== "Group") return refuse("not_encrypted");
+
+      // A thrown read is a native/IPC failure, not a verdict, so it refuses
+      // as unavailable. The one exception is group_not_established: no
+      // group row on this device means the group is not encrypted here.
+      let state: GroupState;
+      try {
+        state = await this.groupState(channel.id);
+      } catch (error) {
+        return refuse(
+          (error as NativeError | null)?.type === "group_not_established"
+            ? "not_encrypted"
+            : "unavailable",
+        );
+      }
+      if (!groupStateIncludable(state)) return refuse("not_encrypted");
+
+      // The exact native verdict, not the cached one: "blocked" (a changed
+      // identity) and "peer_downgraded" refuse as well. Native
+      // add_group_member has no peer-downgrade guard of its own.
+      let mode: Awaited<ReturnType<E2EEBridge["sendModeNowFor"]>>;
+      try {
+        mode = await this.sendModeNowFor(channel);
+      } catch {
+        return refuse("unavailable");
+      }
+      if (mode !== "encrypt") return refuse("not_encrypted");
+
+      if (includeOverMemberCap(state.members, userId)) {
+        return refuse("too_many");
+      }
+
+      // Per-member native state: the new member's pinned identity, then the
+      // active devices of every counted member for the envelope estimate.
+      let memberDevices: number[];
+      try {
+        const target = await this.conversationState(userId);
+        if (hasIdentityChanged(target.devices)) return refuse("not_encrypted");
+        memberDevices = await Promise.all(
+          includeCountedMembers(state.members, userId).map(async (id) =>
+            activeDeviceCount((await this.conversationState(id)).devices),
+          ),
+        );
+      } catch {
+        return refuse("unavailable");
+      }
+      // Refuse before the fetch when the existing members alone are over:
+      // no one-time keys are spent on an include that cannot fit.
+      if (includeOverEnvelopeCap(includeEnvelopeEstimate(memberDevices, 0))) {
+        return refuse("too_many");
+      }
+
+      let fetched: unknown;
+      try {
+        fetched = await this.#api<unknown>("GET", `/e2ee/keys/${userId}`);
+      } catch (error) {
+        return refuse(classifyBundleFetchError(error));
+      }
+      const verdict = classifyIncludeBundle(fetched, userId);
+      if (verdict !== "ok") return refuse(verdict);
+      const bundle = fetched as KeyBundle;
+
+      if (
+        includeOverEnvelopeCap(
+          includeEnvelopeEstimate(memberDevices, bundle.devices.length),
+        )
+      ) {
+        return refuse("too_many");
+      }
+      return { kind: "ok", bundle };
+    } catch (error) {
+      console.error("[e2ee] group include preflight failed", errorName(error));
+      return refuse("unavailable");
+    }
+  }
+
+  /**
+   * Include `userId` in `channel`'s encryption (steps 3b and 4 of the
+   * pinned order). They must already be a member server-side AND in the
+   * local member list. `bundle` comes from `groupIncludePreflight`, fresh
+   * for every attempt.
+   *
+   * The native shell confirms the include in an OS dialog the webview
+   * cannot draw or answer. Resolves `"ok"` once the include was delivered,
+   * `"declined"` when the user pressed Cancel there and `"busy"` when
+   * another growth dialog is open or this group's prompt is locked after a
+   * decline: in both of those nothing was pinned, marked or sent (a first
+   * include leaves the member announced) and a Retry prompts again. Every
+   * other failure throws;
+   * `isTerminalIncludeError` (groupInclude.ts) tells the failures a Retry
+   * cannot fix, and the wrapped native errors keep their `type` for it.
+   */
+  async addGroupMemberEncrypted(
+    channel: Channel,
+    userId: string,
+    bundle: KeyBundle,
+  ): Promise<GroupGrowthOutcome> {
+    if (channel.type !== "Group") throw new Error("not a group");
+    if (!channel.recipientIds.has(userId)) {
+      throw new Error("not in the local member list yet");
+    }
+    const conversationId = channel.id;
+    const selfId = this.#client.user!.id;
+    if (userId === selfId) throw new Error("cannot include self");
+
+    // One include per (group, member) at a time. A second one (a modal
+    // re-created mid-commit, a repeated confirm) would reconcile and add
+    // alongside the first: two group_enable fan-outs and two markers, from
+    // rosters read at different moments. It is refused here, before
+    // anything is awaited, with an error that is not terminal; the first
+    // one's outcome stands. Released on every path.
+    const release = claimIncludeFlight(
+      this.#includeInFlight,
+      conversationId,
+      userId,
+    );
+    try {
+      // Native sends THIS device's pinned roster, which refreshes only on
+      // group open and may be days old: a member removed since would be
+      // re-added on every device. The reconcile that guards the add runs in
+      // the loop below, right before it. This early one fails fast before
+      // the self bundle prefetch spends one of our one-time keys, and lets
+      // the first send-mode check judge the live roster (a stale member's
+      // changed identity would otherwise read as "blocked"). It is
+      // idempotent: a repeat adds no markers.
+      await this.#invoke("e2ee_group_reconcile", {
+        conversationId,
+        displayed: [...channel.recipientIds.values()],
+        selfUserId: selfId,
+      });
+
+      // Bundles for the rest of the audience go in BEFORE the attempt loop:
+      // a needs_bundle after the user confirmed the native dialog means a
+      // re-invoke, which can prompt again. The audience is the roster the
+      // add sends, this device's Active members after the reconcile above;
+      // the new member's bundle is the caller's. Self is added by the
+      // preflight (own devices pin only from a self bundle). A failed read
+      // leaves the members to the needs_bundle loop below.
+      let audience: string[] = [];
+      try {
+        audience = (await this.groupState(conversationId)).members
+          .filter((m) => m.status === "active" && m.user_id !== userId)
+          .map((m) => m.user_id);
+      } catch (error) {
+        console.warn(
+          "[e2ee] include preflight could not read the roster",
+          errorName(error),
+        );
+      }
+      const preflight = await this.groupGrowthBundlePreflight(
+        channel,
+        audience,
+      );
+      const bundles: KeyBundle[] = [bundle, ...preflight];
+      const fetched = new Set<string>([
+        userId,
+        ...preflight.map((b) => b.user_id),
+      ]);
+      const selfPrefetched = preflight.some((b) => b.user_id === selfId);
+
+      let result: EncryptResult | undefined;
+      for (
+        let attempt = 0;
+        attempt < channel.recipientIds.size + 2;
+        attempt++
+      ) {
+        // The exact native verdict again, right before the invoke: a
+        // downgrade or identity change since the preflight stops here.
+        if ((await this.sendModeNowFor(channel)) !== "encrypt") {
+          throw new E2EESendError(
+            "This group's encryption state changed. Nobody was included.",
+            "blocked",
+          );
+        }
+        // The awaits above (bundle fetches, the send-mode check) leave room
+        // for a member to be removed, and the add sends the full roster that
+        // receivers replace theirs with. Re-check and reconcile against the
+        // live list NOW, with nothing awaited between this and the add, so
+        // the roster it sends is the one on screen. Errors throw. Reconcile
+        // only removes or announces, so the verdict above cannot worsen.
+        // The add itself waits on the native confirm dialog, and native
+        // takes no displayed list (plan D7): a member removed while that
+        // dialog is open is still in the roster it sends if the user
+        // confirms, until the next reconcile. That gap is the accepted one.
+        if (!channel.recipientIds.has(userId)) {
+          throw new Error("no longer in the local member list");
+        }
+        const displayed = [...channel.recipientIds.values()];
+        const displayNames = groupGrowthDisplayNames(displayed, (id) =>
+          this.#client.users.get(id),
+        );
+        await this.#invoke("e2ee_group_reconcile", {
+          conversationId,
+          displayed,
+          selfUserId: selfId,
+        });
+        try {
+          result = await this.#invoke<EncryptResult>("e2ee_add_group_member", {
+            conversationId,
+            userId,
+            selfUserId: selfId,
+            bundles,
+            displayNames,
+          });
+          break;
+        } catch (raw) {
+          // Cancel in the native dialog, or another growth dialog holds it
+          // (or this group's prompt is locked after a decline). Nothing was
+          // pinned, marked or sent: a silent outcome, not an error.
+          const outcome = groupGrowthOutcomeOf(raw);
+          if (outcome) return outcome;
+          const native = raw as NativeError;
+          if (native.type === "needs_bundle" && native.user_id) {
+            if (fetched.has(native.user_id)) throw raw;
+            fetched.add(native.user_id);
+            bundles.push(
+              await this.#api<KeyBundle>("GET", `/e2ee/keys/${native.user_id}`),
+            );
+            continue;
+          }
+          if (native.type === "fan_out_too_large") {
+            throw Object.assign(
+              new E2EESendError(
+                "This encrypted group is too large to include another member (too many members or devices).",
+                "native",
+              ),
+              { type: native.type },
+            );
+          }
+          if (native.type === "peer_identity_changed") {
+            await this.#refreshGroupMode(conversationId);
+            throw Object.assign(
+              new E2EESendError(
+                "A security identity changed. Review the warning before including anyone.",
+                "blocked",
+              ),
+              { type: native.type },
+            );
+          }
+          if (native.type === "no_usable_devices") {
+            throw Object.assign(
+              new E2EESendError(
+                "No trusted device of this person can receive encrypted messages.",
+                "no_devices",
+              ),
+              { type: native.type },
+            );
+          }
+          throw raw;
+        }
+      }
+      if (!result) {
+        throw new E2EESendError(
+          "Could not gather encryption keys for every group member.",
+          "native",
+        );
+      }
+      // Pins are durable in the native store: stop prefetching (DM parity)
+      if (selfPrefetched) this.#selfDevicesUnpinned = false;
+
+      const response = await this.#api<{ receipts?: unknown } | undefined>(
+        "POST",
+        "/e2ee/messages",
+        result.payload,
+      );
+      const receipts = response?.receipts;
+
+      // Delivered. A throw from here on would offer a Retry that sends a
+      // second group_enable and a duplicate marker, so bookkeeping failures
+      // are logged by name only, as the group send path settles them.
+      const log = (step: string, error: unknown) =>
+        console.warn(
+          `[e2ee] include post-delivery ${step} failed:`,
+          errorName(error),
+        );
+      try {
+        await this.#invoke<string[]>("e2ee_handle_receipts", { receipts });
+      } catch (error) {
+        log("receipts", error);
+      }
+      await this.#refreshGroupMode(conversationId);
+      try {
+        await this.#syncRecentConversation(conversationId, channel.id);
+      } catch (error) {
+        log("sync", error);
+      }
+
+      // The one exception: none of the new member's devices took the
+      // envelope, so they are active in our roster but never received the
+      // group. Only a Retry can include them.
+      if (newMemberUndelivered(receipts, userId)) {
+        throw new E2EESendError(
+          "The encryption update reached none of the new member's devices.",
+          "delivery_failed",
+        );
+      }
+      return "ok";
+    } finally {
+      release();
     }
   }
 

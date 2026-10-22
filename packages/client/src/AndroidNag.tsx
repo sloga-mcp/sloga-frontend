@@ -12,13 +12,19 @@ import AndroidPromo from "../scripts/assets_fallback/inapp-promotion/web/android
 const ANDROID_NAG_DISMISS_KEY = "android-nag-dismissed";
 
 /**
- * Where the Android app comes from.
- *
- * Sloga is not on Google Play — the APK is self-hosted. This is the stable
- * redirect rather than a version-pinned file, so releases do not strand old
- * clients on a dead link, and it is counted server-side.
+ * Sloga's Google Play listing. Chrome on Android hands this URL to the Play
+ * Store app, so people never see the "file might be harmful" download prompt.
  */
-const ANDROID_DOWNLOAD_URL = "https://sloga.gg/dl/android";
+const PLAY_STORE_URL =
+  "https://play.google.com/store/apps/details?id=gg.sloga.app";
+
+/**
+ * Self-hosted APKs, for phones without Google Play. These are the stable
+ * redirects rather than version-pinned files, so releases do not strand old
+ * clients on a dead link, and they are counted server-side.
+ */
+const APK_DOWNLOAD_URL = "https://sloga.gg/dl/android";
+const GOOGLE_FREE_APK_DOWNLOAD_URL = "https://sloga.gg/dl/android-google-free";
 
 /**
  * Whether the current device is running Android
@@ -62,7 +68,12 @@ export function AndroidNag() {
     <Show when={show()}>
       <Base>
         <Hero>
-          <img src={AndroidPromo} alt="Sloga on Android" />
+          <img
+            src={AndroidPromo}
+            alt="Sloga on Android"
+            width={450}
+            height={512}
+          />
 
           <Heading>
             <Text class="headline" size="large">
@@ -90,11 +101,34 @@ export function AndroidNag() {
           <Button
             variant="filled"
             onPress={() => {
-              window.open(ANDROID_DOWNLOAD_URL, "_blank", "noopener,noreferrer");
+              window.open(PLAY_STORE_URL, "_blank", "noopener,noreferrer");
             }}
           >
-            <Trans>Get the Android app</Trans>
+            <Trans>Get it on Google Play</Trans>
           </Button>
+
+          <AltInstall>
+            <span>
+              <Trans>Other ways to install:</Trans>
+            </span>
+            <span>
+              <a
+                href={APK_DOWNLOAD_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <Trans>Download APK</Trans>
+              </a>
+              {" · "}
+              <a
+                href={GOOGLE_FREE_APK_DOWNLOAD_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <Trans>Google-free APK</Trans>
+              </a>
+            </span>
+          </AltInstall>
 
           <Button variant="text" onPress={() => setDismissedThisSession(true)}>
             <Trans>Continue in browser</Trans>
@@ -150,9 +184,13 @@ const Hero = styled("div", {
     justifyContent: "center",
     gap: "var(--gap-md)",
 
+    // The width/height attributes reserve the box before the image loads;
+    // these caps keep it from crowding out the copy on short screens.
     "& img": {
-      width: "min(60vw, 240px)",
+      width: "auto",
       height: "auto",
+      maxWidth: "min(60vw, 240px)",
+      maxHeight: "34vh",
       marginBottom: "var(--gap-md)",
     },
   },
@@ -197,6 +235,28 @@ const Footer = styled("div", {
     maxWidth: "360px",
     gap: "var(--gap-md)",
     paddingTop: "var(--gap-lg)",
+  },
+});
+
+/**
+ * Direct APK links for phones without Google Play, kept quieter than the
+ * Play button
+ */
+const AltInstall = styled("div", {
+  base: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    gap: "var(--gap-xs)",
+
+    fontSize: "0.875rem",
+    color: "var(--md-sys-color-on-surface-variant)",
+
+    "& a": {
+      color: "var(--md-sys-color-primary)",
+      textDecoration: "underline",
+      textUnderlineOffset: "2px",
+    },
   },
 });
 
