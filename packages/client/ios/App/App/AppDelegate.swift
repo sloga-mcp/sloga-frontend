@@ -1,10 +1,24 @@
 import UIKit
 import Capacitor
+import SlogaE2ee
 
 @UIApplicationMain
 class AppDelegate: UIResponder, UIApplicationDelegate {
 
     var window: UIWindow?
+
+    override init() {
+        // Main.storyboard names SlogaBridgeViewController only by string, and
+        // UIKit loads it before any launch callback runs. The class subclasses
+        // CAPBridgeViewController from Capacitor's prebuilt (library-evolution)
+        // binary, so the Objective-C runtime does not know it until Swift first
+        // initializes its metadata; until then the storyboard finds no such
+        // class, falls back to a plain view controller and the app launches
+        // blank. Handing the class to Objective-C here, when UIKit creates the
+        // app delegate, registers it in time (and cannot be optimized away).
+        _ = NSStringFromClass(SlogaBridgeViewController.self)
+        super.init()
+    }
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         // Override point for customization after application launch.

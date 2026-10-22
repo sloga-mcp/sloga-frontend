@@ -4,5 +4,9 @@
 <dict>
 	<key>aps-environment</key>
 	<string>development</string>
+	<key>keychain-access-groups</key>
+	<array>
+		<string>M6UUDLK2XQ.gg.sloga.app.e2ee</string>
+	</array>
 </dict>
 </plist>
