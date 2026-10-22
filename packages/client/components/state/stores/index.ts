@@ -7,6 +7,7 @@ import { TypeDraft } from "./Draft";
 import { TypeExperiments } from "./Experiments";
 import { TypeFriendGroups } from "./FriendGroups";
 import { TypeFriends } from "./Friends";
+import { TypeHomeLayout } from "./HomeLayout";
 import { TypeKeybinds } from "./Keybinds";
 import { TypeLayout } from "./Layout";
 import { TypeLinkSafety } from "./LinkSafety";
@@ -26,6 +27,7 @@ export type Store = {
   experiments: TypeExperiments;
   friends: TypeFriends;
   "friend-groups": TypeFriendGroups;
+  "home-layout": TypeHomeLayout;
   keybinds: TypeKeybinds;
   layout: TypeLayout;
   linkSafety: TypeLinkSafety;

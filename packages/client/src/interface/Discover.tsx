@@ -20,46 +20,16 @@ import {
 import MdExplore from "@material-design-icons/svg/filled/explore.svg?component-solid";
 
 import { HeaderIcon } from "./common/CommonHeader";
+import {
+  MAX_QUERY_LENGTH,
+  fetchDiscoverPage as fetchPage,
+} from "./discoverApi";
 
 /**
  * Debounce applied to the search box before a request is sent, so a
  * fast typist doesn't burn through the public discover ratelimit bucket.
  */
 const SEARCH_DEBOUNCE_MS = 300;
-
-/**
- * Longest query the API accepts (`MAX_QUERY_LENGTH` in servers_list.rs);
- * longer strings are rejected with a 400, so clamp before sending.
- */
-const MAX_QUERY_LENGTH = 64;
-
-/** One page of the public directory, as served by `GET /discover/servers` */
-interface DiscoverPage {
-  servers: DiscoverableServerData[];
-  total?: number;
-}
-
-/**
- * Fetch one page of the public directory. Raw fetch, unauthenticated: the
- * endpoint is public and the typed api package lags behind the fork's
- * routes (same reasoning as `DiscoverableServer.fetch`).
- */
-async function fetchPage(
-  baseURL: string,
-  query: string,
-  skip: number,
-): Promise<DiscoverPage> {
-  const params = new URLSearchParams();
-  if (query) params.set("query", query.slice(0, MAX_QUERY_LENGTH));
-  if (skip) params.set("skip", String(skip));
-  const qs = params.toString();
-
-  const response = await fetch(
-    `${baseURL}/discover/servers${qs ? `?${qs}` : ""}`,
-  );
-  if (!response.ok) throw await response.json();
-  return (await response.json()) as DiscoverPage;
-}
 
 /**
  * Base layout of the discover page

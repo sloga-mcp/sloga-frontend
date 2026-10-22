@@ -1,11 +1,11 @@
 import {
+  Show,
   createEffect,
   createMemo,
   createResource,
   createSignal,
   onCleanup,
   onMount,
-  Show,
 } from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
@@ -26,13 +26,24 @@ import MdHome from "@material-design-icons/svg/filled/home.svg?component-solid";
 import MdReport from "@material-design-icons/svg/filled/report.svg?component-solid";
 import MdTravelExplore from "@material-design-icons/svg/filled/travel_explore.svg?component-solid";
 
+import type { HomeBlockId } from "@revolt/state/stores/homeLayoutRules";
+import { Symbol } from "@revolt/ui/components/utils/Symbol";
+
 import { HeaderIcon } from "./common/CommonHeader";
-import { CipherBanner } from "./home/CipherBanner";
+import { PanelHead, PanelTitle } from "./home/cardParts";
+import { CipherBanner, createCipherBannerState } from "./home/CipherBanner";
+import { CustomizeHome } from "./home/CustomizeHome";
+import { DiscoverPicks, createDiscoverPicksState } from "./home/DiscoverPicks";
+import { FriendsOnline } from "./home/FriendsOnline";
+import { HappeningNow } from "./home/HappeningNow";
+import { type HomeBlockDef, HomeGrid } from "./home/HomeGrid";
 import { isNewUser } from "./home/homeHub";
-import { JumpBackIn } from "./home/JumpBackIn";
-import { StreamerRow } from "./home/StreamerRow";
+import { ImportCard, importCardAction } from "./home/ImportCard";
+import { UnreadBlock, UpcomingBlock } from "./home/JumpBackIn";
+import { StreamerRow, createStreamerRowState } from "./home/StreamerRow";
+import { UnreadMentions } from "./home/UnreadMentions";
 import { WelcomeTiles } from "./home/WelcomeTiles";
-import { WhatsNewCard } from "./home/WhatsNewCard";
+import { WhatsNewCard, createWhatsNewState } from "./home/WhatsNewCard";
 
 // Satellite colors clockwise from the top, matching the brand mark.
 const DOT_COLORS = [
@@ -242,8 +253,6 @@ const content = cva({
 const Sections = styled("div", {
   base: {
     width: "100%",
-    maxWidth: "780px",
-    marginInline: "auto",
     display: "flex",
     flexDirection: "column",
     gap: "20px",
@@ -254,27 +263,70 @@ const Sections = styled("div", {
   },
 });
 
+/** Pushes the Customize button to the right end of the header */
+const HeaderSpacer = styled("div", {
+  base: {
+    flex: 1,
+  },
+});
+
+const CustomizeButton = styled("button", {
+  base: {
+    minHeight: "36px",
+    padding: "0 12px",
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "6px",
+    border: 0,
+    borderRadius: "var(--borderRadius-full)",
+    background: "transparent",
+    font: "inherit",
+    fontSize: "13px",
+    fontWeight: 600,
+    color: "var(--md-sys-color-on-surface-variant)",
+    cursor: "pointer",
+
+    "&:hover, &[aria-pressed=true]": {
+      background: "var(--md-sys-color-surface-container-high)",
+      color: "var(--md-sys-color-on-surface)",
+    },
+    "&:focus-visible": {
+      outline: "2px solid var(--md-sys-color-primary)",
+      outlineOffset: "2px",
+    },
+  },
+});
+
 /**
  * Staff-only moderation queues
  */
 const Staff = styled("section", {
   base: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+    display: "flex",
+    flexDirection: "column",
     gap: "8px",
-    padding: "8px",
+    padding: "12px 8px 8px",
     borderRadius: "var(--borderRadius-lg)",
     background: "var(--md-sys-color-surface-variant)",
     color: "var(--md-sys-color-on-surface-variant)",
   },
 });
 
+const StaffGrid = styled("div", {
+  base: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+    gap: "8px",
+  },
+});
+
 /**
- * Home page: welcome tiles for new accounts, the Cipher banner, this
- * release's highlights, Founding Streamers, "Jump back in" (unreads, friends
- * in voice, upcoming events), and the moderation queues for
- * staff. Everything else that used to sit here (settings, discover, support)
- * already has its own button in the app.
+ * Home page: cards the viewer arranges in two columns and switches on and
+ * off (welcome tiles for new accounts, the Cipher banner, this release's
+ * highlights, what is happening in voice, unreads, mentions, upcoming events,
+ * suggested servers, friends online, Founding Streamers, importing, and the
+ * moderation queues for staff). The arrangement is the synced `home-layout`
+ * store; each card decides for itself whether it has anything to show.
  */
 export function HomePage() {
   const { openModal, isOpen } = useModals();
@@ -361,6 +413,84 @@ export function HomePage() {
     );
   });
 
+  // Card state that outlives the card: moving a card rebuilds it, and these
+  // hold fetches and dismissals that must not restart when that happens
+  const cipher = createCipherBannerState();
+  const whatsNew = createWhatsNewState();
+  const streamers = createStreamerRowState();
+  const discover = createDiscoverPicksState();
+
+  const [customizing, setCustomizing] = createSignal(false);
+
+  const always = () => true;
+
+  const blocks: Record<HomeBlockId, HomeBlockDef> = {
+    welcome: {
+      title: () => t`Welcome`,
+      available: newUser,
+      render: () => <WelcomeTiles />,
+    },
+    cipher: {
+      title: () => t`Cipher`,
+      available: cipher.visible,
+      inset: 48,
+      render: () => <CipherBanner state={cipher} />,
+    },
+    happening: {
+      title: () => t`Happening now`,
+      available: always,
+      render: () => <HappeningNow />,
+    },
+    unread: {
+      title: () => t`Jump back in`,
+      available: always,
+      render: () => <UnreadBlock />,
+    },
+    mentions: {
+      title: () => t`Mentions`,
+      available: always,
+      render: () => <UnreadMentions />,
+    },
+    upcoming: {
+      title: () => t`Upcoming`,
+      available: always,
+      render: () => <UpcomingBlock />,
+    },
+    discover: {
+      title: () => t`Servers you might like`,
+      available: () => discover.picks().length > 0,
+      render: () => <DiscoverPicks state={discover} />,
+    },
+    staff: {
+      title: () => t`Moderation`,
+      available: isPrivileged,
+      render: () => staffQueues(),
+    },
+    friends: {
+      title: () => t`Friends online`,
+      available: always,
+      render: () => <FriendsOnline />,
+    },
+    streamers: {
+      title: () => t`Founding Streamers`,
+      available: () => streamers.tiles().length > 0,
+      // clear of the row's own "See all"
+      inset: 76,
+      render: () => <StreamerRow state={streamers} />,
+    },
+    whatsNew: {
+      title: () => t`What's New`,
+      available: whatsNew.visible,
+      inset: 48,
+      render: () => <WhatsNewCard state={whatsNew} />,
+    },
+    import: {
+      title: () => t`Bring your community over`,
+      available: () => importCardAction() !== "none",
+      render: () => <ImportCard />,
+    },
+  };
+
   return (
     <Base>
       <Header placement="primary">
@@ -368,68 +498,88 @@ export function HomePage() {
           <MdHome {...iconSize(22)} />
         </HeaderIcon>
         <Trans>Home</Trans>
+        <HeaderSpacer />
+        <CustomizeButton
+          type="button"
+          aria-pressed={customizing()}
+          onClick={() => setCustomizing((on) => !on)}
+        >
+          <Symbol size={18}>dashboard_customize</Symbol>
+          <Trans>Customize</Trans>
+        </CustomizeButton>
       </Header>
       <div use:scrollable={{ class: content() }}>
         <Sections>
-          <Show when={newUser()}>
-            <WelcomeTiles />
+          <Show when={customizing()}>
+            <CustomizeHome
+              blocks={blocks}
+              onDone={() => setCustomizing(false)}
+            />
           </Show>
-          <CipherBanner />
-          <WhatsNewCard />
-          <StreamerRow />
-          <JumpBackIn />
-          <Show when={isPrivileged()}>
-            <Staff aria-label={t`Moderation`}>
-              <CategoryButton
-                onClick={() =>
-                  openModal({ type: "report_queue", client: client()! })
-                }
-                description={
-                  <Trans>Review and resolve open content reports.</Trans>
-                }
-                icon={<MdReport />}
-                action={
-                  <Show when={queues()?.reports}>
-                    {(count) => (
-                      <QueueBadge
-                        aria-label={t`${count()} reports awaiting review`}
-                      >
-                        {count()}
-                      </QueueBadge>
-                    )}
-                  </Show>
-                }
-              >
-                <Trans>Report queue</Trans>
-              </CategoryButton>
-              <CategoryButton
-                onClick={() =>
-                  openModal({ type: "discovery_queue", client: client()! })
-                }
-                description={
-                  <Trans>
-                    Approve or reject servers asking to be publicly listed.
-                  </Trans>
-                }
-                icon={<MdTravelExplore />}
-                action={
-                  <Show when={queues()?.listings}>
-                    {(count) => (
-                      <QueueBadge
-                        aria-label={t`${count()} listing requests awaiting review`}
-                      >
-                        {count()}
-                      </QueueBadge>
-                    )}
-                  </Show>
-                }
-              >
-                <Trans>Listing requests</Trans>
-              </CategoryButton>
-            </Staff>
-          </Show>
+          <HomeGrid blocks={blocks} customizing={customizing()} />
         </Sections>
       </div>
     </Base>
   );
+
+  /** Staff-only moderation queues, as a card */
+  function staffQueues() {
+    return (
+      <Staff aria-labelledby="home-staff-title">
+        <PanelHead>
+          <PanelTitle id="home-staff-title">
+            <Trans>Moderation</Trans>
+          </PanelTitle>
+        </PanelHead>
+        <StaffGrid>
+          <CategoryButton
+            onClick={() =>
+              openModal({ type: "report_queue", client: client()! })
+            }
+            description={
+              <Trans>Review and resolve open content reports.</Trans>
+            }
+            icon={<MdReport />}
+            action={
+              <Show when={queues()?.reports}>
+                {(count) => (
+                  <QueueBadge
+                    aria-label={t`${count()} reports awaiting review`}
+                  >
+                    {count()}
+                  </QueueBadge>
+                )}
+              </Show>
+            }
+          >
+            <Trans>Report queue</Trans>
+          </CategoryButton>
+          <CategoryButton
+            onClick={() =>
+              openModal({ type: "discovery_queue", client: client()! })
+            }
+            description={
+              <Trans>
+                Approve or reject servers asking to be publicly listed.
+              </Trans>
+            }
+            icon={<MdTravelExplore />}
+            action={
+              <Show when={queues()?.listings}>
+                {(count) => (
+                  <QueueBadge
+                    aria-label={t`${count()} listing requests awaiting review`}
+                  >
+                    {count()}
+                  </QueueBadge>
+                )}
+              </Show>
+            }
+          >
+            <Trans>Listing requests</Trans>
+          </CategoryButton>
+        </StaffGrid>
+      </Staff>
+    );
+  }
 }

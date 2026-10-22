@@ -9,6 +9,7 @@ import { State } from "..";
 import { AbstractStore } from ".";
 import { TypeFriendGroups } from "./FriendGroups";
 import { TypeFriends } from "./Friends";
+import { TypeHomeLayout } from "./HomeLayout";
 import { TypeNotificationOptions } from "./NotificationOptions";
 import { TypeOrdering } from "./Ordering";
 import { TypeReleaseNotes } from "./ReleaseNotes";
@@ -20,6 +21,7 @@ type SynchronisedStores =
   | "release-notes"
   | "friends"
   | "friend-groups"
+  | "home-layout"
   | "theme";
 
 const STORE_KEYS: SynchronisedStores[] = [
@@ -28,6 +30,7 @@ const STORE_KEYS: SynchronisedStores[] = [
   "release-notes",
   "friends",
   "friend-groups",
+  "home-layout",
   "theme",
 ];
 
@@ -206,6 +209,7 @@ export class Sync extends AbstractStore<"sync", TypeSynchronisation> {
         "release-notes": 0,
         friends: 0,
         "friend-groups": 0,
+        "home-layout": 0,
         theme: 0,
       },
     };
@@ -461,6 +465,7 @@ export class Sync extends AbstractStore<"sync", TypeSynchronisation> {
           TypeReleaseNotes &
           TypeFriends &
           TypeFriendGroups &
+          TypeHomeLayout &
           TypeTheme,
       ),
     );
