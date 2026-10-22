@@ -223,13 +223,13 @@ export function UnreadBlock() {
 }
 
 /**
- * Upcoming events across the user's servers: the next few in the next two
- * weeks, one per series. With none, offers to schedule one.
+ * The Upcoming card's events and their fetch. Kept apart from the card so
+ * moving the card (which rebuilds it) does not start the fetch again.
+ * @param enabled Whether the card is switched on; nothing is fetched while off
  */
-export function UpcomingBlock() {
+export function createUpcomingState(enabled: () => boolean) {
   const client = useClient();
   const state = useState();
-  const navigate = useNavigate();
 
   const [now, setNow] = createSignal(Date.now());
   onMount(() => {
@@ -239,11 +239,12 @@ export function UpcomingBlock() {
 
   /**
    * Every server the user is in, sorted, so joining or leaving any of them
-   * asks again; undefined (nothing to ask) when there are none
+   * asks again; undefined (nothing to ask) when there are none or the card
+   * is switched off
    */
   const eventServers = createMemo(() => {
     const c = client();
-    if (!c) return undefined;
+    if (!c || !enabled()) return undefined;
     const ids = state.ordering
       .orderedServers(c)
       .map((server) => server.id)
@@ -294,6 +295,20 @@ export function UpcomingBlock() {
     );
   });
 
+  return { upcoming, loading: () => calendars.loading };
+}
+
+/**
+ * Upcoming events across the user's servers: the next few in the next two
+ * weeks, one per series. With none, offers to schedule one.
+ */
+export function UpcomingBlock(props: {
+  state: ReturnType<typeof createUpcomingState>;
+}) {
+  const client = useClient();
+  const state = useState();
+  const navigate = useNavigate();
+
   /** Where "Schedule an event" goes: the first server on the rail */
   const scheduleServer = () => {
     const c = client();
@@ -309,9 +324,9 @@ export function UpcomingBlock() {
         </PanelTitle>
       </PanelHead>
       <Show
-        when={upcoming().length > 0}
+        when={props.state.upcoming().length > 0}
         fallback={
-          <Show when={!calendars.loading}>
+          <Show when={!props.state.loading()}>
             <Empty>
               <span>
                 <Trans>No events in the next two weeks.</Trans>
@@ -332,7 +347,7 @@ export function UpcomingBlock() {
         }
       >
         <List>
-          <For each={upcoming()}>
+          <For each={props.state.upcoming()}>
             {(entry) => (
               <li>
                 <RowLink

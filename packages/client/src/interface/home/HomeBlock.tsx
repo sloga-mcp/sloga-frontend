@@ -5,6 +5,7 @@ import { styled } from "styled-system/jsx";
 
 import { ContextMenu, ContextMenuButton } from "@revolt/app/menus/ContextMenu";
 import type {
+  HomeBlockId,
   HomeColumn,
   HomeMove,
 } from "@revolt/state/stores/homeLayoutRules";
@@ -104,12 +105,15 @@ const Grip = styled("span", {
 });
 
 export function HomeBlock(props: {
+  /** The card's id, so the grid can find its menu button again after a move */
+  id: HomeBlockId;
   /** The card's name, for its menu and screen readers */
   title: string;
   column: HomeColumn;
   canMoveUp: boolean;
   canMoveDown: boolean;
-  onMove: (move: HomeMove) => void;
+  /** A move from the menu; `fromKeyboard` when the menu was opened with a key */
+  onMove: (move: HomeMove, fromKeyboard: boolean) => void;
   onHide: () => void;
   /** Distance of the controls from the right edge; cards with their own X need more */
   inset?: number;
@@ -130,6 +134,13 @@ export function HomeBlock(props: {
     return t`Options for ${name}`;
   };
 
+  // Whether the menu was opened from the keyboard (a key press on a button
+  // fires a click with no pointer detail); only then does a move put focus
+  // back on this button, so a mouse move neither scrolls nor pins the pill
+  let openedFromKeyboard = false;
+  const move = (direction: HomeMove) =>
+    props.onMove(direction, openedFromKeyboard);
+
   return (
     <Frame data-customizing={props.customizing ? "" : undefined}>
       {props.children}
@@ -148,21 +159,24 @@ export function HomeBlock(props: {
         </Show>
         <ControlButton
           type="button"
+          data-home-menu={props.id}
           aria-label={menuLabel()}
+          onClick={(event) => (openedFromKeyboard = event.detail === 0)}
+          onContextMenu={() => (openedFromKeyboard = false)}
           use:floating={{
             contextMenu: () => (
               <ContextMenu>
                 <Show when={props.canMoveUp}>
-                  <ContextMenuButton onClick={() => props.onMove("up")}>
+                  <ContextMenuButton onClick={() => move("up")}>
                     <Trans>Move up</Trans>
                   </ContextMenuButton>
                 </Show>
                 <Show when={props.canMoveDown}>
-                  <ContextMenuButton onClick={() => props.onMove("down")}>
+                  <ContextMenuButton onClick={() => move("down")}>
                     <Trans>Move down</Trans>
                   </ContextMenuButton>
                 </Show>
-                <ContextMenuButton onClick={() => props.onMove("other")}>
+                <ContextMenuButton onClick={() => move("other")}>
                   {props.column === "main" ? (
                     <Trans>Move to the side column</Trans>
                   ) : (

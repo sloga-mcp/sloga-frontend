@@ -1,9 +1,10 @@
 import { For, Show, createMemo } from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
-import type { Channel, User } from "stoat.js";
+import type { Channel } from "stoat.js";
 
 import { useClient } from "@revolt/client";
+import { useUserActions } from "@revolt/client/popoutBridge";
 import { useModals } from "@revolt/modal";
 import { useNavigate } from "@revolt/routing";
 import { useState } from "@revolt/state";
@@ -19,7 +20,6 @@ import {
 import MdChat from "@material-design-icons/svg/filled/chat.svg?component-solid";
 import MdPeople from "@material-design-icons/svg/filled/people.svg?component-solid";
 
-import { routeConversation } from "../../../components/chatWindows/openConversation";
 import { voiceChannelOf } from "../../../components/client/voicePresence";
 import { isChannelGatedForMember } from "../channels/memberGate";
 
@@ -49,6 +49,7 @@ export function FriendsOnline() {
   const { openModal } = useModals();
   const presence = usePresenceText();
   const { t } = useLingui();
+  const userActions = useUserActions();
 
   /** Whether a mature gate stands between the viewer and this channel */
   const gated = (channel: Channel) =>
@@ -97,13 +98,6 @@ export function FriendsOnline() {
       presence.label(entry.user.presence)
     );
   };
-
-  /** Open the DM with a friend the way the friends list does */
-  async function message(user: User) {
-    const dm = await user.openDM().catch(() => undefined);
-    if (!dm) return;
-    routeConversation(state, dm.id, () => navigate(`/channel/${dm.id}`));
-  }
 
   return (
     <Panel aria-labelledby="home-friends-title">
@@ -161,7 +155,9 @@ export function FriendsOnline() {
                     <RowButton
                       type="button"
                       aria-label={label()}
-                      onClick={() => void message(entry.user)}
+                      // the friends list's own path: a chat window or the
+                      // DM, and a snackbar when the DM cannot be opened
+                      onClick={() => void userActions.run("dm", entry.user.id)}
                     >
                       <MdChat {...iconSize(18)} />
                     </RowButton>

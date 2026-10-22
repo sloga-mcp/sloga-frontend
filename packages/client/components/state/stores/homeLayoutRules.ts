@@ -144,6 +144,34 @@ export function cleanHomeLayout(input: unknown): TypeHomeLayout {
 }
 
 /**
+ * Whether two layouts put the same cards in the same places. Writing a
+ * layout stamps a sync revision, so a change that ends where it started (a
+ * drop back in place, Reset on an untouched Home) must not count as one: its
+ * upload could beat a real edit made on another device.
+ * @param a Layout
+ * @param b Layout
+ */
+export function sameHomeLayout(a: TypeHomeLayout, b: TypeHomeLayout): boolean {
+  const same = (x: readonly HomeBlockId[], y: readonly HomeBlockId[]) =>
+    x.length === y.length && x.every((id, index) => id === y[index]);
+  return (
+    same(a.main, b.main) && same(a.side, b.side) && same(a.hidden, b.hidden)
+  );
+}
+
+/**
+ * Cards Customize lists, in default order: all of them except the ones this
+ * viewer could never see here (staff tools for everyone else, a feature this
+ * build has switched off, payment cards in store builds)
+ * @param offered Whether a card can ever show for this viewer
+ */
+export function customizableBlocks(
+  offered: (id: HomeBlockId) => boolean,
+): HomeBlockId[] {
+  return HOME_BLOCKS.filter((id) => offered(id));
+}
+
+/**
  * The column a card is in
  * @param layout Layout
  * @param id Card

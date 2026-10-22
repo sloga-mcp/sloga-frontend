@@ -215,15 +215,19 @@ function readHiddenAt(): number | undefined {
  * Whether the Cipher banner shows, the sale numbers it draws, and its
  * dismiss. Kept apart from the banner so Home can ask before it draws a
  * frame for it, and so moving the card does not fetch the counter again.
+ * @param enabled Whether the card is switched on; nothing is fetched while off
  */
-export function createCipherBannerState() {
+export function createCipherBannerState(enabled: () => boolean) {
   const client = useClient();
 
   const [hiddenAt, setHiddenAt] = createSignal(readHiddenAt());
 
   // Public counter, read once per visit to Home. A failure hides the banner.
   const [stats] = createResource(
-    () => (allowsDonationLinks() ? CONFIGURATION.DEFAULT_API_URL : undefined),
+    () =>
+      allowsDonationLinks() && enabled()
+        ? CONFIGURATION.DEFAULT_API_URL
+        : undefined,
     (apiBase) =>
       fetchCipherStats({
         fetch: (url, init) => fetch(url, init),

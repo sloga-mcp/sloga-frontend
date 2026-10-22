@@ -7,6 +7,7 @@ import { useState } from "@revolt/state";
 import {
   type HomeBlockId,
   type HomeColumn,
+  type HomeMove,
 } from "@revolt/state/stores/homeLayoutRules";
 import {
   Draggable,
@@ -21,6 +22,11 @@ export type HomeBlockDef = {
   title: () => string;
   /** Whether the card has anything to show right now */
   available: () => boolean;
+  /**
+   * Whether this viewer could ever see the card here; Customize leaves the
+   * others out. Every card is offered unless it says otherwise.
+   */
+  offered?: () => boolean;
   /** Distance of the move/hide controls from the right edge (cards with their own X) */
   inset?: number;
   render: () => JSX.Element;
@@ -133,6 +139,29 @@ export function HomeGrid(props: {
   const single = () =>
     !props.customizing && (mainIds().length === 0 || sideIds().length === 0);
 
+  let grid: HTMLDivElement | undefined;
+
+  /**
+   * Move a card from its menu. A move rebuilds the column, so the menu
+   * button keyboard focus was on is gone; when the menu was opened from the
+   * keyboard, put focus back on the moved card's own menu button (following
+   * the card), unless focus has already gone somewhere else. A mouse move
+   * leaves focus alone, so the page does not jump to the card.
+   */
+  function moveFromMenu(
+    id: HomeBlockId,
+    move: HomeMove,
+    fromKeyboard: boolean,
+  ) {
+    state.homeLayout.move(id, move, shownSet());
+    if (!fromKeyboard) return;
+    requestAnimationFrame(() => {
+      const active = document.activeElement;
+      if (active && active !== document.body) return;
+      grid?.querySelector<HTMLElement>(`[data-home-menu="${id}"]`)?.focus();
+    });
+  }
+
   function column(
     which: HomeColumn,
     ids: () => HomeBlockId[],
@@ -162,11 +191,14 @@ export function HomeGrid(props: {
 
             return (
               <HomeBlock
+                id={id}
                 title={def.title()}
                 column={which}
                 canMoveUp={index() > 0}
                 canMoveDown={index() < ids().length - 1}
-                onMove={(move) => state.homeLayout.move(id, move, shownSet())}
+                onMove={(move, fromKeyboard) =>
+                  moveFromMenu(id, move, fromKeyboard)
+                }
                 onHide={() => state.homeLayout.setHidden(id, true)}
                 inset={def.inset}
                 // a phone holds the card to pick it up; the grip only arms
@@ -191,7 +223,7 @@ export function HomeGrid(props: {
   }
 
   return (
-    <Columns data-single={single() ? "" : undefined}>
+    <Columns ref={grid} data-single={single() ? "" : undefined}>
       {column("main", mainIds, mainItems)}
       {column("side", sideIds, sideItems)}
     </Columns>

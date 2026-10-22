@@ -7,10 +7,12 @@ import {
   CIPHER_BANNER_SNOOZE_MS,
   collectEvents,
   eventLink,
+  fetchInOrder,
   HAPPENING_ROOM_LIMIT,
   HOME_DISCOVER_LIMIT,
   HOME_FRIEND_LIMIT,
   HOME_MENTION_LIMIT,
+  HOME_MENTION_SCAN_LIMIT,
   isNewUser,
   JUMP_EVENT_LIMIT,
   JUMP_UNREAD_LIMIT,
@@ -511,4 +513,107 @@ test("a calendar query without a usable event id opens nothing", () => {
   ]) {
     assert.equal(parseEventLink(bad), undefined, JSON.stringify(bad));
   }
+});
+
+/** A fetch that settles on the next tick, logging which indexes it was asked for */
+function slowFetch<T>(values: (T | undefined | Error)[], asked: number[]) {
+  return async (index: number) => {
+    asked.push(index);
+    await new Promise((resolve) => setTimeout(resolve, 1));
+    const value = values[index];
+    if (value instanceof Error) throw value;
+    return value;
+  };
+}
+
+test("fetchInOrder keeps list order and skips failures", async () => {
+  const asked: number[] = [];
+  const got = await fetchInOrder(
+    5,
+    slowFetch(["a", new Error("gone"), undefined, "d", "e"], asked),
+    { want: 10, keep: () => true, concurrency: 2 },
+  );
+  assert.deepEqual(got, ["a", "d", "e"]);
+  assert.deepEqual(
+    [...asked].sort((a, b) => a - b),
+    [0, 1, 2, 3, 4],
+  );
+});
+
+test("fetchInOrder stops once enough are kept", async () => {
+  const values = ["a", "b", "c", "d", "e", "f", "g", "h"];
+
+  const one: number[] = [];
+  const serial = await fetchInOrder(values.length, slowFetch(values, one), {
+    want: 3,
+    keep: () => true,
+    concurrency: 1,
+  });
+  assert.deepEqual(serial, ["a", "b", "c"]);
+  assert.deepEqual(one, [0, 1, 2]);
+
+  // at most concurrency - 1 extra fetches
+  const two: number[] = [];
+  const parallel = await fetchInOrder(values.length, slowFetch(values, two), {
+    want: 3,
+    keep: () => true,
+    concurrency: 2,
+  });
+  assert.ok(two.length >= 3 && two.length <= 4, `asked ${two}`);
+  assert.deepEqual(parallel.slice(0, 3), ["a", "b", "c"]);
+});
+
+test("fetchInOrder reads further to replace items it does not keep", async () => {
+  // A blocked author's mention must not take one of the card's rows
+  const values = ["x1", "a", "x2", "b", "c", "d"];
+  const asked: number[] = [];
+  const got = await fetchInOrder(values.length, slowFetch(values, asked), {
+    want: 3,
+    keep: (value) => !value.startsWith("x"),
+    concurrency: 1,
+  });
+  assert.deepEqual(
+    got.filter((value) => !value.startsWith("x")),
+    ["a", "b", "c"],
+  );
+  assert.deepEqual(asked, [0, 1, 2, 3, 4]);
+});
+
+test("fetchInOrder with nothing to fetch asks for nothing", async () => {
+  const asked: number[] = [];
+  assert.deepEqual(
+    await fetchInOrder(0, slowFetch([], asked), {
+      want: 5,
+      keep: () => true,
+      concurrency: 2,
+    }),
+    [],
+  );
+  assert.deepEqual(asked, []);
+});
+
+test("the Mentions card reads past its row count to fill blocked rows", () => {
+  assert.ok(HOME_MENTION_SCAN_LIMIT > HOME_MENTION_LIMIT);
+});
+
+test("fetchInOrder keeps the earliest items when one fetch is slow", async () => {
+  // "c" is slow; the other worker reads past it while it is in flight, but
+  // the rows kept are still the first three in list order
+  const values = ["a", "b", "c", "x1", "x2", "d", "e"];
+  const asked: number[] = [];
+  const got = await fetchInOrder(
+    values.length,
+    async (index) => {
+      asked.push(index);
+      await new Promise((resolve) => setTimeout(resolve, index === 2 ? 30 : 1));
+      return values[index];
+    },
+    { want: 3, keep: (value) => !value.startsWith("x"), concurrency: 2 },
+  );
+  assert.deepEqual(got.filter((value) => !value.startsWith("x")).slice(0, 3), [
+    "a",
+    "b",
+    "c",
+  ]);
+  assert.ok(asked.length < values.length, `asked ${asked}`);
 });

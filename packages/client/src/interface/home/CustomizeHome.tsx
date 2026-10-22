@@ -6,7 +6,7 @@ import { styled } from "styled-system/jsx";
 import { useState } from "@revolt/state";
 import {
   type HomeBlockId,
-  HOME_BLOCKS,
+  customizableBlocks,
 } from "@revolt/state/stores/homeLayoutRules";
 import { Button, Checkbox } from "@revolt/ui";
 
@@ -106,7 +106,11 @@ export function CustomizeHome(props: {
         </Trans>
       </Hint>
       <Options>
-        <For each={HOME_BLOCKS}>
+        <For
+          each={customizableBlocks(
+            (id) => props.blocks[id].offered?.() ?? true,
+          )}
+        >
           {(id) => (
             <Option>
               <Checkbox
