@@ -61,6 +61,13 @@ import {
   PROBE_WINDOW_CAP,
 } from "./e2eeGroupSendGate.ts";
 import {
+  capacitorAttachmentUrl,
+  capacitorClipboardImageInWebview,
+  capacitorNativeE2EE,
+  mediaE2EEPlatformSupported,
+} from "./e2eePlatform";
+import { protectorSendErrorCopy } from "./e2eeProtectorCopy";
+import {
   type CallRosterOutcome,
   type RatelimitTransportOptions,
   CALL_PLANE_RATELIMIT_RETRIES,
@@ -822,10 +829,11 @@ export type EnvelopeDisposition =
 export { classifyEnvelopeError } from "./mlsEnvelopeClassify";
 
 /**
- * Whether the native E2EE layer is reachable (Tauri desktop shell or the
- * Capacitor Android shell). The web build has no native layer — and the
- * server additionally refuses E2EE routes for sessions that never proved a
- * device claim.
+ * Whether the native E2EE layer is reachable (a desktop shell, or a
+ * Capacitor shell: Android always, iOS only when the native E2ee plugin is
+ * compiled in, so an iOS build without it stays web-mode). The web build has
+ * no native layer — and the server additionally refuses E2EE routes for
+ * sessions that never proved a device claim.
  */
 export function nativeE2EEAvailable(): boolean {
   // A window booted at /friends-popout is a lean SECOND client — it must
@@ -846,33 +854,38 @@ export function nativeE2EEAvailable(): boolean {
   // the native bridge is live — a dead bridge reads as "no native layer".
   if ((window as { slogaShell?: SlogaShellGlobal }).slogaShell?.e2ee)
     return true;
-  return Capacitor.isNativePlatform() && Capacitor.getPlatform() === "android";
+  return capacitorNativeE2EE(
+    Capacitor.isNativePlatform(),
+    Capacitor.getPlatform(),
+    (name) => Capacitor.isPluginAvailable(name),
+  );
 }
 
 // ================================================================
 // Native transports
 //
-// One `E2EEBridge` speaks to two native shells through this seam. Both
-// expose the SAME command allowlist backed by the SAME core crate
-// (acutest-e2ee-core); only the carrier differs — Tauri IPC on desktop,
-// a Capacitor plugin over uniffi on Android. Command names, argument
-// shapes and error payloads are identical by construction, so every
-// security decision above this seam is platform-independent.
+// One `E2EEBridge` speaks to every native shell through this seam. They
+// expose the SAME command names backed by the SAME core crate
+// (acutest-e2ee-core); only the carrier differs — Tauri or Electron IPC on
+// desktop, a Capacitor plugin over uniffi on Android and iOS. Command names,
+// argument shapes and error payloads are identical by construction, so every
+// security decision above this seam is platform-independent. (A shell may
+// leave commands out: iOS rejects the call and MLS commands.)
 // ================================================================
 
 interface NativeTransport {
   /**
-   * True when attachment ciphertext moves natively (Android): upload and
-   * fetch happen in the shell, so multi-megabyte payloads never transit
-   * the JS bridge. Desktop moves ciphertext over the (fast, binary-safe)
-   * Tauri IPC and uploads from the webview instead.
+   * True when attachment ciphertext moves natively (Capacitor: Android and
+   * iOS): upload and fetch happen in the shell, so multi-megabyte payloads
+   * never transit the JS bridge. Desktop moves ciphertext over the (fast,
+   * binary-safe) Tauri IPC and uploads from the webview instead.
    */
   readonly nativeBlobTransfer: boolean;
   /**
    * True when the webview may copy a decrypted attachment to the clipboard
    * ITSELF (Android): `attachmentUrl` there is a same-origin path the shell's
    * WebViewClient intercepts, so an ordinary fetch reaches it. On the desktop
-   * shells it is a custom protocol that deliberately serves no
+   * shells and on iOS it is a custom protocol that deliberately serves no
    * `Access-Control-Allow-Origin` and is absent from the CSP's `connect-src`
    * — fetch and the canvas fallback are both blocked BY DESIGN, and copying
    * has to go through the shell's own clipboard command instead.
@@ -885,7 +898,7 @@ interface NativeTransport {
   ): Promise<T>;
   /** WebView URL a decrypted attachment renders from (never carries keys) */
   attachmentUrl(messageId: string, idx: number): string;
-  /** Android-only (`nativeBlobTransfer`): native ciphertext upload */
+  /** Capacitor only (`nativeBlobTransfer`): native ciphertext upload */
   uploadPrepared?(
     localId: string,
     url: string,
@@ -893,7 +906,7 @@ interface NativeTransport {
     authValue: string,
     recipients: unknown[],
   ): Promise<void>;
-  /** Android-only (`nativeBlobTransfer`): native ciphertext fetch+store */
+  /** Capacitor only (`nativeBlobTransfer`): native ciphertext fetch+store */
   fetchAndStore?(
     localId: string,
     url: string,
@@ -902,9 +915,10 @@ interface NativeTransport {
   ): Promise<"ready" | "expired" | "failed" | "pending">;
   /**
    * Present when the recovery-code surface is a native DIALOG rather than a
-   * separate webview window (Android). The desktop shell instead opens the
-   * bundled `e2ee-recovery` window and couriers the result over the
-   * `e2ee:recovery-complete` event, so these are absent there.
+   * separate webview window (Capacitor: an Android dialog, an iOS sheet).
+   * The desktop shell instead opens the bundled `e2ee-recovery` window and
+   * couriers the result over the `e2ee:recovery-complete` event, so these
+   * are absent there.
    *
    * The recovery CODE lives entirely inside the native dialog; these return
    * only the opaque ciphertext the webview must courier to the server.
@@ -947,9 +961,9 @@ interface NativeTransport {
    * any pending ciphertext (EL1 RFC B3: this used to be a direct
    * `__TAURI__.event` use OUTSIDE the seam; on Electron that silently
    * no-oped and a minted code's backup bundle would never reach
-   * `PUT /e2ee/backup`). Absent on Android: recovery there is a native
-   * DIALOG (no separate window, no courier event). Payload is the
-   * core-derived outcome mode — never a secret.
+   * `PUT /e2ee/backup`). Absent on Capacitor (Android and iOS): recovery
+   * there is a native DIALOG (no separate window, no courier event).
+   * Payload is the core-derived outcome mode — never a secret.
    */
   subscribeRecoveryComplete?(
     callback: (mode: string) => void,
@@ -1163,9 +1177,16 @@ type E2eeCapacitorPlugin = {
 
 class CapacitorTransport implements NativeTransport {
   readonly nativeBlobTransfer = true;
-  // `/_e2ee-att/...` is same-origin (the WebViewClient intercepts it before
-  // the asset server), so the ordinary clipboard helper reaches it here.
-  readonly clipboardImageInWebview = true;
+  // Android: `/_e2ee-att/...` is same-origin (the WebViewClient intercepts it
+  // before the asset server), so the ordinary clipboard helper reaches it.
+  // iOS: the `e2ee-att:` custom scheme is served natively with no
+  // `Access-Control-Allow-Origin` and is absent from `connect-src`, so the
+  // webview cannot fetch it (desktop parity); copy goes through the native
+  // `e2ee_attachment_copy_image` command, which also keeps the image off
+  // Universal Clipboard (plan D6).
+  readonly clipboardImageInWebview = capacitorClipboardImageInWebview(
+    Capacitor.getPlatform(),
+  );
   #plugin = registerPlugin<E2eeCapacitorPlugin>("E2ee");
 
   /**
@@ -1291,12 +1312,14 @@ class CapacitorTransport implements NativeTransport {
   }
 
   /**
-   * Same-origin path intercepted by the Android shell's WebViewClient
-   * BEFORE the asset server (the `e2ee-att` analog) — decrypts natively
-   * per request; key material never reaches the WebView.
+   * Decrypts natively per request; key material never reaches the WebView.
+   * Android: a same-origin path intercepted by the shell's WebViewClient
+   * BEFORE the asset server (the `e2ee-att` analog). iOS: the
+   * `e2ee-att://att/...` custom scheme (the Electron shape), served by the
+   * shell's URL scheme handler.
    */
   attachmentUrl(messageId: string, idx: number): string {
-    return `/_e2ee-att/${messageId}/${idx}`;
+    return capacitorAttachmentUrl(Capacitor.getPlatform(), messageId, idx);
   }
 
   async uploadPrepared(
@@ -1377,6 +1400,12 @@ class CapacitorTransport implements NativeTransport {
     // so there is no version skew: if the JS can ask, the shell can push.
     // A remote-webview config would reintroduce skew (new JS asserting this
     // against an old shell) and must NOT be used while media E2EE ships.
+    //
+    // 🔴 iOS answers false ON PURPOSE (plan D7, media gate pin): calls on
+    // iPhone are plaintext in phase 1, and `platformMediaE2EESupported()` is
+    // TRUE there (no `slogaShell`), so this false is the only thing keeping
+    // `mediaE2EEPlatformSupported()` and `shellSupported` false and iOS calls
+    // honest. NEVER flip it to true for iOS.
     return (
       Capacitor.isNativePlatform() && Capacitor.getPlatform() === "android"
     );
@@ -2872,9 +2901,10 @@ export class E2EEBridge implements E2EEAdapter {
       verdict = await this.#invoke<SendModeVerdict>("e2ee_send_mode", {
         peerUserId: peerId,
       });
-    } catch {
+    } catch (error) {
       throw new E2EESendError(
-        "Encryption status could not be verified. The message was NOT sent.",
+        protectorSendErrorCopy(error, Capacitor.getPlatform()) ??
+          "Encryption status could not be verified. The message was NOT sent.",
         "native",
       );
     }
@@ -3047,9 +3077,10 @@ export class E2EEBridge implements E2EEAdapter {
       verdict = await this.#invoke<SendModeVerdict>("e2ee_send_mode_group", {
         conversationId,
       });
-    } catch {
+    } catch (error) {
       throw new E2EESendError(
-        "Encryption status could not be verified. The message was NOT sent.",
+        protectorSendErrorCopy(error, Capacitor.getPlatform()) ??
+          "Encryption status could not be verified. The message was NOT sent.",
         "native",
       );
     }
@@ -3073,9 +3104,10 @@ export class E2EEBridge implements E2EEAdapter {
         fresh = await this.#invoke<SendModeVerdict>("e2ee_send_mode_group", {
           conversationId,
         });
-      } catch {
+      } catch (error) {
         throw new E2EESendError(
-          "Encryption status could not be verified. The message was NOT sent.",
+          protectorSendErrorCopy(error, Capacitor.getPlatform()) ??
+            "Encryption status could not be verified. The message was NOT sent.",
           "native",
         );
       }
@@ -5286,9 +5318,10 @@ export class E2EEBridge implements E2EEAdapter {
         verdict = await this.#invoke<SendModeVerdict>("e2ee_send_mode_group", {
           conversationId,
         });
-      } catch {
+      } catch (error) {
         throw new E2EESendError(
-          "Encryption status could not be verified. Nothing was sent.",
+          protectorSendErrorCopy(error, Capacitor.getPlatform()) ??
+            "Encryption status could not be verified. Nothing was sent.",
           "native",
         );
       }
@@ -5307,9 +5340,10 @@ export class E2EEBridge implements E2EEAdapter {
           fresh = await this.#invoke<SendModeVerdict>("e2ee_send_mode_group", {
             conversationId,
           });
-        } catch {
+        } catch (error) {
           throw new E2EESendError(
-            "Encryption status could not be verified. Nothing was sent.",
+            protectorSendErrorCopy(error, Capacitor.getPlatform()) ??
+              "Encryption status could not be verified. Nothing was sent.",
             "native",
           );
         }
@@ -5339,9 +5373,10 @@ export class E2EEBridge implements E2EEAdapter {
     } else {
       try {
         mode = await this.sendModeNow(conversationId);
-      } catch {
+      } catch (error) {
         throw new E2EESendError(
-          "Encryption status could not be verified. Nothing was sent.",
+          protectorSendErrorCopy(error, Capacitor.getPlatform()) ??
+            "Encryption status could not be verified. Nothing was sent.",
           "native",
         );
       }
@@ -5493,7 +5528,7 @@ export class E2EEBridge implements E2EEAdapter {
 
   /**
    * Webview URL a decrypted attachment renders from — the shell's
-   * attachment endpoint (desktop `e2ee-att` protocol / Android WebView
+   * attachment endpoint (desktop and iOS `e2ee-att` scheme / Android WebView
    * interceptor), which decrypts natively per request: key material never
    * crosses to the webview. Both path segments are ULIDs / integers, so no
    * encoding is needed.
@@ -5796,6 +5831,13 @@ export class E2EEBridge implements E2EEAdapter {
    * `#ensureKeyPackages` path remains the authoritative self-heal.
    */
   async #prepublishMlsKeyPackages(): Promise<void> {
+    // Platform gate FIRST (plan D7, KeyPackage prepublish leak): a shell that
+    // cannot carry encrypted calls has no reason to stock the directory. The
+    // `#callsEnabled` check below is not enough on its own: rtc/state.tsx
+    // wires `setCallsEnabled` at every call connect regardless of platform,
+    // and that accessor hard-returns true (Voice.ts), so without this gate
+    // iOS or an unaudited shell would publish KeyPackages after one call.
+    if (!this.mediaE2EEPlatformSupported()) return;
     // Gate on "Encrypt my calls" (§0.2 #9): with calls E2EE off there is no
     // reason to stock the MLS KeyPackage directory. Fail-closed until wired.
     if (!this.#callsEnabled()) return;
@@ -7175,7 +7217,7 @@ export class E2EEBridge implements E2EEAdapter {
    *
    * The RTC layer folds this into `e2eeCapable` at Room-construction time. A
    * shell that is `nativeE2EEAvailable()` but CANNOT receive key pushes (today:
-   * the Capacitor Android shell, whose `onCallKeysChanged` returns a no-op)
+   * the Capacitor iOS shell; Android before its 6.7a `callKeysChanged`)
    * must be built WITHOUT the LiveKit `e2ee` option — never an E2EE-capable
    * Room whose first-key install can never arrive, which would leave the
    * pause-publish window permanently open and publish plaintext to the SFU
@@ -7189,10 +7231,22 @@ export class E2EEBridge implements E2EEAdapter {
    * The per-shell answer lives behind the transport seam (`keyPushAvailable`):
    * Tauri gates on `window.__TAURI__.event`; the Capacitor Android shell
    * returns true (its `callKeysChanged` channel landed in 6.7a). Both update
-   * together there, as the 6.4 H3/NEW-4 note anticipated.
+   * together there, as the 6.4 H3/NEW-4 note anticipated. The Capacitor iOS
+   * shell returns false on purpose (plan D7 media gate pin).
    */
   nativeKeyPushAvailable(): boolean {
     return this.#transport.keyPushAvailable();
+  }
+
+  /**
+   * Whether this shell could carry encrypted calls: it can receive native
+   * call-key pushes AND its media path is audited (`e2eePlatform.ts`). The
+   * ONE predicate for that question (plan D7, audit MINOR 17):
+   * `shellSupported` in rtc/state.tsx and `#prepublishMlsKeyPackages` both
+   * use it. False on iOS (see `CapacitorTransport.keyPushAvailable`).
+   */
+  mediaE2EEPlatformSupported(): boolean {
+    return mediaE2EEPlatformSupported(this.nativeKeyPushAvailable());
   }
 
   /**

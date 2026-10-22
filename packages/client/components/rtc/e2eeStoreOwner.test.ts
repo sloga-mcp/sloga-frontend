@@ -40,6 +40,9 @@ test("other native errors fall through to the generic loud path", () => {
     { type: "declined" },
     { type: "needs_bundle", user_id: OWNER, device_ids: [] },
     { type: "store_corrupt" },
+    // A locked phone: the store is intact, so never light the reset.
+    { type: "protector" },
+    { type: "protector_locked" },
   ]) {
     assert.equal(storeOwnerMismatch(other), null, JSON.stringify(other));
   }

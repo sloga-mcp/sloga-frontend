@@ -300,8 +300,10 @@ const Config: SettingsConfiguration<{ server: Server }> = {
               id: "security",
               icon: <MdSecurity {...iconSize(20)} />,
               title: <Trans>Encryption</Trans>,
-              // Only meaningful where the native E2EE layer exists (desktop);
-              // the web build has no key material.
+              // Only meaningful where the native E2EE layer exists: the
+              // desktop shells, and the Capacitor app on Android and on iOS
+              // (iOS only when the native E2ee plugin is present; see
+              // nativeE2EEAvailable). The web build has no key material.
               hidden: !nativeE2EEAvailable(),
             },
             {

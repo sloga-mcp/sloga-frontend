@@ -401,22 +401,23 @@ const APNS_TOKEN_TIMEOUT = 30_000;
  * Gated on the platform, not on `isNativePlatform()`: this plugin does not
  * exist in the iOS shell, so every method there rejects with UNIMPLEMENTED.
  */
-const PushTokenNative = Capacitor.getPlatform() === "android"
-  ? registerPlugin<{
-      getToken(): Promise<{ token: string }>;
-      saveSubscription(opts: {
-        apiUrl: string;
-        sessionToken: string;
-      }): Promise<void>;
-      clearSubscription(): Promise<void>;
-      canUseFullScreenIntent(): Promise<{
-        allowed: boolean;
-        applicable: boolean;
-      }>;
-      openFullScreenIntentSettings(): Promise<void>;
-      requestNotificationPermission(): Promise<{ granted: boolean }>;
-    }>("PushToken")
-  : undefined;
+const PushTokenNative =
+  Capacitor.getPlatform() === "android"
+    ? registerPlugin<{
+        getToken(): Promise<{ token: string }>;
+        saveSubscription(opts: {
+          apiUrl: string;
+          sessionToken: string;
+        }): Promise<void>;
+        clearSubscription(): Promise<void>;
+        canUseFullScreenIntent(): Promise<{
+          allowed: boolean;
+          applicable: boolean;
+        }>;
+        openFullScreenIntentSettings(): Promise<void>;
+        requestNotificationPermission(): Promise<{ granted: boolean }>;
+      }>("PushToken")
+    : undefined;
 
 const PUSH_PROVIDER = choosePushProvider({
   native: Capacitor.isNativePlatform(),

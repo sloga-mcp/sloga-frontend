@@ -36,6 +36,20 @@ const config: CapacitorConfig = {
     // frame-key egress path — do not flip them "temporarily" to debug.
     loggingBehavior: "none",
   },
+  ios: {
+    // E2EE: the WebView origin can reach decrypted DM history, the e2ee-att:
+    // attachment renderer output and the session token, so it must not be
+    // Web-Inspector-able: Safari Web Inspector would read exactly the
+    // plaintext E2EE exists to protect. Set explicitly, false also wins in
+    // Debug builds (Capacitor only turns inspection on for DEBUG /
+    // CAPACITOR_DEBUG when this key is unset). Device legs run on a Debug
+    // build are recorded as such in the leg record.
+    webContentsDebuggingEnabled: false,
+    // Never log plugin call data (attachment plaintext, the session token)
+    // to the device console. Both this and webContentsDebuggingEnabled:false
+    // are REQUIRED controls — do not flip them "temporarily" to debug.
+    loggingBehavior: "none",
+  },
 };
 
 export default config;

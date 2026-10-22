@@ -1,5 +1,6 @@
 import { Accessor, Setter, createMemo, createSignal } from "solid-js";
 
+import { Capacitor } from "@capacitor/core";
 import { detect } from "detect-browser";
 import { API, Client, ConnectionState } from "stoat.js";
 import { ProtocolV1 } from "stoat.js/lib/events/v1";
@@ -219,11 +220,12 @@ class Lifecycle {
       ws: CONFIGURATION.DEFAULT_WS_URL,
     };
 
-    // Native E2EE layer (Tauri desktop shell): every DM send and E2EE
-    // event is routed through the bridge — see e2ee.ts for the
-    // downgrade-refusal contract. Web builds have no native layer and the
-    // server additionally refuses E2EE routes for their sessions
-    // (design §8: web-token refusal).
+    // Native E2EE layer (the Tauri and Electron desktop shells, and the
+    // Capacitor shells: Android, and iOS when its native E2ee plugin is
+    // present): every DM send and E2EE event is routed through the bridge —
+    // see e2ee.ts for the downgrade-refusal contract. Web builds have no
+    // native layer and the server additionally refuses E2EE routes for their
+    // sessions (design §8: web-token refusal).
     if (nativeE2EEAvailable()) {
       this.client.e2ee = new E2EEBridge(this.client);
     }
@@ -855,7 +857,12 @@ export default class ClientController {
 
     // Generate a friendly name for this browser
     let friendly_name;
-    if (browser) {
+    if (Capacitor.isNativePlatform() && Capacitor.getPlatform() === "ios") {
+      // The iOS app is a native shell, not a browser. Peers see this name in
+      // their device lists and in new-device notes on encrypted
+      // conversations, so it must not read as a web session.
+      friendly_name = "Sloga for iOS";
+    } else if (browser) {
       let { name, os } = browser as { name: string; os: string };
       if (name === "ios") {
         name = "safari";
