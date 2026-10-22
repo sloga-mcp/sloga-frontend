@@ -2240,6 +2240,10 @@ msgstr "Continue unencrypted — new messages will be readable by the server —
 msgid "Continue with Google"
 msgstr "Continue with Google"
 
+#: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
+msgid "Contrast"
+msgstr "Contrast"
+
 #. placeholder {0}: controllerUser().username
 #: components/ui/components/features/voice/callCard/ParticipantTile.tsx
 msgid "Controlled by {0}"
@@ -8686,6 +8690,10 @@ msgstr "Streaming: {0}"
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
 msgid "Strength: {0}%"
 msgstr "Strength: {0}%"
+
+#: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
+msgid "Style"
+msgstr "Style"
 
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Styles and contrast reshape your color: Neutral mutes it, Fruit Salad shifts its hue, and High Contrast strengthens it."
