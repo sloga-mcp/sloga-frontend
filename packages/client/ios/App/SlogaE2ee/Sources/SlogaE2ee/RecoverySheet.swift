@@ -45,7 +45,8 @@
 // which carries nothing). The page's refresh then gets it first from the
 // plugin's `e2ee_backup_refresh_if_due` arm (`takeOrphanedBundle(userId:)`)
 // and uploads it, but only when that refresh is for the same user: one for
-// any other account drops it, so it never rides another account's upload.
+// any other account gets nothing and leaves it in place (a stale page after
+// a logout must not destroy it), so it never rides another account's upload.
 // A restore needs no such stash: the new page re-derives its republish
 // payload on demand (`e2ee_backup_rederive_republish`).
 //
@@ -109,12 +110,13 @@ enum RecoverySheet {
     static func teardown() {
         // Called by wipe: a bundle kept for a later upload belongs to the
         // identity being destroyed, and so does anything the open flow
-        // couriers from here on.
-        registry.clearOrphanedBundle()
-        guard let flow = registry.active() else {
+        // couriers from here on. Marked before the clear, atomically, so
+        // the flow's courier cannot keep a bundle after it.
+        let flow = registry.active()
+        registry.tearDown(flow)
+        guard let flow else {
             return
         }
-        flow.markFullTeardown()
         DispatchQueue.main.async {
             flow.closeFromMain()
         }
@@ -122,8 +124,8 @@ enum RecoverySheet {
 
     /// The bundle of a create/rotate sheet that finished after its page was
     /// reloaded, only when `userId` is the user that sheet's flow was for;
-    /// nil otherwise. Clears it whoever asks, so it is handed out once and
-    /// a refresh for another account drops it. Any thread.
+    /// nil otherwise. Clears it only when it is handed out, so it is handed
+    /// out once and a refresh for another account leaves it. Any thread.
     static func takeOrphanedBundle(userId: String) -> String? {
         registry.takeOrphanedBundle(userId: userId)
     }
@@ -237,24 +239,26 @@ enum RecoverySheet {
                 _ = try closeFlow(engine, generation: generation)
                 throw busyReject
             case .finish, .close:
-                // Minted but never displayed (full teardown during the mint,
-                // or the sheet dismissed by someone else first). Core holds a
-                // key derived from a code nobody has; a take after the flow
-                // ends would make it the active backup (on rotate, replacing
-                // the key the user's saved code opens). So drop it while the
-                // flow is still live, before closeFlow ends it: no take can
-                // promote it after that. Also after a failed mint (harmless:
-                // the slot then holds nothing of this code's).
-                if minted, !flow.codeWasShown {
+                // F3: a code the user has seen must not be left without a
+                // server backup, so a close after display still couriers.
+                let couriers = minted && mintError == nil && flow.codeWasShown
+                // Every other close drops whatever core holds for this flow
+                // while the flow is still live, before closeFlow ends it, so
+                // no take can promote it after that: a code minted but never
+                // displayed (full teardown during the mint, or the sheet
+                // dismissed by someone else first) is a key nobody holds, and
+                // a take would make it the active backup (on rotate,
+                // replacing the key the user's saved code opens). Also after
+                // a failed mint, which core may have stored before Swift saw
+                // the error. Idempotent, never touches the store.
+                if !couriers {
                     discardMintedState(engine)
                 }
                 let outcome = try closeFlow(engine, generation: generation)
                 if let mintError {
                     throw mintError
                 }
-                // F3: a code the user has seen must not be left without a
-                // server backup, so a close after display still couriers.
-                if minted, flow.codeWasShown, let outcome {
+                if couriers, let outcome {
                     return try courierUpload(engine, flow: flow, outcome: outcome, mode: mode)
                 }
                 throw E2eeReject.declined
@@ -433,7 +437,7 @@ enum RecoverySheet {
         // belongs to the destroyed identity. Told after it is kept, so a
         // refresh the event starts always finds it.
         if flow.outlivedItsPage {
-            let tell = registry.keepOrphanedBundle(bundle, userId: flow.userId)
+            let tell = registry.keepOrphanedBundle(bundle, from: flow)
             tell?()
         }
         return bundle
@@ -512,31 +516,44 @@ private final class FlowRegistry: @unchecked Sendable {
     /// Keeps `bundle` for `userId` and returns the hook to tell the page
     /// with, read under the same lock. The caller runs it after the lock
     /// is released, so the hook can never deadlock against the registry.
-    func keepOrphanedBundle(_ bundle: String, userId: String) -> (() -> Void)? {
+    /// Nil, and nothing kept, once a wipe has torn `flow` down: checked under
+    /// the same lock `tearDown(_:)` marks it in, so a keep can never land
+    /// after the wipe's clear.
+    func keepOrphanedBundle(_ bundle: String, from flow: RecoveryFlow) -> (() -> Void)? {
         lock.lock()
         defer { lock.unlock() }
-        orphan = Orphan(bundle: bundle, userId: userId)
+        guard flow.outlivedItsPage else {
+            return nil
+        }
+        orphan = Orphan(bundle: bundle, userId: flow.userId)
         return waitingHook
     }
 
     func takeOrphanedBundle(userId: String) -> String? {
         lock.lock()
         defer { lock.unlock() }
-        guard let kept = orphan else {
+        // Byte for byte: Swift's String == treats canonically equivalent
+        // Unicode as equal, and the bundle must go only to the exact id it
+        // was minted under. Compared before it is cleared: a refresh for
+        // anyone else (a stale page after a logout) leaves it in place.
+        guard let kept = orphan, kept.userId.utf8.elementsEqual(userId.utf8) else {
             return nil
         }
         orphan = nil
-        // Byte for byte: Swift's String == treats canonically equivalent
-        // Unicode as equal, and the bundle must go only to the exact id it
-        // was minted under.
-        guard kept.userId.utf8.elementsEqual(userId.utf8) else {
-            return nil
-        }
         return kept.bundle
     }
 
     func clearOrphanedBundle() {
         lock.lock()
+        orphan = nil
+        lock.unlock()
+    }
+
+    /// Wipe: marks the open flow torn down and drops any kept bundle in one
+    /// critical section (lock order registry, then the flow's condition).
+    func tearDown(_ flow: RecoveryFlow?) {
+        lock.lock()
+        flow?.markFullTeardown()
         orphan = nil
         lock.unlock()
     }
@@ -1304,7 +1321,7 @@ private final class RecoverySheetController: UIViewController, UITextFieldDelega
         truncatedLabel.text = "Your history is large, so only your most recent messages are backed up."
         warningLabel.textColor = .systemOrange
         warningLabel.text =
-            "If the app closes before you tap \u{201C}I saved it\u{201D}, this code will not work. Create a new one."
+            "If the app closes before this sheet does, this code will not work and your previous code (if any) stays valid. Create a new one."
         screenshotLabel.textColor = .systemOrange
         screenshotLabel.text = "Screenshot taken. Store it somewhere safe or delete it."
         screenshotLabel.isHidden = true

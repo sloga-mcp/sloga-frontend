@@ -1734,9 +1734,15 @@ export class E2EEBridge implements E2EEAdapter {
       // A new connection: its device claim has not landed yet
       this.#claimAccepted = null;
       this.#claimWaitSpent = false;
+      this.#socketDown = false;
       // A (re)connect may follow any amount of missed device traffic
       this.#invalidateProof();
       void this.#onReady();
+    });
+    // The courier's view only (see `#socketDown`): `#claimAccepted` itself
+    // keeps its meaning for the group proof on every shell.
+    client.on("disconnected", () => {
+      this.#socketDown = true;
     });
     client.on("channelGroupJoin", (channel, user) =>
       this.#onGroupJoin(channel, user.id),
@@ -6043,6 +6049,32 @@ export class E2EEBridge implements E2EEAdapter {
   #backupBundleWaiting: Promise<() => void> | null = null;
 
   /**
+   * Set once by `dispose()`. The Controller replaces the client and bridge
+   * on every logout and reconnect cycle, and the iOS plugin listener is
+   * process-lifetime: a stale bridge still holding a user and an accepted
+   * claim must not take a kept bundle under its dead session (audit M2,
+   * Stage 6 MAJOR-1).
+   */
+  #disposed = false;
+
+  /**
+   * The socket dropped since this connection's `ready`. Only the orphaned
+   * backup courier reads it: `#claimAccepted` is reset on `ready`, not on
+   * disconnect, and the group proof reads it on every shell, so it is left
+   * alone. A take while the session is down could not be PUT.
+   */
+  #socketDown = false;
+
+  /**
+   * The running `refreshBackupIfDue` pass chain, one per bridge, and whether
+   * a caller asked for another pass while it ran (single flight, coalesced:
+   * Stage 6 MINOR-2). Concurrent passes raced the PUT and the
+   * `mark_uploaded` order.
+   */
+  #backupRefresh: Promise<void> | null = null;
+  #backupRefreshAgain = false;
+
+  /**
    * Post-restore fresh-OTK republish payload, held between a RESTORE and its
    * device claim. A restore recovers the OLD device_id, so on the server the
    * republish takes the `existing.assert_bound_session` path — it is accepted
@@ -6263,15 +6295,95 @@ export class E2EEBridge implements E2EEAdapter {
    * iOS the native arm first returns a bundle the recovery sheet kept (see
    * `#watchOrphanedBackup`). Only `#courierOrphanedBackup` calls it, so only
    * iOS; the other shells do not call it yet.
+   *
+   * Single flight per bridge: a caller arriving while a pass runs gets the
+   * same promise, and the chain runs ONE more pass after the current one
+   * however many callers arrived, so a trigger that lands mid-pass is not
+   * lost. Every pass re-checks `#backupTakeAllowed()` before the native
+   * take, since the take always clears the kept bundle and a bundle taken
+   * when it cannot be PUT is gone. A pass that fails still runs a requested
+   * follow-up; the chain then rejects with the last failure.
    */
-  async refreshBackupIfDue(): Promise<void> {
-    const selfId = this.#client.user?.id;
-    if (!selfId) return;
-    const bundle = await this.#invoke<BackupBundle | null>(
-      "e2ee_backup_refresh_if_due",
-      { userId: selfId },
+  refreshBackupIfDue(): Promise<void> {
+    if (this.#backupRefresh) {
+      this.#backupRefreshAgain = true;
+      return this.#backupRefresh;
+    }
+    // `.then` defers the chain past the assignment below, so its `finally`
+    // can never clear the slot before it is set.
+    const flight = Promise.resolve().then(async () => {
+      let failed = false;
+      let failure: unknown;
+      try {
+        do {
+          this.#backupRefreshAgain = false;
+          const selfId = this.#client.user?.id;
+          if (!selfId || !this.#backupTakeAllowed()) break;
+          try {
+            const bundle = await this.#invoke<BackupBundle | null>(
+              "e2ee_backup_refresh_if_due",
+              { userId: selfId },
+            );
+            if (bundle) await this.#putBackup(bundle);
+          } catch (error) {
+            failed = true;
+            failure = error;
+          }
+        } while (this.#backupRefreshAgain);
+      } finally {
+        this.#backupRefresh = null;
+      }
+      if (failed) throw failure;
+    });
+    this.#backupRefresh = flight;
+    return flight;
+  }
+
+  /**
+   * Whether a native backup take may run now: a live bridge, a connected
+   * session with THIS connection's accepted claim (`PUT /e2ee/backup` needs
+   * a device-bound session), and an enabled, published device with an id to
+   * PUT under. Shares its terms with `#courierOrphanedBackup`'s guard, and is
+   * re-read before every pass because a follow-up pass can run long after
+   * the caller that asked for it checked.
+   */
+  #backupTakeAllowed(): boolean {
+    const state = this.status.get("state");
+    return (
+      !this.#disposed &&
+      !this.#socketDown &&
+      !!this.#client.user?.id &&
+      !!state?.enabled &&
+      !!state.published &&
+      !!state.device_id &&
+      this.#claimAccepted === true
     );
-    if (bundle) await this.#putBackup(bundle);
+  }
+
+  /**
+   * Tear this bridge down when the Controller replaces its client (Stage 6
+   * MAJOR-1). Marks it disposed, so the courier and any pending follow-up
+   * pass refuse; forgets the claim; and removes the iOS `backupBundleWaiting`
+   * listener, which is process-lifetime and would otherwise outlive the
+   * bridge. A pass already past its native take still finishes its PUT: the
+   * take cleared the kept bundle, so that PUT is its only copy. Idempotent,
+   * and never rejects. A no-op off iOS apart from the flags.
+   */
+  async dispose(): Promise<void> {
+    if (this.#disposed) return;
+    this.#disposed = true;
+    this.#claimAccepted = null;
+    this.#backupRefreshAgain = false;
+    const subscription = this.#backupBundleWaiting;
+    if (!subscription) return;
+    try {
+      (await subscription)();
+    } catch (error) {
+      console.error(
+        "[e2ee] backup bundle listener removal failed:",
+        errorName(error),
+      );
+    }
   }
 
   /**
@@ -6309,22 +6421,28 @@ export class E2EEBridge implements E2EEAdapter {
   /**
    * Upload a recovery bundle the iOS sheet kept (`#watchOrphanedBackup`)
    * through `refreshBackupIfDue`. Guarded like the Encryption tab's
-   * `backupStatus()` caller: the core OPENS, and so provisions, the store on
-   * any engine call, so nothing reaches native unless this device is enabled
-   * and published. It also waits for THIS connection's accepted device
+   * `backupStatus()` caller: nothing reaches native unless this device is
+   * enabled and published (core's backup generics no longer provision a
+   * store since IE Stage 6, but most other engine calls still do). It also waits for THIS connection's accepted device
    * claim: `PUT /e2ee/backup` takes only a session bound to the device
    * (`assert_bound_session`), and the native take always clears the kept
    * bundle, so taking it before the claim could lose it. An event that
    * arrives first does nothing, and the post-claim call takes the bundle.
+   * A disposed bridge, a dropped socket and a device with no id to PUT
+   * under refuse too (Stage 6 MAJOR-1, MINOR-3); the terms match
+   * `#backupTakeAllowed`, which `refreshBackupIfDue` re-reads per pass.
    * Best effort: never throws, and logs only the error's name (never the
    * bundle or an id).
    */
   async #courierOrphanedBackup(): Promise<void> {
     const state = this.status.get("state");
     if (
+      this.#disposed ||
+      this.#socketDown ||
       !this.#client.user?.id ||
       !state?.enabled ||
       !state.published ||
+      !state.device_id ||
       this.#claimAccepted !== true
     )
       return;

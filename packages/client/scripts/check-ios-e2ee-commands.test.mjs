@@ -26,7 +26,11 @@ import { after, before, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const SCRIPT = join(here, "check-ios-e2ee-commands.mjs");
+// Override only to replay these mutants against an older checker (a
+// fail-first control: a new mutant must fail there and pass here).
+const SCRIPT =
+  process.env.CHECK_IOS_E2EE_SCRIPT ??
+  join(here, "check-ios-e2ee-commands.mjs");
 const ROOT = dirname(here);
 
 const SOURCES = "ios/App/SlogaE2ee/Sources/SlogaE2ee";
@@ -628,6 +632,169 @@ describe("G8b returns (audit M1)", () => {
         TRANSFER,
         'throw E2eeReject.invalidArgument("mime")',
         "throw E2eeReject.invalidArgument(exported.fileName)",
+      ],
+    );
+  });
+});
+
+// Stage 6 audit MINOR-1 / MINOR-2 mutants (each exits 0 on the dee74233
+// checker).
+const RECOVERY = `${SOURCES}/RecoverySheet.swift`;
+const MINT_HEAD =
+  "    private static func mintCode(_ engine: E2eeEngine, rotate: Bool) throws -> RecoveryCodeRecord {\n        dispatchPrecondition(condition: .notOnQueue(.main))\n";
+const REFRESH_BIND =
+  "            if let orphaned = RecoverySheet.takeOrphanedBundle(userId: userId) {\n";
+const RUNTIME_CACHED = "    private var cached: E2eeEngine?\n";
+/** mintCode parks a closure over the upload bundle; `target` receives it. */
+const mintStores = (target, value) => [
+  RECOVERY,
+  MINT_HEAD,
+  `${MINT_HEAD}        ${target} = ${value}\n`,
+];
+const TAKE_CLOSURE =
+  "{\n            dispatchPrecondition(condition: .notOnQueue(.main))\n            return try engine.backupTakePendingUpload()\n        }";
+
+describe("G8b stash and raw FFI (Stage 6 audit)", () => {
+  test("A2: a closure stashed in an uninitialized property, returned as `orphaned`", () => {
+    const mutations = [
+      [
+        SUPPORT,
+        RUNTIME_CACHED,
+        `${RUNTIME_CACHED}    var stash: (() throws -> String)?\n`,
+      ],
+      mintStores("E2eeRuntime.shared.stash", TAKE_CLOSURE),
+      [
+        PLUGIN,
+        REFRESH_BIND,
+        `            if let orphaned = try E2eeRuntime.shared.stash?() {\n                return orphaned\n            }\n${REFRESH_BIND}`,
+      ],
+    ];
+    expectViolationWith(
+      "G8b-stash",
+      ["E2eeRuntime.stash", "STORED_CLOSURES"],
+      ...mutations,
+    );
+    expectViolationWith(
+      "G8b-stash",
+      [
+        "RecoverySheet.mintCode(_:rotate:)",
+        "a closure",
+        "E2eeRuntime.shared.stash",
+      ],
+      ...mutations,
+    );
+    expectViolationWith(
+      "G8b-return",
+      ["orphaned may only be bound"],
+      ...mutations,
+    );
+  });
+
+  test("a closure stashed in a listed hook from a native-only caller", () => {
+    expectViolationWith(
+      "G8b-stash",
+      [
+        "RecoverySheet.mintCode(_:rotate:)",
+        "a closure",
+        "RecoverySheet.bundleWaitingHook",
+      ],
+      mintStores(
+        "RecoverySheet.bundleWaitingHook",
+        "{\n            dispatchPrecondition(condition: .notOnQueue(.main))\n            _ = try? engine.backupTakePendingUpload()\n        }",
+      ),
+    );
+  });
+
+  test("a function reference stashed from a native-only caller", () => {
+    expectViolationWith(
+      "G8b-stash",
+      ["RecoverySheet.mintCode(_:rotate:)", "a reference to engine"],
+      mintStores("RecoverySheet.engineForTesting", "E2eeRuntime.shared.engine"),
+    );
+  });
+
+  test("a closure stashed through a local first", () => {
+    expectViolationWith(
+      "G8b-stash",
+      [
+        "RecoverySheet.mintCode(_:rotate:)",
+        "take (a local holding a function)",
+      ],
+      [
+        RECOVERY,
+        MINT_HEAD,
+        `${MINT_HEAD}        let take = ${TAKE_CLOSURE}\n        RecoverySheet.bundleWaitingHook = take\n`,
+      ],
+    );
+  });
+
+  test("`orphaned` bound from something other than takeOrphanedBundle", () => {
+    expectViolationWith(
+      "G8b-return",
+      ["orphaned may only be bound"],
+      [
+        PLUGIN,
+        REFRESH_BIND,
+        `            if let orphaned = try? E2eeStore.prepareStoreDirectory().path {\n                return orphaned\n            }\n${REFRESH_BIND}`,
+      ],
+    );
+  });
+
+  test("a function-typed stored property with an initializer, not listed", () => {
+    expectViolationWith(
+      "G8b-stash",
+      ["E2eeStore.relay", "STORED_CLOSURES"],
+      [
+        STORE,
+        "enum E2eeStore {\n",
+        "enum E2eeStore {\n    static var relay: (() throws -> String)? = nil\n",
+      ],
+    );
+  });
+
+  test("a stored property inferred as a closure, not listed", () => {
+    expectViolationWith(
+      "G8b-stash",
+      ["E2eeStore.relay", "STORED_CLOSURES"],
+      [
+        STORE,
+        "enum E2eeStore {\n",
+        'enum E2eeStore {\n    static let relay = { () -> String in "" }\n',
+      ],
+    );
+  });
+
+  test("B: the raw FFI symbol called from the sources", () => {
+    const mutations = [
+      [
+        SUPPORT,
+        "import Foundation\n",
+        "import Foundation\nimport acutest_e2ee_iosFFI\n\nfunc rawTake(_ engine: E2eeEngine) -> RustBuffer {\n    dispatchPrecondition(condition: .notOnQueue(.main))\n    var status = RustCallStatus()\n    return uniffi_acutest_e2ee_ios_fn_method_e2eeengine_backup_take_pending_upload(engine.uniffiClonePointer(), &status)\n}\n",
+      ],
+    ];
+    expectViolationWith(
+      "G8b-ffi",
+      ["import acutest_e2ee_iosFFI"],
+      ...mutations,
+    );
+    expectViolationWith(
+      "G8b-ffi",
+      [
+        "uniffi_acutest_e2ee_ios_fn_method_e2eeengine_backup_take_pending_upload",
+      ],
+      ...mutations,
+    );
+    expectViolationWith("G8b-ffi", ["uniffiClonePointer"], ...mutations);
+  });
+
+  test("an FFI symbol bound by name in a string literal", () => {
+    expectViolationWith(
+      "G8b-ffi",
+      ["string literal"],
+      [
+        SUPPORT,
+        "import Foundation\n",
+        'import Foundation\n\n@_silgen_name("uniffi_acutest_e2ee_ios_fn_method_e2eeengine_backup_take_pending_upload")\nfunc rawTake(_ p: UnsafeMutableRawPointer) -> Int\n',
       ],
     );
   });

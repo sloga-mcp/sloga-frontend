@@ -145,11 +145,34 @@
  *                      expression, once `engine.<own>(…)` and
  *                      `args.<reader>(…)` are cut out, holds nothing but
  *                      try/jsonQuote/map/literals or a pinned extra (the
- *                      refresh arm's `orphaned`); and inside any function
+ *                      refresh arm's `orphaned`, which must be bound only as
+ *                      `if let orphaned = RecoverySheet.takeOrphanedBundle(
+ *                      label: name)` and appear otherwise only as a bare
+ *                      `return orphaned`); and inside any function
  *                      that can reach a native-only method, `E2eeReject(json:`,
  *                      `invalidArgument(` and `Failure(message:` (all three
  *                      reach the webview through rejectJson) take one plain
  *                      literal
+ *   G8b-stash          (b) cannot see a closure parked in storage by a LISTED
+ *                      caller. So (1) inside every NATIVE_ONLY_CALLERS
+ *                      function, an assignment (`=`, `+=`) to anything but a
+ *                      local let/var of that function has no `{`, no
+ *                      function reference (a source function or engine
+ *                      method named but not called, or an `f(a:b:)`
+ *                      selector) and no local holding one on its right side
+ *                      (an init may set its own type's listed property); and
+ *                      (2) every function-typed stored property (`->`,
+ *                      `@convention` or a function typealias in its type, or
+ *                      an inferred/Any one initialized with a closure or a
+ *                      function reference), initialized or not, is pinned in
+ *                      STORED_CLOSURES, and no enum case has a function
+ *                      payload
+ *   G8b-ffi            the sources never touch the raw FFI: no
+ *                      acutest_e2ee_iosFFI (import or name), uniffi*,
+ *                      ffi_acutest_*, RustCallStatus, rustCall*, RustBuffer,
+ *                      ForeignBytes, FfiConverter*, @_silgen_name, @_cdecl,
+ *                      dlsym/dlopen, and no string literal naming a uniffi /
+ *                      ffi_acutest_ symbol
  *
  * The G8b call graph (conservative: it may report a path that cannot run,
  * it must not miss one that can):
@@ -176,7 +199,9 @@
  *   Limits: a call through a value whose name is not a function or property
  *   of these sources (a closure parameter or a stored property with no
  *   initializer) adds no edge; (b) is what still catches the code that made
- *   the value. Dispatch from SDK code into our overrides (UIKit lifecycle,
+ *   the value when it is not a listed caller, and G8b-stash when it is.
+ *   Not covered: a native-only RESULT (data, not a closure) written by a
+ *   listed caller into storage another path reads. Dispatch from SDK code into our overrides (UIKit lifecycle,
  *   KVO/NotificationCenter blocks) is not followed beyond the code that
  *   registers it; such code is a root only by the rules above. Errors thrown
  *   by the engine itself pass through rejectJson (the core's scrubbed JSON).
@@ -1709,8 +1734,35 @@ const FIXED_RESOLVES = {
   "AttachmentTransfer.copyImage(messageId:idx:)": ["null"],
   "AttachmentTransfer.save(messageId:idx:)": ["true", "false"],
 };
-/** Extra names a generic arm may return besides its own engine call. */
-const ARM_RETURN_EXTRAS = { e2ee_backup_refresh_if_due: ["orphaned"] };
+/**
+ * Extra names a generic arm may return besides its own engine call, each
+ * with the one call it must be bound from (audit S6 MINOR-1: a name alone
+ * let `if let orphaned = <anything>` through).
+ */
+const ARM_RETURN_EXTRAS = {
+  e2ee_backup_refresh_if_due: {
+    orphaned: "RecoverySheet.takeOrphanedBundle",
+  },
+};
+/**
+ * The function-typed STORED properties of these sources (a closure type, a
+ * collection or optional of one, or a typealias of one), as `Type.name`.
+ * Any other one, initialized or not, is G8b-stash: a closure parked in a
+ * stored property and called later is a path the call graph cannot follow.
+ * Computed properties are not storage and are not listed.
+ */
+const STORED_CLOSURES = [
+  "AttachmentSchemeHandler.decrypt",
+  "FlowRegistry.provider",
+  "FlowRegistry.waitingHook",
+  "NativeConfirmPresenter.presenter",
+  "RecoverySheetController.dismissWaiters",
+  "WorkerPool.jobs",
+];
+/** Raw FFI in the sources: everything goes through the generated E2eeEngine. */
+const RAW_FFI =
+  /\bimport\s+(?:(?:class|struct|enum|protocol|func|var|let|typealias)\s+)?acutest_e2ee_iosFFI\b|\bacutest_e2ee_iosFFI\b|\buniffi\w*|\bffi_acutest_\w*|\bRustCallStatus\b|\brustCall\w*|\bRustBuffer\b|\bForeignBytes\b|\bFfiConverter\w*|@_silgen_name\b|@_cdecl\b|\bdl(?:sym|open)\b/g;
+const RAW_FFI_LITERAL = /uniffi|ffi_acutest_|acutest_e2ee_iosFFI/;
 
 function subtractRanges(ranges, cut) {
   const out = [];
@@ -2158,7 +2210,9 @@ function checkReach(ctx, add) {
         "true",
         "false",
         "nil",
-        ...(has(ARM_RETURN_EXTRAS, n.arm) ? ARM_RETURN_EXTRAS[n.arm] : []),
+        ...(has(ARM_RETURN_EXTRAS, n.arm)
+          ? Object.keys(ARM_RETURN_EXTRAS[n.arm])
+          : []),
       ]);
       const stray = [...expr.matchAll(/\b[A-Za-z_]\w*\b/g)]
         .map((x) => x[0])
@@ -2173,6 +2227,8 @@ function checkReach(ctx, add) {
       }
     }
   }
+  checkArmExtras(nodes, add);
+  checkStash(ctx, nodes, reaches, add);
   for (const n of reaches) {
     const code = n.file.code;
     for (const [a, b] of n.ranges) {
@@ -2200,6 +2256,370 @@ function checkReach(ctx, add) {
     reaches: reaches.size,
     reachers: [...reaches].map((n) => n.id).sort(),
   };
+}
+
+/**
+ * An ARM_RETURN_EXTRAS name is bound ONLY as `if let`/`guard let <name> =
+ * <its call>(label: ident, …)` and otherwise appears only as a bare
+ * `return <name>`. Any other mention (a second binding, a reassignment, a
+ * closure parameter, an argument) fails.
+ */
+function checkArmExtras(nodes, add) {
+  for (const n of nodes) {
+    if (!n.arm || n.id.indexOf("runGeneric[") < 0) continue;
+    if (!has(ARM_RETURN_EXTRAS, n.arm)) continue;
+    const code = n.file.code;
+    for (const [name, source] of Object.entries(ARM_RETURN_EXTRAS[n.arm])) {
+      const [recv, fn] = source.split(".");
+      const bind = new RegExp(`^\\s*=\\s*${recv}\\s*\\.\\s*${fn}\\s*\\(`);
+      let bound = 0;
+      for (const [a, b] of n.ranges) {
+        const re = new RegExp(`\\b${name}\\b`, "g");
+        re.lastIndex = a;
+        for (let m; (m = re.exec(code)) && m.index < b; ) {
+          const before = code.slice(Math.max(a, m.index - 40), m.index);
+          const after = code.slice(m.index + name.length, b);
+          const head = bind.exec(after);
+          if (/\b(?:if|guard)\s+let\s+$/.test(before) && head) {
+            const open = m.index + name.length + head[0].length - 1;
+            const close = n.file.match.get(open);
+            const args = code.slice(open + 1, close);
+            const plainArgs =
+              /^\s*(?:[A-Za-z_]\w*\s*:\s*[A-Za-z_]\w*\s*(?:,\s*)?)*$/.test(
+                args,
+              ) && !/,\s*$/.test(args);
+            if (plainArgs && /^\s*(?:\{|else\b)/.test(code.slice(close + 1))) {
+              bound++;
+              continue;
+            }
+          } else if (
+            /\breturn\s+$/.test(before) &&
+            /^[ \t]*(?:\n|;|\})/.test(after)
+          ) {
+            continue;
+          }
+          add(
+            "G8b-return",
+            n.file,
+            m.index,
+            `case "${n.arm}": ${name} may only be bound as \`if let ${name} = ${source}(label: name)\` and returned bare`,
+          );
+        }
+      }
+      if (!bound) {
+        add(
+          "G8b-return",
+          n.file,
+          n.p,
+          `case "${n.arm}" never binds ${name} from ${source}(…); update ARM_RETURN_EXTRAS`,
+        );
+      }
+    }
+  }
+}
+
+/**
+ * G8b-stash (audit S6 MINOR-1). Reachability follows names; a closure parked
+ * in storage and called later through it is followed only when the storage
+ * has an initializer. So:
+ *   (1) inside every function that can reach a native-only method (the
+ *       NATIVE_ONLY_CALLERS set), the right side of an assignment (`=`, `+=`)
+ *       to anything but a local `let`/`var` of that function holds no `{`
+ *       (closure literal, trailing closure), no function reference (a
+ *       function or engine method named but not called, or a `f(a:b:)`
+ *       selector) and no local that holds one; an init of a type may set its
+ *       own STORED_CLOSURES property;
+ *   (2) every function-typed stored property (type annotation with `->`,
+ *       `@convention` or a function typealias; or an initializer holding a
+ *       closure that is not called on the spot or a function reference),
+ *       with an initializer or without, is listed in STORED_CLOSURES, and no
+ *       enum case carries a function-typed payload.
+ */
+function checkStash(ctx, nodes, reaches, add) {
+  const { swift, engineMethods } = ctx;
+  const aliasDefs = new Map();
+  for (const f of swift) {
+    for (const m of f.code.matchAll(
+      /\btypealias\s+([A-Za-z_]\w*)\s*(?:<[^=\n]*>)?\s*=([^\n;]*)/g,
+    )) {
+      aliasDefs.set(m[1], m[2]);
+    }
+  }
+  const fnAliases = new Set();
+  const isFnType = (t) =>
+    /->|@convention\b/.test(t) ||
+    [...t.matchAll(/[A-Za-z_]\w*/g)].some((x) => fnAliases.has(x[0]));
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const [k, v] of aliasDefs) {
+      if (!fnAliases.has(k) && isFnType(v)) {
+        fnAliases.add(k);
+        changed = true;
+      }
+    }
+  }
+  const funcNames = new Set([
+    ...(engineMethods ?? []),
+    ...Object.keys(NATIVE_ONLY),
+  ]);
+  for (const f of swift) {
+    for (const fr of f.frames) {
+      if (fr.kind === "func" && f.code.startsWith("func", fr.declPos)) {
+        funcNames.add(fr.name);
+      }
+    }
+  }
+
+  /** `let|var NAME` at `m`: its annotation and initializer span. */
+  const declAt = (f, m) => {
+    const code = f.code;
+    let k = m.index + m[0].length;
+    while (k < code.length && /[ \t]/.test(code[k])) k++;
+    let type = null;
+    if (code[k] === ":" && code[k + 1] !== ":") {
+      let e = k + 1;
+      while (e < code.length) {
+        const c = code[e];
+        if (c === "(" || c === "[") {
+          e = f.match.get(e) + 1;
+          continue;
+        }
+        if (c === "=" && code[e + 1] !== "=") break;
+        if ("{\n;,)]}".includes(c)) break;
+        e++;
+      }
+      type = code.slice(k + 1, e);
+      k = e;
+      while (k < code.length && /[ \t]/.test(code[k])) k++;
+    }
+    let init = null;
+    if (code[k] === "=" && code[k + 1] !== "=") {
+      init = [k + 1, initializerEnd(code, f.match, k + 1)];
+    }
+    return { type, init, after: k };
+  };
+
+  /** Why [a, b) of `f` may hold a function value, or null. */
+  const holdsFunction = (f, a, b, locals) => {
+    const code = f.code;
+    for (let k = a; k < b; k++) {
+      if (code[k] !== "{") continue;
+      return "a closure";
+    }
+    const re = /\b[A-Za-z_]\w*\b/g;
+    re.lastIndex = a;
+    for (let m; (m = re.exec(code)) && m.index < b; ) {
+      const w = m[0];
+      const after = code.slice(m.index + w.length, b);
+      const member = /\.\s*$/.test(code.slice(a, m.index));
+      if (/^\s*:(?!:)/.test(after)) continue; // an argument label
+      const call = /^\s*\(/.exec(after);
+      let selector = false;
+      if (call) {
+        const open = m.index + w.length + call[0].length - 1;
+        const inner = code.slice(open + 1, f.match.get(open));
+        selector = /^(?:\s*[A-Za-z_]\w*\s*:)+\s*$/.test(inner);
+      }
+      if (!member && locals.has(w)) {
+        if (locals.get(w) && !call) return `${w} (a local holding a function)`;
+        continue;
+      }
+      if (!funcNames.has(w)) continue;
+      if (call && !selector) continue;
+      return `a reference to ${w}`;
+    }
+    return null;
+  };
+
+  /** Locals of [a, b): name → holds a function value. */
+  const localsIn = (f, a, b) => {
+    const locals = new Map();
+    const re = /\b(?:let|var)\s+([A-Za-z_]\w*)/g;
+    re.lastIndex = a;
+    const found = [];
+    for (let m; (m = re.exec(f.code)) && m.index < b; ) found.push(m);
+    for (let pass = 0; pass < 2; pass++) {
+      for (const m of found) {
+        const d = declAt(f, m);
+        const fn =
+          (d.type !== null && isFnType(d.type)) ||
+          (d.init !== null &&
+            holdsFunction(f, d.init[0], d.init[1], locals) !== null);
+        locals.set(m[1], (locals.get(m[1]) ?? false) || fn);
+      }
+    }
+    return locals;
+  };
+
+  // (1) Stashing from a native-only caller.
+  for (const n of reaches) {
+    const code = n.file.code;
+    const owner = n.frame ?? funcAt(n.file, n.p);
+    const scope = owner ? [owner.declPos, owner.close] : n.ranges[0];
+    const locals = localsIn(n.file, scope[0], scope[1]);
+    const ownType = n.frame && n.name === "init" && n.type ? n.type : null;
+    for (const [a, b] of n.ranges) {
+      const re = /\+?=/g;
+      re.lastIndex = n.frame ? Math.max(a, n.frame.open) : a;
+      for (let m; (m = re.exec(code)) && m.index < b; ) {
+        const eq = m.index;
+        const rhs = eq + m[0].length;
+        if (code[rhs] === "=") {
+          re.lastIndex = rhs + 1;
+          continue;
+        }
+        if (m[0] === "=" && "=!<>-*/%&|^~?.+".includes(code[eq - 1])) continue;
+        const line = code.slice(code.lastIndexOf("\n", eq) + 1, eq);
+        if (
+          m[0] === "=" &&
+          /\b(?:let|var)\s+[A-Za-z_]\w*\s*(?::[^=]*)?$/.test(line)
+        ) {
+          continue; // a local's declaration
+        }
+        // The assigned postfix chain, read backwards.
+        let j = eq - 1;
+        while (j >= 0 && /[ \t]/.test(code[j])) j--;
+        while (j >= 0) {
+          const c = code[j];
+          if (c === ")" || c === "]") {
+            j = n.file.match.get(j) - 1;
+          } else if (c === "?" || c === "!") {
+            j--;
+          } else if (/\w/.test(c)) {
+            j = identEndingAt(code, j).start - 1;
+            let q = j;
+            while (q >= 0 && /\s/.test(code[q])) q--;
+            if (code[q] !== ".") break;
+            j = q - 1;
+            while (j >= 0 && /\s/.test(code[j])) j--;
+          } else break;
+        }
+        const chain = code.slice(j + 1, eq).trim();
+        const bare = /^[A-Za-z_]\w*$/.test(chain) ? chain : null;
+        if (bare && (bare === "_" || locals.has(bare))) continue;
+        // An init may set its own type's listed stored closure.
+        const target = bare ?? /^self\s*\.\s*([A-Za-z_]\w*)$/.exec(chain)?.[1];
+        if (
+          ownType &&
+          target &&
+          STORED_CLOSURES.includes(`${ownType}.${target}`)
+        ) {
+          continue;
+        }
+        const end = initializerEnd(code, n.file.match, rhs);
+        const why = holdsFunction(n.file, rhs, end, locals);
+        if (!why) continue;
+        add(
+          "G8b-stash",
+          n.file,
+          eq,
+          `${n.id} can reach a native-only method and stores ${why} outside its locals (${chain.replace(/\s+/g, " ")})`,
+        );
+      }
+    }
+  }
+
+  // (2) Function-typed stored properties and enum payloads.
+  for (const f of swift) {
+    const code = f.code;
+    for (const m of code.matchAll(/\b(?:let|var)\s+([A-Za-z_]\w*)/g)) {
+      if (/\.\s*$/.test(code.slice(Math.max(0, m.index - 4), m.index))) {
+        continue;
+      }
+      const owner = frameAt(f, m.index, (fr) => fr.kind !== "control");
+      if (owner && owner.kind !== "type") continue; // a local
+      const d = declAt(f, m);
+      if (d.init === null && code[d.after] === "{") {
+        const fr = f.frames.find((x) => x.open === d.after);
+        const first = /^\s*([A-Za-z_]\w*)/.exec(
+          code.slice(d.after + 1, fr ? fr.close : d.after + 1),
+        )?.[1];
+        if (first !== "willSet" && first !== "didSet") continue; // computed
+      }
+      let fn = d.type !== null && isFnType(d.type);
+      // An annotated non-function type cannot hold a closure, unless it is
+      // Any/AnyObject; then the initializer decides.
+      const inferred = d.type === null || /\bAny(?:Object)?\b/.test(d.type);
+      if (!fn && inferred && d.init !== null) {
+        const [a, b] = d.init;
+        for (let k = a; k < b && !fn; k++) {
+          if (code[k] !== "{") continue;
+          const close = f.match.get(k);
+          if (!/^\s*\(/.test(code.slice(close + 1, b + 1))) fn = true;
+          k = close;
+        }
+        if (!fn) {
+          const expr = code.slice(a, b).trim();
+          const ref =
+            /^(?:[A-Za-z_]\w*\s*\.\s*)*([A-Za-z_]\w*)(?:\s*\((?:\s*[A-Za-z_]\w*\s*:)+\s*\))?$/.exec(
+              expr,
+            );
+          if (ref && funcNames.has(ref[1]) && !/\(\s*\)$/.test(expr)) {
+            fn = true;
+          }
+        }
+      }
+      if (!fn) continue;
+      const id = `${owner ? `${owner.name}.` : ""}${m[1]}`;
+      if (STORED_CLOSURES.includes(id)) continue;
+      add(
+        "G8b-stash",
+        f,
+        m.index,
+        `${id} is a function-typed stored property not in STORED_CLOSURES (a stashed closure is invisible to the call graph)`,
+      );
+    }
+    for (const m of code.matchAll(/\bcase\s+([A-Za-z_]\w*)\s*\(/g)) {
+      const owner = frameAt(f, m.index, (fr) => fr.kind !== "control");
+      if (!owner || owner.kind !== "type") continue;
+      const open = m.index + m[0].length - 1;
+      if (!isFnType(code.slice(open + 1, f.match.get(open)))) continue;
+      add(
+        "G8b-stash",
+        f,
+        m.index,
+        `${owner.name}.${m[1]} carries a function-typed payload`,
+      );
+    }
+  }
+  for (const id of STORED_CLOSURES) {
+    const [type, name] = id.split(".");
+    const found = swift.some((f) =>
+      [
+        ...f.code.matchAll(new RegExp(`\\b(?:let|var)\\s+${name}\\b`, "g")),
+      ].some(
+        (m) =>
+          frameAt(f, m.index, (fr) => fr.kind !== "control")?.name === type,
+      ),
+    );
+    if (!found) {
+      add(
+        "G8b-stash",
+        null,
+        null,
+        `listed stored closure ${id} not found; update STORED_CLOSURES`,
+      );
+    }
+  }
+}
+
+/** G8b-ffi (audit S6 MINOR-2): the sources never touch the raw FFI. */
+function checkRawFfi(swift, add) {
+  for (const f of swift) {
+    for (const m of f.code.matchAll(RAW_FFI)) {
+      add(
+        "G8b-ffi",
+        f,
+        m.index,
+        `raw FFI \`${m[0].replace(/\s+/g, " ")}\`; the sources call the core only through E2eeEngine`,
+      );
+    }
+    for (const s of f.strings.values()) {
+      if (RAW_FFI_LITERAL.test(s.value)) {
+        add("G8b-ffi", f, s.start, `a string literal names an FFI symbol`);
+      }
+    }
+  }
 }
 
 const EVENT_NAME = "backupBundleWaiting";
@@ -2904,6 +3324,7 @@ function check(opts) {
     }
   }
   checkEvents(swift, plugin, add);
+  checkRawFfi(swift, add);
   // G8b reachability and what reaches the webview.
   const reach = checkReach(
     {
@@ -2915,6 +3336,7 @@ function check(opts) {
       nativeArms,
       objc,
       targetOf,
+      engineMethods: [...methods.values()].map((m) => m.name),
     },
     add,
   );

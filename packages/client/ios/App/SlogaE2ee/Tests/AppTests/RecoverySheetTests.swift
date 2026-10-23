@@ -1364,7 +1364,10 @@ final class RecoverySheetTests: XCTestCase {
     }
 
     /// The same-user take is testSheetThatOutlivedItsPageLeavesItsBundleForTheNextPageOnce.
-    func testARefreshForAnotherUserGetsNothingAndDropsTheKeptBundle() {
+    /// Stage 6 (lane 3 MAJOR-1): a refresh for another account, e.g. from a
+    /// stale page bridge after a logout, must not destroy the minting
+    /// user's bundle on its way to nothing.
+    func testARefreshForAnotherUserGetsNothingAndLeavesTheKeptBundle() {
         guard let holder = makeEngine(provision: true) else {
             return
         }
@@ -1374,8 +1377,9 @@ final class RecoverySheetTests: XCTestCase {
         }
         let foreign = subject(RecoverySheet.takeOrphanedBundle(userId: otherUserId), bad: bundle)
         XCTAssertTrue(foreign == nil, "a refresh for another account never gets the bundle")
-        let later = subject(RecoverySheet.takeOrphanedBundle(userId: testUserId), bad: bundle)
-        XCTAssertTrue(later == nil, "that refresh dropped it: the minting user's later take finds nothing")
+        let later = subject(RecoverySheet.takeOrphanedBundle(userId: testUserId), bad: nil)
+        XCTAssertEqual(later, bundle, "the minting user's later take still gets it")
+        XCTAssertTrue(RecoverySheet.takeOrphanedBundle(userId: testUserId) == nil, "and only once")
     }
 
     func testAKeptBundleIsAnnouncedOnceWithAnEmptyEventAfterItIsKept() {

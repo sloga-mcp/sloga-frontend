@@ -77,9 +77,10 @@ open class SlogaBridgeViewController: CAPBridgeViewController {
         // downgrade, verify or save for a caller that no longer exists.
         // A recovery sheet that has started minting or restoring is the one
         // exception and stays up (RecoverySheet.teardownForNavigation): core
-        // has already stored the new backup state, so the code must still be
-        // shown and the bundle couriered when the sheet closes (F3), or a
-        // rotate would silently break the user's saved code.
+        // holds the minted key until the sheet's close takes it, so the code
+        // must still be shown and the bundle couriered when the sheet closes
+        // (F3), or the user would hold a code whose backup never reaches the
+        // server.
         // Acting on every notification whose new value is true (not only a
         // false-to-true change) errs toward declining, which is the safe side.
         // All three calls are safe from any thread and never wait on main.

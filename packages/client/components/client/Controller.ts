@@ -180,6 +180,9 @@ class Lifecycle {
       this.client.off("policyChanges", this.onPolicyChanges);
       this.client.off("error", this.onError);
       this.client.on("error", () => {}); // suppress stale unhandled errors
+      // The E2EE bridge's iOS plugin listener outlives the client; a stale
+      // bridge must never take a recovery bundle for the new one (IE Stage 6).
+      if (this.client.e2ee instanceof E2EEBridge) void this.client.e2ee.dispose();
     }
 
     this.client = new Client({
