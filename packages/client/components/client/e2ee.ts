@@ -6319,6 +6319,10 @@ export class E2EEBridge implements E2EEAdapter {
           this.#backupRefreshAgain = false;
           const selfId = this.#client.user?.id;
           if (!selfId || !this.#backupTakeAllowed()) break;
+          // The chain reports the LAST pass that ran: a later success clears
+          // an earlier failure (a refused follow-up above keeps it).
+          failed = false;
+          failure = undefined;
           try {
             const bundle = await this.#invoke<BackupBundle | null>(
               "e2ee_backup_refresh_if_due",

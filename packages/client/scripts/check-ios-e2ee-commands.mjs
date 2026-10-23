@@ -201,7 +201,9 @@
  *   initializer) adds no edge; (b) is what still catches the code that made
  *   the value when it is not a listed caller, and G8b-stash when it is.
  *   Not covered: a native-only RESULT (data, not a closure) written by a
- *   listed caller into storage another path reads. Dispatch from SDK code into our overrides (UIKit lifecycle,
+ *   listed caller into storage another path reads; a closure handed as an
+ *   ARGUMENT to a setter or method that stores it in an allowlisted
+ *   property (G8b-stash looks at `=` / `+=` only). Dispatch from SDK code into our overrides (UIKit lifecycle,
  *   KVO/NotificationCenter blocks) is not followed beyond the code that
  *   registers it; such code is a root only by the rules above. Errors thrown
  *   by the engine itself pass through rejectJson (the core's scrubbed JSON).

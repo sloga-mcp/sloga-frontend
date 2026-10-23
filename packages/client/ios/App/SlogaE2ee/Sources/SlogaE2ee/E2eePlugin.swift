@@ -596,7 +596,7 @@ private extension E2eePlugin {
             // to the page that is gone and kept it (the page heard
             // `backupBundleWaiting`). Handed over only to a refresh for the
             // user whose flow minted it, which uploads whatever this
-            // returns; a refresh for anyone else drops it.
+            // returns; a refresh for anyone else gets nothing and leaves it.
             if let orphaned = RecoverySheet.takeOrphanedBundle(userId: userId) {
                 return orphaned
             }
