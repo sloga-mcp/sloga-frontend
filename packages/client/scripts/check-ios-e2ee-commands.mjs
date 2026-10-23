@@ -303,6 +303,7 @@ const NATIVE_ONLY = {
   recoveryClosed: ["RecoverySheet.swift"],
   backupTakePendingUpload: ["RecoverySheet.swift"],
   backupTakePendingRepublish: ["RecoverySheet.swift"],
+  recoveryDiscardPending: ["RecoverySheet.swift"],
   serveAttachmentForRender: ["AttachmentSchemeHandler.swift"],
   attachmentCiphertext: ["AttachmentTransfer.swift"],
   attachmentStore: ["AttachmentTransfer.swift"],
@@ -1644,6 +1645,7 @@ const RECOVERY_CREATE = [
   "recoveryRotate",
   "recoveryFinish",
   "backupTakePendingUpload",
+  "recoveryDiscardPending",
 ];
 const RECOVERY_RESTORE = [
   "recoveryOpen",
@@ -1699,7 +1701,7 @@ const NATIVE_ONLY_CALLERS = [
   "RecoverySheet.finishFlow(_:)",
   "RecoverySheet.closeFlow(_:generation:)",
   "RecoverySheet.courierUpload(_:flow:outcome:mode:)",
-  "RecoverySheet.forgetMintedState(_:)",
+  "RecoverySheet.discardMintedState(_:)",
   "RecoverySheet.takeRepublish(_:)",
 ];
 /** Native export entry points: every function-level return is one of these. */

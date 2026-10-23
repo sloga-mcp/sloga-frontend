@@ -627,7 +627,12 @@ public protocol E2eeEngineProtocol: AnyObject, Sendable {
     func attachmentStore(localId: String, bytes: Data) throws 
     
     /**
-     * Forget the LOCAL backup bookkeeping. Idempotent.
+     * Forget the LOCAL backup bookkeeping. Idempotent. Also drops a held
+     * (minted, not yet taken) recovery mint, as one step against take
+     * (core D5/D7). So a page-routed forget during a live recovery sheet
+     * turns that sheet's "I saved it" into "cancel": the code on screen
+     * opens nothing, and the card shows no backup. The only FE caller is
+     * the MFA-gated backup delete.
      */
     func backupForgetLocal() throws 
     
@@ -644,7 +649,12 @@ public protocol E2eeEngineProtocol: AnyObject, Sendable {
     
     /**
      * JSON `Option<BackupBundle>`: the opaque ciphertext bundle to
-     * `PUT /e2ee/backup` when a refresh is due, or JSON `null`.
+     * `PUT /e2ee/backup` when a refresh is due, or JSON `null`. Due also
+     * when the last built generation was never confirmed uploaded, at
+     * most once every 15 minutes (core D6). While a minted key is held
+     * (before its take), a refresh still builds under the PREVIOUS active
+     * key; the take then rebuilds one generation past it under the new
+     * key, so the newest bundle to leave is always the new key's.
      */
     func backupRefreshIfDue(userId: String) throws  -> String
     
@@ -661,9 +671,20 @@ public protocol E2eeEngineProtocol: AnyObject, Sendable {
     func backupTakePendingRepublish() throws  -> String
     
     /**
-     * Take the stashed ciphertext backup bundle for the courier: JSON
-     * `BackupBundle`, or the string `null` when there is none.
-     * Swift-internal; must never be routed from the webview (G8b).
+     * Take the minted ciphertext backup bundle for the courier: JSON
+     * `BackupBundle`, or the string `null` when there is none. Also `null`
+     * while the minting flow is still live (before `recovery_finish` /
+     * `recovery_closed`): the held mint stays for the take after the flow
+     * ends. A wipe also ends the flow, and it clears the held mint, so
+     * the take after it answers `null`. A held mint from another store or
+     * device is dropped and the take answers `null` too, promoting
+     * nothing. A take that returns a bundle has first PROMOTED its key to
+     * the active backup key (core design D2), which waits on the engine lock
+     * (an Argon2 mint or a refresh can hold it for seconds) and may
+     * rebuild the bundle (up to 8 MiB): never call it on the main thread.
+     * A promote error is returned and the held mint is dropped; the old
+     * key stays active. Swift-internal; must never be routed from the
+     * webview (G8b).
      */
     func backupTakePendingUpload() throws  -> String
     
@@ -807,11 +828,32 @@ public protocol E2eeEngineProtocol: AnyObject, Sendable {
     /**
      * Mint a NEW recovery code + first backup bundle (64 MiB Argon2id,
      * seconds: call off the main thread). Returns the CODE for one-time
-     * display in the native recovery sheet; the ciphertext bundle is
-     * stashed for [`Self::backup_take_pending_upload`]. Swift-internal;
-     * must never be routed from the webview (G8b).
+     * display in the native recovery sheet. Nothing is written to the
+     * store here: the minted key and its ciphertext bundle wait in memory
+     * and become ACTIVE only when [`Self::backup_take_pending_upload`]
+     * takes the bundle after this flow has ended (core design D1/D2). A
+     * re-mint in the same flow replaces the held one; a process death
+     * before the take drops it and leaves the store as it was.
+     * Swift-internal; must never be routed from the webview (G8b).
      */
     func recoveryCreate() throws  -> RecoveryCodeRecord
+    
+    /**
+     * Drop the minted key awaiting promotion WITHOUT promoting it (core
+     * design D5): the recovery sheet's rollback of a code that was minted
+     * but never shown. It replaces the old rollback of
+     * [`Self::backup_take_pending_upload`] + `backup_forget_local`, which
+     * under deferred activation would first PROMOTE the never-shown key
+     * (the flow has ended by then) and then delete the active row, losing
+     * the previously working key (on a rotate) whose code the user still
+     * holds. Never
+     * promotes, never opens or touches the store; the previously active
+     * key and its code stay exactly as they were. Idempotent. Not
+     * secret-bearing, but Swift-internal all the same: must never be
+     * routed from the webview (G8b), because a page that could call it
+     * could void the bundle of a code the user has already seen and saved.
+     */
+    func recoveryDiscardPending() throws 
     
     /**
      * Finish the recovery flow; returns core's derived outcome ("create",
@@ -841,8 +883,10 @@ public protocol E2eeEngineProtocol: AnyObject, Sendable {
     
     /**
      * Rotate the recovery code (new code, continued generation). Same
-     * shape and cost as [`Self::recovery_create`]. Swift-internal; must
-     * never be routed from the webview (G8b).
+     * shape and cost as [`Self::recovery_create`], and the same deferred
+     * activation: the old key stays active, and the old code keeps
+     * opening every upload, until the take promotes the new one.
+     * Swift-internal; must never be routed from the webview (G8b).
      */
     func recoveryRotate() throws  -> RecoveryCodeRecord
     
@@ -1151,7 +1195,12 @@ open func attachmentStore(localId: String, bytes: Data)throws   {try rustCallWit
 }
     
     /**
-     * Forget the LOCAL backup bookkeeping. Idempotent.
+     * Forget the LOCAL backup bookkeeping. Idempotent. Also drops a held
+     * (minted, not yet taken) recovery mint, as one step against take
+     * (core D5/D7). So a page-routed forget during a live recovery sheet
+     * turns that sheet's "I saved it" into "cancel": the code on screen
+     * opens nothing, and the card shows no backup. The only FE caller is
+     * the MFA-gated backup delete.
      */
 open func backupForgetLocal()throws   {try rustCallWithError(FfiConverterTypeE2eeError_lift) {
     uniffi_acutest_e2ee_ios_fn_method_e2eeengine_backup_forget_local(self.uniffiClonePointer(),$0
@@ -1182,7 +1231,12 @@ open func backupRederiveRepublish()throws  -> String  {
     
     /**
      * JSON `Option<BackupBundle>`: the opaque ciphertext bundle to
-     * `PUT /e2ee/backup` when a refresh is due, or JSON `null`.
+     * `PUT /e2ee/backup` when a refresh is due, or JSON `null`. Due also
+     * when the last built generation was never confirmed uploaded, at
+     * most once every 15 minutes (core D6). While a minted key is held
+     * (before its take), a refresh still builds under the PREVIOUS active
+     * key; the take then rebuilds one generation past it under the new
+     * key, so the newest bundle to leave is always the new key's.
      */
 open func backupRefreshIfDue(userId: String)throws  -> String  {
     return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeE2eeError_lift) {
@@ -1215,9 +1269,20 @@ open func backupTakePendingRepublish()throws  -> String  {
 }
     
     /**
-     * Take the stashed ciphertext backup bundle for the courier: JSON
-     * `BackupBundle`, or the string `null` when there is none.
-     * Swift-internal; must never be routed from the webview (G8b).
+     * Take the minted ciphertext backup bundle for the courier: JSON
+     * `BackupBundle`, or the string `null` when there is none. Also `null`
+     * while the minting flow is still live (before `recovery_finish` /
+     * `recovery_closed`): the held mint stays for the take after the flow
+     * ends. A wipe also ends the flow, and it clears the held mint, so
+     * the take after it answers `null`. A held mint from another store or
+     * device is dropped and the take answers `null` too, promoting
+     * nothing. A take that returns a bundle has first PROMOTED its key to
+     * the active backup key (core design D2), which waits on the engine lock
+     * (an Argon2 mint or a refresh can hold it for seconds) and may
+     * rebuild the bundle (up to 8 MiB): never call it on the main thread.
+     * A promote error is returned and the held mint is dropped; the old
+     * key stays active. Swift-internal; must never be routed from the
+     * webview (G8b).
      */
 open func backupTakePendingUpload()throws  -> String  {
     return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeE2eeError_lift) {
@@ -1516,15 +1581,40 @@ open func recoveryClosed(generation: UInt64?)throws  -> String?  {
     /**
      * Mint a NEW recovery code + first backup bundle (64 MiB Argon2id,
      * seconds: call off the main thread). Returns the CODE for one-time
-     * display in the native recovery sheet; the ciphertext bundle is
-     * stashed for [`Self::backup_take_pending_upload`]. Swift-internal;
-     * must never be routed from the webview (G8b).
+     * display in the native recovery sheet. Nothing is written to the
+     * store here: the minted key and its ciphertext bundle wait in memory
+     * and become ACTIVE only when [`Self::backup_take_pending_upload`]
+     * takes the bundle after this flow has ended (core design D1/D2). A
+     * re-mint in the same flow replaces the held one; a process death
+     * before the take drops it and leaves the store as it was.
+     * Swift-internal; must never be routed from the webview (G8b).
      */
 open func recoveryCreate()throws  -> RecoveryCodeRecord  {
     return try  FfiConverterTypeRecoveryCodeRecord_lift(try rustCallWithError(FfiConverterTypeE2eeError_lift) {
     uniffi_acutest_e2ee_ios_fn_method_e2eeengine_recovery_create(self.uniffiClonePointer(),$0
     )
 })
+}
+    
+    /**
+     * Drop the minted key awaiting promotion WITHOUT promoting it (core
+     * design D5): the recovery sheet's rollback of a code that was minted
+     * but never shown. It replaces the old rollback of
+     * [`Self::backup_take_pending_upload`] + `backup_forget_local`, which
+     * under deferred activation would first PROMOTE the never-shown key
+     * (the flow has ended by then) and then delete the active row, losing
+     * the previously working key (on a rotate) whose code the user still
+     * holds. Never
+     * promotes, never opens or touches the store; the previously active
+     * key and its code stay exactly as they were. Idempotent. Not
+     * secret-bearing, but Swift-internal all the same: must never be
+     * routed from the webview (G8b), because a page that could call it
+     * could void the bundle of a code the user has already seen and saved.
+     */
+open func recoveryDiscardPending()throws   {try rustCallWithError(FfiConverterTypeE2eeError_lift) {
+    uniffi_acutest_e2ee_ios_fn_method_e2eeengine_recovery_discard_pending(self.uniffiClonePointer(),$0
+    )
+}
 }
     
     /**
@@ -1574,8 +1664,10 @@ open func recoveryRestore(code: String)throws  -> String  {
     
     /**
      * Rotate the recovery code (new code, continued generation). Same
-     * shape and cost as [`Self::recovery_create`]. Swift-internal; must
-     * never be routed from the webview (G8b).
+     * shape and cost as [`Self::recovery_create`], and the same deferred
+     * activation: the old key stays active, and the old code keeps
+     * opening every upload, until the take promotes the new one.
+     * Swift-internal; must never be routed from the webview (G8b).
      */
 open func recoveryRotate()throws  -> RecoveryCodeRecord  {
     return try  FfiConverterTypeRecoveryCodeRecord_lift(try rustCallWithError(FfiConverterTypeE2eeError_lift) {
@@ -2631,7 +2723,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_attachment_store() != 4969) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_backup_forget_local() != 13569) {
+    if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_backup_forget_local() != 49705) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_backup_mark_uploaded() != 32366) {
@@ -2640,7 +2732,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_backup_rederive_republish() != 18532) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_backup_refresh_if_due() != 20366) {
+    if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_backup_refresh_if_due() != 62674) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_backup_status() != 59099) {
@@ -2649,7 +2741,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_backup_take_pending_republish() != 24835) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_backup_take_pending_upload() != 16194) {
+    if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_backup_take_pending_upload() != 34219) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_confirm_peer_downgrade() != 17608) {
@@ -2718,7 +2810,10 @@ private let initializationResult: InitializationResult = {
     if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_recovery_closed() != 18912) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_recovery_create() != 1300) {
+    if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_recovery_create() != 57948) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_recovery_discard_pending() != 6202) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_recovery_finish() != 9407) {
@@ -2730,7 +2825,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_recovery_restore() != 9777) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_recovery_rotate() != 11498) {
+    if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_recovery_rotate() != 63276) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_replenish() != 1524) {

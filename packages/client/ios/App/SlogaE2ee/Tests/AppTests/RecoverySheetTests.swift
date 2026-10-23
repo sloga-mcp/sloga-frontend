@@ -543,6 +543,14 @@ final class RecoverySheetTests: XCTestCase {
         return fields
     }
 
+    /// What a take would courier now (and promote, if core held a mint).
+    private func takePending(_ holder: EngineHolder, file: StaticString = #filePath, line: UInt = #line) -> String? {
+        offMain("backupTakePendingUpload", file: file, line: line) { () -> String in
+            dispatchPrecondition(condition: .notOnQueue(.main))
+            return try holder.get().backupTakePendingUpload()
+        }
+    }
+
     private func isProvisioned(_ holder: EngineHolder) -> Bool? {
         offMain("isProvisioned") { () -> Bool in
             dispatchPrecondition(condition: .notOnQueue(.main))
@@ -757,7 +765,7 @@ final class RecoverySheetTests: XCTestCase {
         waitOnMain("the sheet is gone") { stage == nil && !sheetOnScreen }
 
         let after = subject(status(holder), bad: before)
-        XCTAssertEqual(after?.exists, true, "the mint stored a local backup state")
+        XCTAssertEqual(after?.exists, true, "the courier's take made the minted key the active backup")
         XCTAssertEqual(after?.generation, bundle?.fields.generation, "status generation = the bundle's")
         XCTAssertEqual(after?.uploadedGeneration, 0, "nothing is uploaded until the courier confirms")
         XCTAssertGreaterThan(after?.createdAt ?? 0, 0, "created_at is set")
@@ -886,7 +894,7 @@ final class RecoverySheetTests: XCTestCase {
 
     // MARK: 4. M1(b): minted but never shown is rolled back
 
-    func testFullTeardownDuringCreateMintDeclinesAndForgetsTheMintedState() {
+    func testFullTeardownDuringCreateMintDeclinesAndDiscardsTheMintedState() {
         guard let holder = makeEngine(provision: true) else {
             return
         }
@@ -904,12 +912,18 @@ final class RecoverySheetTests: XCTestCase {
         waitOnMain("the sheet is gone") { stage == nil && !sheetOnScreen }
         let after = subject(status(holder), bad: StatusFields.liveBackup)
         XCTAssertEqual(after, StatusFields.noBackup, "no local backup key is left that nobody holds a code for")
+        // The mint writes nothing, so the status check alone also passes with
+        // no rollback at all. A take now would promote a mint still held in
+        // core's slot: it must find nothing, and leave the status unchanged.
+        XCTAssertEqual(takePending(holder), "null", "the never-shown mint was discarded, not left to a take")
+        XCTAssertEqual(status(holder), StatusFields.noBackup, "a later take activates nothing")
     }
 
-    /// The same rollback on rotate, where it cannot pass by accident: before
-    /// the rotate the store holds generation 1. No mint would leave it at 1,
-    /// a mint without the rollback at 2; only mint + forget leaves none.
-    func testFullTeardownDuringRotateMintForgetsTheMintedState() {
+    /// The same rollback on rotate: before the rotate the store holds
+    /// generation 1 under a code the user saved. The discard keeps exactly
+    /// that key active; the take afterwards proves the never-shown mint is
+    /// gone (a mint left in the slot would promote to generation 2 there).
+    func testFullTeardownDuringRotateMintDiscardsTheMintedState() {
         guard let holder = makeEngine(provision: true), createBackup(on: holder) != nil,
               let before = status(holder)
         else {
@@ -924,8 +938,10 @@ final class RecoverySheetTests: XCTestCase {
         XCTAssertEqual(stage, "minting", "Create code starts the rotate mint")
         RecoverySheet.teardown()
         assertRejected(result(of: flow), declinedJson, "full teardown during the rotate mint")
-        let after = subject(status(holder), bad: before)
-        XCTAssertEqual(after, StatusFields.noBackup, "the rotated, never-shown key is gone and nothing else is live")
+        let after = subject(status(holder), bad: StatusFields.noBackup)
+        XCTAssertEqual(after, before, "the saved code's key stays active; the never-shown key never became active")
+        XCTAssertEqual(takePending(holder), "null", "the never-shown mint was discarded, not left to a take")
+        XCTAssertEqual(status(holder), before, "a later take activates nothing")
     }
 
     // MARK: 5. m1: never over a consent alert

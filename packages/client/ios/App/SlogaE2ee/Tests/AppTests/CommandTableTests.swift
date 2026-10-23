@@ -122,6 +122,8 @@ private let unroutableNames: [String] = [
     "e2ee_recovery_finish",
     "e2ee_recovery_open",
     "e2ee_recovery_closed",
+    "e2ee_recovery_discard_pending",
+    "recoveryDiscardPending",
     "e2ee_recovery_context",
     "e2ee_backup_open_recovery",
     "e2ee_backup_take_pending_upload",

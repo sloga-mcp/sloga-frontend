@@ -316,6 +316,14 @@ describe("G8 unreachable from the webview", () => {
     ]);
   });
 
+  test("recoveryDiscardPending called from a generic arm", () => {
+    expectViolation("G8b-native-only", [
+      PLUGIN,
+      "            try engine.backupForgetLocal()\n",
+      "            try engine.backupForgetLocal()\n            try engine.recoveryDiscardPending()\n",
+    ]);
+  });
+
   test("serveAttachmentForRender called from AttachmentTransfer.swift", () => {
     expectViolation("G8b-native-only", [
       `${SOURCES}/AttachmentTransfer.swift`,

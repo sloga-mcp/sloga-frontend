@@ -22,17 +22,19 @@
 //     self-heal with a forced recovery_closed(nil), then open again.
 //   - recovery_closed / recovery_finish return the core-derived outcome;
 //     a minted and displayed code is still couriered on close (F3).
-//   - The mint persists the new local backup_state at once (backup.rs
-//     put_backup_state in backup_create). A code minted but never shown is
-//     a live backup key nobody holds, so that branch deletes the local
-//     state again (backup_forget_local; Android rollback parity).
+//   - The mint writes nothing (e2ee-recovery-mint-promotion D1/D4): the
+//     sealed key and its bundle wait in core's backup slot and become the
+//     active backup only when backup_take_pending_upload takes them after
+//     the flow has ended. A code minted but never shown must never be
+//     taken, so that branch drops the slot with recovery_discard_pending
+//     before the flow ends; the previously active key (rotate) stays.
 //
 // Two teardowns. `teardown()` (called only by E2eePlugin's wipe) closes the
 // sheet in any stage. `teardownForNavigation()` (every main-frame load,
 // including a WebContent process the system killed and Capacitor reloaded)
 // closes it only before a mint or restore has started: once Argon2 runs or
 // the code is on screen, the native sheet outlives the page, so the user
-// still sees and saves the code that the store now holds.
+// still sees and saves the code that the take will make active.
 //
 // Orphaned bundle. A sheet that outlived its page still resolves the old
 // plugin call, but that page is gone and nothing would upload the bundle
@@ -219,8 +221,8 @@ enum RecoverySheet {
                     }
                 } catch {
                     // W2 carry-in: after a failed mint nothing is ever
-                    // couriered. Core's pending_upload may still hold an
-                    // older flow's bundle, and that is not this code's.
+                    // couriered. Core's backup slot may still hold an
+                    // earlier mint of this flow, and that is not this code's.
                     mintError = error
                     DispatchQueue.main.async {
                         flow.showMintFailed()
@@ -235,6 +237,17 @@ enum RecoverySheet {
                 _ = try closeFlow(engine, generation: generation)
                 throw busyReject
             case .finish, .close:
+                // Minted but never displayed (full teardown during the mint,
+                // or the sheet dismissed by someone else first). Core holds a
+                // key derived from a code nobody has; a take after the flow
+                // ends would make it the active backup (on rotate, replacing
+                // the key the user's saved code opens). So drop it while the
+                // flow is still live, before closeFlow ends it: no take can
+                // promote it after that. Also after a failed mint (harmless:
+                // the slot then holds nothing of this code's).
+                if minted, !flow.codeWasShown {
+                    discardMintedState(engine)
+                }
                 let outcome = try closeFlow(engine, generation: generation)
                 if let mintError {
                     throw mintError
@@ -243,17 +256,6 @@ enum RecoverySheet {
                 // server backup, so a close after display still couriers.
                 if minted, flow.codeWasShown, let outcome {
                     return try courierUpload(engine, flow: flow, outcome: outcome, mode: mode)
-                }
-                // Minted but never displayed (full teardown during the mint,
-                // or the sheet dismissed by someone else first). The mint
-                // already stored a backup key derived from a code nobody
-                // holds; left alone, the next refresh would upload under it
-                // (on rotate, replacing the server copy the user's saved
-                // code opens). Only when core still had this flow live
-                // (outcome == mode): a nil outcome means a wipe reset the
-                // handoff, and there is no store left to clean.
-                if minted, outcome == mode {
-                    forgetMintedState(engine)
                 }
                 throw E2eeReject.declined
             }
@@ -437,21 +439,15 @@ enum RecoverySheet {
         return bundle
     }
 
-    /// Best effort: delete the local backup_state the mint just wrote (local
-    /// only; the server copy is untouched). Guarded by is_provisioned:
-    /// backup_forget_local goes through core's opening path, which on a
-    /// store a wipe just deleted would create a fresh one.
-    private static func forgetMintedState(_ engine: E2eeEngine) {
+    /// Best effort: drop the never-shown mint from core's backup slot. Never
+    /// promotes and never opens or touches the store (safe after a wipe), so
+    /// the previously active key and its code stay exactly as they were.
+    /// Idempotent. Never a take: a take after the flow ended would promote.
+    private static func discardMintedState(_ engine: E2eeEngine) {
         dispatchPrecondition(condition: .notOnQueue(.main))
         E2eeRuntime.shared.withBackgroundTask("gg.sloga.e2ee.recovery") {
             dispatchPrecondition(condition: .notOnQueue(.main))
-            // Drop the bundle core still holds for the courier, too: it is
-            // sealed under the key being forgotten, so nothing may send it.
-            _ = try? engine.backupTakePendingUpload()
-            guard (try? engine.isProvisioned()) == true else {
-                return
-            }
-            try? engine.backupForgetLocal()
+            try? engine.recoveryDiscardPending()
         }
     }
 
