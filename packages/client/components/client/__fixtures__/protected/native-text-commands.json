@@ -1,0 +1,56 @@
+{
+  "_about": "Pinned native text command list (W4 plan 4.2 A1). Generated from the pinned sources below; protectedTextTypes.test.ts asserts TEXT_COMMANDS against it ALWAYS and re-parses the sources when present.",
+  "sources": [
+    {
+      "file": "w4-notes/w4_design.md",
+      "sha256": "0edf1edb043423d57c0240ac1e3a570cec0aaf667c8f26dd592c31dca68f1e26"
+    },
+    {
+      "file": "w4-notes/w4_native_error.rs",
+      "sha256": "be40b9423216c1551d48c994e5edf12c1e83346e84ed6f7f45afe2f9ee33daf5"
+    },
+    {
+      "file": "w4-notes/w4_native_types.rs",
+      "sha256": "e5734af7783b15cd51a1c77f2ab9744b20e3efc1e34f6522c1db81cdc2e2010b"
+    },
+    {
+      "file": "~/.claude/plans/protected-channels-W3-native.md",
+      "note": "D7/3a e2ee_text_pin_own_devices, D12 e2ee_text_mark_left"
+    }
+  ],
+  "design_8_3_table": [
+    "e2ee_text_group_create",
+    "e2ee_text_join",
+    "e2ee_text_admit",
+    "e2ee_text_process",
+    "e2ee_text_commit_won",
+    "e2ee_text_commit_lost",
+    "e2ee_text_pending_commit",
+    "e2ee_text_encrypt",
+    "e2ee_text_decrypt",
+    "e2ee_text_seat_list_sign",
+    "e2ee_text_seat_list_verify",
+    "e2ee_text_owner_pin_state",
+    "e2ee_text_owner_confirm_change",
+    "e2ee_text_owner_handover_sign",
+    "e2ee_text_remove",
+    "e2ee_text_update",
+    "e2ee_text_state",
+    "e2ee_mls_group_kind"
+  ],
+  "w3_additions": ["e2ee_text_mark_left", "e2ee_text_pin_own_devices"],
+  "named_in_native_sources": [
+    "e2ee_mls_group_kind",
+    "e2ee_text_commit_won",
+    "e2ee_text_decrypt",
+    "e2ee_text_encrypt",
+    "e2ee_text_group_create",
+    "e2ee_text_mark_left",
+    "e2ee_text_owner_handover_sign",
+    "e2ee_text_owner_pin_state",
+    "e2ee_text_process",
+    "e2ee_text_seat_list_sign",
+    "e2ee_text_seat_list_verify",
+    "e2ee_text_state"
+  ]
+}

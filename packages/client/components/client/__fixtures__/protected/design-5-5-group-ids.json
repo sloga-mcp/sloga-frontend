@@ -1,0 +1,14 @@
+{
+  "_about": "Design 3.1 text group id derivation and the 5.5 vectors. Generated from the pinned design copy.",
+  "sources": [
+    {
+      "file": "w4-notes/w4_design.md",
+      "sha256": "0edf1edb043423d57c0240ac1e3a570cec0aaf667c8f26dd592c31dca68f1e26"
+    }
+  ],
+  "context": "sloga-text-group-v1",
+  "formula_line": "\"sloga-text-group-v1\" LF channel_id LF decimal(g)",
+  "channel_id": "01J9Z3K4M5N6P7Q8R9S0T1V2W3",
+  "group_id_g0": "4a4ba4afc6e6ea1c9f4a271f7eded44ea860fdb814e4e1377121e02635a715b5",
+  "group_id_g1": "b4989a8d9b082e1668a726aa3303d3eb8b52688d340ca4dc1e0184f61fc67000"
+}

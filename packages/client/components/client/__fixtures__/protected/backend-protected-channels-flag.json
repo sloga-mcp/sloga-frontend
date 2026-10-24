@@ -1,0 +1,11 @@
+{
+  "_about": "Backend `GET /` advert shape: RevoltConfig.features.protected_channels = ProtectedChannelsFeature. Generated from the backend worktree source.",
+  "sources": [
+    {
+      "file": "wt-protected-be@4206add336:crates/delta/src/routes/root.rs",
+      "sha256": "a4b9db2082c766de148e0198bde13b73f60ccbf8d030df348eefe886a7600081"
+    }
+  ],
+  "advert_path": ["features", "protected_channels"],
+  "struct_fields": ["enabled: bool", "default_device_cap: u32"]
+}
