@@ -7,15 +7,25 @@ import {
   CIPHER_BANNER_SNOOZE_MS,
   collectEvents,
   eventLink,
+  fetchInOrder,
+  HAPPENING_ROOM_LIMIT,
+  HOME_DISCOVER_LIMIT,
+  HOME_FRIEND_LIMIT,
+  HOME_MENTION_LIMIT,
+  HOME_MENTION_SCAN_LIMIT,
   isNewUser,
   JUMP_EVENT_LIMIT,
   JUMP_UNREAD_LIMIT,
-  JUMP_VOICE_LIMIT,
+  MENTION_PREVIEW_LENGTH,
+  mentionPreview,
   parseEventLink,
   parseStoredTime,
+  pickDiscover,
+  pickHappening,
+  pickMentionIds,
+  pickOnlineFriends,
   pickUnreads,
   pickUpcoming,
-  pickVoiceRooms,
   primaryConnection,
   releaseOf,
   showCipherBanner,
@@ -188,32 +198,39 @@ test("Unread stops at its limit", () => {
   assert.deepEqual(pickUnreads([]), []);
 });
 
-test("In voice lists rooms with friends, busiest first", () => {
+test("Happening now lists rooms with friends first, then the busiest", () => {
   const friends = new Set(["alice", "bob", "cara", "me"]);
   const rooms = [
     { channelId: "one", participantIds: ["alice", "stranger"] },
-    { channelId: "strangers", participantIds: ["stranger"] },
+    { channelId: "crowd", participantIds: ["s1", "s2", "s3"] },
     { channelId: "two", participantIds: ["bob", "cara", "me"] },
+    { channelId: "quiet", participantIds: ["s4"] },
     { channelId: "empty", participantIds: [] },
   ];
-  const picked = pickVoiceRooms(rooms, friends, { viewerId: "me" });
+  const picked = pickHappening(rooms, friends, { viewerId: "me" });
   assert.deepEqual(
-    picked.map((entry) => [entry.room.channelId, entry.friendIds]),
+    picked.map((entry) => [
+      entry.room.channelId,
+      entry.friendIds,
+      entry.people.length,
+    ]),
     [
-      ["two", ["bob", "cara"]],
-      ["one", ["alice"]],
+      ["two", ["bob", "cara"], 2],
+      ["one", ["alice"], 2],
+      ["crowd", [], 3],
+      ["quiet", [], 1],
     ],
   );
 });
 
-test("In voice leaves out the viewer and the call they are in", () => {
+test("Happening now leaves out the viewer and the call they are in", () => {
   const friends = new Set(["alice", "me"]);
   const rooms = [
     { channelId: "mine", participantIds: ["alice", "me"] },
     { channelId: "alone", participantIds: ["me"] },
   ];
   assert.deepEqual(
-    pickVoiceRooms(rooms, friends, {
+    pickHappening(rooms, friends, {
       viewerId: "me",
       currentChannelId: "mine",
     }),
@@ -221,15 +238,100 @@ test("In voice leaves out the viewer and the call they are in", () => {
   );
 });
 
-test("In voice stops at its limit", () => {
-  const rooms = Array.from({ length: 7 }, (_, i) => ({
+test("Happening now stops at its limit", () => {
+  const rooms = Array.from({ length: 9 }, (_, i) => ({
     channelId: `c${i}`,
     participantIds: ["alice"],
   }));
+  assert.equal(pickHappening(rooms, new Set()).length, HAPPENING_ROOM_LIMIT);
+  assert.equal(HAPPENING_ROOM_LIMIT, 6);
+});
+
+const ulid = (n: number) => `01J${String(n).padStart(23, "0")}`;
+
+test("Mentions are the newest across channels, each once", () => {
+  const picked = pickMentionIds([
+    { channelId: "a", messageIds: [ulid(1), ulid(5), "not-an-id", ulid(5)] },
+    { channelId: "b", messageIds: new Set([ulid(3), ulid(9)]) },
+  ]);
+  assert.deepEqual(picked, [
+    { channelId: "b", messageId: ulid(9) },
+    { channelId: "a", messageId: ulid(5) },
+    { channelId: "b", messageId: ulid(3) },
+    { channelId: "a", messageId: ulid(1) },
+  ]);
+});
+
+test("Mentions stop at their limit", () => {
+  const ids = Array.from({ length: 12 }, (_, i) => ulid(i + 1));
+  const picked = pickMentionIds([{ channelId: "a", messageIds: ids }]);
+  assert.equal(picked.length, HOME_MENTION_LIMIT);
+  assert.equal(picked[0].messageId, ulid(12));
+});
+
+test("a mention preview is one line of plain text with names written out", () => {
+  const user = ulid(7);
+  const channel = ulid(8);
   assert.equal(
-    pickVoiceRooms(rooms, new Set(["alice"])).length,
-    JUMP_VOICE_LIMIT,
+    mentionPreview(`hey <@${user}>\n\ncheck <#${channel}> :${ulid(2)}:`, {
+      user: (id) => (id === user ? "Velvetfly" : undefined),
+      channel: () => "general",
+    }),
+    "hey @Velvetfly check #general :emoji:",
   );
+  assert.equal(mentionPreview(`<@${user}>`), "@user");
+  assert.equal(mentionPreview("   "), undefined);
+  assert.equal(mentionPreview(undefined), undefined);
+  assert.equal(mentionPreview({ text: "x" }), undefined);
+});
+
+test("a long mention preview is cut without splitting an emoji", () => {
+  const long = "😀".repeat(MENTION_PREVIEW_LENGTH + 10);
+  const preview = mentionPreview(long)!;
+  assert.equal(Array.from(preview).length, MENTION_PREVIEW_LENGTH);
+  assert.ok(preview.endsWith("…"));
+  // whole emoji only: a cut inside one would leave half a surrogate pair
+  assert.equal(preview.slice(0, -1), "😀".repeat(MENTION_PREVIEW_LENGTH - 1));
+});
+
+test("Friends online lists friends in calls, then playing, then the rest", () => {
+  const friend = (
+    id: string,
+    name: string,
+    inVoice = false,
+    playing = false,
+  ) => ({ id, name, inVoice, playing });
+  const picked = pickOnlineFriends([
+    friend("1", "zed"),
+    friend("2", "Amy", false, true),
+    friend("3", "bob", true),
+    friend("4", "alex"),
+    friend("5", "Cy", true, true),
+  ]);
+  assert.deepEqual(
+    picked.map((entry) => entry.name),
+    ["bob", "Cy", "Amy", "alex", "zed"],
+  );
+  const many = Array.from({ length: 20 }, (_, i) => friend(String(i), `f${i}`));
+  assert.equal(pickOnlineFriends(many).length, HOME_FRIEND_LIMIT);
+});
+
+test("suggestions leave out joined servers, duplicates and bad ids", () => {
+  const servers = [
+    { _id: "a" },
+    { _id: "joined" },
+    { _id: 4 },
+    { _id: "a" },
+    { _id: "b" },
+    { _id: "c" },
+    { _id: "d" },
+  ];
+  assert.deepEqual(
+    pickDiscover(servers, new Set(["joined"])).map((server) => server._id),
+    ["a", "b", "c"],
+  );
+  assert.equal(HOME_DISCOVER_LIMIT, 3);
+  assert.deepEqual(pickDiscover(undefined, new Set()), []);
 });
 
 const event = (id: string, cancelled = false) => ({ id, cancelled });
@@ -411,4 +513,107 @@ test("a calendar query without a usable event id opens nothing", () => {
   ]) {
     assert.equal(parseEventLink(bad), undefined, JSON.stringify(bad));
   }
+});
+
+/** A fetch that settles on the next tick, logging which indexes it was asked for */
+function slowFetch<T>(values: (T | undefined | Error)[], asked: number[]) {
+  return async (index: number) => {
+    asked.push(index);
+    await new Promise((resolve) => setTimeout(resolve, 1));
+    const value = values[index];
+    if (value instanceof Error) throw value;
+    return value;
+  };
+}
+
+test("fetchInOrder keeps list order and skips failures", async () => {
+  const asked: number[] = [];
+  const got = await fetchInOrder(
+    5,
+    slowFetch(["a", new Error("gone"), undefined, "d", "e"], asked),
+    { want: 10, keep: () => true, concurrency: 2 },
+  );
+  assert.deepEqual(got, ["a", "d", "e"]);
+  assert.deepEqual(
+    [...asked].sort((a, b) => a - b),
+    [0, 1, 2, 3, 4],
+  );
+});
+
+test("fetchInOrder stops once enough are kept", async () => {
+  const values = ["a", "b", "c", "d", "e", "f", "g", "h"];
+
+  const one: number[] = [];
+  const serial = await fetchInOrder(values.length, slowFetch(values, one), {
+    want: 3,
+    keep: () => true,
+    concurrency: 1,
+  });
+  assert.deepEqual(serial, ["a", "b", "c"]);
+  assert.deepEqual(one, [0, 1, 2]);
+
+  // at most concurrency - 1 extra fetches
+  const two: number[] = [];
+  const parallel = await fetchInOrder(values.length, slowFetch(values, two), {
+    want: 3,
+    keep: () => true,
+    concurrency: 2,
+  });
+  assert.ok(two.length >= 3 && two.length <= 4, `asked ${two}`);
+  assert.deepEqual(parallel.slice(0, 3), ["a", "b", "c"]);
+});
+
+test("fetchInOrder reads further to replace items it does not keep", async () => {
+  // A blocked author's mention must not take one of the card's rows
+  const values = ["x1", "a", "x2", "b", "c", "d"];
+  const asked: number[] = [];
+  const got = await fetchInOrder(values.length, slowFetch(values, asked), {
+    want: 3,
+    keep: (value) => !value.startsWith("x"),
+    concurrency: 1,
+  });
+  assert.deepEqual(
+    got.filter((value) => !value.startsWith("x")),
+    ["a", "b", "c"],
+  );
+  assert.deepEqual(asked, [0, 1, 2, 3, 4]);
+});
+
+test("fetchInOrder with nothing to fetch asks for nothing", async () => {
+  const asked: number[] = [];
+  assert.deepEqual(
+    await fetchInOrder(0, slowFetch([], asked), {
+      want: 5,
+      keep: () => true,
+      concurrency: 2,
+    }),
+    [],
+  );
+  assert.deepEqual(asked, []);
+});
+
+test("the Mentions card reads past its row count to fill blocked rows", () => {
+  assert.ok(HOME_MENTION_SCAN_LIMIT > HOME_MENTION_LIMIT);
+});
+
+test("fetchInOrder keeps the earliest items when one fetch is slow", async () => {
+  // "c" is slow; the other worker reads past it while it is in flight, but
+  // the rows kept are still the first three in list order
+  const values = ["a", "b", "c", "x1", "x2", "d", "e"];
+  const asked: number[] = [];
+  const got = await fetchInOrder(
+    values.length,
+    async (index) => {
+      asked.push(index);
+      await new Promise((resolve) => setTimeout(resolve, index === 2 ? 30 : 1));
+      return values[index];
+    },
+    { want: 3, keep: (value) => !value.startsWith("x"), concurrency: 2 },
+  );
+  assert.deepEqual(got.filter((value) => !value.startsWith("x")).slice(0, 3), [
+    "a",
+    "b",
+    "c",
+  ]);
+  assert.ok(asked.length < values.length, `asked ${asked}`);
 });

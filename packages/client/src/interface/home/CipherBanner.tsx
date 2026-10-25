@@ -11,7 +11,7 @@ import { i18n } from "@lingui/core";
 import { styled } from "styled-system/jsx";
 
 import { CipherLock } from "@revolt/auth/src/CipherLock";
-import { formatCount } from "@revolt/auth/src/cipherPromo";
+import { formatCount } from "@revolt/auth/src/cipherPromoPolicy";
 import { allowsDonationLinks, useClient } from "@revolt/client";
 import { CONFIGURATION } from "@revolt/common";
 import { useModals } from "@revolt/modal";
@@ -212,20 +212,22 @@ function readHiddenAt(): number | undefined {
 }
 
 /**
- * Protected servers / Cipher banner at the top of Home, after the sloga.gg
- * popup. Shown only while the sale is open, to people without a Cipher
- * badge, in builds that may link to payments; the X hides it for two weeks.
+ * Whether the Cipher banner shows, the sale numbers it draws, and its
+ * dismiss. Kept apart from the banner so Home can ask before it draws a
+ * frame for it, and so moving the card does not fetch the counter again.
+ * @param enabled Whether the card is switched on; nothing is fetched while off
  */
-export function CipherBanner() {
+export function createCipherBannerState(enabled: () => boolean) {
   const client = useClient();
-  const { openModal } = useModals();
-  const { t } = useLingui();
 
   const [hiddenAt, setHiddenAt] = createSignal(readHiddenAt());
 
   // Public counter, read once per visit to Home. A failure hides the banner.
   const [stats] = createResource(
-    () => (allowsDonationLinks() ? CONFIGURATION.DEFAULT_API_URL : undefined),
+    () =>
+      allowsDonationLinks() && enabled()
+        ? CONFIGURATION.DEFAULT_API_URL
+        : undefined,
     (apiBase) =>
       fetchCipherStats({
         fetch: (url, init) => fetch(url, init),
@@ -253,10 +255,34 @@ export function CipherBanner() {
     }
   }
 
+  // First load only ("pending"; a refetch with stats already here is
+  // "refreshing"). `state` never reads the value, so it cannot suspend.
+  const loading = () => stats.state === "pending";
+
+  return { visible, dismiss, stats, loading };
+}
+
+/**
+ * Protected servers / Cipher banner at the top of Home, after the sloga.gg
+ * popup. Shown only while the sale is open, to people without a Cipher
+ * badge, in builds that may link to payments; the X hides it for two weeks.
+ */
+export function CipherBanner(props: {
+  state: ReturnType<typeof createCipherBannerState>;
+}) {
+  const { openModal } = useModals();
+  const { t } = useLingui();
+
+  const stats = () => props.state.stats;
+
   return (
-    <Show when={visible()}>
+    <Show when={props.state.visible()}>
       <Card aria-labelledby="home-cipher-title">
-        <Close type="button" aria-label={t`Hide for now`} onClick={dismiss}>
+        <Close
+          type="button"
+          aria-label={t`Hide for now`}
+          onClick={() => props.state.dismiss()}
+        >
           <MdClose {...iconSize(18)} />
         </Close>
         <LockStage />
@@ -273,7 +299,7 @@ export function CipherBanner() {
           <Stats>
             <Stat>
               <StatValue>
-                {formatCount(stats.latest?.cap ?? 1000, i18n.locale)}
+                {formatCount(stats().latest?.cap ?? 1000, i18n.locale)}
               </StatValue>
               <StatLabel>
                 <Trans>numbered Cipher badges</Trans>

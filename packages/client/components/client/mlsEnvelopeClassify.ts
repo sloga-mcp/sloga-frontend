@@ -19,6 +19,8 @@ import type { EnvelopeDisposition } from "./e2ee";
  *  - `mls_leaf_rejected` → split by `reason` (leaf-verify fix): ONLY
  *    `binding_unverified` → `needs_identity` (reconcile + reprocess, no ack);
  *    every other/unknown reason → hostile, refuse LOUD + ack+drop.
+ *  - `protector` / `protector_locked` → key unreadable (locked phone), store
+ *    intact; surface loud, do NOT ack — reprocessed after unlock.
  *  - anything else → surface loud, do NOT ack (may be reprocessable).
  */
 export function classifyEnvelopeError(error: unknown): EnvelopeDisposition {
@@ -135,6 +137,15 @@ export function classifyEnvelopeError(error: unknown): EnvelopeDisposition {
         successorNeeded: false,
         ack: true,
       };
+    // The platform protector could not open the key — on iOS, most often a
+    // locked phone (`protector_locked`, or plain `protector`). The store is
+    // INTACT and the key is just unreadable for now, so this is transient by
+    // construction: NEVER ack, NEVER drop. The envelope is reprocessed after
+    // unlock. Spelled out rather than left to `default` so a future change
+    // to the default can't turn a locked phone into silent message loss.
+    case "protector":
+    case "protector_locked":
+      return { kind: "error", error, ack: false };
     default:
       // Genuinely transient (storage / protector / IPC / transport / an
       // error type we don't recognise): surface loud, do NOT ack — the

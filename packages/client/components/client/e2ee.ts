@@ -65,6 +65,14 @@ import {
   PROBE_WINDOW_CAP,
 } from "./e2eeGroupSendGate.ts";
 import {
+  capacitorAttachmentUrl,
+  capacitorClipboardImageInWebview,
+  capacitorCouriersOrphanedRecovery,
+  capacitorNativeE2EE,
+  mediaE2EEPlatformSupported,
+} from "./e2eePlatform";
+import { protectorSendErrorCopy } from "./e2eeProtectorCopy";
+import {
   type CallRosterOutcome,
   type RatelimitTransportOptions,
   CALL_PLANE_RATELIMIT_RETRIES,
@@ -862,10 +870,11 @@ export type EnvelopeDisposition =
 export { classifyEnvelopeError } from "./mlsEnvelopeClassify";
 
 /**
- * Whether the native E2EE layer is reachable (Tauri desktop shell or the
- * Capacitor Android shell). The web build has no native layer — and the
- * server additionally refuses E2EE routes for sessions that never proved a
- * device claim.
+ * Whether the native E2EE layer is reachable (a desktop shell, or a
+ * Capacitor shell: Android always, iOS only when the native E2ee plugin is
+ * compiled in, so an iOS build without it stays web-mode). The web build has
+ * no native layer — and the server additionally refuses E2EE routes for
+ * sessions that never proved a device claim.
  */
 export function nativeE2EEAvailable(): boolean {
   // A window booted at /friends-popout is a lean SECOND client — it must
@@ -886,33 +895,38 @@ export function nativeE2EEAvailable(): boolean {
   // the native bridge is live — a dead bridge reads as "no native layer".
   if ((window as { slogaShell?: SlogaShellGlobal }).slogaShell?.e2ee)
     return true;
-  return Capacitor.isNativePlatform() && Capacitor.getPlatform() === "android";
+  return capacitorNativeE2EE(
+    Capacitor.isNativePlatform(),
+    Capacitor.getPlatform(),
+    (name) => Capacitor.isPluginAvailable(name),
+  );
 }
 
 // ================================================================
 // Native transports
 //
-// One `E2EEBridge` speaks to two native shells through this seam. Both
-// expose the SAME command allowlist backed by the SAME core crate
-// (acutest-e2ee-core); only the carrier differs — Tauri IPC on desktop,
-// a Capacitor plugin over uniffi on Android. Command names, argument
-// shapes and error payloads are identical by construction, so every
-// security decision above this seam is platform-independent.
+// One `E2EEBridge` speaks to every native shell through this seam. They
+// expose the SAME command names backed by the SAME core crate
+// (acutest-e2ee-core); only the carrier differs — Tauri or Electron IPC on
+// desktop, a Capacitor plugin over uniffi on Android and iOS. Command names,
+// argument shapes and error payloads are identical by construction, so every
+// security decision above this seam is platform-independent. (A shell may
+// leave commands out: iOS rejects the call and MLS commands.)
 // ================================================================
 
 interface NativeTransport {
   /**
-   * True when attachment ciphertext moves natively (Android): upload and
-   * fetch happen in the shell, so multi-megabyte payloads never transit
-   * the JS bridge. Desktop moves ciphertext over the (fast, binary-safe)
-   * Tauri IPC and uploads from the webview instead.
+   * True when attachment ciphertext moves natively (Capacitor: Android and
+   * iOS): upload and fetch happen in the shell, so multi-megabyte payloads
+   * never transit the JS bridge. Desktop moves ciphertext over the (fast,
+   * binary-safe) Tauri IPC and uploads from the webview instead.
    */
   readonly nativeBlobTransfer: boolean;
   /**
    * True when the webview may copy a decrypted attachment to the clipboard
    * ITSELF (Android): `attachmentUrl` there is a same-origin path the shell's
    * WebViewClient intercepts, so an ordinary fetch reaches it. On the desktop
-   * shells it is a custom protocol that deliberately serves no
+   * shells and on iOS it is a custom protocol that deliberately serves no
    * `Access-Control-Allow-Origin` and is absent from the CSP's `connect-src`
    * — fetch and the canvas fallback are both blocked BY DESIGN, and copying
    * has to go through the shell's own clipboard command instead.
@@ -925,7 +939,7 @@ interface NativeTransport {
   ): Promise<T>;
   /** WebView URL a decrypted attachment renders from (never carries keys) */
   attachmentUrl(messageId: string, idx: number): string;
-  /** Android-only (`nativeBlobTransfer`): native ciphertext upload */
+  /** Capacitor only (`nativeBlobTransfer`): native ciphertext upload */
   uploadPrepared?(
     localId: string,
     url: string,
@@ -933,7 +947,7 @@ interface NativeTransport {
     authValue: string,
     recipients: unknown[],
   ): Promise<void>;
-  /** Android-only (`nativeBlobTransfer`): native ciphertext fetch+store */
+  /** Capacitor only (`nativeBlobTransfer`): native ciphertext fetch+store */
   fetchAndStore?(
     localId: string,
     url: string,
@@ -942,9 +956,10 @@ interface NativeTransport {
   ): Promise<"ready" | "expired" | "failed" | "pending">;
   /**
    * Present when the recovery-code surface is a native DIALOG rather than a
-   * separate webview window (Android). The desktop shell instead opens the
-   * bundled `e2ee-recovery` window and couriers the result over the
-   * `e2ee:recovery-complete` event, so these are absent there.
+   * separate webview window (Capacitor: an Android dialog, an iOS sheet).
+   * The desktop shell instead opens the bundled `e2ee-recovery` window and
+   * couriers the result over the `e2ee:recovery-complete` event, so these
+   * are absent there.
    *
    * The recovery CODE lives entirely inside the native dialog; these return
    * only the opaque ciphertext the webview must courier to the server.
@@ -987,13 +1002,21 @@ interface NativeTransport {
    * any pending ciphertext (EL1 RFC B3: this used to be a direct
    * `__TAURI__.event` use OUTSIDE the seam; on Electron that silently
    * no-oped and a minted code's backup bundle would never reach
-   * `PUT /e2ee/backup`). Absent on Android: recovery there is a native
-   * DIALOG (no separate window, no courier event). Payload is the
-   * core-derived outcome mode — never a secret.
+   * `PUT /e2ee/backup`). Absent on Capacitor (Android and iOS): recovery
+   * there is a native DIALOG (no separate window, no courier event).
+   * Payload is the core-derived outcome mode — never a secret.
    */
   subscribeRecoveryComplete?(
     callback: (mode: string) => void,
   ): Promise<() => void>;
+  /**
+   * iOS only (`capacitorCouriersOrphanedRecovery`): the native recovery
+   * sheet kept a minted backup bundle because the page that opened it was
+   * reloaded under it, and it waits for the next `e2ee_backup_refresh_if_due`
+   * (audit M2). The event carries nothing: no bundle, no user id. Absent on
+   * Android, the desktop shells and the web, which never subscribe.
+   */
+  subscribeBackupBundleWaiting?(callback: () => void): Promise<() => void>;
 }
 
 class TauriTransport implements NativeTransport {
@@ -1199,14 +1222,49 @@ type E2eeCapacitorPlugin = {
     eventName: "callKeysChanged",
     listenerFunc: (event: { group_id: string; epoch: number }) => void,
   ): Promise<{ remove: () => Promise<void> }>;
+  /**
+   * iOS only: the recovery sheet kept a backup bundle for the next refresh
+   * (see `subscribeBackupBundleWaiting`). The payload is empty.
+   */
+  addListener(
+    eventName: "backupBundleWaiting",
+    listenerFunc: () => void,
+  ): Promise<{ remove: () => Promise<void> }>;
 };
 
 class CapacitorTransport implements NativeTransport {
   readonly nativeBlobTransfer = true;
-  // `/_e2ee-att/...` is same-origin (the WebViewClient intercepts it before
-  // the asset server), so the ordinary clipboard helper reaches it here.
-  readonly clipboardImageInWebview = true;
+  // Android: `/_e2ee-att/...` is same-origin (the WebViewClient intercepts it
+  // before the asset server), so the ordinary clipboard helper reaches it.
+  // iOS: the `e2ee-att:` custom scheme is served natively with no
+  // `Access-Control-Allow-Origin` and is absent from `connect-src`, so the
+  // webview cannot fetch it (desktop parity); copy goes through the native
+  // `e2ee_attachment_copy_image` command, which also keeps the image off
+  // Universal Clipboard (plan D6).
+  readonly clipboardImageInWebview = capacitorClipboardImageInWebview(
+    Capacitor.getPlatform(),
+  );
   #plugin = registerPlugin<E2eeCapacitorPlugin>("E2ee");
+
+  /**
+   * iOS only, so a property rather than a method: on Android (and a plain
+   * web build) it is undefined, the bridge never subscribes, and nothing
+   * new runs there. The listener drops whatever payload arrives; the event
+   * only says "ask native for the kept bundle".
+   */
+  readonly subscribeBackupBundleWaiting = capacitorCouriersOrphanedRecovery(
+    Capacitor.getPlatform(),
+  )
+    ? async (callback: () => void): Promise<() => void> => {
+        const handle = await this.#plugin.addListener(
+          "backupBundleWaiting",
+          () => callback(),
+        );
+        return () => {
+          void handle.remove();
+        };
+      }
+    : undefined;
 
   /**
    * Reject payloads are the core's scrubbed error JSON in the exception
@@ -1331,12 +1389,14 @@ class CapacitorTransport implements NativeTransport {
   }
 
   /**
-   * Same-origin path intercepted by the Android shell's WebViewClient
-   * BEFORE the asset server (the `e2ee-att` analog) — decrypts natively
-   * per request; key material never reaches the WebView.
+   * Decrypts natively per request; key material never reaches the WebView.
+   * Android: a same-origin path intercepted by the shell's WebViewClient
+   * BEFORE the asset server (the `e2ee-att` analog). iOS: the
+   * `e2ee-att://att/...` custom scheme (the Electron shape), served by the
+   * shell's URL scheme handler.
    */
   attachmentUrl(messageId: string, idx: number): string {
-    return `/_e2ee-att/${messageId}/${idx}`;
+    return capacitorAttachmentUrl(Capacitor.getPlatform(), messageId, idx);
   }
 
   async uploadPrepared(
@@ -1417,6 +1477,12 @@ class CapacitorTransport implements NativeTransport {
     // so there is no version skew: if the JS can ask, the shell can push.
     // A remote-webview config would reintroduce skew (new JS asserting this
     // against an old shell) and must NOT be used while media E2EE ships.
+    //
+    // 🔴 iOS answers false ON PURPOSE (plan D7, media gate pin): calls on
+    // iPhone are plaintext in phase 1, and `platformMediaE2EESupported()` is
+    // TRUE there (no `slogaShell`), so this false is the only thing keeping
+    // `mediaE2EEPlatformSupported()` and `shellSupported` false and iOS calls
+    // honest. NEVER flip it to true for iOS.
     return (
       Capacitor.isNativePlatform() && Capacitor.getPlatform() === "android"
     );
@@ -1708,13 +1774,22 @@ export class E2EEBridge implements E2EEAdapter {
       // A new connection: its device claim has not landed yet
       this.#claimAccepted = null;
       this.#claimWaitSpent = false;
+      this.#socketDown = false;
       // A (re)connect may follow any amount of missed device traffic
       this.#invalidateProof();
       void this.#onReady();
     });
+    // The courier's view only (see `#socketDown`): `#claimAccepted` itself
+    // keeps its meaning for the group proof on every shell.
+    client.on("disconnected", () => {
+      this.#socketDown = true;
+    });
     client.on("channelGroupJoin", (channel, user) =>
       this.#onGroupJoin(channel, user.id),
     );
+    // iOS: listen from the first moment, since the bundle this waits for is
+    // usually kept AFTER the page has loaded and claimed. A no-op elsewhere.
+    this.#watchOrphanedBackup();
   }
 
   /**
@@ -2500,6 +2575,16 @@ export class E2EEBridge implements E2EEAdapter {
     } catch (error) {
       console.error("[e2ee] post-claim housekeeping failed", error);
     }
+
+    // iOS: upload a recovery bundle the native sheet kept for an earlier page
+    // (see `#watchOrphanedBackup`). The event is the main path; this picks
+    // up a bundle whose event arrived before this connection's claim was
+    // accepted, or while no page was listening. It cannot help after the app
+    // process died: the kept bundle lived only in memory. Outside the try so
+    // a failed reconcile does not skip it.
+    if (this.#transport.subscribeBackupBundleWaiting) {
+      await this.#courierOrphanedBackup();
+    }
   }
 
   async #replenish(): Promise<void> {
@@ -2940,9 +3025,10 @@ export class E2EEBridge implements E2EEAdapter {
       verdict = await this.#invoke<SendModeVerdict>("e2ee_send_mode", {
         peerUserId: peerId,
       });
-    } catch {
+    } catch (error) {
       throw new E2EESendError(
-        "Encryption status could not be verified. The message was NOT sent.",
+        protectorSendErrorCopy(error, Capacitor.getPlatform()) ??
+          "Encryption status could not be verified. The message was NOT sent.",
         "native",
       );
     }
@@ -3115,9 +3201,10 @@ export class E2EEBridge implements E2EEAdapter {
       verdict = await this.#invoke<SendModeVerdict>("e2ee_send_mode_group", {
         conversationId,
       });
-    } catch {
+    } catch (error) {
       throw new E2EESendError(
-        "Encryption status could not be verified. The message was NOT sent.",
+        protectorSendErrorCopy(error, Capacitor.getPlatform()) ??
+          "Encryption status could not be verified. The message was NOT sent.",
         "native",
       );
     }
@@ -3141,9 +3228,10 @@ export class E2EEBridge implements E2EEAdapter {
         fresh = await this.#invoke<SendModeVerdict>("e2ee_send_mode_group", {
           conversationId,
         });
-      } catch {
+      } catch (error) {
         throw new E2EESendError(
-          "Encryption status could not be verified. The message was NOT sent.",
+          protectorSendErrorCopy(error, Capacitor.getPlatform()) ??
+            "Encryption status could not be verified. The message was NOT sent.",
           "native",
         );
       }
@@ -5354,9 +5442,10 @@ export class E2EEBridge implements E2EEAdapter {
         verdict = await this.#invoke<SendModeVerdict>("e2ee_send_mode_group", {
           conversationId,
         });
-      } catch {
+      } catch (error) {
         throw new E2EESendError(
-          "Encryption status could not be verified. Nothing was sent.",
+          protectorSendErrorCopy(error, Capacitor.getPlatform()) ??
+            "Encryption status could not be verified. Nothing was sent.",
           "native",
         );
       }
@@ -5375,9 +5464,10 @@ export class E2EEBridge implements E2EEAdapter {
           fresh = await this.#invoke<SendModeVerdict>("e2ee_send_mode_group", {
             conversationId,
           });
-        } catch {
+        } catch (error) {
           throw new E2EESendError(
-            "Encryption status could not be verified. Nothing was sent.",
+            protectorSendErrorCopy(error, Capacitor.getPlatform()) ??
+              "Encryption status could not be verified. Nothing was sent.",
             "native",
           );
         }
@@ -5407,9 +5497,10 @@ export class E2EEBridge implements E2EEAdapter {
     } else {
       try {
         mode = await this.sendModeNow(conversationId);
-      } catch {
+      } catch (error) {
         throw new E2EESendError(
-          "Encryption status could not be verified. Nothing was sent.",
+          protectorSendErrorCopy(error, Capacitor.getPlatform()) ??
+            "Encryption status could not be verified. Nothing was sent.",
           "native",
         );
       }
@@ -5561,7 +5652,7 @@ export class E2EEBridge implements E2EEAdapter {
 
   /**
    * Webview URL a decrypted attachment renders from — the shell's
-   * attachment endpoint (desktop `e2ee-att` protocol / Android WebView
+   * attachment endpoint (desktop and iOS `e2ee-att` scheme / Android WebView
    * interceptor), which decrypts natively per request: key material never
    * crosses to the webview. Both path segments are ULIDs / integers, so no
    * encoding is needed.
@@ -5864,6 +5955,13 @@ export class E2EEBridge implements E2EEAdapter {
    * `#ensureKeyPackages` path remains the authoritative self-heal.
    */
   async #prepublishMlsKeyPackages(): Promise<void> {
+    // Platform gate FIRST (plan D7, KeyPackage prepublish leak): a shell that
+    // cannot carry encrypted calls has no reason to stock the directory. The
+    // `#callsEnabled` check below is not enough on its own: rtc/state.tsx
+    // wires `setCallsEnabled` at every call connect regardless of platform,
+    // and that accessor hard-returns true (Voice.ts), so without this gate
+    // iOS or an unaudited shell would publish KeyPackages after one call.
+    if (!this.mediaE2EEPlatformSupported()) return;
     // Gate on "Encrypt my calls" (§0.2 #9): with calls E2EE off there is no
     // reason to stock the MLS KeyPackage directory. Fail-closed until wired.
     // Protected channels: `enable()` just made this device capable, so the
@@ -6018,6 +6116,38 @@ export class E2EEBridge implements E2EEAdapter {
   // through `#api` (raw fetch) per the stoat-api body-drop rule.
 
   #backupCourierReady = false;
+
+  /**
+   * The iOS `backupBundleWaiting` subscription (resolves to its unsubscribe),
+   * set once per bridge by `#watchOrphanedBackup`. Null on every other shell.
+   */
+  #backupBundleWaiting: Promise<() => void> | null = null;
+
+  /**
+   * Set once by `dispose()`. The Controller replaces the client and bridge
+   * on every logout and reconnect cycle, and the iOS plugin listener is
+   * process-lifetime: a stale bridge still holding a user and an accepted
+   * claim must not take a kept bundle under its dead session (audit M2,
+   * Stage 6 MAJOR-1).
+   */
+  #disposed = false;
+
+  /**
+   * The socket dropped since this connection's `ready`. Only the orphaned
+   * backup courier reads it: `#claimAccepted` is reset on `ready`, not on
+   * disconnect, and the group proof reads it on every shell, so it is left
+   * alone. A take while the session is down could not be PUT.
+   */
+  #socketDown = false;
+
+  /**
+   * The running `refreshBackupIfDue` pass chain, one per bridge, and whether
+   * a caller asked for another pass while it ran (single flight, coalesced:
+   * Stage 6 MINOR-2). Concurrent passes raced the PUT and the
+   * `mark_uploaded` order.
+   */
+  #backupRefresh: Promise<void> | null = null;
+  #backupRefreshAgain = false;
 
   /**
    * Post-restore fresh-OTK republish payload, held between a RESTORE and its
@@ -6236,17 +6366,170 @@ export class E2EEBridge implements E2EEAdapter {
 
   /**
    * Refresh the backup if native says one is due (timer / message delta), and
-   * upload the resulting blob. Called opportunistically on connect. No-op when
-   * no backup exists or none is due.
+   * upload the resulting blob. No-op when no backup exists or none is due. On
+   * iOS the native arm first returns a bundle the recovery sheet kept (see
+   * `#watchOrphanedBackup`). Only `#courierOrphanedBackup` calls it, so only
+   * iOS; the other shells do not call it yet.
+   *
+   * Single flight per bridge: a caller arriving while a pass runs gets the
+   * same promise, and the chain runs ONE more pass after the current one
+   * however many callers arrived, so a trigger that lands mid-pass is not
+   * lost. Every pass re-checks `#backupTakeAllowed()` before the native
+   * take, since the take always clears the kept bundle and a bundle taken
+   * when it cannot be PUT is gone. A pass that fails still runs a requested
+   * follow-up; the chain then rejects with the last failure.
    */
-  async refreshBackupIfDue(): Promise<void> {
-    const selfId = this.#client.user?.id;
-    if (!selfId) return;
-    const bundle = await this.#invoke<BackupBundle | null>(
-      "e2ee_backup_refresh_if_due",
-      { userId: selfId },
+  refreshBackupIfDue(): Promise<void> {
+    if (this.#backupRefresh) {
+      this.#backupRefreshAgain = true;
+      return this.#backupRefresh;
+    }
+    // `.then` defers the chain past the assignment below, so its `finally`
+    // can never clear the slot before it is set.
+    const flight = Promise.resolve().then(async () => {
+      let failed = false;
+      let failure: unknown;
+      try {
+        do {
+          this.#backupRefreshAgain = false;
+          const selfId = this.#client.user?.id;
+          if (!selfId || !this.#backupTakeAllowed()) break;
+          // The chain reports the LAST pass that ran: a later success clears
+          // an earlier failure (a refused follow-up above keeps it).
+          failed = false;
+          failure = undefined;
+          try {
+            const bundle = await this.#invoke<BackupBundle | null>(
+              "e2ee_backup_refresh_if_due",
+              { userId: selfId },
+            );
+            if (bundle) await this.#putBackup(bundle);
+          } catch (error) {
+            failed = true;
+            failure = error;
+          }
+        } while (this.#backupRefreshAgain);
+      } finally {
+        this.#backupRefresh = null;
+      }
+      if (failed) throw failure;
+    });
+    this.#backupRefresh = flight;
+    return flight;
+  }
+
+  /**
+   * Whether a native backup take may run now: a live bridge, a connected
+   * session with THIS connection's accepted claim (`PUT /e2ee/backup` needs
+   * a device-bound session), and an enabled, published device with an id to
+   * PUT under. Shares its terms with `#courierOrphanedBackup`'s guard, and is
+   * re-read before every pass because a follow-up pass can run long after
+   * the caller that asked for it checked.
+   */
+  #backupTakeAllowed(): boolean {
+    const state = this.status.get("state");
+    return (
+      !this.#disposed &&
+      !this.#socketDown &&
+      !!this.#client.user?.id &&
+      !!state?.enabled &&
+      !!state.published &&
+      !!state.device_id &&
+      this.#claimAccepted === true
     );
-    if (bundle) await this.#putBackup(bundle);
+  }
+
+  /**
+   * Tear this bridge down when the Controller replaces its client (Stage 6
+   * MAJOR-1). Marks it disposed, so the courier and any pending follow-up
+   * pass refuse; forgets the claim; and removes the iOS `backupBundleWaiting`
+   * listener, which is process-lifetime and would otherwise outlive the
+   * bridge. A pass already past its native take still finishes its PUT: the
+   * take cleared the kept bundle, so that PUT is its only copy. Idempotent,
+   * and never rejects. A no-op off iOS apart from the flags.
+   */
+  async dispose(): Promise<void> {
+    if (this.#disposed) return;
+    this.#disposed = true;
+    this.#claimAccepted = null;
+    this.#backupRefreshAgain = false;
+    const subscription = this.#backupBundleWaiting;
+    if (!subscription) return;
+    try {
+      (await subscription)();
+    } catch (error) {
+      console.error(
+        "[e2ee] backup bundle listener removal failed:",
+        errorName(error),
+      );
+    }
+  }
+
+  /**
+   * iOS (audit M2). A create or rotate whose page goes away while the native
+   * recovery sheet is up (WebContent killed, Capacitor reloads the page) has
+   * no promise left to return the minted bundle to, so native keeps it for
+   * the next `e2ee_backup_refresh_if_due`. Until this, no page ever sent that
+   * command: the server kept the old generation, which the new code cannot
+   * open, and nothing nagged. The reloaded page re-claims within seconds,
+   * usually while the code is still on screen, so the bundle is kept AFTER
+   * the claim: the native `backupBundleWaiting` event is the main path, and
+   * the post-claim call in `#onClaimResult` covers an event that came before
+   * the claim. If the app process dies first, the kept bundle (memory only)
+   * is gone; only core's regular due refresh (up to 24 h / 50 messages later)
+   * uploads under the new key. Subscribes once per bridge; the transport has
+   * no member on any other shell.
+   */
+  #watchOrphanedBackup(): void {
+    if (this.#backupBundleWaiting) return;
+    if (!this.#transport.subscribeBackupBundleWaiting) return;
+    this.#backupBundleWaiting = this.#transport
+      .subscribeBackupBundleWaiting(() => {
+        void this.#courierOrphanedBackup();
+      })
+      .catch((error: unknown) => {
+        // The post-claim courier still runs on the next claim.
+        console.error(
+          "[e2ee] backup bundle listener failed:",
+          errorName(error),
+        );
+        return () => {};
+      });
+  }
+
+  /**
+   * Upload a recovery bundle the iOS sheet kept (`#watchOrphanedBackup`)
+   * through `refreshBackupIfDue`. Guarded like the Encryption tab's
+   * `backupStatus()` caller: nothing reaches native unless this device is
+   * enabled and published (core's backup generics no longer provision a
+   * store since IE Stage 6, but most other engine calls still do). It also waits for THIS connection's accepted device
+   * claim: `PUT /e2ee/backup` takes only a session bound to the device
+   * (`assert_bound_session`), and the native take always clears the kept
+   * bundle, so taking it before the claim could lose it. An event that
+   * arrives first does nothing, and the post-claim call takes the bundle.
+   * A disposed bridge, a dropped socket and a device with no id to PUT
+   * under refuse too (Stage 6 MAJOR-1, MINOR-3); the terms match
+   * `#backupTakeAllowed`, which `refreshBackupIfDue` re-reads per pass.
+   * Best effort: never throws, and logs only the error's name (never the
+   * bundle or an id).
+   */
+  async #courierOrphanedBackup(): Promise<void> {
+    const state = this.status.get("state");
+    if (
+      this.#disposed ||
+      this.#socketDown ||
+      !this.#client.user?.id ||
+      !state?.enabled ||
+      !state.published ||
+      !state.device_id ||
+      this.#claimAccepted !== true
+    )
+      return;
+    try {
+      await this.refreshBackupIfDue();
+    } catch (error) {
+      console.error("[e2ee] orphaned backup upload failed:", errorName(error));
+    }
   }
 
   /**
@@ -8327,7 +8610,7 @@ export class E2EEBridge implements E2EEAdapter {
    *
    * The RTC layer folds this into `e2eeCapable` at Room-construction time. A
    * shell that is `nativeE2EEAvailable()` but CANNOT receive key pushes (today:
-   * the Capacitor Android shell, whose `onCallKeysChanged` returns a no-op)
+   * the Capacitor iOS shell; Android before its 6.7a `callKeysChanged`)
    * must be built WITHOUT the LiveKit `e2ee` option — never an E2EE-capable
    * Room whose first-key install can never arrive, which would leave the
    * pause-publish window permanently open and publish plaintext to the SFU
@@ -8341,10 +8624,22 @@ export class E2EEBridge implements E2EEAdapter {
    * The per-shell answer lives behind the transport seam (`keyPushAvailable`):
    * Tauri gates on `window.__TAURI__.event`; the Capacitor Android shell
    * returns true (its `callKeysChanged` channel landed in 6.7a). Both update
-   * together there, as the 6.4 H3/NEW-4 note anticipated.
+   * together there, as the 6.4 H3/NEW-4 note anticipated. The Capacitor iOS
+   * shell returns false on purpose (plan D7 media gate pin).
    */
   nativeKeyPushAvailable(): boolean {
     return this.#transport.keyPushAvailable();
+  }
+
+  /**
+   * Whether this shell could carry encrypted calls: it can receive native
+   * call-key pushes AND its media path is audited (`e2eePlatform.ts`). The
+   * ONE predicate for that question (plan D7, audit MINOR 17):
+   * `shellSupported` in rtc/state.tsx and `#prepublishMlsKeyPackages` both
+   * use it. False on iOS (see `CapacitorTransport.keyPushAvailable`).
+   */
+  mediaE2EEPlatformSupported(): boolean {
+    return mediaE2EEPlatformSupported(this.nativeKeyPushAvailable());
   }
 
   /**

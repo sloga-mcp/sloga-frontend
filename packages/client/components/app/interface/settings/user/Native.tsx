@@ -2,6 +2,7 @@ import { Show, createSignal, onMount } from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
 
+import * as mainShell from "@revolt/client/mainShell";
 import { tauriInvoke } from "@revolt/common";
 import { CategoryButton, Checkbox, Column } from "@revolt/ui";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
@@ -89,6 +90,11 @@ function TauriNative() {
     slot: 0,
   });
 
+  // null until the shell answers, and for good on a shell without the
+  // setting: the row stays hidden rather than offering a choice it ignores.
+  const [systemFrameOn, setSystemFrameOn] = createSignal<boolean | null>(null);
+  const [systemFrameFailed, setSystemFrameFailed] = createSignal(false);
+
   onMount(async () => {
     try {
       setAutostart(await invoke<boolean>("autostart_get"));
@@ -101,7 +107,32 @@ function TauriNative() {
     } catch (err) {
       console.error("[native-settings] multi_instance_get failed:", err);
     }
+
+    setSystemFrameOn(await mainShell.systemFrame());
   });
+
+  /** A write in flight: a second click waits for it rather than racing. */
+  let savingSystemFrame = false;
+
+  async function toggleSystemFrame() {
+    const current = systemFrameOn();
+    if (current === null || savingSystemFrame) return;
+    savingSystemFrame = true;
+    setSystemFrameFailed(false);
+    try {
+      if (await mainShell.setSystemFrame(!current)) {
+        setSystemFrameOn(!current);
+      } else {
+        // Show what the shell actually has stored, and say it did not save.
+        // A re-read that fails too keeps the previous value: null would
+        // hide the row, and the error with it.
+        setSystemFrameOn((await mainShell.systemFrame()) ?? current);
+        setSystemFrameFailed(true);
+      }
+    } finally {
+      savingSystemFrame = false;
+    }
+  }
 
   async function toggleAutostart() {
     try {
@@ -155,6 +186,28 @@ function TauriNative() {
             }
           >
             <Trans>Allow Multiple Instances</Trans>
+          </CategoryButton>
+        </Show>
+        <Show when={systemFrameOn() !== null}>
+          <CategoryButton
+            action={<Checkbox checked={systemFrameOn() === true} />}
+            onClick={() => void toggleSystemFrame()}
+            icon={<Symbol>web_asset</Symbol>}
+            description={
+              <Show
+                when={systemFrameFailed()}
+                fallback={
+                  <Trans>
+                    Applies after you quit Sloga from the tray and open it
+                    again.
+                  </Trans>
+                }
+              >
+                <Trans>Could not save this setting. Try again.</Trans>
+              </Show>
+            }
+          >
+            <Trans>Use the Windows title bar</Trans>
           </CategoryButton>
         </Show>
       </CategoryButton.Group>

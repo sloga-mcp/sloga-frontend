@@ -1030,6 +1030,18 @@ msgstr "Allow multiple answers"
 msgid "Allow Multiple Instances"
 msgstr "Allow Multiple Instances"
 
+#: components/app/interface/settings/user/Native.tsx
+msgid "Applies after you quit Sloga from the tray and open it again."
+msgstr "Applies after you quit Sloga from the tray and open it again."
+
+#: components/app/interface/settings/user/Native.tsx
+msgid "Could not save this setting. Try again."
+msgstr "Could not save this setting. Try again."
+
+#: components/app/interface/settings/user/Native.tsx
+msgid "Use the Windows title bar"
+msgstr "Use the Windows title bar"
+
 #: components/app/interface/settings/user/bots/ViewBot.tsx
 msgid "Allow others to add your bot to their servers from Discover"
 msgstr "Allow others to add your bot to their servers from Discover"
@@ -1540,6 +1552,15 @@ msgstr "Block user"
 #: src/interface/Friends.tsx
 msgid "Blocked"
 msgstr "Blocked"
+
+#: src/interface/Home.tsx
+msgid "Welcome"
+msgstr "Welcome"
+
+#: src/interface/Home.tsx
+#: src/interface/home/HappeningNow.tsx
+msgid "Happening now"
+msgstr "Happening now"
 
 #: components/ui/components/features/messaging/elements/MessageReply.tsx
 msgid "Blocked User"
@@ -2269,6 +2290,10 @@ msgstr "Continue unencrypted — new messages will be readable by the server —
 #: components/auth/src/flows/FlowLogin.tsx
 msgid "Continue with Google"
 msgstr "Continue with Google"
+
+#: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
+msgid "Contrast"
+msgstr "Contrast"
 
 #. placeholder {0}: controllerUser().username
 #: components/ui/components/features/voice/callCard/ParticipantTile.tsx
@@ -4378,8 +4403,26 @@ msgid "Home"
 msgstr "Home"
 
 #: src/interface/Home.tsx
+msgid "Customize"
+msgstr "Customize"
+
+#: src/interface/Home.tsx
 msgid "Moderation"
 msgstr "Moderation"
+
+#: src/interface/Home.tsx
+#: src/interface/home/FriendsOnline.tsx
+msgid "Friends online"
+msgstr "Friends online"
+
+#: src/interface/Home.tsx
+msgid "What's New"
+msgstr "What's New"
+
+#: src/interface/Home.tsx
+#: src/interface/home/ImportCard.tsx
+msgid "Bring your community over"
+msgstr "Bring your community over"
 
 #: components/ui/components/features/voice/watch/WatchOverlay.tsx
 msgid "Hosted by {name}"
@@ -8821,6 +8864,10 @@ msgid "Strength: {0}%"
 msgstr "Strength: {0}%"
 
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
+msgid "Style"
+msgstr "Style"
+
+#: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Styles and contrast reshape your color: Neutral mutes it, Fruit Salad shifts its hue, and High Contrast strengthens it."
 msgstr "Styles and contrast reshape your color: Neutral mutes it, Fruit Salad shifts its hue, and High Contrast strengthens it."
 
@@ -10309,6 +10356,114 @@ msgstr "Protected servers are coming to Sloga"
 msgid "End-to-end encryption for a whole server or a single channel. We can't read any of it."
 msgstr "End-to-end encryption for a whole server or a single channel. We can't read any of it."
 
+#: src/interface/home/CustomizeHome.tsx
+msgid "Customize Home"
+msgstr "Customize Home"
+
+#: src/interface/home/CustomizeHome.tsx
+msgid "Drag a card by its grip to move it (on a phone, press and hold the card), or use its menu. Cards you switch off here stay off until you switch them back on. Your layout follows your account to your other devices."
+msgstr "Drag a card by its grip to move it (on a phone, press and hold the card), or use its menu. Cards you switch off here stay off until you switch them back on. Your layout follows your account to your other devices."
+
+#: src/interface/home/CustomizeHome.tsx
+msgid "(nothing to show right now)"
+msgstr "(nothing to show right now)"
+
+#: src/interface/home/CustomizeHome.tsx
+msgid "Reset layout"
+msgstr "Reset layout"
+
+#: src/interface/home/DiscoverPicks.tsx
+msgid "Browse Discover"
+msgstr "Browse Discover"
+
+#: src/interface/home/FriendsOnline.tsx
+msgid "In voice"
+msgstr "In voice"
+
+#: src/interface/home/FriendsOnline.tsx
+msgid "In voice · {place}"
+msgstr "In voice · {place}"
+
+#: src/interface/home/FriendsOnline.tsx
+msgid "Playing {game}"
+msgstr "Playing {game}"
+
+#: src/interface/home/FriendsOnline.tsx
+msgid "All friends"
+msgstr "All friends"
+
+#: src/interface/home/FriendsOnline.tsx
+msgid "None of your friends are online."
+msgstr "None of your friends are online."
+
+#: src/interface/home/FriendsOnline.tsx
+msgid "Add friends"
+msgstr "Add friends"
+
+#: src/interface/home/FriendsOnline.tsx
+msgid "Message {name}"
+msgstr "Message {name}"
+
+#: src/interface/home/HappeningNow.tsx
+msgid "Nobody's in voice right now."
+msgstr "Nobody's in voice right now."
+
+#: src/interface/home/HappeningNow.tsx
+msgid "Start a hangout in {server}"
+msgstr "Start a hangout in {server}"
+
+#: src/interface/home/HappeningNow.tsx
+msgid "Join {name}"
+msgstr "Join {name}"
+
+#: src/interface/home/HappeningNow.tsx
+msgid "{name} is sharing their screen"
+msgstr "{name} is sharing their screen"
+
+#: src/interface/home/HomeBlock.tsx
+msgid "Drag {name} to move it"
+msgstr "Drag {name} to move it"
+
+#: src/interface/home/HomeBlock.tsx
+msgid "Options for {name}"
+msgstr "Options for {name}"
+
+#: src/interface/home/HomeBlock.tsx
+msgid "Drag to move"
+msgstr "Drag to move"
+
+#: src/interface/home/HomeBlock.tsx
+msgid "Move to the side column"
+msgstr "Move to the side column"
+
+#: src/interface/home/HomeBlock.tsx
+msgid "Move to the main column"
+msgstr "Move to the main column"
+
+#: src/interface/home/HomeBlock.tsx
+msgid "Hide this card"
+msgstr "Hide this card"
+
+#: src/interface/home/ImportCard.tsx
+msgid "Import a server from another platform."
+msgstr "Import a server from another platform."
+
+#: src/interface/home/ImportCard.tsx
+msgid "Import a server from Discord."
+msgstr "Import a server from Discord."
+
+#: src/interface/home/JumpBackIn.tsx
+msgid "You're all caught up."
+msgstr "You're all caught up."
+
+#: src/interface/home/JumpBackIn.tsx
+msgid "No events in the next two weeks."
+msgstr "No events in the next two weeks."
+
+#: src/interface/home/JumpBackIn.tsx
+msgid "Schedule an event"
+msgstr "Schedule an event"
+
 #: src/interface/home/JumpBackIn.tsx
 msgid "Jump back in"
 msgstr "Jump back in"
@@ -10344,6 +10499,14 @@ msgstr "Back to {0}"
 #: src/interface/home/StreamerRow.tsx
 msgid "Watch on {0}"
 msgstr "Watch on {0}"
+
+#: src/interface/home/UnreadMentions.tsx
+msgid "No new mentions."
+msgstr "No new mentions."
+
+#: src/interface/home/UnreadMentions.tsx
+msgid "Open to read"
+msgstr "Open to read"
 
 #: src/interface/home/WelcomeTiles.tsx
 msgid "Welcome to Sloga"
@@ -10764,6 +10927,11 @@ msgstr "Until I turn it back on"
 #: src/interface/ServerEvents.tsx
 msgid "Upcoming"
 msgstr "Upcoming"
+
+#: src/interface/Home.tsx
+#: src/interface/home/DiscoverPicks.tsx
+msgid "Servers you might like"
+msgstr "Servers you might like"
 
 #: components/ui/components/features/profiles/ProfileRespect.tsx
 msgid "Update"

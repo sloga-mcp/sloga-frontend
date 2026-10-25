@@ -15,12 +15,18 @@
  *   the flag clears itself after {@link TAB_DRAG_FLAG_TTL_MS}, and on
  *   {@link clearStaleTabDrag}, which each window calls on the pointer events
  *   {@link isStaleDragPointer} picks: none happens during an HTML5 drag.
+ * - Window fullscreen, per window label (`main` included): the Electron
+ *   shell pushes it for its hidden-inset windows (mainShell's
+ *   `watchWindowFrameState`), and an `inset` bar drops the traffic lights'
+ *   space while its window is fullscreen, as the lights go with the OS bar.
  * - The layout of a bar, by frame ({@link titleBarLayout}).
+ * - The document listeners that keep the drag flag right
+ *   ({@link watchDragFlag}), for a chat window's document or main's.
  *
  * Kept free of lingui and the app contexts so `node --test` can load it; the
- * only Solid use is signals.
+ * only Solid use is signals and `onCleanup`.
  */
-import { createSignal } from "solid-js";
+import { createSignal, getOwner, onCleanup } from "solid-js";
 
 import type { ChatWindowFrame } from "../client/chatShell.ts";
 
@@ -69,7 +75,11 @@ export interface TitleBarLayout {
  * - `inset` (Electron on macOS): a bar whose left end is kept clear for the
  *   traffic lights, which the OS draws. The padding is physical, not
  *   `padding-inline-start`: the lights sit on the left whatever the page's
- *   direction, so an RTL page must not move the space to the right.
+ *   direction, so an RTL page must not move the space to the right. While
+ *   the window `label` is in window fullscreen ({@link windowFullscreen})
+ *   the lights are gone, and so is the space.
+ *
+ * Reactive in the window's fullscreen state, so read it in a tracking scope.
  */
 export function titleBarLayout(
   frame: ChatWindowFrame,
@@ -79,6 +89,9 @@ export function titleBarLayout(
     return { bar: true, controls: label !== undefined, style: undefined };
   }
   if (frame === "inset") {
+    if (label !== undefined && windowFullscreen(label)) {
+      return { bar: true, controls: false, style: undefined };
+    }
     return {
       bar: true,
       controls: false,
@@ -263,11 +276,42 @@ export function settleMaximizeToggle(
  * the host calls this when a window closes, so closed labels do not linger,
  * and again when it adopts a new handle for a label, in case a close was
  * missed. A toggle still in flight for the old window is voided too, as
- * stamps never repeat.
+ * stamps never repeat. Its fullscreen state goes as well.
  */
 export function forgetWindow(label: string): void {
   stamps.delete(label);
   writeMaximized(label, false);
+  setWindowFullscreen(label, false);
+}
+
+/* ------------------------------------------------------------------------ *
+ * Window fullscreen, per label (Electron inset windows)
+ * ------------------------------------------------------------------------ */
+
+/** Labels of the windows the shell last reported in window fullscreen. */
+const [fullscreen, setFullscreen] = createSignal<ReadonlySet<string>>(
+  new Set(),
+);
+
+/**
+ * Whether the shell last reported the window `label` (`main`, or a chat
+ * window's label) in window fullscreen (reactive).
+ */
+export function windowFullscreen(label: string): boolean {
+  return fullscreen().has(label);
+}
+
+/**
+ * Record the shell's report of the window `label`'s fullscreen state. A
+ * repeated value notifies nobody.
+ */
+export function setWindowFullscreen(label: string, value: boolean): void {
+  const current = fullscreen();
+  if (current.has(label) === value) return;
+  const next = new Set(current);
+  if (value) next.add(label);
+  else next.delete(label);
+  setFullscreen(next);
 }
 
 /* ------------------------------------------------------------------------ *
@@ -317,4 +361,45 @@ export function markTabDragEnd(): void {
  */
 export function clearStaleTabDrag(): void {
   if (dragActive()) markTabDragEnd();
+}
+
+/**
+ * Keep the drag flag ({@link tabDragActive}) right in the document `doc`
+ * (a chat window's, or main's): raised while files dragged in from outside
+ * the app are over the window, so the title bars' free space stops refusing
+ * them; ended at a `drop` or `dragend`; cleared when a pointer event shows a
+ * drag ended without telling us. Which event does what is
+ * {@link dragFlagAction}'s.
+ *
+ * Capture phase, so a listener that stops propagation cannot hide an event.
+ * A child's events never reach main's document, so each window gets its own
+ * listeners. They go with the calling owner (one rendered window), if there
+ * is one, or with the returned stop, whichever comes first.
+ */
+export function watchDragFlag(doc: Document): () => void {
+  const onEvent = (event: Event) => {
+    const action = dragFlagAction(event as DragEvent & PointerEvent);
+    if (action === "raise") markTabDragStart();
+    else if (action === "end") markTabDragEnd();
+    else if (action === "stale") clearStaleTabDrag();
+  };
+  const opts = { capture: true, passive: true } as const;
+  for (const type of DRAG_FLAG_EVENTS) {
+    doc.addEventListener(type, onEvent, opts);
+  }
+  let live = true;
+  const stop = () => {
+    if (!live) return;
+    live = false;
+    try {
+      for (const type of DRAG_FLAG_EVENTS) {
+        doc.removeEventListener(type, onEvent, opts);
+      }
+    } catch {
+      // A closed window's listeners die with it.
+    }
+  };
+  // Without an owner, onCleanup would only warn; the caller holds the stop.
+  if (getOwner()) onCleanup(stop);
+  return stop;
 }
