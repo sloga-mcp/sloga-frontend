@@ -114,7 +114,10 @@ export const SHIELD_BENIGN_GROUP_ERRORS = [
   "declined",
 ] as const satisfies readonly NativeErrorTag[];
 
-/** Step 3b for `seatListError` (D24: gap refetch, join path, behind). */
+/**
+ * Step 3b for `seatListError` (D24: gap refetch, join path, behind).
+ * `seat_list_behind` is not loud, but step 7 holds it at `resecuring`.
+ */
 export const SHIELD_BENIGN_SEAT_LIST_ERRORS = [
   "not_seated",
   "mls_epoch_gap",
@@ -307,12 +310,15 @@ export function explainShield(i: ShieldInputs): ShieldExplanation | null {
   }
   // 6e. `own_commit_mismatch`, `already_member`, `unexpected_mls_content`
   // fell through step 3 / 3b on purpose (SHIELD_BENIGN_GROUP_ERRORS).
-  // 7.
+  // 7. Plus `seat_list_behind`: the held list is older than the server's,
+  // so the held state is kept but never green (plan D24).
   if (
     n.verdict === "no_group" ||
     n.verdict === "joining" ||
     n.verdict === "poisoned" ||
     n.verdict === "no_seat_list" ||
+    i.seatListError === "seat_list_behind" ||
+    i.groupError === "seat_list_behind" ||
     serverSaysResecuring(n, i.serverGroup)
   ) {
     return { state: "resecuring", step: "7", notice: "resecuring" };

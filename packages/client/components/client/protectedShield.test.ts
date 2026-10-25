@@ -367,6 +367,9 @@ test("every native tag as groupError / seatListError lands in exactly one class"
     assert.ok(g);
     if ((SHIELD_LOUD_GROUP_ERRORS as readonly string[]).includes(tag)) {
       assert.deepEqual([g.state, g.step], ["unverified", "3"], tag);
+    } else if (tag === "seat_list_behind") {
+      // D24: held state kept, never green
+      assert.deepEqual([g.state, g.step], ["resecuring", "7"], tag);
     } else if (
       (SHIELD_BENIGN_GROUP_ERRORS as readonly string[]).includes(tag)
     ) {
@@ -379,6 +382,8 @@ test("every native tag as groupError / seatListError lands in exactly one class"
     assert.ok(s);
     if ((SHIELD_LOUD_SEAT_LIST_ERRORS as readonly string[]).includes(tag)) {
       assert.deepEqual([s.state, s.step], ["unverified", "3"], tag);
+    } else if (tag === "seat_list_behind") {
+      assert.deepEqual([s.state, s.step], ["resecuring", "7"], tag);
     } else if (
       (SHIELD_BENIGN_SEAT_LIST_ERRORS as readonly string[]).includes(tag)
     ) {
@@ -393,6 +398,46 @@ test("every native tag as groupError / seatListError lands in exactly one class"
       tag,
     );
   }
+});
+
+test("D24: SeatListBehind keeps the held state at resecuring, never protected", () => {
+  for (const key of ["seatListError", "groupError"] as const) {
+    // over a native verdict ok
+    expectShield(green({ [key]: "seat_list_behind" }), "resecuring", "7", key);
+    assert.equal(
+      explainShield(green({ [key]: "seat_list_behind" }))?.notice,
+      "resecuring",
+      key,
+    );
+    // earlier steps still win
+    expectShield(
+      withVerdict("not_seated", { [key]: "seat_list_behind" }),
+      "not_seated",
+      "5",
+      key,
+    );
+    expectShield(
+      withVerdict("roster_mismatch", {
+        [key]: "seat_list_behind",
+        rosterMismatchAgeMs: 60_000,
+      }),
+      "unverified",
+      "6",
+      key,
+    );
+    expectShield(
+      green({ [key]: "seat_list_behind", native: null }),
+      "resecuring",
+      "4",
+      key,
+    );
+  }
+  // a loud error alongside still wins (step 3)
+  expectShield(
+    green({ seatListError: "seat_list_behind", groupError: "bad_sig" }),
+    "unverified",
+    "3",
+  );
 });
 
 test("step 4: native null (loading) is resecuring", () => {
@@ -638,6 +683,7 @@ test("green only from verdict ok: exhaustive sweep", () => {
     "bad_sig",
     "mls_epoch_gap",
     "own_commit_mismatch",
+    "seat_list_behind",
   ] as const;
   const groups = [null, serverGroup(), serverGroup({ current_epoch: 9 })];
   let greens = 0;
@@ -674,6 +720,8 @@ test("green only from verdict ok: exhaustive sweep", () => {
                         assert.equal(capable, true);
                         assert.equal(retries, 0);
                         assert.equal(exhausted, false);
+                        assert.notEqual(se, "seat_list_behind");
+                        assert.notEqual(ge, "seat_list_behind");
                       }
                       // never produced in S1
                       assert.ok(e?.state !== "grace" && e?.state !== "frozen");

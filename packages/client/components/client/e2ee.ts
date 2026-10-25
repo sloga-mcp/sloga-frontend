@@ -39,6 +39,10 @@ import type {
   E2EEServerEvent,
   Message,
 } from "stoat.js";
+import {
+  ProtectedChannelUnavailable,
+  ProtectedFieldRefusedClient,
+} from "stoat.js";
 
 import type { ResumeCommitRef, ResumePrefetch } from "../rtc/mlsRejoinPolicy";
 import { decryptBump } from "./e2eeConversationBump";
@@ -105,6 +109,42 @@ import {
   writeResumeRecord,
 } from "./mlsResumeKeep";
 import { IS_OVERLAY_WINDOW, IS_POPOUT_WINDOW } from "./popout";
+import { fetchProtectedChannelsFlag } from "./protectedChannelsFlag";
+import {
+  type TextSinkSource,
+  routeMls,
+  textSinkEnvelope,
+} from "./protectedRouter";
+import { toProtectedSendError } from "./protectedSendError";
+import {
+  type ProtectedTextManagerExtraCallbacks,
+  ProtectedTextManager,
+} from "./protectedText";
+import { TextIdIndex } from "./protectedTextIds";
+import {
+  decryptRow,
+  encryptAndSend,
+  markerForError,
+} from "./protectedTextMessages";
+import { protect, setSeats } from "./protectedTextOwner";
+import {
+  type ProtectedChannelInfo,
+  type ProtectedChannelsFlag,
+  type ProtectedChannelView,
+  type ProtectedMessageRow,
+  type ProtectedMessageView,
+  type ProtectedTextManagerCallbacks,
+  type ProtectedTextPort,
+  type ProtectedToastKind,
+  type ProtectedUiApi,
+  type TextApiMethod,
+  type TextApiResponse,
+  type TextCommand,
+  type TextCommandArgs,
+  type TextCommandResult,
+  type TimelineMarker,
+  TEXT_COMMANDS,
+} from "./protectedTextTypes";
 
 /** Author id used for locally-injected system/marker messages */
 const SYSTEM_AUTHOR = "00000000000000000000000000";
@@ -1699,6 +1739,8 @@ export class E2EEBridge implements E2EEAdapter {
       // The server does not accept this device for the signed-in account, so
       // no call here can use what is held; it stays queued server-side.
       this.#mlsBuffer.clear();
+      this.#ptPreIndex.clear();
+      this.#protectedDispose();
     } else if (presence === "present") {
       this.deviceOwnedElsewhere.delete("state");
     }
@@ -1896,6 +1938,8 @@ export class E2EEBridge implements E2EEAdapter {
     // Nothing the signed-in account's call could use: the store holding the
     // groups these envelopes name is somebody else's.
     this.#mlsBuffer.clear();
+    this.#ptPreIndex.clear();
+    this.#protectedDispose();
     // The same goes for any group kept for a resume, and for the records
     // naming one. Not sticky: an owner check that later matches keeps again.
     void this.#kept.discardAll();
@@ -2004,6 +2048,11 @@ export class E2EEBridge implements E2EEAdapter {
       // exactly where that rejection lands.
     } catch (error) {
       console.error("[e2ee] startup failed", error);
+    } finally {
+      // Protected channels (W4 B5): on EVERY path, the unprovisioned early
+      // return and a failed startup included. Seeds the routing index and
+      // marks it ready (structural), then builds the manager if capable.
+      void this.#protectedOnReady();
     }
   }
 
@@ -2196,7 +2245,10 @@ export class E2EEBridge implements E2EEAdapter {
         // included); clearing here keeps what is held to this connection's
         // copy instead of piling a stale one from an earlier connection under
         // it. A rejected claim gets no drain and clears nothing.
-        if (event.accepted) this.#mlsBuffer.clear();
+        if (event.accepted) {
+          this.#mlsBuffer.clear();
+          this.#ptPreIndex.clear();
+        }
         void this.#onClaimResult(event.accepted);
         // Peer listings need the device-bound session this binds: drop
         // anything learned before it and re-run the probes it failed.
@@ -2211,7 +2263,13 @@ export class E2EEBridge implements E2EEAdapter {
         const contentType = event.content_type;
         if (contentType && inboundRoute(contentType) === "mls") {
           const sinkEvent = mlsSinkEnvelope(event, contentType);
-          if (sinkEvent) this.#deliverMlsEnvelope(sinkEvent);
+          if (
+            sinkEvent &&
+            this.#protectedRouteEnvelope(event, contentType, sinkEvent) ===
+              "call"
+          ) {
+            this.#deliverMlsEnvelope(sinkEvent);
+          }
           break;
         }
         // Serialise: drain + live pushes must decrypt in delivery order
@@ -2232,24 +2290,28 @@ export class E2EEBridge implements E2EEAdapter {
       case "E2EEDeviceDelete":
         void this.#onDeviceDelete(event.user_id, event.device_id);
         break;
-      case "MlsJoinRequested":
+      case "MlsJoinRequested": {
         // Admit trigger — hand the (already server-relayed, client-reverified)
         // intent to the active call session's admit scheduler. No session ⇒
         // dropped, never held: a joiner re-broadcasts on its retry timer, and
         // a late replay of a held intent could admit a joiner who has left.
-        this.#mlsSink?.({
-          kind: "join_request",
-          request: {
-            group_id: event.group_id,
-            channel_id: event.channel_id,
-            user_id: event.user_id,
-            device_id: event.device_id,
-            key_package_ref: event.key_package_ref,
-            signature: event.signature,
-          },
-          rejoin: event.rejoin ?? false,
-        });
+        const request: MlsJoinRequest = {
+          group_id: event.group_id,
+          channel_id: event.channel_id,
+          user_id: event.user_id,
+          device_id: event.device_id,
+          key_package_ref: event.key_package_ref,
+          signature: event.signature,
+        };
+        const rejoin = event.rejoin ?? false;
+        // Protected channels: an indexed text group's intent goes to the
+        // text manager instead, or is dropped (never held, never the call).
+        if (this.#protectedRouteJoinRequest(request, rejoin) !== "call") {
+          break;
+        }
+        this.#mlsSink?.({ kind: "join_request", request, rejoin });
         break;
+      }
       case "MlsCommit":
       case "MlsWelcome":
       case "MlsCtl": {
@@ -2257,15 +2319,21 @@ export class E2EEBridge implements E2EEAdapter {
         // serialized drain (H1), NOT the text `#decryptQueue`. Malformed
         // envelopes are dropped (`mlsSinkEnvelope`). NOT acked here — the
         // session acks after durable native processing (§3.3).
-        const sinkEvent = mlsSinkEnvelope(
-          event,
+        const armType =
           event.type === "MlsWelcome"
             ? "mls_welcome"
             : event.type === "MlsCtl"
               ? "mls_ctl"
-              : "mls_commit",
-        );
-        if (sinkEvent) this.#deliverMlsEnvelope(sinkEvent);
+              : "mls_commit";
+        const sinkEvent = mlsSinkEnvelope(event, armType);
+        // Protected channels: routed first (a ctl always stays on the call
+        // path; `#protectedRouteEnvelope` never sends one to text).
+        if (
+          sinkEvent &&
+          this.#protectedRouteEnvelope(event, armType, sinkEvent) === "call"
+        ) {
+          this.#deliverMlsEnvelope(sinkEvent);
+        }
         break;
       }
     }
@@ -5798,7 +5866,12 @@ export class E2EEBridge implements E2EEAdapter {
   async #prepublishMlsKeyPackages(): Promise<void> {
     // Gate on "Encrypt my calls" (§0.2 #9): with calls E2EE off there is no
     // reason to stock the MLS KeyPackage directory. Fail-closed until wired.
-    if (!this.#callsEnabled()) return;
+    // Protected channels: `enable()` just made this device capable, so the
+    // text manager can start now (it fetches the flag and replenishes, D12)
+    // and open the channels the UI already holds open. D12 gate: also stock
+    // KeyPackages when the feature is advertised and this device is capable.
+    this.#protectedEnsureManager();
+    if (!this.#callsEnabled() && !this.#protectedKeyPackagesWanted()) return;
     try {
       const userId = this.#client.user?.id;
       if (!userId) return;
@@ -5861,6 +5934,8 @@ export class E2EEBridge implements E2EEAdapter {
     // Held MLS envelopes name groups the wipe just destroyed; the next call
     // must not be fed them.
     this.#mlsBuffer.clear();
+    this.#ptPreIndex.clear();
+    this.#protectedDispose();
     // Kept groups went with the store; drop their entries and every resume
     // record so nothing tries to resume one. Their native deletes are
     // skipped now the store is gone (`#deleteLocalGroup`). Not sticky: a
@@ -7074,6 +7149,939 @@ export class E2EEBridge implements E2EEAdapter {
       transport: { maxRetries: CALL_PLANE_RATELIMIT_RETRIES },
     });
   }
+
+  // ================================================================
+  // BEGIN protected seam (W4 lane B5, plan 4.3, D3 D4 D6 D8 D10 D12 D13)
+  //
+  // Protected channels: the text-plane manager (`protectedText.ts`) wired
+  // into this bridge. Every member the seam adds lives between the BEGIN and
+  // END markers (placement rule PA#10). Outside them the seam only touches
+  // the three MLS event arms (`routeMls` runs BEFORE `#deliverMlsEnvelope` /
+  // `#mlsSink`), the four `#mlsBuffer.clear()` sites (the pre-index buffer is
+  // cleared with it), the end of `#onReady` and the D12 KeyPackage gate.
+  //
+  // Never touches `#encryptedIds`: protected rows use the SDK's
+  // channel-keyed predicate (D2). Never sends `Idempotency-Key`. Installs no
+  // draft-guard resolver (lane C5 owns it). Logs ids only (D16).
+  // ================================================================
+
+  /** Routing index (D4): every server-protected or pinned channel. */
+  readonly #ptIndex = new TextIdIndex();
+  /** Channels whose `#ptIndex.addChannel` resolved. */
+  readonly #ptIndexed = new Set<string>();
+  /**
+   * The pre-index hold (D4 steps 2 and 6): a second `MlsInboundBuffer`,
+   * cleared at every site that clears `#mlsBuffer`. Each entry also carries
+   * its bonfire event, so the commit declarations survive the wait (D5).
+   */
+  readonly #ptPreIndex = new MlsInboundBuffer();
+  #ptManager: ProtectedTextManager | null = null;
+  /** The manager's lifetime; aborted on dispose (`port.sleep` rejects). */
+  #ptLife: AbortController | null = null;
+  /** `<userId>:<deviceId>` the manager was built for. */
+  #ptManagerKey: string | null = null;
+  /** Channels handed to the current manager (dedupes `onChannelProtected`). */
+  readonly #ptForwarded = new Set<string>();
+  readonly #ptFlagState = new ReactiveMap<"state", ProtectedChannelsFlag>();
+  #ptOwnListing: { hash: string; listing: unknown[]; at: number } | null = null;
+  #ptOwnListingFlight: Promise<{ hash: string; listing: unknown[] }> | null =
+    null;
+  /** Last server KeyPackage count the text plane saw (D12). */
+  #ptServerKeyPackages = 0;
+  #ptReplenishing = false;
+  #ptDeletesSubscribed = false;
+  /** `disposeProtected()` ran: never build a manager again. */
+  #ptSignedOut = false;
+  /** Channels the UI holds open (survives a manager rebuild). */
+  readonly #ptOpen = new Set<string>();
+  /** Draft outbox keys (set by the Draft lane); unset = unknown. */
+  #ptOutboxKeys: (() => ReadonlySet<string>) | null = null;
+
+  /** Per-channel manager view (`ProtectedUiApi.protectedChannels`). */
+  readonly protectedChannels = new ReactiveMap<string, ProtectedChannelView>();
+  /** Decrypted message views (D22). */
+  readonly protectedViews = new ReactiveMap<string, ProtectedMessageView>();
+  /** Local timeline markers per channel (D22). */
+  readonly protectedTimelineMarkers = new ReactiveMap<
+    string,
+    readonly TimelineMarker[]
+  >();
+  /**
+   * The manager's latest toast (D22 `port.notify`). The UI renders each new
+   * `at` once. Holds a kind only, never content.
+   */
+  readonly protectedToast = new ReactiveMap<
+    "state",
+    { kind: ProtectedToastKind; at: number }
+  >();
+
+  /** This bridge as the typed UI surface (compile-time contract check). */
+  get protectedUi(): ProtectedUiApi {
+    return this;
+  }
+
+  /**
+   * D4 `structural`: the Tauri main window. No status terms, so a Tauri
+   * device that is merely disabled or unprovisioned still routes indexed
+   * envelopes away from the call session.
+   */
+  #protectedStructural(): boolean {
+    return (
+      this.#transport instanceof TauriTransport &&
+      !IS_POPOUT_WINDOW &&
+      !IS_OVERLAY_WINDOW
+    );
+  }
+
+  /**
+   * D3: whether this window can run the text plane. Electron, Android, iOS
+   * and web are never capable; neither is a Tauri device that is not
+   * provisioned and enabled, or whose store or device belongs elsewhere.
+   */
+  protectedTextCapable(): boolean {
+    const status = this.status.get("state");
+    return (
+      this.#protectedStructural() &&
+      status?.enabled === true &&
+      !!status.device_id &&
+      !this.storeOwnedByAnotherAccount.has("state") &&
+      !this.deviceOwnedElsewhere.has("state")
+    );
+  }
+
+  /** D13 flag (growth UI and D12 only); `enabled: false` until fetched. */
+  protectedFlag(): ProtectedChannelsFlag {
+    return (
+      this.#ptFlagState.get("state") ?? {
+        enabled: false,
+        defaultDeviceCap: null,
+      }
+    );
+  }
+
+  #protectedManagerReady(): boolean {
+    return this.#ptManager !== null && this.protectedTextCapable();
+  }
+
+  /**
+   * D4 for one inbound MLS envelope (drain or live push), called BEFORE the
+   * call path. `"call"` hands it to `#deliverMlsEnvelope` unchanged; anything
+   * else was routed here (text manager, pre-index hold, or dropped unacked).
+   * A ctl is always the call's and is never routed to text.
+   */
+  #protectedRouteEnvelope(
+    event: TextSinkSource,
+    contentType: string,
+    sinkEvent: MlsBufferedEnvelope,
+  ): "call" | "handled" {
+    if (contentType === "mls_ctl" || event.content_type === "mls_ctl") {
+      return "call";
+    }
+    const route = routeMls({
+      structural: this.#protectedStructural(),
+      indexReady: this.#ptIndex.ready,
+      inIndex: this.#ptIndex.has(sinkEvent.envelope.group_id),
+      managerReady: this.#protectedManagerReady(),
+      kind: "envelope",
+      recipientDeviceId: sinkEvent.recipientDeviceId,
+      ownDeviceId: this.status.get("state")?.device_id ?? null,
+    });
+    switch (route) {
+      case "call":
+        return "call";
+      case "pre_index_hold":
+        this.#ptPreIndex.push(
+          Object.assign({}, sinkEvent, {
+            ptSource: event,
+            ptContentType: contentType,
+          }),
+        );
+        return "handled";
+      case "drop_unacked":
+        return "handled";
+      case "text": {
+        const envelope = textSinkEnvelope(event, contentType);
+        if (envelope) this.#ptManager?.onEnvelope(envelope);
+        else {
+          console.warn("[protected] malformed text envelope dropped", {
+            envelopeId: sinkEvent.envelope.id,
+          });
+        }
+        return "handled";
+      }
+    }
+  }
+
+  /** D4 for a join request (never held; a recipient filter never applies). */
+  #protectedRouteJoinRequest(
+    request: MlsJoinRequest,
+    rejoin: boolean,
+  ): "call" | "handled" {
+    const route = routeMls({
+      structural: this.#protectedStructural(),
+      indexReady: this.#ptIndex.ready,
+      inIndex: this.#ptIndex.has(request.group_id),
+      managerReady: this.#protectedManagerReady(),
+      kind: "join_request",
+      recipientDeviceId: null,
+      ownDeviceId: this.status.get("state")?.device_id ?? null,
+    });
+    if (route === "call") return "call";
+    if (route === "text") this.#ptManager?.onJoinRequest(request, rejoin);
+    return "handled";
+  }
+
+  /** Re-route everything held pre-index, in order (a re-hold re-queues). */
+  #protectedFlushPreIndex(): void {
+    const held = this.#ptPreIndex.drain() as (MlsBufferedEnvelope & {
+      ptSource: TextSinkSource;
+      ptContentType: string;
+    })[];
+    for (const entry of held) {
+      const sinkEvent: MlsBufferedEnvelope = {
+        kind: "envelope",
+        recipientDeviceId: entry.recipientDeviceId,
+        envelope: entry.envelope,
+      };
+      try {
+        if (
+          this.#protectedRouteEnvelope(
+            entry.ptSource,
+            entry.ptContentType,
+            sinkEvent,
+          ) === "call"
+        ) {
+          this.#deliverMlsEnvelope(sinkEvent);
+        }
+      } catch (error) {
+        console.error("[protected] pre-index flush failed", {
+          envelopeId: entry.envelope.id,
+          error: errorName(error),
+        });
+      }
+    }
+  }
+
+  /** Server-protected channels in the cache plus every pinned id. */
+  #protectedSeedIds(): string[] {
+    const ids = new Set<string>();
+    try {
+      for (const id of this.#client.protectedPins.all()) ids.add(id);
+    } catch (error) {
+      console.warn("[protected] pin set unreadable", errorName(error));
+    }
+    try {
+      for (const channel of this.#client.channels.values()) {
+        if (channel.type === "TextChannel" && channel.isProtected) {
+          ids.add(channel.id);
+        }
+      }
+    } catch (error) {
+      console.warn("[protected] channel cache unreadable", errorName(error));
+    }
+    return [...ids];
+  }
+
+  /** Index one channel; resolves false when it cannot be indexed. */
+  async #protectedIndex(channelId: string): Promise<boolean> {
+    try {
+      await this.#ptIndex.addChannel(channelId);
+      this.#ptIndexed.add(channelId);
+      return true;
+    } catch {
+      console.warn("[protected] channel not indexed", { channelId });
+      return false;
+    }
+  }
+
+  /**
+   * End of every `#onReady` (W4a audit, binding): seed the index from the
+   * pins and the cache (`allSettled`: a non-ULID pin must not block the
+   * rest), rebuild the manager when the account/device changed or the device
+   * stopped being capable, build it when capable, and THEN mark the index
+   * ready and flush the pre-index hold. `markReady` is structural and runs on
+   * every path, capable or not: an index that never becomes ready holds every
+   * envelope and drops every join request for good. Never throws.
+   */
+  async #protectedOnReady(): Promise<void> {
+    try {
+      this.#protectedSubscribeDeletes();
+      await Promise.allSettled(
+        this.#protectedSeedIds().map((id) => this.#protectedIndex(id)),
+      );
+      const key = this.#protectedManagerKeyNow();
+      if (this.#ptManager && key !== this.#ptManagerKey) {
+        this.#protectedDispose();
+      }
+      this.#protectedEnsureManager();
+      // L1: a manager built while seeding was in flight (enable(), a UI
+      // action) missed channels indexed after it; hand them over (deduped).
+      for (const channelId of this.#ptIndexed) {
+        this.#protectedForward(channelId);
+      }
+    } catch (error) {
+      console.error("[protected] startup failed", errorName(error));
+    } finally {
+      this.#ptIndex.markReady();
+      this.#protectedFlushPreIndex();
+    }
+  }
+
+  /**
+   * D22 / PA#17: drop decrypted views of deleted messages. Subscribed ONCE
+   * per bridge; `messageDeleteId` covers uncached rows, the bulk event the
+   * cached ones it removes.
+   */
+  #protectedSubscribeDeletes(): void {
+    if (this.#ptDeletesSubscribed) return;
+    this.#ptDeletesSubscribed = true;
+    this.#client.on("messageDeleteId", (id) => this.#protectedForget([id]));
+    this.#client.on("messageDeleteBulk", (messages) =>
+      this.#protectedForget(messages.map((message) => message.id)),
+    );
+  }
+
+  #protectedForget(ids: string[]): void {
+    if (ids.length === 0) return;
+    for (const id of ids) this.protectedViews.delete(id);
+    try {
+      this.#ptManager?.forget(ids);
+    } catch (error) {
+      console.error("[protected] forget failed", errorName(error));
+    }
+  }
+
+  /** `<userId>:<deviceId>` when capable, else null. */
+  #protectedManagerKeyNow(): string | null {
+    const userId = this.#client.user?.id;
+    const deviceId = this.status.get("state")?.device_id;
+    return this.protectedTextCapable() && userId && deviceId
+      ? `${userId}:${deviceId}`
+      : null;
+  }
+
+  /**
+   * Build the manager once `status.device_id` is known and the window is
+   * capable (D3). Hands it every indexed channel, then starts it. Idempotent.
+   */
+  #protectedEnsureManager(): void {
+    if (this.#ptManager || this.#ptSignedOut) return;
+    const key = this.#protectedManagerKeyNow();
+    const userId = this.#client.user?.id;
+    const deviceId = this.status.get("state")?.device_id;
+    if (!key || !userId || !deviceId) return;
+
+    const life = new AbortController();
+    let manager: ProtectedTextManager | null = null;
+    const current = () => manager !== null && this.#ptManager === manager;
+    const callbacks: ProtectedTextManagerCallbacks &
+      ProtectedTextManagerExtraCallbacks = {
+      onView: (channelId, view) => {
+        if (current()) this.protectedChannels.set(channelId, view);
+      },
+      onMessageView: (messageId, view) => {
+        if (current()) this.protectedViews.set(messageId, view);
+      },
+      onTimelineMarker: (channelId, marker) => {
+        if (!current()) return;
+        // Bounded: the newest 200 markers per channel.
+        const list = [
+          ...(this.protectedTimelineMarkers.get(channelId) ?? []),
+          marker,
+        ];
+        this.protectedTimelineMarkers.set(channelId, list.slice(-200));
+      },
+      // D12: this device's KeyPackage was consumed by the Welcome.
+      onWelcomeJoined: () => {
+        if (!current()) return;
+        this.#ptServerKeyPackages = Math.max(0, this.#ptServerKeyPackages - 1);
+        void this.#protectedReplenish();
+      },
+    };
+    manager = new ProtectedTextManager(
+      this.#protectedPort(userId, deviceId, life.signal),
+      callbacks,
+      {
+        owner: { protect, setSeats },
+        messages: { encryptAndSend, decryptRow, markerForError },
+      },
+    );
+    this.#ptManager = manager;
+    this.#ptLife = life;
+    this.#ptManagerKey = key;
+    this.#ptForwarded.clear();
+    for (const channelId of this.#ptIndexed) {
+      this.#protectedForward(channelId);
+    }
+    manager.start().catch((error: unknown) => {
+      console.error("[protected] manager start failed", errorName(error));
+    });
+    // Channels the UI opened before this manager existed.
+    for (const channelId of this.#ptOpen) void this.#protectedOpen(channelId);
+    void this.#protectedRefreshFlag();
+  }
+
+  /** Hand one indexed channel to the current manager, once. */
+  #protectedForward(channelId: string): void {
+    const manager = this.#ptManager;
+    if (!manager || this.#ptForwarded.has(channelId)) return;
+    this.#ptForwarded.add(channelId);
+    manager.channelProtected(channelId);
+    if (this.#client.isProtectedFlagStripped(channelId)) {
+      manager.flagStripped(channelId);
+    }
+  }
+
+  /**
+   * Tear the manager down (wipe, disable, ownership latches, a changed
+   * device, sign-out via `disposeProtected`). Aborts its lifetime, so every
+   * `port.sleep` rejects and every courier request is cut. Drops the views:
+   * nothing decrypted under the old manager outlives it.
+   */
+  #protectedDispose(): void {
+    const manager = this.#ptManager;
+    this.#ptManager = null;
+    this.#ptManagerKey = null;
+    this.#ptForwarded.clear();
+    this.#ptLife?.abort();
+    this.#ptLife = null;
+    this.#ptOwnListing = null;
+    this.#ptOwnListingFlight = null;
+    this.#ptServerKeyPackages = 0;
+    if (manager) {
+      try {
+        manager.dispose();
+      } catch (error) {
+        console.error("[protected] manager dispose failed", errorName(error));
+      }
+    }
+    this.protectedChannels.clear();
+    this.protectedViews.clear();
+    this.protectedTimelineMarkers.clear();
+    this.protectedToast.clear();
+  }
+
+  /**
+   * Sign-out teardown. No sign-out hook reaches the bridge (the lifecycle
+   * builds a new client and bridge), so the lifecycle owner calls this from
+   * `onSignOut`; otherwise the old manager's timers outlive the session.
+   */
+  disposeProtected(): void {
+    // Idempotent, safe at any time; final: the client this bridge serves is
+    // gone, so no later UI action or reconnect may build another manager.
+    this.#ptSignedOut = true;
+    this.#protectedDispose();
+  }
+
+  /**
+   * Draft outbox keys for the D10 orphan scan (set by the Draft lane; the
+   * accessor THROWS until the outbox is loaded). Until set, the scan logs
+   * and skips rather than treat a live outbox entry as an orphan (which
+   * could re-send a delivered message). Setting it re-runs the scan (M4).
+   */
+  setProtectedOutboxKeys(accessor: () => ReadonlySet<string>): void {
+    this.#ptOutboxKeys = accessor;
+    const manager = this.#ptManager as
+      | (ProtectedTextManager & { rescanOrphans?: () => void })
+      | null;
+    if (!manager) return; // a manager built later scans at start()
+    if (typeof manager.rescanOrphans === "function") {
+      manager.rescanOrphans();
+    } else {
+      console.warn("[protected] orphan re-scan unavailable on this manager");
+    }
+  }
+
+  /**
+   * `textInvoke` (D3): the ONLY way a text command reaches native. Allow-
+   * listed to `TEXT_COMMANDS` and refused unless `protectedTextCapable()`,
+   * so Electron, Android, iOS and web never call one.
+   */
+  #textInvoke<C extends TextCommand>(
+    cmd: C,
+    args: TextCommandArgs[C],
+  ): Promise<TextCommandResult[C]> {
+    if (!(TEXT_COMMANDS as readonly string[]).includes(cmd)) {
+      return Promise.reject({ source: "client", reason: "not_allowed" });
+    }
+    if (!this.protectedTextCapable()) {
+      return Promise.reject({ source: "client", reason: "not_capable" });
+    }
+    return this.#invoke<TextCommandResult[C]>(
+      cmd,
+      args as unknown as Record<string, unknown>,
+    );
+  }
+
+  /**
+   * D6 text courier. Never throws on a non-2xx (the manager owns the 429
+   * policy); rejects only on a network failure or abort. Its own signal, no
+   * call-plane 429 notifier, never `Idempotency-Key`.
+   */
+  async textApi(
+    method: TextApiMethod,
+    path: string,
+    body?: unknown,
+    signal?: AbortSignal,
+  ): Promise<TextApiResponse> {
+    const [authHeader, authValue] = this.#client.authenticationHeader;
+    const transportError = () =>
+      Object.assign(new Error("[protected] transport error"), {
+        name: "TextTransportError",
+      });
+    let response: Response;
+    let text: string;
+    try {
+      response = await fetch(`${this.#client.options.baseURL}${path}`, {
+        method,
+        headers: {
+          [authHeader]: authValue,
+          ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+        },
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+        signal,
+      });
+      text = await response.text();
+    } catch {
+      throw transportError();
+    }
+    let parsed: unknown = null;
+    try {
+      parsed = text ? JSON.parse(text) : null;
+    } catch {
+      parsed = null;
+    }
+    const header = response.headers.get("X-RateLimit-Reset-After");
+    const reset = header === null ? NaN : Number(header);
+    return {
+      status: response.status,
+      resetAfterMs: Number.isFinite(reset) && reset >= 0 ? reset : null,
+      body: parsed,
+    };
+  }
+
+  /** The port the manager drives everything through (plan 4.3). */
+  #protectedPort(
+    userId: string,
+    deviceId: string,
+    life: AbortSignal,
+  ): ProtectedTextPort {
+    const storage = (): Storage => globalThis.localStorage;
+    return {
+      selfUserId: userId,
+      selfDeviceId: deviceId,
+      invoke: <C extends TextCommand>(cmd: C, args: TextCommandArgs[C]) =>
+        this.#textInvoke(cmd, args),
+      pinCallIdentities: (peer, targets) =>
+        this.#protectedPinIdentities(peer, targets),
+      ownDeviceListing: () => this.#protectedOwnListing(),
+      api: (method, path, body) => this.textApi(method, path, body, life),
+      ack: async (ids) => {
+        if (!life.aborted) this.ackEnvelopes(ids);
+      },
+      now: () => Date.now(),
+      // Rejects on the caller's signal AND once the manager is disposed:
+      // B2's publish loops have no attempt cap and stop only on a reject.
+      sleep: (ms, signal) =>
+        new Promise<void>((resolve, reject) => {
+          if (signal.aborted || life.aborted) {
+            reject(new Error("[protected] sleep aborted"));
+            return;
+          }
+          const onAbort = () => {
+            cleanup();
+            reject(new Error("[protected] sleep aborted"));
+          };
+          const timer = setTimeout(
+            () => {
+              cleanup();
+              resolve();
+            },
+            Math.max(0, ms),
+          );
+          const cleanup = () => {
+            clearTimeout(timer);
+            signal.removeEventListener("abort", onAbort);
+            life.removeEventListener("abort", onAbort);
+          };
+          signal.addEventListener("abort", onAbort, { once: true });
+          life.addEventListener("abort", onAbort, { once: true });
+        }),
+      log: (level, msg, ids) => {
+        const line = msg.startsWith("[protected]") ? msg : `[protected] ${msg}`;
+        console[level](line, ids);
+      },
+      channelInfo: (channelId) => this.#protectedChannelInfo(channelId),
+      displayNames: (userIds) =>
+        userIds.flatMap((id) => {
+          const user = this.#client.users.get(id);
+          return user
+            ? [{ user_id: id, name: user.displayName || user.username }]
+            : [];
+        }),
+      store: {
+        get: (key) => {
+          try {
+            return storage().getItem(key);
+          } catch {
+            return null;
+          }
+        },
+        set: (key, value) => {
+          try {
+            storage().setItem(key, value);
+            return true;
+          } catch {
+            return false;
+          }
+        },
+        delete: (key) => {
+          try {
+            storage().removeItem(key);
+          } catch {
+            // storage unavailable: nothing stored to delete
+          }
+        },
+      },
+      notify: (kind) => {
+        if (!life.aborted)
+          this.protectedToast.set("state", { kind, at: Date.now() });
+      },
+      // Throws when storage is unreadable: the scan logs and skips.
+      storeKeys: (prefix) => {
+        const keys: string[] = [];
+        const s = storage();
+        for (let i = 0; i < s.length; i++) {
+          const key = s.key(i);
+          if (key !== null && key.startsWith(prefix)) keys.push(key);
+        }
+        return keys;
+      },
+      // Throws until the Draft lane wires the accessor ("unknown").
+      liveOutboxKeys: () => {
+        const accessor = this.#ptOutboxKeys;
+        if (!accessor) throw new Error("[protected] outbox keys not wired");
+        return accessor();
+      },
+    };
+  }
+
+  /** What the cache knows about a channel (null when not cached). */
+  #protectedChannelInfo(channelId: string): ProtectedChannelInfo | null {
+    const channel = this.#client.channels.get(channelId);
+    if (!channel) return null;
+    return {
+      channelId,
+      name: channel.name ?? "",
+      serverId: channel.serverId || null,
+      serverOwnerId: channel.server?.ownerId || null,
+      serverProtected: channel.isProtected,
+      locallyPinned: this.#client.protectedPins.has(channelId),
+    };
+  }
+
+  /**
+   * D18: pin OTHER users' named devices from a fresh signed listing. Own
+   * devices go through `e2ee_text_pin_own_devices` (the manager).
+   */
+  async #protectedPinIdentities(
+    userId: string,
+    targets: string[],
+  ): Promise<string[]> {
+    const selfUserId = this.#client.user?.id;
+    if (
+      !this.protectedTextCapable() ||
+      !selfUserId ||
+      userId === selfUserId ||
+      targets.length === 0
+    ) {
+      return [];
+    }
+    const report = await this.#reconcileDevices(userId);
+    if (!report) return [];
+    return this.#invoke<string[]>("e2ee_pin_call_identities", {
+      selfUserId,
+      userId,
+      targets,
+      devices: report.listing,
+    });
+  }
+
+  /**
+   * D18: this user's COMPLETE signed listing, cached for 60 s and
+   * single-flight (the manager asks before every `_process`). A failed
+   * refresh falls back to the last listing.
+   */
+  #protectedOwnListing(): Promise<{ hash: string; listing: unknown[] }> {
+    const cached = this.#ptOwnListing;
+    if (cached && Date.now() - cached.at < 60_000) {
+      return Promise.resolve(cached);
+    }
+    if (this.#ptOwnListingFlight) return this.#ptOwnListingFlight;
+    // A dispose mid-flight resets `#ptLife`; a stale answer is not cached.
+    const life = this.#ptLife;
+    const flight = (async () => {
+      const userId = this.#client.user?.id;
+      if (!userId || !this.protectedTextCapable()) {
+        throw { source: "client", reason: "not_capable" };
+      }
+      const report = await this.#reconcileDevices(userId);
+      if (!report) throw { source: "client", reason: "not_capable" };
+      const entry = {
+        hash: JSON.stringify(report.listing),
+        listing: report.listing,
+        at: Date.now(),
+      };
+      if (this.#ptLife === life) this.#ptOwnListing = entry;
+      return entry;
+    })()
+      .catch((error: unknown) => {
+        if (cached) return cached;
+        throw error;
+      })
+      .finally(() => {
+        if (this.#ptLife === life) this.#ptOwnListingFlight = null;
+      });
+    this.#ptOwnListingFlight = flight;
+    return flight;
+  }
+
+  /** D13: fetch the flag; when enabled, run the D12 ready-time replenish. */
+  async #protectedRefreshFlag(): Promise<void> {
+    const flag = await fetchProtectedChannelsFlag(this.#client);
+    this.#ptFlagState.set("state", flag);
+    if (flag.enabled) await this.#protectedReplenish();
+  }
+
+  /** D12 gate: the flag is advertised AND this window is capable. */
+  #protectedKeyPackagesWanted(): boolean {
+    return this.protectedFlag().enabled && this.protectedTextCapable();
+  }
+
+  /** D12 low-water KeyPackage replenish for the text plane (best-effort). */
+  async #protectedReplenish(): Promise<void> {
+    if (this.#ptReplenishing || !this.#protectedKeyPackagesWanted()) return;
+    const userId = this.#client.user?.id;
+    if (!userId) return;
+    this.#ptReplenishing = true;
+    try {
+      const payload = await this.mlsReplenish(
+        userId,
+        this.#ptServerKeyPackages,
+      );
+      if (!payload) return;
+      const res = await this.mlsPutKeyPackages(payload);
+      if (res.kind === "ok") {
+        this.#ptServerKeyPackages = res.body.key_package_count;
+      } else if (res.kind !== "feature_disabled") {
+        console.warn("[protected] KeyPackage replenish not completed", {
+          kind: res.kind,
+        });
+      }
+    } catch (error) {
+      console.warn("[protected] KeyPackage replenish failed", errorName(error));
+    } finally {
+      this.#ptReplenishing = false;
+    }
+  }
+
+  /** The SDK row as the manager sees it (`?? null`, never undefined). */
+  #protectedRow(message: Message): ProtectedMessageRow {
+    return {
+      id: message.id,
+      channelId: message.channelId,
+      authorId: message.authorId ?? "",
+      nonce: message.nonce ?? null,
+      encrypted: message.encrypted ?? null,
+    };
+  }
+
+  // ---- E2EEAdapter protected hooks (stoat.js 4.1) ----
+
+  /**
+   * Plan 4.1 choke point: encrypt natively and deliver, or THROW. The body
+   * carries only the text, reply ids and a 0/1 flags value; every other
+   * non-empty field is refused (`ProtectedFieldRefusedClient`, D9b), never
+   * stripped. Every rejection is ONE `ProtectedSendError` whose `failure`
+   * is the cause (W4b audit M2); `.message` is never display copy.
+   */
+  async handleProtectedSend(
+    channel: Channel,
+    data: E2EEDataMessageSend,
+    idempotencyKey: string,
+  ): Promise<Message> {
+    try {
+      this.#protectedEnsureManager();
+      const manager = this.#ptManager;
+      if (!manager || !this.protectedTextCapable()) {
+        throw new ProtectedChannelUnavailable();
+      }
+      const record = data as Record<string, unknown>;
+      for (const [field, value] of Object.entries(record)) {
+        if (field === "content" || field === "replies" || field === "flags") {
+          continue;
+        }
+        if (value === undefined || value === null) continue;
+        if (Array.isArray(value) && value.length === 0) continue;
+        throw new ProtectedFieldRefusedClient(
+          field as ConstructorParameters<typeof ProtectedFieldRefusedClient>[0],
+        );
+      }
+      const text = typeof data.content === "string" ? data.content : "";
+      if (!text.trim()) throw { source: "client", reason: "empty_message" };
+      const flags = data.flags ?? 0;
+      if (flags !== 0 && flags !== 1) {
+        throw { source: "client", reason: "invalid_flags" };
+      }
+      // Reply ids travel inside the ciphertext. The native encrypt takes ids
+      // only (`e2ee_text_encrypt.replies: string[]`), so a reply's `mention`
+      // flag cannot be carried yet; it is validated here, not dropped
+      // silently by a malformed shape.
+      const replies: string[] = [];
+      for (const reply of data.replies ?? []) {
+        const r = reply as { id?: unknown; mention?: unknown } | null;
+        if (
+          typeof r?.id !== "string" ||
+          (r.mention !== undefined && typeof r.mention !== "boolean")
+        ) {
+          throw { source: "client", reason: "invalid_reply" };
+        }
+        replies.push(r.id);
+      }
+      const out = await manager.send(
+        channel.id,
+        text,
+        replies,
+        flags === 1,
+        idempotencyKey,
+      );
+      const message = this.#client.messages.getOrCreate(
+        out.messageId,
+        out.raw as Parameters<Client["messages"]["getOrCreate"]>[1],
+        true,
+      );
+      channel.noteOwnMessage(out.messageId);
+      return message;
+    } catch (error) {
+      throw toProtectedSendError(error);
+    }
+  }
+
+  onProtectedMessage(message: Message): void {
+    this.#ptManager?.onMessage(this.#protectedRow(message), true);
+  }
+
+  decryptProtectedHistory(channel: Channel, messages: Message[]): void {
+    this.#ptManager?.decryptHistory(
+      channel.id,
+      messages.map((message) => this.#protectedRow(message)),
+    );
+  }
+
+  onProtectedFlagStripped(channelId: string): void {
+    void this.#protectedIndex(channelId).then((indexed) => {
+      if (!indexed) return;
+      if (this.#ptForwarded.has(channelId)) {
+        this.#ptManager?.flagStripped(channelId);
+      } else {
+        this.#protectedForward(channelId);
+      }
+    });
+  }
+
+  /** Fires on every Ready per protected channel; deduped per manager. */
+  onChannelProtected(channelId: string): void {
+    void this.#protectedIndex(channelId).then((indexed) => {
+      if (indexed) this.#protectedForward(channelId);
+    });
+  }
+
+  // ---- ProtectedUiApi (plan 4.3) ----
+
+  /**
+   * Channel open (D8): the manager refreshes seats, text group and native
+   * state now and every 60 s until close. The raw `GET /channels/:id` and
+   * its `applyProtectedFlag(id, raw.protected, true)` belong to the open
+   * lifecycle hook (B6), which runs it at open and every 60 s. Remembered:
+   * a manager built later opens every channel still open. Never throws, and
+   * a no-op beyond the bookkeeping while no manager exists.
+   */
+  protectedOpen(channelId: string): void {
+    this.#ptOpen.add(channelId);
+    this.#protectedEnsureManager();
+    void this.#protectedOpen(channelId);
+  }
+
+  async #protectedOpen(channelId: string): Promise<void> {
+    const manager = this.#ptManager;
+    if (!manager) return;
+    if (!(await this.#protectedIndex(channelId))) return;
+    if (this.#ptManager !== manager || !this.#ptOpen.has(channelId)) return;
+    this.#protectedForward(channelId);
+    try {
+      await manager.open(channelId);
+    } catch (error) {
+      console.warn("[protected] open failed", {
+        channelId,
+        error: errorName(error),
+      });
+    }
+  }
+
+  protectedClose(channelId: string): void {
+    this.#ptOpen.delete(channelId);
+    this.#ptManager?.close(channelId);
+  }
+
+  /** The current manager for a UI action on an indexed channel, or throw. */
+  async #protectedManagerFor(channelId: string): Promise<ProtectedTextManager> {
+    this.#protectedEnsureManager();
+    const manager = this.#ptManager;
+    if (!manager || !this.protectedTextCapable()) {
+      throw new ProtectedChannelUnavailable();
+    }
+    // PA#11f: the routing index holds the channel before any group op.
+    if (!(await this.#protectedIndex(channelId))) {
+      throw { source: "client", reason: "invalid_argument" };
+    }
+    this.#protectedForward(channelId);
+    return manager;
+  }
+
+  async protect(
+    channelId: string,
+    seats: string[],
+    deviceCap: number,
+  ): Promise<void> {
+    const manager = await this.#protectedManagerFor(channelId);
+    return manager.protect(channelId, seats, deviceCap);
+  }
+
+  async setSeats(
+    channelId: string,
+    seats: string[],
+    deviceCap: number,
+  ): Promise<void> {
+    const manager = await this.#protectedManagerFor(channelId);
+    return manager.setSeats(channelId, seats, deviceCap);
+  }
+
+  async confirmOwnerChange(channelId: string): Promise<void> {
+    const manager = await this.#protectedManagerFor(channelId);
+    return manager.confirmOwnerChange(channelId);
+  }
+
+  async recreateGroup(channelId: string): Promise<void> {
+    const manager = await this.#protectedManagerFor(channelId);
+    return manager.recreateGroup(channelId);
+  }
+
+  seatsSnapshot(channelId: string) {
+    return this.protectedChannels.get(channelId)?.seats ?? null;
+  }
+
+  // END protected seam
+  // ================================================================
 
   /**
    * `POST /mls/groups` — register the epoch-0 group for a call (arbitrated).

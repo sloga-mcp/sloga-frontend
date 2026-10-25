@@ -1013,6 +1013,18 @@ export interface ProtectedTextPort {
     delete(key: string): void;
   };
   notify(kind: ProtectedToastKind): void;
+  /**
+   * Every stored key starting with `prefix` (localStorage scan, D10
+   * orphans). Optional: a port without it makes the orphan scan log and
+   * skip.
+   */
+  storeKeys?(prefix: string): string[];
+  /**
+   * Outbox keys owned by a live Draft outbox entry (never orphans). The
+   * manager calls `.has()` on the answer. Throwing means "unknown": the
+   * orphan scan logs and skips rather than treat a live entry as orphaned.
+   */
+  liveOutboxKeys?(): ReadonlySet<string>;
 }
 
 /** Why a refresh runs (D8, D26). */
