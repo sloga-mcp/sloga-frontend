@@ -95,6 +95,10 @@ export const distributionChannel = channel;
 export const allowsDonationLinks = () =>
   channel() !== "play" && channel() !== "appstore";
 
+/** Contributing Prot to a tank or goal (S5b). Off in store builds until S6 brings in-app purchase (D5). */
+export const allowsProtSpending = () =>
+  channel() !== "play" && channel() !== "appstore";
+
 /**
  * Sloga's Ko-fi page, opened straight from the "Support Sloga" buttons. Keep
  * it equal to the server's `[api.kofi] page_url`, which the Supporter page

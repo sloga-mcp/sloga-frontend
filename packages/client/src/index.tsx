@@ -75,9 +75,11 @@ import { ChannelPage } from "./interface/channels/ChannelPage";
 import { mountIosViewportFix } from "./iosViewport";
 import {
   type CipherSettingsContext,
+  type ProtSettingsContext,
   CHANNEL_WAIT_MS,
   cipherLinkAction,
   cipherSettingsContext,
+  protSettingsContext,
 } from "./lib/deepLinks";
 import "./serviceWorkerInterface";
 
@@ -155,7 +157,16 @@ function SettingsRedirect() {
     // opens the Cipher page. Store builds ignore both and open settings as
     // usual, since the Cipher page is not listed there.
     const cipher = cipherSettingsContext(window.location.search);
-    const openSettings = (context?: CipherSettingsContext) =>
+    // Prot deep link: `?prot=success|cancel` (the Stripe return URL of a
+    // Prot purchase) opens the Prot page. That page is listed in every
+    // build, so it opens at once with no channel wait. A Cipher link in the
+    // same URL wins and keeps its own behavior, store builds included.
+    const prot = cipher
+      ? undefined
+      : protSettingsContext(window.location.search);
+    const openSettings = (
+      context?: CipherSettingsContext | ProtSettingsContext,
+    ) =>
       context
         ? openModal({ type: "settings", config: "user", context })
         : openModal({ type: "settings", config: "user" });
@@ -168,7 +179,9 @@ function SettingsRedirect() {
       mayStillResolve: distributionChannel() === "play",
     });
     if (action !== "wait") {
-      openSettings(action === "open" ? cipher : undefined);
+      // Without a Cipher link the action is "plain", and `prot` is the
+      // Prot page's context (or undefined for plain settings)
+      openSettings(action === "open" ? cipher : prot);
       return;
     }
 

@@ -6777,6 +6777,10 @@ msgstr "Supporter"
 msgid "Cipher"
 msgstr "Cipher"
 
+#: components/app/interface/settings/UserSettings.tsx
+msgid "Prot"
+msgstr "Prot"
+
 #: components/app/interface/settings/user/profile/UserProfileEditor.tsx
 msgid "Profile Bio"
 msgstr "Profile Bio"
@@ -8006,6 +8010,127 @@ msgstr "Share Computer Sound"
 msgid "Share Game Activity"
 msgstr "Share Game Activity"
 
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Your Prot wallet couldn't be loaded. Try again in a moment."
+msgstr "Your Prot wallet couldn't be loaded. Try again in a moment."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "{amount} Prot"
+msgstr "{amount} Prot"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "{held} Prot on hold"
+msgstr "{held} Prot on hold"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Prot purchase"
+msgstr "Prot purchase"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Cipher Prot"
+msgstr "Cipher Prot"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Removed after a refund or chargeback"
+msgstr "Removed after a refund or chargeback"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Adjustment by Sloga"
+msgstr "Adjustment by Sloga"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Contribution"
+msgstr "Contribution"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Pledge"
+msgstr "Pledge"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Returned to your wallet"
+msgstr "Returned to your wallet"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Forfeited"
+msgstr "Forfeited"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Other activity"
+msgstr "Other activity"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Includes {bonus} bonus Prot"
+msgstr "Includes {bonus} bonus Prot"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Choose any amount from {min} to {max} Prot."
+msgstr "Choose any amount from {min} to {max} Prot."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Enter a whole number of Prot."
+msgstr "Enter a whole number of Prot."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "The minimum is {min} Prot."
+msgstr "The minimum is {min} Prot."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "The maximum is {max} Prot."
+msgstr "The maximum is {max} Prot."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "A wallet can hold up to {max} Prot."
+msgstr "A wallet can hold up to {max} Prot."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "You can choose a different amount after {expires}, when your open checkout expires."
+msgstr "You can choose a different amount after {expires}, when your open checkout expires."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Get Prot"
+msgstr "Get Prot"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Every US cent buys 1 Prot, and bigger packs include bonus Prot."
+msgstr "Every US cent buys 1 Prot, and bigger packs include bonus Prot."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Pay an exact amount"
+msgstr "Pay an exact amount"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Amount of Prot"
+msgstr "Amount of Prot"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Enter an amount"
+msgstr "Enter an amount"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Prot is the credit you'll use for Protected servers and channels. Your balance and recent activity are below."
+msgstr "Prot is the credit you'll use for Protected servers and channels. Your balance and recent activity are below."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Thank you! Your Prot is in your wallet."
+msgstr "Thank you! Your Prot is in your wallet."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Your balance"
+msgstr "Your balance"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Prot bought in the last 72 hours stays in your wallet, but it can't be spent on Protected servers and channels until the hold ends. This guards against card fraud."
+msgstr "Prot bought in the last 72 hours stays in your wallet, but it can't be spent on Protected servers and channels until the hold ends. This guards against card fraud."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Recent activity"
+msgstr "Recent activity"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "No Prot activity yet."
+msgstr "No Prot activity yet."
+
 #: components/app/interface/settings/user/Referrals.tsx
 msgid "Invite friends to Sloga with your referral code or link. Each friend who sticks around brings you closer to the next reward."
 msgstr "Invite friends to Sloga with your referral code or link. Each friend who sticks around brings you closer to the next reward."
@@ -8339,6 +8464,10 @@ msgstr "Cipher {label}"
 #: components/app/interface/settings/user/CipherSettings.tsx
 msgid "{price} tier"
 msgstr "{price} tier"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "{amount} Prot, in your Prot wallet"
+msgstr "{amount} Prot, in your Prot wallet"
 
 #: components/app/interface/settings/user/CipherSettings.tsx
 msgid "{amount} Prot at launch"
@@ -9476,6 +9605,42 @@ msgstr "You already have a checkout in progress. Finish it, or pick again after 
 #: components/i18n/errors.ts
 msgid "The payment provider didn't respond. Please try again."
 msgstr "The payment provider didn't respond. Please try again."
+
+#: components/i18n/errors.ts
+msgid "Prot isn't available right now."
+msgstr "Prot isn't available right now."
+
+#: components/i18n/errors.ts
+msgid "Prot isn't on sale right now."
+msgstr "Prot isn't on sale right now."
+
+#: components/i18n/errors.ts
+msgid "That Prot amount isn't available. Pick a pack, or an amount within the limits shown."
+msgstr "That Prot amount isn't available. Pick a pack, or an amount within the limits shown."
+
+#: components/i18n/errors.ts
+msgid "This would take your Prot wallet over its limit of {protCap} Prot."
+msgstr "This would take your Prot wallet over its limit of {protCap} Prot."
+
+#: components/i18n/errors.ts
+msgid "You can't do this with Prot right now. If a payment on your account is disputed, try again once the dispute is resolved."
+msgstr "You can't do this with Prot right now. If a payment on your account is disputed, try again once the dispute is resolved."
+
+#: components/i18n/errors.ts
+msgid "Prot isn't on sale in your country yet."
+msgstr "Prot isn't on sale in your country yet."
+
+#: components/i18n/errors.ts
+msgid "Prot is temporarily unavailable. Please try again later."
+msgstr "Prot is temporarily unavailable. Please try again later."
+
+#: components/i18n/errors.ts
+msgid "This Prot request was already sent with different details. Refresh and try again."
+msgstr "This Prot request was already sent with different details. Refresh and try again."
+
+#: components/i18n/errors.ts
+msgid "You don't have enough Prot for this: it needs {protNeeded} Prot and you have {protAvailable}."
+msgstr "You don't have enough Prot for this: it needs {protNeeded} Prot and you have {protAvailable}."
 
 #: components/i18n/errors.ts
 msgid "This account is not activated! Please check your account's inbox and try again."

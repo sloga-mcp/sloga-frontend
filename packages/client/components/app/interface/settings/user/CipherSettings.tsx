@@ -66,6 +66,7 @@ import {
   thankedMembership,
   tierCents,
 } from "./cipherCheckout";
+import { parseProtFeature } from "./protWallet";
 
 /**
  * Headers for a JSON request as the session user (as on the Supporter page):
@@ -360,9 +361,19 @@ function CipherPage(props: { context?: unknown }) {
     return t`${price} tier`;
   }
 
+  // Once the server credits Cipher Prot, the grant sits in the Prot wallet
+  // (Settings, Prot) instead of waiting for launch
+  const cipherGrantsOn = () =>
+    parseProtFeature(
+      (client().configuration?.features as { prot?: unknown } | undefined)
+        ?.prot,
+    ).cipher_grants_enabled;
+
   function protLine(prot: number) {
     const amount = formatCount(prot, i18n.locale);
-    return t`${amount} Prot at launch`;
+    return cipherGrantsOn()
+      ? t`${amount} Prot, in your Prot wallet`
+      : t`${amount} Prot at launch`;
   }
 
   function thanks(number: number) {

@@ -5465,6 +5465,10 @@ msgstr "Perfil"
 msgid "Cipher"
 msgstr "Cipher"
 
+#: components/app/interface/settings/UserSettings.tsx
+msgid "Prot"
+msgstr "Prot"
+
 #: components/app/interface/settings/user/profile/UserProfileEditor.tsx
 msgid "Profile Bio"
 msgstr "Biografía del perfil"
@@ -6576,6 +6580,127 @@ msgstr ""
 msgid "Share Game Activity"
 msgstr "Compartir actividad de juego"
 
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Your Prot wallet couldn't be loaded. Try again in a moment."
+msgstr "No se pudo cargar tu billetera de Prot. Inténtalo de nuevo en un momento."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "{amount} Prot"
+msgstr "{amount} Prot"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "{held} Prot on hold"
+msgstr "{held} Prot en retención"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Prot purchase"
+msgstr "Compra de Prot"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Cipher Prot"
+msgstr "Prot de Cipher"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Removed after a refund or chargeback"
+msgstr "Retirado después de un reembolso o un contracargo"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Adjustment by Sloga"
+msgstr "Ajuste realizado por Sloga"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Contribution"
+msgstr "Contribución"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Pledge"
+msgstr "Promesa de aporte"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Returned to your wallet"
+msgstr "Devuelto a tu billetera"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Forfeited"
+msgstr "Perdido"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Other activity"
+msgstr "Otra actividad"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Includes {bonus} bonus Prot"
+msgstr "Incluye {bonus} Prot de bonificación"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Choose any amount from {min} to {max} Prot."
+msgstr "Elige cualquier cantidad de {min} a {max} Prot."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Enter a whole number of Prot."
+msgstr "Ingresa un número entero de Prot."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "The minimum is {min} Prot."
+msgstr "El mínimo es {min} Prot."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "The maximum is {max} Prot."
+msgstr "El máximo es {max} Prot."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "A wallet can hold up to {max} Prot."
+msgstr "Una billetera puede contener hasta {max} Prot."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "You can choose a different amount after {expires}, when your open checkout expires."
+msgstr "Podrás elegir otra cantidad después de las {expires}, cuando venza tu pago pendiente."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Get Prot"
+msgstr "Obtener Prot"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Every US cent buys 1 Prot, and bigger packs include bonus Prot."
+msgstr "Cada centavo de dólar estadounidense equivale a 1 Prot, y los paquetes más grandes incluyen Prot de bonificación."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Pay an exact amount"
+msgstr "Pagar una cantidad exacta"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Amount of Prot"
+msgstr "Cantidad de Prot"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Enter an amount"
+msgstr "Ingresa una cantidad"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Prot is the credit you'll use for Protected servers and channels. Your balance and recent activity are below."
+msgstr "Prot es el crédito que vas a usar en los servidores y canales Protected. Abajo están tu saldo y tu actividad reciente."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Thank you! Your Prot is in your wallet."
+msgstr "¡Gracias! Tu Prot ya está en tu billetera."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Your balance"
+msgstr "Tu saldo"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Prot bought in the last 72 hours stays in your wallet, but it can't be spent on Protected servers and channels until the hold ends. This guards against card fraud."
+msgstr "El Prot comprado en las últimas 72 horas queda en tu billetera, pero no se puede gastar en servidores y canales Protected hasta que termine la retención. Esto protege contra el fraude con tarjetas."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Recent activity"
+msgstr "Actividad reciente"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "No Prot activity yet."
+msgstr "Todavía no hay actividad de Prot."
+
 #: components/ui/components/features/voice/callCard/VoiceCallCardActions.tsx
 msgid "Share screen"
 msgstr "Compartir pantalla"
@@ -6596,6 +6721,10 @@ msgstr ""
 msgid "Show 'copy ID' in context menus"
 msgstr ""
 
+#: components/client/toastShell.ts
+msgid "Slow down — try again in a moment"
+msgstr "Más despacio — inténtalo de nuevo en un momento"
+
 #: components/app/interface/settings/user/CipherSettings.tsx
 msgid "Checkout couldn't be started. Try again in a moment."
 msgstr "No se pudo iniciar el pago. Vuelve a intentarlo en un momento."
@@ -6609,6 +6738,10 @@ msgid "{price} tier"
 msgstr "Nivel de {price}"
 
 #: components/app/interface/settings/user/CipherSettings.tsx
+msgid "{amount} Prot, in your Prot wallet"
+msgstr "{amount} Prot, en tu billetera de Prot"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
 msgid "{amount} Prot at launch"
 msgstr "{amount} Prot en el lanzamiento"
 
@@ -6619,6 +6752,10 @@ msgstr "¡Gracias! Eres el Cipher {label}."
 #: components/app/interface/settings/user/CipherSettings.tsx
 msgid "Checkout open: {name}"
 msgstr "Pago pendiente: {name}"
+
+#: components/app/interface/settings/user/Supporter.tsx
+msgid "Expires {expires}"
+msgstr "Válido hasta {expires}"
 
 #: components/app/interface/settings/user/CipherSettings.tsx
 msgid "You can pick a different tier after {expires}, when your open checkout expires."
@@ -7501,6 +7638,42 @@ msgstr "Ya tienes un pago en curso. Termínalo o vuelve a elegir cuando expire."
 #: components/i18n/errors.ts
 msgid "The payment provider didn't respond. Please try again."
 msgstr "El proveedor de pagos no respondió. Inténtalo de nuevo."
+
+#: components/i18n/errors.ts
+msgid "Prot isn't available right now."
+msgstr "Prot no está disponible en este momento."
+
+#: components/i18n/errors.ts
+msgid "Prot isn't on sale right now."
+msgstr "Prot no está a la venta en este momento."
+
+#: components/i18n/errors.ts
+msgid "That Prot amount isn't available. Pick a pack, or an amount within the limits shown."
+msgstr "Esa cantidad de Prot no está disponible. Elige un paquete o una cantidad dentro de los límites indicados."
+
+#: components/i18n/errors.ts
+msgid "This would take your Prot wallet over its limit of {protCap} Prot."
+msgstr "Esto haría que tu billetera de Prot superara su límite de {protCap} Prot."
+
+#: components/i18n/errors.ts
+msgid "You can't do this with Prot right now. If a payment on your account is disputed, try again once the dispute is resolved."
+msgstr "En este momento no puedes hacer esto con Prot. Si hay un pago de tu cuenta en disputa, inténtalo de nuevo cuando se resuelva."
+
+#: components/i18n/errors.ts
+msgid "Prot isn't on sale in your country yet."
+msgstr "Prot todavía no está a la venta en tu país."
+
+#: components/i18n/errors.ts
+msgid "Prot is temporarily unavailable. Please try again later."
+msgstr "Prot no está disponible temporalmente. Inténtalo de nuevo más tarde."
+
+#: components/i18n/errors.ts
+msgid "This Prot request was already sent with different details. Refresh and try again."
+msgstr "Esta solicitud de Prot ya se envió con otros datos. Actualiza e inténtalo de nuevo."
+
+#: components/i18n/errors.ts
+msgid "You don't have enough Prot for this: it needs {protNeeded} Prot and you have {protAvailable}."
+msgstr "No tienes suficiente Prot para esto: se necesitan {protNeeded} Prot y tienes {protAvailable}."
 
 #: components/i18n/errors.ts
 msgid "This account is not activated! Please check your account's inbox and try again."
