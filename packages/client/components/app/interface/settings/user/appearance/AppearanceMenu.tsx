@@ -231,69 +231,122 @@ export function AppearanceMenu() {
         </Show>
 
         <Show when={state.theme.preset === "you"}>
-          {/* TODO: Cursed on mobile; may need to be replaced
-          with FloatingSelect / similar on small screens */}
-          <Row justify="stretch">
-            <Button
-              size="xs"
-              group="connected-start"
-              groupActive={state.theme.m3Contrast.toFixed(1) === "-1.0"}
-              onPress={() => state.theme.setM3Contrast(-1.0)}
-            >
-              <Trans>Reduced</Trans>
-            </Button>
-            <Button
-              size="xs"
-              group="connected"
-              groupActive={state.theme.m3Contrast.toFixed(1) === "0.0"}
-              onPress={() => state.theme.setM3Contrast(0)}
-            >
-              <Trans>Normal</Trans>
-            </Button>
-            <Button
-              size="xs"
-              group="connected"
-              groupActive={state.theme.m3Contrast.toFixed(1) === "0.5"}
-              onPress={() => state.theme.setM3Contrast(0.5)}
-            >
-              <Trans>More Contrast</Trans>
-            </Button>
-            <Button
-              size="xs"
-              group="connected-end"
-              groupActive={state.theme.m3Contrast.toFixed(1) === "1.0"}
-              onPress={() => state.theme.setM3Contrast(1.0)}
-            >
-              <Trans>High Contrast</Trans>
-            </Button>
-          </Row>
+          {/* Four fixed-height buttons do not fit a phone's width: the labels
+              wrap and spill over the row below, worse with a large system
+              font. Phones get the same choices as two dropdowns instead. */}
+          <Show
+            when={device.layout() !== "phone"}
+            fallback={
+              <>
+                <FloatingSelect
+                  label={t`Contrast`}
+                  value={state.theme.m3Contrast.toFixed(1)}
+                  onChange={(e) =>
+                    state.theme.setM3Contrast(
+                      parseFloat(e.currentTarget.value as string),
+                    )
+                  }
+                >
+                  <MenuItem value="-1.0">
+                    <Trans>Reduced</Trans>
+                  </MenuItem>
+                  <MenuItem value="0.0">
+                    <Trans>Normal</Trans>
+                  </MenuItem>
+                  <MenuItem value="0.5">
+                    <Trans>More Contrast</Trans>
+                  </MenuItem>
+                  <MenuItem value="1.0">
+                    <Trans>High Contrast</Trans>
+                  </MenuItem>
+                </FloatingSelect>
 
-          <Row justify="stretch">
-            <Button
-              size="xs"
-              group="connected-start"
-              groupActive={state.theme.m3Variant === "monochrome"}
-              onPress={() => state.theme.setM3Variant("monochrome")}
-            >
-              <Trans>Monochrome</Trans>
-            </Button>
-            <Button
-              size="xs"
-              group="connected"
-              groupActive={state.theme.m3Variant === "neutral"}
-              onPress={() => state.theme.setM3Variant("neutral")}
-            >
-              <Trans>Neutral</Trans>
-            </Button>
-            <Button
-              size="xs"
-              group="connected"
-              groupActive={state.theme.m3Variant === "tonal_spot"}
-              onPress={() => state.theme.setM3Variant("tonal_spot")}
-            >
-              <Trans>Tonal Spot</Trans>
-            </Button>
-            {/* <Button
+                <FloatingSelect
+                  label={t`Style`}
+                  value={state.theme.m3Variant}
+                  onChange={(e) =>
+                    state.theme.setM3Variant(
+                      e.currentTarget.value as typeof state.theme.m3Variant,
+                    )
+                  }
+                >
+                  <MenuItem value="monochrome">
+                    <Trans>Monochrome</Trans>
+                  </MenuItem>
+                  <MenuItem value="neutral">
+                    <Trans>Neutral</Trans>
+                  </MenuItem>
+                  <MenuItem value="tonal_spot">
+                    <Trans>Tonal Spot</Trans>
+                  </MenuItem>
+                  <MenuItem value="fruit_salad">
+                    <Trans>Fruit Salad</Trans>
+                  </MenuItem>
+                </FloatingSelect>
+              </>
+            }
+          >
+            <Row justify="stretch">
+              <Button
+                size="xs"
+                group="connected-start"
+                groupActive={state.theme.m3Contrast.toFixed(1) === "-1.0"}
+                onPress={() => state.theme.setM3Contrast(-1.0)}
+              >
+                <Trans>Reduced</Trans>
+              </Button>
+              <Button
+                size="xs"
+                group="connected"
+                groupActive={state.theme.m3Contrast.toFixed(1) === "0.0"}
+                onPress={() => state.theme.setM3Contrast(0)}
+              >
+                <Trans>Normal</Trans>
+              </Button>
+              <Button
+                size="xs"
+                group="connected"
+                groupActive={state.theme.m3Contrast.toFixed(1) === "0.5"}
+                onPress={() => state.theme.setM3Contrast(0.5)}
+              >
+                <Trans>More Contrast</Trans>
+              </Button>
+              <Button
+                size="xs"
+                group="connected-end"
+                groupActive={state.theme.m3Contrast.toFixed(1) === "1.0"}
+                onPress={() => state.theme.setM3Contrast(1.0)}
+              >
+                <Trans>High Contrast</Trans>
+              </Button>
+            </Row>
+
+            <Row justify="stretch">
+              <Button
+                size="xs"
+                group="connected-start"
+                groupActive={state.theme.m3Variant === "monochrome"}
+                onPress={() => state.theme.setM3Variant("monochrome")}
+              >
+                <Trans>Monochrome</Trans>
+              </Button>
+              <Button
+                size="xs"
+                group="connected"
+                groupActive={state.theme.m3Variant === "neutral"}
+                onPress={() => state.theme.setM3Variant("neutral")}
+              >
+                <Trans>Neutral</Trans>
+              </Button>
+              <Button
+                size="xs"
+                group="connected"
+                groupActive={state.theme.m3Variant === "tonal_spot"}
+                onPress={() => state.theme.setM3Variant("tonal_spot")}
+              >
+                <Trans>Tonal Spot</Trans>
+              </Button>
+              {/* <Button
             size="xs"
             group="connected"
             groupActive={state.theme.m3Variant === "vibrant"}
@@ -333,15 +386,16 @@ export function AppearanceMenu() {
           >
             <Trans>Rainbow</Trans>
           </Button> */}
-            <Button
-              size="xs"
-              group="connected-end"
-              groupActive={state.theme.m3Variant === "fruit_salad"}
-              onPress={() => state.theme.setM3Variant("fruit_salad")}
-            >
-              <Trans>Fruit Salad</Trans>
-            </Button>
-          </Row>
+              <Button
+                size="xs"
+                group="connected-end"
+                groupActive={state.theme.m3Variant === "fruit_salad"}
+                onPress={() => state.theme.setM3Variant("fruit_salad")}
+              >
+                <Trans>Fruit Salad</Trans>
+              </Button>
+            </Row>
+          </Show>
           <Text class="label" size="small">
             <Trans>
               Styles and contrast reshape your color: Neutral mutes it, Fruit
