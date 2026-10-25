@@ -134,8 +134,10 @@ export function isShellToMain(value: unknown): value is ShellToMain {
         CHAT_WINDOW_LABEL_RE.test(msg.label) &&
         typeof msg.maximized === "boolean"
       );
-    // The Windows shell took main's frame back (its watchdog or a release);
-    // nothing rides along.
+    // The Windows shell took main's frame back from a live page that claimed
+    // it, which only a release does (the watchdog acts only on a page that
+    // never claimed; a dead renderer's revoke reaches no page); nothing rides
+    // along.
     case "mainFrameRevoked":
       return hasExactKeys(msg, ["kind"]);
     default:

@@ -1,17 +1,20 @@
 // Unit spec for the main window's title bar bridge. Run with Node's built-in
 // runner from packages/client:
 //   node --test --conditions=browser components/client/mainShell.test.ts
-// Declared test count: 23 (the runner also exits 0 when it finds no tests at
+// Declared test count: 26 (the runner also exits 0 when it finds no tests at
 // all, so compare this against its pass count).
 //
 // Focus (main-titlebar plan M3, M5, M10, C1-C5, C8, C9): the page draws its
 // bar only on a claim answer of EXACTLY `{ frameless: true, maximized }`
 // (Tauri) or `slogaShell.windowFrame.main === "inset"` (Electron); anything
 // else, any rejection or throw, is `native`, and `probe` never rejects. A
-// revoke (the shell's push, or a failing call while the bar is drawn) makes
-// main `native` for the rest of the page, wins over a claim still in flight,
-// and a failure-driven one asks the shell to release the frame; a failing
-// claim never does (there was no frame to give back). Maximized comes only
+// revoke (the shell's push, or a confirmed release) makes main `native` for
+// the rest of the page and wins over a claim still in flight. A failing call
+// while the bar is drawn hands the frame back, and the bar goes only once
+// the shell confirms the release: a failed release keeps it (the window may
+// have no OS title bar). A claim answer the page cannot read is released
+// too, best effort (the shell may count the page as claimed); a claim call
+// that failed never is (there was no frame to give back). Maximized comes only
 // from the shell (claim, toggle reply, state pull) and an older answer never
 // overwrites a newer one. The Electron `windowFrameState` pushes are
 // validated exactly, routed per label into chatWindowFrame's fullscreen map,
@@ -308,21 +311,57 @@ test("probe (Tauri): buttons only on exactly { frameless: true, maximized }", as
   ]);
 });
 
-test("probe (Tauri): a claim answer with an extra key is native, never buttons", async () => {
-  const calls = tauri(() =>
-    Promise.resolve({ frameless: true, maximized: false, x: 1 }),
+test("probe (Tauri): a claim answer with an extra key is native, and released", async () => {
+  const releaseAnswer = deferred<unknown>();
+  const calls = tauri((cmd) =>
+    cmd === "main_window_claim_frame"
+      ? Promise.resolve({ frameless: true, maximized: false, x: 1 })
+      : releaseAnswer.promise,
+  );
+  const shell = await fresh();
+  let settled = false;
+  const probed = shell.probe().then((frame) => {
+    settled = true;
+    return frame;
+  });
+  await flush();
+  assert.equal(settled, false, "probe settled before the release answered");
+  releaseAnswer.resolve(null);
+  assert.equal(await probed, "native");
+  assert.equal(shell.mainFrame(), "native");
+  assert.equal(shell.mainFrameRevoked(), true);
+  // The shell may have built main frameless and counted the claim, so the
+  // frame is handed back before probe settles.
+  assert.deepEqual(calls, [
+    { cmd: "main_window_claim_frame", args: undefined },
+    { cmd: "main_window_release_frame", args: undefined },
+  ]);
+});
+
+test("probe (Tauri): an unreadable claim answer whose release fails is still native", async () => {
+  const calls = tauri((cmd) =>
+    cmd === "main_window_claim_frame"
+      ? Promise.resolve({ frameless: "true", maximized: false })
+      : Promise.reject(new Error("release refused")),
   );
   const shell = await fresh();
   assert.equal(await shell.probe(), "native");
   assert.equal(shell.mainFrame(), "native");
-  await flush();
-  // No frame was ever drawn, so there is nothing to release.
-  assert.deepEqual(cmds(calls), ["main_window_claim_frame"]);
+  assert.equal(shell.mainFrameRevoked(), true);
+  assert.deepEqual(cmds(calls), [
+    "main_window_claim_frame",
+    "main_window_release_frame",
+  ]);
+  assert.ok(
+    warnings.some((args) => String(args[0]).includes("release failed")),
+    "the failed release was not logged",
+  );
 });
 
 test("probe (Tauri): every other answer, rejection or throw is native", async () => {
-  const answers: [string, () => unknown, boolean][] = [
-    // [why, answer, counts as a failure (revoked)]
+  const answers: [string, () => unknown, boolean, boolean?][] = [
+    // [why, answer, counts as a failure (revoked), released: an answer the
+    // shell gave but the page cannot read]
     [
       "frameless false",
       () => Promise.resolve({ frameless: false, maximized: false }),
@@ -345,19 +384,27 @@ test("probe (Tauri): every other answer, rejection or throw is native", async ()
       },
       true,
     ],
-    ["null", () => Promise.resolve(null), true],
-    ["frameless only", () => Promise.resolve({ frameless: true }), true],
-    ["string", () => Promise.resolve("buttons"), true],
-    ["true", () => Promise.resolve(true), true],
+    ["null", () => Promise.resolve(null), true, true],
+    ["frameless only", () => Promise.resolve({ frameless: true }), true, true],
+    ["string", () => Promise.resolve("buttons"), true, true],
+    ["true", () => Promise.resolve(true), true, true],
   ];
-  for (const [why, answer, failure] of answers) {
-    const calls = tauri(answer);
+  for (const [why, answer, failure, released = false] of answers) {
+    const calls = tauri((cmd) =>
+      cmd === "main_window_claim_frame" ? answer() : Promise.resolve(null),
+    );
     const shell = await fresh();
     assert.equal(await shell.probe(), "native", why);
     assert.equal(shell.mainFrameRevoked(), failure, why);
     assert.equal(shell.mainMaximized(), false, why);
     await flush();
-    assert.deepEqual(cmds(calls), ["main_window_claim_frame"], why);
+    assert.deepEqual(
+      cmds(calls),
+      released
+        ? ["main_window_claim_frame", "main_window_release_frame"]
+        : ["main_window_claim_frame"],
+      why,
+    );
   }
 });
 
@@ -506,6 +553,66 @@ test("a failing call while the bar is drawn revokes and releases the frame", asy
         `${cmd} ${mode}`,
       );
     }
+  }
+});
+
+test("a failing call keeps the bar until the shell confirms the release", async () => {
+  const releaseAnswer = deferred<unknown>();
+  const calls = framelessTauri((cmd) =>
+    cmd === "main_window_release_frame"
+      ? releaseAnswer.promise
+      : Promise.reject(new Error("gone")),
+  );
+  const shell = await fresh();
+  assert.equal(await shell.probe(), "buttons");
+  const seen = watch(() => shell.mainFrame());
+  const minimized = shell.minimize();
+  await flush();
+  // The release has gone out and not been answered: the bar is still there.
+  assert.deepEqual(cmds(calls), [
+    "main_window_claim_frame",
+    "main_window_minimize",
+    "main_window_release_frame",
+  ]);
+  assert.equal(shell.mainFrame(), "buttons");
+  assert.equal(shell.mainFrameRevoked(), false);
+  releaseAnswer.resolve(null);
+  assert.equal(await minimized, false);
+  assert.equal(shell.mainFrame(), "native");
+  assert.equal(shell.mainFrameRevoked(), true);
+  seen.dispose();
+  assert.deepEqual(seen.seen, ["buttons", "native"]);
+});
+
+test("a failing call whose release fails too keeps the bar", async () => {
+  // Known-bad control: 35082f68 dropped the bar before the release answered,
+  // leaving a window with no OS title bar and no bar of ours.
+  for (const releaseAnswer of [
+    () => Promise.reject(new Error("no shell")),
+    () => {
+      throw new Error("bridge gone");
+    },
+  ]) {
+    const calls = framelessTauri((cmd) =>
+      cmd === "main_window_release_frame"
+        ? releaseAnswer()
+        : Promise.reject(new Error("gone")),
+    );
+    const shell = await fresh();
+    assert.equal(await shell.probe(), "buttons");
+    assert.equal(await shell.toggleMaximize(), false);
+    assert.equal(shell.mainFrame(), "buttons", "the bar went with no frame");
+    assert.equal(shell.mainFrameRevoked(), false);
+    // The bar still works: the next failure asks again.
+    assert.equal(await shell.refreshState(), false);
+    assert.equal(shell.mainFrame(), "buttons");
+    assert.deepEqual(cmds(calls), [
+      "main_window_claim_frame",
+      "main_window_toggle_maximize",
+      "main_window_release_frame",
+      "main_window_state",
+      "main_window_release_frame",
+    ]);
   }
 });
 

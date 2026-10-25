@@ -1,4 +1,11 @@
-import { JSX, Show, createSignal, onCleanup, onMount } from "solid-js";
+import {
+  ErrorBoundary,
+  JSX,
+  Show,
+  createSignal,
+  onCleanup,
+  onMount,
+} from "solid-js";
 
 import { cva } from "styled-system/css";
 
@@ -9,6 +16,7 @@ import {
   mainMaximized,
   minimize,
   probe,
+  release,
   toggleMaximize,
   watchResize,
   watchWindowFrameState,
@@ -58,14 +66,61 @@ export function titleBarStatusSlot(): HTMLElement | undefined {
  * good when the shell takes the frame back (`mainFrame()` turns `native`),
  * and the fixed connection dot comes back with it. While an element is
  * fullscreen the bar is hidden, not released: its drag region would
- * otherwise still answer presses over the fullscreen element.
+ * otherwise still answer presses over the fullscreen element. If the bar
+ * itself throws, the frame is handed back ({@link BarCrashed}).
  */
 export function MainTitleBar(): JSX.Element {
   onMount(() => void probe());
 
   return (
     <Show when={mainFrame() !== "native"}>
-      <Bar />
+      <ErrorBoundary fallback={(error) => <BarCrashed error={error} />}>
+        <Bar />
+      </ErrorBoundary>
+    </Show>
+  );
+}
+
+/**
+ * What is left when the bar throws after a claim: the frame handed back so
+ * the shell restores the OS title bar. Once it confirms, `mainFrame()` turns
+ * `native` and this goes too; the fixed connection dot comes back with the
+ * bar's status slot. If the release fails, the window may have no OS title
+ * bar, so a bare drag strip stands in for the bar: the window can still be
+ * moved, maximized by a double-click, and closed from the system menu.
+ * On macOS (`inset`) the traffic lights are the OS's and stay; there is
+ * nothing to hand back, and nothing is drawn.
+ */
+function BarCrashed(props: { error: unknown }): JSX.Element {
+  const [stuck, setStuck] = createSignal(false);
+  const root = document.documentElement;
+  let live = true;
+
+  onMount(() => {
+    console.error("[main-titlebar] the bar crashed:", props.error);
+    // #root back to the top, also when the bar threw before its cleanup was
+    // registered
+    delete root.dataset.mainTitlebar;
+    if (mainFrame() !== "buttons") return;
+    void release().then((released) => {
+      if (released || !live) return;
+      root.dataset.mainTitlebar = "";
+      setStuck(true);
+    });
+  });
+
+  onCleanup(() => {
+    live = false;
+    if (stuck()) delete root.dataset.mainTitlebar;
+  });
+
+  return (
+    <Show when={stuck()}>
+      <div
+        class={bar()}
+        data-app-region="drag"
+        style={{ height: `${TITLEBAR_HEIGHT}px` }}
+      />
     </Show>
   );
 }
@@ -93,20 +148,23 @@ function Bar(): JSX.Element {
     // Turns on --titlebar-height, which moves #root below the bar
     root.dataset.mainTitlebar = "";
 
-    const onFullscreen = () => setFullscreen(!!document.fullscreenElement);
-    document.addEventListener("fullscreenchange", onFullscreen);
-
-    const stops = [
-      watchResize(window),
-      watchWindowFrameState(),
-      watchDragFlag(document),
-    ];
-
+    // Registered before anything starts, so a watcher that throws (caught
+    // by the boundary) still leaves nothing behind.
+    const stops: (() => void)[] = [];
     onCleanup(() => {
       delete root.dataset.mainTitlebar;
-      document.removeEventListener("fullscreenchange", onFullscreen);
       for (const stop of stops) stop();
     });
+
+    const onFullscreen = () => setFullscreen(!!document.fullscreenElement);
+    document.addEventListener("fullscreenchange", onFullscreen);
+    stops.push(() =>
+      document.removeEventListener("fullscreenchange", onFullscreen),
+    );
+
+    stops.push(watchResize(window));
+    stops.push(watchWindowFrameState());
+    stops.push(watchDragFlag(document));
   });
 
   onCleanup(() => setStatusSlot(undefined));

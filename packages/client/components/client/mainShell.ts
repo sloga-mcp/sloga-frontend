@@ -6,12 +6,15 @@
  *
  * - Tauri (Windows): main may be built frameless. The page asks with
  *   `main_window_claim_frame` and draws its bar (with minimize, maximize /
- *   restore and close) only on exactly `{ frameless: true, maximized }`. The
- *   shell can take the frame back (its watchdog, a release, a crashed page):
- *   it then pushes `mainFrameRevoked` (ShellBridgeWorker calls
- *   {@link noteRevoked}), and any `main_window_*` call that fails while the
- *   bar is drawn counts as a revoke too, as that push only reaches a page
- *   with ShellBridgeWorker mounted (not the login screen).
+ *   restore and close) only on exactly `{ frameless: true, maximized }`.
+ *   Only a release (`main_window_release_frame`) takes the frame back from a
+ *   live page that claimed it; the shell then pushes `mainFrameRevoked`
+ *   (ShellBridgeWorker calls {@link noteRevoked}). Its watchdog restores the
+ *   OS frame only for a page that never claimed, and a dead renderer's
+ *   revoke has no live page to tell.
+ *   That push only reaches a page with ShellBridgeWorker mounted (not the
+ *   login screen), so a `main_window_*` call that fails while the bar is
+ *   drawn releases the frame too, and the bar goes once the shell confirms.
  * - Electron (macOS): `slogaShell.windowFrame.main === "inset"` means main
  *   was built with the hidden-inset title bar; the OS draws the traffic
  *   lights and the page keeps their corner clear, except in window
@@ -241,23 +244,21 @@ export function noteRevoked(): void {
 }
 
 /**
- * A `main_window_*` call failed, or answered something unreadable. With the
- * bar drawn this is a revoke the page may not have been told about (the
- * push misses the login screen); the shell is asked to restore the OS frame
- * too, best effort, so the window is never left with no title bar at all
- * when the shell is still answering.
+ * A `main_window_*` call failed, or answered something unreadable. With no
+ * bar drawn, main is `native` from now on. With the bar drawn, this may be a
+ * revoke the page was not told about (the push misses the login screen), so
+ * the frame is handed back ({@link release}) and the bar goes only once the
+ * shell answers the release. If the release fails too, the
+ * bar stays: the window may still have no OS title bar, and the bar's drag
+ * region and system menu keep working without the shell. Never rejects.
  */
-function failed(cmd: string, why: string): void {
+async function failed(cmd: string, why: string): Promise<void> {
   console.warn("[main-shell]", cmd, "failed:", why);
-  const wasLive = mainFrame() === "buttons";
-  noteRevoked();
-  if (wasLive) {
-    void tauriCall("main_window_release_frame").then((result) => {
-      if ("failed" in result) {
-        console.warn("[main-shell] release after failure:", result.failed);
-      }
-    });
+  if (mainFrame() !== "buttons") {
+    noteRevoked();
+    return;
   }
+  await release();
 }
 
 /* ------------------------------------------------------------------------ *
@@ -274,7 +275,15 @@ async function probeNow(): Promise<void> {
     const result = await tauriCall("main_window_claim_frame");
     if ("failed" in result) return failed("claim", result.failed);
     const answer = parseClaimAnswer(result.value);
-    if (!answer) return failed("claim", "invalid answer");
+    if (!answer) {
+      await failed("claim", "invalid answer");
+      // The shell answered, so it may have built main frameless and now
+      // count this page as claimed (its watchdog stands down): hand the
+      // frame back, best effort, or the window keeps no title bar at all.
+      // A release is idempotent on the shell.
+      await release();
+      return;
+    }
     // A revoke that landed while the claim was in flight wins.
     if (revoked() || !answer.frameless) return;
     applyMaximized(ticket, answer.maximized);
@@ -306,8 +315,8 @@ export function probe(): Promise<MainFrame> {
   return probed.then(mainFrame);
 }
 
-function probeThrew(reason: unknown): void {
-  failed("probe", errText(reason));
+function probeThrew(reason: unknown): Promise<void> {
+  return failed("probe", errText(reason));
 }
 
 /* ------------------------------------------------------------------------ *
@@ -326,11 +335,11 @@ async function barVerb<T>(
   if (mainFrame() !== "buttons") return null;
   const result = await tauriCall(cmd);
   if ("failed" in result) {
-    failed(cmd, result.failed);
+    await failed(cmd, result.failed);
     return null;
   }
   const value = read(result.value);
-  if (value === null) failed(cmd, "invalid answer");
+  if (value === null) await failed(cmd, "invalid answer");
   return value;
 }
 
