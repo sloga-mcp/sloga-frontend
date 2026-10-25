@@ -24,20 +24,14 @@ import {
   setInternalLinkHandler,
   tryOpenChildWindow,
 } from "@revolt/client/childWindow";
+import { watchWindowFrameState } from "@revolt/client/mainShell";
 import { useVoice } from "@revolt/rtc";
 import { useState } from "@revolt/state";
 
 import { ChatWindowView } from "./ChatWindowView";
 import { FriendsWindow } from "./FriendsWindow";
 import { TabStrip } from "./TabStrip";
-import {
-  DRAG_FLAG_EVENTS,
-  clearStaleTabDrag,
-  dragFlagAction,
-  forgetWindow,
-  markTabDragEnd,
-  markTabDragStart,
-} from "./chatWindowFrame";
+import { forgetWindow, watchDragFlag } from "./chatWindowFrame";
 import {
   chatWindows,
   closeTab,
@@ -471,6 +465,12 @@ export function ChatWindowsHost(): JSX.Element {
     }),
   );
 
+  // Electron: the shell pushes the window fullscreen of its hidden-inset
+  // windows; a chat window's lands where its bar's layout reads it
+  // (`titleBarLayout`), main's in mainShell. A no-op elsewhere; the one
+  // shell subscription is shared with any other holder.
+  onCleanup(watchWindowFrameState());
+
   onCleanup(() => {
     disposed = true;
     window.removeEventListener("pagehide", onMainPagehide, true);
@@ -515,39 +515,6 @@ export function ChatWindowsHost(): JSX.Element {
       }}
     </For>
   );
-}
-
-/**
- * Keep the drag flag (`tabDragActive`) right in the child document `doc`,
- * for as long as the calling owner (one rendered window) lives: raised
- * while files dragged in from outside the app are over the window, so the
- * title bars' free space stops refusing them; ended at a `drop` or
- * `dragend`; cleared when a pointer event shows a drag ended without telling
- * us. Which event does what is `dragFlagAction`'s.
- *
- * Capture phase, so a listener that stops propagation cannot hide an event.
- * A child's events never reach main's document, so each window gets its own
- * listeners.
- */
-function watchDragFlag(doc: Document) {
-  const onEvent = (event: Event) => {
-    const action = dragFlagAction(event as DragEvent & PointerEvent);
-    if (action === "raise") markTabDragStart();
-    else if (action === "end") markTabDragEnd();
-    else if (action === "stale") clearStaleTabDrag();
-  };
-  const opts = { capture: true, passive: true } as const;
-  for (const type of DRAG_FLAG_EVENTS)
-    doc.addEventListener(type, onEvent, opts);
-  onCleanup(() => {
-    try {
-      for (const type of DRAG_FLAG_EVENTS) {
-        doc.removeEventListener(type, onEvent, opts);
-      }
-    } catch {
-      // A closed window's listeners die with it.
-    }
-  });
 }
 
 /** The tab strip over the active tab's conversation. */

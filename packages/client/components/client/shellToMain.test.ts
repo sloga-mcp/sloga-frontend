@@ -1,7 +1,7 @@
 // Unit spec for the shell-to-main validator and the web popout message
 // validator. Run with Node's built-in runner from packages/client:
 //   node --test --conditions=browser components/client/shellToMain.test.ts
-// Declared test count: 15 (the runner also exits 0 when it finds no tests at
+// Declared test count: 16 (the runner also exits 0 when it finds no tests at
 // all, so compare this against its pass count).
 //
 // Focus: `isShellToMain` is the only check between a shell bridge payload and
@@ -13,6 +13,8 @@
 // shells no longer carry `popoutOpenInMain`, so the shell validator rejects it.
 // `chatWindowState` (Tauri, frameless chat windows) needs a chat window label
 // (`friends-window` or `chat-` and 1..20 ASCII digits) and a real boolean.
+// `mainFrameRevoked` (Tauri, main-titlebar plan C5) is exactly
+// `{"kind":"mainFrameRevoked"}`: it carries nothing, so any other key fails.
 //
 // `validateWebPopoutMessage` is the payload half of the web popout's
 // `postMessage` trust rule (the sender check stays in ShellBridgeWorker): the
@@ -75,7 +77,11 @@ const state = (o: Record<string, unknown> = {}) => ({
   maximized: true,
   ...o,
 });
-const MAKERS = [notify, reply, open, state];
+const revoked = (o: Record<string, unknown> = {}) => ({
+  kind: "mainFrameRevoked",
+  ...o,
+});
+const MAKERS = [notify, reply, open, state, revoked];
 
 test("exported constants: stateless regexes, actions, web message type", () => {
   for (const re of [ULID_RE, TOAST_ID_RE]) {
@@ -97,8 +103,34 @@ test("accepts every shell kind in the exact Rust wire JSON", () => {
     '{"kind":"toastOpen","toastId":"01ARZ3NDEKTSV4RRFFQ69G5FAV"}',
     '{"kind":"chatWindowState","label":"chat-3","maximized":true}',
     '{"kind":"chatWindowState","label":"friends-window","maximized":false}',
+    '{"kind":"mainFrameRevoked"}',
   ])
     assert.equal(isShellToMain(JSON.parse(wire)), true, wire);
+});
+
+test("main frame revoked: exactly the kind, nothing riding along", () => {
+  assert.equal(isShellToMain(revoked()), true);
+  for (const wire of [
+    '{"kind":"mainFrameRevoked","x":1}',
+    '{"kind":"mainFrameRevoked","label":"main"}',
+    '{"kind":"mainFrameRevoked","revoked":true}',
+    '{"kind":"mainFrameRevoked","frameless":false}',
+    '{"kind":"mainFrameRevoked","__proto__":{"x":1}}',
+    '{"kind":"main_frame_revoked"}',
+    '{"kind":"MainFrameRevoked"}',
+    '{"kind":"mainframerevoked"}',
+    '{"kind":"mainFrameRevoked "}',
+    '{"MainFrameRevoked":null}',
+    '"MainFrameRevoked"',
+    '["mainFrameRevoked"]',
+  ])
+    assert.equal(isShellToMain(JSON.parse(wire)), false, wire);
+  assert.equal(isShellToMain(revoked({ extra: undefined })), false);
+  assert.equal(
+    isShellToMain(Object.create(revoked())),
+    false,
+    "inherited kind",
+  );
 });
 
 test("shell transport rejects the retired popoutOpenInMain kind", () => {
