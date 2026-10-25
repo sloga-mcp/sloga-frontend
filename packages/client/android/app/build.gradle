@@ -55,12 +55,12 @@ android {
         // versionName tracks the PATCH NOTES version from v0.55.0 on (it used
         // to run its own 1.x sequence, which matched nothing users could see).
         // versionCode keeps counting up untouched — it is what ApkUpdateWorker
-        // and Play order releases by, and it must never go backwards. vc76 was
-        // published as the 0.68.0 SIDELOAD apk (and the Google-free apk) and
-        // uploaded to Play, so this release is vc77 (the Android screen share
+        // and Play order releases by, and it must never go backwards. vc77 was
+        // published as the 0.69.0 SIDELOAD apk (and the Google-free apk) and
+        // uploaded to Play, so this release is vc78 (the Android screen share
         // flip requires >= 73).
-        versionCode 77
-        versionName "0.69.0"
+        versionCode 78
+        versionName "0.69.1"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         // Validated "true" or "false" (top of file). No flavor overrides it,
         // so play, sideload and foss all take this value.
