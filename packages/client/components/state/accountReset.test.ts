@@ -87,6 +87,7 @@ const STUBS: Record<string, Record<string, string>> = {
     }`,
     "./FriendGroups": `export const TypeFriendGroups = undefined;`,
     "./Friends": `export const TypeFriends = undefined;`,
+    "./HomeLayout": `export const TypeHomeLayout = undefined;`,
     "./NotificationOptions": `export const TypeNotificationOptions = undefined;`,
     "./Ordering": `export const TypeOrdering = undefined;`,
     "./ReleaseNotes": `export const TypeReleaseNotes = undefined;`,
@@ -144,6 +145,7 @@ const THEME = {
 const DEFAULTS = {
   friends: { favourites: [], collapsed: [] },
   "friend-groups": { groups: [], members: {} },
+  "home-layout": { main: ["unread"], side: ["friends"], hidden: [] },
   theme: THEME,
 };
 
@@ -153,6 +155,7 @@ const ACCOUNT_A = {
     groups: [{ id: "g1", name: "A's raid night", order: 0 }],
     members: { g1: ["friend-of-a"] },
   },
+  "home-layout": { main: ["friends"], side: ["unread"], hidden: ["unread"] },
   theme: { ...THEME, mode: "light", slogaAccent: "#ff5733" },
 };
 
@@ -162,6 +165,7 @@ const ACCOUNT_B = {
     groups: [{ id: "g9", name: "B's book club", order: 0 }],
     members: { g9: ["friend-of-b"] },
   },
+  "home-layout": { main: ["unread", "friends"], side: [], hidden: [] },
   theme: { ...THEME, slogaAccent: "#9bf088" },
 };
 
@@ -206,6 +210,7 @@ function device(owner: string | undefined, data = ACCOUNT_A) {
         ordering: 4_000,
         friends: 5_000,
         "friend-groups": 5_000,
+        "home-layout": 5_000,
         theme: 5_000,
       },
       owner,

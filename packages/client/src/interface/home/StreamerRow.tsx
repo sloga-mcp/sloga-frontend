@@ -298,9 +298,63 @@ const Watch = styled("a", {
  *
  * Renders nothing until a load succeeds with at least one streamer.
  */
-export function StreamerRow() {
+export function StreamerRow(props: {
+  state: ReturnType<typeof createStreamerRowState>;
+}) {
   const client = useClient();
   const navigate = useNavigate();
+
+  const tiles = () => props.state.tiles();
+
+  function avatarUrl(streamer: FoundingStreamer): string | undefined {
+    const instance = client();
+    if (!instance || !streamer.avatar) return undefined;
+    // createFileURL, not previewUrl: only it checks the autumn flag
+    return new StoatFile(
+      instance,
+      streamer.avatar as ConstructorParameters<typeof StoatFile>[1],
+    ).createFileURL();
+  }
+
+  return (
+    <Show when={tiles().length}>
+      <Section
+        aria-labelledby="home-streamers-title"
+        style={{ "--home-streamer-colour": FOUNDING_STREAMER_COLOUR }}
+      >
+        <Head>
+          <Heading id="home-streamers-title">
+            <MdLiveTv {...iconSize(20)} />
+            <Trans>Founding Streamers</Trans>
+          </Heading>
+          <SeeAll type="button" onClick={() => navigate("/streamers")}>
+            <Trans>See all</Trans>
+          </SeeAll>
+        </Head>
+        <Row>
+          {/* Keyed by id: every poll parses fresh objects, and identity keying
+              would rebuild every tile (and drop a flipped one) each minute */}
+          <Key each={tiles()} by="_id">
+            {(streamer) => (
+              <StreamerTile
+                streamer={streamer()}
+                avatar={avatarUrl(streamer())}
+              />
+            )}
+          </Key>
+        </Row>
+      </Section>
+    </Show>
+  );
+}
+
+/**
+ * The Founding Streamers list and its refresh, kept apart from the row so
+ * Home can ask whether there is anything to show before it draws a frame,
+ * and so moving the card does not fetch the list again.
+ */
+export function createStreamerRowState() {
+  const client = useClient();
 
   // Anonymous route; brand-new accounts are exactly who this row is for
   const [streamers, { refetch }] = createResource(
@@ -347,46 +401,7 @@ export function StreamerRow() {
     [],
   );
 
-  function avatarUrl(streamer: FoundingStreamer): string | undefined {
-    const instance = client();
-    if (!instance || !streamer.avatar) return undefined;
-    // createFileURL, not previewUrl: only it checks the autumn flag
-    return new StoatFile(
-      instance,
-      streamer.avatar as ConstructorParameters<typeof StoatFile>[1],
-    ).createFileURL();
-  }
-
-  return (
-    <Show when={tiles().length}>
-      <Section
-        aria-labelledby="home-streamers-title"
-        style={{ "--home-streamer-colour": FOUNDING_STREAMER_COLOUR }}
-      >
-        <Head>
-          <Heading id="home-streamers-title">
-            <MdLiveTv {...iconSize(20)} />
-            <Trans>Founding Streamers</Trans>
-          </Heading>
-          <SeeAll type="button" onClick={() => navigate("/streamers")}>
-            <Trans>See all</Trans>
-          </SeeAll>
-        </Head>
-        <Row>
-          {/* Keyed by id: every poll parses fresh objects, and identity keying
-              would rebuild every tile (and drop a flipped one) each minute */}
-          <Key each={tiles()} by="_id">
-            {(streamer) => (
-              <StreamerTile
-                streamer={streamer()}
-                avatar={avatarUrl(streamer())}
-              />
-            )}
-          </Key>
-        </Row>
-      </Section>
-    </Show>
-  );
+  return { tiles };
 }
 
 /**

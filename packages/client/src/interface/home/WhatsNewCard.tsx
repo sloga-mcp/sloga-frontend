@@ -86,7 +86,8 @@ const List = styled("ul", {
     padding: 0,
     listStyle: "none",
     display: "grid",
-    gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+    // three across in the wide column, one per line in the narrow one
+    gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))",
     gap: "10px",
 
     "@media (max-width: 640px)": {
@@ -171,13 +172,10 @@ function readDismissed(): string | null {
 }
 
 /**
- * "New in vX" card: this release's headline changes and a link to the full
- * patch notes. Dismissed per release.
+ * Whether the What's New card shows, and its dismiss. Kept apart from the
+ * card so Home can ask before it draws a frame for it.
  */
-export function WhatsNewCard() {
-  const { openModal } = useModals();
-  const { t } = useLingui();
-
+export function createWhatsNewState() {
   const [dismissed, setDismissed] = createSignal(readDismissed());
 
   const visible = () =>
@@ -196,15 +194,32 @@ export function WhatsNewCard() {
     }
   }
 
+  return { visible, dismiss };
+}
+
+/**
+ * "New in vX" card: this release's headline changes and a link to the full
+ * patch notes. Dismissed per release.
+ */
+export function WhatsNewCard(props: {
+  state: ReturnType<typeof createWhatsNewState>;
+}) {
+  const { openModal } = useModals();
+  const { t } = useLingui();
+
   async function openNotes() {
     const changelogs = await fetchAllChangelogs().catch(() => []);
     if (changelogs.length) openModal({ type: "changelog_history", changelogs });
   }
 
   return (
-    <Show when={visible()}>
+    <Show when={props.state.visible()}>
       <Card aria-labelledby="home-whats-new-title">
-        <Close type="button" aria-label={t`Dismiss`} onClick={dismiss}>
+        <Close
+          type="button"
+          aria-label={t`Dismiss`}
+          onClick={() => props.state.dismiss()}
+        >
           <MdClose {...iconSize(18)} />
         </Close>
         <Tag>

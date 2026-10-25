@@ -71,6 +71,7 @@ const STUBS: Record<string, string> = {
   }`,
   "./FriendGroups": `export const TypeFriendGroups = undefined;`,
   "./Friends": `export const TypeFriends = undefined;`,
+  "./HomeLayout": `export const TypeHomeLayout = undefined;`,
   "./NotificationOptions": `export const TypeNotificationOptions = undefined;`,
   "./Ordering": `export const TypeOrdering = undefined;`,
   "./ReleaseNotes": `export const TypeReleaseNotes = undefined;`,
