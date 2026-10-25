@@ -142,7 +142,7 @@ EXPECTED=(
   "components/rtc/screenAudioNativeWin.test.ts 51 0"
   "components/rtc/pauseClauseHold.test.ts 7 0"
   "components/client/mlsInboundBuffer.test.ts 17 0"
-  "components/client/mlsEnvelopeClassify.test.ts 12 0"
+  "components/client/mlsEnvelopeClassify.test.ts 13 0"
   "components/client/mlsResumeKeep.test.ts 64 0"
   # Call-view suggestions (opt-in screen shares, video-only grid, member
   # moves, opt-in share recording), first measured at 0c672a54; the watch,

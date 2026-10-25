@@ -190,6 +190,18 @@ test("mls_stale_ctl → QUIET ack+drop (6.5: a ctl-announce is coordination-only
   );
 });
 
+// A locked phone leaves the store intact and the key merely unreadable, so
+// the envelope must survive until unlock: never acked, never dropped (plan D3).
+test("protector / protector_locked → transient error, NOT acked, NEVER a drop", () => {
+  for (const type of ["protector", "protector_locked"]) {
+    const locked = { type };
+    const disp = classifyEnvelopeError(locked);
+    assert.deepEqual(disp, { kind: "error", error: locked, ack: false }, type);
+    assert.notEqual(disp.kind, "drop", type);
+    assert.equal(disp.ack, false, type);
+  }
+});
+
 test("unrecognised error TYPE → transient error, NOT acked (drain bounds the retries)", () => {
   const weird = { type: "some_future_error" };
   assert.deepEqual(classifyEnvelopeError(weird), {

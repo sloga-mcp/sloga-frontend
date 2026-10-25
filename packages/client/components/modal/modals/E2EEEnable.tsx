@@ -27,8 +27,9 @@ import { Modals } from "../types";
  * choice is presented up front rather than probing `GET /e2ee/backup` first,
  * which would burn a single-use ticket for users who just want to start
  * fresh). The recovery CODE is entered only on the native surface (the
- * bundled recovery window on desktop / an AlertDialog on Android) — it never
- * reaches this webview; `restoreFromBackup` only couriers opaque ciphertext.
+ * bundled recovery window on desktop / a native dialog from the Capacitor
+ * E2ee plugin on Android and iOS) — it never reaches this webview;
+ * `restoreFromBackup` only couriers opaque ciphertext.
  */
 export function E2EEEnableModal(
   props: DialogProps & Modals & { type: "e2ee_enable" },
@@ -100,8 +101,9 @@ export function E2EEEnableModal(
 
       // Desktop: the recovery WINDOW is now open and drives code entry +
       // republish asynchronously (the completion courier lives in the bridge).
-      // Android: the native dialog already restored before resolving. Either
-      // way this device is on its way to provisioned — close the prompt.
+      // Capacitor (Android, iOS): the native dialog already restored before
+      // resolving (a cancel there returned 0 above). Either way this device
+      // is on its way to provisioned — close the prompt.
       e2ee.restoreAvailable.delete("state");
       props.onClose();
     } catch (error) {
@@ -131,8 +133,17 @@ export function E2EEEnableModal(
               {
                 text: <Trans>Create recovery code</Trans>,
                 onClick: () => {
-                  // Opens the native recovery window (desktop). A no-op on a
-                  // shell without one; the nag in settings keeps prompting.
+                  // Never a silent no-op. Desktop (Tauri, Electron) opens the
+                  // bundled recovery window, and the bridge uploads the bundle
+                  // when it closes. Capacitor (Android, and iOS with its
+                  // native E2ee plugin) shows a native dialog and uploads the
+                  // bundle on return; cancelling it resolves quietly. Any
+                  // other failure, including a shell that lacks the command
+                  // or plugin method (Capacitor rejects UNIMPLEMENTED), lands
+                  // in showError. With no native layer there is no bridge and
+                  // enable() bails before this button can show. If the user
+                  // skips or cancels, the Encryption settings card keeps
+                  // offering to create one.
                   void e2ee?.createRecoveryCode().catch((error) =>
                     showError(error),
                   );
