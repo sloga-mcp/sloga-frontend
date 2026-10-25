@@ -352,13 +352,15 @@ export function StreamerRow(props: {
  * The Founding Streamers list and its refresh, kept apart from the row so
  * Home can ask whether there is anything to show before it draws a frame,
  * and so moving the card does not fetch the list again.
+ * @param enabled Whether the card is switched on; nothing is fetched or
+ *   polled while off
  */
-export function createStreamerRowState() {
+export function createStreamerRowState(enabled: () => boolean) {
   const client = useClient();
 
   // Anonymous route; brand-new accounts are exactly who this row is for
   const [streamers, { refetch }] = createResource(
-    () => client()?.options.baseURL,
+    () => (enabled() ? client()?.options.baseURL : undefined),
     (baseURL) => fetchFoundingStreamers(baseURL),
   );
 
@@ -370,13 +372,13 @@ export function createStreamerRowState() {
     };
 
     const timer = setInterval(() => {
-      if (!document.hidden) poll();
+      if (!document.hidden && enabled()) poll();
     }, STREAMER_POLL_INTERVAL);
 
     // Catch up when the tab comes back, throttled to the poll interval so
     // alt-tabbing cannot trip the route's rate limit
     const onVisibilityChange = () => {
-      if (document.hidden) return;
+      if (document.hidden || !enabled()) return;
       if (Date.now() - lastFetch < STREAMER_POLL_INTERVAL) return;
       poll();
     };
@@ -401,7 +403,11 @@ export function createStreamerRowState() {
     [],
   );
 
-  return { tiles };
+  // First load only: a poll refreshing a list already here is "refreshing",
+  // not "pending". `state` never reads the value, so it cannot suspend.
+  const loading = () => streamers.state === "pending";
+
+  return { tiles, loading };
 }
 
 /**

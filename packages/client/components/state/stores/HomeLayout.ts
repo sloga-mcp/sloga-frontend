@@ -11,6 +11,7 @@ import {
   columnOf,
   defaultHomeLayout,
   moveBlock,
+  sameHomeLayout,
   setBlockHidden,
   shownBlocks,
 } from "./homeLayoutRules";
@@ -67,12 +68,13 @@ export class HomeLayout extends AbstractStore<"home-layout", TypeHomeLayout> {
   }
 
   /**
-   * Store a layout the rules produced, unless nothing changed
+   * Store a layout the rules produced, unless nothing changed. Compared by
+   * value: every write is synced, and a drop back in place or Reset on the
+   * default layout builds new lists with the same cards in them.
    * @param next New layout
    */
   private write(next: TypeHomeLayout) {
-    const current = this.get();
-    if (next === current) return;
+    if (sameHomeLayout(next, this.get())) return;
     this.set({ main: next.main, side: next.side, hidden: next.hidden });
   }
 

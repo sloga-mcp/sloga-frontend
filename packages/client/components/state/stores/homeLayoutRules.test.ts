@@ -6,11 +6,13 @@ import {
   type TypeHomeLayout,
   applyDrop,
   cleanHomeLayout,
+  customizableBlocks,
   DEFAULT_COLUMN,
   defaultHomeLayout,
   HOME_BLOCKS,
   mergeVisibleOrder,
   moveBlock,
+  sameHomeLayout,
   setBlockHidden,
   shownBlocks,
 } from "./homeLayoutRules.ts";
@@ -239,5 +241,52 @@ describe("setBlockHidden", () => {
     assert.deepEqual(hidden.main, start.main);
     assert.equal(setBlockHidden(hidden, "discover", true), hidden);
     assert.deepEqual(setBlockHidden(hidden, "discover", false).hidden, []);
+  });
+});
+
+describe("sameHomeLayout", () => {
+  it("treats rebuilt lists with the same cards as no change", () => {
+    // Reset on an untouched Home, and a drop back in place, both build
+    // new lists; neither may stamp a sync revision
+    assert.ok(sameHomeLayout(defaultHomeLayout(), defaultHomeLayout()));
+    const start = defaultHomeLayout();
+    const shown = new Set(start.main);
+    assert.ok(
+      sameHomeLayout(
+        cleanHomeLayout(applyDrop(start, "main", [...start.main], shown)),
+        start,
+      ),
+    );
+  });
+
+  it("sees a change in any of the three lists", () => {
+    const start = defaultHomeLayout();
+    const swapped = [...start.main];
+    [swapped[0], swapped[1]] = [swapped[1], swapped[0]];
+    assert.ok(!sameHomeLayout({ ...start, main: swapped }, start));
+    assert.ok(
+      !sameHomeLayout(moveBlock(start, "friends", "other", all), start),
+    );
+    assert.ok(!sameHomeLayout(setBlockHidden(start, "staff", true), start));
+    assert.ok(!sameHomeLayout(start, setBlockHidden(start, "staff", true)));
+  });
+});
+
+describe("customizableBlocks", () => {
+  it("lists every card in default order when all are offered", () => {
+    assert.deepEqual(
+      customizableBlocks(() => true),
+      [...HOME_BLOCKS],
+    );
+  });
+
+  it("leaves out the cards this viewer can never see", () => {
+    const never = new Set<HomeBlockId>(["staff", "cipher", "import"]);
+    const listed = customizableBlocks((id) => !never.has(id));
+    assert.deepEqual(
+      listed,
+      HOME_BLOCKS.filter((id) => !never.has(id)),
+    );
+    for (const id of never) assert.ok(!listed.includes(id));
   });
 });

@@ -25,6 +25,10 @@ import {
 } from "./cardParts";
 import {
   HOME_MENTION_CONCURRENCY,
+  HOME_MENTION_LIMIT,
+  HOME_MENTION_RETRY_MS,
+  HOME_MENTION_SCAN_LIMIT,
+  fetchInOrder,
   mentionPreview,
   pickMentionIds,
 } from "./homeHub";
@@ -36,12 +40,24 @@ import {
  */
 const messageCache = new WeakMap<Client, Map<string, Message>>();
 
+/**
+ * When a mentioned message last failed to load, by id, so the card does not
+ * ask for the same deleted or unreadable messages on every change to the
+ * mention list. Kept per client, like the cache above.
+ */
+const failedAt = new WeakMap<Client, Map<string, number>>();
+
 /** One fetched mention */
 type MentionRow = { channel: Channel; message: Message };
 
+/** Blocked authors stay out, as they do in chat and in notifications */
+const notBlocked = (row: MentionRow) =>
+  row.message.author?.relationship !== "Blocked";
+
 /**
- * Fetch the picked messages, a couple at a time, reusing ones fetched before.
- * A message that fails to load (deleted, no access) is left out.
+ * Fetch the picked messages newest first, a couple at a time, reusing ones
+ * fetched before, until there are enough rows from authors who are not
+ * blocked. A message that fails to load (deleted, no access) is left out.
  */
 async function loadMentions(
   client: Client,
@@ -52,39 +68,47 @@ async function loadMentions(
     cache = new Map();
     messageCache.set(client, cache);
   }
+  let failed = failedAt.get(client);
+  if (!failed) {
+    failed = new Map();
+    failedAt.set(client, failed);
+  }
 
-  const rows: (MentionRow | undefined)[] = new Array(picks.length);
-  let next = 0;
-  const worker = async () => {
-    while (next < picks.length) {
-      const index = next++;
+  return fetchInOrder(
+    picks.length,
+    async (index) => {
       const { channel, messageId } = picks[index];
-      try {
-        const message =
-          cache.get(messageId) ?? (await channel.fetchMessage(messageId));
-        cache.set(messageId, message);
-        rows[index] = { channel, message };
-      } catch {
-        // gone or not ours to read: skip it
-      }
-    }
-  };
+      const cached = cache.get(messageId);
+      if (cached) return { channel, message: cached };
 
-  await Promise.all(
-    Array.from(
-      { length: Math.min(HOME_MENTION_CONCURRENCY, picks.length) },
-      worker,
-    ),
+      const at = failed.get(messageId);
+      if (at !== undefined && Date.now() - at < HOME_MENTION_RETRY_MS) {
+        return undefined;
+      }
+      try {
+        const message = await channel.fetchMessage(messageId);
+        cache.set(messageId, message);
+        failed.delete(messageId);
+        return { channel, message };
+      } catch (error) {
+        failed.set(messageId, Date.now());
+        throw error;
+      }
+    },
+    {
+      want: HOME_MENTION_LIMIT,
+      keep: notBlocked,
+      concurrency: HOME_MENTION_CONCURRENCY,
+    },
   );
-  return rows.filter((row) => row !== undefined);
 }
 
 /**
- * Unread messages in servers that mention the viewer, newest first. Direct
- * messages are not here: every one of them already shows in "Jump back in".
- * Muted servers and channels, and channels behind a gate, are left out.
+ * The Mentions card's rows and their fetch. Kept apart from the card so
+ * moving the card (which rebuilds it) does not start the fetch again.
+ * @param enabled Whether the card is switched on; nothing is fetched while off
  */
-export function UnreadMentions() {
+export function createUnreadMentionsState(enabled: () => boolean) {
   const client = useClient();
   const state = useState();
 
@@ -114,7 +138,7 @@ export function UnreadMentions() {
       }
     }
 
-    return pickMentionIds(candidates).map((pick) => ({
+    return pickMentionIds(candidates, HOME_MENTION_SCAN_LIMIT).map((pick) => ({
       channel: channels.get(pick.channelId)!,
       messageId: pick.messageId,
     }));
@@ -129,7 +153,7 @@ export function UnreadMentions() {
   // Refetches only when the set of mentions changes; read untracked below so
   // unrelated store traffic cannot start another round of fetches
   const [mentions] = createResource(
-    () => key() || false,
+    () => (enabled() && key()) || false,
     () => loadMentions(untrack(client)!, untrack(picks)),
   );
 
@@ -137,13 +161,23 @@ export function UnreadMentions() {
   const rows = createMemo(() => {
     if (mentions.error) return [];
     const unread = new Set(picks().map((pick) => pick.messageId));
-    // Blocked authors stay out, as they do in chat and in notifications
-    return (mentions.latest ?? []).filter(
-      (row) =>
-        unread.has(row.message.id) &&
-        row.message.author?.relationship !== "Blocked",
-    );
+    return (mentions.latest ?? [])
+      .filter((row) => unread.has(row.message.id) && notBlocked(row))
+      .slice(0, HOME_MENTION_LIMIT);
   });
+
+  return { rows, loading: () => mentions.loading };
+}
+
+/**
+ * Unread messages in servers that mention the viewer, newest first. Direct
+ * messages are not here: every one of them already shows in "Jump back in".
+ * Muted servers and channels, and channels behind a gate, are left out.
+ */
+export function UnreadMentions(props: {
+  state: ReturnType<typeof createUnreadMentionsState>;
+}) {
+  const client = useClient();
 
   /**
    * The text a row shows. A message the E2EE layer owns never has its text
@@ -166,9 +200,9 @@ export function UnreadMentions() {
         </PanelTitle>
       </PanelHead>
       <Show
-        when={rows().length > 0}
+        when={props.state.rows().length > 0}
         fallback={
-          <Show when={!mentions.loading}>
+          <Show when={!props.state.loading()}>
             <Empty>
               <span>
                 <Trans>No new mentions.</Trans>
@@ -178,7 +212,7 @@ export function UnreadMentions() {
         }
       >
         <List>
-          <For each={rows()}>
+          <For each={props.state.rows()}>
             {(row) => (
               <li>
                 <RowLink

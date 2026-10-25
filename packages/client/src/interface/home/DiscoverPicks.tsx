@@ -58,11 +58,15 @@ async function directory(client: Client): Promise<DiscoverableServerData[]> {
  * State behind "Servers you might like": a few public servers the viewer is
  * not in. Kept apart from the card so Home can leave the card out when the
  * directory has nothing new to offer, or cannot be reached.
+ * @param enabled Whether the card is switched on; nothing is fetched while off
  */
-export function createDiscoverPicksState() {
+export function createDiscoverPicksState(enabled: () => boolean) {
   const client = useClient();
 
-  const [page] = createResource(client, (c) => directory(c));
+  const [page] = createResource(
+    () => (enabled() ? client() : undefined),
+    (c) => directory(c),
+  );
 
   const picks = createMemo(() => {
     const c = client();
@@ -73,7 +77,11 @@ export function createDiscoverPicksState() {
     );
   });
 
-  return { picks };
+  // First load only ("pending"; a refetch with a page already here is
+  // "refreshing"). `state` never reads the value, so it cannot suspend.
+  const loading = () => page.state === "pending";
+
+  return { picks, loading };
 }
 
 /**

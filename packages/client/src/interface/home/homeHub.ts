@@ -153,8 +153,21 @@ export const HAPPENING_ROOM_LIMIT = 6;
 /** Most mentions the Mentions card lists (one message fetch each) */
 export const HOME_MENTION_LIMIT = 5;
 
+/**
+ * Most mentions the card will fetch to fill its rows. Mentions from blocked
+ * authors are fetched and then left out, so the card reads further down the
+ * list to fill their place, up to here.
+ */
+export const HOME_MENTION_SCAN_LIMIT = 15;
+
 /** Mention fetches in flight at once */
 export const HOME_MENTION_CONCURRENCY = 2;
+
+/**
+ * How long a mention whose message failed to load (deleted, no access) is
+ * skipped before the card asks for it again
+ */
+export const HOME_MENTION_RETRY_MS = 10 * 60 * 1000;
 
 /** Longest mention preview, in characters */
 export const MENTION_PREVIEW_LENGTH = 140;
@@ -295,6 +308,45 @@ export function pickMentionIds(
       a.messageId < b.messageId ? 1 : a.messageId > b.messageId ? -1 : 0,
     )
     .slice(0, limit);
+}
+
+/**
+ * Fetch a list's items in order, a few at a time, until `want` of them pass
+ * `keep` or the list runs out. Results come back in list order; an item
+ * whose fetch fails or finds nothing is left out. No new fetch starts once
+ * enough have been kept; fetches already running when that happens still
+ * finish, so a slow one can let the other workers read a few items past
+ * what filling the rows needed.
+ * @param count Items in the list
+ * @param fetchOne Fetch the item at an index
+ * @param options How many to keep, which count, and fetches in flight at once
+ */
+export async function fetchInOrder<T>(
+  count: number,
+  fetchOne: (index: number) => Promise<T | undefined>,
+  options: { want: number; keep: (value: T) => boolean; concurrency: number },
+): Promise<T[]> {
+  const results: (T | undefined)[] = new Array(count);
+  let next = 0;
+  let kept = 0;
+
+  const worker = async () => {
+    while (next < count && kept < options.want) {
+      const index = next++;
+      try {
+        const value = await fetchOne(index);
+        results[index] = value;
+        if (value !== undefined && options.keep(value)) kept++;
+      } catch {
+        // gone or not ours to read: skip it
+      }
+    }
+  };
+
+  await Promise.all(
+    Array.from({ length: Math.min(options.concurrency, count) }, worker),
+  );
+  return results.filter((value): value is T => value !== undefined);
 }
 
 /**

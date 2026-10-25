@@ -12,8 +12,9 @@ import { Trans, useLingui } from "@lingui-solid/solid/macro";
 import { cva } from "styled-system/css";
 import { styled } from "styled-system/jsx";
 
-import { useClient } from "@revolt/client";
+import { allowsDonationLinks, useClient } from "@revolt/client";
 import { useModals } from "@revolt/modal";
+import { useState } from "@revolt/state";
 import {
   CategoryButton,
   Header,
@@ -39,9 +40,16 @@ import { HappeningNow } from "./home/HappeningNow";
 import { type HomeBlockDef, HomeGrid } from "./home/HomeGrid";
 import { isNewUser } from "./home/homeHub";
 import { ImportCard, importCardAction } from "./home/ImportCard";
-import { UnreadBlock, UpcomingBlock } from "./home/JumpBackIn";
+import {
+  UnreadBlock,
+  UpcomingBlock,
+  createUpcomingState,
+} from "./home/JumpBackIn";
 import { StreamerRow, createStreamerRowState } from "./home/StreamerRow";
-import { UnreadMentions } from "./home/UnreadMentions";
+import {
+  UnreadMentions,
+  createUnreadMentionsState,
+} from "./home/UnreadMentions";
 import { WelcomeTiles } from "./home/WelcomeTiles";
 import { WhatsNewCard, createWhatsNewState } from "./home/WhatsNewCard";
 
@@ -68,7 +76,7 @@ const O = { cx: 115, cy: 55, ring: 29, core: 10 };
 /**
  * How often the moderation queue counts on the home tiles are refreshed. Only
  * privileged accounts poll at all, and only while the home screen is mounted
- * and visible; acting on a queue refreshes it immediately when the modal
+ * and visible and the card is switched on; acting on a queue refreshes it immediately when the modal
  * closes, so this is just the backstop for items filed by someone else.
  */
 const QUEUE_POLL_INTERVAL = 60_000;
@@ -332,8 +340,13 @@ export function HomePage() {
   const { openModal, isOpen } = useModals();
   const { t } = useLingui();
   const client = useClient();
+  const state = useState();
 
   const isPrivileged = () => !!client()!.user?.privileged;
+
+  /** Whether a card is switched on: a card switched off fetches and polls nothing */
+  const switchedOn = (id: HomeBlockId) => () => !state.homeLayout.isHidden(id);
+  const staffOn = switchedOn("staff");
 
   /**
    * Pending counts for the two moderation queues.
@@ -346,7 +359,7 @@ export function HomePage() {
    * misleading zero.
    */
   const [queues, { refetch: refetchQueues }] = createResource(
-    () => (isPrivileged() ? client()! : undefined),
+    () => (isPrivileged() && staffOn() ? client()! : undefined),
     async (c) => {
       const api = c.api as unknown as {
         baseURL: string;
@@ -388,7 +401,7 @@ export function HomePage() {
   onMount(() => {
     const timer = setInterval(() => {
       // Don't poll a screen nobody is looking at.
-      if (isPrivileged() && !document.hidden) refetchQueues();
+      if (isPrivileged() && staffOn() && !document.hidden) refetchQueues();
     }, QUEUE_POLL_INTERVAL);
 
     onCleanup(() => clearInterval(timer));
@@ -415,10 +428,12 @@ export function HomePage() {
 
   // Card state that outlives the card: moving a card rebuilds it, and these
   // hold fetches and dismissals that must not restart when that happens
-  const cipher = createCipherBannerState();
+  const cipher = createCipherBannerState(switchedOn("cipher"));
   const whatsNew = createWhatsNewState();
-  const streamers = createStreamerRowState();
-  const discover = createDiscoverPicksState();
+  const streamers = createStreamerRowState(switchedOn("streamers"));
+  const discover = createDiscoverPicksState(switchedOn("discover"));
+  const mentions = createUnreadMentionsState(switchedOn("mentions"));
+  const upcoming = createUpcomingState(switchedOn("upcoming"));
 
   const [customizing, setCustomizing] = createSignal(false);
 
@@ -433,6 +448,9 @@ export function HomePage() {
     cipher: {
       title: () => t`Cipher`,
       available: cipher.visible,
+      loading: cipher.loading,
+      // store builds never link to payments, so never list the card there
+      offered: allowsDonationLinks,
       inset: 48,
       render: () => <CipherBanner state={cipher} />,
     },
@@ -449,21 +467,23 @@ export function HomePage() {
     mentions: {
       title: () => t`Mentions`,
       available: always,
-      render: () => <UnreadMentions />,
+      render: () => <UnreadMentions state={mentions} />,
     },
     upcoming: {
       title: () => t`Upcoming`,
       available: always,
-      render: () => <UpcomingBlock />,
+      render: () => <UpcomingBlock state={upcoming} />,
     },
     discover: {
       title: () => t`Servers you might like`,
       available: () => discover.picks().length > 0,
+      loading: discover.loading,
       render: () => <DiscoverPicks state={discover} />,
     },
     staff: {
       title: () => t`Moderation`,
       available: isPrivileged,
+      offered: isPrivileged,
       render: () => staffQueues(),
     },
     friends: {
@@ -474,6 +494,7 @@ export function HomePage() {
     streamers: {
       title: () => t`Founding Streamers`,
       available: () => streamers.tiles().length > 0,
+      loading: streamers.loading,
       // clear of the row's own "See all"
       inset: 76,
       render: () => <StreamerRow state={streamers} />,
@@ -487,6 +508,7 @@ export function HomePage() {
     import: {
       title: () => t`Bring your community over`,
       available: () => importCardAction() !== "none",
+      offered: () => importCardAction() !== "none",
       render: () => <ImportCard />,
     },
   };
