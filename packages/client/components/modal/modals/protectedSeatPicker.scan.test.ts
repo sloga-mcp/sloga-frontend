@@ -27,7 +27,11 @@
 //      `bot` / `privileged` facts;
 //  P7  errors only through `protectedNoticeForError(…, {op: "owner"})` and
 //      `errorUiCopy`, never an error's `message`;
-//  P8  copy from C0 (no bare English literals) and blank-page traps.
+//  P8  copy from C0 (no bare English literals) and blank-page traps;
+//  P9  W4d (W2 C1): a `SeatListNamesRemovedUsers` refusal deselects
+//      exactly the users it names, keeps them off (unlisted, never in a
+//      later list), lets the list without them be confirmed, and never
+//      resubmits by itself (C-SET3, picker side).
 //
 // Point `PROTECTED_SEAT_PICKER_FILE`, `PROTECTED_MODAL_TYPES_FILE` or
 // `PROTECTED_MODALS_FILE` at another copy (a known-bad control) to check
@@ -64,7 +68,11 @@ interface Rules {
     c: Candidate,
     current: ReadonlySet<string>,
     ownerId: string | null,
+    dropped?: ReadonlySet<string>,
   ): boolean;
+  seatWithout(ids: Iterable<string>, drop: Iterable<string>): string[];
+  seatRefusalRemoved(ui: unknown, ownerId: string | null): string[];
+  seatDroppedIds(ids: unknown, ownerId: string | null): string[];
   seatInitialSelection(
     current: readonly string[],
     ownerId: string | null,
@@ -87,11 +95,15 @@ interface Rules {
     selected: ReadonlySet<string>,
     ownerId: string | null,
     slotCap: number | null,
+    cleanup?: boolean,
   ): boolean;
 }
 const RULE_NAMES = [
   "seatCapOf",
   "seatListed",
+  "seatWithout",
+  "seatRefusalRemoved",
+  "seatDroppedIds",
   "seatInitialSelection",
   "seatFinalList",
   "seatToggleBlock",
@@ -165,6 +177,8 @@ describe("Protected channel seat picker (lane C12)", () => {
       /\bcurrent: string\[\];/,
       /\bslotCap: number \| null;/,
       /\bonConfirm: \(userIds: string\[\]\) => Promise<void>;/,
+      // W4d: optional, so every other opener keeps the pinned contract
+      /\bremoved\?: string\[\];/,
     ]) {
       assert.match(entry, field, `pinned prop ${field} changed`);
     }
@@ -367,9 +381,10 @@ describe("Protected channel seat picker (lane C12)", () => {
     assert.equal(r.seatCanConfirm([OWNER, "a"], set(OWNER), OWNER, 5), true);
     assert.equal(r.seatCanConfirm([OWNER], set(OWNER, "b"), null, null), false);
 
+    // W4d: from `currentIds()` (`props.current` minus refusal-dropped).
     assert.match(
       BODY,
-      /await props\.onConfirm\(seatFinalList\(props\.current, selected\(\), owner\)\);\s*props\.onClose\(\);/,
+      /await props\.onConfirm\(seatFinalList\(currentIds\(\), selected\(\), owner\)\);\s*props\.onClose\(\);/,
       "onConfirm gets the full list, close only after it resolves",
     );
     assert.equal(
@@ -395,7 +410,7 @@ describe("Protected channel seat picker (lane C12)", () => {
     assert.match(BODY, /isDisabled: !canConfirm\(\)/);
     assert.match(
       BODY,
-      /seatCanConfirm\(props\.current, selected\(\), ownerId\(\), slotCap\)/,
+      /seatCanConfirm\(\s*currentIds\(\),\s*selected\(\),\s*ownerId\(\),\s*slotCap,\s*dropped\(\)\.size > 0,\s*\)/,
     );
   });
 
@@ -426,13 +441,17 @@ describe("Protected channel seat picker (lane C12)", () => {
     );
     assert.match(BODY, /bot: !!user\.bot,/);
     assert.match(BODY, /privileged: user\.privileged === true,/);
-    assert.match(BODY, /seatListed\(candidate, current, owner\)/);
+    // W4d: `current` is now a memo (minus refusal-dropped users).
+    assert.match(
+      BODY,
+      /seatListed\(candidate, current\(\), owner, dropped\(\)\)/,
+    );
     assert.match(BODY, /m\.id\.server === serverId/);
     assert.match(BODY, /props\.channel\.server\?\.ownerId \?\? null/);
     // Current seats the client holds no member for stay in the list.
     assert.match(
       BODY,
-      /for \(const id of owner === null \? props\.current : \[owner, \.\.\.current\]\)/,
+      /for \(const id of owner === null \? currentIds\(\) : \[owner, \.\.\.current\(\)\]\)/,
     );
   });
 
@@ -441,7 +460,11 @@ describe("Protected channel seat picker (lane C12)", () => {
       BODY,
       /return protectedNoticeForError\(err, \{ op: "owner" \}\);/,
     );
-    assert.match(BODY, /setError\(errorUiCopy\(ui\)\);/);
+    // W4d: the removed-users copy names who was left off when it can.
+    assert.match(
+      BODY,
+      /setError\(errorUiCopy\(ui, \{ removedUserNames: displayNames \}\)\);/,
+    );
     assert.equal(
       (BODY.match(/setError\(/g) ?? []).length,
       3,
@@ -492,6 +515,8 @@ describe("Protected channel seat picker (lane C12)", () => {
       "@revolt/ui barrel import",
     );
     assert.doesNotMatch(CODE, /features\/legacy/, "legacy barrel");
+    // W4d added no local msgid: the removed-users copy is L-ERR's.
+    assert.equal((BODY.match(/\bt`/g) ?? []).length, 4, "local msgids");
     for (const file of [
       "@revolt/ui/components/design/Avatar",
       "@revolt/ui/components/design/Dialog",
@@ -501,5 +526,140 @@ describe("Protected channel seat picker (lane C12)", () => {
     ]) {
       assert.ok(CODE.includes(`from "${file}";`), `${file} by file path`);
     }
+  });
+
+  it("P9 a removed-users refusal deselects exactly them and never resubmits (C-SET3)", async () => {
+    const r = await loadRules();
+    const refusal = {
+      kind: "notice",
+      notice: "seat_list_names_removed_users",
+      max: null,
+      tag: "SeatListNamesRemovedUsers",
+      users: ["x", OWNER, "", 7, "x", "y"],
+    };
+    assert.deepEqual(r.seatRefusalRemoved(refusal, OWNER), ["x", "y"]);
+    assert.deepEqual(
+      r.seatRefusalRemoved({ ...refusal, users: null }, OWNER),
+      [],
+    );
+    assert.deepEqual(
+      r.seatRefusalRemoved({ ...refusal, notice: "seat_cap_reached" }, OWNER),
+      [],
+    );
+    assert.deepEqual(
+      r.seatRefusalRemoved({ kind: "none", tag: "Declined" }, OWNER),
+      [],
+    );
+    assert.deepEqual(r.seatRefusalRemoved(undefined, OWNER), []);
+    const kept = r.seatWithout(["a", "x", "b", "y"], ["x", "y"]);
+    assert.deepEqual(kept, ["a", "b"]);
+    assert.deepEqual(r.seatWithout(set(OWNER, "x"), new Set(["x"])), [OWNER]);
+    // Dropped users are never listed again in this modal (re-adding them
+    // waits for a list without them); the owner always is.
+    const dropped = set("x");
+    assert.equal(
+      r.seatListed(person("x"), set(OWNER, "x"), OWNER, dropped),
+      false,
+    );
+    assert.equal(r.seatListed(person("y"), set(OWNER), OWNER, dropped), true);
+    assert.equal(
+      r.seatListed(person(OWNER), set(OWNER), OWNER, set(OWNER)),
+      true,
+    );
+    // The list without them is a change on its own (the server's list still
+    // names them), but only with `cleanup`.
+    assert.equal(
+      r.seatCanConfirm([OWNER, "a"], set(OWNER, "a"), OWNER, 5),
+      false,
+    );
+    assert.equal(
+      r.seatCanConfirm([OWNER, "a"], set(OWNER, "a"), OWNER, 5, true),
+      true,
+    );
+    assert.equal(
+      r.seatCanConfirm([OWNER, "a"], set(OWNER, "a"), null, 5, true),
+      false,
+      "still needs a known owner",
+    );
+    // Wiring: `current` is `props.current` minus the dropped users, the
+    // refusal deselects exactly them, and the catch resubmits nothing.
+    assert.match(
+      BODY,
+      /const currentIds = createMemo\(\(\) => seatWithout\(props\.current, dropped\(\)\)\);/,
+    );
+    // W4d: the selection starts from `currentIds()` (minus `removed`, P10).
+    assert.match(
+      BODY,
+      /seatInitialSelection\(currentIds\(\), ownerId\(\)\)/,
+      "a removed user is never pre-selected",
+    );
+    const from = BODY.indexOf(
+      "} catch (err) {",
+      BODY.indexOf("async function confirm()"),
+    );
+    const to = BODY.indexOf("} finally {", from);
+    assert.ok(from !== -1 && to > from, "confirm catch missing");
+    const katch = BODY.slice(from, to);
+    assert.match(
+      katch,
+      /const removed = seatRefusalRemoved\(ui, owner\);\s*if \(removed\.length > 0\) \{\s*setDropped\(\(prev\) => new Set\(\[\.\.\.prev, \.\.\.removed\]\)\);\s*setSelected\(\(prev\) => new Set\(seatWithout\(prev, removed\)\)\);\s*\}/,
+    );
+    assert.doesNotMatch(
+      katch,
+      /onConfirm|confirm\(\)|onClose/,
+      "a refusal never resubmits or closes",
+    );
+    assert.equal(
+      (BODY.match(/(?<![.\w])confirm\(\)/g) ?? []).length,
+      2,
+      "confirm(): its declaration and the Confirm action only",
+    );
+    assert.match(
+      BODY,
+      /onClick: \(\) => \{\s*void confirm\(\);\s*return false;/,
+    );
+  });
+
+  it("P10 a fresh picker never offers a user the page knows was removed (C-SET4)", async () => {
+    const r = await loadRules();
+    // The prop is read like a refusal's ids: strings, deduplicated, no owner.
+    assert.deepEqual(r.seatDroppedIds(["x", OWNER, "", 3, "x", "y"], OWNER), [
+      "x",
+      "y",
+    ]);
+    assert.deepEqual(r.seatDroppedIds(undefined, OWNER), [], "absent = none");
+    assert.deepEqual(r.seatDroppedIds("x", OWNER), []);
+    // A fresh modal: `removed` x is not selected, not a candidate even if
+    // they rejoined and can view, and dropping them alone may be confirmed.
+    const dropped = new Set(r.seatDroppedIds(["x"], OWNER));
+    const currentIds = r.seatWithout([OWNER, "a", "x"], dropped);
+    assert.deepEqual(currentIds, [OWNER, "a"]);
+    const initial = r.seatInitialSelection(currentIds, OWNER);
+    assert.equal(initial.has("x"), false, "never pre-selected");
+    assert.equal(
+      r.seatListed(person("x"), new Set(currentIds), OWNER, dropped),
+      false,
+      "never offered",
+    );
+    assert.equal(
+      r.seatCanConfirm(currentIds, initial, OWNER, 5, dropped.size > 0),
+      true,
+      "the list that only drops them can be confirmed",
+    );
+    assert.equal(
+      r.seatCanConfirm(currentIds, initial, OWNER, 5, false),
+      false,
+      "without removed users nothing changed",
+    );
+    // Wiring: `dropped` starts from the prop.
+    assert.match(
+      BODY,
+      /createSignal<ReadonlySet<string>>\(\s*new Set\(seatDroppedIds\(props\.removed, ownerId\(\)\)\),\s*\);/,
+    );
+    assert.match(
+      CODE,
+      /return seatDroppedIds\(u\.users, ownerId\);/,
+      "the prop and a refusal's ids share one rule",
+    );
   });
 });

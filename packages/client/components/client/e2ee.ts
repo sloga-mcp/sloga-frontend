@@ -7182,6 +7182,13 @@ export class E2EEBridge implements E2EEAdapter {
   #ptManagerKey: string | null = null;
   /** Channels handed to the current manager (dedupes `onChannelProtected`). */
   readonly #ptForwarded = new Set<string>();
+  /**
+   * W4d F#3: forwarded channels whose strip the current manager was handed
+   * (its latch is set). A later `protected: true` clears the SDK latch and
+   * fires `onChannelProtected`, which hands such a channel over once more so
+   * the manager clears its latch and re-seeds. Cleared with `#ptForwarded`.
+   */
+  readonly #ptStripped = new Set<string>();
   readonly #ptFlagState = new ReactiveMap<"state", ProtectedChannelsFlag>();
   #ptOwnListing: { hash: string; listing: unknown[]; at: number } | null = null;
   #ptOwnListingFlight: Promise<{ hash: string; listing: unknown[] }> | null =
@@ -7527,6 +7534,7 @@ export class E2EEBridge implements E2EEAdapter {
     this.#ptLife = life;
     this.#ptManagerKey = key;
     this.#ptForwarded.clear();
+    this.#ptStripped.clear();
     for (const channelId of this.#ptIndexed) {
       this.#protectedForward(channelId);
     }
@@ -7553,6 +7561,7 @@ export class E2EEBridge implements E2EEAdapter {
     this.#ptForwarded.add(channelId);
     manager.channelProtected(channelId);
     if (this.#client.isProtectedFlagStripped(channelId)) {
+      this.#ptStripped.add(channelId);
       manager.flagStripped(channelId);
     }
   }
@@ -7568,6 +7577,7 @@ export class E2EEBridge implements E2EEAdapter {
     this.#ptManager = null;
     this.#ptManagerKey = null;
     this.#ptForwarded.clear();
+    this.#ptStripped.clear();
     this.#ptLife?.abort();
     this.#ptLife = null;
     this.#ptOwnListing = null;
@@ -7588,9 +7598,12 @@ export class E2EEBridge implements E2EEAdapter {
   }
 
   /**
-   * Sign-out teardown. No sign-out hook reaches the bridge (the lifecycle
-   * builds a new client and bridge), so the lifecycle owner calls this from
-   * `onSignOut`; otherwise the old manager's timers outlive the session.
+   * Sign-out teardown; otherwise the old manager's timers outlive the
+   * session (the lifecycle builds a new client and bridge for the next one).
+   * Interim wiring (W4c C18): `NotificationsWorker` calls this from
+   * `lifecycle.onSignOut`. The main-merge step also calls it first thing in
+   * the iOS `E2EEBridge.dispose()` hook, ahead of that hook's early return.
+   * Calling it from both is safe.
    */
   disposeProtected(): void {
     // Idempotent, safe at any time; final: the client this bridge serves is
@@ -8094,6 +8107,7 @@ export class E2EEBridge implements E2EEAdapter {
     void this.#protectedIndex(channelId).then((indexed) => {
       if (!indexed) return;
       if (this.#ptForwarded.has(channelId)) {
+        this.#ptStripped.add(channelId);
         this.#ptManager?.flagStripped(channelId);
       } else {
         this.#protectedForward(channelId);
@@ -8101,10 +8115,28 @@ export class E2EEBridge implements E2EEAdapter {
     });
   }
 
-  /** Fires on every Ready per protected channel; deduped per manager. */
+  /**
+   * Fires on every Ready per protected channel; deduped per manager, except
+   * that a channel whose strip the manager holds (W4d F#3) is handed over
+   * again once the SDK latch is clear, so the manager clears its latch and
+   * re-seeds. Both hooks wait on the same per-channel index promise, so their
+   * callbacks run in event order; a strip that arrived after this
+   * re-protect is already visible on the SDK latch and keeps the strip.
+   */
   onChannelProtected(channelId: string): void {
     void this.#protectedIndex(channelId).then((indexed) => {
-      if (indexed) this.#protectedForward(channelId);
+      if (!indexed) return;
+      const manager = this.#ptManager;
+      if (
+        manager &&
+        this.#ptStripped.has(channelId) &&
+        !this.#client.isProtectedFlagStripped(channelId)
+      ) {
+        this.#ptStripped.delete(channelId);
+        manager.channelProtected(channelId);
+        return;
+      }
+      this.#protectedForward(channelId);
     });
   }
 

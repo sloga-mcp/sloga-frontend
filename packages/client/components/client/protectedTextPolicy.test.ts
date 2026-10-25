@@ -8,7 +8,8 @@
 // resubmit, 409 Resecuring is not a Lost), `classifySendAnswer` with the
 // unknown-outcome rule, M5, and the envelope classifier for every text tag.
 // The plan 7 named mutation controls in this module each have a test below
-// marked "control:".
+// marked "control:". W4d (lane L-MGR): the own-send binding (X#4, control
+// C-X4) and `not_member` on a send and a commit (X#5, C-X5a / C-X5b).
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
@@ -30,6 +31,7 @@ import {
   JOIN_RETRY_MS,
   LEAF_STAGGER_MS,
   leafStaggerMs,
+  ownSendRowBinds,
   PUBLISH_BACKOFF,
   publishBackoffMs,
   publishResolved,
@@ -560,7 +562,11 @@ test("D20: a refusal with no row is commit_lost, then the reason's follow-up", (
     ["stale_seat_list", 409, "ProtectedChannelResecuring", "reverify_restage"],
     ["pending_removal", 409, "ProtectedChannelResecuring", "await_removal"],
     [null, 400, "FailedValidation", "refresh"],
-    [null, 400, "DeviceCapReached", "refresh"],
+    // W4d (was "refresh"): W2c made the commit transaction's cap answers
+    // typed; they are `refused` so the caller gets the typed refusal for
+    // its cap notice (still `_commit_lost`, still never retried).
+    [null, 400, "DeviceCapReached", "refused"],
+    [null, 400, "MlsCallFull", "refused"],
   ];
   for (const [reason, status, type, then] of cases) {
     const first = classifySubmit(
@@ -855,9 +861,23 @@ const CID_MS = 1_760_000_000_000;
 const CID = ulidAt(CID_MS);
 const AFTER = ulidAt(CID_MS - 300_000, "0".repeat(16));
 
+const CHAN = "01CHAN00000000000000000000";
+/** The `encrypted` payload the send POSTed (W4d X#4 binding). */
+const ENC = {
+  v: 1,
+  group_id: GROUP,
+  epoch: 7,
+  sender_device_id: SELF.device_id,
+  nonce: "QUVBRA",
+  ciphertext: "Q1Q",
+  sig: "U0lH",
+};
+
 const dctx = (over: Partial<SendContext> = {}): SendContext => ({
   selfUserId: SELF.user_id,
+  channelId: CHAN,
   cid: CID,
+  encrypted: ENC,
   priorUnknown: false,
   resecureRetried: false,
   failures: 0,
@@ -873,11 +893,18 @@ const RESECURING = res(409, {
 });
 const DUPLICATE = res(409, { type: "DuplicateNonce" });
 
-const msg = (id: string, author: string, nonce: string) => ({
+const msg = (
+  id: string,
+  author: string,
+  nonce: string,
+  over: Record<string, unknown> = {},
+) => ({
   _id: id,
-  channel: "01CHAN00000000000000000000",
+  channel: CHAN,
   author,
   nonce,
+  encrypted: ENC,
+  ...over,
 });
 
 const confirm = (
@@ -1103,6 +1130,117 @@ test("D10: an unparseable cid cannot be confirmed: maybe_unsent, never re-encryp
   assert.deepEqual(send(RESECURING, { cid: "garbage", priorUnknown: true }), {
     kind: "maybe_unsent",
   });
+});
+
+// ---------------------------------------------------------------------------
+// W4d fix round (lane L-MGR): X#4 own-send binding, X#5 not_member
+// ---------------------------------------------------------------------------
+
+test("W4d X#4 (C-X4): a 2xx or confirm row is this send only when channel, author, nonce AND encrypted bind", () => {
+  const good = msg("01ROW", SELF.user_id, CID);
+  assert.equal(ownSendRowBinds(good, dctx()), true);
+  // serde skips `franking: None`: null and absent are the same payload.
+  assert.equal(
+    ownSendRowBinds(msg("01ROW", SELF.user_id, CID), {
+      ...dctx(),
+      encrypted: { ...ENC, franking: null },
+    }),
+    true,
+  );
+  const unbound = [
+    msg("01ROW", SELF.user_id, CID, { channel: "01CHANOTHER000000000000000" }),
+    msg("01ROW", OTHER.user_id, CID),
+    msg("01ROW", SELF.user_id, ulidAt(CID_MS + 1)),
+    msg("01ROW", SELF.user_id, CID, { encrypted: { ...ENC, ciphertext: "X" } }),
+    msg("01ROW", SELF.user_id, CID, { encrypted: { ...ENC, epoch: 8 } }),
+    msg("01ROW", SELF.user_id, CID, { encrypted: { ...ENC, extra: "x" } }),
+    msg("01ROW", SELF.user_id, CID, { encrypted: undefined }),
+    msg("01ROW", SELF.user_id, CID, { _id: "" }),
+    { ...good, _id: undefined },
+  ];
+  for (const raw of unbound) {
+    assert.equal(ownSendRowBinds(raw, dctx()), false, JSON.stringify(raw));
+    // A 2xx naming another message is never delivered: unknown, same bytes.
+    assert.deepEqual(send(res(200, raw)), { kind: "unknown", delayMs: 250 });
+    // The confirm never adopts it either: absent → acted on the trigger (a
+    // row without a string `_id` makes the whole page malformed: later).
+    const first = send(DUPLICATE);
+    if (first.kind !== "confirm") return assert.fail("expected confirm");
+    assert.equal(
+      confirm(first.trigger, res(200, [raw])).kind,
+      typeof raw._id === "string" ? "maybe_unsent" : "confirm_later",
+    );
+  }
+  assert.equal(ownSendRowBinds(good, dctx({ encrypted: null })), false);
+  // The bound row among unbound ones is the one adopted.
+  const first = send(DUPLICATE);
+  if (first.kind !== "confirm") return assert.fail("expected confirm");
+  const page = [...unbound.filter((r) => typeof r._id === "string"), good];
+  assert.deepEqual(confirm(first.trigger, res(200, page)), {
+    kind: "delivered",
+    raw: good,
+    confirmed: true,
+  });
+});
+
+const NOT_MEMBER = res(409, {
+  type: "ProtectedChannelResecuring",
+  reason: "not_member",
+});
+
+test("W4d X#5 (C-X5b): a send refused not_member is refused at once, never re-encrypted", () => {
+  assert.deepEqual(send(NOT_MEMBER), {
+    kind: "refused",
+    status: 409,
+    type: "ProtectedChannelResecuring",
+    clientDefect: false,
+  });
+  // After an unknown outcome: confirm first; absent → refused, no retry.
+  const first = send(NOT_MEMBER, { priorUnknown: true });
+  if (first.kind !== "confirm") return assert.fail("expected confirm");
+  assert.equal(confirm(first.trigger, res(200, [])).kind, "refused");
+  // Every other Resecuring reason keeps its one re-encrypt retry.
+  assert.equal(send(RESECURING).kind, "resecure_retry");
+});
+
+test("W4d X#5 (C-X5a): a commit refused not_member → refetch → absent → mark_left(not_member); own row → won", () => {
+  const first = classifySubmit(
+    { kind: "submit", response: NOT_MEMBER },
+    sctx(),
+  );
+  const purpose = {
+    kind: "after_refusal",
+    status: 409,
+    type: "ProtectedChannelResecuring",
+    reason: "not_member",
+  } as const;
+  assert.deepEqual(first, { kind: "refetch", purpose, delayMs: 0 });
+  assert.deepEqual(
+    classifySubmit(
+      { kind: "refetch", purpose, response: res(200, commits()) },
+      sctx(),
+    ),
+    { kind: "mark_left", reason: "not_member" },
+  );
+  assert.equal(
+    classifySubmit(
+      { kind: "refetch", purpose, response: res(200, commits(row(SELF))) },
+      sctx(),
+    ).kind,
+    "won",
+  );
+  // Other refusal reasons still drop the stage and refresh.
+  assert.deepEqual(
+    classifySubmit(
+      {
+        kind: "refetch",
+        purpose: { ...purpose, reason: "stale_epoch" },
+        response: res(200, commits()),
+      },
+      sctx(),
+    ),
+    { kind: "lost", winner: null, then: "refresh" },
+  );
 });
 
 // ---------------------------------------------------------------------------

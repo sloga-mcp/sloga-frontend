@@ -135,6 +135,10 @@ export function useError() {
         return t`Not available in protected channels.`;
       if (errType === "ProtectedFieldRefused")
         return t`This message couldn't be sent securely.`;
+      // Seat PUT refused for naming users the server removed (the users are
+      // ids, so the generic copy here; the owner UI can name them).
+      if (errType === "SeatListNamesRemovedUsers")
+        return t`Some members were removed from this server and were left off the seat list.`;
       // `FeatureDisabled` for the two protected-channel features; any other
       // feature falls through to the generic copy in the switch below.
       if (errType === "FeatureDisabled") {

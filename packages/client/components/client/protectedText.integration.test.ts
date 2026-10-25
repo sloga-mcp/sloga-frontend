@@ -7,7 +7,10 @@
 // 2. protect → genesis: B2 signs, PUTs, reads back, verifies (the self-pin)
 //    and asks the manager to create generation 0, which it registers.
 // Control: revert the M1 fix (an in-flight Update makes `#commitUpdate`
-// return early) → test 1 FAILS.
+// return early) → test 1 FAILS. W4d (lane L-MGR): test 1 also pins X#4 (the
+// own view is ONE native `live: false` decrypt of the delivered row) and
+// asserts the held Update's persisted stage is never resubmitted (X#2; the
+// guard's own control, C-X2c, is pinned by the unit "C-X2b" case).
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
@@ -380,6 +383,27 @@ test("send → update_required → in-flight Update awaited → retry encrypts o
       ? ok({ _id: "MSG1", author: SELF, channel: CH, ...(b as object) })
       : undefined,
   );
+  // W4d X#4: the own view is native's decrypt of the delivered row (the
+  // fake "decrypts" only the bytes it encrypted), never the typed text.
+  port.handlers.e2ee_text_decrypt = (a) => {
+    if (a.encrypted.ciphertext !== "CT" || a.nonce !== CID) {
+      throw { type: "bad_sig", user_id: a.authorUserId, device_id: DEV };
+    }
+    return {
+      message_id: a.messageId,
+      channel_id: a.channelId,
+      group_id: G0,
+      epoch: a.encrypted.epoch,
+      author_user_id: a.authorUserId,
+      sender_device_id: DEV,
+      cid: a.nonce,
+      ts: port.clock,
+      text: "hello",
+      replies: [],
+      sender_verified: true,
+      ts_skew: false,
+    };
+  };
   const m = make(port);
   await m.refresh(CH, "open"); // the refresh starts the (held) Update
   await port.advance(0);
@@ -411,6 +435,21 @@ test("send → update_required → in-flight Update awaited → retry encrypts o
   ]);
   const v = port.msgViews.get("MSG1");
   assert.ok(v?.status === "ok" && v.text === "hello");
+  assert.equal(
+    port.apiCalls.filter(
+      (c) =>
+        c.method === "POST" &&
+        /\/mls\/groups\/[0-9a-f]+\/commits$/.test(c.path),
+    ).length,
+    1,
+    "X#2: the persisted stage of the held Update was never resubmitted",
+  );
+  const decrypts = port.invokes.filter((i) => i.cmd === "e2ee_text_decrypt");
+  assert.equal(decrypts.length, 1, "ONE native decrypt of the own row");
+  assert.deepEqual(
+    (decrypts[0].args as TextCommandArgs["e2ee_text_decrypt"]).live,
+    false,
+  );
   assert.equal([...port.storeMap.keys()].length, 0, "stored send cleared");
   m.dispose();
 });

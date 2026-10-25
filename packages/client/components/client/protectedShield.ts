@@ -504,6 +504,7 @@ export const PROTECTED_NOTICE_KINDS = [
   "device_cap_reached",
   "not_owner",
   "seat_list_behind",
+  "seat_list_names_removed_users",
   "protect_failed",
   "channel_protected",
   "ownership_transfer_blocked",
@@ -554,6 +555,12 @@ export type ProtectedErrorUi =
       notice: ProtectedNoticeKind;
       max: number | null;
       tag: string;
+      /**
+       * Only on `seat_list_names_removed_users`: the user ids the server
+       * reported (validated, deduplicated, capped). For the caller to
+       * resolve to display names; never rendered as ids.
+       */
+      users?: readonly string[];
     }
   | { kind: "marker"; marker: ProtectedMarkerKind; tag: string }
   | { kind: "toast"; toast: ProtectedToastKind; tag: string }
@@ -577,6 +584,29 @@ const none = (tag: string): ProtectedErrorUi => ({ kind: "none", tag });
 /** A non-negative safe integer, else null. */
 function count(v: unknown): number | null {
   return typeof v === "number" && Number.isSafeInteger(v) && v >= 0 ? v : null;
+}
+
+/**
+ * At most this many reported user ids are kept: the Text group leaf cap
+ * (design 7.6), so a hostile body can't make the caller resolve more.
+ */
+export const REMOVED_USERS_MAX = 100;
+
+/**
+ * `SeatListNamesRemovedUsers.users`: the non-empty string ids, deduplicated,
+ * in server order, capped at `REMOVED_USERS_MAX`. Anything malformed is
+ * dropped (an empty result still gets the generic copy).
+ */
+function userIds(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  const out: string[] = [];
+  for (const id of v) {
+    if (out.length >= REMOVED_USERS_MAX) break;
+    if (typeof id === "string" && id.length > 0 && !out.includes(id)) {
+      out.push(id);
+    }
+  }
+  return out;
 }
 
 /** The fail-closed answer for anything unmapped. */
@@ -698,6 +728,7 @@ export const PROTECTED_SERVER_ERROR_TYPES = [
   "DuplicateNonce",
   "FeatureDisabled",
   "MlsCallFull",
+  "SeatListNamesRemovedUsers",
 ] as const;
 
 export type ProtectedServerErrorType =
@@ -725,7 +756,16 @@ const SERVER_RULES: Record<ProtectedServerErrorType, Rule> = {
     return catchAll(c);
   },
   // Reused by the server for the Text 100-leaf cap (design 7.6).
+  // `DeviceCapReached` and `MlsCallFull` come from the seat PUT and, since
+  // W2c, from the commit transaction too: same copy in every context.
   MlsCallFull: (f) => notice("channel_full", "", count(f.max)),
+  // W2 C1: a seat PUT still naming users the server force-released (kick,
+  // ban, leave, account deletion). Owner UI only; the shield is unchanged.
+  // The publish loop never re-sends or re-signs it (protectedTextOwner).
+  SeatListNamesRemovedUsers: (f) => ({
+    ...notice("seat_list_names_removed_users", ""),
+    users: userIds(f.users),
+  }),
 };
 
 /** `TextFlowFailure.source === "client"` reasons that carry a notice. */

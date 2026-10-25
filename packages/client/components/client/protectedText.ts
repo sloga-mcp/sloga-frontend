@@ -43,9 +43,9 @@ import {
   textEnvelopeFromCommitInfo,
   toWireEnvelope,
 } from "./protectedRouter.ts";
+import { SHIELD_LOUD_GROUP_ERRORS } from "./protectedShield.ts";
 import { textGroupId, TextIdIndex } from "./protectedTextIds.ts";
 import {
-  type RefetchPurpose,
   type SendAction,
   type SendContext,
   type SendTrigger,
@@ -168,6 +168,31 @@ export const MESSAGE_LEVEL_TAGS: readonly NativeErrorTag[] = [
   "seat_list_behind",
   "handover_target_invalid",
 ];
+
+/**
+ * W4d X#1: loud poisoned-path `groupError` tags are STICKY per group. They
+ * are the design 9.1 step-3 `groupError` list (the commit-AD pre-check and
+ * the step-6 commit checks of 3.12.3) plus `seat_list_rollback` (the same
+ * AD pre-check; loud through step 3b). A benign tag (`mls_poisoned_epoch`
+ * from the next envelope of the poisoned group, a dropped duplicate) never
+ * overwrites one and a processed `duplicate` / `commit_applied` never
+ * clears one; only joining a HIGHER generation of the channel does (a
+ * `welcome_joined` into the successor, or this device's own successor
+ * create accepted by the server, D21). `owner_changed` is not sticky: it
+ * has its own defined reset (the D15 owner-change confirm), and native's
+ * `owner_changed` verdict keeps step 3 loud until then.
+ */
+export const STICKY_GROUP_ERRORS: readonly NativeErrorTag[] = [
+  ...SHIELD_LOUD_GROUP_ERRORS.filter((t) => t !== "owner_changed"),
+  "seat_list_rollback",
+];
+
+/**
+ * W4d X#3: re-GETs of `.../seats` when the snapshot under verify is older
+ * than the held group epoch and native answers `seat_list_rollback` (the
+ * snapshot is stale, never a rollback). Past this the answer is dropped.
+ */
+export const STALE_SEATS_REFETCH_BUDGET = 2;
 
 // ---------------------------------------------------------------------------
 // Optional bridge extensions (B5 supplies them; read by feature detection)
@@ -337,6 +362,51 @@ function parseCommitRows(body: unknown): TextCommitInfo[] | null {
 }
 
 /**
+ * W4d X#5: a send refused with `ProtectedChannelResecuring { reason:
+ * "not_member" }` (the DS holds no leaf of this device in the group).
+ */
+function isNotMemberRefusal(err: unknown): boolean {
+  return (
+    isFlowFailure(err) &&
+    err.source === "server" &&
+    err.type === "ProtectedChannelResecuring" &&
+    isRecord(err.body) &&
+    err.body.reason === "not_member"
+  );
+}
+
+/**
+ * W4d X#4: the delivered own send as a row for ONE native decrypt, built
+ * from the server row itself and only when it names this channel, this
+ * user, the send's id and cid, and carries `encrypted` (B4 already checked
+ * that payload equals the bytes sent). Null otherwise: no view is made.
+ */
+function ownRowOf(
+  out: ProtectedSendOutcome,
+  channelId: string,
+  selfUserId: string,
+): ProtectedMessageRow | null {
+  const raw = out.raw;
+  if (
+    !isRecord(raw) ||
+    raw._id !== out.messageId ||
+    raw.channel !== channelId ||
+    raw.author !== selfUserId ||
+    raw.nonce !== out.cid ||
+    !isRecord(raw.encrypted)
+  ) {
+    return null;
+  }
+  return {
+    id: out.messageId,
+    channelId,
+    authorId: selfUserId,
+    nonce: out.cid,
+    encrypted: raw.encrypted as unknown as ProtectedMessageRow["encrypted"],
+  };
+}
+
+/**
  * This device's position in the held roster, used as its leaf index for the
  * D19 stagger. GUESS (W3 cross-check): `TextChannelState.members` is
  * reported in leaf order; native exposes no leaf index.
@@ -358,22 +428,20 @@ interface JoinState {
   cancelled: boolean;
 }
 
-interface ParkedCommit {
+/** A sticky loud `groupError` (W4d X#1) and the group it poisoned. */
+interface StickyGroupError {
+  tag: ViewErrorTag;
   groupId: string;
-  payload: TextSubmitCommitPayload;
-  purpose: RefetchPurpose;
-  resubmit: boolean;
-  /**
-   * The DS answered `Won` but its stored row could not be read: resume by
-   * reading the row again (never a resubmit, never `_commit_won` early).
-   */
-  wonUnread: boolean;
+  /** Generation of `groupId`; Infinity when unknown (never cleared). */
+  generation: number;
 }
 
 interface ChannelRec {
   id: string;
   seatListError: ViewErrorTag | null;
   groupError: ViewErrorTag | null;
+  /** Set while `groupError` is a sticky loud tag (W4d X#1). */
+  stickyGroupError: StickyGroupError | null;
   native: TextChannelState | null;
   serverGroup: ProtectedTextGroupResponse | null;
   /** The last text_group GET answered a definitive 404. */
@@ -402,7 +470,6 @@ interface ChannelRec {
   successorInFlight: boolean;
   /** The in-flight re-run of an unaccepted create (D21 crash recovery). */
   recreating: Promise<void> | null;
-  parkedCommit: ParkedCommit | null;
   seeded: boolean;
 }
 
@@ -438,10 +505,23 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
   readonly #decrypting = new Set<string>();
   /** Final message views (cache restore re-requests re-emit these). */
   readonly #views = new Map<string, ProtectedMessageView>();
-  /** Ids whose view came from this device's typed plaintext (own sends). */
-  readonly #ownSent = new Set<string>();
-  /** Ids whose cached view came from a LIVE decrypt or an own send. */
+  /**
+   * Ids whose cached view came from a LIVE decrypt or from the one native
+   * decrypt of an own delivered send (W4d X#4: never the typed plaintext).
+   */
   readonly #viewLive = new Set<string>();
+  /**
+   * W4d X#2: commit flows (stage + submit loop, or a resumed stage) in
+   * progress per group id. A persisted stage is resumed only while none is.
+   */
+  readonly #commitBusy = new Map<string, number>();
+  /**
+   * The full submit body of the last stage per group (welcome and
+   * declarations included), kept while its outcome is unresolved. Used by a
+   * resume ONLY when it equals native's persisted stage; native's
+   * `_pending_commit` is the authority, so a restart still resumes.
+   */
+  readonly #stagedPayloads = new Map<string, TextSubmitCommitPayload>();
   /** Deleted message ids (`forget`): a late decrypt never re-adds them. */
   readonly #forgotten = new Set<string>();
   /** Group ids whose create this manager POSTed or re-ran (D21 retry). */
@@ -531,12 +611,29 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
   // Registry
   // -------------------------------------------------------------------------
 
-  /** A channel became known as protected or pinned (deduped). */
+  /**
+   * A channel became known as protected or pinned (deduped). For a channel
+   * whose strip this manager holds it is the un-strip (W4d F#3: the bridge
+   * forwards it once the SDK latch is clear): the latch is cleared and the
+   * channel re-seeded and refreshed, so sends and admissions run again.
+   */
   channelProtected(channelId: string): void {
     this.#background(
-      this.#register(channelId).then((rec) =>
-        this.#started ? this.#seed(rec) : undefined,
-      ),
+      this.#register(channelId).then((rec) => {
+        let restored = false;
+        if (rec.stripped) {
+          rec.stripped = false;
+          rec.seeded = false;
+          restored = true;
+          this.#log("info", "flag restored", { channelId });
+          this.#emit(rec);
+        }
+        if (!this.#started) return undefined;
+        const seeded = this.#seed(rec);
+        return restored
+          ? seeded.then(() => this.refresh(rec.id, "commit"))
+          : seeded;
+      }),
     );
   }
 
@@ -650,27 +747,47 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
   ): Promise<ProtectedSendOutcome> {
     const rec = await this.#register(channelId);
     if (rec.stripped) throw clientFailure("flag_stripped");
-    const out = await this.#deps.messages.encryptAndSend(
-      this,
-      this.#port,
-      channelId,
-      text,
-      replies,
-      silent,
-      key,
-    );
-    // D22: the own view comes from the typed plaintext; the live echo of
-    // the same id is deduped (onMessage skips it).
-    this.#ownSent.add(out.messageId);
-    this.#viewLive.add(out.messageId);
-    this.#setMessageView(out.messageId, {
-      status: "ok",
-      text,
-      replies,
-      senderVerified: true,
-      tsSkew: false,
-      cid: out.cid,
-    });
+    let out: ProtectedSendOutcome;
+    try {
+      out = await this.#deps.messages.encryptAndSend(
+        this,
+        this.#port,
+        channelId,
+        text,
+        replies,
+        silent,
+        key,
+      );
+    } catch (err) {
+      // W4d X#5: the DS holds no leaf of this device: wipe and rejoin.
+      if (isNotMemberRefusal(err)) {
+        this.#background(this.#leaveNotMember(rec));
+      }
+      throw err;
+    }
+    // W4d X#4 (replaces the D22 typed-plaintext shortcut): the own view
+    // comes from ONE native decrypt of the delivered row (live: false),
+    // which binds cid → message id in native's `mls_text_seen`. An id that
+    // already has a view keeps it (the cached view is re-emitted, never
+    // replaced); the live echo of the same id is served from the cache.
+    const row = ownRowOf(out, channelId, this.#port.selfUserId);
+    if (row === null) {
+      this.#log("error", "own send row unbound", {
+        channelId,
+        messageId: out.messageId,
+      });
+    } else {
+      try {
+        await this.#decryptOne(row, false, true);
+      } catch (err) {
+        if (!isDisposed(err)) {
+          this.#log("warn", "own send decrypt failed", {
+            messageId: row.id,
+            type: viewTagOf(err),
+          });
+        }
+      }
+    }
     // D19: after a send, commit an Update when native says one is due.
     this.#background(this.#afterSend(rec));
     return out;
@@ -692,12 +809,17 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     );
   }
 
-  async #decryptOne(row: ProtectedMessageRow, live: boolean): Promise<void> {
+  /**
+   * `own`: the delivered row of this device's own send (X#4). Its native
+   * decrypt runs with `live: false`; a successful result also answers the
+   * live echo of that id, so the echo costs no second decrypt.
+   */
+  async #decryptOne(
+    row: ProtectedMessageRow,
+    live: boolean,
+    own = false,
+  ): Promise<void> {
     if (this.#disposed) return;
-    if (this.#ownSent.has(row.id) && this.#views.has(row.id)) {
-      this.#cb.onMessageView(row.id, this.#views.get(row.id)!);
-      return;
-    }
     if (this.#forgotten.has(row.id)) return;
     const cached = this.#views.get(row.id);
     // A history (non-live) result never answers a live request: native
@@ -724,11 +846,11 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     } finally {
       this.#decrypting.delete(key);
     }
-    if (this.#disposed || this.#ownSent.has(row.id)) return;
+    if (this.#disposed) return;
     if (this.#forgotten.has(row.id)) return;
     // A late history result never overwrites a live one.
     if (!live && this.#viewLive.has(row.id)) return;
-    if (live) this.#viewLive.add(row.id);
+    if (live || (own && view.status === "ok")) this.#viewLive.add(row.id);
     this.#setMessageView(row.id, view);
   }
 
@@ -740,7 +862,6 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
   forget(ids: string[]): void {
     for (const id of ids) {
       this.#views.delete(id);
-      this.#ownSent.delete(id);
       this.#viewLive.delete(id);
       this.#forgotten.add(id);
     }
@@ -759,7 +880,6 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         const oldest = this.#views.keys().next().value;
         if (oldest !== undefined) {
           this.#views.delete(oldest);
-          this.#ownSent.delete(oldest);
           this.#viewLive.delete(oldest);
         }
       }
@@ -769,6 +889,35 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     } catch {
       this.#log("error", "onMessageView threw", { messageId: id });
     }
+  }
+
+  /**
+   * W4d X#5: a send answered `not_member`: `_mark_left(group,
+   * "not_member")` in the lane (native still reports the group active, so
+   * a refresh alone would never rejoin), then the rejoin path.
+   */
+  async #leaveNotMember(rec: ChannelRec): Promise<void> {
+    await this.#enqueue(rec.id, async () => {
+      const n = await this.#readStateDirect(rec);
+      if (!n || n.state !== "active" || n.group_id === null) return;
+      const groupId = n.group_id;
+      try {
+        await this.#invoke("e2ee_text_mark_left", {
+          groupId,
+          reason: "not_member",
+        });
+        this.#log("warn", "group left", { groupId, reason: "not_member" });
+      } catch (err) {
+        if (isDisposed(err)) throw err;
+        this.#log("warn", "mark_left failed", {
+          groupId,
+          type: viewTagOf(err),
+        });
+      }
+      await this.#readStateDirect(rec);
+    });
+    this.#emit(rec);
+    this.#background(this.ensureJoined(rec.id));
   }
 
   async #afterSend(rec: ChannelRec): Promise<void> {
@@ -872,6 +1021,9 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       );
     }
     this.#createPosted.add(created.group_id);
+    // X#1: this device's successor (a higher generation) is accepted: the
+    // poisoned group's sticky loud tag is reset (D21).
+    this.#clearStickyBelow(rec, created.generation);
     this.#log("info", "text group created", {
       channelId,
       groupId: created.group_id,
@@ -1047,10 +1199,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       if (kind === "call") {
         this.#log("error", "wrong group kind", ids);
         const rec = laneRec ?? this.#recForGroup(wire.group_id);
-        if (rec) {
-          rec.groupError = "wrong_group_kind";
-          this.#emit(rec);
-        }
+        if (rec) this.#setGroupError(rec, "wrong_group_kind", wire.group_id);
         this.#queued.delete(wire.id);
         return "dropped";
       }
@@ -1080,7 +1229,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         const rec = laneRec ?? this.#recForGroup(wire.group_id);
         const tag = viewTagOf(err);
         this.#log("warn", "process failed", { ...ids, type: tag });
-        this.#recordGroupError(rec, verdict.groupError, tag);
+        this.#recordGroupError(rec, verdict.groupError, tag, wire.group_id);
         if (verdict.ack) {
           await this.#ack([wire.id]);
           this.#markSeen(wire.id);
@@ -1115,7 +1264,22 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       }
       case "park_owner_change":
         if (!rec) return this.#hold(rec, wire);
-        rec.parked.push(wire);
+        // W4d X#9: a catch-up re-reads the same commit on every refresh;
+        // park it once per (group, epoch) and per id.
+        if (
+          rec.parked.some(
+            (p) =>
+              p.id === wire.id ||
+              (p.content_type === "mls_commit" &&
+                wire.content_type === "mls_commit" &&
+                p.group_id === wire.group_id &&
+                p.epoch === wire.epoch),
+          )
+        ) {
+          this.#queued.delete(wire.id);
+        } else {
+          rec.parked.push(wire);
+        }
         rec.ownerChangePending = true;
         this.#emit(rec);
         return "parked";
@@ -1188,7 +1352,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     const rec =
       this.#channels.get(out.channel_id) ?? this.#recForGroup(out.group_id);
     if (!rec) return;
-    rec.groupError = null;
+    this.#clearGroupError(rec, out);
     const now = this.#port.now();
     for (const d of out.new_devices) {
       this.#marker(rec, {
@@ -1267,9 +1431,13 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       this.#api("GET", `/channels/${rec.id}/seats`),
       this.#api("GET", `/mls/channels/${rec.id}/text_group`),
     ]);
+    // W4d X#3: only a snapshot fetched in THIS pass is verified; after a
+    // failed GET the older snapshot is kept for display, never re-verified
+    // (native may have adopted a newer list since: a false rollback).
+    let fresh: ProtectedSeatsResponse | null = null;
     if (seatsRes !== null && is2xx(seatsRes.status)) {
-      const seats = parseSeats(seatsRes.body);
-      if (seats) rec.seats = seats;
+      fresh = parseSeats(seatsRes.body);
+      if (fresh) rec.seats = fresh;
     }
     if (groupRes !== null && is2xx(groupRes.status)) {
       const g = parseTextGroup(groupRes.body);
@@ -1281,7 +1449,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       rec.serverGroup = null;
       rec.serverGroupMissing = true;
     }
-    if (rec.seats?.list) await this.#verifySeats(rec, rec.seats, true);
+    if (fresh?.list) await this.#verifySeats(rec, fresh, true);
     await this.#readState(rec);
     this.#emit(rec);
     this.#afterRefresh(rec, reason);
@@ -1297,6 +1465,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     seats: ProtectedSeatsResponse,
     withAsOf: boolean,
     retried = false,
+    staleRefetches = 0,
   ): Promise<void> {
     const list = seats.list;
     if (!list) return;
@@ -1349,13 +1518,51 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
             await this.#enqueue(rec.id, () =>
               this.#catchUpInner(rec, to, groupId),
             );
-            return this.#verifySeats(rec, seats, withAsOf, true);
+            return this.#verifySeats(
+              rec,
+              seats,
+              withAsOf,
+              true,
+              staleRefetches,
+            );
           }
           break;
         case "identity_pin_required":
           if (!retried && native?.type === "identity_pin_required") {
             await this.#pinFor(native.user_id, [native.device_id]);
-            return this.#verifySeats(rec, seats, withAsOf, true);
+            return this.#verifySeats(
+              rec,
+              seats,
+              withAsOf,
+              true,
+              staleRefetches,
+            );
+          }
+          break;
+        case "seat_list_rollback":
+          // W4d X#3: a snapshot older than the held group epoch is stale,
+          // not a rollback: re-GET (bounded), never record the loud tag.
+          // Nothing is adopted from the older list (native refused it).
+          if (withAsOf && (await this.#staleSnapshot(rec, seats))) {
+            if (staleRefetches < STALE_SEATS_REFETCH_BUDGET) {
+              const r = await this.#api("GET", `/channels/${rec.id}/seats`);
+              const next =
+                r !== null && is2xx(r.status) ? parseSeats(r.body) : null;
+              if (next) rec.seats = next;
+              if (next?.list) {
+                return this.#verifySeats(
+                  rec,
+                  next,
+                  withAsOf,
+                  retried,
+                  staleRefetches + 1,
+                );
+              }
+            }
+            this.#log("warn", "stale seat snapshot: rollback not recorded", {
+              channelId: rec.id,
+            });
+            return;
           }
           break;
         case "owner_changed":
@@ -1374,26 +1581,47 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     }
   }
 
+  /**
+   * X#3: the snapshot names the group native holds at an OLDER epoch than
+   * native's (read fresh), so a newer list may have been adopted since.
+   */
+  async #staleSnapshot(
+    rec: ChannelRec,
+    seats: ProtectedSeatsResponse,
+  ): Promise<boolean> {
+    const n = await this.#readState(rec);
+    return (
+      n !== null &&
+      seats.as_of_group_id !== null &&
+      seats.as_of_epoch !== null &&
+      n.group_id === seats.as_of_group_id &&
+      n.epoch !== null &&
+      seats.as_of_epoch < n.epoch
+    );
+  }
+
   /** Maintenance a refresh can reveal (fire-and-forget, errors logged). */
   #afterRefresh(rec: ChannelRec, reason: TextRefreshReason): void {
     if (this.#disposed || rec.stripped) return;
-    if (rec.parkedCommit) {
-      const p = rec.parkedCommit;
-      rec.parkedCommit = null;
-      this.#background(this.#resumeParked(rec, p));
-    }
     const n = rec.native;
     const g = rec.serverGroup;
     if (!n) return;
     const self = this.#port.selfUserId;
-    if (n.state === "active" && g && n.group_id === g.group_id) {
-      if (g.pending_removals.length > 0) {
-        this.#background(this.#commitPendingRemovals(rec));
-      } else if (n.epoch !== null && n.epoch < g.current_epoch) {
-        this.#background(this.catchUp(rec.id, g.current_epoch, g.group_id));
-      } else if (n.update_due || n.update_required) {
-        this.#background(this.#commitUpdate(rec, false));
-      }
+    // W4d X#2: a stage native persisted (a crash, a restart, a parked
+    // commit) is resumed first when no commit flow runs for its group; the
+    // routine commits (`#maintain`) run only when there was none.
+    if (
+      n.state === "active" &&
+      n.group_id !== null &&
+      !this.#busy(n.group_id)
+    ) {
+      this.#background(
+        this.#resumeStage(rec).then((resumed) => {
+          if (!resumed) this.#maintain(rec);
+        }),
+      );
+    } else {
+      this.#maintain(rec);
     }
     // D21 successor: native poisoned, this device signed the current list,
     // and the server still names the poisoned group as open.
@@ -1447,6 +1675,25 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     if (wantsJoin && !rec.join) this.#background(this.ensureJoined(rec.id));
   }
 
+  /** The routine commits a refresh can reveal, for the group both hold. */
+  #maintain(rec: ChannelRec): void {
+    if (this.#disposed || rec.stripped) return;
+    const n = rec.native;
+    const g = rec.serverGroup;
+    if (!n || !g || n.state !== "active" || n.group_id !== g.group_id) return;
+    if (g.pending_removals.length > 0) {
+      this.#background(this.#commitPendingRemovals(rec));
+    } else if (n.epoch !== null && n.epoch < g.current_epoch) {
+      // W4d X#9: not while an owner change is parked; the catch-up would
+      // only re-read (and re-park) the same commit on every refresh.
+      if (rec.parked.length === 0) {
+        this.#background(this.catchUp(rec.id, g.current_epoch, g.group_id));
+      }
+    } else if (n.update_due || n.update_required) {
+      this.#background(this.#commitUpdate(rec, false));
+    }
+  }
+
   async #intervalLoop(rec: ChannelRec, signal: AbortSignal): Promise<void> {
     while (!signal.aborted && !this.#disposed) {
       try {
@@ -1468,6 +1715,11 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     rec.seeded = true;
     await this.#readState(rec);
     this.#emit(rec);
+    // W4d X#2: a commit stage persisted before a restart (or a manager
+    // rebuild) is resumed at once, not left to wedge sends.
+    if (rec.native?.state === "active" && rec.native.group_id !== null) {
+      this.#background(this.#resumeStage(rec));
+    }
     if (rec.native === null || rec.native.group_id === null) {
       this.#firstSightQueue.push(rec);
       this.#background(this.#firstSightWorker());
@@ -1559,6 +1811,21 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     for (;;) {
       if (js.cancelled) return;
       this.#checkAlive();
+      // W4d X#6: before EVERY `_join` (the first of a new run too): re-Added
+      // at/after our last intent means a Welcome is due. Another intent
+      // would read as a rejoin and evict that fresh leaf, so wait for the
+      // Welcome (the mailbox redelivers it) for a bounded window; past it
+      // the join is stalled loud (9.1 6d), never restarted.
+      if (this.#reAdded(rec, g)) {
+        if (await this.#awaitWelcome(js, JOIN_RETRY_MS * JOIN_RETRIES)) {
+          return;
+        }
+        if (js.cancelled) return;
+        rec.welcomeRetriesExhausted = true;
+        rec.recreateAvailable = this.#isSigner(rec);
+        this.#emit(rec);
+        throw clientFailure("welcome_pending");
+      }
       rec.joinFromEpoch = g.current_epoch;
       // Every attempt is a fresh `_join`: native mints a new one-time
       // KeyPackage per intent (W3 2026-10-25).
@@ -1581,7 +1848,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
           await this.#readState(rec);
           return;
         }
-        if (tag !== "busy") this.#recordGroupError(rec, tag, tag);
+        if (tag !== "busy") this.#recordGroupError(rec, tag, tag, gid);
         throw toFailure(err);
       }
       // Publish the intent's KeyPackage FIRST (an admitter claims that very
@@ -1619,13 +1886,9 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       g = rec.serverGroup;
       if (n && g && n.state === "active" && n.group_id === g.group_id) return;
       if (!g) throw clientFailure("no_group");
-      if (this.#reAdded(rec, g)) {
-        // design 7.2 member_added: re-Added at/after our intent. Stop the
-        // retries and wait for the Welcome (the mailbox redelivers it).
-        if (await this.#awaitWelcome(js, JOIN_RETRY_MS * JOIN_RETRIES)) return;
-        throw clientFailure("welcome_pending");
-      }
-      if (attempts > JOIN_RETRIES) {
+      // design 7.2 member_added: a re-Add at/after our intent is handled at
+      // the top of the loop (wait for the Welcome, never another intent).
+      if (attempts > JOIN_RETRIES && !this.#reAdded(rec, g)) {
         rec.welcomeRetriesExhausted = true;
         rec.recreateAvailable = this.#isSigner(rec);
         this.#emit(rec);
@@ -1736,16 +1999,19 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       for (let stage = 0; stage < 2; stage++) {
         const claimed = await this.#claim(req);
         if (!claimed) return;
-        const payload = await this.#stageAdmit(rec, req, claimed);
-        const r = await this.#submit(rec, req.group_id, payload);
+        const r = await this.#staged(rec, req.group_id, () =>
+          this.#stageAdmit(rec, req, claimed),
+        );
         if (r !== "restage") return;
       }
     } catch (err) {
       if (!isDisposed(err)) {
-        this.#log("warn", "admission failed", {
-          groupId: req.group_id,
-          type: viewTagOf(err),
-        });
+        // A server refusal (e.g. the W2c cap refusals) logs its error type.
+        const type =
+          isFlowFailure(err) && err.source === "server" && err.type !== null
+            ? err.type
+            : viewTagOf(err);
+        this.#log("warn", "admission failed", { groupId: req.group_id, type });
       }
     } finally {
       this.#admitting.delete(key);
@@ -1822,20 +2088,20 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         rec.serverGroup?.group_id === groupId
           ? rec.serverGroup.pending_removals.map((p) => p.user_id)
           : [];
-      let payload: TextSubmitCommitPayload;
-      try {
-        payload = await this.#enqueue(rec.id, () =>
-          this.#invoke("e2ee_text_remove", {
-            groupId,
-            targets,
-            rejoinIntent,
-            pendingRemovalUsers,
-          }),
-        );
-      } catch (err) {
-        throw toFailure(err);
-      }
-      const r = await this.#submit(rec, groupId, payload);
+      const r = await this.#staged(rec, groupId, async () => {
+        try {
+          return await this.#enqueue(rec.id, () =>
+            this.#invoke("e2ee_text_remove", {
+              groupId,
+              targets,
+              rejoinIntent,
+              pendingRemovalUsers,
+            }),
+          );
+        } catch (err) {
+          throw toFailure(err);
+        }
+      });
       if (r === "won") return;
       if (r !== "restage") throw clientFailure(`commit_${r}`);
     }
@@ -1916,10 +2182,11 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         if (!n || n.state !== "active" || n.group_id === null) return;
         if (!force && !n.update_due && !n.update_required) return;
         const groupId = n.group_id;
-        const payload = await this.#enqueue(rec.id, () =>
-          this.#invoke("e2ee_text_update", { groupId }),
+        const r = await this.#staged(rec, groupId, () =>
+          this.#enqueue(rec.id, () =>
+            this.#invoke("e2ee_text_update", { groupId }),
+          ),
         );
-        const r = await this.#submit(rec, groupId, payload);
         if (r !== "restage") return;
         force = true;
       }
@@ -2018,12 +2285,46 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
   // Commit submit and outcome recovery (D20)
   // -------------------------------------------------------------------------
 
+  /**
+   * One commit flow: stage (native, in the lane) + submit loop, counted in
+   * `#commitBusy` from BEFORE the stage until the loop settles, so a
+   * concurrent resume never submits the same stage twice (W4d X#2).
+   */
+  async #staged(
+    rec: ChannelRec,
+    groupId: string,
+    stage: () => Promise<TextSubmitCommitPayload>,
+  ): Promise<SubmitResult> {
+    this.#busyEnter(groupId);
+    try {
+      const payload = await stage();
+      return await this.#submit(rec, groupId, payload);
+    } finally {
+      this.#busyLeave(groupId);
+    }
+  }
+
+  #busy(groupId: string): boolean {
+    return (this.#commitBusy.get(groupId) ?? 0) > 0;
+  }
+
+  #busyEnter(groupId: string): void {
+    this.#commitBusy.set(groupId, (this.#commitBusy.get(groupId) ?? 0) + 1);
+  }
+
+  #busyLeave(groupId: string): void {
+    const n = (this.#commitBusy.get(groupId) ?? 1) - 1;
+    if (n > 0) this.#commitBusy.set(groupId, n);
+    else this.#commitBusy.delete(groupId);
+  }
+
   async #submit(
     rec: ChannelRec,
     groupId: string,
     payload: TextSubmitCommitPayload,
   ): Promise<SubmitResult> {
     const ctx: SubmitContext = this.#submitCtx(groupId, payload, false);
+    this.#stagedPayloads.set(groupId, payload);
     const r = await this.#api(
       "POST",
       `/mls/groups/${groupId}/commits`,
@@ -2035,7 +2336,42 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         : { kind: "submit_transport_error" },
       ctx,
     );
-    return this.#submitLoop(rec, payload, ctx, first, true);
+    return this.#runSubmitLoop(rec, payload, ctx, first, true, r);
+  }
+
+  /**
+   * `#submitLoop`, keeping the stage's full body as the resume hint while
+   * its outcome is unresolved (parked, or a non-server failure thrown) and
+   * dropping it once the loop resolved the stage (incl. a typed refusal).
+   */
+  async #runSubmitLoop(
+    rec: ChannelRec,
+    payload: TextSubmitCommitPayload,
+    ctx: SubmitContext,
+    first: SubmitAction,
+    fromSubmit: boolean,
+    firstResponse: TextApiResponse | null = null,
+  ): Promise<SubmitResult> {
+    let settled = false;
+    try {
+      const r = await this.#submitLoop(
+        rec,
+        payload,
+        ctx,
+        first,
+        fromSubmit,
+        firstResponse,
+      );
+      settled = r !== "parked";
+      return r;
+    } catch (err) {
+      settled = isFlowFailure(err) && err.source === "server";
+      throw err;
+    } finally {
+      if (settled && this.#stagedPayloads.get(ctx.groupId) === payload) {
+        this.#stagedPayloads.delete(ctx.groupId);
+      }
+    }
   }
 
   #submitCtx(
@@ -2112,6 +2448,8 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
   /**
    * `fromSubmit`: `first` classifies a commit POST answer (not a refetch).
    * Tracked per action, so a `won` knows whether it is a plain 2xx.
+   * `firstResponse`: that POST answer (null after a transport failure);
+   * the latest POST answer is what a typed refusal (`refused`) rethrows.
    */
   async #submitLoop(
     rec: ChannelRec,
@@ -2119,12 +2457,14 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     ctx: SubmitContext,
     first: SubmitAction,
     fromSubmit: boolean,
+    firstResponse: TextApiResponse | null = null,
   ): Promise<SubmitResult> {
     const { groupId } = ctx;
     const ids = { groupId, epoch: ctx.epoch };
     let action = first;
     let plain = fromSubmit;
     let refetch403 = 0;
+    let lastPost = firstResponse;
     for (;;) {
       this.#checkAlive();
       switch (action.kind) {
@@ -2139,13 +2479,8 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
           if (plain) {
             const read = await this.#readWonRow(ctx);
             if (read === null) {
-              rec.parkedCommit = {
-                groupId,
-                payload,
-                purpose: { kind: "unknown_outcome" },
-                resubmit: ctx.resubmit,
-                wonUnread: true,
-              };
+              // Parked: native keeps the stage; the next refresh resumes it
+              // from `_pending_commit` (W4d X#2), reading the row first.
               this.#log("warn", "won row unread, commit parked", ids);
               return "parked";
             }
@@ -2202,6 +2537,18 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
             case "refresh":
               this.#background(this.refresh(rec.id, "commit"));
               return "lost";
+            case "refused":
+              // W2c cap refusal (DeviceCapReached / MlsCallFull): the stage
+              // is dropped and the SAME Add never retried; the typed refusal
+              // goes to the caller (its cap notice), never a `groupError`.
+              this.#log("warn", "commit refused", {
+                ...ids,
+                type: lastPost ? errorTypeOf(lastPost.body) : null,
+              });
+              this.#background(this.refresh(rec.id, "commit"));
+              throw lastPost !== null
+                ? serverFailure(lastPost)
+                : clientFailure("commit_refused");
           }
           break;
         }
@@ -2228,14 +2575,8 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
             refetch403 >= REFETCH_403_PARK_BUDGET &&
             action.kind === "refetch"
           ) {
-            // Binding note: park; the stage stays, the outcome unknown.
-            rec.parkedCommit = {
-              groupId,
-              payload,
-              purpose,
-              resubmit: ctx.resubmit,
-              wonUnread: false,
-            };
+            // Binding note: park; the stage stays, the outcome unknown. The
+            // next refresh resumes it from `_pending_commit` (W4d X#2).
             this.#log("warn", "commit parked after 403s", ids);
             return "parked";
           }
@@ -2270,6 +2611,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
             `/mls/groups/${groupId}/commits`,
             payload,
           );
+          lastPost = r;
           action = classifySubmit(
             r !== null
               ? { kind: "submit", response: r }
@@ -2299,34 +2641,91 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     }
   }
 
-  /** Resume a parked commit on the next refresh (binding note). */
-  async #resumeParked(rec: ChannelRec, p: ParkedCommit): Promise<void> {
-    try {
-      const pending = await this.#enqueue(rec.id, () =>
-        this.#invoke("e2ee_text_pending_commit", { groupId: p.groupId }),
-      );
-      const { payload } = p;
-      if (
-        pending === null ||
-        pending.epoch !== payload.epoch ||
-        pending.commit_b64 !== payload.commit
-      ) {
-        return;
-      }
-      const ctx = this.#submitCtx(p.groupId, payload, p.resubmit);
-      // A parked `Won` re-enters as a plain win: the row is read again.
-      const first: SubmitAction = p.wonUnread
-        ? { kind: "won", storedCommitB64: payload.commit, rejoinIntents: [] }
-        : { kind: "refetch", purpose: p.purpose, delayMs: 0 };
-      await this.#submitLoop(rec, payload, ctx, first, p.wonUnread);
-    } catch (err) {
-      if (!isDisposed(err)) {
-        this.#log("warn", "parked commit resume failed", {
-          groupId: p.groupId,
-          type: viewTagOf(err),
-        });
-      }
+  /**
+   * W4d X#2: resume the own commit stage native persisted for the held
+   * group (`_pending_commit`), when no commit flow runs for that group: a
+   * crash or restart between stage and outcome, a manager rebuild, or a
+   * parked commit. Its outcome is unknown, so it re-enters the submit loop
+   * at `{refetch, unknown_outcome}`: the `{group}:{epoch}` row is fetched
+   * FIRST (own committer → won with the DS's stored string and the row's
+   * `rejoin_intents`; another → lost; absent → the IDENTICAL persisted
+   * bytes are resubmitted, never a re-stage). Resolves true when a stage
+   * was found (the caller's routine commits then wait for the next
+   * refresh), false otherwise. Never rejects except on dispose.
+   *
+   * The submit body is native's persisted `{epoch, commit}`; the welcome
+   * and declarations come from this manager's hint of the SAME stage when
+   * it has one (after a restart it has none: a DS that then refuses the
+   * bare body leads to `_commit_lost` and a refresh, never a wedge).
+   */
+  #resumeStage(rec: ChannelRec): Promise<boolean> {
+    const n = rec.native;
+    if (
+      this.#disposed ||
+      rec.stripped ||
+      !n ||
+      n.state !== "active" ||
+      n.group_id === null ||
+      this.#busy(n.group_id) ||
+      // D21: an unaccepted create's stage is the re-run's to refuse.
+      this.#unacceptedCreate(rec) !== null
+    ) {
+      return Promise.resolve(false);
     }
+    const groupId = n.group_id;
+    // Counted synchronously, before any await: one resume per group.
+    this.#busyEnter(groupId);
+    return this.#resumeStageInner(rec, groupId).finally(() =>
+      this.#busyLeave(groupId),
+    );
+  }
+
+  async #resumeStageInner(rec: ChannelRec, groupId: string): Promise<boolean> {
+    let pending: TextCommandResult["e2ee_text_pending_commit"];
+    try {
+      pending = await this.#enqueue(rec.id, () =>
+        this.#invoke("e2ee_text_pending_commit", { groupId }),
+      );
+    } catch (err) {
+      if (isDisposed(err)) throw err;
+      this.#log("warn", "pending commit read failed", {
+        groupId,
+        type: viewTagOf(err),
+      });
+      return false;
+    }
+    if (pending === null) return false;
+    // A commit flow started meanwhile: it owns the group's stage now.
+    if ((this.#commitBusy.get(groupId) ?? 0) > 1) return true;
+    const ids = { groupId, epoch: pending.epoch };
+    const hint = this.#stagedPayloads.get(groupId);
+    const payload: TextSubmitCommitPayload =
+      hint !== undefined &&
+      hint.epoch === pending.epoch &&
+      hint.commit === pending.commit_b64
+        ? hint
+        : {
+            device_id: this.#port.selfDeviceId,
+            epoch: pending.epoch,
+            commit: pending.commit_b64,
+          };
+    this.#log("info", "resuming a staged commit", ids);
+    try {
+      const ctx = this.#submitCtx(groupId, payload, false);
+      const first: SubmitAction = {
+        kind: "refetch",
+        purpose: { kind: "unknown_outcome" },
+        delayMs: 0,
+      };
+      await this.#runSubmitLoop(rec, payload, ctx, first, false);
+    } catch (err) {
+      if (isDisposed(err)) throw err;
+      this.#log("warn", "staged commit resume failed", {
+        ...ids,
+        type: viewTagOf(err),
+      });
+    }
+    return true;
   }
 
   // -------------------------------------------------------------------------
@@ -2435,14 +2834,18 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       const outboxKey = rest.slice(sep + 1);
       if (live.has(outboxKey)) continue; // the Draft outbox owns it
       let cid: string | null = null;
+      let encrypted: unknown = null;
       try {
         const v: unknown = JSON.parse(this.#port.store.get(key) ?? "null");
-        if (isRecord(v) && str(v.nonce)) cid = v.nonce;
+        if (isRecord(v) && str(v.nonce)) {
+          cid = v.nonce;
+          encrypted = v.encrypted ?? null;
+        }
       } catch {
         cid = null;
       }
       try {
-        await this.#confirmOrphan(channelId, key, cid);
+        await this.#confirmOrphan(channelId, key, cid, encrypted);
       } catch (err) {
         if (isDisposed(err)) return;
         this.#log("warn", "orphan confirm failed", { channelId });
@@ -2455,7 +2858,12 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
    * the outbox). Found → delete. Absent → delete + `maybeUnsent`. Unknown
    * after the budget → kept for the next start.
    */
-  async #confirmOrphan(channelId: string, key: string, cid: string | null) {
+  async #confirmOrphan(
+    channelId: string,
+    key: string,
+    cid: string | null,
+    encrypted: unknown,
+  ) {
     const rec = await this.#register(channelId);
     const absent = () => {
       this.#port.store.delete(key);
@@ -2471,9 +2879,12 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       reason: null,
       retryAfterMs: null,
     };
+    // X#4: only a row bound to the stored bytes confirms the send.
     const ctx: SendContext = {
       selfUserId: this.#port.selfUserId,
+      channelId,
       cid,
+      encrypted,
       priorUnknown: true,
       resecureRetried: true,
       failures: 0,
@@ -2548,6 +2959,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         id: channelId,
         seatListError: null,
         groupError: null,
+        stickyGroupError: null,
         native: null,
         serverGroup: null,
         serverGroupMissing: false,
@@ -2570,7 +2982,6 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         updating: null,
         successorInFlight: false,
         recreating: null,
-        parkedCommit: null,
         seeded: false,
       };
       this.#channels.set(channelId, rec);
@@ -2597,10 +3008,69 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     rec: ChannelRec | null,
     verdictTag: ViewErrorTag | undefined,
     tag: ViewErrorTag,
+    groupId: string,
   ): void {
     if (!rec || verdictTag === undefined || tag === "busy") return;
     if ((MESSAGE_LEVEL_TAGS as readonly string[]).includes(tag)) return;
-    rec.groupError = verdictTag;
+    this.#setGroupError(rec, verdictTag, groupId);
+  }
+
+  /**
+   * W4d X#1: a sticky loud tag (`STICKY_GROUP_ERRORS`) is recorded with the
+   * group it came from; while one is held, any other tag is ignored (a
+   * newer loud tag replaces it).
+   */
+  #setGroupError(rec: ChannelRec, tag: ViewErrorTag, groupId: string): void {
+    if ((STICKY_GROUP_ERRORS as readonly string[]).includes(tag)) {
+      rec.stickyGroupError = {
+        tag,
+        groupId,
+        generation:
+          this.#index.get(groupId)?.generation ?? Number.POSITIVE_INFINITY,
+      };
+      rec.groupError = tag;
+    } else if (rec.stickyGroupError === null) {
+      rec.groupError = tag;
+    } else {
+      this.#log("info", "group error kept over a benign tag", {
+        channelId: rec.id,
+        kept: rec.stickyGroupError.tag,
+        type: tag,
+      });
+    }
+    this.#emit(rec);
+  }
+
+  /**
+   * A processed outcome clears `groupError`, except a sticky one, which
+   * only a `welcome_joined` into a HIGHER generation of the channel than
+   * the poisoned group clears (X#1).
+   */
+  #clearGroupError(rec: ChannelRec, out: TextProcessOutcome): void {
+    const sticky = rec.stickyGroupError;
+    if (sticky !== null) {
+      if (out.kind !== "welcome_joined") return;
+      const ref = this.#index.get(out.group_id);
+      if (!ref || ref.channelId !== rec.id) return;
+      if (ref.generation <= sticky.generation) return;
+      rec.stickyGroupError = null;
+      this.#log("info", "sticky group error cleared by a successor", {
+        channelId: rec.id,
+        groupId: out.group_id,
+      });
+    }
+    rec.groupError = null;
+  }
+
+  /** D21: this device's own create of `generation` was accepted (X#1). */
+  #clearStickyBelow(rec: ChannelRec, generation: number): void {
+    const sticky = rec.stickyGroupError;
+    if (sticky === null || generation <= sticky.generation) return;
+    rec.stickyGroupError = null;
+    rec.groupError = null;
+    this.#log("info", "sticky group error cleared by own successor", {
+      channelId: rec.id,
+    });
     this.#emit(rec);
   }
 

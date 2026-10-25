@@ -10,6 +10,7 @@
 import assert from "node:assert/strict";
 import { beforeEach, test } from "node:test";
 
+import { protectedNoticeForError } from "./protectedShield.ts";
 import {
   _resetOwnerFlowsForTest,
   protect,
@@ -779,6 +780,144 @@ test("setSeats: a seat PUT non-429 4xx is a genuine refusal (resolved, no read-b
   });
   assert.equal(h.store.size, 0);
   assert.equal(cmds(h, "e2ee_text_seat_list_verify").length, 1);
+});
+
+// W2 C1 (cross-session note 10-25): the seat PUT answers 400
+// `SeatListNamesRemovedUsers {users}` when the list still names users the
+// server force-released. Control C-ERR2: the publish loop re-sending (or
+// re-signing) after this refusal turns these red.
+const CAROL = "01USERCAROL000000000000000";
+const removedBody = { type: "SeatListNamesRemovedUsers", users: [CAROL] };
+const refusedV3 = genesis({
+  version: 3,
+  body: "body-v3-carol",
+  signature: "SIGC",
+});
+
+/**
+ * Native model for D24: `_sign` persists nothing and refuses
+ * `seat_list_behind` unless its `serverList` is the list this device last
+ * verified. `signs` are returned in order.
+ */
+function d24Native(signs: SignedSeatList[]) {
+  let verified: string | null = null;
+  const queue = [...signs];
+  return {
+    e2ee_text_seat_list_verify: (a: Record<string, unknown>) => {
+      const body = (a.list as { body: string }).body;
+      verified = body;
+      return verdict([ME, BOB], body === "body-v3" ? 3 : 2);
+    },
+    e2ee_text_seat_list_sign: (a: Record<string, unknown>) => {
+      const server = a.serverList as { body: string } | null;
+      if (server === null || server.body !== verified) {
+        throw { type: "seat_list_behind", channel_id: CH, have: 0, need: 0 };
+      }
+      const next = queue.shift();
+      if (next === undefined) throw new Error("unscripted sign");
+      return next;
+    },
+    e2ee_text_state: () => nativeState([{ user_id: ME, device_id: MY_DEV }]),
+  };
+}
+
+test("W2 C1: SeatListNamesRemovedUsers resolves as a typed refusal: never re-sent, never re-signed", async () => {
+  const h = harness({
+    routes: seatsRoutes([res(400, removedBody), res(200)]),
+    invoke: d24Native([refusedV3, v3]),
+  });
+  let failure: unknown = null;
+  await assert.rejects(
+    setSeats(h.ops, h.port, CH, [ME, BOB, CAROL], 5),
+    (e) => {
+      failure = e;
+      return true;
+    },
+  );
+  assert.deepEqual(failure, {
+    source: "server",
+    status: 400,
+    type: "SeatListNamesRemovedUsers",
+    body: removedBody,
+  });
+  assert.equal(puts(h).length, 1, "the refused bytes are never re-sent");
+  assert.equal(cmds(h, "e2ee_text_seat_list_sign").length, 1, "no re-sign");
+  assert.equal(
+    cmds(h, "e2ee_text_seat_list_verify").length,
+    1,
+    "a refused list is never read back and verified",
+  );
+  assert.deepEqual(h.sleeps, [], "no backoff: nothing is retried");
+  assert.equal(h.store.size, 0, "the D7c entry is resolved");
+  assert.equal(h.opsLog.filter((o) => o[0] === "removeDevices").length, 0);
+  // The owner UI gets the typed notice with the ids (names are its job).
+  const ui = protectedNoticeForError(failure, { op: "owner" });
+  assert.equal(
+    ui.kind === "notice" && ui.notice,
+    "seat_list_names_removed_users",
+  );
+  assert.deepEqual(ui.kind === "notice" && ui.users, [CAROL]);
+});
+
+test("W2 C1 + D24: the next setSeats GETs and verifies the server's current list before signing (no SeatListBehind)", async () => {
+  const h = harness({
+    routes: seatsRoutes([res(400, removedBody), res(200)]),
+    invoke: d24Native([refusedV3, v3]),
+  });
+  await assert.rejects(setSeats(h.ops, h.port, CH, [ME, BOB, CAROL], 5), {
+    type: "SeatListNamesRemovedUsers",
+  });
+  const order: string[] = [];
+  const api = h.port.api;
+  h.port.api = (async (method: never, path: never, body?: never) => {
+    order.push(`${method} ${path}`);
+    return body === undefined ? api(method, path) : api(method, path, body);
+  }) as ProtectedTextPort["api"];
+  const invoke = h.port.invoke;
+  h.port.invoke = (async (cmd: never, args: never) => {
+    order.push(cmd);
+    return invoke(cmd, args);
+  }) as ProtectedTextPort["invoke"];
+  // The owner opens the picker again and saves without the removed user.
+  await setSeats(h.ops, h.port, CH, [ME, BOB], 5);
+  const seatsPath = `GET /channels/${CH}/seats`;
+  assert.deepEqual(order.slice(0, 3), [
+    seatsPath,
+    "e2ee_text_seat_list_verify",
+    "e2ee_text_seat_list_sign",
+  ]);
+  const signs = cmds(h, "e2ee_text_seat_list_sign");
+  assert.equal(signs.length, 2);
+  // signed from the server's CURRENT list (still v2: the refusal wrote nothing)
+  assert.deepEqual(signs[1].args.serverList, { version: 2, body: "body-v2" });
+  assert.deepEqual(signs[1].args.seats, [ME, BOB]);
+  const p = puts(h);
+  assert.equal(p.length, 2);
+  assert.deepEqual(p[1].body, {
+    body: "body-v3",
+    signature: "SIG3",
+    signer_device_id: MY_DEV,
+  });
+  assert.equal(h.store.size, 0);
+});
+
+test("W2 C1: a stored refused publish (crash window) is re-PUT once by the D7c rule, then resolves; nothing signed", async () => {
+  const h = harness({
+    routes: seatsRoutes([res(400, removedBody), res(200)]),
+    invoke: d24Native([v3]),
+  });
+  const key = publishStoreKey(ME, CH);
+  h.store.set(key, JSON.stringify({ v: 1, op: "seats", signed: refusedV3 }));
+  await assert.rejects(setSeats(h.ops, h.port, CH, [ME, BOB], 5), {
+    type: "SeatListNamesRemovedUsers",
+  });
+  assert.equal(puts(h).length, 1);
+  assert.equal((puts(h)[0].body as { body: string }).body, "body-v3-carol");
+  assert.equal(cmds(h, "e2ee_text_seat_list_sign").length, 0);
+  assert.equal(h.store.size, 0, "resolved: the next flow is not blocked");
+  await setSeats(h.ops, h.port, CH, [ME, BOB], 5);
+  assert.equal(puts(h).length, 2);
+  assert.equal((puts(h)[1].body as { body: string }).body, "body-v3");
 });
 
 test("setSeats: 5xx then 429 re-PUT the same bytes until 2xx", async () => {

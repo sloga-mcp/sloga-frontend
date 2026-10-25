@@ -9230,6 +9230,15 @@ msgstr "The owner's device isn't verified on this device yet."
 
 #: components/client/protectedCopy.ts
 #: components/i18n/errors.ts
+msgid "Some members were removed from this server and were left off the seat list."
+msgstr "Some members were removed from this server and were left off the seat list."
+
+#: components/client/protectedCopy.ts
+msgid "Members removed from this server and left off the seat list: {list}"
+msgstr "Members removed from this server and left off the seat list: {list}"
+
+#: components/client/protectedCopy.ts
+#: components/i18n/errors.ts
 msgid "Re-securing this channel…"
 msgstr "Re-securing this channel…"
 

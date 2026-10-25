@@ -331,12 +331,16 @@ export type Modals =
        * user ids (owner included); `onConfirm` gets the FULL new list, the
        * owner always included. `slotCap` null = unknown (shown as unknown,
        * never treated as 0 or unlimited); a number caps the selection.
+       * `removed` (W4d): users the server removed whom the signed list still
+       * names; never selected or offered, and a list that only drops them
+       * may be confirmed. Absent = none.
        */
       type: "protected_seat_picker";
       channel: Channel;
       current: string[];
       slotCap: number | null;
       onConfirm: (userIds: string[]) => Promise<void>;
+      removed?: string[];
     }
   | {
       type: "e2ee_enable";

@@ -15,8 +15,8 @@
  *
  * Copy follows the design 9.2 suggestions where one exists. Naming rule:
  * never "Protected" alone as a noun, always "Protected channel(s)". The only
- * values interpolated are a display name and counts; never ids, key material
- * or message text.
+ * values interpolated are display names (from the caller) and counts; never
+ * ids, key material or message text.
  *
  * The macro cannot run outside the build, so this file has no spec. The
  * error and state mapping it renders is spec'd in `protectedShield.test.ts`.
@@ -76,13 +76,42 @@ function ownerPinUnverifiedCopy(): string {
 // Channel notices (design 9.2, plan D17; `ProtectedNoticeKind` from A2)
 // ---------------------------------------------------------------------------
 
+/** Most display names `seat_list_names_removed_users` lists inline. */
+export const REMOVED_NAMES_LISTED_MAX = 5;
+
+/** Generic `seat_list_names_removed_users` copy (also `errors.ts`). */
+function removedUsersCopy(): string {
+  return t`Some members were removed from this server and were left off the seat list.`;
+}
+
+/**
+ * `seat_list_names_removed_users`: lists the display names only when the
+ * caller resolved every reported user (a partial list would read as the
+ * whole) and there are few enough to show; otherwise the generic copy.
+ */
+function removedUsersNamedCopy(names: readonly string[] | null): string {
+  const shown = (names ?? []).map((n) => n.trim());
+  if (
+    shown.length === 0 ||
+    shown.length > REMOVED_NAMES_LISTED_MAX ||
+    shown.some((n) => n.length === 0)
+  ) {
+    return removedUsersCopy();
+  }
+  const list = shown.join(", ");
+  return t`Members removed from this server and left off the seat list: ${list}`;
+}
+
 /**
  * Notice text for a channel-level kind. `max` is `ProtectedErrorUi.max`
  * (seat or device cap); null or absent falls back to copy without a count.
+ * `names`: display names for `seat_list_names_removed_users` (from the
+ * caller; never ids), ignored by every other kind.
  */
 export function noticeCopy(
   kind: ProtectedNoticeKind,
   max: number | null = null,
+  names: readonly string[] | null = null,
 ): string {
   switch (kind) {
     // shield states
@@ -130,6 +159,8 @@ export function noticeCopy(
       return t`Only the channel owner's device can change seats.`;
     case "seat_list_behind":
       return t`The member list changed since you last loaded it. Reloading…`;
+    case "seat_list_names_removed_users":
+      return removedUsersNamedCopy(names);
     case "protect_failed":
       return t`This channel couldn't be protected.`;
     case "channel_protected":
@@ -220,13 +251,51 @@ export function toastCopy(kind: ProtectedToastKind): string {
 }
 
 /**
- * Text for a `protectedNoticeForError` answer; null for `none` (the bridge
- * handled it, or the user cancelled a native dialog).
+ * Display names for `ProtectedErrorUi.users`, index-aligned; null (or an
+ * empty string, or the id itself) for a user the caller can't name.
  */
-export function errorUiCopy(ui: ProtectedErrorUi): string | null {
+export type RemovedUserNames = (
+  userIds: readonly string[],
+) => readonly (string | null)[];
+
+/**
+ * `names` only when every reported user resolved to a real display name
+ * (never an id): anything less gets the generic copy.
+ */
+function resolvedNames(
+  ui: Extract<ProtectedErrorUi, { kind: "notice" }>,
+  resolve: RemovedUserNames | undefined,
+): string[] | null {
+  const ids = ui.users ?? [];
+  if (resolve === undefined || ids.length === 0) return null;
+  const names = resolve(ids);
+  if (!Array.isArray(names) || names.length !== ids.length) return null;
+  const out: string[] = [];
+  for (let i = 0; i < ids.length; i++) {
+    const n = names[i];
+    if (typeof n !== "string" || n.trim().length === 0) return null;
+    if (n.trim() === ids[i]) return null;
+    out.push(n);
+  }
+  return out;
+}
+
+/**
+ * Text for a `protectedNoticeForError` answer; null for `none` (the bridge
+ * handled it, or the user cancelled a native dialog). `opts.removedUserNames`
+ * lets the owner UI name the users of `seat_list_names_removed_users`.
+ */
+export function errorUiCopy(
+  ui: ProtectedErrorUi,
+  opts: { removedUserNames?: RemovedUserNames } = {},
+): string | null {
   switch (ui.kind) {
     case "notice":
-      return noticeCopy(ui.notice, ui.max);
+      return noticeCopy(
+        ui.notice,
+        ui.max,
+        resolvedNames(ui, opts.removedUserNames),
+      );
     case "marker":
       return markerCopy(ui.marker);
     case "toast":

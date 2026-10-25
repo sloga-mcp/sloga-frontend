@@ -31,6 +31,7 @@ import {
   PROTECTED_SHIELD_STATES,
   protectedActionsBlocked,
   protectedNoticeForError,
+  REMOVED_USERS_MAX,
   SHIELD_BENIGN_GROUP_ERRORS,
   SHIELD_BENIGN_SEAT_LIST_ERRORS,
   SHIELD_FALL_THROUGH_GROUP_ERRORS,
@@ -938,6 +939,12 @@ function wellFormed(ui: ProtectedErrorUi, label: string) {
         `${label}: ${ui.notice}`,
       );
       assert.ok(ui.max === null || Number.isSafeInteger(ui.max), label);
+      assert.ok(
+        ui.users === undefined ||
+          (ui.notice === "seat_list_names_removed_users" &&
+            ui.users.every((u) => typeof u === "string" && u.length > 0)),
+        `${label}: users`,
+      );
       break;
     case "marker":
       assert.ok(MARKERS.includes(ui.marker), `${label}: ${ui.marker}`);
@@ -1160,6 +1167,116 @@ test("D17 server types (7.6 + extras)", () => {
     ),
     "not_seated",
   );
+});
+
+// W2 C1 (cross-session note 10-25): `PUT /channels/:id/seats` answers 400
+// `{type: "SeatListNamesRemovedUsers", users}` when the list still names
+// users the server force-released. Control C-ERR1: the SERVER_RULES entry
+// removed (or protectedShield.ts at c3381567) turns this red.
+const removedA = "01USERREMOVEDA000000000000";
+const removedB = "01USERREMOVEDB000000000000";
+const removedErr = (users: unknown) => ({
+  source: "server",
+  status: 400,
+  type: "SeatListNamesRemovedUsers",
+  body: { type: "SeatListNamesRemovedUsers", users },
+});
+
+test("W2 C1: SeatListNamesRemovedUsers is its own owner notice carrying the ids", () => {
+  assert.ok(PROTECTED_NOTICE_KINDS.includes("seat_list_names_removed_users"));
+  assert.ok(
+    (PROTECTED_SERVER_ERROR_TYPES as readonly string[]).includes(
+      "SeatListNamesRemovedUsers",
+    ),
+  );
+  assert.deepEqual(ui(removedErr([removedA, removedB]), "owner"), {
+    kind: "notice",
+    notice: "seat_list_names_removed_users",
+    max: null,
+    tag: "SeatListNamesRemovedUsers",
+    users: [removedA, removedB],
+  });
+  // a bare server body maps the same way
+  const bare = ui(
+    { type: "SeatListNamesRemovedUsers", users: [removedB] },
+    "owner",
+  );
+  assert.equal(brief(bare), "seat_list_names_removed_users");
+  assert.deepEqual(bare.kind === "notice" && bare.users, [removedB]);
+  // a message row never reads it: the red marker, no ids
+  assert.deepEqual(ui(removedErr([removedA]), "message"), {
+    kind: "marker",
+    marker: "error",
+    tag: "SeatListNamesRemovedUsers",
+  });
+  // never the catch-all for any other op either (total mapping)
+  for (const op of OPS) {
+    const u = ui(removedErr([removedA]), op);
+    wellFormed(u, `removed/${op}`);
+    if (op !== "message") {
+      assert.equal(brief(u), "seat_list_names_removed_users", op);
+    }
+  }
+});
+
+test("W2 C1: malformed SeatListNamesRemovedUsers.users is dropped, deduplicated and capped", () => {
+  const usersOf = (users: unknown) => {
+    const u = ui(removedErr(users), "owner");
+    assert.equal(brief(u), "seat_list_names_removed_users");
+    return u.kind === "notice" ? u.users : "not a notice";
+  };
+  assert.deepEqual(
+    usersOf([removedA, removedA, "", 7, null, { id: removedB }, removedB]),
+    [removedA, removedB],
+  );
+  for (const bad of [undefined, null, "01USER", 3, { 0: removedA }]) {
+    assert.deepEqual(usersOf(bad), [], String(bad));
+  }
+  const many = Array.from(
+    { length: REMOVED_USERS_MAX + 50 },
+    (_, i) => `U${i}`,
+  );
+  const capped = usersOf(many);
+  assert.ok(Array.isArray(capped));
+  assert.equal(capped.length, REMOVED_USERS_MAX);
+  assert.equal(capped[0], "U0");
+});
+
+test("W2 C1: a removed-users refusal is a server type, never a shield input", () => {
+  // Owner UI only: not a native (view) error tag, so no shield step reads it.
+  assert.ok(
+    !(NATIVE_ERROR_TAGS as readonly string[]).includes(
+      "SeatListNamesRemovedUsers",
+    ),
+  );
+  assert.ok(
+    !(NATIVE_ERROR_TAGS as readonly string[]).includes(
+      "seat_list_names_removed_users",
+    ),
+  );
+});
+
+test("W2c: commit-transaction DeviceCapReached / MlsCallFull map like the seat ones", () => {
+  // The commit context is channel-level (`op: "channel"`); same copy kinds
+  // and caps as the seat context (`op: "owner"`).
+  const s = (type: string, max: unknown, op: ProtectedErrorOp) =>
+    ui({ source: "server", status: 400, type, body: { type, max } }, op);
+  for (const op of ["channel", "owner"] as const) {
+    assert.deepEqual(s("DeviceCapReached", 2, op), {
+      kind: "notice",
+      notice: "device_cap_reached",
+      max: 2,
+      tag: "DeviceCapReached",
+    });
+    assert.deepEqual(s("MlsCallFull", 100, op), {
+      kind: "notice",
+      notice: "channel_full",
+      max: 100,
+      tag: "MlsCallFull",
+    });
+    const bad = s("DeviceCapReached", "2", op);
+    assert.equal(bad.kind === "notice" && bad.max, null);
+  }
 });
 
 test("D17 catch-all: everything unmapped fails closed", () => {

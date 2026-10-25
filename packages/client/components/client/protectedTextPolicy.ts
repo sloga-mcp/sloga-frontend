@@ -445,7 +445,9 @@ export type SubmitAnswer =
  * - `lost`: `_commit_lost(group)`, then `then`: `process_winner` (gap
  *   refetch and process the winner), `reverify_restage` (stale_seat_list:
  *   verify `GET .../seats` with `as_of_*`, re-stage ONCE),
- *   `await_removal` (pending_removal: wait for the Remove), `refresh`.
+ *   `await_removal` (pending_removal: wait for the Remove), `refresh`,
+ *   `refused` (a typed cap refusal, `COMMIT_CAP_REFUSALS`: the caller gets
+ *   the refusal itself so it can show the cap notice; never retried).
  * - `refetch`: `GET /mls/groups/:id/commits?from_epoch=<epoch>` after
  *   `delayMs`, then classify with `{kind: "refetch", purpose}`.
  * - `resubmit`: after `delayMs`, `_pending_commit` and POST the IDENTICAL
@@ -457,13 +459,33 @@ export type SubmitAction =
   | {
       kind: "lost";
       winner: TextCommitInfo | null;
-      then: "process_winner" | "reverify_restage" | "await_removal" | "refresh";
+      then:
+        | "process_winner"
+        | "reverify_restage"
+        | "await_removal"
+        | "refresh"
+        | "refused";
     }
   | { kind: "refetch"; purpose: RefetchPurpose; delayMs: number }
   | { kind: "resubmit"; delayMs: number; asResubmit: boolean }
   | { kind: "mark_left"; reason: TextLeftReason };
 
-/** A stored commit row, or null when the shape is not one. */
+/**
+ * W2c: typed refusals of the Text commit transaction (`{ max }`) for an Add
+ * past the enforced device cap or the 100-leaf cap. Server error types,
+ * never native tags, so never a `groupError` and never loud.
+ */
+export const COMMIT_CAP_REFUSALS: readonly string[] = [
+  "DeviceCapReached",
+  "MlsCallFull",
+];
+
+/**
+ * A stored commit row, or null when the shape is not one. Only the fields
+ * read here are checked; unknown extra fields (W2's advisory
+ * `removed_reasons`) are tolerated and never forwarded to native (the
+ * router's envelope builders copy declared fields only).
+ */
 function parseCommitInfo(v: unknown): TextCommitInfo | null {
   if (!isRecord(v)) return null;
   const c = v.committer;
@@ -623,6 +645,21 @@ function classifyRefetch(
         asResubmit: true,
       };
     case "after_refusal":
+      // W4d X#5: the DS says this device holds no leaf in the group, and
+      // no own row raced the refusal: native is out of step. Wipe and
+      // rejoin (a refresh alone would see an active group and never join).
+      if (
+        purpose.type === "ProtectedChannelResecuring" &&
+        purpose.reason === "not_member"
+      ) {
+        return { kind: "mark_left", reason: "not_member" };
+      }
+      // W4d (W2c): a typed cap refusal of the commit transaction. Not loud
+      // and not retryable with the same Add: drop the stage, surface the
+      // typed refusal (the caller's cap notice), refresh.
+      if (purpose.type !== null && COMMIT_CAP_REFUSALS.includes(purpose.type)) {
+        return { kind: "lost", winner: null, then: "refused" };
+      }
       return {
         kind: "lost",
         winner: null,
@@ -672,8 +709,16 @@ export interface SendTrigger {
 
 export interface SendContext {
   selfUserId: string;
+  /** The channel the send was posted to. */
+  channelId: string;
   /** The stored entry's cid (`TextEncrypted.nonce`). */
   cid: string;
+  /**
+   * The stored entry's `encrypted` payload, exactly as POSTed (W4d X#4). A
+   * row is this send only when its channel, author, nonce AND `encrypted`
+   * all match (`ownSendRowBinds`); null binds nothing.
+   */
+  encrypted: unknown;
   /**
    * An earlier attempt with THIS stored entry had an unknown outcome
    * (transport error, lost response, 5xx). Every orphan resolved at start
@@ -761,9 +806,7 @@ export function confirmAfterId(cid: string): string | null {
 
 interface MessageRow {
   _id: string;
-  author: unknown;
-  nonce: unknown;
-  raw: unknown;
+  raw: Record<string, unknown>;
 }
 
 /** A messages page: an array, or `{ messages }` (with users). */
@@ -777,9 +820,53 @@ function parseMessageRows(body: unknown): MessageRow[] | null {
   const rows: MessageRow[] = [];
   for (const m of list) {
     if (!isRecord(m) || typeof m._id !== "string") return null;
-    rows.push({ _id: m._id, author: m.author, nonce: m.nonce, raw: m });
+    rows.push({ _id: m._id, raw: m });
   }
   return rows;
+}
+
+/**
+ * Structural equality of two JSON values; an object key whose value is
+ * `null` or absent counts as absent (serde skips `franking: None`).
+ */
+function sameJson(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return (
+      Array.isArray(a) &&
+      Array.isArray(b) &&
+      a.length === b.length &&
+      a.every((v, i) => sameJson(v, b[i]))
+    );
+  }
+  if (!isRecord(a) || !isRecord(b)) return false;
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  for (const k of keys) {
+    const x = a[k] ?? null;
+    const y = b[k] ?? null;
+    if (!sameJson(x, y)) return false;
+  }
+  return true;
+}
+
+/**
+ * W4d X#4: whether a server row is THIS send: an `_id`, this channel, this
+ * user as author, the cid as nonce, and `encrypted` equal to the payload
+ * that was POSTed. Anything less is never adopted as the own send (the
+ * server could otherwise bind the stored send to any message id).
+ */
+export function ownSendRowBinds(raw: unknown, ctx: SendContext): boolean {
+  return (
+    isRecord(raw) &&
+    typeof raw._id === "string" &&
+    raw._id.length > 0 &&
+    raw.channel === ctx.channelId &&
+    raw.author === ctx.selfUserId &&
+    raw.nonce === ctx.cid &&
+    isRecord(ctx.encrypted) &&
+    isRecord(raw.encrypted) &&
+    sameJson(raw.encrypted, ctx.encrypted)
+  );
 }
 
 function triggerOf(response: TextApiResponse): SendTrigger {
@@ -810,7 +897,14 @@ function afterKnownFailure(
     // "Possibly delivered": confirm, never re-encrypt under a new cid.
     return confirmed ? { kind: "maybe_unsent" } : startConfirm(trigger, ctx);
   }
-  if (trigger.type === "ProtectedChannelResecuring" && !ctx.resecureRetried) {
+  // W4d X#5: `not_member` is never retried here: re-encrypting for a group
+  // the DS says this device is not in cannot land. Refused; the manager
+  // marks the group left and takes the rejoin path.
+  if (
+    trigger.type === "ProtectedChannelResecuring" &&
+    !ctx.resecureRetried &&
+    trigger.reason !== "not_member"
+  ) {
     return { kind: "resecure_retry", reason: trigger.reason };
   }
   return {
@@ -845,7 +939,12 @@ export function classifySendAnswer(
     case "response": {
       const { response } = answer;
       if (is2xx(response.status)) {
-        return { kind: "delivered", raw: response.body, confirmed: false };
+        // A 2xx that does not bind to this send (X#4) is never "delivered":
+        // the outcome is unknown, so the SAME bytes go again and the
+        // DuplicateNonce answer confirms by refetch.
+        return ownSendRowBinds(response.body, ctx)
+          ? { kind: "delivered", raw: response.body, confirmed: false }
+          : { kind: "unknown", delayMs: publishBackoffMs(ctx.failures) };
       }
       if (!is4xx(response.status)) {
         return { kind: "unknown", delayMs: publishBackoffMs(ctx.failures) };
@@ -871,9 +970,9 @@ export function classifySendAnswer(
       const rows = parseMessageRows(response.body);
       const after = confirmAfterId(ctx.cid);
       if (rows === null || after === null) return later;
-      const own = rows.find(
-        (m) => m.author === ctx.selfUserId && m.nonce === ctx.cid,
-      );
+      // X#4: the same binding as a 2xx; a row with our nonce but another
+      // channel, author or payload is not this send.
+      const own = rows.find((m) => ownSendRowBinds(m.raw, ctx));
       if (own !== undefined) {
         return { kind: "delivered", raw: own.raw, confirmed: true };
       }

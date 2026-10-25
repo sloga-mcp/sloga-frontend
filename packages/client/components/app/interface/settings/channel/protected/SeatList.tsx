@@ -6,7 +6,7 @@ import type { Channel } from "stoat.js";
 import { styled } from "styled-system/jsx";
 
 import { useClient } from "@revolt/client";
-import { settingsCopy } from "@revolt/client/protectedCopy";
+import { noticeCopy, settingsCopy } from "@revolt/client/protectedCopy";
 import type { ProtectedSeatsResponse } from "@revolt/client/protectedTextTypes";
 import { Avatar } from "@revolt/ui/components/design/Avatar";
 import { Button } from "@revolt/ui/components/design/Button";
@@ -17,6 +17,11 @@ export interface SeatListProps {
   seats: ProtectedSeatsResponse;
   /** The server owner, always seated, never removable here. */
   ownerId: string;
+  /**
+   * Users the server removed whom the signed list still names
+   * (`serverRemovedSeatIds`, W4d): shown read-only, never as seated.
+   */
+  removed: readonly string[];
   /** Hide the per-row Remove (not capable, unknown device cap). */
   hideRemove: boolean;
   /** Disable Remove (a seat publish is in flight, D7). */
@@ -30,6 +35,8 @@ export interface SeatListProps {
  * member can't view the channel anymore (`seated_without_access`, sent only
  * to the owner), released seats still counted until `cooldown_until`, and
  * the seat and device caps. A null cap is unknown, never 0 or unlimited.
+ * Members the server removed whom the signed list still names (W4d) are
+ * a separate read-only group, never seated rows.
  * Display only, apart from the per-row Remove the page wires up.
  */
 export function SeatList(props: SeatListProps) {
@@ -57,6 +64,7 @@ export function SeatList(props: SeatListProps) {
     const ids = [
       ...seatRows(props.seats.seats, props.ownerId).map((r) => r.userId),
       ...coolingRows(props.seats.cooling).map((r) => r.userId),
+      ...props.removed,
     ];
     for (const id of ids) {
       if (requested.has(id) || c.users.get(id)) continue;
@@ -67,7 +75,7 @@ export function SeatList(props: SeatListProps) {
     }
   });
 
-  const rows = () => seatRows(props.seats.seats, props.ownerId);
+  const rows = () => seatRows(props.seats.seats, props.ownerId, props.removed);
   const cooling = () => coolingRows(props.seats.cooling);
   const slotCap = () => seatCount(props.seats.slot_cap);
   const used = () => seatsUsedOf(props.seats);
@@ -202,6 +210,29 @@ export function SeatList(props: SeatListProps) {
         </For>
       </Rows>
 
+      {/* W4d: removed by the server, still named by the signed list. Read
+          only: no Remove, and left off every list this page submits. */}
+      <Show when={props.removed.length > 0}>
+        <RemovedNote role="status" data-server-removed-note>
+          {noticeCopy("seat_list_names_removed_users")}
+        </RemovedNote>
+        <Rows>
+          <For each={props.removed}>
+            {(userId) => {
+              const who = () => person(userId);
+              return (
+                <Row data-server-removed={userId}>
+                  <Avatar src={who().avatar} fallback={who().name} size={32} />
+                  <RowText>
+                    <RowName>{who().name}</RowName>
+                  </RowText>
+                </Row>
+              );
+            }}
+          </For>
+        </Rows>
+      </Show>
+
       <Show when={cooling().length > 0}>
         <SubHeading>
           {/* C16: local msgid */}
@@ -257,10 +288,15 @@ export function seatCount(v: unknown): number | null {
   return typeof v === "number" && Number.isSafeInteger(v) && v >= 0 ? v : null;
 }
 
-/** Seated rows, deduplicated, owner first, otherwise in server order. */
+/**
+ * Seated rows, deduplicated, owner first, otherwise in server order. Users
+ * in `removed` (`serverRemovedSeatIds`) are left out: they get their own
+ * read-only group, even while a stale read still shows their seat.
+ */
 export function seatRows(
   seats: readonly SeatRowInput[] | unknown,
   ownerId: string,
+  removed: readonly string[] = [],
 ): SeatRowView[] {
   if (!Array.isArray(seats)) return [];
   const seen = new Set<string>();
@@ -268,6 +304,7 @@ export function seatRows(
   for (const s of seats as SeatRowInput[]) {
     const id = s?.user_id;
     if (typeof id !== "string" || id.length === 0 || seen.has(id)) continue;
+    if (id !== ownerId && removed.includes(id)) continue;
     seen.add(id);
     out.push({
       userId: id,
@@ -354,6 +391,50 @@ export function currentSeatIds(r: {
     }
   }
   return ids;
+}
+
+/**
+ * W4d L-SET (W2 C1): the users the server removed (kick, ban, leaving the
+ * server, account deletion) whom the signed list still names. A forced
+ * release frees the seat but never edits the owner-signed list, and a seat
+ * PUT still naming such a user is refused `SeatListNamesRemovedUsers`. So:
+ * named by the list's `seats:` line, not the owner (the signer is always
+ * seated), and holding no active seat in `seats[]` (cooling or expired
+ * alike); plus `reported`, the ids of such a refusal against this same
+ * list, while the list still names them. In list order. Empty without a
+ * readable list or `seats` array: an unreadable read never leaves anyone
+ * off a list (the server's refusal still names them).
+ */
+export function serverRemovedSeatIds(
+  r: { list?: { body?: unknown } | null; seats?: unknown },
+  ownerId: string,
+  reported: readonly string[] = [],
+): string[] {
+  const listed = listSeatIds(r.list?.body);
+  if (listed === null || !Array.isArray(r.seats)) return [];
+  const active = new Set<string>();
+  for (const s of r.seats as SeatRowInput[]) {
+    if (typeof s?.user_id === "string") active.add(s.user_id);
+  }
+  const out: string[] = [];
+  for (const id of listed) {
+    if (id === ownerId || out.includes(id)) continue;
+    if (!active.has(id) || reported.includes(id)) out.push(id);
+  }
+  return out;
+}
+
+/**
+ * The seat ids an owner change starts from (the picker's `current`, the
+ * base of "Remove seat"): `currentSeatIds` without `removed`, so no list
+ * this page submits names a user the server removed. Adding one back is
+ * an ordinary add in the picker (growth, native's dialog).
+ */
+export function editableSeatIds(
+  r: { list?: { body?: unknown } | null; seats?: unknown },
+  removed: readonly string[],
+): string[] {
+  return currentSeatIds(r).filter((id) => !removed.includes(id));
 }
 
 /** `ids` with the owner first and no duplicates (the signer is seated). */
@@ -473,6 +554,16 @@ const RowNote = styled("span", {
   base: {
     fontSize: "0.75rem",
     color: "var(--md-sys-color-on-surface-variant)",
+  },
+});
+
+const RemovedNote = styled("div", {
+  base: {
+    padding: "10px 12px",
+    borderRadius: "8px",
+    fontSize: "0.85rem",
+    background: "var(--md-sys-color-surface-container-high)",
+    color: "var(--md-sys-color-on-surface)",
   },
 });
 

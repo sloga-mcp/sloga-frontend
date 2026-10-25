@@ -36,10 +36,11 @@ import { CircularProgress } from "@revolt/ui/components/design/LoadingProgress";
 
 import {
   SeatList,
-  currentSeatIds,
+  editableSeatIds,
   ownerFirst,
   seatCount,
   seatsAfterRemoval,
+  serverRemovedSeatIds,
 } from "./SeatList";
 
 /**
@@ -151,15 +152,19 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
   });
 
   /** The ONE raw request this page makes: a read-only seats GET. */
+  async function fetchSeatsBody(): Promise<ProtectedSeatsResponse | null> {
+    const body: unknown = await client().api.get(
+      `/channels/${props.channel.id as ""}/seats` as never,
+    );
+    return parseSeatsBody(body);
+  }
+
   async function readSeats(key: string) {
     const generation = ++readGeneration;
     setRaw({ key, state: "loading" });
     try {
-      const body: unknown = await client().api.get(
-        `/channels/${props.channel.id as ""}/seats` as never,
-      );
+      const parsed = await fetchSeatsBody();
       if (generation !== readGeneration) return;
-      const parsed = parseSeatsBody(body);
       setRaw(
         parsed === null
           ? { key, state: "failed" }
@@ -167,6 +172,34 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
       );
     } catch {
       if (generation === readGeneration) setRaw({ key, state: "failed" });
+    }
+  }
+
+  /**
+   * W4d: a seats read taken after a `SeatListNamesRemovedUsers` refusal,
+   * over the bridge snapshot it was read against (`seatsOver`). The bridge
+   * doesn't refresh after a refused publish; this read only shows the seat
+   * rows as they are now. It never signs or submits anything.
+   */
+  const [fresh, setFresh] = createSignal<{
+    basis: ProtectedSeatsResponse;
+    body: ProtectedSeatsResponse;
+  } | null>(null);
+  let freshGeneration = 0;
+
+  async function refreshSeatsAfterRefusal() {
+    const basis = snapshot();
+    if (!isProtected() || basis === null) {
+      rereadSeats();
+      return;
+    }
+    const generation = ++freshGeneration;
+    try {
+      const parsed = await fetchSeatsBody();
+      if (generation !== freshGeneration || snapshot() !== basis) return;
+      if (parsed !== null) setFresh({ basis, body: parsed });
+    } catch {
+      // the snapshot and the refusal's own ids still apply
     }
   }
 
@@ -189,10 +222,43 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
 
   const seats = (): ProtectedSeatsResponse | null => {
     const snap = snapshot();
-    if (isProtected() && snap !== null) return snap;
+    if (isProtected() && snap !== null) return seatsOver(snap, fresh());
     const r = rawFor();
     return r?.state === "ok" ? r.body : null;
   };
+
+  /**
+   * W4d: ids of the last `SeatListNamesRemovedUsers` refusal, tied to the
+   * channel and the signed list body it was refused against.
+   */
+  const [refused, setRefused] = createSignal<RemovedRefusal | null>(null);
+
+  /** Removed by the server, still on the signed list (W4d, W2 C1). */
+  const removedIds = createMemo((): string[] => {
+    const s = seats();
+    const owner = ownerId();
+    if (s === null || owner === null) return [];
+    const reported = refusedFor(refused(), props.channel.id, s.list?.body);
+    return serverRemovedSeatIds(s, owner, reported);
+  });
+
+  /** The seats a change starts from: never a server-removed user. */
+  const editableIds = (): string[] => {
+    const s = seats();
+    return s === null ? [] : editableSeatIds(s, removedIds());
+  };
+
+  /** Display names for the refusal copy; null when not known here. */
+  function displayNames(userIds: readonly string[]): (string | null)[] {
+    const c = client();
+    return userIds.map((id) => {
+      const member = c.serverMembers.getByKey({
+        server: props.channel.serverId,
+        user: id,
+      });
+      return member?.displayName ?? c.users.get(id)?.displayName ?? null;
+    });
+  }
 
   // ---- actions ----------------------------------------------------------
 
@@ -234,7 +300,19 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
         tag: ui.tag,
       });
     }
-    return errorUiCopy(ui);
+    return errorUiCopy(ui, { removedUserNames: displayNames });
+  }
+
+  /**
+   * W4d: after a `SeatListNamesRemovedUsers` refusal, leave exactly those
+   * users off the next list (the picker's `current`, "Remove seat") and
+   * re-read the seats. Nothing is resubmitted: the owner saves again.
+   */
+  function noteRemovedRefusal(err: unknown, listBody: unknown) {
+    const users = removedUsersOfRefusal(errorUiOf(err));
+    if (users === null || typeof listBody !== "string") return;
+    setRefused({ channelId: props.channel.id, listBody, users });
+    void refreshSeatsAfterRefusal();
   }
 
   const availability = createMemo(() => {
@@ -312,6 +390,8 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
       if (rethrow) throw new ProtectedChannelUnavailable();
       return;
     }
+    // The signed list this change was built from (W4d refusal scope).
+    const listBody = seats()?.list?.body;
     setPending("seats");
     setError(null);
     setSaved(false);
@@ -319,6 +399,7 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
       await api.setSeats(props.channel.id, ownerFirst(userIds, owner), cap);
       setSaved(true);
     } catch (err) {
+      noteRemovedRefusal(err, listBody);
       setError(errorText(err));
       if (rethrow) throw err;
       return;
@@ -335,10 +416,12 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
     openModal({
       type: "protected_seat_picker",
       channel: props.channel,
-      current: currentSeatIds(s),
+      // W4d: never a server-removed user (none pre-selected, none re-sent)
+      current: editableIds(),
       slotCap: seatCount(s.slot_cap),
       // Rejects on failure so the picker shows the notice (C12 contract).
       onConfirm: (userIds) => runSetSeats(userIds, true),
+      removed: removedIds(),
     });
   }
 
@@ -350,7 +433,9 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
     const s = seats();
     const owner = ownerId();
     if (!s || owner === null || busy() || !canChangeSeats()) return;
-    const next = seatsAfterRemoval(currentSeatIds(s), owner, userId);
+    // W4d: from the editable seats, so a list still naming another
+    // server-removed user is never submitted
+    const next = seatsAfterRemoval(editableIds(), owner, userId);
     if (next === null) return;
     void runSetSeats(next, false);
   }
@@ -507,6 +592,7 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
                       channel={props.channel}
                       seats={s()}
                       ownerId={ownerId()!}
+                      removed={removedIds()}
                       hideRemove={!canChangeSeats()}
                       disabled={busy()}
                       onRemove={removeSeat}
@@ -661,6 +747,64 @@ export function parseSeatsBody(body: unknown): ProtectedSeatsResponse | null {
     return null;
   }
   return body as ProtectedSeatsResponse;
+}
+
+/**
+ * W4d: the seats the page shows and edits from. `fresh` (a read taken
+ * after a refusal) is used only over the very snapshot it was read against
+ * and only while it carries the same signed list body: it updates the seat
+ * rows (a forced release never changes the list), never the list the
+ * bridge verified. A newer bridge snapshot always wins.
+ */
+export function seatsOver<T extends { list?: { body?: unknown } | null }>(
+  snap: T,
+  fresh: { basis: unknown; body: T } | null,
+): T {
+  if (fresh === null || fresh.basis !== snap) return snap;
+  const body = snap.list?.body;
+  return typeof body === "string" && fresh.body.list?.body === body
+    ? fresh.body
+    : snap;
+}
+
+/** A `SeatListNamesRemovedUsers` refusal the page remembers (W4d). */
+export interface RemovedRefusal {
+  channelId: string;
+  /** The signed list body the refused change was built from. */
+  listBody: string;
+  users: readonly string[];
+}
+
+/**
+ * The remembered refusal's ids while it still applies: same channel, same
+ * signed list (a newer list was built without them, or names them anew
+ * as an ordinary add). Else none.
+ */
+export function refusedFor(
+  r: RemovedRefusal | null,
+  channelId: string,
+  listBody: unknown,
+): readonly string[] {
+  if (r === null || r.channelId !== channelId) return [];
+  return typeof listBody === "string" && r.listBody === listBody ? r.users : [];
+}
+
+/**
+ * The user ids of a `SeatListNamesRemovedUsers` answer (a
+ * `protectedNoticeForError` result, kind `seat_list_names_removed_users`),
+ * or null for any other answer. Only ever leaves users off the next list;
+ * it never resubmits.
+ */
+export function removedUsersOfRefusal(ui: unknown): string[] | null {
+  if (typeof ui !== "object" || ui === null) return null;
+  const u = ui as { kind?: unknown; notice?: unknown; users?: unknown };
+  if (u.kind !== "notice" || u.notice !== "seat_list_names_removed_users") {
+    return null;
+  }
+  if (!Array.isArray(u.users)) return [];
+  return u.users.filter(
+    (id): id is string => typeof id === "string" && id.length > 0,
+  );
 }
 // protected-pure:end
 

@@ -13,6 +13,7 @@ import { Channel, HydratedChannel } from "stoat.js";
 import { styled } from "styled-system/jsx";
 
 import { useClient } from "@revolt/client";
+import { protectedActionsBlocked } from "@revolt/client/protectedShield";
 import {
   cachedChannels,
   threadsQueryKey,
@@ -99,7 +100,16 @@ export function ThreadsListSidebar(props: { channel: Channel }) {
         </Button>
       </Row>
 
-      <Show when={props.channel.havePermission("SendMessage")}>
+      {/* A thread title is server plaintext: no thread on a protected or
+          pinned channel (plan D11; the SDK refuses as a second key) */}
+      <Show
+        when={
+          !protectedActionsBlocked(
+            client().isProtectedChannel(props.channel.id),
+            "create_thread",
+          ) && props.channel.havePermission("SendMessage")
+        }
+      >
         <Button
           size="sm"
           variant="text"

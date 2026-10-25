@@ -10,7 +10,9 @@
  * - Signed bytes persist (D7c `protected-publish:<userId>:<channelId>`)
  *   BEFORE the PUT and are re-sent byte for byte until the publish resolves
  *   (`publishStep`): no attempt cap, a 429 is never resolving, and nothing
- *   new is signed while a publish is unresolved (`signAllowed`).
+ *   new is signed while a publish is unresolved (`signAllowed`). A seat
+ *   PUT's other 4xx (incl. `SeatListNamesRemovedUsers`) resolves it as
+ *   refused: never re-sent, never re-signed automatically.
  * - A protect is never taken at face value on a non-429 4xx: it is resolved
  *   by read-back (`resolveProtectReadBack`). The genesis self-pin happens
  *   only through `_seat_list_verify` on the read-back list.
@@ -538,6 +540,24 @@ async function publishSeats(ctx: Ctx, signed: SignedSeatList) {
     if (step.kind === "resolved_ok") break;
     // `resolved_refused` (a seat PUT 4xx is a genuine refusal); a
     // `read_back` never comes for op "seats", refuse it the same way.
+    // W2 C1 `SeatListNamesRemovedUsers` resolves like any other: these
+    // bytes are never re-sent and nothing is re-signed here. `_sign`
+    // persisted nothing and the D7c entry is gone, so the owner's next
+    // `setSeats` GETs and verifies the server's current list before it
+    // signs (no SeatListBehind); re-adding a removed user is a new growth.
+    if (
+      step.kind === "resolved_refused" &&
+      step.type === "SeatListNamesRemovedUsers" &&
+      answer.kind === "response"
+    ) {
+      const body = answer.response.body;
+      const users = isRecord(body) ? body.users : null;
+      // ids and a count only (D16)
+      ctx.port.log("warn", "[protected] seat list names removed users", {
+        channelId: ctx.channelId,
+        count: Array.isArray(users) ? users.length : 0,
+      });
+    }
     throw answer.kind === "response"
       ? serverFailure(answer.response)
       : clientFailure("publish_refused");

@@ -6,7 +6,9 @@
 // row without `encrypted` → marker; own send returns the server row for
 // `getOrCreate` + `noteOwnMessage`; decrypt markers and the one catch-up;
 // startup orphans confirmed, never re-sent. The plan 7 named mutation
-// controls in this module each have a test marked "control:".
+// controls in this module each have a test marked "control:". W4d (lane
+// L-MGR): a row is the own send only when it binds (X#4, C-X4);
+// `not_member` is refused without a retry (X#5, C-X5b).
 import assert from "node:assert/strict";
 import { beforeEach, test } from "node:test";
 
@@ -475,6 +477,54 @@ test("a 2xx without a readable row is not adopted: confirmed through the same by
   const out = await send(h);
   assert.equal(out.messageId, "01MSG1");
   assert.equal(h.encrypts.length, 1);
+});
+
+test("W4d X#4 (C-X4): a 2xx or confirm row naming another message is never adopted as the own send", async () => {
+  // The DS answers 2xx with someone else's payload under its id, then a
+  // confirm page holds our nonce in another channel and under another
+  // author: none of those is this send; the bound row is.
+  const forged2xx = { ...row("01FORGED", CID1), encrypted: payload(CID2) };
+  const h = harness({
+    post: [res(200, forged2xx), res(409, { type: "DuplicateNonce" })],
+    get: [
+      res(200, [
+        { ...row("01WRONGCH", CID1), channel: "01CHANNEL0000000000000000B" },
+        row("01WRONGAU", CID1, BOB),
+        row("01MSG1", CID1),
+      ]),
+    ],
+  });
+  const out = await send(h);
+  assert.equal(out.messageId, "01MSG1");
+  assert.equal(h.encrypts.length, 1, "never re-encrypted");
+  assert.deepEqual(posts(h)[0].body, posts(h)[1].body, "SAME bytes");
+  assert.equal(h.store.size, 0);
+
+  // Only forged rows: never delivered; DuplicateNonce absent → maybe_unsent.
+  const h2 = harness({
+    post: [res(200, forged2xx), res(409, { type: "DuplicateNonce" })],
+    get: [res(200, [forged2xx])],
+  });
+  await assert.rejects(send(h2), { source: "client", reason: "maybe_unsent" });
+});
+
+test("W4d X#5 (C-X5b): Resecuring not_member is refused at once: no refresh, no re-encrypt, the reason reaches the manager", async () => {
+  const h = harness({
+    post: [
+      res(409, { type: "ProtectedChannelResecuring", reason: "not_member" }),
+    ],
+  });
+  await assert.rejects(
+    send(h),
+    (e: { source: string; type: string; body: { reason: string } }) =>
+      e.source === "server" &&
+      e.type === "ProtectedChannelResecuring" &&
+      e.body.reason === "not_member",
+  );
+  assert.equal(h.encrypts.length, 1);
+  assert.equal(posts(h).length, 1);
+  assert.ok(!h.events.some((e) => e.startsWith("refresh")));
+  assert.equal(h.store.size, 0);
 });
 
 test("send store keys round-trip per user", () => {

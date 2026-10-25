@@ -44,7 +44,9 @@ interface SeatRow {
  * can view the channel); the server validates every seat (design 4.3 step
  * 5). The owner row is always checked and locked, current seats start
  * checked and may be removed, and `slotCap` caps the selection (null =
- * unknown: shown as unknown, never treated as 0 or unlimited).
+ * unknown: shown as unknown, never treated as 0 or unlimited). `current`
+ * never holds a user the server removed (the page leaves them out, W4d);
+ * `removed` and a refusal naming such users get the same treatment.
  *
  * Confirm hands the FULL new seat list (owner first) to `onConfirm`, which
  * signs and publishes it (D7 is the bridge's job; growth gets native's own
@@ -61,8 +63,6 @@ export function ProtectedSeatPickerModal(
 
   // The pinned props are fixed for the modal's life.
   // eslint-disable-next-line solid/reactivity
-  const current = new Set(props.current);
-  // eslint-disable-next-line solid/reactivity
   const slotCap = seatCapOf(props.slotCap);
 
   const ownerId = () => props.channel.server?.ownerId ?? null;
@@ -71,9 +71,20 @@ export function ProtectedSeatPickerModal(
     return owner !== null && client().user?.id === owner;
   };
 
+  // W4d: users the server removed whom the signed list still names: the
+  // page's `removed` prop at open, plus any a `SeatListNamesRemovedUsers`
+  // refusal names later. Left off (never selected, unlisted, never in a
+  // list), and a list without them counts as a change; nothing resubmits.
+  const [dropped, setDropped] = createSignal<ReadonlySet<string>>(
+    // eslint-disable-next-line solid/reactivity
+    new Set(seatDroppedIds(props.removed, ownerId())),
+  );
+  const currentIds = createMemo(() => seatWithout(props.current, dropped()));
+  const current = createMemo(() => new Set(currentIds()));
+
   const [selected, setSelected] = createSignal<ReadonlySet<string>>(
     // eslint-disable-next-line solid/reactivity
-    seatInitialSelection(props.current, ownerId()),
+    seatInitialSelection(currentIds(), ownerId()),
   );
   const [query, setQuery] = createSignal("");
   const [pending, setPending] = createSignal(false);
@@ -115,13 +126,15 @@ export function ProtectedSeatPickerModal(
       (m) => m.id.server === serverId,
     )) {
       const candidate = candidateOf(member);
-      if (!candidate || !seatListed(candidate, current, owner)) continue;
+      if (!candidate || !seatListed(candidate, current(), owner, dropped())) {
+        continue;
+      }
       byId.set(candidate.id, {
         candidate,
         name: member.displayName ?? candidate.id,
         avatar: member.animatedAvatarURL,
         withoutAccess:
-          current.has(candidate.id) &&
+          current().has(candidate.id) &&
           candidate.id !== owner &&
           !candidate.canView,
       });
@@ -130,7 +143,7 @@ export function ProtectedSeatPickerModal(
     // Seats whose member this client doesn't hold stay listed (and in the
     // returned list until the owner removes them): dropping them silently
     // would unseat people.
-    for (const id of owner === null ? props.current : [owner, ...current]) {
+    for (const id of owner === null ? currentIds() : [owner, ...current()]) {
       if (byId.has(id)) continue;
       const user = c.users.get(id);
       byId.set(id, {
@@ -146,7 +159,8 @@ export function ProtectedSeatPickerModal(
       });
     }
 
-    const rank = (id: string) => (id === owner ? 0 : current.has(id) ? 1 : 2);
+    const seatedNow = current();
+    const rank = (id: string) => (id === owner ? 0 : seatedNow.has(id) ? 1 : 2);
     return [...byId.values()].sort(
       (a, b) =>
         rank(a.candidate.id) - rank(b.candidate.id) ||
@@ -165,10 +179,12 @@ export function ProtectedSeatPickerModal(
       );
     });
     const seated = matched.filter(
-      (row) => row.candidate.id === ownerId() || current.has(row.candidate.id),
+      (row) =>
+        row.candidate.id === ownerId() || current().has(row.candidate.id),
     );
     const others = matched.filter(
-      (row) => row.candidate.id !== ownerId() && !current.has(row.candidate.id),
+      (row) =>
+        row.candidate.id !== ownerId() && !current().has(row.candidate.id),
     );
     return {
       rows: [...seated, ...others.slice(0, UNSEATED_ROW_LIMIT)],
@@ -180,16 +196,22 @@ export function ProtectedSeatPickerModal(
     const owner = ownerId();
     return owner === null
       ? selected().size
-      : seatFinalList(props.current, selected(), owner).length;
+      : seatFinalList(currentIds(), selected(), owner).length;
   };
 
   const blockOf = (row: SeatRow) =>
-    seatToggleBlock(row.candidate, selected(), current, ownerId(), slotCap);
+    seatToggleBlock(row.candidate, selected(), current(), ownerId(), slotCap);
 
   const canConfirm = () =>
     !pending() &&
     viewerIsOwner() &&
-    seatCanConfirm(props.current, selected(), ownerId(), slotCap);
+    seatCanConfirm(
+      currentIds(),
+      selected(),
+      ownerId(),
+      slotCap,
+      dropped().size > 0,
+    );
 
   function toggle(row: SeatRow) {
     if (pending() || blockOf(row) !== null) return;
@@ -214,13 +236,25 @@ export function ProtectedSeatPickerModal(
     return protectedNoticeForError(err, { op: "owner" });
   }
 
+  /** Display names for the refusal copy; null when not known here. */
+  function displayNames(userIds: readonly string[]): (string | null)[] {
+    const c = client();
+    return userIds.map((id) => {
+      const member = c.serverMembers.getByKey({
+        server: props.channel.serverId,
+        user: id,
+      });
+      return member?.displayName ?? c.users.get(id)?.displayName ?? null;
+    });
+  }
+
   async function confirm() {
     const owner = ownerId();
     if (!canConfirm() || owner === null) return;
     setPending(true);
     setError(null);
     try {
-      await props.onConfirm(seatFinalList(props.current, selected(), owner));
+      await props.onConfirm(seatFinalList(currentIds(), selected(), owner));
       props.onClose();
     } catch (err) {
       const ui = errorUiOf(err);
@@ -228,7 +262,14 @@ export function ProtectedSeatPickerModal(
       if (ui.kind !== "none") {
         console.error("[protected] seat change failed", { tag: ui.tag });
       }
-      setError(errorUiCopy(ui));
+      // W4d: deselect exactly the users the server named and keep them off
+      // (the copy says they were left off); the owner confirms again.
+      const removed = seatRefusalRemoved(ui, owner);
+      if (removed.length > 0) {
+        setDropped((prev) => new Set([...prev, ...removed]));
+        setSelected((prev) => new Set(seatWithout(prev, removed)));
+      }
+      setError(errorUiCopy(ui, { removedUserNames: displayNames }));
     } finally {
       setPending(false);
     }
@@ -399,14 +440,55 @@ function seatCapExceeded(count: number, slotCap: number | null): boolean {
   return slotCap !== null && count > slotCap;
 }
 
-/** Whether a row is listed: the owner and current seats always are. */
+/**
+ * Whether a row is listed: the owner and current seats always are; a user
+ * a removed-users refusal named (`dropped`, W4d) never is, until a list
+ * without them lands (re-adding is then an ordinary add).
+ */
 function seatListed(
   c: SeatCandidate,
   current: ReadonlySet<string>,
   ownerId: string | null,
+  dropped: ReadonlySet<string> = new Set(),
 ): boolean {
-  if (c.id === ownerId || current.has(c.id)) return true;
+  if (c.id === ownerId) return true;
+  if (dropped.has(c.id)) return false;
+  if (current.has(c.id)) return true;
   return !c.bot && c.canView;
+}
+
+/** `ids` without any of `drop`, in order (W4d). */
+function seatWithout(ids: Iterable<string>, drop: Iterable<string>): string[] {
+  const gone = new Set(drop);
+  return [...ids].filter((id) => !gone.has(id));
+}
+
+/**
+ * W4d (W2 C1): the users a `SeatListNamesRemovedUsers` refusal names (the
+ * `protectedNoticeForError` answer, kind `seat_list_names_removed_users`),
+ * never the owner; empty for any other answer.
+ */
+function seatRefusalRemoved(ui: unknown, ownerId: string | null): string[] {
+  if (typeof ui !== "object" || ui === null) return [];
+  const u = ui as { kind?: unknown; notice?: unknown; users?: unknown };
+  if (u.kind !== "notice" || u.notice !== "seat_list_names_removed_users") {
+    return [];
+  }
+  return seatDroppedIds(u.users, ownerId);
+}
+
+/**
+ * W4d: removed-user ids (the `removed` prop, a refusal's `users`): the
+ * non-empty strings, deduplicated, never the owner; [] when not an array.
+ */
+function seatDroppedIds(ids: unknown, ownerId: string | null): string[] {
+  if (!Array.isArray(ids)) return [];
+  const out: string[] = [];
+  for (const id of ids) {
+    if (typeof id !== "string" || id.length === 0 || id === ownerId) continue;
+    if (!out.includes(id)) out.push(id);
+  }
+  return out;
 }
 
 /** The starting selection: the owner plus every current seat. */
@@ -475,19 +557,22 @@ function seatToggled(selected: ReadonlySet<string>, id: string): Set<string> {
  * by the cap (an owner over a lowered cap must be able to shrink).
  * Genesis (`current` empty, the protect flow): any list within a known cap
  * may be confirmed, the owner-only list included (design 6.3 "Protect").
+ * `cleanup` (W4d): a refusal named removed users the server's list still
+ * holds, so the list without them is a change even when nothing else is.
  */
 function seatCanConfirm(
   current: readonly string[],
   selected: ReadonlySet<string>,
   ownerId: string | null,
   slotCap: number | null,
+  cleanup = false,
 ): boolean {
   if (ownerId === null) return false;
   const list = seatFinalList(current, selected, ownerId);
   if (current.length === 0) return !seatCapExceeded(list.length, slotCap);
   const before = new Set([ownerId, ...current]);
   const adds = list.some((id) => !before.has(id));
-  if (!adds && list.length === before.size) return false;
+  if (!adds && list.length === before.size) return cleanup;
   return !(adds && seatCapExceeded(list.length, slotCap));
 }
 // protected-pure:end

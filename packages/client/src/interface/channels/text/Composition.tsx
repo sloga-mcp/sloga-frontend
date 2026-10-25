@@ -106,6 +106,15 @@ interface Props {
 }
 
 /**
+ * Protected channels whose `maybe_unsent` notice (plan D10) was dismissed
+ * in this session. Module scope so a dismissal outlives a composer remount
+ * (channel switch, chat window); never persisted.
+ */
+const [maybeUnsentDismissed, setMaybeUnsentDismissed] = createSignal<
+  ReadonlySet<string>
+>(new Set());
+
+/**
  * Message composition engine
  */
 export function MessageComposition(props: Props) {
@@ -289,6 +298,22 @@ export function MessageComposition(props: Props) {
       shield.notice ?? shieldPresentation(shield.state).notice ?? "unverified"
     );
   };
+
+  /**
+   * D10: the manager found no delivered row for an orphan send. Shown in
+   * every shield state until dismissed for this channel (the manager's
+   * flag stays set for the session).
+   */
+  const maybeUnsentShown = () =>
+    protectedChannel() &&
+    protectedShield()?.view?.maybeUnsent === true &&
+    !maybeUnsentDismissed().has(props.channel.id);
+
+  /** Hide the D10 notice for this channel until the next session. */
+  function dismissMaybeUnsent() {
+    const id = props.channel.id;
+    setMaybeUnsentDismissed((prev) => new Set(prev).add(id));
+  }
 
   /**
    * Whether features that put new plaintext on the server (polls, scheduled
@@ -1871,6 +1896,15 @@ export function MessageComposition(props: Props) {
           </Show>
         </ProtectedBanner>
       </Show>
+      <Show when={maybeUnsentShown()}>
+        <ProtectedSendNotice role="status">
+          <Symbol style={{ "font-size": "1rem" }}>error</Symbol>
+          <span>{noticeCopy("maybe_unsent")}</span>
+          <ProtectedBannerAction type="button" onClick={dismissMaybeUnsent}>
+            {t`Dismiss`}
+          </ProtectedBannerAction>
+        </ProtectedSendNotice>
+      </Show>
       <Show when={state.draft.hasAdditionalElements(props.channel.id)}>
         <Keybind
           keybind={KeybindAction.CHAT_REMOVE_COMPOSITION_ELEMENT}
@@ -2833,6 +2867,22 @@ const ProtectedBanner = styled("div", {
     fontWeight: "600",
     color:
       "color-mix(in srgb, var(--sloga-protected-alert) 70%, var(--md-sys-color-on-surface))",
+  },
+});
+
+/**
+ * Neutral notice above the composer for a send whose outcome is unknown
+ * (plan D10 `maybe_unsent`): not a shield state, so no shield hue
+ */
+const ProtectedSendNotice = styled("div", {
+  base: {
+    display: "flex",
+    alignItems: "center",
+    gap: "var(--gap-sm)",
+    padding: "4px 12px",
+    fontSize: "0.75rem",
+    fontWeight: "600",
+    color: "var(--md-sys-color-on-surface-variant)",
   },
 });
 

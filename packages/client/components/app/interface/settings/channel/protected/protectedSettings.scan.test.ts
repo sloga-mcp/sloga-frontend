@@ -28,7 +28,13 @@
 //      onConfirm rejects so the picker shows the notice; never .message;
 //  S9  the only raw request is a read-only seats GET; device caps come
 //      from the seats read or the flag, never invented;
-//  S10 C0 copy, no handover UI, no blank-page traps.
+//  S10 C0 copy, no handover UI, no blank-page traps;
+//  S12 W4d (W2 C1): a user the server removed whom the signed list still
+//      names is never in the picker's `current` (C-SET1);
+//  S13 W4d: "Remove seat" never submits a list naming another
+//      server-removed user (C-SET2); they show read-only;
+//  S14 W4d: a `SeatListNamesRemovedUsers` refusal leaves exactly those
+//      users off the next list and re-reads; it never resubmits (C-SET3).
 //
 // Point `PROTECTED_SETTINGS_FILE`, `PROTECTED_SEAT_LIST_FILE` or
 // `PROTECTED_CHANNEL_SETTINGS_FILE` at another copy (a known-bad control)
@@ -103,13 +109,27 @@ interface PageRules {
     | { ok: true; slotCap: number; deviceCap: number }
     | { ok: false; block: string };
   parseSeatsBody(b: unknown): unknown;
+  seatsOver<T>(snap: T, fresh: { basis: unknown; body: T } | null): T;
+  refusedFor(
+    r: { channelId: string; listBody: string; users: string[] } | null,
+    channelId: string,
+    listBody: unknown,
+  ): readonly string[];
+  removedUsersOfRefusal(ui: unknown): string[] | null;
 }
 interface ListRules {
   seatCount(v: unknown): number | null;
   seatRows(
     seats: unknown,
     ownerId: string,
+    removed?: string[],
   ): { userId: string; owner: boolean; withoutAccess: boolean }[];
+  serverRemovedSeatIds(
+    r: Record<string, unknown>,
+    ownerId: string,
+    reported?: readonly string[],
+  ): string[];
+  editableSeatIds(r: Record<string, unknown>, removed: string[]): string[];
   seatsUsedOf(r: Record<string, unknown>): number;
   deviceCapLine(v: unknown): { kind: string; max?: number };
   coolingRows(c: unknown): { userId: string; until: string | null }[];
@@ -494,9 +514,10 @@ describe("protected channel settings (C11)", () => {
     ]);
     assert.equal(l.coolingRows(null).length, 0);
     // Wiring: Remove → seatsAfterRemoval → setSeats; never on the owner row.
+    // W4d: from the editable seats (S13), no longer `currentSeatIds(s)`.
     assert.match(
       PAGE_BODY,
-      /const next = seatsAfterRemoval\(currentSeatIds\(s\), owner, userId\);/,
+      /const next = seatsAfterRemoval\(editableIds\(\), owner, userId\);/,
     );
     assert.match(PAGE_BODY, /void runSetSeats\(next, false\);/);
     assert.equal(
@@ -561,7 +582,11 @@ describe("protected channel settings (C11)", () => {
       PAGE_BODY,
       /return protectedNoticeForError\(err, \{ op: "owner" \}\);/,
     );
-    assert.match(PAGE_BODY, /return errorUiCopy\(ui\);/);
+    // W4d: the removed-users copy names who was left off when it can.
+    assert.match(
+      PAGE_BODY,
+      /return errorUiCopy\(ui, \{ removedUserNames: displayNames \}\);/,
+    );
     assert.match(
       PAGE_BODY,
       /if \(isClientReason\(err, "publish_in_flight"\)\) \{\s*return settingsCopy\.publishInFlight\(\);/,
@@ -694,6 +719,11 @@ describe("protected channel settings (C11)", () => {
       assert.doesNotMatch(src, /features\/legacy/, `${tag}: legacy barrel`);
     }
     assert.doesNotMatch(REGISTRY, /\bstyled\(\s*[A-Za-z_$]/);
+    // W4d: the removed group reuses L-ERR's copy (no new msgid here).
+    assert.ok(
+      LIST_BODY.includes('noticeCopy("seat_list_names_removed_users")'),
+      "list: removed-users copy not used",
+    );
     assert.match(
       REGISTRY,
       /import \{ Symbol \} from "@revolt\/ui\/components\/utils\/Symbol";/,
@@ -710,5 +740,220 @@ describe("protected channel settings (C11)", () => {
     ]) {
       assert.ok(LIST.includes(`from "${file}";`), `list: ${file} by file path`);
     }
+  });
+
+  // W4d (W2 C1). A forced release (kick, ban, leave, account deletion)
+  // frees the seat but never edits the signed list; a PUT still naming
+  // such a user is refused 400 `SeatListNamesRemovedUsers {users}`.
+  // Signed list O,A,B,X,Y; X cooling, Y's cooldown over (in neither array).
+  const SIGNED =
+    "sloga-seat-list-v1\nv:1\nchannel_id:C\nversion:4\ndevice_cap:5\nissued_at:1\nsigner_user_id:O\nsigner_device_id:d\nseats:A,B,O,X,Y";
+  const KICKED = {
+    list: { body: SIGNED },
+    seats: [{ user_id: "O" }, { user_id: "A" }, { user_id: "B" }],
+    cooling: [{ user_id: "X", cooldown_until: "2026-11-01T00:00:00Z" }],
+  };
+
+  /** One component-scope function of the page, `function <name>(` to `}`. */
+  function pageFn(name: string): string {
+    const from = PAGE_BODY.indexOf(`function ${name}(`);
+    assert.ok(from !== -1, `${name} missing`);
+    const to = PAGE_BODY.indexOf("\n  }\n", from);
+    assert.ok(to > from, `${name}: end missing`);
+    return PAGE_BODY.slice(from, to);
+  }
+
+  it("S12 a server-removed user is never in the picker's current (C-SET1)", async () => {
+    const l = await listRules;
+    const removed = l.serverRemovedSeatIds(KICKED, "O");
+    assert.deepEqual(removed, ["X", "Y"], "cooling and expired alike");
+    assert.deepEqual(l.editableSeatIds(KICKED, removed), ["A", "B", "O"]);
+    // The owner (the signer) is never removed, even without a seat row.
+    assert.deepEqual(
+      l.serverRemovedSeatIds({ ...KICKED, seats: [{ user_id: "A" }] }, "O"),
+      ["B", "X", "Y"],
+    );
+    // Nothing removed: the editable seats are the signed list's.
+    const all = {
+      list: { body: SIGNED },
+      seats: ["A", "B", "O", "X", "Y"].map((user_id) => ({ user_id })),
+    };
+    assert.deepEqual(l.serverRemovedSeatIds(all, "O"), []);
+    assert.deepEqual(l.editableSeatIds(all, []), ["A", "B", "O", "X", "Y"]);
+    // A refusal's ids count while the list names them, even over a stale
+    // read that still shows the seat; never an id the list doesn't name.
+    assert.deepEqual(l.serverRemovedSeatIds(all, "O", ["B", "Z", "O"]), ["B"]);
+    // Unreadable reads never leave anyone off.
+    assert.deepEqual(
+      l.serverRemovedSeatIds({ list: { body: SIGNED }, seats: null }, "O"),
+      [],
+    );
+    assert.deepEqual(
+      l.serverRemovedSeatIds({ list: null, seats: [{ user_id: "A" }] }, "O"),
+      [],
+    );
+    assert.deepEqual(
+      l.serverRemovedSeatIds({ list: { body: "nope" }, seats: [] }, "O"),
+      [],
+    );
+    // Wiring: the picker's `current` is the editable list, the removed set
+    // comes from the shown seats plus the remembered refusal.
+    assert.match(PAGE_BODY, /current: editableIds\(\),/);
+    // C-SET4: the picker also learns who is removed, before any refusal.
+    assert.match(
+      PAGE_BODY,
+      /onConfirm: \(userIds\) => runSetSeats\(userIds, true\),\s*removed: removedIds\(\),/,
+    );
+    assert.doesNotMatch(PAGE_BODY, /current: currentSeatIds\(/);
+    assert.doesNotMatch(
+      PAGE,
+      /\bcurrentSeatIds\(/,
+      "the page never edits from the raw signed list",
+    );
+    assert.match(
+      PAGE_BODY,
+      /return s === null \? \[\] : editableSeatIds\(s, removedIds\(\)\);/,
+    );
+    assert.match(
+      PAGE_BODY,
+      /const reported = refusedFor\(refused\(\), props\.channel\.id, s\.list\?\.body\);\s*return serverRemovedSeatIds\(s, owner, reported\);/,
+    );
+  });
+
+  it("S13 Remove seat never names another server-removed user (C-SET2)", async () => {
+    const l = await listRules;
+    const removed = l.serverRemovedSeatIds(KICKED, "O");
+    // Two removed users: the old base (the signed list) re-sent both.
+    assert.deepEqual(
+      l.seatsAfterRemoval(l.editableSeatIds(KICKED, removed), "O", "A"),
+      ["O", "B"],
+    );
+    assert.equal(
+      l.seatsAfterRemoval(l.editableSeatIds(KICKED, removed), "O", "X"),
+      null,
+      "a removed user has no Remove of their own",
+    );
+    // They show read-only: never as seated rows, never with Remove.
+    assert.deepEqual(
+      l.seatRows(KICKED.seats, "O", removed).map((r) => r.userId),
+      ["O", "A", "B"],
+    );
+    const staleRows = [{ user_id: "O" }, { user_id: "A" }, { user_id: "X" }];
+    assert.deepEqual(
+      l.seatRows(staleRows, "O", ["X", "O"]).map((r) => r.userId),
+      ["O", "A"],
+      "a stale row of a removed user is hidden; the owner never is",
+    );
+    assert.match(
+      LIST_BODY,
+      /seatRows\(props\.seats\.seats, props\.ownerId, props\.removed\)/,
+    );
+    const from = LIST_BODY.indexOf("<Show when={props.removed.length > 0}>");
+    const to = LIST_BODY.indexOf("</Show>", LIST_BODY.indexOf("</For>", from));
+    assert.ok(from !== -1 && to > from, "removed group missing");
+    const group = LIST_BODY.slice(from, to);
+    assert.match(group, /<For each=\{props\.removed\}>/);
+    assert.doesNotMatch(group, /onRemove|<Button|setConfirmId/, "read-only");
+    assert.match(PAGE_BODY, /removed=\{removedIds\(\)\}/);
+  });
+
+  it("S14 a removed-users refusal leaves exactly those off; never resubmits (C-SET3)", async () => {
+    const p = await pageRules;
+    const ui = {
+      kind: "notice",
+      notice: "seat_list_names_removed_users",
+      max: null,
+      tag: "SeatListNamesRemovedUsers",
+      users: ["X", "", 5, "Y"],
+    };
+    assert.deepEqual(p.removedUsersOfRefusal(ui), ["X", "Y"]);
+    assert.deepEqual(p.removedUsersOfRefusal({ ...ui, users: undefined }), []);
+    assert.equal(
+      p.removedUsersOfRefusal({ ...ui, notice: "network_error" }),
+      null,
+    );
+    assert.equal(
+      p.removedUsersOfRefusal({ kind: "none", tag: "Declined" }),
+      null,
+    );
+    assert.equal(p.removedUsersOfRefusal(null), null);
+    // The remembered ids apply to the same channel and signed list only.
+    const r = { channelId: "C", listBody: SIGNED, users: ["X"] };
+    assert.deepEqual(p.refusedFor(r, "C", SIGNED), ["X"]);
+    assert.deepEqual(p.refusedFor(r, "C2", SIGNED), []);
+    assert.deepEqual(p.refusedFor(r, "C", `${SIGNED}\n`), [], "newer list");
+    assert.deepEqual(p.refusedFor(r, "C", undefined), []);
+    assert.deepEqual(p.refusedFor(null, "C", SIGNED), []);
+    // The re-read only replaces the seat rows of the very snapshot it was
+    // read over, with the same signed list; a newer snapshot wins.
+    const snap = { list: { body: SIGNED }, seats: [{ user_id: "X" }] };
+    const body = { list: { body: SIGNED }, seats: [] };
+    assert.equal(p.seatsOver(snap, { basis: snap, body }), body);
+    assert.equal(p.seatsOver(snap, null), snap);
+    assert.equal(p.seatsOver(snap, { basis: { ...snap }, body }), snap);
+    assert.equal(
+      p.seatsOver(snap, {
+        basis: snap,
+        body: { ...body, list: { body: `${SIGNED}x` } },
+      }),
+      snap,
+      "a different signed list is never adopted",
+    );
+    const unlisted = { list: null, seats: [] };
+    assert.equal(
+      p.seatsOver(unlisted, {
+        basis: unlisted,
+        body: { list: null, seats: [{ user_id: "X" }] },
+      }),
+      unlisted,
+      "no signed list: nothing to scope the re-read to",
+    );
+    // Wiring: noted on the refusal path, then the error; no resubmission
+    // anywhere on it.
+    assert.match(
+      PAGE_BODY,
+      /\} catch \(err\) \{\s*noteRemovedRefusal\(err, listBody\);\s*setError\(errorText\(err\)\);\s*if \(rethrow\) throw err;\s*return;\s*\}/,
+    );
+    assert.match(PAGE_BODY, /const listBody = seats\(\)\?\.list\?\.body;/);
+    const note = pageFn("noteRemovedRefusal");
+    assert.match(
+      note,
+      /const users = removedUsersOfRefusal\(errorUiOf\(err\)\);/,
+    );
+    assert.match(
+      note,
+      /setRefused\(\{ channelId: props\.channel\.id, listBody, users \}\);\s*void refreshSeatsAfterRefusal\(\);/,
+    );
+    const refresh = pageFn("refreshSeatsAfterRefusal");
+    for (const [tag, src] of [
+      ["noteRemovedRefusal", note],
+      ["refreshSeatsAfterRefusal", refresh],
+    ] as const) {
+      assert.doesNotMatch(
+        src,
+        /runSetSeats|setSeats|\.protect\(|openSeatPicker|removeSeat|onConfirm/,
+        `${tag} must never resubmit`,
+      );
+    }
+    assert.equal(
+      (PAGE_BODY.match(/\bapi\.setSeats\(/g) ?? []).length,
+      1,
+      "one setSeats call site",
+    );
+    assert.equal(
+      (PAGE_BODY.match(/\brunSetSeats\(/g) ?? []).length,
+      3,
+      "runSetSeats: its declaration, the picker's onConfirm, Remove seat",
+    );
+    // The re-read is the page's one read-only GET, over the snapshot.
+    assert.match(refresh, /await fetchSeatsBody\(\);/);
+    assert.match(
+      refresh,
+      /if \(generation !== freshGeneration \|\| snapshot\(\) !== basis\) return;/,
+    );
+    assert.match(
+      PAGE_BODY,
+      /if \(isProtected\(\) && snap !== null\) return seatsOver\(snap, fresh\(\)\);/,
+    );
   });
 });

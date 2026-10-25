@@ -21,9 +21,11 @@
 import { protectedNoticeForError } from "./protectedShield.ts";
 import {
   type SendAnswer,
+  type SendContext,
   type SendTrigger,
   classifySendAnswer,
   confirmAfterId,
+  ownSendRowBinds,
   publishBackoffMs,
 } from "./protectedTextPolicy.ts";
 import type {
@@ -173,9 +175,18 @@ function sendBody(e: TextEncrypted, silent: boolean) {
     : { nonce: e.nonce, encrypted: e.encrypted };
 }
 
-function outcomeOf(raw: unknown, cid: string): ProtectedSendOutcome | null {
-  if (!isRecord(raw) || typeof raw._id !== "string") return null;
-  return { messageId: raw._id, cid, raw };
+/**
+ * The delivered outcome, only for a row bound to this send (W4d X#4: this
+ * channel, this author, nonce === cid, `encrypted` equal to what was sent).
+ * The policy already refuses an unbound row; this re-check keeps a policy
+ * change from ever handing the manager another message's id.
+ */
+function outcomeOf(
+  raw: unknown,
+  ctx: SendContext,
+): ProtectedSendOutcome | null {
+  if (!ownSendRowBinds(raw, ctx) || !isRecord(raw)) return null;
+  return { messageId: raw._id as string, cid: ctx.cid, raw };
 }
 
 function serverFailure(
@@ -341,16 +352,19 @@ export async function encryptAndSend(
 
   let answer = await post();
   for (;;) {
-    const action = classifySendAnswer(answer, {
+    const ctx: SendContext = {
       selfUserId: port.selfUserId,
+      channelId,
       cid: current().nonce,
+      encrypted: current().encrypted,
       priorUnknown,
       resecureRetried,
       failures,
-    });
+    };
+    const action = classifySendAnswer(answer, ctx);
     switch (action.kind) {
       case "delivered": {
-        const outcome = outcomeOf(action.raw, current().nonce);
+        const outcome = outcomeOf(action.raw, ctx);
         if (outcome !== null) {
           deleteEntry(port, k);
           return outcome;

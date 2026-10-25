@@ -16,18 +16,28 @@
 // `{intent, key_packages}`; the package is PUT before the intent alone is
 // posted (429/5xx retried, other 4xx never posts); every `_commit_won`
 // carries `rejoinIntents` (plain win: this commit's; refetch: the DS's).
-// Controls C-F1a/b/c target the tests named "F1 ...".
+// Controls C-F1a/b/c target the tests named "F1 ...". W4d (lane L-MGR, the
+// tests named "W4d ..."): sticky loud groupError (X#1), resume of a
+// persisted stage (X#2), no false rollback (X#3), own-send binding and the
+// native own view (X#4), not_member (X#5), member_added before every join
+// (X#6), parked dedupe (X#9), un-strip (F#3), commit cap refusals.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { MlsJoinRequest, MlsMemberDevice } from "./e2ee";
-import { computeShieldState, shieldInputsFromView } from "./protectedShield.ts";
+import {
+  computeShieldState,
+  protectedNoticeForError,
+  shieldInputsFromView,
+} from "./protectedShield.ts";
 import {
   type ProtectedTextPortExtensions,
   FIRST_SIGHT_PER_MINUTE,
   KEY_PACKAGE_PUT_429_BUDGET,
   ProtectedTextManager,
   REFETCH_403_PARK_BUDGET,
+  STALE_SEATS_REFETCH_BUDGET,
+  STICKY_GROUP_ERRORS,
   WON_ROW_READ_BUDGET,
 } from "./protectedText.ts";
 import { textGroupId } from "./protectedTextIds.ts";
@@ -226,6 +236,29 @@ function ok(body: unknown, status = 200): TextApiResponse {
   return { status, resetAfterMs: null, body };
 }
 
+/** The `encrypted` payload of the fake own send. */
+const SENT_PAYLOAD = {
+  v: 1 as const,
+  group_id: G0,
+  epoch: 3,
+  sender_device_id: DEV,
+  nonce: "AEAD",
+  ciphertext: "CT",
+  sig: "SIG",
+};
+
+/** The server row a delivered own send answers (B4 checked the binding). */
+function sentRow(ch = CH, over: Record<string, unknown> = {}) {
+  return {
+    _id: "MSENT",
+    channel: ch,
+    author: SELF,
+    nonce: CID1,
+    encrypted: SENT_PAYLOAD,
+    ...over,
+  };
+}
+
 /** `_join`'s n-th answer: a fresh one-time package per intent (W3). */
 function joinIntent(n: number): TextJoinIntent {
   const ref = `KPR-${n}`;
@@ -321,6 +354,7 @@ class Env implements ProtectedTextPort, ProtectedTextPortExtensions {
   msgViews = new Map<string, ProtectedMessageView>();
   markers: TimelineMarker[] = [];
   decrypts: string[] = [];
+  decryptCalls: { id: string; live: boolean }[] = [];
   sends: string[] = [];
   joins = 0;
   /** Native commands and courier calls, in call order. */
@@ -676,12 +710,13 @@ function fakeDeps(
       ...over.owner,
     },
     messages: {
-      encryptAndSend: async (_ops, _port, _ch, text) => {
+      encryptAndSend: async (_ops, _port, ch, text) => {
         env.sends.push(text);
-        return { messageId: "MSENT", cid: CID1, raw: { _id: "MSENT" } };
+        return { messageId: "MSENT", cid: CID1, raw: sentRow(ch) };
       },
-      decryptRow: async (_ops, _port, row) => {
+      decryptRow: async (_ops, _port, row, live) => {
         env.decrypts.push(row.id);
+        env.decryptCalls.push({ id: row.id, live });
         return {
           status: "ok",
           text: "decrypted",
@@ -781,7 +816,9 @@ test("protect → genesis create → seat → admit → message", async () => {
     rejoinIntents: [],
   });
 
-  // Message: live row decrypted through B4; own send uses typed text.
+  // Message: live row decrypted through B4. The own send's view comes from
+  // ONE native decrypt of the delivered row (live: false; W4d X#4 replaced
+  // the typed-plaintext view), and its live echo is served from that view.
   m.onMessage(
     { id: "M1", channelId: CH, authorId: PEER, nonce: CID2, encrypted: null },
     true,
@@ -791,19 +828,27 @@ test("protect → genesis create → seat → admit → message", async () => {
   const out = await m.send(CH, "hello", [], false, "k1");
   assert.equal(out.messageId, "MSENT");
   const own = env.msgViews.get("MSENT");
-  assert.ok(own?.status === "ok" && own.text === "hello");
+  assert.ok(own?.status === "ok" && own.text === "decrypted", "native view");
+  assert.deepEqual(
+    env.decryptCalls.filter((c) => c.id === "MSENT"),
+    [{ id: "MSENT", live: false }],
+  );
   m.onMessage(
     {
       id: "MSENT",
       channelId: CH,
       authorId: SELF,
       nonce: CID1,
-      encrypted: null,
+      encrypted: SENT_PAYLOAD,
     },
     true,
   );
   await env.advance(0);
-  assert.equal(env.decrypts.includes("MSENT"), false, "own echo deduped");
+  assert.equal(
+    env.decrypts.filter((id) => id === "MSENT").length,
+    1,
+    "own echo deduped",
+  );
   m.dispose();
 });
 
@@ -1387,8 +1432,14 @@ test("join: member_added at/after our intent stops the retries", async () => {
   });
   await env.advance(200_000);
   assert.equal(env.api$("POST", /join_intent$/).length, 1);
-  await assert.rejects(p);
-  assert.equal(env.views.get(CH)?.welcomeRetriesExhausted, false);
+  await assert.rejects(
+    p,
+    (e: { reason?: string }) => e.reason === "welcome_pending",
+  );
+  // W4d X#6 (was `false`): the bounded Welcome window ran out, so the join
+  // is stalled LOUD (9.1 6d) instead of being restarted by the next refresh.
+  assert.equal(env.views.get(CH)?.welcomeRetriesExhausted, true);
+  assert.equal(env.shield(), "unverified");
   m.dispose();
 });
 
@@ -1843,6 +1894,18 @@ test("ChannelDelete (close) keeps state; only the refresh timer goes", async () 
   m.dispose();
 });
 
+/** A confirm-page row bound to a stored orphan `{nonce: CID1, encrypted: {}}`. */
+function orphanRow(over: Record<string, unknown> = {}) {
+  return {
+    _id: "MX",
+    channel: CH,
+    author: SELF,
+    nonce: CID1,
+    encrypted: {},
+    ...over,
+  };
+}
+
 test("control RC NEW-6: orphan protected-send entries are resolved at start", async () => {
   const env = new Env();
   const key = (k: string) => `protected-send:${SELF}:${CH}:${k}`;
@@ -1853,7 +1916,7 @@ test("control RC NEW-6: orphan protected-send entries are resolved at start", as
   env.liveKeys.add("k3");
   env.routes.push((method, path) => {
     if (method === "GET" && path.startsWith(`/channels/${CH}/messages?`)) {
-      return ok([{ _id: "MX", author: SELF, nonce: CID1 }]);
+      return ok([orphanRow()]);
     }
     return undefined;
   });
@@ -2170,7 +2233,7 @@ test("rescanOrphans: skipped while the outbox throws, then resolves the orphan e
   env.outboxThrows = true;
   env.routes.push((method, path) =>
     method === "GET" && path.startsWith(`/channels/${CH}/messages?`)
-      ? ok([{ _id: "MX", author: SELF, nonce: CID1 }])
+      ? ok([orphanRow()])
       : undefined,
   );
   const m = make(env);
@@ -2189,4 +2252,651 @@ test("rescanOrphans: skipped while the outbox throws, then resolves the orphan e
   m.dispose();
   await m.rescanOrphans();
   assert.equal(confirms(), 1, "no-op after dispose");
+});
+
+// ---------------------------------------------------------------------------
+// W4d fix round (lane L-MGR). Named controls C-X1 ... C-F3 and C-MGRcap each
+// turn the test carrying their name red (literal patches on temp copies;
+// the c3381567 base fails them too; see the lane report).
+// ---------------------------------------------------------------------------
+
+function processScript(
+  env: Env,
+  script: Record<string, () => TextProcessOutcome>,
+) {
+  env.handlers.e2ee_text_process = (a) => {
+    const f = script[a.envelope.id];
+    if (!f) throw { type: "storage" };
+    return f();
+  };
+}
+
+const fail = (type: string) => () => {
+  throw { type, group_id: G0 };
+};
+
+/** A seated user's join intent from a device not yet in the group. */
+function newDeviceRequest(signature: string): MlsJoinRequest {
+  return { ...joinRequest(signature), device_id: "dev-peer-new" };
+}
+
+test("W4d X#1 (C-X1): a loud poisoned-path groupError is sticky per group until a higher-generation welcome_joined", async () => {
+  assert.ok(STICKY_GROUP_ERRORS.includes("commit_declaration_mismatch"));
+  assert.equal(STICKY_GROUP_ERRORS.includes("owner_changed"), false);
+  for (const tag of STICKY_GROUP_ERRORS) {
+    const env = new Env();
+    processScript(env, {
+      E1: fail(tag),
+      E2: fail("mls_poisoned_epoch"),
+      E3: () => outcome({ epoch: 4 }),
+      E4: () => outcome({ kind: "duplicate", epoch: 4 }),
+      W0: () => outcome({ kind: "welcome_joined", epoch: 4 }),
+      W1: () => outcome({ kind: "welcome_joined", group_id: G1, epoch: 0 }),
+    });
+    const m = make(env);
+    await m.refresh(CH, "open");
+    const step = async (id: string, over: Partial<TextEnvelope> = {}) => {
+      m.onEnvelope(envelope(id, 4, over));
+      await env.advance(0);
+      return env.views.get(CH)?.groupError ?? null;
+    };
+    assert.equal(await step("E1"), tag, tag);
+    assert.equal(env.shield(), "unverified", tag);
+    // Benign tag, applied commit, duplicate, same-generation welcome: kept.
+    assert.equal(await step("E2"), tag, `${tag}: mls_poisoned_epoch`);
+    assert.equal(await step("E3"), tag, `${tag}: commit_applied`);
+    assert.equal(await step("E4"), tag, `${tag}: duplicate`);
+    const w0 = { content_type: "mls_welcome" as const };
+    assert.equal(await step("W0", w0), tag, `${tag}: same generation`);
+    assert.equal(env.shield(), "unverified", `${tag}: still loud`);
+    // Successor joined (generation 1 > 0): cleared.
+    const w1 = { content_type: "mls_welcome" as const, group_id: G1 };
+    assert.equal(await step("W1", w1), null, `${tag}: successor`);
+    m.dispose();
+  }
+
+  // A benign tag alone is still recorded and cleared as before.
+  const env2 = new Env();
+  processScript(env2, {
+    E1: fail("mls_poisoned_epoch"),
+    E2: () => outcome({ epoch: 4 }),
+  });
+  const m2 = make(env2);
+  await m2.refresh(CH, "open");
+  m2.onEnvelope(envelope("E1", 4));
+  await env2.advance(0);
+  assert.equal(env2.views.get(CH)?.groupError, "mls_poisoned_epoch");
+  m2.onEnvelope(envelope("E2", 4));
+  await env2.advance(0);
+  assert.equal(env2.views.get(CH)?.groupError, null);
+  m2.dispose();
+
+  // This device's own successor create (D21) accepted: cleared too.
+  const env3 = new Env();
+  processScript(env3, { E1: fail("duplicate_leaf") });
+  const m3 = make(env3);
+  await m3.refresh(CH, "open");
+  m3.onEnvelope(envelope("E1", 4));
+  await env3.advance(0);
+  assert.equal(env3.views.get(CH)?.groupError, "duplicate_leaf");
+  await m3.createGroup(CH, G0);
+  await env3.advance(0);
+  assert.equal(env3.views.get(CH)?.groupError, null);
+  m3.dispose();
+});
+
+test("W4d X#2 (C-X2a): a persisted own commit stage is resumed at seed (restart / rebuild), row fetched first", async () => {
+  const env = new Env();
+  env.pending = { epoch: 4, commit_b64: "PERSISTED" };
+  env.rows.push({ ...ownRow(4, "PERSISTED"), rejoin_intents: [] });
+  const m = make(env);
+  m.channelProtected(CH);
+  await env.advance(0);
+  await m.start();
+  await env.advance(1_000);
+  assert.deepEqual(env.calls("e2ee_text_commit_won"), [
+    {
+      groupId: G0,
+      wonEpoch: 4,
+      storedCommitB64: "PERSISTED",
+      rejoinIntents: [],
+    },
+  ]);
+  assert.equal(env.api$("POST", /\/commits$/).length, 0, "row existed");
+  const fetched = at(env, /^GET \/mls\/groups\/[0-9a-f]+\/commits\?/);
+  const seats = at(env, /^GET \/channels\/[^/]+\/seats$/);
+  assert.ok(fetched >= 0, "fetched {group}:{epoch} first");
+  assert.ok(seats < 0 || fetched < seats, "from the seed, not a refresh");
+  assert.equal(env.calls("e2ee_text_commit_lost").length, 0);
+  m.dispose();
+
+  // Another committer's row at that epoch: lost, the winner processed.
+  const env2 = new Env();
+  env2.pending = { epoch: 4, commit_b64: "PERSISTED" };
+  env2.rows.push({
+    ...ownRow(4, "THEIRS"),
+    committer: { user_id: OWNER, device_id: OWNER_DEV },
+  });
+  const m2 = make(env2);
+  m2.channelProtected(CH);
+  await env2.advance(0);
+  await m2.start();
+  await env2.advance(1_000);
+  assert.equal(env2.calls("e2ee_text_commit_won").length, 0);
+  assert.equal(env2.calls("e2ee_text_commit_lost").length, 1);
+  assert.equal(env2.calls("e2ee_text_process")[0]?.envelope.epoch, 4);
+  m2.dispose();
+});
+
+test("W4d X#2 (C-X2b): an absent row resubmits the IDENTICAL persisted bytes, never a re-stage; one resume per group", async () => {
+  const env = new Env();
+  env.pending = { epoch: 4, commit_b64: "PERSISTED" };
+  const m = make(env);
+  m.channelProtected(CH);
+  await env.advance(0);
+  // The seed and a refresh race: one resume, one resubmit.
+  await Promise.all([m.start(), m.refresh(CH, "open")]);
+  await env.advance(1_000);
+  const posts = env.api$("POST", /\/commits$/);
+  assert.equal(posts.length, 1, "one resume, one resubmit");
+  assert.deepEqual(posts[0].body, {
+    device_id: DEV,
+    epoch: 4,
+    commit: "PERSISTED",
+  });
+  assert.equal(env.calls("e2ee_text_update").length, 0, "never re-staged");
+  assert.equal(
+    env.calls("e2ee_text_commit_won")[0]?.storedCommitB64,
+    "PERSISTED",
+  );
+  m.dispose();
+
+  // A resume in flight (its row fetch held) blocks a second one: two loops
+  // for one stage would double-submit and double-merge.
+  const env3 = new Env();
+  env3.pending = { epoch: 4, commit_b64: "PERSISTED" };
+  let release: () => void = () => undefined;
+  const held = new Promise<void>((r) => {
+    release = r;
+  });
+  let refetches = 0;
+  const api = env3.api.bind(env3);
+  env3.api = async (method: string, path: string, body?: unknown) => {
+    if (method === "GET" && path.includes("from_epoch=4")) {
+      refetches++;
+      await held;
+    }
+    return api(method, path, body);
+  };
+  const m3 = make(env3);
+  m3.channelProtected(CH);
+  await env3.advance(0);
+  await m3.start();
+  await env3.advance(0);
+  await m3.refresh(CH, "interval");
+  await m3.refresh(CH, "open");
+  await env3.advance(0);
+  assert.equal(refetches, 1, "a second resume never starts");
+  release();
+  await env3.advance(1_000);
+  assert.equal(env3.api$("POST", /\/commits$/).length, 1, "one resubmit");
+  assert.equal(env3.calls("e2ee_text_commit_won").length, 1);
+  m3.dispose();
+
+  // The parked commit of a running manager is resumed with its FULL body
+  // (welcome and declarations of the same stage), not a bare one.
+  const env2 = new Env();
+  let refetchAllowed = false;
+  env2.routes.push((method, path) => {
+    if (method === "POST" && path.endsWith("/commits")) {
+      return refetchAllowed ? undefined : "transport";
+    }
+    if (method === "GET" && path.includes("from_epoch=4") && !refetchAllowed) {
+      return ok({ type: "MissingPermission" }, 403);
+    }
+    return undefined;
+  });
+  const m2 = make(env2);
+  await m2.refresh(CH, "open");
+  m2.onJoinRequest(newDeviceRequest("S"), false);
+  await env2.advance(600_000);
+  assert.equal(env2.api$("POST", /\/commits$/).length, 1, "parked");
+  refetchAllowed = true;
+  await m2.refresh(CH, "interval");
+  await env2.advance(1_000);
+  const bodies = env2.api$("POST", /\/commits$/).map((c) => c.body);
+  assert.equal(bodies.length, 2, "absent → resubmitted");
+  assert.deepEqual(bodies[1], bodies[0], "identical, welcome included");
+  assert.equal((bodies[1] as { welcome: string }).welcome, "WEL");
+  assert.equal(env2.calls("e2ee_text_commit_won").length, 1);
+  m2.dispose();
+});
+
+test("W4d X#3 (C-X3): no false loud seat_list_rollback from a stale snapshot; a real one stays loud", async () => {
+  const accepted = {
+    status: "accepted" as const,
+    version: 1,
+    seats: [OWNER, PEER, SELF],
+    device_cap: 5,
+    signer_user_id: OWNER,
+    signer_device_id: OWNER_DEV,
+    pinned_now: false,
+  };
+  const rollback = {
+    type: "seat_list_rollback",
+    channel_id: CH,
+    held: 2,
+    got: 1,
+  };
+  const seatsQueue = (env: Env, q: (number | "fail")[]) => {
+    env.routes.push((method, path) => {
+      if (method !== "GET" || !/^\/channels\/[^/]+\/seats$/.test(path)) {
+        return undefined;
+      }
+      const next = q.length > 1 ? q.shift() : q[0];
+      return next === "fail"
+        ? ok({ type: "InternalError" }, 503)
+        : ok(seatsBody({ as_of_epoch: next }));
+    });
+  };
+  // Native adopted a newer list at epoch 5: an older snapshot "rolls back".
+  const staleVerify = (env: Env) => {
+    env.handlers.e2ee_text_seat_list_verify = (a) => {
+      const held = env.state().epoch ?? 0;
+      if (a.asOfEpoch !== null && a.asOfEpoch < held) throw rollback;
+      return accepted;
+    };
+  };
+
+  // (a) The GET failed this pass: the old snapshot is never re-verified.
+  const env = new Env();
+  staleVerify(env);
+  const q: (number | "fail")[] = [3];
+  seatsQueue(env, q);
+  const m = make(env);
+  await m.refresh(CH, "open");
+  const verifies = env.calls("e2ee_text_seat_list_verify").length;
+  assert.ok(verifies >= 1);
+  env.state().epoch = 5;
+  q.splice(0, q.length, "fail");
+  await m.refresh(CH, "interval");
+  await env.advance(0);
+  assert.equal(env.calls("e2ee_text_seat_list_verify").length, verifies);
+  assert.equal(env.views.get(CH)?.seatListError, null);
+  m.dispose();
+
+  // (b) A stale snapshot (as_of 3 < held 5): re-GET, the fresh one passes.
+  const env2 = new Env();
+  env2.state().epoch = 5;
+  env2.group = groupBody({ current_epoch: 5 });
+  staleVerify(env2);
+  seatsQueue(env2, [3, 5]);
+  const m2 = make(env2);
+  await m2.refresh(CH, "open");
+  assert.equal(env2.views.get(CH)?.seatListError, null);
+  assert.equal(env2.api$("GET", /\/seats$/).length, 2, "one re-GET");
+  assert.equal(env2.shield(), "protected");
+  m2.dispose();
+
+  // (b') Always stale: bounded re-GETs, the tag is never recorded.
+  const env3 = new Env();
+  env3.state().epoch = 5;
+  env3.group = groupBody({ current_epoch: 5 });
+  staleVerify(env3);
+  seatsQueue(env3, [3]);
+  const m3 = make(env3);
+  await m3.refresh(CH, "open");
+  assert.equal(
+    env3.api$("GET", /\/seats$/).length,
+    1 + STALE_SEATS_REFETCH_BUDGET,
+  );
+  assert.equal(env3.views.get(CH)?.seatListError, null);
+  assert.equal(env3.shield(), "protected");
+  m3.dispose();
+
+  // (c) A rollback at the held epoch is real: loud.
+  const env4 = new Env();
+  env4.handlers.e2ee_text_seat_list_verify = () => {
+    throw rollback;
+  };
+  const m4 = make(env4);
+  await m4.refresh(CH, "open");
+  assert.equal(env4.views.get(CH)?.seatListError, "seat_list_rollback");
+  assert.equal(env4.shield(), "unverified");
+  m4.dispose();
+});
+
+test("W4d X#4 (C-X4): the own view is native's decrypt of a BOUND row; an id with a view keeps it; never the typed text", async () => {
+  // An id that already has a view (the server pointed our send at another
+  // message): that view is re-emitted, nothing is decrypted or replaced.
+  const env = new Env();
+  const m = make(env);
+  m.onMessage(
+    {
+      id: "MSENT",
+      channelId: CH,
+      authorId: PEER,
+      nonce: CID2,
+      encrypted: SENT_PAYLOAD,
+    },
+    true,
+  );
+  await env.advance(0);
+  assert.equal(env.decrypts.length, 1);
+  await m.send(CH, "typed secret", [], false, "k1");
+  await env.advance(0);
+  assert.equal(env.decrypts.length, 1, "no decrypt over an existing view");
+  const v = env.msgViews.get("MSENT");
+  assert.ok(v?.status === "ok" && v.cid === CID2, "the earlier view kept");
+  assert.ok(
+    ![...env.msgViews.values()].some(
+      (x) => x.status === "ok" && x.text === "typed secret",
+    ),
+    "the typed text never becomes a view",
+  );
+  m.dispose();
+
+  // A delivered outcome whose row does not bind: no view at all (loud log).
+  for (const over of [
+    { channel: "01J9Z3K4M5N6P7Q8R9S0T1V2ZZ" },
+    { author: PEER },
+    { nonce: CID2 },
+    { _id: "MOTHER" },
+    { encrypted: null },
+  ]) {
+    const e = new Env();
+    const mm = make(
+      e,
+      fakeDeps(e, {
+        messages: {
+          encryptAndSend: async () => ({
+            messageId: "MSENT",
+            cid: CID1,
+            raw: sentRow(CH, over),
+          }),
+        },
+      }),
+    );
+    await mm.send(CH, "typed secret", [], false, "k1");
+    await e.advance(0);
+    assert.equal(e.msgViews.has("MSENT"), false, JSON.stringify(over));
+    assert.equal(e.decrypts.length, 0);
+    assert.ok(
+      e.logs.some(
+        (l) =>
+          l.level === "error" && l.msg === "[protected] own send row unbound",
+      ),
+    );
+    mm.dispose();
+  }
+
+  // Orphan confirm (refetch path): an unbound row is not "delivered".
+  const env2 = new Env();
+  const key = `protected-send:${SELF}:${CH}:k1`;
+  env2.storeMap.set(key, JSON.stringify({ nonce: CID1, encrypted: {} }));
+  env2.routes.push((method, path) =>
+    method === "GET" && path.startsWith(`/channels/${CH}/messages?`)
+      ? ok([orphanRow({ encrypted: { forged: true } })])
+      : undefined,
+  );
+  const m2 = make(env2);
+  await m2.start();
+  await env2.advance(10_000);
+  assert.equal(env2.views.get(CH)?.maybeUnsent, true, "absent, never adopted");
+  m2.dispose();
+});
+
+test("W4d X#5 (C-X5a): a commit refused not_member → _mark_left(not_member) → rejoin", async () => {
+  const env = new Env();
+  env.routes.push((method, path) =>
+    method === "POST" && path.endsWith("/commits")
+      ? ok({ type: "ProtectedChannelResecuring", reason: "not_member" }, 409)
+      : undefined,
+  );
+  const m = make(env);
+  await assert.rejects((await scriptedRemove(env, m)).p);
+  assert.deepEqual(env.calls("e2ee_text_mark_left"), [
+    { groupId: G0, reason: "not_member" },
+  ]);
+  assert.ok(env.calls("e2ee_text_join").length >= 1, "rejoin path");
+  assert.equal(env.calls("e2ee_text_commit_lost").length, 0);
+  m.dispose();
+});
+
+test("W4d X#5 (C-X5b): a send refused not_member → _mark_left(not_member) → rejoin", async () => {
+  const env = new Env();
+  const refusal = {
+    source: "server",
+    status: 409,
+    type: "ProtectedChannelResecuring",
+    body: { type: "ProtectedChannelResecuring", reason: "not_member" },
+  };
+  const m = make(
+    env,
+    fakeDeps(env, {
+      messages: {
+        encryptAndSend: async () => {
+          throw refusal;
+        },
+      },
+    }),
+  );
+  await m.refresh(CH, "open");
+  await assert.rejects(m.send(CH, "x", [], false, "k"), (e) => e === refusal);
+  await env.advance(1_000);
+  assert.deepEqual(env.calls("e2ee_text_mark_left"), [
+    { groupId: G0, reason: "not_member" },
+  ]);
+  assert.ok(env.calls("e2ee_text_join").length >= 1, "rejoin path");
+  m.dispose();
+
+  // Any other refusal reason never wipes.
+  const env2 = new Env();
+  const m2 = make(
+    env2,
+    fakeDeps(env2, {
+      messages: {
+        encryptAndSend: async () => {
+          throw { ...refusal, body: { reason: "stale_epoch" } };
+        },
+      },
+    }),
+  );
+  await m2.refresh(CH, "open");
+  await assert.rejects(m2.send(CH, "x", [], false, "k"));
+  await env2.advance(1_000);
+  assert.equal(env2.calls("e2ee_text_mark_left").length, 0);
+  m2.dispose();
+});
+
+test("W4d X#6 (C-X6): member_added suppresses EVERY _join; the bounded window ends loud, never a restarted join", async () => {
+  const env = joiningEnv();
+  const m = make(env);
+  const p = silence(m.ensureJoined(CH));
+  await env.advance(0);
+  assert.equal(env.calls("e2ee_text_join").length, 1);
+  env.group = groupBody({
+    member_added: [{ user_id: SELF, device_id: DEV, epoch: 4, at: "" }],
+  });
+  await env.advance(200_000);
+  await assert.rejects(p);
+  assert.equal(env.views.get(CH)?.welcomeRetriesExhausted, true);
+  // Later triggers (a rejoin verdict, a refresh, a manual reopen) never
+  // send another intent while member_added shows this device.
+  const again = silence(m.ensureJoined(CH));
+  await env.advance(200_000);
+  await assert.rejects(again);
+  await m.refresh(CH, "interval");
+  await m.open(CH);
+  await env.advance(200_000);
+  assert.equal(env.calls("e2ee_text_join").length, 1, "no second _join");
+  assert.equal(env.api$("POST", /join_intent$/).length, 1);
+  assert.equal(env.views.get(CH)?.welcomeRetriesExhausted, true);
+  assert.equal(env.shield(), "unverified");
+  m.dispose();
+});
+
+test("W4d X#9: a parked owner-change commit is not duplicated by later refreshes", async () => {
+  const env = new Env();
+  env.group = groupBody({ current_epoch: 4 });
+  let blocked = true;
+  env.handlers.e2ee_text_process = (a) => {
+    if (blocked) {
+      throw {
+        type: "owner_changed",
+        channel_id: CH,
+        signer_user_id: OWNER,
+        signer_device_id: "dev-owner-2",
+        same_user: true,
+        verified: true,
+      };
+    }
+    env.state().epoch = a.envelope.epoch;
+    return outcome({ epoch: a.envelope.epoch });
+  };
+  const row4 = {
+    group_id: G0,
+    epoch: 4,
+    committer: { user_id: OWNER, device_id: OWNER_DEV },
+    commit: "C4",
+    added: [],
+    removed: [],
+  };
+  env.routes.push((method, path) =>
+    method === "GET" && path.includes("from_epoch=4")
+      ? ok({ commits: [row4], current_epoch: 4 })
+      : undefined,
+  );
+  const m = make(env);
+  for (let i = 0; i < 3; i++) {
+    await m.refresh(CH, "interval");
+    await env.advance(1_000);
+  }
+  const epoch4 = () =>
+    env.calls("e2ee_text_process").filter((a) => a.envelope.epoch === 4).length;
+  assert.equal(epoch4(), 1, "parked once, never re-read");
+  assert.equal(env.views.get(CH)?.ownerChangePending, true);
+  blocked = false;
+  await m.confirmOwnerChange(CH);
+  await env.advance(1_000);
+  assert.equal(epoch4(), 2, "reprocessed exactly once");
+  m.dispose();
+});
+
+test("W4d F#3 (C-F3): strip → re-protect clears the latch: sends and admissions run again", async () => {
+  const env = new Env();
+  const m = make(env);
+  m.channelProtected(CH);
+  await m.start();
+  await env.advance(0);
+  m.flagStripped(CH);
+  await env.advance(0);
+  await assert.rejects(
+    m.send(CH, "x", [], false, "k"),
+    (e: { reason?: string }) => e.reason === "flag_stripped",
+  );
+  m.onJoinRequest(newDeviceRequest("S1"), false);
+  await env.advance(10_000);
+  assert.equal(env.api$("POST", /claim$/).length, 0, "stripped: no admit");
+  // The bridge forwards the un-strip as a re-protect.
+  m.channelProtected(CH);
+  await env.advance(0);
+  const out = await m.send(CH, "x", [], false, "k2");
+  assert.equal(out.messageId, "MSENT");
+  assert.deepEqual(env.sends, ["x"]);
+  m.onJoinRequest(newDeviceRequest("S2"), false);
+  await env.advance(10_000);
+  assert.equal(env.api$("POST", /claim$/).length, 1, "admits again");
+  assert.equal(env.shield(CH, { serverProtected: true }), "protected");
+  assert.ok(
+    env.logs.some((l) => l.msg === "[protected] flag restored"),
+    "re-seeded",
+  );
+  m.dispose();
+});
+
+test("W4d cap (C-MGRcap): DeviceCapReached / MlsCallFull on a commit: _commit_lost, no retry, typed (not 'unknown'), never loud", async () => {
+  for (const [type, kind] of [
+    ["DeviceCapReached", "device_cap_reached"],
+    ["MlsCallFull", "channel_full"],
+  ] as const) {
+    // Owner path (removeDevices / B2): the typed refusal reaches the caller.
+    const env = new Env();
+    env.routes.push((method, path) =>
+      method === "POST" && path.endsWith("/commits")
+        ? ok({ type, max: 5 }, 400)
+        : undefined,
+    );
+    const m = make(env);
+    const { p } = await scriptedRemove(env, m);
+    let caught: unknown = null;
+    await p.catch((e: unknown) => {
+      caught = e;
+    });
+    assert.deepEqual(caught, {
+      source: "server",
+      status: 400,
+      type,
+      body: { type, max: 5 },
+    });
+    const ui = protectedNoticeForError(caught, { op: "channel" });
+    assert.ok(ui.kind === "notice" && ui.notice === kind, `${type} notice`);
+    assert.equal(env.calls("e2ee_text_commit_lost").length, 1, "stage dropped");
+    assert.equal(env.api$("POST", /\/commits$/).length, 1, "never retried");
+    assert.equal(env.calls("e2ee_text_mark_left").length, 0);
+    assert.equal(env.views.get(CH)?.groupError ?? null, null, "never loud");
+    assert.equal(env.shield(), "protected");
+    m.dispose();
+
+    // Admitter path: one Add, dropped, never re-staged, logged with the type.
+    const env2 = new Env();
+    env2.routes.push((method, path) =>
+      method === "POST" && path.endsWith("/commits")
+        ? ok({ type, max: 5 }, 400)
+        : undefined,
+    );
+    const m2 = make(env2);
+    await m2.refresh(CH, "open");
+    m2.onJoinRequest(newDeviceRequest("S"), false);
+    await env2.advance(10_000);
+    assert.equal(env2.calls("e2ee_text_admit").length, 1, "no re-stage");
+    assert.equal(env2.calls("e2ee_text_commit_lost").length, 1);
+    assert.ok(
+      env2.logs.some(
+        (l) => l.msg === "[protected] admission failed" && l.ids.type === type,
+      ),
+    );
+    assert.equal(env2.shield(), "protected");
+    m2.dispose();
+  }
+});
+
+test("W4d: unknown extra commit fields (W2 advisory removed_reasons) are tolerated and never reach native", async () => {
+  const env = new Env();
+  env.group = groupBody({ current_epoch: 4 });
+  env.routes.push((method, path) =>
+    method === "GET" && path.includes("from_epoch=4")
+      ? ok({
+          commits: [
+            {
+              group_id: G0,
+              epoch: 4,
+              committer: { user_id: OWNER, device_id: OWNER_DEV },
+              commit: "C4",
+              added: [],
+              removed: [{ user_id: PEER, device_id: PEER_DEV }],
+              removed_reasons: [{ user_id: PEER, reason: "unseated" }],
+            },
+          ],
+          current_epoch: 4,
+        })
+      : undefined,
+  );
+  const m = make(env);
+  await m.refresh(CH, "open");
+  await env.advance(1_000);
+  const processed = env.calls("e2ee_text_process");
+  assert.equal(processed.length, 1, "the row was processed");
+  assert.equal("removed_reasons" in processed[0].envelope, false);
+  m.dispose();
 });

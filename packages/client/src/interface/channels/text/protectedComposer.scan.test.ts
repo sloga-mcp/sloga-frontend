@@ -16,11 +16,13 @@
 //      the composer is disabled while the shield loads (fail closed);
 //  P6  MessageBox has a `protected` tone in BOTH variant records and keeps
 //      its `never` exhaustiveness check.
+//  F4  (W4d) the D10 `maybeUnsent` view flag renders a dismissible notice,
+//      in every shield state, dismissed per channel for the session.
 //
 // Run: node --test --conditions=browser \
 //   src/interface/channels/text/protectedComposer.scan.test.ts
 // `PROTECTED_COMPOSER_TSX=<path>` / `PROTECTED_MESSAGEBOX_TSX=<path>` scan
-// another copy (named controls C-C4a/b/c).
+// another copy (named controls C-C4a/b/c, W4d C-F4).
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -502,5 +504,61 @@ test("P8 'Review owner change' only for a same-user owner change, on click", () 
   );
   assert.ok(
     ownerUi.includes('protectedNoticeForError(error, { op: "owner" })'),
+  );
+});
+
+// ---- F4 (W4d final audit) ---------------------------------------------------
+
+test("F4 the D10 maybe-unsent notice renders, dismissible per channel", () => {
+  // Rendered from the view flag alone: no shield-state condition around it
+  const marker = '{noticeCopy("maybe_unsent")}';
+  const at = COMPOSITION.indexOf(marker);
+  assert.ok(at >= 0, `missing marker ${marker}`);
+  assert.deepEqual(enclosingConditions(COMPOSITION, at), [
+    "maybeUnsentShown()",
+  ]);
+  const shownAt = COMPOSITION.indexOf("const maybeUnsentShown = () =>");
+  assert.ok(shownAt >= 0, "missing maybeUnsentShown");
+  assert.equal(
+    code(COMPOSITION.slice(shownAt, COMPOSITION.indexOf(";\n", shownAt) + 1)),
+    "const maybeUnsentShown = () => protectedChannel() && " +
+      "protectedShield()?.view?.maybeUnsent === true && " +
+      "!maybeUnsentDismissed().has(props.channel.id);",
+  );
+
+  // The notice carries a dismiss button with an existing msgid
+  const notice = code(
+    COMPOSITION.slice(
+      COMPOSITION.lastIndexOf("<Show when={maybeUnsentShown()}>", at),
+      COMPOSITION.indexOf("</Show>", at),
+    ),
+  );
+  assert.ok(
+    notice.includes(
+      '<ProtectedBannerAction type="button" onClick={dismissMaybeUnsent}> ' +
+        "{t`Dismiss`} </ProtectedBannerAction>",
+    ),
+    `no dismiss button: ${notice}`,
+  );
+  assert.ok(!/may not have been sent/i.test(COMPOSITION), "bare copy literal");
+
+  // Dismissal: this channel only, session only (module scope, not stored)
+  assert.equal(
+    code(functionBody(COMPOSITION, "function dismissMaybeUnsent() {")),
+    "const id = props.channel.id; " +
+      "setMaybeUnsentDismissed((prev) => new Set(prev).add(id));",
+  );
+  const declared = COMPOSITION.indexOf(
+    "const [maybeUnsentDismissed, setMaybeUnsentDismissed] = createSignal<",
+  );
+  assert.ok(
+    declared >= 0 &&
+      declared < COMPOSITION.indexOf("export function MessageComposition("),
+    "the dismissed set must live at module scope",
+  );
+  assert.equal(
+    (COMPOSITION.match(/setMaybeUnsentDismissed\b/g) ?? []).length,
+    2,
+    "the dismissed set is written only by dismissMaybeUnsent",
   );
 });

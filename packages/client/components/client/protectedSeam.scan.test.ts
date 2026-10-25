@@ -20,6 +20,10 @@
 //      held (Tauri main window only), bounded, deduped by id (live wins),
 //      replayed in arrival order once `start()` settles, and cleared on
 //      dispose. The hold logic is lifted out of the source and RUN.
+//  S11 (W4d F#3) a strip the manager was handed is undone: a later
+//      `onChannelProtected` (SDK latch clear) hands the channel over again,
+//      once; forwarding stays deduped otherwise. The two hooks and
+//      `#protectedForward` are lifted out of the source and RUN.
 //
 // Run: node --test --conditions=browser components/client/protectedSeam.scan.test.ts
 // `PROTECTED_SEAM_TS=<path>` scans another copy (named controls; the
@@ -733,5 +737,221 @@ test("S10: the hold is cleared on dispose (wipe, latches, sign-out) and on delet
   assert.match(
     hold,
     /^\{\s*if \(!this\.#protectedStructural\(\) \|\| this\.#ptSignedOut\) \{\s*this\.#ptPending\.clear\(\);\s*return false;\s*\}\s*return this\.#ptManager === null;\s*\}$/,
+  );
+});
+
+// ---- S11 W4d F#3 un-strip re-forward -----------------------------------------
+
+const FORWARDED_DECL = /\n {2}readonly #ptForwarded = new Set<string>\(\);/;
+const STRIPPED_DECL = /\n {2}readonly #ptStripped = new Set<string>\(\);/;
+
+type Hand = ["protected", string] | ["stripped", string];
+type StripHarness = {
+  /** The SDK latch (`client.isProtectedFlagStripped`). */
+  sdk: Set<string>;
+  /** Channels `#protectedIndex` cannot index. */
+  unindexable: Set<string>;
+  /** `#protectedEnsureManager`'s hand-over (S11 pins its two clears). */
+  build(m: unknown): void;
+  /** `#protectedDispose`'s bookkeeping (S11 pins its two clears). */
+  drop(): void;
+  stripped(): string[];
+  onProtectedFlagStripped(channelId: string): void;
+  onChannelProtected(channelId: string): void;
+};
+
+/**
+ * A class holding the seam's REAL `#ptForwarded` / `#ptStripped`,
+ * `#protectedForward` and the two SDK hooks, lifted from the scanned source
+ * with their types stripped. `#protectedIndex` is an async stub (indexes
+ * every channel not in `unindexable`), so hook callbacks run a tick later,
+ * in event order, as with the real per-channel index promise.
+ */
+function stripHarness(): StripHarness {
+  const forwarded = FORWARDED_DECL.exec(SRC);
+  const stripped = STRIPPED_DECL.exec(SRC);
+  assert.ok(
+    forwarded && stripped,
+    "S11: #ptForwarded and #ptStripped declared",
+  );
+  const members = [
+    /\n {2}#protectedForward\(channelId: string\): void /,
+    /\n {2}onProtectedFlagStripped\(channelId: string\): void /,
+    /\n {2}onChannelProtected\(channelId: string\): void /,
+  ].map((head) => memberDecl(SRC, head));
+  const ts = `class StripHarness {
+  #ptManager = null;
+  readonly #ptIndexed = new Set();
+  sdk = new Set();
+  unindexable = new Set();
+  #client = { isProtectedFlagStripped: (id) => this.sdk.has(id) };
+  ${forwarded[0].trim()}
+  ${stripped[0].trim()}
+  async #protectedIndex(channelId) {
+    await null;
+    if (this.unindexable.has(channelId)) return false;
+    this.#ptIndexed.add(channelId);
+    return true;
+  }
+  build(m) {
+    this.#ptManager = m;
+    this.#ptForwarded.clear();
+    this.#ptStripped.clear();
+    for (const channelId of this.#ptIndexed) this.#protectedForward(channelId);
+  }
+  drop() {
+    this.#ptManager = null;
+    this.#ptForwarded.clear();
+    this.#ptStripped.clear();
+  }
+  stripped() { return [...this.#ptStripped]; }
+  ${members.join("\n  ")}
+}`;
+  const Cls = new Function(
+    `${stripTypeScriptTypes(ts)}\nreturn StripHarness;`,
+  )();
+  return new Cls() as StripHarness;
+}
+
+function handRecorder(): { hands: Hand[]; manager: unknown } {
+  const hands: Hand[] = [];
+  return {
+    hands,
+    manager: {
+      channelProtected: (id: string) => hands.push(["protected", id]),
+      flagStripped: (id: string) => hands.push(["stripped", id]),
+    },
+  };
+}
+
+/** Let every pending hook callback run. */
+const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+/** SDK `applyProtectedFlag`: set or clear the latch, then fire the hook. */
+async function strip(h: StripHarness, id: string): Promise<void> {
+  h.sdk.add(id);
+  h.onProtectedFlagStripped(id);
+  await settle();
+}
+
+async function reprotect(h: StripHarness, id: string): Promise<void> {
+  h.sdk.delete(id);
+  h.onChannelProtected(id);
+  await settle();
+}
+
+test("S11 (F#3): strip then re-protect hands the channel over again", async () => {
+  const h = stripHarness();
+  const { hands, manager } = handRecorder();
+  h.build(manager);
+  await reprotect(h, "C1"); // first sight
+  assert.deepEqual(hands, [["protected", "C1"]]);
+  await reprotect(h, "C1"); // a later Ready: deduped
+  assert.deepEqual(hands, [["protected", "C1"]], "idempotent while unstripped");
+  await strip(h, "C1");
+  assert.deepEqual(hands.slice(1), [["stripped", "C1"]]);
+  assert.deepEqual(h.stripped(), ["C1"]);
+  await reprotect(h, "C1"); // un-strip: forwarded again
+  assert.deepEqual(hands.slice(2), [["protected", "C1"]]);
+  assert.deepEqual(h.stripped(), [], "the tracked strip is cleared");
+  await reprotect(h, "C1"); // and deduped again afterwards
+  assert.equal(hands.length, 3, "one re-forward per un-strip");
+  await strip(h, "C1"); // a second cycle works the same way
+  await reprotect(h, "C1");
+  assert.deepEqual(hands.slice(3), [
+    ["stripped", "C1"],
+    ["protected", "C1"],
+  ]);
+});
+
+test("S11 (F#3): a strip handed over with the first forward is undone too", async () => {
+  const h = stripHarness();
+  // Seen before any manager: nothing is handed over, no strip tracked.
+  h.sdk.add("C1");
+  h.onProtectedFlagStripped("C1");
+  h.onChannelProtected("C2");
+  await settle();
+  assert.deepEqual(h.stripped(), [], "no manager, nothing tracked");
+  const { hands, manager } = handRecorder();
+  h.build(manager); // #protectedEnsureManager hands over every indexed id
+  assert.deepEqual(hands, [
+    ["protected", "C1"],
+    ["stripped", "C1"],
+    ["protected", "C2"],
+  ]);
+  assert.deepEqual(h.stripped(), ["C1"]);
+  await reprotect(h, "C1");
+  assert.deepEqual(hands.slice(3), [["protected", "C1"]]);
+  await reprotect(h, "C2");
+  assert.equal(hands.length, 4, "C2 was never stripped: still deduped");
+});
+
+test("S11 (F#3): event order wins; a newer strip keeps the latch", async () => {
+  const h = stripHarness();
+  const { hands, manager } = handRecorder();
+  h.build(manager);
+  await reprotect(h, "C1");
+  // Strip, re-protect, strip again, all before any callback ran.
+  h.sdk.add("C1");
+  h.onProtectedFlagStripped("C1");
+  h.sdk.delete("C1");
+  h.onChannelProtected("C1");
+  h.sdk.add("C1");
+  h.onProtectedFlagStripped("C1");
+  await settle();
+  assert.deepEqual(hands.slice(1), [
+    ["stripped", "C1"],
+    ["stripped", "C1"],
+  ]);
+  assert.deepEqual(h.stripped(), ["C1"], "still latched, as the SDK is");
+  await reprotect(h, "C1");
+  assert.deepEqual(hands.slice(3), [["protected", "C1"]]);
+});
+
+test("S11 (F#3): a rebuilt manager starts clear; unindexed ids never move", async () => {
+  const h = stripHarness();
+  const first = handRecorder();
+  h.build(first.manager);
+  await reprotect(h, "C1");
+  await strip(h, "C1");
+  h.drop(); // #protectedDispose
+  assert.deepEqual(h.stripped(), []);
+  h.sdk.delete("C1"); // un-stripped while no manager exists
+  h.onChannelProtected("C1");
+  await settle();
+  const second = handRecorder();
+  h.build(second.manager);
+  assert.deepEqual(second.hands, [["protected", "C1"]], "fresh, unlatched");
+  await reprotect(h, "C1");
+  assert.equal(second.hands.length, 1, "nothing to undo on the new manager");
+  assert.equal(first.hands.length, 2, "the old manager got nothing more");
+  h.unindexable.add("C9");
+  await strip(h, "C9");
+  await reprotect(h, "C9");
+  assert.equal(second.hands.length, 1, "an unindexed channel is never handed");
+});
+
+test("S11 (F#3): the strip set is cleared with #ptForwarded, written only here", () => {
+  const pair = /this\.#ptForwarded\.clear\(\);\s*this\.#ptStripped\.clear\(\);/;
+  assert.match(
+    member(SRC, /\n {2}#protectedEnsureManager\(\): void /),
+    pair,
+    "a new manager starts with no tracked strip",
+  );
+  assert.match(
+    member(SRC, /\n {2}#protectedDispose\(\): void /),
+    pair,
+    "dispose drops the tracked strips",
+  );
+  assert.equal(count(SRC, "#ptForwarded.clear()"), 2);
+  assert.equal(count(SRC, "#ptStripped.clear()"), 2);
+  // Added where a strip is handed over (forward, strip hook); dropped only
+  // by the re-protect in onChannelProtected.
+  assert.equal(count(SRC, "#ptStripped.add("), 2);
+  assert.equal(count(SRC, "#ptStripped.delete("), 1);
+  assert.equal(
+    count(SRC, ".flagStripped("),
+    2,
+    "every strip hand-over tracked",
   );
 });
