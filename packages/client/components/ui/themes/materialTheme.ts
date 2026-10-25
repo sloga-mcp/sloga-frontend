@@ -31,6 +31,11 @@ export const BRAND_ACCENT = "#00B2FF";
 export const BRAND_VARIANT: TypeTheme["m3Variant"] = "tonal_spot";
 
 /**
+ * Discord's brand blurple, the only accent the Discord preset uses.
+ */
+export const DISCORD_ACCENT = "#5865F2";
+
+/**
  * Whether picking an accent changes anything under the given preset and
  * variant. The appearance menu greys out the accent swatches when it does not.
  *
@@ -38,13 +43,97 @@ export const BRAND_VARIANT: TypeTheme["m3Variant"] = "tonal_spot";
  * role from greys, so every accent gives the same colours. The Sloga preset
  * ignores the stored `m3Variant` instead — it always generates from
  * `BRAND_VARIANT` (see `activeTheme` in Theme.ts) — so a stale "monochrome"
- * left over from Material You must not lock the Sloga swatches.
+ * left over from Material You must not lock the Sloga swatches. The Discord
+ * preset ignores the accent altogether: it is Discord's palette, blurple
+ * included, so no swatch can move it.
  */
 export function accentHasEffect(
   preset: TypeTheme["preset"],
   variant: TypeTheme["m3Variant"],
 ): boolean {
+  if (preset === "discord") return false;
   return preset === "stoat" || variant !== "monochrome";
+}
+
+/**
+ * Discord's own dark palette (the long-standing "Dark" theme), laid over a
+ * scheme generated from blurple the same way the Sloga tables are, so the
+ * roles it does not name (inverse, the fixed roles, error containers) stay
+ * consistent with it.
+ *
+ * The surface roles map onto Discord's three backgrounds by what paints them
+ * here: `surface` is the page canvas behind the server rail (Discord's
+ * tertiary, #1E1F22), `surface-container-low` the channel list (secondary,
+ * #2B2D31), `surface-container-lowest` the chat column (primary, #313338).
+ * That makes "lowest" lighter than "low", the reverse of Material's ramp, and
+ * is deliberate: in Discord the chat is the lightest of the three. The higher
+ * containers are Discord's composer (#383A40) and selected-row (#404249)
+ * fills. White on blurple is Discord's own pairing and passes AA (4.6:1).
+ */
+const DISCORD_DARK: Partial<MaterialColours> = {
+  surface: "#1E1F22",
+  "surface-dim": "#1E1F22",
+  "surface-bright": "#404249",
+  "surface-container-lowest": "#313338",
+  "surface-container-low": "#2B2D31",
+  "surface-container": "#2B2D31",
+  "surface-container-high": "#383A40",
+  "surface-container-highest": "#404249",
+
+  "on-surface": "#DBDEE1",
+  "on-surface-variant": "#B5BAC1",
+  outline: "#80848E",
+  "outline-variant": "#3F4147",
+
+  primary: DISCORD_ACCENT,
+  "primary-container": DISCORD_ACCENT,
+  "on-primary": "#FFFFFF",
+  "on-primary-container": "#FFFFFF",
+
+  "secondary-container": "#404249",
+  "on-secondary-container": "#F2F3F5",
+
+  error: "#F23F43",
+  "on-error": "#FFFFFF",
+};
+
+/**
+ * Discord's light palette, mapped onto the same roles as the dark one: the
+ * canvas and rail (#E3E5E8), the channel list (#F2F3F5) and a white chat
+ * column, with Discord's light-mode text and selected-row greys.
+ */
+const DISCORD_LIGHT: Partial<MaterialColours> = {
+  surface: "#E3E5E8",
+  "surface-dim": "#E3E5E8",
+  "surface-bright": "#FFFFFF",
+  "surface-container-lowest": "#FFFFFF",
+  "surface-container-low": "#F2F3F5",
+  "surface-container": "#EBEDEF",
+  "surface-container-high": "#EBEDEF",
+  "surface-container-highest": "#E3E5E8",
+
+  "on-surface": "#313338",
+  "on-surface-variant": "#4E5058",
+  outline: "#80848E",
+  "outline-variant": "#D4D7DC",
+
+  primary: DISCORD_ACCENT,
+  "primary-container": DISCORD_ACCENT,
+  "on-primary": "#FFFFFF",
+  "on-primary-container": "#FFFFFF",
+
+  "secondary-container": "#D4D7DC",
+  "on-secondary-container": "#060607",
+
+  error: "#DA373C",
+  "on-error": "#FFFFFF",
+};
+
+/**
+ * The Discord palette for the given mode.
+ */
+export function discordPins(darkMode: boolean): Partial<MaterialColours> {
+  return darkMode ? DISCORD_DARK : DISCORD_LIGHT;
 }
 
 /**
@@ -163,7 +252,9 @@ export function createMaterialColourVariables<P extends string>(
   const colours =
     theme.preset === "stoat"
       ? { ...scheme, ...brandPins(theme.accent, theme.darkMode) }
-      : scheme;
+      : theme.preset === "discord"
+        ? { ...scheme, ...discordPins(theme.darkMode) }
+        : scheme;
 
   return Object.entries(colours).reduce(
     (d, [key, value]) => ({

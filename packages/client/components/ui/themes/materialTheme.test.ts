@@ -21,6 +21,7 @@ import { isDeepStrictEqual } from "node:util";
 import {
   BRAND_ACCENT,
   BRAND_VARIANT,
+  DISCORD_ACCENT,
   accentHasEffect,
   brandPins,
   createMaterialColourVariables,
@@ -38,7 +39,11 @@ const common = {
   variant: "tonal_spot",
 } as const;
 
-function colours(preset: "stoat" | "you", accent: string, darkMode: boolean) {
+function colours(
+  preset: "stoat" | "discord" | "you",
+  accent: string,
+  darkMode: boolean,
+) {
   return createMaterialColourVariables(
     { ...common, preset, accent, darkMode } as never,
     "",
@@ -189,6 +194,66 @@ describe("accentHasEffect agrees with the generated colours", () => {
         generated("stoat", ACCENT_A, darkMode, BRAND_VARIANT, 0),
         generated("stoat", ACCENT_B, darkMode, BRAND_VARIANT, 0),
         darkMode ? "dark" : "light",
+      );
+    }
+  });
+});
+
+describe("the Discord preset", () => {
+  it("dark mode paints Discord's three backgrounds where Discord has them", () => {
+    const dark = colours("discord", DISCORD_ACCENT, true);
+    assert.equal(dark.surface, "#1E1F22");
+    assert.equal(dark["surface-container-low"], "#2B2D31");
+    assert.equal(dark["surface-container-lowest"], "#313338");
+    assert.equal(dark["surface-container-high"], "#383A40");
+    assert.equal(dark["on-surface"], "#DBDEE1");
+    assert.equal(dark.primary, "#5865F2");
+    assert.equal(dark["on-primary"], "#FFFFFF");
+  });
+
+  it("light mode keeps a light canvas under dark text", () => {
+    const light = colours("discord", DISCORD_ACCENT, false);
+    assert.equal(light.surface, "#E3E5E8");
+    assert.equal(light["surface-container-lowest"], "#FFFFFF");
+    assert.equal(light["on-surface"], "#313338");
+    assert.equal(light.primary, "#5865F2");
+  });
+
+  it("is locked whatever variant is stored, and ignores the accent", () => {
+    for (const variant of ["tonal_spot", "monochrome"] as const) {
+      assert.equal(accentHasEffect("discord", variant), false);
+    }
+    for (const darkMode of [true, false]) {
+      // only the pinned roles are checked: the generated ones are seeded from
+      // whatever accent `activeTheme` hands over, which is always blurple
+      const a = colours("discord", "#FF5733", darkMode);
+      const b = colours("discord", "#9bf088", darkMode);
+      for (const role of ["surface", "primary", "on-surface"]) {
+        assert.equal(
+          a[role],
+          b[role],
+          `${role}, ${darkMode ? "dark" : "light"}`,
+        );
+      }
+    }
+  });
+
+  it("comes out as six-digit hex the triplet parser accepts", () => {
+    for (const darkMode of [true, false]) {
+      const vars = colours("discord", DISCORD_ACCENT, darkMode);
+      for (const [role, value] of Object.entries(vars)) {
+        assert.match(value, SIX_DIGIT, role);
+      }
+      assert.doesNotThrow(() =>
+        createMduiColourTriplets(
+          {
+            ...common,
+            preset: "discord",
+            accent: DISCORD_ACCENT,
+            darkMode,
+          } as never,
+          "",
+        ),
       );
     }
   });
