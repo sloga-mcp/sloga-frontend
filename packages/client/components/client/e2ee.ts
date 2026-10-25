@@ -5955,7 +5955,13 @@ export class E2EEBridge implements E2EEAdapter {
    * `#ensureKeyPackages` path remains the authoritative self-heal.
    */
   async #prepublishMlsKeyPackages(): Promise<void> {
-    // Platform gate FIRST (plan D7, KeyPackage prepublish leak): a shell that
+    // Protected channels: `enable()` just made this device capable, so the
+    // text manager can start now (it fetches the flag and replenishes its own
+    // KeyPackages, D12) and open the channels the UI already holds open. It
+    // runs before the call-plane platform gate so a shell that cannot carry
+    // encrypted calls still starts its protected text plane.
+    this.#protectedEnsureManager();
+    // Platform gate (plan D7, KeyPackage prepublish leak): a shell that
     // cannot carry encrypted calls has no reason to stock the directory. The
     // `#callsEnabled` check below is not enough on its own: rtc/state.tsx
     // wires `setCallsEnabled` at every call connect regardless of platform,
@@ -5964,11 +5970,8 @@ export class E2EEBridge implements E2EEAdapter {
     if (!this.mediaE2EEPlatformSupported()) return;
     // Gate on "Encrypt my calls" (§0.2 #9): with calls E2EE off there is no
     // reason to stock the MLS KeyPackage directory. Fail-closed until wired.
-    // Protected channels: `enable()` just made this device capable, so the
-    // text manager can start now (it fetches the flag and replenishes, D12)
-    // and open the channels the UI already holds open. D12 gate: also stock
-    // KeyPackages when the feature is advertised and this device is capable.
-    this.#protectedEnsureManager();
+    // D12 gate: also stock KeyPackages when the protected-channels feature is
+    // advertised and this device is capable.
     if (!this.#callsEnabled() && !this.#protectedKeyPackagesWanted()) return;
     try {
       const userId = this.#client.user?.id;
@@ -6449,6 +6452,10 @@ export class E2EEBridge implements E2EEAdapter {
    * and never rejects. A no-op off iOS apart from the flags.
    */
   async dispose(): Promise<void> {
+    // Protected channels: stop the text manager first, ahead of the iOS-only
+    // early return below, so its timers and publish loops never outlive a
+    // replaced client on any shell. Idempotent.
+    this.disposeProtected();
     if (this.#disposed) return;
     this.#disposed = true;
     this.#claimAccepted = null;
