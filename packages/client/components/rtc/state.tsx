@@ -52,6 +52,8 @@ interface MicPipelineWants {
   denoise: boolean;
   gainPercent: number;
   tonePreset: VoiceTonePresetId;
+  /** Voice changer pitch in semitones; 0 = off (`voicePitch.ts`). */
+  pitchSemitones: number;
 }
 
 /** Native Android foreground service keeping calls alive in the background */
@@ -239,6 +241,7 @@ import {
   moveTokenUsable,
 } from "./voiceMovePolicy";
 import { voiceNodeForChannel } from "./voiceNode";
+import { voicePitchIsActive } from "./voicePitch";
 import {
   isRejoinPreempted,
   MAX_REJOIN_ATTEMPTS,
@@ -3835,7 +3838,8 @@ class Voice {
       // feed watched.
       this.#pruneWatchedShares();
       this.#watchControlledShares();
-      // Voice shaper, input gain and the noise filter apply LIVE: the mic
+      // Voice changer, voice shaper, input gain and the noise filter apply
+      // LIVE: the mic
       // runs one processor and every stage of it is tunable in place. The
       // settings reads are tracked, the apply is not — nothing it writes
       // may re-trigger it. Runs once at root creation too, which is a no-op
@@ -6753,6 +6757,7 @@ class Voice {
       denoise: this.#settings.noiseSupression === "enhanced",
       gainPercent: this.#settings.microphoneGain ?? 100,
       tonePreset: this.#settings.voiceTonePreset,
+      pitchSemitones: this.#settings.voicePitchSemitones,
     };
   }
 
@@ -6804,7 +6809,8 @@ class Voice {
    * Reconcile the mic processor with the settings. LiveKit gives a track
    * ONE processor slot, so every mic stage lives in the same
    * `VoiceAudioPipeline` and this is the only place that attaches one.
-   * All-default settings (browser/no noise filter, unity gain, shaper off)
+   * All-default settings (browser/no noise filter, unity gain, shaper and
+   * voice changer off)
    * run the raw capture with no Web Audio hop at all; the pipeline is
    * attached the first time any stage is wanted WHILE THE PUBLISH GATE IS
    * EMPTY, and then stays for the life of the track, tuned in place. Under
@@ -6823,7 +6829,8 @@ class Voice {
       wantsDefault:
         !want.denoise &&
         want.gainPercent === 100 &&
-        want.tonePreset === VOICE_TONE_PRESET_DEFAULT,
+        want.tonePreset === VOICE_TONE_PRESET_DEFAULT &&
+        !voicePitchIsActive(want.pitchSemitones),
     });
     if (action === "tune") {
       // "tune" is the `hasPipeline` arm, so the slot is live here; the guard
@@ -6831,6 +6838,8 @@ class Voice {
       if (!pipeline) return;
       pipeline.setGain(want.gainPercent);
       pipeline.setTonePreset(want.tonePreset).catch(() => undefined);
+      // Same fallback for the voice changer worklet: pitch stays off.
+      pipeline.setPitch(want.pitchSemitones).catch(() => undefined);
       // Asset load can fail (offline at first enable): denoise stays off and
       // audio keeps flowing — the same fallback as a join-time failure.
       pipeline.setDenoiseEnabled(want.denoise).catch(() => undefined);

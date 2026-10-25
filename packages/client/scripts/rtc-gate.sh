@@ -144,6 +144,9 @@ EXPECTED=(
   "components/client/mlsInboundBuffer.test.ts 17 0"
   "components/client/mlsEnvelopeClassify.test.ts 13 0"
   "components/client/mlsResumeKeep.test.ts 64 0"
+  # Voice changer: the pitch range helpers and the worklet DSP, including the
+  # level floors that catch an unaligned (warbling) splice.
+  "components/rtc/voicePitch.test.ts 26 0"
   # Call-view suggestions (opt-in screen shares, video-only grid, member
   # moves, opt-in share recording), first measured at 0c672a54; the watch,
   # move and chip counts were re-measured after the final-audit fix rounds.
@@ -370,6 +373,7 @@ SPECS=(components/rtc/mls*.test.ts components/rtc/rosterReconcile.test.ts
   # two lines.
   components/client/mlsInboundBuffer.test.ts
   components/client/mlsEnvelopeClassify.test.ts
+  components/rtc/voicePitch.test.ts
   # 🔴 Same reason, and the same directory. The kept-group registry decides
   # when a hung-up call's local group is finally deleted and whether a resume
   # may ever claim it; without this literal its spec runs nowhere and its
@@ -518,6 +522,9 @@ FILES=(components/rtc/mlsCallSession.ts components/rtc/mlsCallModePolicy.ts
   components/rtc/voiceMoveDrag.ts components/rtc/moveEventRedaction.test.ts
   components/rtc/callModerationPolicy.ts
   components/rtc/callModerationPolicy.test.ts
+  # Voice changer. Enrolled because both are clean: `prettier --check` and
+  # eslint each exit 0 on them, with no warnings.
+  components/rtc/voicePitch.ts components/rtc/voicePitch.test.ts
   components/rtc/callRecorder.ts components/rtc/callRecorder.test.ts
   components/rtc/stateWiring.test.ts components/rtc/sourcePins.harness.ts
   components/ui/components/features/voice/callCard/callTileSelection.ts
