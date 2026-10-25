@@ -176,6 +176,8 @@ function makeDraft() {
 }
 
 const client = {
+  // sendDraft asks this first (protected channels take another path)
+  isProtectedChannel: () => false,
   configuration: { features: { autumn: { url: "https://autumn.test" } } },
   authenticationHeader: ["X-Session-Token", "test"],
 };

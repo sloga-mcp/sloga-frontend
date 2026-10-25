@@ -16,6 +16,10 @@
 //      uses `Promise.allSettled`; `port.sleep` rejects after dispose;
 //      dispose on the wipe and ownership paths; the D12 gate; no
 //      `Idempotency-Key` and no draft-guard resolver in the seam.
+//  S10 (W4c#2) decrypt requests that arrive before a manager exists are
+//      held (Tauri main window only), bounded, deduped by id (live wins),
+//      replayed in arrival order once `start()` settles, and cleared on
+//      dispose. The hold logic is lifted out of the source and RUN.
 //
 // Run: node --test --conditions=browser components/client/protectedSeam.scan.test.ts
 // `PROTECTED_SEAM_TS=<path>` scans another copy (named controls; the
@@ -24,6 +28,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { stripTypeScriptTypes } from "node:module";
 import { test } from "node:test";
 
 import {
@@ -522,4 +527,211 @@ test("S9 (M3 support): disposeProtected is idempotent and final", () => {
   const inner = member(SRC, /\n {2}#protectedDispose\(\): void /);
   assert.match(inner, /this\.#ptLife\?\.abort\(\);/, "null-safe abort");
   assert.match(inner, /if \(manager\) \{/, "null-safe manager dispose");
+});
+
+// ---- S10 W4c#2 hold + replay of early decrypt requests ----------------------
+
+/** The full declaration (head + body) of the class member `head` names. */
+function memberDecl(src: string, head: RegExp): string {
+  const m = head.exec(src);
+  assert.ok(m, `member not found: ${head}`);
+  const body = member(src, head);
+  const start = m.index + (m[0].length - m[0].trimStart().length);
+  return src.slice(start, src.indexOf(body, m.index) + body.length);
+}
+
+const PENDING_DECL = /\n {2}readonly #ptPending = new Map<[\s\S]*?>\(\);/;
+const PENDING_MAX_DECL = /\n {2}readonly #ptPendingMax = (\d+);/;
+
+type Row = {
+  id: string;
+  channelId: string;
+  authorId: string;
+  nonce: string | null;
+  encrypted: unknown;
+};
+type Call = ["live", string] | ["history", string, string[]];
+type Harness = {
+  setManager(m: unknown): void;
+  setStructural(v: boolean): void;
+  signOut(): void;
+  pending(): [string, boolean][];
+  replay(m: unknown): void;
+  onProtectedMessage(message: unknown): void;
+  decryptProtectedHistory(channel: unknown, messages: unknown[]): void;
+};
+
+/**
+ * A class holding the seam's REAL hold members (`#ptPending`, its bound,
+ * `#protectedHoldRequests`, `#protectedEnqueue`, `#protectedReplayPending`,
+ * the two hooks, `#protectedRow`), lifted from the scanned source with
+ * their types stripped, plus stubs for the rest of the bridge.
+ */
+function harness(warn: unknown[][] = []): Harness {
+  const pending = PENDING_DECL.exec(SRC);
+  const max = PENDING_MAX_DECL.exec(SRC);
+  assert.ok(pending && max, "S10: #ptPending and #ptPendingMax declared");
+  const members = [
+    /\n {2}#protectedRow\(/,
+    /\n {2}onProtectedMessage\(/,
+    /\n {2}decryptProtectedHistory\(/,
+    /\n {2}#protectedHoldRequests\(\): boolean /,
+    /\n {2}#protectedEnqueue\(/,
+    /\n {2}#protectedReplayPending\(/,
+  ].map((head) => memberDecl(SRC, head));
+  const ts = `class Harness {
+  #ptManager = null;
+  #ptSignedOut = false;
+  #structural = true;
+  ${pending[0].trim()}
+  ${max[0].trim()}
+  #protectedStructural() { return this.#structural; }
+  setManager(m) { this.#ptManager = m; }
+  setStructural(v) { this.#structural = v; }
+  signOut() { this.#ptSignedOut = true; }
+  pending() { return [...this.#ptPending.values()].map((e) => [e.row.id, e.live]); }
+  replay(m) { this.#protectedReplayPending(m); }
+  ${members.join("\n  ")}
+}`;
+  const Cls = new Function(
+    "errorName",
+    "console",
+    `${stripTypeScriptTypes(ts)}\nreturn Harness;`,
+  )(String, { warn: (...a: unknown[]) => warn.push(a), error: () => {} });
+  return new Cls() as Harness;
+}
+
+function msg(id: string, channelId = "C1"): Row {
+  return { id, channelId, authorId: "U", nonce: null, encrypted: "CT" };
+}
+
+function recorder(): { calls: Call[]; manager: unknown } {
+  const calls: Call[] = [];
+  return {
+    calls,
+    manager: {
+      onMessage: (row: Row, live: boolean) => {
+        assert.equal(live, true, "replayed through onMessage only when live");
+        calls.push(["live", row.id]);
+      },
+      decryptHistory: (channelId: string, rows: Row[]) =>
+        calls.push(["history", channelId, rows.map((r) => r.id)]),
+    },
+  };
+}
+
+test("S10: a request with no manager is held, not dropped; live wins a dedupe", () => {
+  const h = harness();
+  h.decryptProtectedHistory({ id: "C1" }, [msg("a"), msg("b"), msg("x", "C2")]);
+  h.onProtectedMessage(msg("c"));
+  h.onProtectedMessage(msg("b")); // live supersedes the held history row
+  h.decryptProtectedHistory({ id: "C1" }, [msg("c"), msg("a")]); // dupes
+  h.onProtectedMessage(msg("c")); // live dupe
+  assert.deepEqual(h.pending(), [
+    ["a", false],
+    ["c", true],
+    ["b", true],
+  ]);
+});
+
+test("S10: the hold is bounded; the oldest go, logged by id only", () => {
+  const warn: unknown[][] = [];
+  const h = harness(warn);
+  const max = Number(PENDING_MAX_DECL.exec(SRC)![1]);
+  assert.ok(max >= 100 && max <= 5000, `bound is sane: ${max}`);
+  const rows = Array.from({ length: max + 50 }, (_, i) => msg(`m${i}`));
+  h.decryptProtectedHistory({ id: "C1" }, rows);
+  const held = h.pending();
+  assert.equal(held.length, max, "never more than the bound");
+  assert.equal(held[0][0], "m50", "the oldest 50 were dropped");
+  assert.equal(held[max - 1][0], `m${max + 49}`);
+  assert.equal(warn.length, 1, "one log per enqueue");
+  assert.match(String(warn[0][0]), /^\[protected\] /);
+  const detail = JSON.stringify(warn[0].slice(1));
+  assert.ok(detail.includes('"count":50'), "counts the drops");
+  assert.ok(detail.includes('"m0"'), "names dropped ids");
+  assert.ok(!detail.includes("CT"), "never logs a row body");
+});
+
+test("S10: replay hands every held request over in arrival order", () => {
+  const h = harness();
+  h.decryptProtectedHistory({ id: "C1" }, [msg("a"), msg("b")]);
+  h.decryptProtectedHistory({ id: "C2" }, [msg("x", "C2")]);
+  h.onProtectedMessage(msg("c"));
+  h.decryptProtectedHistory({ id: "C1" }, [msg("d")]);
+  const { calls, manager } = recorder();
+  h.replay(manager); // not the current manager: nothing moves
+  assert.deepEqual(calls, []);
+  assert.equal(h.pending().length, 5, "kept for the current manager");
+  h.setManager(manager);
+  h.replay(manager);
+  assert.deepEqual(calls, [
+    ["history", "C1", ["a", "b"]],
+    ["history", "C2", ["x"]],
+    ["live", "c"],
+    ["history", "C1", ["d"]],
+  ]);
+  assert.deepEqual(h.pending(), [], "the hold is empty after replay");
+  // With a manager, requests go straight to it.
+  h.onProtectedMessage(msg("e"));
+  h.decryptProtectedHistory({ id: "C1" }, [msg("f")]);
+  assert.deepEqual(calls.slice(4), [
+    ["live", "e"],
+    ["history", "C1", ["f"]],
+  ]);
+  assert.deepEqual(h.pending(), []);
+});
+
+test("S10: a non-capable shell holds nothing; neither does a signed-out bridge", () => {
+  const h = harness();
+  h.onProtectedMessage(msg("a"));
+  h.setStructural(false); // web / Electron / Android / iOS / popout
+  h.onProtectedMessage(msg("b"));
+  h.decryptProtectedHistory({ id: "C1" }, [msg("c")]);
+  assert.deepEqual(h.pending(), [], "nothing held, the old entry cleared");
+  const s = harness();
+  s.signOut();
+  s.onProtectedMessage(msg("a"));
+  s.decryptProtectedHistory({ id: "C1" }, [msg("b")]);
+  assert.deepEqual(s.pending(), []);
+});
+
+test("S10: replay is wired to start() settling (both arms) for that manager", () => {
+  const ensure = stripComments(
+    member(SRC, /\n {2}#protectedEnsureManager\(\): void /),
+  );
+  assert.match(
+    ensure,
+    /this\.#ptManager = manager;[\s\S]*const started = manager;\s*started\.start\(\)\.then\(\s*\(\) => this\.#protectedReplayPending\(started\),\s*\(error: unknown\) => \{[^}]*this\.#protectedReplayPending\(started\);\s*\},\s*\);/,
+    "replay after start() resolves, and after it rejects",
+  );
+  assert.equal(count(SRC, "#protectedReplayPending("), 3, "decl + two arms");
+  const replay = stripComments(member(SRC, /\n {2}#protectedReplayPending\(/));
+  assert.match(
+    replay,
+    /^\{\s*if \(this\.#ptManager !== manager\) return;\s*const held = \[\.\.\.this\.#ptPending\.values\(\)\];\s*this\.#ptPending\.clear\(\);/,
+    "only the current manager drains the hold",
+  );
+});
+
+test("S10: the hold is cleared on dispose (wipe, latches, sign-out) and on delete", () => {
+  const dispose = member(SRC, /\n {2}#protectedDispose\(\): void /);
+  assert.match(dispose, /this\.#ptPending\.clear\(\);/, "dispose clears it");
+  // disposeProtected (sign-out) and the wipe / latch paths all reach it (S8).
+  assert.match(
+    member(SRC, /\n {2}disposeProtected\(\): void /),
+    /this\.#protectedDispose\(\);/,
+  );
+  const forget = member(SRC, /\n {2}#protectedForget\(/);
+  assert.match(forget, /this\.#ptPending\.delete\(id\);/, "deleted ids go");
+  // Writers: one set (enqueue); clears: dispose, non-capable, replay.
+  assert.equal(count(SRC, "#ptPending.set("), 1);
+  assert.equal(count(SRC, "#ptPending.clear()"), 3);
+  const hold = stripComments(
+    member(SRC, /\n {2}#protectedHoldRequests\(\): boolean /),
+  );
+  assert.match(
+    hold,
+    /^\{\s*if \(!this\.#protectedStructural\(\) \|\| this\.#ptSignedOut\) \{\s*this\.#ptPending\.clear\(\);\s*return false;\s*\}\s*return this\.#ptManager === null;\s*\}$/,
+  );
 });

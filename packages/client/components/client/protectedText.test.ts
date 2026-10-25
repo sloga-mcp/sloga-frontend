@@ -12,6 +12,11 @@
 // stripped → unverified; ChannelDelete keeps state. Named controls:
 // [RC NEW-5] refetched own row with different bytes, [RC NEW-6] orphan
 // protected-send entries at start, [RC NEW-7] never-seated unopened channel.
+// W3 command shapes (2026-10-25, lane F1): `_join` returns
+// `{intent, key_packages}`; the package is PUT before the intent alone is
+// posted (429/5xx retried, other 4xx never posts); every `_commit_won`
+// carries `rejoinIntents` (plain win: this commit's; refetch: the DS's).
+// Controls C-F1a/b/c target the tests named "F1 ...".
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
@@ -20,8 +25,10 @@ import { computeShieldState, shieldInputsFromView } from "./protectedShield.ts";
 import {
   type ProtectedTextPortExtensions,
   FIRST_SIGHT_PER_MINUTE,
+  KEY_PACKAGE_PUT_429_BUDGET,
   ProtectedTextManager,
   REFETCH_403_PARK_BUDGET,
+  WON_ROW_READ_BUDGET,
 } from "./protectedText.ts";
 import { textGroupId } from "./protectedTextIds.ts";
 import { JOIN_RETRIES } from "./protectedTextPolicy.ts";
@@ -40,6 +47,7 @@ import type {
   TextCommandArgs,
   TextCommandResult,
   TextEnvelope,
+  TextJoinIntent,
   TextLogIds,
   TextMember,
   TextProcessOutcome,
@@ -218,6 +226,32 @@ function ok(body: unknown, status = 200): TextApiResponse {
   return { status, resetAfterMs: null, body };
 }
 
+/** `_join`'s n-th answer: a fresh one-time package per intent (W3). */
+function joinIntent(n: number): TextJoinIntent {
+  const ref = `KPR-${n}`;
+  return {
+    intent: { device_id: DEV, key_package_ref: ref, signature: `JSIG-${n}` },
+    key_packages: {
+      device_id: DEV,
+      mls_signature_key: "MSK-SELF",
+      binding_signature: "BS-SELF",
+      key_packages: [{ key_package_ref: ref, key_package: `KP-${n}` }],
+    },
+  };
+}
+
+/** A fanned-out join intent (the `MlsJoinRequested` shape). */
+function joinRequest(signature: string): MlsJoinRequest {
+  return {
+    group_id: G0,
+    channel_id: CH,
+    user_id: PEER,
+    device_id: PEER_DEV,
+    key_package_ref: "KPR-PEER",
+    signature,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Fake port
 // ---------------------------------------------------------------------------
@@ -288,6 +322,23 @@ class Env implements ProtectedTextPort, ProtectedTextPortExtensions {
   markers: TimelineMarker[] = [];
   decrypts: string[] = [];
   sends: string[] = [];
+  joins = 0;
+  /** Native commands and courier calls, in call order. */
+  trace: string[] = [];
+  /** Commit rows the fake DS stored on a 2xx (served by the refetch GET). */
+  rows: {
+    group_id: string;
+    epoch: number;
+    committer: MlsMemberDevice;
+    commit: string;
+    added: MlsMemberDevice[];
+    removed: MlsMemberDevice[];
+    rejoin_intents?: MlsJoinRequest[];
+  }[] = [];
+  /** The DS's own `rejoin_intents` for the rows it stores (null: absent). */
+  dsRejoin: MlsJoinRequest[] | null = null;
+  /** Overrides the stored `commit` string (RC NEW-5 on a plain win). */
+  storedCommit: string | null = null;
 
   constructor() {
     this.handlers = defaultHandlers(this);
@@ -317,6 +368,7 @@ class Env implements ProtectedTextPort, ProtectedTextPortExtensions {
     args: TextCommandArgs[C],
   ): Promise<TextCommandResult[C]> {
     this.invokes.push({ cmd, args: structuredClone(args) });
+    this.trace.push(cmd);
     const h = this.handlers[cmd] as
       | ((a: TextCommandArgs[C]) => TextCommandResult[C])
       | undefined;
@@ -337,6 +389,7 @@ class Env implements ProtectedTextPort, ProtectedTextPortExtensions {
 
   async api(method: string, path: string, body?: unknown) {
     this.apiCalls.push({ method, path, body: structuredClone(body) });
+    this.trace.push(`${method} ${path}`);
     for (const r of [...this.routes, defaultRoute(this)]) {
       const a = r(method, path, body);
       if (a === "transport") throw new Error("network");
@@ -502,11 +555,7 @@ function defaultHandlers(env: Env): Handlers {
       return null;
     },
     e2ee_text_pending_commit: () => env.pending,
-    e2ee_text_join: () => ({
-      device_id: DEV,
-      key_package_ref: "KPR",
-      signature: "JSIG",
-    }),
+    e2ee_text_join: () => joinIntent(++env.joins),
     e2ee_text_mark_left: () => {
       const s = env.state();
       s.state = "left";
@@ -560,12 +609,36 @@ function defaultRoute(env: Env): Route {
       return env.group ? ok(env.group) : ok({ type: "NotFound" }, 404);
     }
     if (method === "POST" && /^\/mls\/groups\/[0-9a-f]+\/commits$/.test(path)) {
+      // A bare `Won`; the DS keeps the row (with ITS rejoin_intents).
+      const b = body as TextSubmitCommitPayload;
+      const group_id = path.split("/")[3];
+      if (
+        !env.rows.some((r) => r.group_id === group_id && r.epoch === b.epoch)
+      ) {
+        env.rows.push({
+          group_id,
+          epoch: b.epoch,
+          committer: { user_id: SELF, device_id: b.device_id },
+          commit: env.storedCommit ?? b.commit,
+          added: b.added ?? [],
+          removed: b.removed ?? [],
+          ...(env.dsRejoin ? { rejoin_intents: env.dsRejoin } : {}),
+        });
+      }
       return ok({ result: "Won" });
     }
     if (method === "GET" && /\/commits\?from_epoch=/.test(path)) {
-      return ok({ commits: [], current_epoch: 3 });
+      const group_id = path.split("/")[3];
+      const from = Number(path.split("from_epoch=")[1]);
+      const commits = env.rows.filter(
+        (r) => r.group_id === group_id && r.epoch >= from,
+      );
+      return ok({ commits, current_epoch: 3 });
     }
     if (method === "POST" && /\/join_intent$/.test(path)) return ok(null, 204);
+    if (method === "PUT" && path === "/mls/key_packages") {
+      return ok({ key_package_count: 1 });
+    }
     if (method === "POST" && path === "/mls/key_packages/claim") {
       const t = (body as { targets: MlsMemberDevice[] }).targets[0];
       return ok({
@@ -760,6 +833,11 @@ test("unseat: removeDevices passes pending_removal_users and commits", async () 
   assert.equal(
     env.calls("e2ee_text_commit_won").at(-1)?.storedCommitB64,
     "REM",
+  );
+  assert.deepEqual(
+    env.calls("e2ee_text_commit_won").at(-1)?.rejoinIntents,
+    [],
+    "a Remove without an intent carries none",
   );
   m.dispose();
 });
@@ -1327,6 +1405,411 @@ test("join: retries exhausted → welcomeRetriesExhausted → unverified (6d)", 
   assert.equal(env.views.get(CH)?.welcomeRetriesExhausted, true);
   assert.equal(env.shield(), "unverified");
   m.dispose();
+});
+
+/** The join's PUT /mls/key_packages and POST join_intent calls, in order. */
+function joinTraffic(env: Env) {
+  return env.apiCalls.filter(
+    (c) =>
+      (c.method === "PUT" && c.path === "/mls/key_packages") ||
+      (c.method === "POST" && /\/join_intent$/.test(c.path)),
+  );
+}
+
+test("F1 join: PUT exactly key_packages BEFORE posting the intent alone, fresh _join per attempt", async () => {
+  const env = joiningEnv();
+  const m = make(env);
+  const p = silence(m.ensureJoined(CH));
+  await env.advance(0);
+  const first = joinTraffic(env);
+  assert.deepEqual(
+    first.map((c) => c.method),
+    ["PUT", "POST"],
+    "the package is published before the intent",
+  );
+  assert.deepEqual(first[0].body, joinIntent(1).key_packages);
+  assert.equal(first[1].path, `/mls/groups/${G0}/join_intent`);
+  assert.deepEqual(first[1].body, joinIntent(1).intent, "the intent alone");
+  await env.advance(200_000);
+  await assert.rejects(p);
+  assert.equal(env.calls("e2ee_text_join").length, 1 + JOIN_RETRIES);
+  const expected = Array.from({ length: 1 + JOIN_RETRIES }, (_, i) => [
+    ["PUT", joinIntent(i + 1).key_packages],
+    ["POST", joinIntent(i + 1).intent],
+  ]).flat();
+  assert.deepEqual(
+    joinTraffic(env).map((c) => [c.method, c.body]),
+    expected,
+    "each attempt PUTs its own fresh package, then posts its own intent",
+  );
+  m.dispose();
+});
+
+test("F1 join: a 429 PUT is waited out and re-PUT; 5xx/transport retry with a fresh _join; no intent before a 2xx PUT", async () => {
+  const env = joiningEnv();
+  const answers: (TextApiResponse | "transport")[] = [
+    { status: 429, resetAfterMs: 1_500, body: { type: "RateLimited" } },
+    ok({ type: "InternalError" }, 503),
+    "transport",
+  ];
+  env.routes.push((method, path) =>
+    method === "PUT" && path === "/mls/key_packages"
+      ? answers.shift()
+      : undefined,
+  );
+  const m = make(env);
+  const p = silence(m.ensureJoined(CH));
+  await env.advance(0);
+  assert.equal(env.api$("PUT", /^\/mls\/key_packages$/).length, 1);
+  await env.advance(1_499);
+  assert.equal(
+    env.api$("PUT", /^\/mls\/key_packages$/).length,
+    1,
+    "Retry-After honored",
+  );
+  // 429 → same body re-PUT → 503 → backoff, `_join` #2 → transport →
+  // backoff, `_join` #3 → 2xx → intent #3 (all inside the 10 s window).
+  await env.advance(5_001);
+  const t = joinTraffic(env);
+  assert.deepEqual(
+    t.map((c) => [c.method, c.body]),
+    [
+      ["PUT", joinIntent(1).key_packages],
+      ["PUT", joinIntent(1).key_packages],
+      ["PUT", joinIntent(2).key_packages],
+      ["PUT", joinIntent(3).key_packages],
+      ["POST", joinIntent(3).intent],
+    ],
+  );
+  assert.equal(env.calls("e2ee_text_join").length, 3);
+  m.dispose();
+  await p.catch(() => undefined);
+});
+
+test("F1 join: a non-429 4xx PUT fails the attempt and never posts the intent", async () => {
+  const env = joiningEnv();
+  env.routes.push((method, path) =>
+    method === "PUT" && path === "/mls/key_packages"
+      ? ok({ type: "FailedValidation", error: "x" }, 400)
+      : undefined,
+  );
+  const m = make(env);
+  const p = silence(m.ensureJoined(CH));
+  await env.advance(60_000);
+  await assert.rejects(
+    p,
+    (e: { source?: string; status?: number }) =>
+      e.source === "server" && e.status === 400,
+  );
+  assert.equal(env.api$("PUT", /^\/mls\/key_packages$/).length, 1);
+  assert.equal(env.api$("POST", /join_intent$/).length, 0);
+  assert.equal(env.calls("e2ee_text_join").length, 1);
+  m.dispose();
+});
+
+test("F1 join: PUT 5xx and 429 retries are bounded; no intent is ever posted", async () => {
+  for (const answer of [
+    ok({ type: "InternalError" }, 503),
+    { status: 429, resetAfterMs: 1_500, body: { type: "RateLimited" } },
+  ]) {
+    const env = joiningEnv();
+    env.routes.push((method, path) =>
+      method === "PUT" && path === "/mls/key_packages" ? answer : undefined,
+    );
+    const m = make(env);
+    const p = silence(m.ensureJoined(CH));
+    await env.advance(600_000);
+    await assert.rejects(
+      p,
+      (e: { source?: string; status?: number }) =>
+        e.source === "server" && e.status === answer.status,
+    );
+    const perAttempt =
+      answer.status === 429 ? 1 + KEY_PACKAGE_PUT_429_BUDGET : 1;
+    assert.equal(env.calls("e2ee_text_join").length, 1 + JOIN_RETRIES);
+    assert.equal(
+      env.api$("PUT", /^\/mls\/key_packages$/).length,
+      perAttempt * (1 + JOIN_RETRIES),
+    );
+    assert.equal(env.api$("POST", /join_intent$/).length, 0);
+    assert.equal(env.views.get(CH)?.welcomeRetriesExhausted, false);
+    m.dispose();
+  }
+});
+
+/** A remove of PEER's device carrying `rejoinIntent`, scripted by `routes`. */
+async function removeWith(
+  env: Env,
+  m: ProtectedTextManager,
+  rejoinIntent: MlsJoinRequest | null,
+) {
+  await m.refresh(CH, "open");
+  const p = silence(
+    m.removeDevices(CH, [{ user_id: PEER, device_id: PEER_DEV }], {
+      rejoinIntent,
+    }),
+  );
+  await env.advance(120_000);
+  await p;
+}
+
+/** Index in `env.trace` of the first entry matching `re`. */
+function at(env: Env, re: RegExp): number {
+  return env.trace.findIndex((t) => re.test(t));
+}
+
+test("F1 commit_won: a plain 2xx win reads the stored row and passes the SERVER's rejoin_intents and commit", async () => {
+  // Rule 6 from a fanned-out rejoin request (the #admit path); the DS
+  // recorded a DIFFERENT (newer) intent of that device than ours.
+  const env = new Env();
+  const ours = joinRequest("OURS");
+  const ds = joinRequest("DS-STORED");
+  env.dsRejoin = [ds];
+  const m = make(env);
+  await m.refresh(CH, "open");
+  m.onJoinRequest(ours, true);
+  await env.advance(10_000);
+  assert.deepEqual(env.calls("e2ee_text_remove")[0]?.rejoinIntent, ours);
+  assert.deepEqual(env.calls("e2ee_text_commit_won"), [
+    { groupId: G0, wonEpoch: 4, storedCommitB64: "REM", rejoinIntents: [ds] },
+  ]);
+  const read = at(env, /^GET \/mls\/groups\/[0-9a-f]+\/commits\?from_epoch=4$/);
+  assert.ok(read > at(env, /^POST .*\/commits$/), "read after the 2xx");
+  assert.ok(read < at(env, /^e2ee_text_commit_won$/), "read before won");
+  m.dispose();
+
+  // The DS stored NO intents for this Remove (another rule applied): `[]`,
+  // never the intent this device gave `_remove`; and the stored string,
+  // not our bytes, is what native compares (RC NEW-5).
+  const env2 = new Env();
+  env2.storedCommit = "DS-BYTES";
+  const m2 = make(env2);
+  await removeWith(env2, m2, ours);
+  assert.deepEqual(env2.calls("e2ee_text_commit_won"), [
+    {
+      groupId: G0,
+      wonEpoch: 4,
+      storedCommitB64: "DS-BYTES",
+      rejoinIntents: [],
+    },
+  ]);
+  m2.dispose();
+
+  // Unknown outcome, absent row, identical resubmit answered 2xx: the row
+  // is read again before won.
+  const env3 = new Env();
+  env3.dsRejoin = [ds];
+  let posts = 0;
+  env3.routes.push((method, path) =>
+    method === "POST" && path.endsWith("/commits") && ++posts === 1
+      ? "transport"
+      : undefined,
+  );
+  const m3 = make(env3);
+  await removeWith(env3, m3, ours);
+  assert.equal(posts, 2, "resubmitted");
+  assert.deepEqual(env3.calls("e2ee_text_commit_won")[0]?.rejoinIntents, [ds]);
+  m3.dispose();
+});
+
+test("F1 commit_won: the stored-row read retries transport/429/5xx/missing and never calls won early; parks after its budget", async () => {
+  const env = new Env();
+  env.dsRejoin = [joinRequest("DS-STORED")];
+  const answers: (TextApiResponse | "transport")[] = [
+    "transport",
+    { status: 429, resetAfterMs: 2_000, body: { type: "RateLimited" } },
+    ok({ type: "InternalError" }, 503),
+    ok({ commits: [], current_epoch: 4 }), // a missing row after a 2xx
+  ];
+  env.routes.push((method, path) =>
+    method === "GET" && path.includes("from_epoch=4")
+      ? answers.shift()
+      : undefined,
+  );
+  const m = make(env);
+  await m.refresh(CH, "open");
+  const p = silence(
+    m.removeDevices(CH, [{ user_id: PEER, device_id: PEER_DEV }], {
+      rejoinIntent: null,
+    }),
+  );
+  await env.advance(0);
+  assert.equal(env.calls("e2ee_text_commit_won").length, 0, "not early");
+  await env.advance(120_000);
+  await p;
+  const reads = env.api$("GET", /from_epoch=4$/).length;
+  assert.equal(reads, 5, "four failed reads, then the row");
+  assert.equal(env.api$("POST", /\/commits$/).length, 1, "never resubmitted");
+  assert.equal(env.calls("e2ee_text_commit_lost").length, 0);
+  assert.deepEqual(
+    env.calls("e2ee_text_commit_won")[0]?.rejoinIntents,
+    env.dsRejoin,
+  );
+  assert.ok(
+    env.logs.some(
+      (l) =>
+        l.msg === "[protected] won row missing" &&
+        JSON.stringify(l.ids) === JSON.stringify({ groupId: G0, epoch: 4 }),
+    ),
+    "missing row logged with ids only",
+  );
+  m.dispose();
+
+  // Never readable: parked (stage kept, no won/lost/resubmit), resumed by
+  // the next refresh as a plain win that reads the row again.
+  const env2 = new Env();
+  let readable = false;
+  env2.routes.push((method, path) =>
+    method === "GET" && path.includes("from_epoch=4") && !readable
+      ? ok({ type: "InternalError" }, 503)
+      : undefined,
+  );
+  const m2 = make(env2);
+  await m2.refresh(CH, "open");
+  const p2 = silence(
+    m2.removeDevices(CH, [{ user_id: PEER, device_id: PEER_DEV }], {
+      rejoinIntent: null,
+    }),
+  );
+  await env2.advance(600_000);
+  await assert.rejects(
+    p2,
+    (e: { reason?: string }) => e.reason === "commit_parked",
+  );
+  assert.equal(env2.api$("GET", /from_epoch=4$/).length, WON_ROW_READ_BUDGET);
+  assert.equal(env2.calls("e2ee_text_commit_won").length, 0);
+  assert.equal(env2.calls("e2ee_text_commit_lost").length, 0);
+  assert.equal(env2.calls("e2ee_text_mark_left").length, 0);
+  assert.equal(env2.api$("POST", /\/commits$/).length, 1);
+  readable = true;
+  await m2.refresh(CH, "interval");
+  await env2.advance(1_000);
+  assert.equal(env2.calls("e2ee_text_commit_won").length, 1, "resumed");
+  assert.equal(env2.api$("POST", /\/commits$/).length, 1, "still no resubmit");
+  m2.dispose();
+});
+
+test("F1 R2: a successor created locally but never accepted is re-created, not joined", async () => {
+  const signer = {
+    ...st().seat_list!,
+    signer_user_id: SELF,
+    signer_device_id: DEV,
+  };
+  // Native holds G1 exactly as `_group_create(supersedes: G0)` left it; the
+  // server still names the old G0 as open.
+  const untouched = (group_id: string, generation: number) =>
+    st({
+      group_id,
+      generation,
+      epoch: 0,
+      members: [mem(SELF, DEV)],
+      seat_list: signer,
+    });
+  const env = new Env();
+  env.states.set(CH, untouched(G1, 1));
+  const m = make(env);
+  await m.refresh(CH, "open");
+  await env.advance(1_000);
+  assert.deepEqual(env.calls("e2ee_text_group_create"), [
+    { channelId: CH, userId: SELF, supersedes: G0 },
+  ]);
+  const post = env.api$("POST", /^\/mls\/groups$/);
+  assert.equal(post.length, 1);
+  assert.equal((post[0].body as { group_id: string }).group_id, G1);
+  assert.equal(
+    env.calls("e2ee_text_join").length,
+    0,
+    "no ChannelMismatch join",
+  );
+  // The server still shows G0: once per session, never a loop.
+  await m.refresh(CH, "interval");
+  await env.advance(1_000);
+  assert.equal(env.calls("e2ee_text_group_create").length, 1);
+  // ensureJoined (open/send) takes the same re-create, never `_join`.
+  await assert.doesNotReject(m.ensureJoined(CH));
+  assert.equal(env.calls("e2ee_text_join").length, 0);
+  m.dispose();
+
+  // Genesis: native holds an untouched G0, the server definitively has none.
+  const env2 = new Env();
+  env2.group = null;
+  env2.states.set(CH, untouched(G0, 0));
+  const m2 = make(env2);
+  await m2.refresh(CH, "open");
+  await env2.advance(1_000);
+  assert.deepEqual(env2.calls("e2ee_text_group_create"), [
+    { channelId: CH, userId: SELF, supersedes: null },
+  ]);
+  m2.dispose();
+
+  // Not applicable: the server accepted it; a staged commit; not the
+  // signer; a server answer that is unknown (never read as absent).
+  for (const setup of [
+    (e: Env) => {
+      e.group = groupBody({ group_id: G1, generation: 1, current_epoch: 0 });
+    },
+    (e: Env) => {
+      e.pending = { epoch: 1, commit_b64: "STAGED" };
+    },
+    (e: Env) => {
+      e.states.set(CH, { ...untouched(G1, 1), seat_list: st().seat_list });
+    },
+    (e: Env) => {
+      e.routes.push((method, path) =>
+        method === "GET" && path.endsWith("/text_group")
+          ? "transport"
+          : undefined,
+      );
+    },
+  ]) {
+    const e = new Env();
+    e.states.set(CH, untouched(G1, 1));
+    setup(e);
+    const mm = make(e);
+    await mm.refresh(CH, "open");
+    await e.advance(1_000);
+    assert.equal(e.api$("POST", /^\/mls\/groups$/).length, 0);
+    mm.dispose();
+  }
+});
+
+test("F1 commit_won: Lost{self} and refetched rows pass the DS's rejoin_intents verbatim", async () => {
+  const ours = joinRequest("OURS");
+  const ds = joinRequest("DS-STORED");
+  const env = new Env();
+  env.routes.push((method, path) => {
+    if (method === "POST" && path.endsWith("/commits")) {
+      return ok({ result: "Lost", winning: ownRow(4, "REM") }, 409);
+    }
+    if (method === "GET" && path.includes("from_epoch=4")) {
+      return ok({
+        commits: [{ ...ownRow(4, "REM"), rejoin_intents: [ds] }],
+        current_epoch: 4,
+      });
+    }
+    return undefined;
+  });
+  const m = make(env);
+  await removeWith(env, m, ours);
+  assert.deepEqual(env.calls("e2ee_text_commit_won"), [
+    { groupId: G0, wonEpoch: 4, storedCommitB64: "REM", rejoinIntents: [ds] },
+  ]);
+  m.dispose();
+
+  // A refetched own row without `rejoin_intents` (absent = empty): `[]`,
+  // never this device's own guess.
+  const env2 = new Env();
+  env2.routes.push((method, path) => {
+    if (method === "POST" && path.endsWith("/commits")) return "transport";
+    if (method === "GET" && path.includes("from_epoch=4")) {
+      return ok({ commits: [ownRow(4, "REM")], current_epoch: 4 });
+    }
+    return undefined;
+  });
+  const m2 = make(env2);
+  await removeWith(env2, m2, ours);
+  assert.deepEqual(env2.calls("e2ee_text_commit_won")[0]?.rejoinIntents, []);
+  m2.dispose();
 });
 
 test("flag stripped → unverified; sends refused before any encrypt", async () => {

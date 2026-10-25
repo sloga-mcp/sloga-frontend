@@ -7196,6 +7196,20 @@ export class E2EEBridge implements E2EEAdapter {
   readonly #ptOpen = new Set<string>();
   /** Draft outbox keys (set by the Draft lane); unset = unknown. */
   #ptOutboxKeys: (() => ReadonlySet<string>) | null = null;
+  /**
+   * W4c#2: decrypt requests (live and history) that arrived on the Tauri
+   * main window before a manager existed (cold start straight into a
+   * protected channel, E2EE switched on mid-session). One entry per message
+   * id, in arrival order (a live request supersedes a history one), bounded
+   * by `#ptPendingMax` (oldest dropped). Replayed once the next manager's
+   * `start()` settles; cleared by `#protectedDispose`. Never filled on a
+   * shell that is not structurally capable (it renders `not_available`).
+   */
+  readonly #ptPending = new Map<
+    string,
+    { row: ProtectedMessageRow; live: boolean }
+  >();
+  readonly #ptPendingMax = 2000;
 
   /** Per-channel manager view (`ProtectedUiApi.protectedChannels`). */
   readonly protectedChannels = new ReactiveMap<string, ProtectedChannelView>();
@@ -7443,7 +7457,10 @@ export class E2EEBridge implements E2EEAdapter {
 
   #protectedForget(ids: string[]): void {
     if (ids.length === 0) return;
-    for (const id of ids) this.protectedViews.delete(id);
+    for (const id of ids) {
+      this.protectedViews.delete(id);
+      this.#ptPending.delete(id);
+    }
     try {
       this.#ptManager?.forget(ids);
     } catch (error) {
@@ -7513,9 +7530,17 @@ export class E2EEBridge implements E2EEAdapter {
     for (const channelId of this.#ptIndexed) {
       this.#protectedForward(channelId);
     }
-    manager.start().catch((error: unknown) => {
-      console.error("[protected] manager start failed", errorName(error));
-    });
+    // W4c#2: requests held while no manager existed are replayed once
+    // start() settles. Also after a failed start: the manager then serves
+    // every later request anyway, and a held row must not stay pending.
+    const started = manager;
+    started.start().then(
+      () => this.#protectedReplayPending(started),
+      (error: unknown) => {
+        console.error("[protected] manager start failed", errorName(error));
+        this.#protectedReplayPending(started);
+      },
+    );
     // Channels the UI opened before this manager existed.
     for (const channelId of this.#ptOpen) void this.#protectedOpen(channelId);
     void this.#protectedRefreshFlag();
@@ -7548,6 +7573,7 @@ export class E2EEBridge implements E2EEAdapter {
     this.#ptOwnListing = null;
     this.#ptOwnListingFlight = null;
     this.#ptServerKeyPackages = 0;
+    this.#ptPending.clear();
     if (manager) {
       try {
         manager.dispose();
@@ -7968,14 +7994,100 @@ export class E2EEBridge implements E2EEAdapter {
   }
 
   onProtectedMessage(message: Message): void {
-    this.#ptManager?.onMessage(this.#protectedRow(message), true);
+    const row = this.#protectedRow(message);
+    if (this.#protectedHoldRequests()) {
+      this.#protectedEnqueue([row], true);
+      return;
+    }
+    this.#ptManager?.onMessage(row, true);
   }
 
   decryptProtectedHistory(channel: Channel, messages: Message[]): void {
-    this.#ptManager?.decryptHistory(
-      channel.id,
-      messages.map((message) => this.#protectedRow(message)),
-    );
+    const rows = messages.map((message) => this.#protectedRow(message));
+    if (this.#protectedHoldRequests()) {
+      // The manager skips rows of another channel; so does the hold.
+      this.#protectedEnqueue(
+        rows.filter((row) => row.channelId === channel.id),
+        false,
+      );
+      return;
+    }
+    this.#ptManager?.decryptHistory(channel.id, rows);
+  }
+
+  /**
+   * W4c#2: hold decrypt requests while no manager exists on a window that
+   * is (or can become) capable, i.e. the Tauri main window before sign-out.
+   * Anywhere else nothing is held and the old pending entries go.
+   */
+  #protectedHoldRequests(): boolean {
+    if (!this.#protectedStructural() || this.#ptSignedOut) {
+      this.#ptPending.clear();
+      return false;
+    }
+    return this.#ptManager === null;
+  }
+
+  /**
+   * Add requests to `#ptPending`, deduped by message id: a live request
+   * replaces a held history one (and takes its arrival slot), anything else
+   * keeps the entry already held. Past `#ptPendingMax` the oldest go, logged
+   * by id only (D16).
+   */
+  #protectedEnqueue(rows: ProtectedMessageRow[], live: boolean): void {
+    for (const row of rows) {
+      const held = this.#ptPending.get(row.id);
+      if (held && (held.live || !live)) continue;
+      this.#ptPending.delete(row.id);
+      this.#ptPending.set(row.id, { row, live });
+    }
+    const dropped: string[] = [];
+    while (this.#ptPending.size > this.#ptPendingMax) {
+      const oldest = this.#ptPending.keys().next().value;
+      if (oldest === undefined) break;
+      this.#ptPending.delete(oldest);
+      dropped.push(oldest);
+    }
+    if (dropped.length > 0) {
+      console.warn("[protected] held decrypt requests dropped (queue full)", {
+        count: dropped.length,
+        messageIds: dropped.slice(0, 20),
+      });
+    }
+  }
+
+  /**
+   * W4c#2: once `manager.start()` settled, hand it every held request in
+   * arrival order (consecutive history rows of one channel as one batch, so
+   * they decrypt one after another). A manager that was disposed or replaced
+   * meanwhile gets nothing: dispose cleared the queue, and a newer manager
+   * replays after its own start.
+   */
+  #protectedReplayPending(manager: ProtectedTextManager): void {
+    if (this.#ptManager !== manager) return;
+    const held = [...this.#ptPending.values()];
+    this.#ptPending.clear();
+    let batch: ProtectedMessageRow[] = [];
+    const flush = () => {
+      if (batch.length > 0) manager.decryptHistory(batch[0].channelId, batch);
+      batch = [];
+    };
+    try {
+      for (const { row, live } of held) {
+        if (live) {
+          flush();
+          manager.onMessage(row, true);
+        } else {
+          if (batch.length > 0 && batch[0].channelId !== row.channelId) {
+            flush();
+          }
+          batch.push(row);
+        }
+      }
+      flush();
+    } catch (error) {
+      console.error("[protected] held request replay failed", errorName(error));
+    }
   }
 
   onProtectedFlagStripped(channelId: string): void {

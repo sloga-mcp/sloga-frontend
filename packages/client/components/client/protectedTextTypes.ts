@@ -26,6 +26,7 @@ import type {
   MlsJoinIntentPayload,
   MlsJoinRequest,
   MlsMemberDevice,
+  MlsPublishKeyPackages,
   MlsSubmitCommit,
 } from "./e2ee";
 
@@ -109,6 +110,18 @@ export interface TextGroupCreated {
   group_id: string;
   generation: number;
   payload: TextCreateGroupPayload;
+}
+
+/**
+ * `e2ee_text_join` (W3 command-shape change, 2026-10-25): the signed intent
+ * and the FRESH one-time KeyPackage native minted for it (one package, no
+ * last resort). The manager PUTs `key_packages` to `/mls/key_packages` first
+ * and only after its 2xx POSTs `intent` (never the whole object) to
+ * `/mls/groups/:id/join_intent`. Both are couriered verbatim.
+ */
+export interface TextJoinIntent {
+  intent: MlsJoinIntentPayload;
+  key_packages: MlsPublishKeyPackages;
 }
 
 /** What `_process` / `_commit_won` did with an envelope. */
@@ -354,8 +367,11 @@ export interface TextCommandArgs {
   e2ee_text_process: { envelope: TextWireEnvelope; userId: string };
   /**
    * `storedCommitB64` is the DS's stored string on a refetch path, our own
-   * bytes only on a plain 2xx (plan D20). `rejoinIntents` (W3 D11, plan D24)
-   * comes from `MlsCommitInfo`; `[]` on the 2xx path.
+   * bytes only on a plain 2xx (plan D20). `rejoinIntents` is ALWAYS passed
+   * (W3 2026-10-25: forced-removal memory depends on it): on a refetch path
+   * the DS's `MlsCommitInfo.rejoin_intents` verbatim (absent = `[]`); on a
+   * plain 2xx exactly the intents this device's commit carried (the
+   * `_remove` `rejoinIntent`; `[]` for Adds and Updates).
    */
   e2ee_text_commit_won: {
     groupId: string;
@@ -433,7 +449,7 @@ export interface TextCommandArgs {
 /** Per-command results. Rust `()` arrives as `null`. */
 export interface TextCommandResult {
   e2ee_text_group_create: TextGroupCreated;
-  e2ee_text_join: MlsJoinIntentPayload;
+  e2ee_text_join: TextJoinIntent;
   e2ee_text_admit: TextSubmitCommitPayload;
   e2ee_text_process: TextProcessOutcome;
   e2ee_text_commit_won: TextProcessOutcome;

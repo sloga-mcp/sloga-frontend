@@ -10,16 +10,22 @@ import { Trans, useLingui } from "@lingui-solid/solid/macro";
 import { Channel } from "stoat.js";
 
 import { useClient } from "@revolt/client";
+import { settingsCopy } from "@revolt/client/protectedCopy";
 import { channelNounOf } from "@revolt/common/lib/channelNoun";
 import { TextWithEmoji } from "@revolt/markdown";
 import { useModals } from "@revolt/modal";
 import { ColouredText } from "@revolt/ui";
+import { Symbol } from "@revolt/ui/components/utils/Symbol";
 
 import { SettingsConfiguration } from ".";
 import ForumSettings from "./channel/ForumSettings";
 import ChannelOverview from "./channel/Overview";
 import { ChannelPermissionsEditor } from "./channel/permissions/ChannelPermissionsEditor";
 import { ChannelPermissionsOverview } from "./channel/permissions/ChannelPermissionsOverview";
+import {
+  ProtectedChannelSettings,
+  protectedSettingsVisibleFor,
+} from "./channel/protected/ProtectedChannelSettings";
 import { ViewWebhook } from "./channel/webhooks/ViewWebhook";
 import { WebhooksList } from "./channel/webhooks/WebhooksList";
 import { BackCard } from "./user/_AccountCard";
@@ -102,7 +108,15 @@ const Config: SettingsConfiguration<Channel> = {
             return null;
         }
       case "webhooks":
-        return <WebhooksList channel={channel} />;
+        // The server refuses webhooks on protected channels (C13 note).
+        return client().isProtectedChannel(channel.id) ? null : (
+          <WebhooksList channel={channel} />
+        );
+      case "protected":
+        // Server owner only (product choice 4); the page re-checks.
+        return protectedSettingsVisibleFor(channel, client()) ? (
+          <ProtectedChannelSettings channel={channel} />
+        ) : null;
       default:
         return null;
     }
@@ -115,6 +129,7 @@ const Config: SettingsConfiguration<Channel> = {
    */
   list(channel, onClose) {
     const { openModal } = useModals();
+    const client = useClient();
 
     return {
       context: channel,
@@ -152,11 +167,20 @@ const Config: SettingsConfiguration<Channel> = {
               hidden:
                 // forums have no message stream, so no webhooks either
                 channel.type === "Forum" ||
+                // the server refuses webhooks on protected channels
+                client().isProtectedChannel(channel.id) ||
                 (!channel.havePermission("ManageWebhooks") &&
                   import.meta.env.DEV),
               id: "webhooks",
               icon: <BiSolidCloud size={20} />,
               title: <Trans>Webhooks</Trans>,
+            },
+            {
+              // Server owner only (product choice 4).
+              hidden: !protectedSettingsVisibleFor(channel, client()),
+              id: "protected",
+              icon: <Symbol size={20}>verified_user</Symbol>,
+              title: settingsCopy.title(),
             },
           ],
         },

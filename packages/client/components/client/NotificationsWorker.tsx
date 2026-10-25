@@ -10,6 +10,7 @@ import { Capacitor, registerPlugin } from "@capacitor/core";
 
 import { useLingui } from "@lingui-solid/solid/macro";
 import {
+  type Client,
   Channel,
   ChannelEditSystemMessage,
   ChannelOwnershipChangeSystemMessage,
@@ -33,6 +34,7 @@ import {
 } from "@revolt/rtc";
 import { useState } from "@revolt/state";
 import { streamerModeActive, streamerModeHides } from "@revolt/state/streamer";
+import { useSnackbar } from "@revolt/ui/components/design/Snackbar";
 
 import { useClient, useClientLifecycle, useNotifications, useSound } from ".";
 import { routeConversation } from "../chatWindows/openConversation";
@@ -42,6 +44,7 @@ import {
   pushProvider,
   unifiedPushRegistered,
 } from "./NotificationsController";
+import type { E2EEBridge } from "./e2ee";
 import {
   notificationPermissionGranted,
   showNotification,
@@ -55,6 +58,8 @@ import {
   DM_PREVIEW_DEFAULT,
   e2eeNotificationGate,
 } from "./notificationPreviewPolicy";
+import { notificationCopy, toastCopy } from "./protectedCopy";
+import type { ProtectedToastKind } from "./protectedTextTypes";
 import { playsWebRingtone } from "./pushPolicy";
 import { connectionUrl } from "./streamConnections";
 import { toastSurfaceFor } from "./toastPolicy";
@@ -75,6 +80,74 @@ function notificationSurface(): NotificationSurface {
 }
 
 /**
+ * Whether a message is a Protected channel row (plan D25): it carries
+ * `encrypted`, or its channel is protected or pinned on the client that
+ * received it. stoat.js strips the server text from such rows already; the
+ * notification never reads it either way.
+ *
+ * Run by `protectedNotifications.scan.test.ts` with its types stripped: keep
+ * it to erasable TypeScript (no enums, no parameter properties).
+ * @param message Message
+ * @param client The client that received it
+ * @returns Whether it is a Protected channel row
+ */
+function isProtectedRow(message: Message, client: Client): boolean {
+  return (
+    message.encrypted !== undefined ||
+    client.isProtectedChannel(message.channelId)
+  );
+}
+
+/**
+ * Toast times already shown, per bridge and map key. At module scope, so a
+ * remounted worker does not show the same entry again; per bridge, so a new
+ * session starts clear.
+ */
+const shownProtectedToasts = new WeakMap<object, Map<string, number>>();
+
+/**
+ * The entries of the bridge's `protectedToast` map not shown yet, recorded
+ * as shown. An entry is new when its `at` differs from the one last shown
+ * under its key.
+ *
+ * Run by `protectedNotifications.scan.test.ts` with its types stripped: keep
+ * it to erasable TypeScript (no enums, no parameter properties).
+ * @param shown Times already shown, by key (updated)
+ * @param entries The map's entries
+ * @returns The kinds to show, in map order
+ */
+function takeNewProtectedToasts(
+  shown: Map<string, number>,
+  entries: Iterable<[string, { kind: ProtectedToastKind; at: number }]>,
+): ProtectedToastKind[] {
+  const fresh: ProtectedToastKind[] = [];
+  for (const [key, entry] of entries) {
+    if (shown.get(key) === entry.at) continue;
+    shown.set(key, entry.at);
+    fresh.push(entry.kind);
+  }
+  return fresh;
+}
+
+/**
+ * Whether a protected toast is an alert (plan D22: the blocked invitation is
+ * a red toast). The house snackbar has no tone, so an alert gets a close
+ * button and stays up longer instead.
+ * @param kind Toast kind
+ * @returns Whether it is an alert
+ */
+function protectedToastIsAlert(kind: ProtectedToastKind): boolean {
+  switch (kind) {
+    case "unsolicited_welcome":
+      return true;
+    default: {
+      const _exhaustive: never = kind;
+      return true;
+    }
+  }
+}
+
+/**
  * Process and display desktop notifications
  */
 export function NotificationsWorker() {
@@ -86,7 +159,51 @@ export function NotificationsWorker() {
   const params = useSmartParams();
   const sound = useSound();
   const toastShell = useToastShell();
+  const snackbar = useSnackbar();
   const { lifecycle } = useClientLifecycle();
+
+  /** The native bridge of the current client, where this shell has one. */
+  const bridge = () => client()?.e2ee as E2EEBridge | undefined;
+
+  // Signing out ends the Protected channel manager (W4b audit M3). The
+  // lifecycle builds a new client and bridge for the next session, so
+  // nothing else stops the old manager's timers and courier loops. The hook
+  // fires while the old client is still current; `disposeProtected` is
+  // idempotent and final for that bridge.
+  onCleanup(lifecycle.onSignOut(() => bridge()?.disposeProtected?.()));
+
+  // The draft store's protected wiring (resolver, outbox keys) follows the
+  // current client. This worker mounts once per signed-in session, and
+  // `bindClient` is idempotent per client, rebinding when it changes.
+  createEffect(() => {
+    const c = client();
+    if (c) untrack(() => state.draft.bindClient(c));
+  });
+
+  // Protected channel toasts (plan D22): the bridge's `protectedToast` map
+  // holds the manager's latest toast, a kind and a time, never content.
+  // Each new entry shows once, through the app's snackbar.
+  createEffect(() => {
+    const e2ee = bridge();
+    const toasts = e2ee?.protectedToast;
+    if (!e2ee || !toasts) return;
+    let shown = shownProtectedToasts.get(e2ee);
+    if (!shown) {
+      shown = new Map();
+      shownProtectedToasts.set(e2ee, shown);
+    }
+    const fresh = takeNewProtectedToasts(shown, toasts.entries());
+    untrack(() => {
+      for (const kind of fresh) {
+        const alert = protectedToastIsAlert(kind);
+        snackbar.show({
+          message: toastCopy(kind),
+          closeable: alert,
+          autoCloseDelay: alert ? 10_000 : undefined,
+        });
+      }
+    });
+  });
 
   // Tell the native layer whether this web layer can currently present the
   // ringing popup, so SlogaNotifier.notifyIncomingCall (shared by the FCM and
@@ -162,6 +279,8 @@ export function NotificationsWorker() {
    */
   async function onMessage(message: Message) {
     const us = client().user!;
+    // The client this message arrived on, held across the awaits below.
+    const receiver = client();
 
     // Ephemeral interaction responses are the bot answering something this
     // user just did — never worth a notification (and never persisted)
@@ -226,6 +345,12 @@ export function NotificationsWorker() {
     const channel = message.channel;
     if (channel.type === "SavedMessages") return;
 
+    // A Protected channel row is announced like an encrypted one (plan D25):
+    // never its server text, attachments or embeds, and never its decrypted
+    // text either, since the OS keeps what it draws. The body is fixed copy.
+    // Decided after the awaits: a channel only ever becomes protected.
+    const protectedRow = isProtectedRow(message, receiver);
+
     // How much this notification may reveal. Decided before the sound so
     // "Off" stays silent, and before the payload so a withheld body is never
     // built into it. Everything but the surface is fixed here, so a refused
@@ -257,6 +382,13 @@ export function NotificationsWorker() {
       // we could not read.
       if (e2eeGate === "sender_only") {
         decision.showBody = false;
+        decision.showImage = false;
+        decision.allowReply = false;
+      }
+      // A protected row keeps its fixed body, but no image and no reply.
+      // Quick replies are only offered in DMs and groups, which are never
+      // protected; this fails closed if that ever changes.
+      if (protectedRow) {
         decision.showImage = false;
         decision.allowReply = false;
       }
@@ -296,13 +428,17 @@ export function NotificationsWorker() {
     };
 
     // Find image if applicable
-    const image = message.attachments?.find(
-      (x) => x.metadata.type === "Image",
-    )?.previewUrl;
+    const image = protectedRow
+      ? undefined
+      : message.attachments?.find((x) => x.metadata.type === "Image")
+          ?.previewUrl;
 
     // Find body/icon
     let body, icon;
-    if (message.content) {
+    if (protectedRow) {
+      body = notificationCopy.body();
+      icon = message.avatarURL;
+    } else if (message.content) {
       body = message.contentPlain;
       icon = message.avatarURL;
     } else if (message.forwarded) {

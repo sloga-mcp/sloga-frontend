@@ -13,6 +13,7 @@ import {
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
 import {
+  type Channel,
   ImageEmbed,
   Message as MessageInterface,
   WebsiteEmbed,
@@ -22,9 +23,15 @@ import { styled } from "styled-system/jsx";
 import { decodeTime } from "ulid";
 
 import { useClient, useE2EE } from "@revolt/client";
+import { protectedActionsBlocked } from "@revolt/client/protectedShield";
+import type {
+  ProtectedMarkerKind,
+  ProtectedMessageView,
+} from "@revolt/client/protectedTextTypes";
+import { useProtectedMessage } from "@revolt/client/useProtectedChannel";
 import { translationAvailable } from "@revolt/common/lib/translation";
 import { useTime } from "@revolt/i18n";
-import { Markdown } from "@revolt/markdown";
+import { Markdown, renderSimpleMarkdown } from "@revolt/markdown";
 import { useState } from "@revolt/state";
 import {
   Attachment,
@@ -41,6 +48,7 @@ import {
   typography,
 } from "@revolt/ui";
 import { DisplayName } from "@revolt/ui/components/features/DisplayName";
+import { Base as ReplyBase } from "@revolt/ui/components/features/messaging/elements/MessageReply";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
 
 import { MessageContextMenu } from "../../../menus/MessageContextMenu";
@@ -59,6 +67,7 @@ import { InteractionContext } from "./InteractionContext";
 import { MessageComponents } from "./MessageComponents";
 import { MessageTranslation } from "./MessageTranslation";
 import { PollMessage, isPollMessage } from "./PollMessage";
+import { ProtectedMessageMarker } from "./ProtectedMessageMarker";
 import { SoftResMessage, isSoftResMessage } from "./SoftResMessage";
 import { TimelockMessage, isTimelockMessage } from "./TimelockMessage";
 import { serverActionsBlocked } from "./e2eeTranscriptTrust";
@@ -73,6 +82,69 @@ const RE_URL =
  * Regex for matching gif providers
  */
 const GIF_PROVIDERS_REGEX = /^https:\/\/(tenor\.com|gifbox\.me|giphy\.com)/;
+
+/**
+ * Replies a Protected channel row may show (the server's own cap). Reply
+ * ids come from inside the ciphertext, so they are CLIENT-CLAIMED by the
+ * sender: capped, deduplicated and shape-checked before any fetch.
+ */
+const MAX_PROTECTED_REPLIES = 5;
+
+/** Message ids are ULIDs; anything else is never fetched or shown. */
+const RE_MESSAGE_ID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+
+/**
+ * What a Protected channel row shows IN PLACE of its body (design 9.3):
+ * the marker kind for anything but a decrypted (`ok`) view; no view yet
+ * is `pending`, never the server text, and on a device with no protected
+ * text plane it is `not_available` (it would never decrypt). A real marker
+ * view wins over both. An unknown status fails closed.
+ */
+function protectedMarkerKind(
+  view: ProtectedMessageView | null | undefined,
+  capable: boolean,
+): ProtectedMarkerKind | "pending" | "not_available" | undefined {
+  const waiting = capable === true ? "pending" : "not_available";
+  if (!view) return waiting;
+  switch (view.status) {
+    case "ok":
+      return undefined;
+    case "marker":
+      return view.kind;
+    case "pending":
+      return waiting;
+    default: {
+      const _exhaustive: never = view;
+      return "error";
+    }
+  }
+}
+
+/**
+ * Whether this device runs the protected text plane (plan D3, the bridge's
+ * `protectedTextCapable()`). Web, Electron, Android and iOS have no such
+ * method or return false; anything but a literal `true` is not capable.
+ */
+function protectedTextPlane(bridge: unknown): boolean {
+  const b = bridge as { protectedTextCapable?: unknown } | null | undefined;
+  if (typeof b?.protectedTextCapable !== "function") return false;
+  return (
+    (b as { protectedTextCapable(): unknown }).protectedTextCapable() === true
+  );
+}
+
+/** The reply targets of a decrypted view (CLIENT-CLAIMED, see above). */
+function protectedReplyTargets(replies: unknown, ownId: string): string[] {
+  if (!Array.isArray(replies)) return [];
+  const out: string[] = [];
+  for (const id of replies) {
+    if (typeof id !== "string" || !RE_MESSAGE_ID.test(id)) continue;
+    if (id === ownId || out.includes(id)) continue;
+    out.push(id);
+    if (out.length === MAX_PROTECTED_REPLIES) break;
+  }
+  return out;
+}
 
 interface Props {
   /**
@@ -222,6 +294,40 @@ export function Message(props: Props) {
     isEncrypted() ||
     serverActionsBlocked(e2ee, props.message.channel, client().user?.id);
 
+  /**
+   * Whether this row is in a Protected channel, server-flagged or pinned on
+   * this device (plan D2). Its body is the decrypted view ONLY (D22): server
+   * `content`, embeds, attachments, components and other server-set text
+   * are never rendered here, even if present (D25 strips them; this is the
+   * second guard).
+   */
+  const protectedRow = () =>
+    client().isProtectedChannel(props.message.channelId);
+
+  /** The decrypted view; never read for any other row. */
+  const protectedView = useProtectedMessage(() =>
+    protectedRow() ? props.message.id : undefined,
+  );
+
+  /** Marker shown in place of the body: anything but an `ok` view. */
+  const protectedMarker = () =>
+    protectedRow()
+      ? protectedMarkerKind(protectedView(), protectedTextPlane(client().e2ee))
+      : undefined;
+
+  /** The decrypted view, when there is one to render. */
+  const protectedOk = () => {
+    if (!protectedRow()) return undefined;
+    const view = protectedView();
+    return view?.status === "ok" ? view : undefined;
+  };
+
+  /** Reply previews come from the decrypted view, never server `replies`. */
+  const protectedReplyIds = () => {
+    const view = protectedOk();
+    return view ? protectedReplyTargets(view.replies, props.message.id) : [];
+  };
+
   return (
     <MessageContext message={props.message} reactPicker={reactPicker}>
       <MessageContainer
@@ -234,14 +340,17 @@ export function Message(props: Props) {
                 user={props.message.author}
                 member={props.message.member}
                 name={
-                  props.message.masquerade?.name ??
+                  // A server-set masquerade never names a Protected row
+                  (protectedRow()
+                    ? undefined
+                    : props.message.masquerade?.name) ??
                   props.message.member?.nickname ??
                   props.message.author?.displayName ??
                   props.message.author?.username ??
                   props.message.username ??
                   ""
                 }
-                masquerade={!!props.message.masquerade}
+                masquerade={!protectedRow() && !!props.message.masquerade}
                 colour={props.message.roleColour}
                 brand={isSlogaStaff(props.message.author)}
                 animate={!props.isLink}
@@ -286,13 +395,14 @@ export function Message(props: Props) {
           <>
             <Show
               when={
+                !protectedRow() &&
                 props.message.isInteractionResponse &&
                 props.message.commandContext
               }
             >
               <InteractionContext message={props.message} />
             </Show>
-            <For each={props.message.replyIds}>
+            <For each={protectedRow() ? undefined : props.message.replyIds}>
               {(reply_id) => {
                 /**
                  * Signal the actual message
@@ -314,6 +424,15 @@ export function Message(props: Props) {
                   />
                 );
               }}
+            </For>
+            <For each={protectedReplyIds()}>
+              {(replyId) => (
+                <ProtectedReplyPreview
+                  id={replyId}
+                  channelId={props.message.channelId}
+                  channel={props.message.channel}
+                />
+              )}
             </For>
           </>
         }
@@ -400,11 +519,11 @@ export function Message(props: Props) {
           </Switch>
         }
         compact={
-          !!props.message.systemMessage ||
+          (!protectedRow() && !!props.message.systemMessage) ||
           state.settings.getValue("appearance:compact_mode")
         }
         infoMatch={
-          <Match when={props.message.systemMessage}>
+          <Match when={!protectedRow() && props.message.systemMessage}>
             <SystemMessageIcon
               systemMessage={props.message.systemMessage!}
               createdAt={props.message.createdAt}
@@ -413,7 +532,7 @@ export function Message(props: Props) {
           </Match>
         }
       >
-        <Show when={props.message.systemMessage}>
+        <Show when={!protectedRow() && props.message.systemMessage}>
           <SystemMessage
             systemMessage={props.message.systemMessage!}
             menuGenerator={(user) =>
@@ -428,15 +547,24 @@ export function Message(props: Props) {
             isServer={!!props.message.server}
           />
         </Show>
-        {/* The emoji tab reacts on the server; hidden when blocked */}
+        {/* The emoji tab reacts on the server; hidden when blocked. On a
+            Protected channel only reacting stays: the GIF and sticker
+            reply (a plain URL message) is hidden (plan D11) */}
         <Show when={!contentActionsBlocked()}>
           <CompositionMediaPicker
-            onMessage={(content) =>
+            emojiOnly={protectedRow()}
+            onMessage={(content) => {
+              if (
+                protectedActionsBlocked(protectedRow(), "gif") ||
+                protectedActionsBlocked(protectedRow(), "stickers")
+              ) {
+                return;
+              }
               props.message?.channel?.sendMessage({
                 content,
                 replies: [{ id: props.message.id, mention: true }],
-              })
-            }
+              });
+            }}
             onTextReplacement={(emoji) =>
               react(
                 emoji.startsWith(":")
@@ -449,20 +577,57 @@ export function Message(props: Props) {
           >
             {(trigProps) => {
               trigProps.ref(msgRef);
-              setReactPicker(trigProps);
+              setReactPicker({
+                ...trigProps,
+                onClickGif: (event, ref) => {
+                  if (protectedActionsBlocked(protectedRow(), "gif")) return;
+                  trigProps.onClickGif(event, ref);
+                },
+                onClickSticker: (event, ref) => {
+                  if (protectedActionsBlocked(protectedRow(), "stickers")) {
+                    return;
+                  }
+                  trigProps.onClickSticker(event, ref);
+                },
+              });
               return <></>;
             }}
           </CompositionMediaPicker>
         </Show>
-        <Show when={props.message.isCrosspost}>
+        <Show when={!protectedRow() && props.message.isCrosspost}>
           <CrosspostAttribution>
             <Symbol size={14}>campaign</Symbol>
             <span>{crosspostOrigin()}</span>
           </CrosspostAttribution>
         </Show>
         <Switch>
-          <Match when={props.editing}>
+          {/* Editing is hidden on Protected channels (plan D11): a stray
+              editing flag still renders the decrypted view below */}
+          <Match when={props.editing && !protectedRow()}>
             <EditMessage message={props.message} />
+          </Match>
+          {/* Protected channel rows (plan D22, design 9.3): a marker IN
+              PLACE of the body for anything but a decrypted view, and no
+              view yet is `pending`. Never the server content, even when
+              present, and never translated (decrypted text must not leave
+              the device) */}
+          <Match when={protectedMarker()}>
+            {(kind) => <ProtectedMessageMarker kind={kind()} />}
+          </Match>
+          <Match when={protectedOk()}>
+            {(view) => (
+              <>
+                <BreakText>
+                  <Markdown content={view().text} />
+                </BreakText>
+                <Show when={view().tsSkew}>
+                  <ProtectedMessageMarker kind="ts_skew" />
+                </Show>
+                <Show when={!view().senderVerified}>
+                  <ProtectedMessageMarker kind="sender_not_verified" />
+                </Show>
+              </>
+            )}
           </Match>
           <Match
             when={isDiceRollMessage(props.message.flags, props.message.content)}
@@ -521,30 +686,34 @@ export function Message(props: Props) {
             </Show>
           </Match>
         </Switch>
-        <For each={props.message.attachments}>
-          {(attachment) => (
-            <Attachment message={props.message} file={attachment} />
-          )}
-        </For>
-        <For each={e2ee?.attachmentsFor(props.message.id) ?? []}>
-          {(meta) => (
-            <EncryptedAttachment
-              meta={meta}
-              messageId={props.message.id}
-              message={props.message}
-              e2ee={e2ee!}
-            />
-          )}
-        </For>
-        <For each={stickerUrl() ? [] : props.message.embeds}>
-          {(embed) => <Embed embed={embed} />}
-        </For>
-        {/* Bot-author gating (defence-in-depth) lives inside the
-            renderer, which fetches the author on cache miss */}
-        <Show when={props.message.components?.length}>
-          <MessageComponents message={props.message} />
+        {/* Never on a Protected channel row: attachments, embeds and
+            components there are server-set, not from the ciphertext */}
+        <Show when={!protectedRow()}>
+          <For each={props.message.attachments}>
+            {(attachment) => (
+              <Attachment message={props.message} file={attachment} />
+            )}
+          </For>
+          <For each={e2ee?.attachmentsFor(props.message.id) ?? []}>
+            {(meta) => (
+              <EncryptedAttachment
+                meta={meta}
+                messageId={props.message.id}
+                message={props.message}
+                e2ee={e2ee!}
+              />
+            )}
+          </For>
+          <For each={stickerUrl() ? [] : props.message.embeds}>
+            {(embed) => <Embed embed={embed} />}
+          </For>
+          {/* Bot-author gating (defence-in-depth) lives inside the
+              renderer, which fetches the author on cache miss */}
+          <Show when={props.message.components?.length}>
+            <MessageComponents message={props.message} />
+          </Show>
         </Show>
-        <Show when={props.message.isCrossposted}>
+        <Show when={!protectedRow() && props.message.isCrossposted}>
           <PublishedChip>
             <Symbol size={14}>campaign</Symbol>
             <span>
@@ -565,7 +734,7 @@ export function Message(props: Props) {
             </a>
           </EphemeralNotice>
         </Show>
-        <Show when={props.message.thread}>
+        <Show when={!protectedRow() && props.message.thread}>
           <a href={props.message.thread!.path}>
             <ThreadPill>
               <Symbol size={16}>subdirectory_arrow_right</Symbol>
@@ -581,7 +750,9 @@ export function Message(props: Props) {
             reactions={
               props.message.reactions as never as Map<string, Set<string>>
             }
-            interactions={props.message.interactions}
+            interactions={
+              protectedRow() ? undefined : props.message.interactions
+            }
             userId={client().user!.id}
             addReaction={react}
             removeReaction={unreact}
@@ -591,6 +762,149 @@ export function Message(props: Props) {
     </MessageContext>
   );
 }
+
+/**
+ * Reply preview on a Protected channel row (plan D22 / D25). The target's
+ * text comes ONLY from its decrypted view, else its marker or `pending`;
+ * server content, attachments, masquerades and forwarded snapshots are
+ * never read. A target outside this channel is shown as not loaded: the
+ * reply ids are CLIENT-CLAIMED inside the sender's ciphertext.
+ */
+function ProtectedReplyPreview(props: {
+  id: string;
+  channelId: string;
+  channel: Channel | undefined;
+}) {
+  const client = useClient();
+
+  const target = () => {
+    const message = client().messages.get(props.id);
+    return message?.channelId === props.channelId ? message : undefined;
+  };
+
+  const view = useProtectedMessage(() => (target() ? props.id : undefined));
+  const marker = () =>
+    protectedMarkerKind(view(), protectedTextPlane(client().e2ee));
+
+  const text = () => {
+    const v = view();
+    if (v?.status !== "ok") return "";
+    const line = v.text.length > 128 ? v.text.slice(0, 128) + "..." : v.text;
+    return line.replace(/\n/g, " ");
+  };
+
+  onMount(() => {
+    if (!client().messages.get(props.id)) {
+      // Fetching decrypts it (plan 4.1); a failure stays "not loaded".
+      props.channel?.fetchMessage(props.id).catch(() => undefined);
+    }
+  });
+
+  return (
+    <Switch fallback={<MessageReply />}>
+      <Match when={target()?.author?.relationship === "Blocked"}>
+        <ReplyBase>
+          <Trans>Blocked User</Trans>
+        </ReplyBase>
+      </Match>
+      <Match when={target()}>
+        {(message) => (
+          <ReplyBase>
+            <div
+              class={replyUser()}
+              use:floating={floatingUserMenusFromMessage(message())}
+            >
+              <Avatar src={message().avatarURL} size={14} />
+              <span class={typography({ class: "label", size: "large" })}>
+                <DisplayName
+                  user={message().author}
+                  member={message().member}
+                  name={
+                    message().member?.nickname ??
+                    message().author?.displayName ??
+                    message().author?.username ??
+                    ""
+                  }
+                  colour={message().roleColour}
+                  brand={isSlogaStaff(message().author)}
+                />
+              </span>
+            </div>
+            <ReplyLink href={message().path}>
+              <Switch
+                fallback={<ReplyText>{renderSimpleMarkdown(text())}</ReplyText>}
+              >
+                <Match when={marker()}>
+                  {(kind) => (
+                    <ReplyMarker>
+                      <ProtectedMessageMarker kind={kind()} />
+                    </ReplyMarker>
+                  )}
+                </Match>
+              </Switch>
+            </ReplyLink>
+          </ReplyBase>
+        )}
+      </Match>
+    </Switch>
+  );
+}
+
+/**
+ * Author of a Protected channel reply preview
+ */
+const replyUser = cva({
+  base: {
+    display: "flex",
+    alignItems: "center",
+    gap: "var(--gap-sm)",
+    flexShrink: 0,
+    whiteSpace: "nowrap",
+  },
+});
+
+/**
+ * Jump link around a Protected channel reply preview's body
+ */
+const ReplyLink = styled("a", {
+  base: {
+    display: "flex",
+    minWidth: 0,
+    alignItems: "center",
+    gap: "var(--gap-md)",
+  },
+});
+
+/**
+ * Decrypted reply text, one line
+ */
+const ReplyText = styled("div", {
+  base: {
+    overflow: "hidden",
+    alignItems: "center",
+    whiteSpace: "nowrap",
+    textOverflow: "ellipsis",
+  },
+});
+
+/**
+ * Keeps a marker on the one-line reply bar (no box, same glyph and copy)
+ */
+const ReplyMarker = styled("div", {
+  base: {
+    minWidth: 0,
+    overflow: "hidden",
+    whiteSpace: "nowrap",
+
+    "& [data-protected-marker]": {
+      marginBlock: 0,
+      padding: 0,
+      border: "none",
+      background: "transparent",
+      fontSize: "inherit",
+    },
+  },
+});
 
 /**
  * New user indicator

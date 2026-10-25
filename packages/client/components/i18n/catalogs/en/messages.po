@@ -2215,6 +2215,36 @@ msgstr "Contested items"
 msgid "Continue"
 msgstr "Continue"
 
+#: components/app/interface/settings/channel/protected/SeatList.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "Seats used: {count}. The seat limit isn't known yet."
+msgstr "Seats used: {count}. The seat limit isn't known yet."
+
+#: components/app/interface/settings/channel/protected/SeatList.tsx
+msgid "Remove {name}'s seat? They lose access to this channel on all their devices, and the released seat still counts toward the seat limit for 14 days."
+msgstr "Remove {name}'s seat? They lose access to this channel on all their devices, and the released seat still counts toward the seat limit for 14 days."
+
+#: components/app/interface/settings/channel/protected/SeatList.tsx
+msgid "Counts as a used seat until {until}."
+msgstr "Counts as a used seat until {until}."
+
+#: components/app/interface/settings/channel/protected/SeatList.tsx
+msgid "Each member can use any number of devices."
+msgstr "Each member can use any number of devices."
+
+#: components/app/interface/settings/channel/protected/SeatList.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "Can't view this channel anymore."
+msgstr "Can't view this channel anymore."
+
+#: components/app/interface/settings/channel/protected/SeatList.tsx
+msgid "Recently released seats"
+msgstr "Recently released seats"
+
+#: components/app/interface/settings/channel/protected/SeatList.tsx
+msgid "Counts as a used seat for 14 days after release."
+msgstr "Counts as a used seat for 14 days after release."
+
 #: components/modal/modals/AddFriendToGroup.tsx
 #: components/modal/modals/E2EEEnableGroup.tsx
 msgid "You'll confirm this in a system dialog."
@@ -4625,6 +4655,10 @@ msgstr "Incoming Voices"
 msgid "Incorrect password."
 msgstr "Incorrect password."
 
+#: src/interface/channels/ProtectedChannelPill.tsx
+msgid "Seats used: {used}"
+msgstr "Seats used: {used}"
+
 #: components/modal/modals/SuspendUser.tsx
 msgid "Indefinite"
 msgstr "Indefinite"
@@ -5954,6 +5988,25 @@ msgstr "No pending listing requests. All clear!"
 msgid "No permissions set yet"
 msgstr "No permissions set yet"
 
+#: components/app/interface/settings/channel/protected/ProtectedChannelSettings.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "Staff accounts can't be seated."
+msgstr "Staff accounts can't be seated."
+
+#: components/app/interface/settings/channel/protected/ProtectedChannelSettings.tsx
+msgid "Only a channel without messages can be protected."
+msgstr "Only a channel without messages can be protected."
+
+#: components/app/interface/settings/channel/protected/ProtectedChannelSettings.tsx
+msgid "Protected channels aren't enabled for this channel yet."
+msgstr "Protected channels aren't enabled for this channel yet."
+
+#: components/app/interface/settings/channel/protected/ProtectedChannelSettings.tsx
+#: components/app/interface/settings/channel/protected/SeatList.tsx
+#: components/app/interface/settings/channel/protected/SeatList.tsx
+msgid "The device limit isn't known yet."
+msgstr "The device limit isn't known yet."
+
 #: src/interface/channels/forum/ForumChannel.tsx
 msgid "No posts yet"
 msgstr "No posts yet"
@@ -5981,6 +6034,10 @@ msgstr "No verifiable devices yet — send or receive an encrypted message first
 #: components/modal/modals/PollVoters.tsx
 msgid "No votes for this answer yet"
 msgstr "No votes for this answer yet"
+
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "Search to find more members."
+msgstr "Search to find more members."
 
 #: components/ui/components/features/voice/callCard/VoiceGiveControlButton.tsx
 msgid "Nobody else is in this call yet."
@@ -6389,6 +6446,82 @@ msgstr "Overview"
 #: components/modal/modals/DiscoveryQueue.tsx
 msgid "Owner"
 msgstr "Owner"
+
+#: components/client/protectedCopy.ts
+msgid "Saving the member list. You can make more changes when this finishes."
+msgstr "Saving the member list. You can make more changes when this finishes."
+
+#: components/client/protectedCopy.ts
+msgid "Seats updated."
+msgstr "Seats updated."
+
+#: components/client/protectedCopy.ts
+msgid "Voice and announcement settings aren't available for protected channels."
+msgstr "Voice and announcement settings aren't available for protected channels."
+
+#: components/client/protectedCopy.ts
+msgid "Give seats"
+msgstr "Give seats"
+
+#: components/client/protectedCopy.ts
+msgid "Only members who can view this channel are listed. The server checks every seat when you save."
+msgstr "Only members who can view this channel are listed. The server checks every seat when you save."
+
+#: components/client/protectedCopy.ts
+msgid "Search members"
+msgstr "Search members"
+
+#: components/client/protectedCopy.ts
+msgid "No members found."
+msgstr "No members found."
+
+#: components/client/protectedCopy.ts
+msgid "Seats left: {left}"
+msgstr "Seats left: {left}"
+
+#: components/client/protectedCopy.ts
+msgid "Save seats"
+msgstr "Save seats"
+
+#: components/client/protectedCopy.ts
+msgid "Message (Protected channel)"
+msgstr "Message (Protected channel)"
+
+#: components/client/protectedCopy.ts
+msgid "Ask the owner for a seat."
+msgstr "Ask the owner for a seat."
+
+#: components/client/protectedCopy.ts
+msgid "Your draft stays here until the channel is secure again."
+msgstr "Your draft stays here until the channel is secure again."
+
+#: components/client/protectedCopy.ts
+msgid "Sending is turned off until this channel is verified again."
+msgstr "Sending is turned off until this channel is verified again."
+
+#: components/client/protectedCopy.ts
+msgid "Files can't be sent in protected channels yet."
+msgstr "Files can't be sent in protected channels yet."
+
+#: components/client/protectedCopy.ts
+msgid "Decrypting…"
+msgstr "Decrypting…"
+
+#: components/client/protectedCopy.ts
+msgid "Sent time doesn't match."
+msgstr "Sent time doesn't match."
+
+#: components/client/protectedCopy.ts
+msgid "The sender's device isn't verified on this device yet."
+msgstr "The sender's device isn't verified on this device yet."
+
+#: components/client/protectedCopy.ts
+msgid "Search can't look inside protected channel messages."
+msgstr "Search can't look inside protected channel messages."
+
+#: components/client/protectedCopy.ts
+msgid "New message"
+msgstr "New message"
 
 #: components/app/interface/settings/server/bans/ListBans.tsx
 msgid "Pardon User"
@@ -9070,6 +9203,298 @@ msgstr "Couldn't move you to that channel."
 msgid "Couldn't open a conversation with this user."
 msgstr "Couldn't open a conversation with this user."
 
+#: components/client/protectedCopy.ts
+msgid "Protected channel"
+msgstr "Protected channel"
+
+#: components/client/protectedCopy.ts
+msgid "Seats used: {used} of {cap}"
+msgstr "Seats used: {used} of {cap}"
+
+#: components/client/protectedCopy.ts
+msgid "Something went wrong verifying this channel."
+msgstr "Something went wrong verifying this channel."
+
+#: components/client/protectedCopy.ts
+msgid "Something went wrong verifying this message."
+msgstr "Something went wrong verifying this message."
+
+#. Protected channel state
+#: components/client/protectedCopy.ts
+msgid "Verification failed"
+msgstr "Verification failed"
+
+#: components/client/protectedCopy.ts
+msgid "The owner's device isn't verified on this device yet."
+msgstr "The owner's device isn't verified on this device yet."
+
+#: components/client/protectedCopy.ts
+#: components/i18n/errors.ts
+msgid "Re-securing this channel…"
+msgstr "Re-securing this channel…"
+
+#: components/client/protectedCopy.ts
+#: components/i18n/errors.ts
+msgid "You don't have a seat in this protected channel. Ask the owner for a seat."
+msgstr "You don't have a seat in this protected channel. Ask the owner for a seat."
+
+#: components/client/protectedCopy.ts
+msgid "Protected channels aren't available here yet. Open this channel in the main window of the Sloga desktop app."
+msgstr "Protected channels aren't available here yet. Open this channel in the main window of the Sloga desktop app."
+
+#: components/client/protectedCopy.ts
+msgid "Turn on end-to-end encryption on this device to use Protected channels."
+msgstr "Turn on end-to-end encryption on this device to use Protected channels."
+
+#: components/client/protectedCopy.ts
+msgid "The server stopped marking this channel as protected. This device still treats it as a protected channel and won't send unencrypted messages here."
+msgstr "The server stopped marking this channel as protected. This device still treats it as a protected channel and won't send unencrypted messages here."
+
+#: components/client/protectedCopy.ts
+msgid "This channel's member list failed verification."
+msgstr "This channel's member list failed verification."
+
+#: components/client/protectedCopy.ts
+msgid "Someone in this channel isn't on the owner's member list."
+msgstr "Someone in this channel isn't on the owner's member list."
+
+#: components/client/protectedCopy.ts
+msgid "A member made an invalid change to this channel. Re-securing with a new group…"
+msgstr "A member made an invalid change to this channel. Re-securing with a new group…"
+
+#: components/client/protectedCopy.ts
+msgid "This channel received a replayed membership change. Re-securing with a new group…"
+msgstr "This channel received a replayed membership change. Re-securing with a new group…"
+
+#: components/client/protectedCopy.ts
+msgid "This channel's security check failed."
+msgstr "This channel's security check failed."
+
+#: components/client/protectedCopy.ts
+msgid "The owner of this channel is now signing from a different device."
+msgstr "The owner of this channel is now signing from a different device."
+
+#: components/client/protectedCopy.ts
+msgid "This channel's member list is now signed by a different person. This is not allowed and the channel has been locked."
+msgstr "This channel's member list is now signed by a different person. This is not allowed and the channel has been locked."
+
+#: components/client/protectedCopy.ts
+msgid "This device couldn't finish joining this protected channel. Try opening the channel again later."
+msgstr "This device couldn't finish joining this protected channel. Try opening the channel again later."
+
+#: components/client/protectedCopy.ts
+msgid "This protected channel is full."
+msgstr "This protected channel is full."
+
+#: components/client/protectedCopy.ts
+#: components/i18n/errors.ts
+msgid "All seats are in use. Released seats count for 14 days."
+msgstr "All seats are in use. Released seats count for 14 days."
+
+#: components/client/protectedCopy.ts
+#: components/i18n/errors.ts
+msgid "All {max} seats are in use. Released seats count for 14 days."
+msgstr "All {max} seats are in use. Released seats count for 14 days."
+
+#: components/client/protectedCopy.ts
+#: components/i18n/errors.ts
+msgid "This member already has the maximum number of devices in this channel."
+msgstr "This member already has the maximum number of devices in this channel."
+
+#: components/client/protectedCopy.ts
+#: components/i18n/errors.ts
+msgid "This member already has {max} devices in this channel."
+msgstr "This member already has {max} devices in this channel."
+
+#: components/client/protectedCopy.ts
+msgid "Only the channel owner's device can change seats."
+msgstr "Only the channel owner's device can change seats."
+
+#: components/client/protectedCopy.ts
+msgid "The member list changed since you last loaded it. Reloading…"
+msgstr "The member list changed since you last loaded it. Reloading…"
+
+#: components/client/protectedCopy.ts
+msgid "This channel couldn't be protected."
+msgstr "This channel couldn't be protected."
+
+#: components/client/protectedCopy.ts
+#: components/i18n/errors.ts
+msgid "Not available in protected channels."
+msgstr "Not available in protected channels."
+
+#: components/client/protectedCopy.ts
+msgid "Ownership can't be transferred while this server has protected channels."
+msgstr "Ownership can't be transferred while this server has protected channels."
+
+#: components/client/protectedCopy.ts
+#: components/i18n/errors.ts
+msgid "Encrypted messaging is unavailable right now."
+msgstr "Encrypted messaging is unavailable right now."
+
+#: components/client/protectedCopy.ts
+#: components/i18n/errors.ts
+msgid "Protected channels are unavailable right now."
+msgstr "Protected channels are unavailable right now."
+
+#: components/client/protectedCopy.ts
+#: components/i18n/errors.ts
+msgid "This message couldn't be sent securely."
+msgstr "This message couldn't be sent securely."
+
+#: components/client/protectedCopy.ts
+msgid "A message may not have been sent."
+msgstr "A message may not have been sent."
+
+#: components/client/protectedCopy.ts
+msgid "Couldn't reach the server. Check your connection and try again."
+msgstr "Couldn't reach the server. Check your connection and try again."
+
+#: components/client/protectedCopy.ts
+msgid "Sent before this device joined."
+msgstr "Sent before this device joined."
+
+#: components/client/protectedCopy.ts
+msgid "Sent with a key this device never had."
+msgstr "Sent with a key this device never had."
+
+#: components/client/protectedCopy.ts
+msgid "Couldn't decrypt this message."
+msgstr "Couldn't decrypt this message."
+
+#: components/client/protectedCopy.ts
+msgid "Couldn't verify the sender. This message may be forged."
+msgstr "Couldn't verify the sender. This message may be forged."
+
+#: components/client/protectedCopy.ts
+msgid "Sent by someone who was removed from this channel."
+msgstr "Sent by someone who was removed from this channel."
+
+#: components/client/protectedCopy.ts
+msgid "Duplicate message (replayed)."
+msgstr "Duplicate message (replayed)."
+
+#: components/client/protectedCopy.ts
+msgid "Unreadable message."
+msgstr "Unreadable message."
+
+#: components/client/protectedCopy.ts
+msgid "Unencrypted message in a protected channel. It did not come from a member's protected app."
+msgstr "Unencrypted message in a protected channel. It did not come from a member's protected app."
+
+#: components/client/protectedCopy.ts
+msgid "{name} added a new device."
+msgstr "{name} added a new device."
+
+#: components/client/protectedCopy.ts
+msgid "{name} was removed by the server and can't rejoin until the owner re-seats them."
+msgstr "{name} was removed by the server and can't rejoin until the owner re-seats them."
+
+#: components/client/protectedCopy.ts
+msgid "Blocked an unexpected invitation to a protected channel."
+msgstr "Blocked an unexpected invitation to a protected channel."
+
+#. Protected channel state
+#: components/client/protectedCopy.ts
+msgid "Re-securing"
+msgstr "Re-securing"
+
+#. Protected channel state
+#: components/client/protectedCopy.ts
+msgid "Not seated"
+msgstr "Not seated"
+
+#: components/client/protectedCopy.ts
+msgid "Not available on this device"
+msgstr "Not available on this device"
+
+#. Protected channel state
+#: components/client/protectedCopy.ts
+msgid "Grace period"
+msgstr "Grace period"
+
+#. Protected channel state
+#: components/client/protectedCopy.ts
+msgid "Frozen"
+msgstr "Frozen"
+
+#: components/client/protectedCopy.ts
+msgid "Status: {label}"
+msgstr "Status: {label}"
+
+#: components/client/protectedCopy.ts
+msgid "Messages are end-to-end encrypted"
+msgstr "Messages are end-to-end encrypted"
+
+#: components/client/protectedCopy.ts
+msgid "The owner's device is verified on this device."
+msgstr "The owner's device is verified on this device."
+
+#: components/client/protectedCopy.ts
+msgid "The owner's device changed. Review the change before you trust this channel."
+msgstr "The owner's device changed. Review the change before you trust this channel."
+
+#: components/client/protectedCopy.ts
+msgid "Review owner change"
+msgstr "Review owner change"
+
+#: components/client/protectedCopy.ts
+msgid "Re-create the protected group"
+msgstr "Re-create the protected group"
+
+#: components/client/protectedCopy.ts
+msgid "Every member's device lost this channel's encrypted group. Re-create it so members can join again."
+msgstr "Every member's device lost this channel's encrypted group. Re-create it so members can join again."
+
+#: components/client/protectedCopy.ts
+msgid "Re-creating the group…"
+msgstr "Re-creating the group…"
+
+#: components/client/protectedCopy.ts
+msgid "Messages in a protected channel are end-to-end encrypted. Only members you give a seat can read and send messages, on devices that support Protected channels."
+msgstr "Messages in a protected channel are end-to-end encrypted. Only members you give a seat can read and send messages, on devices that support Protected channels."
+
+#: components/client/protectedCopy.ts
+msgid "Protect this channel"
+msgstr "Protect this channel"
+
+#: components/client/protectedCopy.ts
+msgid "Protect this channel?"
+msgstr "Protect this channel?"
+
+#: components/client/protectedCopy.ts
+msgid "This can't be undone. A protected channel can't go back to a normal channel."
+msgstr "This can't be undone. A protected channel can't go back to a normal channel."
+
+#: components/client/protectedCopy.ts
+msgid "Protecting…"
+msgstr "Protecting…"
+
+#: components/client/protectedCopy.ts
+msgid "Only the server owner can manage this protected channel."
+msgstr "Only the server owner can manage this protected channel."
+
+#. Protected channel member seats
+#: components/client/protectedCopy.ts
+msgid "Seats"
+msgstr "Seats"
+
+#: components/client/protectedCopy.ts
+msgid "Each member can use up to {max} devices."
+msgstr "Each member can use up to {max} devices."
+
+#: components/client/protectedCopy.ts
+msgid "Add seats"
+msgstr "Add seats"
+
+#: components/client/protectedCopy.ts
+msgid "Remove seat"
+msgstr "Remove seat"
+
+#: components/client/protectedCopy.ts
+msgid "No one has a seat yet."
+msgstr "No one has a seat yet."
+
 #: components/client/popoutBridge.ts
 msgid "Couldn't open this in the main Sloga window."
 msgstr "Couldn't open this in the main Sloga window."
@@ -10027,6 +10452,10 @@ msgstr "Translate messages to"
 #: components/app/interface/channels/text/MessageTranslation.tsx
 msgid "Translated from {0}"
 msgstr "Translated from {0}"
+
+#: components/app/interface/channels/text/Messages.tsx
+msgid "A member"
+msgstr "A member"
 
 #: components/ui/components/features/messaging/composition/picker/GifPicker.tsx
 msgid "Trending GIFs"

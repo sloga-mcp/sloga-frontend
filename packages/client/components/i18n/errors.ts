@@ -107,6 +107,43 @@ export function useError() {
         return t`You already have a checkout in progress. Finish it, or pick again after it expires.`;
       if (errType === "PaymentProviderError")
         return t`The payment provider didn't respond. Please try again.`;
+      // Protected channels (same lag pattern). The protected-channel UI maps
+      // these itself through `protectedNoticeForError`; this is the copy for
+      // anywhere else. Same msgids as `protectedCopy.ts` (design 9.2). The
+      // Resecuring `reason` does not change the copy, and `ChannelProtected`
+      // carries no context here, so it gets the general wording.
+      const rawMax = (err as { max?: unknown }).max;
+      const max =
+        typeof rawMax === "number" &&
+        Number.isSafeInteger(rawMax) &&
+        rawMax >= 0
+          ? rawMax
+          : null;
+      if (errType === "ProtectedChannelResecuring")
+        return t`Re-securing this channel…`;
+      if (errType === "NotSeated")
+        return t`You don't have a seat in this protected channel. Ask the owner for a seat.`;
+      if (errType === "SeatCapReached")
+        return max === null
+          ? t`All seats are in use. Released seats count for 14 days.`
+          : t`All ${max} seats are in use. Released seats count for 14 days.`;
+      if (errType === "DeviceCapReached")
+        return max === null
+          ? t`This member already has the maximum number of devices in this channel.`
+          : t`This member already has ${max} devices in this channel.`;
+      if (errType === "ChannelProtected")
+        return t`Not available in protected channels.`;
+      if (errType === "ProtectedFieldRefused")
+        return t`This message couldn't be sent securely.`;
+      // `FeatureDisabled` for the two protected-channel features; any other
+      // feature falls through to the generic copy in the switch below.
+      if (errType === "FeatureDisabled") {
+        const feature = (err as { feature?: unknown }).feature;
+        if (feature === "protected_channels")
+          return t`Protected channels are unavailable right now.`;
+        if (feature === "e2ee")
+          return t`Encrypted messaging is unavailable right now.`;
+      }
 
       switch (err.type) {
         case "AlreadyFriends":

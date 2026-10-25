@@ -275,9 +275,29 @@ function baseline(port: Port) {
     signer_device_id: a.list.signer_device_id,
     pinned_now: true,
   });
-  port.routes.push((m, p) => {
+  // The DS answers a bare `Won` and keeps the row; the manager reads it
+  // back before `_commit_won` (W3 2026-10-25, lane F1 follow-up).
+  const rows: { group_id: string; epoch: number; [k: string]: unknown }[] = [];
+  port.routes.push((m, p, b) => {
     if (m === "POST" && /^\/mls\/groups\/[0-9a-f]+\/commits$/.test(p)) {
+      const c = b as TextSubmitCommitPayload;
+      rows.push({
+        group_id: p.split("/")[3],
+        epoch: c.epoch,
+        committer: { user_id: SELF, device_id: c.device_id },
+        commit: c.commit,
+        added: [],
+        removed: [],
+      });
       return ok({ result: "Won" });
+    }
+    if (m === "GET" && /\/commits\?from_epoch=/.test(p)) {
+      const from = Number(p.split("from_epoch=")[1]);
+      const group_id = p.split("/")[3];
+      return ok({
+        commits: rows.filter((r) => r.group_id === group_id && r.epoch >= from),
+        current_epoch: port.nat.epoch ?? 0,
+      });
     }
     if (m === "GET" && p === `/mls/channels/${CH}/text_group`) {
       return ok({

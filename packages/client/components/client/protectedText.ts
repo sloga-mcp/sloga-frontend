@@ -36,13 +36,14 @@ import type {
   MlsClaimedKeyPackage,
   MlsJoinRequest,
   MlsMemberDevice,
+  MlsPublishKeyPackages,
 } from "./e2ee";
 import {
   isSynthTextEnvelopeId,
   textEnvelopeFromCommitInfo,
   toWireEnvelope,
 } from "./protectedRouter.ts";
-import { TextIdIndex } from "./protectedTextIds.ts";
+import { textGroupId, TextIdIndex } from "./protectedTextIds.ts";
 import {
   type RefetchPurpose,
   type SendAction,
@@ -122,6 +123,18 @@ export const CATCH_UP_ROUND_BUDGET = 16;
 
 /** Retries of `POST /mls/groups` after a 429/5xx/transport answer. */
 export const CREATE_RETRY_BUDGET = 8;
+
+/**
+ * 429 answers to one join KeyPackage `PUT /mls/key_packages` waited out
+ * before that join attempt counts as failed (then a fresh `_join`).
+ */
+export const KEY_PACKAGE_PUT_429_BUDGET = 5;
+
+/**
+ * Reads of the stored row after a plain 2xx `Won` before the commit is
+ * parked (stage kept, `_commit_won` not called) until the next refresh.
+ */
+export const WON_ROW_READ_BUDGET = 8;
 
 /** Orphan confirm retries (confirm_later) before it waits for next start. */
 export const ORPHAN_CONFIRM_BUDGET = 5;
@@ -350,6 +363,11 @@ interface ParkedCommit {
   payload: TextSubmitCommitPayload;
   purpose: RefetchPurpose;
   resubmit: boolean;
+  /**
+   * The DS answered `Won` but its stored row could not be read: resume by
+   * reading the row again (never a resubmit, never `_commit_won` early).
+   */
+  wonUnread: boolean;
 }
 
 interface ChannelRec {
@@ -382,6 +400,8 @@ interface ChannelRec {
   /** The in-flight Update; later callers await it (W4b audit M1). */
   updating: Promise<void> | null;
   successorInFlight: boolean;
+  /** The in-flight re-run of an unaccepted create (D21 crash recovery). */
+  recreating: Promise<void> | null;
   parkedCommit: ParkedCommit | null;
   seeded: boolean;
 }
@@ -424,6 +444,8 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
   readonly #viewLive = new Set<string>();
   /** Deleted message ids (`forget`): a late decrypt never re-adds them. */
   readonly #forgotten = new Set<string>();
+  /** Group ids whose create this manager POSTed or re-ran (D21 retry). */
+  readonly #createPosted = new Set<string>();
   readonly #firstSightQueue: ChannelRec[] = [];
   #firstSightRunning = false;
   #firstSightWindowStart = 0;
@@ -849,6 +871,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         (r !== null ? retryAfterMs(r) : null) ?? publishBackoffMs(failures),
       );
     }
+    this.#createPosted.add(created.group_id);
     this.#log("info", "text group created", {
       channelId,
       groupId: created.group_id,
@@ -1392,15 +1415,33 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     ) {
       this.#background(this.#createSuccessor(rec));
     }
+    // D21 crash recovery AFTER the local create: re-run the idempotent
+    // create once per group per session (a refusal never loops).
+    const unaccepted = this.#unacceptedCreate(rec);
+    if (
+      unaccepted &&
+      !rec.successorInFlight &&
+      !rec.recreating &&
+      !this.#createPosted.has(unaccepted.groupId)
+    ) {
+      this.#createPosted.add(unaccepted.groupId);
+      const run = this.#recreateUnaccepted(rec, unaccepted).finally(() => {
+        if (rec.recreating === run) rec.recreating = null;
+      });
+      rec.recreating = run;
+      this.#background(run);
+    }
     const holds =
       g !== null &&
       n.group_id === g.group_id &&
       (n.state === "active" || n.state === "poisoned");
     const seated = n.self_seated && n.seat_list?.seats.includes(self) === true;
+    // Joining the server's older group would only answer ChannelMismatch.
     const wantsJoin =
       g !== null &&
       seated &&
       !holds &&
+      unaccepted === null &&
       !rec.welcomeRetriesExhausted &&
       (reason !== "start" || n.state === "left");
     if (wantsJoin && !rec.join) this.#background(this.ensureJoined(rec.id));
@@ -1498,6 +1539,12 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         error: { type: "not_seated", channel_id: rec.id },
       } satisfies TextFlowFailure;
     }
+    const unaccepted = this.#unacceptedCreate(rec);
+    if (unaccepted) {
+      // D21: re-run the create instead (joining would be ChannelMismatch).
+      await (rec.recreating ?? this.#recreateUnaccepted(rec, unaccepted));
+      return;
+    }
     if (!g) {
       if (rec.serverGroupMissing && this.#isSigner(rec)) {
         await this.createGroup(rec.id, null);
@@ -1513,11 +1560,13 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       if (js.cancelled) return;
       this.#checkAlive();
       rec.joinFromEpoch = g.current_epoch;
-      let payload: TextCommandResult["e2ee_text_join"];
+      // Every attempt is a fresh `_join`: native mints a new one-time
+      // KeyPackage per intent (W3 2026-10-25).
+      let joined: TextCommandResult["e2ee_text_join"];
       const gid = g.group_id;
       const generation = g.generation;
       try {
-        payload = await this.#enqueue(rec.id, () =>
+        joined = await this.#enqueue(rec.id, () =>
           this.#invoke("e2ee_text_join", {
             groupId: gid,
             channelId: rec.id,
@@ -1535,8 +1584,24 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         if (tag !== "busy") this.#recordGroupError(rec, tag, tag);
         throw toFailure(err);
       }
+      // Publish the intent's KeyPackage FIRST (an admitter claims that very
+      // package), then post the intent alone. A refused PUT throws here and
+      // the intent is never posted.
+      const unpublished = await this.#putJoinKeyPackage(
+        gid,
+        joined.key_packages,
+      );
+      if (unpublished !== null) {
+        // 5xx / transport / 429 past its budget: back off and retry with a
+        // fresh `_join`, inside the same attempt budget.
+        attempts += 1;
+        if (attempts > JOIN_RETRIES) throw unpublished;
+        await this.#sleep(publishBackoffMs(attempts));
+        continue;
+      }
+      if (js.cancelled) return;
       const r = await this.#api("POST", `/mls/groups/${gid}/join_intent`, {
-        ...payload,
+        ...joined.intent,
       });
       attempts += 1;
       if (r !== null && r.status === 404) {
@@ -1566,6 +1631,36 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         this.#emit(rec);
         throw clientFailure("join_stalled");
       }
+    }
+  }
+
+  /**
+   * `PUT /mls/key_packages` with the one-time KeyPackage `_join` minted for
+   * its intent, through this manager's courier. Resolves null once
+   * published. A 429 is waited out and the same body re-PUT (up to
+   * `KEY_PACKAGE_PUT_429_BUDGET`); past that, and on a 5xx or a transport
+   * failure, resolves the failure (the caller retries the attempt). Any
+   * other 4xx THROWS `serverFailure`: the intent is never posted.
+   */
+  async #putJoinKeyPackage(
+    groupId: string,
+    body: MlsPublishKeyPackages,
+  ): Promise<TextFlowFailure | null> {
+    for (let limited = 0; ; limited++) {
+      const r = await this.#api("PUT", "/mls/key_packages", body);
+      if (r !== null && is2xx(r.status)) return null;
+      const ids = { groupId, status: r === null ? null : r.status };
+      if (r !== null && r.status === 429) {
+        if (limited < KEY_PACKAGE_PUT_429_BUDGET) {
+          await this.#sleep(retryAfterMs(r) ?? publishBackoffMs(limited));
+          continue;
+        }
+      } else if (r !== null && is4xx(r.status)) {
+        this.#log("warn", "join key package refused", ids);
+        throw serverFailure(r);
+      }
+      this.#log("warn", "join key package not published", ids);
+      return r === null ? { source: "transport" } : serverFailure(r);
     }
   }
 
@@ -1838,6 +1933,68 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     }
   }
 
+  /**
+   * D21 crash between `_group_create` and the server accepting it: the
+   * newest group native holds looks exactly as the create left it (active,
+   * epoch 0, this device's leaf alone; `#recreateUnaccepted` checks nothing
+   * is staged and native re-checks the rest) while the server does not
+   * have it (definitively no open group, or an older generation), and this
+   * device signed the held list. Null when any of that does not hold; an
+   * unknown server answer is never read as absent.
+   */
+  #unacceptedCreate(
+    rec: ChannelRec,
+  ): { groupId: string; generation: number } | null {
+    const n = rec.native;
+    const g = rec.serverGroup;
+    if (!n || n.group_id === null || n.generation === null) return null;
+    if (n.state !== "active" || n.epoch !== 0 || n.members.length !== 1) {
+      return null;
+    }
+    const leaf = n.members[0];
+    if (
+      leaf.user_id !== this.#port.selfUserId ||
+      leaf.device_id !== this.#port.selfDeviceId
+    ) {
+      return null;
+    }
+    const serverBehind =
+      g === null ? rec.serverGroupMissing : g.generation < n.generation;
+    if (!serverBehind || !this.#isSigner(rec)) return null;
+    return { groupId: n.group_id, generation: n.generation };
+  }
+
+  /**
+   * Re-run the create of an unaccepted group (W3: `_group_create` answers
+   * the same payload for an untouched group, and refuses anything else),
+   * then `POST /mls/groups`; a 409 Conflict naming that id is "created".
+   */
+  async #recreateUnaccepted(
+    rec: ChannelRec,
+    c: { groupId: string; generation: number },
+  ): Promise<void> {
+    const ids = { channelId: rec.id, groupId: c.groupId };
+    let pending: TextCommandResult["e2ee_text_pending_commit"];
+    try {
+      pending = await this.#enqueue(rec.id, () =>
+        this.#invoke("e2ee_text_pending_commit", { groupId: c.groupId }),
+      );
+    } catch (err) {
+      throw toFailure(err);
+    }
+    if (pending !== null) {
+      this.#log("warn", "unaccepted group has a staged commit", ids);
+      throw clientFailure("create_staged");
+    }
+    const supersedes =
+      c.generation === 0 ? null : await textGroupId(rec.id, c.generation - 1);
+    this.#log("info", "re-running an unaccepted group create", ids);
+    const created = await this.createGroup(rec.id, supersedes);
+    if (created.group_id !== c.groupId) {
+      this.#log("warn", "re-run create named another group", ids);
+    }
+  }
+
   async #createSuccessor(rec: ChannelRec): Promise<void> {
     if (rec.successorInFlight) return;
     rec.successorInFlight = true;
@@ -1878,7 +2035,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         : { kind: "submit_transport_error" },
       ctx,
     );
-    return this.#submitLoop(rec, payload, ctx, first);
+    return this.#submitLoop(rec, payload, ctx, first, true);
   }
 
   #submitCtx(
@@ -1897,15 +2054,76 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     };
   }
 
+  /**
+   * After a plain 2xx `Won` (a bare answer, no commit info): read the
+   * stored `{group}:{epoch}` row through this manager's courier and apply
+   * the committer rule to it. Own committer: `won` with the DS's stored
+   * string and its `rejoin_intents ?? []`. Another committer: `lost` and
+   * process that winner. Transport / 429 / 5xx, a refusal, a malformed
+   * answer and a missing row (a DS defect after a 2xx) are retried with
+   * backoff, never read as lost and never resubmitted; null once
+   * `WON_ROW_READ_BUDGET` reads failed (the caller parks the commit).
+   */
+  async #readWonRow(ctx: SubmitContext): Promise<SubmitAction | null> {
+    const { groupId, epoch } = ctx;
+    for (let failures = 0; failures < WON_ROW_READ_BUDGET; failures++) {
+      const r = await this.#api(
+        "GET",
+        `/mls/groups/${groupId}/commits?from_epoch=${epoch}`,
+      );
+      let wait = publishBackoffMs(failures);
+      if (r !== null && is2xx(r.status)) {
+        const row = parseCommitRows(r.body)?.find(
+          (c) =>
+            c.epoch === epoch &&
+            c.group_id === groupId &&
+            str(c.committer.user_id) &&
+            str(c.committer.device_id),
+        );
+        if (row) {
+          const own =
+            row.committer.user_id === this.#port.selfUserId &&
+            row.committer.device_id === this.#port.selfDeviceId;
+          return own
+            ? {
+                kind: "won",
+                storedCommitB64: row.commit,
+                rejoinIntents: Array.isArray(row.rejoin_intents)
+                  ? row.rejoin_intents
+                  : [],
+              }
+            : { kind: "lost", winner: row, then: "process_winner" };
+        }
+        this.#log("warn", "won row missing", { groupId, epoch });
+      } else if (r !== null && r.status === 429) {
+        wait = retryAfterMs(r) ?? wait;
+      } else if (r !== null && r.status < 500) {
+        this.#log("warn", "won row read refused", {
+          groupId,
+          epoch,
+          status: r.status,
+        });
+      }
+      await this.#sleep(wait);
+    }
+    return null;
+  }
+
+  /**
+   * `fromSubmit`: `first` classifies a commit POST answer (not a refetch).
+   * Tracked per action, so a `won` knows whether it is a plain 2xx.
+   */
   async #submitLoop(
     rec: ChannelRec,
     payload: TextSubmitCommitPayload,
     ctx: SubmitContext,
     first: SubmitAction,
+    fromSubmit: boolean,
   ): Promise<SubmitResult> {
     const { groupId } = ctx;
     const ids = { groupId, epoch: ctx.epoch };
     let action = first;
+    let plain = fromSubmit;
     let refetch403 = 0;
     for (;;) {
       this.#checkAlive();
@@ -1914,14 +2132,36 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
           // RC NEW-5: on a refetch path `storedCommitB64` is the DS's
           // stored string; native merges equal bytes and answers
           // own_commit_mismatch (→ left → rejoin) for different ones.
+          // W3 2026-10-25: `_commit_won` ALWAYS gets the stored row's
+          // `rejoin_intents` (the DS fills them from its own intent rows).
+          // A plain 2xx is a bare `Won`, so read the row first and take the
+          // committer rule on it; `_commit_won` waits until it is read.
+          if (plain) {
+            const read = await this.#readWonRow(ctx);
+            if (read === null) {
+              rec.parkedCommit = {
+                groupId,
+                payload,
+                purpose: { kind: "unknown_outcome" },
+                resubmit: ctx.resubmit,
+                wonUnread: true,
+              };
+              this.#log("warn", "won row unread, commit parked", ids);
+              return "parked";
+            }
+            action = read;
+            plain = false;
+            break;
+          }
           const won = action;
+          const rejoinIntents: MlsJoinRequest[] = won.rejoinIntents;
           try {
             await this.#enqueue(rec.id, async () => {
               const out = await this.#invoke("e2ee_text_commit_won", {
                 groupId,
                 wonEpoch: ctx.epoch,
                 storedCommitB64: won.storedCommitB64,
-                rejoinIntents: won.rejoinIntents,
+                rejoinIntents,
               });
               await this.#onOutcome(out);
             });
@@ -1983,6 +2223,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
               : { kind: "refetch_transport_error", purpose },
             ctx,
           );
+          plain = false;
           if (
             refetch403 >= REFETCH_403_PARK_BUDGET &&
             action.kind === "refetch"
@@ -1993,6 +2234,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
               payload,
               purpose,
               resubmit: ctx.resubmit,
+              wonUnread: false,
             };
             this.#log("warn", "commit parked after 403s", ids);
             return "parked";
@@ -2034,6 +2276,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
               : { kind: "submit_transport_error" },
             ctx,
           );
+          plain = true;
           break;
         }
         case "mark_left": {
@@ -2062,19 +2305,20 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       const pending = await this.#enqueue(rec.id, () =>
         this.#invoke("e2ee_text_pending_commit", { groupId: p.groupId }),
       );
+      const { payload } = p;
       if (
         pending === null ||
-        pending.epoch !== p.payload.epoch ||
-        pending.commit_b64 !== p.payload.commit
+        pending.epoch !== payload.epoch ||
+        pending.commit_b64 !== payload.commit
       ) {
         return;
       }
-      const ctx = this.#submitCtx(p.groupId, p.payload, p.resubmit);
-      await this.#submitLoop(rec, p.payload, ctx, {
-        kind: "refetch",
-        purpose: p.purpose,
-        delayMs: 0,
-      });
+      const ctx = this.#submitCtx(p.groupId, payload, p.resubmit);
+      // A parked `Won` re-enters as a plain win: the row is read again.
+      const first: SubmitAction = p.wonUnread
+        ? { kind: "won", storedCommitB64: payload.commit, rejoinIntents: [] }
+        : { kind: "refetch", purpose: p.purpose, delayMs: 0 };
+      await this.#submitLoop(rec, payload, ctx, first, p.wonUnread);
     } catch (err) {
       if (!isDisposed(err)) {
         this.#log("warn", "parked commit resume failed", {
@@ -2325,6 +2569,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         removalInFlight: false,
         updating: null,
         successorInFlight: false,
+        recreating: null,
         parkedCommit: null,
         seeded: false,
       };

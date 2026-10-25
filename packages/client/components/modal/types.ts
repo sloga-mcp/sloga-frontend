@@ -326,6 +326,19 @@ export type Modals =
       channelId: string;
     }
   | {
+      /**
+       * Protected channel seat picker (W4 lane C12). `current` = the seated
+       * user ids (owner included); `onConfirm` gets the FULL new list, the
+       * owner always included. `slotCap` null = unknown (shown as unknown,
+       * never treated as 0 or unlimited); a number caps the selection.
+       */
+      type: "protected_seat_picker";
+      channel: Channel;
+      current: string[];
+      slotCap: number | null;
+      onConfirm: (userIds: string[]) => Promise<void>;
+    }
+  | {
       type: "e2ee_enable";
       /**
        * Lead with the restore-vs-start-fresh choice (slice 5.5). Set when the
