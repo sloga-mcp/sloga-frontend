@@ -104,7 +104,7 @@ export function seedView(key: string, data: unknown): unknown {
 
   // a copy of its own: the deletes below must never reach the store
   const theme = { ...(synced as Partial<TypeTheme>) };
-  if (theme.preset === "stoat") {
+  if (theme.preset === "stoat" || theme.preset === "discord") {
     delete theme.m3Accent;
     delete theme.m3Contrast;
     delete theme.m3Variant;
@@ -113,6 +113,10 @@ export function seedView(key: string, data: unknown): unknown {
     // background picker
     delete theme.slogaSurfaceDark;
     delete theme.slogaSurfaceLight;
+  }
+  // Discord reads no accent at all, so the Sloga one is just as invisible
+  if (theme.preset === "discord") {
+    delete theme.slogaAccent;
   }
   return theme;
 }

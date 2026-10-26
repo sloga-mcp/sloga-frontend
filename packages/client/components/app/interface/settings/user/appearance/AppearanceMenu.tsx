@@ -213,6 +213,13 @@ export function AppearanceMenu() {
             <Trans>Sloga</Trans>
           </Button>
           <Button
+            group="connected"
+            groupActive={state.theme.preset === "discord"}
+            onPress={() => state.theme.setPreset("discord")}
+          >
+            <Trans>Discord</Trans>
+          </Button>
+          <Button
             group="connected-end"
             groupActive={state.theme.preset === "you"}
             onPress={() => state.theme.setPreset("you")}
@@ -289,10 +296,20 @@ export function AppearanceMenu() {
         </Row>
         <Show when={accentLocked()}>
           <Text class="label" size="small">
-            <Trans>
-              Monochrome uses only grays, so it ignores your color. Pick another
-              style below to use one.
-            </Trans>
+            <Show
+              when={state.theme.preset === "discord"}
+              fallback={
+                <Trans>
+                  Monochrome uses only grays, so it ignores your color. Pick
+                  another style below to use one.
+                </Trans>
+              }
+            >
+              <Trans>
+                Discord uses its own blurple, so it ignores your color. Pick
+                Sloga or Material You to use one.
+              </Trans>
+            </Show>
           </Text>
         </Show>
 

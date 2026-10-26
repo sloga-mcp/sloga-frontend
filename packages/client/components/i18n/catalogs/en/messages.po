@@ -3232,6 +3232,7 @@ msgstr "Disconnect Sound Style"
 msgid "Disconnected"
 msgstr "Disconnected"
 
+#: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 #: components/app/interface/settings/user/appearance/LayoutArrangement.tsx
 msgid "Discord"
 msgstr "Discord"
@@ -3239,6 +3240,10 @@ msgstr "Discord"
 #: components/app/interface/settings/user/Native.tsx
 msgid "Discord RPC"
 msgstr "Discord RPC"
+
+#: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
+msgid "Discord uses its own blurple, so it ignores your color. Pick Sloga or Material You to use one."
+msgstr "Discord uses its own blurple, so it ignores your color. Pick Sloga or Material You to use one."
 
 #: src/interface/Discover.tsx
 msgid "Discover"

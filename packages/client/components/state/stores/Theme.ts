@@ -6,7 +6,11 @@ import {
   MONOSPACE_FONT_KEYS,
   MonospaceFonts,
 } from "@revolt/ui/themes/fonts";
-import { BRAND_ACCENT, BRAND_VARIANT } from "@revolt/ui/themes/materialTheme";
+import {
+  BRAND_ACCENT,
+  BRAND_VARIANT,
+  DISCORD_ACCENT,
+} from "@revolt/ui/themes/materialTheme";
 import {
   RAIL_ACCENT_DEFAULT,
   RAIL_ACCENT_PATTERN,
@@ -22,12 +26,14 @@ export type TypeTheme = {
   /**
    * Base theme preset
    *
-   * "stoat" is Sloga's hand-tuned palette, recoloured by `slogaAccent`; "you"
-   * generates the whole scheme from the m3 accent/contrast/variant controls.
-   * The appearance menu shows the accent swatches under both, and contrast and
-   * variant only under "you", because the Sloga palette pins what they change.
+   * "stoat" is Sloga's hand-tuned palette, recoloured by `slogaAccent`;
+   * "discord" is Discord's own palette, blurple included, and takes no accent;
+   * "you" generates the whole scheme from the m3 accent/contrast/variant
+   * controls. The appearance menu shows the accent swatches under all three
+   * (locked under "discord"), and contrast and variant only under "you",
+   * because the other two palettes pin what they change.
    */
-  preset: "stoat" | "you";
+  preset: "stoat" | "discord" | "you";
 
   /**
    * Whether `preset` has been through the one-time migration below
@@ -159,7 +165,7 @@ export type SelectedTheme = Pick<
   | "messageGroupSpacing"
   | "messageAvatarSize"
 > & {
-  preset: "stoat" | "you";
+  preset: TypeTheme["preset"];
   darkMode: boolean;
   style: TypeTheme["style"];
 
@@ -265,7 +271,7 @@ export class Theme extends AbstractStore<"theme", TypeTheme> {
     // boot that nothing short of clearing storage could recover. Only presets
     // `activeTheme` can actually build are allowed through.
     if (input.presetMigrated) {
-      if (["stoat", "you"].includes(input.preset!)) {
+      if (["stoat", "discord", "you"].includes(input.preset!)) {
         data.preset = input.preset!;
       }
     } else {
@@ -400,23 +406,41 @@ export class Theme extends AbstractStore<"theme", TypeTheme> {
     // contrast and variant — those two controls are hidden under this preset
     // because the brand palette pins what they would change. The roles it
     // leaves alone (error, outline, inverse) are still derived from these.
-    return opts.preset === "stoat"
-      ? {
-          ...common,
-          preset: "stoat",
-          accent: opts.slogaAccent,
-          surface: darkMode ? opts.slogaSurfaceDark : opts.slogaSurfaceLight,
-          contrast: 0,
-          variant: BRAND_VARIANT,
-        }
-      : {
-          ...common,
-          preset: "you",
-          accent: opts.m3Accent,
-          surface: "",
-          contrast: opts.m3Contrast,
-          variant: opts.m3Variant,
-        };
+    //
+    // Discord seeds from blurple the same way, for the same reason; it never
+    // reads a stored accent, so neither swatch row can drift it off Discord.
+    // Like Material You it takes no custom surface: its own pinned greys are
+    // the point, and the Background picker only shows under Sloga.
+    if (opts.preset === "stoat") {
+      return {
+        ...common,
+        preset: "stoat",
+        accent: opts.slogaAccent,
+        surface: darkMode ? opts.slogaSurfaceDark : opts.slogaSurfaceLight,
+        contrast: 0,
+        variant: BRAND_VARIANT,
+      };
+    }
+
+    if (opts.preset === "discord") {
+      return {
+        ...common,
+        preset: "discord",
+        accent: DISCORD_ACCENT,
+        surface: "",
+        contrast: 0,
+        variant: BRAND_VARIANT,
+      };
+    }
+
+    return {
+      ...common,
+      preset: "you",
+      accent: opts.m3Accent,
+      surface: "",
+      contrast: opts.m3Contrast,
+      variant: opts.m3Variant,
+    };
   }
 
   /**
@@ -500,17 +524,27 @@ export class Theme extends AbstractStore<"theme", TypeTheme> {
    * Get the accent of the active preset
    */
   get accent() {
-    return this.preset === "stoat" ? this.get().slogaAccent : this.m3Accent;
+    switch (this.preset) {
+      case "stoat":
+        return this.get().slogaAccent;
+      case "discord":
+        return DISCORD_ACCENT;
+      default:
+        return this.m3Accent;
+    }
   }
 
   /**
    * Set the accent of the active preset
+   *
+   * A no-op under Discord, which has no accent of its own to store; writing
+   * it into another preset's slot would recolour that one behind the user.
    * @param accent Accent
    */
   setAccent(accent: string) {
     if (this.preset === "stoat") {
       this.set("slogaAccent", accent);
-    } else {
+    } else if (this.preset === "you") {
       this.setM3Accent(accent);
     }
   }
