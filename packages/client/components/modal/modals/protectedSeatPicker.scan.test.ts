@@ -31,7 +31,10 @@
 //  P9  W4d (W2 C1): a `SeatListNamesRemovedUsers` refusal deselects
 //      exactly the users it names, keeps them off (unlisted, never in a
 //      later list), lets the list without them be confirmed, and never
-//      resubmits by itself (C-SET3, picker side).
+//      resubmits by itself (C-SET3, picker side);
+//  P10 a fresh picker never offers a `removed` user (C-SET4);
+//  P11 W4d N3: whenever anyone is left off, Confirm is preceded by a line
+//      naming them all (C-N3c).
 //
 // Point `PROTECTED_SEAT_PICKER_FILE`, `PROTECTED_MODAL_TYPES_FILE` or
 // `PROTECTED_MODALS_FILE` at another copy (a known-bad control) to check
@@ -73,6 +76,10 @@ interface Rules {
   seatWithout(ids: Iterable<string>, drop: Iterable<string>): string[];
   seatRefusalRemoved(ui: unknown, ownerId: string | null): string[];
   seatDroppedIds(ids: unknown, ownerId: string | null): string[];
+  seatLeftOffNames(
+    ids: readonly string[],
+    names: readonly (string | null | undefined)[],
+  ): string;
   seatInitialSelection(
     current: readonly string[],
     ownerId: string | null,
@@ -104,6 +111,7 @@ const RULE_NAMES = [
   "seatWithout",
   "seatRefusalRemoved",
   "seatDroppedIds",
+  "seatLeftOffNames",
   "seatInitialSelection",
   "seatFinalList",
   "seatToggleBlock",
@@ -515,8 +523,8 @@ describe("Protected channel seat picker (lane C12)", () => {
       "@revolt/ui barrel import",
     );
     assert.doesNotMatch(CODE, /features\/legacy/, "legacy barrel");
-    // W4d added no local msgid: the removed-users copy is L-ERR's.
-    assert.equal((BODY.match(/\bt`/g) ?? []).length, 4, "local msgids");
+    // W4d N3 added ONE local msgid (the left-off line, P11; catalog owed).
+    assert.equal((BODY.match(/\bt`/g) ?? []).length, 5, "local msgids");
     for (const file of [
       "@revolt/ui/components/design/Avatar",
       "@revolt/ui/components/design/Dialog",
@@ -661,5 +669,39 @@ describe("Protected channel seat picker (lane C12)", () => {
       /return seatDroppedIds\(u\.users, ownerId\);/,
       "the prop and a refusal's ids share one rule",
     );
+  });
+
+  it("P11 Confirm is preceded by who will be left off (C-N3c)", async () => {
+    const r = await loadRules();
+    // Unresolved or blank names show the id: nobody dropped goes unnamed.
+    assert.equal(
+      r.seatLeftOffNames(["x", "y", "z"], ["Xena", " ", null]),
+      "Xena, y, z",
+    );
+    assert.equal(r.seatLeftOffNames(["x"], []), "x");
+    // Wiring: the line shows whenever `dropped` (the `removed` prop or a
+    // refusal) is non-empty, after the error, last before the actions.
+    assert.match(
+      BODY,
+      /const leftOff = \(\): string \| null => \{\s*const ids = \[\.\.\.dropped\(\)\];\s*if \(ids\.length === 0\) return null;\s*return leftOffLine\(seatLeftOffNames\(ids, displayNames\(ids\)\)\);\s*\};/,
+    );
+    assert.match(
+      BODY,
+      /const leftOffLine = \(names: string\) =>\s*t`Will be left off the seat list: \$\{names\}`;/,
+    );
+    const err = BODY.indexOf('<Notice role="alert">{error()}</Notice>');
+    const line = BODY.indexOf("<Show when={leftOff()}>");
+    const end = BODY.indexOf("</Column>");
+    assert.ok(
+      err !== -1 && line > err && end > line,
+      "left-off line placement",
+    );
+    assert.match(
+      BODY.slice(line, end),
+      /^<Show when=\{leftOff\(\)\}>\s*\{\(line\) => \(\s*<LeftOff role="status" data-left-off>\s*\{line\(\)\}\s*<\/LeftOff>\s*\)\}\s*<\/Show>\s*$/,
+    );
+    // Names of users this client hasn't loaded are fetched.
+    assert.match(BODY, /for \(const id of dropped\(\)\) \{/);
+    assert.match(BODY, /c\.users\.fetch\(id\)\.catch\(/);
   });
 });

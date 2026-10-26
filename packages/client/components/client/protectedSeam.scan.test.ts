@@ -10,7 +10,8 @@
 //  S4  protected ids never enter `#encryptedIds`;
 //  S5  `textInvoke` is the only text-command path and refuses unless
 //      `protectedTextCapable()` (and outside `TEXT_COMMANDS`);
-//  S6  no edit to `NativeTransport` or any transport class;
+//  S6  no edit to `NativeTransport` or any transport class (the region is
+//      byte-identical to origin/main 1dcdd1b4);
 //  S7  `markReady()` runs on EVERY `#onReady`, capable or not (W4a audit);
 //  S8  the manager is built only once `status.device_id` is known; seeding
 //      uses `Promise.allSettled`; `port.sleep` rejects after dispose;
@@ -47,15 +48,26 @@ const SRC = readFileSync(FILE, "utf8");
 
 /**
  * sha256 of the transport region (`interface NativeTransport` up to
- * `function resumeRecordStorage`) at the W4a checkpoint 4363b406.
+ * `function resumeRecordStorage`) in `git show origin/main:<this file>` at
+ * origin/main 1dcdd1b4 (v0.69.1). W4 never edits it, so the working copy
+ * must match main byte for byte. Re-pinned after the main merge: main's iOS
+ * work changed the region, so the W4a checkpoint 4363b406 value
+ * (f34aa475...) no longer applies. Re-pin it ONLY from main, never from
+ * this branch.
  */
 const TRANSPORT_REGION_SHA256 =
-  "f34aa475d3bc2c8dd58e32d0042d3ef8d48b0d00e4a4d0e1902038903c798677";
+  "f1d615dfa4dc5de12ac3af97ac1c68ff4023f109a9a9bcbd62afede7ed9b5909";
 
-/** `#encryptedIds.add(` call sites at 4363b406; the seam adds none. */
+/**
+ * `#encryptedIds.add(` call sites at 4363b406 and at origin/main 1dcdd1b4;
+ * the seam adds none.
+ */
 const ENCRYPTED_IDS_ADD_SITES = 2;
 
-/** `#mlsBuffer.clear()` sites at 4363b406 (plan D4: 1701/1898/2199/5863). */
+/**
+ * `#mlsBuffer.clear()` sites at 4363b406 (plan D4) and at origin/main
+ * 1dcdd1b4.
+ */
 const MLS_BUFFER_CLEAR_SITES = 4;
 
 // ---- Source helpers ---------------------------------------------------------
@@ -323,7 +335,11 @@ test("S6: NativeTransport and the transport classes are unchanged", () => {
   const end = SRC.indexOf("function resumeRecordStorage");
   assert.ok(start >= 0 && end > start, "transport region present");
   const sha = createHash("sha256").update(SRC.slice(start, end)).digest("hex");
-  assert.equal(sha, TRANSPORT_REGION_SHA256, "transport region byte-identical");
+  assert.equal(
+    sha,
+    TRANSPORT_REGION_SHA256,
+    "transport region byte-identical to origin/main 1dcdd1b4",
+  );
 });
 
 // ---- S7 markReady on every #onReady ---------------------------------------------
@@ -531,6 +547,20 @@ test("S9 (M3 support): disposeProtected is idempotent and final", () => {
   const inner = member(SRC, /\n {2}#protectedDispose\(\): void /);
   assert.match(inner, /this\.#ptLife\?\.abort\(\);/, "null-safe abort");
   assert.match(inner, /if \(manager\) \{/, "null-safe manager dispose");
+});
+
+test("S9 (F#5): E2EEBridge.dispose() calls disposeProtected() before any return", () => {
+  const body = stripComments(
+    member(SRC, /\n {2}async dispose\(\): Promise<void> /),
+  );
+  const call = body.indexOf("this.disposeProtected();");
+  const firstReturn = body.search(/\breturn\b/);
+  assert.ok(call >= 0, "dispose() stops the text manager");
+  assert.equal(count(body, "this.disposeProtected();"), 1, "called once");
+  assert.ok(
+    firstReturn < 0 || call < firstReturn,
+    "called ahead of dispose()'s first return (the iOS early return)",
+  );
 });
 
 // ---- S10 W4c#2 hold + replay of early decrypt requests ----------------------

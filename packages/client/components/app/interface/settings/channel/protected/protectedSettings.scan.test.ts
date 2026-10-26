@@ -34,7 +34,10 @@
 //  S13 W4d: "Remove seat" never submits a list naming another
 //      server-removed user (C-SET2); they show read-only;
 //  S14 W4d: a `SeatListNamesRemovedUsers` refusal leaves exactly those
-//      users off the next list and re-reads; it never resubmits (C-SET3).
+//      users off the next list and re-reads; it never resubmits (C-SET3);
+//  S15 W4d N3: "removed" needs positive evidence (cooling, or a same-list
+//      refusal), never mere absence (C-N3a/b); the Remove-seat confirm
+//      names everyone else the submitted list drops.
 //
 // Point `PROTECTED_SETTINGS_FILE`, `PROTECTED_SEAT_LIST_FILE` or
 // `PROTECTED_CHANNEL_SETTINGS_FILE` at another copy (a known-bad control)
@@ -130,6 +133,12 @@ interface ListRules {
     reported?: readonly string[],
   ): string[];
   editableSeatIds(r: Record<string, unknown>, removed: string[]): string[];
+  leftOffBesides(
+    r: Record<string, unknown>,
+    ownerId: string,
+    removed: string[],
+    target: string,
+  ): string[];
   seatsUsedOf(r: Record<string, unknown>): number;
   deviceCapLine(v: unknown): { kind: string; max?: number };
   coolingRows(c: unknown): { userId: string; until: string | null }[];
@@ -745,14 +754,21 @@ describe("protected channel settings (C11)", () => {
   // W4d (W2 C1). A forced release (kick, ban, leave, account deletion)
   // frees the seat but never edits the signed list; a PUT still naming
   // such a user is refused 400 `SeatListNamesRemovedUsers {users}`.
-  // Signed list O,A,B,X,Y; X cooling, Y's cooldown over (in neither array).
+  // Signed list O,A,B,X,Y. KICKED: X and Y released and cooling. ABSENT:
+  // X and Y merely missing from `seats[]` (no cooling, no refusal; N3).
   const SIGNED =
     "sloga-seat-list-v1\nv:1\nchannel_id:C\nversion:4\ndevice_cap:5\nissued_at:1\nsigner_user_id:O\nsigner_device_id:d\nseats:A,B,O,X,Y";
+  const cool = (user_id: string) => ({
+    user_id,
+    released_at: "2026-10-20T00:00:00Z",
+    cooldown_until: "2026-11-03T00:00:00Z",
+  });
   const KICKED = {
     list: { body: SIGNED },
     seats: [{ user_id: "O" }, { user_id: "A" }, { user_id: "B" }],
-    cooling: [{ user_id: "X", cooldown_until: "2026-11-01T00:00:00Z" }],
+    cooling: [cool("X"), cool("Y")],
   };
+  const ABSENT = { ...KICKED, cooling: [] };
 
   /** One component-scope function of the page, `function <name>(` to `}`. */
   function pageFn(name: string): string {
@@ -766,12 +782,20 @@ describe("protected channel settings (C11)", () => {
   it("S12 a server-removed user is never in the picker's current (C-SET1)", async () => {
     const l = await listRules;
     const removed = l.serverRemovedSeatIds(KICKED, "O");
-    assert.deepEqual(removed, ["X", "Y"], "cooling and expired alike");
+    assert.deepEqual(removed, ["X", "Y"], "released and cooling");
     assert.deepEqual(l.editableSeatIds(KICKED, removed), ["A", "B", "O"]);
-    // The owner (the signer) is never removed, even without a seat row.
+    // The owner (the signer) is never removed, even listed as cooling.
     assert.deepEqual(
-      l.serverRemovedSeatIds({ ...KICKED, seats: [{ user_id: "A" }] }, "O"),
-      ["B", "X", "Y"],
+      l.serverRemovedSeatIds(
+        {
+          ...KICKED,
+          seats: [{ user_id: "A" }],
+          cooling: [cool("O"), cool("X")],
+        },
+        "O",
+      ),
+      ["X"],
+      "B is only absent (N3): not removed",
     );
     // Nothing removed: the editable seats are the signed list's.
     const all = {
@@ -955,5 +979,73 @@ describe("protected channel settings (C11)", () => {
       PAGE_BODY,
       /if \(isProtected\(\) && snap !== null\) return seatsOver\(snap, fresh\(\)\);/,
     );
+  });
+
+  it("S15 removal needs positive evidence; Remove seat names who else is dropped (C-N3a/b)", async () => {
+    const l = await listRules;
+    // C-N3a: absent from the owner's read only: still editable, so the
+    // owner never signs them away on the server's silence.
+    assert.deepEqual(l.serverRemovedSeatIds(ABSENT, "O"), []);
+    assert.deepEqual(l.editableSeatIds(ABSENT, []), ["A", "B", "O", "X", "Y"]);
+    assert.deepEqual(
+      l.serverRemovedSeatIds({ list: { body: SIGNED }, seats: [] }, "O"),
+      [],
+      "an empty seats read removes nobody",
+    );
+    // C-N3b: released and cooling is evidence; so is a same-list refusal.
+    assert.deepEqual(
+      l.serverRemovedSeatIds({ ...ABSENT, cooling: [cool("X")] }, "O"),
+      ["X"],
+    );
+    assert.deepEqual(l.serverRemovedSeatIds(ABSENT, "O", ["Y"]), ["Y"]);
+    // Contradictions and junk never count: active AND cooling, cooling but
+    // not on the list, malformed rows.
+    assert.deepEqual(
+      l.serverRemovedSeatIds(
+        { ...KICKED, seats: [...KICKED.seats, { user_id: "X" }] },
+        "O",
+      ),
+      ["Y"],
+    );
+    assert.deepEqual(
+      l.serverRemovedSeatIds(
+        { ...ABSENT, cooling: [cool("Z"), { user_id: 5 }, null] },
+        "O",
+      ),
+      [],
+    );
+    assert.match(
+      LIST,
+      /const released = cooling\.has\(id\) && !active\.has\(id\);\s*if \(released \|\| reported\.includes\(id\)\) out\.push\(id\);/,
+    );
+    // Disclosure: Remove seat for A also drops X and Y here; nobody else
+    // when nothing is removed. Same inputs as the page's submission.
+    assert.deepEqual(l.leftOffBesides(KICKED, "O", ["X", "Y"], "A"), [
+      "X",
+      "Y",
+    ]);
+    assert.deepEqual(l.leftOffBesides(ABSENT, "O", [], "A"), []);
+    assert.deepEqual(l.leftOffBesides(KICKED, "O", ["X", "Y"], "O"), []);
+    const from = LIST_BODY.indexOf("const confirm = (");
+    const to = LIST_BODY.indexOf("</Confirm>", from);
+    const block = LIST_BODY.slice(from, to);
+    assert.match(
+      block,
+      /<Show when=\{leftOff\(row\.userId\)\}>\s*\{\(line\) => <span data-left-off>\{line\(\)\}<\/span>\}\s*<\/Show>/,
+    );
+    assert.match(
+      LIST_BODY,
+      /const ids = leftOffBesides\(\s*props\.seats,\s*props\.ownerId,\s*props\.removed,\s*target,\s*\);/,
+    );
+    assert.match(
+      LIST_BODY,
+      /const leftOffLine = \(names: string\) =>\s*t`Will be left off the seat list: \$\{names\}`;/,
+    );
+    // The page submits exactly what the disclosure describes.
+    assert.match(
+      PAGE_BODY,
+      /seatsAfterRemoval\(editableIds\(\), owner, userId\)/,
+    );
+    assert.match(PAGE_BODY, /removed=\{removedIds\(\)\}/);
   });
 });

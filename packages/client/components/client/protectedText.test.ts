@@ -2388,33 +2388,81 @@ test("W4d X#2 (C-X2a): a persisted own commit stage is resumed at seed (restart 
   m2.dispose();
 });
 
-test("W4d X#2 (C-X2b): an absent row resubmits the IDENTICAL persisted bytes, never a re-stage; one resume per group", async () => {
-  const env = new Env();
-  env.pending = { epoch: 4, commit_b64: "PERSISTED" };
-  const m = make(env);
-  m.channelProtected(CH);
-  await env.advance(0);
-  // The seed and a refresh race: one resume, one resubmit.
-  await Promise.all([m.start(), m.refresh(CH, "open")]);
-  await env.advance(1_000);
-  const posts = env.api$("POST", /\/commits$/);
-  assert.equal(posts.length, 1, "one resume, one resubmit");
-  assert.deepEqual(posts[0].body, {
-    device_id: DEV,
-    epoch: 4,
-    commit: "PERSISTED",
+/** The N1 store key of this device's persisted stage body for `group`. */
+const stageKey = (group = G0) => `protected-stage:${SELF}:${group}`;
+
+/** A running manager stages an Add whose outcome stays unknown (parked). */
+async function parkedAdd(env: Env, allowed: { now: boolean }) {
+  env.routes.push((method, path) => {
+    if (method === "POST" && path.endsWith("/commits")) {
+      return allowed.now ? undefined : "transport";
+    }
+    if (method === "GET" && path.includes("from_epoch=4") && !allowed.now) {
+      return ok({ type: "MissingPermission" }, 403);
+    }
+    return undefined;
   });
-  assert.equal(env.calls("e2ee_text_update").length, 0, "never re-staged");
-  assert.equal(
-    env.calls("e2ee_text_commit_won")[0]?.storedCommitB64,
-    "PERSISTED",
+  const m = make(env);
+  await m.refresh(CH, "open");
+  m.onJoinRequest(newDeviceRequest("S"), false);
+  await env.advance(600_000);
+  assert.equal(env.api$("POST", /\/commits$/).length, 1, "parked");
+  return m;
+}
+
+test("W4d X#2 (C-X2b): an absent row resubmits the IDENTICAL persisted FULL body, never a re-stage; one resume per group", async () => {
+  // The parked Add of a running manager: resumed with its full body.
+  const env2 = new Env();
+  const allowed = { now: false };
+  const m2 = await parkedAdd(env2, allowed);
+  const first = env2.api$("POST", /\/commits$/)[0].body;
+  assert.deepEqual(
+    JSON.parse(env2.storeMap.get(stageKey()) ?? "null"),
+    first,
+    "N1: the full body is persisted before the POST",
   );
-  m.dispose();
+  allowed.now = true;
+  await m2.refresh(CH, "interval");
+  await env2.advance(1_000);
+  const bodies = env2.api$("POST", /\/commits$/).map((c) => c.body);
+  assert.equal(bodies.length, 2, "absent → resubmitted");
+  assert.deepEqual(bodies[1], first, "identical, welcome included");
+  assert.equal((bodies[1] as { welcome: string }).welcome, "WEL");
+  assert.deepEqual((bodies[1] as { added: unknown }).added, [
+    { user_id: PEER, device_id: "dev-new" },
+  ]);
+  assert.equal(env2.calls("e2ee_text_commit_won").length, 1);
+  assert.equal(env2.storeMap.has(stageKey()), false, "resolved → dropped");
+  m2.dispose();
+
+  // Restart mid-Add (a NEW manager, the store kept): the persisted full
+  // body is resubmitted, never re-staged and never bare.
+  const env4 = new Env();
+  const allowed4 = { now: false };
+  const old = await parkedAdd(env4, allowed4);
+  const sent = env4.api$("POST", /\/commits$/)[0].body;
+  old.dispose();
+  allowed4.now = true;
+  const m4 = make(env4);
+  m4.channelProtected(CH);
+  await env4.advance(0);
+  await m4.start();
+  await env4.advance(1_000);
+  const after = env4.api$("POST", /\/commits$/).map((c) => c.body);
+  assert.equal(after.length, 2, "one resubmit after the restart");
+  assert.deepEqual(after[1], sent, "the persisted FULL body");
+  assert.equal(env4.calls("e2ee_text_admit").length, 1, "never re-staged");
+  assert.equal(env4.calls("e2ee_text_commit_won").length, 1);
+  m4.dispose();
 
   // A resume in flight (its row fetch held) blocks a second one: two loops
   // for one stage would double-submit and double-merge.
   const env3 = new Env();
   env3.pending = { epoch: 4, commit_b64: "PERSISTED" };
+  env3.storeMap.set(
+    stageKey(),
+    JSON.stringify({ device_id: DEV, epoch: 4, commit: "PERSISTED" }),
+  );
   let release: () => void = () => undefined;
   const held = new Promise<void>((r) => {
     release = r;
@@ -2440,36 +2488,118 @@ test("W4d X#2 (C-X2b): an absent row resubmits the IDENTICAL persisted bytes, ne
   release();
   await env3.advance(1_000);
   assert.equal(env3.api$("POST", /\/commits$/).length, 1, "one resubmit");
-  assert.equal(env3.calls("e2ee_text_commit_won").length, 1);
+  assert.equal(env3.calls("e2ee_text_update").length, 0, "never re-staged");
+  assert.equal(
+    env3.calls("e2ee_text_commit_won")[0]?.storedCommitB64,
+    "PERSISTED",
+  );
   m3.dispose();
+});
 
-  // The parked commit of a running manager is resumed with its FULL body
-  // (welcome and declarations of the same stage), not a bare one.
+test("W4d N1 (C-N1a): a stage without its persisted full body is NEVER resubmitted bare: own row → won, absent → _commit_lost", async () => {
+  // Restart mid-Add, no full body (or one for another stage), row absent.
+  for (const stored of [
+    null,
+    { device_id: DEV, epoch: 3, commit: "ADM" },
+    { device_id: DEV, epoch: 4, commit: "OTHER-BYTES" },
+  ]) {
+    const env = new Env();
+    env.pending = { epoch: 4, commit_b64: "ADM" };
+    if (stored) env.storeMap.set(stageKey(), JSON.stringify(stored));
+    const m = make(env);
+    m.channelProtected(CH);
+    await env.advance(0);
+    await m.start();
+    await env.advance(1_000);
+    const label = JSON.stringify(stored);
+    assert.equal(env.api$("POST", /\/commits$/).length, 0, `no POST ${label}`);
+    assert.ok(env.api$("GET", /from_epoch=4$/).length >= 1, "fetched first");
+    assert.equal(env.calls("e2ee_text_commit_lost").length, 1, label);
+    assert.equal(env.calls("e2ee_text_commit_won").length, 0, label);
+    assert.equal(env.calls("e2ee_text_mark_left").length, 0, label);
+    assert.ok(env.api$("GET", /\/seats$/).length >= 1, "refresh re-derives");
+    m.dispose();
+  }
+
+  // Restart mid-Add, no full body, own row present: won with the DS string.
   const env2 = new Env();
-  let refetchAllowed = false;
-  env2.routes.push((method, path) => {
-    if (method === "POST" && path.endsWith("/commits")) {
-      return refetchAllowed ? undefined : "transport";
-    }
-    if (method === "GET" && path.includes("from_epoch=4") && !refetchAllowed) {
-      return ok({ type: "MissingPermission" }, 403);
-    }
-    return undefined;
+  env2.pending = { epoch: 4, commit_b64: "ADM" };
+  env2.rows.push({
+    ...ownRow(4, "ADM"),
+    added: [{ user_id: PEER, device_id: "dev-new" }],
   });
   const m2 = make(env2);
-  await m2.refresh(CH, "open");
-  m2.onJoinRequest(newDeviceRequest("S"), false);
-  await env2.advance(600_000);
-  assert.equal(env2.api$("POST", /\/commits$/).length, 1, "parked");
-  refetchAllowed = true;
-  await m2.refresh(CH, "interval");
+  m2.channelProtected(CH);
+  await env2.advance(0);
+  await m2.start();
   await env2.advance(1_000);
-  const bodies = env2.api$("POST", /\/commits$/).map((c) => c.body);
-  assert.equal(bodies.length, 2, "absent → resubmitted");
-  assert.deepEqual(bodies[1], bodies[0], "identical, welcome included");
-  assert.equal((bodies[1] as { welcome: string }).welcome, "WEL");
-  assert.equal(env2.calls("e2ee_text_commit_won").length, 1);
+  assert.deepEqual(env2.calls("e2ee_text_commit_won"), [
+    { groupId: G0, wonEpoch: 4, storedCommitB64: "ADM", rejoinIntents: [] },
+  ]);
+  assert.equal(env2.api$("POST", /\/commits$/).length, 0);
   m2.dispose();
+});
+
+test("W4d N4 (C-N4): while a resume holds the group, no routine commit or staging flow re-stages over the pending stage", async () => {
+  const env = new Env();
+  env.pending = { epoch: 4, commit_b64: "PERSISTED" };
+  env.rows.push({ ...ownRow(4, "PERSISTED"), rejoin_intents: [] });
+  env.storeMap.set(
+    stageKey(),
+    JSON.stringify({ device_id: DEV, epoch: 4, commit: "PERSISTED" }),
+  );
+  // Routine work a refresh would start: an Update is due and the server
+  // is ahead (a catch-up would merge another epoch under our stage).
+  env.state().update_due = true;
+  env.group = groupBody({ current_epoch: 5 });
+  let release: () => void = () => undefined;
+  const held = new Promise<void>((r) => {
+    release = r;
+  });
+  let fetches4 = 0;
+  const api = env.api.bind(env);
+  env.api = async (method: string, path: string, body?: unknown) => {
+    if (method === "GET" && path.includes("from_epoch=4")) {
+      fetches4++;
+      await held;
+    }
+    return api(method, path, body);
+  };
+  const m = make(env);
+  m.channelProtected(CH);
+  await env.advance(0);
+  await m.start();
+  await env.advance(0);
+  await m.refresh(CH, "interval");
+  const removal = silence(
+    m.removeDevices(CH, [{ user_id: PEER, device_id: PEER_DEV }], {
+      rejoinIntent: null,
+    }),
+  );
+  await env.advance(5_000);
+  assert.equal(fetches4, 1, "only the resume's row fetch (no catch-up)");
+  assert.equal(env.calls("e2ee_text_update").length, 0, "no Update staged");
+  assert.equal(env.calls("e2ee_text_remove").length, 0, "Remove waits");
+  release();
+  await env.advance(5_000);
+  await removal;
+  assert.deepEqual(
+    env.calls("e2ee_text_commit_won")[0],
+    {
+      groupId: G0,
+      wonEpoch: 4,
+      storedCommitB64: "PERSISTED",
+      rejoinIntents: [],
+    },
+    "the resumed stage won",
+  );
+  const order = env.invokes.map((i) => i.cmd);
+  assert.ok(
+    order.indexOf("e2ee_text_remove") > order.indexOf("e2ee_text_commit_won"),
+    "the Remove is staged only after the resume resolved",
+  );
+  assert.equal(env.calls("e2ee_text_update").length, 0, "no stale Update");
+  m.dispose();
 });
 
 test("W4d X#3 (C-X3): no false loud seat_list_rollback from a stale snapshot; a real one stays loud", async () => {

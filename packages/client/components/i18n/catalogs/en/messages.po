@@ -2246,6 +2246,11 @@ msgid "Remove {name}'s seat? They lose access to this channel on all their devic
 msgstr "Remove {name}'s seat? They lose access to this channel on all their devices, and the released seat still counts toward the seat limit for 14 days."
 
 #: components/app/interface/settings/channel/protected/SeatList.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "Will be left off the seat list: {names}"
+msgstr "Will be left off the seat list: {names}"
+
+#: components/app/interface/settings/channel/protected/SeatList.tsx
 msgid "Counts as a used seat until {until}."
 msgstr "Counts as a used seat until {until}."
 

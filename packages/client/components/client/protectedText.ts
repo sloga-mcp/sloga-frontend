@@ -145,6 +145,14 @@ export const CONFIRM_PAGE_LIMIT = 100;
 /** D10 storage key prefix of a stored protected send. */
 export const PROTECTED_SEND_KEY_PREFIX = "protected-send:";
 
+/**
+ * W4d N1: storage key prefix (`<prefix><userId>:<groupId>`) of the FULL
+ * submit body (commit, welcome, added/removed declarations) of this
+ * device's staged own commit, written before the POST and dropped once
+ * the stage is resolved. Handshake bytes only, never message plaintext.
+ */
+export const PROTECTED_STAGE_KEY_PREFIX = "protected-stage:";
+
 /** Decrypted views remembered for cache-restore re-requests. */
 const VIEW_CACHE_MAX = 5_000;
 
@@ -522,6 +530,8 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
    * `_pending_commit` is the authority, so a restart still resumes.
    */
   readonly #stagedPayloads = new Map<string, TextSubmitCommitPayload>();
+  /** W4d N4: the resume in flight per group; staging flows await it. */
+  readonly #resuming = new Map<string, Promise<boolean>>();
   /** Deleted message ids (`forget`): a late decrypt never re-adds them. */
   readonly #forgotten = new Set<string>();
   /** Group ids whose create this manager POSTed or re-ran (D21 retry). */
@@ -1620,7 +1630,9 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
           if (!resumed) this.#maintain(rec);
         }),
       );
-    } else {
+    } else if (n.group_id === null || !this.#busy(n.group_id)) {
+      // W4d N4: never while a commit flow (e.g. a resume) holds the group:
+      // a routine Update would re-stage over the pending stage.
       this.#maintain(rec);
     }
     // D21 successor: native poisoned, this device signed the current list,
@@ -2295,6 +2307,10 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     groupId: string,
     stage: () => Promise<TextSubmitCommitPayload>,
   ): Promise<SubmitResult> {
+    // W4d N4: never stage over a persisted stage a resume is resolving
+    // (the resumed `_commit_won` would then hit own_commit_mismatch).
+    const resuming = this.#resuming.get(groupId);
+    if (resuming) await resuming.catch(() => false);
     this.#busyEnter(groupId);
     try {
       const payload = await stage();
@@ -2324,7 +2340,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     payload: TextSubmitCommitPayload,
   ): Promise<SubmitResult> {
     const ctx: SubmitContext = this.#submitCtx(groupId, payload, false);
-    this.#stagedPayloads.set(groupId, payload);
+    this.#persistStage(groupId, payload);
     const r = await this.#api(
       "POST",
       `/mls/groups/${groupId}/commits`,
@@ -2351,6 +2367,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     first: SubmitAction,
     fromSubmit: boolean,
     firstResponse: TextApiResponse | null = null,
+    resubmitAllowed = true,
   ): Promise<SubmitResult> {
     let settled = false;
     try {
@@ -2361,6 +2378,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         first,
         fromSubmit,
         firstResponse,
+        resubmitAllowed,
       );
       settled = r !== "parked";
       return r;
@@ -2368,9 +2386,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       settled = isFlowFailure(err) && err.source === "server";
       throw err;
     } finally {
-      if (settled && this.#stagedPayloads.get(ctx.groupId) === payload) {
-        this.#stagedPayloads.delete(ctx.groupId);
-      }
+      if (settled) this.#dropStage(ctx.groupId, payload);
     }
   }
 
@@ -2458,6 +2474,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     first: SubmitAction,
     fromSubmit: boolean,
     firstResponse: TextApiResponse | null = null,
+    resubmitAllowed = true,
   ): Promise<SubmitResult> {
     const { groupId } = ctx;
     const ids = { groupId, epoch: ctx.epoch };
@@ -2583,6 +2600,24 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
           break;
         }
         case "resubmit": {
+          if (!resubmitAllowed) {
+            // W4d N1: no full body for this stage (restart / rebuild): the
+            // row is absent, so drop the stage and let the normal flows
+            // re-derive it. A bare body is NEVER POSTed.
+            this.#log("warn", "stage without its full body dropped", ids);
+            await this.#enqueue(rec.id, async () => {
+              try {
+                await this.#invoke("e2ee_text_commit_lost", { groupId });
+              } catch (err) {
+                this.#log("warn", "commit_lost failed", {
+                  ...ids,
+                  type: viewTagOf(err),
+                });
+              }
+            });
+            this.#background(this.refresh(rec.id, "commit"));
+            return "lost";
+          }
           await this.#sleep(action.delayMs);
           ctx.resubmit = action.asResubmit;
           ctx.failures += 1;
@@ -2653,10 +2688,17 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
    * was found (the caller's routine commits then wait for the next
    * refresh), false otherwise. Never rejects except on dispose.
    *
-   * The submit body is native's persisted `{epoch, commit}`; the welcome
-   * and declarations come from this manager's hint of the SAME stage when
-   * it has one (after a restart it has none: a DS that then refuses the
-   * bare body leads to `_commit_lost` and a refresh, never a wedge).
+   * W4d N1: a resubmit needs the FULL submit body (welcome and the
+   * added/removed declarations): the DS cannot see inside the commit and
+   * reads absent declarations as empty, so a bare `{epoch, commit}` of an
+   * Add/Remove would be ACCEPTED and poison every other member
+   * (`commit_declaration_mismatch`) while the joiner never gets a Welcome.
+   * Native persists only `{epoch, commit}` and cannot say whether the
+   * stage is an Update, so the full body this manager persisted at stage
+   * time (`PROTECTED_STAGE_KEY_PREFIX`, matched on epoch AND bytes) is the
+   * only body ever resubmitted. Without it the resume only REFETCHES: own
+   * row → won; another → lost; absent → `_commit_lost` and a refresh (the
+   * normal flows re-derive the Add/Remove/Update from server state).
    */
   #resumeStage(rec: ChannelRec): Promise<boolean> {
     const n = rec.native;
@@ -2675,9 +2717,78 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     const groupId = n.group_id;
     // Counted synchronously, before any await: one resume per group.
     this.#busyEnter(groupId);
-    return this.#resumeStageInner(rec, groupId).finally(() =>
-      this.#busyLeave(groupId),
-    );
+    const run = this.#resumeStageInner(rec, groupId).finally(() => {
+      this.#busyLeave(groupId);
+      if (this.#resuming.get(groupId) === run) this.#resuming.delete(groupId);
+    });
+    // N4: a staging flow arriving meanwhile waits for this resume.
+    this.#resuming.set(groupId, run);
+    return run;
+  }
+
+  /** N1: the persisted full body of this stage, or null (never guessed). */
+  #fullStageBody(
+    groupId: string,
+    pending: { epoch: number; commit_b64: string },
+  ): TextSubmitCommitPayload | null {
+    const matches = (b: unknown): b is TextSubmitCommitPayload =>
+      isRecord(b) &&
+      b.device_id === this.#port.selfDeviceId &&
+      b.epoch === pending.epoch &&
+      b.commit === pending.commit_b64;
+    let stored: unknown = null;
+    try {
+      const raw = this.#port.store.get(this.#stageKey(groupId));
+      stored = JSON.parse(raw ?? "null");
+    } catch {
+      stored = null;
+    }
+    if (matches(stored)) return stored;
+    const hint = this.#stagedPayloads.get(groupId);
+    return matches(hint) ? hint : null;
+  }
+
+  #stageKey(groupId: string): string {
+    return `${PROTECTED_STAGE_KEY_PREFIX}${this.#port.selfUserId}:${groupId}`;
+  }
+
+  /** N1: persist the full submit body BEFORE it is POSTed. */
+  #persistStage(groupId: string, payload: TextSubmitCommitPayload): void {
+    this.#stagedPayloads.set(groupId, payload);
+    let ok = false;
+    try {
+      const raw = JSON.stringify(payload);
+      ok = this.#port.store.set(this.#stageKey(groupId), raw);
+    } catch {
+      ok = false;
+    }
+    if (!ok) {
+      this.#log("warn", "stage body not persisted", {
+        groupId,
+        epoch: payload.epoch,
+      });
+    }
+  }
+
+  /** The stage is resolved: drop its persisted body (only that one). */
+  #dropStage(groupId: string, payload: TextSubmitCommitPayload): void {
+    if (this.#stagedPayloads.get(groupId) === payload) {
+      this.#stagedPayloads.delete(groupId);
+    }
+    const key = this.#stageKey(groupId);
+    try {
+      const stored: unknown = JSON.parse(this.#port.store.get(key) ?? "null");
+      if (
+        stored === null ||
+        (isRecord(stored) &&
+          stored.epoch === payload.epoch &&
+          stored.commit === payload.commit)
+      ) {
+        this.#port.store.delete(key);
+      }
+    } catch {
+      this.#port.store.delete(key);
+    }
   }
 
   async #resumeStageInner(rec: ChannelRec, groupId: string): Promise<boolean> {
@@ -2698,18 +2809,18 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     // A commit flow started meanwhile: it owns the group's stage now.
     if ((this.#commitBusy.get(groupId) ?? 0) > 1) return true;
     const ids = { groupId, epoch: pending.epoch };
-    const hint = this.#stagedPayloads.get(groupId);
-    const payload: TextSubmitCommitPayload =
-      hint !== undefined &&
-      hint.epoch === pending.epoch &&
-      hint.commit === pending.commit_b64
-        ? hint
-        : {
-            device_id: this.#port.selfDeviceId,
-            epoch: pending.epoch,
-            commit: pending.commit_b64,
-          };
-    this.#log("info", "resuming a staged commit", ids);
+    const full = this.#fullStageBody(groupId, pending);
+    // Without the full body this payload is only the refetch context and
+    // the `_commit_won` byte compare; it is NEVER POSTed (N1).
+    const payload: TextSubmitCommitPayload = full ?? {
+      device_id: this.#port.selfDeviceId,
+      epoch: pending.epoch,
+      commit: pending.commit_b64,
+    };
+    this.#log("info", "resuming a staged commit", {
+      ...ids,
+      fullBody: full !== null,
+    });
     try {
       const ctx = this.#submitCtx(groupId, payload, false);
       const first: SubmitAction = {
@@ -2717,7 +2828,15 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         purpose: { kind: "unknown_outcome" },
         delayMs: 0,
       };
-      await this.#runSubmitLoop(rec, payload, ctx, first, false);
+      await this.#runSubmitLoop(
+        rec,
+        payload,
+        ctx,
+        first,
+        false,
+        null,
+        full !== null,
+      );
     } catch (err) {
       if (isDisposed(err)) throw err;
       this.#log("warn", "staged commit resume failed", {

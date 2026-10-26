@@ -92,6 +92,22 @@ export function SeatList(props: SeatListProps) {
   const removeConfirmLine = (name: string) =>
     t`Remove ${name}'s seat? They lose access to this channel on all their devices, and the released seat still counts toward the seat limit for 14 days.`;
 
+  /** W4d N3: NEW local msgid (catalog owed), same text as the picker's. */
+  const leftOffLine = (names: string) =>
+    t`Will be left off the seat list: ${names}`;
+
+  /** The confirm's disclosure for `target`: who else the list drops. */
+  const leftOff = (target: string): string | null => {
+    const ids = leftOffBesides(
+      props.seats,
+      props.ownerId,
+      props.removed,
+      target,
+    );
+    if (ids.length === 0) return null;
+    return leftOffLine(ids.map((id) => person(id).name).join(", "));
+  };
+
   /** C16: local msgid (a released seat, design 7.2 `cooldown_until`). */
   const coolingUntilLine = (until: string) =>
     t`Counts as a used seat until ${until}.`;
@@ -177,6 +193,9 @@ export function SeatList(props: SeatListProps) {
               >
                 <Confirm role="group" data-remove-confirm={row.userId}>
                   <span>{removeConfirmLine(who().name)}</span>
+                  <Show when={leftOff(row.userId)}>
+                    {(line) => <span data-left-off>{line()}</span>}
+                  </Show>
                   <Actions>
                     <Button
                       size="sm"
@@ -397,16 +416,19 @@ export function currentSeatIds(r: {
  * W4d L-SET (W2 C1): the users the server removed (kick, ban, leaving the
  * server, account deletion) whom the signed list still names. A forced
  * release frees the seat but never edits the owner-signed list, and a seat
- * PUT still naming such a user is refused `SeatListNamesRemovedUsers`. So:
- * named by the list's `seats:` line, not the owner (the signer is always
- * seated), and holding no active seat in `seats[]` (cooling or expired
- * alike); plus `reported`, the ids of such a refusal against this same
- * list, while the list still names them. In list order. Empty without a
- * readable list or `seats` array: an unreadable read never leaves anyone
- * off a list (the server's refusal still names them).
+ * PUT still naming such a user is refused `SeatListNamesRemovedUsers`.
+ * Only POSITIVE evidence counts (W4d N3): named by the list's `seats:`
+ * line, not the owner (the signer is always seated), and either released
+ * and cooling (in `cooling[]`, not in `seats[]`) or in `reported`, the ids
+ * of such a refusal against this same list. Mere ABSENCE from `seats[]`
+ * never counts: a server could omit a member from the owner's read alone
+ * and have the owner sign them away. Such a user stays editable; if the
+ * server really released them (an expired cooldown, say) the next save is
+ * refused naming them. In list order. Empty without a readable list or
+ * `seats` array: an unreadable read never leaves anyone off a list.
  */
 export function serverRemovedSeatIds(
-  r: { list?: { body?: unknown } | null; seats?: unknown },
+  r: { list?: { body?: unknown } | null; seats?: unknown; cooling?: unknown },
   ownerId: string,
   reported: readonly string[] = [],
 ): string[] {
@@ -416,10 +438,12 @@ export function serverRemovedSeatIds(
   for (const s of r.seats as SeatRowInput[]) {
     if (typeof s?.user_id === "string") active.add(s.user_id);
   }
+  const cooling = new Set(coolingRows(r.cooling).map((c) => c.userId));
   const out: string[] = [];
   for (const id of listed) {
     if (id === ownerId || out.includes(id)) continue;
-    if (!active.has(id) || reported.includes(id)) out.push(id);
+    const released = cooling.has(id) && !active.has(id);
+    if (released || reported.includes(id)) out.push(id);
   }
   return out;
 }
@@ -435,6 +459,22 @@ export function editableSeatIds(
   removed: readonly string[],
 ): string[] {
   return currentSeatIds(r).filter((id) => !removed.includes(id));
+}
+
+/**
+ * W4d N3 disclosure: who "Remove seat" for `target` leaves off the signed
+ * list besides `target` (exactly what the page submits: the editable seats
+ * without `target`), in list order. Empty when nothing else is dropped.
+ */
+export function leftOffBesides(
+  r: { list?: { body?: unknown } | null; seats?: unknown },
+  ownerId: string,
+  removed: readonly string[],
+  target: string,
+): string[] {
+  const next = seatsAfterRemoval(editableSeatIds(r, removed), ownerId, target);
+  if (next === null) return [];
+  return currentSeatIds(r).filter((id) => id !== target && !next.includes(id));
 }
 
 /** `ids` with the owner first and no duplicates (the signer is seated). */

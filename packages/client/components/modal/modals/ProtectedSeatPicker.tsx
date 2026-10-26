@@ -1,4 +1,11 @@
-import { For, Show, createMemo, createSignal, onMount } from "solid-js";
+import {
+  For,
+  Show,
+  createEffect,
+  createMemo,
+  createSignal,
+  onMount,
+} from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
 import type { ServerMember } from "stoat.js";
@@ -248,6 +255,30 @@ export function ProtectedSeatPickerModal(
     });
   }
 
+  // W4d N3: users left off are named before Confirm; fetch unknown ones.
+  const requested = new Set<string>();
+  createEffect(() => {
+    const c = client();
+    for (const id of dropped()) {
+      if (requested.has(id) || c.users.get(id)) continue;
+      requested.add(id);
+      c.users.fetch(id).catch(() => {
+        // the line falls back to the id; nothing else depends on it
+      });
+    }
+  });
+
+  /** W4d N3: NEW local msgid (catalog owed), same text as SeatList's. */
+  const leftOffLine = (names: string) =>
+    t`Will be left off the seat list: ${names}`;
+
+  /** The disclosure above Confirm, or null when nobody is left off. */
+  const leftOff = (): string | null => {
+    const ids = [...dropped()];
+    if (ids.length === 0) return null;
+    return leftOffLine(seatLeftOffNames(ids, displayNames(ids)));
+  };
+
   async function confirm() {
     const owner = ownerId();
     if (!canConfirm() || owner === null) return;
@@ -400,6 +431,15 @@ export function ProtectedSeatPickerModal(
         <Show when={error()}>
           <Notice role="alert">{error()}</Notice>
         </Show>
+
+        {/* W4d N3: right above Confirm, whenever anyone is left off. */}
+        <Show when={leftOff()}>
+          {(line) => (
+            <LeftOff role="status" data-left-off>
+              {line()}
+            </LeftOff>
+          )}
+        </Show>
       </Column>
     </Dialog>
   );
@@ -455,6 +495,23 @@ function seatListed(
   if (dropped.has(c.id)) return false;
   if (current.has(c.id)) return true;
   return !c.bot && c.canView;
+}
+
+/**
+ * W4d N3: the names of the users left off, in order (`names[i]` for
+ * `ids[i]`); an unresolved user shows as their id (the owner must see
+ * everyone the list drops).
+ */
+function seatLeftOffNames(
+  ids: readonly string[],
+  names: readonly (string | null | undefined)[],
+): string {
+  return ids
+    .map((id, i) => {
+      const n = names[i];
+      return typeof n === "string" && n.trim().length > 0 ? n : id;
+    })
+    .join(", ");
 }
 
 /** `ids` without any of `drop`, in order (W4d). */
@@ -602,6 +659,16 @@ const Notice = styled("div", {
     fontSize: "0.85rem",
     background: "var(--md-sys-color-error-container)",
     color: "var(--md-sys-color-on-error-container)",
+  },
+});
+
+const LeftOff = styled("div", {
+  base: {
+    padding: "10px 12px",
+    borderRadius: "8px",
+    fontSize: "0.85rem",
+    background: "var(--md-sys-color-tertiary-container)",
+    color: "var(--md-sys-color-on-tertiary-container)",
   },
 });
 
