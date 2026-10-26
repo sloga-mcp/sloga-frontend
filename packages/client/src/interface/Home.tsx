@@ -255,6 +255,15 @@ const content = cva({
     "@media (max-width: 640px)": {
       padding: "12px 12px 32px",
     },
+
+    // Modern: a faint glow of the accent at the top of the page, scrolling
+    // away with the content ("local") rather than sitting behind it
+    _modern: {
+      backgroundImage:
+        "radial-gradient(1100px 440px at 30% -100px, color-mix(in srgb, var(--md-sys-color-primary) 20%, transparent), transparent 70%)",
+      backgroundRepeat: "no-repeat",
+      backgroundAttachment: "local",
+    },
   },
 });
 

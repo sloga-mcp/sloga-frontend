@@ -42,6 +42,12 @@
  * them, queues an upload for an edit to one, merges a copy in another
  * format, never seeds an account, counts the Material You fields under the
  * Sloga preset when seeding, or leaves `untracked()`'s block behind.
+ *
+ * The "older client" specs fail on 1dcdd1b4 (the copy without `style` and
+ * the backgrounds is adopted as is), on a copy that fills the missing fields
+ * even with no revision or overwrites fields the copy does carry, and on a
+ * copy that uploads newer fields this device never knew (a just-updated
+ * device then wipes a peer's picks with its defaults).
  */
 import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
@@ -155,6 +161,11 @@ const THEME_DEFAULT = {
   preset: "stoat",
   presetMigrated: true,
   mode: "dark",
+  style: "modern",
+  slogaSurfaceDark: "",
+  slogaSurfaceLight: "",
+  // a default the device never set: none of the newer fields is known
+  knownFields: [] as string[],
   slogaAccent: "#5470ec",
   m3Accent: "#5470ec",
   m3Contrast: 0,
@@ -176,6 +187,9 @@ const DEVICE_LOCAL = [
   "messageAvatarSize",
 ];
 
+/** The newer theme fields (`themeFields.ts`), in its order */
+const NEWER = ["style", "slogaSurfaceDark", "slogaSurfaceLight"];
+
 const KEYS = {
   theme: {
     empty: THEME_DEFAULT,
@@ -189,6 +203,8 @@ const KEYS = {
       m3Variant: "vibrant",
       railAccent: "#54ecc1",
       interfaceFont: "Atkinson Hyperlegible",
+      // from a device that has every newer field, so it uploads them all
+      knownFields: ["style", "slogaSurfaceDark", "slogaSurfaceLight"],
     },
   },
   friends: {
@@ -466,6 +482,7 @@ describe('"theme" sync', () => {
     for (const field of DEVICE_LOCAL) {
       assert.ok(!(field in uploaded), `uploaded ${field}`);
     }
+    assert.ok(!("knownFields" in uploaded), "uploaded knownFields");
     assert.equal(uploaded.m3Accent, theme.remote.m3Accent);
     assert.equal(uploaded.presetMigrated, true);
     // the store itself keeps them
@@ -608,6 +625,155 @@ describe('"theme" sync', () => {
     });
   });
 
+  describe("a copy from an older client", () => {
+    /** As a client from before `style` and the backgrounds uploads it */
+    function older(data: Record<string, unknown>) {
+      const copy = syncedPart(data);
+      delete copy.style;
+      delete copy.slogaSurfaceDark;
+      delete copy.slogaSurfaceLight;
+      return copy;
+    }
+
+    const customized = {
+      ...structuredClone(theme.empty),
+      style: "classic",
+      slogaSurfaceDark: "#000000",
+      slogaSurfaceLight: "#f7f5f0",
+      knownFields: [...NEWER],
+    };
+
+    /**
+     * The store here merges writes, so a field missing from the adopted copy
+     * would survive in it whatever merge() did; the real clean() fills every
+     * missing field with its default. So read what clean() is handed.
+     */
+    function spyClean(w: ReturnType<typeof world>) {
+      const seen: { input: Record<string, unknown> } = { input: {} };
+      (w.state.theme as { clean: (input: unknown) => unknown }).clean = (
+        input,
+      ) => (seen.input = input as Record<string, unknown>);
+      return seen;
+    }
+
+    it("keeps this device's style and backgrounds, and takes the rest", () => {
+      const w = world("theme", customized, { theme: 5_000 });
+      const seen = spyClean(w);
+      w.sync.merge(9_000, "theme", JSON.stringify(older(theme.remote)));
+
+      const data = seen.input;
+      assert.equal(data.style, "classic");
+      assert.equal(data.slogaSurfaceDark, "#000000");
+      assert.equal(data.slogaSurfaceLight, "#f7f5f0");
+      assert.equal(data.mode, theme.remote.mode);
+      assert.equal(data.m3Accent, theme.remote.m3Accent);
+      assert.equal(w.revision(), 9_000);
+      assert.equal(w.sync.shouldSync, false);
+    });
+
+    it("a copy that carries them wins as usual", () => {
+      const w = world("theme", customized, { theme: 5_000 });
+      const seen = spyClean(w);
+      w.sync.merge(
+        9_000,
+        "theme",
+        JSON.stringify(syncedPart({ ...theme.remote, slogaSurfaceDark: "" })),
+      );
+
+      const data = seen.input;
+      assert.equal(data.style, "modern");
+      assert.equal(data.slogaSurfaceDark, "");
+    });
+
+    it("a device that never synced takes it as is", () => {
+      const w = world("theme", customized, olderDisk("theme"));
+      assert.equal(w.revision(), undefined, "precondition: never synced");
+
+      const seen = spyClean(w);
+      w.sync.merge(1_000, "theme", JSON.stringify(older(theme.remote)));
+      const cleaned = seen.input;
+
+      assert.equal(cleaned.mode, theme.remote.mode, "precondition: merged");
+      assert.ok(!("style" in cleaned), "kept a never-synced device's style");
+      assert.ok(!("slogaSurfaceDark" in cleaned));
+      assert.ok(!("slogaSurfaceLight" in cleaned));
+      assert.deepEqual(cleaned.knownFields, [], "knows fields it never had");
+    });
+
+    it("adopting a copy that carries a field makes it known here", () => {
+      const w = world("theme", theme.empty, { theme: 5_000 });
+      const seen = spyClean(w);
+      w.sync.merge(9_000, "theme", JSON.stringify(syncedPart(theme.remote)));
+      assert.deepEqual(seen.input.knownFields, NEWER);
+    });
+
+    it("a field this device only has the default for is not uploaded", async () => {
+      const w = world("theme", theme.empty, { theme: 5_000 });
+      set(w)("theme", "mode", "light");
+      const r = recorder();
+      await w.sync.save(r.client);
+
+      const uploaded = JSON.parse(r.sent[0].theme as string);
+      assert.equal(uploaded.mode, "light", "precondition: uploaded");
+      for (const field of NEWER) {
+        assert.ok(!(field in uploaded), `uploaded the default ${field}`);
+      }
+    });
+
+    it("a picked value is uploaded even when it equals the default", async () => {
+      const w = world(
+        "theme",
+        { ...structuredClone(theme.empty), knownFields: ["style"] },
+        { theme: 5_000 },
+      );
+      set(w)("theme", "mode", "light");
+      const r = recorder();
+      await w.sync.save(r.client);
+
+      const uploaded = JSON.parse(r.sent[0].theme as string);
+      assert.equal(uploaded.style, "modern");
+      assert.ok(!("slogaSurfaceDark" in uploaded));
+    });
+
+    it("a device that updated after adopting an older copy cannot wipe a peer's picks", async () => {
+      // the peer picked Classic on black, and synced it
+      const peer = world("theme", customized, { theme: 5_000 });
+
+      // this device adopted an older client's copy (none of the fields),
+      // then updated: clean() gave it the defaults, and none is known
+      const updated = world("theme", theme.empty, { theme: 6_000 });
+      set(updated)("theme", "mode", "light");
+      const r = recorder();
+      await updated.sync.save(r.client);
+      const [ts, data] = [r.sent[0].timestamp as number, r.sent[0].theme];
+
+      const seen = spyClean(peer);
+      peer.sync.merge(ts, "theme", data as string);
+
+      assert.equal(seen.input.mode, "light", "precondition: adopted");
+      assert.equal(seen.input.style, "classic");
+      assert.equal(seen.input.slogaSurfaceDark, "#000000");
+      assert.equal(seen.input.slogaSurfaceLight, "#f7f5f0");
+      assert.deepEqual(seen.input.knownFields, NEWER);
+    });
+
+    it("the backgrounds do not count towards seeding under Material You", () => {
+      const view = mod.seedView("theme", {
+        ...customized,
+        preset: "you",
+      }) as Record<string, unknown>;
+      assert.ok(!("slogaSurfaceDark" in view));
+      assert.ok(!("slogaSurfaceLight" in view));
+      assert.equal(view.style, "classic");
+
+      const sloga = mod.seedView("theme", customized) as Record<
+        string,
+        unknown
+      >;
+      assert.equal(sloga.slogaSurfaceDark, "#000000");
+    });
+  });
+
   describe("untracked()", () => {
     it("writes without a revision or an upload, and a later edit still goes out", () => {
       const w = world("theme", theme.empty, olderDisk("theme"));
@@ -640,10 +806,16 @@ describe('"theme" sync', () => {
   });
 });
 
-/** A theme copy as another device uploads it: no device-local fields */
+/**
+ * A theme copy as another device uploads it: no device-local fields, and only
+ * the newer fields that device knows (`themeFields.ts`)
+ */
 function syncedPart(data: Record<string, unknown>) {
   const copy = structuredClone(data);
+  const known = (copy.knownFields as string[] | undefined) ?? [];
+  for (const field of NEWER) if (!known.includes(field)) delete copy[field];
   for (const field of DEVICE_LOCAL) delete copy[field];
+  delete copy.knownFields;
   return copy;
 }
 

@@ -14,6 +14,7 @@ import { TypeNotificationOptions } from "./NotificationOptions";
 import { TypeOrdering } from "./Ordering";
 import { TypeReleaseNotes } from "./ReleaseNotes";
 import { TypeTheme } from "./Theme";
+import { NEWER_THEME_FIELDS } from "./themeFields.ts";
 
 type SynchronisedStores =
   | "ordering"
@@ -48,6 +49,8 @@ export const DEVICE_LOCAL_THEME_FIELDS = [
   "messageSize",
   "messageGroupSpacing",
   "messageAvatarSize",
+  // bookkeeping, not a setting: see `themeFields.ts`
+  "knownFields",
 ] as const satisfies readonly (keyof TypeTheme)[];
 
 /**
@@ -70,6 +73,14 @@ export function syncedData(key: string, data: unknown): unknown {
   if (key !== "theme") return data;
 
   const synced = { ...(data as Record<string, unknown>) };
+
+  // a newer field this device only has the default for is left out, so it
+  // cannot overwrite a value picked on another device (`themeFields.ts`)
+  const known = (synced.knownFields as readonly string[] | undefined) ?? [];
+  for (const field of NEWER_THEME_FIELDS) {
+    if (!known.includes(field)) delete synced[field];
+  }
+
   for (const field of DEVICE_LOCAL_THEME_FIELDS) delete synced[field];
   return synced;
 }
@@ -97,6 +108,11 @@ export function seedView(key: string, data: unknown): unknown {
     delete theme.m3Accent;
     delete theme.m3Contrast;
     delete theme.m3Variant;
+  } else {
+    // Material You builds its surfaces from the accent and shows no
+    // background picker
+    delete theme.slogaSurfaceDark;
+    delete theme.slogaSurfaceLight;
   }
   return theme;
 }
@@ -451,8 +467,26 @@ export class Sync extends AbstractStore<"sync", TypeSynchronisation> {
     // the uploaded theme has no device-local fields; this device keeps its own
     if (key === "theme") {
       const local = this.state.get(key);
+      const carried = NEWER_THEME_FIELDS.filter((field) => field in remote);
+
       for (const field of DEVICE_LOCAL_THEME_FIELDS) {
         remote[field] = local[field];
+      }
+
+      // A copy that lacks a newer field (an older client's, or one from a
+      // device that never had it) keeps this device's value and whether it
+      // knew it. With no revision the device's data is the default anyway
+      // (see `syncMergeDecision`), so the copy is taken as is.
+      if (this.ts(key)) {
+        for (const field of NEWER_THEME_FIELDS) {
+          if (!carried.includes(field)) remote[field] = local[field];
+        }
+        remote.knownFields = NEWER_THEME_FIELDS.filter(
+          (field) =>
+            carried.includes(field) || local.knownFields?.includes(field),
+        );
+      } else {
+        remote.knownFields = carried;
       }
     }
 

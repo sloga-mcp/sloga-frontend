@@ -15,6 +15,8 @@ import {
 
 import type { SelectedTheme, TypeTheme } from "@revolt/state/stores/Theme";
 
+import { SURFACE_ROLE_KEYS, surfaceRoles } from "./surfaceRamp.ts";
+
 /**
  * Default accent for both presets: Sloga blue.
  */
@@ -161,9 +163,7 @@ export function createMaterialColourVariables<P extends string>(
   );
 
   const colours =
-    theme.preset === "stoat"
-      ? { ...scheme, ...brandPins(theme.accent, theme.darkMode) }
-      : scheme;
+    theme.preset === "stoat" ? slogaColours(theme, scheme) : scheme;
 
   return Object.entries(colours).reduce(
     (d, [key, value]) => ({
@@ -172,6 +172,48 @@ export function createMaterialColourVariables<P extends string>(
     }),
     {} as addPrefixToObject<MaterialColours, P>,
   );
+}
+
+/**
+ * The Sloga preset: accent roles from the accent, everything the page is made
+ * of from the background
+ *
+ * Material builds its neutral palette from the accent's hue, so on its own a
+ * green accent tints the text and, in light mode, the whole page green. Here
+ * the surface and neutral roles come from the background instead: the one the
+ * user picked, or, with none picked, the brand blue's own scheme (with the
+ * navy ramp over it in dark mode). With the brand accent and no background the
+ * result is exactly the scheme it replaces.
+ * @param theme Selected theme
+ * @param scheme Scheme generated from the accent
+ * @returns Colours
+ */
+function slogaColours(
+  theme: SelectedTheme,
+  scheme: MaterialColours,
+): MaterialColours {
+  const accentRoles = { ...scheme, ...brandPins(theme.accent, theme.darkMode) };
+
+  if (theme.surface) {
+    return { ...accentRoles, ...surfaceRoles(theme.surface, theme.darkMode) };
+  }
+
+  const brand = generateMaterialYouScheme(
+    BRAND_ACCENT,
+    theme.darkMode,
+    0,
+    BRAND_VARIANT,
+  );
+  const neutrals = Object.fromEntries(
+    SURFACE_ROLE_KEYS.map((key) => [key, brand[key]]),
+  );
+
+  // brandPins goes last again: in dark mode it carries the navy ramp
+  return {
+    ...accentRoles,
+    ...neutrals,
+    ...brandPins(theme.accent, theme.darkMode),
+  };
 }
 
 /**
