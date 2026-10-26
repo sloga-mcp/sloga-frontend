@@ -6638,6 +6638,15 @@ msgstr "Rounded"
 msgid "Script"
 msgstr "Script"
 
+#. placeholder {0}: pitchLabel()
+#: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
+msgid "Pitch: {0}"
+msgstr "Pitch: {0}"
+
+#: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
+msgid "Pitch: normal"
+msgstr "Pitch: normal"
+
 #: components/app/interface/settings/user/profile/NameStyleEditor.tsx
 msgid "Pixel"
 msgstr "Pixel"
@@ -7376,6 +7385,10 @@ msgstr "Reset encryption"
 #: components/auth/src/flows/FlowConfirmReset.tsx
 msgid "Reset password"
 msgstr "Reset password"
+
+#: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
+msgid "Reset Pitch"
+msgstr "Reset Pitch"
 
 #: components/app/interface/settings/user/Account.tsx
 msgid "Reset Recovery Codes"
@@ -8285,6 +8298,10 @@ msgstr "Skip one of the two system confirmations for this person next time"
 #: src/interface/channels/text/Composition.tsx
 msgid "Slash commands are unavailable in encrypted conversations."
 msgstr "Slash commands are unavailable in encrypted conversations."
+
+#: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
+msgid "Slide left for a deeper voice, right for a higher one. Just for fun: it applies live during calls, stays on until you reset it, and does not hide who you are."
+msgstr "Slide left for a deeper voice, right for a higher one. Just for fun: it applies live during calls, stays on until you reset it, and does not hide who you are."
 
 #: components/app/interface/settings/user/appearance/LayoutArrangement.tsx
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
@@ -10261,6 +10278,10 @@ msgstr "Share your referral link"
 msgid "Your referrals"
 msgstr "Your referrals"
 
+#: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
+msgid "Put your voice back to normal."
+msgstr "Put your voice back to normal."
+
 #: components/app/interface/settings/user/Referrals.tsx
 msgid "Qualified"
 msgstr "Qualified"
@@ -10760,6 +10781,10 @@ msgstr "Voice Activity Detection"
 msgid "Voice and Video Calls"
 msgstr "Voice and Video Calls"
 
+#: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
+msgid "Voice Changer"
+msgstr "Voice Changer"
+
 #: src/interface/ServerEvents.tsx
 msgid "Voice channel"
 msgstr "Voice channel"
@@ -10771,6 +10796,10 @@ msgstr "Voice Channel"
 #: components/app/interface/settings/user/voice/VoiceChannelOptions.tsx
 msgid "Voice Channels"
 msgstr "Voice Channels"
+
+#: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
+msgid "Voice Pitch"
+msgstr "Voice Pitch"
 
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
 msgid "Voice Processing"
