@@ -20,6 +20,12 @@
 // CapacitorTransport's `command ===` arms, and rtc/remoteControl.ts (Tauri
 // `invoke`). 80 = 37 generic + 2 native + 6 dedicated + 35 out.
 //
+// Protected channels (W4) add 20 more names: the 19 e2ee_text_* commands and
+// e2ee_mls_group_kind (`TEXT_COMMANDS` in protectedTextTypes.ts), sent only by
+// e2ee.ts `#textInvoke` on the Tauri main window. iOS never builds the text
+// manager, so all 20 are `.out`. The same grep now yields 107 names; 100 =
+// 37 generic + 2 native + 6 dedicated + 55 out.
+//
 // e2ee_recovery_* (context/create/rotate/restore/finish) are NOT here: no FE
 // file sends them (only the desktop recovery window does). They are unknown
 // names, so `route(for:)` answers `.out` for them anyway.
@@ -109,7 +115,7 @@ enum E2eeCommands {
         ("e2ee_mark_verified", .dedicated("markVerified")),
         ("e2ee_accept_identity_change", .dedicated("acceptIdentityChange")),
 
-        // Out (35): desktop-only. `call` rejects invalid_argument{field:"name"}.
+        // Out (55): desktop-only. `call` rejects invalid_argument{field:"name"}.
         // Desktop binary attachment path (iOS moves ciphertext natively)
         ("e2ee_attachment_ciphertext", .out),
         ("e2ee_attachment_store", .out),
@@ -152,6 +158,28 @@ enum E2eeCommands {
         ("e2ee_rc_cancel", .out),
         ("e2ee_rc_accept", .out),
         ("e2ee_rc_start", .out),
+        // Protected text channels (W4): the Tauri main window's text plane
+        // only, through e2ee.ts `#textInvoke`. iOS never builds the manager.
+        ("e2ee_text_group_create", .out),
+        ("e2ee_text_join", .out),
+        ("e2ee_text_admit", .out),
+        ("e2ee_text_process", .out),
+        ("e2ee_text_commit_won", .out),
+        ("e2ee_text_commit_lost", .out),
+        ("e2ee_text_pending_commit", .out),
+        ("e2ee_text_encrypt", .out),
+        ("e2ee_text_decrypt", .out),
+        ("e2ee_text_seat_list_sign", .out),
+        ("e2ee_text_seat_list_verify", .out),
+        ("e2ee_text_owner_pin_state", .out),
+        ("e2ee_text_owner_confirm_change", .out),
+        ("e2ee_text_owner_handover_sign", .out),
+        ("e2ee_text_remove", .out),
+        ("e2ee_text_update", .out),
+        ("e2ee_text_state", .out),
+        ("e2ee_text_mark_left", .out),
+        ("e2ee_text_pin_own_devices", .out),
+        ("e2ee_mls_group_kind", .out),
     ]
 
     /// The dedicated plugin methods (D5), in this order, `call` excluded.
@@ -175,7 +203,7 @@ enum E2eeCommands {
     static let nativeCount = 2
     static let dedicatedCount = 6
     /// Desktop-only FE names in the table; tests pin it with the others.
-    static let outCount = 35
+    static let outCount = 55
 
     // Built once. A duplicate name keeps its FIRST entry rather than
     // trapping: a crash here would be reachable from any webview message,

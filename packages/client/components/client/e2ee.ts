@@ -5943,6 +5943,13 @@ export class E2EEBridge implements E2EEAdapter {
     // call join finds it populated. Best-effort and NOT awaited — enable()
     // has already succeeded, and the call-join path self-heals via
     // `#ensureKeyPackages` (no-MFA publish, plan §3.1).
+    // Protected channels: `enable()` just made this device capable, so the
+    // text manager can start now (it fetches the flag and replenishes its own
+    // KeyPackages, D12) and open the channels the UI already holds open. It
+    // runs here, not inside the prepublish, so the call-plane platform gate
+    // stays that function's first statement (iOS gate G7) and a shell that
+    // cannot carry encrypted calls still starts its protected text plane.
+    this.#protectedEnsureManager();
     void this.#prepublishMlsKeyPackages();
   }
 
@@ -5955,24 +5962,22 @@ export class E2EEBridge implements E2EEAdapter {
    * `#ensureKeyPackages` path remains the authoritative self-heal.
    */
   async #prepublishMlsKeyPackages(): Promise<void> {
-    // Protected channels: `enable()` just made this device capable, so the
-    // text manager can start now (it fetches the flag and replenishes its own
-    // KeyPackages, D12) and open the channels the UI already holds open. It
-    // runs before the call-plane platform gate so a shell that cannot carry
-    // encrypted calls still starts its protected text plane.
-    this.#protectedEnsureManager();
-    // Platform gate (plan D7, KeyPackage prepublish leak): a shell that
+    // Platform gate FIRST (plan D7, KeyPackage prepublish leak): a shell that
     // cannot carry encrypted calls has no reason to stock the directory. The
     // `#callsEnabled` check below is not enough on its own: rtc/state.tsx
     // wires `setCallsEnabled` at every call connect regardless of platform,
     // and that accessor hard-returns true (Voice.ts), so without this gate
     // iOS or an unaudited shell would publish KeyPackages after one call.
     if (!this.mediaE2EEPlatformSupported()) return;
-    // Gate on "Encrypt my calls" (§0.2 #9): with calls E2EE off there is no
-    // reason to stock the MLS KeyPackage directory. Fail-closed until wired.
     // D12 gate: also stock KeyPackages when the protected-channels feature is
-    // advertised and this device is capable.
-    if (!this.#callsEnabled() && !this.#protectedKeyPackagesWanted()) return;
+    // advertised and this device is capable. Otherwise gate on "Encrypt my
+    // calls" (§0.2 #9): with calls E2EE off there is no reason to stock the
+    // MLS KeyPackage directory. Fail-closed until wired. Same condition as
+    // `!callsEnabled && !protectedWanted`, nested so the calls gate keeps the
+    // exact statement iOS gate G7 pins.
+    if (!this.#protectedKeyPackagesWanted()) {
+      if (!this.#callsEnabled()) return;
+    }
     try {
       const userId = this.#client.user?.id;
       if (!userId) return;
@@ -6257,7 +6262,10 @@ export class E2EEBridge implements E2EEAdapter {
 
     // Re-seed the MLS KeyPackage directory too (publish-UX plan §3.2): the
     // revocation cascade deleted this device's packages, and the re-enroll
-    // PUT above re-bound the session, so the no-MFA publish rides now.
+    // PUT above re-bound the session, so the no-MFA publish rides now. The
+    // protected text manager starts first, ahead of the prepublish's
+    // call-plane platform gate (see `enable()`).
+    this.#protectedEnsureManager();
     void this.#prepublishMlsKeyPackages();
   }
 
@@ -7925,6 +7933,12 @@ export class E2EEBridge implements E2EEAdapter {
    * `textInvoke` (D3): the ONLY way a text command reaches native. Allow-
    * listed to `TEXT_COMMANDS` and refused unless `protectedTextCapable()`,
    * so Electron, Android, iOS and web never call one.
+   *
+   * One literal arm per command: the iOS gate (G6-fe-dynamic in
+   * scripts/check-ios-e2ee-commands.mjs) needs every `#invoke` to name its
+   * command, and each name is a `.out` entry in E2eeCommands.swift. The
+   * `never` default makes a new `TEXT_COMMANDS` entry fail tsc until it has
+   * an arm here.
    */
   #textInvoke<C extends TextCommand>(
     cmd: C,
@@ -7936,10 +7950,56 @@ export class E2EEBridge implements E2EEAdapter {
     if (!this.protectedTextCapable()) {
       return Promise.reject({ source: "client", reason: "not_capable" });
     }
-    return this.#invoke<TextCommandResult[C]>(
-      cmd,
-      args as unknown as Record<string, unknown>,
-    );
+    type Out = TextCommandResult[C];
+    const a = args as unknown as Record<string, unknown>;
+    const command: TextCommand = cmd;
+    switch (command) {
+      case "e2ee_text_group_create":
+        return this.#invoke<Out>("e2ee_text_group_create", a);
+      case "e2ee_text_join":
+        return this.#invoke<Out>("e2ee_text_join", a);
+      case "e2ee_text_admit":
+        return this.#invoke<Out>("e2ee_text_admit", a);
+      case "e2ee_text_process":
+        return this.#invoke<Out>("e2ee_text_process", a);
+      case "e2ee_text_commit_won":
+        return this.#invoke<Out>("e2ee_text_commit_won", a);
+      case "e2ee_text_commit_lost":
+        return this.#invoke<Out>("e2ee_text_commit_lost", a);
+      case "e2ee_text_pending_commit":
+        return this.#invoke<Out>("e2ee_text_pending_commit", a);
+      case "e2ee_text_encrypt":
+        return this.#invoke<Out>("e2ee_text_encrypt", a);
+      case "e2ee_text_decrypt":
+        return this.#invoke<Out>("e2ee_text_decrypt", a);
+      case "e2ee_text_seat_list_sign":
+        return this.#invoke<Out>("e2ee_text_seat_list_sign", a);
+      case "e2ee_text_seat_list_verify":
+        return this.#invoke<Out>("e2ee_text_seat_list_verify", a);
+      case "e2ee_text_owner_pin_state":
+        return this.#invoke<Out>("e2ee_text_owner_pin_state", a);
+      case "e2ee_text_owner_confirm_change":
+        return this.#invoke<Out>("e2ee_text_owner_confirm_change", a);
+      case "e2ee_text_owner_handover_sign":
+        return this.#invoke<Out>("e2ee_text_owner_handover_sign", a);
+      case "e2ee_text_remove":
+        return this.#invoke<Out>("e2ee_text_remove", a);
+      case "e2ee_text_update":
+        return this.#invoke<Out>("e2ee_text_update", a);
+      case "e2ee_text_state":
+        return this.#invoke<Out>("e2ee_text_state", a);
+      case "e2ee_text_mark_left":
+        return this.#invoke<Out>("e2ee_text_mark_left", a);
+      case "e2ee_text_pin_own_devices":
+        return this.#invoke<Out>("e2ee_text_pin_own_devices", a);
+      case "e2ee_mls_group_kind":
+        return this.#invoke<Out>("e2ee_mls_group_kind", a);
+      default: {
+        // Unreachable: the allow-list above already refused anything else.
+        const _exhaustive: never = command;
+        return Promise.reject({ source: "client", reason: "not_allowed" });
+      }
+    }
   }
 
   /**

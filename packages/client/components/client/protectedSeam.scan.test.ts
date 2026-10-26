@@ -41,6 +41,7 @@ import {
   ProtectedSendError,
   toProtectedSendError,
 } from "./protectedSendError.ts";
+import { TEXT_COMMANDS } from "./protectedTextTypes.ts";
 
 const FILE =
   process.env.PROTECTED_SEAM_TS || new URL("./e2ee.ts", import.meta.url);
@@ -303,10 +304,36 @@ test("S5: textInvoke is allow-listed and refuses unless protectedTextCapable()",
     port,
     /invoke: <C extends TextCommand>\([^)]*\) =>\s*this\.#textInvoke\(cmd, args\)/,
   );
+  // W4d L-IOSGATE: the names are literals now (iOS gate G6-fe-dynamic), but
+  // only inside textInvoke: each one is a case label plus its own #invoke.
+  const textLit = /"e2ee_text_\w+"|"e2ee_mls_group_kind"/g;
+  const raw = member(SRC, /\n {2}#textInvoke</);
+  assert.ok(SRC.includes(raw), "textInvoke lifted verbatim");
   assert.equal(
-    [...SRC.matchAll(/"e2ee_text_\w+"|"e2ee_mls_group_kind"/g)].length,
+    [...SRC.replace(raw, "").matchAll(textLit)].length,
     0,
-    "no text command named outside the typed manager",
+    "no text command named outside textInvoke",
+  );
+  assert.equal(
+    [...body.matchAll(textLit)].length,
+    2 * TEXT_COMMANDS.length,
+    "one case label and one #invoke per text command, nothing else",
+  );
+  for (const name of TEXT_COMMANDS) {
+    assert.equal(
+      count(
+        body,
+        `case "${name}":\n        return this.#invoke<Out>("${name}", a);`,
+      ),
+      1,
+      `${name} has exactly one arm, invoking its own name`,
+    );
+  }
+  assert.equal(count(body, "this.#invoke"), TEXT_COMMANDS.length);
+  assert.match(
+    body,
+    /default: \{\s*const _exhaustive: never = command;\s*return Promise\.reject\(\{ source: "client", reason: "not_allowed" \}\);\s*\}/,
+    "the default is a never check that refuses",
   );
 });
 
@@ -435,10 +462,39 @@ test("S8: onChannelProtected is deduped per manager; seeding is allSettled", () 
   );
 });
 
-test("S8: D12 gate, no Idempotency-Key, no draft-guard resolver", () => {
-  assert.match(
+test("S8 (W4d F#9, iOS G7): the text manager starts at each prepublish caller, not inside it", () => {
+  // F#9: a shell whose call-plane media predicate is false still starts its
+  // protected text plane, so the start cannot sit behind the prepublish's
+  // platform gate; G7 needs that gate to stay the prepublish's first
+  // statement, so the start lives at the callers.
+  const pre = stripComments(
     member(SRC, /\n {2}async #prepublishMlsKeyPackages\(\)/),
-    /if \(!this\.#callsEnabled\(\) && !this\.#protectedKeyPackagesWanted\(\)\) return;/,
+  );
+  assert.match(
+    pre,
+    /^\{\s*if \(!this\.mediaE2EEPlatformSupported\(\)\) return;/,
+    "the platform gate is the prepublish's first statement",
+  );
+  assert.equal(count(pre, "#protectedEnsureManager"), 0, "no start inside");
+  const calls = count(SRC, "this.#prepublishMlsKeyPackages()");
+  assert.equal(calls, 2, "two prepublish callers (enable, re-enroll)");
+  assert.equal(
+    [
+      ...SRC.matchAll(
+        /\n {4}this\.#protectedEnsureManager\(\);\n {4}void this\.#prepublishMlsKeyPackages\(\);\n/g,
+      ),
+    ].length,
+    calls,
+    "each caller starts the manager on the line before the prepublish",
+  );
+});
+
+test("S8: D12 gate, no Idempotency-Key, no draft-guard resolver", () => {
+  // `!callsEnabled && !protectedWanted`, nested so the calls gate keeps the
+  // statement iOS gate G7 pins (W4d L-IOSGATE).
+  assert.match(
+    stripComments(member(SRC, /\n {2}async #prepublishMlsKeyPackages\(\)/)),
+    /if \(!this\.#protectedKeyPackagesWanted\(\)\) \{\s*if \(!this\.#callsEnabled\(\)\) return;\s*\}\s*try \{/,
   );
   const block = seamCode();
   assert.equal(count(block, "Idempotency-Key"), 0);
