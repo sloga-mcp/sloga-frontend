@@ -2,6 +2,7 @@ import { For, Show, createSignal } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
+import { css } from "styled-system/css";
 import { styled } from "styled-system/jsx";
 
 import { resolvePostDefault } from "@revolt/common";
@@ -164,8 +165,9 @@ export default function ForumSettings(props: ChannelSettingsProps) {
                   }
                 >
                   {(picker) => (
-                    <EmojiButton
+                    <button
                       type="button"
+                      class={emojiButton}
                       ref={picker.ref}
                       onClick={(e) => picker.onClickEmoji(e)}
                       aria-label={
@@ -186,7 +188,7 @@ export default function ForumSettings(props: ChannelSettingsProps) {
                       >
                         <TextWithEmoji content={tag.emoji} />
                       </Show>
-                    </EmojiButton>
+                    </button>
                   )}
                 </CompositionMediaPicker>
                 <Show when={tag.emoji}>
@@ -386,26 +388,26 @@ const EmojiSlot = styled("div", {
   },
 });
 
-const EmojiButton = styled("button", {
-  base: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    width: "40px",
-    height: "100%",
-    cursor: "pointer",
-    color: "var(--md-sys-color-on-surface-variant)",
-    fill: "currentColor",
-    "--emoji-size": "22px",
+// A class on a plain <button>: `use:floating` (its tooltip) only attaches to
+// native elements, not styled() components
+const emojiButton = css({
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  width: "40px",
+  height: "100%",
+  cursor: "pointer",
+  color: "var(--md-sys-color-on-surface-variant)",
+  fill: "currentColor",
+  "--emoji-size": "22px",
 
-    "& img": {
-      margin: 0,
-      verticalAlign: "middle",
-    },
+  "& img": {
+    margin: 0,
+    verticalAlign: "middle",
+  },
 
-    _hover: {
-      background: "var(--md-sys-color-surface-container-high)",
-    },
+  _hover: {
+    background: "var(--md-sys-color-surface-container-high)",
   },
 });
 
