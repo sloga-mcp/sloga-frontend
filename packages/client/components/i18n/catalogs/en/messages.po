@@ -10189,16 +10189,16 @@ msgid "Create a server"
 msgstr "Create a server"
 
 #: src/interface/home/WhatsNewCard.tsx
-msgid "Sort your friends into categories"
-msgstr "Sort your friends into categories"
+msgid "A new Modern style, with a Classic option"
+msgstr "A new Modern style, with a Classic option"
 
 #: src/interface/home/WhatsNewCard.tsx
-msgid "A new title bar for chat windows"
-msgstr "A new title bar for chat windows"
+msgid "A Discord color scheme and new backgrounds"
+msgstr "A Discord color scheme and new backgrounds"
 
 #: src/interface/home/WhatsNewCard.tsx
-msgid "Push to talk fixes and a hang-up button"
-msgstr "Push to talk fixes and a hang-up button"
+msgid "Change your voice's pitch in calls"
+msgstr "Change your voice's pitch in calls"
 
 #: src/interface/home/WhatsNewCard.tsx
 msgid "New in v{HIGHLIGHTS_RELEASE}"

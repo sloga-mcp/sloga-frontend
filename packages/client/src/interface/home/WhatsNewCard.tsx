@@ -8,10 +8,10 @@ import { fetchAllChangelogs } from "@revolt/modal/modals/Changelog";
 import { iconSize } from "@revolt/ui";
 
 import MdArrowForward from "@material-design-icons/svg/filled/arrow_forward.svg?component-solid";
-import MdCallEnd from "@material-design-icons/svg/filled/call_end.svg?component-solid";
 import MdClose from "@material-design-icons/svg/filled/close.svg?component-solid";
-import MdFolder from "@material-design-icons/svg/filled/folder.svg?component-solid";
-import MdWebAsset from "@material-design-icons/svg/filled/web_asset.svg?component-solid";
+import MdAutoAwesome from "@material-design-icons/svg/filled/auto_awesome.svg?component-solid";
+import MdGraphicEq from "@material-design-icons/svg/filled/graphic_eq.svg?component-solid";
+import MdPalette from "@material-design-icons/svg/filled/palette.svg?component-solid";
 
 import pkg from "../../../../../package.json";
 
@@ -21,23 +21,23 @@ import { showWhatsNew, WHATS_NEW_KEY } from "./homeHub";
  * The release these highlights were written for. Update it together with
  * HIGHLIGHTS each release; until both are updated the card stays hidden.
  */
-const HIGHLIGHTS_RELEASE = "0.69";
+const HIGHLIGHTS_RELEASE = "0.70";
 
 const ACCENT = "#3BB8ED";
 
 /** Two or three headline changes, short enough for one line each */
 const HIGHLIGHTS: { icon: () => JSX.Element; text: () => JSX.Element }[] = [
   {
-    icon: () => <MdFolder {...iconSize(18)} />,
-    text: () => <Trans>Sort your friends into categories</Trans>,
+    icon: () => <MdAutoAwesome {...iconSize(18)} />,
+    text: () => <Trans>A new Modern style, with a Classic option</Trans>,
   },
   {
-    icon: () => <MdWebAsset {...iconSize(18)} />,
-    text: () => <Trans>A new title bar for chat windows</Trans>,
+    icon: () => <MdPalette {...iconSize(18)} />,
+    text: () => <Trans>A Discord color scheme and new backgrounds</Trans>,
   },
   {
-    icon: () => <MdCallEnd {...iconSize(18)} />,
-    text: () => <Trans>Push to talk fixes and a hang-up button</Trans>,
+    icon: () => <MdGraphicEq {...iconSize(18)} />,
+    text: () => <Trans>Change your voice's pitch in calls</Trans>,
   },
 ];
 
