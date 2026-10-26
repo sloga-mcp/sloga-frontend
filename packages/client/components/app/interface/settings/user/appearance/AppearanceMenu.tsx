@@ -34,8 +34,13 @@ import {
   MONOSPACE_FONT_KEYS,
   MonospaceFonts,
 } from "@revolt/ui/themes/fonts";
-import { BRAND_ACCENT, accentHasEffect } from "@revolt/ui/themes/materialTheme";
+import {
+  BRAND_ACCENT,
+  accentHasEffect,
+  createMaterialColourVariables,
+} from "@revolt/ui/themes/materialTheme";
 import { RAIL_ACCENT_PRESETS } from "@revolt/ui/themes/railAccent";
+import { SURFACE_PRESETS } from "@revolt/ui/themes/surfaceRamp";
 
 import MDPalette from "@material-design-icons/svg/outlined/palette.svg?component-solid";
 
@@ -52,6 +57,41 @@ export function AppearanceMenu() {
   const { t } = useLingui();
   const [pickerRef, setPickerRef] = createSignal<HTMLInputElement>();
   const [railPickerRef, setRailPickerRef] = createSignal<HTMLInputElement>();
+  const [surfacePickerRef, setSurfacePickerRef] =
+    createSignal<HTMLInputElement>();
+
+  const darkMode = () => state.theme.activeTheme.darkMode;
+
+  /**
+   * The page colour the Sloga preset uses with no background picked, for
+   * the mode showing: what the "Default" swatch and the picker start from
+   */
+  const defaultSurface = () =>
+    createMaterialColourVariables(
+      { ...state.theme.activeTheme, surface: "" },
+      "",
+    ).surface;
+
+  // Keyed by the stored values in SURFACE_PRESETS
+  const SURFACE_NAMES: Record<string, () => string> = {
+    "": () => t`Default`,
+    "#000000": () => t`Black`,
+    "#121212": () => t`Graphite`,
+    "#12161c": () => t`Slate`,
+    "#140a18": () => t`Plum`,
+    "#08130e": () => t`Forest`,
+    "#ffffff": () => t`White`,
+    "#f7f5f0": () => t`Paper`,
+    "#eef2f6": () => t`Mist`,
+    "#fbf1f3": () => t`Rose`,
+  };
+
+  const surfaceChoices = () =>
+    SURFACE_PRESETS[darkMode() ? "dark" : "light"].map((value) => ({
+      value,
+      colour: value || defaultSurface(),
+      name: SURFACE_NAMES[value]?.() ?? value,
+    }));
 
   // Swatches compare case-insensitively: the native picker reports lowercase
   // hex, the presets are written uppercase, and a user who picked a preset
@@ -137,6 +177,32 @@ export function AppearanceMenu() {
             <Trans>System</Trans>
           </Button>
         </Row>
+
+        <Text class="label">
+          <Trans>Style</Trans>
+        </Text>
+        <Row justify="stretch">
+          <Button
+            group="connected-start"
+            groupActive={state.theme.style === "classic"}
+            onPress={() => state.theme.setStyle("classic")}
+          >
+            <Trans>Classic</Trans>
+          </Button>
+          <Button
+            group="connected-end"
+            groupActive={state.theme.style === "modern"}
+            onPress={() => state.theme.setStyle("modern")}
+          >
+            <Trans>Modern</Trans>
+          </Button>
+        </Row>
+        <Text class="label" size="small">
+          <Trans>
+            Modern adds depth: raised buttons, and cards and dialogs that float
+            off the page. Classic is the flat look.
+          </Trans>
+        </Text>
 
         <Row justify="stretch">
           <Button
@@ -228,6 +294,71 @@ export function AppearanceMenu() {
               style below to use one.
             </Trans>
           </Text>
+        </Show>
+
+        {/* Sloga only: Material You builds its surfaces from the accent. One
+            colour per mode, so the row edits the mode that is showing. */}
+        <Show when={state.theme.preset === "stoat"}>
+          <Text class="label">
+            <Trans>Background</Trans>
+          </Text>
+          <Text class="label" size="small">
+            <Show
+              when={darkMode()}
+              fallback={
+                <Trans>
+                  Used in light mode. Your accent color never tints it.
+                </Trans>
+              }
+            >
+              <Trans>
+                Used in dark mode. Your accent color never tints it.
+              </Trans>
+            </Show>
+          </Text>
+          <Row align justify wrap>
+            <IconButton
+              variant="filled"
+              shape="square"
+              size="md"
+              onPress={() => surfacePickerRef()?.click()}
+            >
+              <MDPalette />
+            </IconButton>
+            <input
+              ref={setSurfacePickerRef}
+              type="color"
+              aria-label={t`Custom background color`}
+              value={state.theme.surface || defaultSurface()}
+              onInput={(e) =>
+                state.theme.setSurface(
+                  (e.currentTarget as HTMLInputElement).value,
+                )
+              }
+              style={{
+                position: "absolute",
+                opacity: 0,
+                width: "0px",
+                height: "0px",
+                padding: 0,
+                border: "none",
+              }}
+            />
+            <For each={surfaceChoices()}>
+              {(choice) => (
+                <Swatch
+                  type="button"
+                  title={choice.name}
+                  aria-label={choice.name}
+                  aria-pressed={
+                    state.theme.surface.toLowerCase() === choice.value
+                  }
+                  style={{ "background-color": choice.colour }}
+                  onClick={() => state.theme.setSurface(choice.value)}
+                />
+              )}
+            </For>
+          </Row>
         </Show>
 
         <Show when={state.theme.preset === "you"}>
@@ -815,6 +946,34 @@ function EmojiPack(props: { pack: UnicodeEmojiPacks }) {
     </MenuItem>
   );
 }
+
+/**
+ * A background colour to pick. Its own button rather than a coloured
+ * `Button`: the near-black swatches vanish against the settings page without
+ * the ring, and the selected one needs a mark that is not just its shape.
+ */
+const Swatch = styled("button", {
+  base: {
+    width: "40px",
+    height: "40px",
+    flexShrink: 0,
+    padding: 0,
+    border: 0,
+    borderRadius: "var(--borderRadius-full)",
+    cursor: "pointer",
+    boxShadow:
+      "inset 0 0 0 1px color-mix(in srgb, var(--md-sys-color-on-surface) 30%, transparent)",
+
+    "&[aria-pressed=true]": {
+      outline: "3px solid var(--md-sys-color-primary)",
+      outlineOffset: "2px",
+    },
+    "&:focus-visible": {
+      outline: "2px solid var(--md-sys-color-on-surface)",
+      outlineOffset: "2px",
+    },
+  },
+});
 
 const Preview = styled("div", {
   base: {

@@ -20,6 +20,12 @@ export function LoadTheme() {
   createEffect(() => {
     const activeTheme = state.theme.activeTheme;
 
+    // Classic or Modern. An attribute rather than variables: the Modern
+    // overrides are `_modern` blocks in each component's own styles, which
+    // match `[data-style=modern] &`. On <html>, which chat windows copy their
+    // attributes from, so they follow it too.
+    document.documentElement.dataset.style = activeTheme.style;
+
     // load fonts
     FONTS[state.theme.interfaceFont].load();
     MONOSPACE_FONTS[state.theme.monospaceFont].load();

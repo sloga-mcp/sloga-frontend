@@ -134,6 +134,14 @@ const Base = styled("div", {
 
     fill: "var(--md-sys-color-on-secondary-container)",
     background: "var(--md-sys-color-secondary-container)",
+
+    // Modern: floats above the message with a fine ring and a soft shadow
+    _modern: {
+      borderRadius: "10px",
+      background: "var(--md-sys-color-surface-container-high)",
+      boxShadow:
+        "inset 0 0 0 1px color-mix(in srgb, var(--md-sys-color-on-surface) 10%, transparent), 0 10px 24px -8px rgb(0 0 0 / 0.55)",
+    },
   },
 });
 

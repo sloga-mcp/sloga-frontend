@@ -23,6 +23,11 @@ const Panel = styled("section", {
     padding: "16px",
     borderRadius: "16px",
     background: "var(--md-sys-color-surface-container-high)",
+    // Modern: same ring and shadow as the other Home cards (cardParts Panel)
+    _modern: {
+      boxShadow:
+        "inset 0 0 0 1px color-mix(in srgb, var(--md-sys-color-on-surface) 8%, transparent), 0 10px 26px -14px rgb(0 0 0 / 0.55)",
+    },
     color: "var(--md-sys-color-on-surface)",
 
     "@media (max-width: 1180px)": {

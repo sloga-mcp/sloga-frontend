@@ -1442,6 +1442,18 @@ msgstr "Back to login"
 msgid "Background"
 msgstr "Background"
 
+#: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
+msgid "Used in light mode. Your accent color never tints it."
+msgstr "Used in light mode. Your accent color never tints it."
+
+#: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
+msgid "Used in dark mode. Your accent color never tints it."
+msgstr "Used in dark mode. Your accent color never tints it."
+
+#: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
+msgid "Custom background color"
+msgstr "Custom background color"
+
 #: components/app/interface/settings/user/voice/CameraOptions.tsx
 msgid "Background effect"
 msgstr "Background effect"
@@ -2853,6 +2865,42 @@ msgstr "Deep"
 #: components/app/menus/shared/NotificationContextMenu.tsx
 msgid "Default"
 msgstr "Default"
+
+#: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
+msgid "Black"
+msgstr "Black"
+
+#: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
+msgid "Graphite"
+msgstr "Graphite"
+
+#: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
+msgid "Slate"
+msgstr "Slate"
+
+#: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
+msgid "Plum"
+msgstr "Plum"
+
+#: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
+msgid "Forest"
+msgstr "Forest"
+
+#: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
+msgid "White"
+msgstr "White"
+
+#: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
+msgid "Paper"
+msgstr "Paper"
+
+#: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
+msgid "Mist"
+msgstr "Mist"
+
+#: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
+msgid "Rose"
+msgstr "Rose"
 
 #: components/app/interface/settings/user/profile/NameStyleEditor.tsx
 msgid "This color can't be used for a name."
@@ -8752,6 +8800,10 @@ msgid "Style"
 msgstr "Style"
 
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
+msgid "Modern adds depth: raised buttons, and cards and dialogs that float off the page. Classic is the flat look."
+msgstr "Modern adds depth: raised buttons, and cards and dialogs that float off the page. Classic is the flat look."
+
+#: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Styles and contrast reshape your color: Neutral mutes it, Fruit Salad shifts its hue, and High Contrast strengthens it."
 msgstr "Styles and contrast reshape your color: Neutral mutes it, Fruit Salad shifts its hue, and High Contrast strengthens it."
 
@@ -11566,3 +11618,4 @@ msgstr "Animated Cipher badge preview"
 #: components/auth/src/CipherPromo.tsx
 msgid "Every Cipher gets a numbered badge, and the top tier's badge decrypts like this."
 msgstr "Every Cipher gets a numbered badge, and the top tier's badge decrypts like this."
+
