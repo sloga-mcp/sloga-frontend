@@ -8,8 +8,8 @@ import { fetchAllChangelogs } from "@revolt/modal/modals/Changelog";
 import { iconSize } from "@revolt/ui";
 
 import MdArrowForward from "@material-design-icons/svg/filled/arrow_forward.svg?component-solid";
-import MdClose from "@material-design-icons/svg/filled/close.svg?component-solid";
 import MdAutoAwesome from "@material-design-icons/svg/filled/auto_awesome.svg?component-solid";
+import MdClose from "@material-design-icons/svg/filled/close.svg?component-solid";
 import MdGraphicEq from "@material-design-icons/svg/filled/graphic_eq.svg?component-solid";
 import MdPalette from "@material-design-icons/svg/filled/palette.svg?component-solid";
 
