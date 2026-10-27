@@ -13,6 +13,7 @@ overrides:
 patchedDependencies:
   '@capacitor/android@8.4.3': 038207ccea7f18c908e5ca94dd818a98c3a219de150d8b46f2f6c8812f86ac57
   '@motionone/dom@10.18.0': 0fed901df0f62d913ff36f960859f7fe0517c842f6788eba0707e4b8129892c7
+  '@panzoom/panzoom@4.6.0': 6f9183090ee596e3ff5e8195e5a3893e782714393eb55c2dfef591f535415952
   '@solid-aria/interactions@0.1.4': af51cab83f24c461c7dcf7a2e670c14c5a043044064edb8d269a0256d41946e1
   livekit-client@2.15.13: f2afef1e493c4877d7e3ccc7e6d82b2a896366894bc02fc4341ce0e3c1bb3a9e
 
@@ -199,7 +200,7 @@ importers:
         version: 0.2.1(solid-js@1.9.15)
       '@panzoom/panzoom':
         specifier: ^4.6.0
-        version: 4.6.0
+        version: 4.6.0(patch_hash=6f9183090ee596e3ff5e8195e5a3893e782714393eb55c2dfef591f535415952)
       '@sentry/browser':
         specifier: ^8.55.0
         version: 8.55.0
@@ -10951,7 +10952,7 @@ snapshots:
 
   '@pandacss/types@0.46.1': {}
 
-  '@panzoom/panzoom@4.6.0': {}
+  '@panzoom/panzoom@4.6.0(patch_hash=6f9183090ee596e3ff5e8195e5a3893e782714393eb55c2dfef591f535415952)': {}
 
   '@pkgjs/parseargs@0.11.0':
     optional: true

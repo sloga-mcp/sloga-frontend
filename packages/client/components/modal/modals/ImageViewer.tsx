@@ -86,10 +86,20 @@ export function ImageViewerModal(
             }
           });
 
-          const zoom = Panzoom(ref, {
-            minScale: 0.1,
-            maxScale: 5,
-          });
+          // A throw here would abort the effects queued after this one,
+          // including the fade-in, leaving only the scrim on screen. Panzoom
+          // did throw in chat windows ("not attached to the DOM": it checked
+          // the main document). Lose zoom, never the image.
+          let zoom: PanzoomObject;
+          try {
+            zoom = Panzoom(ref, {
+              minScale: 0.1,
+              maxScale: 5,
+            });
+          } catch (error) {
+            console.error("[image viewer] pan/zoom unavailable", error);
+            return;
+          }
 
           panzoom = zoom;
 
