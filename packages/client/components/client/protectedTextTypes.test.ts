@@ -66,7 +66,8 @@ const ERRORS = fixture<{
 }>("native-error-tags.json");
 
 const NOTES = process.env.W4_NOTES_DIR ?? "/home/mcp/w4-notes";
-const ERROR_RS = join(NOTES, "w4_native_error.rs");
+// The Error enum pinned at native ed207f1 (adds `protector_locked`, S1 F5).
+const ERROR_RS = join(NOTES, "w4_native_error.ed207f1.rs");
 const TYPES_RS = join(NOTES, "w4_native_types.rs");
 const DESIGN = join(NOTES, "w4_design.md");
 const PINNED = [ERROR_RS, TYPES_RS, DESIGN].every((p) => existsSync(p));
@@ -132,6 +133,14 @@ test("NATIVE_ERROR_TAGS equals the native Error enum, in order", () => {
   assert.ok(ERRORS.error_enum.length >= 60);
   assert.equal(new Set(ERRORS.error_enum).size, ERRORS.error_enum.length);
   assert.deepEqual([...NATIVE_ERROR_TAGS], ERRORS.error_enum);
+});
+
+test("protector_locked: right after protector, not a text-plane tag", () => {
+  const i = NATIVE_ERROR_TAGS.indexOf("protector_locked");
+  assert.ok(i > 0, "present");
+  assert.equal(NATIVE_ERROR_TAGS[i - 1], "protector");
+  // A locked device is not a group state: the fail-closed catch-all owns it.
+  assert.equal(has(TEXT_NATIVE_ERROR_TAGS, "protector_locked"), false);
 });
 
 test("TEXT_NATIVE_ERROR_TAGS = W3 variants + design 8.4 existing", () => {

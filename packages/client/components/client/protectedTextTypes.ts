@@ -547,6 +547,7 @@ export const NATIVE_ERROR_TAGS = [
   "busy",
   "storage",
   "protector",
+  "protector_locked",
   "store_corrupt",
   "unsupported_protocol_version",
   "crypto_failure",
@@ -679,6 +680,8 @@ export type NativeError =
   | { type: "busy" }
   | { type: "storage"; code: string }
   | { type: "protector" }
+  /** Device locked (iOS): transient, retry after unlock; never a wipe. */
+  | { type: "protector_locked" }
   | { type: "store_corrupt" }
   | { type: "unsupported_protocol_version"; version: number }
   | { type: "crypto_failure" }

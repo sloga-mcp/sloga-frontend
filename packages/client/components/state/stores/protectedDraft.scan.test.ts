@@ -326,6 +326,24 @@ describe("protected Draft source scans", () => {
     );
   });
 
+  it("S12 (C-C5g): a protected id that is not a TextChannel is refused before anything else", () => {
+    const send = SEND_PROTECTED();
+    assert.match(
+      send,
+      /^\{\s*this\.bindClient\(client\);\s*if \(channel\.type !== "TextChannel"\) \{\s*const error = new StoatSdk\.ProtectedChannelUnavailable\(\);\s*if \(retryOf\) this\.markProtectedFailed\(channel\.id, retryOf, error, true\);\s*throw error;\s*\}/,
+      "first check after binding, throws the SDK refusal",
+    );
+    const backstop = at(send, 'if (channel.type !== "TextChannel")');
+    for (const later of [
+      "this.getDraft(",
+      'this.set("outbox"',
+      "this.popDraft(",
+      "channel.sendMessage(",
+    ]) {
+      assert.ok(backstop < at(send, later), `backstop precedes ${later}`);
+    }
+  });
+
   it("S8: clean() keeps a text entry's key across a reload", () => {
     const clean = member(SRC, /\n {2}clean\(input: Partial<TypeDraft>\)/);
     assert.match(clean, /idempotencyKey: message\.idempotencyKey,/);
@@ -365,6 +383,12 @@ const STUBS: Record<string, string> = {
         super("ProtectedFieldRefusedClient: " + field);
         this.name = "ProtectedFieldRefusedClient";
         this.field = field;
+      }
+    }
+    export class ProtectedChannelUnavailable extends Error {
+      constructor() {
+        super("ProtectedChannelUnavailable");
+        this.name = "ProtectedChannelUnavailable";
       }
     }`,
   ulid: `let n = 0; export const ulid = () => "key-" + ++n;`,
@@ -478,6 +502,7 @@ function makeChannel(
     sent,
     channel: {
       id,
+      type: "TextChannel" as string | undefined,
       sendMessage: (body: Record<string, unknown>, key: string) => {
         sent.push({
           data: body,
@@ -686,6 +711,60 @@ describe("protected Draft behaviour", () => {
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(sent[2].key, key);
     assert.deepEqual(data.outbox[P], [], "delivered on the same key");
+  });
+
+  it("B11 (C-C5g): a protected id relabelled away from TextChannel never sends, Retry included", async () => {
+    for (const type of [
+      "Thread",
+      "Group",
+      "DirectMessage",
+      "SavedMessages",
+      undefined,
+    ]) {
+      const { draft, data } = makeDraft();
+      const { client, prepared } = makeClient([P]);
+      const { channel, sent } = makeChannel(P, data);
+      channel.type = type; // undefined too: not hydrated yet
+      data.drafts[P] = { content: "secret", replies: [] };
+      const before = { xhrs, uploads: uploads() };
+
+      await assert.rejects(
+        draft.sendDraft(client as never, channel as never),
+        (error: Error) => error.name === "ProtectedChannelUnavailable",
+      );
+      assert.equal(sent.length, 0, `${type}: nothing sent`);
+      assert.equal(data.drafts[P].content, "secret", "the composer keeps it");
+      assert.deepEqual(data.outbox[P] ?? [], [], "no outbox entry");
+      assert.equal(prepared(), 0);
+      assert.equal(xhrs, before.xhrs);
+      assert.equal(uploads(), before.uploads);
+    }
+
+    // Retry: an entry from an unknown-outcome send, then the server
+    // relabels the channel
+    const { draft, data } = makeDraft();
+    const { client } = makeClient([P]);
+    const made = makeChannel(P, data, () =>
+      Promise.reject(new ProtectedSendError({ source: "transport" })),
+    );
+    data.drafts[P] = { content: "secret" };
+    await assert.rejects(
+      draft.sendDraft(client as never, made.channel as never),
+    );
+    const key = made.sent[0].key;
+    made.channel.type = "Thread";
+    const errors: unknown[] = [];
+    draft.retrySend(client as never, made.channel as never, key, (e: unknown) =>
+      errors.push(e),
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(made.sent.length, 1, "the retry sent nothing");
+    assert.equal(errors.length, 1);
+    assert.equal((errors[0] as Error).name, "ProtectedChannelUnavailable");
+    const [entry] = data.outbox[P];
+    assert.equal(entry.idempotencyKey, key, "entry kept under its key");
+    assert.equal(entry.status, "failed");
+    assert.equal(entry.protectedNotice, "not_available");
   });
 
   it("B6: non-protected sends keep today's path (fresh key, upload path, swallow)", async () => {

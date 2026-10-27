@@ -13,7 +13,6 @@ import {
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
 import {
-  type Channel,
   ImageEmbed,
   Message as MessageInterface,
   WebsiteEmbed,
@@ -295,13 +294,16 @@ export function Message(props: Props) {
     serverActionsBlocked(e2ee, props.message.channel, client().user?.id);
 
   /**
-   * Whether this row is in a Protected channel, server-flagged or pinned on
-   * this device (plan D2). Its body is the decrypted view ONLY (D22): server
-   * `content`, embeds, attachments, components and other server-set text
-   * are never rendered here, even if present (D25 strips them; this is the
-   * second guard).
+   * Whether this row is a Protected channel row: it carries `encrypted`
+   * (the server refuses it anywhere else, so presence alone proves it, as in
+   * D25), or its channel is server-flagged or pinned on this device (plan
+   * D2). Its body is the decrypted view ONLY (D22): server `content`,
+   * embeds, attachments, components and other server-set text are never
+   * rendered here, even if present (D25 strips them; this is the second
+   * guard).
    */
   const protectedRow = () =>
+    props.message.encrypted !== undefined ||
     client().isProtectedChannel(props.message.channelId);
 
   /** The decrypted view; never read for any other row. */
@@ -430,7 +432,6 @@ export function Message(props: Props) {
                 <ProtectedReplyPreview
                   id={replyId}
                   channelId={props.message.channelId}
-                  channel={props.message.channel}
                 />
               )}
             </For>
@@ -769,12 +770,13 @@ export function Message(props: Props) {
  * server content, attachments, masquerades and forwarded snapshots are
  * never read. A target outside this channel is shown as not loaded: the
  * reply ids are CLIENT-CLAIMED inside the sender's ciphertext.
+ *
+ * It resolves ONLY from rows already loaded on this device and never
+ * fetches an uncached target: a fetch would tell the server which message
+ * this one replies to (design 1 / R6). An uncached target stays "not
+ * loaded" until its page arrives with the normal history.
  */
-function ProtectedReplyPreview(props: {
-  id: string;
-  channelId: string;
-  channel: Channel | undefined;
-}) {
+function ProtectedReplyPreview(props: { id: string; channelId: string }) {
   const client = useClient();
 
   const target = () => {
@@ -792,13 +794,6 @@ function ProtectedReplyPreview(props: {
     const line = v.text.length > 128 ? v.text.slice(0, 128) + "..." : v.text;
     return line.replace(/\n/g, " ");
   };
-
-  onMount(() => {
-    if (!client().messages.get(props.id)) {
-      // Fetching decrypts it (plan 4.1); a failure stays "not loaded".
-      props.channel?.fetchMessage(props.id).catch(() => undefined);
-    }
-  });
 
   return (
     <Switch fallback={<MessageReply />}>

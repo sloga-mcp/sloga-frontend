@@ -2,8 +2,9 @@
   "_about": "Pinned native e2ee-core Error tags (serde tag `type`, snake_case), in enum order. Generated from the pinned sources below.",
   "sources": [
     {
-      "file": "w4-notes/w4_native_error.rs",
-      "sha256": "be40b9423216c1551d48c994e5edf12c1e83346e84ed6f7f45afe2f9ee33daf5"
+      "file": "w4-notes/w4_native_error.ed207f1.rs",
+      "origin": "sd-protected-native ed207f1:acutest-desktop/src-tauri/e2ee-core/src/error.rs",
+      "sha256": "783096b3b17b3392b81b8c025eb10265635e49ca0289252fdf9b57fb19f4d90b"
     },
     {
       "file": "w4-notes/w4_design.md",
@@ -29,6 +30,7 @@
     "busy",
     "storage",
     "protector",
+    "protector_locked",
     "store_corrupt",
     "unsupported_protocol_version",
     "crypto_failure",

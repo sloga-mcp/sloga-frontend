@@ -1978,16 +1978,34 @@ export class E2EEBridge implements E2EEAdapter {
    * accessor throws (web, and any desktop build older than it), and a device
    * that has never done MLS has no row. Either way the server-side signals
    * still run and nothing here says the store is fine.
+   *
+   * A throw leaves calls and DMs as they were (UNKNOWN), but the protected
+   * text plane fails closed on it (S1-final A-1): `#storeOwnerUnread` keeps
+   * `protectedTextCapable()` false until a retry reads the owner. Retries
+   * run only on the Tauri main window, the one window the text plane runs
+   * in; elsewhere the text plane is never capable, so a shell without the
+   * accessor stays the benign case.
    */
-  async #checkStoreOwner(): Promise<void> {
+  async #checkStoreOwner(retry = false): Promise<void> {
     const userId = this.#client.user?.id;
     if (!userId) return;
+    if (!retry) this.#storeOwnerRetries = 0;
 
     let owner: string | null;
     try {
       owner = await this.#invoke<string | null>("e2ee_store_owner");
     } catch {
-      return; // no accessor on this shell — the server-side signals stand
+      // No accessor on this shell, or it failed (busy, storage, protector,
+      // corrupt store): the server-side signals stand for calls and DMs.
+      this.#storeOwnerUnread = true;
+      this.#scheduleStoreOwnerRetry();
+      return;
+    }
+    this.#storeOwnerUnread = false;
+    this.#storeOwnerRetries = 0;
+    if (this.#storeOwnerRetryTimer !== null) {
+      clearTimeout(this.#storeOwnerRetryTimer);
+      this.#storeOwnerRetryTimer = null;
     }
     if (!owner) return; // no MLS row yet: UNKNOWN
 
@@ -2000,6 +2018,32 @@ export class E2EEBridge implements E2EEAdapter {
     }
 
     this.#raiseStoreOwnedByAnotherAccount();
+  }
+
+  /** A-1: the last owner check threw; the text plane is not capable. */
+  #storeOwnerUnread = false;
+  #storeOwnerRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Retries since the last connect's check (bounded backoff). */
+  #storeOwnerRetries = 0;
+
+  /**
+   * A-1: re-read the owner after 2, 4, 8, 16, 32 and 64 s, then wait for
+   * the next connect. A read that succeeds lets the text plane start.
+   */
+  #scheduleStoreOwnerRetry(): void {
+    if (this.#storeOwnerRetryTimer !== null || this.#storeOwnerRetries >= 6) {
+      return;
+    }
+    if (!this.#protectedStructural()) return;
+    const delay = 2000 * 2 ** this.#storeOwnerRetries;
+    this.#storeOwnerRetries++;
+    this.#storeOwnerRetryTimer = setTimeout(() => {
+      this.#storeOwnerRetryTimer = null;
+      if (this.#ptSignedOut) return;
+      void this.#checkStoreOwner(true).then(() => {
+        if (!this.#storeOwnerUnread) this.#protectedBootManager();
+      });
+    }, delay);
   }
 
   /**
@@ -7497,6 +7541,8 @@ export class E2EEBridge implements E2EEAdapter {
   #ptDeletesSubscribed = false;
   /** `disposeProtected()` ran: never build a manager again. */
   #ptSignedOut = false;
+  /** F4: the boot flag probe (`GET /`) ran on this bridge. */
+  #ptFlagProbed = false;
   /** Channels the UI holds open (survives a manager rebuild). */
   readonly #ptOpen = new Set<string>();
   /** Draft outbox keys (set by the Draft lane); unset = unknown. */
@@ -7556,6 +7602,9 @@ export class E2EEBridge implements E2EEAdapter {
    * D3: whether this window can run the text plane. Electron, Android, iOS
    * and web are never capable; neither is a Tauri device that is not
    * provisioned and enabled, or whose store or device belongs elsewhere.
+   * An owner check that threw is NOT an all-clear here (A-1): `e2ee_text_*`
+   * carries no user id, so a store of unknown owner could decrypt another
+   * account's channels.
    */
   protectedTextCapable(): boolean {
     const status = this.status.get("state");
@@ -7563,6 +7612,7 @@ export class E2EEBridge implements E2EEAdapter {
       this.#protectedStructural() &&
       status?.enabled === true &&
       !!status.device_id &&
+      !this.#storeOwnerUnread &&
       !this.storeOwnedByAnotherAccount.has("state") &&
       !this.deviceOwnedElsewhere.has("state")
     );
@@ -7732,7 +7782,7 @@ export class E2EEBridge implements E2EEAdapter {
       if (this.#ptManager && key !== this.#ptManagerKey) {
         this.#protectedDispose();
       }
-      this.#protectedEnsureManager();
+      this.#protectedBootManager();
       // L1: a manager built while seeding was in flight (enable(), a UI
       // action) missed channels indexed after it; hand them over (deduped).
       for (const channelId of this.#ptIndexed) {
@@ -7780,6 +7830,36 @@ export class E2EEBridge implements E2EEAdapter {
     return this.protectedTextCapable() && userId && deviceId
       ? `${userId}:${deviceId}`
       : null;
+  }
+
+  /**
+   * S1-final F4: the boot paths (`#onReady`, a successful owner re-check,
+   * and the two SDK hooks) build the manager only when there is protected
+   * work: an indexed (server-protected or pinned) channel, or the advertised
+   * flag. Otherwise they only probe the flag, so a user with no protected
+   * channel on a dark deployment pays one `GET /` per bridge and no
+   * own-device pin write or device listing. User actions (`enable()`, the
+   * re-enroll, open, send, a group op) still call `#protectedEnsureManager`.
+   */
+  #protectedBootManager(): void {
+    if (this.#ptIndexed.size > 0 || this.protectedFlag().enabled) {
+      this.#protectedEnsureManager();
+      return;
+    }
+    void this.#protectedProbeFlag();
+  }
+
+  /**
+   * F4: fetch the flag once per bridge, on a capable window with no manager,
+   * and build the manager when it answers enabled. Never rejects.
+   */
+  async #protectedProbeFlag(): Promise<void> {
+    if (this.#ptManager || this.#ptSignedOut || this.#ptFlagProbed) return;
+    if (!this.#protectedManagerKeyNow()) return;
+    this.#ptFlagProbed = true;
+    const flag = await fetchProtectedChannelsFlag(this.#client);
+    this.#ptFlagState.set("state", flag);
+    if (flag.enabled) this.#protectedEnsureManager();
   }
 
   /**
@@ -7908,6 +7988,11 @@ export class E2EEBridge implements E2EEAdapter {
     // gone, so no later UI action or reconnect may build another manager.
     this.#ptSignedOut = true;
     this.#protectedDispose();
+    // A-1: no owner re-check outlives the session it was for.
+    if (this.#storeOwnerRetryTimer !== null) {
+      clearTimeout(this.#storeOwnerRetryTimer);
+      this.#storeOwnerRetryTimer = null;
+    }
   }
 
   /**
@@ -7934,11 +8019,10 @@ export class E2EEBridge implements E2EEAdapter {
    * listed to `TEXT_COMMANDS` and refused unless `protectedTextCapable()`,
    * so Electron, Android, iOS and web never call one.
    *
-   * One literal arm per command: the iOS gate (G6-fe-dynamic in
-   * scripts/check-ios-e2ee-commands.mjs) needs every `#invoke` to name its
-   * command, and each name is a `.out` entry in E2eeCommands.swift. The
-   * `never` default makes a new `TEXT_COMMANDS` entry fail tsc until it has
-   * an arm here.
+   * A-1: native refusing any text command with
+   * `mls_store_owned_by_another_account` raises the same latch the connect
+   * check does (which disposes the manager and makes this window not
+   * capable, so none is rebuilt), then rejects as before.
    */
   #textInvoke<C extends TextCommand>(
     cmd: C,
@@ -7950,6 +8034,29 @@ export class E2EEBridge implements E2EEAdapter {
     if (!this.protectedTextCapable()) {
       return Promise.reject({ source: "client", reason: "not_capable" });
     }
+    return this.#protectedTextDispatch(cmd, args).catch((error: unknown) => {
+      if (
+        (error as NativeError | null)?.type ===
+        "mls_store_owned_by_another_account"
+      ) {
+        this.#raiseStoreOwnedByAnotherAccount();
+      }
+      throw error;
+    });
+  }
+
+  /**
+   * `#textInvoke`'s native call; nothing else calls it. One literal arm per
+   * command: the iOS gate (G6-fe-dynamic in
+   * scripts/check-ios-e2ee-commands.mjs) needs every `#invoke` to name its
+   * command, and each name is a `.out` entry in E2eeCommands.swift. The
+   * `never` default makes a new `TEXT_COMMANDS` entry fail tsc until it has
+   * an arm here.
+   */
+  #protectedTextDispatch<C extends TextCommand>(
+    cmd: C,
+    args: TextCommandArgs[C],
+  ): Promise<TextCommandResult[C]> {
     type Out = TextCommandResult[C];
     const a = args as unknown as Record<string, unknown>;
     const command: TextCommand = cmd;
@@ -8456,6 +8563,11 @@ export class E2EEBridge implements E2EEAdapter {
   onProtectedFlagStripped(channelId: string): void {
     void this.#protectedIndex(channelId).then((indexed) => {
       if (!indexed) return;
+      if (!this.#ptManager) {
+        // F4: after a dark boot; a build hands it (and its strip) over.
+        this.#protectedBootManager();
+        return;
+      }
       if (this.#ptForwarded.has(channelId)) {
         this.#ptStripped.add(channelId);
         this.#ptManager?.flagStripped(channelId);
@@ -8476,6 +8588,11 @@ export class E2EEBridge implements E2EEAdapter {
   onChannelProtected(channelId: string): void {
     void this.#protectedIndex(channelId).then((indexed) => {
       if (!indexed) return;
+      if (!this.#ptManager) {
+        // F4: protected or pinned after a dark boot; a build hands it over.
+        this.#protectedBootManager();
+        return;
+      }
       const manager = this.#ptManager;
       if (
         manager &&

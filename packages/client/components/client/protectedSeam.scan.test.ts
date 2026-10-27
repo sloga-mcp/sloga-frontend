@@ -289,7 +289,15 @@ test("S5: textInvoke is allow-listed and refuses unless protectedTextCapable()",
   const body = stripComments(member(SRC, /\n {2}#textInvoke</));
   const allow = body.indexOf("TEXT_COMMANDS");
   const guard = body.indexOf("if (!this.protectedTextCapable())");
-  const call = body.indexOf("this.#invoke");
+  // S1-final A-1: the native call moved into `#protectedTextDispatch`, which
+  // only textInvoke calls (wrapped in the store-owner escalation).
+  const call = body.indexOf("this.#protectedTextDispatch(cmd, args)");
+  assert.equal(count(body, "this.#invoke"), 0, "no direct #invoke here");
+  assert.equal(
+    count(SRC, "this.#protectedTextDispatch("),
+    1,
+    "the dispatch has one caller: textInvoke",
+  );
   assert.ok(allow >= 0, "allow-list checked");
   assert.ok(guard >= 0, "capability checked");
   assert.ok(call > guard && call > allow, "native reached only after both");
@@ -305,33 +313,35 @@ test("S5: textInvoke is allow-listed and refuses unless protectedTextCapable()",
     /invoke: <C extends TextCommand>\([^)]*\) =>\s*this\.#textInvoke\(cmd, args\)/,
   );
   // W4d L-IOSGATE: the names are literals now (iOS gate G6-fe-dynamic), but
-  // only inside textInvoke: each one is a case label plus its own #invoke.
+  // only inside textInvoke's dispatch: each one is a case label plus its own
+  // #invoke.
   const textLit = /"e2ee_text_\w+"|"e2ee_mls_group_kind"/g;
-  const raw = member(SRC, /\n {2}#textInvoke</);
-  assert.ok(SRC.includes(raw), "textInvoke lifted verbatim");
+  const raw = member(SRC, /\n {2}#protectedTextDispatch</);
+  assert.ok(SRC.includes(raw), "dispatch lifted verbatim");
   assert.equal(
     [...SRC.replace(raw, "").matchAll(textLit)].length,
     0,
-    "no text command named outside textInvoke",
+    "no text command named outside the dispatch",
   );
+  const dispatch = stripComments(raw);
   assert.equal(
-    [...body.matchAll(textLit)].length,
+    [...dispatch.matchAll(textLit)].length,
     2 * TEXT_COMMANDS.length,
     "one case label and one #invoke per text command, nothing else",
   );
   for (const name of TEXT_COMMANDS) {
     assert.equal(
       count(
-        body,
+        dispatch,
         `case "${name}":\n        return this.#invoke<Out>("${name}", a);`,
       ),
       1,
       `${name} has exactly one arm, invoking its own name`,
     );
   }
-  assert.equal(count(body, "this.#invoke"), TEXT_COMMANDS.length);
+  assert.equal(count(dispatch, "this.#invoke"), TEXT_COMMANDS.length);
   assert.match(
-    body,
+    dispatch,
     /default: \{\s*const _exhaustive: never = command;\s*return Promise\.reject\(\{ source: "client", reason: "not_allowed" \}\);\s*\}/,
     "the default is a never check that refuses",
   );
@@ -350,6 +360,7 @@ test("S5: protectedTextCapable is the Tauri main window with live status (D3)", 
     "status.device_id",
     'this.storeOwnedByAnotherAccount.has("state")',
     'this.deviceOwnedElsewhere.has("state")',
+    "!this.#storeOwnerUnread", // S1-final A-1
   ]) {
     assert.ok(capable.includes(term), `capable reads ${term}`);
   }
@@ -394,7 +405,7 @@ test("S7: markReady() runs in a finally, unconditionally, after seeding", () => 
   assert.match(tryBody, /await Promise\.allSettled\(/, "seeding awaited");
   assert.ok(
     tryBody.indexOf("Promise.allSettled") <
-      tryBody.indexOf("#protectedEnsureManager()"),
+      tryBody.indexOf("#protectedBootManager()"), // F4: the gated build
     "seeded before the manager is built",
   );
   const finBody = stripComments(body.slice(fin + 8, matchBrace(body, fin + 8)));
@@ -585,7 +596,9 @@ test("S9 (L1): after seeding every indexed channel is forwarded (deduped)", () =
   );
   assert.match(
     ready,
-    /this\.#protectedEnsureManager\(\);\s*for \(const channelId of this\.#ptIndexed\) \{\s*this\.#protectedForward\(channelId\);\s*\}/,
+    // S1-final F4: the boot gate (builds only with protected work) in place
+    // of the unconditional build.
+    /this\.#protectedBootManager\(\);\s*for \(const channelId of this\.#ptIndexed\) \{\s*this\.#protectedForward\(channelId\);\s*\}/,
   );
 });
 
@@ -837,6 +850,8 @@ type StripHarness = {
   sdk: Set<string>;
   /** Channels `#protectedIndex` cannot index. */
   unindexable: Set<string>;
+  /** `#protectedBootManager` calls (stubbed: it never builds here). */
+  boots: number;
   /** `#protectedEnsureManager`'s hand-over (S11 pins its two clears). */
   build(m: unknown): void;
   /** `#protectedDispose`'s bookkeeping (S11 pins its two clears). */
@@ -871,6 +886,9 @@ function stripHarness(): StripHarness {
   sdk = new Set();
   unindexable = new Set();
   #client = { isProtectedFlagStripped: (id) => this.sdk.has(id) };
+  boots = 0;
+  // F4 (S12): the boot gate is its own spec; here it only counts.
+  #protectedBootManager() { this.boots++; }
   ${forwarded[0].trim()}
   ${stripped[0].trim()}
   async #protectedIndex(channelId) {
@@ -1040,4 +1058,352 @@ test("S11 (F#3): the strip set is cleared with #ptForwarded, written only here",
     2,
     "every strip hand-over tracked",
   );
+});
+
+// ---- S12 S1-final F4: no protected work on a dark boot -------------------------
+
+type BootHarness = {
+  indexed: Set<string>;
+  key: string | null;
+  fetches: number;
+  builds: number;
+  answer: { enabled: boolean; defaultDeviceCap: number | null };
+  signOut(): void;
+  boot(): void;
+  flag(): { enabled: boolean };
+};
+
+/**
+ * The seam's REAL `#protectedBootManager`, `#protectedProbeFlag`,
+ * `protectedFlag` and `#ptFlagProbed`, lifted with types stripped.
+ * `fetchProtectedChannelsFlag` (the `GET /`) and `#protectedEnsureManager`
+ * (the pin write + device listing) are counting stubs.
+ */
+function bootHarness(): BootHarness {
+  const probed = /\n {2}#ptFlagProbed = false;/.exec(SRC);
+  assert.ok(probed, "S12: #ptFlagProbed declared");
+  const members = [
+    /\n {2}#protectedBootManager\(\): void /,
+    /\n {2}async #protectedProbeFlag\(\): Promise<void> /,
+    /\n {2}protectedFlag\(\): ProtectedChannelsFlag /,
+  ].map((head) => memberDecl(SRC, head));
+  const ts = `class BootHarness {
+  #ptManager = null;
+  #ptSignedOut = false;
+  #client = {};
+  #ptFlagState = new Map();
+  indexed = new Set();
+  get #ptIndexed() { return this.indexed; }
+  key = "U:D";
+  fetches = 0;
+  builds = 0;
+  answer = { enabled: false, defaultDeviceCap: 0 };
+  ${probed[0].trim()}
+  #protectedManagerKeyNow() { return this.key; }
+  #protectedEnsureManager() {
+    if (this.#ptManager || this.#ptSignedOut || !this.key) return;
+    this.builds++;
+    this.#ptManager = {};
+  }
+  signOut() { this.#ptSignedOut = true; }
+  boot() { this.#protectedBootManager(); }
+  flag() { return this.protectedFlag(); }
+  ${members.join("\n  ")}
+}`;
+  const self: BootHarness[] = [];
+  const fetch = async () => {
+    self[0].fetches++;
+    await null;
+    return { ...self[0].answer };
+  };
+  const Cls = new Function(
+    "fetchProtectedChannelsFlag",
+    `${stripTypeScriptTypes(ts)}\nreturn BootHarness;`,
+  )(fetch);
+  self.push(new Cls() as BootHarness);
+  return self[0];
+}
+
+test("S12 (F4): a dark boot with nothing protected builds nothing; one GET / per bridge", async () => {
+  const h = bootHarness();
+  h.boot();
+  await settle();
+  assert.equal(h.fetches, 1, "the flag is probed once");
+  assert.equal(h.builds, 0, "no manager: no pin write, no device GET");
+  assert.equal(h.flag().enabled, false);
+  h.boot(); // a reconnect
+  h.boot();
+  await settle();
+  assert.equal(h.fetches, 1, "not re-probed on this bridge");
+  assert.equal(h.builds, 0);
+});
+
+test("S12 (F4): an indexed channel or an enabled flag still builds the manager", async () => {
+  const pinned = bootHarness();
+  pinned.indexed.add("C1");
+  pinned.boot();
+  await settle();
+  assert.equal(pinned.builds, 1, "a protected/pinned channel builds it");
+  assert.equal(pinned.fetches, 0, "the manager fetches the flag itself");
+
+  const lit = bootHarness();
+  lit.answer = { enabled: true, defaultDeviceCap: 0 };
+  lit.boot();
+  assert.equal(lit.builds, 0, "not before the flag answers");
+  await settle();
+  assert.equal(lit.fetches, 1);
+  assert.equal(lit.builds, 1, "the flag fetch says enabled: built");
+  lit.boot();
+  assert.equal(lit.builds, 1, "idempotent");
+
+  // Dark first, a channel protected later: the hook's boot builds it.
+  const later = bootHarness();
+  later.boot();
+  await settle();
+  assert.equal(later.builds, 0);
+  later.indexed.add("C2");
+  later.boot();
+  assert.equal(later.builds, 1, "a later protected channel starts it");
+});
+
+test("S12 (F4): a window that is not capable probes nothing until it is", async () => {
+  const h = bootHarness();
+  h.key = null; // web / Electron / not enabled / owner unread
+  h.boot();
+  await settle();
+  assert.equal(h.fetches, 0, "no GET / while not capable");
+  h.key = "U:D"; // enable() / owner re-check succeeded
+  h.boot();
+  await settle();
+  assert.equal(h.fetches, 1, "probed once capable");
+  const s = bootHarness();
+  s.signOut();
+  s.indexed.add("C1");
+  s.boot();
+  s.indexed.clear();
+  s.boot();
+  await settle();
+  assert.equal(s.fetches + s.builds, 0, "a signed-out bridge does nothing");
+});
+
+test("S12 (F4): the boot paths go through the gate; the hooks boot with no manager", async () => {
+  // onReady (S9 pins its shape), the owner re-check and the two SDK hooks.
+  assert.equal(count(SRC, "this.#protectedBootManager();"), 4);
+  const ready = stripComments(
+    member(SRC, /\n {2}async #protectedOnReady\(\): Promise<void> /),
+  );
+  assert.equal(count(ready, "#protectedEnsureManager"), 0, "no ungated build");
+  const h = stripHarness();
+  h.onChannelProtected("C1");
+  h.sdk.add("C2");
+  h.onProtectedFlagStripped("C2");
+  await settle();
+  assert.equal(h.boots, 2, "each hook boots while no manager exists");
+  const { hands, manager } = handRecorder();
+  h.build(manager);
+  await reprotect(h, "C3");
+  assert.equal(h.boots, 2, "no boot once a manager exists");
+  assert.deepEqual(hands, [
+    ["protected", "C1"],
+    ["protected", "C2"],
+    ["stripped", "C2"],
+    ["protected", "C3"],
+  ]);
+});
+
+// ---- S13 S1-final A-1: the store-owner latch fails closed for the text plane -----
+
+type OwnerHarness = {
+  owner: () => Promise<string | null>;
+  dispatch: () => Promise<unknown>;
+  dispatches: number;
+  boots: number;
+  disposes: number;
+  structural: boolean;
+  timers: { fn: () => void; delay: number; live: boolean }[];
+  check(retry?: boolean): Promise<void>;
+  capable(): boolean;
+  text(cmd: string, args: unknown): Promise<unknown>;
+  latched(): boolean;
+  signOut(): void;
+};
+
+/**
+ * The REAL `#checkStoreOwner`, its retry state and `#scheduleStoreOwnerRetry`,
+ * `#raiseStoreOwnedByAnotherAccount`, `protectedTextCapable`, `#textInvoke`
+ * and `disposeProtected`, lifted with types stripped. `e2ee_store_owner`,
+ * the text dispatch, the timers and the manager teardown are stubs.
+ */
+function ownerHarness(): OwnerHarness {
+  const decls = [
+    /\n {2}#storeOwnerUnread = false;/,
+    /\n {2}#storeOwnerRetryTimer: ReturnType<typeof setTimeout> \| null = null;/,
+    /\n {2}#storeOwnerRetries = 0;/,
+  ].map((re) => {
+    const m = re.exec(SRC);
+    assert.ok(m, `S13: declared ${re}`);
+    return m[0].trim();
+  });
+  const members = [
+    /\n {2}async #checkStoreOwner\(/,
+    /\n {2}#scheduleStoreOwnerRetry\(\): void /,
+    /\n {2}#raiseStoreOwnedByAnotherAccount\(\): void /,
+    /\n {2}protectedTextCapable\(\): boolean /,
+    /\n {2}#textInvoke</,
+    /\n {2}disposeProtected\(\): void /,
+  ].map((head) => memberDecl(SRC, head));
+  const ts = `class OwnerHarness {
+  ${decls.join("\n  ")}
+  #client = { user: { id: "B" } };
+  status = new Map([["state", { enabled: true, device_id: "D" }]]);
+  storeOwnedByAnotherAccount = new Map();
+  deviceOwnedElsewhere = new Map();
+  #mlsBuffer = { clear() {} };
+  #ptPreIndex = { clear() {} };
+  #kept = { discardAll: async () => {} };
+  #ptSignedOut = false;
+  structural = true;
+  owner = async () => "B";
+  dispatch = async () => "ok";
+  dispatches = 0;
+  boots = 0;
+  disposes = 0;
+  timers = [];
+  #protectedStructural() { return this.structural; }
+  #protectedBootManager() { this.boots++; }
+  #protectedDispose() { this.disposes++; }
+  #invoke(command) {
+    if (command !== "e2ee_store_owner") throw new Error("unexpected " + command);
+    return this.owner();
+  }
+  #protectedTextDispatch() { this.dispatches++; return this.dispatch(); }
+  check(retry) { return this.#checkStoreOwner(retry); }
+  capable() { return this.protectedTextCapable(); }
+  text(cmd, args) { return this.#textInvoke(cmd, args); }
+  latched() { return this.storeOwnedByAnotherAccount.has("state"); }
+  signOut() { this.disposeProtected(); }
+  ${members.join("\n  ")}
+}`;
+  const self: OwnerHarness[] = [];
+  const setTimeoutFake = (fn: () => void, delay: number) => {
+    self[0].timers.push({ fn, delay, live: true });
+    return self[0].timers.length - 1;
+  };
+  const clearTimeoutFake = (id: number) => {
+    if (self[0].timers[id]) self[0].timers[id].live = false;
+  };
+  const Cls = new Function(
+    "TEXT_COMMANDS",
+    "setTimeout",
+    "clearTimeout",
+    "console",
+    `${stripTypeScriptTypes(ts)}\nreturn OwnerHarness;`,
+  )(TEXT_COMMANDS, setTimeoutFake, clearTimeoutFake, {
+    error: () => {},
+    warn: () => {},
+  });
+  self.push(new Cls() as OwnerHarness);
+  return self[0];
+}
+
+/** Fire the one live timer (asserted), then let its re-check settle. */
+async function fire(h: OwnerHarness): Promise<number> {
+  const live = h.timers.filter((t) => t.live);
+  assert.equal(live.length, 1, "exactly one retry pending");
+  live[0].live = false;
+  live[0].fn();
+  await settle();
+  return live[0].delay;
+}
+
+const BUSY = { type: "busy" };
+const NOT_OURS = {
+  type: "mls_store_owned_by_another_account",
+  owner_user_id: "A",
+  requested_user_id: "B",
+};
+
+test("S13 (A-1): an owner check that throws leaves the text plane NOT capable", async () => {
+  const h = ownerHarness();
+  h.owner = async () => {
+    throw BUSY;
+  };
+  await h.check();
+  assert.equal(h.capable(), false, "UNKNOWN owner is not an all-clear");
+  assert.equal(h.latched(), false, "calls/DMs: no latch, as before");
+  await assert.rejects(h.text("e2ee_text_decrypt", {}), {
+    reason: "not_capable",
+  });
+  assert.equal(h.dispatches, 0, "no text command reaches native");
+  h.owner = async () => "B";
+  assert.equal(await fire(h), 2000);
+  assert.equal(h.capable(), true, "capable again after a successful retry");
+  assert.equal(h.boots, 1, "the retry starts the text plane");
+  assert.equal(h.timers.filter((t) => t.live).length, 0, "no more retries");
+  await h.text("e2ee_text_decrypt", {});
+  assert.equal(h.dispatches, 1);
+});
+
+test("S13 (A-1): retries back off and are bounded; a connect check re-arms them", async () => {
+  const h = ownerHarness();
+  h.owner = async () => {
+    throw BUSY;
+  };
+  await h.check();
+  const delays: number[] = [];
+  while (h.timers.some((t) => t.live)) delays.push(await fire(h));
+  assert.deepEqual(delays, [2000, 4000, 8000, 16000, 32000, 64000]);
+  assert.equal(h.capable(), false);
+  assert.equal(h.boots, 0);
+  await h.check(); // the next connect
+  assert.equal(h.timers.filter((t) => t.live).length, 1, "re-armed");
+  h.signOut();
+  assert.equal(h.timers.filter((t) => t.live).length, 0, "sign-out cancels it");
+
+  const other = ownerHarness();
+  other.structural = false; // web / Electron / Android / iOS / popout
+  other.owner = async () => {
+    throw new Error("no accessor");
+  };
+  await other.check();
+  assert.equal(
+    other.timers.length,
+    0,
+    "no retry where the text plane never runs",
+  );
+});
+
+test("S13 (A-1): a retry that reads another owner raises the latch", async () => {
+  const h = ownerHarness();
+  h.owner = async () => {
+    throw BUSY;
+  };
+  await h.check();
+  h.owner = async () => "A";
+  await fire(h);
+  assert.equal(h.latched(), true);
+  assert.equal(h.capable(), false);
+  assert.equal(h.disposes, 1, "the manager is torn down");
+});
+
+test("S13 (A-1): a text command refused as another account's store escalates", async () => {
+  const h = ownerHarness();
+  await h.check();
+  assert.equal(h.capable(), true);
+  h.dispatch = async () => {
+    throw BUSY;
+  };
+  await assert.rejects(h.text("e2ee_text_state", {}), BUSY);
+  assert.equal(h.latched(), false, "another error does not raise");
+  h.dispatch = async () => {
+    throw NOT_OURS;
+  };
+  await assert.rejects(h.text("e2ee_text_decrypt", {}), NOT_OURS);
+  assert.equal(h.latched(), true, "latch raised");
+  assert.equal(h.disposes, 1, "manager disposed");
+  assert.equal(h.capable(), false, "so no manager is rebuilt");
+  await assert.rejects(h.text("e2ee_text_decrypt", {}), {
+    reason: "not_capable",
+  });
+  assert.equal(h.dispatches, 2, "nothing more reaches native");
 });
