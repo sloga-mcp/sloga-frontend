@@ -640,9 +640,16 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         }
         if (!this.#started) return undefined;
         const seeded = this.#seed(rec);
-        return restored
-          ? seeded.then(() => this.refresh(rec.id, "commit"))
-          : seeded;
+        // W4e O1: a channel that is OPEN when it becomes protected takes the
+        // open path now (seats + verify + text_group + `_state`, then the
+        // join when wanted), not at the next re-open or 60 s tick. Idempotent
+        // with an open in flight: concurrent refreshes coalesce, and
+        // `ensureJoined` joins once.
+        const isOpen = rec.openCtl !== null;
+        if (!restored && !isOpen) return seeded;
+        return seeded.then(() =>
+          this.refresh(rec.id, isOpen ? "open" : "commit"),
+        );
       }),
     );
   }

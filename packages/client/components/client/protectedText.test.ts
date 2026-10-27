@@ -3030,3 +3030,46 @@ test("W4d: unknown extra commit fields (W2 advisory removed_reasons) are tolerat
   assert.equal("removed_reasons" in processed[0].envelope, false);
   m.dispose();
 });
+
+test("W4e O1 (C-O1): protected while OPEN → the join starts at once; while closed → nothing until open", async () => {
+  // Open before it is protected: no list, not seated, nothing to join.
+  const env = new Env();
+  env.states.set(CH, noGroup(CH));
+  const m = make(env);
+  await m.start();
+  await m.open(CH);
+  await env.advance(1_000);
+  assert.equal(env.calls("e2ee_text_join").length, 0);
+  // Protected and seated (verified list) while still open: the bridge
+  // forwards the protect, and the join runs without a re-open or 60 s tick.
+  env.states.set(
+    CH,
+    noGroup(CH, {
+      self_seated: true,
+      verdict: "no_group",
+      seat_list: st().seat_list,
+    }),
+  );
+  m.channelProtected(CH);
+  await env.advance(1_000);
+  assert.equal(env.calls("e2ee_text_join").length, 1, "join without re-open");
+  assert.equal(env.api$("POST", /join_intent$/).length, 1);
+  // A second forward (or an open in flight) never starts a second join.
+  m.channelProtected(CH);
+  void m.open(CH);
+  await env.advance(1_000);
+  assert.equal(env.calls("e2ee_text_join").length, 1, "idempotent");
+  m.dispose();
+
+  // Closed when protected: nothing until it is opened.
+  const env2 = joiningEnv();
+  const m2 = make(env2);
+  await m2.start();
+  m2.channelProtected(CH);
+  await env2.advance(1_000);
+  assert.equal(env2.calls("e2ee_text_join").length, 0, "closed: no join");
+  await m2.open(CH);
+  await env2.advance(1_000);
+  assert.equal(env2.calls("e2ee_text_join").length, 1, "joins on open");
+  m2.dispose();
+});

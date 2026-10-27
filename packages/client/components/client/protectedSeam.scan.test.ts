@@ -36,6 +36,7 @@ import { readFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
 import { test } from "node:test";
 
+import { fetchProtectedChannelsFlag } from "./protectedChannelsFlag.ts";
 import {
   isProtectedSendError,
   ProtectedSendError,
@@ -1067,7 +1068,10 @@ type BootHarness = {
   key: string | null;
   fetches: number;
   builds: number;
-  answer: { enabled: boolean; defaultDeviceCap: number | null };
+  requests: number;
+  unread: boolean;
+  /** The `GET /` advert; `fail` makes the request reject (no response). */
+  answer: { enabled: boolean; fail?: boolean };
   signOut(): void;
   boot(): void;
   flag(): { enabled: boolean };
@@ -1075,13 +1079,22 @@ type BootHarness = {
 
 /**
  * The seam's REAL `#protectedBootManager`, `#protectedProbeFlag`,
- * `protectedFlag` and `#ptFlagProbed`, lifted with types stripped.
- * `fetchProtectedChannelsFlag` (the `GET /`) and `#protectedEnsureManager`
- * (the pin write + device listing) are counting stubs.
+ * `protectedFlag` and the probe state, lifted with types stripped, over the
+ * REAL `fetchProtectedChannelsFlag`. `client.api.get("/")` and
+ * `#protectedEnsureManager` (the pin write + device listing; it builds only
+ * when capable, i.e. `key` set) are counting stubs.
  */
 function bootHarness(): BootHarness {
-  const probed = /\n {2}#ptFlagProbed = false;/.exec(SRC);
-  assert.ok(probed, "S12: #ptFlagProbed declared");
+  const decls = [
+    /\n {2}#ptFlagProbed = false;/,
+    /\n {2}#ptFlagProbing = false;/,
+    /\n {2}#ptFlagProbeFailures = 0;/,
+    /\n {2}readonly #ptFlagProbeMaxFailures = 5;/,
+  ].map((re) => {
+    const m = re.exec(SRC);
+    assert.ok(m, `S12: declared ${re}`);
+    return m[0].trim();
+  });
   const members = [
     /\n {2}#protectedBootManager\(\): void /,
     /\n {2}async #protectedProbeFlag\(\): Promise<void> /,
@@ -1090,15 +1103,33 @@ function bootHarness(): BootHarness {
   const ts = `class BootHarness {
   #ptManager = null;
   #ptSignedOut = false;
-  #client = {};
+  #client = { api: { get: (path) => this.get(path) } };
   #ptFlagState = new Map();
   indexed = new Set();
   get #ptIndexed() { return this.indexed; }
   key = "U:D";
   fetches = 0;
   builds = 0;
-  answer = { enabled: false, defaultDeviceCap: 0 };
-  ${probed[0].trim()}
+  requests = 0;
+  unread = false;
+  answer = { enabled: false };
+  ${decls.join("\n  ")}
+  get #storeOwnerUnread() { return this.unread; }
+  #requestStoreOwnerRead() { this.requests++; }
+  async get(path) {
+    if (path !== "/") throw new Error("unexpected " + path);
+    this.fetches++;
+    await null;
+    if (this.answer.fail) throw new Error("offline");
+    return {
+      features: {
+        protected_channels: {
+          enabled: this.answer.enabled,
+          default_device_cap: 0,
+        },
+      },
+    };
+  }
   #protectedManagerKeyNow() { return this.key; }
   #protectedEnsureManager() {
     if (this.#ptManager || this.#ptSignedOut || !this.key) return;
@@ -1110,18 +1141,11 @@ function bootHarness(): BootHarness {
   flag() { return this.protectedFlag(); }
   ${members.join("\n  ")}
 }`;
-  const self: BootHarness[] = [];
-  const fetch = async () => {
-    self[0].fetches++;
-    await null;
-    return { ...self[0].answer };
-  };
   const Cls = new Function(
     "fetchProtectedChannelsFlag",
     `${stripTypeScriptTypes(ts)}\nreturn BootHarness;`,
-  )(fetch);
-  self.push(new Cls() as BootHarness);
-  return self[0];
+  )(fetchProtectedChannelsFlag);
+  return new Cls() as BootHarness;
 }
 
 test("S12 (F4): a dark boot with nothing protected builds nothing; one GET / per bridge", async () => {
@@ -1134,7 +1158,7 @@ test("S12 (F4): a dark boot with nothing protected builds nothing; one GET / per
   h.boot(); // a reconnect
   h.boot();
   await settle();
-  assert.equal(h.fetches, 1, "not re-probed on this bridge");
+  assert.equal(h.fetches, 1, "not re-probed after a response");
   assert.equal(h.builds, 0);
 });
 
@@ -1147,7 +1171,7 @@ test("S12 (F4): an indexed channel or an enabled flag still builds the manager",
   assert.equal(pinned.fetches, 0, "the manager fetches the flag itself");
 
   const lit = bootHarness();
-  lit.answer = { enabled: true, defaultDeviceCap: 0 };
+  lit.answer = { enabled: true };
   lit.boot();
   assert.equal(lit.builds, 0, "not before the flag answers");
   await settle();
@@ -1166,16 +1190,26 @@ test("S12 (F4): an indexed channel or an enabled flag still builds the manager",
   assert.equal(later.builds, 1, "a later protected channel starts it");
 });
 
-test("S12 (F4): a window that is not capable probes nothing until it is", async () => {
+test("S12 (F4): a window that is not capable still reads the advert; it builds nothing", async () => {
   const h = bootHarness();
-  h.key = null; // web / Electron / not enabled / owner unread
+  h.key = null; // web / Electron / E2EE not on yet / owner unread
+  h.answer = { enabled: true };
   h.boot();
   await settle();
-  assert.equal(h.fetches, 0, "no GET / while not capable");
-  h.key = "U:D"; // enable() / owner re-check succeeded
+  assert.equal(h.fetches, 1, "GET / runs regardless of capability");
+  assert.equal(h.flag().enabled, true, "the settings tab can see the advert");
+  assert.equal(h.builds, 0, "but no manager without capability");
+  h.key = "U:D"; // enable() / owner read succeeded
   h.boot();
+  assert.equal(h.builds, 1, "built once capable");
+  assert.equal(h.fetches, 1, "the advert is not fetched again");
+
+  const unread = bootHarness();
+  unread.unread = true;
+  unread.boot();
   await settle();
-  assert.equal(h.fetches, 1, "probed once capable");
+  assert.equal(unread.requests, 1, "an unread owner asks for the read");
+
   const s = bootHarness();
   s.signOut();
   s.indexed.add("C1");
@@ -1184,6 +1218,33 @@ test("S12 (F4): a window that is not capable probes nothing until it is", async 
   s.boot();
   await settle();
   assert.equal(s.fetches + s.builds, 0, "a signed-out bridge does nothing");
+});
+
+test("S12 (F4): a probe with no response is retried on the next boot, bounded", async () => {
+  const h = bootHarness();
+  h.answer = { enabled: true, fail: true };
+  h.boot();
+  h.boot(); // deduped while in flight
+  await settle();
+  assert.equal(h.fetches, 1);
+  assert.equal(h.flag().enabled, false, "no response reads as off");
+  h.boot(); // the next connect
+  await settle();
+  assert.equal(h.fetches, 2, "re-probed after a failure");
+  h.answer = { enabled: true };
+  h.boot();
+  await settle();
+  assert.equal(h.fetches, 3);
+  assert.equal(h.flag().enabled, true);
+  assert.equal(h.builds, 1, "the late answer still builds it");
+
+  const down = bootHarness();
+  down.answer = { enabled: false, fail: true };
+  for (let i = 0; i < 9; i++) {
+    down.boot();
+    await settle();
+  }
+  assert.equal(down.fetches, 5, "at most five failed probes per bridge");
 });
 
 test("S12 (F4): the boot paths go through the gate; the hooks boot with no manager", async () => {
@@ -1217,11 +1278,14 @@ type OwnerHarness = {
   owner: () => Promise<string | null>;
   dispatch: () => Promise<unknown>;
   dispatches: number;
+  reads: number;
   boots: number;
   disposes: number;
   structural: boolean;
+  status: Map<string, { enabled: boolean; device_id: string | null }>;
   timers: { fn: () => void; delay: number; live: boolean }[];
   check(retry?: boolean): Promise<void>;
+  request(): void;
   capable(): boolean;
   text(cmd: string, args: unknown): Promise<unknown>;
   latched(): boolean;
@@ -1229,16 +1293,19 @@ type OwnerHarness = {
 };
 
 /**
- * The REAL `#checkStoreOwner`, its retry state and `#scheduleStoreOwnerRetry`,
+ * The REAL `#checkStoreOwner`, its state (`#storeOwnerUnread` starts SET),
+ * `#scheduleStoreOwnerRetry`, `#requestStoreOwnerRead`,
  * `#raiseStoreOwnedByAnotherAccount`, `protectedTextCapable`, `#textInvoke`
  * and `disposeProtected`, lifted with types stripped. `e2ee_store_owner`,
  * the text dispatch, the timers and the manager teardown are stubs.
  */
 function ownerHarness(): OwnerHarness {
   const decls = [
-    /\n {2}#storeOwnerUnread = false;/,
+    // Either value lifts: the behaviour cases below pin that it starts set.
+    /\n {2}#storeOwnerUnread = (?:true|false);/,
     /\n {2}#storeOwnerRetryTimer: ReturnType<typeof setTimeout> \| null = null;/,
     /\n {2}#storeOwnerRetries = 0;/,
+    /\n {2}#storeOwnerReading: Promise<void> \| null = null;/,
   ].map((re) => {
     const m = re.exec(SRC);
     assert.ok(m, `S13: declared ${re}`);
@@ -1247,6 +1314,7 @@ function ownerHarness(): OwnerHarness {
   const members = [
     /\n {2}async #checkStoreOwner\(/,
     /\n {2}#scheduleStoreOwnerRetry\(\): void /,
+    /\n {2}#requestStoreOwnerRead\(\): void /,
     /\n {2}#raiseStoreOwnedByAnotherAccount\(\): void /,
     /\n {2}protectedTextCapable\(\): boolean /,
     /\n {2}#textInvoke</,
@@ -1266,6 +1334,7 @@ function ownerHarness(): OwnerHarness {
   owner = async () => "B";
   dispatch = async () => "ok";
   dispatches = 0;
+  reads = 0;
   boots = 0;
   disposes = 0;
   timers = [];
@@ -1274,10 +1343,12 @@ function ownerHarness(): OwnerHarness {
   #protectedDispose() { this.disposes++; }
   #invoke(command) {
     if (command !== "e2ee_store_owner") throw new Error("unexpected " + command);
+    this.reads++;
     return this.owner();
   }
   #protectedTextDispatch() { this.dispatches++; return this.dispatch(); }
   check(retry) { return this.#checkStoreOwner(retry); }
+  request() { this.#requestStoreOwnerRead(); }
   capable() { return this.protectedTextCapable(); }
   text(cmd, args) { return this.#textInvoke(cmd, args); }
   latched() { return this.storeOwnedByAnotherAccount.has("state"); }
@@ -1322,6 +1393,48 @@ const NOT_OURS = {
   owner_user_id: "A",
   requested_user_id: "B",
 };
+
+test("S13 (A-1): an enabled status before any owner read is NOT capable", async () => {
+  const h = ownerHarness();
+  // Status enabled (the `#ensureBootStatus` race), no owner read yet.
+  assert.equal(h.capable(), false, "no successful read yet");
+  await assert.rejects(h.text("e2ee_text_pin_own_devices", {}), {
+    reason: "not_capable",
+  });
+  await assert.rejects(h.text("e2ee_text_decrypt", {}), {
+    reason: "not_capable",
+  });
+  assert.equal(h.dispatches, 0, "no text command reaches native");
+  let release: (owner: string | null) => void = () => {};
+  h.owner = () =>
+    new Promise<string | null>((resolve) => {
+      release = resolve;
+    });
+  h.request();
+  h.request(); // deduped while in flight
+  assert.equal(h.reads, 1);
+  assert.equal(h.capable(), false, "still not capable while the read runs");
+  release("B");
+  await settle();
+  assert.equal(h.capable(), true, "capable once the read succeeds");
+  assert.equal(h.boots, 1, "the read runs the boot gate");
+  h.request();
+  assert.equal(h.reads, 1, "no read once one succeeded");
+  // An empty store (no MLS row) is a successful read too.
+  const fresh = ownerHarness();
+  fresh.owner = async () => null;
+  await fresh.check();
+  assert.equal(fresh.capable(), true);
+  assert.equal(fresh.boots, 1);
+  // Not asked where the text plane never runs, or before E2EE is on.
+  const web = ownerHarness();
+  web.structural = false;
+  web.request();
+  const off = ownerHarness();
+  off.status.set("state", { enabled: false, device_id: null });
+  off.request();
+  assert.equal(web.reads + off.reads, 0);
+});
 
 test("S13 (A-1): an owner check that throws leaves the text plane NOT capable", async () => {
   const h = ownerHarness();

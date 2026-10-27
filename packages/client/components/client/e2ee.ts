@@ -1980,11 +1980,12 @@ export class E2EEBridge implements E2EEAdapter {
    * still run and nothing here says the store is fine.
    *
    * A throw leaves calls and DMs as they were (UNKNOWN), but the protected
-   * text plane fails closed on it (S1-final A-1): `#storeOwnerUnread` keeps
-   * `protectedTextCapable()` false until a retry reads the owner. Retries
-   * run only on the Tauri main window, the one window the text plane runs
-   * in; elsewhere the text plane is never capable, so a shell without the
-   * accessor stays the benign case.
+   * text plane fails closed on it (S1-final A-1): `#storeOwnerUnread` starts
+   * set and keeps `protectedTextCapable()` false until a read SUCCEEDS (an
+   * owner, or no MLS row: nobody's groups). Retries run only on the Tauri
+   * main window, the one window the text plane runs in; elsewhere the text
+   * plane is never capable, so a shell without the accessor stays the benign
+   * case. The first successful read runs the F4 boot gate.
    */
   async #checkStoreOwner(retry = false): Promise<void> {
     const userId = this.#client.user?.id;
@@ -2001,30 +2002,58 @@ export class E2EEBridge implements E2EEAdapter {
       this.#scheduleStoreOwnerRetry();
       return;
     }
+    const wasUnread = this.#storeOwnerUnread;
     this.#storeOwnerUnread = false;
     this.#storeOwnerRetries = 0;
     if (this.#storeOwnerRetryTimer !== null) {
       clearTimeout(this.#storeOwnerRetryTimer);
       this.#storeOwnerRetryTimer = null;
     }
-    if (!owner) return; // no MLS row yet: UNKNOWN
 
-    if (owner === userId) {
+    if (owner && owner !== userId) {
+      this.#raiseStoreOwnedByAnotherAccount();
+      return;
+    }
+    if (owner) {
       // Local evidence in the other direction. It does NOT touch
       // `deviceOwnedElsewhere`: a device can be rightfully ours and still
       // revoked server-side.
       this.storeOwnedByAnotherAccount.delete("state");
-      return;
     }
-
-    this.#raiseStoreOwnedByAnotherAccount();
+    // No MLS row yet is UNKNOWN for calls and DMs; for the text plane it is
+    // a successful read (no other account's groups). A-1: the first one
+    // starts the text plane through the F4 gate.
+    if (wasUnread) this.#protectedBootManager();
   }
 
-  /** A-1: the last owner check threw; the text plane is not capable. */
-  #storeOwnerUnread = false;
+  /**
+   * A-1: no owner read has succeeded on this bridge yet (it starts set), or
+   * the last one threw. The text plane is not capable while it is set.
+   */
+  #storeOwnerUnread = true;
   #storeOwnerRetryTimer: ReturnType<typeof setTimeout> | null = null;
   /** Retries since the last connect's check (bounded backoff). */
   #storeOwnerRetries = 0;
+  /** A read `#requestStoreOwnerRead` started and that has not settled. */
+  #storeOwnerReading: Promise<void> | null = null;
+
+  /**
+   * A-1: an enabled status can land before `#onReady`'s owner read (the
+   * boot-race `#ensureBootStatus`, or `enable()` on a device that was
+   * unprovisioned at connect, where no read ran). The text plane asks for
+   * the read instead of trusting the status: deduped, never while a backoff
+   * retry is pending, and only on the Tauri main window with an enabled
+   * status.
+   */
+  #requestStoreOwnerRead(): void {
+    if (!this.#storeOwnerUnread || this.#storeOwnerReading) return;
+    if (this.#storeOwnerRetryTimer !== null || this.#ptSignedOut) return;
+    if (!this.#protectedStructural()) return;
+    if (this.status.get("state")?.enabled !== true) return;
+    this.#storeOwnerReading = this.#checkStoreOwner(true).finally(() => {
+      this.#storeOwnerReading = null;
+    });
+  }
 
   /**
    * A-1: re-read the owner after 2, 4, 8, 16, 32 and 64 s, then wait for
@@ -2040,9 +2069,8 @@ export class E2EEBridge implements E2EEAdapter {
     this.#storeOwnerRetryTimer = setTimeout(() => {
       this.#storeOwnerRetryTimer = null;
       if (this.#ptSignedOut) return;
-      void this.#checkStoreOwner(true).then(() => {
-        if (!this.#storeOwnerUnread) this.#protectedBootManager();
-      });
+      // A read that succeeds runs the boot gate itself.
+      void this.#checkStoreOwner(true);
     }, delay);
   }
 
@@ -7541,8 +7569,12 @@ export class E2EEBridge implements E2EEAdapter {
   #ptDeletesSubscribed = false;
   /** `disposeProtected()` ran: never build a manager again. */
   #ptSignedOut = false;
-  /** F4: the boot flag probe (`GET /`) ran on this bridge. */
+  /** F4: the boot flag probe (`GET /`) got a response on this bridge. */
   #ptFlagProbed = false;
+  #ptFlagProbing = false;
+  /** F4: probes that got no response (retried on later boots, bounded). */
+  #ptFlagProbeFailures = 0;
+  readonly #ptFlagProbeMaxFailures = 5;
   /** Channels the UI holds open (survives a manager rebuild). */
   readonly #ptOpen = new Set<string>();
   /** Draft outbox keys (set by the Draft lane); unset = unknown. */
@@ -7837,9 +7869,10 @@ export class E2EEBridge implements E2EEAdapter {
    * and the two SDK hooks) build the manager only when there is protected
    * work: an indexed (server-protected or pinned) channel, or the advertised
    * flag. Otherwise they only probe the flag, so a user with no protected
-   * channel on a dark deployment pays one `GET /` per bridge and no
-   * own-device pin write or device listing. User actions (`enable()`, the
-   * re-enroll, open, send, a group op) still call `#protectedEnsureManager`.
+   * channel on a dark deployment pays one `GET /` per bridge (on every
+   * window) and no own-device pin write or device listing. User actions
+   * (`enable()`, the re-enroll, open, send, a group op) still call
+   * `#protectedEnsureManager`.
    */
   #protectedBootManager(): void {
     if (this.#ptIndexed.size > 0 || this.protectedFlag().enabled) {
@@ -7850,16 +7883,42 @@ export class E2EEBridge implements E2EEAdapter {
   }
 
   /**
-   * F4: fetch the flag once per bridge, on a capable window with no manager,
-   * and build the manager when it answers enabled. Never rejects.
+   * F4: fetch the flag while no manager exists, on ANY window: `GET /` is a
+   * public read with no native call, and the settings tab (with its
+   * enable-E2EE guidance) needs the advert on a window that is not capable
+   * yet. Only building the manager needs capability (`#protectedEnsureManager`
+   * checks it). Once per bridge after a response; a failed request (no
+   * response, read as "off") is retried on the next boot path, at most
+   * `#ptFlagProbeMaxFailures` times. Deduped while in flight. Never rejects.
    */
   async #protectedProbeFlag(): Promise<void> {
     if (this.#ptManager || this.#ptSignedOut || this.#ptFlagProbed) return;
-    if (!this.#protectedManagerKeyNow()) return;
-    this.#ptFlagProbed = true;
-    const flag = await fetchProtectedChannelsFlag(this.#client);
-    this.#ptFlagState.set("state", flag);
-    if (flag.enabled) this.#protectedEnsureManager();
+    // A-1: not capable before an owner read; its success re-runs the gate.
+    if (this.#storeOwnerUnread) this.#requestStoreOwnerRead();
+    if (this.#ptFlagProbing) return;
+    if (this.#ptFlagProbeFailures >= this.#ptFlagProbeMaxFailures) return;
+    this.#ptFlagProbing = true;
+    let answered = false;
+    try {
+      const flag = await fetchProtectedChannelsFlag({
+        api: {
+          get: async (path: "/") => {
+            const body: unknown = await this.#client.api.get(path);
+            answered = true;
+            return body;
+          },
+        },
+      });
+      if (!answered) {
+        this.#ptFlagProbeFailures++;
+        return;
+      }
+      this.#ptFlagProbed = true;
+      this.#ptFlagState.set("state", flag);
+      if (flag.enabled) this.#protectedEnsureManager();
+    } finally {
+      this.#ptFlagProbing = false;
+    }
   }
 
   /**
@@ -7868,6 +7927,8 @@ export class E2EEBridge implements E2EEAdapter {
    */
   #protectedEnsureManager(): void {
     if (this.#ptManager || this.#ptSignedOut) return;
+    // A-1: not capable before an owner read; its success re-runs the gate.
+    if (this.#storeOwnerUnread) this.#requestStoreOwnerRead();
     const key = this.#protectedManagerKeyNow();
     const userId = this.#client.user?.id;
     const deviceId = this.status.get("state")?.device_id;
