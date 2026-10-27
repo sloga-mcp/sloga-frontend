@@ -1334,6 +1334,8 @@ function bootHarness(): BootHarness {
     this.builds++;
     this.#ptManager = {};
   }
+  // S7 audit fix 3: the probe routes its answer to the S7 flag (C3's scan).
+  #protectedFlagEvent() {}
   signOut() { this.#ptSignedOut = true; }
   boot() { this.#protectedBootManager(); }
   flag() { return this.protectedFlag(); }
@@ -1447,7 +1449,8 @@ test("S12 (F4): a probe with no response is retried on the next boot, bounded", 
 
 test("S12 (F4): the boot paths go through the gate; the hooks boot with no manager", async () => {
   // onReady (S9 pins its shape), the owner re-check and the two SDK hooks.
-  assert.equal(count(SRC, "this.#protectedBootManager();"), 4);
+  // + the S7 platform flag flip (audit fix 3, #protectedPlatformApply).
+  assert.equal(count(SRC, "this.#protectedBootManager();"), 5);
   const ready = stripComments(
     member(SRC, /\n {2}async #protectedOnReady\(\): Promise<void> /),
   );

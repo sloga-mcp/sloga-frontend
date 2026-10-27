@@ -7862,35 +7862,43 @@ export class E2EEBridge implements E2EEAdapter {
   }
 
   /**
-   * Settle the flag and the Android probe (RR-1, PA-8). The flag is seeded
-   * from this account's last-known value, then fetched (5 s), independently
-   * of capability; the probe is asked in parallel (5 s, then failed). A
-   * start that ends without a server answer ends like a timed-out one:
-   * a known value stays, unknown becomes off, so the router never holds for
-   * the bridge's whole life. Never rejects.
+   * Settle the flag and the Android probe (RR-1, PA-8).
+   * - The flag is seeded from this account's last-known value. A seed
+   *   decides at once and the start does not wait for the network; only a
+   *   first run (no seed) waits for the server, at most 5 s.
+   * - The fetch always runs, independently of capability, and its answer is
+   *   routed through `#protectedFlagEvent` whenever it lands, also after the
+   *   start, so a slow first answer or a changed server value takes effect
+   *   in this session.
+   * - The Android probe is a local plugin call, awaited on every start (5 s,
+   *   then failed).
+   * - The start window then closes like a timeout: a known value stays,
+   *   unknown becomes off, so the router never holds for the bridge's life.
+   * Never rejects.
    */
   async #protectedPlatformDecide(): Promise<void> {
     const userId = this.#client.user?.id ?? null;
     const android = this.#protectedPlatformInput().androidProbe !== null;
     try {
+      const seed = this.#protectedFlagLastKnown(userId);
       this.#ptServerFlag = reduceFlag(this.#ptServerFlag, {
         kind: "seed",
-        value: this.#protectedFlagLastKnown(userId),
+        value: seed,
       });
-      const [flagEvent, probe] = await Promise.all([
-        this.#protectedWithin<FlagEvent>(this.#protectedFlagFetch(), {
-          kind: "timeout",
-        }),
+      const answered = this.#protectedFlagFetch()
+        .then(({ event }) => {
+          this.#protectedFlagEvent(event);
+          return true;
+        })
+        .catch((error: unknown) => {
+          console.error("[protected] flag answer failed", errorName(error));
+          return false;
+        });
+      const [, probe] = await Promise.all([
+        seed === null ? this.#protectedWithin(answered, false) : null,
         android ? this.#protectedAndroidProbe() : Promise.resolve(null),
       ]);
-      this.#ptServerFlag = reduceFlag(this.#ptServerFlag, flagEvent);
-      if (flagEvent.kind === "fetch_ok") {
-        this.#protectedFlagRemember(userId, flagEvent.enabled);
-      } else if (flagEvent.kind === "fetch_failed") {
-        this.#ptServerFlag = reduceFlag(this.#ptServerFlag, {
-          kind: "timeout",
-        });
-      }
+      this.#ptServerFlag = reduceFlag(this.#ptServerFlag, { kind: "timeout" });
       if (probe) this.#ptProbe = probe;
     } catch (error) {
       console.error("[protected] platform start failed", errorName(error));
@@ -7903,11 +7911,54 @@ export class E2EEBridge implements E2EEAdapter {
   }
 
   /**
+   * Audit fix 3: the ONE way the server flag moves after its seed. Every
+   * answer the bridge gets (the start's fetch, the boot probe, the D13
+   * refresh) is reduced here: an answer replaces the state and is
+   * remembered for this account; a failure changes nothing (sticky).
+   */
+  #protectedFlagEvent(event: FlagEvent): void {
+    const before = this.#protectedPlatformState();
+    const prev = this.#ptServerFlag;
+    this.#ptServerFlag = reduceFlag(this.#ptServerFlag, event);
+    if (event.kind === "fetch_ok") {
+      this.#protectedFlagRemember(this.#client.user?.id ?? null, event.enabled);
+    }
+    if (this.#ptServerFlag === prev) return;
+    this.#protectedPlatformChanged();
+    this.#protectedPlatformApply(before);
+  }
+
+  /**
+   * Act on a platform change once the bridge's first `#protectedOnReady`
+   * has run (before that, it settles both itself): held envelopes are
+   * re-routed; a window that stopped being structural drops its manager
+   * (D10: off is today's call path); one that became structural and is not
+   * on hold boots the manager the normal way. Never runs on Tauri, whose
+   * structural state never changes.
+   */
+  #protectedPlatformApply(before: {
+    structural: boolean;
+    hold: boolean;
+  }): void {
+    if (!this.#ptIndex.ready) return;
+    const after = this.#protectedPlatformState();
+    if (after.structural === before.structural && after.hold === before.hold)
+      return;
+    if (before.structural && !after.structural) this.#protectedDispose();
+    this.#protectedFlushPreIndex();
+    if (after.structural && !after.hold) this.#protectedBootManager();
+  }
+
+  /**
    * `GET /` for the advert, telling a failed request (`fetch_failed`) from
    * an answer: `protectedChannelsFlag.ts` reads a failure as off, which is
-   * NOT this input (D9). A malformed answer still parses as off.
+   * NOT this input (D9). A malformed answer still parses as off. `flag` is
+   * the parsed advert as W4 reads it (off on a failure).
    */
-  async #protectedFlagFetch(): Promise<FlagEvent> {
+  async #protectedFlagFetch(): Promise<{
+    event: FlagEvent;
+    flag: ProtectedChannelsFlag;
+  }> {
     let failed = false;
     const flag = await fetchProtectedChannelsFlag({
       api: {
@@ -7921,9 +7972,12 @@ export class E2EEBridge implements E2EEAdapter {
         },
       },
     });
-    return failed
-      ? { kind: "fetch_failed" }
-      : { kind: "fetch_ok", enabled: flag.enabled };
+    return {
+      event: failed
+        ? { kind: "fetch_failed" }
+        : { kind: "fetch_ok", enabled: flag.enabled },
+      flag,
+    };
   }
 
   /** The Android probe, bounded; any failure or a timeout is `failed`. */
@@ -8261,10 +8315,14 @@ export class E2EEBridge implements E2EEAdapter {
       });
       if (!answered) {
         this.#ptFlagProbeFailures++;
+        // Audit fix 3: sticky; a failure never moves the S7 flag.
+        this.#protectedFlagEvent({ kind: "fetch_failed" });
         return;
       }
       this.#ptFlagProbed = true;
       this.#ptFlagState.set("state", flag);
+      // Audit fix 3: the S7 platform flag follows this answer too.
+      this.#protectedFlagEvent({ kind: "fetch_ok", enabled: flag.enabled });
       if (flag.enabled) this.#protectedEnsureManager();
     } finally {
       this.#ptFlagProbing = false;
@@ -8760,8 +8818,11 @@ export class E2EEBridge implements E2EEAdapter {
 
   /** D13: fetch the flag; when enabled, run the D12 ready-time replenish. */
   async #protectedRefreshFlag(): Promise<void> {
-    const flag = await fetchProtectedChannelsFlag(this.#client);
+    // `flag` reads a failure as off, as before; `event` tells the two apart
+    // for the S7 platform flag (audit fix 3), where a failure is sticky.
+    const { event, flag } = await this.#protectedFlagFetch();
     this.#ptFlagState.set("state", flag);
+    this.#protectedFlagEvent(event);
     if (flag.enabled) await this.#protectedReplenish();
   }
 

@@ -142,6 +142,12 @@ const FIELDS = [
   "#ptStart",
   "#ptPlatformLogged",
   "#ptStartTimeoutMs",
+  // W4 F4 boot probe and D13 state (audit fix 3: their answers are routed)
+  "#ptFlagState",
+  "#ptFlagProbed",
+  "#ptFlagProbing",
+  "#ptFlagProbeFailures",
+  "#ptFlagProbeMaxFailures",
 ];
 
 const MEMBERS = [
@@ -155,7 +161,11 @@ const MEMBERS = [
   /\n {2}#protectedPlatformChanged\(\): void /,
   /\n {2}#protectedPlatformStart\(\): Promise<void> \| null /,
   /\n {2}async #protectedPlatformDecide\(\): Promise<void> /,
-  /\n {2}async #protectedFlagFetch\(\): Promise<FlagEvent> /,
+  /\n {2}async #protectedFlagFetch\(\): Promise<\{\s*event: FlagEvent;\s*flag: ProtectedChannelsFlag;\s*\}> /,
+  /\n {2}#protectedFlagEvent\(event: FlagEvent\): void /,
+  /\n {2}#protectedPlatformApply\(/,
+  /\n {2}async #protectedProbeFlag\(\): Promise<void> /,
+  /\n {2}async #protectedRefreshFlag\(\): Promise<void> /,
   /\n {2}async #protectedAndroidProbe\(\): Promise<AndroidProbe> /,
   /\n {2}#protectedWithin</,
   /\n {2}#protectedFlagKey\(/,
@@ -221,6 +231,13 @@ interface Bridge {
   probe(): unknown;
   version(): number | undefined;
   log(): void;
+  /** `#ptIndex.ready`: the first `#protectedOnReady` ran. */
+  indexReady: boolean;
+  /** W4's F4 boot probe and D13 refresh (lifted, real). */
+  probeFlag(): Promise<void>;
+  refreshFlag(): Promise<void>;
+  /** W4's advert state (`protectedFlag()`), as the probe/refresh set it. */
+  advert(): { enabled: boolean } | undefined;
 }
 
 interface Rig {
@@ -231,6 +248,11 @@ interface Rig {
   probes: number;
   timers: { ms: number; fire(): void; cleared: boolean }[];
   storage: Map<string, string> | "throws";
+  /** Counting stubs: `#protectedBootManager`, `#protectedDispose`, ... */
+  boots: number;
+  disposes: number;
+  flushes: number;
+  ensures: number;
   /** Fire every pending (uncleared) timer. */
   fireTimers(): void;
 }
@@ -247,6 +269,10 @@ function rig(env: Env): Rig {
     probes: 0,
     timers,
     storage,
+    boots: 0,
+    disposes: 0,
+    flushes: 0,
+    ensures: 0,
     fireTimers() {
       for (const t of timers) if (!t.cleared) t.fire();
     },
@@ -275,7 +301,21 @@ function rig(env: Env): Rig {
   #storeOwnerRetries = 0;
   #storeOwnerRetryTimer = null;
   #scheduleStoreOwnerRetry() {}
-  #protectedBootManager() {}
+  #protectedBootManager() { rig.boots++; }
+  // Audit fixes 3/4: what the routed flag reaches (counting stubs).
+  #ptIndex = { ready: false };
+  #ptManager = null;
+  #ptSignedOut = false;
+  #protectedDispose() { rig.disposes++; }
+  #protectedFlushPreIndex() { rig.flushes++; }
+  #protectedEnsureManager() { rig.ensures++; }
+  #requestStoreOwnerRead() {}
+  async #protectedReplenish() {}
+  get indexReady() { return this.#ptIndex.ready; }
+  set indexReady(v) { this.#ptIndex.ready = v; }
+  probeFlag() { return this.#protectedProbeFlag(); }
+  refreshFlag() { return this.#protectedRefreshFlag(); }
+  advert() { return this.#ptFlagState.get("state"); }
   readOk() { this.#storeOwnerUnread = false; }
   unread() { return this.#storeOwnerUnread; }
   structural() { return this.#protectedStructural(); }
@@ -614,6 +654,7 @@ test("W1: the flag is seeded from this account's last-known value", async () => 
   assert.equal(r.bridge.flag(), "on", "seeded before the fetch answers");
   root.reject(new Error("offline"));
   await p;
+  await settle();
   assert.equal(r.bridge.flag(), "on", "a failed fetch keeps a known on");
   assert.deepEqual(r.bridge.state(), { structural: true, hold: false });
   // Another account's value is not this account's.
@@ -654,6 +695,8 @@ test("W1: a successful off replaces a seeded on, and is persisted", async () => 
     storage,
     fetch: async () => ROOT_OFF,
   });
+  // A seeded start does not wait for the answer (audit fix 4); it lands.
+  await settle();
   assert.equal(r.bridge.flag(), "off");
   assert.equal(storage.get("protected-flag:U1"), "off");
   assert.deepEqual(r.bridge.state(), { structural: false, hold: false });
@@ -696,6 +739,207 @@ test("W1: unreadable storage seeds nothing and never throws", async () => {
   });
   assert.equal(r.bridge.flag(), "on");
   assert.deepEqual(r.errors, [], "nothing logged as a failure");
+});
+
+// ---- W4 audit fixes 3/4: one flag, seeded starts never wait on the network --
+
+/** Has `p` settled yet (after the queued reactions ran)? */
+async function settled(p: Promise<unknown>): Promise<boolean> {
+  let done = false;
+  void p.then(() => {
+    done = true;
+  });
+  await settle();
+  return done;
+}
+
+test("W4 (fix 4): a seeded start decides from the seed and does not wait for GET /", async () => {
+  for (const seed of ["on", "off"] as const) {
+    const root = deferred<unknown>();
+    const r = rig({
+      shell: "electron",
+      protectedText: 1,
+      storage: new Map([["protected-flag:U1", seed]]),
+      fetch: () => root.promise,
+    });
+    const p = r.bridge.start();
+    assert.ok(p);
+    assert.equal(await settled(p), true, `seed ${seed}: start is not blocked`);
+    assert.equal(
+      r.fetches,
+      1,
+      `seed ${seed}: still fetched, in the background`,
+    );
+    assert.equal(r.timers.length, 0, `seed ${seed}: no flag deadline`);
+    assert.equal(r.bridge.flag(), seed);
+    assert.equal(r.bridge.state().hold, false);
+  }
+  // Android with a seeded off: held only until the local probe answers.
+  const probe = deferred<unknown>();
+  const a = rig({
+    shell: "android",
+    storage: new Map([["protected-flag:U1", "off"]]),
+    fetch: () => new Promise(() => {}),
+    probe: () => probe.promise,
+  });
+  const p = a.bridge.start();
+  assert.ok(p);
+  assert.equal(await settled(p), false, "waits for the probe");
+  assert.deepEqual(
+    a.timers.map((t) => t.ms),
+    [5000],
+    "the probe's deadline only",
+  );
+  probe.resolve(PROBE_OK);
+  assert.equal(await settled(p), true, "the probe answer ends the start");
+  assert.deepEqual(a.bridge.state(), { structural: false, hold: false });
+});
+
+test("W4 (fix 4): a first run (no seed) waits for the answer, at most 5 s", async () => {
+  const root = deferred<unknown>();
+  const r = rig({
+    shell: "electron",
+    protectedText: 1,
+    fetch: () => root.promise,
+  });
+  const p = r.bridge.start();
+  assert.ok(p);
+  assert.equal(await settled(p), false, "held for the server");
+  assert.deepEqual(
+    r.timers.map((t) => t.ms),
+    [5000],
+  );
+  root.resolve(ROOT_ON);
+  assert.equal(await settled(p), true);
+  assert.equal(r.bridge.flag(), "on");
+});
+
+test("W4 (fix 3): a late answer to the start's own fetch lands after the deadline", async () => {
+  const root = deferred<unknown>();
+  const storage = new Map<string, string>();
+  const r = rig({
+    shell: "electron",
+    protectedText: 1,
+    storage,
+    fetch: () => root.promise,
+  });
+  const p = r.bridge.start();
+  await settle();
+  r.fireTimers(); // GET / took > 5 s
+  await p;
+  assert.equal(r.bridge.flag(), "off", "no answer in time: off");
+  assert.deepEqual(r.bridge.state(), { structural: false, hold: false });
+  r.bridge.indexReady = true; // the first #protectedOnReady ran
+  root.resolve(ROOT_ON);
+  await settle();
+  assert.equal(r.bridge.flag(), "on", "the late answer is routed");
+  assert.equal(storage.get("protected-flag:U1"), "on", "and remembered");
+  assert.deepEqual(r.bridge.state(), { structural: true, hold: false });
+  assert.equal(r.boots, 1, "structural on: the manager boots the normal way");
+  assert.equal(r.flushes, 1, "held envelopes re-routed");
+  assert.equal(r.disposes, 0);
+});
+
+test("W4 (fix 3): W4's boot probe answer is routed: on flips structural on, off flips it off", async () => {
+  const answer = { value: ROOT_ON as unknown };
+  const storage = new Map([["protected-flag:U1", "off"]]);
+  const r = rig({
+    shell: "android",
+    storage,
+    fetch: async () => answer.value,
+    probe: async () => PROBE_OK,
+  });
+  await r.bridge.start();
+  // The seeded start did not wait; its own background answer (on) lands
+  // before the first #protectedOnReady, so nothing is acted on yet.
+  await settle();
+  assert.equal(r.disposes + r.flushes + r.boots, 0);
+  assert.equal(r.bridge.flag(), "on");
+  answer.value = ROOT_OFF;
+  r.bridge.indexReady = true;
+  await r.bridge.refreshFlag();
+  assert.equal(r.bridge.flag(), "off", "the D13 refresh answer is routed");
+  assert.equal(storage.get("protected-flag:U1"), "off", "and remembered");
+  assert.equal(r.bridge.structural(), false);
+  assert.equal(r.disposes, 1, "structural off drops the manager");
+  answer.value = ROOT_ON;
+  await r.bridge.probeFlag();
+  assert.equal(r.bridge.advert()?.enabled, true, "W4's own state, as before");
+  assert.equal(r.bridge.flag(), "on", "the boot probe answer is routed");
+  assert.equal(storage.get("protected-flag:U1"), "on");
+  assert.deepEqual(r.bridge.state(), { structural: true, hold: false });
+  assert.equal(r.boots, 1, "structural on: boot");
+  assert.equal(r.flushes, 2, "re-routed on each flip");
+});
+
+test("W4 (fix 3): a failed refresh or probe after on stays on; W4's advert still reads off", async () => {
+  const fail = { now: false };
+  const storage = new Map<string, string>();
+  const r = rig({
+    shell: "electron",
+    protectedText: 1,
+    storage,
+    fetch: async () => {
+      if (fail.now) throw new Error("offline");
+      return ROOT_ON;
+    },
+  });
+  await r.bridge.start();
+  r.bridge.indexReady = true;
+  assert.equal(r.bridge.flag(), "on");
+  const v = r.bridge.version();
+  fail.now = true;
+  await r.bridge.refreshFlag();
+  assert.equal(r.bridge.flag(), "on", "sticky on a failed refresh");
+  assert.equal(r.bridge.advert()?.enabled, false, "W4: a failure reads as off");
+  await r.bridge.probeFlag();
+  assert.equal(r.bridge.flag(), "on", "sticky on a failed probe");
+  assert.equal(r.bridge.version(), v, "no platform change");
+  assert.equal(storage.get("protected-flag:U1"), "on", "nothing overwritten");
+  assert.equal(r.disposes + r.flushes + r.boots, 0, "nothing acted on");
+});
+
+test("W4 (fix 3): Tauri is unaffected by any flag answer", async () => {
+  const answer = { value: ROOT_OFF as unknown };
+  const r = rig({ shell: "tauri", fetch: async () => answer.value });
+  assert.equal(r.bridge.start(), null, "no start, no wait");
+  r.bridge.indexReady = true;
+  await r.bridge.refreshFlag();
+  assert.deepEqual(r.bridge.state(), { structural: true, hold: false });
+  answer.value = ROOT_ON;
+  await r.bridge.probeFlag();
+  assert.deepEqual(r.bridge.state(), { structural: true, hold: false });
+  assert.equal(r.disposes + r.flushes + r.boots, 0, "no platform action");
+  assert.equal(
+    r.ensures,
+    1,
+    "W4's own probe path (enabled → ensure) as before",
+  );
+});
+
+test("W4 (fix 3): every flag answer path routes through #protectedFlagEvent", () => {
+  const norm = (head: RegExp) => stripComments(member(SRC, head));
+  const probe = norm(/\n {2}async #protectedProbeFlag\(\): Promise<void> /);
+  assert.match(
+    probe,
+    /this\.#ptFlagState\.set\("state", flag\);\s*this\.#protectedFlagEvent\(\{ kind: "fetch_ok", enabled: flag\.enabled \}\);/,
+  );
+  assert.match(
+    probe,
+    /this\.#ptFlagProbeFailures\+\+;\s*this\.#protectedFlagEvent\(\{ kind: "fetch_failed" \}\);\s*return;/,
+  );
+  const refresh = norm(/\n {2}async #protectedRefreshFlag\(\): Promise<void> /);
+  assert.match(
+    refresh,
+    /const \{ event, flag \} = await this\.#protectedFlagFetch\(\);\s*this\.#ptFlagState\.set\("state", flag\);\s*this\.#protectedFlagEvent\(event\);/,
+  );
+  assert.equal(count(SRC, "fetchProtectedChannelsFlag(this.#client)"), 0);
+  // Only the seed and the start's closing timeout reduce outside the router.
+  assert.equal(
+    count(SRC, "this.#protectedFlagEvent("),
+    4,
+    "start, probe x2, refresh",
+  );
 });
 
 test("W1: one [protected] platform line per bridge, starting with the marker", async () => {
