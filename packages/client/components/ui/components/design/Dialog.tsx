@@ -145,6 +145,12 @@ const ScrimBase = styled("div", {
   },
   variants: {
     show: {
+      // Modern: blur what is behind an open dialog. Only while it is shown:
+      // a closed modal stays mounted for its exit, and the blur must not
+      // outlive it. Off with the appearance menu's blur switch.
+      true: {
+        _modern: { backdropFilter: "var(--effects-blur-md)" },
+      },
       false: {
         animationName: "unset",
         pointerEvents: "none",
@@ -203,6 +209,15 @@ const Container = styled("div", {
 
     color: "var(--md-sys-color-on-surface)",
     background: "var(--md-sys-color-surface-container-high)",
+
+    // Modern: a crisper frame that floats off the page
+    _modern: {
+      borderRadius: "16px",
+      border:
+        "1px solid color-mix(in srgb, var(--md-sys-color-on-surface) 9%, transparent)",
+      boxShadow:
+        "inset 0 1px 0 rgb(255 255 255 / 0.04), 0 24px 60px -16px rgb(0 0 0 / 0.6)",
+    },
   },
 });
 

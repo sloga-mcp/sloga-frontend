@@ -16,6 +16,14 @@ export const Panel = styled("section", {
     borderRadius: "16px",
     background: "var(--md-sys-color-surface-container)",
     color: "var(--md-sys-color-on-surface)",
+
+    // Modern: a fine ring (inset, so the card does not change size) and a
+    // soft shadow. The other Home cards (What's New, Cipher, Customize) carry
+    // the same pair; keep them in step.
+    _modern: {
+      boxShadow:
+        "inset 0 0 0 1px color-mix(in srgb, var(--md-sys-color-on-surface) 8%, transparent), 0 10px 26px -14px rgb(0 0 0 / 0.55)",
+    },
   },
 });
 
@@ -47,6 +55,21 @@ export const PanelTitle = styled("h2", {
       height: "18px",
       flexShrink: 0,
       fill: "currentColor",
+    },
+
+    // Modern: the title icon sits in a tinted chip. Drawn as a shadow spread
+    // around the untouched 18px icon: the icons carry no viewBox, so resizing
+    // or padding the <svg> crops the glyph instead of scaling it.
+    _modern: {
+      "& > svg": {
+        margin: "6px",
+        borderRadius: "3px",
+        background:
+          "color-mix(in srgb, var(--md-sys-color-primary) 14%, transparent)",
+        boxShadow:
+          "0 0 0 6px color-mix(in srgb, var(--md-sys-color-primary) 14%, transparent)",
+        fill: "var(--md-sys-color-primary)",
+      },
     },
   },
 });

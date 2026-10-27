@@ -277,7 +277,13 @@ describe("ensureAccountOwner()", () => {
 
     for (const key of KEYS) {
       d.sync.merge(1_000, key, JSON.stringify(ACCOUNT_B[key]));
-      assert.deepEqual(d.data(key), ACCOUNT_B[key]);
+      // adopting a theme copy also records which newer theme fields it
+      // carried (none here): device-local bookkeeping, never uploaded
+      const want =
+        key === "theme"
+          ? { ...ACCOUNT_B.theme, knownFields: [] }
+          : ACCOUNT_B[key];
+      assert.deepEqual(d.data(key), want);
     }
     assert.deepEqual(await nextUpload(d), []);
   });

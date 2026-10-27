@@ -93,16 +93,47 @@ const iconButton2 = cva({
 
     color: "var(--colour)",
     fill: "var(--colour)",
+
+    // Modern: keyboard focus ring, as on Button
+    _modern: {
+      _focusVisible: {
+        outline: "2px solid var(--md-sys-color-primary)",
+        outlineOffset: "2px",
+      },
+    },
   },
   variants: {
     variant: {
+      // Modern: raised like Button's filled and tonal, a little lighter, and
+      // without the hover lift (icon buttons sit in dense rows)
       filled: {
         background: "var(--md-sys-color-primary)",
         "--colour": "var(--md-sys-color-on-primary)",
+        _modern: {
+          backgroundImage:
+            "linear-gradient(180deg, rgb(255 255 255 / 0.16), rgb(255 255 255 / 0) 65%)",
+          boxShadow:
+            "inset 0 1px 0 rgb(255 255 255 / 0.22), 0 1px 2px rgb(0 0 0 / 0.3), 0 4px 12px -4px color-mix(in srgb, var(--md-sys-color-primary) 50%, transparent)",
+          _enabled: {
+            _active: { boxShadow: "inset 0 2px 4px rgb(0 0 0 / 0.28)" },
+          },
+        },
       },
       tonal: {
         background: "var(--md-sys-color-secondary-container)",
         "--colour": "var(--md-sys-color-on-secondary-container)",
+        _modern: {
+          backgroundImage:
+            "linear-gradient(180deg, rgb(255 255 255 / 0.06), rgb(255 255 255 / 0) 70%)",
+          boxShadow:
+            "inset 0 0 0 1px color-mix(in srgb, var(--md-sys-color-on-surface) 10%, transparent), 0 1px 2px rgb(0 0 0 / 0.22)",
+          _enabled: {
+            _active: {
+              boxShadow:
+                "inset 0 0 0 1px color-mix(in srgb, var(--md-sys-color-on-surface) 10%, transparent), inset 0 2px 3px rgb(0 0 0 / 0.3)",
+            },
+          },
+        },
       },
       outlined: {
         border: "1px solid var(--md-sys-color-outline-variant)",
@@ -186,6 +217,7 @@ const iconButton2 = cva({
           "color-mix(in srgb, 38% var(--md-sys-color-on-surface), transparent)",
         background:
           "color-mix(in srgb, 10% var(--md-sys-color-on-surface), transparent)",
+        _modern: { backgroundImage: "none", boxShadow: "none" },
       },
     },
     {

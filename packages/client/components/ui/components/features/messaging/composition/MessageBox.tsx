@@ -143,6 +143,18 @@ const Base = styled("div", {
     display: "flex",
     background: "var(--md-sys-color-surface-container-high)",
     color: "var(--md-sys-color-on-surface)",
+
+    // Modern: a fine ring and soft shadow, and a ring in the accent while
+    // typing (the editor itself draws no focus outline)
+    _modern: {
+      boxShadow:
+        "inset 0 0 0 1px color-mix(in srgb, var(--md-sys-color-on-surface) 10%, transparent), 0 8px 20px -12px rgb(0 0 0 / 0.6)",
+      transition: "box-shadow var(--transitions-fast)",
+      _focusWithin: {
+        boxShadow:
+          "inset 0 0 0 1px color-mix(in srgb, var(--md-sys-color-primary) 60%, transparent), 0 0 0 3px color-mix(in srgb, var(--md-sys-color-primary) 18%, transparent), 0 8px 20px -12px rgb(0 0 0 / 0.6)",
+      },
+    },
   },
   variants: {
     hasActionsAppend: {
