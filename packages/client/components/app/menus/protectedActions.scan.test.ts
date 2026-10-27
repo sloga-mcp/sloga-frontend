@@ -13,11 +13,11 @@
 //      with no ok view it is hidden and copies nothing; server `content` is
 //      read only on non-protected rows (and by `canForward` after its gate);
 //  A4  reply, react, pin, delete, mark unread, copy link and copy id carry
-//      no protected gate (their blocks are byte-identical to 7a1e03ca);
+//      no protected gate (their blocks are byte-identical to main 7fde1662);
 //  A5  toolbar: edit gated by `protectedActionsBlocked(protectedRow(),
 //      "edit")`; reply, react and delete unchanged; no GIF/sticker button;
 //  A6  with the protected additions removed, both files are byte-identical
-//      to the W4b checkpoint 7a1e03ca (non-protected behaviour unchanged);
+//      to origin/main 7fde1662 (non-protected behaviour unchanged);
 //  A7  A2's action lists keep/hide what these menus rely on;
 //  A8  no `styled(ImportedComponent, ...)` (blank page at boot).
 //
@@ -52,11 +52,15 @@ const TOOLBAR = readFileSync(
   "utf8",
 );
 
-/** sha256 of the two files at the W4b checkpoint 7a1e03ca. */
+/**
+ * sha256 of the two files on origin/main 7fde1662 (v0.70.0), merged into
+ * this branch. The menu is unchanged since the W4b checkpoint 7a1e03ca;
+ * main's toolbar adds only a `_modern` style block to `Base` (was 7d3c377a).
+ */
 const MENU_BASE_SHA256 =
   "2cc93b651f818f7de53fdd8edccf6124a26ca92f3c7fd8b6ca59859fc9905946";
 const TOOLBAR_BASE_SHA256 =
-  "7d3c377a744ff4fb92d55c32232957570dff85978255d176a2645e52f132bac5";
+  "1c7f892829c3135122ef391af6606f919d57d79bce125d38a95330812abd68b0";
 
 // ---- Source helpers ---------------------------------------------------------
 
@@ -334,7 +338,7 @@ function normalise(
   return out;
 }
 
-test("A6: non-protected source is byte-identical to 7a1e03ca", () => {
+test("A6: non-protected source is byte-identical to main 7fde1662", () => {
   const menu = normalise(
     MENU,
     [
