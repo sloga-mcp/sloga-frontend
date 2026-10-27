@@ -15,7 +15,11 @@ import {
 
 import { useLingui } from "@lingui-solid/solid/macro";
 import type { ApplicationCommandData, Message } from "stoat.js";
-import { Channel } from "stoat.js";
+import {
+  Channel,
+  ProtectedChannelUnavailable,
+  ProtectedFieldRefusedClient,
+} from "stoat.js";
 
 import { styled } from "styled-system/jsx";
 
@@ -24,6 +28,30 @@ import { serverActionsBlocked } from "@revolt/app/interface/channels/text/e2eeTr
 import type { E2EEBridge } from "@revolt/client";
 import { E2EESendError, useClient, useE2EE, useSound } from "@revolt/client";
 import { composerE2EEModeFor } from "@revolt/client/e2eeBadge";
+import {
+  composerCopy,
+  errorUiCopy,
+  markerCopy,
+  messageCopy,
+  noticeCopy,
+  panelCopy,
+} from "@revolt/client/protectedCopy";
+import { isProtectedSendError } from "@revolt/client/protectedSendError";
+import {
+  type ProtectedAction,
+  type ProtectedComposerMode,
+  type ProtectedErrorUi,
+  type ProtectedNoticeKind,
+  protectedActionsBlocked,
+  protectedNoticeForError,
+  shieldPresentation,
+} from "@revolt/client/protectedShield";
+import type { ProtectedChannelView } from "@revolt/client/protectedTextTypes";
+import {
+  protectedUiOf,
+  useProtectedMessage,
+  useProtectedShield,
+} from "@revolt/client/useProtectedChannel";
 import { useWindowCtx } from "@revolt/client/windowCtx";
 import { CONFIGURATION, debounce, useDevice } from "@revolt/common";
 import { pickUploadLimit } from "@revolt/common/lib/uploadLimit";
@@ -47,6 +75,7 @@ import {
   VoiceMessageButton,
   humanFileSize,
 } from "@revolt/ui";
+import { ProtectedShieldIcon } from "@revolt/ui/components/features/protected/ProtectedShieldIcon";
 import { expandTrailingEmoticon } from "@revolt/ui/components/features/texteditor/emoticonExpansion";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
 import { useSearchSpace } from "@revolt/ui/components/utils/autoComplete";
@@ -75,6 +104,15 @@ interface Props {
    */
   onMessageSend?: () => void;
 }
+
+/**
+ * Protected channels whose `maybe_unsent` notice (plan D10) was dismissed
+ * in this session. Module scope so a dismissal outlives a composer remount
+ * (channel switch, chat window); never persisted.
+ */
+const [maybeUnsentDismissed, setMaybeUnsentDismissed] = createSignal<
+  ReadonlySet<string>
+>(new Set());
 
 /**
  * Message composition engine
@@ -212,6 +250,72 @@ export function MessageComposition(props: Props) {
   };
 
   /**
+   * Protected channel (plan D9c, D11): the server reports it protected or
+   * this device pinned it. A predicate of its own on purpose:
+   * `plaintextFeaturesBlocked` is false without E2EE and for every server
+   * channel. Independent of `e2ee`, so the web hides the same actions.
+   * Declared before `pollAllowed`, which reads it eagerly (see above).
+   */
+  const protectedChannel = createMemo(() =>
+    client().isProtectedChannel(props.channel.id),
+  );
+
+  /**
+   * Whether a composer action is hidden here (plan D11)
+   * @param action Action
+   */
+  const protectedHides = (action: ProtectedAction) =>
+    protectedActionsBlocked(protectedChannel(), action);
+
+  /**
+   * Design 9.1 shield, read-only (the open lifecycle is mounted once in
+   * `TextChannel.tsx`)
+   */
+  const protectedShield = useProtectedShield(() => props.channel.id);
+
+  /**
+   * Composer mode on a protected channel (design 9.1): `enabled` only in
+   * the `protected` state. A shield that is still loading, or missing for a
+   * channel the SDK holds protected, is `disabled` (fail closed). Undefined
+   * for every other channel.
+   */
+  const protectedComposer = createMemo<ProtectedComposerMode | undefined>(
+    () => {
+      if (!protectedChannel()) return undefined;
+      const shield = protectedShield();
+      return shield ? shieldPresentation(shield.state).composer : "disabled";
+    },
+  );
+
+  /**
+   * The most specific notice for the shield; a loading shield is
+   * re-securing
+   */
+  const protectedNotice = (): ProtectedNoticeKind => {
+    const shield = protectedShield();
+    if (!shield) return "resecuring";
+    return (
+      shield.notice ?? shieldPresentation(shield.state).notice ?? "unverified"
+    );
+  };
+
+  /**
+   * D10: the manager found no delivered row for an orphan send. Shown in
+   * every shield state until dismissed for this channel (the manager's
+   * flag stays set for the session).
+   */
+  const maybeUnsentShown = () =>
+    protectedChannel() &&
+    protectedShield()?.view?.maybeUnsent === true &&
+    !maybeUnsentDismissed().has(props.channel.id);
+
+  /** Hide the D10 notice for this channel until the next session. */
+  function dismissMaybeUnsent() {
+    const id = props.channel.id;
+    setMaybeUnsentDismissed((prev) => new Set(prev).add(id));
+  }
+
+  /**
    * Whether features that put new plaintext on the server (polls, scheduled
    * messages, the disappearing timer, slash commands) are withheld here.
    * The trust module decides this for every send mode, so an "unconfirmed"
@@ -240,6 +344,7 @@ export function MessageComposition(props: Props) {
       ) &&
       props.channel.havePermission("SendMessage") &&
       !plaintextFeaturesBlocked() &&
+      !protectedHides("poll") &&
       e2eeMode() !== "encrypt" &&
       e2eeMode() !== "blocked" &&
       // Peer downgraded but this side hasn't consented to plaintext yet —
@@ -257,7 +362,8 @@ export function MessageComposition(props: Props) {
    * dark until the loot catalog verification pass is done.
    */
   const softresAllowed = createMemo(
-    () => SOFTRES_CREATION_ENABLED && pollAllowed(),
+    () =>
+      SOFTRES_CREATION_ENABLED && !protectedHides("softres") && pollAllowed(),
   );
 
   /**
@@ -273,6 +379,7 @@ export function MessageComposition(props: Props) {
       ) &&
       props.channel.havePermission("SendMessage") &&
       !plaintextFeaturesBlocked() &&
+      !protectedHides("schedule") &&
       e2eeMode() !== "encrypt" &&
       e2eeMode() !== "blocked" &&
       e2eeMode() !== "peer_downgraded",
@@ -288,6 +395,7 @@ export function MessageComposition(props: Props) {
   const disappearAllowed = createMemo(
     () =>
       !plaintextFeaturesBlocked() &&
+      !protectedHides("disappearing_timer") &&
       e2eeMode() !== "encrypt" &&
       e2eeMode() !== "blocked" &&
       e2eeMode() !== "peer_downgraded",
@@ -297,7 +405,8 @@ export function MessageComposition(props: Props) {
    * Timelocked messages are sealed ON DEVICE before they ever leave the
    * composer, so unlike polls/scheduling there is no plaintext-on-server
    * concern and no E2EE exclusion: the sealed content rides the normal send
-   * path (and through message E2EE, where active) as ordinary text.
+   * path (and through message E2EE, where active) as ordinary text. Hidden
+   * on a protected channel all the same (plan D11).
    */
   const timelockAllowed = createMemo(
     () =>
@@ -305,6 +414,7 @@ export function MessageComposition(props: Props) {
         props.channel.type,
       ) &&
       props.channel.havePermission("SendMessage") &&
+      !protectedHides("timelock") &&
       !currentSlowmode(),
   );
 
@@ -444,6 +554,12 @@ export function MessageComposition(props: Props) {
    */
   const sendingAllowed = () => {
     timedOutUntil();
+    // Design 9.1: on a protected channel the composer exists only in the
+    // `protected` state; every other state shows its notice instead
+    const protectedMode = protectedComposer();
+    if (protectedMode !== undefined && protectedMode !== "enabled") {
+      return false;
+    }
     return (
       props.channel.havePermission("SendMessage") &&
       // Archived/locked threads are read-only unless the user can manage
@@ -454,10 +570,35 @@ export function MessageComposition(props: Props) {
   };
 
   /**
+   * Composer notice on a protected channel whose shield is not `protected`
+   * (design 9.1): re-securing (the draft is kept), no seat, not available
+   * on this device (or E2EE off on this desktop, product choice 6), or
+   * verification failed (the loud banner above names the cause).
+   */
+  const protectedBlockedText = (): string | undefined => {
+    const mode = protectedComposer();
+    if (mode === undefined || mode === "enabled") return undefined;
+    if (mode === "disabled") {
+      const notice = noticeCopy(protectedNotice());
+      return draft().content?.trim()
+        ? `${notice} ${composerCopy.draftKept()}`
+        : notice;
+    }
+    return protectedShield()?.state === "unverified"
+      ? composerCopy.sendingBlocked()
+      : noticeCopy(protectedNotice());
+  };
+
+  /**
    * Composer notice while the viewer is timed out, in place of the generic
-   * no-permission text.
+   * no-permission text. A protected channel's notice comes first.
    */
   const blockedText = () => {
+    const protectedText = protectedBlockedText();
+    if (protectedText) {
+      return protectedText;
+    }
+
     const until = timedOutUntil();
     if (!until) {
       return undefined;
@@ -628,6 +769,16 @@ export function MessageComposition(props: Props) {
    * for routes missing from its tables.
    */
   async function sendRoll(notation: string) {
+    // Second key behind the hidden dice menu and the sendMessage guard: a
+    // roll is a server-written plaintext message (plan D11)
+    if (protectedHides("roll")) {
+      openModal({
+        type: "error2",
+        error: new Error(noticeCopy("channel_protected")),
+      });
+      return;
+    }
+
     if (props.channel.type !== "TextChannel") {
       openModal({
         type: "error2",
@@ -971,6 +1122,14 @@ export function MessageComposition(props: Props) {
    * @param useContent Content to send
    */
   async function sendMessage(useContent?: unknown) {
+    // Protected channel guard, FIRST (plan D9c): nothing below runs for a
+    // protected or pinned channel. `/roll`, game lookups, `/softres`, bot
+    // slash commands and the disappearing timer would each put text or
+    // metadata on the server outside the encryption.
+    if (client().isProtectedChannel(props.channel.id)) {
+      return sendProtectedMessage(useContent);
+    }
+
     if (!canSend() && typeof useContent !== "string") {
       return;
     } else if (currentSlowmode()) {
@@ -1023,22 +1182,8 @@ export function MessageComposition(props: Props) {
     // only expands the ones a space was typed after, and the last thing typed
     // before sending never gets one. Written back to the draft because that is
     // what sendDraft reads, which also covers the send button and phone taps.
-    if (
-      typeof useContent !== "string" &&
-      state.settings.getValue("appearance:expand_emoticons")
-    ) {
-      const expanded = expandTrailingEmoticon(
-        rawContent,
-        unicodeEmojiPackPrefix(
-          state.settings.getValue("appearance:unicode_emoji") as string,
-        ),
-      );
-      if (expanded !== rawContent) {
-        state.draft.setDraft(props.channel.id, {
-          ...draft(),
-          content: expanded,
-        });
-      }
+    if (typeof useContent !== "string") {
+      expandDraftEmoticon(rawContent);
     }
 
     // E2EE pre-send guard: a blocked conversation (peer identity change
@@ -1212,6 +1357,123 @@ export function MessageComposition(props: Props) {
   }
 
   /**
+   * Expand an emoticon the draft ends on, written back to the draft (see
+   * the plain send path for why)
+   * @param rawContent Draft text
+   */
+  function expandDraftEmoticon(rawContent: string) {
+    if (!state.settings.getValue("appearance:expand_emoticons")) return;
+    const expanded = expandTrailingEmoticon(
+      rawContent,
+      unicodeEmojiPackPrefix(
+        state.settings.getValue("appearance:unicode_emoji") as string,
+      ),
+    );
+    if (expanded !== rawContent) {
+      state.draft.setDraft(props.channel.id, {
+        ...draft(),
+        content: expanded,
+      });
+    }
+  }
+
+  /**
+   * The ONLY send path on a protected or pinned channel (plan D9c, D10):
+   * the draft's text through `sendDraft`, whose protected outbox (lane C5)
+   * reaches the SDK protected arm. No command interception, no timer, no
+   * files, no picker content. A refusal is shown through
+   * `protectedNoticeForError`, never `error.message`; putting the draft
+   * text back is `sendDraft`'s job and is not repeated here.
+   * @param useContent Picker content (a GIF or sticker URL), refused
+   */
+  async function sendProtectedMessage(useContent: unknown) {
+    // Design 9.1: sending only in the `protected` state. Every other state
+    // already shows its notice in place of the editor.
+    if (protectedComposer() !== "enabled") return;
+
+    // GIFs and stickers are hidden here (D11); a stray picker send is
+    // refused, never sent
+    if (typeof useContent === "string") {
+      openModal({
+        type: "error2",
+        error: new Error(noticeCopy("channel_protected")),
+      });
+      return;
+    }
+
+    if (!canSend() || currentSlowmode()) return;
+
+    // Files are refused before anything is taken from the draft or
+    // uploaded (D9d/e); the guard inside sendDraft is the backstop
+    if (draft().files?.length) {
+      openModal({
+        type: "error2",
+        error: new Error(composerCopy.filesRefused()),
+      });
+      return;
+    }
+
+    expandDraftEmoticon(currentValue());
+
+    stopTyping();
+    sound.playSound("messageSent");
+    props.onMessageSend?.();
+
+    try {
+      await state.draft.sendDraft(client(), props.channel);
+    } catch (error) {
+      openModal({
+        type: "error2",
+        error: new Error(protectedSendErrorText(error)),
+      });
+    }
+  }
+
+  /**
+   * Copy for a rejected protected send (plan D17). The bridge wraps every
+   * failure in one `ProtectedSendError` whose `failure` is the cause;
+   * without a bridge (web) the SDK throws `ProtectedChannelUnavailable`
+   * itself, and sendDraft refuses a draft with files as
+   * `ProtectedFieldRefusedClient("attachments")` (lane C5). A cause with no
+   * copy (`none`) still fails loudly.
+   * @param error Rejection from sendDraft
+   */
+  function protectedSendErrorText(error: unknown): string {
+    const cause = isProtectedSendError(error) ? error.failure : error;
+    if (isFilesRefusal(cause)) return composerCopy.filesRefused();
+    return (
+      errorUiCopy(protectedSendErrorUi(cause, protectedNotice())) ??
+      noticeCopy("send_refused")
+    );
+  }
+
+  /**
+   * Native owner-change dialog in flight (D15); blocks a second click
+   */
+  const [reviewingOwnerChange, setReviewingOwnerChange] = createSignal(false);
+
+  /**
+   * Plan D15 "Review owner change": opens native's dialog, ONLY from the
+   * banner button's click. A cancel (`declined`) maps to no copy and stays
+   * silent; any other failure shows its notice.
+   */
+  async function reviewOwnerChange() {
+    if (reviewingOwnerChange()) return;
+    const channelId = props.channel.id;
+    const ui = protectedUiOf(client().e2ee);
+    setReviewingOwnerChange(true);
+    try {
+      if (!ui) throw new ProtectedChannelUnavailable();
+      await ui.confirmOwnerChange(channelId);
+    } catch (error) {
+      const text = errorUiCopy(protectedOwnerErrorUi(error, protectedNotice()));
+      if (text) openModal({ type: "error2", error: new Error(text) });
+    } finally {
+      setReviewingOwnerChange(false);
+    }
+  }
+
+  /**
    * Shorthand for updating the draft
    */
   function setContent(content: string) {
@@ -1268,6 +1530,8 @@ export function MessageComposition(props: Props) {
    * @param files List of files
    */
   function onFiles(files: File[]) {
+    if (refuseProtectedFiles()) return;
+
     const rejectedFiles: File[] = [];
     const validFiles: File[] = [];
     const maxSize = attachmentSizeLimit();
@@ -1313,9 +1577,25 @@ export function MessageComposition(props: Props) {
   }
 
   /**
+   * Protected channels take no files yet (plan D9; attachments are S3).
+   * Every entry point is hidden there; this is the composer's second key.
+   * @returns Whether the files were refused
+   */
+  function refuseProtectedFiles() {
+    if (!protectedHides("attachments")) return false;
+    openModal({
+      type: "error2",
+      error: new Error(composerCopy.filesRefused()),
+    });
+    return true;
+  }
+
+  /**
    * Add a file to the message
    */
   function addFile() {
+    if (refuseProtectedFiles()) return;
+
     // In a chat window the picker must open over that window, so the input
     // lives in its document
     const doc = windowCtx.doc;
@@ -1396,7 +1676,8 @@ export function MessageComposition(props: Props) {
    * — interactions never get a plaintext fallback inside E2EE — and in
    * DMs / saved messages, which the server structurally rejects anyway.
    * The same goes for any conversation the trust gate withholds plaintext
-   * features from, an "unconfirmed" group included.
+   * features from, an "unconfirmed" group included, and for a protected
+   * channel (plan D11; not even fetched).
    */
   const [availableCommands] = createResource(
     () =>
@@ -1405,9 +1686,11 @@ export function MessageComposition(props: Props) {
         props.channel.type,
         e2eeMode(),
         plaintextFeaturesBlocked(),
-      ] as [string, string, string | undefined, boolean],
-    async ([, type, mode, blocked]) => {
+        protectedHides("slash_commands"),
+      ] as [string, string, string | undefined, boolean, boolean],
+    async ([, type, mode, blocked, protectedHidden]) => {
       if (
+        protectedHidden ||
         blocked ||
         mode === "encrypt" ||
         mode === "blocked" ||
@@ -1596,6 +1879,32 @@ export function MessageComposition(props: Props) {
           <span>{t`Turn on end-to-end encryption for this group.`}</span>
         </E2EEIndicator>
       </Show>
+      <Show
+        when={protectedChannel() && protectedShield()?.state === "unverified"}
+      >
+        <ProtectedBanner role="status">
+          <ProtectedShieldIcon state="unverified" size={16} />
+          <span>{noticeCopy(protectedNotice())}</span>
+          <Show when={ownerChangeReviewable(protectedShield()?.view)}>
+            <ProtectedBannerAction
+              type="button"
+              disabled={reviewingOwnerChange()}
+              onClick={() => void reviewOwnerChange()}
+            >
+              {panelCopy.reviewOwnerChange()}
+            </ProtectedBannerAction>
+          </Show>
+        </ProtectedBanner>
+      </Show>
+      <Show when={maybeUnsentShown()}>
+        <ProtectedSendNotice role="status">
+          <Symbol style={{ "font-size": "1rem" }}>error</Symbol>
+          <span>{noticeCopy("maybe_unsent")}</span>
+          <ProtectedBannerAction type="button" onClick={dismissMaybeUnsent}>
+            {t`Dismiss`}
+          </ProtectedBannerAction>
+        </ProtectedSendNotice>
+      </Show>
       <Show when={state.draft.hasAdditionalElements(props.channel.id)}>
         <Keybind
           keybind={KeybindAction.CHAT_REMOVE_COMPOSITION_ELEMENT}
@@ -1627,14 +1936,26 @@ export function MessageComposition(props: Props) {
             state.draft.removeReply(props.channel.id, reply.id);
           }
 
+          // Protected: the decrypted text, never the row's server text
           return (
-            <MessageReplyPreview
-              message={message}
-              mention={reply.mention}
-              toggle={toggle}
-              dismiss={dismiss}
-              self={message?.authorId === client()!.user!.id}
-            />
+            <Show
+              when={protectedChannel()}
+              fallback={
+                <MessageReplyPreview
+                  message={message}
+                  mention={reply.mention}
+                  toggle={toggle}
+                  dismiss={dismiss}
+                  self={message?.authorId === client()!.user!.id}
+                />
+              }
+            >
+              <ProtectedReplyPreview
+                messageId={reply.id}
+                message={message}
+                dismiss={dismiss}
+              />
+            </Show>
           );
         }}
       </For>
@@ -1657,27 +1978,48 @@ export function MessageComposition(props: Props) {
       </Show>
       <span ref={composerStart} hidden />
       <MessageBox
-        tone={e2eeMode() === "encrypt" ? "encrypted" : "plain"}
+        tone={
+          protectedChannel()
+            ? "protected"
+            : e2eeMode() === "encrypt"
+              ? "encrypted"
+              : "plain"
+        }
         initialValue={initialValue()}
         nodeReplacement={nodeReplacement()}
         onSendMessage={() => sendMessage()}
         onTyping={delayedStopTyping}
-        onEditLastMessage={() =>
-          state.draft.setEditingMessage(true, props.channel.id)
-        }
+        onEditLastMessage={() => {
+          // Edits are refused on a protected channel (plan D11)
+          if (protectedHides("edit")) return;
+          state.draft.setEditingMessage(true, props.channel.id);
+        }}
         content={draft()?.content ?? ""}
         setContent={setContent}
         actionsStart={
-          <Show
-            when={props.channel.havePermission("UploadFiles")}
-            fallback={<MessageBox.InlineIcon size="short" />}
-          >
-            <MessageBox.InlineIcon>
-              <IconButton onPress={addFile}>
-                <Symbol>add</Symbol>
-              </IconButton>
-            </MessageBox.InlineIcon>
-          </Show>
+          <Switch fallback={<MessageBox.InlineIcon size="short" />}>
+            <Match when={protectedChannel()}>
+              <MessageBox.InlineIcon>
+                <ProtectedComposerShield>
+                  <ProtectedShieldIcon
+                    state={protectedShield()?.state ?? "resecuring"}
+                  />
+                </ProtectedComposerShield>
+              </MessageBox.InlineIcon>
+            </Match>
+            <Match
+              when={
+                props.channel.havePermission("UploadFiles") &&
+                !protectedHides("attachments")
+              }
+            >
+              <MessageBox.InlineIcon>
+                <IconButton onPress={addFile}>
+                  <Symbol>add</Symbol>
+                </IconButton>
+              </MessageBox.InlineIcon>
+            </Match>
+          </Switch>
         }
         actionsEnd={
           <MessageBox.ActionContainer column>
@@ -1695,6 +2037,9 @@ export function MessageComposition(props: Props) {
               <CompositionMediaPicker
                 onMessage={sendMessage}
                 onTextReplacement={(text) => setNodeReplacement([text])}
+                // Protected: the picker offers emoji only, no GIF or
+                // sticker tab (plan D11)
+                emojiOnly={protectedHides("gif") || protectedHides("stickers")}
               >
                 {(triggerProps) => (
                   <>
@@ -1819,7 +2164,13 @@ export function MessageComposition(props: Props) {
                         </ComposerPopover>
                       </MessageBox.InlineIcon>
                     </Show>
-                    <Show when={props.channel.havePermission("UploadFiles")}>
+                    <Show
+                      when={
+                        props.channel.havePermission("UploadFiles") &&
+                        !protectedHides("camera") &&
+                        !protectedHides("voice_message")
+                      }
+                    >
                       <MessageBox.InlineIcon>
                         <CameraMessageButton
                           onFile={(file) => onFiles([file])}
@@ -1878,7 +2229,12 @@ export function MessageComposition(props: Props) {
                         transition: "max-width 0.25s ease, opacity 0.2s ease",
                       }}
                     >
-                      <Show when={props.channel.type === "TextChannel"}>
+                      <Show
+                        when={
+                          props.channel.type === "TextChannel" &&
+                          !protectedHides("dice")
+                        }
+                      >
                         <MessageBox.InlineIcon>
                           <ComposerPopover
                             open={showDiceMenu()}
@@ -2145,12 +2501,14 @@ export function MessageComposition(props: Props) {
                           </Tooltip>
                         </MessageBox.InlineIcon>
                       </Show>
-                      <MessageBox.InlineIcon>
-                        <IconButton onPress={triggerProps.onClickSticker}>
-                          <Symbol>note_stack</Symbol>
-                        </IconButton>
-                      </MessageBox.InlineIcon>
-                      <Show when={!canSend()}>
+                      <Show when={!protectedHides("stickers")}>
+                        <MessageBox.InlineIcon>
+                          <IconButton onPress={triggerProps.onClickSticker}>
+                            <Symbol>note_stack</Symbol>
+                          </IconButton>
+                        </MessageBox.InlineIcon>
+                      </Show>
+                      <Show when={!canSend() && !protectedHides("gif")}>
                         <MessageBox.InlineIcon>
                           <IconButton onPress={triggerProps.onClickGif}>
                             <Symbol>gif</Symbol>
@@ -2158,24 +2516,30 @@ export function MessageComposition(props: Props) {
                         </MessageBox.InlineIcon>
                       </Show>
                     </div>
-                    <MessageBox.InlineIcon>
-                      <Tooltip
-                        content={
-                          showMoreActions() ? t`Fewer options` : t`More options`
-                        }
-                        placement="top"
-                      >
-                        <IconButton
-                          onPress={() => setShowMoreActions((v) => !v)}
+                    {/* Every action in the tray is hidden on a protected
+                        channel, so the toggle is too */}
+                    <Show when={!protectedChannel()}>
+                      <MessageBox.InlineIcon>
+                        <Tooltip
+                          content={
+                            showMoreActions()
+                              ? t`Fewer options`
+                              : t`More options`
+                          }
+                          placement="top"
                         >
-                          <Symbol>
-                            {showMoreActions()
-                              ? "chevron_right"
-                              : "chevron_left"}
-                          </Symbol>
-                        </IconButton>
-                      </Tooltip>
-                    </MessageBox.InlineIcon>
+                          <IconButton
+                            onPress={() => setShowMoreActions((v) => !v)}
+                          >
+                            <Symbol>
+                              {showMoreActions()
+                                ? "chevron_right"
+                                : "chevron_left"}
+                            </Symbol>
+                          </IconButton>
+                        </Tooltip>
+                      </MessageBox.InlineIcon>
+                    </Show>
                   </>
                 )}
               </CompositionMediaPicker>
@@ -2183,11 +2547,13 @@ export function MessageComposition(props: Props) {
           </MessageBox.ActionContainer>
         }
         placeholder={
-          props.channel.type === "SavedMessages"
-            ? t`Save to your notes`
-            : props.channel.type === "DirectMessage"
-              ? t`Message ${props.channel.recipient?.username}`
-              : t`Message ${props.channel.name}`
+          protectedChannel()
+            ? composerCopy.placeholder()
+            : props.channel.type === "SavedMessages"
+              ? t`Save to your notes`
+              : props.channel.type === "DirectMessage"
+                ? t`Message ${props.channel.recipient?.username}`
+                : t`Message ${props.channel.name}`
         }
         sendingAllowed={sendingAllowed()}
         blockedText={blockedText()}
@@ -2243,19 +2609,310 @@ export function MessageComposition(props: Props) {
         }
       />
       <span ref={composerEnd} hidden />
+      {/* Inactive on a protected channel (plan D9): no file is collected */}
       <FilePasteCollector
         onFiles={onFiles}
         ctx={windowCtx}
-        active={() => true}
+        active={() => !protectedHides("attachments")}
       />
       <FileDropAnywhereCollector
         onFiles={onFiles}
         ctx={windowCtx}
-        active={() => true}
+        active={() => !protectedHides("attachments")}
       />
     </>
   );
 }
+
+/**
+ * Whether `error` is an instance of `cls`, also across realms by the
+ * `name` the SDK sets (a literal: minified class names differ)
+ * @param error Value
+ * @param cls Error class
+ * @param name The class's `error.name`
+ */
+function isErrorClass(
+  error: unknown,
+  cls: typeof ProtectedChannelUnavailable | typeof ProtectedFieldRefusedClient,
+  name: "ProtectedChannelUnavailable" | "ProtectedFieldRefusedClient",
+): boolean {
+  return (
+    error instanceof cls || (error instanceof Error && error.name === name)
+  );
+}
+
+/**
+ * Whether a protected send was refused for carrying files (D9d/e;
+ * attachments are S3): expected, not a client defect
+ * @param cause The `ProtectedSendError` failure, or the bare rejection
+ */
+function isFilesRefusal(cause: unknown): boolean {
+  if (
+    !isErrorClass(
+      cause,
+      ProtectedFieldRefusedClient,
+      "ProtectedFieldRefusedClient",
+    )
+  ) {
+    return false;
+  }
+  const field = (cause as { field?: unknown }).field;
+  return field === "attachments" || field === "e2eeAttachments";
+}
+
+/**
+ * Plan D17 answer for the cause of a rejected protected send. The two SDK
+ * refusals are not `TextFlowFailure`s, so they are mapped here; everything
+ * else goes through `protectedNoticeForError`, which fails closed.
+ * @param cause The `ProtectedSendError` failure, or the bare rejection
+ * @param shieldNotice The shield's current notice (D3 `enable_e2ee`)
+ */
+function protectedSendErrorUi(
+  cause: unknown,
+  shieldNotice: ProtectedNoticeKind,
+): ProtectedErrorUi {
+  if (
+    isErrorClass(
+      cause,
+      ProtectedChannelUnavailable,
+      "ProtectedChannelUnavailable",
+    )
+  ) {
+    return {
+      kind: "notice",
+      notice: shieldNotice === "enable_e2ee" ? "enable_e2ee" : "not_available",
+      max: null,
+      tag: "ProtectedChannelUnavailable",
+    };
+  }
+  if (
+    isErrorClass(
+      cause,
+      ProtectedFieldRefusedClient,
+      "ProtectedFieldRefusedClient",
+    )
+  ) {
+    // Files are handled by `isFilesRefusal`; any other refused field is a
+    // client defect (D10): this composer never sends one
+    console.error("[protected] send refused a field", {
+      field: (cause as { field?: unknown }).field,
+    });
+    return protectedNoticeForError(
+      { type: "ProtectedFieldRefused" },
+      { op: "send" },
+    );
+  }
+  return protectedNoticeForError(cause, { op: "send" });
+}
+
+/**
+ * Plan D17 answer for a failed D15 owner-change review. Native `declined`
+ * (the user cancelled) maps to `none`, which shows nothing.
+ * @param error Rejection from `confirmOwnerChange`
+ * @param shieldNotice The shield's current notice (D3 `enable_e2ee`)
+ */
+function protectedOwnerErrorUi(
+  error: unknown,
+  shieldNotice: ProtectedNoticeKind,
+): ProtectedErrorUi {
+  if (
+    isErrorClass(
+      error,
+      ProtectedChannelUnavailable,
+      "ProtectedChannelUnavailable",
+    )
+  ) {
+    return protectedSendErrorUi(error, shieldNotice);
+  }
+  return protectedNoticeForError(error, { op: "owner" });
+}
+
+/**
+ * Whether the D15 "Review owner change" button may show. The SAME condition
+ * as the header pill (C3 `pillOwnerChangeReviewable`): native holds a
+ * pending signer of the SAME user (`same_user: true`) AND the change is
+ * pending (the manager parked it, or the pin status is `changed`). A
+ * different user is final in S1, and an unknown signer gets no button.
+ * @param view The manager's channel view
+ */
+function ownerChangeReviewable(
+  view: ProtectedChannelView | null | undefined,
+): boolean {
+  const pin = view?.native?.owner_pin ?? null;
+  if (!pin || pin.pending_signer?.same_user !== true) return false;
+  return view?.ownerChangePending === true || pin.status === "changed";
+}
+
+/**
+ * Composer reply preview on a protected channel (plan D22, D25): the
+ * target's DECRYPTED text from the bridge view, its marker, or the pending
+ * line; never the SDK row's server text. No mention toggle: the encrypted
+ * send cannot carry a reply mention yet, and mentions are stripped.
+ * @param props Reply target and dismiss handler
+ */
+function ProtectedReplyPreview(props: {
+  messageId: string;
+  message?: Message;
+  dismiss: () => void;
+}) {
+  const { t } = useLingui();
+  const view = useProtectedMessage(() => props.messageId);
+
+  const text = () => {
+    const v = view();
+    if (!v || v.status === "pending") return messageCopy.pending();
+    if (v.status === "marker") return markerCopy(v.kind);
+    const flat = v.text.replace(/\n/g, " ");
+    return flat.length > 128 ? flat.slice(0, 128) + "..." : flat;
+  };
+
+  return (
+    <ProtectedReplyBase data-protected-reply={view()?.status ?? "pending"}>
+      <ProtectedReplyLabel>{t`Replying to`}</ProtectedReplyLabel>
+      <ProtectedReplyBody>
+        <Show
+          when={props.message?.author?.relationship !== "Blocked"}
+          fallback={t`Blocked User`}
+        >
+          <Show when={props.message?.username}>
+            {(name) => <ProtectedReplyAuthor>{name()}</ProtectedReplyAuthor>}
+          </Show>
+          <ProtectedReplyText>{text()}</ProtectedReplyText>
+        </Show>
+      </ProtectedReplyBody>
+      <ProtectedReplyDismiss onClick={props.dismiss}>
+        <Symbol size={16} fill>
+          cancel
+        </Symbol>
+      </ProtectedReplyDismiss>
+    </ProtectedReplyBase>
+  );
+}
+
+const ProtectedReplyBase = styled("div", {
+  base: {
+    display: "flex",
+    alignItems: "center",
+    gap: "var(--gap-md)",
+    fontSize: "0.8em",
+    userSelect: "none",
+    marginBlockEnd: "var(--gap-md)",
+    padding: "var(--gap-md) var(--gap-lg)",
+    borderRadius: "var(--borderRadius-lg)",
+    background: "var(--md-sys-color-primary-container)",
+    color: "var(--md-sys-color-on-primary-container)",
+  },
+});
+
+const ProtectedReplyLabel = styled("span", {
+  base: {
+    flexShrink: 0,
+  },
+});
+
+const ProtectedReplyBody = styled("div", {
+  base: {
+    display: "flex",
+    alignItems: "center",
+    gap: "var(--gap-sm)",
+    flexGrow: 1,
+    minWidth: 0,
+    overflow: "hidden",
+  },
+});
+
+const ProtectedReplyAuthor = styled("span", {
+  base: {
+    flexShrink: 0,
+    fontWeight: "600",
+  },
+});
+
+const ProtectedReplyText = styled("span", {
+  base: {
+    overflow: "hidden",
+    whiteSpace: "nowrap",
+    textOverflow: "ellipsis",
+  },
+});
+
+const ProtectedReplyDismiss = styled("a", {
+  base: {
+    display: "grid",
+    placeItems: "center",
+    cursor: "pointer",
+    "&:hover": {
+      filter: "brightness(1.2)",
+    },
+  },
+});
+
+/**
+ * "Review owner change" in the unverified banner (D15)
+ */
+const ProtectedBannerAction = styled("button", {
+  base: {
+    marginInlineStart: "auto",
+    flexShrink: 0,
+    padding: "2px 8px",
+    borderRadius: "var(--borderRadius-md)",
+    border: "1px solid currentColor",
+    background: "transparent",
+    color: "inherit",
+    font: "inherit",
+    cursor: "pointer",
+    "&:disabled": {
+      opacity: 0.6,
+      cursor: "default",
+    },
+  },
+});
+
+/**
+ * Loud banner above the composer while a protected channel is unverified
+ * (design 9.1). Text tint per the shield hue (plan D14).
+ */
+const ProtectedBanner = styled("div", {
+  base: {
+    display: "flex",
+    alignItems: "center",
+    gap: "var(--gap-sm)",
+    padding: "4px 12px",
+    fontSize: "0.75rem",
+    fontWeight: "600",
+    color:
+      "color-mix(in srgb, var(--sloga-protected-alert) 70%, var(--md-sys-color-on-surface))",
+  },
+});
+
+/**
+ * Neutral notice above the composer for a send whose outcome is unknown
+ * (plan D10 `maybe_unsent`): not a shield state, so no shield hue
+ */
+const ProtectedSendNotice = styled("div", {
+  base: {
+    display: "flex",
+    alignItems: "center",
+    gap: "var(--gap-sm)",
+    padding: "4px 12px",
+    fontSize: "0.75rem",
+    fontWeight: "600",
+    color: "var(--md-sys-color-on-surface-variant)",
+  },
+});
+
+/**
+ * The faint static shield where the attach button sits on other channels
+ */
+const ProtectedComposerShield = styled("span", {
+  base: {
+    display: "flex",
+    alignItems: "center",
+    minHeight: "40px",
+    fontSize: "20px",
+    opacity: 0.6,
+  },
+});
 
 const SlowmodeContainer = styled("div", {
   base: {

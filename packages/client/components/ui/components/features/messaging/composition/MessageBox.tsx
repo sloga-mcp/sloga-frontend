@@ -10,6 +10,32 @@ import { AutoCompleteSearchSpace } from "@revolt/ui/components/utils/autoComplet
 
 import { TextEditor2 } from "../../texteditor/TextEditor2";
 
+/**
+ * Composer icon tone. Every value needs an entry in BOTH `tone` variant
+ * records below (Base and ActionBar): their generated prop types make a
+ * missing key a tsc error, and `toneOf` is the runtime exhaustiveness check.
+ */
+export type MessageBoxTone = "plain" | "encrypted" | "protected";
+
+/**
+ * The tone to render; an absent or unknown value is "plain"
+ * @param tone Requested tone
+ */
+function toneOf(tone: MessageBoxTone | undefined): MessageBoxTone {
+  switch (tone) {
+    case undefined:
+      return "plain";
+    case "plain":
+    case "encrypted":
+    case "protected":
+      return tone;
+    default: {
+      const _exhaustive: never = tone;
+      return "plain";
+    }
+  }
+}
+
 interface Props {
   /**
    * Initial content
@@ -90,9 +116,10 @@ interface Props {
 
   /**
    * Icon tone: "encrypted" turns the standard action icons the E2EE green
-   * so an encrypted conversation is recognisable from the composer itself.
+   * so an encrypted conversation is recognisable from the composer itself;
+   * "protected" uses the Protected channel shield green.
    */
-  tone?: "plain" | "encrypted";
+  tone?: MessageBoxTone;
 
   /**
    * Update the current draft selection
@@ -142,12 +169,18 @@ const Base = styled("div", {
     // action icons themselves signal the conversation's encryption state:
     // the same green as the E2EEIndicator's encrypted notice (#3BA55D —
     // keep in sync), or the plain on-surface foreground when unencrypted.
+    // A Protected channel uses the shield green (`LoadTheme.tsx`), mixed
+    // toward the foreground for contrast in light themes.
     tone: {
       encrypted: {
         "--icon-button-colour": "#3BA55D",
       },
       plain: {
         "--icon-button-colour": "var(--md-sys-color-on-surface)",
+      },
+      protected: {
+        "--icon-button-colour":
+          "color-mix(in srgb, var(--sloga-protected-ok) 70%, var(--md-sys-color-on-surface))",
       },
     },
   },
@@ -206,7 +239,7 @@ const ActionBar = styled("div", {
     scrollbarWidth: "none",
     "&::-webkit-scrollbar": { display: "none" },
   },
-  // Same tone pair as Base — the phone layout hosts the actions here.
+  // Same tones as Base — the phone layout hosts the actions here.
   variants: {
     tone: {
       encrypted: {
@@ -214,6 +247,10 @@ const ActionBar = styled("div", {
       },
       plain: {
         "--icon-button-colour": "var(--md-sys-color-on-surface)",
+      },
+      protected: {
+        "--icon-button-colour":
+          "color-mix(in srgb, var(--sloga-protected-ok) 70%, var(--md-sys-color-on-surface))",
       },
     },
   },
@@ -380,13 +417,16 @@ export function MessageBox(props: Props) {
       <Show when={twoRow()}>
         <StackedParent>
           <Show when={props.sendingAllowed}>
-            <ActionBar tone={props.tone}>
+            <ActionBar tone={toneOf(props.tone)}>
               {props.actionsStart}
               {props.actionsEnd}
             </ActionBar>
           </Show>
           <InputRow>
-            <Base hasActionsAppend={props.hasActionsAppend} tone={props.tone}>
+            <Base
+              hasActionsAppend={props.hasActionsAppend}
+              tone={toneOf(props.tone)}
+            >
               <Show when={!props.sendingAllowed}>
                 <InlineIcon>
                   <Blocked>
@@ -404,7 +444,10 @@ export function MessageBox(props: Props) {
       {/* Desktop / tablet: everything on a single row */}
       <Show when={!twoRow()}>
         <Parent>
-          <Base hasActionsAppend={props.hasActionsAppend} tone={props.tone}>
+          <Base
+            hasActionsAppend={props.hasActionsAppend}
+            tone={toneOf(props.tone)}
+          >
             <Switch fallback={props.actionsStart}>
               <Match when={!props.sendingAllowed}>
                 <InlineIcon>

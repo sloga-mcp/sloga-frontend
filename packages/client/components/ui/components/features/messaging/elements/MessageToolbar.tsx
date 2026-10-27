@@ -5,7 +5,8 @@ import { styled } from "styled-system/jsx";
 
 import { MessageContextMenu, useMessage } from "@revolt/app";
 import { serverActionsBlocked } from "@revolt/app/interface/channels/text/e2eeTranscriptTrust";
-import { useE2EE, useUser } from "@revolt/client";
+import { useClient, useE2EE, useUser } from "@revolt/client";
+import { protectedActionsBlocked } from "@revolt/client/protectedShield";
 import { useModals } from "@revolt/modal";
 import { useState } from "@revolt/state";
 import { Ripple } from "@revolt/ui/components/design";
@@ -19,6 +20,7 @@ import MdReply from "@material-design-icons/svg/outlined/reply.svg?component-sol
 
 export function MessageToolbar() {
   const user = useUser();
+  const client = useClient();
   const state = useState();
   const { openModal } = useModals();
   const { message, reactPicker } = useMessage();
@@ -36,6 +38,16 @@ export function MessageToolbar() {
    */
   const contentActionsBlocked = () =>
     encrypted() || serverActionsBlocked(e2ee, message?.channel, user()?.id);
+
+  /**
+   * Whether this message is in a Protected channel, server-flagged or
+   * pinned on this device (plan D2). Keyed on the CHANNEL, never on
+   * `isEncryptedMessage`: reply, react and delete stay; edit is hidden
+   * (plan D11). The toolbar has no GIF or sticker button; the hover
+   * picker's GIF/sticker reply is hidden in `Message.tsx`.
+   */
+  const protectedRow = () =>
+    !!message && client().isProtectedChannel(message.channelId);
 
   let reactRef;
 
@@ -82,7 +94,13 @@ export function MessageToolbar() {
           <MdEmojiEmotions {...iconSize(20)} />
         </div>
       </Show>
-      <Show when={!contentActionsBlocked() && message?.author?.self}>
+      <Show
+        when={
+          !protectedActionsBlocked(protectedRow(), "edit") &&
+          !contentActionsBlocked() &&
+          message?.author?.self
+        }
+      >
         <div
           class={tool()}
           onClick={() => state.draft.setEditingMessage(message!)}

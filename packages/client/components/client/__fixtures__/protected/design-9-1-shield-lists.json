@@ -1,0 +1,36 @@
+{
+  "_about": "Design 9.1 step 3 (loud) and step 6e (fall-through) tag lists, in design order. Generated from the pinned design copy.",
+  "sources": [
+    {
+      "file": "w4-notes/w4_design.md",
+      "sha256": "0edf1edb043423d57c0240ac1e3a570cec0aaf667c8f26dd592c31dca68f1e26"
+    }
+  ],
+  "step3_seat_list_errors": [
+    "bad_sig",
+    "owner_changed",
+    "seat_list_rollback",
+    "seat_list_equivocation",
+    "seat_list_invalid"
+  ],
+  "step3_group_errors": [
+    "channel_mismatch",
+    "roster_mismatch",
+    "mls_leaf_rejected",
+    "owner_changed",
+    "seat_list_equivocation",
+    "wrong_group_kind",
+    "bad_sig",
+    "seat_list_invalid",
+    "text_group_full",
+    "not_owner",
+    "commit_declaration_mismatch",
+    "duplicate_leaf",
+    "replayed_rejoin_intent"
+  ],
+  "step6e_group_errors": [
+    "own_commit_mismatch",
+    "already_member",
+    "unexpected_mls_content"
+  ]
+}

@@ -16,12 +16,20 @@ import {
   splitProps,
 } from "solid-js";
 
+import { useLingui } from "@lingui-solid/solid/macro";
 import isEqual from "lodash.isequal";
 import { Channel, Message as MessageInterface } from "stoat.js";
 import { styled } from "styled-system/jsx";
 
 import { useClient, useClientLifecycle, useE2EE } from "@revolt/client";
 import { State } from "@revolt/client/Controller";
+import { timelineCopy } from "@revolt/client/protectedCopy";
+import { protectedActionsBlocked } from "@revolt/client/protectedShield";
+import type { TimelineMarker } from "@revolt/client/protectedTextTypes";
+import {
+  protectedUiOf,
+  useProtectedTimeline,
+} from "@revolt/client/useProtectedChannel";
 import { useTime } from "@revolt/i18n";
 import { useState } from "@revolt/state";
 import {
@@ -36,6 +44,7 @@ import {
   ListView2,
   ListView2Update,
 } from "@revolt/ui/components/utils/ListView2";
+import { Symbol as MaterialSymbol } from "@revolt/ui/components/utils/Symbol";
 import { Message } from "./Message";
 import { useMessageCache } from "./MessageCache";
 import {
@@ -60,6 +69,169 @@ const FETCH_LIMIT = 50;
  * Display limit
  */
 const DISPLAY_LIMIT = 150;
+
+// protected-pure:begin
+// Pure protected channel helpers (W4 lane C7). No imports and no Solid, so
+// protectedMessages.scan.test.ts loads this region on its own and runs it.
+
+/**
+ * Whether this list renders a Protected channel transcript: a server text
+ * channel the SDK holds protected or pinned. DMs and groups always stay on
+ * the DM trust path, whatever flag a server sends for them.
+ * @param channelType Channel type
+ * @param protectedOrPinned `client.isProtectedChannel(id)`
+ * @returns Whether the protected rules apply
+ */
+function protectedTranscriptOf(
+  channelType: string | undefined,
+  protectedOrPinned: boolean,
+): boolean {
+  return channelType === "TextChannel" && protectedOrPinned === true;
+}
+
+/**
+ * Trust the DM transcript filter sees. A protected transcript is never on
+ * the DM path (plan D2): its rows are never in the DM trusted set, so that
+ * path would hide all of them. A row without `encrypted` still renders and
+ * Message.tsx shows the red `unencrypted_row` marker for it (design 9.4).
+ * @param protectedTranscript Result of `protectedTranscriptOf`
+ * @param dmTrust The DM/group derivation (`channelTrust`)
+ * @returns Trust level
+ */
+function transcriptTrustFor(
+  protectedTranscript: boolean,
+  dmTrust: ConversationTrust,
+): ConversationTrust {
+  return protectedTranscript ? "not_e2ee" : dmTrust;
+}
+
+/**
+ * Rows restored from the cache that have no decrypted view (or marker)
+ * yet, in their original order; a `pending` view counts as a view.
+ * @param rows Restored rows
+ * @param hasView Whether the bridge holds a view for an id
+ * @returns Rows to hand to `decryptProtectedHistory`
+ */
+function rowsWithoutView<T extends { id: string }>(
+  rows: readonly T[],
+  hasView: (id: string) => boolean,
+): T[] {
+  return rows.filter((row) => !hasView(row.id));
+}
+
+/**
+ * Display name for a timeline marker: the member nickname, then the user's
+ * display name, then the id-free fallback. Never the user id.
+ * @param names Candidate names, best first
+ * @param fallback Copy such as "A member"
+ * @returns Name
+ */
+function timelineDisplayName(
+  names: readonly (string | null | undefined)[],
+  fallback: string,
+): string {
+  for (const name of names) {
+    if (typeof name === "string" && name.trim() !== "") return name;
+  }
+  return fallback;
+}
+
+/**
+ * Same calendar day in local time, the comparison the list's date
+ * dividers use
+ * @param a Time in ms
+ * @param b Time in ms
+ * @returns Whether both fall on one day
+ */
+function sameLocalDay(a: number, b: number): boolean {
+  const x = new Date(a);
+  const y = new Date(b);
+  return (
+    x.getFullYear() === y.getFullYear() &&
+    x.getMonth() === y.getMonth() &&
+    x.getDate() === y.getDate()
+  );
+}
+
+/**
+ * Where local timeline markers sit among the loaded messages, ordered by
+ * their `atMs`. Indices follow `messagesAtMs`, which is newest first like
+ * the list; every array of markers is newest first too.
+ * - `before[k]`: markers at or after message k and before message k - 1.
+ *   For k = 0 they are newer than every loaded message and show only at
+ *   the end of the conversation (otherwise they belong to unloaded rows).
+ * - `beforeDate[k]`: markers older than message k but on its day, when
+ *   message k + 1 is on an earlier day (they go under k's date divider).
+ * - `breaksTail[k]`: a marker sits between message k and message k + 1.
+ * - `trailing`: markers older than the oldest loaded message, shown only
+ *   at the start of the conversation.
+ * @param markers Markers in any order
+ * @param messagesAtMs Message times in ms, newest first
+ * @param atStart Whether the start of the conversation is loaded
+ * @param atEnd Whether the end of the conversation is loaded
+ * @param sameDay Day comparison
+ * @returns Placement
+ */
+function planTimelineMarkers<M extends { atMs: number }>(
+  markers: readonly M[],
+  messagesAtMs: readonly number[],
+  atStart: boolean,
+  atEnd: boolean,
+  sameDay: (a: number, b: number) => boolean,
+): { before: M[][]; beforeDate: M[][]; breaksTail: boolean[]; trailing: M[] } {
+  // Newest first; equal times keep their arrival order once reversed
+  const pending = markers
+    .map((marker, index) => ({ marker, index }))
+    .filter(({ marker }) => Number.isFinite(marker.atMs))
+    .sort((a, b) => b.marker.atMs - a.marker.atMs || b.index - a.index)
+    .map(({ marker }) => marker);
+
+  const before: M[][] = [];
+  const beforeDate: M[][] = [];
+  const breaksTail: boolean[] = [];
+  let i = 0;
+
+  for (let k = 0; k < messagesAtMs.length; k++) {
+    const at = messagesAtMs[k];
+    const newer: M[] = [];
+    while (i < pending.length && pending[i].atMs >= at) {
+      newer.push(pending[i++]);
+    }
+    before.push(k === 0 && !atEnd ? [] : newer);
+
+    const next = k + 1 < messagesAtMs.length ? messagesAtMs[k + 1] : undefined;
+    const sameDayOlder: M[] = [];
+    if (next !== undefined && !sameDay(at, next)) {
+      while (
+        i < pending.length &&
+        pending[i].atMs > next &&
+        sameDay(pending[i].atMs, at)
+      ) {
+        sameDayOlder.push(pending[i++]);
+      }
+    }
+    beforeDate.push(sameDayOlder);
+
+    breaksTail.push(
+      next !== undefined &&
+        (sameDayOlder.length > 0 ||
+          (i < pending.length && pending[i].atMs >= next)),
+    );
+  }
+
+  const rest = pending.slice(i);
+  const trailing =
+    messagesAtMs.length === 0
+      ? atStart && atEnd
+        ? rest
+        : []
+      : atStart
+        ? rest
+        : [];
+
+  return { before, beforeDate, breaksTail, trailing };
+}
+// protected-pure:end
 
 interface Props {
   /**
@@ -111,6 +283,50 @@ export function Messages(props: Props) {
   const e2ee = useE2EE();
   const state = useState();
   const dayjs = useTime();
+
+  /**
+   * Local timeline markers of this channel (protected channels, plan D22)
+   */
+  const protectedTimeline = useProtectedTimeline(() => props.channel.id);
+
+  /**
+   * Whether the SDK holds this channel protected or pinned. Used as is
+   * where it only withholds an action (fails closed).
+   * @returns Boolean
+   */
+  function protectedOrPinned(): boolean {
+    return client().isProtectedChannel(props.channel.id);
+  }
+
+  /**
+   * Whether this list renders a Protected channel transcript (server text
+   * channel only, so a DM never leaves the DM trust path)
+   * @returns Boolean
+   */
+  function protectedTranscript(): boolean {
+    return protectedTranscriptOf(props.channel.type, protectedOrPinned());
+  }
+
+  /**
+   * Hand rows restored from the cache that have no decrypted view to the
+   * bridge, in one batch per restore (plan D22). Fetched rows are already
+   * handed over by the SDK's fetch methods.
+   * @param rows Restored rows
+   */
+  function decryptRestoredProtectedRows(rows: MessageInterface[]) {
+    const c = client();
+    const views = protectedUiOf(c.e2ee)?.protectedViews;
+    const missing = rowsWithoutView(rows, (id) => views?.get(id) !== undefined);
+    if (!missing.length) return;
+
+    try {
+      c.e2ee?.decryptProtectedHistory?.(props.channel, missing);
+    } catch {
+      console.error("[protected] restore decrypt failed", {
+        channelId: props.channel.id,
+      });
+    }
+  }
 
   /**
    * Loaded messages
@@ -251,6 +467,11 @@ export function Messages(props: Props) {
 
       if (useExistingState) {
         messages = existingState.messages;
+
+        // Protected channel: restored rows without a view re-request decrypt
+        if (protectedTranscript()) {
+          decryptRestoredProtectedRows(messages);
+        }
       } else {
         // Fetch results are not re-checked: in an encrypted conversation
         // fetchMessagesWithUsers returns fetchLocalHistory, whose rows are
@@ -738,7 +959,10 @@ export function Messages(props: Props) {
    * the channel id for a group, the other recipient's id for a DM
    */
   function currentTrust(): ConversationTrust {
-    return channelTrust(e2ee, props.channel, client().user?.id);
+    return transcriptTrustFor(
+      protectedTranscript(),
+      channelTrust(e2ee, props.channel, client().user?.id),
+    );
   }
 
   /**
@@ -882,6 +1106,29 @@ export function Messages(props: Props) {
     };
 
     const arr = messages();
+
+    // Local timeline markers, by time, on a protected channel only
+    const timeline = protectedTranscript()
+      ? planTimelineMarkers(
+          protectedTimeline(),
+          arr.map((message) => +message.createdAt),
+          atStart(),
+          atEnd(),
+          sameLocalDay,
+        )
+      : undefined;
+
+    /**
+     * Push timeline markers (after any pending blocked message count)
+     */
+    const pushTimelineMarkers = (markers?: readonly TimelineMarker[]) => {
+      if (!markers?.length) return;
+      createBlockedMessageCount();
+      for (const marker of markers) {
+        messagesWithTail.push(objectCache.get(marker) ?? { t: 3, marker });
+      }
+    };
+
     arr.forEach((message, index) => {
       const next = arr[index + 1];
       let tail = true;
@@ -926,6 +1173,11 @@ export function Messages(props: Props) {
         tail = false;
       }
 
+      // A timeline marker between this message and the next splits chains
+      if (timeline?.breaksTail[index]) {
+        tail = false;
+      }
+
       // Try to add the unread divider
       if (
         !insertedUnreadDivider &&
@@ -940,6 +1192,9 @@ export function Messages(props: Props) {
           },
         );
       }
+
+      // Markers newer than this message
+      pushTimelineMarkers(timeline?.before[index]);
 
       if (message.author?.relationship === "Blocked") {
         blockedMessages++;
@@ -957,6 +1212,9 @@ export function Messages(props: Props) {
         );
       }
 
+      // Markers older than this message on its day go under its divider
+      pushTimelineMarkers(timeline?.beforeDate[index]);
+
       // Add date to list, retrieve if it exists in the cache
       if (date) {
         messagesWithTail.push(
@@ -967,6 +1225,9 @@ export function Messages(props: Props) {
         );
       }
     });
+
+    // Markers older than every loaded message (start of conversation only)
+    pushTimelineMarkers(timeline?.trailing);
 
     // Push remainder of blocked messages
     createBlockedMessageCount();
@@ -986,6 +1247,8 @@ export function Messages(props: Props) {
         objectCache.set(`${object.message.id}:${object.tail}`, object);
       } else if (object.t === 1) {
         objectCache.set(object.unread ?? object.date, object);
+      } else if (object.t === 3) {
+        objectCache.set(object.marker, object);
       }
     }
 
@@ -1020,19 +1283,18 @@ export function Messages(props: Props) {
         // server, so skip them; with none left this clears the request.
         // If the conversation itself is gated, edit nothing: a mode flip
         // leaves old plaintext rows on screen, and editing one would PATCH
-        // the new text to the server in plaintext.
-        const message = serverActionsBlocked(
-          e2ee,
-          props.channel,
-          client().user?.id,
-        )
-          ? undefined
-          : messages().find(
-              (message) =>
-                message.channelId === channelId &&
-                message.author?.self &&
-                !e2ee?.isEncryptedMessage(message.id),
-            );
+        // the new text to the server in plaintext. Edit is hidden on a
+        // protected or pinned channel (plan D11).
+        const message =
+          serverActionsBlocked(e2ee, props.channel, client().user?.id) ||
+          protectedActionsBlocked(protectedOrPinned(), "edit")
+            ? undefined
+            : messages().find(
+                (message) =>
+                  message.channelId === channelId &&
+                  message.author?.self &&
+                  !e2ee?.isEncryptedMessage(message.id),
+              );
 
         if (message) {
           state.draft.setEditingMessage(message);
@@ -1170,6 +1432,11 @@ type ListEntry =
       // Blocked messages
       t: 2;
       count: number;
+    }
+  | {
+      // Protected channel timeline marker (local, never from the server)
+      t: 3;
+      marker: TimelineMarker;
     };
 
 /**
@@ -1206,6 +1473,83 @@ function Entry(
       <Match when={local.t === 2}>
         <BlockedMessage count={(other as ListEntry & { t: 2 }).count} />
       </Match>
+      <Match when={local.t === 3}>
+        <ProtectedTimelineRow marker={(other as ListEntry & { t: 3 }).marker} />
+      </Match>
     </Switch>
   );
 }
+
+/**
+ * Glyph for a timeline marker kind
+ * @param kind Marker kind
+ * @returns Material symbol name
+ */
+function timelineGlyph(kind: TimelineMarker["kind"]): string {
+  switch (kind) {
+    case "new_device":
+      return "devices";
+    case "forced_removal":
+      return "person_remove";
+    default: {
+      const _exhaustive: never = kind;
+      return "info";
+    }
+  }
+}
+
+/**
+ * Local system-style row for a protected channel timeline marker (plan
+ * D22). The member is named the way system messages name users (server
+ * nickname, then display name); an unknown member reads "A member", never
+ * an id.
+ */
+function ProtectedTimelineRow(props: { marker: TimelineMarker }) {
+  const client = useClient();
+  const { t } = useLingui();
+
+  const text = createMemo(() => {
+    const c = client();
+    const userId = props.marker.userId;
+    const serverId = c.channels.get(props.marker.channelId)?.serverId;
+    const member = serverId
+      ? c.serverMembers.getByKey({ server: serverId, user: userId })
+      : undefined;
+    const user = c.users.get(userId);
+
+    return timelineCopy(
+      props.marker,
+      timelineDisplayName(
+        [member?.nickname, user?.displayName],
+        // C16: local msgid; C0 has no member-name fallback yet
+        t`A member`,
+      ),
+    );
+  });
+
+  return (
+    <TimelineRow role="note" data-protected-timeline={props.marker.kind}>
+      <MaterialSymbol size={16}>
+        {timelineGlyph(props.marker.kind)}
+      </MaterialSymbol>
+      <span>{text()}</span>
+    </TimelineRow>
+  );
+}
+
+/**
+ * Timeline marker row, styled like the other list-level notices
+ */
+const TimelineRow = styled("div", {
+  base: {
+    display: "flex",
+    alignItems: "center",
+    gap: "var(--gap-sm)",
+    marginTop: "var(--gap-md)",
+    padding: "var(--gap-sm) var(--gap-xxl)",
+    fontSize: "0.8em",
+    fontStyle: "italic",
+    color: "var(--md-sys-color-outline)",
+    overflowWrap: "anywhere",
+  },
+});

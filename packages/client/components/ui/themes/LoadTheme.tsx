@@ -61,6 +61,15 @@ export function LoadTheme() {
       // voice channel). User-chosen, so it is read off the store directly
       // rather than folded into the generated scheme.
       "--sloga-rail-accent": state.theme.railAccent,
+      // Protected channel shield states (ProtectedHueVar in
+      // protectedShield.ts). Fixed hues, the same in light and dark. The
+      // unavailable grey is the invisible presence grey.
+      "--sloga-protected-ok": "#27A163",
+      "--sloga-protected-resecuring": "#F5870D",
+      "--sloga-protected-alert": "#CF2A27",
+      "--sloga-protected-unavailable": "#A5A5A5",
+      "--sloga-protected-grace": "#E3CF1B",
+      "--sloga-protected-frozen": "#3BB8ED",
     })) {
       // Mounted on <html>, not <body>: styles.css paints the page canvas from
       // `html:root` (it has to — iOS Safari draws overscroll from <html>), and

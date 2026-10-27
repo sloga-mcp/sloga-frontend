@@ -15,6 +15,7 @@ import { decodeTime, ulid } from "ulid";
 
 import { DraftMessages, Messages, ScheduledMessagesBar } from "@revolt/app";
 import { useClient } from "@revolt/client";
+import { useProtectedChannelOpen } from "@revolt/client/useProtectedChannel";
 import { resolveCurrent } from "@revolt/common";
 import { Keybind, KeybindAction, createKeybind } from "@revolt/keybinds";
 import { useModals } from "@revolt/modal";
@@ -74,6 +75,13 @@ export function TextChannel(props: ChannelPageProps) {
   const state = useState();
   const client = useClient();
   const sides = useLayoutSides();
+
+  // Protected channel open/refresh lifecycle (plan D8, D27). Mounted once,
+  // here in the main view only; chat windows stay read-only. The hook keys
+  // on the channel id, so a channel switch closes the old lifecycle and
+  // opens the new one, and unmount closes it. It does nothing for a channel
+  // that is neither protected nor pinned, or outside the main window.
+  useProtectedChannelOpen(() => props.channel);
 
   /**
    * Whether the member list belongs in this channel's own side column (the

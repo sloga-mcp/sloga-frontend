@@ -1,16 +1,29 @@
 import { Accessor, Setter, batch, createSignal } from "solid-js";
 
 import { API, Channel, Client, Message } from "stoat.js";
+// The refusal class is read off the namespace rather than named above: the
+// Draft specs load this file against a stoat.js stand-in that exports only
+// the four names above, and a missing named export fails to link
+import * as StoatSdk from "stoat.js";
 import { ulid } from "ulid";
 
 import { CONFIGURATION, insecureUniqueId } from "@revolt/common";
 
 import { State } from "..";
+// Pure modules, by relative path: the @revolt/client barrel would cycle, and
+// the Draft specs load this file under plain node
+import { isProtectedSendError } from "../../client/protectedSendError.ts";
+import type { ProtectedNoticeKind } from "../../client/protectedShield.ts";
+import { protectedNoticeForError } from "../../client/protectedShield.ts";
 
 import { AbstractStore } from ".";
 import { LAYOUT_SECTIONS } from "./Layout";
 import { uploadFileChunked } from "./chunkedUpload";
 import { describeSendError } from "./draftSendError.ts";
+import {
+  isProtectedForDraft,
+  setProtectedChannelResolver,
+} from "./protectedDraftGuard.ts";
 
 /**
  * Attachment upload timeout, in milliseconds. Autumn buffers the whole file,
@@ -78,7 +91,124 @@ export type UnsentMessage = {
    * Why the last send attempt failed, shown on the failed message
    */
   error?: string;
+
+  /**
+   * Why the last protected send failed, as a notice kind (protected errors
+   * carry no display copy); `DraftMessage` shows its text
+   */
+  protectedNotice?: ProtectedNoticeKind;
+
+  /**
+   * Count for the notice copy (seat or device cap), if any
+   */
+  protectedNoticeMax?: number | null;
 } & DraftData;
+
+/**
+ * `TextFlowFailure` client reasons the bridge only raises before the first
+ * POST of a send (or after deleting the stored bytes of an attempt known to
+ * have failed): with a fresh key, nothing was delivered. Anything not listed
+ * (`maybe_unsent`, `unexpected_error`, a reason added later) counts as an
+ * unknown outcome.
+ */
+const UNDELIVERED_CLIENT_REASONS = new Set([
+  "flag_stripped",
+  "invalid_channel",
+  "disposed",
+  "malformed_encrypt",
+  "empty_message",
+  "invalid_flags",
+  "invalid_reply",
+  "not_allowed",
+  "not_capable",
+  "join_stalled",
+  "welcome_pending",
+  "no_group",
+  "poisoned",
+  "state_unavailable",
+  "update_pending",
+  "catch_up_incomplete",
+  "catch_up_failed",
+  "commit_restage_exhausted",
+  "create_staged",
+]);
+
+/**
+ * The cause of a protected send rejection: `ProtectedSendError.failure`, or
+ * the SDK's own refusal thrown before the bridge was reached
+ * @param error Thrown value
+ * @returns Cause, or null for anything else
+ */
+function protectedFailureOf(
+  error: unknown,
+): Record<string, unknown> | Error | null {
+  if (isProtectedSendError(error)) {
+    const failure = error.failure;
+    return typeof failure === "object" && failure !== null
+      ? (failure as Record<string, unknown>)
+      : null;
+  }
+  const name = (error as { name?: unknown } | null)?.name;
+  return name === "ProtectedChannelUnavailable" ||
+    name === "ProtectedFieldRefusedClient"
+    ? (error as Error)
+    : null;
+}
+
+/**
+ * Whether a rejected protected send under a FRESH key was certainly not
+ * delivered. True only for causes the bridge raises before any POST, or
+ * after a definitive refusal (it deletes the stored bytes then); transport
+ * failures, `maybe_unsent` and anything unrecognised are unknown outcomes.
+ * Not valid for a retried key: an earlier attempt under it may still be
+ * pending in the bridge's store.
+ * @param error Thrown value
+ * @returns Whether the message is known undelivered
+ */
+function protectedSendUndelivered(error: unknown): boolean {
+  const failure = protectedFailureOf(error);
+  if (!failure) return false;
+
+  const { name, source, reason } = failure as Record<string, unknown>;
+  if (
+    name === "ProtectedChannelUnavailable" ||
+    name === "ProtectedFieldRefusedClient"
+  ) {
+    return true;
+  }
+
+  if (source === "server" || source === "native") return true;
+  return (
+    source === "client" &&
+    typeof reason === "string" &&
+    UNDELIVERED_CLIENT_REASONS.has(reason)
+  );
+}
+
+/**
+ * Notice for a rejected protected send (plan D17)
+ * @param error Thrown value
+ * @param undelivered Whether the send is known undelivered
+ * @returns Notice kind and its count
+ */
+function protectedSendNotice(
+  error: unknown,
+  undelivered: boolean,
+): [ProtectedNoticeKind, number | null] {
+  const failure = protectedFailureOf(error);
+  const name = (failure as { name?: unknown } | null)?.name;
+  if (name === "ProtectedChannelUnavailable") return ["not_available", null];
+  if (name === "ProtectedFieldRefusedClient") return ["send_refused", null];
+
+  if (failure) {
+    const ui = protectedNoticeForError(failure, { op: "send" });
+    if (ui.kind === "notice" && ui.tag !== "unknown") {
+      return [ui.notice, ui.max];
+    }
+  }
+
+  return [undelivered ? "send_refused" : "maybe_unsent", null];
+}
 
 export interface TextSelection {
   /**
@@ -226,6 +356,17 @@ export class Draft extends AbstractStore<"draft", TypeDraft> {
   ];
 
   /**
+   * Client the protected-channel wiring was last installed for
+   */
+  private boundClient?: Client;
+
+  /**
+   * Set by `hydrate()`, which runs once every store's saved data is loaded:
+   * until then the outbox is not the user's real outbox
+   */
+  private outboxLoaded = false;
+
+  /**
    * Construct store
    * @param state State
    */
@@ -243,7 +384,75 @@ export class Draft extends AbstractStore<"draft", TypeDraft> {
    * Hydrate external context
    */
   hydrate(): void {
-    /** nothing needs to be done */
+    // State.hydrate() calls this after loading every store from disk
+    this.outboxLoaded = true;
+  }
+
+  /**
+   * Install the protected-channel wiring for a client (plan D9d, D10; W4b
+   * audit M4), once per client; a new client (sign-in after sign-out)
+   * replaces it. This store is the sole owner of both pieces:
+   * - the draft-guard resolver behind `addFile`'s refusal, on every shell;
+   * - where the client has a native bridge, the outbox keys its D10 orphan
+   *   scan must leave alone (an entry the outbox owns is retried from here).
+   *
+   * Safe to call from anywhere, any number of times: `NotificationsWorker`
+   * calls it at app start (before connect, so `addFile` refuses before the
+   * first send) and `sendDraft` calls it as well. A different client
+   * replaces the previous one everywhere; no reference to it is kept.
+   * @param client Client
+   */
+  bindClient(client: Client) {
+    if (this.boundClient === client) return;
+    this.boundClient = client;
+
+    setProtectedChannelResolver((channelId) =>
+      client.isProtectedChannel(channelId),
+    );
+
+    // Structural: importing the bridge type from @revolt/client would cycle
+    const e2ee = client.e2ee as unknown as
+      | {
+          setProtectedOutboxKeys?: (
+            accessor: () => ReadonlySet<string>,
+          ) => void;
+        }
+      | undefined;
+    try {
+      e2ee?.setProtectedOutboxKeys?.(() => this.outboxKeys());
+    } catch (error) {
+      // Never fails a send: without the keys the orphan scan only defers.
+      // Forget the client so the next call registers again.
+      this.boundClient = undefined;
+      console.error("[protected] outbox keys not registered", {
+        name: (error as { name?: unknown } | null)?.name,
+      });
+    }
+  }
+
+  /**
+   * Idempotency keys of every outbox entry, for the bridge's orphan scan.
+   * All channels, not only protected ones: the scan only looks up keys a
+   * stored protected send carries, and such a key is in the outbox only when
+   * this outbox owns that send. Filtering by the protected flag instead
+   * could hand the scan a live entry while the flag is still loading.
+   * @returns Keys
+   * @throws until the outbox is loaded, so the scan defers instead of
+   * reading a live entry as an orphan (W4b audit M4)
+   */
+  private outboxKeys(): ReadonlySet<string> {
+    if (!this.outboxLoaded) {
+      throw new Error("[protected] draft outbox not loaded");
+    }
+
+    const keys = new Set<string>();
+    for (const entries of Object.values(this.get().outbox ?? {})) {
+      for (const entry of entries ?? []) {
+        keys.add(entry.idempotencyKey);
+      }
+    }
+
+    return keys;
   }
 
   /**
@@ -414,6 +623,15 @@ export class Draft extends AbstractStore<"draft", TypeDraft> {
     existingDraft?: DraftData,
     retryOf?: string,
   ) {
+    // Protected channels (plan D9e) are decided FIRST, from the SDK's own
+    // predicate (server flag or local pin, independent of `client.e2ee`),
+    // before any pop, Autumn upload or prepareDraftAttachments below
+    if (client.isProtectedChannel(channel.id)) {
+      return this.sendProtectedDraft(client, channel, existingDraft, retryOf);
+    }
+
+    this.bindClient(client);
+
     const draft = existingDraft ?? this.popDraft(channel.id);
 
     // Check if this is something we can even send
@@ -633,6 +851,172 @@ export class Draft extends AbstractStore<"draft", TypeDraft> {
         throw error;
       }
     }
+  }
+
+  /**
+   * Send a draft to a protected channel (plan D9e, D10). Text only: the
+   * native layer encrypts it, and the outbox entry's key is the bridge's
+   * idempotency key, under which it stores the ciphertext and re-sends the
+   * same bytes on a retry.
+   * @param client Client
+   * @param channel Protected channel
+   * @param existingDraft Outbox entry being retried
+   * @param retryOf Idempotency key of the outbox entry being retried
+   * @throws on every refusal or failed send, with the text kept
+   */
+  private async sendProtectedDraft(
+    client: Client,
+    channel: Channel,
+    existingDraft?: DraftData,
+    retryOf?: string,
+  ) {
+    this.bindClient(client);
+
+    // Protected text exists only in text channels. A protected or pinned id
+    // the server relabelled (Thread, Group, DM, SavedMessages) or one not
+    // hydrated yet is refused before anything else, Retry included, so it
+    // can never reach a plaintext path (S1 audit PB-1 backstop). Nothing is
+    // popped: the composer keeps the draft, a retried entry stays failed.
+    if (channel.type !== "TextChannel") {
+      const error = new StoatSdk.ProtectedChannelUnavailable();
+      if (retryOf) this.markProtectedFailed(channel.id, retryOf, error, true);
+      throw error;
+    }
+
+    // Read, not popped: the composer keeps the draft until the outbox entry
+    // below exists
+    const draft = existingDraft ?? this.getDraft(channel.id);
+
+    // Attachments never go to a protected channel: refused here, before any
+    // pop, Autumn upload or prepareDraftAttachments, never stripped. The
+    // draft keeps its text and files.
+    if (draft.files?.length) {
+      const error = new StoatSdk.ProtectedFieldRefusedClient("attachments");
+      if (retryOf) this.markProtectedFailed(channel.id, retryOf, error, true);
+      throw error;
+    }
+
+    const { content, replies } = draft;
+    if (!content) {
+      if (retryOf) this.cancelSend(channel, retryOf);
+      return;
+    }
+
+    // One outbox model: the entry exists before the pop and survives a
+    // reload (clean() keeps text entries). A retry reuses its key, never a
+    // fresh ulid, so the bridge re-sends the ciphertext stored under it.
+    const idempotencyKey = retryOf ?? ulid();
+    this.set("outbox", channel.id, [
+      ...this.getPendingMessages(channel.id).filter(
+        (entry) => entry.idempotencyKey !== idempotencyKey,
+      ),
+      {
+        idempotencyKey,
+        content,
+        replies,
+        status: "sending",
+      } as UnsentMessage,
+    ]);
+
+    if (!existingDraft) this.popDraft(channel.id);
+
+    try {
+      await channel.sendMessage({ content, replies }, idempotencyKey);
+    } catch (error) {
+      // Exactly one copy of the text survives, and every rejection reaches
+      // the caller (never a silent "failed"):
+      // - known undelivered, fresh key: back in the composer, entry deleted;
+      // - unknown outcome, or a retried key (an earlier attempt under it may
+      //   still be pending in the bridge): a failed entry under the SAME
+      //   key, so a retry re-sends the stored bytes. Never put back in the
+      //   composer, where a second send would mint a new key and could
+      //   duplicate a message that did land.
+      const undelivered = !retryOf && protectedSendUndelivered(error);
+      if (
+        undelivered &&
+        !existingDraft &&
+        this.restoreProtectedText(channel.id, content, replies)
+      ) {
+        this.cancelSend(channel, idempotencyKey);
+      } else {
+        this.markProtectedFailed(
+          channel.id,
+          idempotencyKey,
+          error,
+          undelivered,
+        );
+      }
+      throw error;
+    }
+
+    this.set(
+      "outbox",
+      channel.id,
+      this.getPendingMessages(channel.id).filter(
+        (entry) => entry.idempotencyKey !== idempotencyKey,
+      ),
+    );
+  }
+
+  /**
+   * Mark a protected outbox entry as failed, with a notice kind as the
+   * reason. No `error` text: protected errors carry no display copy, and
+   * `describeSendError` would show their identifier.
+   * @param channelId Channel ID
+   * @param idempotencyKey Idempotency key
+   * @param error Thrown value
+   * @param undelivered Whether the send is known undelivered
+   */
+  private markProtectedFailed(
+    channelId: string,
+    idempotencyKey: string,
+    error: unknown,
+    undelivered: boolean,
+  ) {
+    const [notice, max] = protectedSendNotice(error, undelivered);
+    this.set(
+      "outbox",
+      channelId,
+      this.getPendingMessages(channelId).map((entry) =>
+        entry.idempotencyKey === idempotencyKey
+          ? {
+              ...entry,
+              status: "failed",
+              error: undefined,
+              protectedNotice: notice,
+              protectedNoticeMax: max,
+            }
+          : entry,
+      ),
+    );
+  }
+
+  /**
+   * Put the text of an undelivered protected send back in the composer,
+   * unless the user has typed something new since
+   * @param channelId Channel ID
+   * @param content Text that was sent
+   * @param replies Replies that were sent
+   * @returns Whether the text went back
+   */
+  private restoreProtectedText(
+    channelId: string,
+    content: string,
+    replies?: API.ReplyIntent[],
+  ): boolean {
+    const current = this.getDraft(channelId);
+    if (current.content) return false;
+
+    this.setDraft(channelId, {
+      ...current,
+      content,
+      replies: current.replies?.length ? current.replies : replies,
+    });
+
+    // A mounted composer shows the editor, not the draft: write it there
+    // too (it was emptied by the pop, so this is the whole text)
+    this.replaceNode(channelId, [content]);
+    return true;
   }
 
   /**
@@ -957,6 +1341,14 @@ export class Draft extends AbstractStore<"draft", TypeDraft> {
    * @param file File to add
    */
   addFile(channelId: string, file: File) {
+    // A protected channel takes no attachments (plan D9d). The composer hides
+    // the entry points; this refuses whatever still arrives. UX only: the
+    // never-plaintext guard is sendDraft's own check.
+    if (isProtectedForDraft(channelId)) {
+      console.warn("[protected] attachment refused", { channelId });
+      return Promise.resolve();
+    }
+
     // One attachment at a time: the picker hands over many files at once and
     // the composer doesn't await, so without this every snapshot would be
     // read into memory concurrently. It also keeps the files in pick order.
@@ -969,6 +1361,13 @@ export class Draft extends AbstractStore<"draft", TypeDraft> {
           CONFIGURATION.MAX_ATTACHMENTS;
 
       const id = await this.cacheFile(file, snapshot);
+
+      // The channel may have turned protected while the file was read
+      if (isProtectedForDraft(channelId)) {
+        this.deleteFile(id);
+        console.warn("[protected] attachment refused", { channelId });
+        return;
+      }
 
       this.setDraft(channelId, (data) => ({
         files: [...(data.files ?? []), id],
