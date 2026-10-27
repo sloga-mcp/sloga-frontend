@@ -7227,7 +7227,7 @@ function isGatedFor(
         file=CHANNEL_OVERVIEW,
         search="""    } catch (error) {
       setSpoilerFailed(true);
-      showError(error);
+      if (!protectedRefusal(error, "spoiler")) showError(error);
     } finally {
       setSpoilerSaving(false);""",
         replace="""    } finally {
@@ -7241,7 +7241,7 @@ function isGatedFor(
         file=CHANNEL_OVERVIEW,
         search="""    } catch (error) {
       setPwFailed(true);
-      showError(error);
+      if (!protectedRefusal(error, "password")) showError(error);
     } finally {
       setPwSaving(false);""",
         replace="""    } finally {
@@ -7255,14 +7255,14 @@ function isGatedFor(
         file=CHANNEL_OVERVIEW,
         search="""    } catch (error) {
       setPwFailed(true);
-      showError(error);
+      if (!protectedRefusal(error, "password")) showError(error);
     } finally {
       setPwSaving(false);
     }""",
         replace="""      setPwSaving(false);
     } catch (error) {
       setPwFailed(true);
-      showError(error);
+      if (!protectedRefusal(error, "password")) showError(error);
     }""",
         specs=[AFK_CHANNEL_SETTINGS_SPEC],
         must_red=[AFK_CHANNEL_SETTINGS_SPEC],
