@@ -2034,23 +2034,6 @@ export function MessageComposition(props: Props) {
               </MessageBox.FloatingAction>
             </Show>
             <MessageBox.ActionContainer>
-              {/* Every action in the tray is hidden on a protected channel */}
-              <Show when={!protectedChannel()}>
-                <MessageBox.InlineIcon>
-                  <Tooltip
-                    content={
-                      showMoreActions() ? t`Fewer options` : t`More options`
-                    }
-                    placement="top"
-                  >
-                    <IconButton onPress={() => setShowMoreActions((v) => !v)}>
-                      <Symbol>
-                        {showMoreActions() ? "chevron_left" : "chevron_right"}
-                      </Symbol>
-                    </IconButton>
-                  </Tooltip>
-                </MessageBox.InlineIcon>
-              </Show>
               <CompositionMediaPicker
                 onMessage={sendMessage}
                 onTextReplacement={(text) => setNodeReplacement([text])}
@@ -2060,8 +2043,182 @@ export function MessageComposition(props: Props) {
               >
                 {(triggerProps) => (
                   <>
+                    <MessageBox.InlineIcon>
+                      <IconButton onPress={triggerProps.onClickEmoji}>
+                        <Symbol>emoticon</Symbol>
+                      </IconButton>
+                    </MessageBox.InlineIcon>
+                    <div ref={triggerProps.ref} />
+                    <Show when={disappearAllowed()}>
+                      <MessageBox.InlineIcon>
+                        <ComposerPopover
+                          open={showDisappearMenu()}
+                          onDismiss={() => setShowDisappearMenu(false)}
+                          panel={
+                            <div
+                              style={{
+                                background:
+                                  "var(--md-sys-color-surface-container-high)",
+                                "border-radius": "12px",
+                                padding: "8px 0",
+                                "min-width": "160px",
+                                "box-shadow": "0 4px 20px rgba(0,0,0,0.4)",
+                                border:
+                                  "1px solid var(--md-sys-color-outline-variant)",
+                              }}
+                            >
+                              <div
+                                style={{
+                                  padding: "4px 12px 8px",
+                                  "font-size": "0.75em",
+                                  opacity: "0.6",
+                                  "font-weight": "600",
+                                  "letter-spacing": "0.05em",
+                                  "text-transform": "uppercase",
+                                }}
+                              >
+                                Disappear after
+                              </div>
+                              <For each={DISAPPEAR_OPTIONS}>
+                                {(opt, i) => (
+                                  <div
+                                    onClick={() => selectDisappear(i())}
+                                    style={{
+                                      display: "flex",
+                                      "align-items": "center",
+                                      gap: "10px",
+                                      padding: "12px 16px",
+                                      cursor: "pointer",
+                                      background:
+                                        disappearIdx() === i()
+                                          ? "var(--md-sys-color-primary-container)"
+                                          : "transparent",
+                                      color:
+                                        disappearIdx() === i()
+                                          ? "var(--md-sys-color-on-primary-container)"
+                                          : "inherit",
+                                      "font-size": "0.9em",
+                                    }}
+                                  >
+                                    <div
+                                      style={{
+                                        width: "16px",
+                                        height: "16px",
+                                        "border-radius": "50%",
+                                        border: `2px solid ${disappearIdx() === i() ? "#FF8A00" : "var(--md-sys-color-outline)"}`,
+                                        background:
+                                          disappearIdx() === i()
+                                            ? "#FF8A00"
+                                            : "transparent",
+                                        "flex-shrink": "0",
+                                      }}
+                                    />
+                                    {opt.label}
+                                  </div>
+                                )}
+                              </For>
+                            </div>
+                          }
+                        >
+                          <Tooltip
+                            content={disappearTooltipText()}
+                            placement="top"
+                          >
+                            <div
+                              style={{
+                                display: "flex",
+                                "flex-direction": "column",
+                                "align-items": "center",
+                              }}
+                            >
+                              <IconButton
+                                onPress={toggleDisappearMenu}
+                                style={
+                                  disappearOption().seconds !== null
+                                    ? { color: "#FF8A00" }
+                                    : {}
+                                }
+                              >
+                                <Symbol>
+                                  {disappearOption().seconds === null
+                                    ? "timer_off"
+                                    : "timer"}
+                                </Symbol>
+                              </IconButton>
+                              <Show when={disappearOption().seconds !== null}>
+                                <span
+                                  style={{
+                                    "font-size": "0.6em",
+                                    "line-height": "1",
+                                    "margin-top": "-4px",
+                                    color: "#FF8A00",
+                                    "font-weight": "600",
+                                    "pointer-events": "none",
+                                  }}
+                                >
+                                  {disappearOption().label}
+                                </span>
+                              </Show>
+                            </div>
+                          </Tooltip>
+                        </ComposerPopover>
+                      </MessageBox.InlineIcon>
+                    </Show>
+                    <Show
+                      when={
+                        props.channel.havePermission("UploadFiles") &&
+                        !protectedHides("camera") &&
+                        !protectedHides("voice_message")
+                      }
+                    >
+                      <MessageBox.InlineIcon>
+                        <CameraMessageButton
+                          onFile={(file) => onFiles([file])}
+                          onError={(error) =>
+                            openModal({ type: "error2", error })
+                          }
+                        />
+                      </MessageBox.InlineIcon>
+                      <MessageBox.InlineIcon>
+                        <VoiceMessageButton
+                          onFile={(file) => onFiles([file])}
+                          onError={(error) =>
+                            openModal({ type: "error2", error })
+                          }
+                        />
+                      </MessageBox.InlineIcon>
+                    </Show>
+                    <Show when={scheduleAllowed()}>
+                      <MessageBox.InlineIcon>
+                        <Tooltip
+                          content={
+                            draft()?.files?.length
+                              ? t`Scheduling does not support attachments yet`
+                              : !draft()?.content?.trim()
+                                ? t`Write a message first, then schedule it`
+                                : t`Send later`
+                          }
+                          placement="top"
+                        >
+                          <IconButton
+                            isDisabled={
+                              !!draft()?.files?.length ||
+                              !draft()?.content?.trim()
+                            }
+                            onPress={() =>
+                              openModal({
+                                type: "schedule_message",
+                                channel: props.channel,
+                              })
+                            }
+                          >
+                            <Symbol>schedule_send</Symbol>
+                          </IconButton>
+                        </Tooltip>
+                      </MessageBox.InlineIcon>
+                    </Show>
                     {/* Slide-out tray: extra actions stay collapsed until
-                        the chevron toggle reveals them */}
+                        the chevron toggle at the end of the bar reveals them */}
                     <div
                       style={{
                         display: "flex",
@@ -2359,175 +2516,33 @@ export function MessageComposition(props: Props) {
                         </MessageBox.InlineIcon>
                       </Show>
                     </div>
-                    <MessageBox.InlineIcon>
-                      <IconButton onPress={triggerProps.onClickEmoji}>
-                        <Symbol>emoticon</Symbol>
-                      </IconButton>
-                    </MessageBox.InlineIcon>
-                    <div ref={triggerProps.ref} />
+                    {/* Every action in the tray is hidden on a protected
+                        channel, so the toggle is too */}
+                    <Show when={!protectedChannel()}>
+                      <MessageBox.InlineIcon>
+                        <Tooltip
+                          content={
+                            showMoreActions()
+                              ? t`Fewer options`
+                              : t`More options`
+                          }
+                          placement="top"
+                        >
+                          <IconButton
+                            onPress={() => setShowMoreActions((v) => !v)}
+                          >
+                            <Symbol>
+                              {showMoreActions()
+                                ? "chevron_right"
+                                : "chevron_left"}
+                            </Symbol>
+                          </IconButton>
+                        </Tooltip>
+                      </MessageBox.InlineIcon>
+                    </Show>
                   </>
                 )}
               </CompositionMediaPicker>
-              <Show when={disappearAllowed()}>
-                <MessageBox.InlineIcon>
-                  <ComposerPopover
-                    open={showDisappearMenu()}
-                    onDismiss={() => setShowDisappearMenu(false)}
-                    panel={
-                      <div
-                        style={{
-                          background:
-                            "var(--md-sys-color-surface-container-high)",
-                          "border-radius": "12px",
-                          padding: "8px 0",
-                          "min-width": "160px",
-                          "box-shadow": "0 4px 20px rgba(0,0,0,0.4)",
-                          border:
-                            "1px solid var(--md-sys-color-outline-variant)",
-                        }}
-                      >
-                        <div
-                          style={{
-                            padding: "4px 12px 8px",
-                            "font-size": "0.75em",
-                            opacity: "0.6",
-                            "font-weight": "600",
-                            "letter-spacing": "0.05em",
-                            "text-transform": "uppercase",
-                          }}
-                        >
-                          Disappear after
-                        </div>
-                        <For each={DISAPPEAR_OPTIONS}>
-                          {(opt, i) => (
-                            <div
-                              onClick={() => selectDisappear(i())}
-                              style={{
-                                display: "flex",
-                                "align-items": "center",
-                                gap: "10px",
-                                padding: "12px 16px",
-                                cursor: "pointer",
-                                background:
-                                  disappearIdx() === i()
-                                    ? "var(--md-sys-color-primary-container)"
-                                    : "transparent",
-                                color:
-                                  disappearIdx() === i()
-                                    ? "var(--md-sys-color-on-primary-container)"
-                                    : "inherit",
-                                "font-size": "0.9em",
-                              }}
-                            >
-                              <div
-                                style={{
-                                  width: "16px",
-                                  height: "16px",
-                                  "border-radius": "50%",
-                                  border: `2px solid ${disappearIdx() === i() ? "#FF8A00" : "var(--md-sys-color-outline)"}`,
-                                  background:
-                                    disappearIdx() === i()
-                                      ? "#FF8A00"
-                                      : "transparent",
-                                  "flex-shrink": "0",
-                                }}
-                              />
-                              {opt.label}
-                            </div>
-                          )}
-                        </For>
-                      </div>
-                    }
-                  >
-                    <Tooltip content={disappearTooltipText()} placement="top">
-                      <div
-                        style={{
-                          display: "flex",
-                          "flex-direction": "column",
-                          "align-items": "center",
-                        }}
-                      >
-                        <IconButton
-                          onPress={toggleDisappearMenu}
-                          style={
-                            disappearOption().seconds !== null
-                              ? { color: "#FF8A00" }
-                              : {}
-                          }
-                        >
-                          <Symbol>
-                            {disappearOption().seconds === null
-                              ? "timer_off"
-                              : "timer"}
-                          </Symbol>
-                        </IconButton>
-                        <Show when={disappearOption().seconds !== null}>
-                          <span
-                            style={{
-                              "font-size": "0.6em",
-                              "line-height": "1",
-                              "margin-top": "-4px",
-                              color: "#FF8A00",
-                              "font-weight": "600",
-                              "pointer-events": "none",
-                            }}
-                          >
-                            {disappearOption().label}
-                          </span>
-                        </Show>
-                      </div>
-                    </Tooltip>
-                  </ComposerPopover>
-                </MessageBox.InlineIcon>
-              </Show>
-              <Show
-                when={
-                  props.channel.havePermission("UploadFiles") &&
-                  !protectedHides("camera") &&
-                  !protectedHides("voice_message")
-                }
-              >
-                <MessageBox.InlineIcon>
-                  <CameraMessageButton
-                    onFile={(file) => onFiles([file])}
-                    onError={(error) => openModal({ type: "error2", error })}
-                  />
-                </MessageBox.InlineIcon>
-                <MessageBox.InlineIcon>
-                  <VoiceMessageButton
-                    onFile={(file) => onFiles([file])}
-                    onError={(error) => openModal({ type: "error2", error })}
-                  />
-                </MessageBox.InlineIcon>
-              </Show>
-              <Show when={scheduleAllowed()}>
-                <MessageBox.InlineIcon>
-                  <Tooltip
-                    content={
-                      draft()?.files?.length
-                        ? t`Scheduling does not support attachments yet`
-                        : !draft()?.content?.trim()
-                          ? t`Write a message first, then schedule it`
-                          : t`Send later`
-                    }
-                    placement="top"
-                  >
-                    <IconButton
-                      isDisabled={
-                        !!draft()?.files?.length || !draft()?.content?.trim()
-                      }
-                      onPress={() =>
-                        openModal({
-                          type: "schedule_message",
-                          channel: props.channel,
-                        })
-                      }
-                    >
-                      <Symbol>schedule_send</Symbol>
-                    </IconButton>
-                  </Tooltip>
-                </MessageBox.InlineIcon>
-              </Show>
             </MessageBox.ActionContainer>
           </MessageBox.ActionContainer>
         }

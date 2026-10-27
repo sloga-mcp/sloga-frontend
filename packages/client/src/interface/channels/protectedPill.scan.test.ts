@@ -16,7 +16,8 @@
 //  P4  pins the error path: A2 `protectedNoticeForError(..., { op: "owner" })`
 //      + C0 `errorUiCopy`, never `error.message`;
 //  P5  blank-page traps: every `styled(` takes a string tag; no barrel
-//      import; the shield icon by file path;
+//      import; the shield icon by file path; `use:floating` sits on the
+//      NATIVE pill button (a directive on a styled() component is dead);
 //  P6  `ChannelHeader.tsx`: `grid_3x3` stays the fallback of a Show over the
 //      read-only shield, the pill is mounted once in the text branch, the
 //      name tint goes through the P1 helper.
@@ -401,6 +402,18 @@ describe("P5 blank-page traps", () => {
     for (const c of calls) {
       assert.match(c[1], /^"[a-z]+"$/, `styled(${c[1]} is not a string tag`);
     }
+  });
+
+  it("use:floating sits on the native pill button (S1 final F1)", () => {
+    // On a styled() component the directive is a dead prop (the panel never
+    // opened); see useOnStyled.scan.test.ts for the tree-wide rule.
+    assert.match(
+      PILL_CODE,
+      /<button\s+class=\{pillClass\}[^>]*?\suse:floating=\{\{/,
+    );
+    assert.match(PILL_CODE, /const pillClass = css\(\{/);
+    assert.doesNotMatch(PILL_CODE, /<Pill\b/);
+    assert.equal(count(PILL_CODE, /\buse:floating=/g), 1);
   });
 
   it("no barrel imports; the shield icon by file path", () => {

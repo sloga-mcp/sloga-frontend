@@ -872,6 +872,17 @@ export class Draft extends AbstractStore<"draft", TypeDraft> {
   ) {
     this.bindClient(client);
 
+    // Protected text exists only in text channels. A protected or pinned id
+    // the server relabelled (Thread, Group, DM, SavedMessages) or one not
+    // hydrated yet is refused before anything else, Retry included, so it
+    // can never reach a plaintext path (S1 audit PB-1 backstop). Nothing is
+    // popped: the composer keeps the draft, a retried entry stays failed.
+    if (channel.type !== "TextChannel") {
+      const error = new StoatSdk.ProtectedChannelUnavailable();
+      if (retryOf) this.markProtectedFailed(channel.id, retryOf, error, true);
+      throw error;
+    }
+
     // Read, not popped: the composer keeps the draft until the outbox entry
     // below exists
     const draft = existingDraft ?? this.getDraft(channel.id);

@@ -296,6 +296,13 @@ test("P4 forbidden actions are gated by the protected predicate", () => {
   assertGated("<Symbol>casino</Symbol>", /protectedHides\("dice"\)/);
   assertGated("triggerProps.onClickSticker", /protectedHides\("stickers"\)/);
   assertGated("triggerProps.onClickGif", /protectedHides\("gif"\)/);
+  // v0.70.0 moved the more-options toggle to the end of the bar
+  assertGated("setShowMoreActions((v) => !v)", /!protectedChannel\(\)/);
+  assert.equal(
+    (COMPOSITION.match(/setShowMoreActions\(\(v\) => !v\)/g) ?? []).length,
+    1,
+    "exactly one more-options toggle",
+  );
 
   const memoGates: [string, string, string][] = [
     ['type: "create_poll"', "pollAllowed", "poll"],

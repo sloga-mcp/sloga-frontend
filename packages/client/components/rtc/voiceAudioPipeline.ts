@@ -7,6 +7,11 @@ import type {
 import { CONFIGURATION } from "@revolt/common";
 
 import {
+  VOICE_PITCH_DEFAULT,
+  clampVoicePitch,
+  voicePitchIsActive,
+} from "./voicePitch";
+import {
   VOICE_TONE_PRESET_DEFAULT,
   VoiceTonePresetId,
   connectChain,
@@ -56,11 +61,27 @@ async function loadDenoiseAssets(ctx: AudioContext): Promise<ArrayBuffer> {
   return wasmBinary;
 }
 
+/** Contexts that already have the pitch worklet module registered. */
+const pitchWorkletLoaded = new WeakSet<AudioContext>();
+
+/** Self-hosted like the RNNoise assets, for the same CSP / no-CDN reasons. */
+async function loadPitchWorklet(ctx: AudioContext): Promise<void> {
+  if (pitchWorkletLoaded.has(ctx)) return;
+  await ctx.audioWorklet.addModule(
+    new URL(
+      `${import.meta.env.BASE_URL}voice-pitch/VoicePitchWorklet.js`,
+      window.location.origin,
+    ).href,
+  );
+  pitchWorkletLoaded.add(ctx);
+}
+
 /**
  * The one processor allowed in the mic track's single LiveKit processor slot:
- * capture → [DenoiserWorklet (RNNoise)] → [voice shaper] → GainNode →
- * destination. Every stage is live-tunable mid-call (`setDenoiseEnabled` /
- * `setTonePreset` / `setGain`) so settings changes apply without
+ * capture → [DenoiserWorklet (RNNoise)] → [voice changer pitch] →
+ * [voice shaper] → GainNode → destination. Every stage is live-tunable
+ * mid-call (`setDenoiseEnabled` / `setPitch` / `setTonePreset` / `setGain`)
+ * so settings changes apply without
  * republishing, and none of them steals the slot from the others (the old
  * separate Denoise/Gain processors were mutually exclusive, and a third
  * processor for the shaper would have made it three ways exclusive).
@@ -69,6 +90,10 @@ async function loadDenoiseAssets(ctx: AudioContext): Promise<ArrayBuffer> {
  * graph entirely when disabled (an unconnected worklet node isn't rendered),
  * so a gain-only pipeline pays no denoise latency. The vendored worklet
  * resamples context-rate ↔ 48 kHz internally (see public/rnnoise/PROVENANCE).
+ *
+ * The pitch stage (`voicePitch.ts`) works like the worklet stage: created
+ * on first use and wired past at 0 semitones. If its worklet fails to load,
+ * the other stages keep running without it.
  *
  * The shaper stage is exactly one preset's node chain (`voiceTonePresets.ts`);
  * `off` contributes no nodes at all. Switching presets tears the old chain
@@ -84,10 +109,12 @@ export class VoiceAudioPipeline implements TrackProcessor<
   #denoise: boolean;
   #gainPercent: number;
   #tonePreset: VoiceTonePresetId;
+  #pitchSemitones: number;
 
   #ctx: AudioContext | undefined;
   #source: MediaStreamAudioSourceNode | undefined;
   #denoiseNode: AudioWorkletNode | undefined;
+  #pitchNode: AudioWorkletNode | undefined;
   #toneNodes: AudioNode[] = [];
   #gainNode: GainNode | undefined;
   #dest: MediaStreamAudioDestinationNode | undefined;
@@ -100,10 +127,14 @@ export class VoiceAudioPipeline implements TrackProcessor<
     denoise: boolean;
     gainPercent: number;
     tonePreset?: VoiceTonePresetId;
+    pitchSemitones?: number;
   }) {
     this.#denoise = opts.denoise;
     this.#gainPercent = opts.gainPercent;
     this.#tonePreset = opts.tonePreset ?? VOICE_TONE_PRESET_DEFAULT;
+    this.#pitchSemitones = clampVoicePitch(
+      opts.pitchSemitones ?? VOICE_PITCH_DEFAULT,
+    );
   }
 
   #enqueue<T>(op: () => Promise<T> | T): Promise<T> {
@@ -159,6 +190,30 @@ export class VoiceAudioPipeline implements TrackProcessor<
     });
   }
 
+  /**
+   * Live-set the voice changer pitch, in semitones (0 = off). The first
+   * non-zero value on a call loads the worklet. If that fails it warns and
+   * rejects, with pitch not applied and audio flowing; the wanted value is
+   * kept, so the next settings change or a rebuild (device switch) retries.
+   * Once the stage is in the graph, moving the slider only updates its
+   * parameter.
+   */
+  setPitch(semitones: number): Promise<void> {
+    return this.#enqueue(async () => {
+      const wasWired = this.#pitchStageWired();
+      this.#pitchSemitones = clampVoicePitch(semitones);
+      // Not built (before init, or after a failed build / destroy): the
+      // value is picked up by the next #build. Never grow a graph LiveKit
+      // has not adopted.
+      if (!this.#source) return;
+      if (voicePitchIsActive(this.#pitchSemitones)) {
+        await this.#ensurePitchNodeOrWarn();
+        this.#applyPitchParam();
+      }
+      if (wasWired !== this.#pitchStageWired()) this.#rewire();
+    });
+  }
+
   /** Live-update input gain (percent, 100 = unity), with a short ramp to
    *  avoid zipper noise while the settings slider drags. */
   setGain(gainPercent: number) {
@@ -191,8 +246,26 @@ export class VoiceAudioPipeline implements TrackProcessor<
     this.#gainNode = ctx.createGain();
     this.#gainNode.gain.value = this.#gainPercent / 100;
     this.#dest = ctx.createMediaStreamDestination();
-    if (this.#denoise) {
-      await this.#ensureDenoiseNode();
+    try {
+      if (this.#denoise) {
+        await this.#ensureDenoiseNode();
+      }
+    } catch (error) {
+      // A rejected build is never adopted by LiveKit and nothing else will
+      // destroy it: drop the half-built graph so a queued tune (setPitch
+      // guards on #source) cannot wire a live mic into it.
+      this.#teardown();
+      throw error;
+    }
+    if (voicePitchIsActive(this.#pitchSemitones)) {
+      // Unlike denoise, a pitch load failure must not fail the whole attach:
+      // the noise filter, shaper and gain still apply without it.
+      try {
+        await this.#ensurePitchNodeOrWarn();
+        this.#applyPitchParam();
+      } catch {
+        // Warned; pitch stays unwired until a later retry.
+      }
     }
     this.#rebuildToneStage();
     this.#rewire();
@@ -210,6 +283,41 @@ export class VoiceAudioPipeline implements TrackProcessor<
     });
   }
 
+  /** Create the pitch worklet node once per build. A failure is logged —
+   *  the settings row still shows the chosen pitch, so the console is where
+   *  "why is my voice normal?" gets answered — and rethrown. */
+  async #ensurePitchNodeOrWarn() {
+    const ctx = this.#ctx;
+    if (this.#pitchNode || !ctx || !this.#source) return;
+    try {
+      await loadPitchWorklet(ctx);
+      // Defensive: the graph this node is for must still be the current one.
+      if (this.#ctx !== ctx || !this.#source) return;
+      this.#pitchNode = new AudioWorkletNode(ctx, "VoicePitchShift", {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        channelCount: 1,
+        channelCountMode: "explicit",
+        outputChannelCount: [1],
+      });
+    } catch (error) {
+      console.warn("[voice changer] pitch worklet unavailable:", error);
+      throw error;
+    }
+  }
+
+  /** Push `#pitchSemitones` to the worklet with a short glide, so dragging
+   *  the slider sweeps rather than steps. */
+  #applyPitchParam() {
+    const param = this.#pitchNode?.parameters.get("semitones");
+    if (!param || !this.#ctx) return;
+    param.setTargetAtTime(this.#pitchSemitones, this.#ctx.currentTime, 0.03);
+  }
+
+  #pitchStageWired(): boolean {
+    return !!this.#pitchNode && voicePitchIsActive(this.#pitchSemitones);
+  }
+
   /** Drop the current shaper nodes and build the ones for `#tonePreset`.
    *  Leaves them unconnected — `#rewire` threads the whole graph. */
   #rebuildToneStage() {
@@ -223,12 +331,17 @@ export class VoiceAudioPipeline implements TrackProcessor<
     if (!this.#source || !this.#gainNode || !this.#dest) return;
     this.#source.disconnect();
     this.#denoiseNode?.disconnect();
+    this.#pitchNode?.disconnect();
     for (const node of this.#toneNodes) node.disconnect();
     this.#gainNode.disconnect();
     let head: AudioNode = this.#source;
     if (this.#denoise && this.#denoiseNode) {
       head.connect(this.#denoiseNode);
       head = this.#denoiseNode;
+    }
+    if (this.#pitchNode && this.#pitchStageWired()) {
+      head.connect(this.#pitchNode);
+      head = this.#pitchNode;
     }
     connectChain(head, this.#toneNodes, this.#gainNode);
     this.#gainNode.connect(this.#dest);
@@ -240,10 +353,16 @@ export class VoiceAudioPipeline implements TrackProcessor<
     this.#denoiseNode?.port.postMessage({ message: "DESTROY" });
     this.#denoiseNode?.port.close();
     this.#denoiseNode?.disconnect();
+    // "stop" lets the pitch worklet return false from `process` and be
+    // collected; a rebuild creates a fresh node.
+    this.#pitchNode?.port.postMessage("stop");
+    this.#pitchNode?.port.close();
+    this.#pitchNode?.disconnect();
     this.#source?.disconnect();
     for (const node of this.#toneNodes) node.disconnect();
     this.#gainNode?.disconnect();
     this.#denoiseNode = undefined;
+    this.#pitchNode = undefined;
     this.#source = undefined;
     this.#toneNodes = [];
     this.#gainNode = undefined;

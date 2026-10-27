@@ -1442,6 +1442,18 @@ msgstr "Back to login"
 msgid "Background"
 msgstr "Background"
 
+#: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
+msgid "Used in light mode. Your accent color never tints it."
+msgstr "Used in light mode. Your accent color never tints it."
+
+#: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
+msgid "Used in dark mode. Your accent color never tints it."
+msgstr "Used in dark mode. Your accent color never tints it."
+
+#: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
+msgid "Custom background color"
+msgstr "Custom background color"
+
 #: components/app/interface/settings/user/voice/CameraOptions.tsx
 msgid "Background effect"
 msgstr "Background effect"
@@ -2889,6 +2901,42 @@ msgstr "Deep"
 msgid "Default"
 msgstr "Default"
 
+#: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
+msgid "Black"
+msgstr "Black"
+
+#: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
+msgid "Graphite"
+msgstr "Graphite"
+
+#: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
+msgid "Slate"
+msgstr "Slate"
+
+#: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
+msgid "Plum"
+msgstr "Plum"
+
+#: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
+msgid "Forest"
+msgstr "Forest"
+
+#: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
+msgid "White"
+msgstr "White"
+
+#: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
+msgid "Paper"
+msgstr "Paper"
+
+#: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
+msgid "Mist"
+msgstr "Mist"
+
+#: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
+msgid "Rose"
+msgstr "Rose"
+
 #: components/app/interface/settings/user/profile/NameStyleEditor.tsx
 msgid "This color can't be used for a name."
 msgstr "This color can't be used for a name."
@@ -3219,6 +3267,7 @@ msgstr "Disconnect Sound Style"
 msgid "Disconnected"
 msgstr "Disconnected"
 
+#: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 #: components/app/interface/settings/user/appearance/LayoutArrangement.tsx
 msgid "Discord"
 msgstr "Discord"
@@ -3226,6 +3275,10 @@ msgstr "Discord"
 #: components/app/interface/settings/user/Native.tsx
 msgid "Discord RPC"
 msgstr "Discord RPC"
+
+#: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
+msgid "Discord uses its own blurple, so it ignores your color. Pick Sloga or Material You to use one."
+msgstr "Discord uses its own blurple, so it ignores your color. Pick Sloga or Material You to use one."
 
 #: src/interface/Discover.tsx
 msgid "Discover"
@@ -6776,6 +6829,15 @@ msgstr "Rounded"
 msgid "Script"
 msgstr "Script"
 
+#. placeholder {0}: pitchLabel()
+#: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
+msgid "Pitch: {0}"
+msgstr "Pitch: {0}"
+
+#: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
+msgid "Pitch: normal"
+msgstr "Pitch: normal"
+
 #: components/app/interface/settings/user/profile/NameStyleEditor.tsx
 msgid "Pixel"
 msgstr "Pixel"
@@ -7514,6 +7576,10 @@ msgstr "Reset encryption"
 #: components/auth/src/flows/FlowConfirmReset.tsx
 msgid "Reset password"
 msgstr "Reset password"
+
+#: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
+msgid "Reset Pitch"
+msgstr "Reset Pitch"
 
 #: components/app/interface/settings/user/Account.tsx
 msgid "Reset Recovery Codes"
@@ -8424,6 +8490,10 @@ msgstr "Skip one of the two system confirmations for this person next time"
 msgid "Slash commands are unavailable in encrypted conversations."
 msgstr "Slash commands are unavailable in encrypted conversations."
 
+#: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
+msgid "Slide left for a deeper voice, right for a higher one. Just for fun: it applies live during calls, stays on until you reset it, and does not hide who you are."
+msgstr "Slide left for a deeper voice, right for a higher one. Just for fun: it applies live during calls, stays on until you reset it, and does not hide who you are."
+
 #: components/app/interface/settings/user/appearance/LayoutArrangement.tsx
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Sloga"
@@ -8871,6 +8941,10 @@ msgstr "Strength: {0}%"
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Style"
 msgstr "Style"
+
+#: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
+msgid "Modern adds depth: raised buttons, and cards and dialogs that float off the page. Classic is the flat look."
+msgstr "Modern adds depth: raised buttons, and cards and dialogs that float off the page. Classic is the flat look."
 
 #: components/app/interface/settings/user/appearance/AppearanceMenu.tsx
 msgid "Styles and contrast reshape your color: Neutral mutes it, Fruit Salad shifts its hue, and High Contrast strengthens it."
@@ -10558,16 +10632,16 @@ msgid "Create a server"
 msgstr "Create a server"
 
 #: src/interface/home/WhatsNewCard.tsx
-msgid "Sort your friends into categories"
-msgstr "Sort your friends into categories"
+msgid "A new Modern style, with a Classic option"
+msgstr "A new Modern style, with a Classic option"
 
 #: src/interface/home/WhatsNewCard.tsx
-msgid "A new title bar for chat windows"
-msgstr "A new title bar for chat windows"
+msgid "A Discord color scheme and new backgrounds"
+msgstr "A Discord color scheme and new backgrounds"
 
 #: src/interface/home/WhatsNewCard.tsx
-msgid "Push to talk fixes and a hang-up button"
-msgstr "Push to talk fixes and a hang-up button"
+msgid "Change your voice's pitch in calls"
+msgstr "Change your voice's pitch in calls"
 
 #: src/interface/home/WhatsNewCard.tsx
 msgid "New in v{HIGHLIGHTS_RELEASE}"
@@ -10707,6 +10781,10 @@ msgstr "Share your referral link"
 #: components/app/interface/settings/user/Referrals.tsx
 msgid "Your referrals"
 msgstr "Your referrals"
+
+#: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
+msgid "Put your voice back to normal."
+msgstr "Put your voice back to normal."
 
 #: components/app/interface/settings/user/Referrals.tsx
 msgid "Qualified"
@@ -11207,6 +11285,10 @@ msgstr "Voice Activity Detection"
 msgid "Voice and Video Calls"
 msgstr "Voice and Video Calls"
 
+#: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
+msgid "Voice Changer"
+msgstr "Voice Changer"
+
 #: src/interface/ServerEvents.tsx
 msgid "Voice channel"
 msgstr "Voice channel"
@@ -11218,6 +11300,10 @@ msgstr "Voice Channel"
 #: components/app/interface/settings/user/voice/VoiceChannelOptions.tsx
 msgid "Voice Channels"
 msgstr "Voice Channels"
+
+#: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
+msgid "Voice Pitch"
+msgstr "Voice Pitch"
 
 #: components/app/interface/settings/user/voice/VoiceProcessingOptions.tsx
 msgid "Voice Processing"
@@ -11984,3 +12070,4 @@ msgstr "Animated Cipher badge preview"
 #: components/auth/src/CipherPromo.tsx
 msgid "Every Cipher gets a numbered badge, and the top tier's badge decrypts like this."
 msgstr "Every Cipher gets a numbered badge, and the top tier's badge decrypts like this."
+

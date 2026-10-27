@@ -40,6 +40,7 @@ nodeLinker: isolated
 # stuck pressed. The patch listens on the pressed element's ownerDocument.
 patchedDependencies:
   "@capacitor/android@8.4.3": patches/@capacitor__android@8.4.3.patch
+  "@motionone/dom@10.18.0": patches/@motionone__dom@10.18.0.patch
   "@solid-aria/interactions@0.1.4": patches/@solid-aria__interactions@0.1.4.patch
   livekit-client@2.15.13: patches/livekit-client@2.15.13.patch
 

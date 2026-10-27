@@ -38,6 +38,9 @@
 //  S15 W4d N3: "removed" needs positive evidence (cooling, or a same-list
 //      refusal), never mere absence (C-N3a/b); the Remove-seat confirm
 //      names everyone else the submitted list drops.
+//  S16 S1-final F2: the tab and page stay invisible while the feature is
+//      dark: shown only with the D13 flag on or a protected/pinned
+//      channel, and always only to the owner (C-F2a/b/c).
 //
 // Point `PROTECTED_SETTINGS_FILE`, `PROTECTED_SEAT_LIST_FILE` or
 // `PROTECTED_CHANNEL_SETTINGS_FILE` at another copy (a known-bad control)
@@ -199,16 +202,14 @@ describe("protected channel settings (C11)", () => {
       REGISTRY,
       /import \{\s*ProtectedChannelSettings,\s*protectedSettingsVisibleFor,\s*\} from "\.\/channel\/protected\/ProtectedChannelSettings";/,
     );
+    // Both through the F2 tab gate (owner rule inside it, S16).
     const e = entry("protected");
-    assert.match(
-      e,
-      /hidden: !protectedSettingsVisibleFor\(channel, client\(\)\),/,
-    );
+    assert.match(e, /hidden: !protectedTabShown\(channel, client\(\)\),/);
     assert.match(e, /title: settingsCopy\.title\(\),/);
     const a = arm("protected");
     assert.match(
       a,
-      /return protectedSettingsVisibleFor\(channel, client\(\)\) \? \(\s*<ProtectedChannelSettings channel=\{channel\} \/>\s*\) : null;/,
+      /return protectedTabShown\(channel, client\(\)\) \? \(\s*<ProtectedChannelSettings channel=\{channel\} \/>\s*\) : null;/,
     );
     assert.equal(
       (REGISTRY.match(/<ProtectedChannelSettings\b/g) ?? []).length,
@@ -1047,5 +1048,94 @@ describe("protected channel settings (C11)", () => {
       /seatsAfterRemoval\(editableIds\(\), owner, userId\)/,
     );
     assert.match(PAGE_BODY, /removed=\{removedIds\(\)\}/);
+  });
+
+  it("S16 the tab is invisible while dark, and owner-only (C-F2a/b/c)", async () => {
+    // Run the real helper with stand-ins for its two imports.
+    const from = registrySource.indexOf("// protected-tab:begin");
+    const to = registrySource.indexOf("// protected-tab:end");
+    assert.ok(from !== -1 && to > from, "protected-tab region missing");
+    const js = stripTypeScriptTypes(registrySource.slice(from, to), {
+      mode: "strip",
+    });
+    type Fake = {
+      owner: boolean;
+      protectedOrPinned: boolean;
+      bridge: null | { flag: unknown };
+    };
+    const shown = new Function(
+      "protectedSettingsVisibleFor",
+      "protectedUiOf",
+      `${js}\nreturn protectedTabShown;`,
+    )(
+      (_channel: unknown, client: Fake | undefined) => client?.owner === true,
+      (bridge: unknown) =>
+        bridge === null || bridge === undefined
+          ? null
+          : {
+              protectedFlag: () => ({
+                enabled: (bridge as { flag: unknown }).flag,
+                defaultDeviceCap: null,
+              }),
+            },
+    ) as (channel: { id: string }, client: unknown) => boolean;
+    const client = (f: Fake) => ({
+      owner: f.owner,
+      e2ee: f.bridge,
+      isProtectedChannel: (id: string) => id === "C" && f.protectedOrPinned,
+    });
+    const ch = { id: "C" };
+    const at = (f: Fake) => shown(ch, client(f));
+    // Dark: owner, flag off or no bridge, channel not protected → hidden.
+    assert.equal(
+      at({ owner: true, protectedOrPinned: false, bridge: { flag: false } }),
+      false,
+      "flag off",
+    );
+    assert.equal(
+      at({ owner: true, protectedOrPinned: false, bridge: null }),
+      false,
+      "web: no bridge",
+    );
+    assert.equal(
+      at({ owner: true, protectedOrPinned: false, bridge: { flag: "yes" } }),
+      false,
+      "only a strict true lights it",
+    );
+    // Lit: flag on, or already protected/pinned (web included).
+    assert.equal(
+      at({ owner: true, protectedOrPinned: false, bridge: { flag: true } }),
+      true,
+    );
+    assert.equal(
+      at({ owner: true, protectedOrPinned: true, bridge: null }),
+      true,
+      "web: a protected channel keeps its tab",
+    );
+    assert.equal(
+      at({ owner: true, protectedOrPinned: true, bridge: { flag: false } }),
+      true,
+    );
+    // Owner-only always wins.
+    assert.equal(
+      at({ owner: false, protectedOrPinned: true, bridge: { flag: true } }),
+      false,
+    );
+    assert.equal(shown(ch, undefined), false);
+    // Wiring: entry and arm both use the helper; no direct owner-only gate.
+    assert.equal(
+      (REGISTRY.match(/protectedTabShown\(channel, client\(\)\)/g) ?? [])
+        .length,
+      2,
+    );
+    assert.equal(
+      (REGISTRY.match(/protectedSettingsVisibleFor\(/g) ?? []).length,
+      1,
+      "only inside protectedTabShown",
+    );
+    assert.match(
+      REGISTRY,
+      /import \{ protectedUiOf \} from "@revolt\/client\/useProtectedChannel";/,
+    );
   });
 });

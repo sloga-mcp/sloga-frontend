@@ -2,6 +2,7 @@ import { createEffect, createSignal, on, Show } from "solid-js";
 
 import { useLingui } from "@lingui-solid/solid/macro";
 import type { Channel } from "stoat.js";
+import { css } from "styled-system/css";
 import { styled } from "styled-system/jsx";
 
 import { useClient } from "@revolt/client";
@@ -286,7 +287,11 @@ export function ProtectedChannelPill(props: Props) {
 
   return (
     <Show when={shield()}>
-      <Pill
+      {/* A NATIVE button: Solid applies `use:floating` only to native
+          elements. On a styled() component it becomes a dead
+          "use:floating" prop and the panel never opens. */}
+      <button
+        class={pillClass}
         type="button"
         aria-haspopup="dialog"
         data-protected-pill={stateNow()}
@@ -352,42 +357,40 @@ export function ProtectedChannelPill(props: Props) {
         }}
       >
         {shieldLabel(stateNow())}
-      </Pill>
+      </button>
     </Show>
   );
 }
 
 /**
- * State-colored pill; the hue arrives as `--protected-pill-hue`. Static:
- * no animation, no transition (D14).
+ * State-colored pill (a class for a native button, see the render); the hue
+ * arrives as `--protected-pill-hue`. Static: no animation, no transition
+ * (D14).
  */
-const Pill = styled("button", {
-  base: {
-    display: "inline-block",
-    flexShrink: 0,
-    minWidth: 0,
-    overflow: "hidden",
-    textOverflow: "ellipsis",
-    marginInlineStart: "var(--gap-md)",
-    padding: "2px var(--gap-md)",
-    borderRadius: "var(--borderRadius-full)",
-    border:
-      "1px solid color-mix(in srgb, var(--protected-pill-hue) 45%, transparent)",
-    background:
-      "color-mix(in srgb, var(--protected-pill-hue) 14%, transparent)",
-    color:
-      "color-mix(in srgb, var(--protected-pill-hue) 70%, var(--md-sys-color-on-surface))",
-    fontSize: "0.75rem",
-    fontWeight: 600,
-    lineHeight: 1.4,
-    whiteSpace: "nowrap",
-    cursor: "pointer",
-    animation: "none",
-    transition: "none",
-    // A narrow phone header shrinks the pill before the header icons.
-    _phone: {
-      flexShrink: 1,
-    },
+const pillClass = css({
+  display: "inline-block",
+  flexShrink: 0,
+  minWidth: 0,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  marginInlineStart: "var(--gap-md)",
+  padding: "2px var(--gap-md)",
+  borderRadius: "var(--borderRadius-full)",
+  border:
+    "1px solid color-mix(in srgb, var(--protected-pill-hue) 45%, transparent)",
+  background: "color-mix(in srgb, var(--protected-pill-hue) 14%, transparent)",
+  color:
+    "color-mix(in srgb, var(--protected-pill-hue) 70%, var(--md-sys-color-on-surface))",
+  fontSize: "0.75rem",
+  fontWeight: 600,
+  lineHeight: 1.4,
+  whiteSpace: "nowrap",
+  cursor: "pointer",
+  animation: "none",
+  transition: "none",
+  // A narrow phone header shrinks the pill before the header icons.
+  _phone: {
+    flexShrink: 1,
   },
 });
 

@@ -162,7 +162,7 @@ const MEMBERS = [
   /\n {2}#protectedFlagLastKnown\(/,
   /\n {2}#protectedFlagRemember\(/,
   /\n {2}#protectedPlatformLog\(\): void /,
-  /\n {2}async #checkStoreOwner\(\): Promise<void> /,
+  /\n {2}async #checkStoreOwner\(retry = false\): Promise<void> /,
 ];
 
 type Deferred<T> = {
@@ -213,6 +213,9 @@ interface Bridge {
   start(): Promise<void> | null;
   checkOwner(): Promise<void>;
   noteOwner(check: unknown): void;
+  /** W4 A-1: a successful owner read happened (`#storeOwnerUnread` clear). */
+  readOk(): void;
+  unread(): boolean;
   owner(): unknown;
   flag(): string;
   probe(): unknown;
@@ -267,6 +270,14 @@ function rig(env: Env): Rig {
     return env.storeOwner ? env.storeOwner() : null;
   }
   #raiseStoreOwnedByAnotherAccount() { this.raised++; }
+  // W4 S1-final A-1 (merge re-anchor): its read state, retries and boot gate.
+  #storeOwnerUnread = true;
+  #storeOwnerRetries = 0;
+  #storeOwnerRetryTimer = null;
+  #scheduleStoreOwnerRetry() {}
+  #protectedBootManager() {}
+  readOk() { this.#storeOwnerUnread = false; }
+  unread() { return this.#storeOwnerUnread; }
   structural() { return this.#protectedStructural(); }
   state() { return this.#protectedPlatformState(); }
   input() { return this.#protectedPlatformInput(); }
@@ -405,6 +416,8 @@ async function started(env: Env): Promise<Rig> {
 
 function enable(b: Bridge): void {
   b.status.set("state", { enabled: true, device_id: "D1" });
+  // W4 A-1 (S13 pins it): no text plane before a successful owner read.
+  b.readOk();
 }
 
 // ---- W1 structural, as the bridge feeds it -----------------------------------
@@ -880,6 +893,11 @@ test("W2: #checkStoreOwner records the A8 state; its W4 latch is unchanged", asy
     b.storeOwnedByAnotherAccount.set("state", 7);
     await b.checkOwner();
     assert.deepEqual(b.owner(), want, why);
+    assert.equal(
+      b.unread(),
+      why === "no accessor",
+      `${why}: W4 A-1 read state`,
+    );
     assert.equal(b.raised, raised, `${why}: latch raise`);
     assert.equal(
       b.storeOwnedByAnotherAccount.has("state"),
@@ -897,9 +915,12 @@ test("W2: #checkStoreOwner records the A8 state; its W4 latch is unchanged", asy
   assert.deepEqual(anon.owner(), { state: "unknown" });
 });
 
-test("W2: #checkStoreOwner's W4 parsing lines are intact", () => {
+test("W2: #checkStoreOwner keeps W4's final lines; the A8 record precedes them", () => {
   const body = stripComments(
-    member(SRC, /\n {2}async #checkStoreOwner\(\): Promise<void> /),
+    member(
+      SRC,
+      /\n {2}async #checkStoreOwner\(retry = false\): Promise<void> /,
+    ),
   );
   assert.match(
     body,
@@ -909,15 +930,19 @@ test("W2: #checkStoreOwner's W4 parsing lines are intact", () => {
     body,
     /owner = await this\.#invoke<string \| null>\("e2ee_store_owner"\);/,
   );
-  assert.match(body, /if \(!owner\) return;/);
   assert.match(
     body,
-    /if \(owner === userId\) \{\s*this\.storeOwnedByAnotherAccount\.delete\("state"\);\s*return;\s*\}\s*this\.#raiseStoreOwnedByAnotherAccount\(\);\s*\}$/,
+    /\} catch \{\s*this\.#storeOwnerUnread = true;\s*this\.#protectedNoteStoreOwner\(\{ state: "unknown" \}\);\s*this\.#scheduleStoreOwnerRetry\(\);\s*return;\s*\}/,
   );
+  assert.match(
+    body,
+    /if \(owner && owner !== userId\) \{\s*this\.#raiseStoreOwnedByAnotherAccount\(\);\s*return;\s*\}\s*if \(owner\) \{\s*this\.storeOwnedByAnotherAccount\.delete\("state"\);\s*\}\s*if \(wasUnread\) this\.#protectedBootManager\(\);\s*\}$/,
+  );
+  const record = body.lastIndexOf("#protectedNoteStoreOwner(");
   assert.ok(
-    body.indexOf("#protectedNoteStoreOwner(") <
-      body.indexOf("if (!owner) return;"),
-    "recorded before the W4 early return",
+    record > body.indexOf("this.#storeOwnerUnread = false;") &&
+      record < body.indexOf("if (owner && owner !== userId)"),
+    "recorded after a successful read, before the latch decision",
   );
 });
 

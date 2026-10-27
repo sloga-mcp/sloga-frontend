@@ -21,7 +21,11 @@
 //  P6  other server-set text (system, interaction, masquerade, crosspost,
 //      published, thread, interactions) is gated off Protected rows;
 //  P7  the non-protected body branches are byte-identical to 7a1e03ca;
-//  P8  no `styled(ImportedComponent, ...)` (blank page at boot).
+//  P8  no `styled(ImportedComponent, ...)` (blank page at boot);
+//  P9  (PB-5) a row is Protected when it carries `encrypted` OR its
+//      channel is protected/pinned (the predicate is evaluated);
+//  P10 (PB-2) the reply preview never fetches: an uncached target is
+//      "not loaded", no request links the reply to its target.
 //
 // Run: node --test --conditions=browser \
 //   components/app/interface/channels/text/protectedMessage.scan.test.ts
@@ -194,7 +198,7 @@ test("P2: body order puts the protected branches before any server text", () => 
   // `protectedMarker` / `protectedOk` are keyed on the Protected predicate.
   assert.match(
     MESSAGE_FN,
-    /const protectedRow = \(\) =>\s+client\(\)\.isProtectedChannel\(props\.message\.channelId\);/,
+    /const protectedRow = \(\) =>\s+props\.message\.encrypted !== undefined \|\|\s+client\(\)\.isProtectedChannel\(props\.message\.channelId\);/,
   );
   assert.match(
     MESSAGE_FN,
@@ -353,4 +357,67 @@ test("P8: no styled() over an imported component", () => {
   for (const m of SRC.matchAll(/\bstyled\(\s*([^\s,)]+)/g)) {
     assert.match(m[1], /^"[a-z0-9]+"$/, `styled(${m[1]})`);
   }
+});
+
+// ---- P9 (PB-5) --------------------------------------------------------------
+
+/** Code without comments, so prose never counts. */
+function code(s: string): string {
+  return s
+    .replace(/\{\/\*[\s\S]*?\*\/\}/g, "")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^\s*\/\/.*$/gm, "");
+}
+
+test("P9: a row carrying `encrypted` is Protected even off a protected channel", () => {
+  const src = between(MESSAGE_FN, "const protectedRow = () =>", ";\n");
+  const body = src.slice("const protectedRow = () =>".length, -2);
+  const evalRow = new Function(
+    "props",
+    "client",
+    `return (${stripTypeScriptTypes(body)});`,
+  ) as (props: unknown, client: () => unknown) => boolean;
+
+  const run = (encrypted: unknown, channelProtected: boolean) =>
+    evalRow({ message: { encrypted, channelId: "C1" } }, () => ({
+      isProtectedChannel: (id: string) => id === "C1" && channelProtected,
+    }));
+
+  assert.equal(run({ v: 1 }, false), true, "encrypted, channel not flagged");
+  assert.equal(run(undefined, true), true, "channel flagged or pinned");
+  assert.equal(run({ v: 1 }, true), true);
+  assert.equal(run(undefined, false), false, "plain row stays plain");
+  // `null` never comes out of hydration (`?? undefined`); fail closed.
+  assert.equal(run(null, false), true);
+});
+
+// ---- P10 (PB-2) -------------------------------------------------------------
+
+test("P10: the reply preview never fetches an uncached target", () => {
+  const preview = code(functionSource("ProtectedReplyPreview"));
+  // Resolves only from rows already loaded on this device.
+  assert.match(preview, /client\(\)\.messages\.get\(props\.id\)/);
+  for (const re of [
+    /fetch/i,
+    /\.api\b/,
+    /onMount\(/,
+    /createEffect\(/,
+    /createResource\(/,
+    /props\.channel\b/,
+    /channels\.get\(/,
+  ]) {
+    assert.doesNotMatch(preview, re, `preview must not ${re}`);
+  }
+  // Uncached (or foreign) targets fall back to MessageReply's "not loaded".
+  assert.match(preview, /<Switch fallback=\{<MessageReply \/>\}>/);
+  // The only fetch left in Message.tsx is the legacy reply path, which a
+  // Protected row never iterates (P4).
+  const fetches = code(SRC).match(/fetchMessage\(/g) ?? [];
+  assert.equal(fetches.length, 1, "exactly one fetchMessage( (legacy path)");
+  const legacy = between(
+    MESSAGE_FN,
+    "<For each={protectedRow() ? undefined : props.message.replyIds}>",
+    "</For>",
+  );
+  assert.match(legacy, /fetchMessage\(/);
 });
