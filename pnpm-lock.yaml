@@ -11,7 +11,7 @@ overrides:
   solid-js: ^1.9.15
 
 patchedDependencies:
-  '@capacitor/android@8.4.3': 038207ccea7f18c908e5ca94dd818a98c3a219de150d8b46f2f6c8812f86ac57
+  '@capacitor/android@8.4.3': 5c504b9b07952f824de1eb523e9fe4b35d08b5ea9966844eabdfe9614ee17d7c
   '@solid-aria/interactions@0.1.4': af51cab83f24c461c7dcf7a2e670c14c5a043044064edb8d269a0256d41946e1
   livekit-client@2.15.13: f2afef1e493c4877d7e3ccc7e6d82b2a896366894bc02fc4341ce0e3c1bb3a9e
 
@@ -48,7 +48,7 @@ importers:
     dependencies:
       '@capacitor/android':
         specifier: ^8.4.3
-        version: 8.4.3(patch_hash=038207ccea7f18c908e5ca94dd818a98c3a219de150d8b46f2f6c8812f86ac57)(@capacitor/core@8.4.3)
+        version: 8.4.3(patch_hash=5c504b9b07952f824de1eb523e9fe4b35d08b5ea9966844eabdfe9614ee17d7c)(@capacitor/core@8.4.3)
       '@capacitor/core':
         specifier: ^8.4.3
         version: 8.4.3
@@ -9273,7 +9273,7 @@ snapshots:
 
   '@bufbuild/protobuf@1.10.1': {}
 
-  '@capacitor/android@8.4.3(patch_hash=038207ccea7f18c908e5ca94dd818a98c3a219de150d8b46f2f6c8812f86ac57)(@capacitor/core@8.4.3)':
+  '@capacitor/android@8.4.3(patch_hash=5c504b9b07952f824de1eb523e9fe4b35d08b5ea9966844eabdfe9614ee17d7c)(@capacitor/core@8.4.3)':
     dependencies:
       '@capacitor/core': 8.4.3
 

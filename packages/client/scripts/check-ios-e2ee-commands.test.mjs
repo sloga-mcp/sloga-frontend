@@ -237,6 +237,137 @@ describe("G6 command table", () => {
   });
 });
 
+// Protected channels S7 D9: textCapability is Android-only, and e2ee.ts
+// guards it at the bridge, not in CapacitorTransport. Each anchor is a hop
+// of that chain (the checker's ANDROID_ONLY_PLUGIN_METHODS).
+const PROBE_PLUGIN_CALL = "return await this.#plugin.textCapability();";
+const PROBE_GUARD =
+  "        android ? this.#protectedAndroidProbe() : Promise.resolve(null),\n";
+const PROBE_DECL =
+  "const android = this.#protectedPlatformInput().androidProbe !== null;";
+const PROBE_INPUT = 'transport === "capacitor" && platform === "android"';
+/** A statement of CapacitorTransport.subscribeKeysChanged. */
+const KEYS_LISTENER =
+  '    const handle = await this.#plugin.addListener("callKeysChanged", callback);\n';
+const ANDROID_ONLY = "Android-only plugin method textCapability, but ";
+
+describe("G6 Android-only plugin methods (S7 D9)", () => {
+  test("the guarded textCapability probe passes", () => {
+    const root = copyTree();
+    assert.ok(
+      readFileSync(join(root, FE), "utf8").includes(PROBE_PLUGIN_CALL),
+      "the copy no longer calls this.#plugin.textCapability(): re-anchor",
+    );
+    const result = run(root);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+  });
+
+  test("a reflowed, commented wrapper still passes", () => {
+    const root = copyTree();
+    mutate(
+      root,
+      FE,
+      PROBE_PLUGIN_CALL,
+      "return await this.#plugin\n        // the Android probe\n        .textCapability(\n        );",
+    );
+    const result = run(root);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+  });
+
+  test("the probe asked without the android guard", () => {
+    expectViolationWith(
+      "G6-fe-route",
+      [ANDROID_ONLY, "#protectedAndroidProbe must be named only"],
+      [FE, PROBE_GUARD, "        this.#protectedAndroidProbe(),\n"],
+    );
+  });
+
+  test("androidProbe no longer null off Android", () => {
+    expectViolationWith(
+      "G6-fe-route",
+      [ANDROID_ONLY, "#protectedPlatformInput() body is not the pinned one"],
+      [FE, PROBE_INPUT, 'transport === "capacitor"'],
+    );
+  });
+
+  test("the android const widened", () => {
+    expectViolationWith(
+      "G6-fe-route",
+      [ANDROID_ONLY, "must declare `const android"],
+      [
+        FE,
+        PROBE_DECL,
+        "const android = this.#protectedPlatformInput().androidProbe !== null || Capacitor.isNativePlatform();",
+      ],
+    );
+  });
+
+  test("android shadowed at the guard", () => {
+    expectViolationWith(
+      "G6-fe-route",
+      [ANDROID_ONLY, "android is rebound or read another way"],
+      [
+        FE,
+        PROBE_GUARD,
+        "        [true].map((android) => (android ? this.#protectedAndroidProbe() : null))[0] ??\n          Promise.resolve(null),\n",
+      ],
+    );
+  });
+
+  test("a second caller of the wrapper", () => {
+    expectViolationWith(
+      "G6-fe-route",
+      [ANDROID_ONLY, "textCapability is named at"],
+      [FE, KEYS_LISTENER, `    void this.textCapability();\n${KEYS_LISTENER}`],
+    );
+  });
+
+  test("a second direct plugin call", () => {
+    expectViolationWith(
+      "G6-fe-route",
+      [ANDROID_ONLY, "must appear once, inside the wrapper (found 2)"],
+      [
+        FE,
+        KEYS_LISTENER,
+        `    void this.#plugin.textCapability();\n${KEYS_LISTENER}`,
+      ],
+    );
+  });
+
+  test("the name read through a string literal", () => {
+    expectViolationWith(
+      "G6-fe-route",
+      [ANDROID_ONLY, "a string literal at"],
+      [
+        FE,
+        KEYS_LISTENER,
+        `    void Reflect.get(this.#plugin, "textCapability");\n${KEYS_LISTENER}`,
+      ],
+    );
+  });
+
+  test("another unknown plugin method in the guarded wrapper", () => {
+    // The allow-list is by name: the same guard does not admit another one.
+    expectViolationWith(
+      "G6-fe-route",
+      ["CapacitorTransport calls plugin method textProbe, which iOS"],
+      [FE, PROBE_PLUGIN_CALL, "return await this.#plugin.textProbe();"],
+    );
+  });
+
+  test("an unknown plugin method beside the allow-listed one", () => {
+    expectViolationWith(
+      "G6-fe-route",
+      ["CapacitorTransport calls plugin method textWarmup, which iOS"],
+      [
+        FE,
+        PROBE_PLUGIN_CALL,
+        "await this.#plugin.textWarmup();\n      return await this.#plugin.textCapability();",
+      ],
+    );
+  });
+});
+
 describe("G7 threads and consent", () => {
   test("a gated name added as a generic case", () => {
     expectViolation("G7-gated-case", [

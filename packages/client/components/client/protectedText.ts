@@ -24,6 +24,11 @@
  *   a verdict the policy marks ackable. `toWireEnvelope` before `_process`.
  * - `groupError` never records a message-level tag or `busy`.
  * - Logs carry ids and error tags only (D16), never text, ciphertext or keys.
+ * - S7 C9: a native `protector` refusal never reaches a flow. Every text
+ *   command, the owner and message flows' included, passes the protector
+ *   gate (`#gatedInvoke`, policy `protectorGateStep`); a refused command is
+ *   held and re-issued after the back-off, so it is never read as a
+ *   failure, a leave or a wipe.
  *
  * Lane rule (no deadlock): a task running in a channel's lane never awaits
  * another task of the same lane. Long waits (submit retries, join windows,
@@ -46,6 +51,8 @@ import {
 import { SHIELD_LOUD_GROUP_ERRORS } from "./protectedShield.ts";
 import { textGroupId, TextIdIndex } from "./protectedTextIds.ts";
 import {
+  type ProtectorAnswer,
+  type ProtectorGate,
   type SendAction,
   type SendContext,
   type SendTrigger,
@@ -56,9 +63,13 @@ import {
   classifyTextEnvelopeError,
   errorTypeOf,
   isCatchUpDesync,
+  isProtectorError,
   JOIN_RETRIES,
   JOIN_RETRY_MS,
   leafStaggerMs,
+  PROTECTOR_GATE_OPEN,
+  protectorGateAfter,
+  protectorGateStep,
   publishBackoffMs,
   REFRESH_INTERVAL_MS,
   retryAfterMs,
@@ -268,6 +279,25 @@ function viewTagOf(err: unknown): ViewErrorTag {
 
 function clientFailure(reason: string): TextFlowFailure {
   return { source: "client", reason };
+}
+
+/**
+ * S7 C9: `port` with only `invoke` replaced, for the owner and message
+ * flows, so their commands (the per-message decrypt included) pass the
+ * manager's protector gate. Every other member, the optional extensions
+ * included, is read from `port` itself and called on it.
+ */
+function withInvoke(
+  port: ProtectedTextPort,
+  invoke: ProtectedTextPort["invoke"],
+): ProtectedTextPort {
+  return new Proxy(port, {
+    get(target, prop) {
+      if (prop === "invoke") return invoke;
+      const v: unknown = Reflect.get(target, prop);
+      return typeof v === "function" ? v.bind(target) : v;
+    },
+  });
 }
 
 const DISPOSED: TextFlowFailure = { source: "client", reason: "disposed" };
@@ -545,6 +575,12 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
   #orphanScanAgain = false;
   #started = false;
   #disposed = false;
+  /** S7 C9: the protector gate every text command passes. */
+  #protector: ProtectorGate = PROTECTOR_GATE_OPEN;
+  /** Settles when the one command let through a closed gate is answered. */
+  #protectorProbe: Promise<void> | null = null;
+  /** The port the owner and message flows get: its `invoke` is gated. */
+  readonly #flowPort: ProtectedTextPort;
 
   constructor(
     port: ProtectedTextPort,
@@ -554,6 +590,11 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     this.#port = port;
     this.#cb = cb;
     this.#deps = deps;
+    this.#flowPort = withInvoke(
+      port,
+      <C extends TextCommand>(cmd: C, args: TextCommandArgs[C]) =>
+        this.#gatedInvoke(cmd, args),
+    );
   }
 
   // -------------------------------------------------------------------------
@@ -713,7 +754,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     try {
       await this.#deps.owner.protect(
         this,
-        this.#port,
+        this.#flowPort,
         channelId,
         seats,
         deviceCap,
@@ -736,7 +777,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     try {
       await this.#deps.owner.setSeats(
         this,
-        this.#port,
+        this.#flowPort,
         channelId,
         seats,
         deviceCap,
@@ -761,7 +802,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     try {
       out = await this.#deps.messages.encryptAndSend(
         this,
-        this.#port,
+        this.#flowPort,
         channelId,
         text,
         replies,
@@ -844,7 +885,12 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     this.#cb.onMessageView(row.id, { status: "pending" });
     let view: ProtectedMessageView;
     try {
-      view = await this.#deps.messages.decryptRow(this, this.#port, row, live);
+      view = await this.#deps.messages.decryptRow(
+        this,
+        this.#flowPort,
+        row,
+        live,
+      );
     } catch (err) {
       let kind: ProtectedMarkerKind;
       try {
@@ -3303,7 +3349,78 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     args: TextCommandArgs[C],
   ): Promise<TextCommandResult[C]> {
     this.#checkAlive();
-    return this.#port.invoke(cmd, args);
+    return this.#gatedInvoke(cmd, args);
+  }
+
+  /**
+   * S7 C9 (EL-F7 / AND-F13): one native text command through the protector
+   * gate. While the gate is open this is `port.invoke`. After a `protector`
+   * refusal nothing is issued until the back-off window ends; then ONE
+   * waiting command probes and the others wait for its answer. A refused
+   * command is never surfaced: native refuses at the store open, before the
+   * command runs, so it waits and is re-issued (a decrypt stays pending,
+   * an envelope stays queued unacked). Waits end on dispose.
+   */
+  async #gatedInvoke<C extends TextCommand>(
+    cmd: C,
+    args: TextCommandArgs[C],
+  ): Promise<TextCommandResult[C]> {
+    for (;;) {
+      const step = protectorGateStep(
+        this.#protector,
+        this.#port.now(),
+        this.#protectorProbe !== null,
+      );
+      if (step.kind === "wait_probe") {
+        await this.#protectorProbe;
+        this.#checkAlive();
+        continue;
+      }
+      if (step.kind === "wait") {
+        await this.#sleep(step.waitMs);
+        continue;
+      }
+      const issued = this.#protector.failures;
+      const probe = step.probe ? deferred() : null;
+      if (probe) this.#protectorProbe = probe.promise;
+      try {
+        const out = await this.#port.invoke(cmd, args);
+        this.#protectorAnswer("ok", issued, cmd);
+        return out;
+      } catch (err) {
+        if (!isProtectorError(err)) {
+          this.#protectorAnswer("other", issued, cmd);
+          throw err;
+        }
+        this.#protectorAnswer("protector", issued, cmd);
+      } finally {
+        if (probe) {
+          this.#protectorProbe = null;
+          probe.resolve();
+        }
+      }
+    }
+  }
+
+  /** Apply one answer to the gate; logs only when the gate changes. */
+  #protectorAnswer(
+    answer: ProtectorAnswer,
+    issued: number,
+    cmd: TextCommand,
+  ): void {
+    const before = this.#protector.failures;
+    const now = this.#port.now();
+    this.#protector = protectorGateAfter(this.#protector, answer, issued, now);
+    const after = this.#protector.failures;
+    if (after > before) {
+      this.#log("warn", "protector refused, text commands held", {
+        command: cmd,
+        failures: after,
+        waitMs: this.#protector.untilMs - now,
+      });
+    } else if (before > 0 && after === 0) {
+      this.#log("info", "protector back-off cleared", { command: cmd });
+    }
   }
 
   /** The courier answer, or null on a transport failure (never thrown). */

@@ -120,7 +120,7 @@ export function noticeCopy(
     case "not_seated":
       return t`You don't have a seat in this protected channel. Ask the owner for a seat.`;
     case "not_available":
-      return t`Protected channels aren't available here yet. Open this channel in the main window of the Sloga desktop app.`;
+      return t`Protected channels aren't available here yet. They work in the main window of the Sloga app for Windows, Linux and Android.`;
     case "enable_e2ee":
       return t`Turn on end-to-end encryption on this device to use Protected channels.`;
     case "unverified":

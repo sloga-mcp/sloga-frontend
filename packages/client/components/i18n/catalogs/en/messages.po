@@ -9300,6 +9300,10 @@ msgid "You don't have a seat in this protected channel. Ask the owner for a seat
 msgstr "You don't have a seat in this protected channel. Ask the owner for a seat."
 
 #: components/client/protectedCopy.ts
+msgid "Protected channels aren't available here yet. They work in the main window of the Sloga app for Windows, Linux and Android."
+msgstr "Protected channels aren't available here yet. They work in the main window of the Sloga app for Windows, Linux and Android."
+
+#: components/client/protectedCopy.ts
 msgid "Protected channels aren't available here yet. Open this channel in the main window of the Sloga desktop app."
 msgstr "Protected channels aren't available here yet. Open this channel in the main window of the Sloga desktop app."
 

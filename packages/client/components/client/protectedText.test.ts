@@ -20,7 +20,9 @@
 // tests named "W4d ..."): sticky loud groupError (X#1), resume of a
 // persisted stage (X#2), no false rollback (X#3), own-send binding and the
 // native own view (X#4), not_member (X#5), member_added before every join
-// (X#6), parked dedupe (X#9), un-strip (F#3), commit cap refusals.
+// (X#6), parked dedupe (X#9), un-strip (F#3), commit cap refusals. S7 C9
+// (the tests named "C9 protector ..."): the protector back-off (EL-F7,
+// AND-F13); controls: gate bypassed, and protector surfaced to the flows.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
@@ -33,6 +35,7 @@ import {
 import {
   type ProtectedTextPortExtensions,
   FIRST_SIGHT_PER_MINUTE,
+  HOLD_RETRY_BUDGET,
   KEY_PACKAGE_PUT_429_BUDGET,
   ProtectedTextManager,
   REFETCH_403_PARK_BUDGET,
@@ -3028,5 +3031,220 @@ test("W4d: unknown extra commit fields (W2 advisory removed_reasons) are tolerat
   const processed = env.calls("e2ee_text_process");
   assert.equal(processed.length, 1, "the row was processed");
   assert.equal("removed_reasons" in processed[0].envelope, false);
+  m.dispose();
+});
+
+// ---------------------------------------------------------------------------
+// S7 C9: protector back-off (EL-F7 Linux keyring, AND-F13 Android Keystore)
+// ---------------------------------------------------------------------------
+
+/**
+ * Every scripted native command answers `{ type: "protector" }` while
+ * `locked()`: the store cannot be opened. `refused` counts those answers,
+ * i.e. the unlock prompts a real keyring would have raised; `byCmd` splits
+ * them per command.
+ */
+function protectorLock(env: Env, locked: () => boolean) {
+  const lock = { refused: 0, byCmd: new Map<string, number>() };
+  const handlers = env.handlers as Record<string, (a: unknown) => unknown>;
+  for (const cmd of Object.keys(handlers)) {
+    const h = handlers[cmd];
+    handlers[cmd] = (a) => {
+      if (locked()) {
+        lock.refused += 1;
+        lock.byCmd.set(cmd, (lock.byCmd.get(cmd) ?? 0) + 1);
+        throw { type: "protector" };
+      }
+      return h(a);
+    };
+  }
+  return lock;
+}
+
+/** B4's decrypt reduced to its port use: any native error is a red marker. */
+function nativeDecryptDeps(env: Env): ProtectedTextManagerDeps {
+  env.handlers.e2ee_text_decrypt = (a) => ({
+    message_id: a.messageId,
+    channel_id: a.channelId,
+    group_id: G0,
+    epoch: 3,
+    author_user_id: a.authorUserId,
+    sender_device_id: PEER_DEV,
+    cid: a.nonce,
+    ts: env.clock,
+    text: "decrypted",
+    replies: [],
+    sender_verified: true,
+    ts_skew: false,
+  });
+  return fakeDeps(env, {
+    messages: {
+      decryptRow: async (_ops, port, row, live) => {
+        try {
+          const d = await port.invoke("e2ee_text_decrypt", {
+            channelId: row.channelId,
+            messageId: row.id,
+            authorUserId: row.authorId,
+            nonce: row.nonce ?? "",
+            encrypted: SENT_PAYLOAD,
+            live,
+          });
+          return {
+            status: "ok",
+            text: d.text,
+            replies: d.replies,
+            senderVerified: d.sender_verified,
+            tsSkew: d.ts_skew,
+            cid: d.cid,
+          };
+        } catch {
+          return { status: "marker", kind: "error" };
+        }
+      },
+    },
+  });
+}
+
+function peerRow(i: number) {
+  return {
+    id: `MP${i}`,
+    channelId: CH,
+    authorId: PEER,
+    nonce: CID2,
+    encrypted: SENT_PAYLOAD,
+  };
+}
+
+/** The back-off windows: 2 s doubling, capped at 60 s. */
+const PROTECTOR_WINDOWS = [2_000, 4_000, 8_000, 16_000, 32_000, 60_000, 60_000];
+
+test("C9 protector: a locked store holds every text command, one probe per back-off window (EL-F7)", async () => {
+  const env = new Env();
+  const deps = nativeDecryptDeps(env);
+  let locked = true;
+  const lock = protectorLock(env, () => locked);
+  const m = make(env, deps);
+  void silence(m.start());
+  await env.advance(0);
+  // The first command (own-device pins) was refused; nothing else ran.
+  assert.equal(lock.refused, 1);
+  assert.equal(env.invokes.length, 1);
+  // A burst of passive work: an open channel, two envelopes, 20 messages.
+  void silence(m.open(CH));
+  await env.advance(0);
+  m.onEnvelope(envelope("E1", 4));
+  m.onEnvelope(envelope("E2", 5));
+  for (let i = 0; i < 20; i++) m.onMessage(peerRow(i), true);
+  await env.advance(0);
+  assert.equal(env.invokes.length, 1, "nothing issued inside the window");
+  for (const w of PROTECTOR_WINDOWS) {
+    const before: number = env.invokes.length;
+    await env.advance(w - 1);
+    assert.equal(env.invokes.length, before, `nothing before ${w} ms`);
+    await env.advance(1);
+    assert.equal(env.invokes.length, before + 1, `ONE probe after ${w} ms`);
+  }
+  assert.equal(lock.refused, 1 + PROTECTOR_WINDOWS.length);
+  // Held, not failed: never a leave or wipe, nothing acked, no groupError,
+  // the shield at its loading `resecuring`, every message still pending.
+  assert.equal(env.calls("e2ee_text_mark_left").length, 0);
+  assert.deepEqual(env.acks, []);
+  assert.equal(env.views.get(CH)?.groupError ?? null, null);
+  assert.equal(env.views.get(CH)?.native ?? null, null);
+  assert.equal(env.shield(), "resecuring");
+  for (let i = 0; i < 20; i++) {
+    assert.deepEqual(env.msgViews.get(`MP${i}`), { status: "pending" });
+  }
+  const held = env.logs.filter(
+    (l) => l.msg === "[protected] protector refused, text commands held",
+  );
+  assert.equal(held.length, 1 + PROTECTOR_WINDOWS.length, "one per escalation");
+  assert.equal(held[0].level, "warn");
+  // Unlocked: the next probe succeeds, the gate reopens, everything runs.
+  locked = false;
+  await env.advance(60_000);
+  assert.equal(lock.refused, 1 + PROTECTOR_WINDOWS.length);
+  for (let i = 0; i < 20; i++) {
+    assert.equal(env.msgViews.get(`MP${i}`)?.status, "ok", `MP${i}`);
+  }
+  assert.equal(
+    env.calls("e2ee_text_decrypt").length,
+    20 + (lock.byCmd.get("e2ee_text_decrypt") ?? 0),
+    "each message decrypted once; earlier decrypts were refused probes",
+  );
+  assert.deepEqual([...env.acks].sort(), ["E1", "E2"]);
+  assert.equal(env.shield(), "protected");
+  assert.ok(
+    env.logs.some((l) => l.msg === "[protected] protector back-off cleared"),
+  );
+  m.dispose();
+});
+
+test("C9 protector: the first success resets the back-off; a later refusal starts again at 2 s", async () => {
+  const env = new Env();
+  const deps = nativeDecryptDeps(env);
+  let locked = false;
+  const lock = protectorLock(env, () => locked);
+  const m = make(env, deps);
+  await m.refresh(CH, "open");
+  await env.advance(0);
+  locked = true;
+  m.onMessage(peerRow(0), true);
+  await env.advance(0);
+  assert.equal(lock.refused, 1);
+  await env.advance(2_000);
+  assert.equal(lock.refused, 2);
+  await env.advance(4_000);
+  assert.equal(lock.refused, 3);
+  assert.deepEqual(env.msgViews.get("MP0"), { status: "pending" });
+  locked = false;
+  await env.advance(8_000);
+  assert.equal(env.msgViews.get("MP0")?.status, "ok");
+  // Reset: the next refusal waits 2 s again, not 16 s.
+  locked = true;
+  m.onMessage(peerRow(1), true);
+  await env.advance(0);
+  assert.equal(lock.refused, 4);
+  await env.advance(1_999);
+  assert.equal(lock.refused, 4);
+  await env.advance(1);
+  assert.equal(lock.refused, 5, "the window restarted at 2 s");
+  locked = false;
+  await env.advance(4_000);
+  assert.equal(env.msgViews.get("MP1")?.status, "ok");
+  m.dispose();
+});
+
+test("C9 protector: a refused _process is held unacked past the hold budget, never left, never a groupError (AND-F13)", async () => {
+  const env = new Env();
+  const m = make(env);
+  await m.refresh(CH, "open");
+  await env.advance(0);
+  assert.equal(env.shield(), "protected");
+  let locked = true;
+  const lock = protectorLock(env, () => locked);
+  m.onEnvelope(envelope("E1", 4));
+  await env.advance(0);
+  assert.equal(lock.refused, 1);
+  // Long enough that a surfaced refusal would exhaust HOLD_RETRY_BUDGET:
+  // each retry of a commit costs two commands (group kind, then process).
+  const windows = [...PROTECTOR_WINDOWS, ...Array<number>(8).fill(60_000)];
+  assert.ok(windows.length > 2 * (HOLD_RETRY_BUDGET + 1));
+  await env.advance(windows.reduce((a, b) => a + b, 0));
+  assert.equal(lock.refused, 1 + windows.length, "one probe per window");
+  assert.deepEqual(env.acks, []);
+  assert.equal(env.calls("e2ee_text_mark_left").length, 0);
+  assert.equal(env.calls("e2ee_text_join").length, 0);
+  assert.equal(env.views.get(CH)?.groupError, null);
+  assert.equal(env.shield(), "protected", "a refusal never changes the view");
+  assert.equal(
+    env.logs.some((l) => l.msg === "[protected] envelope left unacked"),
+    false,
+  );
+  locked = false;
+  await env.advance(60_000);
+  assert.deepEqual(env.acks, ["E1"], "processed and acked once");
+  assert.equal(env.calls("e2ee_text_mark_left").length, 0);
+  assert.equal(env.shield(), "protected");
   m.dispose();
 });

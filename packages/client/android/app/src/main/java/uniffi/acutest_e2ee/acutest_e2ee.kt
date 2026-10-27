@@ -660,6 +660,12 @@ internal interface UniffiCallbackInterfaceKeyProtectorMethod0 : com.sun.jna.Call
 internal interface UniffiCallbackInterfaceKeyProtectorMethod1 : com.sun.jna.Callback {
     fun callback(`uniffiHandle`: Long,`blob`: RustBuffer.ByValue,`uniffiOutReturn`: RustBuffer,uniffiCallStatus: UniffiRustCallStatus,)
 }
+internal interface UniffiCallbackInterfaceTextConfirmMethod0 : com.sun.jna.Callback {
+    fun callback(`uniffiHandle`: Long,`payload`: RustBuffer.ByValue,`uniffiOutReturn`: ByteByReference,uniffiCallStatus: UniffiRustCallStatus,)
+}
+internal interface UniffiCallbackInterfaceTextConfirmMethod1 : com.sun.jna.Callback {
+    fun callback(`uniffiHandle`: Long,`payload`: RustBuffer.ByValue,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
+}
 @Structure.FieldOrder("protect", "unprotect", "uniffiFree")
 internal open class UniffiVTableCallbackInterfaceKeyProtector(
     @JvmField internal var `protect`: UniffiCallbackInterfaceKeyProtectorMethod0? = null,
@@ -679,6 +685,74 @@ internal open class UniffiVTableCallbackInterfaceKeyProtector(
     }
 
 }
+@Structure.FieldOrder("confirm", "inform", "uniffiFree")
+internal open class UniffiVTableCallbackInterfaceTextConfirm(
+    @JvmField internal var `confirm`: UniffiCallbackInterfaceTextConfirmMethod0? = null,
+    @JvmField internal var `inform`: UniffiCallbackInterfaceTextConfirmMethod1? = null,
+    @JvmField internal var `uniffiFree`: UniffiCallbackInterfaceFree? = null,
+) : Structure() {
+    class UniffiByValue(
+        `confirm`: UniffiCallbackInterfaceTextConfirmMethod0? = null,
+        `inform`: UniffiCallbackInterfaceTextConfirmMethod1? = null,
+        `uniffiFree`: UniffiCallbackInterfaceFree? = null,
+    ): UniffiVTableCallbackInterfaceTextConfirm(`confirm`,`inform`,`uniffiFree`,), Structure.ByValue
+
+   internal fun uniffiSetValue(other: UniffiVTableCallbackInterfaceTextConfirm) {
+        `confirm` = other.`confirm`
+        `inform` = other.`inform`
+        `uniffiFree` = other.`uniffiFree`
+    }
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -1019,6 +1093,8 @@ fun uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_call_verify_join_intent(
 ): Short
 fun uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_expire_key_packages(
 ): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_group_kind(
+): Short
 fun uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_publish_key_packages(
 ): Short
 fun uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_replenish(
@@ -1061,11 +1137,55 @@ fun uniffi_acutest_e2ee_checksum_method_e2eeengine_status(
 ): Short
 fun uniffi_acutest_e2ee_checksum_method_e2eeengine_store_owner(
 ): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_text_admit(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_text_capability(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_text_commit_lost(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_text_commit_won(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_text_decrypt(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_text_encrypt(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_text_group_create(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_text_join(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_text_mark_left(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_text_owner_confirm_change(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_text_owner_handover_sign(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_text_owner_pin_state(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_text_pending_commit(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_text_pin_own_devices(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_text_process(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_text_remove(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_text_seat_list_sign(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_text_seat_list_verify(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_text_state(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_text_update(
+): Short
 fun uniffi_acutest_e2ee_checksum_method_e2eeengine_wipe(
 ): Short
 fun uniffi_acutest_e2ee_checksum_method_keyprotector_protect(
 ): Short
 fun uniffi_acutest_e2ee_checksum_method_keyprotector_unprotect(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_textconfirm_confirm(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_textconfirm_inform(
 ): Short
 fun uniffi_acutest_e2ee_checksum_constructor_e2eeengine_new(
 ): Short
@@ -1108,6 +1228,7 @@ internal interface UniffiLib : Library {
             // No need to check the contract version and checksums, since 
             // we already did that with `IntegrityCheckingUniffiLib` above.
             uniffiCallbackInterfaceKeyProtector.register(lib)
+            uniffiCallbackInterfaceTextConfirm.register(lib)
             // Loading of library with integrity check done.
             lib
         }
@@ -1231,6 +1352,8 @@ fun uniffi_acutest_e2ee_fn_method_e2eeengine_mls_call_verify_join_intent(`ptr`: 
 ): Unit
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_mls_expire_key_packages(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_mls_group_kind(`ptr`: Pointer,`argsJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_mls_publish_key_packages(`ptr`: Pointer,`userId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_mls_replenish(`ptr`: Pointer,`userId`: RustBuffer.ByValue,`serverRemaining`: Long,uniffi_out_err: UniffiRustCallStatus, 
@@ -1273,6 +1396,46 @@ fun uniffi_acutest_e2ee_fn_method_e2eeengine_status(`ptr`: Pointer,uniffi_out_er
 ): RustBuffer.ByValue
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_store_owner(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_text_admit(`ptr`: Pointer,`argsJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_text_capability(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_text_commit_lost(`ptr`: Pointer,`argsJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_text_commit_won(`ptr`: Pointer,`argsJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_text_decrypt(`ptr`: Pointer,`argsJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_text_encrypt(`ptr`: Pointer,`argsJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_text_group_create(`ptr`: Pointer,`argsJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_text_join(`ptr`: Pointer,`argsJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_text_mark_left(`ptr`: Pointer,`argsJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_text_owner_confirm_change(`ptr`: Pointer,`argsJson`: RustBuffer.ByValue,`confirm`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_text_owner_handover_sign(`ptr`: Pointer,`argsJson`: RustBuffer.ByValue,`confirm`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_text_owner_pin_state(`ptr`: Pointer,`argsJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_text_pending_commit(`ptr`: Pointer,`argsJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_text_pin_own_devices(`ptr`: Pointer,`argsJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_text_process(`ptr`: Pointer,`argsJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_text_remove(`ptr`: Pointer,`argsJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_text_seat_list_sign(`ptr`: Pointer,`argsJson`: RustBuffer.ByValue,`confirm`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_text_seat_list_verify(`ptr`: Pointer,`argsJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_text_state(`ptr`: Pointer,`argsJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_text_update(`ptr`: Pointer,`argsJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_wipe(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
 fun uniffi_acutest_e2ee_fn_clone_keyprotector(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
@@ -1285,6 +1448,16 @@ fun uniffi_acutest_e2ee_fn_method_keyprotector_protect(`ptr`: Pointer,`plaintext
 ): RustBuffer.ByValue
 fun uniffi_acutest_e2ee_fn_method_keyprotector_unprotect(`ptr`: Pointer,`blob`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_clone_textconfirm(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): Pointer
+fun uniffi_acutest_e2ee_fn_free_textconfirm(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_acutest_e2ee_fn_init_callback_vtable_textconfirm(`vtable`: UniffiVTableCallbackInterfaceTextConfirm,
+): Unit
+fun uniffi_acutest_e2ee_fn_method_textconfirm_confirm(`ptr`: Pointer,`payload`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Byte
+fun uniffi_acutest_e2ee_fn_method_textconfirm_inform(`ptr`: Pointer,`payload`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
 fun ffi_acutest_e2ee_rustbuffer_alloc(`size`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun ffi_acutest_e2ee_rustbuffer_from_bytes(`bytes`: ForeignBytes.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -1570,6 +1743,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_expire_key_packages() != 8919.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_group_kind() != 41013.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_mls_publish_key_packages() != 33779.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1633,6 +1809,66 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_store_owner() != 49521.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_admit() != 58626.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_capability() != 28207.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_commit_lost() != 13490.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_commit_won() != 61325.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_decrypt() != 13479.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_encrypt() != 53138.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_group_create() != 30805.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_join() != 5811.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_mark_left() != 57073.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_owner_confirm_change() != 59766.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_owner_handover_sign() != 16365.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_owner_pin_state() != 16716.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_pending_commit() != 41141.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_pin_own_devices() != 63903.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_process() != 30872.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_remove() != 19883.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_seat_list_sign() != 47294.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_seat_list_verify() != 5734.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_state() != 9077.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_update() != 24751.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_wipe() != 31954.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1640,6 +1876,12 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_acutest_e2ee_checksum_method_keyprotector_unprotect() != 60908.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_textconfirm_confirm() != 36423.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_textconfirm_inform() != 3640.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_acutest_e2ee_checksum_constructor_e2eeengine_new() != 45690.toShort()) {
@@ -2537,6 +2779,12 @@ public interface E2eeEngineInterface {
     fun `mlsExpireKeyPackages`()
     
     /**
+     * `e2ee_mls_group_kind`: `"call"`, `"text"` or `null`. Never
+     * provisions; unprovisioned is `null`.
+     */
+    fun `mlsGroupKind`(`argsJson`: kotlin.String): kotlin.String
+    
+    /**
      * Generate + record a full KeyPackage batch; returns the
      * `PUT /mls/key_packages` body JSON (public KeyPackages + signed
      * credential binding). Called on first call-enrollment and after wipe.
@@ -2736,6 +2984,125 @@ public interface E2eeEngineInterface {
      * which no JS gate can see.
      */
     fun `storeOwner`(): kotlin.String?
+    
+    /**
+     * `e2ee_text_admit`: JSON `SubmitMlsCommitPayload`. Never provisions.
+     */
+    fun `textAdmit`(`argsJson`: kotlin.String): kotlin.String
+    
+    /**
+     * The text plane's protocol, `{"protocol":1}`. Touches no engine and no
+     * file; the webview's capability probe.
+     */
+    fun `textCapability`(): kotlin.String
+    
+    /**
+     * `e2ee_text_commit_lost`: JSON `null`. Never provisions.
+     */
+    fun `textCommitLost`(`argsJson`: kotlin.String): kotlin.String
+    
+    /**
+     * `e2ee_text_commit_won`: JSON `TextProcessOutcome`. `rejoinIntents`
+     * is required (the stored commit's list, possibly empty). Never
+     * provisions.
+     */
+    fun `textCommitWon`(`argsJson`: kotlin.String): kotlin.String
+    
+    /**
+     * `e2ee_text_decrypt`: JSON `TextDecrypted`. `encrypted` is the raw
+     * message field, parsed in core. Never provisions.
+     */
+    fun `textDecrypt`(`argsJson`: kotlin.String): kotlin.String
+    
+    /**
+     * `e2ee_text_encrypt`: JSON `TextEncrypted`. Never provisions.
+     */
+    fun `textEncrypt`(`argsJson`: kotlin.String): kotlin.String
+    
+    /**
+     * `e2ee_text_group_create`: JSON `TextGroupCreated`. Provisions on
+     * first use (protecting a channel is user action).
+     */
+    fun `textGroupCreate`(`argsJson`: kotlin.String): kotlin.String
+    
+    /**
+     * `e2ee_text_join`: JSON `TextJoinIntent`. Provisions on first use
+     * (joining a channel is user action).
+     */
+    fun `textJoin`(`argsJson`: kotlin.String): kotlin.String
+    
+    /**
+     * `e2ee_text_mark_left`: JSON `null`. Never provisions.
+     */
+    fun `textMarkLeft`(`argsJson`: kotlin.String): kotlin.String
+    
+    /**
+     * `e2ee_text_owner_confirm_change`: JSON `null` once the same-user
+     * re-pin is confirmed. A different-user signer gets `inform` only and
+     * `owner_changed{same_user:false}`, changing nothing.
+     */
+    fun `textOwnerConfirmChange`(`argsJson`: kotlin.String, `confirm`: TextConfirm): kotlin.String
+    
+    /**
+     * `e2ee_text_owner_handover_sign`: JSON `SignedHandover`. ALWAYS asks
+     * `confirm`. `displayNames` is required and not rendered, as on
+     * desktop (the target is always this user's own device). Persists
+     * nothing.
+     */
+    fun `textOwnerHandoverSign`(`argsJson`: kotlin.String, `confirm`: TextConfirm): kotlin.String
+    
+    /**
+     * `e2ee_text_owner_pin_state`: JSON `OwnerPinState`. Never provisions.
+     */
+    fun `textOwnerPinState`(`argsJson`: kotlin.String): kotlin.String
+    
+    /**
+     * `e2ee_text_pending_commit`: JSON `PendingCommit` or `null`. Never
+     * provisions; unprovisioned is `null`.
+     */
+    fun `textPendingCommit`(`argsJson`: kotlin.String): kotlin.String
+    
+    /**
+     * `e2ee_text_pin_own_devices`: JSON `OwnPinReport`. Never provisions.
+     */
+    fun `textPinOwnDevices`(`argsJson`: kotlin.String): kotlin.String
+    
+    /**
+     * `e2ee_text_process`: JSON `TextProcessOutcome`. `envelope` is parsed
+     * BEFORE the engine is touched, as `ShellEngine::text_process` does: a
+     * malformed one is `malformed_text_payload{reason:"structure"}` and
+     * opens nothing. Never provisions.
+     */
+    fun `textProcess`(`argsJson`: kotlin.String): kotlin.String
+    
+    /**
+     * `e2ee_text_remove`: JSON `SubmitMlsCommitPayload`.
+     * `pendingRemovalUsers` is required. Never provisions.
+     */
+    fun `textRemove`(`argsJson`: kotlin.String): kotlin.String
+    
+    /**
+     * `e2ee_text_seat_list_sign`: JSON `SignedSeatList`. A list that seats
+     * a new user or raises the device cap needs `confirm`; one that does
+     * neither is signed with no dialog. Persists nothing.
+     */
+    fun `textSeatListSign`(`argsJson`: kotlin.String, `confirm`: TextConfirm): kotlin.String
+    
+    /**
+     * `e2ee_text_seat_list_verify`: JSON `SeatListVerdict`. Never
+     * provisions.
+     */
+    fun `textSeatListVerify`(`argsJson`: kotlin.String): kotlin.String
+    
+    /**
+     * `e2ee_text_state`: JSON `TextChannelState`. Never provisions.
+     */
+    fun `textState`(`argsJson`: kotlin.String): kotlin.String
+    
+    /**
+     * `e2ee_text_update`: JSON `SubmitMlsCommitPayload`. Never provisions.
+     */
+    fun `textUpdate`(`argsJson`: kotlin.String): kotlin.String
     
     /**
      * Destroy ALL local E2EE state.
@@ -3860,6 +4227,23 @@ open class E2eeEngine: Disposable, AutoCloseable, E2eeEngineInterface
 
     
     /**
+     * `e2ee_mls_group_kind`: `"call"`, `"text"` or `null`. Never
+     * provisions; unprovisioned is `null`.
+     */
+    @Throws(E2eeException::class)override fun `mlsGroupKind`(`argsJson`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_mls_group_kind(
+        it, FfiConverterString.lower(`argsJson`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
      * Generate + record a full KeyPackage batch; returns the
      * `PUT /mls/key_packages` body JSON (public KeyPackages + signed
      * credential binding). Called on first call-enrollment and after wipe.
@@ -4292,6 +4676,344 @@ open class E2eeEngine: Disposable, AutoCloseable, E2eeEngineInterface
 
     
     /**
+     * `e2ee_text_admit`: JSON `SubmitMlsCommitPayload`. Never provisions.
+     */
+    @Throws(E2eeException::class)override fun `textAdmit`(`argsJson`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_text_admit(
+        it, FfiConverterString.lower(`argsJson`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * The text plane's protocol, `{"protocol":1}`. Touches no engine and no
+     * file; the webview's capability probe.
+     */override fun `textCapability`(): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_text_capability(
+        it, _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * `e2ee_text_commit_lost`: JSON `null`. Never provisions.
+     */
+    @Throws(E2eeException::class)override fun `textCommitLost`(`argsJson`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_text_commit_lost(
+        it, FfiConverterString.lower(`argsJson`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * `e2ee_text_commit_won`: JSON `TextProcessOutcome`. `rejoinIntents`
+     * is required (the stored commit's list, possibly empty). Never
+     * provisions.
+     */
+    @Throws(E2eeException::class)override fun `textCommitWon`(`argsJson`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_text_commit_won(
+        it, FfiConverterString.lower(`argsJson`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * `e2ee_text_decrypt`: JSON `TextDecrypted`. `encrypted` is the raw
+     * message field, parsed in core. Never provisions.
+     */
+    @Throws(E2eeException::class)override fun `textDecrypt`(`argsJson`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_text_decrypt(
+        it, FfiConverterString.lower(`argsJson`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * `e2ee_text_encrypt`: JSON `TextEncrypted`. Never provisions.
+     */
+    @Throws(E2eeException::class)override fun `textEncrypt`(`argsJson`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_text_encrypt(
+        it, FfiConverterString.lower(`argsJson`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * `e2ee_text_group_create`: JSON `TextGroupCreated`. Provisions on
+     * first use (protecting a channel is user action).
+     */
+    @Throws(E2eeException::class)override fun `textGroupCreate`(`argsJson`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_text_group_create(
+        it, FfiConverterString.lower(`argsJson`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * `e2ee_text_join`: JSON `TextJoinIntent`. Provisions on first use
+     * (joining a channel is user action).
+     */
+    @Throws(E2eeException::class)override fun `textJoin`(`argsJson`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_text_join(
+        it, FfiConverterString.lower(`argsJson`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * `e2ee_text_mark_left`: JSON `null`. Never provisions.
+     */
+    @Throws(E2eeException::class)override fun `textMarkLeft`(`argsJson`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_text_mark_left(
+        it, FfiConverterString.lower(`argsJson`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * `e2ee_text_owner_confirm_change`: JSON `null` once the same-user
+     * re-pin is confirmed. A different-user signer gets `inform` only and
+     * `owner_changed{same_user:false}`, changing nothing.
+     */
+    @Throws(E2eeException::class)override fun `textOwnerConfirmChange`(`argsJson`: kotlin.String, `confirm`: TextConfirm): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_text_owner_confirm_change(
+        it, FfiConverterString.lower(`argsJson`),FfiConverterTypeTextConfirm.lower(`confirm`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * `e2ee_text_owner_handover_sign`: JSON `SignedHandover`. ALWAYS asks
+     * `confirm`. `displayNames` is required and not rendered, as on
+     * desktop (the target is always this user's own device). Persists
+     * nothing.
+     */
+    @Throws(E2eeException::class)override fun `textOwnerHandoverSign`(`argsJson`: kotlin.String, `confirm`: TextConfirm): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_text_owner_handover_sign(
+        it, FfiConverterString.lower(`argsJson`),FfiConverterTypeTextConfirm.lower(`confirm`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * `e2ee_text_owner_pin_state`: JSON `OwnerPinState`. Never provisions.
+     */
+    @Throws(E2eeException::class)override fun `textOwnerPinState`(`argsJson`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_text_owner_pin_state(
+        it, FfiConverterString.lower(`argsJson`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * `e2ee_text_pending_commit`: JSON `PendingCommit` or `null`. Never
+     * provisions; unprovisioned is `null`.
+     */
+    @Throws(E2eeException::class)override fun `textPendingCommit`(`argsJson`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_text_pending_commit(
+        it, FfiConverterString.lower(`argsJson`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * `e2ee_text_pin_own_devices`: JSON `OwnPinReport`. Never provisions.
+     */
+    @Throws(E2eeException::class)override fun `textPinOwnDevices`(`argsJson`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_text_pin_own_devices(
+        it, FfiConverterString.lower(`argsJson`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * `e2ee_text_process`: JSON `TextProcessOutcome`. `envelope` is parsed
+     * BEFORE the engine is touched, as `ShellEngine::text_process` does: a
+     * malformed one is `malformed_text_payload{reason:"structure"}` and
+     * opens nothing. Never provisions.
+     */
+    @Throws(E2eeException::class)override fun `textProcess`(`argsJson`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_text_process(
+        it, FfiConverterString.lower(`argsJson`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * `e2ee_text_remove`: JSON `SubmitMlsCommitPayload`.
+     * `pendingRemovalUsers` is required. Never provisions.
+     */
+    @Throws(E2eeException::class)override fun `textRemove`(`argsJson`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_text_remove(
+        it, FfiConverterString.lower(`argsJson`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * `e2ee_text_seat_list_sign`: JSON `SignedSeatList`. A list that seats
+     * a new user or raises the device cap needs `confirm`; one that does
+     * neither is signed with no dialog. Persists nothing.
+     */
+    @Throws(E2eeException::class)override fun `textSeatListSign`(`argsJson`: kotlin.String, `confirm`: TextConfirm): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_text_seat_list_sign(
+        it, FfiConverterString.lower(`argsJson`),FfiConverterTypeTextConfirm.lower(`confirm`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * `e2ee_text_seat_list_verify`: JSON `SeatListVerdict`. Never
+     * provisions.
+     */
+    @Throws(E2eeException::class)override fun `textSeatListVerify`(`argsJson`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_text_seat_list_verify(
+        it, FfiConverterString.lower(`argsJson`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * `e2ee_text_state`: JSON `TextChannelState`. Never provisions.
+     */
+    @Throws(E2eeException::class)override fun `textState`(`argsJson`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_text_state(
+        it, FfiConverterString.lower(`argsJson`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * `e2ee_text_update`: JSON `SubmitMlsCommitPayload`. Never provisions.
+     */
+    @Throws(E2eeException::class)override fun `textUpdate`(`argsJson`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_text_update(
+        it, FfiConverterString.lower(`argsJson`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
      * Destroy ALL local E2EE state.
      *
      * Design §9a: reachable ONLY from the deliberate user-logout flow
@@ -4675,6 +5397,347 @@ public object FfiConverterTypeKeyProtector: FfiConverter<KeyProtector, Pointer> 
 }
 
 
+// This template implements a class for working with a Rust struct via a Pointer/Arc<T>
+// to the live Rust struct on the other side of the FFI.
+//
+// Each instance implements core operations for working with the Rust `Arc<T>` and the
+// Kotlin Pointer to work with the live Rust struct on the other side of the FFI.
+//
+// There's some subtlety here, because we have to be careful not to operate on a Rust
+// struct after it has been dropped, and because we must expose a public API for freeing
+// theq Kotlin wrapper object in lieu of reliable finalizers. The core requirements are:
+//
+//   * Each instance holds an opaque pointer to the underlying Rust struct.
+//     Method calls need to read this pointer from the object's state and pass it in to
+//     the Rust FFI.
+//
+//   * When an instance is no longer needed, its pointer should be passed to a
+//     special destructor function provided by the Rust FFI, which will drop the
+//     underlying Rust struct.
+//
+//   * Given an instance, calling code is expected to call the special
+//     `destroy` method in order to free it after use, either by calling it explicitly
+//     or by using a higher-level helper like the `use` method. Failing to do so risks
+//     leaking the underlying Rust struct.
+//
+//   * We can't assume that calling code will do the right thing, and must be prepared
+//     to handle Kotlin method calls executing concurrently with or even after a call to
+//     `destroy`, and to handle multiple (possibly concurrent!) calls to `destroy`.
+//
+//   * We must never allow Rust code to operate on the underlying Rust struct after
+//     the destructor has been called, and must never call the destructor more than once.
+//     Doing so may trigger memory unsafety.
+//
+//   * To mitigate many of the risks of leaking memory and use-after-free unsafety, a `Cleaner`
+//     is implemented to call the destructor when the Kotlin object becomes unreachable.
+//     This is done in a background thread. This is not a panacea, and client code should be aware that
+//      1. the thread may starve if some there are objects that have poorly performing
+//     `drop` methods or do significant work in their `drop` methods.
+//      2. the thread is shared across the whole library. This can be tuned by using `android_cleaner = true`,
+//         or `android = true` in the [`kotlin` section of the `uniffi.toml` file](https://mozilla.github.io/uniffi-rs/kotlin/configuration.html).
+//
+// If we try to implement this with mutual exclusion on access to the pointer, there is the
+// possibility of a race between a method call and a concurrent call to `destroy`:
+//
+//    * Thread A starts a method call, reads the value of the pointer, but is interrupted
+//      before it can pass the pointer over the FFI to Rust.
+//    * Thread B calls `destroy` and frees the underlying Rust struct.
+//    * Thread A resumes, passing the already-read pointer value to Rust and triggering
+//      a use-after-free.
+//
+// One possible solution would be to use a `ReadWriteLock`, with each method call taking
+// a read lock (and thus allowed to run concurrently) and the special `destroy` method
+// taking a write lock (and thus blocking on live method calls). However, we aim not to
+// generate methods with any hidden blocking semantics, and a `destroy` method that might
+// block if called incorrectly seems to meet that bar.
+//
+// So, we achieve our goals by giving each instance an associated `AtomicLong` counter to track
+// the number of in-flight method calls, and an `AtomicBoolean` flag to indicate whether `destroy`
+// has been called. These are updated according to the following rules:
+//
+//    * The initial value of the counter is 1, indicating a live object with no in-flight calls.
+//      The initial value for the flag is false.
+//
+//    * At the start of each method call, we atomically check the counter.
+//      If it is 0 then the underlying Rust struct has already been destroyed and the call is aborted.
+//      If it is nonzero them we atomically increment it by 1 and proceed with the method call.
+//
+//    * At the end of each method call, we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+//    * When `destroy` is called, we atomically flip the flag from false to true.
+//      If the flag was already true we silently fail.
+//      Otherwise we atomically decrement and check the counter.
+//      If it has reached zero then we destroy the underlying Rust struct.
+//
+// Astute readers may observe that this all sounds very similar to the way that Rust's `Arc<T>` works,
+// and indeed it is, with the addition of a flag to guard against multiple calls to `destroy`.
+//
+// The overall effect is that the underlying Rust struct is destroyed only when `destroy` has been
+// called *and* all in-flight method calls have completed, avoiding violating any of the expectations
+// of the underlying Rust code.
+//
+// This makes a cleaner a better alternative to _not_ calling `destroy()` as
+// and when the object is finished with, but the abstraction is not perfect: if the Rust object's `drop`
+// method is slow, and/or there are many objects to cleanup, and it's on a low end Android device, then the cleaner
+// thread may be starved, and the app will leak memory.
+//
+// In this case, `destroy`ing manually may be a better solution.
+//
+// The cleaner can live side by side with the manual calling of `destroy`. In the order of responsiveness, uniffi objects
+// with Rust peers are reclaimed:
+//
+// 1. By calling the `destroy` method of the object, which calls `rustObject.free()`. If that doesn't happen:
+// 2. When the object becomes unreachable, AND the Cleaner thread gets to call `rustObject.free()`. If the thread is starved then:
+// 3. The memory is reclaimed when the process terminates.
+//
+// [1] https://stackoverflow.com/questions/24376768/can-java-finalize-an-object-when-it-is-still-in-scope/24380219
+//
+
+
+/**
+ * Kotlin-implemented native dialog for the three protected-text dialog
+ * commands.
+ *
+ * BLOCKING: each method returns only once the user has answered, or the
+ * dialog could not be shown or was torn down (which must answer
+ * `Ok(false)` or an `Err`). uniffi runs it on the thread that called the
+ * engine method, so the plugin calls the dialog commands from a worker
+ * thread and NEVER from the main thread (the dialog is posted to the UI
+ * thread while the worker waits). No Rust lock is held while either
+ * method runs.
+ *
+ * Only `Ok(true)` from `confirm` is consent. `Ok(false)` and any `Err` are
+ * a decline, which starts the decline lockout. `inform`'s result is
+ * ignored.
+ */
+public interface TextConfirm {
+    
+    fun `confirm`(`payload`: TextConfirmPayload): kotlin.Boolean
+    
+    fun `inform`(`payload`: TextConfirmPayload)
+    
+    companion object
+}
+
+/**
+ * Kotlin-implemented native dialog for the three protected-text dialog
+ * commands.
+ *
+ * BLOCKING: each method returns only once the user has answered, or the
+ * dialog could not be shown or was torn down (which must answer
+ * `Ok(false)` or an `Err`). uniffi runs it on the thread that called the
+ * engine method, so the plugin calls the dialog commands from a worker
+ * thread and NEVER from the main thread (the dialog is posted to the UI
+ * thread while the worker waits). No Rust lock is held while either
+ * method runs.
+ *
+ * Only `Ok(true)` from `confirm` is consent. `Ok(false)` and any `Err` are
+ * a decline, which starts the decline lockout. `inform`'s result is
+ * ignored.
+ */
+open class TextConfirmImpl: Disposable, AutoCloseable, TextConfirm
+{
+
+    constructor(pointer: Pointer) {
+        this.pointer = pointer
+        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(pointer))
+    }
+
+    /**
+     * This constructor can be used to instantiate a fake object. Only used for tests. Any
+     * attempt to actually use an object constructed this way will fail as there is no
+     * connected Rust object.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    constructor(noPointer: NoPointer) {
+        this.pointer = null
+        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(pointer))
+    }
+
+    protected val pointer: Pointer?
+    protected val cleanable: UniffiCleaner.Cleanable
+
+    private val wasDestroyed = AtomicBoolean(false)
+    private val callCounter = AtomicLong(1)
+
+    override fun destroy() {
+        // Only allow a single call to this method.
+        // TODO: maybe we should log a warning if called more than once?
+        if (this.wasDestroyed.compareAndSet(false, true)) {
+            // This decrement always matches the initial count of 1 given at creation time.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable.clean()
+            }
+        }
+    }
+
+    @Synchronized
+    override fun close() {
+        this.destroy()
+    }
+
+    internal inline fun <R> callWithPointer(block: (ptr: Pointer) -> R): R {
+        // Check and increment the call counter, to keep the object alive.
+        // This needs a compare-and-set retry loop in case of concurrent updates.
+        do {
+            val c = this.callCounter.get()
+            if (c == 0L) {
+                throw IllegalStateException("${this.javaClass.simpleName} object has already been destroyed")
+            }
+            if (c == Long.MAX_VALUE) {
+                throw IllegalStateException("${this.javaClass.simpleName} call counter would overflow")
+            }
+        } while (! this.callCounter.compareAndSet(c, c + 1L))
+        // Now we can safely do the method call without the pointer being freed concurrently.
+        try {
+            return block(this.uniffiClonePointer())
+        } finally {
+            // This decrement always matches the increment we performed above.
+            if (this.callCounter.decrementAndGet() == 0L) {
+                cleanable.clean()
+            }
+        }
+    }
+
+    // Use a static inner class instead of a closure so as not to accidentally
+    // capture `this` as part of the cleanable's action.
+    private class UniffiCleanAction(private val pointer: Pointer?) : Runnable {
+        override fun run() {
+            pointer?.let { ptr ->
+                uniffiRustCall { status ->
+                    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_free_textconfirm(ptr, status)
+                }
+            }
+        }
+    }
+
+    fun uniffiClonePointer(): Pointer {
+        return uniffiRustCall() { status ->
+            UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_clone_textconfirm(pointer!!, status)
+        }
+    }
+
+    
+    @Throws(TextConfirmException::class)override fun `confirm`(`payload`: TextConfirmPayload): kotlin.Boolean {
+            return FfiConverterBoolean.lift(
+    callWithPointer {
+    uniffiRustCallWithError(TextConfirmException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_textconfirm_confirm(
+        it, FfiConverterTypeTextConfirmPayload.lower(`payload`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    @Throws(TextConfirmException::class)override fun `inform`(`payload`: TextConfirmPayload)
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(TextConfirmException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_textconfirm_inform(
+        it, FfiConverterTypeTextConfirmPayload.lower(`payload`),_status)
+}
+    }
+    
+    
+
+    
+
+    
+    
+    companion object
+    
+}
+
+
+// Put the implementation in an object so we don't pollute the top-level namespace
+internal object uniffiCallbackInterfaceTextConfirm {
+    internal object `confirm`: UniffiCallbackInterfaceTextConfirmMethod0 {
+        override fun callback(`uniffiHandle`: Long,`payload`: RustBuffer.ByValue,`uniffiOutReturn`: ByteByReference,uniffiCallStatus: UniffiRustCallStatus,) {
+            val uniffiObj = FfiConverterTypeTextConfirm.handleMap.get(uniffiHandle)
+            val makeCall = { ->
+                uniffiObj.`confirm`(
+                    FfiConverterTypeTextConfirmPayload.lift(`payload`),
+                )
+            }
+            val writeReturn = { value: kotlin.Boolean -> uniffiOutReturn.setValue(FfiConverterBoolean.lower(value)) }
+            uniffiTraitInterfaceCallWithError(
+                uniffiCallStatus,
+                makeCall,
+                writeReturn,
+                { e: TextConfirmException -> FfiConverterTypeTextConfirmError.lower(e) }
+            )
+        }
+    }
+    internal object `inform`: UniffiCallbackInterfaceTextConfirmMethod1 {
+        override fun callback(`uniffiHandle`: Long,`payload`: RustBuffer.ByValue,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,) {
+            val uniffiObj = FfiConverterTypeTextConfirm.handleMap.get(uniffiHandle)
+            val makeCall = { ->
+                uniffiObj.`inform`(
+                    FfiConverterTypeTextConfirmPayload.lift(`payload`),
+                )
+            }
+            val writeReturn = { _: Unit -> Unit }
+            uniffiTraitInterfaceCallWithError(
+                uniffiCallStatus,
+                makeCall,
+                writeReturn,
+                { e: TextConfirmException -> FfiConverterTypeTextConfirmError.lower(e) }
+            )
+        }
+    }
+
+    internal object uniffiFree: UniffiCallbackInterfaceFree {
+        override fun callback(handle: Long) {
+            FfiConverterTypeTextConfirm.handleMap.remove(handle)
+        }
+    }
+
+    internal var vtable = UniffiVTableCallbackInterfaceTextConfirm.UniffiByValue(
+        `confirm`,
+        `inform`,
+        uniffiFree,
+    )
+
+    // Registers the foreign callback with the Rust side.
+    // This method is generated for each callback interface.
+    internal fun register(lib: UniffiLib) {
+        lib.uniffi_acutest_e2ee_fn_init_callback_vtable_textconfirm(vtable)
+    }
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeTextConfirm: FfiConverter<TextConfirm, Pointer> {
+    internal val handleMap = UniffiHandleMap<TextConfirm>()
+
+    override fun lower(value: TextConfirm): Pointer {
+        return Pointer(handleMap.insert(value))
+    }
+
+    override fun lift(value: Pointer): TextConfirm {
+        return TextConfirmImpl(value)
+    }
+
+    override fun read(buf: ByteBuffer): TextConfirm {
+        // The Rust code always writes pointers as 8 bytes, and will
+        // fail to compile if they don't fit.
+        return lift(Pointer(buf.getLong()))
+    }
+
+    override fun allocationSize(value: TextConfirm) = 8UL
+
+    override fun write(value: TextConfirm, buf: ByteBuffer) {
+        // The Rust code always expects pointers written as 8 bytes,
+        // and will fail to compile if they don't fit.
+        buf.putLong(Pointer.nativeValue(lower(value)))
+    }
+}
+
+
 
 /**
  * Decrypted attachment content for the WebView interceptor (the Android
@@ -4879,6 +5942,70 @@ public object FfiConverterTypeIdentityPrompt: FfiConverterRustBuffer<IdentityPro
 
 
 
+/**
+ * The rendered core-owned copy of one protected-text dialog. Kotlin renders
+ * it verbatim in an `AlertDialog`; it carries no strings of its own.
+ *
+ * `kind` is `"warning"` or `"info"`; `default_button` is `"cancel"` or
+ * `"confirm"`. `single` is `true` for an information dialog
+ * ([`TextConfirm::inform`]): one button, labelled `cancel_label`, whose
+ * answer decides nothing.
+ */
+data class TextConfirmPayload (
+    var `title`: kotlin.String, 
+    var `message`: kotlin.String, 
+    /**
+     * Label of the button whose press means `confirm == Ok(true)`.
+     */
+    var `confirmLabel`: kotlin.String, 
+    var `cancelLabel`: kotlin.String, 
+    var `kind`: kotlin.String, 
+    var `defaultButton`: kotlin.String, 
+    var `single`: kotlin.Boolean
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeTextConfirmPayload: FfiConverterRustBuffer<TextConfirmPayload> {
+    override fun read(buf: ByteBuffer): TextConfirmPayload {
+        return TextConfirmPayload(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterBoolean.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: TextConfirmPayload) = (
+            FfiConverterString.allocationSize(value.`title`) +
+            FfiConverterString.allocationSize(value.`message`) +
+            FfiConverterString.allocationSize(value.`confirmLabel`) +
+            FfiConverterString.allocationSize(value.`cancelLabel`) +
+            FfiConverterString.allocationSize(value.`kind`) +
+            FfiConverterString.allocationSize(value.`defaultButton`) +
+            FfiConverterBoolean.allocationSize(value.`single`)
+    )
+
+    override fun write(value: TextConfirmPayload, buf: ByteBuffer) {
+            FfiConverterString.write(value.`title`, buf)
+            FfiConverterString.write(value.`message`, buf)
+            FfiConverterString.write(value.`confirmLabel`, buf)
+            FfiConverterString.write(value.`cancelLabel`, buf)
+            FfiConverterString.write(value.`kind`, buf)
+            FfiConverterString.write(value.`defaultButton`, buf)
+            FfiConverterBoolean.write(value.`single`, buf)
+    }
+}
+
+
+
 
 
 /**
@@ -4979,6 +6106,67 @@ public object FfiConverterTypeProtectorError : FfiConverterRustBuffer<ProtectorE
     override fun write(value: ProtectorException, buf: ByteBuffer) {
         when(value) {
             is ProtectorException.Failed -> {
+                buf.putInt(1)
+                Unit
+            }
+        }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+
+}
+
+
+
+
+
+/**
+ * Error type of the FOREIGN [`TextConfirm`] callback (Kotlin to Rust).
+ *
+ * Deliberately NOT `flat_error`, for the reason [`ProtectorError`] gives:
+ * uniffi can only lift a fielded error enum, and a flat one aborts the
+ * process the first time the callback throws. It carries no detail by
+ * design: any failure is a decline.
+ */
+sealed class TextConfirmException: kotlin.Exception() {
+    
+    class Failed(
+        ) : TextConfirmException() {
+        override val message
+            get() = ""
+    }
+    
+
+    companion object ErrorHandler : UniffiRustCallStatusErrorHandler<TextConfirmException> {
+        override fun lift(error_buf: RustBuffer.ByValue): TextConfirmException = FfiConverterTypeTextConfirmError.lift(error_buf)
+    }
+
+    
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeTextConfirmError : FfiConverterRustBuffer<TextConfirmException> {
+    override fun read(buf: ByteBuffer): TextConfirmException {
+        
+
+        return when(buf.getInt()) {
+            1 -> TextConfirmException.Failed()
+            else -> throw RuntimeException("invalid error enum value, something is very wrong!!")
+        }
+    }
+
+    override fun allocationSize(value: TextConfirmException): ULong {
+        return when(value) {
+            is TextConfirmException.Failed -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+            )
+        }
+    }
+
+    override fun write(value: TextConfirmException, buf: ByteBuffer) {
+        when(value) {
+            is TextConfirmException.Failed -> {
                 buf.putInt(1)
                 Unit
             }

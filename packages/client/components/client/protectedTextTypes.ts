@@ -1197,6 +1197,12 @@ export type ProtectedTextManagerCtor = new (
  */
 export interface ProtectedUiApi {
   protectedTextCapable(): boolean;
+  /**
+   * S7 D9: a shell that runs the text plane once E2EE is on (the Tauri main
+   * window; Electron and Android per their native capability and the server
+   * flag). Picks `enable_e2ee` over `not_available` for an E2EE-off device.
+   */
+  structuralShell(): boolean;
   protectedOpen(channelId: string): void;
   protectedClose(channelId: string): void;
   protect(channelId: string, seats: string[], deviceCap: number): Promise<void>;

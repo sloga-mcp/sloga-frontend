@@ -17,6 +17,8 @@
  * - Protected send (plan D10, design 3.10 / 7.3 / 9.2): `classifySendAnswer`
  *   with the unknown-outcome rule, `confirmAfterId`.
  * - Envelope errors (design 8.4 / 9.2): `classifyTextEnvelopeError`.
+ * - Protector back-off (S7 plan D9, EL-F7 / AND-F13): `isProtectorError`,
+ *   `protectorBackoffMs`, `protectorGateStep`, `protectorGateAfter`.
  * - Admission stagger (plan D19): `leafStaggerMs`.
  *
  * Fail-closed rules this module holds everywhere:
@@ -1124,7 +1126,131 @@ export function classifyTextEnvelopeError(err: unknown): TextEnvelopeVerdict {
   // Transient native lock contention: hold and retry with backoff, and
   // leave `groupError` unchanged (it must not turn the shield red).
   if (type === "busy") return { ack: false, action: "hold" };
+  // The platform protector would not open the store (a locked or declined
+  // keyring, a locked phone). Nothing ran and the store is intact: held
+  // like `busy`, never acked, never a leave, rejoin or wipe.
+  if (isProtectorError(err)) return { ack: false, action: "hold" };
   return textEnvelopeVerdict(type as TextNativeErrorTag);
+}
+
+// ---------------------------------------------------------------------------
+// Protector back-off (S7 plan D9, Stage-1 EL-F7 / AND-F13)
+// ---------------------------------------------------------------------------
+
+/**
+ * Pause after a native `protector` refusal: 2 s doubling, capped at 60 s.
+ * Native consults the protector only when it opens the store, and a store
+ * that failed to open is opened again by the next command. On Linux every
+ * such open asks the Secret Service to unlock (a prompt); on Android a
+ * locked Keystore refuses until the device is unlocked. Without a pause,
+ * each passive command (a decrypt per message, `_state`,
+ * `_pin_own_devices`, `_process`) would raise the prompt again.
+ */
+export const PROTECTOR_BACKOFF = { startMs: 2_000, capMs: 60_000 } as const;
+
+/**
+ * Whether `err` (a raw native error or a `source: "native"` failure) is the
+ * platform protector refusing to open the store. `protector_locked` is
+ * iOS's locked-device variant of the same refusal; it is matched too. A
+ * server, transport or client failure never is, whatever its `type`.
+ */
+export function isProtectorError(err: unknown): boolean {
+  if (isRecord(err) && "source" in err && err.source !== "native") {
+    return false;
+  }
+  const type = nativeTypeOf(err);
+  return type === "protector" || type === "protector_locked";
+}
+
+/** The pause after the `failures`-th consecutive refusal (1 = first). */
+export function protectorBackoffMs(failures: number): number {
+  const n = failures > 1 ? Math.floor(failures) - 1 : 0;
+  let ms: number = PROTECTOR_BACKOFF.startMs;
+  for (let i = 0; i < n && ms < PROTECTOR_BACKOFF.capMs; i++) ms *= 2;
+  return Math.min(ms, PROTECTOR_BACKOFF.capMs);
+}
+
+/**
+ * The manager's protector gate. `failures` 0 is open: commands run as
+ * before. Otherwise no text command reaches native before `untilMs`; then
+ * ONE command probes while every other one waits for its answer.
+ */
+export interface ProtectorGate {
+  readonly failures: number;
+  readonly untilMs: number;
+}
+
+export const PROTECTOR_GATE_OPEN: ProtectorGate = Object.freeze({
+  failures: 0,
+  untilMs: 0,
+});
+
+/**
+ * - `run`: issue the command now; `probe` when it is the one command let
+ *   through a closed gate.
+ * - `wait`: issue nothing for `waitMs`, then ask again.
+ * - `wait_probe`: a probe is in flight; ask again once it is answered.
+ */
+export type ProtectorGateStep =
+  | { kind: "run"; probe: boolean }
+  | { kind: "wait"; waitMs: number }
+  | { kind: "wait_probe" };
+
+/**
+ * What a command may do now. Any `failures` but a clean 0 counts as closed.
+ * A window longer than the cap can only mean the clock moved back: one
+ * probe then restarts the window from the current clock. An unreadable
+ * clock never lets a command through.
+ */
+export function protectorGateStep(
+  gate: ProtectorGate,
+  nowMs: number,
+  probeInFlight: boolean,
+): ProtectorGateStep {
+  if (gate.failures === 0) return { kind: "run", probe: false };
+  if (probeInFlight) return { kind: "wait_probe" };
+  const remaining = gate.untilMs - nowMs;
+  if (!Number.isFinite(remaining)) {
+    return { kind: "wait", waitMs: PROTECTOR_BACKOFF.capMs };
+  }
+  if (remaining > 0 && remaining <= PROTECTOR_BACKOFF.capMs) {
+    return { kind: "wait", waitMs: remaining };
+  }
+  return { kind: "run", probe: true };
+}
+
+/**
+ * How a command was answered: `ok` (it resolved), `protector` (refused by
+ * the protector), `other` (any other rejection).
+ */
+export type ProtectorAnswer = "ok" | "protector" | "other";
+
+/**
+ * The gate after one answer. `issuedFailures` is `gate.failures` when that
+ * command was issued.
+ * - `ok` reopens the gate: native opened the store (it stays open).
+ * - `protector` closes it one level above the level the command was issued
+ *   at, so commands already in flight when the gate closed, refused
+ *   together, count once. The window restarts at this answer.
+ * - `other` changes nothing. It does not show the store opened (`busy` is
+ *   answered before the open), so it does not reopen the gate.
+ */
+export function protectorGateAfter(
+  gate: ProtectorGate,
+  answer: ProtectorAnswer,
+  issuedFailures: number,
+  nowMs: number,
+): ProtectorGate {
+  switch (answer) {
+    case "ok":
+      return PROTECTOR_GATE_OPEN;
+    case "other":
+      return gate;
+    case "protector": {
+      const failures = Math.max(gate.failures, issuedFailures + 1);
+      return { failures, untilMs: nowMs + protectorBackoffMs(failures) };
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

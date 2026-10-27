@@ -27,7 +27,11 @@
 #      cordova.variables.gradle). No web build is needed.
 #   3. Drift alarm on the two COMMITTED files `cap update` rewrites.
 #   3b. Source pin: the Capacitor MessageHandler.java gradle is about to
-#      compile must carry patches/@capacitor__android@8.4.3.patch.
+#      compile must carry patches/@capacitor__android@8.4.3.patch, including
+#      its usingWebMessageListener field.
+#   3c. check-android-e2ee-libs.mjs: the native E2EE libraries and their
+#      uniffi bindings must match e2ee-native-PROVENANCE.txt. A missing
+#      checker fails the gate.
 #   4. gradle compile{Sideload,Play,Foss}DebugJavaWithJavac. In each variant
 #      javac runs after kotlinc (it depends on it), so one task per flavor
 #      checks both languages, and every flavor-only source set (src/sideload,
@@ -184,8 +188,21 @@ git --no-pager diff --exit-code -- \
 # the :capacitor-android projectDir the drift-checked settings name (relative
 # to $ANDROID, as gradle resolves it).
 #
+# The same patch adds `public static volatile boolean usingWebMessageListener`.
+# E2eePlugin refuses the protected-text commands while it is false, because the
+# fallback bridge (addJavascriptInterface, taken when the WebView lacks
+# WEB_MESSAGE_LISTENER, when the config asks for the legacy bridge, or when
+# addWebMessageListener throws) takes calls from every frame of the page. It
+# must be declared once with `= false`, reset to false in the constructor
+# before the bridge is chosen, and set true exactly once: on the line right
+# after the addWebMessageListener call and right before its catch, so that
+# only a registration that returned can set it. The identifier may appear on
+# those three lines only, so any other assignment, in any branch, fails here.
+#
 # Control: an unpatched copy of the 8.4.1 file (byte-identical in 8.4.3), the swap alone and the
-# volatile alone each fail this step; the patched copy passes.
+# volatile alone each fail this step; the patched copy passes. So do the patched copy without
+# the field, with the field set true before the addWebMessageListener call, and with a second
+# true assignment in the catch.
 CAP_SETTINGS="$ANDROID/capacitor.settings.gradle"
 CAP_PATCH="patches/@capacitor__android@8.4.3.patch"
 cap_dir=$(sed -n "s/^project(':capacitor-android')\.projectDir = new File('\(.*\)')\$/\1/p" \
@@ -225,7 +242,66 @@ l_post=$(mh_line "$re_post")
   fail 5 "$MH: the reply proxy is not stored before the call is dispatched" \
     "(isMainFrame line $l_main, assignment line $l_assign, postMessage line" \
     "$l_post). $mh_fix"
+
+re_wml_decl='^    public static volatile boolean usingWebMessageListener = false;$'
+re_wml_reset='^ +usingWebMessageListener = false;$'
+re_wml_true='^ +usingWebMessageListener = true;$'
+re_ctor='^    public MessageHandler\(Bridge bridge, WebView webView, PluginManager cordovaPluginManager\) \{$'
+re_if='^ +if \(WebViewFeature\.isFeatureSupported\(WebViewFeature\.WEB_MESSAGE_LISTENER\) && !bridge\.getConfig\(\)\.isUsingLegacyBridge\(\)\) \{$'
+re_listen='^ +WebViewCompat\.addWebMessageListener\(webView, "androidBridge", bridge\.getAllowedOriginRules\(\), capListener\);$'
+re_catch='^ +\} catch \(Exception ex\) \{$'
+n_wml_decl=$(mh_count "$re_wml_decl")
+n_wml_reset=$(mh_count "$re_wml_reset")
+n_wml_true=$(mh_count "$re_wml_true")
+n_wml_any=$(mh_count 'usingWebMessageListener')
+n_ctor=$(mh_count "$re_ctor")
+n_if=$(mh_count "$re_if")
+n_listen=$(mh_count "$re_listen")
+[ "$n_wml_decl" = 1 ] && [ "$n_wml_reset" = 1 ] && [ "$n_wml_true" = 1 ] &&
+  [ "$n_wml_any" = 3 ] && [ "$n_ctor" = 1 ] && [ "$n_if" = 1 ] &&
+  [ "$n_listen" = 1 ] ||
+  fail 5 "$MH: usingWebMessageListener declaration x$n_wml_decl, reset to" \
+    "false x$n_wml_reset, set true x$n_wml_true (each must be exactly 1)," \
+    "lines naming it x$n_wml_any (must be exactly 3); constructor" \
+    "x$n_ctor, WEB_MESSAGE_LISTENER branch x$n_if, addWebMessageListener" \
+    "call x$n_listen (each must be exactly 1). $mh_fix"
+# Each pattern matched exactly once above, so each line number is one integer.
+# The file has other `} catch (Exception ex) {` lines, so the catch is read
+# from the line right after the true assignment rather than searched for.
+l_ctor=$(mh_line "$re_ctor")
+l_wml_reset=$(mh_line "$re_wml_reset")
+l_if=$(mh_line "$re_if")
+l_listen=$(mh_line "$re_listen")
+l_wml_true=$(mh_line "$re_wml_true")
+after_true=$(sed -n "$((l_wml_true + 1))p" "$MH")
+[ "$l_ctor" -lt "$l_wml_reset" ] && [ "$l_wml_reset" -lt "$l_if" ] &&
+  [ "$l_wml_true" -eq "$((l_listen + 1))" ] &&
+  grep -qE "$re_catch" <<<"$after_true" ||
+  fail 5 "$MH: usingWebMessageListener must be reset to false in the" \
+    "constructor before the bridge is chosen and set true only on the line" \
+    "between the addWebMessageListener call and its catch (constructor line" \
+    "$l_ctor, reset line $l_wml_reset, branch line $l_if, listener call line" \
+    "$l_listen, true line $l_wml_true, next line '$after_true'). $mh_fix"
 echo "capacitor bridge pin: $MH is patched"
+
+# --- 3c. the native E2EE libraries ---------------------------------------------------
+#
+# check-android-e2ee-libs.mjs checks the shipped libacutest_e2ee.so files and
+# the uniffi acutest_e2ee.kt against e2ee-native-PROVENANCE.txt. kotlinc
+# compiles a .kt that does not match its .so without complaint (uniffi
+# compares the two only at runtime, when the library loads), so nothing else
+# in this gate would notice stale or mismatched bindings. A missing or empty
+# checker fails the gate; it is never skipped. Judged on node's own exit
+# status.
+LIBS_CHECK="$CLIENT/scripts/check-android-e2ee-libs.mjs"
+[ -s "$LIBS_CHECK" ] ||
+  fail 7 "$LIBS_CHECK is missing or empty: the native E2EE libraries are unchecked"
+libs_rc=0
+node "$LIBS_CHECK" || libs_rc=$?
+[ "$libs_rc" -eq 0 ] ||
+  fail 7 "$LIBS_CHECK exited $libs_rc: the native E2EE libraries or their" \
+    "bindings do not match $ANDROID/app/e2ee-native-PROVENANCE.txt (output above)"
+echo "native E2EE libraries: $LIBS_CHECK passed"
 
 # --- 4. compile ----------------------------------------------------------------------
 TASKS=()

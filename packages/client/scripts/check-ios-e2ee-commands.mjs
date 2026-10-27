@@ -62,6 +62,8 @@
  *                      iOS dedicated method; every dedicated method has an FE
  *                      caller and the FE calls no plugin method iOS lacks
  *                      except for `.out` names (those reject, fail closed)
+ *                      and ANDROID_ONLY_PLUGIN_METHODS (textCapability), each
+ *                      only while its pinned Android-only guard chain holds
  * G7, threads and consent (all files under the Swift sources dir)
  *   G7-gated-case      no dedicated (confirm-gated) name is a case label
  *                      anywhere in E2eePlugin.swift
@@ -306,6 +308,82 @@ const DEDICATED_METHODS = [
   "attachmentFetch",
 ];
 const COUNTS = { generic: 37, native: 2, dedicated: 6 };
+
+/**
+ * Android-only plugin methods (protected channels S7 D9) → the check that
+ * proves e2ee.ts never calls them on iOS. iOS implements none of them, so
+ * G6-fe-route accepts a CapacitorTransport call to one ONLY while its guard
+ * chain holds; every other plugin method iOS lacks fails as before.
+ *
+ * textCapability (the Android text-plane probe) is not guarded inside
+ * CapacitorTransport; e2ee.ts guards it at the bridge, so each hop is pinned
+ * (TEXT_CAPABILITY_PIN, compared by flatTs):
+ *   1. `this.#plugin.textCapability(` appears once in CapacitorTransport,
+ *      inside `async textCapability()`, whose body is the pinned wrapper;
+ *   2. e2ee.ts names textCapability nowhere else but the plugin type and
+ *      inside `#protectedAndroidProbe()`, whose body is pinned (one direct
+ *      call), and no string literal holds the name;
+ *   3. `#protectedAndroidProbe` is named twice in all: its definition and
+ *      one call, `android ? this.#protectedAndroidProbe() :` inside
+ *      `#protectedPlatformDecide()`, with `android` as the whole condition
+ *      (right after `,`, `(` or `[`);
+ *   4. that `android` is the pinned `const android = this.
+ *      #protectedPlatformInput().androidProbe !== null;`, at the top level of
+ *      `#protectedPlatformDecide()` and before the call, and is otherwise
+ *      only read there, as `android ?` or `if (android)` (no rebinding or
+ *      shadowing);
+ *   5. `#protectedPlatformInput()`'s body is pinned: `androidProbe` is null
+ *      unless `transport === "capacitor" && platform === "android"`, with
+ *      `platform` = `Capacitor.getPlatform()` on Capacitor and "" elsewhere.
+ * An edit anywhere along the chain fails here until the guard is re-proven
+ * and the pin updated. A local `getPlatform() === "android"` guard in the
+ * wrapper would collapse hops 2-5 into one.
+ */
+const ANDROID_ONLY_PLUGIN_METHODS = { textCapability: textCapabilityGuard };
+
+/** textCapability's guard chain (see ANDROID_ONLY_PLUGIN_METHODS). */
+const TEXT_CAPABILITY_PIN = {
+  pluginType: /(?<![\w$#.])type\s+E2eeCapacitorPlugin\s*=\s*\{/g,
+  wrapper:
+    /(?<![\w$#.])async\s+textCapability\s*\(\s*\)\s*:\s*Promise\s*<\s*AndroidTextCapability\s*>\s*\{/g,
+  wrapperBody:
+    "{try{return await this.#plugin.textCapability();}" +
+    "catch(error){this.#rethrow(error);}}",
+  caller:
+    /(?<![\w$#.])async\s+#protectedAndroidProbe\s*\(\s*\)\s*:\s*Promise\s*<\s*AndroidProbe\s*>\s*\{/g,
+  callerBody:
+    "{const transport=this.#transport;" +
+    'if(!(transport instanceof CapacitorTransport))return{state:"failed"};' +
+    "return this.#protectedWithin<AndroidProbe>(" +
+    "transport.textCapability().then(" +
+    '(value):AndroidProbe=>value&&typeof value==="object"' +
+    '?{state:"ok",value:{protocol:value.protocol,' +
+    "listenerBridge:value.listenerBridge}}" +
+    ':{state:"failed"},' +
+    '():AndroidProbe=>({state:"failed"})),' +
+    '{state:"failed"});}',
+  decide:
+    /(?<![\w$#.])async\s+#protectedPlatformDecide\s*\(\s*\)\s*:\s*Promise\s*<\s*void\s*>\s*\{/g,
+  guard:
+    /[,([]\s*(android)\s*\?\s*this\s*\.\s*(#protectedAndroidProbe)\s*\(\s*\)\s*:/dg,
+  guardDecl:
+    /(?<![\w$#.])const\s+(android)\s*=\s*this\s*\.\s*#protectedPlatformInput\s*\(\s*\)\s*\.\s*androidProbe\s*!==\s*null\s*;/dg,
+  guardRead: /(?<![\w$#.])if\s*\(\s*(android)\s*\)/dg,
+  input:
+    /(?<![\w$#.])#protectedPlatformInput\s*\(\s*\)\s*:\s*StructuralInput\s*\{/g,
+  inputBody:
+    '{this.#ptPlatformVersion.get("state");' +
+    "const transport=this.#protectedTransportKind();" +
+    'const platform=transport==="capacitor"?Capacitor.getPlatform():"";' +
+    'const protocol=transport==="electron"' +
+    "?(window as{slogaShell?:SlogaShellGlobal}).slogaShell?.e2ee?.protectedText" +
+    ":undefined;" +
+    "return{transport,platform," +
+    'electronProtocol:typeof protocol==="number"?protocol:undefined,' +
+    'androidProbe:transport==="capacitor"&&platform==="android"' +
+    "?this.#ptProbe:null," +
+    "popout:IS_POPOUT_WINDOW,overlay:IS_OVERLAY_WINDOW,flag:this.#ptServerFlag};}",
+};
 
 /** Confirm-gated engine method → the one plugin method that may call it. */
 const GATED = {
@@ -1661,6 +1739,176 @@ function staticCommand(fe, open) {
   }
   shape += fe.code.slice(at, end);
   return /^\s*`\s*$/.test(shape) || /^[^"'`?:]*\?\s*`\s*:\s*`\s*$/.test(shape);
+}
+
+/**
+ * Lexed TS in [from, to) as comparable text: comments gone, whitespace kept
+ * only between two word characters (or a repeated `+`/`-`), a comma before a
+ * closer dropped, each literal as its JSON-quoted value. null when an
+ * interpolated template or a regex literal (the lexer blanks its body and
+ * keeps no value) is in range: never equal to a pin.
+ */
+function flatTs(file, from, to) {
+  const word = (c) => c !== undefined && /[\w$#]/.test(c);
+  const squeeze = (s) => {
+    const t = s.replace(/\s+/g, " ").trim();
+    let out = "";
+    for (let i = 0; i < t.length; i++) {
+      const [a, b] = [t[i - 1], t[i + 1]];
+      if (t[i] !== " ") out += t[i];
+      else if ((word(a) && word(b)) || (a === b && (a === "+" || a === "-")))
+        out += " ";
+    }
+    return out.replace(/,([)\]}])/g, "$1");
+  };
+  const parts = [];
+  let at = from;
+  for (const s of literalsIn(file, from, to)) {
+    if (s.interpolated || s.end > to) return null;
+    parts.push(squeeze(file.code.slice(at, s.start)), JSON.stringify(s.value));
+    at = s.end;
+  }
+  parts.push(squeeze(file.code.slice(at, to)));
+  // A blanked regex squeezes to `//`; code has no other way to make one.
+  if (parts.some((p, i) => i % 2 === 0 && p.includes("//"))) return null;
+  return parts.join("");
+}
+
+/** Each match of the global `re` in fe's lexed code within [from, to). */
+function tsMatches(fe, re, from = 0, to = fe.code.length) {
+  return [...fe.code.slice(from, to).matchAll(re)].map((m) => ({
+    at: from + m.index,
+    end: from + m.index + m[0].length,
+    group: (k) => from + m.indices[k][0],
+  }));
+}
+
+/** True when no `{` opened in (open, p) is still open at p. */
+function topLevelAt(fe, open, p) {
+  for (let k = open + 1; k < p; k++) {
+    if (fe.code[k] === "{" && fe.match.get(k) > p) return false;
+  }
+  return true;
+}
+
+/**
+ * Why CapacitorTransport's `this.#plugin.textCapability(` calls (offsets
+ * `calls`; `cls` = the class body braces) are not proven Android-only; an
+ * empty list = proven. The chain is ANDROID_ONLY_PLUGIN_METHODS' doc.
+ */
+function textCapabilityGuard(fe, cls, calls) {
+  const P = TEXT_CAPABILITY_PIN;
+  const why = [];
+  const line = (p) => `line ${fe.line(p)}`;
+  const only = (what, found) => {
+    if (found.length === 1) {
+      const { at, end } = found[0];
+      return { at, open: end - 1, close: fe.match.get(end - 1) };
+    }
+    why.push(`${what} is defined ${found.length} times, not once`);
+    return null;
+  };
+  const inside = (p, d) => d !== null && d.open < p && p < d.close;
+  const pinned = (d, pin) =>
+    d !== null && flatTs(fe, d.open, d.close + 1) === pin;
+
+  // 1. The plugin call, once, in the pinned wrapper.
+  const wrapper = only(
+    "CapacitorTransport's async textCapability()",
+    tsMatches(fe, P.wrapper, cls.open, cls.close),
+  );
+  if (wrapper && !pinned(wrapper, P.wrapperBody)) {
+    why.push("the async textCapability() wrapper body is not the pinned one");
+  }
+  if (calls.length !== 1 || !inside(calls[0], wrapper)) {
+    why.push(
+      `this.#plugin.textCapability( must appear once, inside the wrapper (found ${calls.length})`,
+    );
+  }
+
+  // 2. The wrapper's one caller.
+  const caller = only("#protectedAndroidProbe()", tsMatches(fe, P.caller));
+  if (caller && !pinned(caller, P.callerBody)) {
+    why.push("the #protectedAndroidProbe() body is not the pinned one");
+  }
+  const type = only("type E2eeCapacitorPlugin", tsMatches(fe, P.pluginType));
+  const wrapperName = wrapper && fe.code.indexOf("textCapability", wrapper.at);
+  for (const m of fe.code.matchAll(/(?<![\w$])textCapability(?![\w$])/g)) {
+    const p = m.index;
+    if (
+      p !== wrapperName &&
+      !inside(p, type) &&
+      !inside(p, wrapper) &&
+      !inside(p, caller)
+    ) {
+      why.push(`textCapability is named at ${line(p)}, outside its chain`);
+    }
+  }
+  for (const s of fe.strings.values()) {
+    if (s.value.includes("textCapability")) {
+      why.push(`a string literal at ${line(s.start)} names textCapability`);
+    }
+  }
+
+  // 3. The caller's one call, under `android ?`.
+  const decide = only("#protectedPlatformDecide()", tsMatches(fe, P.decide));
+  const guards = decide
+    ? tsMatches(fe, P.guard, decide.open, decide.close)
+    : [];
+  const callerName =
+    caller && fe.code.indexOf("#protectedAndroidProbe", caller.at);
+  const named = [...fe.code.matchAll(/#protectedAndroidProbe(?![\w$])/g)].map(
+    (m) => m.index,
+  );
+  if (
+    guards.length !== 1 ||
+    named.length !== 2 ||
+    !named.includes(callerName) ||
+    !named.includes(guards[0].group(2))
+  ) {
+    why.push(
+      "#protectedAndroidProbe must be named only at its definition and in one `android ? this.#protectedAndroidProbe() :` in #protectedPlatformDecide()",
+    );
+  }
+
+  // 4. `android`: the pinned const, read-only, top level, before the call.
+  if (decide) {
+    const decls = tsMatches(fe, P.guardDecl, decide.open, decide.close);
+    const allowed = new Set([
+      ...decls.map((d) => d.group(1)),
+      ...guards.map((g) => g.group(1)),
+      ...tsMatches(fe, P.guardRead, decide.open, decide.close).map((r) =>
+        r.group(1),
+      ),
+    ]);
+    if (
+      decls.length !== 1 ||
+      !topLevelAt(fe, decide.open, decls[0].at) ||
+      (guards.length === 1 && decls[0].at > guards[0].at)
+    ) {
+      why.push(
+        "#protectedPlatformDecide() must declare `const android = this.#protectedPlatformInput().androidProbe !== null;` once, at its top level, before the probe call",
+      );
+    }
+    const body = fe.code.slice(decide.open, decide.close);
+    for (const m of body.matchAll(/(?<![\w$#.])android(?![\w$])/g)) {
+      const p = decide.open + m.index;
+      if (!allowed.has(p)) {
+        why.push(
+          `android is rebound or read another way at ${line(p)} (only \`android ?\` and \`if (android)\` may read it)`,
+        );
+      }
+    }
+  }
+
+  // 5. androidProbe is null off Android.
+  const input = only("#protectedPlatformInput()", tsMatches(fe, P.input));
+  if (input && !pinned(input, P.inputBody)) {
+    why.push(
+      'the #protectedPlatformInput() body is not the pinned one (androidProbe must stay null unless Capacitor.getPlatform() is "android")',
+    );
+  }
+  return why;
 }
 
 // --------------------------------------------- G8b reachability call graph
@@ -3504,7 +3752,21 @@ function check(opts) {
       ...outMethods,
     ]);
     for (const m of used) {
-      if (!allowed.has(m)) {
+      if (allowed.has(m)) continue;
+      if (has(ANDROID_ONLY_PLUGIN_METHODS, m)) {
+        const at = [...body.matchAll(pluginCall)]
+          .filter((x) => x[1] === m)
+          .map((x) => open + x.index);
+        const why = ANDROID_ONLY_PLUGIN_METHODS[m](fe, { open, close }, at);
+        for (const w of why) {
+          add(
+            "G6-fe-route",
+            fe,
+            at[0],
+            `CapacitorTransport calls Android-only plugin method ${m}, but ${w}; iOS does not implement it`,
+          );
+        }
+      } else {
         add(
           "G6-fe-route",
           fe,

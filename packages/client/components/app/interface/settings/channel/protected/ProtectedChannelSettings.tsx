@@ -28,6 +28,7 @@ import {
 import type { ProtectedSeatsResponse } from "@revolt/client/protectedTextTypes";
 import {
   protectedUiOf,
+  structuralShellOf,
   tauriE2eeOffOf,
 } from "@revolt/client/useProtectedChannel";
 import { useModals } from "@revolt/modal";
@@ -60,15 +61,6 @@ export function protectedSettingsVisibleFor(
     ownerId: channel.server?.ownerId,
     selfId: client?.user?.id,
   });
-}
-
-/** A Tauri shell (D3's notice split; same probe as the B6 hooks). */
-function isTauriShell(): boolean {
-  return (
-    typeof window !== "undefined" &&
-    typeof (window as { __TAURI__?: { core?: { invoke?: unknown } } }).__TAURI__
-      ?.core?.invoke === "function"
-  );
 }
 
 /** `{ source: "client", reason }` from the bridge's owner flows. */
@@ -120,9 +112,10 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
     ui()?.protectedFlag() ?? { enabled: false, defaultDeviceCap: null };
   const view = () => ui()?.protectedChannels.get(props.channel.id) ?? null;
   const snapshot = () => ui()?.seatsSnapshot(props.channel.id) ?? null;
+  // A structural shell with E2EE off (S7 D9 notice split; the B6 hooks' rule).
   const tauriE2eeOff = () =>
     tauriE2eeOffOf({
-      tauri: isTauriShell(),
+      tauri: structuralShellOf(ui()),
       bridgePresent: !!bridge(),
       capable: capable(),
       status: bridge()?.status.get("state"),
