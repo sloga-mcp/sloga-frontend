@@ -832,10 +832,6 @@ msgstr ""
 msgid "Already friends with this user."
 msgstr "Ya eres amigo de este usuario."
 
-#: components/modal/modals/E2EEEnable.tsx
-msgid "Already have a recovery code from another device? Choose \"Restore from a recovery code\" to bring back your history. Otherwise, encrypted history lives on THIS device only and cannot be recovered if the device is lost. You will confirm your identity to continue."
-msgstr "¿Ya tienes un código de recuperación de otro dispositivo? Elija \"Restaurar desde un código de recuperación\" para recuperar su historial. De lo contrario, el historial cifrado permanece únicamente en ESTE dispositivo y no se puede recuperar si se pierde el dispositivo. Confirmarás tu identidad para continuar."
-
 #: components/app/interface/settings/user/Language.tsx
 msgid "Also read translated captions aloud using your device's voice. Runs on the receiving side and never reads your own captions back to you."
 msgstr "Lea también los subtítulos traducidos en voz alta usando la voz de su dispositivo. Se ejecuta en el lado receptor y nunca le lee sus propios subtítulos."
@@ -5145,10 +5141,6 @@ msgstr ""
 msgid "Or pick a time"
 msgstr "O elige una hora"
 
-#: components/modal/modals/E2EEEnable.tsx
-msgid "Or start fresh to set this up as a new device. You keep sending and receiving encrypted messages, but earlier history that lived only on your old device stays there."
-msgstr "O comience de nuevo para configurarlo como un dispositivo nuevo. Sigues enviando y recibiendo mensajes cifrados, pero el historial anterior que vivía sólo en tu antiguo dispositivo permanece allí."
-
 #: src/interface/channels/text/Composition.tsx
 msgid "Or type /roll 2d6+3 in chat"
 msgstr "O escribe /roll 2d6+3 en el chat"
@@ -6017,6 +6009,38 @@ msgstr "Restaurar desde un código de recuperación"
 #: components/modal/modals/E2EEEnable.tsx
 msgid "Restore your encrypted messages"
 msgstr "Restaura tus mensajes cifrados"
+
+#: components/modal/modals/E2EEEnable.tsx
+msgid "Restoring replaces your other device"
+msgstr ""
+
+#: components/modal/modals/E2EEEnable.tsx
+msgid "Restore and replace"
+msgstr ""
+
+#: components/modal/modals/E2EEEnable.tsx
+msgid "A recovery code moves the encryption identity of the device that created it onto this one. It does not add a second device."
+msgstr ""
+
+#: components/modal/modals/E2EEEnable.tsx
+msgid "Only restore if that device no longer runs Sloga — it was lost, wiped or replaced. If both keep running, some encrypted messages will open on only one of them and encrypted calls may not connect."
+msgstr ""
+
+#: components/modal/modals/E2EEEnable.tsx
+msgid "To use encryption here and keep using your other device, choose Start fresh instead."
+msgstr ""
+
+#: components/modal/modals/E2EEEnable.tsx
+msgid "You have encryption set up on your account. If the device that holds it was lost, wiped or replaced, restore your recovery code here to move your identity and message history onto this device — your contacts will not see a security warning."
+msgstr ""
+
+#: components/modal/modals/E2EEEnable.tsx
+msgid "Still using that device? Start fresh to set this up as a new device alongside it. You keep sending and receiving encrypted messages on both, but earlier history stays on the other device."
+msgstr ""
+
+#: components/modal/modals/E2EEEnable.tsx
+msgid "Replacing a lost or wiped device? Choose \"Restore from a recovery code\" to move its identity and history here. Otherwise, encrypted history lives on THIS device only and cannot be recovered if the device is lost. You will confirm your identity to continue."
+msgstr ""
 
 #: components/modal/modals/CreateSoftRes.tsx
 msgid "Restrict items to classes that can use them"
@@ -8711,10 +8735,6 @@ msgstr "Tienes un código de recuperación. Cualquier persona que tenga este có
 #: components/i18n/errors.ts
 msgid "You have been locked out for entering a wrong password multiple times. Please wait a couple minutes and try again."
 msgstr "Se le ha bloqueado por ingresar una contraseña incorrecta varias veces. Espere un par de minutos e inténtelo de nuevo."
-
-#: components/modal/modals/E2EEEnable.tsx
-msgid "You have encryption set up on your account. If you saved a recovery code, restore it here to bring back your identity and message history on this device — your contacts will not see a security warning."
-msgstr "Tiene cifrado configurado en su cuenta. Si guardó un código de recuperación, restáurelo aquí para recuperar su identidad y su historial de mensajes en este dispositivo; sus contactos no verán una advertencia de seguridad."
 
 #: components/i18n/errors.ts
 msgid "You have this user blocked."

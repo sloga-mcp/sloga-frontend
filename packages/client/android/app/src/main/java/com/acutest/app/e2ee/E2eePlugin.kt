@@ -2013,11 +2013,17 @@ class E2eePlugin : Plugin() {
                 orientation = LinearLayout.VERTICAL
                 setPadding(pad, pad, pad, dpToPx(8))
             }
+        // Restore moves the old device's identity here unchanged (design
+        // §6.4); this is the last surface before the code is entered, so it
+        // repeats the webview's warning.
         val prompt =
             TextView(activity).apply {
                 text =
-                    "Enter your recovery code to restore your encrypted message history " +
-                        "on this device."
+                    "Enter your recovery code to move your encryption identity and " +
+                        "message history onto this device.\n\n" +
+                        "Only restore if the device that created this code no longer runs " +
+                        "Sloga. Restoring replaces that device; it does not add a second " +
+                        "one. To keep using it, cancel and choose Start fresh instead."
                 setPadding(0, 0, 0, dpToPx(16))
             }
         val input =
