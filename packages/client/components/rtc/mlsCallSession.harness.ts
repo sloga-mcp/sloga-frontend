@@ -559,8 +559,8 @@ const copyInfo = (info: MlsCommitInfo): MlsCommitInfo => ({
  *     (`commits_submit.rs`), and its Welcome to each added device;
  *   - a join intent, as `MlsJoinRequested`, to every seat whose USER is a
  *     member (`.private(member_user)` — the requester's own user included),
- *     flagged `rejoin` when the device is already a member, with the solo
- *     and all-rejoining closes of `join_intent.rs`.
+ *     flagged `rejoin` when the device is already a member, with the solo,
+ *     all-rejoining and sole-stale-sibling closes of `join_intent.rs`.
  *
  * A `newWorld` gets a private one that does none of this: it `arbitrates`
  * nothing, answers every submit `Won` and applies nothing, so a one-seat
@@ -895,7 +895,35 @@ export class Ds {
     return { kind: "ok", body: { result: "Created" } };
   }
 
-  /** `POST /mls/groups/<id>/join_intent`. */
+  #siblingClose = true;
+  #sfuOracle: (() => readonly string[] | null) | null = null;
+
+  /**
+   * `features.mls_sibling_close`, the kill switch on `joinIntent`'s sibling
+   * close. On by default, as delta's embedded `Revolt.toml` ships it; off,
+   * every sibling intent gets the 400 it always got.
+   */
+  setSiblingClose(on: boolean): void {
+    this.#siblingClose = on;
+  }
+
+  /**
+   * What delta's SFU listing of the call room answers when `joinIntent`
+   * weighs a sibling close (`list_participants_if_present`): the room's
+   * identities as LiveKit reports them, legs included, or `null` for an SFU
+   * that did not answer. Called once per sibling intent, and only when the
+   * switch is on and the sibling is the sole member, as delta lists only
+   * then. Unset (the default) or `null` is no listing: the sibling 400, so a
+   * spec that never sets one runs exactly as before the close existed.
+   */
+  setSfuOracle(oracle: (() => readonly string[] | null) | null): void {
+    this.#sfuOracle = oracle;
+  }
+
+  /**
+   * `POST /mls/groups/<id>/join_intent`. A sibling intent (another device
+   * of a member's user) is refused with the 400, or meets the sibling close.
+   */
   joinIntent(
     seat: World,
     groupId: string,
@@ -908,6 +936,20 @@ export class Ds {
     let rejoin = false;
     if (existing) {
       if (existing.device_id !== payload.device_id) {
+        // Mirrors delta's `call_join_intent` sibling close (the
+        // mls-call-sibling-device-wedge plan): the group's ONLY leaf is this
+        // user's other device and the SFU listing answered without it, so no
+        // member is left to admit anyone. Closed, and answered 404 so the
+        // joiner CREATEs at once. The match is exact `user:device` equality,
+        // so a leg (`user:device:screen`) is not the sibling's seat. No
+        // listing, a live sibling, another member, or the switch off: the 400.
+        if (this.#siblingClose && members.length === 1) {
+          const live = this.#sfuOracle?.() ?? null;
+          if (live !== null && !live.includes(identityOf(existing))) {
+            this.#close(groupId);
+            return { kind: "not_found" };
+          }
+        }
         throw dsFailure(
           "POST",
           `/mls/groups/${groupId}/join_intent`,

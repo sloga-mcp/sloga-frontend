@@ -115,6 +115,7 @@ EXPECTED=(
   "components/rtc/mlsCallSession.resecure.test.ts 23 0"
   "components/rtc/mlsCallSession.resume.test.ts 75 0"
   "components/rtc/mlsCallSession.serveguard.test.ts 7 0"
+  "components/rtc/mlsCallSession.sibling.test.ts 5 0"
   "components/rtc/mlsCallSession.timeline.test.ts 4 0"
   "components/rtc/mlsDrainPolicy.test.ts 14 0"
   "components/rtc/mlsJoinRequestPolicy.test.ts 4 0"
