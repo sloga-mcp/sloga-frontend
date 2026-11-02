@@ -2228,11 +2228,14 @@ class E2eePlugin : Plugin() {
                 orientation = LinearLayout.VERTICAL
                 setPadding(pad, pad, pad, dpToPx(8))
             }
+        // Restore adds this install as a new device (multi-device plan D1);
+        // this is the last surface before the code is entered, so it says so.
         val prompt =
             TextView(activity).apply {
                 text =
-                    "Enter your recovery code to restore your encrypted message history " +
-                        "on this device."
+                    "Enter your recovery code to bring your encrypted message history " +
+                        "onto this device. It is added as a new device; your other " +
+                        "devices keep working."
                 setPadding(0, 0, 0, dpToPx(16))
             }
         val input =

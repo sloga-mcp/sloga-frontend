@@ -213,16 +213,16 @@ export function E2EEEnableModal(
             <Text>
               <Trans>
                 You have encryption set up on your account. If you saved a
-                recovery code, restore it here to bring back your identity and
-                message history on this device. It is added as a new device, and
-                your contacts will see that you added one.
+                recovery code, restore it here to bring back your message
+                history on this device. It is added as a new device, and your
+                contacts will see that you added one. Your other devices keep
+                working.
               </Trans>
             </Text>
             <Text>
               <Trans>
-                Or start fresh to set this up as a new device. You keep sending
-                and receiving encrypted messages, but earlier history that lived
-                only on your old device stays there.
+                Or start fresh to set this up as a new device without your
+                earlier history. That history stays on your other devices.
               </Trans>
             </Text>
             <Text class="label">
