@@ -8,7 +8,7 @@ import { allowsDonationLinks } from "@revolt/client";
 import { Button, Profile } from "@revolt/ui";
 
 import { CipherLock } from "./CipherLock";
-import { cipherPromoUrl, formatCount } from "./cipherPromo";
+import { cipherPromoUrl, formatCount } from "./cipherPromoPolicy";
 
 const GREEN = "#27A163";
 

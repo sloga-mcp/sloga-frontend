@@ -4,16 +4,18 @@
  * android/app/src/main/assets/public/index.html — never into dist/ (the web
  * deploy must not carry this policy; web is served behind Caddy, and the
  * desktop shell gets its own CSP from tauri.conf.json `app.security.csp`).
+ * The iOS shell gets the same policy with one delta (see "iOS" below) in
+ * ios/App/App/public/index.html.
  *
  * Wired as the `capacitor:copy:after` npm hook so EVERY `cap copy`/`cap sync`
  * produces a CSP-carrying Android bundle (build:android included) — a manual
  * `cap sync android` cannot silently ship an unpoliced APK.
  *
  * Placement contract (load-bearing): the <meta> is inserted immediately after
- * the literal `<head>`. At runtime Capacitor's JSInjector inserts its inline
- * native-bridge <script> at indexOf("<head>") + 6 — i.e. BEFORE this meta —
- * and a meta-delivered CSP does not apply to script elements parsed before
- * it. That is the ONLY inline script the policy exempts, and it is
+ * the literal `<head>`. At runtime Capacitor Android's JSInjector inserts its
+ * inline native-bridge <script> at indexOf("<head>") + 6 — i.e. BEFORE this
+ * meta — and a meta-delivered CSP does not apply to script elements parsed
+ * before it. That is the ONLY inline script the policy exempts, and it is
  * installer-signed native-owned content (the same trust class as the shell).
  * Everything parsed after the meta — the app bundle, DOM-injected scripts
  * from any XSS foothold, all runtime fetches — is policed. This is why
@@ -78,10 +80,42 @@
  * hook), the Google-free policy drops FOSS_OMITTED_ORIGINS from every
  * directive that carries them. YouTube stays in frame-src for embeds the user
  * taps to load. Unset, or any other value, injects the standard policy
- * byte-for-byte unchanged.
+ * byte-for-byte unchanged. The foss variant is Android-only: SLOGA_FDROID=1
+ * with the ios platform is a FATAL, since no iOS foss build exists and the
+ * mix can only be a mistaken invocation (fail closed rather than guess).
+ *
+ * iOS: the standard (non-foss) policy plus ONE source, `e2ee-att:`, appended
+ * to img-src and media-src only. The iOS E2EE attachment renderer is a
+ * WKURLSchemeHandler on the custom scheme e2ee-att
+ * (e2ee-att://att/<ULID>/<idx>), a separate origin that 'self' does not
+ * cover. The token is deliberately absent from every other directive:
+ *  - connect-src: the webview never fetches attachment plaintext; it only
+ *    hands an <img>/<video>/<audio> a URL the native handler answers;
+ *  - frame-src: an embed must never be able to frame an attachment (plan D6);
+ *  - default-src, script-src, style-src, worker-src, object-src and the rest:
+ *    decrypted bytes are never code, styles, workers or plugins.
+ * The iOS app origin is capacitor://localhost (Capacitor's default scheme and
+ * hostname, CAPInstanceDescriptor.swift; capacitor.config.ts sets neither
+ * server.iosScheme nor server.hostname), and 'self' is that origin, so the
+ * bundle, the manifest and the workers ride 'self' as they do on Android.
+ * Placement on iOS differs from the Android contract above: Capacitor iOS
+ * (@capacitor/ios 8.4.3, JSExport.swift) does not splice its bridge into the
+ * HTML; it installs it as WKUserScripts at .atDocumentStart,
+ * forMainFrameOnly: true. On iOS the literal <head> is only this script's
+ * insertion anchor, and no inline script is exempted by placement. That
+ * WebKit runs those user scripts outside the page CSP (so script-src still
+ * needs no 'unsafe-inline') is WebKit behavior, not something these sources
+ * show; it is verified on the Simulator in G12.
+ *
+ * Platform: CAPACITOR_PLATFORM_NAME ("android" | "ios"), which Capacitor sets
+ * for the hook and capCopyAfter.mjs passes through. Unset = "android" (the
+ * legacy bare invocation); set to anything else, empty included = FATAL. The
+ * target path is cross-checked: an `ios` path segment with a non-ios
+ * platform, an `android` segment with a non-android platform, or both
+ * segments at once = FATAL, so neither policy can land in the other bundle.
  */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const DIRECTIVES = [
@@ -114,36 +148,90 @@ const FOSS_OMITTED_ORIGINS = new Set([
   "https://*.hcaptcha.com",
 ]);
 
-const CSP = (
-  FOSS
-    ? DIRECTIVES.map((directive) =>
-        directive
-          .split(" ")
-          .filter((source) => !FOSS_OMITTED_ORIGINS.has(source))
-          .join(" "),
-      )
-    : DIRECTIVES
-).join("; ");
+// iOS only: the e2ee-att scheme handler's source, and the ONLY directives it
+// may appear in (see "iOS" above).
+const IOS_ATTACHMENT_SOURCE = "e2ee-att:";
+const IOS_ATTACHMENT_DIRECTIVES = new Set(["img-src", "media-src"]);
 
+const PLATFORMS = ["android", "ios"];
+const requested = process.env.CAPACITOR_PLATFORM_NAME;
+// Unset = the legacy bare-invocation default. Empty or unknown = fail closed.
+const platform = requested === undefined ? "android" : requested;
+if (!PLATFORMS.includes(platform)) {
+  console.error(
+    `[inject-csp] FATAL: unsupported CAPACITOR_PLATFORM_NAME=${requested} — expected android or ios`,
+  );
+  process.exit(1);
+}
+const tag = `[${platform}-csp]`;
+
+if (platform === "ios" && FOSS) {
+  console.error(
+    `${tag} FATAL: SLOGA_FDROID=1 with CAPACITOR_PLATFORM_NAME=ios — the foss policy is Android-only; unset SLOGA_FDROID for an iOS sync`,
+  );
+  process.exit(1);
+}
+
+function platformDirectives() {
+  if (platform === "ios") {
+    return DIRECTIVES.map((directive) =>
+      IOS_ATTACHMENT_DIRECTIVES.has(directive.split(" ")[0])
+        ? `${directive} ${IOS_ATTACHMENT_SOURCE}`
+        : directive,
+    );
+  }
+  if (FOSS) {
+    return DIRECTIVES.map((directive) =>
+      directive
+        .split(" ")
+        .filter((source) => !FOSS_OMITTED_ORIGINS.has(source))
+        .join(" "),
+    );
+  }
+  return DIRECTIVES;
+}
+
+const CSP = platformDirectives().join("; ");
+
+// The markers stay `android-csp` on every platform: the idempotent strip
+// below must find blocks written by earlier runs, and the Android packaging
+// gate (android/app/build.gradle) counts this exact start marker.
 const MARKER_START = "<!-- android-csp:start -->";
 const MARKER_END = "<!-- android-csp:end -->";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
-const target = join(
-  root,
-  "android",
-  "app",
-  "src",
-  "main",
-  "assets",
-  "public",
-  "index.html",
-);
+// Target = the platform's synced index.html. Passed explicitly by
+// scripts/capCopyAfter.mjs (android or ios); the bare-invocation default keeps
+// the Android path so older call sites stay correct.
+const target = process.argv[2]
+  ? join(root, process.argv[2])
+  : join(
+      root,
+      "android",
+      "app",
+      "src",
+      "main",
+      "assets",
+      "public",
+      "index.html",
+    );
+
+// Cross-check the target against the platform, by path segment
+// (case-insensitive: the macOS filesystem is).
+const segments = relative(root, target).toLowerCase().split(/[\\/]/);
+const pathPlatforms = PLATFORMS.filter((name) => segments.includes(name));
+if (
+  pathPlatforms.length > 1 ||
+  (pathPlatforms.length === 1 && pathPlatforms[0] !== platform)
+) {
+  console.error(
+    `${tag} FATAL: target ${target} does not belong to platform ${platform} — refusing to inject this policy there`,
+  );
+  process.exit(1);
+}
 
 if (!existsSync(target)) {
-  console.error(
-    `[android-csp] FATAL: ${target} not found — run after cap copy/sync`,
-  );
+  console.error(`${tag} FATAL: ${target} not found — run after cap copy/sync`);
   process.exit(1);
 }
 
@@ -155,7 +243,7 @@ if (start !== -1) {
   const end = html.indexOf(MARKER_END);
   if (end === -1) {
     console.error(
-      "[android-csp] FATAL: found start marker without end marker — refusing to edit",
+      `${tag} FATAL: found start marker without end marker — refusing to edit`,
     );
     process.exit(1);
   }
@@ -165,7 +253,7 @@ if (start !== -1) {
 const headIdx = html.indexOf("<head>");
 if (headIdx === -1) {
   console.error(
-    "[android-csp] FATAL: no literal <head> in index.html — Capacitor injection anchor missing",
+    `${tag} FATAL: no literal <head> in index.html — Capacitor injection anchor missing`,
   );
   process.exit(1);
 }
@@ -177,8 +265,12 @@ html =
   html.slice(headIdx + "<head>".length);
 
 writeFileSync(target, html);
-console.log(
-  FOSS
-    ? "[android-csp] injected foss (SLOGA_FDROID=1) main-document CSP into android assets index.html"
-    : "[android-csp] injected main-document CSP into android assets index.html",
-);
+if (platform === "ios") {
+  console.log(`${tag} injected main-document CSP into ios public index.html`);
+} else {
+  console.log(
+    FOSS
+      ? "[android-csp] injected foss (SLOGA_FDROID=1) main-document CSP into android assets index.html"
+      : "[android-csp] injected main-document CSP into android assets index.html",
+  );
+}

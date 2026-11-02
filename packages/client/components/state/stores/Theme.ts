@@ -6,26 +6,34 @@ import {
   MONOSPACE_FONT_KEYS,
   MonospaceFonts,
 } from "@revolt/ui/themes/fonts";
-import { BRAND_ACCENT, BRAND_VARIANT } from "@revolt/ui/themes/materialTheme";
+import {
+  BRAND_ACCENT,
+  BRAND_VARIANT,
+  DISCORD_ACCENT,
+} from "@revolt/ui/themes/materialTheme";
 import {
   RAIL_ACCENT_DEFAULT,
   RAIL_ACCENT_PATTERN,
 } from "@revolt/ui/themes/railAccent";
+import { cleanSurface } from "@revolt/ui/themes/surfaceRamp";
 
 import { State } from "..";
 
 import { AbstractStore } from ".";
+import { NEWER_THEME_FIELDS, NewerThemeField } from "./themeFields";
 
 export type TypeTheme = {
   /**
    * Base theme preset
    *
-   * "stoat" is Sloga's hand-tuned palette, recoloured by `slogaAccent`; "you"
-   * generates the whole scheme from the m3 accent/contrast/variant controls.
-   * The appearance menu shows the accent swatches under both, and contrast and
-   * variant only under "you", because the Sloga palette pins what they change.
+   * "stoat" is Sloga's hand-tuned palette, recoloured by `slogaAccent`;
+   * "discord" is Discord's own palette, blurple included, and takes no accent;
+   * "you" generates the whole scheme from the m3 accent/contrast/variant
+   * controls. The appearance menu shows the accent swatches under all three
+   * (locked under "discord"), and contrast and variant only under "you",
+   * because the other two palettes pin what they change.
    */
-  preset: "stoat" | "you";
+  preset: "stoat" | "discord" | "you";
 
   /**
    * Whether `preset` has been through the one-time migration below
@@ -38,6 +46,40 @@ export type TypeTheme = {
    * Light/dark mode
    */
   mode: "light" | "dark" | "system";
+
+  /**
+   * How the interface is drawn: "classic" is the flat Material look,
+   * "modern" adds depth (raised buttons, bordered and shadowed cards and
+   * dialogs). Independent of the colours. Mounted as `data-style` on <html>.
+   *
+   * Modern is the default for everyone, so a stored theme without the field
+   * (one saved before it existed) is Modern too: there is nothing to migrate.
+   */
+  style: "classic" | "modern";
+
+  /**
+   * Page background in dark mode
+   * (Sloga)
+   *
+   * `""` is the brand navy. Separate from the accent on purpose: the surfaces
+   * and the text on them are built from this, never from `slogaAccent`.
+   */
+  slogaSurfaceDark: string;
+
+  /**
+   * Page background in light mode
+   * (Sloga)
+   *
+   * `""` is the brand's light surfaces.
+   */
+  slogaSurfaceLight: string;
+
+  /**
+   * Which of the newer synced fields this device has a real value for: set
+   * here, or carried by a copy it adopted. Only those are uploaded.
+   * Not a user-facing setting, and never synced itself; see `themeFields.ts`.
+   */
+  knownFields: NewerThemeField[];
 
   /**
    * Accent
@@ -123,10 +165,16 @@ export type SelectedTheme = Pick<
   | "messageGroupSpacing"
   | "messageAvatarSize"
 > & {
-  preset: "stoat" | "you";
+  preset: TypeTheme["preset"];
   darkMode: boolean;
+  style: TypeTheme["style"];
 
   accent: string;
+  /**
+   * Background for the current mode, or `""` for the preset's own; always
+   * `""` under Material You, which builds its surfaces from the accent
+   */
+  surface: string;
   contrast: number;
   variant: TypeTheme["m3Variant"];
 };
@@ -179,6 +227,10 @@ export class Theme extends AbstractStore<"theme", TypeTheme> {
       // Fresh profiles start where the migration would put them.
       presetMigrated: true,
       mode: "dark",
+      style: "modern",
+      slogaSurfaceDark: "",
+      slogaSurfaceLight: "",
+      knownFields: [],
 
       slogaAccent: BRAND_ACCENT,
       m3Accent: BRAND_ACCENT,
@@ -219,13 +271,29 @@ export class Theme extends AbstractStore<"theme", TypeTheme> {
     // boot that nothing short of clearing storage could recover. Only presets
     // `activeTheme` can actually build are allowed through.
     if (input.presetMigrated) {
-      if (["stoat", "you"].includes(input.preset!)) {
+      if (["stoat", "discord", "you"].includes(input.preset!)) {
         data.preset = input.preset!;
       }
     } else {
       data.preset = "stoat";
     }
     data.presetMigrated = true;
+
+    if (["classic", "modern"].includes(input.style!)) {
+      data.style = input.style!;
+    }
+
+    data.slogaSurfaceDark = cleanSurface(input.slogaSurfaceDark);
+    data.slogaSurfaceLight = cleanSurface(input.slogaSurfaceLight);
+
+    // Never inferred from a field being present: this client always writes
+    // all three, defaults included. Absent (a theme saved before it existed)
+    // means none is known.
+    if (Array.isArray(input.knownFields)) {
+      data.knownFields = NEWER_THEME_FIELDS.filter((field) =>
+        input.knownFields!.includes(field),
+      );
+    }
 
     if (typeof input.m3Contrast === "number") {
       data.m3Contrast = input.m3Contrast;
@@ -315,15 +383,18 @@ export class Theme extends AbstractStore<"theme", TypeTheme> {
   get activeTheme(): SelectedTheme {
     const opts = this.get();
 
+    const darkMode =
+      opts.mode === "dark" || (opts.mode === "system" && this.prefersDark());
+
     const common = {
+      style: opts.style,
       blur: opts.blur,
       interfaceFont: opts.interfaceFont,
       monospaceFont: opts.monospaceFont,
       messageSize: opts.messageSize,
       messageGroupSpacing: opts.messageGroupSpacing,
       messageAvatarSize: opts.messageAvatarSize,
-      darkMode:
-        opts.mode === "dark" || (opts.mode === "system" && this.prefersDark()),
+      darkMode,
     };
 
     // Deliberately a branch and not a switch: this getter feeds every colour
@@ -335,21 +406,41 @@ export class Theme extends AbstractStore<"theme", TypeTheme> {
     // contrast and variant — those two controls are hidden under this preset
     // because the brand palette pins what they would change. The roles it
     // leaves alone (error, outline, inverse) are still derived from these.
-    return opts.preset === "stoat"
-      ? {
-          ...common,
-          preset: "stoat",
-          accent: opts.slogaAccent,
-          contrast: 0,
-          variant: BRAND_VARIANT,
-        }
-      : {
-          ...common,
-          preset: "you",
-          accent: opts.m3Accent,
-          contrast: opts.m3Contrast,
-          variant: opts.m3Variant,
-        };
+    //
+    // Discord seeds from blurple the same way, for the same reason; it never
+    // reads a stored accent, so neither swatch row can drift it off Discord.
+    // Like Material You it takes no custom surface: its own pinned greys are
+    // the point, and the Background picker only shows under Sloga.
+    if (opts.preset === "stoat") {
+      return {
+        ...common,
+        preset: "stoat",
+        accent: opts.slogaAccent,
+        surface: darkMode ? opts.slogaSurfaceDark : opts.slogaSurfaceLight,
+        contrast: 0,
+        variant: BRAND_VARIANT,
+      };
+    }
+
+    if (opts.preset === "discord") {
+      return {
+        ...common,
+        preset: "discord",
+        accent: DISCORD_ACCENT,
+        surface: "",
+        contrast: 0,
+        variant: BRAND_VARIANT,
+      };
+    }
+
+    return {
+      ...common,
+      preset: "you",
+      accent: opts.m3Accent,
+      surface: "",
+      contrast: opts.m3Contrast,
+      variant: opts.m3Variant,
+    };
   }
 
   /**
@@ -365,6 +456,53 @@ export class Theme extends AbstractStore<"theme", TypeTheme> {
    */
   setMode(mode: TypeTheme["mode"]) {
     this.set("mode", mode);
+  }
+
+  /**
+   * Get the interface style
+   */
+  get style() {
+    return this.get().style;
+  }
+
+  /**
+   * Set the interface style
+   * @param style Style
+   */
+  setStyle(style: TypeTheme["style"]) {
+    this.markKnown("style");
+    this.set("style", style);
+  }
+
+  /**
+   * Record that this device now has a real value for a newer synced field,
+   * so it is uploaded from now on (`themeFields.ts`)
+   * @param field Field
+   */
+  private markKnown(field: NewerThemeField) {
+    const known = this.get().knownFields;
+    if (!known.includes(field)) this.set("knownFields", [...known, field]);
+  }
+
+  /**
+   * Get the Sloga background for the mode currently showing (`""` = brand)
+   */
+  get surface() {
+    return this.activeTheme.darkMode
+      ? this.get().slogaSurfaceDark
+      : this.get().slogaSurfaceLight;
+  }
+
+  /**
+   * Set the Sloga background for the mode currently showing
+   * @param colour Six-digit hex, or `""` for the brand default
+   */
+  setSurface(colour: string) {
+    const field = this.activeTheme.darkMode
+      ? "slogaSurfaceDark"
+      : "slogaSurfaceLight";
+    this.markKnown(field);
+    this.set(field, colour);
   }
 
   /**
@@ -386,17 +524,27 @@ export class Theme extends AbstractStore<"theme", TypeTheme> {
    * Get the accent of the active preset
    */
   get accent() {
-    return this.preset === "stoat" ? this.get().slogaAccent : this.m3Accent;
+    switch (this.preset) {
+      case "stoat":
+        return this.get().slogaAccent;
+      case "discord":
+        return DISCORD_ACCENT;
+      default:
+        return this.m3Accent;
+    }
   }
 
   /**
    * Set the accent of the active preset
+   *
+   * A no-op under Discord, which has no accent of its own to store; writing
+   * it into another preset's slot would recolour that one behind the user.
    * @param accent Accent
    */
   setAccent(accent: string) {
     if (this.preset === "stoat") {
       this.set("slogaAccent", accent);
-    } else {
+    } else if (this.preset === "you") {
       this.setM3Accent(accent);
     }
   }

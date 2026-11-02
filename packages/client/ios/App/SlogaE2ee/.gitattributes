@@ -1,0 +1,5 @@
+# Generated native artifacts: byte-exact (PROVENANCE.txt pins their sha256),
+# so no line-ending conversion on any checkout, and no textual diffs.
+AcutestE2ee.xcframework/** -text -diff
+Bindings/acutest_e2ee_ios.swift -text -diff linguist-generated
+PROVENANCE.txt -text

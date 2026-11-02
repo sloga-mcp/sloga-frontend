@@ -178,6 +178,11 @@ const base = cva({
     "&:hover .hover-hide, &:not(:hover) .hover-show": {
       display: "none",
     },
+
+    // Modern: rounded rows instead of pills
+    _modern: {
+      borderRadius: "10px",
+    },
   },
   variants: {
     size: {
@@ -216,6 +221,16 @@ const base = cva({
       selected: {
         "--color": "var(--md-sys-color-on-primary-container)",
         background: "var(--md-sys-color-primary-container)",
+        // Modern: a tint of the selection colour with a fine ring, and the
+        // ordinary text colour, instead of a solid pill. Built from
+        // primary-container so it follows the Home sidebar's orange pin.
+        _modern: {
+          "--color": "var(--md-sys-color-on-surface)",
+          background:
+            "color-mix(in srgb, var(--md-sys-color-primary-container) 18%, transparent)",
+          boxShadow:
+            "inset 0 0 0 1px color-mix(in srgb, var(--md-sys-color-primary-container) 32%, transparent)",
+        },
       },
     },
   },

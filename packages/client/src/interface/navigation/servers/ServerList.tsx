@@ -774,6 +774,15 @@ const entryContainer = cva({
     "&:hover:before": {
       height: "16px",
     },
+
+    // Modern: lift the server icons off the rail. A drop-shadow filter, not
+    // a box-shadow: the avatar is an SVG with a masked foreignObject, so a
+    // box-shadow is clipped, while the filter follows the unread holepunch.
+    _modern: {
+      "& > svg, & a > svg": {
+        filter: "drop-shadow(0 3px 6px rgb(0 0 0 / 0.4))",
+      },
+    },
   },
   variants: {
     indicator: {

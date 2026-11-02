@@ -18,6 +18,8 @@ import { Channel, HydratedChannel, Message } from "stoat.js";
 import { styled } from "styled-system/jsx";
 
 import { useClient } from "@revolt/client";
+import { noticeCopy } from "@revolt/client/protectedCopy";
+import { protectedActionsBlocked } from "@revolt/client/protectedShield";
 import {
   cachedChannels,
   forumPostsQueryKey,
@@ -31,6 +33,7 @@ import { TextWithEmoji } from "@revolt/markdown";
 import { useModals } from "@revolt/modal";
 import { useState } from "@revolt/state";
 import { Button, CircularProgress, Header, Row, Text } from "@revolt/ui";
+import { ProtectedShieldIcon } from "@revolt/ui/components/features/protected/ProtectedShieldIcon";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
 
 import MdCheck from "@material-design-icons/svg/outlined/check.svg?component-solid";
@@ -97,6 +100,15 @@ export function ForumChannel(props: ChannelPageProps) {
   const state = useState();
   const { openModal, showError } = useModals();
   const { t } = useLingui();
+
+  /**
+   * A channel the SDK holds protected or pinned that the server now calls a
+   * forum (a relabelled protected channel). Posts are server plaintext, so
+   * the view shows only a notice and offers no way to post.
+   */
+  const protectedChannel = createMemo(() =>
+    client().isProtectedChannel(props.channel.id),
+  );
 
   /**
    * Name of a forum layout: the one place a layout maps to its label, used
@@ -579,230 +591,251 @@ export function ForumChannel(props: ChannelPageProps) {
         <ChannelHeader channel={props.channel} />
       </Header>
 
-      <Toolbar>
-        <Row align gap="sm" wrap>
-          {/* One "view" control rather than a button per mode. The toolbar
-              also carries the tag filter and the archived toggle, and a row of
-              one button per mode does not survive another mode being added. */}
-          <Show
-            when={!props.channel.forceSort}
-            fallback={
-              // The order is fixed for everyone, so this is a label rather
-              // than a disabled menu: a control that opens and changes
-              // nothing is worse than no control.
-              <ForcedSort>
-                <Symbol size={18}>lock</Symbol>
+      {/* Protected: nothing in a forum is encrypted, so no post list and
+          no way to post, only the notice */}
+      <Show
+        when={!protectedChannel()}
+        fallback={
+          <ProtectedForumNotice role="alert">
+            <ProtectedShieldIcon state="unverified" size={16} />
+            <span>{noticeCopy("channel_protected")}</span>
+          </ProtectedForumNotice>
+        }
+      >
+        <Toolbar>
+          <Row align gap="sm" wrap>
+            {/* One "view" control rather than a button per mode. The toolbar
+                also carries the tag filter and the archived toggle, and a row of
+                one button per mode does not survive another mode being added. */}
+            <Show
+              when={!props.channel.forceSort}
+              fallback={
+                // The order is fixed for everyone, so this is a label rather
+                // than a disabled menu: a control that opens and changes
+                // nothing is worse than no control.
+                <ForcedSort>
+                  <Symbol size={18}>lock</Symbol>
+                  <SortName mode={sort()} />
+                </ForcedSort>
+              }
+            >
+              <Button
+                size="sm"
+                variant="text"
+                use:floating={{
+                  contextMenu: () => (
+                    <ContextMenu>
+                      <ContextMenuButton
+                        onClick={() =>
+                          updateFilters({ sort: "latest_activity" })
+                        }
+                        actionIcon={
+                          sort() === "latest_activity" ? MdCheck : undefined
+                        }
+                      >
+                        <Trans>Latest activity</Trans>
+                      </ContextMenuButton>
+                      <ContextMenuButton
+                        onClick={() => updateFilters({ sort: "creation_date" })}
+                        actionIcon={
+                          sort() === "creation_date" ? MdCheck : undefined
+                        }
+                      >
+                        <Trans>Creation date</Trans>
+                      </ContextMenuButton>
+                      <ContextMenuButton
+                        onClick={() => updateFilters({ sort: "alphabetical" })}
+                        actionIcon={
+                          sort() === "alphabetical" ? MdCheck : undefined
+                        }
+                      >
+                        <Trans>A-Z</Trans>
+                      </ContextMenuButton>
+                    </ContextMenu>
+                  ),
+                  contextMenuHandler: "click",
+                }}
+              >
+                <Symbol>sort</Symbol>
                 <SortName mode={sort()} />
-              </ForcedSort>
-            }
-          >
+              </Button>
+            </Show>
+
             <Button
               size="sm"
               variant="text"
               use:floating={{
-                contextMenu: () => (
-                  <ContextMenu>
-                    <ContextMenuButton
-                      onClick={() => updateFilters({ sort: "latest_activity" })}
-                      actionIcon={
-                        sort() === "latest_activity" ? MdCheck : undefined
-                      }
-                    >
-                      <Trans>Latest activity</Trans>
-                    </ContextMenuButton>
-                    <ContextMenuButton
-                      onClick={() => updateFilters({ sort: "creation_date" })}
-                      actionIcon={
-                        sort() === "creation_date" ? MdCheck : undefined
-                      }
-                    >
-                      <Trans>Creation date</Trans>
-                    </ContextMenuButton>
-                    <ContextMenuButton
-                      onClick={() => updateFilters({ sort: "alphabetical" })}
-                      actionIcon={
-                        sort() === "alphabetical" ? MdCheck : undefined
-                      }
-                    >
-                      <Trans>A-Z</Trans>
-                    </ContextMenuButton>
-                  </ContextMenu>
-                ),
+                contextMenu: () => {
+                  // A plain identifier, so the layout name reaches translators
+                  // as a named placeholder inside one message.
+                  const name = layoutLabel(forumDefaultLayout());
+                  return (
+                    <ContextMenu>
+                      {/* Exactly one item is checked: this one while the reader
+                          follows the forum, else their own pick below. */}
+                      <ContextMenuButton
+                        onClick={followForumDefault}
+                        actionIcon={layoutOverride() ? undefined : MdCheck}
+                      >
+                        <Trans>Use the forum's default ({name})</Trans>
+                      </ContextMenuButton>
+                      <ContextMenuButton
+                        onClick={() => chooseLayout("Modern")}
+                        actionIcon={
+                          layoutOverride() === "Modern" ? MdCheck : undefined
+                        }
+                      >
+                        <Trans>Modern</Trans>
+                      </ContextMenuButton>
+                      <ContextMenuButton
+                        onClick={() => chooseLayout("Classic")}
+                        actionIcon={
+                          layoutOverride() === "Classic" ? MdCheck : undefined
+                        }
+                      >
+                        <Trans>Classic</Trans>
+                      </ContextMenuButton>
+                      <ContextMenuButton
+                        onClick={() => chooseLayout("ClassicPlus")}
+                        actionIcon={
+                          layoutOverride() === "ClassicPlus"
+                            ? MdCheck
+                            : undefined
+                        }
+                      >
+                        <Trans>Classic+</Trans>
+                      </ContextMenuButton>
+                    </ContextMenu>
+                  );
+                },
                 contextMenuHandler: "click",
               }}
             >
-              <Symbol>sort</Symbol>
-              <SortName mode={sort()} />
+              <Symbol>view_list</Symbol>
+              {layoutLabel(layout())}
             </Button>
-          </Show>
 
-          <Button
-            size="sm"
-            variant="text"
-            use:floating={{
-              contextMenu: () => {
-                // A plain identifier, so the layout name reaches translators
-                // as a named placeholder inside one message.
-                const name = layoutLabel(forumDefaultLayout());
-                return (
-                  <ContextMenu>
-                    {/* Exactly one item is checked: this one while the reader
-                        follows the forum, else their own pick below. */}
-                    <ContextMenuButton
-                      onClick={followForumDefault}
-                      actionIcon={layoutOverride() ? undefined : MdCheck}
-                    >
-                      <Trans>Use the forum's default ({name})</Trans>
-                    </ContextMenuButton>
-                    <ContextMenuButton
-                      onClick={() => chooseLayout("Modern")}
-                      actionIcon={
-                        layoutOverride() === "Modern" ? MdCheck : undefined
-                      }
-                    >
-                      <Trans>Modern</Trans>
-                    </ContextMenuButton>
-                    <ContextMenuButton
-                      onClick={() => chooseLayout("Classic")}
-                      actionIcon={
-                        layoutOverride() === "Classic" ? MdCheck : undefined
-                      }
-                    >
-                      <Trans>Classic</Trans>
-                    </ContextMenuButton>
-                    <ContextMenuButton
-                      onClick={() => chooseLayout("ClassicPlus")}
-                      actionIcon={
-                        layoutOverride() === "ClassicPlus" ? MdCheck : undefined
-                      }
-                    >
-                      <Trans>Classic+</Trans>
-                    </ContextMenuButton>
-                  </ContextMenu>
-                );
-              },
-              contextMenuHandler: "click",
-            }}
-          >
-            <Symbol>view_list</Symbol>
-            {layoutLabel(layout())}
-          </Button>
-
-          <Button
-            size="sm"
-            variant={archived() ? "filled" : "text"}
-            onPress={() => updateFilters({ archived: !archived() })}
-          >
-            <Trans>Archived</Trans>
-          </Button>
-
-          <Grow />
-
-          <Show when={props.channel.havePermission("SendMessage")}>
             <Button
               size="sm"
-              onPress={() =>
-                openModal({
-                  type: "create_forum_post",
-                  channel: props.channel,
-                })
+              variant={archived() ? "filled" : "text"}
+              onPress={() => updateFilters({ archived: !archived() })}
+            >
+              <Trans>Archived</Trans>
+            </Button>
+
+            <Grow />
+
+            <Show
+              when={
+                !protectedActionsBlocked(protectedChannel(), "create_thread") &&
+                props.channel.havePermission("SendMessage")
               }
             >
-              <Symbol size={18}>add</Symbol> <Trans>New Post</Trans>
-            </Button>
-          </Show>
-        </Row>
-
-        <Show when={props.channel.tags.length}>
-          <Row align gap="sm" wrap>
-            <For each={props.channel.tags}>
-              {(forumTag) => (
-                <TagChip
-                  selected={tag() === forumTag.id}
-                  onClick={() =>
-                    updateFilters({
-                      tag: tag() === forumTag.id ? undefined : forumTag.id,
-                    })
-                  }
-                >
-                  <Show when={forumTag.emoji}>
-                    <TextWithEmoji content={forumTag.emoji} />{" "}
-                  </Show>
-                  <TextWithEmoji content={forumTag.name} />
-                </TagChip>
-              )}
-            </For>
-          </Row>
-        </Show>
-      </Toolbar>
-
-      <Scroll>
-        <Suspense fallback={<CircularProgress />}>
-          <Show when={posts().length === 0 && !query.isLoading}>
-            <Text>
-              <Show when={archived()} fallback={<Trans>No posts yet</Trans>}>
-                <Trans>No archived posts</Trans>
-              </Show>
-            </Text>
-          </Show>
-          <Switch
-            fallback={
-              <Grid>
-                <For each={posts()}>
-                  {(post) => (
-                    <PostCard
-                      post={post}
-                      forum={props.channel}
-                      starter={starterFor(post)}
-                    />
-                  )}
-                </For>
-              </Grid>
-            }
-          >
-            <Match when={layout() === "Classic"}>
-              <List>
-                <For each={posts()}>
-                  {(post) => (
-                    <PostRow
-                      post={post}
-                      forum={props.channel}
-                      stats={statsFor(post)}
-                      lastMessage={lastMessageFor(post)}
-                    />
-                  )}
-                </For>
-              </List>
-            </Match>
-            <Match when={layout() === "ClassicPlus"}>
-              {/* No header row over an empty forum: the empty-state text
-                  above already says there is nothing to list. */}
-              <Show when={posts().length > 0}>
-                <PostTable
-                  posts={posts()}
-                  forum={props.channel}
-                  statsFor={statsFor}
-                  lastMessageFor={lastMessageFor}
-                />
-              </Show>
-            </Match>
-          </Switch>
-          <Show when={mayHaveMore()}>
-            <LoadMoreRow>
               <Button
                 size="sm"
-                variant="text"
-                isDisabled={loadingMore()}
-                onPress={loadMore}
+                onPress={() =>
+                  openModal({
+                    type: "create_forum_post",
+                    channel: props.channel,
+                  })
+                }
               >
-                <Show when={!loadingMore()} fallback={<CircularProgress />}>
-                  <Trans>Load more</Trans>
-                </Show>
+                <Symbol size={18}>add</Symbol> <Trans>New Post</Trans>
               </Button>
-            </LoadMoreRow>
+            </Show>
+          </Row>
+
+          <Show when={props.channel.tags.length}>
+            <Row align gap="sm" wrap>
+              <For each={props.channel.tags}>
+                {(forumTag) => (
+                  <TagChip
+                    selected={tag() === forumTag.id}
+                    onClick={() =>
+                      updateFilters({
+                        tag: tag() === forumTag.id ? undefined : forumTag.id,
+                      })
+                    }
+                  >
+                    <Show when={forumTag.emoji}>
+                      <TextWithEmoji content={forumTag.emoji} />{" "}
+                    </Show>
+                    <TextWithEmoji content={forumTag.name} />
+                  </TagChip>
+                )}
+              </For>
+            </Row>
           </Show>
-        </Suspense>
-      </Scroll>
+        </Toolbar>
+
+        <Scroll>
+          <Suspense fallback={<CircularProgress />}>
+            <Show when={posts().length === 0 && !query.isLoading}>
+              <Text>
+                <Show when={archived()} fallback={<Trans>No posts yet</Trans>}>
+                  <Trans>No archived posts</Trans>
+                </Show>
+              </Text>
+            </Show>
+            <Switch
+              fallback={
+                <Grid>
+                  <For each={posts()}>
+                    {(post) => (
+                      <PostCard
+                        post={post}
+                        forum={props.channel}
+                        starter={starterFor(post)}
+                      />
+                    )}
+                  </For>
+                </Grid>
+              }
+            >
+              <Match when={layout() === "Classic"}>
+                <List>
+                  <For each={posts()}>
+                    {(post) => (
+                      <PostRow
+                        post={post}
+                        forum={props.channel}
+                        stats={statsFor(post)}
+                        lastMessage={lastMessageFor(post)}
+                      />
+                    )}
+                  </For>
+                </List>
+              </Match>
+              <Match when={layout() === "ClassicPlus"}>
+                {/* No header row over an empty forum: the empty-state text
+                    above already says there is nothing to list. */}
+                <Show when={posts().length > 0}>
+                  <PostTable
+                    posts={posts()}
+                    forum={props.channel}
+                    statsFor={statsFor}
+                    lastMessageFor={lastMessageFor}
+                  />
+                </Show>
+              </Match>
+            </Switch>
+            <Show when={mayHaveMore()}>
+              <LoadMoreRow>
+                <Button
+                  size="sm"
+                  variant="text"
+                  isDisabled={loadingMore()}
+                  onPress={loadMore}
+                >
+                  <Show when={!loadingMore()} fallback={<CircularProgress />}>
+                    <Trans>Load more</Trans>
+                  </Show>
+                </Button>
+              </LoadMoreRow>
+            </Show>
+          </Suspense>
+        </Scroll>
+      </Show>
     </Base>
   );
 }
@@ -814,6 +847,23 @@ const Base = styled("div", {
     flexGrow: 1,
     minHeight: 0,
     color: "var(--md-sys-color-on-surface)",
+  },
+});
+
+/**
+ * Loud notice in place of the forum view on a protected channel, tinted
+ * with the shield's alert hue like the composer's unverified banner
+ */
+const ProtectedForumNotice = styled("div", {
+  base: {
+    display: "flex",
+    alignItems: "center",
+    gap: "var(--gap-sm)",
+    padding: "var(--gap-md) var(--gap-lg)",
+    fontSize: "0.875rem",
+    fontWeight: "600",
+    color:
+      "color-mix(in srgb, var(--sloga-protected-alert) 70%, var(--md-sys-color-on-surface))",
   },
 });
 

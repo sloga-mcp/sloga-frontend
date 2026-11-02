@@ -20,6 +20,12 @@ export function LoadTheme() {
   createEffect(() => {
     const activeTheme = state.theme.activeTheme;
 
+    // Classic or Modern. An attribute rather than variables: the Modern
+    // overrides are `_modern` blocks in each component's own styles, which
+    // match `[data-style=modern] &`. On <html>, which chat windows copy their
+    // attributes from, so they follow it too.
+    document.documentElement.dataset.style = activeTheme.style;
+
     // load fonts
     FONTS[state.theme.interfaceFont].load();
     MONOSPACE_FONTS[state.theme.monospaceFont].load();
@@ -55,6 +61,15 @@ export function LoadTheme() {
       // voice channel). User-chosen, so it is read off the store directly
       // rather than folded into the generated scheme.
       "--sloga-rail-accent": state.theme.railAccent,
+      // Protected channel shield states (ProtectedHueVar in
+      // protectedShield.ts). Fixed hues, the same in light and dark. The
+      // unavailable grey is the invisible presence grey.
+      "--sloga-protected-ok": "#27A163",
+      "--sloga-protected-resecuring": "#F5870D",
+      "--sloga-protected-alert": "#CF2A27",
+      "--sloga-protected-unavailable": "#A5A5A5",
+      "--sloga-protected-grace": "#E3CF1B",
+      "--sloga-protected-frozen": "#3BB8ED",
     })) {
       // Mounted on <html>, not <body>: styles.css paints the page canvas from
       // `html:root` (it has to — iOS Safari draws overscroll from <html>), and

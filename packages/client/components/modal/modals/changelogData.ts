@@ -9,6 +9,66 @@ import type { ChangelogResponse } from "./Changelog";
  */
 export const CHANGELOGS: ChangelogResponse[] = [
   // ==========================================================================
+  // v0.70.0 (written 2026-10-26 by the merge steward from the v0.70 inbox,
+  // ~/.claude/plans/v070-release-inbox.md "DRAFT v0.70.0", every bullet
+  // checked against the landed code). User go 2026-10-26 (full sweep; the
+  // voice changer's listening test waived, announced as a new feature).
+  // Same copy constraints as below: no Cipher, purchase or pricing lines; no
+  // "Steam"; encryption bullets describe only what users see; the voice
+  // changer copy keeps "does not hide who you are" (v0.57.0 shaper rule).
+  {
+    id: "sloga-2026-10-26",
+    title: "Patch Notes",
+    published_at: "2026-10-26T12:00:00.000Z",
+    web_version: "0.70.0",
+    markdown_content: `## v0.70.0: A Modern Look, a Discord Color Scheme and a Voice Changer
+
+### 🎨 Appearance
+- **A new Modern style, on by default:** raised buttons, and cards and dialogs that float off the page. Prefer the flat look? Pick **Classic** under Style in Settings → Appearance.
+- **Choose your background:** Black, Graphite, Slate, Plum or Forest in dark mode, White, Paper, Mist or Rose in light mode, or any color you like. Your accent color never tints it.
+- **A Discord color scheme:** pick **Discord** in Settings → Appearance → Colors, next to Sloga and Material You. It brings Discord's dark and light colors and uses its own blurple, so it ignores your accent color.
+
+### 🎙️ Voice
+- **New: Voice Changer.** In Settings → Voice, slide Voice Pitch left for a deeper voice or right for a higher one. Just for fun: it applies live during calls, stays on until you reset it, and does not hide who you are.
+
+### 💬 Chat
+- **The arrow for more message options** now sits at the end of the message bar, and the extra buttons slide out to its left.
+- **Chat windows (desktop app):** images and dialogs now open in a popped-out chat window even while the main window is minimized. Before, the window dimmed and showed nothing.
+
+### 🔐 Encryption (desktop app)
+- Reloading the recovery code window while it's being set up no longer leaves you with a recovery code you never saw.
+- Linux and macOS: View → Reload now reloads only the main window, not your chat windows.
+`,
+  },
+  // ==========================================================================
+  // v0.69.1 (written 2026-10-25 by the merge steward from the v0.70 inbox,
+  // ~/.claude/plans/v070-release-inbox.md, plus the queued Home and phone
+  // fixes; every bullet checked against the landed code). User go 2026-10-25
+  // (full sweep, live tests waived). Same copy constraints as v0.69.0 below:
+  // no Cipher, purchase or pricing lines; no "Steam"; encryption bullets
+  // describe only what users see.
+  {
+    id: "sloga-2026-10-25",
+    title: "Patch Notes",
+    published_at: "2026-10-25T12:00:00.000Z",
+    web_version: "0.69.1",
+    markdown_content: `## v0.69.1: Arrange Your Home and a Title Bar for the Main Window
+
+### 🏠 Arrange your Home
+- **Home now has two columns** and cards you can move, hide and bring back. Drag a card by its grip (on a phone, press and hold the card), or use its **⋯** menu to move it up, down, to the other column, or hide it.
+- **Press Customize** at the top of Home to choose which cards show, or to reset the layout.
+- **Your layout follows your account** to your other devices.
+- Cards about you, like friends online, who's in voice and upcoming events, now show a short note instead of disappearing when there's nothing to show.
+
+### 🪟 A title bar for the main window (desktop app)
+- **The Sloga window now has the same title bar as chat windows**, with Sloga in the middle. Drag it to move the window, double-click it to maximize, and use the buttons in the corner (Windows). macOS keeps its traffic lights; Linux keeps the usual title bar.
+- **Prefer the Windows title bar?** Turn on **Use the Windows title bar** in Settings → Desktop. It applies after you quit Sloga from the tray and open it again.
+
+### ✨ Small improvements
+- **Material You on phones:** the Contrast and Style choices in Settings → Appearance now fit on a phone screen.
+`,
+  },
+  // ==========================================================================
   // v0.69.0 (written 2026-10-21 by the merge steward from the v0.69 inbox,
   // ~/.claude/plans/v069-release-inbox.md section 0-FINAL, every bullet
   // checked against the landed code). User go 2026-10-21 (full sweep).

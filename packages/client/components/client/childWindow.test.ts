@@ -502,6 +502,10 @@ describe("mirror selection", () => {
     for (const name of ["id", "onclick", "dir", "hidden", "datax", "src"])
       assert.equal(mod.isMirroredRootAttribute(name), false, name);
   });
+
+  it("keeps main's own title-bar flag out of child windows", () => {
+    assert.equal(mod.isMirroredRootAttribute("data-main-titlebar"), false);
+  });
 });
 
 describe("isReloadShortcut", () => {

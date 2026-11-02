@@ -298,54 +298,13 @@ const Watch = styled("a", {
  *
  * Renders nothing until a load succeeds with at least one streamer.
  */
-export function StreamerRow() {
+export function StreamerRow(props: {
+  state: ReturnType<typeof createStreamerRowState>;
+}) {
   const client = useClient();
   const navigate = useNavigate();
 
-  // Anonymous route; brand-new accounts are exactly who this row is for
-  const [streamers, { refetch }] = createResource(
-    () => client()?.options.baseURL,
-    (baseURL) => fetchFoundingStreamers(baseURL),
-  );
-
-  onMount(() => {
-    let lastFetch = Date.now();
-    const poll = () => {
-      lastFetch = Date.now();
-      refetch();
-    };
-
-    const timer = setInterval(() => {
-      if (!document.hidden) poll();
-    }, STREAMER_POLL_INTERVAL);
-
-    // Catch up when the tab comes back, throttled to the poll interval so
-    // alt-tabbing cannot trip the route's rate limit
-    const onVisibilityChange = () => {
-      if (document.hidden) return;
-      if (Date.now() - lastFetch < STREAMER_POLL_INTERVAL) return;
-      poll();
-    };
-    document.addEventListener("visibilitychange", onVisibilityChange);
-
-    onCleanup(() => {
-      clearInterval(timer);
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-    });
-  });
-
-  /**
-   * `streamers.error` is the only accessor safe to read while errored
-   * (`streamers()` and `.latest` throw then), and Home has no ErrorBoundary.
-   * A failed poll keeps the previous list instead of emptying the row.
-   */
-  const tiles = createMemo<FoundingStreamer[]>(
-    (prev) =>
-      streamers.error
-        ? prev
-        : sortStreamers(streamers.latest ?? []).slice(0, HOME_STREAMER_LIMIT),
-    [],
-  );
+  const tiles = () => props.state.tiles();
 
   function avatarUrl(streamer: FoundingStreamer): string | undefined {
     const instance = client();
@@ -387,6 +346,68 @@ export function StreamerRow() {
       </Section>
     </Show>
   );
+}
+
+/**
+ * The Founding Streamers list and its refresh, kept apart from the row so
+ * Home can ask whether there is anything to show before it draws a frame,
+ * and so moving the card does not fetch the list again.
+ * @param enabled Whether the card is switched on; nothing is fetched or
+ *   polled while off
+ */
+export function createStreamerRowState(enabled: () => boolean) {
+  const client = useClient();
+
+  // Anonymous route; brand-new accounts are exactly who this row is for
+  const [streamers, { refetch }] = createResource(
+    () => (enabled() ? client()?.options.baseURL : undefined),
+    (baseURL) => fetchFoundingStreamers(baseURL),
+  );
+
+  onMount(() => {
+    let lastFetch = Date.now();
+    const poll = () => {
+      lastFetch = Date.now();
+      refetch();
+    };
+
+    const timer = setInterval(() => {
+      if (!document.hidden && enabled()) poll();
+    }, STREAMER_POLL_INTERVAL);
+
+    // Catch up when the tab comes back, throttled to the poll interval so
+    // alt-tabbing cannot trip the route's rate limit
+    const onVisibilityChange = () => {
+      if (document.hidden || !enabled()) return;
+      if (Date.now() - lastFetch < STREAMER_POLL_INTERVAL) return;
+      poll();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    onCleanup(() => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    });
+  });
+
+  /**
+   * `streamers.error` is the only accessor safe to read while errored
+   * (`streamers()` and `.latest` throw then), and Home has no ErrorBoundary.
+   * A failed poll keeps the previous list instead of emptying the row.
+   */
+  const tiles = createMemo<FoundingStreamer[]>(
+    (prev) =>
+      streamers.error
+        ? prev
+        : sortStreamers(streamers.latest ?? []).slice(0, HOME_STREAMER_LIMIT),
+    [],
+  );
+
+  // First load only: a poll refreshing a list already here is "refreshing",
+  // not "pending". `state` never reads the value, so it cannot suspend.
+  const loading = () => streamers.state === "pending";
+
+  return { tiles, loading };
 }
 
 /**

@@ -23,13 +23,18 @@ import { resetChatWindows } from "../chatWindows/chatWindowsStore";
 import type { State } from ".";
 
 /**
- * Synchronised stores holding one account's own data: its friend lists, and
- * the theme, which follows the account since it synchronises
+ * Synchronised stores holding one account's own data: its friend lists, its
+ * Home layout, and the theme, which follows the account since it synchronises
  *
  * The other synced stores (ordering, notifications, release notes) are not
  * reset.
  */
-const ACCOUNT_KEYS = ["friends", "friend-groups", "theme"] as const;
+const ACCOUNT_KEYS = [
+  "friends",
+  "friend-groups",
+  "home-layout",
+  "theme",
+] as const;
 
 type PersistedKey = (typeof ACCOUNT_KEYS)[number] | "sync";
 

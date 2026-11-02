@@ -5,6 +5,7 @@ import type { Channel } from "stoat.js";
 import { styled } from "styled-system/jsx";
 
 import { useClient, useUser } from "@revolt/client";
+import { noticeCopy } from "@revolt/client/protectedCopy";
 import { Markdown } from "@revolt/markdown";
 import { userInformation } from "@revolt/markdown/users";
 import { useState } from "@revolt/state";
@@ -127,6 +128,16 @@ export function DraftMessage(props: Props) {
             ? t`Your messages to people who aren't your friends are paused while our team reviews your account. You can still message your friends.`
             : props.draft.error}
         </SendError>
+      </Show>
+      {/* A protected send stores a notice kind, never error text */}
+      <Show
+        when={props.draft.status === "failed" && props.draft.protectedNotice}
+      >
+        {(kind) => (
+          <SendError>
+            {noticeCopy(kind(), props.draft.protectedNoticeMax ?? null)}
+          </SendError>
+        )}
       </Show>
     </MessageContainer>
   );

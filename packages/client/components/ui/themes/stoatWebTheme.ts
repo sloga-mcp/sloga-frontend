@@ -6,6 +6,10 @@ import { SelectedTheme } from "@revolt/state/stores/Theme";
  * @returns CSS Variables
  */
 export function createStoatWebVariables(theme: SelectedTheme) {
+  // Discord's own status and state colours, so the dots match the rest of
+  // the Discord palette; the statuses Discord has no colour for keep Sloga's.
+  const discord = theme.preset === "discord";
+
   return {
     // helper variables
     "--unset-fg": "red",
@@ -31,15 +35,15 @@ export function createStoatWebVariables(theme: SelectedTheme) {
     "--transitions-medium": ".2s ease",
 
     // brand
-    "--brand-presence-online": "#3ABF7E",
-    "--brand-presence-idle": "#F39F00",
-    "--brand-presence-busy": "#F84848",
+    "--brand-presence-online": discord ? "#23A55A" : "#3ABF7E",
+    "--brand-presence-idle": discord ? "#F0B232" : "#F39F00",
+    "--brand-presence-busy": discord ? "#F23F43" : "#F84848",
     "--brand-presence-focus": "#4799F0",
     // Looking-for-group sits right next to idle's amber, so its yellow is
     // pushed brighter and cooler to stay separable from idle at dot size.
     "--brand-presence-lookingforgroup": "#FFD426",
     "--brand-presence-lookingformore": "#A855F7",
-    "--brand-presence-invisible": "#A5A5A5",
+    "--brand-presence-invisible": discord ? "#80848E" : "#A5A5A5",
 
     // semantic state
     // The legacy generator builds a `customColours` table holding success /
@@ -52,9 +56,9 @@ export function createStoatWebVariables(theme: SelectedTheme) {
     // contrast against white, hence the near-black `on-` pairs (8.5:1 and
     // 9.3:1 respectively). Error deliberately has no token here --
     // `--md-sys-color-error` is already real and already carries it.
-    "--brand-success": "#3ABF7E",
+    "--brand-success": discord ? "#23A55A" : "#3ABF7E",
     "--brand-on-success": "#05090F",
-    "--brand-warning": "#F39F00",
+    "--brand-warning": discord ? "#F0B232" : "#F39F00",
     "--brand-on-warning": "#05090F",
 
     // font

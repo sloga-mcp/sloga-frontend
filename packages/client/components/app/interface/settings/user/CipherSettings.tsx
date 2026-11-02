@@ -16,7 +16,10 @@ import { i18n } from "@lingui/core";
 import type { CipherTier, Client } from "stoat.js";
 import { styled } from "styled-system/jsx";
 
-import { cipherPromoUrl, formatCount } from "@revolt/auth/src/cipherPromo";
+import {
+  cipherPromoUrl,
+  formatCount,
+} from "@revolt/auth/src/cipherPromoPolicy";
 import { allowsDonationLinks, useClient } from "@revolt/client";
 import { CONFIGURATION, isNativeShell } from "@revolt/common";
 import { useError } from "@revolt/i18n";

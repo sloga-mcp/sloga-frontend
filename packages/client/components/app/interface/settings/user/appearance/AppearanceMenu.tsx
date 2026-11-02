@@ -34,8 +34,13 @@ import {
   MONOSPACE_FONT_KEYS,
   MonospaceFonts,
 } from "@revolt/ui/themes/fonts";
-import { BRAND_ACCENT, accentHasEffect } from "@revolt/ui/themes/materialTheme";
+import {
+  BRAND_ACCENT,
+  accentHasEffect,
+  createMaterialColourVariables,
+} from "@revolt/ui/themes/materialTheme";
 import { RAIL_ACCENT_PRESETS } from "@revolt/ui/themes/railAccent";
+import { SURFACE_PRESETS } from "@revolt/ui/themes/surfaceRamp";
 
 import MDPalette from "@material-design-icons/svg/outlined/palette.svg?component-solid";
 
@@ -52,6 +57,41 @@ export function AppearanceMenu() {
   const { t } = useLingui();
   const [pickerRef, setPickerRef] = createSignal<HTMLInputElement>();
   const [railPickerRef, setRailPickerRef] = createSignal<HTMLInputElement>();
+  const [surfacePickerRef, setSurfacePickerRef] =
+    createSignal<HTMLInputElement>();
+
+  const darkMode = () => state.theme.activeTheme.darkMode;
+
+  /**
+   * The page colour the Sloga preset uses with no background picked, for
+   * the mode showing: what the "Default" swatch and the picker start from
+   */
+  const defaultSurface = () =>
+    createMaterialColourVariables(
+      { ...state.theme.activeTheme, surface: "" },
+      "",
+    ).surface;
+
+  // Keyed by the stored values in SURFACE_PRESETS
+  const SURFACE_NAMES: Record<string, () => string> = {
+    "": () => t`Default`,
+    "#000000": () => t`Black`,
+    "#121212": () => t`Graphite`,
+    "#12161c": () => t`Slate`,
+    "#140a18": () => t`Plum`,
+    "#08130e": () => t`Forest`,
+    "#ffffff": () => t`White`,
+    "#f7f5f0": () => t`Paper`,
+    "#eef2f6": () => t`Mist`,
+    "#fbf1f3": () => t`Rose`,
+  };
+
+  const surfaceChoices = () =>
+    SURFACE_PRESETS[darkMode() ? "dark" : "light"].map((value) => ({
+      value,
+      colour: value || defaultSurface(),
+      name: SURFACE_NAMES[value]?.() ?? value,
+    }));
 
   // Swatches compare case-insensitively: the native picker reports lowercase
   // hex, the presets are written uppercase, and a user who picked a preset
@@ -138,6 +178,32 @@ export function AppearanceMenu() {
           </Button>
         </Row>
 
+        <Text class="label">
+          <Trans>Style</Trans>
+        </Text>
+        <Row justify="stretch">
+          <Button
+            group="connected-start"
+            groupActive={state.theme.style === "classic"}
+            onPress={() => state.theme.setStyle("classic")}
+          >
+            <Trans>Classic</Trans>
+          </Button>
+          <Button
+            group="connected-end"
+            groupActive={state.theme.style === "modern"}
+            onPress={() => state.theme.setStyle("modern")}
+          >
+            <Trans>Modern</Trans>
+          </Button>
+        </Row>
+        <Text class="label" size="small">
+          <Trans>
+            Modern adds depth: raised buttons, and cards and dialogs that float
+            off the page. Classic is the flat look.
+          </Trans>
+        </Text>
+
         <Row justify="stretch">
           <Button
             group="connected-start"
@@ -145,6 +211,13 @@ export function AppearanceMenu() {
             onPress={() => state.theme.setPreset("stoat")}
           >
             <Trans>Sloga</Trans>
+          </Button>
+          <Button
+            group="connected"
+            groupActive={state.theme.preset === "discord"}
+            onPress={() => state.theme.setPreset("discord")}
+          >
+            <Trans>Discord</Trans>
           </Button>
           <Button
             group="connected-end"
@@ -223,77 +296,205 @@ export function AppearanceMenu() {
         </Row>
         <Show when={accentLocked()}>
           <Text class="label" size="small">
-            <Trans>
-              Monochrome uses only grays, so it ignores your color. Pick another
-              style below to use one.
-            </Trans>
+            <Show
+              when={state.theme.preset === "discord"}
+              fallback={
+                <Trans>
+                  Monochrome uses only grays, so it ignores your color. Pick
+                  another style below to use one.
+                </Trans>
+              }
+            >
+              <Trans>
+                Discord uses its own blurple, so it ignores your color. Pick
+                Sloga or Material You to use one.
+              </Trans>
+            </Show>
           </Text>
         </Show>
 
-        <Show when={state.theme.preset === "you"}>
-          {/* TODO: Cursed on mobile; may need to be replaced
-          with FloatingSelect / similar on small screens */}
-          <Row justify="stretch">
-            <Button
-              size="xs"
-              group="connected-start"
-              groupActive={state.theme.m3Contrast.toFixed(1) === "-1.0"}
-              onPress={() => state.theme.setM3Contrast(-1.0)}
+        {/* Sloga only: Material You builds its surfaces from the accent. One
+            colour per mode, so the row edits the mode that is showing. */}
+        <Show when={state.theme.preset === "stoat"}>
+          <Text class="label">
+            <Trans>Background</Trans>
+          </Text>
+          <Text class="label" size="small">
+            <Show
+              when={darkMode()}
+              fallback={
+                <Trans>
+                  Used in light mode. Your accent color never tints it.
+                </Trans>
+              }
             >
-              <Trans>Reduced</Trans>
-            </Button>
-            <Button
-              size="xs"
-              group="connected"
-              groupActive={state.theme.m3Contrast.toFixed(1) === "0.0"}
-              onPress={() => state.theme.setM3Contrast(0)}
+              <Trans>
+                Used in dark mode. Your accent color never tints it.
+              </Trans>
+            </Show>
+          </Text>
+          <Row align justify wrap>
+            <IconButton
+              variant="filled"
+              shape="square"
+              size="md"
+              onPress={() => surfacePickerRef()?.click()}
             >
-              <Trans>Normal</Trans>
-            </Button>
-            <Button
-              size="xs"
-              group="connected"
-              groupActive={state.theme.m3Contrast.toFixed(1) === "0.5"}
-              onPress={() => state.theme.setM3Contrast(0.5)}
-            >
-              <Trans>More Contrast</Trans>
-            </Button>
-            <Button
-              size="xs"
-              group="connected-end"
-              groupActive={state.theme.m3Contrast.toFixed(1) === "1.0"}
-              onPress={() => state.theme.setM3Contrast(1.0)}
-            >
-              <Trans>High Contrast</Trans>
-            </Button>
+              <MDPalette />
+            </IconButton>
+            <input
+              ref={setSurfacePickerRef}
+              type="color"
+              aria-label={t`Custom background color`}
+              value={state.theme.surface || defaultSurface()}
+              onInput={(e) =>
+                state.theme.setSurface(
+                  (e.currentTarget as HTMLInputElement).value,
+                )
+              }
+              style={{
+                position: "absolute",
+                opacity: 0,
+                width: "0px",
+                height: "0px",
+                padding: 0,
+                border: "none",
+              }}
+            />
+            <For each={surfaceChoices()}>
+              {(choice) => (
+                <Swatch
+                  type="button"
+                  title={choice.name}
+                  aria-label={choice.name}
+                  aria-pressed={
+                    state.theme.surface.toLowerCase() === choice.value
+                  }
+                  style={{ "background-color": choice.colour }}
+                  onClick={() => state.theme.setSurface(choice.value)}
+                />
+              )}
+            </For>
           </Row>
+        </Show>
 
-          <Row justify="stretch">
-            <Button
-              size="xs"
-              group="connected-start"
-              groupActive={state.theme.m3Variant === "monochrome"}
-              onPress={() => state.theme.setM3Variant("monochrome")}
-            >
-              <Trans>Monochrome</Trans>
-            </Button>
-            <Button
-              size="xs"
-              group="connected"
-              groupActive={state.theme.m3Variant === "neutral"}
-              onPress={() => state.theme.setM3Variant("neutral")}
-            >
-              <Trans>Neutral</Trans>
-            </Button>
-            <Button
-              size="xs"
-              group="connected"
-              groupActive={state.theme.m3Variant === "tonal_spot"}
-              onPress={() => state.theme.setM3Variant("tonal_spot")}
-            >
-              <Trans>Tonal Spot</Trans>
-            </Button>
-            {/* <Button
+        <Show when={state.theme.preset === "you"}>
+          {/* Four fixed-height buttons do not fit a phone's width: the labels
+              wrap and spill over the row below, worse with a large system
+              font. Phones get the same choices as two dropdowns instead. */}
+          <Show
+            when={device.layout() !== "phone"}
+            fallback={
+              <>
+                <FloatingSelect
+                  label={t`Contrast`}
+                  value={state.theme.m3Contrast.toFixed(1)}
+                  onChange={(e) =>
+                    state.theme.setM3Contrast(
+                      parseFloat(e.currentTarget.value as string),
+                    )
+                  }
+                >
+                  <MenuItem value="-1.0">
+                    <Trans>Reduced</Trans>
+                  </MenuItem>
+                  <MenuItem value="0.0">
+                    <Trans>Normal</Trans>
+                  </MenuItem>
+                  <MenuItem value="0.5">
+                    <Trans>More Contrast</Trans>
+                  </MenuItem>
+                  <MenuItem value="1.0">
+                    <Trans>High Contrast</Trans>
+                  </MenuItem>
+                </FloatingSelect>
+
+                <FloatingSelect
+                  label={t`Style`}
+                  value={state.theme.m3Variant}
+                  onChange={(e) =>
+                    state.theme.setM3Variant(
+                      e.currentTarget.value as typeof state.theme.m3Variant,
+                    )
+                  }
+                >
+                  <MenuItem value="monochrome">
+                    <Trans>Monochrome</Trans>
+                  </MenuItem>
+                  <MenuItem value="neutral">
+                    <Trans>Neutral</Trans>
+                  </MenuItem>
+                  <MenuItem value="tonal_spot">
+                    <Trans>Tonal Spot</Trans>
+                  </MenuItem>
+                  <MenuItem value="fruit_salad">
+                    <Trans>Fruit Salad</Trans>
+                  </MenuItem>
+                </FloatingSelect>
+              </>
+            }
+          >
+            <Row justify="stretch">
+              <Button
+                size="xs"
+                group="connected-start"
+                groupActive={state.theme.m3Contrast.toFixed(1) === "-1.0"}
+                onPress={() => state.theme.setM3Contrast(-1.0)}
+              >
+                <Trans>Reduced</Trans>
+              </Button>
+              <Button
+                size="xs"
+                group="connected"
+                groupActive={state.theme.m3Contrast.toFixed(1) === "0.0"}
+                onPress={() => state.theme.setM3Contrast(0)}
+              >
+                <Trans>Normal</Trans>
+              </Button>
+              <Button
+                size="xs"
+                group="connected"
+                groupActive={state.theme.m3Contrast.toFixed(1) === "0.5"}
+                onPress={() => state.theme.setM3Contrast(0.5)}
+              >
+                <Trans>More Contrast</Trans>
+              </Button>
+              <Button
+                size="xs"
+                group="connected-end"
+                groupActive={state.theme.m3Contrast.toFixed(1) === "1.0"}
+                onPress={() => state.theme.setM3Contrast(1.0)}
+              >
+                <Trans>High Contrast</Trans>
+              </Button>
+            </Row>
+
+            <Row justify="stretch">
+              <Button
+                size="xs"
+                group="connected-start"
+                groupActive={state.theme.m3Variant === "monochrome"}
+                onPress={() => state.theme.setM3Variant("monochrome")}
+              >
+                <Trans>Monochrome</Trans>
+              </Button>
+              <Button
+                size="xs"
+                group="connected"
+                groupActive={state.theme.m3Variant === "neutral"}
+                onPress={() => state.theme.setM3Variant("neutral")}
+              >
+                <Trans>Neutral</Trans>
+              </Button>
+              <Button
+                size="xs"
+                group="connected"
+                groupActive={state.theme.m3Variant === "tonal_spot"}
+                onPress={() => state.theme.setM3Variant("tonal_spot")}
+              >
+                <Trans>Tonal Spot</Trans>
+              </Button>
+              {/* <Button
             size="xs"
             group="connected"
             groupActive={state.theme.m3Variant === "vibrant"}
@@ -333,15 +534,16 @@ export function AppearanceMenu() {
           >
             <Trans>Rainbow</Trans>
           </Button> */}
-            <Button
-              size="xs"
-              group="connected-end"
-              groupActive={state.theme.m3Variant === "fruit_salad"}
-              onPress={() => state.theme.setM3Variant("fruit_salad")}
-            >
-              <Trans>Fruit Salad</Trans>
-            </Button>
-          </Row>
+              <Button
+                size="xs"
+                group="connected-end"
+                groupActive={state.theme.m3Variant === "fruit_salad"}
+                onPress={() => state.theme.setM3Variant("fruit_salad")}
+              >
+                <Trans>Fruit Salad</Trans>
+              </Button>
+            </Row>
+          </Show>
           <Text class="label" size="small">
             <Trans>
               Styles and contrast reshape your color: Neutral mutes it, Fruit
@@ -761,6 +963,34 @@ function EmojiPack(props: { pack: UnicodeEmojiPacks }) {
     </MenuItem>
   );
 }
+
+/**
+ * A background colour to pick. Its own button rather than a coloured
+ * `Button`: the near-black swatches vanish against the settings page without
+ * the ring, and the selected one needs a mark that is not just its shape.
+ */
+const Swatch = styled("button", {
+  base: {
+    width: "40px",
+    height: "40px",
+    flexShrink: 0,
+    padding: 0,
+    border: 0,
+    borderRadius: "var(--borderRadius-full)",
+    cursor: "pointer",
+    boxShadow:
+      "inset 0 0 0 1px color-mix(in srgb, var(--md-sys-color-on-surface) 30%, transparent)",
+
+    "&[aria-pressed=true]": {
+      outline: "3px solid var(--md-sys-color-primary)",
+      outlineOffset: "2px",
+    },
+    "&:focus-visible": {
+      outline: "2px solid var(--md-sys-color-on-surface)",
+      outlineOffset: "2px",
+    },
+  },
+});
 
 const Preview = styled("div", {
   base: {

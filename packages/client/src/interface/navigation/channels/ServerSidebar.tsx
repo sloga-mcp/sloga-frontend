@@ -28,6 +28,9 @@ import { styled } from "styled-system/jsx";
 
 import { ContextMenu, ContextMenuButton } from "@revolt/app/menus/ContextMenu";
 import { useClient } from "@revolt/client";
+import { shieldLabel } from "@revolt/client/protectedCopy";
+import { shieldPresentation } from "@revolt/client/protectedShield";
+import { useProtectedShield } from "@revolt/client/useProtectedChannel";
 import { useDevice } from "@revolt/common";
 import { KeybindAction, createKeybind } from "@revolt/keybinds";
 import { TextWithEmoji } from "@revolt/markdown";
@@ -65,6 +68,7 @@ import {
   useLayoutSides,
   useSnackbar,
 } from "@revolt/ui";
+import { ProtectedShieldIcon } from "@revolt/ui/components/features/protected/ProtectedShieldIcon";
 import { VoiceChannelPreview } from "@revolt/ui/components/features/voice/VoiceChannelPreview";
 import { createDragHandle } from "@revolt/ui/components/utils/Draggable";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
@@ -112,6 +116,28 @@ function isGatedFor(
     LAYOUT_SECTIONS.MATURE,
   );
 }
+
+// protected-pure:begin
+/**
+ * The colour for a Protected channel row's NAME (W4 plan D14, product
+ * choice 5), or undefined to leave the name on the row's own colour.
+ *
+ * The name colour is the unread signal (`MenuButton`'s `--color` per
+ * attention), so the tint applies only while the row is `normal`; an
+ * unread, in-call, muted or selected row keeps its colour and the shield
+ * alone carries the state. Which states tint is `shieldPresentation`'s
+ * `tintName` (re-securing never does). `presentation` is null for a row
+ * with no shield.
+ */
+function protectedNameTint(
+  presentation: { tintName: boolean; hueVar: string } | null | undefined,
+  attention: "muted" | "normal" | "active" | "selected",
+): string | undefined {
+  if (!presentation || presentation.tintName !== true) return undefined;
+  if (attention !== "normal") return undefined;
+  return `color-mix(in srgb, var(${presentation.hueVar}) 70%, var(--md-sys-color-on-surface))`;
+}
+// protected-pure:end
 
 interface Props {
   /**
@@ -2119,6 +2145,21 @@ function Entry(
             : "normal",
   );
 
+  // Protected channel shield (W4 plan D14, lane C2). `useProtectedShield` is
+  // read-only (the bridge map and SDK flags, no request), so every row may
+  // call it; the open/refresh lifecycle belongs to TextChannel alone. Null
+  // for a channel that is neither protected nor pinned, which leaves the
+  // row exactly as it was.
+  const protectedShield = useProtectedShield(() => props.channel.id);
+  const protectedState = () => protectedShield()?.state;
+  const protectedTint = createMemo(() => {
+    const state = protectedState();
+    return protectedNameTint(
+      state ? shieldPresentation(state) : null,
+      attentionState(),
+    );
+  });
+
   return (
     <Column
       gap="sm"
@@ -2187,6 +2228,18 @@ function Entry(
         icon={
           <>
             <Switch fallback={<Symbol>edit</Symbol>}>
+              {/* Protected channels are text channels, so the shield takes
+                  the `edit` glyph's place; it is matched first so no other
+                  glyph can ever hide the state. A custom icon and the
+                  password lock still render beside it. */}
+              <Match when={protectedState()}>
+                {(state) => (
+                  <ProtectedShieldIcon
+                    state={state()}
+                    title={shieldLabel(state())}
+                  />
+                )}
+              </Match>
               <Match when={props.channel.isVoice}>
                 <Symbol color={inCall() ? inCallIconColour() : undefined}>
                   {isAfkVoiceChannel() ? "mic_off" : "mic"}
@@ -2261,7 +2314,12 @@ function Entry(
           </Show>
         }
       >
-        <OverflowingText>
+        {/* The tint is an inline colour on the name alone, set only while
+            the row is `normal`; otherwise there is no style attribute and
+            the name keeps `MenuButton`'s `--color` (the unread signal). */}
+        <OverflowingText
+          style={protectedTint() ? { color: protectedTint() } : undefined}
+        >
           <TextWithEmoji content={props.channel.name!} />
         </OverflowingText>
       </MenuButton>

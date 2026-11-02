@@ -16,10 +16,6 @@ import {
  * `buttons` frame: Tauri on Windows, which builds the window without an OS
  * title bar). Rendered at the right end of the window's own title bar.
  *
- * Plain buttons drawn like the Windows 11 caption buttons, not IconButton:
- * its press delay and round ripple are wrong for caption buttons. Each one is
- * explicitly no-drag, as the bar around them is a caption region.
- *
  * Minimize and maximize go through main's shell bridge (the child window has
  * no IPC of its own). Close is the caller's: it goes through the chat window
  * store, so the host closes the window the same way as any other close.
@@ -30,10 +26,6 @@ export function WindowControls(props: {
   label: string;
   onClose: () => void;
 }): JSX.Element {
-  const { t } = useLingui();
-
-  const maximized = () => windowMaximized(props.label);
-
   function minimize() {
     const label = props.label;
     void chatShell.minimize(label).then((result) => {
@@ -54,7 +46,36 @@ export function WindowControls(props: {
     });
   }
 
-  const maximizeLabel = () => (maximized() ? t`Restore` : t`Maximize`);
+  return (
+    <CaptionButtons
+      maximized={windowMaximized(props.label)}
+      onMinimize={minimize}
+      onToggleMaximize={toggleMaximize}
+      onClose={() => props.onClose()}
+    />
+  );
+}
+
+/**
+ * The three caption buttons (minimize, maximize / restore, close) of a
+ * window's own title bar, without any window behind them: the caller says
+ * whether its window is maximized and what each button does. Used by the
+ * chat windows ({@link WindowControls}) and by main's bar (MainTitleBar).
+ *
+ * Plain buttons drawn like the Windows 11 caption buttons, not IconButton:
+ * its press delay and round ripple are wrong for caption buttons. Each one is
+ * explicitly no-drag, as the bar around them is a caption region.
+ */
+export function CaptionButtons(props: {
+  /** Whether the window is maximized: the middle button restores it */
+  maximized: boolean;
+  onMinimize: () => void;
+  onToggleMaximize: () => void;
+  onClose: () => void;
+}): JSX.Element {
+  const { t } = useLingui();
+
+  const maximizeLabel = () => (props.maximized ? t`Restore` : t`Maximize`);
 
   return (
     <div class={group()}>
@@ -64,7 +85,7 @@ export function WindowControls(props: {
         class={captionButton()}
         aria-label={t`Minimize`}
         title={t`Minimize`}
-        onClick={minimize}
+        onClick={() => props.onMinimize()}
       >
         <svg {...GLYPH}>
           <path d="M0 5.5h10" />
@@ -76,10 +97,10 @@ export function WindowControls(props: {
         class={captionButton()}
         aria-label={maximizeLabel()}
         title={maximizeLabel()}
-        onClick={toggleMaximize}
+        onClick={() => props.onToggleMaximize()}
       >
         <Show
-          when={maximized()}
+          when={props.maximized}
           fallback={
             <svg {...GLYPH}>
               <rect x="0.5" y="0.5" width="9" height="9" />

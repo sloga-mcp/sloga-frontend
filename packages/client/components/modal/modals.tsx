@@ -73,6 +73,7 @@ import { MFARecoveryModal } from "./modals/MFARecovery";
 import { OnboardingModal } from "./modals/Onboarding";
 import { PolicyChangeModal } from "./modals/PolicyChange";
 import { PollVotersModal } from "./modals/PollVoters";
+import { ProtectedSeatPickerModal } from "./modals/ProtectedSeatPicker";
 import { RemoveMemberModal } from "./modals/RemoveMember";
 import { RenameSessionModal } from "./modals/RenameSession";
 import { ReportContentModal } from "./modals/ReportContent";
@@ -233,6 +234,8 @@ export function RenderModal(props: ActiveModal & { onClose: () => void }) {
       return <E2EEEnableGroupModal {...modalProps} />;
     case "e2ee_group_plaintext_confirm":
       return <E2EEGroupPlaintextConfirmModal {...modalProps} />;
+    case "protected_seat_picker":
+      return <ProtectedSeatPickerModal {...modalProps} />;
     case "image_editor":
       return <ImageEditorModal {...modalProps} />;
     case "image_viewer":

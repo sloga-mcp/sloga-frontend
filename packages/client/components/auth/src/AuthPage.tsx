@@ -4,7 +4,7 @@ import { JSX, Show } from "solid-js";
 import { Trans } from "@lingui-solid/solid/macro";
 import { styled } from "styled-system/jsx";
 
-import { Titlebar } from "@revolt/app/interface/desktop/Titlebar";
+import { ConnectionIndicator } from "@revolt/app/interface/ConnectionIndicator";
 import { useLocation } from "@revolt/routing";
 import { useState } from "@revolt/state";
 import { IconButton, iconSize } from "@revolt/ui";
@@ -194,7 +194,7 @@ export function AuthPage(props: { children: JSX.Element }) {
         height: "100%",
       }}
     >
-      <Titlebar />
+      <ConnectionIndicator />
       <Base
         style={{ "--url": `url('${background}')` }}
         css={{ scrollbar: "hidden" }}
