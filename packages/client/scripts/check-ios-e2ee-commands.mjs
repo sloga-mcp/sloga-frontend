@@ -2,7 +2,10 @@
 /**
  * Gates G6, G7 and G8 of the iOS E2EE port (plan
  * discord-features-plans/ios-e2ee-messaging-port.md D1, D5, §5, D10, and the
- * W3 binding rules). A source scan of the Swift plugin package
+ * W3 binding rules), extended for iOS call E2EE phase 2 (plan
+ * ios-call-e2ee-phase2.md, Wave 2 contracts C-W2-1..8: the `.call` route,
+ * the callKeysChanged event, the SlogaCallAudio plugin and the
+ * __slogaIosCaps user script). A source scan of the Swift plugin package
  * (ios/App/SlogaE2ee), its generated uniffi bindings and the frontend sender
  * (components/client/e2ee.ts), so a routing or threading mistake in the iOS
  * shell fails here and not on a phone.
@@ -25,15 +28,18 @@
  *
  * G6, command table (E2eeCommands.swift, E2eePlugin.swift, bindings, e2ee.ts)
  *   G6-table-shape     each `table` line is exactly `("e2ee_x", .generic),`,
- *                      `.native`, `.out` or `.dedicated("m")`, one per line;
- *                      `dedicatedMethods` is one `"m",` per line
- *   G6-table-duplicate a name listed twice
- *   G6-count           generic 37 / native 2 / dedicated 6, equal to the
- *                      static genericCount/nativeCount/dedicatedCount;
- *                      outCount equals the number of `.out` lines
- *   G6-table-route     the generic, native and dedicated sets are exactly the
- *                      W3 contract's (names and dedicated method per name)
- *   G6-dedicated-order `dedicatedMethods` is the 12 methods in contract order
+ *                      `.native`, `.call`, `.out` or `.dedicated("m")`, one
+ *                      per line; `dedicatedMethods` is one `"m",` per line
+ *   G6-table-duplicate a name listed twice (any route)
+ *   G6-count           generic 37 / native 2 / call 22 / dedicated 7 / out 32,
+ *                      each equal to its static <route>Count (all five must
+ *                      exist)
+ *   G6-table-route     the generic, native, call and dedicated sets are
+ *                      exactly the contract's (names and dedicated method per
+ *                      name; phase 2 adds the 22 call-plane names and
+ *                      e2ee_call_confirm_downgrade → callConfirmDowngrade)
+ *   G6-dedicated-order `dedicatedMethods` is the 13 methods in contract order
+ *                      (callConfirmDowngrade right after acceptIdentityChange)
  *   G6-dedicated-method each dedicated method is an
  *                      `@objc func m(_ call: CAPPluginCall)`; no other @objc
  *                      CAPPluginCall method but `call`; pluginMethods is
@@ -49,8 +55,14 @@
  *                      (checked for every method), and the class and its
  *                      protocol export the same methods
  *   G6-generic-arm     each generic arm calls exactly its own engine method
+ *   G6-call-case       runCallPlane's `switch name`, as G6-generic-case, with
+ *                      exactly the 22 call names
+ *   G6-call-binding    every call name maps to an E2eeEngine method, as
+ *                      G6-generic-binding
+ *   G6-call-arm        each call arm calls exactly its own engine method
  *   G6-plugin-engine-call an engine call in E2eePlugin.swift is either in a
- *                      generic arm or a gated call in its dedicated method
+ *                      generic or call arm or a gated call in its dedicated
+ *                      method
  *   G6-fe-unlisted     every `e2ee_*` string literal in e2ee.ts is in the table
  *                      (as IN or explicitly `.out`)
  *   G6-fe-dynamic      every `this.#invoke(` names its command with a literal;
@@ -66,7 +78,8 @@
  *   G7-gated-case      no dedicated (confirm-gated) name is a case label
  *                      anywhere in E2eePlugin.swift
  *   G7-gated-call      wipe/downgrade/enableGroup/addGroupMember/markVerified/
- *                      acceptIdentityChange on an engine value only inside
+ *                      acceptIdentityChange/callConfirmDowngrade on an engine
+ *                      value only inside
  *                      their own dedicated @objc method, inside an
  *                      onDedicatedThread/runOnDedicatedThread closure;
  *                      confirmPeerDowngrade likewise in
@@ -80,7 +93,12 @@
  *                      onDedicatedThread/runOnDedicatedThread, which reaches a
  *                      new `Thread`
  *   G7-generic-worker  runGeneric is called once, from an
- *                      `engineWorker.submit` closure
+ *                      `engineWorker.submit` closure (the NEAREST worker
+ *                      closure around the call decides)
+ *   G7-call-worker     runCallPlane likewise, from a `callWorker.submit`
+ *                      closure; and E2eeRuntime declares `let callWorker =
+ *                      WorkerPool(name: "gg.sloga.e2ee.call", threads: 1)`
+ *                      once (its own serial queue, C-W2-2)
  *   G7-precondition    every function or closure body that calls a method on
  *                      an engine value starts with exactly
  *                      `dispatchPrecondition(condition: .notOnQueue(.main))`
@@ -92,12 +110,20 @@
  *                      whitespace-tolerant); in code also no `.main.asyncAndWait`,
  *                      `waitUntilDone: true` or `waitUntilFinished: true`
  * G8, unreachable from the webview
- *   G8a-export         the bindings export no call*, mls*, rc* or
- *                      pinCallIdentities function or uniffi symbol
- *   G8a-route          every e2ee_call_* / e2ee_mls_* / e2ee_rc_* /
- *                      e2ee_pin_call_identities table name is `.out`
- *   G8a-unclassified   every exported E2eeEngine method is a generic target,
- *                      a gated method or a native-only method listed here
+ *   G8a-export         the call/mls/rc/pinCallIdentities-shaped surface of the
+ *                      bindings (functions and uniffi symbols) is exactly the
+ *                      23 contract call-plane methods (CALL_EXPORTS), each
+ *                      exported and each routed as the contract says (22
+ *                      `.call`, callConfirmDowngrade `.dedicated`); any rc,
+ *                      extra call or mls, or free `func_call_` symbol fails
+ *   G8a-route          a call/mls/rc/pin-shaped table name is routed only as
+ *                      the contract says: the 22 call-plane names `.call`,
+ *                      e2ee_call_confirm_downgrade `.dedicated`, every other
+ *                      one (rc_*, mls_group_kind, …) `.out` (phase 2 reversed
+ *                      the W3 "all .out")
+ *   G8a-unclassified   every exported E2eeEngine method is a generic or call
+ *                      target, a gated method or a native-only method listed
+ *                      here
  *   G8b-native-only    recovery* and backupTakePending* are named only in
  *                      RecoverySheet.swift, serveAttachmentForRender only in
  *                      AttachmentSchemeHandler.swift, attachmentCiphertext/
@@ -113,16 +139,27 @@
  *                      e2ee_backup_refresh_if_due arm: it returns a ciphertext
  *                      bundle, not an engine value; RecoverySheet.
  *                      bundleWaitingHook only from `load`)
- *   G8b-event          the only page event is "backupBundleWaiting" with an
- *                      EMPTY payload: `notifyListeners(` appears only in
- *                      E2eePlugin.load, inside the `[weak self] event, data in`
- *                      closure handed to backupBundleWaitingEmitter, forwarding
- *                      exactly `(event, data: data)`; inside that emitter every
+ *   G8b-event          exactly two page events. (1) "backupBundleWaiting" with
+ *                      an EMPTY payload: `notifyListeners(` appears in
+ *                      E2eePlugin.swift only in load, inside the `[weak self]
+ *                      event, data in` closure handed to
+ *                      backupBundleWaitingEmitter, forwarding exactly
+ *                      `(event, data: data)`; inside that emitter every
  *                      mention of its `emit` parameter is exactly
  *                      `emit(Self.backupBundleWaitingEvent, [:])`; and
  *                      backupBundleWaitingEvent is that literal name (audit M2:
- *                      never the bundle, never an id); triggerJSEvent and the
- *                      other page-script channels are not used anywhere
+ *                      never the bundle, never an id). (2) "callKeysChanged":
+ *                      emitted exactly once, from KeysChangedRelay.swift, in
+ *                      the DispatchQueue.main.async closure inside the
+ *                      `{ groupId, epoch in }` closure of `static let shared =
+ *                      KeysChangedRelay …`, as exactly
+ *                      `(KeysChangedRelay.event, data: ["group_id": groupId,
+ *                      "epoch": epoch | NSNumber(value: epoch)])`; the name
+ *                      is the constant, declared once as `static let event =
+ *                      "callKeysChanged"`, and that literal appears nowhere
+ *                      else. No other file calls notifyListeners;
+ *                      triggerJSEvent and the other page-script channels are
+ *                      not used anywhere
  *   G8b-reach          REACHABILITY over a call graph of every Swift function
  *                      under the sources dir (below). (a) From each root, the
  *                      only native-only methods reachable are its own:
@@ -167,6 +204,38 @@
  *                      function reference), initialized or not, is pinned in
  *                      STORED_CLOSURES, and no enum case has a function
  *                      payload
+ *   G8b-frame-keys     callFrameKeys (frame-key material: the one key egress
+ *                      to the webview) is named only in runCallPlane's
+ *                      `case "e2ee_call_frame_keys"`, and in the call graph
+ *                      the ONLY node that can reach a mention of it is that
+ *                      arm (a helper, a stored closure, a second arm or a
+ *                      second runCallPlane caller all fail)
+ *   G8c-audio-plugin   the Capacitor plugin classes are exactly E2eePlugin and
+ *                      SlogaCallAudioPlugin; the latter (CallAudioSession.swift)
+ *                      is `@objc(SlogaCallAudioPlugin) … class …: CAPPlugin,
+ *                      CAPBridgedPlugin`, jsName "SlogaCallAudio",
+ *                      pluginMethods exactly the literal promise methods start
+ *                      and stop, no other @objc member, and no name of the
+ *                      E2EE core; it is armed then built once, in the
+ *                      bridge view controller's guarded block with the E2ee
+ *                      plugin
+ *   G8c-ios-caps       one string literal names __slogaIosCaps (in
+ *                      SlogaBridgeViewController.swift), decoded exactly
+ *                      `Object.defineProperty(window,"__slogaIosCaps",{value:
+ *                      Object.freeze({mediaE2EE:\(b)}),writable:false,
+ *                      configurable:false,enumerable:false});` with ONE
+ *                      interpolation, a literal bool (`let x = c ? "true" :
+ *                      "false"`, c resolving, directly or through the one
+ *                      Bool parameter of the function returning the literal,
+ *                      to the Info.plist read `Bundle.main.object(
+ *                      forInfoDictionaryKey: "SlogaMediaE2EE") as? String ==
+ *                      "YES"`); one WKUserScript( in the sources, exactly
+ *                      (source: <it>, injectionTime: .atDocumentStart,
+ *                      forMainFrameOnly: true); one addUserScript( beside it;
+ *                      slogaShell named nowhere. The script's location is not
+ *                      pinned (Capacitor replaces webViewConfiguration's
+ *                      userContentController, so it is added in
+ *                      capacitorDidLoad)
  *   G8b-ffi            the sources never touch the raw FFI: no
  *                      acutest_e2ee_iosFFI (import or name), uniffi*,
  *                      ffi_acutest_*, RustCallStatus, rustCall*, RustBuffer,
@@ -180,7 +249,7 @@
  *     accessors belong to their enclosing function; nested funcs are their
  *     own nodes), every stored-property initializer outside a function (one
  *     node per property, reached by naming the property), and one node per
- *     runGeneric / nativeJob arm;
+ *     runGeneric / runCallPlane / nativeJob arm;
  *   - edges: EVERY mention of a function or property name counts, called or
  *     not (a function passed as a value, a #selector, a default argument),
  *     except a declaration or an argument label. `T(` and `T.init` reach T's
@@ -191,11 +260,14 @@
  *     receiver, an implicit `.member`, or a resolution that finds nothing) →
  *     EVERY function of that name;
  *   - a sink is any mention of a native-only method's name in a node;
- *   - roots: the plugin's `call` (its runGeneric/nativeJob calls are replaced
- *     by the arms, each its own root), every arm, every @objc dedicated
- *     method, every func named webView or userContentController, every
- *     `override` func of a type inheriting from a CAP* class, and the
- *     `confirm` of a NativeConfirm type (core calls it mid-command).
+ *   - roots: the plugin's `call` (its runGeneric/runCallPlane/nativeJob
+ *     calls are replaced by the arms, each its own root), every arm, every
+ *     `@objc func m(_: CAPPluginCall)` of ANY file (the dedicated methods,
+ *     SlogaCallAudio's start/stop), every func named webView or
+ *     userContentController, every `override` func of a type inheriting from
+ *     a CAP* class, and the `confirm` of a NativeConfirm type and the
+ *     `keysChanged` of a NativeKeysChanged type (core calls both
+ *     mid-command).
  *   Limits: a call through a value whose name is not a function or property
  *   of these sources (a closure parameter or a stored property with no
  *   initializer) adds no edge; (b) is what still catches the code that made
@@ -281,6 +353,35 @@ const GENERIC = [
   "e2ee_backup_rederive_republish",
 ];
 const NATIVE = ["e2ee_attachment_copy_image", "e2ee_attachment_save"];
+/**
+ * The MLS call plane on the `call` mux, run on the CALL worker by
+ * runCallPlane (phase 2 C-W2-3): each name → the engine method of the same
+ * camelCased name.
+ */
+const CALL = [
+  "e2ee_pin_call_identities",
+  "e2ee_call_create",
+  "e2ee_call_join_intent",
+  "e2ee_call_verify_join_intent",
+  "e2ee_call_admit",
+  "e2ee_call_process",
+  "e2ee_call_commit_won",
+  "e2ee_call_commit_lost",
+  "e2ee_call_pending_commit_epoch",
+  "e2ee_call_leave_cleanup",
+  "e2ee_call_local_groups",
+  "e2ee_call_heartbeat",
+  "e2ee_call_remove",
+  "e2ee_call_state",
+  "e2ee_call_roster_identities",
+  "e2ee_call_frame_keys",
+  "e2ee_call_announce",
+  "e2ee_call_clear_downgrade",
+  "e2ee_call_non_enrolled",
+  "e2ee_mls_publish_key_packages",
+  "e2ee_mls_replenish",
+  "e2ee_mls_expire_key_packages",
+];
 /** FE command → its dedicated plugin method. */
 const DEDICATED = {
   e2ee_wipe: "wipe",
@@ -289,6 +390,7 @@ const DEDICATED = {
   e2ee_add_group_member: "addGroupMember",
   e2ee_mark_verified: "markVerified",
   e2ee_accept_identity_change: "acceptIdentityChange",
+  e2ee_call_confirm_downgrade: "callConfirmDowngrade",
 };
 /** The plugin's dedicated methods, in contract order (`call` excluded). */
 const DEDICATED_METHODS = [
@@ -299,13 +401,26 @@ const DEDICATED_METHODS = [
   "addGroupMember",
   "markVerified",
   "acceptIdentityChange",
+  "callConfirmDowngrade",
   "backupCreate",
   "backupRotate",
   "backupRestore",
   "attachmentUpload",
   "attachmentFetch",
 ];
-const COUNTS = { generic: 37, native: 2, dedicated: 6 };
+const COUNTS = { generic: 37, native: 2, call: 22, dedicated: 7, out: 32 };
+/** Every route of the table, in the order the counts are reported. */
+const ROUTES = ["generic", "native", "call", "dedicated", "out"];
+
+/**
+ * The call-plane engine methods the bindings must export (G8a-export): the
+ * 22 `.call` targets and the confirm-gated callConfirmDowngrade. Every other
+ * call/mls/rc-shaped export is refused.
+ */
+const CALL_EXPORTS = [
+  ...CALL.map((name) => lowerCamel(name.slice("e2ee_".length))),
+  "callConfirmDowngrade",
+];
 
 /** Confirm-gated engine method → the one plugin method that may call it. */
 const GATED = {
@@ -316,6 +431,47 @@ const GATED = {
   markVerified: "markVerified",
   acceptIdentityChange: "acceptIdentityChange",
   confirmPeerDowngrade: "confirmPeerDowngradeAccept",
+  callConfirmDowngrade: "callConfirmDowngrade",
+};
+
+/** The one key egress to the webview, and the only arm that may reach it. */
+const FRAME_KEYS_METHOD = "callFrameKeys";
+const FRAME_KEYS_COMMAND = "e2ee_call_frame_keys";
+const FRAME_KEYS_ARM = `E2eePlugin.runCallPlane[${FRAME_KEYS_COMMAND}]`;
+
+/** G8b-event: the key-push event (phase 2 C-W2-1). */
+const KEYS_EVENT = {
+  file: "KeysChangedRelay.swift",
+  type: "KeysChangedRelay",
+  name: "callKeysChanged",
+};
+
+/** G8c-audio-plugin: the call audio plugin (phase 2 C-W2-5). */
+const AUDIO = {
+  file: "CallAudioSession.swift",
+  type: "SlogaCallAudioPlugin",
+  jsName: "SlogaCallAudio",
+  methods: ["start", "stop"],
+};
+/** The Capacitor plugin classes of these sources; any other is new webview surface. */
+const PLUGIN_CLASSES = ["E2eePlugin", AUDIO.type];
+/** Names CallAudioSession.swift may not mention: it never reaches the core. */
+const AUDIO_FORBIDDEN =
+  /\b(?:E2eeEngine|E2eeEngineProtocol|E2eeRuntime|E2eePlugin|KeysChangedRelay|RecoverySheet|AttachmentTransfer|NativeConfirmPresenter)\b/g;
+
+/** G8c-ios-caps: the one page global (phase 2 C-W2-6). */
+const CAPS = {
+  file: "SlogaBridgeViewController.swift",
+  func: "webViewConfiguration",
+  global: "__slogaIosCaps",
+  before:
+    'Object.defineProperty(window,"__slogaIosCaps",{value:Object.freeze({mediaE2EE:',
+  after: "}),writable:false,configurable:false,enumerable:false});",
+  /** The bool, whitespace-free outside literals; parenthesized form too. */
+  bools: [
+    'Bundle.main.object(forInfoDictionaryKey:"SlogaMediaE2EE")as?String=="YES"',
+    '(Bundle.main.object(forInfoDictionaryKey:"SlogaMediaE2EE")as?String)=="YES"',
+  ],
 };
 /** The generic arm that may call confirmPeerDowngrade, decline only. */
 const PEER_DOWNGRADE_CASE = "e2ee_confirm_peer_downgrade";
@@ -376,7 +532,7 @@ const FE_NON_COMMANDS = [];
 const OUT_EXPORT_NAME = /^(?:(?:call|mls|rc)[A-Z0-9]\w*|pinCallIdentities)$/;
 const OUT_COMMAND = /^e2ee_(?:(?:call|mls|rc)_\w+|pin_call_identities)$/;
 const OUT_FFI_SYMBOL =
-  /\b\w*_(?:method_e2eeengine|func)_(?:(?:call|mls|rc)_\w*|pin_call_identities)\b/g;
+  /\b\w*_(method_e2eeengine|func)_((?:call|mls|rc)_\w*|pin_call_identities)\b/g;
 
 const DEFAULTS = {
   sources: "ios/App/SlogaE2ee/Sources/SlogaE2ee",
@@ -489,6 +645,10 @@ function lexSwift(src, rel) {
     let segment = k;
     let value = "";
     let interpolated = false;
+    // Literal text runs and interpolated code spans, in order (G8c-ios-caps
+    // needs to know WHERE the interpolations sit; `value` drops them).
+    const parts = [];
+    let text = "";
     for (;;) {
       if (k >= n) fail(start, "unterminated string literal");
       if (!multi && src[k] === "\n") fail(start, "unterminated string literal");
@@ -498,24 +658,39 @@ function lexSwift(src, rel) {
         if (src[after] === "(") {
           interpolated = true;
           blank(segment, after);
-          k = scanCode(after + 1, true) + 1;
+          const closeParen = scanCode(after + 1, true);
+          parts.push({ text });
+          parts.push({ code: [after + 1, closeParen] });
+          text = "";
+          k = closeParen + 1;
           segment = k;
           continue;
         }
         value += src.slice(k, after + 1);
+        text += src.slice(k, after + 1);
         k = after + 1;
         continue;
       }
       value += src[k];
+      text += src[k];
       k++;
     }
+    parts.push({ text });
     blank(segment, k);
     const end = k + close.length;
     blank(start, quote + openLength);
     out[start] = '"';
     blank(k, end);
     out[end - 1] = '"';
-    strings.set(start, { start, end, value, interpolated });
+    strings.set(start, {
+      start,
+      end,
+      value,
+      interpolated,
+      parts,
+      hashes,
+      multi,
+    });
     return end;
   };
 
@@ -1099,7 +1274,7 @@ function arrayLines(file, { open, close }) {
 function parseCommands(file, add) {
   const entries = [];
   const shape =
-    /^\s*\(\s*"\s*"\s*,\s*\.(generic|native|out|dedicated\s*\(\s*"\s*"\s*\))\s*\)\s*,\s*$/;
+    /^\s*\(\s*"\s*"\s*,\s*\.(generic|native|call|out|dedicated\s*\(\s*"\s*"\s*\))\s*\)\s*,\s*$/;
   const table = arrayLiteral(
     file,
     /\bstatic\s+let\s+table\s*:[^=]*=\s*\[/,
@@ -1112,7 +1287,7 @@ function parseCommands(file, add) {
     const bad = (why) => add("G6-table-shape", file, p, `${why}: ${raw}`);
     if (!m) {
       bad(
-        'table line is not `("e2ee_x", .generic|.native|.out|.dedicated("m")),`',
+        'table line is not `("e2ee_x", .generic|.native|.call|.out|.dedicated("m")),`',
       );
       continue;
     }
@@ -1158,7 +1333,7 @@ function parseCommands(file, add) {
   }
 
   const counts = {};
-  for (const k of ["generic", "native", "dedicated", "out"]) {
+  for (const k of ROUTES) {
     const m = new RegExp(
       `\\bstatic\\s+let\\s+${k}Count\\s*=\\s*(\\d+)\\b`,
     ).exec(file.code);
@@ -1177,7 +1352,7 @@ function checkTable(file, parsed, add) {
     byName.set(e.name, e);
   }
   const ofRoute = (r) => parsed.entries.filter((e) => e.route === r);
-  for (const k of ["generic", "native", "dedicated", "out"]) {
+  for (const k of ROUTES) {
     const actual = ofRoute(k).length;
     const stat = parsed.counts[k];
     if (!stat) {
@@ -1226,6 +1401,7 @@ function checkTable(file, parsed, add) {
   };
   sameSet("generic", GENERIC);
   sameSet("native", NATIVE);
+  sameSet("call", CALL);
   sameSet("dedicated", Object.keys(DEDICATED));
   for (const e of ofRoute("dedicated")) {
     if (DEDICATED[e.name] && DEDICATED[e.name] !== e.method) {
@@ -1237,13 +1413,22 @@ function checkTable(file, parsed, add) {
       );
     }
   }
+  // G8a-route (phase 2 reversal): a call/mls/rc-shaped name is routed only
+  // as the contract says (the 22 call-plane names .call, the whole-call
+  // downgrade .dedicated); every other one, rc_* included, stays .out.
   for (const e of parsed.entries) {
-    if (OUT_COMMAND.test(e.name) && e.route !== "out") {
+    if (!OUT_COMMAND.test(e.name)) continue;
+    const want = CALL.includes(e.name)
+      ? "call"
+      : has(DEDICATED, e.name)
+        ? "dedicated"
+        : "out";
+    if (e.route !== want) {
       add(
         "G8a-route",
         file,
         e.p,
-        `${e.name} is .${e.route}; call/mls/rc names are .out`,
+        `${e.name} is .${e.route}; the contract routes it .${want} (only the 22 call-plane names are .call and e2ee_call_confirm_downgrade .dedicated; every other call/mls/rc name is .out)`,
       );
     }
   }
@@ -1272,7 +1457,7 @@ function checkTable(file, parsed, add) {
 
 // --------------------------------------------------------------- bindings
 
-function parseBindings(file, add) {
+function parseBindings(file, add, table) {
   const cls = file.frames.find(
     (f) =>
       f.kind === "type" &&
@@ -1353,15 +1538,39 @@ function parseBindings(file, add) {
     );
   }
 
-  // G8a: nothing call/mls/rc-shaped is exported at all.
+  checkCallExports(file, methods, table, add);
+  return methods;
+}
+
+/**
+ * G8a-export (phase 2): the call/mls/rc-shaped surface of the bindings is
+ * exactly CALL_EXPORTS, and each of them is routed as the contract says
+ * (`.call`, or callConfirmDowngrade `.dedicated`). Anything else of that
+ * shape (an rc* export, an extra call*, a free `func_call_*` symbol) fails,
+ * as does a contract method the bindings do not export.
+ */
+function checkCallExports(file, methods, table, add) {
+  const allowedSnakes = new Set([
+    ...CALL.map((name) => name.slice("e2ee_".length)),
+    ...Object.keys(DEDICATED)
+      .filter((name) => OUT_COMMAND.test(name))
+      .map((name) => name.slice("e2ee_".length)),
+  ]);
   const seen = new Set();
   for (const m of file.code.matchAll(
     /\bfunc\s+((?:call|mls|rc)[A-Z0-9]\w*|pinCallIdentities)\s*[(<]/g,
   )) {
+    if (CALL_EXPORTS.includes(m[1])) continue;
     seen.add(file.line(m.index));
-    add("G8a-export", file, m.index, `the bindings export ${m[1]}`);
+    add(
+      "G8a-export",
+      file,
+      m.index,
+      `the bindings export ${m[1]}, not a contract call-plane method`,
+    );
   }
   for (const m of file.code.matchAll(OUT_FFI_SYMBOL)) {
+    if (m[1] === "method_e2eeengine" && allowedSnakes.has(m[2])) continue;
     const line = file.line(m.index);
     if (seen.has(line)) continue;
     seen.add(line);
@@ -1369,15 +1578,45 @@ function parseBindings(file, add) {
       "G8a-export",
       file,
       m.index,
-      `the bindings carry uniffi symbol ${m[0]}`,
+      `the bindings carry uniffi symbol ${m[0]}, not a contract call-plane method`,
     );
   }
   for (const method of methods.values()) {
-    if (OUT_EXPORT_NAME.test(method.name)) {
+    if (!OUT_EXPORT_NAME.test(method.name)) continue;
+    if (!CALL_EXPORTS.includes(method.name)) {
       add("G8a-export", file, method.p, `E2eeEngine exports ${method.name}`);
+      continue;
+    }
+    const command = `e2ee_${method.snake ?? ""}`;
+    const want =
+      method.name === GATED.callConfirmDowngrade
+        ? `.dedicated("${method.name}")`
+        : ".call";
+    const entry = table.get(command);
+    const got = !entry
+      ? "missing"
+      : entry.route === "dedicated"
+        ? `.dedicated("${entry.method}")`
+        : `.${entry.route}`;
+    if (got !== want) {
+      add(
+        "G8a-export",
+        file,
+        method.p,
+        `E2eeEngine exports ${method.name}; its command ${command} must be ${want}, is ${got}`,
+      );
     }
   }
-  return methods;
+  for (const name of CALL_EXPORTS) {
+    if (!methods.has(name)) {
+      add(
+        "G8a-export",
+        file,
+        null,
+        `contract call-plane method ${name} is not an E2eeEngine export`,
+      );
+    }
+  }
 }
 
 // ------------------------------------------------------- engine values (G7)
@@ -1757,6 +1996,10 @@ const STORED_CLOSURES = [
   "AttachmentSchemeHandler.decrypt",
   "FlowRegistry.provider",
   "FlowRegistry.waitingHook",
+  // Phase 2 key push: the injectable delivery closure and the shared relay
+  // built from one (KeysChangedRelay.swift; G8b-event pins what it emits).
+  "KeysChangedRelay.deliver",
+  "KeysChangedRelay.shared",
   "NativeConfirmPresenter.presenter",
   "RecoverySheetController.dismissWaiters",
   "WorkerPool.jobs",
@@ -1765,6 +2008,9 @@ const STORED_CLOSURES = [
 const RAW_FFI =
   /\bimport\s+(?:(?:class|struct|enum|protocol|func|var|let|typealias)\s+)?acutest_e2ee_iosFFI\b|\bacutest_e2ee_iosFFI\b|\buniffi\w*|\bffi_acutest_\w*|\bRustCallStatus\b|\brustCall\w*|\bRustBuffer\b|\bForeignBytes\b|\bFfiConverter\w*|@_silgen_name\b|@_cdecl\b|\bdl(?:sym|open)\b/g;
 const RAW_FFI_LITERAL = /uniffi|ffi_acutest_|acutest_e2ee_iosFFI/;
+/** `@objc func m(_ call: CAPPluginCall)`: a method Capacitor can call. */
+const OBJC_PLUGIN_CALL =
+  /@objc(?:\([^)]*\))?(?:\s+(?:public|internal|open|final|dynamic))*\s+func\s+(\w+)\s*\(\s*_\s+\w+\s*:\s*CAPPluginCall\s*\)/g;
 
 function subtractRanges(ranges, cut) {
   const out = [];
@@ -1828,7 +2074,16 @@ function initializerEnd(code, match, from) {
 }
 
 function buildGraph(ctx) {
-  const { swift, plugin, runGeneric, armNames, nativeJob, nativeArms } = ctx;
+  const {
+    swift,
+    plugin,
+    runGeneric,
+    armNames,
+    nativeJob,
+    nativeArms,
+    runCallPlane,
+    callArmNames,
+  } = ctx;
   const nodes = [];
   const typeAt = (f, p) =>
     frameAt(f, p, (fr) => fr.kind === "type")?.name ?? null;
@@ -1915,9 +2170,15 @@ function buildGraph(ctx) {
     "runGeneric",
   );
   const nativeArmNodes = armNodes(nativeJob, nativeArms, "nativeJob");
+  const callArmNodes = armNodes(
+    runCallPlane,
+    [...callArmNames.values()],
+    "runCallPlane",
+  );
   const dispatchers = new Map([
     [byFrame.get(runGeneric), genericArmNodes],
     [byFrame.get(nativeJob), nativeArmNodes],
+    [byFrame.get(runCallPlane), callArmNodes],
   ]);
   const callNode = byFrame.get(ctx.objc.get("call")?.frame);
 
@@ -2009,19 +2270,39 @@ function buildGraph(ctx) {
   addRoot(callNode);
   addRoot(byFrame.get(runGeneric));
   addRoot(byFrame.get(nativeJob));
+  addRoot(byFrame.get(runCallPlane));
   genericArmNodes.forEach(addRoot);
   nativeArmNodes.forEach(addRoot);
+  callArmNodes.forEach(addRoot);
   for (const [name, o] of ctx.objc)
     if (name !== "call") addRoot(byFrame.get(o.frame));
+  // Any Capacitor-callable method of ANY file (the SlogaCallAudio plugin's
+  // start/stop, phase 2) is a webview entry too.
+  for (const f of swift) {
+    for (const m of f.code.matchAll(OBJC_PLUGIN_CALL)) {
+      const declPos = m.index + m[0].indexOf("func");
+      const fr = f.frames.find(
+        (x) => x.kind === "func" && x.declPos === declPos,
+      );
+      if (fr) addRoot(byFrame.get(fr));
+    }
+  }
   for (const n of nodes) {
     if (n.name === "webView" || n.name === "userContentController") addRoot(n);
     if (!n.frame) continue;
     const type = frameAt(n.file, n.p, (fr) => fr.kind === "type");
-    // The NativeConfirm callback: core calls it during webview commands.
+    // The NativeConfirm and NativeKeysChanged callbacks: core calls them
+    // during webview commands.
     if (
-      n.name === "confirm" &&
-      type &&
-      /:[^{]*\bNativeConfirm\b/.test(n.file.code.slice(type.declPos, type.open))
+      ((n.name === "confirm" &&
+        /:[^{]*\bNativeConfirm\b/.test(
+          type ? n.file.code.slice(type.declPos, type.open) : "",
+        )) ||
+        (n.name === "keysChanged" &&
+          /:[^{]*\bNativeKeysChanged\b/.test(
+            type ? n.file.code.slice(type.declPos, type.open) : "",
+          ))) &&
+      type
     ) {
       addRoot(n);
     }
@@ -2126,6 +2407,46 @@ function checkReach(ctx, add) {
     }
   }
 
+  // (d) G8b-frame-keys: callFrameKeys (frame-key material, the one key
+  // egress) is reachable ONLY from runCallPlane's own arm. Every node that
+  // names it, or can reach a node that names it, must be that arm: a helper,
+  // a stored closure, a second arm or another root calling runCallPlane (a
+  // dispatcher edge reaches every arm) all fail.
+  const fkRe = new RegExp(`\\b${FRAME_KEYS_METHOD}\\b`);
+  const fkNames = new Set(
+    nodes.filter((n) =>
+      n.ranges.some(([a, b]) => fkRe.test(n.file.code.slice(a, b))),
+    ),
+  );
+  const fkReach = new Set(fkNames);
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const n of nodes) {
+      if (!fkReach.has(n) && n.edges.some((e) => fkReach.has(e))) {
+        fkReach.add(n);
+        changed = true;
+      }
+    }
+  }
+  for (const n of fkReach) {
+    if (n.id === FRAME_KEYS_ARM) continue;
+    const path = pathTo(n, (x) => fkNames.has(x));
+    add(
+      "G8b-frame-keys",
+      n.file,
+      n.p,
+      `${show(path, FRAME_KEYS_METHOD)} (only ${FRAME_KEYS_ARM} may reach ${FRAME_KEYS_METHOD})`,
+    );
+  }
+  if (![...fkNames].some((n) => n.id === FRAME_KEYS_ARM)) {
+    add(
+      "G8b-frame-keys",
+      ctx.plugin,
+      null,
+      `${FRAME_KEYS_ARM} not found or does not name ${FRAME_KEYS_METHOD}`,
+    );
+  }
+
   // (c) What those paths can hand back to the webview.
   const returnsIn = (n, owner) => {
     const found = [];
@@ -2177,11 +2498,18 @@ function checkReach(ctx, add) {
       )
       .map((f) => f.name),
   );
-  const runGenericFrame = ctx.runGeneric;
   for (const n of nodes) {
-    if (!n.arm || n.id.indexOf("runGeneric[") < 0) continue;
+    if (!n.arm) continue;
+    // A call-plane arm hands back only its own engine call's result, like a
+    // generic arm (the frame-keys arm's result is the one key egress).
+    const dispatcher = n.id.includes("runGeneric[")
+      ? ctx.runGeneric
+      : n.id.includes("runCallPlane[")
+        ? ctx.runCallPlane
+        : null;
+    if (!dispatcher) continue;
     const own = ctx.targetOf(n.arm)?.name;
-    for (const r of returnsIn(n, runGenericFrame)) {
+    for (const r of returnsIn(n, dispatcher)) {
       const code = n.file.code;
       // Cut `engine.<own>(…)` (its arguments go INTO the engine; only its
       // result comes out) and `args.<reader>(…)`; whatever is left must be
@@ -2632,9 +2960,16 @@ function checkEvents(swift, plugin, add) {
     plugin.frames.find((f) => f.kind === "func" && f.name === name);
   const load = fn("load");
   const emitter = fn("backupBundleWaitingEmitter");
+  let relaySites = 0;
   for (const f of swift) {
     for (const m of f.code.matchAll(/\bnotifyListeners\s*\(/g)) {
       const open = m.index + m[0].length - 1;
+      if (f.rel === KEYS_EVENT.file) {
+        relaySites++;
+        const why = relayEmitProblem(f, m.index, open);
+        if (why) add("G8b-event", f, m.index, why);
+        continue;
+      }
       const args = f.code.slice(open, f.match.get(open) + 1);
       const closure = frameAt(f, m.index, (fr) => fr.kind === "closure");
       const ok =
@@ -2718,6 +3053,712 @@ function checkEvents(swift, plugin, add) {
       `backupBundleWaitingEvent must be declared once as "${EVENT_NAME}"`,
     );
   }
+
+  // The second event, callKeysChanged: one emit site, in the relay.
+  if (relaySites !== 1) {
+    add(
+      "G8b-event",
+      swift.find((f) => f.rel === KEYS_EVENT.file) ?? null,
+      null,
+      `${KEYS_EVENT.file} must emit ${KEYS_EVENT.name} exactly once (found ${relaySites} notifyListeners)`,
+    );
+  }
+  // Its name is the constant KeysChangedRelay.event, declared once as the
+  // literal, and that literal names nothing else anywhere.
+  const relay = swift.find((f) => f.rel === KEYS_EVENT.file);
+  const relayType = relay?.frames.find(
+    (f) => f.kind === "type" && f.name === KEYS_EVENT.type,
+  );
+  const eventDecls = relayType
+    ? [...relay.code.matchAll(/\b(?:let|var)\s+event\b/g)].filter(
+        (m) =>
+          frameAt(relay, m.index, (fr) => fr.kind !== "control") === relayType,
+      )
+    : [];
+  const constant =
+    eventDecls.length === 1
+      ? /^static\s+let\s+event\s*(?::\s*String\s*)?=\s*(?=")/.exec(
+          relay.code
+            .slice(eventDecls[0].index - "static ".length)
+            .replace(/^\s+/, ""),
+        )
+      : null;
+  let constantOk = false;
+  if (constant) {
+    const at = relay.code.indexOf("=", eventDecls[0].index) + 1;
+    const lit = relay.strings.get(skipSpace(relay.code, at));
+    constantOk =
+      !!lit &&
+      !lit.interpolated &&
+      lit.value === KEYS_EVENT.name &&
+      /^[ \t]*(?:;|\n|$)/.test(relay.code.slice(lit.end, lit.end + 40)) &&
+      /\bstatic\s+$/.test(
+        relay.code.slice(eventDecls[0].index - 20, eventDecls[0].index),
+      );
+  }
+  if (!constantOk) {
+    add(
+      "G8b-event",
+      relay ?? null,
+      eventDecls[0]?.index ?? null,
+      `${KEYS_EVENT.type}.event must be declared once, in ${KEYS_EVENT.type}, as static let event = "${KEYS_EVENT.name}"`,
+    );
+  }
+  for (const f of swift) {
+    for (const s of f.strings.values()) {
+      if (s.value !== KEYS_EVENT.name) continue;
+      const isConstant =
+        constantOk &&
+        f === relay &&
+        s.start ===
+          skipSpace(
+            relay.code,
+            relay.code.indexOf("=", eventDecls[0].index) + 1,
+          );
+      if (!isConstant) {
+        add(
+          "G8b-event",
+          f,
+          s.start,
+          `the "${KEYS_EVENT.name}" literal outside ${KEYS_EVENT.type}.event (name the constant)`,
+        );
+      }
+    }
+  }
+}
+
+/**
+ * Why the relay's notifyListeners at `at` (its `(` at `open`) is not the one
+ * pinned emit, or null. Pinned: inside KeysChangedRelay, in the
+ * `DispatchQueue.main.async` closure of the `{ groupId, epoch in … }`
+ * closure that builds `static let shared = KeysChangedRelay …`, exactly
+ * `(KeysChangedRelay.event, data: ["group_id": groupId, "epoch": epoch])`
+ * (epoch also as `NSNumber(value: epoch)`), keys in either order.
+ */
+function relayEmitProblem(f, at, open) {
+  const where = `${KEYS_EVENT.name} is emitted only from ${KEYS_EVENT.type}.shared`;
+  const type = frameAt(f, at, (fr) => fr.kind === "type");
+  if (type?.name !== KEYS_EVENT.type)
+    return `${where}: notifyListeners outside ${KEYS_EVENT.type}`;
+  const close = f.match.get(open);
+  const head =
+    /^\(\s*(?:KeysChangedRelay|Self)\s*\.\s*event\s*,\s*data\s*:\s*\[/.exec(
+      f.code.slice(open, close),
+    );
+  if (!head) {
+    return `${where}: the event must be the constant ${KEYS_EVENT.type}.event and data an inline dictionary literal`;
+  }
+  const dictOpen = open + head[0].length - 1;
+  const dictClose = f.match.get(dictOpen);
+  if (skipSpace(f.code, dictClose + 1) !== close) {
+    return `${where}: nothing may follow the data dictionary`;
+  }
+  // Top-level entries of the dictionary literal.
+  const entries = [];
+  let from = dictOpen + 1;
+  for (let k = dictOpen + 1; k <= dictClose; k++) {
+    const c = f.code[k];
+    if (c === "(" || c === "[" || c === "{") {
+      k = f.match.get(k);
+      continue;
+    }
+    if (c === "," || k === dictClose) {
+      entries.push([from, k]);
+      from = k + 1;
+    }
+  }
+  if (entries.length && !f.code.slice(...entries[entries.length - 1]).trim()) {
+    entries.pop(); // a trailing comma
+  }
+  const values = new Map();
+  for (const [a, b] of entries) {
+    const s = skipSpace(f.code, a);
+    const key = f.strings.get(s);
+    const colon = key ? /^\s*:/.exec(f.code.slice(key.end, b)) : null;
+    if (!key || key.interpolated || !colon || values.has(key.value)) {
+      return `${where}: the payload keys must be plain literals, each once`;
+    }
+    values.set(
+      key.value,
+      f.code.slice(key.end + colon[0].length, b).replace(/\s+/g, ""),
+    );
+  }
+  const keys = [...values.keys()].sort().join(",");
+  if (keys !== "epoch,group_id") {
+    return `${where}: the payload keys are exactly group_id and epoch, got [${[...values.keys()].join(", ")}]`;
+  }
+  if (
+    values.get("group_id") !== "groupId" ||
+    !["epoch", "NSNumber(value:epoch)"].includes(values.get("epoch"))
+  ) {
+    return `${where}: the payload is exactly ["group_id": groupId, "epoch": epoch]`;
+  }
+  // One main-queue hop inside the delivery closure of `static let shared`.
+  const hop = frameAt(f, at, (fr) => fr.kind === "closure");
+  const hopCallee = hop ? calleeOf(f, hop) : null;
+  const deliver = hop
+    ? ancestors(hop.parent).find((fr) => fr.kind !== "control")
+    : null;
+  const deliverCallee =
+    deliver?.kind === "closure" ? calleeOf(f, deliver) : null;
+  const ok =
+    hopCallee?.name === "async" &&
+    /\bDispatchQueue\s*\.\s*main\s*\.\s*$/.test(
+      f.code.slice(Math.max(0, hopCallee.start - 40), hopCallee.start),
+    ) &&
+    deliverCallee?.name === KEYS_EVENT.type &&
+    /^\s*\(?\s*groupId\s*,\s*epoch\s*\)?\s+in\b/.test(
+      f.code.slice(deliver.open + 1, deliver.close),
+    ) &&
+    /\bstatic\s+let\s+shared\s*(?::[^=\n]*)?=\s*$/.test(
+      f.code.slice(
+        f.code.lastIndexOf("\n", deliverCallee.start) + 1,
+        deliverCallee.start,
+      ),
+    );
+  if (!ok) {
+    return `${where}: inside DispatchQueue.main.async in the { groupId, epoch in } closure of static let shared = ${KEYS_EVENT.type} …`;
+  }
+  return null;
+}
+
+/**
+ * [a, b) of a lexed file with whitespace and comments dropped, each literal
+ * written back as `"value"` (escapes as in the source); null when a literal
+ * there is interpolated. Used to compare an expression with a pinned text.
+ */
+function normalized(file, a, b) {
+  let out = "";
+  for (let k = a; k < b; ) {
+    const s = file.strings.get(k);
+    if (s) {
+      if (s.interpolated) return null;
+      out += `"${s.value}"`;
+      k = s.end;
+      continue;
+    }
+    if (!/\s/.test(file.code[k])) out += file.code[k];
+    k++;
+  }
+  return out;
+}
+
+/** Top-level comma-separated arguments of the call whose `(` is at `open`. */
+function callArgs(file, open) {
+  const close = file.match.get(open);
+  const args = [];
+  let from = open + 1;
+  for (let k = open + 1; k <= close; k++) {
+    const c = file.code[k];
+    if ((c === "(" || c === "[" || c === "{") && k !== close) {
+      k = file.match.get(k);
+      continue;
+    }
+    if (c === "," || k === close) {
+      if (file.code.slice(from, k).trim()) args.push([from, k]);
+      from = k + 1;
+    }
+  }
+  return args;
+}
+
+/** A plain literal's text with its escapes decoded; null for any other escape. */
+function decodeLiteralText(text, hashes) {
+  const esc = "\\" + "#".repeat(hashes);
+  let out = "";
+  for (let k = 0; k < text.length; ) {
+    if (text.startsWith(esc, k)) {
+      const c = text[k + esc.length];
+      if (c !== '"' && c !== "\\" && c !== "'") return null;
+      out += c;
+      k += esc.length + 1;
+      continue;
+    }
+    out += text[k];
+    k++;
+  }
+  return out;
+}
+
+/**
+ * G8c-audio-plugin (phase 2 C-W2-5): the plugin classes of these sources are
+ * exactly E2eePlugin and SlogaCallAudioPlugin; SlogaCallAudioPlugin lives in
+ * CallAudioSession.swift as `@objc(SlogaCallAudioPlugin) … class
+ * SlogaCallAudioPlugin: CAPPlugin, CAPBridgedPlugin`, jsName "SlogaCallAudio",
+ * pluginMethods exactly the two literal CAPPluginMethods start and stop, and
+ * its only @objc members are those two `(_ call: CAPPluginCall)` methods; the
+ * file names nothing of the E2EE core. It is constructed and armed only in
+ * SlogaBridgeViewController.swift, armed before it is registered, in the
+ * same block as the E2ee plugin (the main-frame guard's).
+ */
+function checkCallAudio(swift, add) {
+  const rule = "G8c-audio-plugin";
+  for (const f of swift) {
+    for (const t of f.frames) {
+      if (t.kind !== "type" || !f.code.startsWith("class", t.declPos)) continue;
+      if (!/:[^{]*\bCAPPlugin\b/.test(f.code.slice(t.declPos, t.open)))
+        continue;
+      const home = t.name === AUDIO.type ? AUDIO.file : "E2eePlugin.swift";
+      if (!PLUGIN_CLASSES.includes(t.name) || f.rel !== home) {
+        add(
+          rule,
+          f,
+          t.declPos,
+          `Capacitor plugin class ${t.name} in ${f.rel}; the plugins are exactly ${PLUGIN_CLASSES.join(", ")} (each in its own file)`,
+        );
+      }
+    }
+  }
+  const f = swift.find((x) => x.rel === AUDIO.file);
+  if (!f) {
+    add(rule, null, null, `${AUDIO.file} not found`);
+    return;
+  }
+  const types = f.frames.filter(
+    (t) => t.kind === "type" && t.name === AUDIO.type,
+  );
+  const cls = types.length === 1 ? types[0] : null;
+  if (
+    !cls ||
+    !f.code.startsWith("class", cls.declPos) ||
+    !/:\s*CAPPlugin\s*,\s*CAPBridgedPlugin\s*$/.test(
+      f.code.slice(cls.declPos, cls.open),
+    ) ||
+    !new RegExp(
+      `@objc\\s*\\(\\s*${AUDIO.type}\\s*\\)\\s*(?:(?:public|open|final)\\s+)*$`,
+    ).test(f.code.slice(Math.max(0, cls.declPos - 80), cls.declPos))
+  ) {
+    add(
+      rule,
+      f,
+      cls?.declPos ?? null,
+      `${AUDIO.file} must declare @objc(${AUDIO.type}) class ${AUDIO.type}: CAPPlugin, CAPBridgedPlugin once`,
+    );
+    return;
+  }
+  const inCls = (p) => frameAt(f, p, (fr) => fr.kind === "type") === cls;
+  const js = [...f.code.matchAll(/\bjsName\s*=\s*/g)].filter((m) =>
+    inCls(m.index),
+  );
+  const jsLit =
+    js.length === 1 ? f.strings.get(js[0].index + js[0][0].length) : null;
+  if (!jsLit || jsLit.interpolated || jsLit.value !== AUDIO.jsName) {
+    add(
+      rule,
+      f,
+      js[0]?.index ?? cls.declPos,
+      `${AUDIO.type}.jsName must be "${AUDIO.jsName}", once`,
+    );
+  }
+  // pluginMethods = [ CAPPluginMethod(name: "start", …), CAPPluginMethod(name: "stop", …) ]
+  const pm = [...f.code.matchAll(/\bpluginMethods\s*:[^=]*=\s*/g)].filter((m) =>
+    inCls(m.index),
+  );
+  let names = null;
+  if (pm.length === 1 && f.code[pm[0].index + pm[0][0].length] === "[") {
+    const open = pm[0].index + pm[0][0].length;
+    const close = f.match.get(open);
+    let rest = f.code.slice(open + 1, close);
+    names = [];
+    for (const m of f.code
+      .slice(open, close)
+      .matchAll(/\bCAPPluginMethod\s*\(/g)) {
+      const p = open + m.index + m[0].length - 1;
+      const args = callArgs(f, p);
+      const nameArg = args[0] ? f.code.slice(...args[0]) : "";
+      const lit = /^\s*name\s*:\s*/.exec(nameArg);
+      const s = lit ? f.strings.get(args[0][0] + lit[0].length) : null;
+      names.push(
+        s &&
+          !s.interpolated &&
+          skipSpace(f.code, s.end) === args[0][1] &&
+          args.length === 2 &&
+          /^\s*returnType\s*:\s*CAPPluginReturnPromise\s*$/.test(
+            f.code.slice(...args[1]),
+          )
+          ? s.value
+          : "<not a plain promise method>",
+      );
+      const span = f.code.slice(open + m.index, f.match.get(p) + 1);
+      rest = rest.replace(span, "");
+    }
+    if (!/^[\s,]*$/.test(rest)) names.push("<something else>");
+  }
+  if (
+    !names ||
+    [...names].sort().join(",") !== [...AUDIO.methods].sort().join(",")
+  ) {
+    add(
+      rule,
+      f,
+      pm[0]?.index ?? cls.declPos,
+      `${AUDIO.type}.pluginMethods must be exactly [${AUDIO.methods.join(", ")}] as literal CAPPluginMethod(name:, returnType: CAPPluginReturnPromise), got [${(names ?? []).join(", ")}]`,
+    );
+  }
+  // @objc members: the class attribute and the two plugin methods only.
+  const objcFuncs = new Set();
+  for (const m of f.code.matchAll(/@objc\b/g)) {
+    const after = f.code.slice(m.index, m.index + 300);
+    if (
+      new RegExp(
+        `^@objc\\s*\\(\\s*${AUDIO.type}\\s*\\)\\s*(?:(?:public|open|final)\\s+)*class\\s+${AUDIO.type}\\b`,
+      ).test(after)
+    ) {
+      continue;
+    }
+    const fn =
+      /^@objc(?:\s+(?:public|internal|open|final|dynamic))*\s+func\s+(\w+)\s*\(\s*_\s+\w+\s*:\s*CAPPluginCall\s*\)/.exec(
+        after,
+      );
+    if (
+      fn &&
+      AUDIO.methods.includes(fn[1]) &&
+      !objcFuncs.has(fn[1]) &&
+      inCls(m.index)
+    ) {
+      objcFuncs.add(fn[1]);
+      continue;
+    }
+    add(
+      rule,
+      f,
+      m.index,
+      `${AUDIO.file}: an @objc member other than ${AUDIO.methods.join("/")}(_ call: CAPPluginCall)`,
+    );
+  }
+  for (const name of AUDIO.methods) {
+    if (!objcFuncs.has(name)) {
+      add(
+        rule,
+        f,
+        cls.declPos,
+        `${AUDIO.type} has no @objc func ${name}(_ call: CAPPluginCall)`,
+      );
+    }
+  }
+  for (const m of f.code.matchAll(AUDIO_FORBIDDEN)) {
+    add(
+      rule,
+      f,
+      m.index,
+      `${AUDIO.file} names ${m[0]}; the call audio plugin never reaches the E2EE core`,
+    );
+  }
+  // Constructed and armed only by the bridge view controller, armed first,
+  // in the E2ee plugin's (guarded) block.
+  const sites = (re) =>
+    swift.flatMap((x) =>
+      [...x.code.matchAll(re)].map((m) => ({ f: x, p: m.index })),
+    );
+  const built = sites(
+    new RegExp(`\\b${AUDIO.type}\\s*(?:\\.\\s*init\\s*)?\\(`, "g"),
+  );
+  const armed = sites(new RegExp(`\\b${AUDIO.type}\\s*\\.\\s*arm\\s*\\(`, "g"));
+  const e2ee = sites(/\bregisterPluginInstance\s*\(\s*E2eePlugin\s*\(/g);
+  const block = (s) => frameAt(s.f, s.p, (fr) => fr.kind !== "closure");
+  const ok =
+    built.length === 1 &&
+    armed.length === 1 &&
+    e2ee.length === 1 &&
+    built[0].f.rel === CAPS.file &&
+    armed[0].f === built[0].f &&
+    e2ee[0].f === built[0].f &&
+    armed[0].p < built[0].p &&
+    block(built[0]) === block(armed[0]) &&
+    block(built[0]) === block(e2ee[0]) &&
+    block(built[0])?.kind === "control" &&
+    /\bregisterPluginInstance\s*\(\s*$/.test(
+      built[0].f.code.slice(Math.max(0, built[0].p - 40), built[0].p),
+    );
+  if (!ok) {
+    add(
+      rule,
+      built[0]?.f ?? null,
+      built[0]?.p ?? null,
+      `${AUDIO.type} must be armed, then built once as registerPluginInstance(${AUDIO.type}()), in ${CAPS.file}'s guarded block with the E2ee plugin`,
+    );
+  }
+}
+
+/**
+ * G8c-ios-caps (phase 2 C-W2-6): the one page global the shell adds.
+ *   - exactly one string literal in the sources names __slogaIosCaps, in
+ *     SlogaBridgeViewController.swift; decoded it is exactly CAPS.before +
+ *     ONE interpolation + CAPS.after (so only mediaE2EE, frozen,
+ *     non-writable, non-configurable, non-enumerable);
+ *   - the interpolation is a literal bool: `\(x)` where x is bound once as
+ *     `let x = c ? "true" : "false"` (or is a Bool itself), and the bool
+ *     resolves to the Info.plist read `Bundle.main.object(forInfoDictionaryKey:
+ *     "SlogaMediaE2EE") as? String == "YES"` (the key literal or a static let
+ *     of it): directly, or through a Bool parameter of the one function that
+ *     returns the literal, bound at the one call site;
+ *   - exactly one WKUserScript( in the sources, its arguments exactly
+ *     source: <that literal | a let of it | a call of that function>,
+ *     injectionTime: .atDocumentStart, forMainFrameOnly: true; and exactly
+ *     one addUserScript( in that file;
+ *   - slogaShell (which selects the desktop paths) named nowhere.
+ */
+function checkIosCaps(swift, add) {
+  const rule = "G8c-ios-caps";
+  for (const f of swift) {
+    for (const m of f.code.matchAll(/\bslogaShell\b/g)) {
+      add(
+        rule,
+        f,
+        m.index,
+        "slogaShell named in the sources (it selects the desktop paths)",
+      );
+    }
+    for (const s of f.strings.values()) {
+      if (/slogaShell/.test(s.value)) {
+        add(
+          rule,
+          f,
+          s.start,
+          "a string literal names slogaShell (it selects the desktop paths)",
+        );
+      }
+    }
+  }
+  const lits = swift.flatMap((f) =>
+    [...f.strings.values()]
+      .filter((s) => s.value.includes(CAPS.global))
+      .map((s) => ({ f, s })),
+  );
+  if (lits.length !== 1 || lits[0].f.rel !== CAPS.file) {
+    for (const { f, s } of lits.length ? lits : [{ f: null, s: null }]) {
+      add(
+        rule,
+        f,
+        s?.start ?? null,
+        `exactly one string literal may name ${CAPS.global}, in ${CAPS.file} (found ${lits.length})`,
+      );
+    }
+    return;
+  }
+  const { f, s } = lits[0];
+  const fail = (p, why) => add(rule, f, p, why);
+  const texts = s.parts
+    .filter((x) => "text" in x)
+    .map((x) => decodeLiteralText(x.text, s.hashes));
+  const codes = s.parts.filter((x) => "code" in x);
+  if (
+    s.multi ||
+    codes.length !== 1 ||
+    texts.length !== 2 ||
+    texts[0] !== CAPS.before ||
+    texts[1] !== CAPS.after
+  ) {
+    fail(
+      s.start,
+      `the ${CAPS.global} script must be exactly ${CAPS.before}\\(bool)${CAPS.after}`,
+    );
+    return;
+  }
+  const home = funcAt(f, s.start);
+  const type = frameAt(f, s.start, (fr) => fr.kind === "type");
+  const inFn = (fn, re) =>
+    fn
+      ? [...f.code.slice(fn.open, fn.close).matchAll(re)].map(
+          (m) => fn.open + m.index,
+        )
+      : [];
+  const esc = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  /** `let name … = <init>` bound exactly once in fn and never reassigned. */
+  const boundOnce = (fn, name) => {
+    const decls = inFn(
+      fn,
+      new RegExp(`\\b(?:let|var)\\s+${esc(name)}\\b`, "g"),
+    );
+    if (decls.length !== 1 || !f.code.startsWith("let", decls[0])) return null;
+    const m = new RegExp(
+      `^let\\s+${esc(name)}\\s*(?::\\s*(\\w+)\\s*)?=(?!=)`,
+    ).exec(f.code.slice(decls[0]));
+    if (!m) return null;
+    const from = decls[0] + m[0].length;
+    // Any other write to it (a let is immutable, but a same-named shadow or
+    // capture would be a second binding the pin does not see).
+    const writes = inFn(
+      fn,
+      new RegExp(`\\b${esc(name)}\\s*(?:[-+*/%&|^]|<<|>>)?=(?!=)`, "g"),
+    ).filter((w) => !(w >= decls[0] && w < from));
+    if (writes.length) return null;
+    return {
+      type: m[1] ?? null,
+      from,
+      to: initializerEnd(f.code, f.match, from),
+    };
+  };
+  // The Info.plist key: the literal, or a static let of this type holding it.
+  const keyConst = (name) => {
+    const decls = [
+      ...f.code.matchAll(new RegExp(`\\b(?:let|var)\\s+${esc(name)}\\b`, "g")),
+    ];
+    if (
+      decls.length !== 1 ||
+      !/\bstatic\s+$/.test(f.code.slice(decls[0].index - 20, decls[0].index))
+    )
+      return false;
+    if (!f.code.startsWith("let", decls[0].index)) return false;
+    if (frameAt(f, decls[0].index, (fr) => fr.kind !== "control") !== type)
+      return false;
+    const eq = /^let\s+\w+\s*(?::\s*String\s*)?=\s*/.exec(
+      f.code.slice(decls[0].index),
+    );
+    const lit = eq ? f.strings.get(decls[0].index + eq[0].length) : null;
+    return !!lit && !lit.interpolated && lit.value === "SlogaMediaE2EE";
+  };
+  const isPinnedBool = (a, b) => {
+    let text = normalized(f, a, b);
+    if (text === null) return false;
+    text = text.replace(
+      /forInfoDictionaryKey:(?:(?:Self|SlogaBridgeViewController)\.)?([A-Za-z_]\w*)\)/,
+      (whole, name) =>
+        keyConst(name) ? 'forInfoDictionaryKey:"SlogaMediaE2EE")' : whole,
+    );
+    return CAPS.bools.includes(text);
+  };
+  /** How `name` in fn is a pinned bool: "pin", "param" (a Bool parameter) or null. */
+  const boolOf = (fn, name) => {
+    const params = fn ? f.code.slice(fn.declPos, fn.open) : "";
+    if (
+      new RegExp(`\\(\\s*(?:_\\s+)?${esc(name)}\\s*:\\s*Bool\\s*\\)`).test(
+        params,
+      )
+    ) {
+      return inFn(fn, new RegExp(`\\b${esc(name)}\\s*=(?!=)`, "g")).length
+        ? null
+        : "param";
+    }
+    const b = boundOnce(fn, name);
+    if (!b || (b.type && b.type !== "Bool")) return null;
+    return isPinnedBool(b.from, b.to) ? "pin" : null;
+  };
+  // The interpolation: \(x), x a "true"/"false" ternary local or a bool.
+  const [ia, ib] = codes[0].code;
+  const ident = /^\s*([A-Za-z_]\w*)\s*$/.exec(f.code.slice(ia, ib))?.[1];
+  let how = null;
+  if (ident) {
+    const t = boundOnce(home, ident);
+    const tern = t
+      ? /^\s*([A-Za-z_]\w*)\s*\?\s*(?=")/.exec(f.code.slice(t.from, t.to))
+      : null;
+    if (tern) {
+      const yes = f.strings.get(t.from + tern[0].length);
+      const colon = yes ? /^\s*:\s*/.exec(f.code.slice(yes.end, t.to)) : null;
+      const no = colon ? f.strings.get(yes.end + colon[0].length) : null;
+      if (
+        yes &&
+        no &&
+        !yes.interpolated &&
+        !no.interpolated &&
+        yes.value === "true" &&
+        no.value === "false" &&
+        skipSpace(f.code, no.end) >= t.to
+      ) {
+        how = boolOf(home, tern[1]);
+      }
+    } else {
+      how = boolOf(home, ident);
+    }
+  }
+  if (!how) {
+    fail(
+      ia,
+      `the one ${CAPS.global} interpolation must be a literal bool: let x = <Info.plist SlogaMediaE2EE == "YES"> ? "true" : "false"`,
+    );
+    return;
+  }
+  // WKUserScript: once, in this file, with the pinned arguments.
+  const ctors = swift.flatMap((x) =>
+    [...x.code.matchAll(/\bWKUserScript\s*(?:\.\s*init\s*)?\(/g)].map((m) => ({
+      x,
+      p: m.index,
+      open: m.index + m[0].length - 1,
+    })),
+  );
+  if (ctors.length !== 1 || ctors[0].x !== f) {
+    fail(
+      ctors[0]?.p ?? null,
+      `exactly one WKUserScript( in the sources, in ${CAPS.file} (found ${ctors.length})`,
+    );
+    return;
+  }
+  const ctor = ctors[0];
+  const args = callArgs(f, ctor.open).map(([a, b]) => [
+    a,
+    b,
+    normalized(f, a, b) ?? "",
+  ]);
+  const caller = funcAt(f, ctor.p);
+  let sourceOk = false;
+  // The source argument from lexed code (its literal, if any, is pinned by
+  // position below, not by text: normalized() refuses interpolated ones).
+  const sourceLabel =
+    args.length === 3
+      ? /^\s*source\s*:\s*/.exec(f.code.slice(args[0][0], args[0][1]))
+      : null;
+  if (sourceLabel) {
+    const at = args[0][0] + sourceLabel[0].length;
+    const expr = f.code.slice(at, args[0][1]).replace(/\s+/g, "");
+    const local = /^[A-Za-z_]\w*$/.test(expr) ? boundOnce(caller, expr) : null;
+    if (how === "pin" && home === caller) {
+      // The literal itself, or a let of it, in the function that builds the script.
+      sourceOk =
+        at === s.start
+          ? skipSpace(f.code, s.end) === args[0][1]
+          : !!local &&
+            skipSpace(f.code, local.from) === s.start &&
+            skipSpace(f.code, s.end) >= local.to;
+    } else if (how === "param" && home && home !== caller) {
+      // A call of the one function that returns the literal, its Bool bound to the pin.
+      const returns = inFn(home, /\breturn\b/g);
+      const call =
+        /^(?:(?:Self|SlogaBridgeViewController)\.)?([A-Za-z_]\w*)\(([A-Za-z_]\w*):([A-Za-z_]\w*)\)$/.exec(
+          expr,
+        );
+      const label =
+        /\(\s*([A-Za-z_]\w*)\s+([A-Za-z_]\w*)?\s*:\s*Bool\s*\)|\(\s*([A-Za-z_]\w*)\s*:\s*Bool\s*\)/.exec(
+          f.code.slice(home.declPos, home.open),
+        );
+      const homeLabel = label ? (label[1] ?? label[3]) : null;
+      sourceOk =
+        returns.length === 1 &&
+        skipSpace(f.code, returns[0] + "return".length) === s.start &&
+        /^[ \t]*(?:\n|;|\})/.test(f.code.slice(s.end, s.end + 40)) &&
+        frameAt(f, home.declPos, (fr) => fr.kind === "type") === type &&
+        !!call &&
+        call[1] === home.name &&
+        call[2] === homeLabel &&
+        f.frames.filter((fr) => fr.kind === "func" && fr.name === home.name)
+          .length === 1 &&
+        [...f.code.matchAll(new RegExp(`\\b${esc(home.name)}\\b`, "g"))]
+          .length === 2 &&
+        boolOf(caller, call[3]) === "pin";
+    }
+  }
+  if (
+    !sourceOk ||
+    args[1]?.[2] !== "injectionTime:.atDocumentStart" ||
+    args[2]?.[2] !== "forMainFrameOnly:true"
+  ) {
+    fail(
+      ctor.p,
+      `WKUserScript must be exactly (source: <the pinned ${CAPS.global} script>, injectionTime: .atDocumentStart, forMainFrameOnly: true)`,
+    );
+  }
+  const adds = swift.flatMap((x) =>
+    [...x.code.matchAll(/\baddUserScript\s*\(/g)].map((m) => ({
+      x,
+      p: m.index,
+    })),
+  );
+  if (adds.length !== 1 || adds[0].x !== f || funcAt(f, adds[0].p) !== caller) {
+    fail(
+      adds[0]?.p ?? null,
+      `exactly one addUserScript( in the sources, beside the WKUserScript (found ${adds.length})`,
+    );
+  }
 }
 
 function check(opts) {
@@ -2784,10 +3825,11 @@ function check(opts) {
   const routeOf = (name) => table.get(name)?.route ?? "out";
   const generic = parsed.entries.filter((e) => e.route === "generic");
   const native = parsed.entries.filter((e) => e.route === "native");
+  const callEntries = parsed.entries.filter((e) => e.route === "call");
   const dedicatedMethods = parsed.methods.map((m) => m.name);
 
   // Bindings.
-  const methods = parseBindings(bindings, add);
+  const methods = parseBindings(bindings, add, table);
   const bySnake = new Map();
   for (const m of methods.values()) if (m.snake) bySnake.set(m.snake, m);
   const targetOf = (command) => bySnake.get(command.slice("e2ee_".length));
@@ -2803,6 +3845,18 @@ function check(opts) {
       );
     } else genericTargets.add(target.name);
   }
+  const callTargets = new Set();
+  for (const e of callEntries) {
+    const target = targetOf(e.name);
+    if (!target) {
+      add(
+        "G6-call-binding",
+        commands,
+        e.p,
+        `${e.name} has no E2eeEngine method (no uniffi symbol ..._e2eeengine_${e.name.slice(5)})`,
+      );
+    } else callTargets.add(target.name);
+  }
   for (const e of parsed.entries) {
     const target = targetOf(e.name);
     if (e.route !== "out" && target && has(NATIVE_ONLY, target.name)) {
@@ -2817,6 +3871,7 @@ function check(opts) {
   for (const m of methods.values()) {
     const known =
       genericTargets.has(m.name) ||
+      callTargets.has(m.name) ||
       has(GATED, m.name) ||
       has(NATIVE_ONLY, m.name) ||
       has(TRANSFER_SHARED, m.name);
@@ -2886,70 +3941,79 @@ function check(opts) {
     }
   }
 
-  // runGeneric / nativeJob switches.
-  const runGeneric = onlyFunc(plugin, "runGeneric");
-  const genericSwitch = switchOn(plugin, runGeneric, "name");
-  if (!genericSwitch) {
-    throw new InputError(`${plugin.rel}: runGeneric has no \`switch name\``);
-  }
-  const arms = caseArms(plugin, genericSwitch);
-  const armNames = new Map();
-  for (const a of arms) {
-    if (a.kind === "default") {
-      if (
-        !literalArg(plugin, a.body, a.end, "invalidArgument").includes("name")
-      ) {
+  // runGeneric / runCallPlane / nativeJob switches.
+  const dispatcherSwitch = (fnName, route, entries, rule) => {
+    const fn = onlyFunc(plugin, fnName);
+    const sw = switchOn(plugin, fn, "name");
+    if (!sw) {
+      throw new InputError(`${plugin.rel}: ${fnName} has no \`switch name\``);
+    }
+    const arms = caseArms(plugin, sw);
+    const named = new Map();
+    for (const a of arms) {
+      if (a.kind === "default") {
+        if (
+          !literalArg(plugin, a.body, a.end, "invalidArgument").includes("name")
+        ) {
+          add(
+            rule,
+            plugin,
+            a.p,
+            `${fnName} default must reject invalid_argument{field:"name"}`,
+          );
+        }
+        continue;
+      }
+      if (!a.literalOnly || a.names.length !== 1 || a.names[0] === null) {
         add(
-          "G6-generic-case",
+          rule,
           plugin,
           a.p,
-          'runGeneric default must reject invalid_argument{field:"name"}',
+          `${fnName} case must be exactly one plain string literal`,
+        );
+        continue;
+      }
+      if (named.has(a.names[0])) {
+        add(rule, plugin, a.p, `case "${a.names[0]}" appears twice`);
+      }
+      named.set(a.names[0], a);
+    }
+    if (!arms.some((a) => a.kind === "default")) {
+      add(rule, plugin, sw.open, `${fnName} switch has no default`);
+    }
+    for (const e of entries) {
+      if (!named.has(e.name)) {
+        add(
+          rule,
+          plugin,
+          fn.declPos,
+          `${route} ${e.name} has no case in ${fnName}`,
         );
       }
-      continue;
     }
-    if (!a.literalOnly || a.names.length !== 1 || a.names[0] === null) {
-      add(
-        "G6-generic-case",
-        plugin,
-        a.p,
-        "runGeneric case must be exactly one plain string literal",
-      );
-      continue;
+    for (const [name, a] of named) {
+      if (routeOf(name) !== route) {
+        add(
+          rule,
+          plugin,
+          a.p,
+          `case "${name}" in ${fnName}, but the table routes it .${routeOf(name)}`,
+        );
+      }
     }
-    if (armNames.has(a.names[0])) {
-      add("G6-generic-case", plugin, a.p, `case "${a.names[0]}" appears twice`);
-    }
-    armNames.set(a.names[0], a);
-  }
-  if (!arms.some((a) => a.kind === "default")) {
-    add(
-      "G6-generic-case",
-      plugin,
-      genericSwitch.open,
-      "runGeneric switch has no default",
-    );
-  }
-  for (const e of generic) {
-    if (!armNames.has(e.name)) {
-      add(
-        "G6-generic-case",
-        plugin,
-        runGeneric.declPos,
-        `generic ${e.name} has no case in runGeneric`,
-      );
-    }
-  }
-  for (const [name, a] of armNames) {
-    if (routeOf(name) !== "generic") {
-      add(
-        "G6-generic-case",
-        plugin,
-        a.p,
-        `case "${name}" in runGeneric, but the table routes it .${routeOf(name)}`,
-      );
-    }
-  }
+    return { fn, sw, named };
+  };
+  const {
+    fn: runGeneric,
+    sw: genericSwitch,
+    named: armNames,
+  } = dispatcherSwitch("runGeneric", "generic", generic, "G6-generic-case");
+  // G6-call-case (phase 2): the call plane's own switch, the 22 names only.
+  const {
+    fn: runCallPlane,
+    sw: callSwitch,
+    named: callArmNames,
+  } = dispatcherSwitch("runCallPlane", "call", callEntries, "G6-call-case");
   const nativeJob = onlyFunc(plugin, "nativeJob");
   const nativeSwitch = switchOn(plugin, nativeJob, "name");
   if (!nativeSwitch) {
@@ -3070,6 +4134,13 @@ function check(opts) {
     for (const [name, a] of armNames) if (a.body <= p && p < a.end) return name;
     return null;
   };
+  const callArmOf = (p) => {
+    if (!(callSwitch.open < p && p < callSwitch.close)) return null;
+    for (const [name, a] of callArmNames) {
+      if (a.body <= p && p < a.end) return name;
+    }
+    return null;
+  };
   const objcOf = (f, p) => {
     if (f !== plugin) return null;
     const fn = funcAt(f, p);
@@ -3140,7 +4211,7 @@ function check(opts) {
     }
   }
   for (const c of calls.get(plugin.rel)) {
-    const arm = armOf(c.p);
+    const arm = armOf(c.p) ?? callArmOf(c.p);
     if (arm) continue;
     if (has(GATED, c.member) && objcOf(plugin, c.p) === GATED[c.member]) {
       continue;
@@ -3149,27 +4220,31 @@ function check(opts) {
       "G6-plugin-engine-call",
       plugin,
       c.p,
-      `engine .${c.member} in E2eePlugin.swift outside a generic arm or its gated dedicated method`,
+      `engine .${c.member} in E2eePlugin.swift outside a generic or call-plane arm or its gated dedicated method`,
     );
   }
-  for (const [name, a] of armNames) {
-    const target = targetOf(name);
-    if (!target) continue;
-    const members = new Set(
-      calls
-        .get(plugin.rel)
-        .filter((c) => a.body <= c.p && c.p < a.end)
-        .map((c) => c.member),
-    );
-    if (!members.has(target.name) || members.size !== 1) {
-      add(
-        "G6-generic-arm",
-        plugin,
-        a.p,
-        `case "${name}" calls engine [${[...members].join(", ")}]; it must call exactly ${target.name}`,
+  const armCalls = (named, rule) => {
+    for (const [name, a] of named) {
+      const target = targetOf(name);
+      if (!target) continue;
+      const members = new Set(
+        calls
+          .get(plugin.rel)
+          .filter((c) => a.body <= c.p && c.p < a.end)
+          .map((c) => c.member),
       );
+      if (!members.has(target.name) || members.size !== 1) {
+        add(
+          rule,
+          plugin,
+          a.p,
+          `case "${name}" calls engine [${[...members].join(", ")}]; it must call exactly ${target.name}`,
+        );
+      }
     }
-  }
+  };
+  armCalls(armNames, "G6-generic-arm");
+  armCalls(callArmNames, "G6-call-arm");
 
   // G7-dedicated-thread / G7-generic-worker.
   for (const name of DEDICATED_METHODS) {
@@ -3239,39 +4314,81 @@ function check(opts) {
       );
     }
   }
-  {
+  const workerSite = (fnName, worker, rule, message) => {
     const sites = [];
     for (const f of swift) {
-      for (const m of f.code.matchAll(/\brunGeneric\s*\(/g)) {
+      for (const m of f.code.matchAll(new RegExp(`\\b${fnName}\\s*\\(`, "g"))) {
         if (/\bfunc\s+$/.test(f.code.slice(Math.max(0, m.index - 20), m.index)))
           continue;
         sites.push({ f, p: m.index });
       }
     }
-    const onWorker = (f, p) =>
-      ancestors(frameAt(f, p)).some((fr) => {
-        if (fr.kind !== "closure") return false;
+    // The NEAREST worker closure decides (a call nested in both workers'
+    // closures runs on the inner one).
+    const onWorker = (f, p) => {
+      for (const fr of ancestors(frameAt(f, p))) {
+        if (fr.kind !== "closure") continue;
         const callee = calleeOf(f, fr);
-        return (
-          callee.name === "submit" &&
-          /\bengineWorker\s*\.\s*$/.test(
-            f.code.slice(Math.max(0, callee.start - 40), callee.start),
-          )
+        if (callee.name !== "submit") continue;
+        return new RegExp(`\\b${worker}\\s*\\.\\s*$`).test(
+          f.code.slice(Math.max(0, callee.start - 40), callee.start),
         );
-      });
+      }
+      return false;
+    };
     if (
       sites.length !== 1 ||
       sites[0].f !== plugin ||
       !onWorker(sites[0].f, sites[0].p)
     ) {
       for (const s of sites.length ? sites : [{ f: plugin, p: null }]) {
-        add(
-          "G7-generic-worker",
-          s.f,
-          s.p,
-          "runGeneric must be called once, from an engineWorker.submit closure",
-        );
+        add(rule, s.f, s.p, message);
       }
+    }
+  };
+  workerSite(
+    "runGeneric",
+    "engineWorker",
+    "G7-generic-worker",
+    "runGeneric must be called once, from an engineWorker.submit closure",
+  );
+  workerSite(
+    "runCallPlane",
+    "callWorker",
+    "G7-call-worker",
+    "runCallPlane must be called once, from a callWorker.submit closure",
+  );
+  {
+    // The call worker is its own serial WorkerPool (C-W2-2), not an alias
+    // of the engine worker.
+    const decls = [...support.code.matchAll(/\b(?:let|var)\s+callWorker\b/g)];
+    const m =
+      decls.length === 1
+        ? /^let\s+callWorker\s*(?::\s*WorkerPool\s*)?=\s*WorkerPool\s*\(\s*name\s*:\s*(?=")/.exec(
+            support.code.slice(decls[0].index),
+          )
+        : null;
+    const lit = m ? support.strings.get(decls[0].index + m[0].length) : null;
+    const tail = lit
+      ? /^\s*,\s*threads\s*:\s*1\s*\)/.test(support.code.slice(lit.end))
+      : false;
+    const owner = decls.length
+      ? frameAt(support, decls[0].index, (fr) => fr.kind !== "control")
+      : null;
+    if (
+      !lit ||
+      lit.interpolated ||
+      lit.value !== "gg.sloga.e2ee.call" ||
+      !tail ||
+      owner?.kind !== "type" ||
+      owner.name !== "E2eeRuntime"
+    ) {
+      add(
+        "G7-call-worker",
+        support,
+        decls[0]?.index ?? null,
+        'E2eeRuntime.callWorker must be declared once as let callWorker = WorkerPool(name: "gg.sloga.e2ee.call", threads: 1)',
+      );
     }
   }
 
@@ -3325,8 +4442,24 @@ function check(opts) {
       );
     }
   }
+  // G8b-frame-keys, by name: callFrameKeys appears only in its own arm.
+  for (const f of swift) {
+    for (const m of f.code.matchAll(
+      new RegExp(`\\b${FRAME_KEYS_METHOD}\\b`, "g"),
+    )) {
+      if (f === plugin && callArmOf(m.index) === FRAME_KEYS_COMMAND) continue;
+      add(
+        "G8b-frame-keys",
+        f,
+        m.index,
+        `${FRAME_KEYS_METHOD} named in ${f.rel} outside runCallPlane's case "${FRAME_KEYS_COMMAND}"`,
+      );
+    }
+  }
   checkEvents(swift, plugin, add);
   checkRawFfi(swift, add);
+  checkCallAudio(swift, add);
+  checkIosCaps(swift, add);
   // G8b reachability and what reaches the webview.
   const reach = checkReach(
     {
@@ -3336,6 +4469,8 @@ function check(opts) {
       armNames,
       nativeJob,
       nativeArms,
+      runCallPlane,
+      callArmNames,
       objc,
       targetOf,
       engineMethods: [...methods.values()].map((m) => m.name),
@@ -3528,6 +4663,7 @@ function check(opts) {
   const summary = {
     generic: generic.map((e) => e.name),
     native: native.map((e) => e.name),
+    call: callEntries.map((e) => e.name),
     dedicated: parsed.entries
       .filter((e) => e.route === "dedicated")
       .map((e) => `${e.name}->${e.method}`),
@@ -3564,13 +4700,13 @@ function main() {
     process.exit(1);
   }
   console.log(
-    `ok: table generic ${summary.generic.length}, native ${summary.native.length}, dedicated ${summary.dedicated.length}, out ${summary.out.length}; ` +
+    `ok: table generic ${summary.generic.length}, native ${summary.native.length}, call ${summary.call.length}, dedicated ${summary.dedicated.length}, out ${summary.out.length}; ` +
       `bindings export ${summary.exports} E2eeEngine methods; e2ee.ts ${summary.feNames} e2ee_ names, ${summary.invokeSites} #invoke sites; ` +
       `${summary.engineCalls} engine calls in ${summary.bodies} preconditioned bodies across ${summary.files} Swift files; ` +
       `call graph ${summary.reach.nodes} nodes, ${summary.reach.roots} roots, ${summary.reach.reaches} native-only callers`,
   );
   if (opts.list) {
-    for (const k of ["generic", "native", "dedicated", "out"]) {
+    for (const k of ROUTES) {
       console.log(`${k} (${summary[k].length}): ${summary[k].join(" ")}`);
     }
     console.log(

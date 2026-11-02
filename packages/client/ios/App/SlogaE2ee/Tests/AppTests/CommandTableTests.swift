@@ -2,11 +2,20 @@
 // command table and its Capacitor bridge contract (plan D5, §5).
 //
 // What is pinned, and why it matters:
-//   - The table: counts, name shape, the exact 37 generic commands, the 6
-//     confirm-gated names and the 12 dedicated methods. A confirm-gated name
-//     drifting to generic would run a consent commit on the engine worker
-//     instead of its own thread; a native-only, secret-bearing name becoming
-//     routable would hand a recovery code or plaintext to the webview.
+//   - The table: counts, name shape, the exact 37 generic commands, the
+//     exact 22 call-plane commands, the 7 confirm-gated names and the 13
+//     dedicated methods. A confirm-gated name drifting to generic would run a
+//     consent commit on the engine worker instead of its own thread; a
+//     native-only, secret-bearing name becoming routable would hand a
+//     recovery code or plaintext to the webview; a call-downgrade arming
+//     primitive becoming routable would let the webview take a call to
+//     plaintext without the native dialog.
+//   - Each call-plane name's camelCased engine method exists in the generated
+//     bindings (a compile-time reference table: a rename breaks the build).
+//
+// iOS call E2EE phase 2 (W2, lane L2i): `.call`, callCount, the 22-name set,
+// e2ee_call_confirm_downgrade → callConfirmDowngrade, per-route duplicate
+// checks and the arming names in `unroutableNames` were added here.
 //   - The surface Capacitor resolves: JS name, method list, selectors.
 //   - Behaviour through a real CAPPluginCall, invoked the way Capacitor's
 //     handleJSCall does (`perform(selector, with:)` on a serial queue):
@@ -84,6 +93,33 @@ private let contractNative: [String] = [
     "e2ee_attachment_save",
 ]
 
+/// p2-w2-contracts.md C-W2-3: the 22 names the `call` mux runs on the CALL
+/// worker. Hand-typed from the contract, NOT read from E2eeCommands.
+private let contractCall: [String] = [
+    "e2ee_pin_call_identities",
+    "e2ee_call_create",
+    "e2ee_call_join_intent",
+    "e2ee_call_verify_join_intent",
+    "e2ee_call_admit",
+    "e2ee_call_process",
+    "e2ee_call_commit_won",
+    "e2ee_call_commit_lost",
+    "e2ee_call_pending_commit_epoch",
+    "e2ee_call_leave_cleanup",
+    "e2ee_call_local_groups",
+    "e2ee_call_heartbeat",
+    "e2ee_call_remove",
+    "e2ee_call_state",
+    "e2ee_call_roster_identities",
+    "e2ee_call_frame_keys",
+    "e2ee_call_announce",
+    "e2ee_call_clear_downgrade",
+    "e2ee_call_non_enrolled",
+    "e2ee_mls_publish_key_packages",
+    "e2ee_mls_replenish",
+    "e2ee_mls_expire_key_packages",
+]
+
 private let contractDedicated: [String: String] = [
     "e2ee_wipe": "wipe",
     "e2ee_downgrade": "downgrade",
@@ -91,6 +127,7 @@ private let contractDedicated: [String: String] = [
     "e2ee_add_group_member": "addGroupMember",
     "e2ee_mark_verified": "markVerified",
     "e2ee_accept_identity_change": "acceptIdentityChange",
+    "e2ee_call_confirm_downgrade": "callConfirmDowngrade",
 ]
 
 private let contractDedicatedMethods: [String] = [
@@ -101,6 +138,7 @@ private let contractDedicatedMethods: [String] = [
     "addGroupMember",
     "markVerified",
     "acceptIdentityChange",
+    "callConfirmDowngrade",
     "backupCreate",
     "backupRotate",
     "backupRestore",
@@ -110,12 +148,24 @@ private let contractDedicatedMethods: [String] = [
 
 /// Names that must never be routable from the webview: the secret- or
 /// plaintext-bearing native-only engine methods under FE-style names (G8b),
-/// the desktop recovery window, the unimplemented call-downgrade method, the
-/// modal ids, and near-misses of real names (case, whitespace, NUL, prefix).
+/// the desktop recovery window, the call-downgrade ARMING primitives (only
+/// the native dialog behind callConfirmDowngrade may take a call to
+/// plaintext; Android's engine exports these, under any spelling they stay
+/// unroutable here), the dedicated method's own name, the modal ids, and
+/// near-misses of real names (case, whitespace, NUL, prefix, camelCase).
 private let unroutableNames: [String] = [
-    "e2ee_call_frame_keys",
-    "e2ee_call_confirm_downgrade",
     "callConfirmDowngrade",
+    "mlsCallMarkDowngradeConfirmed",
+    "mlsCallClearDowngradeConfirmed",
+    "e2ee_mls_call_mark_downgrade_confirmed",
+    "e2ee_mls_call_clear_downgrade_confirmed",
+    "e2ee_call_mark_downgrade_confirmed",
+    "e2ee_call_clear_downgrade_confirmed",
+    "e2ee_call_downgrade",
+    "callFrameKeys",
+    "E2EE_CALL_FRAME_KEYS",
+    "e2ee_call_frame_keys ",
+    "e2ee_callframekeys",
     "e2ee_recovery_create",
     "e2ee_recovery_rotate",
     "e2ee_recovery_restore",
@@ -180,6 +230,75 @@ private func duplicates(_ names: [String]) -> [String] {
         dupes.append(name)
     }
     return dupes
+}
+
+/// The route block an entry belongs to. No `default`: a new E2eeRoute case
+/// stops this file compiling until it is given a block (and so a duplicate
+/// check and a count pin).
+private func routeBlock(_ route: E2eeRoute) -> String {
+    switch route {
+    case .generic:
+        return "generic"
+    case .native:
+        return "native"
+    case .call:
+        return "call"
+    case .dedicated:
+        return "dedicated"
+    case .out:
+        return "out"
+    }
+}
+
+private let routeBlocks = ["generic", "native", "call", "dedicated", "out"]
+
+/// e2ee_call_frame_keys → callFrameKeys: drop `e2ee_`, camelCase the rest
+/// (the uniffi Swift naming the `.call` route relies on).
+private func engineMethodName(_ command: String) -> String {
+    let parts = command.dropFirst("e2ee_".count).split(separator: "_", omittingEmptySubsequences: false)
+    guard let head = parts.first else {
+        return ""
+    }
+    return String(head) + parts.dropFirst().map { $0.prefix(1).uppercased() + $0.dropFirst() }.joined()
+}
+
+/// Compile-time reference table: every call-plane engine method, with the
+/// argument labels the plugin must pass, taken as an unbound method of the
+/// generated `E2eeEngine`. A rename, a dropped method or a relabelled
+/// parameter in the bindings stops this file compiling. The string on each
+/// line is the method's base name; the test ties it to the table's names.
+/// A function, not a global, so no non-Sendable global state.
+private func callPlaneEngineMethods() -> [(method: String, reference: Any)] {
+    [
+        ("pinCallIdentities", E2eeEngine.pinCallIdentities(selfUserId:userId:targetsJson:devicesJson:) as Any),
+        ("callCreate", E2eeEngine.callCreate(channelId:userId:supersedes:) as Any),
+        ("callJoinIntent", E2eeEngine.callJoinIntent(groupId:channelId:userId:) as Any),
+        ("callVerifyJoinIntent", E2eeEngine.callVerifyJoinIntent(requestJson:) as Any),
+        ("callAdmit", E2eeEngine.callAdmit(requestJson:claimedJson:) as Any),
+        ("callProcess", E2eeEngine.callProcess(envelopeJson:userId:) as Any),
+        ("callCommitWon", E2eeEngine.callCommitWon(groupId:wonEpoch:) as Any),
+        ("callCommitLost", E2eeEngine.callCommitLost(groupId:) as Any),
+        ("callPendingCommitEpoch", E2eeEngine.callPendingCommitEpoch(groupId:) as Any),
+        ("callLeaveCleanup", E2eeEngine.callLeaveCleanup(groupId:) as Any),
+        ("callLocalGroups", E2eeEngine.callLocalGroups(channelId:) as Any),
+        ("callHeartbeat", E2eeEngine.callHeartbeat(groupId:) as Any),
+        ("callRemove", E2eeEngine.callRemove(groupId:targetUserId:targetDeviceId:) as Any),
+        ("callState", E2eeEngine.callState(groupId:) as Any),
+        ("callRosterIdentities", E2eeEngine.callRosterIdentities(groupId:) as Any),
+        ("callFrameKeys", E2eeEngine.callFrameKeys(groupId:) as Any),
+        ("callAnnounce", E2eeEngine.callAnnounce(groupId:userId:) as Any),
+        ("callClearDowngrade", E2eeEngine.callClearDowngrade(groupId:) as Any),
+        ("callNonEnrolled", E2eeEngine.callNonEnrolled(groupId:sfuParticipantsJson:) as Any),
+        ("mlsPublishKeyPackages", E2eeEngine.mlsPublishKeyPackages(userId:) as Any),
+        ("mlsReplenish", E2eeEngine.mlsReplenish(userId:serverRemaining:) as Any),
+        ("mlsExpireKeyPackages", E2eeEngine.mlsExpireKeyPackages as Any),
+    ]
+}
+
+/// The engine method behind the dedicated callConfirmDowngrade, same
+/// technique (the dialog is core's, through NativeConfirm).
+private func callConfirmDowngradeEngineMethod() -> (method: String, reference: Any) {
+    ("callConfirmDowngrade", E2eeEngine.callConfirmDowngrade(groupId:sfuParticipantsJson:displayNamesJson:) as Any)
 }
 
 /// The G6 grep shape: `e2ee_` then at least one of [a-z0-9_].
@@ -313,20 +432,51 @@ final class CommandTableTests: XCTestCase {
         XCTAssertEqual(Set(all).count, all.count)
     }
 
+    /// Every route block on its own, `.call` included: a line duplicated
+    /// inside one block is reported against that block, and every entry
+    /// belongs to exactly one block.
+    func testNoRouteBlockHasADuplicateName() {
+        var blocks: [String: [String]] = [:]
+        for entry in E2eeCommands.table {
+            blocks[routeBlock(entry.route), default: []].append(entry.name)
+        }
+        XCTAssertEqual(blocks.keys.sorted(), routeBlocks.sorted(), "every route block is populated")
+        XCTAssertEqual(blocks.values.map { $0.count }.reduce(0, +), E2eeCommands.table.count)
+
+        // Detector control: a `.call` line duplicated in a copy is found.
+        let call = blocks["call", default: []]
+        XCTAssertFalse(call.isEmpty)
+        XCTAssertEqual(duplicates(call + call.prefix(1)), pin(Array(call.prefix(1)), wrong: []))
+
+        for block in routeBlocks {
+            XCTAssertEqual(duplicates(blocks[block, default: []]), pin([], wrong: ["<\(block)>"]), "duplicate in the \(block) block")
+        }
+        // Dedicated targets too: two confirm-gated names on one method would
+        // let the cheaper name stand in for the other.
+        let targets = E2eeCommands.table.compactMap { dedicatedTarget($0.route) }
+        XCTAssertEqual(duplicates(targets), pin([], wrong: ["wipe"]), "dedicated targets")
+    }
+
     func testRouteCountsMatchThePins() {
         let generic = tableNames { $0 == .generic }
         let native = tableNames { $0 == .native }
+        let call = tableNames { $0 == .call }
         let dedicated = tableNames { dedicatedTarget($0) != nil }
         let out = tableNames { $0 == .out }
 
         XCTAssertEqual(generic.count, pin(37, wrong: 36))
         XCTAssertEqual(native.count, 2)
-        XCTAssertEqual(dedicated.count, 6)
+        XCTAssertEqual(call.count, pin(22, wrong: 23))
+        XCTAssertEqual(dedicated.count, 7)
+        XCTAssertEqual(out.count, 32)
         XCTAssertEqual(out.count, E2eeCommands.outCount)
         XCTAssertEqual(E2eeCommands.genericCount, 37)
         XCTAssertEqual(E2eeCommands.nativeCount, 2)
-        XCTAssertEqual(E2eeCommands.dedicatedCount, 6)
-        XCTAssertEqual(E2eeCommands.table.count, 37 + 2 + 6 + E2eeCommands.outCount)
+        XCTAssertEqual(E2eeCommands.callCount, pin(22, wrong: 0))
+        XCTAssertEqual(E2eeCommands.dedicatedCount, 7)
+        XCTAssertEqual(E2eeCommands.outCount, 32)
+        XCTAssertEqual(E2eeCommands.table.count, 37 + 2 + 22 + 7 + 32)
+        XCTAssertEqual(E2eeCommands.table.count, 100)
     }
 
     func testEveryNameIsAnE2eeCommandName() {
@@ -351,6 +501,45 @@ final class CommandTableTests: XCTestCase {
         XCTAssertEqual(tableNames { $0 == .native }, pin(contractNative, wrong: [contractNative[0]]))
     }
 
+    func testCallSetIsExactlyTheContract22() {
+        XCTAssertEqual(contractCall.count, 22, "the hand-typed contract list itself")
+        XCTAssertEqual(duplicates(contractCall), [])
+        XCTAssertTrue(Set(contractCall).isDisjoint(with: contractGeneric))
+        XCTAssertTrue(Set(contractCall).isDisjoint(with: contractDedicated.keys))
+
+        let call = tableNames { $0 == .call }
+        XCTAssertEqual(call.count, E2eeCommands.callCount)
+        let actual = Set(call)
+        let expected = Set(pin(contractCall, wrong: Array(contractCall.dropLast())))
+        XCTAssertEqual(actual, expected, "extra: \(actual.subtracting(expected).sorted()), missing: \(expected.subtracting(actual).sorted())")
+        // The one call-plane name that is confirm-gated is not on the mux.
+        XCTAssertFalse(call.contains("e2ee_call_confirm_downgrade"))
+    }
+
+    func testEveryCallNameNamesARealEngineMethod() {
+        // Derivation control: the camelCasing is the uniffi one.
+        XCTAssertEqual(engineMethodName("e2ee_call_frame_keys"), "callFrameKeys")
+        XCTAssertEqual(engineMethodName("e2ee_mls_publish_key_packages"), pin("mlsPublishKeyPackages", wrong: "mls_publish_key_packages"))
+        XCTAssertEqual(engineMethodName("e2ee_pin_call_identities"), "pinCallIdentities")
+
+        let references = callPlaneEngineMethods()
+        let methods = references.map { $0.method }
+        XCTAssertEqual(references.count, 22)
+        XCTAssertEqual(duplicates(methods), [])
+        // Each base name on the reference line is the derivation of its own
+        // command name: the table's names, the derived method names and the
+        // compiled references are one set.
+        let derived = Set(tableNames { $0 == .call }.map(engineMethodName))
+        let expected = Set(pin(methods, wrong: Array(methods.dropFirst())))
+        XCTAssertEqual(derived, expected, "no engine method: \(derived.subtracting(expected).sorted()), unrouted: \(expected.subtracting(derived).sorted())")
+        XCTAssertEqual(Set(contractCall.map(engineMethodName)), Set(methods))
+
+        let confirm = callConfirmDowngradeEngineMethod()
+        XCTAssertEqual(engineMethodName("e2ee_call_confirm_downgrade"), confirm.method)
+        XCTAssertEqual(contractDedicated["e2ee_call_confirm_downgrade"], confirm.method)
+        XCTAssertFalse(methods.contains(confirm.method), "the confirm-gated engine method is never on the call mux")
+    }
+
     func testDedicatedMappingsAreExact() {
         var mapping: [String: String] = [:]
         for entry in E2eeCommands.table {
@@ -367,8 +556,18 @@ final class CommandTableTests: XCTestCase {
 
     func testDedicatedMethodsAreExactInOrder() {
         XCTAssertEqual(E2eeCommands.dedicatedMethods, pin(contractDedicatedMethods, wrong: contractDedicatedMethods.reversed()))
-        XCTAssertFalse(E2eeCommands.dedicatedMethods.contains("callConfirmDowngrade"))
+        let accept = E2eeCommands.dedicatedMethods.firstIndex(of: "acceptIdentityChange")
+        let confirm = E2eeCommands.dedicatedMethods.firstIndex(of: "callConfirmDowngrade")
+        XCTAssertNotNil(accept)
+        XCTAssertNotNil(confirm)
+        if let accept = accept, let confirm = confirm {
+            XCTAssertEqual(confirm, accept + 1, "callConfirmDowngrade immediately after acceptIdentityChange")
+        }
+        XCTAssertEqual(duplicates(E2eeCommands.dedicatedMethods), [])
         XCTAssertFalse(E2eeCommands.dedicatedMethods.contains("call"))
+        XCTAssertFalse(E2eeCommands.dedicatedMethods.contains("mlsCallMarkDowngradeConfirmed"))
+        XCTAssertFalse(E2eeCommands.dedicatedMethods.contains("mlsCallClearDowngradeConfirmed"))
+        XCTAssertFalse(E2eeCommands.dedicatedMethods.contains("callFrameKeys"))
     }
 
     func testUnroutableNamesRouteOut() {
@@ -376,6 +575,11 @@ final class CommandTableTests: XCTestCase {
         XCTAssertEqual(E2eeCommands.route(for: "e2ee_status"), .generic)
         XCTAssertEqual(E2eeCommands.route(for: "e2ee_attachment_save"), .native)
         XCTAssertEqual(E2eeCommands.route(for: "e2ee_wipe"), .dedicated("wipe"))
+        // Routable since W2: the frame-key egress and the confirm-gated downgrade.
+        XCTAssertEqual(E2eeCommands.route(for: "e2ee_call_frame_keys"), .call)
+        XCTAssertEqual(E2eeCommands.route(for: "e2ee_call_confirm_downgrade"), .dedicated("callConfirmDowngrade"))
+        XCTAssertTrue(Set(unroutableNames).isDisjoint(with: contractCall))
+        XCTAssertTrue(Set(unroutableNames).isDisjoint(with: contractDedicated.keys))
 
         for name in unroutableNames {
             XCTAssertEqual(E2eeCommands.route(for: name), pin(.out, wrong: .generic), "route(for: \(name.debugDescription))")
@@ -402,7 +606,12 @@ final class CommandTableTests: XCTestCase {
         let names = methods.map { $0.name ?? "" }
         XCTAssertEqual(names, pin(["call"] + contractDedicatedMethods, wrong: contractDedicatedMethods))
         XCTAssertEqual(names, ["call"] + E2eeCommands.dedicatedMethods)
-        XCTAssertFalse(names.contains("callConfirmDowngrade"))
+        XCTAssertTrue(names.contains("callConfirmDowngrade"))
+        // Call-plane commands go through `call`, never a method of their own,
+        // and the arming primitives are not exposed under any name.
+        XCTAssertFalse(names.contains("callFrameKeys"))
+        XCTAssertFalse(names.contains("mlsCallMarkDowngradeConfirmed"))
+        XCTAssertFalse(names.contains("mlsCallClearDowngradeConfirmed"))
         for method in methods {
             XCTAssertEqual(method.returnType ?? "", "promise", method.name ?? "")
             XCTAssertEqual(method.returnType ?? "", CAPPluginReturnPromise, method.name ?? "")
@@ -419,8 +628,12 @@ final class CommandTableTests: XCTestCase {
             XCTAssertEqual(method.selector, selector, name)
             XCTAssertTrue(plugin.responds(to: selector), name)
         }
+        // Positive control: the W2 dedicated method resolves.
+        XCTAssertEqual(plugin.responds(to: NSSelectorFromString("callConfirmDowngrade:")), pin(true, wrong: false))
         // Discrimination control: absent methods really are absent.
-        XCTAssertEqual(plugin.responds(to: NSSelectorFromString("callConfirmDowngrade:")), pin(false, wrong: true))
+        XCTAssertEqual(plugin.responds(to: NSSelectorFromString("mlsCallMarkDowngradeConfirmed:")), pin(false, wrong: true))
+        XCTAssertFalse(plugin.responds(to: NSSelectorFromString("mlsCallClearDowngradeConfirmed:")))
+        XCTAssertFalse(plugin.responds(to: NSSelectorFromString("callFrameKeys:")))
         XCTAssertFalse(plugin.responds(to: NSSelectorFromString("call")))
         XCTAssertFalse(plugin.responds(to: NSSelectorFromString("e2eeWipe:")))
     }
@@ -479,6 +692,7 @@ final class CommandTableTests: XCTestCase {
             ("e2ee_add_group_member", ["conversationId": conversationId, "userId": peerId, "selfUserId": selfId]),
             ("e2ee_mark_verified", ["peerUserId": peerId, "deviceId": deviceId, "selfUserId": selfId]),
             ("e2ee_accept_identity_change", ["peerUserId": peerId, "deviceId": deviceId, "selfUserId": selfId]),
+            ("e2ee_call_confirm_downgrade", ["groupId": conversationId, "sfuParticipants": [peerId], "displayNames": [peerId: "Peer"]]),
         ]
         XCTAssertEqual(Set(cases.map { $0.0 }), Set(contractDedicated.keys))
         for (name, arguments) in cases {

@@ -5,15 +5,28 @@
 //
 // Routing comes from the one table, E2eeCommands:
 //   - generic: `call` runs it on the serial engine worker (one switch below);
+//   - call: `call` runs the MLS call-plane commands (phase 2 D3) on the
+//     serial CALL worker, `E2eeRuntime.shared.callWorker`, a queue of its own
+//     so a burst of message decrypts on the engine worker cannot hold a call
+//     commit behind it in FIFO order (D5). Both workers reach the same
+//     engine, whose core mutex is shared, so a call command still waits for
+//     an engine call already in progress;
 //   - native: `call` hands the two attachment export commands to
 //     AttachmentTransfer on a thread of their own;
 //   - dedicated: its own plugin method, on a NEW thread per call, because it
 //     blocks (a native dialog, the recovery sheet, the network) and an open
-//     dialog must never stall decrypt and send on the engine worker (D1 a);
+//     dialog must never stall decrypt and send on the engine worker (D1 a).
+//     The whole-call downgrade confirm is one of them;
 //   - out: refused as an unknown command.
+// The one secret that leaves native code through this plugin is the result
+// of `e2ee_call_frame_keys`: per-sender frame-key material for the media
+// worker in the webview, the same egress Android has (media plan section
+// 7.2). Exporter and epoch secrets and MLS group state never leave Rust.
 // Capacitor calls these methods on its bridge queue, so each one only reads
 // its arguments and hands off. Nothing here runs on the main thread except
-// the empty `backupBundleWaiting` event, and nothing here is logged.
+// `load()` (it hooks the empty `backupBundleWaiting` event and attaches the
+// key-push relay, KeysChangedRelay.swift) and that event's emit. Nothing
+// here is logged: no argument and no result, frame keys included.
 import AcutestE2eeBindings
 import Capacitor
 import Foundation
@@ -70,6 +83,10 @@ public final class E2eePlugin: CAPPlugin, CAPBridgedPlugin {
         RecoverySheet.bundleWaitingHook = Self.backupBundleWaitingEmitter { [weak self] event, data in
             self?.notifyListeners(event, data: data)
         }
+        // The core's key push (phase 2 D4) reaches the page through this
+        // plugin. The relay holds it weakly, and the last instance loaded
+        // wins, as with the hook above.
+        KeysChangedRelay.attach(self)
     }
 
     /// The hook RecoverySheet runs once per kept bundle, on its flow
@@ -100,6 +117,16 @@ public final class E2eePlugin: CAPPlugin, CAPBridgedPlugin {
                 Self.settle(call) {
                     let json = try E2eeRuntime.shared.withBackgroundTask("gg.sloga.e2ee.call") {
                         try Self.runGeneric(name, E2eeCallArgs(call))
+                    }
+                    return .json(json)
+                }
+            }
+        case .call:
+            E2eeRuntime.shared.callWorker.submit {
+                dispatchPrecondition(condition: .notOnQueue(.main))
+                Self.settle(call) {
+                    let json = try E2eeRuntime.shared.withBackgroundTask("gg.sloga.e2ee.call-plane") {
+                        try Self.runCallPlane(name, E2eeCallArgs(call))
                     }
                     return .json(json)
                 }
@@ -281,6 +308,38 @@ public final class E2eePlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
+    @objc func callConfirmDowngrade(_ call: CAPPluginCall) {
+        guard Self.armedOrReject(call) else { return }
+        let args = E2eeCallArgs(call)
+        // All three are required, as on Android: a missing list or map must
+        // not default to empty.
+        guard let input = Self.validated(call, {
+            try (
+                groupId: args.string("groupId"),
+                sfuParticipants: args.stringsJSON("sfuParticipants"),
+                displayNames: args.stringMapJSON("displayNames")
+            )
+        }) else {
+            return
+        }
+        Self.onDedicatedThread(call, "gg.sloga.e2ee.call-confirm-downgrade") {
+            dispatchPrecondition(condition: .notOnQueue(.main))
+            // Blocks on the core's whole-call downgrade dialog (through
+            // NativeConfirmPresenter). The core computes who is not enrolled
+            // from the VERIFIED roster; the two webview lists only label the
+            // dialog's lines. Confirm arms the core's announce gate; cancel
+            // is `declined` and arms nothing.
+            try E2eeRuntime.shared.engine().callConfirmDowngrade(
+                groupId: input.groupId,
+                sfuParticipantsJson: input.sfuParticipants,
+                displayNamesJson: input.displayNames
+            )
+            // `{json:"null"}`, as Android: the webview's CapacitorTransport
+            // parses `json` from this method's result.
+            return .json("null")
+        }
+    }
+
     @objc func backupCreate(_ call: CAPPluginCall) {
         guard Self.armedOrReject(call) else { return }
         guard let userId = Self.validated(call, { try E2eeCallArgs(call).string("userId") }) else {
@@ -377,8 +436,8 @@ public final class E2eePlugin: CAPPlugin, CAPBridgedPlugin {
 }
 
 private extension E2eePlugin {
-    /// How a call settles: `{json}`, or `{}` (markVerified,
-    /// acceptIdentityChange).
+    /// How a call settles: `{json}` (callConfirmDowngrade answers
+    /// `{json:"null"}`), or `{}` (markVerified, acceptIdentityChange).
     enum Resolution {
         case json(String)
         case empty
@@ -614,6 +673,120 @@ private extension E2eePlugin {
             throw E2eeReject.invalidArgument("name")
         }
     }
+
+    /// The MLS call plane, on the call worker. The case labels are exactly
+    /// the 22 call names of E2eeCommands; the whole-call downgrade confirm
+    /// is not one of them (it blocks on a dialog, so it has its own method
+    /// and thread). The argument names are the ones e2ee.ts sends (Android's
+    /// E2eePlugin.kt reads the same); a list or object argument is
+    /// re-serialized as JSON text for the core's own strict parser. Results
+    /// are resolved as in `runGeneric`: the core's JSON text unchanged, unit
+    /// as `null`. Neither arguments nor results are ever logged.
+    static func runCallPlane(_ name: String, _ args: E2eeCallArgs) throws -> String {
+        dispatchPrecondition(condition: .notOnQueue(.main))
+        let engine = try E2eeRuntime.shared.engine()
+        switch name {
+        case "e2ee_pin_call_identities":
+            // Pins other users' named devices from a signed listing; the
+            // core never pins our own user id.
+            return try engine.pinCallIdentities(
+                selfUserId: args.string("selfUserId"),
+                userId: args.string("userId"),
+                targetsJson: args.stringsJSON("targets"),
+                devicesJson: args.arrayJSON("devices")
+            )
+        case "e2ee_call_create":
+            // `supersedes` is sent as null when absent.
+            return try engine.callCreate(
+                channelId: args.string("channelId"),
+                userId: args.string("userId"),
+                supersedes: args.optionalString("supersedes")
+            )
+        case "e2ee_call_join_intent":
+            // `channelId` is the channel the user chose, checked against the
+            // server's answer in e2ee.ts before this is sent (T-15).
+            return try engine.callJoinIntent(
+                groupId: args.string("groupId"),
+                channelId: args.string("channelId"),
+                userId: args.string("userId")
+            )
+        case "e2ee_call_verify_join_intent":
+            try engine.callVerifyJoinIntent(requestJson: args.objectJSON("request"))
+            return "null"
+        case "e2ee_call_admit":
+            return try engine.callAdmit(
+                requestJson: args.objectJSON("request"),
+                claimedJson: args.objectJSON("claimed")
+            )
+        case "e2ee_call_process":
+            return try engine.callProcess(
+                envelopeJson: args.objectJSON("envelope"),
+                userId: args.string("userId")
+            )
+        case "e2ee_call_commit_won":
+            // A whole number that fits i64 exactly; a fraction or a value
+            // out of range is refused, never rounded. The core refuses an
+            // epoch that does not match the staged commit.
+            return try engine.callCommitWon(
+                groupId: args.string("groupId"),
+                wonEpoch: args.int64("wonEpoch")
+            )
+        case "e2ee_call_commit_lost":
+            try engine.callCommitLost(groupId: args.string("groupId"))
+            return "null"
+        case "e2ee_call_pending_commit_epoch":
+            return try engine.callPendingCommitEpoch(groupId: args.string("groupId"))
+        case "e2ee_call_leave_cleanup":
+            try engine.callLeaveCleanup(groupId: args.string("groupId"))
+            return "null"
+        case "e2ee_call_local_groups":
+            return try engine.callLocalGroups(channelId: args.string("channelId"))
+        case "e2ee_call_heartbeat":
+            return try engine.callHeartbeat(groupId: args.string("groupId"))
+        case "e2ee_call_remove":
+            return try engine.callRemove(
+                groupId: args.string("groupId"),
+                targetUserId: args.string("targetUserId"),
+                targetDeviceId: args.string("targetDeviceId")
+            )
+        case "e2ee_call_state":
+            return try engine.callState(groupId: args.string("groupId"))
+        case "e2ee_call_roster_identities":
+            return try engine.callRosterIdentities(groupId: args.string("groupId"))
+        case "e2ee_call_frame_keys":
+            // THE one secret egress: frame-key material for the media worker
+            // in the webview. Passed straight through to the resolve.
+            return try engine.callFrameKeys(groupId: args.string("groupId"))
+        case "e2ee_call_announce":
+            // Confirm-gated in the core (`mls_not_confirmed` until a
+            // confirmed downgrade armed this channel).
+            return try engine.callAnnounce(groupId: args.string("groupId"), userId: args.string("userId"))
+        case "e2ee_call_clear_downgrade":
+            // The safe direction: only forces a fresh confirm.
+            try engine.callClearDowngrade(groupId: args.string("groupId"))
+            return "null"
+        case "e2ee_call_non_enrolled":
+            // Required: a missing list must not read as "nobody is live".
+            return try engine.callNonEnrolled(
+                groupId: args.string("groupId"),
+                sfuParticipantsJson: args.stringsJSON("sfuParticipants")
+            )
+        case "e2ee_mls_publish_key_packages":
+            return try engine.mlsPublishKeyPackages(userId: args.string("userId"))
+        case "e2ee_mls_replenish":
+            // u64 at full width: a negative or fractional count is refused,
+            // never wrapped or truncated.
+            return try engine.mlsReplenish(
+                userId: args.string("userId"),
+                serverRemaining: args.uint64("serverRemaining")
+            )
+        case "e2ee_mls_expire_key_packages":
+            try engine.mlsExpireKeyPackages()
+            return "null"
+        default:
+            throw E2eeReject.invalidArgument("name")
+        }
+    }
 }
 
 /// Strict readers over one call's arguments. A wrong type is rejected as
@@ -744,6 +917,19 @@ private struct E2eeCallArgs {
         return try jsonText(raw, key)
     }
 
+    /// A required list of strings (every element a string), as JSON text.
+    func stringsJSON(_ key: String) throws -> String {
+        try jsonText(strings(key), key)
+    }
+
+    /// A required object of string values, as JSON text.
+    func stringMapJSON(_ key: String) throws -> String {
+        guard let map = try optionalStringMap(key) else {
+            throw invalid(key)
+        }
+        return try jsonText(map, key)
+    }
+
     /// Re-serialized for the core's own strict parser. The validity check
     /// comes first because JSONSerialization raises (it does not throw) on
     /// an object it cannot write.
@@ -811,7 +997,10 @@ private struct E2eeCallArgs {
         }
     }
 
-    /// u64, at least 0 (`serverRemaining`).
+    /// u64, at least 0 (`serverRemaining` of e2ee_replenish and
+    /// e2ee_mls_replenish). A signed or floating-point value only gets
+    /// through an `exactly:` conversion, so -1, 1.5, NaN and a boolean are
+    /// `invalid_argument`, never a trap.
     func uint64(_ key: String) throws -> UInt64 {
         switch try integral(key) {
         case .signed(let signed)?:
@@ -826,7 +1015,7 @@ private struct E2eeCallArgs {
         }
     }
 
-    /// i64 (`generation`).
+    /// i64 (`generation`, `wonEpoch`), through `Int64(exactly:)`.
     func int64(_ key: String) throws -> Int64 {
         switch try integral(key) {
         case .signed(let signed)?:
