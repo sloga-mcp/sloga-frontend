@@ -299,7 +299,7 @@ private func runWipeScenario(dir: URL, confirm: FakeConfirm) -> WipeReport {
     dispatchPrecondition(condition: .notOnQueue(.main))
     var report = WipeReport()
     do {
-        let engine = try E2eeEngine(storeDir: dir.path, confirm: confirm)
+        let engine = try E2eeEngine(storeDir: dir.path, confirm: confirm, keysChanged: KeysChangedRelay(deliver: { _, _ in }))
         _ = try engine.enable()
         report.provisionedBefore = try engine.isProvisioned()
         report.storeFilesBefore = storeFiles(in: dir)

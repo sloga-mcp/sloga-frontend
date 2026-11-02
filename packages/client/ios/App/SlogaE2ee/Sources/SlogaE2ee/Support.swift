@@ -87,8 +87,8 @@ func zeroize(_ data: inout Data) {
 let engineThreadStackSize = 8 << 20
 
 /// A fixed set of long-lived threads draining one FIFO job queue. With
-/// `threads: 1` it is a serial executor (the engine worker). Jobs never run
-/// on the main thread.
+/// `threads: 1` it is a serial executor (the engine worker and the call
+/// worker). Jobs never run on the main thread.
 final class WorkerPool: @unchecked Sendable {
     private let condition = NSCondition()
     private var jobs: [() -> Void] = []
@@ -143,8 +143,9 @@ func runOnDedicatedThread(name: String, _ body: @escaping () -> Void) {
     thread.start()
 }
 
-/// The process's one engine (D5 "Engine lifecycle") and the worker generic
-/// commands run on.
+/// The process's one engine (D5 "Engine lifecycle") and the two serial
+/// workers engine commands run on: one for generic commands, one for the
+/// call plane.
 final class E2eeRuntime: @unchecked Sendable {
     static let shared = E2eeRuntime()
 
@@ -152,6 +153,14 @@ final class E2eeRuntime: @unchecked Sendable {
     /// already serialized by the webview's `#decryptQueue`; the core's mutex
     /// serializes engine access anyway.
     let engineWorker = WorkerPool(name: "gg.sloga.e2ee.engine", threads: 1)
+
+    /// The serial worker for the call plane (the MLS call commands; phase 2
+    /// D5). It is a separate queue so a burst of message decrypts on
+    /// `engineWorker` cannot hold a call commit in FIFO order behind it.
+    /// Honest limit: this removes only the Swift-side queue wait. Both
+    /// workers call the same engine, whose core mutex is still shared, so a
+    /// call command still waits for any engine call already in progress.
+    let callWorker = WorkerPool(name: "gg.sloga.e2ee.call", threads: 1)
 
     private let lock = NSLock()
     private var cached: E2eeEngine?
@@ -165,6 +174,10 @@ final class E2eeRuntime: @unchecked Sendable {
     /// Rust. A live engine is never replaced (the native one-engine-per-dir
     /// registry would refuse a second one while the first is alive); a failed
     /// construction leaves nothing cached, and the next call tries again.
+    /// The engine gets `KeysChangedRelay.shared` as its key-change callback.
+    /// The relay must hold no strong reference to the engine, the runtime or
+    /// the plugin (KeysChangedRelay.swift): a cycle would keep this engine's
+    /// store claim alive and refuse the next construction.
     func engine() throws -> E2eeEngine {
         dispatchPrecondition(condition: .notOnQueue(.main))
         lock.lock()
@@ -173,7 +186,11 @@ final class E2eeRuntime: @unchecked Sendable {
             return engine
         }
         let directory = try E2eeStore.prepareStoreDirectory()
-        let engine = try E2eeEngine(storeDir: directory.path, confirm: NativeConfirmPresenter.shared)
+        let engine = try E2eeEngine(
+            storeDir: directory.path,
+            confirm: NativeConfirmPresenter.shared,
+            keysChanged: KeysChangedRelay.shared
+        )
         cached = engine
         return engine
     }

@@ -689,6 +689,169 @@ public protocol E2eeEngineProtocol: AnyObject, Sendable {
     func backupTakePendingUpload() throws  -> String
     
     /**
+     * Admit a joiner: core verifies the intent (`request_json`, JSON
+     * `MlsJoinRequest`) against OUR pins and the claimed KeyPackage
+     * (`claimed_json`, JSON `MlsClaimedKeyPackage`), then stages an Add
+     * commit + Welcome; JSON `SubmitMlsCommitPayload`. Nothing applies
+     * locally until [`Self::call_commit_won`].
+     */
+    func callAdmit(requestJson: String, claimedJson: String) throws  -> String
+    
+    /**
+     * Mint the group-encrypted mode announcement; JSON `MlsCtlPayload`
+     * (the `POST /mls/groups/<id>/messages` body). Shows no dialog but is
+     * CONFIRM-GATED in core: `mls_not_confirmed` unless
+     * [`Self::call_confirm_downgrade`] armed this channel's gate (core
+     * keys the grant by channel, in memory, cleared when the channel's
+     * last group is cleaned up), so the webview can re-request an announce
+     * but never originate one.
+     */
+    func callAnnounce(groupId: String, userId: String) throws  -> String
+    
+    /**
+     * Clear the channel's confirmed-downgrade grant (on a re-upgrade). The
+     * safe direction: clearing only forces a fresh native confirm before
+     * any later announce.
+     */
+    func callClearDowngrade(groupId: String) throws 
+    
+    /**
+     * The DS rejected OUR staged commit: discard it (the caller then
+     * rebases through [`Self::call_process`]).
+     */
+    func callCommitLost(groupId: String) throws 
+    
+    /**
+     * The Delivery Service confirmed OUR staged commit won `won_epoch`:
+     * merge it; JSON `MlsProcessOutcome`. `won_epoch` must be the DS's
+     * authoritative answer; core refuses a mismatch with the staged
+     * commit, so a guess cannot fork the group. Core fires `keys_changed`
+     * on success.
+     */
+    func callCommitWon(groupId: String, wonEpoch: Int64) throws  -> String
+    
+    /**
+     * Confirm a whole-call downgrade to plaintext. BLOCKS on a native
+     * dialog (core's `CallDowngrade` confirm), so Swift calls it on its
+     * OWN dedicated `Thread`, never the MLS queue, the engine queue or
+     * main. The non-enrolled list in the dialog is computed by core from
+     * the VERIFIED MLS roster; `sfu_participants_json` (JSON array of the
+     * live SFU identities) and `display_names_json` (JSON object, user id
+     * to display name) are webview-supplied and can only change how
+     * people are labelled, never suppress the dialog. Confirm arms core's
+     * announce gate for this channel (keyed by channel, in memory, cleared
+     * when the channel's last group is cleaned up) and returns Ok; cancel
+     * is `declined` and arms nothing. Core keeps no `busy` slot or decline
+     * lockout for this dialog. A malformed argument is refused, and an
+     * unknown group is refused, before any dialog. Never provisions, like
+     * the rest of the call plane, and core releases its lock before the
+     * dialog shows.
+     */
+    func callConfirmDowngrade(groupId: String, sfuParticipantsJson: String, displayNamesJson: String) throws 
+    
+    /**
+     * Create the MLS group for a new call; JSON `MlsCallCreated`
+     * `{group_id, payload}` (`payload` = the `POST /mls/groups` body).
+     * Epoch 0 is established locally, so core fires `keys_changed` with
+     * epoch 0 before this returns. `supersedes` names the group this one
+     * replaces, if any.
+     */
+    func callCreate(channelId: String, userId: String, supersedes: String?) throws  -> String
+    
+    /**
+     * THE one secret egress (media plan section 7.2, invariant 6): JSON
+     * `MlsFrameKeys` `{group_id, epoch, keys, previous}`, each entry
+     * `{livekit_identity, user_id, device_id, key_index, epoch,
+     * frame_key_b64}` carrying 32 bytes of base64 HKDF frame-key
+     * MATERIAL; `previous` holds the prior epoch's entries during the
+     * rotation overlap. Core re-verifies the whole roster before deriving
+     * anything and refuses a poisoned group (`mls_poisoned_epoch`);
+     * exporter and epoch secrets never leave Rust. Never provisions, like
+     * the rest of the call plane: an unprovisioned device holds no group,
+     * so there are no keys to return and nothing is created on disk.
+     */
+    func callFrameKeys(groupId: String) throws  -> String
+    
+    /**
+     * Stage the epoch-heartbeat self-update commit; JSON
+     * `SubmitMlsCommitPayload`. Applies only on [`Self::call_commit_won`].
+     */
+    func callHeartbeat(groupId: String) throws  -> String
+    
+    /**
+     * Sign and persist a join intent for the channel's open group; JSON
+     * `MlsJoinIntentPayload` (the `POST /mls/groups/<id>/join_intent`
+     * body). The persisted intent is what lets core refuse an unsolicited
+     * Welcome, across a crash too.
+     */
+    func callJoinIntent(groupId: String, channelId: String, userId: String) throws  -> String
+    
+    /**
+     * Delete local MLS state for a call group; core also clears the
+     * channel's confirmed-downgrade grant when this was the channel's last
+     * group.
+     */
+    func callLeaveCleanup(groupId: String) throws 
+    
+    /**
+     * JSON array of the LOCAL call-group ids stored for `channel_id`
+     * (existence, not readability: the rejoin startup sweep's probe).
+     */
+    func callLocalGroups(channelId: String) throws  -> String
+    
+    /**
+     * JSON array of the device-qualified SFU identities NOT in the
+     * group's VERIFIED roster. `sfu_participants_json` (JSON array of the
+     * live SFU identities) is webview-supplied and attacker-controlled
+     * only in the safe direction. Read-only; the downgrade dialog computes
+     * its own.
+     */
+    func callNonEnrolled(groupId: String, sfuParticipantsJson: String) throws  -> String
+    
+    /**
+     * JSON number or `null`: the epoch a currently staged own commit would
+     * establish (the crash-safe reconnect check; never a reason to call
+     * `call_commit_won` on a guess).
+     */
+    func callPendingCommitEpoch(groupId: String) throws  -> String
+    
+    /**
+     * Process one inbound MLS envelope (`envelope_json` = JSON
+     * `MlsEnvelope`); JSON `MlsProcessOutcome`. Core fires `keys_changed`
+     * only when the epoch actually advanced (`kind` `welcome_joined` or
+     * `commit_applied`, never a duplicate). The caller acks the envelope
+     * only after Ok.
+     */
+    func callProcess(envelopeJson: String, userId: String) throws  -> String
+    
+    /**
+     * Stage a Remove commit for a departed (or ghost) member's device;
+     * JSON `SubmitMlsCommitPayload`. Applies only on
+     * [`Self::call_commit_won`].
+     */
+    func callRemove(groupId: String, targetUserId: String, targetDeviceId: String) throws  -> String
+    
+    /**
+     * JSON array of the group's CLAIMED leaf identities
+     * (`"user_id:device_id"`), UNVERIFIED: signalling only (which device
+     * listings to reconcile), never a trust input.
+     */
+    func callRosterIdentities(groupId: String) throws  -> String
+    
+    /**
+     * JSON `MlsCallState`: epoch, lifecycle state and the verified roster
+     * with per-member verification status. Display data only, no keys.
+     */
+    func callState(groupId: String) throws  -> String
+    
+    /**
+     * Verify a fanned-out join intent (`request_json` = JSON
+     * `MlsJoinRequest`) against OUR pinned identity for the claimed
+     * device. Read-only; Ok means it verified.
+     */
+    func callVerifyJoinIntent(requestJson: String) throws 
+    
+    /**
      * Resolve a peer's downgrade prompt. With `accept == true` this BLOCKS
      * on a native dialog (core's `PeerDowngrade` confirm), so Swift routes
      * that case to its own dedicated thread; a cancelled accept is
@@ -801,6 +964,27 @@ public protocol E2eeEngineProtocol: AnyObject, Sendable {
     func markVerified(peerUserId: String, deviceId: String, selfUserId: String?, displayName: String?) throws 
     
     /**
+     * Sweep expired local KeyPackage bookkeeping (client-timer driven).
+     */
+    func mlsExpireKeyPackages() throws 
+    
+    /**
+     * Generate and record a full KeyPackage batch; JSON
+     * `PublishMlsKeyPackagesPayload` (the `PUT /mls/key_packages` body:
+     * public KeyPackages + the signed credential binding). Never
+     * provisions (block note): a never-enabled device has no device
+     * account to bind KeyPackages to, and nothing is created on disk.
+     */
+    func mlsPublishKeyPackages(userId: String) throws  -> String
+    
+    /**
+     * Low-water KeyPackage replenish from the server-reported remaining
+     * count: JSON publish payload when below the watermark, else JSON
+     * `null`.
+     */
+    func mlsReplenish(userId: String, serverRemaining: UInt64) throws  -> String
+    
+    /**
      * Late-device downgrade notify (no prompt, no local state change).
      * JSON `EncryptResult`. Never provisions.
      */
@@ -810,6 +994,18 @@ public protocol E2eeEngineProtocol: AnyObject, Sendable {
      * JSON array of conversation ids with an unresolved pending downgrade.
      */
     func pendingDowngrades() throws  -> String
+    
+    /**
+     * Pin specific media-call roster devices of `user_id` from a signed
+     * device listing: `devices_json` is the JSON
+     * `GET /e2ee/devices/{user}` array, `targets_json` the JSON array of
+     * device ids this call needs. Returns the JSON array of device ids
+     * ACTUALLY pinned (the caller gates on this). Core never pins our own
+     * user id and never overwrites a revoked or identity-changed pin.
+     * Never provisions: an unprovisioned device pins nothing and answers
+     * `[]`.
+     */
+    func pinCallIdentities(selfUserId: String, userId: String, targetsJson: String, devicesJson: String) throws  -> String
     
     /**
      * Reconcile a JSON `GET /e2ee/devices/{user}` listing; returns the
@@ -1004,14 +1200,17 @@ open class E2eeEngine: E2eeEngineProtocol, @unchecked Sendable {
      * Swift still holds a singleton: the native rule turns a second
      * construction over the same directory into this error instead of a
      * silent ratchet race. `confirm` is the native dialog every
-     * confirm-gated method blocks on.
+     * confirm-gated method blocks on. `keys_changed` is the key-push sink
+     * core calls when a call group's epoch changes (module docs: it must
+     * return at once and never call the engine).
      */
-public convenience init(storeDir: String, confirm: NativeConfirm)throws  {
+public convenience init(storeDir: String, confirm: NativeConfirm, keysChanged: NativeKeysChanged)throws  {
     let pointer =
         try rustCallWithError(FfiConverterTypeE2eeError_lift) {
     uniffi_acutest_e2ee_ios_fn_constructor_e2eeengine_new(
         FfiConverterString.lower(storeDir),
-        FfiConverterTypeNativeConfirm_lower(confirm),$0
+        FfiConverterTypeNativeConfirm_lower(confirm),
+        FfiConverterTypeNativeKeysChanged_lower(keysChanged),$0
     )
 }
     self.init(unsafeFromRawPointer: pointer)
@@ -1292,6 +1491,291 @@ open func backupTakePendingUpload()throws  -> String  {
 }
     
     /**
+     * Admit a joiner: core verifies the intent (`request_json`, JSON
+     * `MlsJoinRequest`) against OUR pins and the claimed KeyPackage
+     * (`claimed_json`, JSON `MlsClaimedKeyPackage`), then stages an Add
+     * commit + Welcome; JSON `SubmitMlsCommitPayload`. Nothing applies
+     * locally until [`Self::call_commit_won`].
+     */
+open func callAdmit(requestJson: String, claimedJson: String)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeE2eeError_lift) {
+    uniffi_acutest_e2ee_ios_fn_method_e2eeengine_call_admit(self.uniffiClonePointer(),
+        FfiConverterString.lower(requestJson),
+        FfiConverterString.lower(claimedJson),$0
+    )
+})
+}
+    
+    /**
+     * Mint the group-encrypted mode announcement; JSON `MlsCtlPayload`
+     * (the `POST /mls/groups/<id>/messages` body). Shows no dialog but is
+     * CONFIRM-GATED in core: `mls_not_confirmed` unless
+     * [`Self::call_confirm_downgrade`] armed this channel's gate (core
+     * keys the grant by channel, in memory, cleared when the channel's
+     * last group is cleaned up), so the webview can re-request an announce
+     * but never originate one.
+     */
+open func callAnnounce(groupId: String, userId: String)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeE2eeError_lift) {
+    uniffi_acutest_e2ee_ios_fn_method_e2eeengine_call_announce(self.uniffiClonePointer(),
+        FfiConverterString.lower(groupId),
+        FfiConverterString.lower(userId),$0
+    )
+})
+}
+    
+    /**
+     * Clear the channel's confirmed-downgrade grant (on a re-upgrade). The
+     * safe direction: clearing only forces a fresh native confirm before
+     * any later announce.
+     */
+open func callClearDowngrade(groupId: String)throws   {try rustCallWithError(FfiConverterTypeE2eeError_lift) {
+    uniffi_acutest_e2ee_ios_fn_method_e2eeengine_call_clear_downgrade(self.uniffiClonePointer(),
+        FfiConverterString.lower(groupId),$0
+    )
+}
+}
+    
+    /**
+     * The DS rejected OUR staged commit: discard it (the caller then
+     * rebases through [`Self::call_process`]).
+     */
+open func callCommitLost(groupId: String)throws   {try rustCallWithError(FfiConverterTypeE2eeError_lift) {
+    uniffi_acutest_e2ee_ios_fn_method_e2eeengine_call_commit_lost(self.uniffiClonePointer(),
+        FfiConverterString.lower(groupId),$0
+    )
+}
+}
+    
+    /**
+     * The Delivery Service confirmed OUR staged commit won `won_epoch`:
+     * merge it; JSON `MlsProcessOutcome`. `won_epoch` must be the DS's
+     * authoritative answer; core refuses a mismatch with the staged
+     * commit, so a guess cannot fork the group. Core fires `keys_changed`
+     * on success.
+     */
+open func callCommitWon(groupId: String, wonEpoch: Int64)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeE2eeError_lift) {
+    uniffi_acutest_e2ee_ios_fn_method_e2eeengine_call_commit_won(self.uniffiClonePointer(),
+        FfiConverterString.lower(groupId),
+        FfiConverterInt64.lower(wonEpoch),$0
+    )
+})
+}
+    
+    /**
+     * Confirm a whole-call downgrade to plaintext. BLOCKS on a native
+     * dialog (core's `CallDowngrade` confirm), so Swift calls it on its
+     * OWN dedicated `Thread`, never the MLS queue, the engine queue or
+     * main. The non-enrolled list in the dialog is computed by core from
+     * the VERIFIED MLS roster; `sfu_participants_json` (JSON array of the
+     * live SFU identities) and `display_names_json` (JSON object, user id
+     * to display name) are webview-supplied and can only change how
+     * people are labelled, never suppress the dialog. Confirm arms core's
+     * announce gate for this channel (keyed by channel, in memory, cleared
+     * when the channel's last group is cleaned up) and returns Ok; cancel
+     * is `declined` and arms nothing. Core keeps no `busy` slot or decline
+     * lockout for this dialog. A malformed argument is refused, and an
+     * unknown group is refused, before any dialog. Never provisions, like
+     * the rest of the call plane, and core releases its lock before the
+     * dialog shows.
+     */
+open func callConfirmDowngrade(groupId: String, sfuParticipantsJson: String, displayNamesJson: String)throws   {try rustCallWithError(FfiConverterTypeE2eeError_lift) {
+    uniffi_acutest_e2ee_ios_fn_method_e2eeengine_call_confirm_downgrade(self.uniffiClonePointer(),
+        FfiConverterString.lower(groupId),
+        FfiConverterString.lower(sfuParticipantsJson),
+        FfiConverterString.lower(displayNamesJson),$0
+    )
+}
+}
+    
+    /**
+     * Create the MLS group for a new call; JSON `MlsCallCreated`
+     * `{group_id, payload}` (`payload` = the `POST /mls/groups` body).
+     * Epoch 0 is established locally, so core fires `keys_changed` with
+     * epoch 0 before this returns. `supersedes` names the group this one
+     * replaces, if any.
+     */
+open func callCreate(channelId: String, userId: String, supersedes: String?)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeE2eeError_lift) {
+    uniffi_acutest_e2ee_ios_fn_method_e2eeengine_call_create(self.uniffiClonePointer(),
+        FfiConverterString.lower(channelId),
+        FfiConverterString.lower(userId),
+        FfiConverterOptionString.lower(supersedes),$0
+    )
+})
+}
+    
+    /**
+     * THE one secret egress (media plan section 7.2, invariant 6): JSON
+     * `MlsFrameKeys` `{group_id, epoch, keys, previous}`, each entry
+     * `{livekit_identity, user_id, device_id, key_index, epoch,
+     * frame_key_b64}` carrying 32 bytes of base64 HKDF frame-key
+     * MATERIAL; `previous` holds the prior epoch's entries during the
+     * rotation overlap. Core re-verifies the whole roster before deriving
+     * anything and refuses a poisoned group (`mls_poisoned_epoch`);
+     * exporter and epoch secrets never leave Rust. Never provisions, like
+     * the rest of the call plane: an unprovisioned device holds no group,
+     * so there are no keys to return and nothing is created on disk.
+     */
+open func callFrameKeys(groupId: String)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeE2eeError_lift) {
+    uniffi_acutest_e2ee_ios_fn_method_e2eeengine_call_frame_keys(self.uniffiClonePointer(),
+        FfiConverterString.lower(groupId),$0
+    )
+})
+}
+    
+    /**
+     * Stage the epoch-heartbeat self-update commit; JSON
+     * `SubmitMlsCommitPayload`. Applies only on [`Self::call_commit_won`].
+     */
+open func callHeartbeat(groupId: String)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeE2eeError_lift) {
+    uniffi_acutest_e2ee_ios_fn_method_e2eeengine_call_heartbeat(self.uniffiClonePointer(),
+        FfiConverterString.lower(groupId),$0
+    )
+})
+}
+    
+    /**
+     * Sign and persist a join intent for the channel's open group; JSON
+     * `MlsJoinIntentPayload` (the `POST /mls/groups/<id>/join_intent`
+     * body). The persisted intent is what lets core refuse an unsolicited
+     * Welcome, across a crash too.
+     */
+open func callJoinIntent(groupId: String, channelId: String, userId: String)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeE2eeError_lift) {
+    uniffi_acutest_e2ee_ios_fn_method_e2eeengine_call_join_intent(self.uniffiClonePointer(),
+        FfiConverterString.lower(groupId),
+        FfiConverterString.lower(channelId),
+        FfiConverterString.lower(userId),$0
+    )
+})
+}
+    
+    /**
+     * Delete local MLS state for a call group; core also clears the
+     * channel's confirmed-downgrade grant when this was the channel's last
+     * group.
+     */
+open func callLeaveCleanup(groupId: String)throws   {try rustCallWithError(FfiConverterTypeE2eeError_lift) {
+    uniffi_acutest_e2ee_ios_fn_method_e2eeengine_call_leave_cleanup(self.uniffiClonePointer(),
+        FfiConverterString.lower(groupId),$0
+    )
+}
+}
+    
+    /**
+     * JSON array of the LOCAL call-group ids stored for `channel_id`
+     * (existence, not readability: the rejoin startup sweep's probe).
+     */
+open func callLocalGroups(channelId: String)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeE2eeError_lift) {
+    uniffi_acutest_e2ee_ios_fn_method_e2eeengine_call_local_groups(self.uniffiClonePointer(),
+        FfiConverterString.lower(channelId),$0
+    )
+})
+}
+    
+    /**
+     * JSON array of the device-qualified SFU identities NOT in the
+     * group's VERIFIED roster. `sfu_participants_json` (JSON array of the
+     * live SFU identities) is webview-supplied and attacker-controlled
+     * only in the safe direction. Read-only; the downgrade dialog computes
+     * its own.
+     */
+open func callNonEnrolled(groupId: String, sfuParticipantsJson: String)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeE2eeError_lift) {
+    uniffi_acutest_e2ee_ios_fn_method_e2eeengine_call_non_enrolled(self.uniffiClonePointer(),
+        FfiConverterString.lower(groupId),
+        FfiConverterString.lower(sfuParticipantsJson),$0
+    )
+})
+}
+    
+    /**
+     * JSON number or `null`: the epoch a currently staged own commit would
+     * establish (the crash-safe reconnect check; never a reason to call
+     * `call_commit_won` on a guess).
+     */
+open func callPendingCommitEpoch(groupId: String)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeE2eeError_lift) {
+    uniffi_acutest_e2ee_ios_fn_method_e2eeengine_call_pending_commit_epoch(self.uniffiClonePointer(),
+        FfiConverterString.lower(groupId),$0
+    )
+})
+}
+    
+    /**
+     * Process one inbound MLS envelope (`envelope_json` = JSON
+     * `MlsEnvelope`); JSON `MlsProcessOutcome`. Core fires `keys_changed`
+     * only when the epoch actually advanced (`kind` `welcome_joined` or
+     * `commit_applied`, never a duplicate). The caller acks the envelope
+     * only after Ok.
+     */
+open func callProcess(envelopeJson: String, userId: String)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeE2eeError_lift) {
+    uniffi_acutest_e2ee_ios_fn_method_e2eeengine_call_process(self.uniffiClonePointer(),
+        FfiConverterString.lower(envelopeJson),
+        FfiConverterString.lower(userId),$0
+    )
+})
+}
+    
+    /**
+     * Stage a Remove commit for a departed (or ghost) member's device;
+     * JSON `SubmitMlsCommitPayload`. Applies only on
+     * [`Self::call_commit_won`].
+     */
+open func callRemove(groupId: String, targetUserId: String, targetDeviceId: String)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeE2eeError_lift) {
+    uniffi_acutest_e2ee_ios_fn_method_e2eeengine_call_remove(self.uniffiClonePointer(),
+        FfiConverterString.lower(groupId),
+        FfiConverterString.lower(targetUserId),
+        FfiConverterString.lower(targetDeviceId),$0
+    )
+})
+}
+    
+    /**
+     * JSON array of the group's CLAIMED leaf identities
+     * (`"user_id:device_id"`), UNVERIFIED: signalling only (which device
+     * listings to reconcile), never a trust input.
+     */
+open func callRosterIdentities(groupId: String)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeE2eeError_lift) {
+    uniffi_acutest_e2ee_ios_fn_method_e2eeengine_call_roster_identities(self.uniffiClonePointer(),
+        FfiConverterString.lower(groupId),$0
+    )
+})
+}
+    
+    /**
+     * JSON `MlsCallState`: epoch, lifecycle state and the verified roster
+     * with per-member verification status. Display data only, no keys.
+     */
+open func callState(groupId: String)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeE2eeError_lift) {
+    uniffi_acutest_e2ee_ios_fn_method_e2eeengine_call_state(self.uniffiClonePointer(),
+        FfiConverterString.lower(groupId),$0
+    )
+})
+}
+    
+    /**
+     * Verify a fanned-out join intent (`request_json` = JSON
+     * `MlsJoinRequest`) against OUR pinned identity for the claimed
+     * device. Read-only; Ok means it verified.
+     */
+open func callVerifyJoinIntent(requestJson: String)throws   {try rustCallWithError(FfiConverterTypeE2eeError_lift) {
+    uniffi_acutest_e2ee_ios_fn_method_e2eeengine_call_verify_join_intent(self.uniffiClonePointer(),
+        FfiConverterString.lower(requestJson),$0
+    )
+}
+}
+    
+    /**
      * Resolve a peer's downgrade prompt. With `accept == true` this BLOCKS
      * on a native dialog (core's `PeerDowngrade` confirm), so Swift routes
      * that case to its own dedicated thread; a cancelled accept is
@@ -1528,6 +2012,44 @@ open func markVerified(peerUserId: String, deviceId: String, selfUserId: String?
 }
     
     /**
+     * Sweep expired local KeyPackage bookkeeping (client-timer driven).
+     */
+open func mlsExpireKeyPackages()throws   {try rustCallWithError(FfiConverterTypeE2eeError_lift) {
+    uniffi_acutest_e2ee_ios_fn_method_e2eeengine_mls_expire_key_packages(self.uniffiClonePointer(),$0
+    )
+}
+}
+    
+    /**
+     * Generate and record a full KeyPackage batch; JSON
+     * `PublishMlsKeyPackagesPayload` (the `PUT /mls/key_packages` body:
+     * public KeyPackages + the signed credential binding). Never
+     * provisions (block note): a never-enabled device has no device
+     * account to bind KeyPackages to, and nothing is created on disk.
+     */
+open func mlsPublishKeyPackages(userId: String)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeE2eeError_lift) {
+    uniffi_acutest_e2ee_ios_fn_method_e2eeengine_mls_publish_key_packages(self.uniffiClonePointer(),
+        FfiConverterString.lower(userId),$0
+    )
+})
+}
+    
+    /**
+     * Low-water KeyPackage replenish from the server-reported remaining
+     * count: JSON publish payload when below the watermark, else JSON
+     * `null`.
+     */
+open func mlsReplenish(userId: String, serverRemaining: UInt64)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeE2eeError_lift) {
+    uniffi_acutest_e2ee_ios_fn_method_e2eeengine_mls_replenish(self.uniffiClonePointer(),
+        FfiConverterString.lower(userId),
+        FfiConverterUInt64.lower(serverRemaining),$0
+    )
+})
+}
+    
+    /**
      * Late-device downgrade notify (no prompt, no local state change).
      * JSON `EncryptResult`. Never provisions.
      */
@@ -1547,6 +2069,27 @@ open func notifyDowngrade(conversationId: String, selfUserId: String, bundlesJso
 open func pendingDowngrades()throws  -> String  {
     return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeE2eeError_lift) {
     uniffi_acutest_e2ee_ios_fn_method_e2eeengine_pending_downgrades(self.uniffiClonePointer(),$0
+    )
+})
+}
+    
+    /**
+     * Pin specific media-call roster devices of `user_id` from a signed
+     * device listing: `devices_json` is the JSON
+     * `GET /e2ee/devices/{user}` array, `targets_json` the JSON array of
+     * device ids this call needs. Returns the JSON array of device ids
+     * ACTUALLY pinned (the caller gates on this). Core never pins our own
+     * user id and never overwrites a revoked or identity-changed pin.
+     * Never provisions: an unprovisioned device pins nothing and answers
+     * `[]`.
+     */
+open func pinCallIdentities(selfUserId: String, userId: String, targetsJson: String, devicesJson: String)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeE2eeError_lift) {
+    uniffi_acutest_e2ee_ios_fn_method_e2eeengine_pin_call_identities(self.uniffiClonePointer(),
+        FfiConverterString.lower(selfUserId),
+        FfiConverterString.lower(userId),
+        FfiConverterString.lower(targetsJson),
+        FfiConverterString.lower(devicesJson),$0
     )
 })
 }
@@ -2039,6 +2582,213 @@ public func FfiConverterTypeNativeConfirm_lift(_ pointer: UnsafeMutableRawPointe
 #endif
 public func FfiConverterTypeNativeConfirm_lower(_ value: NativeConfirm) -> UnsafeMutableRawPointer {
     return FfiConverterTypeNativeConfirm.lower(value)
+}
+
+
+
+
+
+
+/**
+ * Swift-implemented key-push sink (D4): the iOS analog of desktop's
+ * `e2ee:call-keys-changed` event and Android's `callKeysChanged`. Core
+ * decides when it fires (after `call_create`, an epoch-advancing
+ * `call_process`, and `call_commit_won`); this crate re-parses nothing.
+ * The webview then pulls the new keys through
+ * [`E2eeEngine::call_frame_keys`]; the callback itself carries no key.
+ * Swift's conformance is `func keysChanged(groupId: String, epoch: Int64)
+ * throws`, which never actually throws.
+ */
+public protocol NativeKeysChanged: AnyObject, Sendable {
+    
+    /**
+     * Delivered after core applied a new epoch for `group_id`. Carries ONLY the public pair.
+     * Swift hops asynchronously to the main queue and emits `callKeysChanged`; it must never
+     * block and never call back into the engine from this callback.
+     */
+    func keysChanged(groupId: String, epoch: Int64) throws 
+    
+}
+/**
+ * Swift-implemented key-push sink (D4): the iOS analog of desktop's
+ * `e2ee:call-keys-changed` event and Android's `callKeysChanged`. Core
+ * decides when it fires (after `call_create`, an epoch-advancing
+ * `call_process`, and `call_commit_won`); this crate re-parses nothing.
+ * The webview then pulls the new keys through
+ * [`E2eeEngine::call_frame_keys`]; the callback itself carries no key.
+ * Swift's conformance is `func keysChanged(groupId: String, epoch: Int64)
+ * throws`, which never actually throws.
+ */
+open class NativeKeysChangedImpl: NativeKeysChanged, @unchecked Sendable {
+    fileprivate let pointer: UnsafeMutableRawPointer!
+
+    /// Used to instantiate a [FFIObject] without an actual pointer, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoPointer {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromRawPointer pointer: UnsafeMutableRawPointer) {
+        self.pointer = pointer
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noPointer: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing [Pointer] the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noPointer: NoPointer) {
+        self.pointer = nil
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiClonePointer() -> UnsafeMutableRawPointer {
+        return try! rustCall { uniffi_acutest_e2ee_ios_fn_clone_nativekeyschanged(self.pointer, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        guard let pointer = pointer else {
+            return
+        }
+
+        try! rustCall { uniffi_acutest_e2ee_ios_fn_free_nativekeyschanged(pointer, $0) }
+    }
+
+    
+
+    
+    /**
+     * Delivered after core applied a new epoch for `group_id`. Carries ONLY the public pair.
+     * Swift hops asynchronously to the main queue and emits `callKeysChanged`; it must never
+     * block and never call back into the engine from this callback.
+     */
+open func keysChanged(groupId: String, epoch: Int64)throws   {try rustCallWithError(FfiConverterTypeKeysChangedError_lift) {
+    uniffi_acutest_e2ee_ios_fn_method_nativekeyschanged_keys_changed(self.uniffiClonePointer(),
+        FfiConverterString.lower(groupId),
+        FfiConverterInt64.lower(epoch),$0
+    )
+}
+}
+    
+
+}
+
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+fileprivate struct UniffiCallbackInterfaceNativeKeysChanged {
+
+    // Create the VTable using a series of closures.
+    // Swift automatically converts these into C callback functions.
+    //
+    // This creates 1-element array, since this seems to be the only way to construct a const
+    // pointer that we can pass to the Rust code.
+    static let vtable: [UniffiVTableCallbackInterfaceNativeKeysChanged] = [UniffiVTableCallbackInterfaceNativeKeysChanged(
+        keysChanged: { (
+            uniffiHandle: UInt64,
+            groupId: RustBuffer,
+            epoch: Int64,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterTypeNativeKeysChanged.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return try uniffiObj.keysChanged(
+                     groupId: try FfiConverterString.lift(groupId),
+                     epoch: try FfiConverterInt64.lift(epoch)
+                )
+            }
+
+            
+            let writeReturn = { () }
+            uniffiTraitInterfaceCallWithError(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn,
+                lowerError: FfiConverterTypeKeysChangedError_lower
+            )
+        },
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            let result = try? FfiConverterTypeNativeKeysChanged.handleMap.remove(handle: uniffiHandle)
+            if result == nil {
+                print("Uniffi callback interface NativeKeysChanged: handle missing in uniffiFree")
+            }
+        }
+    )]
+}
+
+private func uniffiCallbackInitNativeKeysChanged() {
+    uniffi_acutest_e2ee_ios_fn_init_callback_vtable_nativekeyschanged(UniffiCallbackInterfaceNativeKeysChanged.vtable)
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeKeysChanged: FfiConverter {
+    fileprivate static let handleMap = UniffiHandleMap<NativeKeysChanged>()
+
+    typealias FfiType = UnsafeMutableRawPointer
+    typealias SwiftType = NativeKeysChanged
+
+    public static func lift(_ pointer: UnsafeMutableRawPointer) throws -> NativeKeysChanged {
+        return NativeKeysChangedImpl(unsafeFromRawPointer: pointer)
+    }
+
+    public static func lower(_ value: NativeKeysChanged) -> UnsafeMutableRawPointer {
+        guard let ptr = UnsafeMutableRawPointer(bitPattern: UInt(truncatingIfNeeded: handleMap.insert(obj: value))) else {
+            fatalError("Cast to UnsafeMutableRawPointer failed")
+        }
+        return ptr
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NativeKeysChanged {
+        let v: UInt64 = try readInt(&buf)
+        // The Rust code won't compile if a pointer won't fit in a UInt64.
+        // We have to go via `UInt` because that's the thing that's the size of a pointer.
+        let ptr = UnsafeMutableRawPointer(bitPattern: UInt(truncatingIfNeeded: v))
+        if (ptr == nil) {
+            throw UniffiInternalError.unexpectedNullPointer
+        }
+        return try lift(ptr!)
+    }
+
+    public static func write(_ value: NativeKeysChanged, into buf: inout [UInt8]) {
+        // This fiddling is because `Int` is the thing that's the same size as a pointer.
+        // The Rust code won't compile if a pointer won't fit in a `UInt64`.
+        writeInt(&buf, UInt64(bitPattern: Int64(Int(bitPattern: lower(value)))))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeKeysChanged_lift(_ pointer: UnsafeMutableRawPointer) throws -> NativeKeysChanged {
+    return try FfiConverterTypeNativeKeysChanged.lift(pointer)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeKeysChanged_lower(_ value: NativeKeysChanged) -> UnsafeMutableRawPointer {
+    return FfiConverterTypeNativeKeysChanged.lower(value)
 }
 
 
@@ -2549,6 +3299,92 @@ extension E2eeError: Foundation.LocalizedError {
 
 
 
+
+/**
+ * Error of the FOREIGN [`NativeKeysChanged`] callback (Swift to Rust).
+ *
+ * Same rule as [`ConfirmError`]: deliberately NOT `flat_error` (uniffi can
+ * only lift a fielded error enum from the foreign side), with a
+ * `From<UnexpectedUniFFICallbackError>` mapping, so an unexpected Swift
+ * failure becomes this value instead of a uniffi panic (an abort in
+ * release, mid-call). The value never leaves [`ForeignKeysChanged`], which
+ * drops it.
+ */
+public enum KeysChangedError: Swift.Error {
+
+    
+    
+    case Unexpected(reason: String
+    )
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeKeysChangedError: FfiConverterRustBuffer {
+    typealias SwiftType = KeysChangedError
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> KeysChangedError {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        
+
+        
+        case 1: return .Unexpected(
+            reason: try FfiConverterString.read(from: &buf)
+            )
+
+         default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: KeysChangedError, into buf: inout [UInt8]) {
+        switch value {
+
+        
+
+        
+        
+        case let .Unexpected(reason):
+            writeInt(&buf, Int32(1))
+            FfiConverterString.write(reason, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeKeysChangedError_lift(_ buf: RustBuffer) throws -> KeysChangedError {
+    return try FfiConverterTypeKeysChangedError.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeKeysChangedError_lower(_ value: KeysChangedError) -> RustBuffer {
+    return FfiConverterTypeKeysChangedError.lower(value)
+}
+
+
+extension KeysChangedError: Equatable, Hashable {}
+
+
+
+
+extension KeysChangedError: Foundation.LocalizedError {
+    public var errorDescription: String? {
+        String(reflecting: self)
+    }
+}
+
+
+
+
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
@@ -2744,6 +3580,63 @@ private let initializationResult: InitializationResult = {
     if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_backup_take_pending_upload() != 34219) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_call_admit() != 2586) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_call_announce() != 45761) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_call_clear_downgrade() != 30654) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_call_commit_lost() != 5707) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_call_commit_won() != 20979) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_call_confirm_downgrade() != 62602) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_call_create() != 36428) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_call_frame_keys() != 40046) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_call_heartbeat() != 31238) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_call_join_intent() != 15597) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_call_leave_cleanup() != 36931) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_call_local_groups() != 43472) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_call_non_enrolled() != 61735) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_call_pending_commit_epoch() != 21461) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_call_process() != 18534) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_call_remove() != 38452) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_call_roster_identities() != 23821) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_call_state() != 31811) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_call_verify_join_intent() != 55724) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_confirm_peer_downgrade() != 17608) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -2798,10 +3691,22 @@ private let initializationResult: InitializationResult = {
     if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_mark_verified() != 42519) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_mls_expire_key_packages() != 21955) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_mls_publish_key_packages() != 29542) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_mls_replenish() != 23888) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_notify_downgrade() != 21709) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_pending_downgrades() != 44531) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_pin_call_identities() != 13559) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_reconcile_devices() != 1734) {
@@ -2861,11 +3766,15 @@ private let initializationResult: InitializationResult = {
     if (uniffi_acutest_e2ee_ios_checksum_method_nativeconfirm_confirm() != 53280) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_acutest_e2ee_ios_checksum_constructor_e2eeengine_new() != 28796) {
+    if (uniffi_acutest_e2ee_ios_checksum_method_nativekeyschanged_keys_changed() != 39496) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_acutest_e2ee_ios_checksum_constructor_e2eeengine_new() != 43806) {
         return InitializationResult.apiChecksumMismatch
     }
 
     uniffiCallbackInitNativeConfirm()
+    uniffiCallbackInitNativeKeysChanged()
     return InitializationResult.ok
 }()
 

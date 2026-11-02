@@ -279,7 +279,7 @@ final class KeychainProtectorTests: XCTestCase {
     private func enableStore(_ dir: URL) throws -> String {
         let payload = try offMain("enable") { () throws -> String in
             dispatchPrecondition(condition: .notOnQueue(.main))
-            let engine = try E2eeEngine(storeDir: dir.path, confirm: DecliningConfirm())
+            let engine = try E2eeEngine(storeDir: dir.path, confirm: DecliningConfirm(), keysChanged: KeysChangedRelay(deliver: { _, _ in }))
             return try engine.enable()
         }
         return try XCTUnwrap(jsonObject(payload)?["device_id"] as? String, "enable payload has no device_id")
@@ -290,7 +290,7 @@ final class KeychainProtectorTests: XCTestCase {
     private func reopenedStatus(_ dir: URL) throws -> [String: Any] {
         let json = try offMain("status") { () throws -> String in
             dispatchPrecondition(condition: .notOnQueue(.main))
-            let engine = try E2eeEngine(storeDir: dir.path, confirm: DecliningConfirm())
+            let engine = try E2eeEngine(storeDir: dir.path, confirm: DecliningConfirm(), keysChanged: KeysChangedRelay(deliver: { _, _ in }))
             return try engine.status()
         }
         return try XCTUnwrap(jsonObject(json), "status is not a JSON object")
@@ -314,7 +314,7 @@ final class KeychainProtectorTests: XCTestCase {
         let dir = makeStoreDir()
         let outcome = try offMain("enable-baseline") { () throws -> Result<String, Error> in
             dispatchPrecondition(condition: .notOnQueue(.main))
-            let engine = try E2eeEngine(storeDir: dir.path, confirm: DecliningConfirm())
+            let engine = try E2eeEngine(storeDir: dir.path, confirm: DecliningConfirm(), keysChanged: KeysChangedRelay(deliver: { _, _ in }))
             return Result { try engine.enable() }
         }
         XCTAssertNil(coreErrorJson(outcome), "\(tag) the core refused a valid planted key")
@@ -370,7 +370,7 @@ final class KeychainProtectorTests: XCTestCase {
         let dir = makeStoreDir()
         let first = try offMain("enable") { () throws -> (before: Bool, payload: String, after: Bool) in
             dispatchPrecondition(condition: .notOnQueue(.main))
-            let engine = try E2eeEngine(storeDir: dir.path, confirm: DecliningConfirm())
+            let engine = try E2eeEngine(storeDir: dir.path, confirm: DecliningConfirm(), keysChanged: KeysChangedRelay(deliver: { _, _ in }))
             let before = try engine.isProvisioned()
             let payload = try engine.enable()
             let after = try engine.isProvisioned()
@@ -386,7 +386,7 @@ final class KeychainProtectorTests: XCTestCase {
         let reopenDir = dir
         let reopened = try offMain("reopen") { () throws -> (status: String, provisioned: Bool, owner: String?) in
             dispatchPrecondition(condition: .notOnQueue(.main))
-            let engine = try E2eeEngine(storeDir: reopenDir.path, confirm: DecliningConfirm())
+            let engine = try E2eeEngine(storeDir: reopenDir.path, confirm: DecliningConfirm(), keysChanged: KeysChangedRelay(deliver: { _, _ in }))
             let status = try engine.status()
             let provisioned = try engine.isProvisioned()
             let owner = try engine.storeOwner()
@@ -505,7 +505,7 @@ final class KeychainProtectorTests: XCTestCase {
             let outcome = try offMain("enable-short") {
                 () throws -> (first: Result<String, Error>, second: Result<String, Error>, provisioned: Bool) in
                 dispatchPrecondition(condition: .notOnQueue(.main))
-                let engine = try E2eeEngine(storeDir: dir.path, confirm: DecliningConfirm())
+                let engine = try E2eeEngine(storeDir: dir.path, confirm: DecliningConfirm(), keysChanged: KeysChangedRelay(deliver: { _, _ in }))
                 let first = Result { try engine.enable() }
                 let second = Result { try engine.enable() }
                 let provisioned = try engine.isProvisioned()
@@ -554,7 +554,7 @@ final class KeychainProtectorTests: XCTestCase {
             let dir = makeStoreDir()
             let outcome = try offMain("enable-foreign") { () throws -> (Result<String, Error>, Bool) in
                 dispatchPrecondition(condition: .notOnQueue(.main))
-                let engine = try E2eeEngine(storeDir: dir.path, confirm: DecliningConfirm())
+                let engine = try E2eeEngine(storeDir: dir.path, confirm: DecliningConfirm(), keysChanged: KeysChangedRelay(deliver: { _, _ in }))
                 let enabled = Result { try engine.enable() }
                 let provisioned = try engine.isProvisioned()
                 return (enabled, provisioned)
@@ -600,7 +600,7 @@ final class KeychainProtectorTests: XCTestCase {
 
             let outcome = try offMain("open-wrong-key") { () throws -> (Result<String, Error>, Bool) in
                 dispatchPrecondition(condition: .notOnQueue(.main))
-                let engine = try E2eeEngine(storeDir: dir.path, confirm: DecliningConfirm())
+                let engine = try E2eeEngine(storeDir: dir.path, confirm: DecliningConfirm(), keysChanged: KeysChangedRelay(deliver: { _, _ in }))
                 let status = Result { try engine.status() }
                 let provisioned = try engine.isProvisioned()
                 return (status, provisioned)
