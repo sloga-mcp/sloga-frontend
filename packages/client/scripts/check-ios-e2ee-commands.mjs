@@ -158,8 +158,23 @@
  *                      is the constant, declared once as `static let event =
  *                      "callKeysChanged"`, and that literal appears nowhere
  *                      else. No other file calls notifyListeners;
- *                      triggerJSEvent and the other page-script channels are
- *                      not used anywhere
+ *                      triggerJSEvent and the other page-script channels
+ *                      (evaluateJavaScript, callAsyncJavaScript, the bridge's
+ *                      eval(js:) and evalWithPlugin) are not used anywhere
+ *   G8b-relay-attach   the key push goes to the ONE registered E2ee plugin:
+ *                      `KeysChangedRelay.attach` is named exactly once in the
+ *                      sources, as `KeysChangedRelay.attach(x)` in
+ *                      SlogaBridgeViewController.swift, where `x` is bound
+ *                      once as `let x = E2eePlugin()` (the only E2eePlugin
+ *                      construction in the sources), and the call follows
+ *                      `registerPluginInstance(x)` directly, in the same
+ *                      guarded block; never in E2eePlugin.swift (a second
+ *                      instance Capacitor creates by class name runs load()
+ *                      and must not take the push; W2 Stage 5 MINOR 3)
+ *   G8b-log            no logging in any Swift source (frame keys pass
+ *                      through Swift): print, debugPrint, NSLog, os_log,
+ *                      dump, Logger and CAPLog are not named at all (a call,
+ *                      or a reference passed as a function)
  *   G8b-reach          REACHABILITY over a call graph of every Swift function
  *                      under the sources dir (below). (a) From each root, the
  *                      only native-only methods reachable are its own:
@@ -212,8 +227,9 @@
  *                      second runCallPlane caller all fail)
  *   G8c-audio-plugin   the Capacitor plugin classes are exactly E2eePlugin and
  *                      SlogaCallAudioPlugin; the latter (CallAudioSession.swift)
- *                      is `@objc(SlogaCallAudioPlugin) … class …: CAPPlugin,
- *                      CAPBridgedPlugin`, jsName "SlogaCallAudio",
+ *                      is `@objc(SlogaCallAudioPlugin) … final class …:
+ *                      CAPPlugin, CAPBridgedPlugin` (final, never open: a
+ *                      subclass would escape this rule), jsName "SlogaCallAudio",
  *                      pluginMethods exactly the literal promise methods start
  *                      and stop, no other @objc member, and no name of the
  *                      E2EE core; it is armed then built once, in the
@@ -462,7 +478,6 @@ const AUDIO_FORBIDDEN =
 /** G8c-ios-caps: the one page global (phase 2 C-W2-6). */
 const CAPS = {
   file: "SlogaBridgeViewController.swift",
-  func: "webViewConfiguration",
   global: "__slogaIosCaps",
   before:
     'Object.defineProperty(window,"__slogaIosCaps",{value:Object.freeze({mediaE2EE:',
@@ -2991,9 +3006,12 @@ function checkEvents(swift, plugin, add) {
         );
       }
     }
-    // Capacitor's other ways to reach the page are not used at all.
+    // Capacitor's other ways to reach the page are not used at all,
+    // including the bridge's eval(js:) and evalWithPlugin(_:js:)
+    // (CapacitorBridge.swift:635,658; W2 Stage 5): any `.eval` member, an
+    // `eval(js:` call, or evalWithPlugin named at all.
     for (const m of f.code.matchAll(
-      /\b(?:triggerJSEvent|triggerWindowJSEvent|triggerDocumentJSEvent|evaluateJavaScript|callAsyncJavaScript)\b/g,
+      /\b(?:triggerJSEvent|triggerWindowJSEvent|triggerDocumentJSEvent|evaluateJavaScript|callAsyncJavaScript|evalWithPlugin)\b|\.\s*eval\b|\beval\s*\(\s*js\s*:/g,
     )) {
       add(
         "G8b-event",
@@ -3281,6 +3299,135 @@ function decodeLiteralText(text, hashes) {
 }
 
 /**
+ * Every `registerPluginInstance(` of the E2ee plugin: with the construction
+ * inline (`registerPluginInstance(E2eePlugin())`, instance "") or with a
+ * `let x = E2eePlugin()` of the same function (instance "x").
+ */
+function e2eeRegistrations(swift) {
+  const found = [];
+  for (const f of swift) {
+    for (const m of f.code.matchAll(/\bregisterPluginInstance\s*\(/g)) {
+      const open = m.index + m[0].length - 1;
+      const close = f.match.get(open);
+      const arg = f.code.slice(open + 1, close).trim();
+      let instance = null;
+      if (/^E2eePlugin\s*(?:\.\s*init\s*)?\(\s*\)$/.test(arg)) instance = "";
+      else if (/^[A-Za-z_]\w*$/.test(arg)) {
+        const fn = funcAt(f, m.index);
+        const bound =
+          fn &&
+          new RegExp(
+            `\\blet\\s+${arg}\\s*(?::\\s*E2eePlugin\\s*)?=\\s*E2eePlugin\\s*(?:\\.\\s*init\\s*)?\\(\\s*\\)`,
+          ).test(f.code.slice(fn.open, m.index));
+        if (bound) instance = arg;
+      }
+      if (instance !== null)
+        found.push({ f, p: m.index, open, close, instance });
+    }
+  }
+  return found;
+}
+
+/**
+ * G8b-relay-attach (W2 Stage 5 MINOR 3): the key push is attached to the one
+ * E2ee plugin instance the bridge view controller registers, never from the
+ * plugin itself (Capacitor can create a second instance by class name, and
+ * its load() would run too). See the header for the exact shape.
+ */
+function checkRelayAttach(swift, add) {
+  const rule = "G8b-relay-attach";
+  const sites = [];
+  for (const f of swift) {
+    for (const m of f.code.matchAll(/\battach\b/g)) {
+      const before = f.code.slice(Math.max(0, m.index - 40), m.index);
+      const after = f.code.slice(m.index + m[0].length, m.index + 40);
+      if (/\bfunc\s+$/.test(before) && f.rel === KEYS_EVENT.file) continue;
+      if (/^\s*:(?!:)/.test(after)) continue; // an argument label
+      sites.push({ f, p: m.index });
+    }
+  }
+  for (const s of sites) {
+    if (s.f.rel === "E2eePlugin.swift") {
+      add(
+        rule,
+        s.f,
+        s.p,
+        "KeysChangedRelay.attach in E2eePlugin.swift: an instance Capacitor creates by class name would take the key push",
+      );
+    }
+  }
+  const shape = `exactly one KeysChangedRelay.attach(x) in the sources, in ${CAPS.file}, right after registerPluginInstance(x) of the one let x = E2eePlugin(), in the guarded block`;
+  if (sites.length !== 1) {
+    add(
+      rule,
+      sites[1]?.f ?? null,
+      sites[1]?.p ?? null,
+      `${shape} (found ${sites.length})`,
+    );
+    return;
+  }
+  const { f, p } = sites[0];
+  const recv = /\bKeysChangedRelay\s*\.\s*$/.exec(
+    f.code.slice(Math.max(0, p - 40), p),
+  );
+  const call = /^\s*\(\s*([A-Za-z_]\w*)\s*\)/.exec(
+    f.code.slice(p + "attach".length),
+  );
+  const regs = e2eeRegistrations(swift);
+  const built = swift.flatMap((x) =>
+    [...x.code.matchAll(/\bE2eePlugin\s*(?:\.\s*init\s*)?\(/g)].map(() => x),
+  );
+  const reg = regs.length === 1 ? regs[0] : null;
+  const blockOf = (x, at) => frameAt(x, at, (fr) => fr.kind !== "closure");
+  const block = reg ? blockOf(f, reg.p) : null;
+  const armed = swift.flatMap((x) =>
+    [...x.code.matchAll(/\bE2eePlugin\s*\.\s*arm\s*\(/g)].map((m) => ({
+      x,
+      p: m.index,
+    })),
+  );
+  const recvStart = recv ? p - recv[0].length : p;
+  const ok =
+    f.rel === CAPS.file &&
+    !!recv &&
+    !!call &&
+    built.length === 1 &&
+    !!reg &&
+    reg.f === f &&
+    reg.instance === call[1] &&
+    // AFTER it, with nothing but whitespace (comments are blanked) between:
+    // an attach before the registration slices to "" and must not pass.
+    recvStart > reg.close &&
+    /^[\s;]*$/.test(f.code.slice(reg.close + 1, recvStart)) &&
+    block?.kind === "control" &&
+    blockOf(f, p) === block &&
+    /^\s*if\b[^{]*\b(?:bridgeGuard|MainFrameBridgeGuard)\b/.test(
+      f.code.slice(block.declPos, block.open),
+    ) &&
+    armed.length === 1 &&
+    armed[0].x === f &&
+    armed[0].p < reg.p &&
+    blockOf(f, armed[0].p) === block;
+  if (!ok) add(rule, f, p, shape);
+}
+
+/** G8b-log (W2 Stage 5): no logging anywhere in the sources. */
+const LOG_NAMES =
+  /\b(?:print|debugPrint|NSLog|os_log|dump|Logger|CAPLog)\b(?!\s*:(?!:))/g;
+function checkNoLogging(swift, add) {
+  for (const f of swift) {
+    for (const m of f.code.matchAll(LOG_NAMES)) {
+      add(
+        "G8b-log",
+        f,
+        m.index,
+        `${m[0]} in the sources: nothing here is logged (frame keys pass through Swift)`,
+      );
+    }
+  }
+}
+
+/**
  * G8c-audio-plugin (phase 2 C-W2-5): the plugin classes of these sources are
  * exactly E2eePlugin and SlogaCallAudioPlugin; SlogaCallAudioPlugin lives in
  * CallAudioSession.swift as `@objc(SlogaCallAudioPlugin) … class
@@ -3335,6 +3482,19 @@ function checkCallAudio(swift, add) {
       `${AUDIO.file} must declare @objc(${AUDIO.type}) class ${AUDIO.type}: CAPPlugin, CAPBridgedPlugin once`,
     );
     return;
+  }
+  // final (W2 Stage 5): a subclass declared elsewhere would be a plugin
+  // class of its own that inherits start/stop and escapes this rule.
+  const modifiers = new RegExp(
+    `@objc\\s*\\(\\s*${AUDIO.type}\\s*\\)\\s*((?:(?:public|open|final)\\s+)*)$`,
+  ).exec(f.code.slice(Math.max(0, cls.declPos - 80), cls.declPos))[1];
+  if (!/\bfinal\b/.test(modifiers) || /\bopen\b/.test(modifiers)) {
+    add(
+      rule,
+      f,
+      cls.declPos,
+      `${AUDIO.type} must be declared final (and not open): a subclass would escape this rule`,
+    );
   }
   const inCls = (p) => frameAt(f, p, (fr) => fr.kind === "type") === cls;
   const js = [...f.code.matchAll(/\bjsName\s*=\s*/g)].filter((m) =>
@@ -3454,7 +3614,9 @@ function checkCallAudio(swift, add) {
     new RegExp(`\\b${AUDIO.type}\\s*(?:\\.\\s*init\\s*)?\\(`, "g"),
   );
   const armed = sites(new RegExp(`\\b${AUDIO.type}\\s*\\.\\s*arm\\s*\\(`, "g"));
-  const e2ee = sites(/\bregisterPluginInstance\s*\(\s*E2eePlugin\s*\(/g);
+  // The E2ee plugin's registration, either form (W2 Stage 5 binds the
+  // instance first so KeysChangedRelay can be attached to it).
+  const e2ee = e2eeRegistrations(swift);
   const block = (s) => frameAt(s.f, s.p, (fr) => fr.kind !== "closure");
   const ok =
     built.length === 1 &&
@@ -4460,6 +4622,8 @@ function check(opts) {
   checkRawFfi(swift, add);
   checkCallAudio(swift, add);
   checkIosCaps(swift, add);
+  checkRelayAttach(swift, add);
+  checkNoLogging(swift, add);
   // G8b reachability and what reaches the webview.
   const reach = checkReach(
     {

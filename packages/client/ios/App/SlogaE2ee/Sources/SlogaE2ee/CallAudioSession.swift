@@ -106,7 +106,7 @@ import Capacitor
 import Foundation
 
 @objc(SlogaCallAudioPlugin)
-public class SlogaCallAudioPlugin: CAPPlugin, CAPBridgedPlugin {
+public final class SlogaCallAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     public let identifier = "SlogaCallAudioPlugin"
     public let jsName = "SlogaCallAudio"
     public let pluginMethods: [CAPPluginMethod] = [

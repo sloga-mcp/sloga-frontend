@@ -83,10 +83,11 @@ public final class E2eePlugin: CAPPlugin, CAPBridgedPlugin {
         RecoverySheet.bundleWaitingHook = Self.backupBundleWaitingEmitter { [weak self] event, data in
             self?.notifyListeners(event, data: data)
         }
-        // The core's key push (phase 2 D4) reaches the page through this
-        // plugin. The relay holds it weakly, and the last instance loaded
-        // wins, as with the hook above.
-        KeysChangedRelay.attach(self)
+        // The core's key push (phase 2 D4) is NOT attached here: Capacitor can
+        // create another instance of this class by name (NSClassFromString in
+        // handleJSCall), and an attach in load() would let that instance take
+        // the push from the registered one. SlogaBridgeViewController attaches
+        // the one instance it registers (W2 Stage 5 MINOR 3).
     }
 
     /// The hook RecoverySheet runs once per kept bundle, on its flow
