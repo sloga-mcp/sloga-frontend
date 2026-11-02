@@ -148,6 +148,11 @@ export function useError() {
         if (feature === "e2ee")
           return t`Encrypted messaging is unavailable right now.`;
       }
+      // A first publication of a device id removed from the account's
+      // encryption (same lag pattern). The bridge also raises `deviceRemoved`,
+      // whose modal offers to set this install up again as a new device.
+      if (errType === "E2EEDeviceRemoved")
+        return t`This device was removed from your account's encryption.`;
 
       switch (err.type) {
         case "AlreadyFriends":

@@ -367,6 +367,39 @@ export type Modals =
       type: "e2ee_disable";
     }
   | {
+      /**
+       * Multi-device D3: this device holds keys that were never registered
+       * (a restore that still needs its second MFA prompt, or an interrupted
+       * start fresh). Auto-opened by the shell on `e2ee.publishPending`.
+       */
+      type: "e2ee_finish_setup";
+    }
+  | {
+      /**
+       * Multi-device D5: this install shares its device identity with another
+       * of the user's installs. Auto-opened by the shell when a claim was
+       * refused twice (`deviceShared.via === "held_elsewhere"`).
+       */
+      type: "e2ee_device_shared";
+    }
+  | {
+      /**
+       * Multi-device D8: this device was removed from the account's
+       * encryption. Auto-opened by the shell on `e2ee.deviceRemoved`.
+       */
+      type: "e2ee_device_removed";
+    }
+  | {
+      /**
+       * Multi-device D7: remove ANOTHER of the user's own devices. `onRemoved`
+       * runs after the device was removed (refresh the device list).
+       */
+      type: "e2ee_remove_device";
+      deviceId: string;
+      sessionName: string | null;
+      onRemoved?: () => void;
+    }
+  | {
       type: "image_editor";
       /**
        * DOM File (not a stoat.js attachment) — this edits a pending draft
