@@ -453,7 +453,9 @@ export type SplitResult =
   | { kind: "declined" }
   | { kind: "cancelled" }
   | { kind: "unavailable" }
-  | { kind: "busy" };
+  | { kind: "busy" }
+  /** An MLS call is active on this bridge; nothing was asked or staged. */
+  | { kind: "in_call" };
 
 /** Server count after a device removal; null when unknown (old server). */
 export type RemoveDeviceResult = {
@@ -1661,6 +1663,11 @@ function resumeRecordStorage(): ResumeStorage | null {
   }
 }
 
+/** A `#api` NotFound (the message text callers have always matched). */
+function isNotFoundError(error: unknown): boolean {
+  return /failed: 404$/.test((error as Error)?.message ?? "");
+}
+
 export class E2EEBridge implements E2EEAdapter {
   #client: Client;
   #transport: NativeTransport;
@@ -2367,6 +2374,12 @@ export class E2EEBridge implements E2EEAdapter {
       // Cheap, local, and the answer the whole account-switch story used to
       // have to infer from three server round trips.
       await this.#checkStoreOwner();
+
+      // A split stage lives in the native engine, which outlives a webview
+      // reload (an iOS WebContent kill during the MFA prompt): with no
+      // split running in THIS page, drop any stage an earlier page left,
+      // before anything here can claim. Idempotent; best effort.
+      if (!this.#split) await this.#discardSplit();
 
       const status = await this.refreshStatus();
       // A "this app shares its identity" verdict from an earlier run of
@@ -6601,11 +6614,12 @@ export class E2EEBridge implements E2EEAdapter {
    *     (MFA-gated). Best-effort: if the revoke fails the device is already
    *     gone locally and cannot decrypt anything, so a lingering registry
    *     entry is harmless and its queued envelopes expire by TTL.
-   *  3. The account-wide opt-in hint is cleared only when the revoke's
-   *     `remaining_devices` says no device is left (multi-device D7). A
-   *     failed revoke, an old server's empty answer or a malformed count
-   *     keeps it: clearing it would turn peers away from the account's
-   *     other devices.
+   *  3. The account-wide opt-in hint is cleared only when the server says
+   *     no device is left (multi-device D7): a `remaining_devices` of 0,
+   *     or, with no count (a 404, an old server's empty answer, a
+   *     malformed count), an own listing that is empty. A failed revoke or
+   *     a failed listing keeps it: clearing it would turn peers away from
+   *     the account's other devices.
    */
   async disable(mfaTicketToken: string): Promise<{
     revokeFailed: boolean;
@@ -6620,6 +6634,7 @@ export class E2EEBridge implements E2EEAdapter {
 
     // (2) Post-wipe revoke. Failures here never resurrect local state.
     let revokeFailed = false;
+    let revoked = false;
     let remainingDevices: number | null = null;
     if (deviceId) {
       try {
@@ -6630,18 +6645,24 @@ export class E2EEBridge implements E2EEAdapter {
           { "X-MFA-Ticket": mfaTicketToken },
         );
         remainingDevices = parseRemainingDevices(body);
+        revoked = true;
       } catch (error) {
-        // NOT harmless (device-lifecycle fixes §3): peers keep fanning
-        // envelopes to the lingering row, wasting queue + one-time-key
-        // claims — and clients without the §1 prefetch lose messages to
-        // it outright. Surfaced to the caller for a loud retry.
-        console.error("[e2ee] server-side device revoke failed", error);
-        revokeFailed = true;
+        // NotFound: the row is already gone, so there is nothing to retry
+        if (isNotFoundError(error)) {
+          revoked = true;
+        } else {
+          // NOT harmless (device-lifecycle fixes §3): peers keep fanning
+          // envelopes to the lingering row, wasting queue + one-time-key
+          // claims — and clients without the §1 prefetch lose messages to
+          // it outright. Surfaced to the caller for a loud retry.
+          console.error("[e2ee] server-side device revoke failed", error);
+          revokeFailed = true;
+        }
       }
     }
 
-    // (3) The opt-in hint, only once the server counts no device left
-    if (remainingDevices === 0) await this.#clearOptIn();
+    // (3) The opt-in hint, only once the server says no device is left
+    if (revoked) await this.#clearOptInIfNoDevices(remainingDevices);
 
     await this.refreshStatus();
     // `device_id` is nullable on the status record; the caller's contract is
@@ -6714,6 +6735,32 @@ export class E2EEBridge implements E2EEAdapter {
     this.deviceRemoved.delete("state");
   }
 
+  /**
+   * After a revoke: clear the opt-in hint when the server counts no device
+   * left. Without a count (a 404, an old server's empty 204, a malformed
+   * body) the own listing decides, and only a successful EMPTY listing
+   * clears it; any error or other answer keeps it.
+   */
+  async #clearOptInIfNoDevices(remaining: number | null): Promise<void> {
+    if (remaining === 0) {
+      await this.#clearOptIn();
+      return;
+    }
+    if (remaining !== null) return;
+    const userId = this.#client.user?.id;
+    if (!userId) return;
+    let listing: unknown;
+    try {
+      listing = await this.#api<unknown>("GET", `/e2ee/devices/${userId}`);
+    } catch (error) {
+      console.error("[e2ee] device listing after revoke failed", error);
+      return;
+    }
+    if (Array.isArray(listing) && listing.length === 0) {
+      await this.#clearOptIn();
+    }
+  }
+
   /** Clear the account-wide opt-in hint (`e2ee_enabled`); best effort. */
   async #clearOptIn(): Promise<void> {
     try {
@@ -6733,7 +6780,7 @@ export class E2EEBridge implements E2EEAdapter {
    * MAJOR-2): re-issues the DELETE with a fresh MFA ticket — never the
    * wipe. NotFound means the original DELETE actually landed and the
    * response was lost: SUCCESS, not an error, but with no count, so the
-   * opt-in flag stays (as for any count other than 0).
+   * own listing decides the opt-in flag (`#clearOptInIfNoDevices`).
    */
   async retryDeviceRevoke(
     deviceId: string,
@@ -6748,13 +6795,14 @@ export class E2EEBridge implements E2EEAdapter {
         { "X-MFA-Ticket": mfaTicketToken },
       );
     } catch (error) {
-      if (/failed: 404$/.test((error as Error)?.message ?? "")) {
+      if (isNotFoundError(error)) {
+        await this.#clearOptInIfNoDevices(null);
         return { remainingDevices: null };
       }
       throw error;
     }
     const remainingDevices = parseRemainingDevices(body);
-    if (remainingDevices === 0) await this.#clearOptIn();
+    await this.#clearOptInIfNoDevices(remainingDevices);
     return { remainingDevices };
   }
 
@@ -6796,6 +6844,9 @@ export class E2EEBridge implements E2EEAdapter {
     ) {
       return { kind: "unavailable" };
     }
+    // An active call holds an MLS leaf bound to the old device's
+    // credential, which the commit deletes: refuse before any native prompt
+    if (this.#mlsSink) return { kind: "in_call" };
     const oldId = status.device_id;
     this.#clearClaimRetry();
     const split: { oldId: string; newId: string | null } = {
@@ -6813,7 +6864,7 @@ export class E2EEBridge implements E2EEAdapter {
         { sessionId },
       );
     } catch (error) {
-      this.#endSplitUnchanged(oldId);
+      await this.#endSplitUnchanged(oldId);
       const type = (error as { type?: unknown } | null)?.type;
       if (type === "declined") return { kind: "declined" };
       if (type === "busy") return { kind: "busy" };
@@ -6822,8 +6873,7 @@ export class E2EEBridge implements E2EEAdapter {
     }
     const newId = payload?.device_id;
     if (typeof newId !== "string" || payload?.split_from !== oldId) {
-      await this.#discardSplit();
-      this.#endSplitUnchanged(oldId);
+      await this.#endSplitUnchanged(oldId);
       throw new Error("[e2ee] split stage returned an unexpected payload");
     }
     split.newId = newId;
@@ -6834,13 +6884,11 @@ export class E2EEBridge implements E2EEAdapter {
     try {
       token = await reauth();
     } catch (error) {
-      await this.#discardSplit();
-      this.#endSplitUnchanged(oldId);
+      await this.#endSplitUnchanged(oldId);
       throw error;
     }
     if (!token) {
-      await this.#discardSplit();
-      this.#endSplitUnchanged(oldId);
+      await this.#endSplitUnchanged(oldId);
       return { kind: "cancelled" };
     }
 
@@ -6855,7 +6903,10 @@ export class E2EEBridge implements E2EEAdapter {
       throw error;
     }
 
-    // (4) Commit; the stage survives a failed attempt, so retry it
+    // (4) Commit; the stage survives a failed attempt, so retry it. A
+    // failure can be reported for a commit that landed (the answer lost on
+    // the way back): when the store already holds the new device it is
+    // committed, and the old id must never be claimed with the new account.
     let committed = false;
     let commitError: unknown;
     for (let attempt = 0; attempt < SPLIT_COMMIT_ATTEMPTS; attempt++) {
@@ -6866,6 +6917,14 @@ export class E2EEBridge implements E2EEAdapter {
       } catch (error) {
         commitError = error;
       }
+      try {
+        if ((await this.refreshStatus()).device_id === newId) {
+          committed = true;
+          break;
+        }
+      } catch (error) {
+        console.error("[e2ee] status read after a failed split commit", error);
+      }
     }
     if (!committed) {
       // Re-claiming the old device re-binds its row; the claim-time sweep
@@ -6874,41 +6933,51 @@ export class E2EEBridge implements E2EEAdapter {
       throw commitError;
     }
 
-    // (5) The store is the new device now
+    // (5) The store is the new device now. Whatever fails below, the split
+    // ends and the new device is claimed.
     try {
-      await this.refreshStatus();
-    } catch (error) {
-      console.error("[e2ee] status refresh after split failed", error);
-      const current = this.status.get("state");
-      if (current) {
-        this.status.set("state", {
-          ...current,
-          device_id: newId,
-          published: true,
-        });
+      try {
+        await this.refreshStatus();
+      } catch (error) {
+        console.error("[e2ee] status refresh after split failed", error);
+        const current = this.status.get("state");
+        if (current) {
+          this.status.set("state", {
+            ...current,
+            device_id: newId,
+            published: true,
+          });
+        }
       }
+      // This connection's claim was for the old device
+      this.#claimAccepted = null;
+      this.#claimWaitSpent = false;
+      const after = this.status.get("state");
+      if (after) this.status.set("state", { ...after, claimed: false });
+      this.#clearDeviceShared(oldId);
+      this.reenrollNeeded.delete("state");
+      this.#pendingRestoreRepublish = null;
+      // The protected text manager captured the old device id
+      this.#protectedDispose();
+      this.#protectedEnsureManager();
+    } catch (error) {
+      console.error("[e2ee] split housekeeping failed", error);
+    } finally {
+      // (6) Claim the new device; a socket that is down claims on `ready`
+      this.#split = null;
+      this.#claimHeldBySplit = false;
+      this.#requestClaim(newId);
     }
-    // This connection's claim was for the old device
-    this.#claimAccepted = null;
-    this.#claimWaitSpent = false;
-    const after = this.status.get("state");
-    if (after) this.status.set("state", { ...after, claimed: false });
-    this.#clearDeviceShared(oldId);
-    this.reenrollNeeded.delete("state");
-    this.#pendingRestoreRepublish = null;
-    // The protected text manager captured the old device id
-    this.#protectedDispose();
-    this.#protectedEnsureManager();
-
-    // (6) Claim the new device; a socket that is down claims on `ready`
-    this.#split = null;
-    this.#claimHeldBySplit = false;
-    this.#requestClaim(newId);
     return { kind: "split", deviceId: newId, previousDeviceId: oldId };
   }
 
-  /** A split that published nothing ends; a held-back claim goes out now. */
-  #endSplitUnchanged(oldId: string): void {
+  /**
+   * A split that published nothing ends: drop the native stage (an error
+   * after the begin may still leave one, or an earlier page's), then send a
+   * held-back claim.
+   */
+  async #endSplitUnchanged(oldId: string): Promise<void> {
+    await this.#discardSplit();
     this.#split = null;
     if (this.#claimHeldBySplit) {
       this.#claimHeldBySplit = false;
@@ -6929,11 +6998,15 @@ export class E2EEBridge implements E2EEAdapter {
     await discarding;
   }
 
-  /** Drop the native stage (idempotent natively); never throws. */
+  /**
+   * Drop the native stage (idempotent natively, opens no store); never
+   * throws. A shell without the command has no stage to drop.
+   */
   async #discardSplit(): Promise<void> {
     try {
       await this.#invoke("e2ee_split_discard");
     } catch (error) {
+      if (isMissingCommandError(error)) return;
       console.error("[e2ee] split discard failed:", errorName(error));
     }
   }
@@ -7235,7 +7308,12 @@ export class E2EEBridge implements E2EEAdapter {
         "e2ee_backup_take_pending_republish",
       );
       if (republish === null) {
-        await this.refreshStatus();
+        const restored = await this.refreshStatus();
+        // A store that is somehow already published is claimed as usual
+        if (restored.enabled && restored.published && restored.device_id) {
+          this.#requestClaim(restored.device_id);
+          return;
+        }
         this.#raisePublishPendingIfUnpublished(null);
         return;
       }

@@ -198,6 +198,7 @@ type Bridge = {
     reauth: () => Promise<string | undefined>,
   ): Promise<string>;
   dismissDeviceShared(): void;
+  registerMlsSink(sink: (event: unknown) => void): () => void;
   dispose(): Promise<void>;
 };
 type BridgeCtor = new (client: unknown) => Bridge;
@@ -751,6 +752,11 @@ test("split:hold - a ready and a challenge between PUT and commit send no claim 
   await settle();
   assert.equal(client.sent.length, before, "nothing sent mid-split");
   assert.equal(nativeCalls("e2ee_sign_claim"), 0, "no proof signed");
+  assert.equal(
+    nativeCalls("e2ee_split_discard"),
+    0,
+    "a ready mid-split keeps this page's own stage",
+  );
 
   native.releaseCommit();
   assert.equal((await split).kind, "split");
@@ -812,6 +818,7 @@ test("split:commit-fails-3x - three commits, discard, claim old, rethrow", async
 test("split:commit-fails-2x - the third try commits", async () => {
   native.commitFailures = 2;
   const { bridge } = await readyBridge();
+  log = [];
   assert.equal((await bridge.splitDevice(async () => "ticket")).kind, "split");
   assert.equal(nativeCalls("e2ee_split_commit"), 3);
   assert.equal(nativeCalls("e2ee_split_discard"), 0);
@@ -837,8 +844,8 @@ test("split:no-publish - declined, busy, cancelled and an old shell never PUT", 
     plugin = new FakePlugin();
     plugin.splitBeginError = error;
     requests = [];
-    log = [];
     const { bridge, client } = await readyBridge();
+    log = [];
     const before = challenges(client, DEV);
     assert.deepEqual(await bridge.splitDevice(reauth), { kind }, kind);
     assert.equal(
@@ -849,8 +856,8 @@ test("split:no-publish - declined, busy, cancelled and an old shell never PUT", 
     assert.equal(nativeCalls("e2ee_split_commit"), 0, kind);
     assert.equal(
       nativeCalls("e2ee_split_discard"),
-      kind === "cancelled" ? 1 : 0,
-      `${kind}: discard only for a staged split`,
+      1,
+      `${kind}: any end after a begin drops a stage that may be left`,
     );
     assert.equal(challenges(client, DEV), before, `${kind}: no extra claim`);
     // A later split is not stuck behind the ended one
@@ -865,6 +872,79 @@ test("split:other-error - an unknown native error rethrows and ends the split", 
   await assert.rejects(bridge.splitDevice(async () => "t"));
   plugin.splitBeginError = null;
   assert.equal((await bridge.splitDevice(async () => "t")).kind, "split");
+});
+
+test("split:stale-stage - a ready drops a stage left by an earlier page, before any claim", async () => {
+  const { client } = await readyBridge();
+  const discard = log.indexOf("cmd:e2ee_split_discard");
+  const claim = log.indexOf(`send:E2EERequestChallenge:${DEV}`);
+  assert.ok(discard >= 0, "discarded on ready");
+  assert.ok(discard < claim, log.join(" | "));
+  assert.equal(challenges(client, DEV), 1);
+});
+
+test("split:stale-stage - an old shell without the command still claims", async () => {
+  native.handlers.set("e2ee_split_discard", () => {
+    throw new TypeError("e2ee.splitDiscard is not a function");
+  });
+  const { client } = await readyBridge();
+  assert.equal(challenges(client, DEV), 1);
+});
+
+test("split:in-call - refused with no native prompt while a call session is active", async () => {
+  const { bridge } = await readyBridge();
+  const unregister = bridge.registerMlsSink(() => {});
+  log = [];
+  assert.deepEqual(await bridge.splitDevice(async () => "t"), {
+    kind: "in_call",
+  });
+  assert.equal(plugin.splitBegins, 0, "no begin, so no native prompt");
+  assert.equal(log.length, 0, "nothing native, nothing sent");
+  unregister();
+  assert.equal((await bridge.splitDevice(async () => "t")).kind, "split");
+});
+
+test("split:tail-throws - the new device is still claimed and the split ends", async () => {
+  const { bridge, client } = await readyBridge();
+  const status = bridge.status;
+  const realSet = status.set.bind(status);
+  native.handlers.set("e2ee_split_commit", () => {
+    native.status.device_id = NEW;
+    // Every status write in the post-commit housekeeping throws
+    status.set = () => {
+      throw new Error("housekeeping");
+    };
+    return null;
+  });
+  const result = await bridge.splitDevice(async () => "ticket");
+  status.set = realSet;
+  assert.equal(result.kind, "split");
+  assert.equal(challenges(client, NEW), 1, "claimed the new device");
+  // A later split is not refused as "already splitting"
+  native.handlers.delete("e2ee_split_commit");
+  native.status.device_id = DEV;
+  realSet("state", { ...native.status, claimed: true });
+  assert.equal(
+    (await bridge.splitDevice(async () => "t")).kind,
+    "split",
+    "#split was cleared",
+  );
+});
+
+test("split:commit-landed - a commit reported failed but landed is committed, the old id never re-claimed", async () => {
+  native.handlers.set("e2ee_split_commit", () => {
+    native.status.device_id = NEW;
+    throw { type: "storage" };
+  });
+  const { bridge, client } = await readyBridge();
+  log = [];
+  const before = challenges(client, DEV);
+  const result = await bridge.splitDevice(async () => "ticket");
+  assert.equal(result.kind, "split");
+  assert.equal(nativeCalls("e2ee_split_commit"), 1, "no retry once landed");
+  assert.equal(nativeCalls("e2ee_split_discard"), 0);
+  assert.equal(challenges(client, DEV), before, "old id not re-claimed");
+  assert.equal(challenges(client, NEW), 1);
 });
 
 // ---- publishPending:* (R1, R2, D3) ----------------------------------------------
@@ -982,7 +1062,11 @@ test("publishPending:restore-courier - desktop: a null take is pending and uncla
   routes.set("GET /e2ee/backup", () =>
     json({ backups: [{ header: "h", ciphertext: "c", generation: 1 }] }),
   );
-  for (const take of [null, { device_id: DEV }]) {
+  for (const [take, published] of [
+    [null, false],
+    [null, true],
+    [{ device_id: DEV }, true],
+  ] as const) {
     native = new Native();
     native.provisioned = false;
     tauriListeners = new Map();
@@ -1003,15 +1087,18 @@ test("publishPending:restore-courier - desktop: a null take is pending and uncla
     native.handlers.set("e2ee_backup_take_pending_republish", () => take);
     const { bridge, client } = await readyBridge();
     await bridge.restoreFromBackup("ticket");
-    if (take === null) unpublished();
+    if (!published) unpublished();
     else native.provisioned = true;
     const listener = tauriListeners.get("e2ee:recovery-complete");
     assert.ok(listener, "courier subscribed");
     listener({ payload: "restore" });
     await settle();
-    if (take === null) {
+    if (!published) {
       assert.equal(bridge.publishPending.get("state")?.via, "restore");
       assert.equal(challenges(client), 0, "no claim before publish");
+    } else if (take === null) {
+      assert.equal(bridge.publishPending.has("state"), false);
+      assert.equal(challenges(client, DEV), 1, "a published store claims");
     } else {
       assert.equal(bridge.publishPending.has("state"), false);
       assert.equal(challenges(client, DEV), 1, "legacy restore claims");
@@ -1103,6 +1190,67 @@ test("retryDeviceRevoke - the flag clears only at 0; a 404 is success with no co
     assert.deepEqual(result, { remainingDevices: remaining });
     assert.equal(flagEdits(), edits);
   }
+});
+
+test("disable:no-count - an empty own listing clears the flag; any other answer keeps it", async () => {
+  for (const [name, revoke, listing, edits, failed] of [
+    [
+      "204 + []",
+      () => new Response(null, { status: 204 }),
+      () => json([]),
+      1,
+      false,
+    ],
+    [
+      "404 + []",
+      () => json({ type: "NotFound" }, 404),
+      () => json([]),
+      1,
+      false,
+    ],
+    [
+      "204 + listing 500",
+      () => new Response(null, { status: 204 }),
+      () => json({}, 500),
+      0,
+      false,
+    ],
+    [
+      "204 + non-array",
+      () => new Response(null, { status: 204 }),
+      () => json({}),
+      0,
+      false,
+    ],
+    [
+      "500 + []",
+      () => json({ type: "InternalError" }, 500),
+      () => json([]),
+      0,
+      true,
+    ],
+  ] as const) {
+    native = new Native();
+    revokeAnswer(revoke);
+    const { bridge } = await readyBridge();
+    routes.set(`GET /e2ee/devices/${USER}`, listing);
+    log = [];
+    const result = await bridge.disable("ticket");
+    assert.equal(flagEdits(), edits, name);
+    assert.equal(result.revokeFailed, failed, name);
+    routes.set(`GET /e2ee/devices/${USER}`, () => json([own(DEV)]));
+  }
+});
+
+test("retryDeviceRevoke:no-count - a 404 with an empty own listing clears the flag", async () => {
+  revokeAnswer(() => json({ type: "NotFound" }, 404));
+  const { bridge } = await readyBridge();
+  routes.set(`GET /e2ee/devices/${USER}`, () => json([]));
+  log = [];
+  assert.deepEqual(await bridge.retryDeviceRevoke(DEV, "ticket"), {
+    remainingDevices: null,
+  });
+  assert.equal(flagEdits(), 1);
 });
 
 // ---- devices, removal, start over (R7, R11, R12) --------------------------------

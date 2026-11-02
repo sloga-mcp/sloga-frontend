@@ -41,6 +41,9 @@ export function useE2EESplit() {
         case "busy":
           setNotice(t`Close the recovery code window first, then try again.`);
           return false;
+        case "in_call":
+          setNotice(t`End the call first, then try again.`);
+          return false;
         case "unavailable":
           setNotice(t`This app cannot be made a separate device right now.`);
           return false;

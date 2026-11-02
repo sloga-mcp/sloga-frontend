@@ -2951,6 +2951,10 @@ msgid "Close the recovery code window first, then try again."
 msgstr ""
 
 #: components/modal/modals/E2EEDeviceShared.tsx
+msgid "End the call first, then try again."
+msgstr ""
+
+#: components/modal/modals/E2EEDeviceShared.tsx
 msgid "This app cannot be made a separate device right now."
 msgstr ""
 
