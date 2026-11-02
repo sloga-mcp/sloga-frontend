@@ -2671,8 +2671,12 @@ msgid "Create a recovery code so you can restore your identity and message histo
 msgstr "Create a recovery code so you can restore your identity and message history if you lose this device. Without one, encrypted history is gone for good if the device is lost. You can also do this later from Settings › Privacy & Safety › Encryption."
 
 #: components/modal/modals/E2EEEnable.tsx
-msgid "You have encryption set up on your account. If you saved a recovery code, restore it here to bring back your identity and message history on this device. It is added as a new device, and your contacts will see that you added one."
-msgstr "You have encryption set up on your account. If you saved a recovery code, restore it here to bring back your identity and message history on this device. It is added as a new device, and your contacts will see that you added one."
+msgid "You have encryption set up on your account. If you saved a recovery code, restore it here to bring back your message history on this device. It is added as a new device, and your contacts will see that you added one. Your other devices keep working."
+msgstr "You have encryption set up on your account. If you saved a recovery code, restore it here to bring back your message history on this device. It is added as a new device, and your contacts will see that you added one. Your other devices keep working."
+
+#: components/modal/modals/E2EEEnable.tsx
+msgid "Or start fresh to set this up as a new device without your earlier history. That history stays on your other devices."
+msgstr "Or start fresh to set this up as a new device without your earlier history. That history stays on your other devices."
 
 #: components/modal/modals/CreateWebhook.tsx
 msgid "Create a webhook"
@@ -6558,10 +6562,6 @@ msgstr "Open thread settings"
 #: components/modal/modals/ScheduleMessage.tsx
 msgid "Or pick a time"
 msgstr "Or pick a time"
-
-#: components/modal/modals/E2EEEnable.tsx
-msgid "Or start fresh to set this up as a new device. You keep sending and receiving encrypted messages, but earlier history that lived only on your old device stays there."
-msgstr "Or start fresh to set this up as a new device. You keep sending and receiving encrypted messages, but earlier history that lived only on your old device stays there."
 
 #: components/modal/modals/E2EEEnable.tsx
 #: components/modal/modals/E2EEEnable.tsx
@@ -11788,10 +11788,6 @@ msgstr "This changes the recovery code for this device's backup only."
 #: components/i18n/errors.ts
 msgid "You have been locked out for entering a wrong password multiple times. Please wait a couple minutes and try again."
 msgstr "You have been locked out for entering a wrong password multiple times. Please wait a couple minutes and try again."
-
-#: components/modal/modals/E2EEEnable.tsx
-msgid "You have encryption set up on your account. If you saved a recovery code, restore it here to bring back your identity and message history on this device — your contacts will not see a security warning."
-msgstr "You have encryption set up on your account. If you saved a recovery code, restore it here to bring back your identity and message history on this device — your contacts will not see a security warning."
 
 #: components/i18n/errors.ts
 msgid "You have this user blocked."

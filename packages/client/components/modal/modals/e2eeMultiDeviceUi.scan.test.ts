@@ -157,7 +157,7 @@ describe("E2EE multi-device UI (lane L-UI)", () => {
     assert.ok(
       ids.some((id) =>
         id.endsWith(
-          "message history on this device. It is added as a new device, and your contacts will see that you added one.",
+          "history on this device. It is added as a new device, and your contacts will see that you added one. Your other devices keep working.",
         ),
       ),
       "Q6 restore lead sentence missing",
