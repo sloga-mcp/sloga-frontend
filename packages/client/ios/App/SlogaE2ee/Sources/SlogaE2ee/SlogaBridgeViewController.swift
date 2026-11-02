@@ -120,9 +120,11 @@ open class SlogaBridgeViewController: CAPBridgeViewController {
                 SlogaCallAudioPlugin.arm()
                 let e2ee = E2eePlugin()
                 bridge.registerPluginInstance(e2ee)
-                // The key push goes to THIS instance only, never to one Capacitor
-                // creates by class name later (KeysChangedRelay holds it weakly).
-                KeysChangedRelay.attach(e2ee)
+                // The key push: the relay holds this instance and the bridge weakly,
+                // and at emit time sends to whichever instance holds the E2ee name in
+                // the bridge's plugin table (Capacitor can replace it with one made by
+                // class name), falling back to this one.
+                KeysChangedRelay.attach(e2ee, bridge: bridge)
                 bridge.registerPluginInstance(SlogaCallAudioPlugin())
             }
         }

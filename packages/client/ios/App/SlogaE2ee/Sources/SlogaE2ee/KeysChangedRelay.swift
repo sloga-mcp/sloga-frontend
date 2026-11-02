@@ -17,19 +17,30 @@
 // generated signature is `throws`. The emit itself runs on main, where
 // Capacitor clears a page's listeners on navigation, so it never walks the
 // listener table while that reset runs (as `backupBundleWaiting` does).
-// The plugin reference is written (`attach`, from `E2eePlugin.load()`) and
-// read (the posted emit) on the main thread only, so it needs no lock.
-// `attach` enforces that itself: called off main (Capacitor can create a
-// plugin by class name on a path whose thread we cannot pin), it hops to
-// main instead of crashing the app.
+// The plugin and bridge references are written (`attach`) and read (the
+// posted emit) on the main thread only, so they need no lock. `attach`
+// enforces that itself: called off main, it hops to main instead of
+// crashing the app.
+//
+// Who attaches: SlogaBridgeViewController, right after it registers the
+// E2ee plugin (`attach(plugin, bridge: bridge)`). Tests attach a plugin
+// alone.
+//
+// Why the bridge lookup: Capacitor can replace the registered plugin. For
+// an unknown pluginId its handleJSCall falls back to
+// NSClassFromString(pluginId), and loadPlugin then stores the new instance
+// under the same jsName, so the registered instance is freed and a weak
+// plugin reference alone would go nil for good. At emit time the target is
+// therefore whichever instance the bridge now holds under the E2ee jsName
+// (the one the page talks to), falling back to the attached instance.
 //
 // Weak: the engine keeps its `NativeKeysChanged` alive for as long as the
 // engine lives, and the engine holds the store's one-engine-per-directory
 // claim. A strong path from this relay to the plugin, the bridge, the
 // runtime or the engine would be a cycle that keeps that claim, and the
 // next engine construction would be refused. The relay holds no strong
-// reference to any of them; the plugin is held weakly, and the last plugin
-// instance attached wins (as with `RecoverySheet.bundleWaitingHook`).
+// reference to any of them; the plugin and the bridge are held weakly, and
+// the last attach wins (as with `RecoverySheet.bundleWaitingHook`).
 //
 // Delivery may be dropped, by design of the transport: no plugin attached
 // yet or already released, the page navigating between the post and the
@@ -50,11 +61,19 @@ final class KeysChangedRelay: NativeKeysChanged {
     /// `{group_id: String, epoch: Number}`, the public pair and nothing else.
     static let event = "callKeysChanged"
 
+    /// The jsName the E2ee plugin is registered under. Must equal
+    /// `E2eePlugin.jsName` (E2eePlugin.swift); kept as a literal here so
+    /// resolving it never constructs a plugin.
+    static let targetJsName = "E2ee"
+
     /// The relay the engine is built with (Support.swift): one main-queue
-    /// hop, then the event on the attached plugin, if there still is one.
+    /// hop, then the event on the bridge's current E2ee plugin, or else the
+    /// attached one, if there still is one.
     static let shared = KeysChangedRelay { groupId, epoch in
         DispatchQueue.main.async {
-            KeysChangedRelay.plugin?.notifyListeners(
+            let target = KeysChangedRelay.bridge?.plugin(withName: KeysChangedRelay.targetJsName)
+                ?? KeysChangedRelay.plugin
+            target?.notifyListeners(
                 KeysChangedRelay.event,
                 data: ["group_id": groupId, "epoch": NSNumber(value: epoch)]
             )
@@ -64,18 +83,26 @@ final class KeysChangedRelay: NativeKeysChanged {
     /// Main thread only (written by `attach`, read by `shared`'s posted emit).
     private static weak var plugin: CAPPlugin?
 
-    /// Makes `plugin` the target of `shared`; called from
-    /// `E2eePlugin.load()`. The write always happens on main: directly when
-    /// called there, otherwise after an async hop. The hop captures the
-    /// plugin weakly, so it cannot keep alive a plugin Capacitor dropped
-    /// before it ran (then nothing is attached).
-    static func attach(_ plugin: CAPPlugin) {
+    /// Main thread only, like `plugin`. Never held strongly.
+    private static weak var bridge: CAPBridgeProtocol?
+
+    /// Makes `plugin` (and, through `bridge`, whichever instance later holds
+    /// the E2ee jsName) the target of `shared`; called by
+    /// SlogaBridgeViewController after it registers the plugin. Replaces
+    /// both references, so an attach without a bridge clears the bridge.
+    /// The writes always happen on main: directly when called there,
+    /// otherwise after an async hop. The hop captures both weakly, so it
+    /// cannot keep alive a plugin or bridge released before it ran (a
+    /// released plugin means nothing is attached).
+    static func attach(_ plugin: CAPPlugin, bridge: CAPBridgeProtocol? = nil) {
         if Thread.isMainThread {
             Self.plugin = plugin
+            Self.bridge = bridge
         } else {
-            DispatchQueue.main.async { [weak plugin] in
+            DispatchQueue.main.async { [weak plugin, weak bridge] in
                 if let plugin {
                     Self.plugin = plugin
+                    Self.bridge = bridge
                 }
             }
         }

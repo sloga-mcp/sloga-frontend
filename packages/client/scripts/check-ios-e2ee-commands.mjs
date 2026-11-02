@@ -163,18 +163,37 @@
  *                      eval(js:) and evalWithPlugin) are not used anywhere
  *   G8b-relay-attach   the key push goes to the ONE registered E2ee plugin:
  *                      `KeysChangedRelay.attach` is named exactly once in the
- *                      sources, as `KeysChangedRelay.attach(x)` in
+ *                      sources, as `KeysChangedRelay.attach(x, bridge: b)` in
  *                      SlogaBridgeViewController.swift, where `x` is bound
  *                      once as `let x = E2eePlugin()` (the only E2eePlugin
  *                      construction in the sources), and the call follows
- *                      `registerPluginInstance(x)` directly, in the same
- *                      guarded block; never in E2eePlugin.swift (a second
- *                      instance Capacitor creates by class name runs load()
- *                      and must not take the push; W2 Stage 5 MINOR 3)
+ *                      `b.registerPluginInstance(x)` directly (the same `b`:
+ *                      the relay resolves its target through that bridge at
+ *                      emit time), in the same guarded block; never in
+ *                      E2eePlugin.swift (a second instance Capacitor creates
+ *                      by class name runs load() and must not take the push;
+ *                      W2 Stage 5 MINOR 3). The emit-time target lookup
+ *                      `plugin(withName:)` appears only in the relay, as
+ *                      `KeysChangedRelay.targetJsName`, declared once as the
+ *                      same literal as E2eePlugin's jsName
  *   G8b-log            no logging in any Swift source (frame keys pass
- *                      through Swift): print, debugPrint, NSLog, os_log,
- *                      dump, Logger and CAPLog are not named at all (a call,
- *                      or a reference passed as a function)
+ *                      through Swift): print, debugPrint, NSLog, NSLogv,
+ *                      os_log, OSLog, os_signpost, dump, Logger, CAPLog,
+ *                      fputs, standardError/standardOutput, stderr/stdout are
+ *                      not named at all (a call, or a reference passed as a
+ *                      function, a ternary arm included); only an argument
+ *                      label right after `(` or `,` is exempt
+ *   G8b-dynamic        no dispatch by name: no Selector type or
+ *                      NSSelectorFromString, no `.perform(` or bare
+ *                      `perform(#selector`, no key-value coding (a forKey/
+ *                      forKeyPath/forUndefinedKey label on value/setValue/
+ *                      mutable…Value, setValuesForKeys, dictionaryWithValues);
+ *                      setValue( only as URLRequest's (_:forHTTPHeaderField:).
+ *                      `#selector` (compile-checked target/action) stays
+ *   G8c-plugin-final   E2eePlugin and SlogaCallAudioPlugin are each declared
+ *                      `final` (never open) once in their own file; no type
+ *                      inherits from either; neither is extended outside its
+ *                      own file
  *   G8b-reach          REACHABILITY over a call graph of every Swift function
  *                      under the sources dir (below). (a) From each root, the
  *                      only native-only methods reachable are its own:
@@ -3321,8 +3340,13 @@ function e2eeRegistrations(swift) {
           ).test(f.code.slice(fn.open, m.index));
         if (bound) instance = arg;
       }
+      // The bridge it is registered on: `b.registerPluginInstance(` (or b?.).
+      const receiver =
+        /([A-Za-z_]\w*)\s*[?!]?\s*\.\s*$/.exec(
+          f.code.slice(Math.max(0, m.index - 60), m.index),
+        )?.[1] ?? null;
       if (instance !== null)
-        found.push({ f, p: m.index, open, close, instance });
+        found.push({ f, p: m.index, open, close, instance, receiver });
     }
   }
   return found;
@@ -3356,7 +3380,7 @@ function checkRelayAttach(swift, add) {
       );
     }
   }
-  const shape = `exactly one KeysChangedRelay.attach(x) in the sources, in ${CAPS.file}, right after registerPluginInstance(x) of the one let x = E2eePlugin(), in the guarded block`;
+  const shape = `exactly one KeysChangedRelay.attach(x, bridge: b) in the sources, in ${CAPS.file}, right after b.registerPluginInstance(x) of the one let x = E2eePlugin(), in the guarded block`;
   if (sites.length !== 1) {
     add(
       rule,
@@ -3370,9 +3394,13 @@ function checkRelayAttach(swift, add) {
   const recv = /\bKeysChangedRelay\s*\.\s*$/.exec(
     f.code.slice(Math.max(0, p - 40), p),
   );
-  const call = /^\s*\(\s*([A-Za-z_]\w*)\s*\)/.exec(
-    f.code.slice(p + "attach".length),
-  );
+  // (x, bridge: b): the relay resolves the plugin through the bridge at emit
+  // time (L2d), so the bridge is passed, and it is the very bridge the
+  // instance was registered on.
+  const call =
+    /^\s*\(\s*([A-Za-z_]\w*)\s*,\s*bridge\s*:\s*([A-Za-z_]\w*)\s*\)/.exec(
+      f.code.slice(p + "attach".length),
+    );
   const regs = e2eeRegistrations(swift);
   const built = swift.flatMap((x) =>
     [...x.code.matchAll(/\bE2eePlugin\s*(?:\.\s*init\s*)?\(/g)].map(() => x),
@@ -3395,6 +3423,7 @@ function checkRelayAttach(swift, add) {
     !!reg &&
     reg.f === f &&
     reg.instance === call[1] &&
+    reg.receiver === call[2] &&
     // AFTER it, with nothing but whitespace (comments are blanked) between:
     // an attach before the registration slices to "" and must not pass.
     recvStart > reg.close &&
@@ -3409,14 +3438,70 @@ function checkRelayAttach(swift, add) {
     armed[0].p < reg.p &&
     blockOf(f, armed[0].p) === block;
   if (!ok) add(rule, f, p, shape);
+
+  // The emit-time target (L2d): `bridge?.plugin(withName:)` only in the
+  // relay, only with its targetJsName constant, and that constant is
+  // declared once as the literal E2eePlugin's jsName is ("Must equal
+  // E2eePlugin.jsName"): another name would hand the push to another plugin.
+  const relay = swift.find((x) => x.rel === KEYS_EVENT.file);
+  const pluginFile = swift.find((x) => x.rel === "E2eePlugin.swift");
+  const literalOf = (x, re) => {
+    const decls = x ? [...x.code.matchAll(re)] : [];
+    const lit =
+      decls.length === 1
+        ? x.strings.get(decls[0].index + decls[0][0].length)
+        : null;
+    return lit && !lit.interpolated ? lit.value : null;
+  };
+  const jsName = literalOf(pluginFile, /\blet\s+jsName\s*=\s*(?=")/g);
+  const target = literalOf(
+    relay,
+    /\bstatic\s+let\s+targetJsName\s*(?::\s*String\s*)?=\s*(?=")/g,
+  );
+  for (const x of swift) {
+    for (const m of x.code.matchAll(/\bplugin\s*\(\s*withName\s*:\s*/g)) {
+      const arg = x.code
+        .slice(m.index + m[0].length, x.match.get(m.index + m[0].indexOf("(")))
+        .replace(/\s+/g, "");
+      const okTarget =
+        x === relay &&
+        /^(?:KeysChangedRelay|Self)\.targetJsName$/.test(arg) &&
+        jsName !== null &&
+        target === jsName &&
+        [...relay.code.matchAll(/\b(?:let|var)\s+targetJsName\b/g)].length ===
+          1;
+      if (!okTarget) {
+        add(
+          rule,
+          x,
+          m.index,
+          `plugin(withName:) only in ${KEYS_EVENT.file}, as KeysChangedRelay.targetJsName, declared once as E2eePlugin's jsName literal ("${jsName ?? "?"}"; targetJsName is "${target ?? "?"}")`,
+        );
+      }
+    }
+  }
 }
 
-/** G8b-log (W2 Stage 5): no logging anywhere in the sources. */
+/**
+ * G8b-log (W2 Stage 5): no logging anywhere in the sources: the Swift and
+ * Foundation printers, NSLog/NSLogv, os_log/OSLog/Logger/os_signpost,
+ * CAPLog, fputs, and the process's standard streams (FileHandle
+ * .standardError/.standardOutput, C stderr/stdout).
+ */
 const LOG_NAMES =
-  /\b(?:print|debugPrint|NSLog|os_log|dump|Logger|CAPLog)\b(?!\s*:(?!:))/g;
+  /\b(?:print|debugPrint|NSLog|NSLogv|os_log|OSLog|os_signpost|dump|Logger|CAPLog|fputs|standardError|standardOutput|stderr|stdout)\b/g;
 function checkNoLogging(swift, add) {
   for (const f of swift) {
     for (const m of f.code.matchAll(LOG_NAMES)) {
+      // An argument label (`f(print: x)`, `(a, print: Bool)`) is not a use:
+      // `name:` right after `(` or `,`. Anything else followed by `:` is
+      // (the ternary `c ? print : g` hands print out as a value).
+      const after = f.code.slice(
+        m.index + m[0].length,
+        m.index + m[0].length + 8,
+      );
+      const before = f.code.slice(Math.max(0, m.index - 40), m.index);
+      if (/^\s*:(?!:)/.test(after) && /[(,]\s*$/.test(before)) continue;
       add(
         "G8b-log",
         f,
@@ -3424,6 +3509,118 @@ function checkNoLogging(swift, add) {
         `${m[0]} in the sources: nothing here is logged (frame keys pass through Swift)`,
       );
     }
+  }
+}
+
+/**
+ * G8b-dynamic (W2 re-review): no dynamic dispatch that would reach the
+ * banned page channels (or anything else) by a NAME the scan cannot see:
+ * no Selector type (`Selector("x")`, `Selector(stringLiteral:)`, a
+ * `: Selector = "x"` literal) and no NSSelectorFromString; no
+ * `.perform(` and no bare `perform(#selector…)`; no key-value coding
+ * (`value`/`setValue`/`mutable…Value` with a forKey/forKeyPath/
+ * forUndefinedKey label, setValuesForKeys, dictionaryWithValues). `#selector`
+ * stays (UIKit target/action is checked at compile time), and so do the
+ * real tree's own `perform(_:uploadBody:cap:)` (AttachmentTransfer) and
+ * `URLRequest.setValue(_:forHTTPHeaderField:)`: a setValue( is allowed only
+ * with exactly those two arguments.
+ */
+function checkDynamicDispatch(swift, add) {
+  const rule = "G8b-dynamic";
+  const why = "dynamic dispatch by name: the scan cannot follow it";
+  for (const f of swift) {
+    for (const m of f.code.matchAll(
+      /\b(?:NSSelectorFromString|Selector|setValuesForKeys|dictionaryWithValues)\b|\.\s*perform\s*\(|\bperform\s*\(\s*#selector\b/g,
+    )) {
+      add(rule, f, m.index, `${m[0].replace(/\s+/g, "")}: ${why}`);
+    }
+    for (const m of f.code.matchAll(
+      /\b(value|setValue|mutableArrayValue|mutableSetValue|mutableOrderedSetValue)\s*\(/g,
+    )) {
+      if (/\bfunc\s+$/.test(f.code.slice(Math.max(0, m.index - 20), m.index))) {
+        continue; // a declaration (E2eeCallArgs.value(_:))
+      }
+      const open = m.index + m[0].length - 1;
+      const labels = callArgs(f, open).map(
+        ([a, b]) =>
+          /^\s*([A-Za-z_]\w*)\s*:(?!:)/.exec(f.code.slice(a, b))?.[1] ?? "_",
+      );
+      const kvc = labels.some((l) =>
+        ["forKey", "forKeyPath", "forUndefinedKey"].includes(l),
+      );
+      const header =
+        m[1] === "setValue" && labels.join(",") === "_,forHTTPHeaderField";
+      if (kvc || (m[1] === "setValue" && !header)) {
+        add(
+          rule,
+          f,
+          m.index,
+          `${m[1]}(${labels.map((l) => `${l}:`).join("")}): key-value coding is ${why}`,
+        );
+      }
+    }
+  }
+}
+
+/**
+ * G8c-plugin-final (W2 re-review): both plugin classes are `final` (never
+ * `open`), no type of these sources inherits from either, and neither is
+ * extended outside its own file (an extension elsewhere could add an @objc
+ * method the per-file plugin rules never look at).
+ */
+function checkPluginsFinal(swift, add) {
+  const rule = "G8c-plugin-final";
+  const home = { E2eePlugin: "E2eePlugin.swift", [AUDIO.type]: AUDIO.file };
+  const names = Object.keys(home);
+  const nameRe = new RegExp(`\\b(${names.join("|")})\\b`);
+  const declared = new Set();
+  for (const f of swift) {
+    for (const t of f.frames) {
+      if (t.kind !== "type") continue;
+      const head = f.code.slice(t.declPos, t.open);
+      const isClass = f.code.startsWith("class", t.declPos);
+      const isExt = f.code.startsWith("extension", t.declPos);
+      if (isClass && names.includes(t.name)) {
+        declared.add(t.name);
+        const mods = f.code.slice(
+          f.code.lastIndexOf("\n", t.declPos) + 1,
+          t.declPos,
+        );
+        if (
+          !/\bfinal\b/.test(mods) ||
+          /\bopen\b/.test(mods) ||
+          f.rel !== home[t.name]
+        ) {
+          add(
+            rule,
+            f,
+            t.declPos,
+            `class ${t.name} must be declared final (not open), once, in ${home[t.name]}`,
+          );
+        }
+      }
+      const colon = head.indexOf(":");
+      const inherits = colon >= 0 ? nameRe.exec(head.slice(colon)) : null;
+      if (inherits && !isExt) {
+        add(
+          rule,
+          f,
+          t.declPos,
+          `${t.name} inherits from ${inherits[1]}: a subclass would escape the plugin rules`,
+        );
+      }
+      if (isExt && names.includes(t.name) && f.rel !== home[t.name]) {
+        add(
+          rule,
+          f,
+          t.declPos,
+          `extension ${t.name} outside ${home[t.name]}: it could add plugin methods no rule sees`,
+        );
+      }
+    }
+  }
+  for (const n of names) {
+    if (!declared.has(n)) add(rule, null, null, `class ${n} not found`);
   }
 }
 
@@ -4624,6 +4821,8 @@ function check(opts) {
   checkIosCaps(swift, add);
   checkRelayAttach(swift, add);
   checkNoLogging(swift, add);
+  checkDynamicDispatch(swift, add);
+  checkPluginsFinal(swift, add);
   // G8b reachability and what reaches the webview.
   const reach = checkReach(
     {

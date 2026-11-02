@@ -1333,9 +1333,13 @@ import Foundation
 final class KeysChangedRelay: NativeKeysChanged {
     static let event = "callKeysChanged"
 
+    static let targetJsName = "E2ee"
+
     static let shared = KeysChangedRelay { groupId, epoch in
         DispatchQueue.main.async {
-            KeysChangedRelay.plugin?.notifyListeners(
+            let target = KeysChangedRelay.bridge?.plugin(withName: KeysChangedRelay.targetJsName)
+                ?? KeysChangedRelay.plugin
+            target?.notifyListeners(
                 KeysChangedRelay.event,
                 data: ["group_id": groupId, "epoch": NSNumber(value: epoch)]
             )
@@ -1344,8 +1348,11 @@ final class KeysChangedRelay: NativeKeysChanged {
 
     private static weak var plugin: CAPPlugin?
 
-    static func attach(_ plugin: CAPPlugin) {
+    private static weak var bridge: CAPBridgeProtocol?
+
+    static func attach(_ plugin: CAPPlugin, bridge: CAPBridgeProtocol? = nil) {
         Self.plugin = plugin
+        Self.bridge = bridge
     }
 
     private let deliver: @Sendable (_ groupId: String, _ epoch: Int64) -> Void
@@ -1424,7 +1431,7 @@ ${W_CAPS_LINE}
                 let e2ee = E2eePlugin()
                 bridge.registerPluginInstance(e2ee)
                 // The key push goes to this instance only.
-                KeysChangedRelay.attach(e2ee)
+                KeysChangedRelay.attach(e2ee, bridge: bridge)
                 bridge.registerPluginInstance(SlogaCallAudioPlugin())
             }
         }
@@ -1978,7 +1985,9 @@ describe("phase 2: callFrameKeys only from its own arm (G8b-frame-keys)", () => 
 
 const W_EMIT_DATA =
   'data: ["group_id": groupId, "epoch": NSNumber(value: epoch)]';
-const W_EMIT_HOP = `        DispatchQueue.main.async {\n            KeysChangedRelay.plugin?.notifyListeners(\n                KeysChangedRelay.event,\n                ${W_EMIT_DATA}\n            )\n        }\n`;
+const W_EMIT_TARGET =
+  "            let target = KeysChangedRelay.bridge?.plugin(withName: KeysChangedRelay.targetJsName)\n                ?? KeysChangedRelay.plugin\n";
+const W_EMIT_HOP = `        DispatchQueue.main.async {\n${W_EMIT_TARGET}            target?.notifyListeners(\n                KeysChangedRelay.event,\n                ${W_EMIT_DATA}\n            )\n        }\n`;
 describe("phase 2: the callKeysChanged event (G8b-event)", () => {
   test("the payload keys in the other order, epoch as a bare Int64", () => {
     worldClean("G8b-event", [
@@ -2074,6 +2083,7 @@ describe("phase 2: the callKeysChanged event (G8b-event)", () => {
         W_RELAY_FILE,
         W_EMIT_HOP,
         `        KeysChangedRelay.plugin?.notifyListeners(\n            KeysChangedRelay.event,\n            ${W_EMIT_DATA}\n        )\n`,
+        // (the target lookup goes too: only the hop is under test)
       ],
     );
   });
@@ -2379,7 +2389,8 @@ describe("phase 2: the __slogaIosCaps user script (G8c-ios-caps)", () => {
   });
 });
 
-const W_ATTACH = "                KeysChangedRelay.attach(e2ee)\n";
+const W_ATTACH =
+  "                KeysChangedRelay.attach(e2ee, bridge: bridge)\n";
 const W_REGISTER_E2EE = "                bridge.registerPluginInstance(e2ee)\n";
 describe("W2 Stage 5: the key push attached to the registered instance (G8b-relay-attach)", () => {
   test("attached from E2eePlugin.load (the MINOR 3 shape)", () => {
@@ -2407,11 +2418,11 @@ describe("W2 Stage 5: the key push attached to the registered instance (G8b-rela
   test("attached to a fresh instance, not the registered one", () => {
     worldExpect(
       "G8b-relay-attach",
-      ["exactly one KeysChangedRelay.attach(x)"],
+      ["exactly one KeysChangedRelay.attach(x, bridge: b)"],
       [
         W_BRIDGE_FILE,
         W_ATTACH,
-        "                KeysChangedRelay.attach(E2eePlugin())\n",
+        "                KeysChangedRelay.attach(E2eePlugin(), bridge: bridge)\n",
       ],
     );
   });
@@ -2419,7 +2430,7 @@ describe("W2 Stage 5: the key push attached to the registered instance (G8b-rela
   test("attached before the instance is registered", () => {
     worldExpect(
       "G8b-relay-attach",
-      ["exactly one KeysChangedRelay.attach(x)"],
+      ["exactly one KeysChangedRelay.attach(x, bridge: b)"],
       [
         W_BRIDGE_FILE,
         `${W_REGISTER_E2EE}                // The key push goes to this instance only.\n${W_ATTACH}`,
@@ -2431,7 +2442,7 @@ describe("W2 Stage 5: the key push attached to the registered instance (G8b-rela
   test("attached outside the guarded block", () => {
     worldExpect(
       "G8b-relay-attach",
-      ["exactly one KeysChangedRelay.attach(x)"],
+      ["exactly one KeysChangedRelay.attach(x, bridge: b)"],
       [
         W_BRIDGE_FILE,
         "                E2eePlugin.arm()\n                SlogaCallAudioPlugin.arm()\n                let e2ee = E2eePlugin()\n" +
@@ -2441,7 +2452,7 @@ describe("W2 Stage 5: the key push attached to the registered instance (G8b-rela
       [
         W_BRIDGE_FILE,
         "        if let bridge = bridge {\n",
-        `        let e2ee = E2eePlugin()\n        bridge?.registerPluginInstance(e2ee)\n        KeysChangedRelay.attach(e2ee)\n        if let bridge = bridge {\n`,
+        `        let e2ee = E2eePlugin()\n        bridge?.registerPluginInstance(e2ee)\n        KeysChangedRelay.attach(e2ee, bridge: bridge)\n        if let bridge = bridge {\n`,
       ],
     );
   });
@@ -2449,11 +2460,71 @@ describe("W2 Stage 5: the key push attached to the registered instance (G8b-rela
   test("a second E2eePlugin instance built next to the registered one", () => {
     worldExpect(
       "G8b-relay-attach",
-      ["exactly one KeysChangedRelay.attach(x)"],
+      ["exactly one KeysChangedRelay.attach(x, bridge: b)"],
       [
         W_BRIDGE_FILE,
         "                let e2ee = E2eePlugin()\n",
         "                let e2ee = E2eePlugin()\n                _ = E2eePlugin()\n",
+      ],
+    );
+  });
+
+  test("attached without the bridge (the relay could not resolve the live instance)", () => {
+    worldExpect(
+      "G8b-relay-attach",
+      ["exactly one KeysChangedRelay.attach(x, bridge: b)"],
+      [
+        W_BRIDGE_FILE,
+        W_ATTACH,
+        "                KeysChangedRelay.attach(e2ee)\n",
+      ],
+    );
+  });
+
+  test("attached with a bridge other than the one it was registered on", () => {
+    worldExpect(
+      "G8b-relay-attach",
+      ["exactly one KeysChangedRelay.attach(x, bridge: b)"],
+      [
+        W_BRIDGE_FILE,
+        W_ATTACH,
+        "                KeysChangedRelay.attach(e2ee, bridge: otherBridge)\n",
+      ],
+    );
+  });
+
+  test("the emit target looked up under another jsName", () => {
+    worldExpect(
+      "G8b-relay-attach",
+      ['targetJsName is "SlogaCallAudio"'],
+      [
+        W_RELAY_FILE,
+        'static let targetJsName = "E2ee"',
+        'static let targetJsName = "SlogaCallAudio"',
+      ],
+    );
+  });
+
+  test("the emit target looked up by an inline name", () => {
+    worldExpect(
+      "G8b-relay-attach",
+      ["plugin(withName:) only in"],
+      [
+        W_RELAY_FILE,
+        "plugin(withName: KeysChangedRelay.targetJsName)",
+        'plugin(withName: "E2ee")',
+      ],
+    );
+  });
+
+  test("a plugin looked up by name outside the relay", () => {
+    worldExpect(
+      "G8b-relay-attach",
+      ["plugin(withName:) only in"],
+      [
+        W_BRIDGE_FILE,
+        W_ATTACH,
+        `${W_ATTACH}                _ = bridge.plugin(withName: "E2ee")\n`,
       ],
     );
   });
@@ -2569,6 +2640,150 @@ describe("W2 Stage 5: the call audio plugin is final (G8c-audio-plugin)", () => 
   });
 });
 
+const W_REJECT_HEAD = "func rejectJson(for error: Error) -> String {\n";
+const inReject = (line) => [SUPPORT, W_REJECT_HEAD, `${W_REJECT_HEAD}${line}`];
+describe("W2 re-review: no dispatch by name (G8b-dynamic)", () => {
+  for (const [what, line] of [
+    [
+      "NSSelectorFromString",
+      '    _ = NSSelectorFromString("evaluateJavaScript:")\n',
+    ],
+    ["Selector(string)", '    _ = Selector("evaluateJavaScript:")\n'],
+    [
+      "a Selector string literal",
+      '    let s: Selector = "evaluateJavaScript:"\n    _ = s\n',
+    ],
+    [".perform(", "    _ = (error as AnyObject).perform(nil)\n"],
+    ["bare perform(#selector", "    perform(#selector(NSObject.copy))\n"],
+    [
+      "value(forKey:)",
+      '    _ = (error as AnyObject).value(forKey: "webView")\n',
+    ],
+    [
+      "value(forKeyPath:)",
+      '    _ = (error as AnyObject).value(forKeyPath: "bridge.webView")\n',
+    ],
+    [
+      "setValue(_:forKey:)",
+      '    (error as AnyObject).setValue(nil, forKey: "delegate")\n',
+    ],
+    [
+      "setValuesForKeys",
+      '    (error as AnyObject).setValuesForKeys(["a": 1])\n',
+    ],
+  ]) {
+    test(what, () => {
+      worldExpect("G8b-dynamic", ["dynamic dispatch by name"], inReject(line));
+    });
+  }
+
+  test("the real tree's own forms stay allowed: header setValue, a local perform, #selector", () => {
+    worldClean(
+      "G8b-dynamic",
+      inReject(
+        '    var request = URLRequest(url: URL(fileURLWithPath: "/"))\n    request.setValue("a", forHTTPHeaderField: "b")\n    _ = perform(request, cap: 1)\n    _ = #selector(NSObject.copy)\n',
+      ),
+    );
+  });
+
+  test("a setValue( with any other shape", () => {
+    worldExpect(
+      "G8b-dynamic",
+      ["setValue(_:forHTTPHeaderField:extra:)"],
+      inReject(
+        '    request.setValue("a", forHTTPHeaderField: "b", extra: 1)\n',
+      ),
+    );
+  });
+});
+
+describe("W2 re-review: more log sinks, and the ternary bypass (G8b-log)", () => {
+  for (const [what, line] of [
+    ["NSLogv", '    NSLogv("%@", getVaList([error.localizedDescription]))\n'],
+    ["fputs", "    fputs(error.localizedDescription, stderr)\n"],
+    ["OSLog", '    _ = OSLog(subsystem: "gg.sloga", category: "e2ee")\n'],
+    ["os_signpost", '    os_signpost(.event, log: .default, name: "x")\n'],
+    [
+      "FileHandle.standardError",
+      "    FileHandle.standardError.write(Data())\n",
+    ],
+    [
+      "FileHandle.standardOutput",
+      "    FileHandle.standardOutput.write(Data())\n",
+    ],
+    [
+      "print handed out by a ternary",
+      "    let sink: (Any) -> Void = error is E2eeReject ? print : { _ in }\n    sink(error)\n",
+    ],
+  ]) {
+    test(what, () => {
+      worldExpect("G8b-log", ["nothing here is logged"], inReject(line));
+    });
+  }
+});
+
+describe("W2 re-review: both plugins final, never subclassed or extended elsewhere (G8c-plugin-final)", () => {
+  test("E2eePlugin not final", () => {
+    worldExpect(
+      "G8c-plugin-final",
+      ["class E2eePlugin must be declared final"],
+      [PLUGIN, "public final class E2eePlugin:", "public class E2eePlugin:"],
+    );
+  });
+
+  test("E2eePlugin open", () => {
+    worldExpect(
+      "G8c-plugin-final",
+      ["class E2eePlugin must be declared final"],
+      [PLUGIN, "public final class E2eePlugin:", "open class E2eePlugin:"],
+    );
+  });
+
+  test("a subclass of E2eePlugin", () => {
+    worldExpect(
+      "G8c-plugin-final",
+      ["DebugE2ee inherits from E2eePlugin"],
+      [
+        SUPPORT,
+        "final class NativeConfirmPresenter",
+        "final class DebugE2ee: E2eePlugin {}\n\nfinal class NativeConfirmPresenter",
+      ],
+    );
+  });
+
+  test("a subclass of SlogaCallAudioPlugin", () => {
+    worldExpect(
+      "G8c-plugin-final",
+      ["LoudAudio inherits from SlogaCallAudioPlugin"],
+      [
+        SUPPORT,
+        "final class NativeConfirmPresenter",
+        "final class LoudAudio: SlogaCallAudioPlugin {}\n\nfinal class NativeConfirmPresenter",
+      ],
+    );
+  });
+
+  test("E2eePlugin extended in another file", () => {
+    worldExpect(
+      "G8c-plugin-final",
+      ["extension E2eePlugin outside E2eePlugin.swift"],
+      [
+        SUPPORT,
+        "final class NativeConfirmPresenter",
+        "extension E2eePlugin {\n    @objc func peek(_ call: CAPPluginCall) {\n        call.resolve()\n    }\n}\n\nfinal class NativeConfirmPresenter",
+      ],
+    );
+  });
+
+  test("an extension in the plugin's own file stays allowed", () => {
+    worldClean("G8c-plugin-final", [
+      PLUGIN,
+      "private struct E2eeCallArgs {",
+      "private extension E2eePlugin {\n    static func helper() {}\n}\n\nprivate struct E2eeCallArgs {",
+    ]);
+  });
+});
+
 describe("phase 2 rules on the real tree's own shapes", () => {
   const REAL_RELAY = `${SOURCES}/KeysChangedRelay.swift`;
   const REAL_AUDIO = `${SOURCES}/CallAudioSession.swift`;
@@ -2602,6 +2817,26 @@ describe("phase 2 rules on the real tree's own shapes", () => {
         PLUGIN,
         "        super.load()\n",
         "        super.load()\n        KeysChangedRelay.attach(self)\n",
+      ],
+    );
+  });
+
+  test("E2eePlugin no longer final", () => {
+    expectViolationWith(
+      "G8c-plugin-final",
+      ["class E2eePlugin must be declared final"],
+      [PLUGIN, "public final class E2eePlugin:", "public class E2eePlugin:"],
+    );
+  });
+
+  test("the key push attached without its bridge (pre-L2d)", () => {
+    expectViolationWith(
+      "G8b-relay-attach",
+      ["exactly one KeysChangedRelay.attach(x, bridge: b)"],
+      [
+        `${SOURCES}/SlogaBridgeViewController.swift`,
+        "KeysChangedRelay.attach(e2ee, bridge: bridge)",
+        "KeysChangedRelay.attach(e2ee)",
       ],
     );
   });

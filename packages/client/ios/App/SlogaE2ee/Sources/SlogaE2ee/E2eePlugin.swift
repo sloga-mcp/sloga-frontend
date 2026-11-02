@@ -24,8 +24,8 @@
 // 7.2). Exporter and epoch secrets and MLS group state never leave Rust.
 // Capacitor calls these methods on its bridge queue, so each one only reads
 // its arguments and hands off. Nothing here runs on the main thread except
-// `load()` (it hooks the empty `backupBundleWaiting` event and attaches the
-// key-push relay, KeysChangedRelay.swift) and that event's emit. Nothing
+// `load()` (it hooks the empty `backupBundleWaiting` event) and that event's
+// emit; the key-push relay is attached by SlogaBridgeViewController. Nothing
 // here is logged: no argument and no result, frame keys included.
 import AcutestE2eeBindings
 import Capacitor
