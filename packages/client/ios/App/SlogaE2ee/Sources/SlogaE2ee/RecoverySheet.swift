@@ -1460,7 +1460,9 @@ private final class RecoverySheetController: UIViewController, UITextFieldDelega
                     + "onto this device. It is added as a new device; your other devices keep working."
             } else if kind == .rotate {
                 titleLabel.text = "Create a new recovery code"
-                bodyLabel.text = "This makes a new recovery code to replace your current one."
+                bodyLabel.text =
+                    "This makes a new recovery code for this device's backup, replacing its current one. "
+                    + "Your other devices keep their own codes."
             } else {
                 titleLabel.text = "Create a recovery code"
                 bodyLabel.text =

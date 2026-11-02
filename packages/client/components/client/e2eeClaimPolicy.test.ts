@@ -37,3 +37,13 @@ test("only the two known reasons act; anything else is absent", () => {
     assert.equal(claimRefusal(other), null, `reason ${String(other)}`);
   }
 });
+
+test("a refusal a lock TTL after the first one is shared, across connections", () => {
+  const first = 1_000_000;
+  assert.equal(heldElsewhereStep(1, first, first), "retry", "the first itself");
+  assert.equal(heldElsewhereStep(1, first, first + 40_000), "retry");
+  assert.equal(heldElsewhereStep(1, first, first + 149_999), "retry");
+  assert.equal(heldElsewhereStep(1, first, first + 150_000), "shared");
+  assert.equal(heldElsewhereStep(1, null, first + 999_999), "retry");
+  assert.equal(heldElsewhereStep(2, first, first), "shared");
+});

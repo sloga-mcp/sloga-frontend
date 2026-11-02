@@ -55,9 +55,12 @@ import {
   type DeviceSharedState,
   type DeviceSharedStorage,
   clearDeviceShared,
+  clearHeldStrike,
   mergeDeviceShared,
   readDeviceShared,
+  readHeldStrike,
   writeDeviceShared,
+  writeHeldStrike,
 } from "./e2eeDeviceShared.ts";
 import {
   type GroupGrowthOutcome,
@@ -1971,6 +1974,13 @@ export class E2EEBridge implements E2EEAdapter {
    */
   #deviceSharedFor: string | null = null;
 
+  /**
+   * The first `held_elsewhere` refusal for a (user, device) key, mirrored
+   * from storage (`readHeldStrike`) so a store that cannot persist still
+   * counts it for this run. Survives `ready`, unlike `#heldStrikes`.
+   */
+  #heldFirst: { key: string; at: number } | null = null;
+
   /** The `splitSupported` probe: one success per bridge, one at a time. */
   #splitProbed = false;
   #splitProbing = false;
@@ -2909,9 +2919,11 @@ export class E2EEBridge implements E2EEAdapter {
     this.reenrollNeeded.delete("state");
     this.#restoreReclaimTried = false;
     // The claim lock is ours now. `deviceShared` stays: a twin that holds
-    // the lock between our connections is still a twin (Q12).
+    // the lock between our connections is still a twin (Q12). The refusal
+    // count starts over, across connections too.
     this.#heldStrikes = 0;
     this.#clearClaimRetry();
+    this.#clearHeldFirst(state?.device_id);
     // The server accepted a claim for this device under the signed-in
     // account, so it is ours: clear any inherited-store verdict (signing
     // back in as the owner is the no-op remedy).
@@ -2956,7 +2968,13 @@ export class E2EEBridge implements E2EEAdapter {
   #onHeldElsewhere(): void {
     this.#heldStrikes++;
     this.#clearClaimRetry();
-    if (heldElsewhereStep(this.#heldStrikes) === "shared") {
+    // The first refusal for this device, across connections and reloads: a
+    // twin that reconnects inside the retry window would otherwise start
+    // over at strike 1 every time and never be told it is shared
+    const now = Date.now();
+    const firstAt = this.#heldFirstAt() ?? now;
+    this.#noteHeldFirst(firstAt);
+    if (heldElsewhereStep(this.#heldStrikes, firstAt, now) === "shared") {
       console.warn(
         "[e2ee] device claim refused again: another install holds this device",
       );
@@ -2972,6 +2990,38 @@ export class E2EEBridge implements E2EEAdapter {
       const deviceId = this.status.get("state")?.device_id;
       if (deviceId) this.#requestClaim(deviceId);
     }, CLAIM_RETRY_DELAY_MS);
+  }
+
+  /** The persisted (or this run's) first refusal for the current device. */
+  #heldFirstAt(): number | null {
+    const userId = this.#client.user?.id;
+    const deviceId = this.status.get("state")?.device_id;
+    if (!userId || !deviceId) return null;
+    const key = `${userId}:${deviceId}`;
+    const stored = readHeldStrike(
+      this.#deviceSharedStorage(),
+      userId,
+      deviceId,
+    );
+    if (stored !== null) return stored;
+    return this.#heldFirst?.key === key ? this.#heldFirst.at : null;
+  }
+
+  #noteHeldFirst(at: number): void {
+    const userId = this.#client.user?.id;
+    const deviceId = this.status.get("state")?.device_id;
+    if (!userId || !deviceId) return;
+    this.#heldFirst = { key: `${userId}:${deviceId}`, at };
+    writeHeldStrike(this.#deviceSharedStorage(), userId, deviceId, at);
+  }
+
+  /** Forget the first refusal for `deviceId` (memory + storage). */
+  #clearHeldFirst(deviceId: string | null | undefined): void {
+    this.#heldFirst = null;
+    const userId = this.#client.user?.id;
+    if (userId && deviceId) {
+      clearHeldStrike(this.#deviceSharedStorage(), userId, deviceId);
+    }
   }
 
   #clearClaimRetry(): void {
@@ -3056,6 +3106,7 @@ export class E2EEBridge implements E2EEAdapter {
     this.deviceShared.delete("state");
     this.#deviceSharedFor = null;
     this.#heldStrikes = 0;
+    this.#clearHeldFirst(deviceId);
     const userId = this.#client.user?.id;
     if (userId && deviceId) {
       clearDeviceShared(this.#deviceSharedStorage(), userId, deviceId);
@@ -3070,6 +3121,8 @@ export class E2EEBridge implements E2EEAdapter {
     const userId = this.#client.user?.id;
     if (!userId) return;
     const key = `${userId}:${deviceId}`;
+    // A first refusal counted for another device id does not apply here
+    if (this.#heldFirst && this.#heldFirst.key !== key) this.#heldFirst = null;
     const current =
       this.#deviceSharedFor === key ? this.deviceShared.get("state") : null;
     const stored = readDeviceShared(
@@ -6728,6 +6781,7 @@ export class E2EEBridge implements E2EEAdapter {
     if (userId && deviceId) {
       clearDeviceShared(this.#deviceSharedStorage(), userId, deviceId);
     }
+    this.#clearHeldFirst(deviceId);
     this.deviceShared.delete("state");
     this.#deviceSharedFor = null;
     this.#heldStrikes = 0;
@@ -6898,8 +6952,9 @@ export class E2EEBridge implements E2EEAdapter {
         "X-MFA-Ticket": token,
       });
     } catch (error) {
+      // Not even `E2EEDeviceRemoved` raises `deviceRemoved` here: the old
+      // device is still ours and was not removed; it is claimed again
       await this.#abortSplit(oldId);
-      this.#noteDeviceRemovedError(error, oldId);
       throw error;
     }
 

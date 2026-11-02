@@ -27,6 +27,15 @@ const HERE = fileURLToPath(new URL(".", import.meta.url));
 const SOURCE =
   process.env.E2EE_MULTI_TS ||
   fileURLToPath(new URL("./e2ee.ts", import.meta.url));
+/** The shared-device modal, scanned for its post-split offer. */
+const SHARED_TSX =
+  process.env.E2EE_SHARED_TSX ||
+  fileURLToPath(
+    new URL("../modal/modals/E2EEDeviceShared.tsx", import.meta.url),
+  );
+const EN_CATALOG = fileURLToPath(
+  new URL("../i18n/catalogs/en/messages.po", import.meta.url),
+);
 
 const USER = "01USER";
 const DEV = "01DEVICE";
@@ -522,6 +531,113 @@ test("reason:none - the legacy rejected-claim path is unchanged", async () => {
   }
 });
 
+/** Refuse `held_elsewhere` and let it land. */
+async function heldElsewhere(bridge: Bridge) {
+  refused(bridge, "held_elsewhere");
+  await settle();
+}
+
+test("reason:held_elsewhere across reconnects - inside 150 s of the first is not shared; at 150 s it is", async () => {
+  mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1_000_000 });
+  try {
+    const { bridge, client } = await readyBridge();
+    await heldElsewhere(bridge); // +0, the first
+    mock.timers.tick(30_000);
+    client.emit("ready");
+    await settle();
+    mock.timers.tick(10_000);
+    await heldElsewhere(bridge); // +40 s, after a reconnect
+    assert.equal(bridge.deviceShared.has("state"), false, "+40 s");
+    for (const step of [50_000, 50_000]) {
+      mock.timers.tick(step);
+      client.emit("ready");
+      await settle();
+    }
+    await heldElsewhere(bridge); // +140 s
+    assert.equal(bridge.deviceShared.has("state"), false, "+140 s");
+    mock.timers.tick(10_000);
+    client.emit("ready");
+    await settle();
+    await heldElsewhere(bridge); // +150 s
+    assert.equal(bridge.deviceShared.get("state")?.via, "held_elsewhere");
+    assert.equal(JSON.parse(storage.get(SHARED_KEY)!).via, "held_elsewhere");
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("reason:held_elsewhere across reloads - a new bridge on the same storage counts the first refusal", async () => {
+  mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1_000_000 });
+  try {
+    const first = await readyBridge();
+    await heldElsewhere(first.bridge);
+    await first.bridge.dispose();
+    mock.timers.tick(40_000);
+    const second = await readyBridge();
+    await heldElsewhere(second.bridge);
+    assert.equal(second.bridge.deviceShared.has("state"), false, "+40 s");
+    await second.bridge.dispose();
+    mock.timers.tick(110_000);
+    const third = await readyBridge();
+    await heldElsewhere(third.bridge);
+    assert.equal(third.bridge.deviceShared.get("state")?.via, "held_elsewhere");
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("reason:held_elsewhere - an accepted claim in between starts the count over", async () => {
+  mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1_000_000 });
+  try {
+    const { bridge, client } = await readyBridge();
+    await heldElsewhere(bridge);
+    mock.timers.tick(60_000);
+    bridge.onEvent({ type: "E2EEClaimResult", device_id: DEV, accepted: true });
+    await settle();
+    assert.equal(
+      storage.has(`sloga.e2ee.heldStrike.v1:${USER}:${DEV}`),
+      false,
+      "first strike cleared",
+    );
+    mock.timers.tick(100_000);
+    client.emit("ready");
+    await settle();
+    await heldElsewhere(bridge); // +160 s: a new first
+    assert.equal(bridge.deviceShared.has("state"), false);
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("reason:held_elsewhere - dismiss and wipe forget the first refusal", async () => {
+  const key = `sloga.e2ee.heldStrike.v1:${USER}:${DEV}`;
+  const { bridge } = await readyBridge();
+  await heldElsewhere(bridge);
+  assert.ok(storage.has(key), "persisted");
+  bridge.dismissDeviceShared();
+  assert.equal(storage.has(key), false, "dismiss");
+  await heldElsewhere(bridge);
+  revokeAnswer(() => json({ remaining_devices: 1 }));
+  await bridge.disable("ticket");
+  assert.equal(storage.has(key), false, "wipe");
+});
+
+test("ui:split-done - the done view offers this device's recovery code, skippable, with existing msgids", () => {
+  const tsx = readFileSync(SHARED_TSX, "utf8");
+  const start = tsx.indexOf("done()\n          ?");
+  assert.ok(start >= 0, "the done branch of the actions");
+  const done = tsx.slice(start, tsx.indexOf("\n          : [", start));
+  assert.match(
+    done,
+    /<Trans>Create a recovery code for this device<\/Trans>[\s\S]*\?\.createRecoveryCode\(\)\s*\.catch\(\(error\) => showError\(error\)\)/,
+  );
+  assert.match(done, /<Trans>Skip for now<\/Trans>/);
+  const po = readFileSync(EN_CATALOG, "utf8");
+  for (const id of ["Create a recovery code for this device", "Skip for now"]) {
+    assert.ok(po.includes(`msgid "${id}"`), `${id} is an existing msgid`);
+  }
+});
+
 // ---- deviceShared (R4, R6) ----------------------------------------------------
 
 test("deviceShared: a new bridge on the same storage restores it", async () => {
@@ -787,9 +903,11 @@ test("split:put-error - discard, claim old at once, rethrow", async () => {
   assert.equal(bridge.deviceRemoved.has("state"), false);
 });
 
-test("split:put-removed - E2EEDeviceRemoved raises deviceRemoved", async () => {
+test("split:put-removed - E2EEDeviceRemoved on the split publish does not mark the OLD device removed", async () => {
   routes.set("PUT /e2ee/keys", () => json({ type: "E2EEDeviceRemoved" }, 403));
-  const { bridge } = await readyBridge();
+  const { bridge, client } = await readyBridge();
+  log = [];
+  const before = challenges(client, DEV);
   await assert.rejects(
     bridge.splitDevice(async () => "ticket"),
     (error: Error & { type?: string; status?: number }) =>
@@ -797,7 +915,9 @@ test("split:put-removed - E2EEDeviceRemoved raises deviceRemoved", async () => {
       error.status === 403 &&
       error.message === "E2EE API PUT /e2ee/keys failed: 403",
   );
-  assert.equal(bridge.deviceRemoved.get("state")?.deviceId, DEV);
+  assert.equal(bridge.deviceRemoved.has("state"), false, "old id not removed");
+  assert.equal(nativeCalls("e2ee_split_discard"), 1, "stage discarded");
+  assert.equal(challenges(client, DEV), before + 1, "old device re-claimed");
 });
 
 test("split:commit-fails-3x - three commits, discard, claim old, rethrow", async () => {

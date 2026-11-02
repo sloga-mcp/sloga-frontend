@@ -75,6 +75,59 @@ export function clearDeviceShared(
 }
 
 /**
+ * The first `held_elsewhere` refusal for a (user, device), kept across
+ * connections and reloads: a twin that reconnects inside the in-connection
+ * retry window resets its per-connection strikes, so only this instant
+ * lets a later refusal count as the second. Same keying and failure rules
+ * as the state above.
+ */
+export function heldStrikeKey(userId: string, deviceId: string): string {
+  return `sloga.e2ee.heldStrike.v1:${userId}:${deviceId}`;
+}
+
+/** When the first refusal was seen, or null when absent or malformed. */
+export function readHeldStrike(
+  storage: DeviceSharedStorage | null,
+  userId: string,
+  deviceId: string,
+): number | null {
+  if (!storage) return null;
+  try {
+    const raw = storage.getItem(heldStrikeKey(userId, deviceId));
+    if (raw === null) return null;
+    const at = (JSON.parse(raw) as { at?: unknown } | null)?.at;
+    return typeof at === "number" && Number.isFinite(at) ? at : null;
+  } catch {
+    return null;
+  }
+}
+
+export function writeHeldStrike(
+  storage: DeviceSharedStorage | null,
+  userId: string,
+  deviceId: string,
+  at: number,
+): void {
+  try {
+    storage?.setItem(heldStrikeKey(userId, deviceId), JSON.stringify({ at }));
+  } catch {
+    // Best effort: the in-memory first strike still counts this run.
+  }
+}
+
+export function clearHeldStrike(
+  storage: DeviceSharedStorage | null,
+  userId: string,
+  deviceId: string,
+): void {
+  try {
+    storage?.removeItem(heldStrikeKey(userId, deviceId));
+  } catch {
+    // Best effort, as above.
+  }
+}
+
+/**
  * The state to keep when `next` is raised over `current`: a refused claim
  * (`held_elsewhere`) outranks a divergence, and a standing state keeps its
  * original instant.

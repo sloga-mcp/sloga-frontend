@@ -6,10 +6,14 @@ import { test } from "node:test";
 import {
   type DeviceSharedStorage,
   clearDeviceShared,
+  clearHeldStrike,
   deviceSharedKey,
+  heldStrikeKey,
   mergeDeviceShared,
   readDeviceShared,
+  readHeldStrike,
   writeDeviceShared,
+  writeHeldStrike,
 } from "./e2eeDeviceShared.ts";
 
 function memoryStorage(): DeviceSharedStorage & { map: Map<string, string> } {
@@ -89,4 +93,23 @@ test("held_elsewhere outranks diverged; a standing state keeps its instant", () 
   assert.deepEqual(mergeDeviceShared(diverged, held), held);
   assert.deepEqual(mergeDeviceShared(held, diverged), held);
   assert.deepEqual(mergeDeviceShared(held, { ...held, at: 99 }), held);
+});
+
+test("the first held_elsewhere strike round-trips per (user, device) and clears", () => {
+  const s = memoryStorage();
+  assert.equal(heldStrikeKey("U", "D"), "sloga.e2ee.heldStrike.v1:U:D");
+  assert.equal(readHeldStrike(s, "U", "D"), null);
+  writeHeldStrike(s, "U", "D", 42);
+  assert.equal(readHeldStrike(s, "U", "D"), 42);
+  assert.equal(readHeldStrike(s, "U", "E"), null);
+  assert.equal(readHeldStrike(s, "V", "D"), null);
+  clearHeldStrike(s, "U", "D");
+  assert.equal(readHeldStrike(s, "U", "D"), null);
+  for (const raw of ["x", "null", "{}", '{"at":"1"}', '{"at":null}']) {
+    s.map.set(heldStrikeKey("U", "D"), raw);
+    assert.equal(readHeldStrike(s, "U", "D"), null, raw);
+  }
+  assert.equal(readHeldStrike(null, "U", "D"), null);
+  writeHeldStrike(null, "U", "D", 1);
+  clearHeldStrike(null, "U", "D");
 });

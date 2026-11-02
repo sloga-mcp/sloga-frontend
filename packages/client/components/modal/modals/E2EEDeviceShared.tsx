@@ -80,6 +80,7 @@ export function E2EEDeviceSharedModal(
   props: DialogProps & Modals & { type: "e2ee_device_shared" },
 ) {
   const e2ee = useE2EE();
+  const { showError } = useModals();
   const split = useE2EESplit();
 
   const [done, setDone] = createSignal(false);
@@ -112,7 +113,24 @@ export function E2EEDeviceSharedModal(
       isDisabled={split.busy()}
       actions={
         done()
-          ? [{ text: <Trans>Done</Trans>, onClick: () => props.onClose() }]
+          ? [
+              {
+                text: <Trans>Create a recovery code for this device</Trans>,
+                onClick: () => {
+                  // The split dropped this install's backup state (backups
+                  // are per device), so its old recovery code no longer
+                  // backs it up. Same courier as finishing setup.
+                  void e2ee
+                    ?.createRecoveryCode()
+                    .catch((error) => showError(error));
+                  props.onClose();
+                },
+              },
+              {
+                text: <Trans>Skip for now</Trans>,
+                onClick: () => props.onClose(),
+              },
+            ]
           : [
               {
                 text: <Trans>Not now</Trans>,
