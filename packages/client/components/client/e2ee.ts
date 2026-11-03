@@ -56,11 +56,14 @@ import {
   type DeviceSharedStorage,
   clearDeviceShared,
   clearHeldStrike,
+  clearWasShared,
   mergeDeviceShared,
   readDeviceShared,
   readHeldStrike,
+  readWasShared,
   writeDeviceShared,
   writeHeldStrike,
+  writeWasShared,
 } from "./e2eeDeviceShared.ts";
 import {
   type GroupGrowthOutcome,
@@ -2004,6 +2007,12 @@ export class E2EEBridge implements E2EEAdapter {
    */
   #heldFirst: { key: string; at: number } | null = null;
 
+  /**
+   * The (user, device) key of this run's sticky "was shared" record
+   * (`readWasShared`), for a store that cannot persist it.
+   */
+  #wasSharedFor: string | null = null;
+
   /** The `splitSupported` probe: one success per bridge, one at a time. */
   #splitProbed = false;
   #splitProbing = false;
@@ -3125,6 +3134,36 @@ export class E2EEBridge implements E2EEAdapter {
     this.#deviceSharedFor = key;
     this.deviceShared.set("state", next);
     writeDeviceShared(this.#deviceSharedStorage(), userId, deviceId, next);
+    this.#noteWasShared(userId, deviceId);
+  }
+
+  /**
+   * Record that this device was shared (sticky: "Not now" and an accepted
+   * claim keep it; `disable()` reads it).
+   */
+  #noteWasShared(userId: string, deviceId: string): void {
+    this.#wasSharedFor = `${userId}:${deviceId}`;
+    writeWasShared(this.#deviceSharedStorage(), userId, deviceId, Date.now());
+  }
+
+  /** Whether the current device carries the sticky "was shared" record. */
+  #wasShared(): boolean {
+    const userId = this.#client.user?.id;
+    const deviceId = this.status.get("state")?.device_id;
+    if (!userId || !deviceId) return false;
+    return (
+      this.#wasSharedFor === `${userId}:${deviceId}` ||
+      readWasShared(this.#deviceSharedStorage(), userId, deviceId)
+    );
+  }
+
+  /** End the record for `deviceId`: a split (ours or the twin's) or a wipe. */
+  #clearWasShared(deviceId: string | null | undefined): void {
+    this.#wasSharedFor = null;
+    const userId = this.#client.user?.id;
+    if (userId && deviceId) {
+      clearWasShared(this.#deviceSharedStorage(), userId, deviceId);
+    }
   }
 
   /** Clear `deviceShared` for `deviceId` (memory + storage) and the strikes. */
@@ -3158,6 +3197,7 @@ export class E2EEBridge implements E2EEAdapter {
     );
     if (stored) {
       this.#deviceSharedFor = key;
+      this.#noteWasShared(userId, deviceId);
       this.deviceShared.set(
         "state",
         mergeDeviceShared(stored, current ?? stored),
@@ -3210,7 +3250,9 @@ export class E2EEBridge implements E2EEAdapter {
     }
 
     if (splitFrom !== null && splitFrom === mine && !this.#split) {
+      // The other install left: this device is no longer shared
       this.#clearDeviceShared(mine);
+      this.#clearWasShared(mine);
       this.#requestClaim(mine);
       let report: { listing: unknown[] } | null = null;
       try {
@@ -6781,12 +6823,14 @@ export class E2EEBridge implements E2EEAdapter {
 
   /**
    * Whether this install shares its device with another live install:
-   * `deviceShared` is raised, a first `held_elsewhere` refusal for this
-   * device is on record, or this connection's claim was refused that way.
+   * `deviceShared` is raised, the sticky "was shared" record is set for
+   * this device, a first `held_elsewhere` refusal for it is on record, or
+   * this connection's claim was refused that way.
    */
   #sharesDevice(): boolean {
     return (
       this.deviceShared.has("state") ||
+      this.#wasShared() ||
       this.#claimRefusedHeldElsewhere ||
       this.#heldFirstAt() !== null
     );
@@ -6847,6 +6891,7 @@ export class E2EEBridge implements E2EEAdapter {
       clearDeviceShared(this.#deviceSharedStorage(), userId, deviceId);
     }
     this.#clearHeldFirst(deviceId);
+    this.#clearWasShared(deviceId);
     this.deviceShared.delete("state");
     this.#deviceSharedFor = null;
     this.#heldStrikes = 0;
@@ -7075,6 +7120,7 @@ export class E2EEBridge implements E2EEAdapter {
       const after = this.status.get("state");
       if (after) this.status.set("state", { ...after, claimed: false });
       this.#clearDeviceShared(oldId);
+      this.#clearWasShared(oldId);
       this.reenrollNeeded.delete("state");
       this.#pendingRestoreRepublish = null;
       // The protected text manager captured the old device id

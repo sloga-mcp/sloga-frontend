@@ -128,6 +128,58 @@ export function clearHeldStrike(
 }
 
 /**
+ * Sticky "this device was shared" record for a (user, device): written
+ * whenever `deviceShared` is raised and kept through "Not now" and accepted
+ * claims, because the other install can still be using the device after
+ * this one wins the claim again. Only a split (ours, or the twin leaving)
+ * or a wipe ends it. Same keying and failure rules as above.
+ */
+export function wasSharedKey(userId: string, deviceId: string): string {
+  return `sloga.e2ee.wasShared.v1:${userId}:${deviceId}`;
+}
+
+export function readWasShared(
+  storage: DeviceSharedStorage | null,
+  userId: string,
+  deviceId: string,
+): boolean {
+  if (!storage) return false;
+  try {
+    const raw = storage.getItem(wasSharedKey(userId, deviceId));
+    if (raw === null) return false;
+    const at = (JSON.parse(raw) as { at?: unknown } | null)?.at;
+    return typeof at === "number" && Number.isFinite(at);
+  } catch {
+    return false;
+  }
+}
+
+export function writeWasShared(
+  storage: DeviceSharedStorage | null,
+  userId: string,
+  deviceId: string,
+  at: number,
+): void {
+  try {
+    storage?.setItem(wasSharedKey(userId, deviceId), JSON.stringify({ at }));
+  } catch {
+    // Best effort: the in-memory record still holds for this run.
+  }
+}
+
+export function clearWasShared(
+  storage: DeviceSharedStorage | null,
+  userId: string,
+  deviceId: string,
+): void {
+  try {
+    storage?.removeItem(wasSharedKey(userId, deviceId));
+  } catch {
+    // Best effort, as above.
+  }
+}
+
+/**
  * The state to keep when `next` is raised over `current`: a refused claim
  * (`held_elsewhere`) outranks a divergence, and a standing state keeps its
  * original instant.

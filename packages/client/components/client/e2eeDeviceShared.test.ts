@@ -7,13 +7,17 @@ import {
   type DeviceSharedStorage,
   clearDeviceShared,
   clearHeldStrike,
+  clearWasShared,
   deviceSharedKey,
   heldStrikeKey,
   mergeDeviceShared,
   readDeviceShared,
   readHeldStrike,
+  readWasShared,
+  wasSharedKey,
   writeDeviceShared,
   writeHeldStrike,
+  writeWasShared,
 } from "./e2eeDeviceShared.ts";
 
 function memoryStorage(): DeviceSharedStorage & { map: Map<string, string> } {
@@ -112,4 +116,23 @@ test("the first held_elsewhere strike round-trips per (user, device) and clears"
   assert.equal(readHeldStrike(null, "U", "D"), null);
   writeHeldStrike(null, "U", "D", 1);
   clearHeldStrike(null, "U", "D");
+});
+
+test("the sticky was-shared record round-trips per (user, device) and clears", () => {
+  const s = memoryStorage();
+  assert.equal(wasSharedKey("U", "D"), "sloga.e2ee.wasShared.v1:U:D");
+  assert.equal(readWasShared(s, "U", "D"), false);
+  writeWasShared(s, "U", "D", 7);
+  assert.equal(readWasShared(s, "U", "D"), true);
+  assert.equal(readWasShared(s, "U", "E"), false);
+  assert.equal(readWasShared(s, "V", "D"), false);
+  clearWasShared(s, "U", "D");
+  assert.equal(readWasShared(s, "U", "D"), false);
+  for (const raw of ["x", "null", "{}", '{"at":"1"}', '{"at":null}']) {
+    s.map.set(wasSharedKey("U", "D"), raw);
+    assert.equal(readWasShared(s, "U", "D"), false, raw);
+  }
+  assert.equal(readWasShared(null, "U", "D"), false);
+  writeWasShared(null, "U", "D", 1);
+  clearWasShared(null, "U", "D");
 });

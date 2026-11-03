@@ -100,6 +100,13 @@ export function E2EEDisableModal(
       setFailedDeviceId(undefined);
       setDone(true);
     } catch (error) {
+      // The other install holds this device: it keeps working, and this
+      // one can only start fresh. Another retry would be refused the same.
+      if ((error as { type?: string })?.type === "E2EEDeviceHeldElsewhere") {
+        setFailedDeviceId(undefined);
+        setTwin("held_elsewhere");
+        return;
+      }
       showError(error);
     } finally {
       setBusy(false);

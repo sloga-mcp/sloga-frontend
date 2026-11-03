@@ -207,6 +207,7 @@ type Bridge = {
     reauth: () => Promise<string | undefined>,
   ): Promise<string>;
   dismissDeviceShared(): void;
+  disablePreflight(): "shared" | null;
   registerMlsSink(sink: (event: unknown) => void): () => void;
   dispose(): Promise<void>;
 };
@@ -1654,6 +1655,7 @@ async function runHandler(
   code: string,
   name: string,
   preflight: "shared" | null,
+  overrides: Record<string, unknown> = {},
 ) {
   const calls: string[] = [];
   const e2ee = {
@@ -1665,9 +1667,9 @@ async function runHandler(
       calls.push("disable");
       return { kind: "disabled", revokeFailed: false, remainingDevices: 1 };
     },
+    ...(overrides.e2ee as object | undefined),
   };
   const stubs: Record<string, unknown> = {
-    e2ee,
     client: () => ({
       account: {
         mfa: async () => {
@@ -1684,11 +1686,13 @@ async function runHandler(
     setTwin: (v: string) => calls.push(`twin:${v}`),
     setBusy: () => {},
     setDone: () => calls.push("done"),
-    setFailedDeviceId: () => {},
+    setFailedDeviceId: (v: unknown) => calls.push(`failed:${String(v)}`),
     showError: (e: unknown) => calls.push(`error:${String(e)}`),
     props: { onClose: () => {} },
     resetting: () => false,
     setResetting: () => {},
+    ...overrides,
+    e2ee,
   };
   const js = stripTypeScriptTypes(code);
   const fn = new Function(...Object.keys(stubs), `${js}\nreturn ${name};`)(
@@ -1761,4 +1765,147 @@ test("ui:banner-preflight - the call banner's reset is refused before the passwo
   assert.ok(shared.includes("open:e2ee_device_shared"));
   const normal = await runHandler(code, "resetDevice", null);
   assert.ok(normal.includes("mfa") && normal.includes("disable"));
+});
+
+// ---- the sticky "was shared" record -----------------------------------------
+
+const WAS_KEY = `sloga.e2ee.wasShared.v1:${USER}:${DEV}`;
+
+/** Two refusals on one connection: `deviceShared` is raised. */
+async function raiseShared(bridge: Bridge) {
+  await heldElsewhere(bridge);
+  await heldElsewhere(bridge);
+  assert.equal(bridge.deviceShared.get("state")?.via, "held_elsewhere");
+}
+
+/** A new connection whose claim the server accepts. */
+async function acceptedConnection(
+  bridge: Bridge,
+  client: { emit(n: string): void },
+) {
+  client.emit("ready");
+  await settle();
+  bridge.onEvent({ type: "E2EEClaimResult", device_id: DEV, accepted: true });
+  await settle();
+}
+
+test("wasShared - Not now and a later accepted claim still refuse disable()", async () => {
+  revokeAnswer(() => json({ remaining_devices: 1 }));
+  const { bridge, client } = await readyBridge();
+  await raiseShared(bridge);
+  assert.ok(storage.has(WAS_KEY), "recorded when raised");
+  bridge.dismissDeviceShared();
+  await acceptedConnection(bridge, client);
+  assert.equal(bridge.deviceShared.has("state"), false);
+  assert.equal(storage.has(HELD_KEY), false);
+  assert.equal(bridge.disablePreflight(), "shared");
+  log = [];
+  assert.deepEqual(await bridge.disable("ticket"), { kind: "shared" });
+  assert.equal(nativeCalls("e2ee_wipe"), 0);
+  assert.equal(deletes(), 0);
+});
+
+test("wasShared - survives a reload of the page", async () => {
+  const first = await readyBridge();
+  await raiseShared(first.bridge);
+  first.bridge.dismissDeviceShared();
+  const second = await readyBridge();
+  second.bridge.onEvent({
+    type: "E2EEClaimResult",
+    device_id: DEV,
+    accepted: true,
+  });
+  await settle();
+  assert.equal(second.bridge.disablePreflight(), "shared");
+});
+
+test("wasShared - a single first refusal does not set it", async () => {
+  const { bridge, client } = await readyBridge();
+  await heldElsewhere(bridge);
+  assert.equal(storage.has(WAS_KEY), false);
+  bridge.dismissDeviceShared();
+  await acceptedConnection(bridge, client);
+  assert.equal(bridge.disablePreflight(), null);
+});
+
+test("wasShared - our own split ends it", async () => {
+  const { bridge, client } = await readyBridge();
+  await raiseShared(bridge);
+  await acceptedConnection(bridge, client);
+  assert.equal((await bridge.splitDevice(async () => "ticket")).kind, "split");
+  assert.equal(storage.has(WAS_KEY), false);
+  await settle();
+  bridge.onEvent({ type: "E2EEClaimResult", device_id: NEW, accepted: true });
+  await settle();
+  assert.equal(bridge.disablePreflight(), null, "the new device is not shared");
+});
+
+test("wasShared - the twin's split event naming us ends it", async () => {
+  const { bridge, client } = await readyBridge();
+  await raiseShared(bridge);
+  bridge.onEvent({
+    type: "E2EEDeviceCreate",
+    user_id: USER,
+    device_id: TWIN_NEW,
+    split_from: DEV,
+  });
+  await settle();
+  assert.equal(storage.has(WAS_KEY), false);
+  await acceptedConnection(bridge, client);
+  assert.equal(bridge.disablePreflight(), null);
+});
+
+test("wasShared - a wipe ends it", async () => {
+  const { bridge } = await readyBridge();
+  await raiseShared(bridge);
+  assert.equal(
+    await bridge.startOverAsNewDevice(async () => undefined),
+    "wiped",
+  );
+  assert.equal(storage.has(WAS_KEY), false);
+});
+
+test("retryDeviceRevoke - a held-elsewhere refusal surfaces with its type and keeps the flag", async () => {
+  revokeAnswer(() => json({ type: "E2EEDeviceHeldElsewhere" }, 403));
+  const { bridge } = await readyBridge();
+  routes.set(`GET /e2ee/devices/${USER}`, () => json([]));
+  log = [];
+  await assert.rejects(
+    bridge.retryDeviceRevoke(DEV, "ticket"),
+    (error: { type?: string }) => error.type === "E2EEDeviceHeldElsewhere",
+  );
+  assert.equal(flagEdits(), 0);
+});
+
+test("ui:retry-held-elsewhere - a refused retry routes to start fresh, not another retry", async () => {
+  const code = liftBlock(
+    readFileSync(DISABLE_TSX, "utf8"),
+    "async function retryRevoke() {",
+  );
+  const calls = await runHandler(code, "retryRevoke", null, {
+    failedDeviceId: () => DEV,
+    e2ee: {
+      retryDeviceRevoke: async () => {
+        throw Object.assign(new Error("E2EE API DELETE failed: 403"), {
+          type: "E2EEDeviceHeldElsewhere",
+        });
+      },
+    },
+  });
+  assert.ok(calls.includes("twin:held_elsewhere"), calls.join());
+  assert.ok(calls.includes("failed:undefined"), "the retry offer goes");
+  assert.ok(!calls.some((c) => c.startsWith("error:")), "no error toast");
+  const other = await runHandler(code, "retryRevoke", null, {
+    failedDeviceId: () => DEV,
+    e2ee: {
+      retryDeviceRevoke: async () => {
+        throw new Error("E2EE API DELETE failed: 500");
+      },
+    },
+  });
+  assert.ok(
+    other.some((c) => c.startsWith("error:")),
+    "other errors still show",
+  );
+  assert.ok(!other.includes("twin:held_elsewhere"));
 });
