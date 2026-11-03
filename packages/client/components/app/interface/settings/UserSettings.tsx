@@ -58,6 +58,8 @@ import Native from "./user/Native";
 import Notifications from "./user/notifications/Notifications";
 import { PrivacySettings } from "./user/Privacy";
 import { EditProfile } from "./user/profile";
+import { ProtSettings } from "./user/ProtSettings";
+import { parseProtFeature } from "./user/protWallet";
 import { Referrals } from "./user/Referrals";
 import { RemoteControlSettings } from "./user/RemoteControl";
 import { Sessions } from "./user/Sessions";
@@ -118,6 +120,11 @@ const Config: SettingsConfiguration<{ server: Server }> = {
         return allowsDonationLinks() ? (
           <CipherSettings context={context} />
         ) : null;
+      case "prot":
+        // Not behind allowsDonationLinks(): balance and history show in
+        // every build, and the page gates buying itself. The context carries
+        // the checkout return.
+        return <ProtSettings context={context} />;
       case "sessions":
         return <Sessions />;
       case "security":
@@ -264,6 +271,24 @@ const Config: SettingsConfiguration<{ server: Server }> = {
               title: <Trans>Cipher</Trans>,
               get hidden() {
                 return !allowsDonationLinks();
+              },
+            },
+            {
+              // Listed in every build (store builds show balance and history
+              // only); hidden while the server does not advertise Prot. A
+              // getter, so the row tracks the configuration. The cast: the
+              // upstream config type has no `prot` feature.
+              id: "prot",
+              icon: <Symbol size={20}>toll</Symbol>,
+              title: <Trans>Prot</Trans>,
+              get hidden() {
+                return !parseProtFeature(
+                  (
+                    client().configuration?.features as
+                      | { prot?: unknown }
+                      | undefined
+                  )?.prot,
+                ).enabled;
               },
             },
             {
