@@ -3,23 +3,38 @@
 //   node --test components/rtc/e2eeDeviceReadiness.test.ts
 // Focus: `ready` stays exactly as permissive as the boolean it replaced
 // (an UNRESOLVED status is still capable — R2-4 fail-closed), the two
-// "set it up here" reasons are told apart, and the refusal matcher is strict
-// enough that a reworded backend degrades to today's behaviour.
+// "set it up here" reasons are told apart, the server's iOS kill switch
+// (`paused`, plan D14) is its own non-capable reason with no setup remedy,
+// and the refusal matcher is strict enough that a reworded backend degrades
+// to today's behaviour.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  type CallEncryptionReadiness,
+  type CallEncryptionReadinessInput,
   callEncryptionCapable,
   callEncryptionReadiness,
   encryptionSetupAvailable,
   isDeviceNotRegisteredRefusal,
 } from "./e2eeDeviceReadiness.ts";
 
+// Every call in this file passes the full input bag, `pausedByServer`
+// included, exactly as `connect()` must (it is a REQUIRED field).
 const base = {
   shellSupported: true,
   status: { enabled: true },
   deviceOwnedElsewhere: false,
+  pausedByServer: false,
 };
+
+const ALL_READINESS: readonly CallEncryptionReadiness[] = [
+  "ready",
+  "needs_setup",
+  "owned_elsewhere",
+  "unsupported",
+  "paused",
+];
 
 test("an enrolled device on a supported shell is ready", () => {
   assert.equal(callEncryptionReadiness(base), "ready");
@@ -78,6 +93,7 @@ test("🔴 a REFUSED device stays CAPABLE — it is a failure, not a non-capabil
   // consent press is not this rule's call to make.
   assert.equal(callEncryptionCapable("needs_setup"), false);
   assert.equal(callEncryptionCapable("unsupported"), false);
+  assert.equal(callEncryptionCapable("paused"), false);
   assert.equal(callEncryptionCapable("ready"), true);
 });
 
@@ -86,6 +102,11 @@ test("an unsupported shell outranks everything — there is nothing to set up", 
     {},
     { deviceOwnedElsewhere: true },
     { status: { enabled: false } },
+    // ...the server's pause included: a shell that can never encrypt is
+    // not "paused", and saying so would promise encryption coming back.
+    { pausedByServer: true },
+    { pausedByServer: true, deviceOwnedElsewhere: true },
+    { pausedByServer: true, status: { enabled: false } },
   ]) {
     const r = callEncryptionReadiness({
       ...base,
@@ -135,4 +156,70 @@ test("🔴 setup-available is the chip's LOCAL term, and it is exactly the two f
   assert.equal(encryptionSetupAvailable("owned_elsewhere"), true);
   assert.equal(encryptionSetupAvailable("unsupported"), false);
   assert.equal(encryptionSetupAvailable("ready"), false);
+  // The server's pause has no remedy on this device: Settings cannot undo a
+  // global switch, and an enable flow offered here would be a dead end.
+  assert.equal(encryptionSetupAvailable("paused"), false);
+});
+
+test("🔴 a server pause (D14) outranks every DEVICE term on a supported shell", () => {
+  // The switch is global for iOS and read once at call start; when it is off
+  // the device's own state is irrelevant — nothing on it can encrypt this
+  // call. Above all it must outrank `ready`: an UNRESOLVED status reads
+  // `ready` (R2-4), and a paused call that took that path would build a
+  // session the server has told us not to run.
+  for (const over of [
+    {},
+    { status: undefined },
+    { status: null },
+    { status: { enabled: false } },
+    { deviceOwnedElsewhere: true },
+    { deviceOwnedElsewhere: true, status: { enabled: false } },
+  ]) {
+    const r = callEncryptionReadiness({
+      ...base,
+      ...over,
+      pausedByServer: true,
+    });
+    assert.equal(r, "paused", JSON.stringify(over));
+    assert.equal(callEncryptionCapable(r), false);
+    assert.equal(encryptionSetupAvailable(r), false);
+  }
+});
+
+test("🔴 a paused call is NOT capable and offers no setup — its own loud reason", () => {
+  // Non-capable: no session, no key provider, no device-qualified identity —
+  // the honest non-enrolled path the switch exists to restore. It is its own
+  // reason (never `unsupported`, whose copy says this device cannot encrypt)
+  // and never `needs_setup` (whose remedy cannot fix a server switch).
+  assert.equal(callEncryptionCapable("paused"), false);
+  assert.equal(encryptionSetupAvailable("paused"), false);
+  const r = callEncryptionReadiness({ ...base, pausedByServer: true });
+  assert.notEqual(r, "unsupported");
+  assert.notEqual(r, "needs_setup");
+});
+
+test("pausedByServer false changes nothing — the switch is ON by default", () => {
+  // The pre-D14 table, re-read with the new input explicitly false: every
+  // reason lands exactly where it did before the switch existed.
+  const cases: [Partial<CallEncryptionReadinessInput>, string][] = [
+    [{}, "ready"],
+    [{ status: undefined }, "ready"],
+    [{ status: { enabled: false } }, "needs_setup"],
+    [{ deviceOwnedElsewhere: true }, "owned_elsewhere"],
+    [{ shellSupported: false }, "unsupported"],
+  ];
+  for (const [over, want] of cases)
+    assert.equal(
+      callEncryptionReadiness({ ...base, ...over, pausedByServer: false }),
+      want,
+      JSON.stringify(over),
+    );
+});
+
+test("only ready and owned_elsewhere are capable, over the WHOLE union", () => {
+  // Total over every member, so a new reason must be placed deliberately.
+  const capable = ALL_READINESS.filter((r) => callEncryptionCapable(r));
+  assert.deepEqual(capable, ["ready", "owned_elsewhere"]);
+  const setup = ALL_READINESS.filter((r) => encryptionSetupAvailable(r));
+  assert.deepEqual(setup, ["needs_setup", "owned_elsewhere"]);
 });

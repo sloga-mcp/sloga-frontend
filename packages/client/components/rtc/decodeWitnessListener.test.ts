@@ -27,11 +27,13 @@ import { test } from "node:test";
 
 import {
   DECODE_WITNESS_CHECK_MS,
+  DECODE_WITNESS_DEAD_MS,
   DECODE_WITNESS_INITIAL,
   DECODE_WITNESS_KIND,
   DECODE_WITNESS_STALE_MS,
   createDecodeWitnessListener,
   parseDecodeWitnessMessage,
+  parseDecodeWitnessRte,
   sameWitness,
 } from "./decodeWitnessListener.ts";
 import { type DecodeWitness } from "./mlsCallModePolicy.ts";
@@ -623,4 +625,379 @@ test("parseDecodeWitnessMessage keeps the tallies it was given", () => {
     },
   ]);
   assert.deepEqual(parseDecodeWitnessMessage(sample([])), []);
+});
+
+// --- a dead worker during a call goes LOUD (R7, spike S3) -------------------
+//
+// S3 killed the worker mid-call on iOS: the call failed closed, silently, and
+// the only trace was this heartbeat stopping. `onDead` is the loud hook. The
+// holes these pin:
+//
+//   one tick    — a single late tick after iOS resumes a frozen thread reads a
+//                 worker as dead whose next heartbeat is already queued.
+//   burst       — the queued interval callbacks of a resumed thread fire back
+//                 to back; two of them are one observation, not two.
+//   between     — a heartbeat delivered between two late ticks ends the
+//                 silence the first one saw.
+//   once        — the verdict is a loud state, not a stream of them.
+//   rte         — a worker without RTCTransformEvent protects nothing, however
+//                 well-formed its windows are.
+//   no hook     — without `onDead` (Chromium) nothing at all changes.
+
+/**
+ * A patched worker's post carrying `rte` exactly as given — `undefined`
+ * included, which a defaulted parameter would have swapped for "function".
+ */
+const beatWith = (rte: unknown) => ({
+  kind: DECODE_WITNESS_KIND,
+  data: {
+    participants: [
+      { identity: "jeff", indexes: [{ keyIndex: 2, seen: 30, dropped: 0 }] },
+    ],
+    rte,
+  },
+});
+
+/** What the patched worker posts once a second on an engine that can transform. */
+const beat = () => beatWith("function");
+
+interface DeadRig {
+  listener: ReturnType<typeof createDecodeWitnessListener>;
+  written: DecodeWitness[];
+  warns: string[];
+  current: { value: boolean };
+  /** How many times `onDead` RETURNED. Set `explode` to make it throw. */
+  dead: { count: number; explode: boolean };
+  advance: (ms: number) => void;
+  /** Run the sweep `n` times at the real cadence, as `setInterval` would. */
+  sweep: (n: number) => void;
+}
+
+/**
+ * The options bag `state.tsx` passes (`now`, `onWitness`, `isCurrentSession`)
+ * plus the hook. The clock starts far from zero so a verdict measured from
+ * zero instead of from arm time cannot pass by accident.
+ */
+function deadRig(
+  options: { staleMs?: number; checkMs?: number; deadAfterMs?: number } = {},
+): DeadRig {
+  let clock = 100_000;
+  const written: DecodeWitness[] = [];
+  const warns: string[] = [];
+  const current = { value: true };
+  const dead = { count: 0, explode: false };
+  const listener = createDecodeWitnessListener({
+    now: () => clock,
+    onWitness: (witness) => written.push(witness),
+    isCurrentSession: () => current.value,
+    log: { warn: (m) => warns.push(m), info: () => {} },
+    onDead: () => {
+      if (dead.explode) throw new Error("loud path threw");
+      dead.count += 1;
+    },
+    ...options,
+  });
+  const advance = (ms: number) => {
+    clock += ms;
+  };
+  return {
+    listener,
+    written,
+    warns,
+    current,
+    dead,
+    advance,
+    sweep: (n) => {
+      for (let i = 0; i < n; i += 1) {
+        advance(listener.checkMs);
+        listener.tick();
+      }
+    },
+  };
+}
+
+/** {@link latest} for a {@link DeadRig}: asserts, never falls back. */
+const latestOf = (r: DeadRig): DecodeWitness => {
+  const last = r.written.at(-1);
+  assert.ok(last, "expected a witness to have been written");
+  return last;
+};
+
+const deadWarns = (r: DeadRig) =>
+  r.warns.filter((m) => /reported dead/.test(m)).length;
+
+test("🔴 the dead threshold is six of the worker's beats", () => {
+  // Hardcoded, like the staleness pin above: every other dead spec scales with
+  // the constant, so widening it to a minute would keep them all green.
+  assert.equal(DECODE_WITNESS_DEAD_MS, 6_000);
+  assert.equal(DECODE_WITNESS_DEAD_MS, 6 * DECODE_WITNESS_CHECK_MS);
+});
+
+test("🔴 a worker silent for six seconds is dead at the NEXT sweep, once", () => {
+  const r = deadRig();
+  r.listener.onMessage(beat());
+  assert.equal(latestOf(r).available, true);
+  // Six sweeps: amber from the fourth, and the sixth is the first to see six
+  // seconds of silence — one observation, not a verdict.
+  r.sweep(6);
+  assert.equal(latestOf(r).available, false);
+  assert.equal(r.dead.count, 0);
+  // The seventh is the second observation, a whole sweep later.
+  r.sweep(1);
+  assert.equal(r.dead.count, 1);
+  assert.equal(deadWarns(r), 1);
+});
+
+test("🔴 ONE stale tick is never a verdict, however late it is", () => {
+  // The resumed-thread case: iOS froze the page for a minute and the first
+  // callback to run is a tick, with the worker's next heartbeat queued behind.
+  const r = deadRig();
+  r.listener.onMessage(beat());
+  r.advance(60_000);
+  r.listener.tick();
+  assert.equal(r.dead.count, 0);
+  // The amber write is not withheld — only the loud verdict waits.
+  assert.equal(latestOf(r).available, false);
+});
+
+test("🔴 no heartbeat ever: silence counts from ARM time, and needs two ticks", () => {
+  const r = deadRig();
+  r.sweep(5);
+  assert.equal(r.dead.count, 0);
+  r.sweep(1); // six seconds since arm: the first observation
+  assert.equal(r.dead.count, 0);
+  r.sweep(1);
+  assert.equal(r.dead.count, 1);
+});
+
+test("🔴 a burst of back-to-back late ticks is ONE observation", () => {
+  // A thread that resumes after a freeze delivers its queued interval
+  // callbacks within milliseconds of each other, and nothing orders them
+  // before the queued heartbeat.
+  const r = deadRig();
+  r.listener.onMessage(beat());
+  r.advance(30_000);
+  r.listener.tick();
+  r.listener.tick();
+  r.advance(1);
+  r.listener.tick();
+  assert.equal(r.dead.count, 0);
+  r.listener.onMessage(beat()); // the queued heartbeat drains
+  for (let i = 0; i < 20; i += 1) {
+    r.sweep(1);
+    r.listener.onMessage(beat());
+  }
+  assert.equal(r.dead.count, 0);
+  assert.equal(latestOf(r).available, true);
+});
+
+test("🔴 the pair needs half a sweep between its ticks: 499 ms is not, 500 is", () => {
+  const r = deadRig();
+  r.listener.onMessage(beat());
+  r.advance(DECODE_WITNESS_DEAD_MS);
+  r.listener.tick();
+  r.advance(499);
+  r.listener.tick();
+  assert.equal(r.dead.count, 0);
+  // Consecutive means the PREVIOUS tick: 500 ms after the 499 one.
+  r.advance(500);
+  r.listener.tick();
+  assert.equal(r.dead.count, 1);
+});
+
+test("🔴 a heartbeat delivered between two late ticks breaks the pair", () => {
+  const r = deadRig();
+  r.listener.onMessage(beat());
+  r.advance(30_000);
+  r.listener.tick(); // late: one observation of the silence
+  r.listener.onMessage(beat()); // the queued heartbeat
+  r.advance(DECODE_WITNESS_CHECK_MS);
+  r.listener.tick(); // late by the wall clock, fresh by the heartbeat
+  assert.equal(r.dead.count, 0);
+});
+
+test("🔴 a heartbeat ends the silence: the next silence needs its own two ticks", () => {
+  // The tick before the heartbeat saw a silence that is over. Pairing it with
+  // the first tick of the NEXT silence would be one observation of each.
+  const r = deadRig();
+  r.listener.onMessage(beat());
+  r.advance(30_000);
+  r.listener.tick();
+  r.listener.onMessage(beat());
+  r.advance(30_000); // frozen again, no sweep in between
+  r.listener.tick();
+  assert.equal(r.dead.count, 0);
+  r.sweep(1);
+  assert.equal(r.dead.count, 1);
+});
+
+test("🔴 onDead fires ONCE, through any number of dead ticks and bad heartbeats", () => {
+  const r = deadRig();
+  r.sweep(30);
+  assert.equal(r.dead.count, 1);
+  r.listener.onMessage(beatWith(undefined));
+  r.listener.onMessage(beatWith("undefined"));
+  r.sweep(30);
+  assert.equal(r.dead.count, 1);
+  assert.equal(deadWarns(r), 1);
+});
+
+test("🔴 a heartbeat whose rte is not 'function' is the dead verdict, and promotes nothing", () => {
+  // A worker without RTCTransformEvent cannot transform a frame, so its
+  // windows are not evidence. `undefined` counts: a worker that does not say
+  // has not been checked.
+  for (const rte of [undefined, "undefined", "object", "", true, 1, {}]) {
+    const r = deadRig();
+    r.listener.onMessage(beatWith(rte));
+    assert.equal(r.dead.count, 1, `rte ${String(rte)}`);
+    assert.deepEqual(r.written, [], `rte ${String(rte)} promoted the chip`);
+  }
+  // Today's shape (no rte at all) is the same case.
+  const bare = deadRig();
+  bare.listener.onMessage(sample());
+  assert.equal(bare.dead.count, 1);
+  assert.deepEqual(bare.written, []);
+});
+
+test("🔴 a bad-rte heartbeat does not refresh the clock either", () => {
+  const r = deadRig();
+  r.listener.onMessage(beat());
+  r.advance(DECODE_WITNESS_STALE_MS + 1);
+  r.listener.onMessage(beatWith("undefined"));
+  r.listener.tick();
+  assert.equal(latestOf(r).available, false);
+});
+
+test("a worker that CAN transform and keeps beating is never dead", () => {
+  const r = deadRig();
+  for (let i = 0; i < 60; i += 1) {
+    r.listener.onMessage(beat());
+    r.sweep(1);
+  }
+  assert.equal(r.dead.count, 0);
+  assert.equal(latestOf(r).available, true);
+});
+
+test("a foreign kind carrying a bad rte is not ours and fires nothing", () => {
+  const r = deadRig();
+  r.listener.onMessage({
+    kind: "cryptorError",
+    data: { participants: [], rte: "undefined" },
+  });
+  assert.equal(r.dead.count, 0);
+});
+
+test("🔴 a superseded session's listener fires nothing, and is not latched by the skip", () => {
+  const r = deadRig();
+  r.current.value = false;
+  r.listener.onMessage(beatWith("undefined"));
+  r.sweep(30);
+  assert.equal(r.dead.count, 0);
+  r.current.value = true;
+  r.sweep(1);
+  assert.equal(r.dead.count, 1);
+});
+
+test("🔴 stop() is terminal for the verdict too", () => {
+  const r = deadRig();
+  r.listener.stop();
+  r.sweep(30);
+  r.listener.onMessage(beatWith("undefined"));
+  assert.equal(r.dead.count, 0);
+});
+
+test("🔴 a throwing onDead is retried, and the amber write still lands", () => {
+  // Latching before the call treats a throw as a delivery: a dead worker,
+  // quiet for the rest of the call — the silent failure this hook ends.
+  const r = deadRig();
+  r.dead.explode = true;
+  r.sweep(6);
+  assert.throws(() => r.sweep(1), /loud path threw/);
+  assert.equal(latestOf(r).available, false);
+  assert.throws(() => r.sweep(1), /loud path threw/);
+  r.dead.explode = false;
+  r.sweep(1);
+  assert.equal(r.dead.count, 1);
+  r.sweep(10);
+  assert.equal(r.dead.count, 1);
+});
+
+test("🔴 a chip derivation that throws on every tick cannot hold the verdict back", () => {
+  let clock = 100_000;
+  let explode = false;
+  let dead = 0;
+  const listener = createDecodeWitnessListener({
+    now: () => clock,
+    onWitness: () => {
+      if (explode) throw new Error("chip derivation threw");
+    },
+    isCurrentSession: () => true,
+    log: { warn: () => {}, info: () => {} },
+    onDead: () => {
+      dead += 1;
+    },
+  });
+  listener.onMessage(beat());
+  explode = true;
+  for (let i = 0; i < 7; i += 1) {
+    clock += DECODE_WITNESS_CHECK_MS;
+    try {
+      listener.tick();
+    } catch {
+      // The setter's throw is the caller's; the verdict is what is asserted.
+    }
+  }
+  assert.equal(dead, 1);
+});
+
+test("after the verdict a heartbeat still feeds the chip, and the verdict stands", () => {
+  // ONE-WAY: nothing here un-dies a worker. The caller's loud state is its own.
+  const r = deadRig();
+  r.sweep(7);
+  assert.equal(r.dead.count, 1);
+  r.listener.onMessage(beat());
+  assert.equal(latestOf(r).available, true);
+  r.sweep(30);
+  assert.equal(r.dead.count, 1);
+});
+
+test("🔴 an armed hook must be finite and ABOVE the staleness threshold", () => {
+  const armed = (deadAfterMs: number) => () => deadRig({ deadAfterMs });
+  assert.throws(armed(DECODE_WITNESS_STALE_MS), RangeError);
+  assert.throws(armed(1_000), RangeError);
+  assert.throws(armed(Infinity), /must be finite and above staleMs/);
+  assert.throws(armed(NaN), RangeError);
+  assert.doesNotThrow(armed(DECODE_WITNESS_STALE_MS + 1));
+  assert.doesNotThrow(() => deadRig());
+});
+
+test("🔴 without onDead nothing changes: no rte needed, no new construction limits", () => {
+  // Chromium does not wire the hook. Its listener reads today's heartbeat
+  // shape, promotes on it, and accepts every construction it accepted before.
+  const r = rig();
+  for (const data of [sample(), beatWith(undefined), beatWith("undefined")]) {
+    r.listener.onMessage(data);
+    assert.deepEqual(latest(r), {
+      available: true,
+      dropping: [],
+      live: ["jeff"],
+    });
+  }
+  r.advance(60_000);
+  assert.doesNotThrow(() => r.listener.tick());
+  assert.equal(latest(r).available, false);
+  assert.doesNotThrow(() => rig({ staleMs: 10_000, checkMs: 1_000 }));
+});
+
+test("parseDecodeWitnessRte reads only our kind's string rte", () => {
+  assert.equal(parseDecodeWitnessRte(beat()), "function");
+  assert.equal(parseDecodeWitnessRte(beatWith("undefined")), "undefined");
+  assert.equal(parseDecodeWitnessRte(beatWith(true)), undefined);
+  assert.equal(parseDecodeWitnessRte(sample()), undefined);
+  assert.equal(parseDecodeWitnessRte({ kind: DECODE_WITNESS_KIND }), undefined);
+  assert.equal(
+    parseDecodeWitnessRte({ kind: "other", data: { rte: "function" } }),
+    undefined,
+  );
+  assert.equal(parseDecodeWitnessRte(undefined), undefined);
 });

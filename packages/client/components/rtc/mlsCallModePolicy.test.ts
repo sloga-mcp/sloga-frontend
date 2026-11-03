@@ -23,7 +23,11 @@ import {
   type LoudHealInputs,
   type PauseClause,
   DECODE_WITNESS_UNAVAILABLE,
+  JOIN_WINDOW_PREDATES_DEPTH,
   MediaErrorLedger,
+  WITNESS_AMBER_CONFIRM_MS,
+  WITNESS_AMBER_ESCALATE_MS,
+  WitnessAmberEscalation,
   bannerParksFloat,
   callBanner,
   callModeTransition,
@@ -31,6 +35,7 @@ import {
   classifyEncryptionError,
   classifyMediaError,
   interludeStickyAcrossResecure,
+  joinWindowMissPredatesEpoch,
   keyPairId,
   latestPresentAddedAt,
   loudHealVerdict,
@@ -42,6 +47,7 @@ import {
   plaintextReleaseAvailable,
   rotationWindowMs,
   summarizeDecodeWitness,
+  witnessOnlyAmber,
 } from "./mlsCallModePolicy.ts";
 
 const NEGOTIATING: CallMode = { kind: "negotiating" };
@@ -364,6 +370,8 @@ const baseChip = (over: Partial<ChipInputs>): ChipInputs => ({
   deviceNeedsSetup: false,
   peerCouldEncrypt: true,
   decodeWitness: { available: true, dropping: [], live: [] },
+  pausedByServer: false,
+  presentIdentities: ["alice:dA", "bob:d1"],
   ...over,
 });
 
@@ -735,6 +743,8 @@ test("chip plaintext/off/no-session with no open group → none", () => {
       deviceNeedsSetup: false,
       peerCouldEncrypt: true,
       decodeWitness: { available: true, dropping: [], live: [] },
+      pausedByServer: false,
+      presentIdentities: [],
     }),
     "none",
   );
@@ -756,6 +766,8 @@ test("chip ME-7/R2-4 + §0.2#9: NO session in a channel with an open group ⇒ n
       deviceNeedsSetup: false,
       peerCouldEncrypt: true,
       decodeWitness: { available: true, dropping: [], live: [] },
+      pausedByServer: false,
+      presentIdentities: [],
     }),
     "not_encrypted",
   );
@@ -777,6 +789,8 @@ test("chip: the open-group branch speaks for any shell, capable or not", () => {
       deviceNeedsSetup: false,
       peerCouldEncrypt: true,
       decodeWitness: { available: true, dropping: [], live: [] },
+      pausedByServer: false,
+      presentIdentities: [],
     }),
     "not_encrypted",
   );
@@ -910,6 +924,7 @@ test("banner: nothing to say on a green, amber or chrome-less chip", () => {
       "needs_setup",
       "owned_elsewhere",
       "unsupported",
+      "paused",
     ] as const)
       assert.equal(
         callBanner(baseBanner({ chip, mode: E2EE, readiness })).kind,
@@ -937,6 +952,7 @@ test("🔴 banner: a cannot_verify chip is never bannerless (kills banner-state-
           "needs_setup",
           "owned_elsewhere",
           "unsupported",
+          "paused",
         ] as const)
           assert.equal(
             callBanner({
@@ -1144,7 +1160,7 @@ test("🔴 an unlatched red chip on a ready device promises nothing (MEDIUM-1)",
 
 // ---- the securing notice and the pause axis (wave 3) -----------------------
 
-// The nine kinds and six chips, pinned as records so a tenth kind (or a
+// The ten kinds and six chips, pinned as records so an eleventh kind (or a
 // seventh chip) cannot be added to the type without landing in every sweep
 // below.
 const KIND_TABLE: Record<CallBannerKind, 0> = {
@@ -1156,6 +1172,7 @@ const KIND_TABLE: Record<CallBannerKind, 0> = {
   cannot_verify: 0,
   device_not_set_up: 0,
   device_unsupported: 0,
+  ios_paused: 0,
   unencrypted_notice: 0,
 };
 const ALL_KINDS = Object.keys(KIND_TABLE) as CallBannerKind[];
@@ -1173,6 +1190,7 @@ const ALL_READINESS = [
   "needs_setup",
   "owned_elsewhere",
   "unsupported",
+  "paused",
 ] as const;
 const ALL_MODES: (CallMode | undefined)[] = [
   undefined,
@@ -1223,6 +1241,7 @@ const heldRule = (kind: CallBannerKind, i: CallBannerInputs): boolean => {
     case "device_not_set_up":
       return i.readiness === "owned_elsewhere";
     case "device_unsupported":
+    case "ios_paused":
     case "unencrypted_notice":
     case "none":
       return false;
@@ -1270,6 +1289,10 @@ const KIND_INPUTS: Record<Exclude<CallBannerKind, "none">, CallBannerInputs> = {
     hasSession: false,
     readiness: "unsupported",
   }),
+  ios_paused: baseBanner({
+    hasSession: false,
+    readiness: "paused",
+  }),
   unencrypted_notice: baseBanner({
     mode: { kind: "off" },
     latchedError: false,
@@ -1310,9 +1333,9 @@ test("🔴 securing: reachable EXACTLY for hasSession ∧ mode ∈ {undefined, n
             );
             if (kind === "securing") hits++;
           }
-  // 4 non-red chips × 2 undecided modes × WITH a session × 2 latches × 4
+  // 4 non-red chips × 2 undecided modes × WITH a session × 2 latches × 5
   // readiness — the rule reads neither the latch nor the readiness.
-  assert.equal(hits, 4 * 2 * 1 * 2 * 4);
+  assert.equal(hits, 4 * 2 * 1 * 2 * 5);
   // First join, pre-verdict: the session's initial `negotiating` is a field
   // initialiser, never pushed through `#setMode`, so `mode` is undefined and
   // the chip is `none` (state `starting`).
@@ -1425,6 +1448,10 @@ test("🔴 securing: never over a red chip — cannot_verify and not_encrypted k
       assert.equal(
         red({ chip: "not_encrypted", readiness: "unsupported" }),
         "device_unsupported",
+      );
+      assert.equal(
+        red({ chip: "not_encrypted", readiness: "paused" }),
+        "ios_paused",
       );
     }
 });
@@ -1585,9 +1612,9 @@ test("pause: the held / none table, row by row (derived banners and the exported
 });
 
 test("🔴 the banner over its WHOLE input space: raise, securing, pause and park follow the rules of record (exhaustive)", () => {
-  // 6 chips × 10 modes × 2 latches × 4 readiness × 2 sessions × 4 verdicts
-  // = 3840 shapes — the banner's entire domain, so nothing here is sampled.
-  // Every one of the nine kinds must be produced, or a rule is being
+  // 6 chips × 10 modes × 2 latches × 5 readiness × 2 sessions × 4 verdicts
+  // = 4800 shapes — the banner's entire domain, so nothing here is sampled.
+  // Every one of the ten kinds must be produced, or a rule is being
   // asserted over a row nobody reached.
   const seen = new Set<CallBannerKind>();
   let shapes = 0;
@@ -1640,7 +1667,7 @@ test("🔴 the banner over its WHOLE input space: raise, securing, pause and par
                 `park: ${at()}`,
               );
             }
-  assert.equal(shapes, 6 * 10 * 2 * 4 * 2 * 4);
+  assert.equal(shapes, 6 * 10 * 2 * 5 * 2 * 4);
   assert.equal(
     seen.size,
     ALL_KINDS.length,
@@ -1797,6 +1824,7 @@ test("🔴 INVARIANT: every LOUD chip (not_encrypted or cannot_verify) carries a
     "needs_setup",
     "owned_elsewhere",
     "unsupported",
+    "paused",
   ] as const;
   const BOOLS = [false, true];
   const LATCHES: (ChipLatch | undefined)[] = [
@@ -1864,6 +1892,10 @@ test("🔴 INVARIANT: every LOUD chip (not_encrypted or cannot_verify) carries a
                                 deviceNeedsSetup,
                                 peerCouldEncrypt,
                                 decodeWitness,
+                                // Row 0 is pinned by its own spec; true here
+                                // would only fold every shape to one red.
+                                pausedByServer: false,
+                                presentIdentities: [],
                               };
                               const chip = chipState(inputs);
                               reached[
@@ -2108,6 +2140,7 @@ test("🔴 only a banner the user can clear parks the Watch Together player (kil
     "securing",
     "device_not_set_up",
     "device_unsupported",
+    "ios_paused",
     "unencrypted_notice",
     "none",
   ] as const)
@@ -2336,6 +2369,8 @@ test("chip: negotiating + latched error is loud; negotiating without one is ambe
     deviceNeedsSetup: false,
     peerCouldEncrypt: true,
     decodeWitness: { available: true, dropping: [], live: [] },
+    pausedByServer: false,
+    presentIdentities: [],
   };
   // A first-join control latch is un-keyed (`#hasLocalKey` is only set after
   // a Welcome install), so it reads not_encrypted at row 5, never row 4.
@@ -2845,4 +2880,760 @@ test("summarizeDecodeWitness: an empty window is available and clean", () => {
   const w = summarizeDecodeWitness([]);
   assert.deepEqual(w, { available: true, dropping: [], live: [] });
   assert.equal(chipState(baseChip({ decodeWitness: w })), "e2ee");
+});
+
+// ---- Gate (d)'s bound: a witness-only amber goes loud (Wave J) -------------
+
+// A sender this device cannot read: every frame it sends is discarded.
+const W_DROPPING: DecodeWitness = {
+  available: true,
+  dropping: ["bob:d1"],
+  live: [],
+};
+// Positive evidence: a fresh window in which nothing was discarded.
+const W_CLEAN: DecodeWitness = {
+  available: true,
+  dropping: [],
+  live: ["bob:d1"],
+};
+
+// The withheld-commit-at-join shape, everything but the witness green: the
+// joiner is keyed and enabled (a), the SFU says both seats publish encrypted
+// (b), our own publications are on record as GCM, the roster is verified (c).
+// Only the frames say otherwise.
+const withheld = (decodeWitness: DecodeWitness): ChipInputs =>
+  baseChip({
+    publishingIdentities: ["alice:dA", "bob:d1"],
+    observedEncrypted: new Map([
+      ["alice:dA", true],
+      ["bob:d1", true],
+    ]),
+    decodeWitness,
+  });
+
+/** Judge `inputs` every `step` ms over [from, to): the readings, in order. */
+const sweepJudge = (
+  esc: WitnessAmberEscalation,
+  inputs: ChipInputs,
+  from: number,
+  to: number,
+  step = 1_000,
+): [number, ChipState][] => {
+  const out: [number, ChipState][] = [];
+  for (let at = from; at < to; at += step) {
+    out.push([at, esc.judge(inputs, at)]);
+  }
+  return out;
+};
+
+/** The banner a live session's seat derives for `chip` (nothing latched). */
+const seatBanner = (chip: ChipState, mode: CallMode | undefined = E2EE) =>
+  callBanner(
+    baseBanner({
+      chip,
+      mode,
+      readiness: "ready",
+      latchedError: false,
+      hasSession: true,
+    }),
+  );
+
+test("🔴 a witness-only amber is NOT forever: a withheld commit at join goes loud at the verdict bound", () => {
+  // One source with the session's join-race verdict bound
+  // (`JOIN_RACE_DEFER_MS`, 10 s leave-grace + 10 s submit).
+  assert.equal(WITNESS_AMBER_ESCALATE_MS, 20_000);
+  assert.equal(WITNESS_AMBER_CONFIRM_MS, 500);
+  const inputs = withheld(W_DROPPING);
+  // The snapshot rule has no clock: this IS the amber-forever.
+  assert.equal(chipState(inputs), "resecuring");
+  assert.equal(witnessOnlyAmber(inputs), true);
+  const esc = new WitnessAmberEscalation();
+  for (const [at, chip] of sweepJudge(esc, inputs, 0, 21_000)) {
+    assert.equal(chip, "resecuring", `loud before the bound, at ${at} ms`);
+  }
+  // 20 s accrued at the 20 000 ms reading; the 21 000 ms reading confirms.
+  assert.equal(
+    esc.judge(inputs, 21_000),
+    "not_encrypted",
+    "amber forever: 21 s of discarded frames and the chip never went loud",
+  );
+  assert.equal(esc.escalated, true);
+  for (const [at, chip] of sweepJudge(esc, inputs, 22_000, 60_000)) {
+    assert.equal(chip, "not_encrypted", `fell back to amber at ${at} ms`);
+  }
+  // A loud chip carries a banner: the honest floor, because nothing is
+  // latched and no gate is held — no pause promised, no release offered.
+  assert.deepEqual(seatBanner(esc.judge(inputs, 60_000)), {
+    kind: "unencrypted_notice",
+    pause: "none",
+  });
+});
+
+test("🔴 a dead witness (no heartbeat) on a keyed call goes loud at the same bound", () => {
+  const inputs = withheld(DECODE_WITNESS_UNAVAILABLE);
+  assert.equal(witnessOnlyAmber(inputs), true);
+  const esc = new WitnessAmberEscalation();
+  for (const [at, chip] of sweepJudge(esc, inputs, 0, 20_500, 100)) {
+    assert.equal(chip, "resecuring", `loud before bound + confirm, at ${at}`);
+  }
+  // Past the bound at 20 000 ms; 500 ms later the second reading agrees.
+  assert.equal(esc.judge(inputs, 20_500), "not_encrypted");
+});
+
+test("🔴 once loud, returning evidence does NOT rescue it: only the end of the claim or a new call resets", () => {
+  const esc = new WitnessAmberEscalation();
+  sweepJudge(esc, withheld(W_DROPPING), 0, 22_000);
+  assert.equal(esc.escalated, true);
+  // bob goes quiet: nothing is dropped any more, and nothing was fixed.
+  assert.equal(chipState(withheld(W_CLEAN)), "e2ee");
+  assert.equal(esc.judge(withheld(W_CLEAN), 23_000), "not_encrypted");
+  // Nor does a rejoin's negotiating amber.
+  assert.equal(
+    esc.judge(
+      baseChip({ mode: NEGOTIATING, e2eeEnabled: false, hasLocalKey: false }),
+      24_000,
+    ),
+    "not_encrypted",
+  );
+  // A latched loud chip passes through untouched: its latch owns the banner
+  // and the gate, and `cannot_verify` stays `cannot_verify`.
+  assert.equal(
+    esc.judge(
+      baseChip({
+        latch: CONTROL_KEYED,
+        mode: NEGOTIATING,
+        sessionState: "failed",
+      }),
+      25_000,
+    ),
+    "cannot_verify",
+  );
+  assert.equal(esc.escalated, true);
+  // No E2EE claim any more (no session, nothing to be left out of): reset.
+  assert.equal(
+    esc.judge(
+      baseChip({
+        hasSession: false,
+        channelHasOpenGroup: false,
+        peerCouldEncrypt: false,
+      }),
+      26_000,
+    ),
+    "none",
+  );
+  assert.equal(esc.escalated, false);
+  assert.equal(esc.judge(withheld(W_CLEAN), 27_000), "e2ee");
+  // A new call: `reset()`.
+  sweepJudge(esc, withheld(W_DROPPING), 30_000, 52_000);
+  assert.equal(esc.escalated, true);
+  esc.reset();
+  assert.equal(esc.escalated, false);
+  assert.equal(esc.judge(withheld(W_DROPPING), 52_000), "resecuring");
+});
+
+test("🔴 false-red control: a healthy call that keeps briefly losing its witness never goes loud", () => {
+  // Ten gaps of 19.9 s, each just short of the bound, each ended by one
+  // fresh clean window: 200 s that are almost all amber, never once loud.
+  const esc = new WitnessAmberEscalation();
+  const gap = withheld(DECODE_WITNESS_UNAVAILABLE);
+  let at = 0;
+  for (let round = 0; round < 10; round++) {
+    for (let i = 0; i < 200; i++, at += 100) {
+      assert.equal(esc.judge(gap, at), "resecuring", `round ${round}, ${at}`);
+    }
+    assert.equal(esc.judge(withheld(W_CLEAN), at), "e2ee", "evidence returned");
+    at += 100;
+  }
+  assert.equal(esc.escalated, false);
+  // A sender mid-rotation (a short run of dropped old-index frames) is the
+  // same shape: brief, then clean.
+  sweepJudge(esc, withheld(W_DROPPING), at, at + 7_000);
+  assert.equal(esc.judge(withheld(W_CLEAN), at + 7_000), "e2ee");
+  assert.equal(esc.escalated, false);
+});
+
+test("🔴 false-red control: a rotation's amber inside a join PAUSES the clock, it does not add to it", () => {
+  const esc = new WitnessAmberEscalation();
+  const drops = withheld(W_DROPPING);
+  // An arbitration window (submit + settle = 12 s): amber, not witness-only.
+  const rotating: ChipInputs = { ...drops, resecuring: true };
+  assert.equal(witnessOnlyAmber(rotating), false);
+  const readings = [
+    ...sweepJudge(esc, drops, 0, 8_000),
+    ...sweepJudge(esc, rotating, 8_000, 20_000),
+    ...sweepJudge(esc, drops, 20_000, 28_000),
+  ];
+  // 28 s of wall clock, 14 s of witness-only time.
+  for (const [at, chip] of readings) {
+    assert.equal(
+      chip,
+      "resecuring",
+      `a rotation counted as witness time, ${at}`,
+    );
+  }
+  assert.equal(esc.judge(withheld(W_CLEAN), 28_000), "e2ee");
+  // ...and a join's pre-key amber, however long, is not witness-only either.
+  const preKey = baseChip({
+    ...drops,
+    mode: NEGOTIATING,
+    e2eeEnabled: false,
+    hasLocalKey: false,
+  });
+  assert.equal(witnessOnlyAmber(preKey), false);
+  for (const [at, chip] of sweepJudge(esc, preKey, 30_000, 70_000)) {
+    assert.equal(chip, "resecuring", `pre-key amber counted, ${at}`);
+  }
+  // Keyed: the Add-grace's old-index drops (well under the bound), then clean.
+  for (const [at, chip] of sweepJudge(esc, drops, 70_000, 77_000)) {
+    assert.equal(chip, "resecuring", `${at}`);
+  }
+  assert.equal(esc.judge(withheld(W_CLEAN), 77_000), "e2ee");
+  assert.equal(esc.escalated, false);
+});
+
+test("🔴 an input that flaps cannot hold a witness-only amber forever: other amber pauses the clock, never resets it", () => {
+  // An SFU toggling bob's declared encryption once every five readings.
+  const esc = new WitnessAmberEscalation();
+  const drops = withheld(W_DROPPING);
+  const flapped: ChipInputs = {
+    ...drops,
+    observedEncrypted: new Map([
+      ["alice:dA", true],
+      ["bob:d1", false],
+    ]),
+  };
+  assert.equal(chipState(flapped), "resecuring");
+  assert.equal(witnessOnlyAmber(flapped), false);
+  let at = 0;
+  let loudAt: number | undefined;
+  for (let cycle = 0; cycle < 20 && loudAt === undefined; cycle++) {
+    for (let i = 0; i < 5 && loudAt === undefined; i++, at += 1_000) {
+      if (esc.judge(drops, at) === "not_encrypted") loudAt = at;
+    }
+    if (loudAt === undefined) {
+      assert.equal(esc.judge(flapped, at), "resecuring");
+      at += 1_000;
+    }
+  }
+  assert.ok(loudAt !== undefined, "the flapping input held amber forever");
+  // 4 s of witness-only time per 6 s cycle: the bound accrues in cycle five
+  // and confirms on the second reading of cycle six.
+  assert.equal(loudAt, 31_000);
+});
+
+test("🔴 false-red control: a main thread resumed from a suspension reads the stale witness once, and that is not the bound", () => {
+  const esc = new WitnessAmberEscalation();
+  const gap = withheld(DECODE_WITNESS_UNAVAILABLE);
+  sweepJudge(esc, gap, 0, 3_000);
+  // Frozen for a minute; the first callback out of the burst reads the stale
+  // witness, then the queued heartbeats drain.
+  assert.equal(
+    esc.judge(gap, 62_000),
+    "resecuring",
+    "one reading across a gap",
+  );
+  assert.equal(esc.judge(withheld(W_CLEAN), 62_050), "e2ee");
+  assert.equal(esc.escalated, false);
+  // Two callbacks fired back to back out of a burst are one observation.
+  sweepJudge(esc, gap, 70_000, 73_000);
+  assert.equal(esc.judge(gap, 133_000), "resecuring");
+  assert.equal(esc.judge(gap, 133_010), "resecuring", "back-to-back = two");
+  assert.equal(esc.judge(withheld(W_CLEAN), 133_020), "e2ee");
+  // A clock step backwards adds nothing, then or on the next reading.
+  sweepJudge(esc, gap, 140_000, 145_000);
+  assert.equal(esc.judge(gap, 10_000), "resecuring");
+  assert.equal(esc.judge(gap, 145_000), "resecuring");
+  assert.equal(esc.judge(gap, 145_500), "resecuring", "re-added the span");
+  assert.equal(esc.judge(withheld(W_CLEAN), 146_000), "e2ee");
+  // But a witness still dead after the resume IS the bound.
+  sweepJudge(esc, gap, 150_000, 153_000);
+  assert.equal(esc.judge(gap, 213_000), "resecuring");
+  assert.equal(esc.judge(gap, 213_500), "not_encrypted");
+});
+
+test("witnessOnlyAmber: true EXACTLY when gate (d) is the one thing between this snapshot and green", () => {
+  const dropping: Partial<ChipInputs> = { decodeWitness: W_DROPPING };
+  const rows: [string, Partial<ChipInputs>, boolean][] = [
+    ["dropping, all else green", dropping, true],
+    [
+      "dead witness, all else green",
+      { decodeWitness: DECODE_WITNESS_UNAVAILABLE },
+      true,
+    ],
+    [
+      "unverified roster (green would be e2ee_unverified)",
+      { ...dropping, rosterVerified: [true, false] },
+      true,
+    ],
+    ["witness clean: green, not amber", { decodeWitness: W_CLEAN }, false],
+    [
+      "gate (b): a publisher not observed encrypted",
+      {
+        ...dropping,
+        publishingIdentities: ["bob:d1"],
+        observedEncrypted: new Map(),
+      },
+      false,
+    ],
+    [
+      "our own declaration not GCM",
+      { ...dropping, localPublicationsEncrypted: false },
+      false,
+    ],
+    ["a rotation window", { ...dropping, resecuring: true }, false],
+    [
+      "the session re-securing",
+      { ...dropping, sessionState: "resecuring" },
+      false,
+    ],
+    [
+      "negotiating (no first key yet)",
+      {
+        ...dropping,
+        mode: NEGOTIATING,
+        e2eeEnabled: false,
+        hasLocalKey: false,
+      },
+      false,
+    ],
+    [
+      "a media latch: loud, not amber",
+      { ...dropping, latch: MEDIA_KEYED },
+      false,
+    ],
+    ["mixed: loud", { ...dropping, mode: MIXED }, false],
+    ["a plain call", { ...dropping, mode: { kind: "off" } }, false],
+  ];
+  for (const [name, over, want] of rows) {
+    assert.equal(witnessOnlyAmber(baseChip(over)), want, name);
+  }
+});
+
+test("🔴 the escalated chip always carries a banner, in every mode and state it can stay loud into", () => {
+  const states = [
+    "starting",
+    "active",
+    "plaintext",
+    "resecuring",
+    "failed",
+    "closed",
+  ] as const;
+  let loud = 0;
+  for (const mode of ALL_MODES) {
+    for (const sessionState of states) {
+      const esc = new WitnessAmberEscalation();
+      sweepJudge(esc, withheld(W_DROPPING), 0, 22_000);
+      assert.equal(esc.escalated, true);
+      const chip = esc.judge(baseChip({ mode, sessionState }), 23_000);
+      const where = JSON.stringify({ mode, sessionState, chip });
+      if (chip === "none") {
+        // The claim ended (a plain call, still starting): reset, not hidden.
+        assert.equal(esc.escalated, false, where);
+        continue;
+      }
+      assert.ok(chip === "not_encrypted" || chip === "cannot_verify", where);
+      const banner = seatBanner(chip, mode);
+      assert.notEqual(
+        banner.kind,
+        "none",
+        `a loud chip with no banner: ${where}`,
+      );
+      assert.notEqual(banner.kind, "securing", where);
+      loud++;
+    }
+  }
+  assert.ok(loud > 0);
+});
+
+test("🔴 readiness `paused` is `unsupported` on every banner input but for its own kind, `ios_paused`", () => {
+  // Same precedence, same pause clause, same float rule: only the kind's
+  // name differs, so the banner can say "paused" rather than "not available
+  // on this device", which is false for a server switch.
+  const asUnsupported = (b: CallBanner): CallBanner =>
+    b.kind === "ios_paused" ? { ...b, kind: "device_unsupported" } : b;
+  let hits = 0;
+  let paused = 0;
+  for (const chip of ALL_CHIPS)
+    for (const mode of ALL_MODES)
+      for (const hasSession of [false, true])
+        for (const latchedError of [false, true])
+          for (const [pauseDisproved, pauseDisproofConfirmed] of FLAGS) {
+            const inputs = baseBanner({
+              chip,
+              mode,
+              hasSession,
+              latchedError,
+              pauseDisproved,
+              pauseDisproofConfirmed,
+            });
+            const got = callBanner({ ...inputs, readiness: "paused" });
+            const unsupported = callBanner({
+              ...inputs,
+              readiness: "unsupported",
+            });
+            const where = JSON.stringify(inputs);
+            assert.notEqual(got.kind, "device_unsupported", where);
+            assert.deepEqual(asUnsupported(got), unsupported, where);
+            assert.equal(
+              bannerParksFloat(got),
+              bannerParksFloat(unsupported),
+              where,
+            );
+            hits++;
+            if (got.kind === "ios_paused") paused++;
+          }
+  assert.ok(hits > 0 && paused > 0);
+  const banner = callBanner(
+    baseBanner({ hasSession: false, readiness: "paused" }),
+  );
+  assert.deepEqual(banner, { kind: "ios_paused", pause: "none" });
+  assert.equal(bannerParksFloat(banner), false);
+  // Even a confirmed disproof withdraws on it exactly as on `unsupported`.
+  assert.deepEqual(
+    callBanner(
+      baseBanner({
+        hasSession: false,
+        readiness: "paused",
+        pauseDisproved: true,
+        pauseDisproofConfirmed: true,
+      }),
+    ),
+    { kind: "ios_paused", pause: "disproved" },
+  );
+});
+
+// ---- The Welcome-window exemption: only a provably pre-epoch pair ----------
+
+test("joinWindowMissPredatesEpoch: exactly the eight epochs before the held one, clamped at 0", () => {
+  assert.equal(JOIN_WINDOW_PREDATES_DEPTH, 8);
+  const predates = joinWindowMissPredatesEpoch;
+  // Held at 20 (index 4): epochs 12..19 predate it.
+  for (const e of [12, 13, 14, 15, 16, 17, 18, 19]) {
+    assert.equal(predates(e % 16, 20), true, `epoch ${e}`);
+  }
+  // 21..27 (indexes 5..11) are AHEAD and count; index 4 is the held one.
+  for (const e of [20, 21, 22, 23, 24, 25, 26, 27]) {
+    assert.equal(predates(e % 16, 20), false, `epoch ${e}`);
+  }
+  // Held at 1: only epoch 0 predates it.
+  assert.equal(predates(0, 1), true);
+  for (let i = 1; i < 16; i++)
+    assert.equal(predates(i, 1), false, `index ${i}`);
+  // Held at 0: nothing predates it.
+  for (let i = 0; i < 16; i++)
+    assert.equal(predates(i, 0), false, `index ${i}`);
+});
+
+test("joinWindowMissPredatesEpoch: anything malformed counts (fails closed)", () => {
+  for (const [i, e] of [
+    [-1, 20],
+    [16, 20],
+    [1.5, 20],
+    [Number.NaN, 20],
+    [3, Number.NaN],
+    [3, -1],
+    [3, Number.POSITIVE_INFINITY],
+    [3, 4.5],
+  ]) {
+    assert.equal(joinWindowMissPredatesEpoch(i, e), false, `(${i}, ${e})`);
+  }
+});
+
+test("🔴 unfilledPairs: a pre-first-key pair AHEAD of the held epoch stays counted (the sender a withheld commit left us behind)", () => {
+  // Welcome at epoch 5. In the window bob was heard at 4 (the Add-grace's
+  // old index: predates us) AND at 6 (he advanced while we joined, and the
+  // commit that would give us 6 is withheld).
+  const ledger = new MediaErrorLedger();
+  ledger.noteError(MISSING(4), 1, true);
+  ledger.noteError(MISSING(6), 2, true);
+  ledger.noteInstalled([entry(5)], 3, 1);
+  ledger.noteFirstHeldEpoch(5);
+  assert.deepEqual(
+    ledger.unfilledPairs(PEER),
+    [keyPairId(PEER, 6)],
+    "the ahead-of-epoch index was exempted for the life of the group",
+  );
+  // The genuinely pre-epoch index stays exempt (the H1 false-red guard).
+  assert.ok(!ledger.unfilledPairs(PEER).includes(keyPairId(PEER, 4)));
+  // Our copy of the commit lands: filled, no longer counted.
+  ledger.noteInstalled([entry(6)], 4, 2);
+  assert.deepEqual(ledger.unfilledPairs(PEER), []);
+});
+
+test("🔴 unfilledPairs: no held epoch recorded means nothing is provably pre-epoch, so every pair counts", () => {
+  const ledger = new MediaErrorLedger();
+  ledger.noteError(MISSING(4), 1, true);
+  ledger.noteInstalled([entry(5)], 2, 1);
+  assert.deepEqual(ledger.unfilledPairs(PEER), [keyPairId(PEER, 4)]);
+  // A pair heard AFTER the first key never had the exemption.
+  ledger.noteFirstHeldEpoch(5);
+  ledger.noteError(MISSING(3), 3, false);
+  assert.deepEqual(ledger.unfilledPairs(PEER), [keyPairId(PEER, 3)]);
+});
+
+test("🔴 unfilledPairs: only the FIRST held epoch judges the Welcome window, and reset forgets it", () => {
+  const ledger = new MediaErrorLedger();
+  ledger.noteError(MISSING(4), 1, true);
+  ledger.noteFirstHeldEpoch(5);
+  // Later installs move on; the window's pairs still predate epoch 5. Judged
+  // against epoch 14 instead, index 4 would fall outside the eight before it.
+  ledger.noteFirstHeldEpoch(14);
+  assert.deepEqual(ledger.unfilledPairs(PEER), []);
+  // Epoch 0 has nothing before it: index 15 is epoch -1, which never existed.
+  const clamped = new MediaErrorLedger();
+  clamped.noteError(MISSING(15), 1, true);
+  clamped.noteFirstHeldEpoch(0);
+  assert.deepEqual(clamped.unfilledPairs(PEER), [keyPairId(PEER, 15)]);
+  // A new group: the old held epoch must not exempt the new window's pairs.
+  ledger.reset();
+  ledger.noteError(MISSING(4), 2, true);
+  assert.deepEqual(ledger.unfilledPairs(PEER), [keyPairId(PEER, 4)]);
+  ledger.noteFirstHeldEpoch(5);
+  assert.deepEqual(ledger.unfilledPairs(PEER), []);
+});
+
+// ---- Fix round F: the paused seat, the quiet dropper, the re-arm -----------
+
+// A paused device: the server switch is off, so no session was ever built.
+const PAUSED_SEAT: Partial<ChipInputs> = {
+  hasSession: false,
+  sessionState: undefined,
+  mode: undefined,
+  e2eeEnabled: false,
+  hasLocalKey: false,
+  rosterVerified: [],
+  pausedByServer: true,
+};
+
+test("🔴 a paused device in a call is LOUD whatever the probe, setup and peer terms say (B2)", () => {
+  let shapes = 0;
+  for (const channelHasOpenGroup of [false, true])
+    for (const deviceNeedsSetup of [false, true])
+      for (const peerCouldEncrypt of [false, true]) {
+        const where = JSON.stringify({
+          channelHasOpenGroup,
+          deviceNeedsSetup,
+          peerCouldEncrypt,
+        });
+        const chip = chipState(
+          baseChip({
+            ...PAUSED_SEAT,
+            channelHasOpenGroup,
+            deviceNeedsSetup,
+            peerCouldEncrypt,
+          }),
+        );
+        assert.equal(chip, "not_encrypted", where);
+        assert.deepEqual(
+          callBanner(
+            baseBanner({
+              chip,
+              mode: undefined,
+              hasSession: false,
+              latchedError: false,
+              readiness: "paused",
+            }),
+          ),
+          { kind: "ios_paused", pause: "none" },
+          where,
+        );
+        shapes++;
+      }
+  assert.equal(shapes, 8);
+  // The shape that read `none` before: iPhone-to-iPhone, no group, nobody
+  // else able to encrypt. Not paused, it still rides the probe.
+  const quietSeat: Partial<ChipInputs> = {
+    ...PAUSED_SEAT,
+    channelHasOpenGroup: false,
+    deviceNeedsSetup: false,
+    peerCouldEncrypt: false,
+  };
+  assert.equal(chipState(baseChip(quietSeat)), "not_encrypted");
+  assert.equal(
+    chipState(baseChip({ ...quietSeat, pausedByServer: false })),
+    "none",
+  );
+  // The escalation passes it through untouched and never fires on it.
+  const esc = new WitnessAmberEscalation();
+  assert.equal(esc.judge(baseChip(quietSeat), 0), "not_encrypted");
+  assert.equal(esc.escalated, false);
+});
+
+test("🔴 paused outranks every other chip row, a keyed control latch included (never the softer cannot_verify)", () => {
+  for (const latch of [
+    undefined,
+    DIRECT_LATCH,
+    MEDIA_KEYED,
+    CONTROL_KEYED,
+    CONTROL_UNKEYED,
+  ])
+    for (const mode of ALL_MODES)
+      for (const hasSession of [false, true])
+        assert.equal(
+          chipState(
+            baseChip({ pausedByServer: true, latch, mode, hasSession }),
+          ),
+          "not_encrypted",
+          JSON.stringify({ latch, mode, hasSession }),
+        );
+});
+
+// The failing sender went quiet: nothing arrives, so nothing is decoded and
+// nothing is dropped. A clean window that says nothing about bob.
+const W_QUIET: DecodeWitness = { available: true, dropping: [], live: [] };
+
+test("🔴 a failing sender that goes QUIET does not reset the clock: the bound is still reached when it sends again (M1)", () => {
+  const esc = new WitnessAmberEscalation();
+  const drops = withheld(W_DROPPING);
+  const quiet = withheld(W_QUIET);
+  assert.equal(chipState(quiet), "e2ee");
+  for (const [at, chip] of sweepJudge(esc, drops, 0, 11_000)) {
+    assert.equal(chip, "resecuring", `${at}`);
+  }
+  // bob mutes (or holds push-to-talk off) for 30 s: green windows.
+  for (const [at, chip] of sweepJudge(esc, quiet, 11_000, 41_000)) {
+    assert.equal(chip, "e2ee", `${at}`);
+  }
+  // He sends again, still at the index this device was never given: the
+  // 10 s already accrued count, so the bound lands 10 s later.
+  const loudAt = sweepJudge(esc, drops, 41_000, 60_000).find(
+    ([, chip]) => chip === "not_encrypted",
+  )?.[0];
+  assert.equal(loudAt, 52_000, "the quiet stretch reset the clock");
+});
+
+test("🔴 an SFU holding the failing sender's packets ~3 s of every 19 s cannot keep the call amber-or-green forever (M1)", () => {
+  const esc = new WitnessAmberEscalation();
+  let at = 0;
+  let loudAt: number | undefined;
+  for (let cycle = 0; cycle < 10 && loudAt === undefined; cycle++) {
+    for (let i = 0; i < 16 && loudAt === undefined; i++, at += 1_000) {
+      if (esc.judge(withheld(W_DROPPING), at) === "not_encrypted") loudAt = at;
+    }
+    for (let i = 0; i < 3 && loudAt === undefined; i++, at += 1_000) {
+      assert.equal(esc.judge(withheld(W_QUIET), at), "e2ee", `${at}`);
+    }
+  }
+  assert.ok(loudAt !== undefined, "the held packets kept resetting the clock");
+  // 15 s per 16-reading run: the bound lands in the second run and the next
+  // reading confirms it.
+  assert.equal(loudAt, 25_000);
+});
+
+test("🔴 false-red control: a failing sender seen DECODING, or gone from the call, lets a green reset the clock (M1)", () => {
+  // (1) bob decodes again (his commit landed): the green resets.
+  const esc = new WitnessAmberEscalation();
+  sweepJudge(esc, withheld(W_DROPPING), 0, 15_000);
+  assert.equal(esc.judge(withheld(W_CLEAN), 15_000), "e2ee");
+  for (const [at, chip] of sweepJudge(
+    esc,
+    withheld(W_DROPPING),
+    16_000,
+    35_000,
+  )) {
+    assert.equal(chip, "resecuring", `bob's decode did not reset, ${at}`);
+  }
+  // (2) bob LEFT the SFU: the green resets although he was never seen
+  // decoding, and carol's later failure starts a clock of its own.
+  const gone = new WitnessAmberEscalation();
+  sweepJudge(gone, withheld(W_DROPPING), 0, 15_000);
+  assert.equal(
+    gone.judge(
+      { ...withheld(W_QUIET), presentIdentities: ["alice:dA"] },
+      15_000,
+    ),
+    "e2ee",
+  );
+  const carol: ChipInputs = {
+    ...withheld({ available: true, dropping: ["carol:d1"], live: [] }),
+    presentIdentities: ["alice:dA", "carol:d1"],
+  };
+  for (const [at, chip] of sweepJudge(gone, carol, 16_000, 35_000)) {
+    assert.equal(chip, "resecuring", `bob's departure did not reset, ${at}`);
+  }
+  // (3) Mid-rotation — decoding AND dropping in one window — is not "seen
+  // decoding": the old index is still being discarded.
+  const mid = new WitnessAmberEscalation();
+  sweepJudge(mid, withheld(W_DROPPING), 0, 15_000);
+  const both = withheld({
+    available: true,
+    dropping: ["bob:d1"],
+    live: ["bob:d1"],
+  });
+  assert.equal(mid.judge(both, 15_000), "resecuring");
+  assert.equal(mid.judge(withheld(W_QUIET), 16_000), "e2ee");
+  sweepJudge(mid, withheld(W_DROPPING), 17_000, 23_000);
+  assert.equal(mid.judge(withheld(W_DROPPING), 23_000), "not_encrypted");
+  // ...and the same window arriving under a rotation's amber (not
+  // witness-only, so nothing is recorded there) resolves nothing either.
+  const rot = new WitnessAmberEscalation();
+  sweepJudge(rot, withheld(W_DROPPING), 0, 15_000);
+  assert.equal(rot.judge({ ...both, resecuring: true }, 15_000), "resecuring");
+  assert.equal(rot.judge(withheld(W_QUIET), 16_000), "e2ee");
+  sweepJudge(rot, withheld(W_DROPPING), 17_000, 24_000);
+  assert.equal(
+    rot.judge(withheld(W_DROPPING), 24_000),
+    "not_encrypted",
+    "a mid-rotation window counted as seen decoding",
+  );
+});
+
+test("🔴 false-red control: a joiner's pre-key drops are not the amber run's, so a sender that then stays quiet holds nothing (M1)", () => {
+  // Before the first key every frame is dropped by construction. bob then
+  // mutes for the rest of the call, and this device's witness keeps briefly
+  // going stale: each gap is witness-only, each ends in a clean window.
+  const esc = new WitnessAmberEscalation();
+  const preKey = baseChip({
+    ...withheld(W_DROPPING),
+    mode: NEGOTIATING,
+    e2eeEnabled: false,
+    hasLocalKey: false,
+  });
+  sweepJudge(esc, preKey, 0, 10_000);
+  let at = 10_000;
+  for (let round = 0; round < 5; round++) {
+    for (const [t, chip] of sweepJudge(
+      esc,
+      withheld(DECODE_WITNESS_UNAVAILABLE),
+      at,
+      at + 15_000,
+    )) {
+      assert.equal(chip, "resecuring", `round ${round}, ${t}`);
+    }
+    at += 15_000;
+    assert.equal(esc.judge(withheld(W_QUIET), at), "e2ee");
+    at += 1_000;
+  }
+  assert.equal(esc.escalated, false, "pre-key noise pinned the clock");
+});
+
+test("🔴 rearm(): a healed media latch drops the escalation, and a LATER withheld commit escalates again after a full bound (m1)", () => {
+  const esc = new WitnessAmberEscalation();
+  sweepJudge(esc, withheld(W_DROPPING), 0, 22_000);
+  assert.equal(esc.escalated, true);
+  esc.rearm();
+  assert.equal(esc.escalated, false);
+  // Re-keyed, bob decodes: green again.
+  assert.equal(esc.judge(withheld(W_CLEAN), 22_000), "e2ee");
+  // A later withheld commit: amber for the whole bound, then loud.
+  for (const [at, chip] of sweepJudge(
+    esc,
+    withheld(W_DROPPING),
+    30_000,
+    51_000,
+  )) {
+    assert.equal(chip, "resecuring", `re-fired early at ${at}`);
+  }
+  assert.equal(esc.judge(withheld(W_DROPPING), 51_000), "not_encrypted");
+  assert.equal(esc.escalated, true);
+  // A rearm in the middle of a drop forgets the time accrued before it.
+  const busy = new WitnessAmberEscalation();
+  sweepJudge(busy, withheld(W_DROPPING), 0, 22_000);
+  busy.rearm();
+  assert.equal(busy.judge(withheld(W_DROPPING), 22_000), "resecuring");
+  assert.equal(
+    busy.judge(withheld(W_DROPPING), 23_000),
+    "resecuring",
+    "rearm kept the time accrued before the heal",
+  );
 });

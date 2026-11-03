@@ -1,7 +1,15 @@
+Sloga patch for livekit-client 2.15.13 (media E2EE). Regenerate with
+pnpm patch / pnpm patch-commit, then put this header back.
+Patched: the esm page bundle, the esm e2ee worker, and the e2ee d.ts types.
+NOT patched (not used by Sloga, pinned by livekitPatchHunks.test.ts):
+dist/livekit-client.umd.js and dist/livekit-client.e2ee.worker.js, the
+require/CJS builds.
+
 diff --git a/dist/livekit-client.e2ee.worker.mjs b/dist/livekit-client.e2ee.worker.mjs
+index 5a13bab55e330dd70101920a240c29e5f32e569c..58b4bfd75e68f2bc69280fbd27f2c61b9e3fc55e 100644
 --- a/dist/livekit-client.e2ee.worker.mjs
 +++ b/dist/livekit-client.e2ee.worker.mjs
-@@ -1468,6 +1468,63 @@
+@@ -1468,6 +1468,63 @@ const CryptoHashes = {
    H264KeyFrame2x2IDR: 'faffc26b68a2fc09096fa20f3351e706398b6f838a7500c8063472c2e476e90d',
    OpusSilenceFrame: 'aad8d31fc56b2802ca500e58c2fb9d0b29ad71bb7cb52cd6530251eade188988'
  };
@@ -59,13 +67,73 @@ diff --git a/dist/livekit-client.e2ee.worker.mjs b/dist/livekit-client.e2ee.work
 +    participants.push({ identity: identity, indexes: indexes });
 +  });
 +  slogaWitness.clear();
-+  postMessage({ kind: 'slogaDecodeWitness', data: { participants: participants } });
++  postMessage({ kind: 'slogaDecodeWitness', data: { participants: participants, rte: typeof self.RTCTransformEvent } });
 +}, 1000);
 +
  /**
   * Check if a byte array matches any of the known SIF payload frame types using secure crypto hashes
   */
-@@ -1695,6 +1752,56 @@
+@@ -1492,6 +1549,31 @@ function identifySifPayload(data) {
+ }
+ 
+ const encryptionEnabledMap = new Map();
++// --- Sloga: worker acks, raw key bytes, key-freshness dead-man (C7, D2, D9) --
++// `slogaRawKeys` flips on the first `setKey` that carries `keyBytes` (the iOS
++// raw-bytes path, D2) and never flips back. Under it the ratchet reply carries
++// no key material at all (D15).
++let slogaRawKeys = false;
++// D9 dead-man switch. UNARMED (undefined) until the first `slogaKeyTick`; only
++// iOS sends ticks, so Chromium shells never arm it. Once armed, local ENCODE
++// frames are dropped while the last tick is older than the bound. The time is
++// this worker's own `performance.now()` at receipt: page and worker clocks
++// differ, so the tick's `at` is informational only.
++const SLOGA_KEY_TICK_STALE_MS = 8000;
++let slogaLastTickAt = undefined;
++function slogaKeyTickStale() {
++  return slogaLastTickAt !== undefined && performance.now() - slogaLastTickAt > SLOGA_KEY_TICK_STALE_MS;
++}
++// C7: a transform is wired for `trackId`. `trackId` is exactly what livekit
++// handed the worker: on the page it is `LocalTrack.mediaStreamID` (the FIRST
++// MediaStreamTrack id of the track, kept across restartTrack) for a sender,
++// via `E2EEManager.setupE2EESender` -> `handleSender(sender, track.mediaStreamID)`,
++// and `RemoteTrack.mediaStreamID` for a receiver. Posted from `setupTransform`,
++// which every attach path reaches: the encoded-streams `encode`/`decode`
++// messages and `onrtctransform`.
++function slogaNoteAttached(trackId, operation) {
++  postMessage({ kind: 'slogaTransformAttached', data: { trackId: trackId, kind: operation } });
++}
+ class BaseFrameCryptor extends eventsExports.EventEmitter {
+   encodeFunction(encodedFrame, controller) {
+     throw Error('not implemented for subclass');
+@@ -1584,6 +1666,7 @@ class FrameCryptor extends BaseFrameCryptor {
+     }, this.logContext));
+     if (isReuse && this.isTransformActive) {
+       workerLogger.debug('reuse transform', Object.assign({}, this.logContext));
++      slogaNoteAttached(trackId, operation);
+       return;
+     }
+     const transformFn = operation === 'encode' ? this.encodeFunction : this.decodeFunction;
+@@ -1598,6 +1681,7 @@ class FrameCryptor extends BaseFrameCryptor {
+       this.isTransformActive = false;
+     });
+     this.trackId = trackId;
++    slogaNoteAttached(trackId, operation);
+   }
+   setSifTrailer(trailer) {
+     workerLogger.debug('setting SIF trailer', Object.assign(Object.assign({}, this.logContext), {
+@@ -1628,6 +1712,11 @@ class FrameCryptor extends BaseFrameCryptor {
+    * 9) Enqueue the encrypted frame for sending.
+    */
+   encodeFunction(encodedFrame, controller) {
++    // Sloga D9: armed and stale -> DROP the frame (never enqueue, never pass
++    // it through). Decode is untouched.
++    if (slogaKeyTickStale()) {
++      return;
++    }
+     return __awaiter(this, void 0, void 0, function* () {
+       var _a;
+       if (!this.isEnabled() ||
+@@ -1695,6 +1784,56 @@ class FrameCryptor extends BaseFrameCryptor {
     * @param {TransformStreamDefaultController} controller - TransportStreamController.
     */
    decodeFunction(encodedFrame, controller) {
@@ -122,3 +190,225 @@ diff --git a/dist/livekit-client.e2ee.worker.mjs b/dist/livekit-client.e2ee.work
      return __awaiter(this, void 0, void 0, function* () {
        if (!this.isEnabled() ||
        // skip for decryption for empty dtx frames
+@@ -2145,6 +2284,12 @@ let keyProviderOptions = KEY_PROVIDER_DEFAULTS;
+ let rtpMap = new Map();
+ workerLogger.setDefaultLevel('info');
+ onmessage = ev => {
++  // Sloga D9: the tick is recorded at RECEIPT, outside the message queue, so a
++  // queue held up behind key imports cannot fake main-thread liveness.
++  if (ev.data && ev.data.kind === 'slogaKeyTick') {
++    slogaLastTickAt = performance.now();
++    return;
++  }
+   messageQueue.run(() => __awaiter(void 0, void 0, void 0, function* () {
+     const {
+       kind,
+@@ -2218,13 +2363,36 @@ onmessage = ev => {
+         });
+         break;
+       case 'setKey':
+-        if (useSharedKey) {
+-          yield setSharedKey(data.key, data.keyIndex);
+-        } else if (data.participantIdentity) {
+-          workerLogger.info("set participant sender key ".concat(data.participantIdentity, " index ").concat(data.keyIndex));
+-          yield getParticipantKeyHandler(data.participantIdentity).setKey(data.key, data.keyIndex);
+-        } else {
+-          workerLogger.error('no participant Id was provided and shared key usage is disabled');
++        // Sloga D2 + C7. `keyBytes` (iOS only) is raw HKDF material imported
++        // HERE, so no CryptoKey has to be cloned across the worker boundary.
++        // Every setKey is answered with `slogaSetKeyAck`; `ok` is true only
++        // once the key is in the ring. The ack never carries key material.
++        let slogaKeyOk = false;
++        try {
++          let slogaMaterial = data.key;
++          if (data.keyBytes !== undefined) {
++            slogaRawKeys = true;
++            slogaMaterial = yield crypto.subtle.importKey('raw', data.keyBytes, 'HKDF', false, ['deriveBits', 'deriveKey']);
++          }
++          if (useSharedKey) {
++            yield setSharedKey(slogaMaterial, data.keyIndex);
++            slogaKeyOk = true;
++          } else if (data.participantIdentity) {
++            workerLogger.info("set participant sender key ".concat(data.participantIdentity, " index ").concat(data.keyIndex));
++            yield getParticipantKeyHandler(data.participantIdentity).setKey(slogaMaterial, data.keyIndex);
++            slogaKeyOk = true;
++          } else {
++            workerLogger.error('no participant Id was provided and shared key usage is disabled');
++          }
++        } finally {
++          postMessage({
++            kind: 'slogaSetKeyAck',
++            data: {
++              identity: data.participantIdentity,
++              keyIndex: data.keyIndex,
++              ok: slogaKeyOk
++            }
++          });
+         }
+         break;
+       case 'removeTransform':
+@@ -2370,6 +2538,18 @@ function setupCryptorErrorEvents(cryptor) {
+   });
+ }
+ function emitRatchetedKeys(ratchetResult, participantIdentity, keyIndex) {
++  // Sloga D15: in raw-bytes mode NO key material crosses back to the page:
++  // no CryptoKey and no chain key, only the identity and the index.
++  if (slogaRawKeys) {
++    postMessage({
++      kind: "ratchetKey",
++      data: {
++        participantIdentity,
++        keyIndex
++      }
++    });
++    return;
++  }
+   const msg = {
+     kind: "ratchetKey",
+     data: {
+diff --git a/dist/livekit-client.esm.mjs b/dist/livekit-client.esm.mjs
+index 910367e2306dbc7a3e6cc56ac7b5f854184c5a37..ef09176c53993526efdc60d98bf554244d375b13 100644
+--- a/dist/livekit-client.esm.mjs
++++ b/dist/livekit-client.esm.mjs
+@@ -11697,13 +11697,17 @@ class BaseKeyProvider extends eventsExports.EventEmitter {
+    * @param key
+    * @param participantIdentity
+    * @param keyIndex
++   * @param keyBytes Sloga (D2): raw HKDF material for the iOS worker import
+    */
+-  onSetEncryptionKey(key, participantIdentity, keyIndex) {
++  onSetEncryptionKey(key, participantIdentity, keyIndex, keyBytes) {
+     const keyInfo = {
+       key,
+       participantIdentity,
+       keyIndex
+     };
++    if (keyBytes !== undefined) {
++      keyInfo.keyBytes = keyBytes;
++    }
+     if (!this.options.sharedKey && !participantIdentity) {
+       throw new Error('participant identity needs to be passed for encryption key if sharedKey option is false');
+     }
+@@ -14150,7 +14154,16 @@ class E2EEManager extends eventsExports.EventEmitter {
+       this.setParticipantCryptorEnabled(this.room.localParticipant.isE2EEEnabled, this.room.localParticipant.identity);
+     });
+     room.localParticipant.on(ParticipantEvent.LocalSenderCreated, (sender, track) => __awaiter(this, void 0, void 0, function* () {
+-      this.setupE2EESender(track, sender);
++      // Sloga (D7.2): this listener is async, so a throw here was a swallowed
++      // rejection and the sender ran with NO transform. Surface it as an E2EE
++      // error (Room re-emits RoomEvent.EncryptionError).
++      try {
++        this.setupE2EESender(track, sender);
++      } catch (e) {
++        const slogaErr = new Error('sloga: handleSender failed: ' + (e instanceof Error ? e.message : String(e)));
++        livekitLogger.error(slogaErr.message);
++        this.emit(EncryptionEvent.EncryptionError, slogaErr);
++      }
+     }));
+     room.localParticipant.on(ParticipantEvent.LocalTrackPublished, publication => {
+       // Safari doesn't support retrieving payload information on RTCEncodedVideoFrame, so we need to update the codec manually once we have the trackInfo from the server
+@@ -14232,17 +14245,29 @@ class E2EEManager extends eventsExports.EventEmitter {
+     let {
+       key,
+       participantIdentity,
+-      keyIndex
++      keyIndex,
++      keyBytes
+     } = _ref;
+     var _a;
+     if (!this.worker) {
+       throw Error('could not set key, worker is missing');
+     }
+-    const msg = {
++    const isPublisher = participantIdentity === ((_a = this.room) === null || _a === void 0 ? void 0 : _a.localParticipant.identity);
++    // Sloga (D2, C5): raw bytes and NO `key` field when the KeyInfo carries
++    // them (iOS only); otherwise the unchanged CryptoKey message.
++    const msg = keyBytes !== undefined ? {
+       kind: 'setKey',
+       data: {
+         participantIdentity: participantIdentity,
+-        isPublisher: participantIdentity === ((_a = this.room) === null || _a === void 0 ? void 0 : _a.localParticipant.identity),
++        isPublisher,
++        keyBytes,
++        keyIndex
++      }
++    } : {
++      kind: 'setKey',
++      data: {
++        participantIdentity: participantIdentity,
++        isPublisher,
+         key,
+         keyIndex
+       }
+@@ -20034,6 +20059,13 @@ class RTCEngine extends eventsExports.EventEmitter {
+   }
+   createSimulcastSender(track, simulcastTrack, opts, encodings) {
+     return __awaiter(this, void 0, void 0, function* () {
++      // Sloga (D7.1): an additional-codec sender gets no E2EE transform (no
++      // LocalSenderCreated), and WebKit sends it in PLAINTEXT. Never create one
++      // while the room has an e2eeManager, whatever path got here.
++      if (this.e2eeManager) {
++        this.log.warn('sloga: refusing additional codec sender, room has e2ee', this.logContext);
++        return;
++      }
+       // store RTCRtpSender
+       if (supportsTransceiver()) {
+         return this.createSimulcastTransceiverSender(track, simulcastTrack, opts, encodings);
+@@ -23992,6 +24024,16 @@ class LocalParticipant extends Participant {
+   publishAdditionalCodecForTrack(track, videoCodec, options) {
+     return __awaiter(this, void 0, void 0, function* () {
+       var _a;
++      // Sloga (D7.1): refuse EVERY additional/backup codec while the room has
++      // an e2eeManager. The guard below only checks `encryptionType`, which is
++      // NONE whenever the publication is not marked encrypted (negotiating or
++      // mixed calls), and the SFU drives this via SubscribedQualityUpdate.
++      if (this.engine && this.engine.e2eeManager) {
++        this.log.warn('sloga: refusing additional codec, room has e2ee', Object.assign(Object.assign({}, this.logContext), {
++          videoCodec
++        }));
++        return;
++      }
+       // TODO remove once e2ee is supported for backup tracks
+       if (this.encryptionType !== Encryption_Type.NONE) {
+         return;
+diff --git a/dist/src/e2ee/KeyProvider.d.ts b/dist/src/e2ee/KeyProvider.d.ts
+index f7a56570cfa7b05fab9fe113bfec675880be1c81..123b97d9c2dc4e28d4f25c0d013d702f79e4934c 100644
+--- a/dist/src/e2ee/KeyProvider.d.ts
++++ b/dist/src/e2ee/KeyProvider.d.ts
+@@ -14,8 +14,9 @@ export declare class BaseKeyProvider extends BaseKeyProvider_base {
+      * @param key
+      * @param participantIdentity
+      * @param keyIndex
++     * @param keyBytes Sloga (D2): raw HKDF material for the iOS worker import
+      */
+-    protected onSetEncryptionKey(key: CryptoKey, participantIdentity?: string, keyIndex?: number): void;
++    protected onSetEncryptionKey(key: CryptoKey, participantIdentity?: string, keyIndex?: number, keyBytes?: Uint8Array): void;
+     /**
+      * Callback being invoked after a key has been ratcheted.
+      * Can happen when:
+diff --git a/dist/src/e2ee/types.d.ts b/dist/src/e2ee/types.d.ts
+index 4274a5eeb201465cf363ab87326df1c443034250..7115789b40b9ffaee5408cac7c3e1e4a034c5d9b 100644
+--- a/dist/src/e2ee/types.d.ts
++++ b/dist/src/e2ee/types.d.ts
+@@ -20,6 +20,12 @@ export interface SetKeyMessage extends BaseMessage {
+         isPublisher: boolean;
+         key: CryptoKey;
+         keyIndex?: number;
++    } | {
++        participantIdentity?: string;
++        isPublisher: boolean;
++        /** Sloga (D2, C5): raw HKDF material, imported inside the worker. */
++        keyBytes: Uint8Array;
++        keyIndex?: number;
+     };
+ }
+ export interface RTPVideoMapMessage extends BaseMessage {
+@@ -149,6 +155,8 @@ export type KeyInfo = {
+     key: CryptoKey;
+     participantIdentity?: string;
+     keyIndex?: number;
++    /** Sloga (D2): raw HKDF material; when present the worker gets these bytes, not `key`. */
++    keyBytes?: Uint8Array;
+ };
+ export type E2EEManagerOptions = {
+     keyProvider: BaseKeyProvider;

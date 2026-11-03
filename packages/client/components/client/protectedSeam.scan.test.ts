@@ -56,9 +56,15 @@ const SRC = readFileSync(FILE, "utf8");
  * work changed the region, so the W4a checkpoint 4363b406 value
  * (f34aa475...) no longer applies. Re-pin it ONLY from main, never from
  * this branch.
+ *
+ * Re-pinned again by iOS call E2EE phase 2, Wave 3 (feat/ios-call-e2ee),
+ * which edits this region on purpose: `CapacitorTransport.keyPushAvailable`
+ * answers for iOS (plan D6) and `#rethrow` maps a call-plane
+ * `protector_locked` to a typed error (D10). Protected-channels work still
+ * never edits it.
  */
 const TRANSPORT_REGION_SHA256 =
-  "f1d615dfa4dc5de12ac3af97ac1c68ff4023f109a9a9bcbd62afede7ed9b5909";
+  "81c232b32316c4feb5a788743a593b0cb265c9717362a7ca4aef06bbaa88e568";
 
 /**
  * `#encryptedIds.add(` call sites at 4363b406 and at origin/main 1dcdd1b4;

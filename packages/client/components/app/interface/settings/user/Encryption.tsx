@@ -1,3 +1,4 @@
+import { Capacitor } from "@capacitor/core";
 import { Match, Show, Switch, createSignal, onMount } from "solid-js";
 
 import { Trans } from "@lingui-solid/solid/macro";
@@ -6,6 +7,11 @@ import type { BackupStatusView } from "@revolt/client";
 import { useClient, useE2EE } from "@revolt/client";
 import { useModals } from "@revolt/modal";
 import { platformMediaE2EESupported } from "@revolt/rtc";
+import {
+  callMediaE2EEOffered,
+  fetchIosCallSwitchValue,
+  iosCallSwitch,
+} from "@revolt/rtc/iosCallSwitch";
 import { CategoryButton, Checkbox, Column, iconSize } from "@revolt/ui";
 
 import MdKey from "@material-design-icons/svg/outlined/key.svg?component-solid";
@@ -41,10 +47,12 @@ export function EncryptionSettings() {
  * flow first when off. Gated on MEDIA capability (`nativeKeyPushAvailable`, not
  * merely `useE2EE`): on Android (E2EE-enrolled but media-fail-closed until 6.7)
  * the card renders DISABLED with explanatory copy so a user can't believe their
- * calls are encrypted when they are not (FE-6).
+ * calls are encrypted when they are not (FE-6). The same holds on iPhone while
+ * the server's kill switch is off (plan D14), with its own copy.
  */
 function CallEncryptionCard() {
   const e2ee = useE2EE();
+  const client = useClient();
   const { openModal } = useModals();
 
   if (!e2ee) return null;
@@ -56,6 +64,31 @@ function CallEncryptionCard() {
 
   // Media E2EE requires a native key-push channel (desktop today; Android 6.7).
   const mediaCapable = () => e2ee.nativeKeyPushAvailable();
+  // The server's iPhone kill switch (plan D14), fetched from `GET /` because
+  // `client.configuration` is a local stub that never carries it (Stage 5
+  // B1). The RAW value goes to `iosCallSwitch`: absent or unreachable reads
+  // ON, only a strict `false` pauses. Off iOS nothing is fetched and the
+  // switch always answers "on", so this card is unchanged there. On iOS the
+  // card waits for the (bounded) answer rather than claim "Always on" first.
+  const platform = Capacitor.getPlatform();
+  const [switchRead, setSwitchRead] = createSignal<{ serverValue: unknown }>();
+  onMount(() => {
+    if (platform !== "ios") return;
+    void fetchIosCallSwitchValue({
+      fetchRoot: () => client().api.get("/"),
+      setTimeout,
+      clearTimeout,
+    }).then((serverValue) => setSwitchRead({ serverValue }));
+  });
+  const switchKnown = () => platform !== "ios" || switchRead() !== undefined;
+  const offered = () =>
+    callMediaE2EEOffered(
+      mediaCapable(),
+      iosCallSwitch({ platform, serverValue: switchRead()?.serverValue }),
+    );
+  // This device could encrypt, but the server has paused it: not "not
+  // available on this device", which would be false (iosCallSwitch rule 6).
+  const pausedByServer = () => mediaCapable() && !offered();
   const textEnrolled = () => {
     const s = e2ee.status.get("state");
     return !!s?.enabled && !!s?.published;
@@ -70,67 +103,80 @@ function CallEncryptionCard() {
   // encryption the gate will not deliver (FE-6). For them the row shows an
   // unchecked box and routes into the enrolment flow, which is the one
   // remaining click here.
-  const enabled = () => mediaCapable() && textEnrolled();
+  const enabled = () => offered() && textEnrolled();
 
   const onClick = () => {
-    if (!mediaCapable()) return; // unsupported shell — no-op
+    if (!offered()) return; // unsupported shell or paused by the server — no-op
     openModal({ type: "e2ee_enable" });
   };
 
   return (
-    <CategoryButton.Group>
-      <CategoryButton
-        // Greyed out only when this device cannot encrypt at all. The
-        // always-on state is informational rather than disabled: it has no
-        // click handler, so it renders without the link cursor.
-        disabled={!mediaCapable()}
-        action={
-          <Show
-            when={enabled()}
-            fallback={
-              <span style={{ "pointer-events": "none", display: "flex" }}>
-                <Checkbox checked={false} />
-              </span>
-            }
-          >
-            <MdLock {...iconSize(20)} />
-          </Show>
-        }
-        icon={<MdVideocam {...iconSize(24)} />}
-        description={
-          <Show
-            when={mediaCapable()}
-            fallback={
-              <Trans>
-                Encrypted calls aren't available on this device yet.
-              </Trans>
-            }
-          >
+    <Show when={switchKnown()}>
+      <CategoryButton.Group>
+        <CategoryButton
+          // Greyed out only when this device cannot encrypt at all (or the
+          // server has paused it). The always-on state is informational rather
+          // than disabled: it has no click handler, so it renders without the
+          // link cursor.
+          disabled={!offered()}
+          action={
             <Show
               when={enabled()}
               fallback={
-                <Trans>
-                  Set up secure device keys to encrypt your calls. Web
-                  participants can't join encrypted calls, and server features
-                  that need the raw audio or video (recording, transcoding) are
-                  turned off in encrypted calls.
-                </Trans>
+                <span style={{ "pointer-events": "none", display: "flex" }}>
+                  <Checkbox checked={false} />
+                </span>
               }
             >
-              <Trans>
-                Always on. Your voice and video are end-to-end encrypted on this
-                device whenever everyone in the call supports it.
-              </Trans>
+              <MdLock {...iconSize(20)} />
             </Show>
+          }
+          icon={<MdVideocam {...iconSize(24)} />}
+          description={
+            <Show
+              when={offered()}
+              fallback={
+                <Show
+                  when={pausedByServer()}
+                  fallback={
+                    <Trans>
+                      Encrypted calls aren't available on this device yet.
+                    </Trans>
+                  }
+                >
+                  <Trans>
+                    Encrypted calls on iPhone are paused right now. Calls on
+                    this device are not encrypted.
+                  </Trans>
+                </Show>
+              }
+            >
+              <Show
+                when={enabled()}
+                fallback={
+                  <Trans>
+                    Set up secure device keys to encrypt your calls. Web
+                    participants can't join encrypted calls, and server features
+                    that need the raw audio or video (recording, transcoding)
+                    are turned off in encrypted calls.
+                  </Trans>
+                }
+              >
+                <Trans>
+                  Always on. Your voice and video are end-to-end encrypted on
+                  this device whenever everyone in the call supports it.
+                </Trans>
+              </Show>
+            </Show>
+          }
+          onClick={enabled() ? undefined : onClick}
+        >
+          <Show when={enabled()} fallback={<Trans>Encrypt my calls</Trans>}>
+            <Trans>Calls are end-to-end encrypted</Trans>
           </Show>
-        }
-        onClick={enabled() ? undefined : onClick}
-      >
-        <Show when={enabled()} fallback={<Trans>Encrypt my calls</Trans>}>
-          <Trans>Calls are end-to-end encrypted</Trans>
-        </Show>
-      </CategoryButton>
-    </CategoryButton.Group>
+        </CategoryButton>
+      </CategoryButton.Group>
+    </Show>
   );
 }
 

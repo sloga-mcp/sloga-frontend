@@ -173,6 +173,12 @@ export interface ConnectOptions {
   resumePrefetch?: ResumePrefetchDep;
   abortResumePrefetch?: AbortResumePrefetchDep;
   prefetchFromBridge?: boolean;
+  /**
+   * The session's `confirmFallbackAllowed` dep for this connect. Absent ⇒
+   * the world's `confirmFallbackAllowed` (`true` unless a spec says
+   * otherwise: every shell but iOS, today's routing, passed explicitly).
+   */
+  confirmFallbackAllowed?: boolean;
 }
 
 /**
@@ -1987,6 +1993,15 @@ export class World {
    * only thing separating a deferral from an invisible green.
    */
   holdsSupported = true;
+  /**
+   * What `state.tsx` passes the session as `confirmFallbackAllowed`: `true`
+   * on every shell but iOS. A spec modelling iOS sets it `false` (through
+   * `newWorld`'s options or here, before the seat boots); one modelling a
+   * caller that omits it sets it `undefined`, which the session must read as
+   * a refusal. `ConnectOptions.confirmFallbackAllowed` overrides it for one
+   * connect.
+   */
+  confirmFallbackAllowed = true;
 
   /**
    * Gate (d) — the senders whose frames the worker is currently DROPPING at an
@@ -2285,6 +2300,7 @@ export class World {
     resumePrefetch,
     abortResumePrefetch,
     prefetchFromBridge = false,
+    confirmFallbackAllowed = this.confirmFallbackAllowed,
   }: ConnectOptions): void {
     const page = this.#page;
     const bridge = this.bridge;
@@ -2310,6 +2326,7 @@ export class World {
       deviceId: this.me.device_id,
       channelId: this.channelId,
       startupWipeTokens: page.tokens,
+      confirmFallbackAllowed,
       ...(prefetch ? { resumePrefetch: prefetch } : {}),
       ...(abort ? { abortResumePrefetch: abort } : {}),
     });
@@ -2690,6 +2707,7 @@ export class World {
       channelHasOpenGroup: boolean;
       deviceNeedsSetup: boolean;
       decodeWitness: DecodeWitness;
+      pausedByServer: boolean;
     }> = {},
   ): ChipState {
     const { latch, mediaHold } = this.#replay();
@@ -2700,9 +2718,12 @@ export class World {
       channelHasOpenGroup = true,
       deviceNeedsSetup = false,
       decodeWitness = this.decodeWitness(),
+      // The iOS server switch (`iosCallSwitch`): off only where a spec says.
+      pausedByServer = false,
     } = overrides;
     return chipStateFrom({
       hasSession: () => hasSession,
+      pausedByServer: () => pausedByServer,
       sessionState: () => sessionState,
       mode: () => mode,
       mediaHold: () => mediaHold,
@@ -3933,10 +3954,15 @@ export function newWorld(
   opts: {
     resumePrefetch?: ResumePrefetchDep;
     abortResumePrefetch?: AbortResumePrefetchDep;
+    /** Sets `World.confirmFallbackAllowed` for every connect of this seat. */
+    confirmFallbackAllowed?: boolean;
   } = {},
 ): World {
   installClock(t);
   const world = new World(role, channelId);
+  if (opts.confirmFallbackAllowed !== undefined) {
+    world.confirmFallbackAllowed = opts.confirmFallbackAllowed;
+  }
   seat?.(world); // seat extra members BEFORE the ladder reads the roster
   world.boot({
     resumePrefetch: opts.resumePrefetch,

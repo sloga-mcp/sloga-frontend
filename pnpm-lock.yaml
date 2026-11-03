@@ -14,7 +14,7 @@ patchedDependencies:
   '@capacitor/android@8.4.3': 038207ccea7f18c908e5ca94dd818a98c3a219de150d8b46f2f6c8812f86ac57
   '@motionone/dom@10.18.0': 0fed901df0f62d913ff36f960859f7fe0517c842f6788eba0707e4b8129892c7
   '@solid-aria/interactions@0.1.4': af51cab83f24c461c7dcf7a2e670c14c5a043044064edb8d269a0256d41946e1
-  livekit-client@2.15.13: f2afef1e493c4877d7e3ccc7e6d82b2a896366894bc02fc4341ce0e3c1bb3a9e
+  livekit-client@2.15.13: 9d5bf8e2b05775ea5576a985c3ca1987d2067f49085d4b522681c3379acec648
 
 importers:
 
@@ -175,10 +175,10 @@ importers:
         version: 5.1.4(@lingui-solid/babel-plugin-lingui-macro@packages+js-lingui-solid+packages+babel-plugin-lingui-macro)(@lingui/core@5.3.1(@lingui/babel-plugin-lingui-macro@5.3.1(babel-plugin-macros@3.1.0)(typescript@5.8.3))(babel-plugin-macros@3.1.0))(babel-plugin-macros@3.1.0)(solid-js@1.9.15)
       '@livekit/components-core':
         specifier: ^0.9.3
-        version: 0.9.3(@livekit/protocol@1.42.2)(livekit-client@2.15.13(patch_hash=f2afef1e493c4877d7e3ccc7e6d82b2a896366894bc02fc4341ce0e3c1bb3a9e)(@types/dom-mediacapture-record@1.0.22))(tslib@2.8.1)
+        version: 0.9.3(@livekit/protocol@1.42.2)(livekit-client@2.15.13(patch_hash=9d5bf8e2b05775ea5576a985c3ca1987d2067f49085d4b522681c3379acec648)(@types/dom-mediacapture-record@1.0.22))(tslib@2.8.1)
       '@livekit/track-processors':
         specifier: ^0.7.2
-        version: 0.7.2(@types/dom-mediacapture-transform@0.1.11)(livekit-client@2.15.13(patch_hash=f2afef1e493c4877d7e3ccc7e6d82b2a896366894bc02fc4341ce0e3c1bb3a9e)(@types/dom-mediacapture-record@1.0.22))
+        version: 0.7.2(@types/dom-mediacapture-transform@0.1.11)(livekit-client@2.15.13(patch_hash=9d5bf8e2b05775ea5576a985c3ca1987d2067f49085d4b522681c3379acec648)(@types/dom-mediacapture-record@1.0.22))
       '@material-design-icons/svg':
         specifier: ^0.14.15
         version: 0.14.15
@@ -280,7 +280,7 @@ importers:
         version: 5.0.2
       livekit-client:
         specifier: 2.15.13
-        version: 2.15.13(patch_hash=f2afef1e493c4877d7e3ccc7e6d82b2a896366894bc02fc4341ce0e3c1bb3a9e)(@types/dom-mediacapture-record@1.0.22)
+        version: 2.15.13(patch_hash=9d5bf8e2b05775ea5576a985c3ca1987d2067f49085d4b522681c3379acec648)(@types/dom-mediacapture-record@1.0.22)
       livekit-rnnoise-processor:
         specifier: ^2.0.0
         version: 2.0.0
@@ -621,7 +621,7 @@ importers:
     dependencies:
       '@livekit/components-core':
         specifier: ^0.12.10
-        version: 0.12.10(livekit-client@2.15.13(patch_hash=f2afef1e493c4877d7e3ccc7e6d82b2a896366894bc02fc4341ce0e3c1bb3a9e)(@types/dom-mediacapture-record@1.0.22))(tslib@2.8.1)
+        version: 0.12.10(livekit-client@2.15.13(patch_hash=9d5bf8e2b05775ea5576a985c3ca1987d2067f49085d4b522681c3379acec648)(@types/dom-mediacapture-record@1.0.22))(tslib@2.8.1)
       '@solid-primitives/intersection-observer':
         specifier: ^2.2.2
         version: 2.2.2(solid-js@1.9.15)
@@ -633,7 +633,7 @@ importers:
         version: 1.5.3(solid-js@1.9.15)
       livekit-client:
         specifier: 2.15.13
-        version: 2.15.13(patch_hash=f2afef1e493c4877d7e3ccc7e6d82b2a896366894bc02fc4341ce0e3c1bb3a9e)(@types/dom-mediacapture-record@1.0.22)
+        version: 2.15.13(patch_hash=9d5bf8e2b05775ea5576a985c3ca1987d2067f49085d4b522681c3379acec648)(@types/dom-mediacapture-record@1.0.22)
       rxjs:
         specifier: ^7.8.2
         version: 7.8.2
@@ -10651,20 +10651,20 @@ snapshots:
     dependencies:
       '@lit-labs/ssr-dom-shim': 1.3.0
 
-  '@livekit/components-core@0.12.10(livekit-client@2.15.13(patch_hash=f2afef1e493c4877d7e3ccc7e6d82b2a896366894bc02fc4341ce0e3c1bb3a9e)(@types/dom-mediacapture-record@1.0.22))(tslib@2.8.1)':
+  '@livekit/components-core@0.12.10(livekit-client@2.15.13(patch_hash=9d5bf8e2b05775ea5576a985c3ca1987d2067f49085d4b522681c3379acec648)(@types/dom-mediacapture-record@1.0.22))(tslib@2.8.1)':
     dependencies:
       '@floating-ui/dom': 1.6.13
-      livekit-client: 2.15.13(patch_hash=f2afef1e493c4877d7e3ccc7e6d82b2a896366894bc02fc4341ce0e3c1bb3a9e)(@types/dom-mediacapture-record@1.0.22)
+      livekit-client: 2.15.13(patch_hash=9d5bf8e2b05775ea5576a985c3ca1987d2067f49085d4b522681c3379acec648)(@types/dom-mediacapture-record@1.0.22)
       loglevel: 1.9.1
       rxjs: 7.8.2
       tslib: 2.8.1
 
-  '@livekit/components-core@0.9.3(@livekit/protocol@1.42.2)(livekit-client@2.15.13(patch_hash=f2afef1e493c4877d7e3ccc7e6d82b2a896366894bc02fc4341ce0e3c1bb3a9e)(@types/dom-mediacapture-record@1.0.22))(tslib@2.8.1)':
+  '@livekit/components-core@0.9.3(@livekit/protocol@1.42.2)(livekit-client@2.15.13(patch_hash=9d5bf8e2b05775ea5576a985c3ca1987d2067f49085d4b522681c3379acec648)(@types/dom-mediacapture-record@1.0.22))(tslib@2.8.1)':
     dependencies:
       '@floating-ui/dom': 1.6.3
       '@livekit/protocol': 1.42.2
       email-regex: 5.0.0
-      livekit-client: 2.15.13(patch_hash=f2afef1e493c4877d7e3ccc7e6d82b2a896366894bc02fc4341ce0e3c1bb3a9e)(@types/dom-mediacapture-record@1.0.22)
+      livekit-client: 2.15.13(patch_hash=9d5bf8e2b05775ea5576a985c3ca1987d2067f49085d4b522681c3379acec648)(@types/dom-mediacapture-record@1.0.22)
       loglevel: 1.9.1
       rxjs: 7.8.1
       tslib: 2.8.1
@@ -10675,11 +10675,11 @@ snapshots:
     dependencies:
       '@bufbuild/protobuf': 1.10.1
 
-  '@livekit/track-processors@0.7.2(@types/dom-mediacapture-transform@0.1.11)(livekit-client@2.15.13(patch_hash=f2afef1e493c4877d7e3ccc7e6d82b2a896366894bc02fc4341ce0e3c1bb3a9e)(@types/dom-mediacapture-record@1.0.22))':
+  '@livekit/track-processors@0.7.2(@types/dom-mediacapture-transform@0.1.11)(livekit-client@2.15.13(patch_hash=9d5bf8e2b05775ea5576a985c3ca1987d2067f49085d4b522681c3379acec648)(@types/dom-mediacapture-record@1.0.22))':
     dependencies:
       '@mediapipe/tasks-vision': 0.10.14
       '@types/dom-mediacapture-transform': 0.1.11
-      livekit-client: 2.15.13(patch_hash=f2afef1e493c4877d7e3ccc7e6d82b2a896366894bc02fc4341ce0e3c1bb3a9e)(@types/dom-mediacapture-record@1.0.22)
+      livekit-client: 2.15.13(patch_hash=9d5bf8e2b05775ea5576a985c3ca1987d2067f49085d4b522681c3379acec648)(@types/dom-mediacapture-record@1.0.22)
 
   '@marijn/find-cluster-break@1.0.2': {}
 
@@ -14218,7 +14218,7 @@ snapshots:
       lit-element: 4.2.0
       lit-html: 3.3.0
 
-  livekit-client@2.15.13(patch_hash=f2afef1e493c4877d7e3ccc7e6d82b2a896366894bc02fc4341ce0e3c1bb3a9e)(@types/dom-mediacapture-record@1.0.22):
+  livekit-client@2.15.13(patch_hash=9d5bf8e2b05775ea5576a985c3ca1987d2067f49085d4b522681c3379acec648)(@types/dom-mediacapture-record@1.0.22):
     dependencies:
       '@livekit/mutex': 1.1.1
       '@livekit/protocol': 1.42.2

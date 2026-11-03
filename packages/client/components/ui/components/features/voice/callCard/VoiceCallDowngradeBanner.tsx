@@ -83,6 +83,11 @@ import { participantUserId } from "../participantIdentity";
  * `voice.callCanStayUnencrypted()` is the single term that decides which,
  * instead of a per-arm guess.
  *
+ * `ios_paused` (readiness `paused`, the server's iPhone kill switch) renders
+ * exactly like the unsupported shell — notice colour, nothing held, Leave
+ * only — with its own sentence, because "not available on this device" would
+ * be false and nothing here can promise when it comes back.
+ *
  * First paint is debounced by `MIX_BANNER_DEBOUNCE_MS` (judgment call 5) so a
  * cap-refused joiner's brief in/out never flashes the banner — the fail-closed
  * publish pause is immediate and undebounced regardless. `securing` rides
@@ -266,14 +271,15 @@ export function VoiceCallDowngradeBanner() {
       <Banner
         interlude={kind() === "interlude"}
         // A NOTICE, not a failure, only where nothing failed: a shell that
-        // can never encrypt, a device that was never set up here, a plain
-        // call, and a session still on its way to a verdict. A device the
-        // server REFUSED keeps the error colour — its publishing is held —
-        // and so does ANY kind whose pause is disproved: "may still be
-        // sending" is never a notice.
+        // can never encrypt (or whose calls the server has paused), a device
+        // that was never set up here, a plain call, and a session still on
+        // its way to a verdict. A device the server REFUSED keeps the error
+        // colour — its publishing is held — and so does ANY kind whose pause
+        // is disproved: "may still be sending" is never a notice.
         notice={
           pause() !== "disproved" &&
           (kind() === "device_unsupported" ||
+            kind() === "ios_paused" ||
             kind() === "unencrypted_notice" ||
             kind() === "securing" ||
             (kind() === "device_not_set_up" && !deviceRefused()))
@@ -293,6 +299,15 @@ export function VoiceCallDowngradeBanner() {
                 Encrypted calls aren't available on this device, so your audio
                 and video are not encrypted here. Everyone else in this call can
                 see that.
+              </Trans>
+            </Match>
+            <Match when={kind() === "ios_paused"}>
+              {/* The server's iPhone switch, not this device: "not available
+                  here" would be false. No remedy exists in the call and none
+                  is promised; Leave is the only control. */}
+              <Trans>
+                Encrypted calls on iPhone are paused right now. This call is not
+                encrypted.
               </Trans>
             </Match>
             <Match when={ownerMismatch()}>

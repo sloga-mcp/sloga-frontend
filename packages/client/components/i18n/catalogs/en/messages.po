@@ -3671,9 +3671,17 @@ msgstr "Encrypted calls are turned off on this server right now."
 msgid "Encrypted calls aren't available on this device yet."
 msgstr "Encrypted calls aren't available on this device yet."
 
+#: components/app/interface/settings/user/Encryption.tsx
+msgid "Encrypted calls on iPhone are paused right now. Calls on this device are not encrypted."
+msgstr "Encrypted calls on iPhone are paused right now. Calls on this device are not encrypted."
+
 #: components/ui/components/features/voice/callCard/VoiceCallDowngradeBanner.tsx
 msgid "Encrypted calls aren't available on this device, so your audio and video are not encrypted here. Everyone else in this call can see that."
 msgstr "Encrypted calls aren't available on this device, so your audio and video are not encrypted here. Everyone else in this call can see that."
+
+#: components/ui/components/features/voice/callCard/VoiceCallDowngradeBanner.tsx
+msgid "Encrypted calls on iPhone are paused right now. This call is not encrypted."
+msgstr "Encrypted calls on iPhone are paused right now. This call is not encrypted."
 
 #: components/ui/components/features/voice/callCard/VoiceCallDowngradeBanner.tsx
 msgid "Encrypted calls aren't set up on this device, so your audio and video are not encrypted here. Set encryption up to encrypt your next call."

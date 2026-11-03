@@ -12257,5 +12257,2095 @@ MUTATIONS += [
 ]
 
 
+# --- iOS call E2EE phase 2 (wave 3 + wave J) ---------------------------------
+#
+# The new pure modules and the wiring that uses them: the WebKit sender hold
+# (R1) and its worker acks (D2, R13, R17), the worker probe (D8), the
+# key-freshness tick (D9, R8), the server kill switch (D14, R9), the key-push
+# backstop (R4, R12), the iOS call audio bracket (R5), the iOS media-E2EE
+# predicates (D6), the `paused` readiness (R6, R11), the call-plane locked-phone
+# mapping (R16) and the drain's locked hold, the decode witness's dead path
+# (R7), the raw-key provider (D2, D15), the witness-only amber escalation and
+# the join-window ledger (wave J), the session's welcome window, iOS confirm
+# (R14), key-ack routing (R17) and locked store, and the state.tsx wiring that
+# `stateWiring.test.ts` pins.
+#
+# Ported from the lanes' own known-bad lists (each was KILLED in the lane's
+# scratch harness, against a scratch copy) and re-anchored here at the start
+# of their lines, per MFR-n3. Selected for direction: every way a module
+# could fail OPEN — release a hold, read a pause as ready, swallow a loss,
+# accept a stale ack, rescue a red — plus the ordering rules the rulings name.
+# Robustness-only mutants (timer binding, case folding, bound validation that
+# already fails closed) were left in the lanes' lists.
+#
+# 🔴 NOT here, and not claimable from this table:
+#  * the livekit patch hunks (D7.1 additional-codec refusal, D7.2 handleSender
+#    catch, the worker's tick drop, raw import, acks, D15 ratchet reply).
+#    They live in `patches/livekit-client@2.15.13.patch`, outside this client
+#    package, which `preflight` refuses as a target; `livekitPatchHunks.test.ts`
+#    pins the patch text and the installed dist instead.
+#  * the session's locked-store LATCH itself (WJ2's `no-latch` mutant made the
+#    file fail to load, `tests 1, fail 1`, which `judge` would rightly call a
+#    PROBLEM). Its backoff, reset, re-feed and control origin are below.
+#  * L3b's two NEVER-SETTLE shapes (`wait-never-times-out`: no timer;
+#    `reset-leaves-waits`: reset settles nothing). The spec does catch them,
+#    but only as a CANCELLED test (a wait that never resolves), `pass + fail
+#    != tests`, which `judge` rightly refuses to call a catch. Measured here
+#    as PROBLEM, then replaced by the fail-OPEN direction of the same lines
+#    (`sender-hold-wait-timeout-reads-acked`, `sender-hold-reset-settles-acked`).
+#    Making the never-settle shapes count needs a bounded ASSERTION in
+#    webkitSenderHold.test.ts, not a wider judge.
+#  * L3e's `f-nobound` (the switch fetch with no timer) for the same reason:
+#    measured `tests 16 of 20, cancelled 1`. Its bounded neighbours
+#    (`ios-switch-fetch-timeout-off`, `ios-switch-fetch-bad-bound`) are below.
+#    Also left in L3e's list: timer binding, never-cleared timer, the 30 s
+#    default, and the truthy helper (same effect as strict on a boolean).
+#  * prejoin (L3p, F5): that lane left no mutant list, and none is written
+#    here; e2eeIosGate.test.ts pins its source.
+#
+# Stage 5 fix round F (F1-F7) added the fetched switch and offer helper (F1),
+# the chip's pausedByServer and the escalation's M1/m1 rules (F2), the
+# session's fatal path (F3), the hold assembly and overdue clock (F4), the
+# Settings card (F6, through e2eeIosGate.test.ts) and the state.tsx wiring
+# (F7). The F7 entries were written here against stateWiring's F7 pins (the
+# lane left no list): each swaps a fatal producer for the healable surface,
+# drops a buffer, a zeroing, an early return or a clock condition, or forges
+# a binding.
+#  * the `state-ios-*` entries prove the pinned statements are PRESENT, never
+#    what they do at runtime (the header's file=STATE rule, and wave 3's own
+#    lesson: an inline backstop view THREW on construction with every text pin
+#    green). The behaviour is in the pure modules' entries above them.
+SENDER_HOLD = "webkitSenderHold.ts"
+PROBE = "workerProbe.ts"
+TICK = "keyFreshnessTick.ts"
+IOS_SWITCH = "iosCallSwitch.ts"
+BACKSTOP = "keyPushBackstop.ts"
+CALL_AUDIO = "iosCallAudio.ts"
+E2EE_PLATFORM = "../client/e2eePlatform.ts"
+READINESS = "e2eeDeviceReadiness.ts"
+CALL_PLANE_IOS = "../client/e2eeCallPlaneIos.ts"
+DRAIN_POLICY = "mlsDrainPolicy.ts"
+SENDER_HOLD_SPEC = "components/rtc/webkitSenderHold.test.ts"
+PROBE_SPEC = "components/rtc/workerProbe.test.ts"
+TICK_SPEC = "components/rtc/keyFreshnessTick.test.ts"
+IOS_SWITCH_SPEC = "components/rtc/iosCallSwitch.test.ts"
+BACKSTOP_SPEC = "components/rtc/keyPushBackstop.test.ts"
+CALL_AUDIO_SPEC = "components/rtc/iosCallAudio.test.ts"
+E2EE_PLATFORM_SPEC = "components/client/e2eePlatform.test.ts"
+READINESS_SPEC = "components/rtc/e2eeDeviceReadiness.test.ts"
+CALL_PLANE_IOS_SPEC = "components/client/e2eeCallPlaneIos.test.ts"
+DRAIN_POLICY_SPEC = "components/rtc/mlsDrainPolicy.test.ts"
+WELCOMEDROP_SPEC = "components/rtc/mlsCallSession.welcomedrop.test.ts"
+IOSCONFIRM_SPEC = "components/rtc/mlsCallSession.iosconfirm.test.ts"
+KEYACK_SPEC = "components/rtc/mlsCallSession.keyack.test.ts"
+LOCKED_SPEC = "components/rtc/mlsCallSession.locked.test.ts"
+ENCRYPTION_SETTINGS = "../app/interface/settings/user/Encryption.tsx"
+FATAL_SPEC = "components/rtc/mlsCallSession.fatal.test.ts"
+IOS_GATE_SPEC = "components/client/e2eeIosGate.test.ts"
+
+MUTATIONS += [
+    Mutation(
+        id='sender-hold-always-releases',
+        what='senderHoldVerdict releases on every engine, so an iOS publication resumes before its transform, enable and key acks',
+        file=SENDER_HOLD,
+        search="""  if (input.scriptTransformEngine === false) return { release: true };""",
+        replace="""  return { release: true };""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-engine-falsy',
+        what='a missing scriptTransformEngine reads as Chromium and releases (the strict `=== false` loosened)',
+        file=SENDER_HOLD,
+        search="""  if (input.scriptTransformEngine === false) return { release: true };""",
+        replace="""  if (!input.scriptTransformEngine) return { release: true };""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-no-senders-releases',
+        what='a publication with no sender ids releases instead of holding (no_senders)',
+        file=SENDER_HOLD,
+        search="""    return { release: false, reason: "no_senders" };""",
+        replace="""    return { release: true };""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-first-sender-only',
+        what='only the first sender is checked, so an unacked simulcastCodecs sender (an SFU h264 request) is released',
+        file=SENDER_HOLD,
+        search="""  for (const trackId of senderTrackIds) {""",
+        replace="""  for (const trackId of senderTrackIds.slice(0, 1)) {""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-enable-term-dropped',
+        what="the worker's enable reply for the local identity is not required (D7.3 / R2 enable ordering)",
+        file=SENDER_HOLD,
+        search="""  if (input.localIdentityEnabled !== true) {""",
+        replace="""  if (false) {""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-key-term-dropped',
+        what="the local send key's ack is not required, so frames go out before the worker holds the key",
+        file=SENDER_HOLD,
+        search="""  if (!key || !says(() => input.keyAcked(key.identity, key.keyIndex))) {""",
+        replace="""  if (false) {""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-throwing-predicate-releases',
+        what='a throwing attached/keyAcked predicate counts as acked',
+        file=SENDER_HOLD,
+        search="""  } catch {
+    return false;
+  }""",
+        replace="""  } catch {
+    return true;
+  }""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-decode-ack-attaches',
+        what='a DECODE transform ack satisfies the encode-side hold',
+        file=SENDER_HOLD,
+        search="""        if (ack.dir === "encode") encodeAttached.add(ack.trackId);""",
+        replace="""        encodeAttached.add(ack.trackId);""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-ack-ok-false-counts',
+        what='a setKeyAck with ok:false is recorded as acked',
+        file=SENDER_HOLD,
+        search="""      setAck(ack.identity, ack.keyIndex, ack.ok);""",
+        replace="""      setAck(ack.identity, ack.keyIndex, true);""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-wait-true-on-ok-false',
+        what='waitKeyAck resolves true on an ok:false ack, so LocalKeyAckError never fires',
+        file=SENDER_HOLD,
+        search="""          wait.settle(ack.ok);""",
+        replace="""          wait.settle(true);""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-wait-timeout-reads-acked',
+        what='a waitKeyAck that times out resolves true, so a worker that never acks reads as holding the key',
+        file=SENDER_HOLD,
+        search="""        wait.handle = setTimer(() => wait.settle(false), timeoutMs);""",
+        replace="""        wait.handle = setTimer(() => wait.settle(true), timeoutMs);""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-stale-ack-satisfies-wait',
+        what='an older ack at a reused key index satisfies a new wait (R13a: registration discards older acks)',
+        file=SENDER_HOLD,
+        search="""      acks.get(identity)?.delete(keyIndex);""",
+        replace="""      if (keyAcked(identity, keyIndex)) return Promise.resolve(true);""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-reset-settles-acked',
+        what='reset() settles pending key waits true, so a wait outlives its worker as an ack',
+        file=SENDER_HOLD,
+        search="""      for (const wait of [...pending]) wait.settle(false);""",
+        replace="""      for (const wait of [...pending]) wait.settle(true);""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-parse-ok-truthy',
+        what='parseSlogaWorkerAck accepts a non-boolean ok and coerces it',
+        file=SENDER_HOLD,
+        search="""    if (typeof ok !== "boolean") return undefined;
+    return { kind: "setKeyAck", identity, keyIndex, ok };""",
+        replace="""    return { kind: "setKeyAck", identity, keyIndex, ok: !!ok };""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-forget-track-no-op',
+        what='forgetTrack keeps the old transform ack, so a republish (same mediaStreamID) releases before its new transform attached (R18c)',
+        file=SENDER_HOLD,
+        search="""      encodeAttached.delete(trackId);""",
+        replace="""""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='probe-pass-without-rte',
+        what='the probe passes on a heartbeat whose rte is not "function" (a worker without RTCTransformEvent)',
+        file=PROBE,
+        search="""          if (!isRecord(body) || body.rte !== "function") {""",
+        replace="""          if (!isRecord(body)) {""",
+        specs=[PROBE_SPEC],
+    ),
+    Mutation(
+        id='probe-ignores-timeout',
+        what="the probe's timeout never fails it, so a silent worker leaves media E2EE pending forever",
+        file=PROBE,
+        search="""      timer = { handle: deps.setTimeout(() => finish("fail"), timeoutMs) };""",
+        replace="""      timer = { handle: deps.setTimeout(() => {}, timeoutMs) };""",
+        specs=[PROBE_SPEC],
+    ),
+    Mutation(
+        id='probe-pending-reads-pass',
+        what='workerProbeResult reports pass before any probe settled',
+        file=PROBE,
+        search="""  return settled ?? "pending";""",
+        replace="""  return settled ?? "pass";""",
+        specs=[PROBE_SPEC],
+    ),
+    Mutation(
+        id='probe-error-event-ignored',
+        what='a worker error event does not fail the probe',
+        file=PROBE,
+        search="""      worker.addEventListener("error", () => finish("fail"));
+""",
+        replace="""""",
+        specs=[PROBE_SPEC],
+    ),
+    Mutation(
+        id='probe-livekit-error-ignored',
+        what="livekit's worker error reply does not fail the probe",
+        file=PROBE,
+        search="""        case WORKER_ERROR_KIND:
+          finish("fail");
+          return;
+""",
+        replace="""""",
+        specs=[PROBE_SPEC],
+    ),
+    Mutation(
+        id='probe-makeworker-throw-uncaught',
+        what='a makeWorker throw escapes instead of failing the probe',
+        file=PROBE,
+        search="""    } catch {
+      finish("fail");
+    }
+  });""",
+        replace="""    } finally {
+    }
+  });""",
+        specs=[PROBE_SPEC],
+    ),
+    Mutation(
+        id='probe-forgets-terminate',
+        what='the probe worker is never terminated',
+        file=PROBE,
+        search="""          worker.terminate();
+""",
+        replace="""          void 0;
+""",
+        specs=[PROBE_SPEC],
+    ),
+    Mutation(
+        id='probe-posts-a-key',
+        what='the probe posts a setKey to its worker (it must never post key material)',
+        file=PROBE,
+        search="""        },
+      });
+    } catch {""",
+        replace="""        },
+      });
+      worker.postMessage({ kind: "setKey", data: {} });
+    } catch {""",
+        specs=[PROBE_SPEC],
+    ),
+    Mutation(
+        id='probe-no-timeout-validation',
+        what='a non-finite or non-positive timeout is accepted instead of failing closed',
+        file=PROBE,
+        search="""    if (!(Number.isFinite(timeoutMs) && timeoutMs > 0)) {""",
+        replace="""    if (false) {""",
+        specs=[PROBE_SPEC],
+    ),
+    Mutation(
+        id='tick-throw-kills-timer',
+        what="one throwing post stops the tick for good, so the worker's dead-man mutes the caller 8 s later",
+        file=TICK,
+        search="""    } catch {
+""",
+        replace="""    } catch {
+      stopped = true;
+      clearInterval(handle);
+""",
+        specs=[TICK_SPEC],
+    ),
+    Mutation(
+        id='tick-no-immediate',
+        what='no tick at start, so the worker runs unarmed for the first interval',
+        file=TICK,
+        search="""  tick();
+
+  return""",
+        replace="""
+  return""",
+        specs=[TICK_SPEC],
+    ),
+    Mutation(
+        id='tick-posts-after-stop',
+        what='a tick already queued still posts after stop()',
+        file=TICK,
+        search="""    if (stopped) return;
+    try {""",
+        replace="""    try {""",
+        specs=[TICK_SPEC],
+    ),
+    Mutation(
+        id='tick-interval-beyond-stale',
+        what="the tick interval exceeds the worker's 8000 ms staleness bound",
+        file=TICK,
+        search="""  const handle = setInterval(tick, KEY_TICK_INTERVAL_MS);""",
+        replace="""  const handle = setInterval(tick, 10_000);""",
+        specs=[TICK_SPEC],
+    ),
+    Mutation(
+        id='ios-switch-off-ignored',
+        what="the server's ios_call_e2ee=false is ignored, so iOS keeps attempting media E2EE under the kill switch",
+        file=IOS_SWITCH,
+        search="""  return input.serverValue === false ? "off" : "on";""",
+        replace="""  return "on";""",
+        specs=[IOS_SWITCH_SPEC],
+    ),
+    Mutation(
+        id='ios-switch-absent-off',
+        what='an absent server value reads OFF (R9: absent must read ON)',
+        file=IOS_SWITCH,
+        search="""  return input.serverValue === false ? "off" : "on";""",
+        replace="""  return input.serverValue === true ? "on" : "off";""",
+        specs=[IOS_SWITCH_SPEC],
+    ),
+    Mutation(
+        id='ios-switch-falsy-off',
+        what='a falsy non-false server value (absent, 0, "") reads OFF',
+        file=IOS_SWITCH,
+        search="""  return input.serverValue === false ? "off" : "on";""",
+        replace="""  return !input.serverValue ? "off" : "on";""",
+        specs=[IOS_SWITCH_SPEC],
+    ),
+    Mutation(
+        id='ios-switch-consent-reuse',
+        what='an earlier plaintext consent turns the switch back on (the module must take no consent input)',
+        file=IOS_SWITCH,
+        search="""  if (input.platform !== "ios") return "on";""",
+        replace="""  if (input.platform !== "ios") return "on";
+  if ((input as { plaintextConsent?: unknown }).plaintextConsent) return "on";""",
+        specs=[IOS_SWITCH_SPEC],
+    ),
+    Mutation(
+        id='backstop-never-pulls',
+        what='afterResolve never pulls, so an epoch whose push never arrived leaves the old key on the wire',
+        file=BACKSTOP,
+        search="""        pulled = deps.pull(groupId, epoch);""",
+        replace="""        pulled = undefined;""",
+        specs=[BACKSTOP_SPEC],
+    ),
+    Mutation(
+        id='backstop-pulls-despite-push',
+        what='afterResolve pulls even when a push already reached the epoch (double pull)',
+        file=BACKSTOP,
+        search="""      if (known !== undefined && known >= epoch) return;
+""",
+        replace="""""",
+        specs=[BACKSTOP_SPEC],
+    ),
+    Mutation(
+        id='backstop-cross-group',
+        what='a push for one group satisfies the backstop for every group',
+        file=BACKSTOP,
+        search="""      const known = reached.get(groupId);
+      if (known === undefined || epoch > known) reached.set(groupId, epoch);""",
+        replace="""      const known = reached.get("*");
+      if (known === undefined || epoch > known) reached.set("*", epoch);""",
+        also=[
+            (
+                """      const known = reached.get(groupId);
+      if (known !== undefined && known >= epoch) return;""",
+                """      const known = reached.get("*");
+      if (known !== undefined && known >= epoch) return;""",
+            ),
+        ],
+        specs=[BACKSTOP_SPEC],
+    ),
+    Mutation(
+        id='backstop-missing-epoch-silent',
+        what='an outcome with no readable epoch is dropped silently instead of going loud (onLost)',
+        file=BACKSTOP,
+        search="""        deps.onLost(groupId, typeof epoch === "number" ? epoch : Number.NaN);""",
+        replace="""        void 0;""",
+        specs=[BACKSTOP_SPEC],
+    ),
+    Mutation(
+        id='backstop-unreadable-outcome-null',
+        what='an epoch-advancing outcome with an unreadable epoch reads as not epoch-advancing (null), so nothing is checked',
+        file=BACKSTOP,
+        search="""  return isEpoch(outcome.epoch) ? outcome.epoch : undefined;""",
+        replace="""  return isEpoch(outcome.epoch) ? outcome.epoch : null;""",
+        specs=[BACKSTOP_SPEC],
+    ),
+    Mutation(
+        id='backstop-unknown-kind-null',
+        what='an unknown process outcome kind reads as not epoch-advancing (null) instead of undefined (loud)',
+        file=BACKSTOP,
+        search="""      return undefined;
+""",
+        replace="""      return null;
+""",
+        specs=[BACKSTOP_SPEC],
+    ),
+    Mutation(
+        id='backstop-infinite-push-counts',
+        what='a push carrying Infinity counts as reaching every future epoch',
+        file=BACKSTOP,
+        search="""      if (!isEpoch(epoch)) return;""",
+        replace="""      if (typeof epoch !== "number" || Number.isNaN(epoch)) return;""",
+        specs=[BACKSTOP_SPEC],
+    ),
+    Mutation(
+        id='backstop-pull-throw-swallowed',
+        what='a throwing pull is swallowed instead of going loud',
+        file=BACKSTOP,
+        search="""        deps.onLost(groupId, epoch);
+        return;""",
+        replace="""        void 0;
+        return;""",
+        specs=[BACKSTOP_SPEC],
+    ),
+    Mutation(
+        id='backstop-async-reject-swallowed',
+        what='a rejected pull promise is swallowed instead of going loud',
+        file=BACKSTOP,
+        search="""        pulled.then(undefined, () => deps.onLost(groupId, epoch));""",
+        replace="""        void 0;""",
+        specs=[BACKSTOP_SPEC],
+    ),
+    Mutation(
+        id='backstop-epoch-any-finite',
+        what='isEpoch accepts negative and fractional numbers',
+        file=BACKSTOP,
+        search="""  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0""",
+        replace="""  return typeof value === "number" && Number.isFinite(value)""",
+        specs=[BACKSTOP_SPEC],
+    ),
+    Mutation(
+        id='backstop-bridge-sync-after-resolve',
+        what='backstopBridge runs afterResolve synchronously, before the session recorded its own state (R12: a macrotask)',
+        file=BACKSTOP,
+        search="""    deps.defer(() => backstop.afterResolve(groupId, epoch));""",
+        replace="""    backstop.afterResolve(groupId, epoch);""",
+        specs=[BACKSTOP_SPEC],
+    ),
+    Mutation(
+        id='backstop-bridge-unbound-methods',
+        what="the view hands out unbound methods, so E2EEBridge's #private fields throw at the first call",
+        file=BACKSTOP,
+        search="""          value: (d.value as AnyMethod).bind(bridge),""",
+        replace="""          value: d.value,""",
+        specs=[BACKSTOP_SPEC],
+    ),
+    Mutation(
+        id='backstop-bridge-commitwon-group-from-outcome',
+        what="callCommitWon's group is read from the outcome instead of its argument",
+        file=BACKSTOP,
+        search="""      const groupId = typeof args[0] === "string" ? args[0] : "";""",
+        replace="""      const groupId = stringField(outcome, "group_id");""",
+        specs=[BACKSTOP_SPEC],
+    ),
+    Mutation(
+        id='backstop-bridge-create-toplevel-group',
+        what="callCreate's group is read from the top level instead of payload.group_id",
+        file=BACKSTOP,
+        search="""      later(stringField(payload, "group_id"), outcomeEpoch""",
+        replace="""      later(stringField(created, "group_id"), outcomeEpoch""",
+        specs=[BACKSTOP_SPEC],
+    ),
+    Mutation(
+        id='backstop-bridge-create-rejection-swallowed',
+        what='a rejected callCreate resolves undefined through the view instead of rejecting',
+        file=BACKSTOP,
+        search="""      const created = await callReal("callCreate", args);""",
+        replace="""      const created = await (callReal("callCreate", args) as Promise<unknown>).catch(() => undefined);""",
+        specs=[BACKSTOP_SPEC],
+    ),
+    Mutation(
+        id='backstop-bridge-mutates-real-bridge',
+        what='the view is written onto the real bridge instead of a separate object',
+        file=BACKSTOP,
+        search="""    Object.defineProperty(view, name, {""",
+        replace="""    Object.defineProperty(bridge, name, {""",
+        specs=[BACKSTOP_SPEC],
+    ),
+    Mutation(
+        id='call-audio-unserialised',
+        what='bracket ops are not serialised, so a stop can overtake the start it follows',
+        file=CALL_AUDIO,
+        search="""    tail = tail.then(step).then(noop, report);
+    return tail;""",
+        replace="""    return step().then(noop, report);""",
+        specs=[CALL_AUDIO_SPEC],
+    ),
+    Mutation(
+        id='call-audio-rejection-escapes',
+        what='a native start/stop rejection is thrown into call teardown instead of reported',
+        file=CALL_AUDIO,
+        search="""      report(reason);
+      return false;""",
+        replace="""      throw reason;""",
+        also=[
+            (
+                """    tail = tail.then(step).then(noop, report);""",
+                """    tail = tail.then(step);""",
+            ),
+        ],
+        specs=[CALL_AUDIO_SPEC],
+    ),
+    Mutation(
+        id='call-audio-interruption-bare-start',
+        what='an interruption end starts again without stopping first',
+        file=CALL_AUDIO,
+        search="""        if (!(await stopNow())) return;
+        await startNow();""",
+        replace="""        await startNow();""",
+        specs=[CALL_AUDIO_SPEC],
+    ),
+    Mutation(
+        id='call-audio-onfailure-throw-escapes',
+        what='a throwing onFailure handler escapes into teardown and stalls the queue',
+        file=CALL_AUDIO,
+        search="""    try {
+      deps.onFailure(callAudioFailure(reason));
+    } catch {
+      // The handler's own bug must not reach call teardown or stall the queue.
+    }""",
+        replace="""    deps.onFailure(callAudioFailure(reason));""",
+        specs=[CALL_AUDIO_SPEC],
+    ),
+    Mutation(
+        id='call-audio-failed-stop-clears-held',
+        what='a failed stop still clears held, so the session is never stopped again',
+        file=CALL_AUDIO,
+        search="""    if (!(await attempt(() => deps.stop()))) return false;""",
+        replace="""    await attempt(() => deps.stop());""",
+        specs=[CALL_AUDIO_SPEC],
+    ),
+    Mutation(
+        id='call-audio-failed-start-sets-held',
+        what='a failed start still sets held',
+        file=CALL_AUDIO,
+        search="""    if (await attempt(() => deps.start())) held = true;""",
+        replace="""    await attempt(() => deps.start());
+    held = true;""",
+        specs=[CALL_AUDIO_SPEC],
+    ),
+    Mutation(
+        id='platform-caps-flag-truthy',
+        what='the iOS caps flag is read truthy instead of strictly true',
+        file=E2EE_PLATFORM,
+        search="""    input.capsMediaE2EE === true &&""",
+        replace="""    !!input.capsMediaE2EE &&""",
+        specs=[E2EE_PLATFORM_SPEC],
+    ),
+    Mutation(
+        id='platform-plugin-dropped',
+        what='iOS media E2EE is ready without the E2ee plugin',
+        file=E2EE_PLATFORM,
+        search="""    input.pluginPresent === true &&
+""",
+        replace="""""",
+        specs=[E2EE_PLATFORM_SPEC],
+    ),
+    Mutation(
+        id='platform-script-transform-ignored',
+        what='iOS media E2EE is ready without RTCRtpScriptTransform',
+        file=E2EE_PLATFORM,
+        search="""    input.scriptTransform === true &&
+""",
+        replace="""""",
+        specs=[E2EE_PLATFORM_SPEC],
+    ),
+    Mutation(
+        id='platform-probe-pending-accepted',
+        what='a pending worker probe counts as ready',
+        file=E2EE_PLATFORM,
+        search='    input.probe === "pass"',
+        replace='    input.probe !== "fail"',
+        specs=[E2EE_PLATFORM_SPEC],
+    ),
+    Mutation(
+        id='platform-shell-drops-e2ee-supported',
+        what='shellMediaE2EESupported ignores isE2EESupported()',
+        file=E2EE_PLATFORM,
+        search="""    input.e2eeSupported === true &&
+""",
+        replace="""""",
+        specs=[E2EE_PLATFORM_SPEC],
+    ),
+    Mutation(
+        id='platform-shell-drops-bridge',
+        what="shellMediaE2EESupported ignores the bridge's platform answer",
+        file=E2EE_PLATFORM,
+        search="""    input.nativeE2EEAvailable === true &&
+    input.bridgePlatformSupported === true
+""",
+        replace="""    input.nativeE2EEAvailable === true
+""",
+        specs=[E2EE_PLATFORM_SPEC],
+    ),
+    Mutation(
+        id='platform-media-drops-platform',
+        what='mediaE2EEPlatformSupported ignores platformMediaE2EESupported()',
+        file=E2EE_PLATFORM,
+        search="""  return keyPushAvailable && platformMediaE2EESupported();""",
+        replace="""  return keyPushAvailable;""",
+        specs=[E2EE_PLATFORM_SPEC],
+    ),
+    Mutation(
+        id='readiness-paused-dropped',
+        what="the server's iOS pause never reaches readiness",
+        file=READINESS,
+        search="""  if (input.pausedByServer) return "paused";
+""",
+        replace="""""",
+        specs=[READINESS_SPEC],
+    ),
+    Mutation(
+        id='readiness-paused-outranks-unsupported',
+        what="paused outranks the shell's unsupported",
+        file=READINESS,
+        search="""  if (!input.shellSupported) return "unsupported";
+  if (input.pausedByServer) return "paused";
+""",
+        replace="""  if (input.pausedByServer) return "paused";
+  if (!input.shellSupported) return "unsupported";
+""",
+        specs=[READINESS_SPEC],
+    ),
+    Mutation(
+        id='readiness-device-terms-outrank-paused',
+        what='a device term (needs_setup) outranks the server pause',
+        file=READINESS,
+        search="""  if (input.pausedByServer) return "paused";
+""",
+        replace="""""",
+        also=[
+            (
+                """  if (e2eeProvenOff(input.status)) return "needs_setup";
+""",
+                """  if (e2eeProvenOff(input.status)) return "needs_setup";
+  if (input.pausedByServer) return "paused";
+""",
+            ),
+        ],
+        specs=[READINESS_SPEC],
+    ),
+    Mutation(
+        id='readiness-paused-capable',
+        what='callEncryptionCapable is true for paused',
+        file=READINESS,
+        search="""  return readiness === "ready" || readiness === "owned_elsewhere";""",
+        replace="""  return readiness === "ready" || readiness === "owned_elsewhere" || readiness === "paused";""",
+        specs=[READINESS_SPEC],
+    ),
+    Mutation(
+        id='readiness-setup-for-paused',
+        what='encryptionSetupAvailable offers a setup remedy for paused',
+        file=READINESS,
+        search="""  return readiness === "needs_setup" || readiness === "owned_elsewhere";""",
+        replace="""  return readiness === "needs_setup" || readiness === "owned_elsewhere" || readiness === "paused";""",
+        specs=[READINESS_SPEC],
+    ),
+    Mutation(
+        id='call-plane-ios-map-everywhere',
+        what='protector_locked is mapped on every command, not only the call plane',
+        file=CALL_PLANE_IOS,
+        search="""  if (command === undefined || !isCallPlaneCommand(command)) return parsed;
+""",
+        replace="""""",
+        specs=[CALL_PLANE_IOS_SPEC],
+    ),
+    Mutation(
+        id='call-plane-ios-no-mapping',
+        what='a call-plane protector_locked stays a plain object (no CallProtectorLockedError, so not loud)',
+        file=CALL_PLANE_IOS,
+        search="""  return copy === null ? parsed : new CallProtectorLockedError(copy);""",
+        replace="""  return parsed;""",
+        specs=[CALL_PLANE_IOS_SPEC],
+    ),
+    Mutation(
+        id='call-plane-ios-type-lost',
+        what='the parsed typed reject is replaced by the raw error',
+        file=CALL_PLANE_IOS,
+        search="""    ? parsed
+    : error;""",
+        replace="""    ? error
+    : error;""",
+        specs=[CALL_PLANE_IOS_SPEC],
+    ),
+    Mutation(
+        id='call-plane-ios-plain-protector-mapped',
+        what='plain `protector` is mapped as a locked phone too',
+        file=CALL_PLANE_IOS,
+        search='    (parsed as { type?: unknown }).type !== "protector_locked"',
+        replace="""    !String((parsed as { type?: unknown }).type).startsWith("protector")""",
+        specs=[CALL_PLANE_IOS_SPEC],
+    ),
+    Mutation(
+        id='call-plane-ios-set-short',
+        what='a call-plane command is missing from the call-plane set',
+        file=CALL_PLANE_IOS,
+        search="""  "e2ee_pin_call_identities",
+""",
+        replace="""""",
+        specs=[CALL_PLANE_IOS_SPEC],
+    ),
+    Mutation(
+        id='drain-locked-acked-and-dropped',
+        what='a locked-store envelope is acked and dropped after its retries (desync) instead of held',
+        file=DRAIN_POLICY,
+        search="""      if (errorType !== undefined) return { do: "hold_locked", errorType };
+""",
+        replace="""""",
+        specs=[DRAIN_POLICY_SPEC],
+    ),
+    Mutation(
+        id='drain-locked-hold-widened',
+        what='every drain error is held as locked, so a poison envelope is never dropped',
+        file=DRAIN_POLICY,
+        search="""      if (errorType !== undefined) return { do: "hold_locked", errorType };""",
+        replace="""      return { do: "hold_locked", errorType: errorType ?? "protector" };""",
+        specs=[DRAIN_POLICY_SPEC],
+    ),
+    Mutation(
+        id='witness-dead-single-stale-tick',
+        what="one stale tick declares the worker dead (a resumed main thread's queued burst reads dead)",
+        file=WITNESS,
+        search="""    return previous !== undefined && at - previous >= checkMs / 2;""",
+        replace="""    return true;""",
+        specs=[WITNESS_SPEC],
+    ),
+    Mutation(
+        id='witness-dead-no-prior-baseline',
+        what='the first stale tick pairs with time zero',
+        file=WITNESS,
+        search="""    return previous !== undefined && at - previous >= checkMs / 2;""",
+        replace="""    return at - (previous ?? 0) >= checkMs / 2;""",
+        specs=[WITNESS_SPEC],
+    ),
+    Mutation(
+        id='witness-dead-burst-counted',
+        what='two ticks inside the same drained burst count as the pair',
+        file=WITNESS,
+        search="""    return previous !== undefined && at - previous >= checkMs / 2;""",
+        replace="""    return previous !== undefined;""",
+        specs=[WITNESS_SPEC],
+    ),
+    Mutation(
+        id='witness-dead-rte-ignored',
+        what='a heartbeat whose rte is not "function" is never judged dead',
+        file=WITNESS,
+        search="""        parseDecodeWitnessRte(data) !== TRANSFORM_EVENT_TYPE""",
+        replace="""        false""",
+        specs=[WITNESS_SPEC],
+    ),
+    Mutation(
+        id='witness-dead-bad-rte-still-promotes',
+        what='a heartbeat without RTCTransformEvent still promotes the witness after declaring dead',
+        file=WITNESS,
+        search="""        fireDead("running without RTCTransformEvent");
+        return;""",
+        replace="""        fireDead("running without RTCTransformEvent");""",
+        specs=[WITNESS_SPEC],
+    ),
+    Mutation(
+        id='witness-dead-credit-keeps-pair',
+        what='a fresh heartbeat does not clear a half-made dead pair',
+        file=WITNESS,
+        search="""      deadSeenAt = undefined;
+      if (warned || skewWarned) {""",
+        replace="""      if (warned || skewWarned) {""",
+        specs=[WITNESS_SPEC],
+    ),
+    Mutation(
+        id='witness-dead-behind-chip-write',
+        what='a throwing chip write skips the dead verdict',
+        file=WITNESS,
+        search="""      try {
+        onWitness(DECODE_WITNESS_UNAVAILABLE);
+      } finally {
+        if (dead) fireDead("silent during the call");
+      }""",
+        replace="""      onWitness(DECODE_WITNESS_UNAVAILABLE);
+      if (dead) fireDead("silent during the call");""",
+        specs=[WITNESS_SPEC],
+    ),
+    Mutation(
+        id='witness-dead-session-guard-dropped',
+        what="an old call's listener fires onDead into the new call",
+        file=WITNESS,
+        search="""    // direction — the same guard that keeps its posts off the new call's chip.
+    if (!isCurrentSession()) return;""",
+        replace="""    // direction — the same guard that keeps its posts off the new call's chip.""",
+        specs=[WITNESS_SPEC],
+    ),
+    Mutation(
+        id='witness-dead-validation-allows-infinity',
+        what='an infinite deadAfterMs is accepted (the dead path can never fire)',
+        file=WITNESS,
+        search="""    !(Number.isFinite(deadAfterMs) && deadAfterMs > staleMs)""",
+        replace="""    !(deadAfterMs > staleMs)""",
+        specs=[WITNESS_SPEC],
+    ),
+    Mutation(
+        id='witness-dead-threshold-widened',
+        what='DECODE_WITNESS_DEAD_MS is widened tenfold',
+        file=WITNESS,
+        search="""export const DECODE_WITNESS_DEAD_MS = 6 * DECODE_WITNESS_CHECK_MS;""",
+        replace="""export const DECODE_WITNESS_DEAD_MS = 60 * DECODE_WITNESS_CHECK_MS;""",
+        specs=[WITNESS_SPEC],
+    ),
+    Mutation(
+        id='witness-dead-rte-non-string',
+        what='a non-string rte is passed through as if it were the event type',
+        file=WITNESS,
+        search="""  return typeof body.rte === "string" ? body.rte : undefined;""",
+        replace="""  return body.rte as string | undefined;""",
+        specs=[WITNESS_SPEC],
+    ),
+    Mutation(
+        id='keys-raw-ack-registered-after-post',
+        what="the local key's ack wait is registered after the post (R13a: an early ack is discarded)",
+        file=CALL_KEYS,
+        search="""    const acks = this.#registerKeyAcks(imported);
+""",
+        replace="""""",
+        also=[
+            (
+                """    this.#stamp(frameKeys.group_id, epoch);
+    await this.#applyLocalScreenKey""",
+                """    const acks = this.#registerKeyAcks(imported);
+    this.#stamp(frameKeys.group_id, epoch);
+    await this.#applyLocalScreenKey""",
+            ),
+        ],
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='keys-raw-ack-false-ignored',
+        what='an ack wait that resolves false does not throw LocalKeyAckError',
+        file=CALL_KEYS,
+        search="""      if (!(await acked)) throw new LocalKeyAckError(groupId, epoch, keyIndex);
+""",
+        replace="""      await acked;
+""",
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='keys-raw-ack-never-awaited',
+        what='applyLocalKey claims the key installed without waiting for its ack',
+        file=CALL_KEYS,
+        search="""    await this.#confirmKeyAcks(acks, frameKeys.group_id, epoch);
+""",
+        replace="""    void this.#confirmKeyAcks(acks, frameKeys.group_id, epoch).catch(() => {});
+""",
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='keys-raw-replaced-not-zeroed',
+        what='replaced key bytes are not zeroed',
+        file=CALL_KEYS,
+        search="""    scrubKeyBytes(outgoing, this.getKeys());
+""",
+        replace="""""",
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='keys-raw-reset-not-zeroed',
+        what="resetForGroup's dropped key bytes are not zeroed",
+        file=CALL_KEYS,
+        search="""    scrubKeyBytes(dropped, this.getKeys());
+""",
+        replace="""""",
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='keys-raw-zeroes-live-set',
+        what='the scrub zeroes the keys still in use',
+        file=CALL_KEYS,
+        search="""    scrubKeyBytes(outgoing, this.getKeys());
+""",
+        replace="""    scrubKeyBytes(outgoing, []);
+    scrubKeyBytes(infos, []);
+""",
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='keys-raw-posts-cryptokey-only',
+        what='raw mode posts without keyBytes (iOS gets a CryptoKey it cannot use)',
+        file=CALL_KEYS,
+        search="""          info.keyIndex,
+          info.keyBytes,
+        );
+""",
+        replace="""          info.keyIndex,
+        );
+""",
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='keys-raw-default-carries-bytes',
+        what='Chromium (no rawKeyBytes) also carries raw key bytes to the worker (C5)',
+        file=CALL_KEYS,
+        search="""        const keyBytes = this.#rawKeyBytes ? new Uint8Array(raw) : undefined;""",
+        replace="""        const keyBytes = new Uint8Array(raw);""",
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='keys-raw-default-ack-gated',
+        what="Chromium's local key install is ack-gated too (R3: no behaviour change off iOS)",
+        file=CALL_KEYS,
+        search="""    this.#awaitKeyAck = rawKeyBytes ? awaitKeyAck : undefined;
+""",
+        replace="""    this.#awaitKeyAck = awaitKeyAck;
+""",
+        also=[
+            (
+                """    if (!this.#rawKeyBytes || awaitKeyAck === undefined) return [];
+""",
+                """    if (awaitKeyAck === undefined) return [];
+""",
+            ),
+        ],
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='keys-raw-constructor-not-fail-closed',
+        what='rawKeyBytes without an awaitKeyAck is accepted instead of throwing',
+        file=CALL_KEYS,
+        search="""    if (rawKeyBytes && typeof awaitKeyAck !== "function") {
+""",
+        replace="""    if (false) {
+""",
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='keys-raw-ack-truthy',
+        what='a truthy non-true ack value counts as ok',
+        file=CALL_KEYS,
+        search="""          (ok) => ok === true,
+""",
+        replace="""          (ok) => Boolean(ok),
+""",
+        specs=[CALL_KEYS_SPEC],
+    ),
+    Mutation(
+        id='amber-no-clock',
+        what="the witness-only amber never escalates (amber forever: WJ1's defect)",
+        file=POLICY,
+        search="""  judge(inputs: ChipInputs, now: number): ChipState {
+    const chip = chipState(inputs);
+""",
+        replace="""  judge(inputs: ChipInputs, now: number): ChipState {
+    const chip = chipState(inputs);
+    if (now >= 0) return chip;
+""",
+        specs=[POLICY_SPEC],
+    ),
+    Mutation(
+        id='amber-evidence-does-not-reset',
+        what='real encryption evidence only interrupts the amber clock instead of resetting it',
+        file=POLICY,
+        search="""    if (chip === "e2ee" || chip === "e2ee_unverified") {
+      this.reset();
+""",
+        replace="""    if (chip === "e2ee" || chip === "e2ee_unverified") {
+      this.#interrupt();
+""",
+        specs=[POLICY_SPEC],
+    ),
+    Mutation(
+        id='amber-other-amber-accrues',
+        what='another amber reading lets wall-clock time accrue toward the witness bound',
+        file=POLICY,
+        search="""  #interrupt(): void {
+    this.#lastWitnessOnlyAt = undefined;
+""",
+        replace="""  #interrupt(): void {
+""",
+        specs=[POLICY_SPEC],
+    ),
+    Mutation(
+        id='amber-other-amber-resets-clock',
+        what='another amber reading resets the accrued witness time, so an interleaved amber never escalates',
+        file=POLICY,
+        search="""  #interrupt(): void {
+    this.#lastWitnessOnlyAt = undefined;
+""",
+        replace="""  #interrupt(): void {
+    this.#amberMs = 0;
+    this.#lastWitnessOnlyAt = undefined;
+""",
+        specs=[POLICY_SPEC],
+    ),
+    Mutation(
+        id='amber-no-confirm-reading',
+        what='the escalation fires on the first reading past the bound, with no confirming reading',
+        file=POLICY,
+        search="""    if (now - this.#pastBoundAt < WITNESS_AMBER_CONFIRM_MS) return chip;
+""",
+        replace="""""",
+        also=[
+            (
+                """    if (this.#pastBoundAt === undefined) {
+      this.#pastBoundAt = now;
+      return chip;
+    }
+""",
+                """""",
+            ),
+        ],
+        specs=[POLICY_SPEC],
+    ),
+    Mutation(
+        id='amber-witness-rescues-red',
+        what='a later green reading rescues an escalated red (locked decision 6: the witness never rescues a red)',
+        file=POLICY,
+        search="""    if (this.#fired) return "not_encrypted";
+    if (chip === "e2ee" || chip === "e2ee_unverified") {
+      this.reset();
+      return chip;
+    }
+""",
+        replace="""    if (chip === "e2ee" || chip === "e2ee_unverified") {
+      this.reset();
+      return chip;
+    }
+    if (this.#fired) return "not_encrypted";
+""",
+        specs=[POLICY_SPEC],
+    ),
+    Mutation(
+        id='amber-backwards-step-readds',
+        what='a backwards clock step re-adds the same span',
+        file=POLICY,
+        search="""    this.#lastWitnessOnlyAt = last === undefined ? now : Math.max(last, now);
+""",
+        replace="""    this.#lastWitnessOnlyAt = now;
+""",
+        specs=[POLICY_SPEC],
+    ),
+    Mutation(
+        id='amber-paused-case-dropped',
+        what='readiness paused gets no banner kind',
+        file=POLICY,
+        search="""    case "paused":
+      return "ios_paused";
+""",
+        replace="""""",
+        specs=[POLICY_SPEC],
+    ),
+    Mutation(
+        id='amber-paused-reuses-device-unsupported',
+        what='readiness paused reuses the device_unsupported banner (wrong copy)',
+        file=POLICY,
+        search="""    case "paused":
+      return "ios_paused";
+""",
+        replace="""    case "paused":
+      return "device_unsupported";
+""",
+        specs=[POLICY_SPEC],
+    ),
+    Mutation(
+        id='amber-ios-paused-held',
+        what='the ios_paused banner reads as a held (amber) state instead of a red one',
+        file=POLICY,
+        search="""    case "device_unsupported":
+    case "ios_paused":
+    case "unencrypted_notice":
+      return "none";
+""",
+        replace="""    case "ios_paused":
+      return "held";
+    case "device_unsupported":
+    case "unencrypted_notice":
+      return "none";
+""",
+        specs=[POLICY_SPEC],
+    ),
+    Mutation(
+        id='ledger-blanket-join-exemption',
+        what='every miss before the first key is exempt, not only one that predates the held epoch',
+        file=POLICY,
+        search="""        beforeFirstKey &&
+          held !== undefined &&
+          joinWindowMissPredatesEpoch(keyPairIndex(pair), held),
+""",
+        replace="""        beforeFirstKey,
+""",
+        specs=[POLICY_SPEC],
+    ),
+    Mutation(
+        id='ledger-latest-held-epoch-wins',
+        what='the first held epoch is overwritten by every later one',
+        file=POLICY,
+        search="""    if (this.#firstHeldEpoch === undefined) this.#firstHeldEpoch = epoch;
+""",
+        replace="""    this.#firstHeldEpoch = epoch;
+""",
+        specs=[POLICY_SPEC],
+    ),
+    Mutation(
+        id='ledger-unknown-epoch-exempts',
+        what='a miss with no held epoch is exempt',
+        file=POLICY,
+        search="""          held !== undefined &&
+          joinWindowMissPredatesEpoch(keyPairIndex(pair), held),
+""",
+        replace="""          (held === undefined ||
+            joinWindowMissPredatesEpoch(keyPairIndex(pair), held)),
+""",
+        specs=[POLICY_SPEC],
+    ),
+    Mutation(
+        id='ledger-reset-keeps-held-epoch',
+        what="reset keeps the previous call's first held epoch",
+        file=POLICY,
+        search="""    this.#everMissing.clear();
+    this.#firstHeldEpoch = undefined;
+""",
+        replace="""    this.#everMissing.clear();
+""",
+        specs=[POLICY_SPEC],
+    ),
+    Mutation(
+        id='ledger-predicate-no-zero-clamp',
+        what='joinWindowMissPredatesEpoch accepts a negative epoch',
+        file=POLICY,
+        search="""    if (epoch < 0) return false;
+    if (epoch % WORKER_KEYRING_SIZE === keyIndex) return true;
+""",
+        replace="""    if (
+      (((epoch % WORKER_KEYRING_SIZE) + WORKER_KEYRING_SIZE) %
+        WORKER_KEYRING_SIZE) ===
+      keyIndex
+    )
+      return true;
+""",
+        specs=[POLICY_SPEC],
+    ),
+    Mutation(
+        id='ledger-exempt-whole-keyring',
+        what='the join-window exemption reaches back the whole keyring instead of half',
+        file=POLICY,
+        search="""export const JOIN_WINDOW_PREDATES_DEPTH = WORKER_KEYRING_SIZE / 2;""",
+        replace="""export const JOIN_WINDOW_PREDATES_DEPTH = WORKER_KEYRING_SIZE;""",
+        specs=[WELCOMEDROP_SPEC],
+    ),
+    Mutation(
+        id='ledger-predicate-no-index-guard',
+        what='joinWindowMissPredatesEpoch never refuses a malformed key index or epoch',
+        file=POLICY,
+        search="""  if (
+    !Number.isInteger(keyIndex) ||""",
+        replace="""  if (
+    true ||
+    !Number.isInteger(keyIndex) ||""",
+        specs=[WELCOMEDROP_SPEC],
+    ),
+    Mutation(
+        id='session-welcome-review-log-only',
+        what='the welcome-window review counts nothing (log only)',
+        file=SESSION,
+        search="""    for (const [pair, { identity, error }] of counted) {
+      if (!this.#holdJoinRace(pair, identity, error)) {""",
+        replace="""    for (const [pair, { identity, error }] of []) {
+      if (!this.#holdJoinRace(pair, identity, error)) {""",
+        specs=[WELCOMEDROP_SPEC],
+    ),
+    Mutation(
+        id='session-welcome-review-after-clear',
+        what='the welcome-window review runs after the window is cleared, so it sees nothing',
+        file=SESSION,
+        search="""    this.#reviewJoinerWindowMisses(heldEpoch);
+    // 6.7b MEDIUM-1""",
+        replace="""    // 6.7b MEDIUM-1""",
+        also=[
+            (
+                """    // (That review ran above, before this clear: see its comment.)
+""",
+                """    this.#reviewJoinerWindowMisses(heldEpoch);
+""",
+            ),
+        ],
+        specs=[WELCOMEDROP_SPEC],
+    ),
+    Mutation(
+        id='session-welcome-nohold-silent',
+        what='a counted welcome-window miss with no hold available returns without latching loud',
+        file=SESSION,
+        search="""        this.#latchLoud(error, "media");
+        return;
+      }
+    }
+    // A sender already gone""",
+        replace="""        return;
+      }
+    }
+    // A sender already gone""",
+        specs=[WELCOMEDROP_SPEC],
+    ),
+    Mutation(
+        id='session-first-held-epoch-unrecorded',
+        what='the first held epoch is never told to the ledger',
+        file=SESSION,
+        search="""    this.#mediaErrors.noteFirstHeldEpoch(heldEpoch);
+""",
+        replace="""""",
+        specs=[HEAL_SPEC],
+    ),
+    Mutation(
+        id='session-ios-confirm-catch-falls-through',
+        what='R14: a callConfirmDowngrade rejection on iOS falls through to confirmLocalPlaintext',
+        file=SESSION,
+        search="""      if (!fallbackAllowed) {
+        // Every rejection keeps the pause;""",
+        replace="""      if (false) {
+        // Every rejection keeps the pause;""",
+        specs=[IOSCONFIRM_SPEC],
+    ),
+    Mutation(
+        id='session-ios-confirm-nogroup-falls-through',
+        what='R14: the no-group branch on iOS falls through to confirmLocalPlaintext',
+        file=SESSION,
+        search="""    if (!fallbackAllowed && (groupId === null || !this.hasUsableGroup())) {""",
+        replace="""    if (false && (groupId === null || !this.hasUsableGroup())) {""",
+        specs=[IOSCONFIRM_SPEC],
+    ),
+    Mutation(
+        id='session-ios-confirm-refusal-silent',
+        what='R14: a refused confirm keeps the pause but latches nothing loud',
+        file=SESSION,
+        search="""    if (this.#terminal() || this.#loudLatched) return;
+    this.#latchLoud(new Error(ENCRYPTION_UNCONFIRMED), "control");""",
+        replace="""    return;""",
+        specs=[IOSCONFIRM_SPEC],
+    ),
+    Mutation(
+        id='session-witness-escalation-noop',
+        what='noteWitnessEscalated latches nothing',
+        file=SESSION,
+        search="""    this.#latchLoud(new Error(ENCRYPTION_UNCONFIRMED), "media");
+  }""",
+        replace="""  }""",
+        specs=[IOSCONFIRM_SPEC],
+    ),
+    Mutation(
+        id='session-key-ack-error-not-routed',
+        what='R17: LocalKeyAckError does not route like MissingLocalFrameKeyError',
+        file=SESSION,
+        search="""      !(error instanceof MissingLocalFrameKeyError) &&
+      !(error instanceof LocalKeyAckError)
+""",
+        replace="""      !(error instanceof MissingLocalFrameKeyError)
+""",
+        specs=[KEYACK_SPEC],
+    ),
+    Mutation(
+        id='session-key-ack-error-keyed-drop',
+        what='R17: a LocalKeyAckError is dropped while E2EE is enabled',
+        file=SESSION,
+        search="""      !(error instanceof LocalKeyAckError) &&
+      this.#e2eeEnabled &&""",
+        replace="""      this.#e2eeEnabled &&""",
+        specs=[KEYACK_SPEC],
+    ),
+    Mutation(
+        id='session-locked-no-backoff',
+        what='a locked-store retry never backs off',
+        file=SESSION,
+        search="""        this.#lockedRetryDelayMs = Math.min(delayMs * 2, LOCKED_RETRY_MAX_MS);
+""",
+        replace="""""",
+        specs=[LOCKED_SPEC],
+    ),
+    Mutation(
+        id='session-locked-no-reset',
+        what='a processed envelope does not reset the locked backoff',
+        file=SESSION,
+        search="""    if (disp.kind === "processed") this.#lockedRetryDelayMs = RETRY_DELAY_MS;
+""",
+        replace="""""",
+        specs=[LOCKED_SPEC],
+    ),
+    Mutation(
+        id='session-locked-no-refeed',
+        what='a held locked envelope is never fed back',
+        file=SESSION,
+        search="""          this.#scheduleLockedRetry(envelope, delayMs);""",
+        replace="""          void delayMs;""",
+        specs=[LOCKED_SPEC],
+    ),
+    Mutation(
+        id='session-locked-media-origin',
+        what='the locked-store latch is a media-origin latch instead of control',
+        file=SESSION,
+        search="""            : new Error(ENCRYPTION_UNCONFIRMED),
+          "control",""",
+        replace="""            : new Error(ENCRYPTION_UNCONFIRMED),
+          "media",""",
+        specs=[LOCKED_SPEC],
+    ),
+    Mutation(
+        id='state-ios-switch-coerced',
+        what="R9/B1: the fetched kill switch is coerced (`|| undefined`), so the server's strict false reads ON",
+        file=STATE,
+        search="""          serverValue: iosSwitchValue,""",
+        replace="""          serverValue: iosSwitchValue || undefined,""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-confirm-fallback-allowed',
+        what='R14: the session is told iOS has an in-app plaintext fallback',
+        file=STATE,
+        search="""          confirmFallbackAllowed: !IOS_WEBKIT,""",
+        replace="""          confirmFallbackAllowed: true,""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-hold-release-unconditional',
+        what='R1: the webkit hold is released whatever the pure hold verdict says',
+        file=STATE,
+        search="""    if (webkitHoldReleased(inputs)) void this.#resumeGate(room, "webkit-hold");""",
+        replace="""    void this.#resumeGate(room, "webkit-hold");""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-hold-release-mid-publish',
+        what='R1: the webkit hold is released while a wrapped publish is still in flight',
+        file=STATE,
+        search="""    if (!this.#publishGate.has("webkit-hold") || hold.publishes > 0) return;""",
+        replace="""    if (!this.#publishGate.has("webkit-hold")) return;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-hold-never-asserted',
+        what='R1: the webkit hold is never asserted at Room construction',
+        file=STATE,
+        search="""      this.#publishGate.add("webkit-hold");
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-hold-enable-term-forged',
+        what="R2: the hold's enable term is forged true instead of the worker's enable reply",
+        file=STATE,
+        search="""      workerEnabled: this.#workerEnabled,""",
+        replace="""      workerEnabled: new Map([[room.localParticipant.identity, true]]),""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-hold-born-senders-dropped',
+        what='R1: senders born since the last listing are left out of the verdict',
+        file=STATE,
+        search="""      born: [...born].map(webkitHoldTrack),""",
+        replace="""      born: [],""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-hold-trackid-mediastreamtrack',
+        what="R15: the hold's trackId is the MediaStreamTrack id instead of mediaStreamID",
+        file=STATE,
+        search="""    mediaStreamID: track.mediaStreamID,""",
+        replace="""    mediaStreamID: track.mediaStreamTrack.id,""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-hold-at-birth-dropped',
+        what='R1: a new sender does not re-assert the hold at its birth',
+        file=STATE,
+        search="""        this.#webkitHoldAtBirth(room, track);
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-forget-track-dropped',
+        what="R18c: a new sender keeps its track's old transform ack",
+        file=STATE,
+        search="""        this.#workerAcks?.forgetTrack(track.mediaStreamID);
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-raw-keys-off',
+        what='D2: the provider is built without raw key bytes on iOS',
+        file=STATE,
+        search="""          rawKeyBytes: IOS_WEBKIT,""",
+        replace="""          rawKeyBytes: false,""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-tick-off',
+        what='R8: the key-freshness tick never starts',
+        file=STATE,
+        search="""    const stopTick = keyTickEnabled(IOS_WEBKIT)""",
+        replace="""    const stopTick = keyTickEnabled(false)""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-reset-before-detach',
+        what='R13c: the tracker resets before its worker listener is detached',
+        file=STATE,
+        search="""      worker.removeEventListener("message", onMessage);
+      tracker.reset();
+""",
+        replace="""      tracker.reset();
+      worker.removeEventListener("message", onMessage);
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-dead-worker-unrouted',
+        what='R7: a dead worker on iOS reaches no loud path',
+        file=STATE,
+        search="""              session.noteFatalMediaError(new Error(E2EE_WORKER_DEAD));""",
+        replace="""              void session;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-probe-not-awaited',
+        what='D8: connect does not wait for a pending worker probe',
+        file=STATE,
+        search="""      await probeE2EEWorker();
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-push-not-counted',
+        what='R12: the key push is routed without being counted by the backstop',
+        file=STATE,
+        search="""            backstop?.notePush(event.group_id, event.epoch);
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-backstop-sync',
+        what="R12: the backstop's afterResolve is deferred synchronously instead of a macrotask",
+        file=STATE,
+        search="""                defer: (f) => setTimeout(f, 0),""",
+        replace="""                defer: (f) => f(),""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='ios-switch-fetch-coerced',
+        what='F1: the fetched root value is coerced to a boolean, so an absent field reads OFF',
+        file=IOS_SWITCH,
+        search="""      (body) => finish(switchValueFromRoot(body)),""",
+        replace="""      (body) => finish(Boolean(switchValueFromRoot(body))),""",
+        specs=[IOS_SWITCH_SPEC],
+    ),
+    Mutation(
+        id='ios-switch-fetch-reject-off',
+        what='F1: a rejected root fetch reads OFF instead of absent (ON)',
+        file=IOS_SWITCH,
+        search="""      () => finish(undefined),
+    );""",
+        replace="""      () => finish(false),
+    );""",
+        specs=[IOS_SWITCH_SPEC],
+    ),
+    Mutation(
+        id='ios-switch-fetch-reject-throws',
+        what='F1: a rejected root fetch rejects the switch read (it must never reject)',
+        file=IOS_SWITCH,
+        search="""      () => finish(undefined),
+    );""",
+        replace="""      (error) => {
+        throw error;
+      },
+    );""",
+        specs=[IOS_SWITCH_SPEC],
+    ),
+    Mutation(
+        id='ios-switch-fetch-timeout-off',
+        what='F1: a fetch that times out reads OFF instead of absent (ON)',
+        file=IOS_SWITCH,
+        search="""      timer = { handle: setTimer(() => finish(undefined), timeoutMs)""",
+        replace="""      timer = { handle: setTimer(() => finish(false), timeoutMs)""",
+        specs=[IOS_SWITCH_SPEC],
+    ),
+    Mutation(
+        id='ios-switch-fetch-sync-throw',
+        what='F1: a synchronous fetchRoot throw escapes the switch read',
+        file=IOS_SWITCH,
+        search="""    try {
+      request = Promise.resolve(deps.fetchRoot());
+    } catch {
+      finish(undefined);
+      return;
+    }""",
+        replace="""    request = Promise.resolve(deps.fetchRoot());""",
+        specs=[IOS_SWITCH_SPEC],
+    ),
+    Mutation(
+        id='ios-switch-fetch-getter-escapes',
+        what='F1: a throwing getter on the root body escapes instead of reading unreachable',
+        file=IOS_SWITCH,
+        search="""  } catch {
+    // A throwing getter on a hostile or broken body is "unreachable".
+    return undefined;
+  }""",
+        replace="""  } catch (error) {
+    throw error;
+  }""",
+        specs=[IOS_SWITCH_SPEC],
+    ),
+    Mutation(
+        id='ios-switch-fetch-bad-bound',
+        what='F1: an invalid timeout falls through to an unbounded fetch',
+        file=IOS_SWITCH,
+        search="""  if (!(timeoutMs > 0 && timeoutMs <= MAX_TIMER_MS)) {
+    return Promise.resolve(undefined);
+  }""",
+        replace="""""",
+        specs=[IOS_SWITCH_SPEC],
+    ),
+    Mutation(
+        id='ios-switch-fetch-wrong-path',
+        what="F1: the flag is read at the root body's top level instead of under features",
+        file=IOS_SWITCH,
+        search="""    return features.ios_call_e2ee;""",
+        replace="""    return body.ios_call_e2ee;""",
+        specs=[IOS_SWITCH_SPEC],
+    ),
+    Mutation(
+        id='ios-switch-offered-or',
+        what='F1: callMediaE2EEOffered offers when EITHER the shell or the switch says so',
+        file=IOS_SWITCH,
+        search="""  return shellSupported === true && sw === "on";""",
+        replace="""  return shellSupported === true || sw === "on";""",
+        specs=[IOS_SWITCH_SPEC],
+    ),
+    Mutation(
+        id='ios-switch-offered-not-off',
+        what='F1: callMediaE2EEOffered offers on any switch value but off',
+        file=IOS_SWITCH,
+        search="""  return shellSupported === true && sw === "on";""",
+        replace="""  return shellSupported === true && sw !== "off";""",
+        specs=[IOS_SWITCH_SPEC],
+    ),
+    Mutation(
+        id='ios-switch-offered-ignores-switch',
+        what='F1: callMediaE2EEOffered ignores the switch',
+        file=IOS_SWITCH,
+        search="""  return shellSupported === true && sw === "on";""",
+        replace="""  return shellSupported === true;""",
+        specs=[IOS_SWITCH_SPEC],
+    ),
+    Mutation(
+        id='amber-b2-paused-row-removed',
+        what='B2: a paused device in a call no longer reads not_encrypted on the chip',
+        file=POLICY,
+        search="""  if (inputs.pausedByServer) return "not_encrypted";
+""",
+        replace="""""",
+        specs=[POLICY_SPEC],
+    ),
+    Mutation(
+        id='amber-m1-any-green-resets',
+        what='M1: any green resets the escalation clock, even while a dropping identity is unresolved',
+        file=POLICY,
+        search="""    if (
+      !this.#fired &&
+      (chip === "e2ee" || chip === "e2ee_unverified") &&
+      this.#unresolvedPresent(inputs.presentIdentities)
+    ) {
+""",
+        replace="""    if (
+      !this.#fired &&
+      (chip === "e2ee" || chip === "e2ee_unverified") &&
+      false
+    ) {
+""",
+        specs=[POLICY_SPEC],
+    ),
+    Mutation(
+        id='amber-m1-departure-ignored',
+        what='M1: an identity that left still counts as unresolved',
+        file=POLICY,
+        search="""      if (present.includes(identity)) return true;
+""",
+        replace="""      return true;
+""",
+        specs=[POLICY_SPEC],
+    ),
+    Mutation(
+        id='amber-m1-live-resolves-while-dropping',
+        what='M1: an identity is resolved while it is still dropping',
+        file=POLICY,
+        search="""      if (!witness.dropping.includes(identity)) {
+        this.#unresolved.delete(identity);
+      }
+""",
+        replace="""      this.#unresolved.delete(identity);
+""",
+        specs=[POLICY_SPEC],
+    ),
+    Mutation(
+        id='amber-m1-live-never-resolves',
+        what='M1: a decoding identity is never resolved',
+        file=POLICY,
+        search="""      if (!witness.dropping.includes(identity)) {
+        this.#unresolved.delete(identity);
+      }
+""",
+        replace="""""",
+        specs=[POLICY_SPEC],
+    ),
+    Mutation(
+        id='amber-m1-prekey-drops-recorded',
+        what='M1: drops seen before the amber run are recorded as unresolved',
+        file=POLICY,
+        search="""    this.#resolveDecoding(inputs.decodeWitness);
+""",
+        replace="""    for (const identity of inputs.decodeWitness.dropping) this.#unresolved.add(identity);
+    this.#resolveDecoding(inputs.decodeWitness);
+""",
+        specs=[POLICY_SPEC],
+    ),
+    Mutation(
+        id='amber-m1-rearm-keeps-time',
+        what='m1: rearm keeps the accrued amber time',
+        file=POLICY,
+        search="""  rearm(): void {
+    this.#amberMs = 0;
+""",
+        replace="""  rearm(): void {
+""",
+        specs=[POLICY_SPEC],
+    ),
+    Mutation(
+        id='amber-m1-rearm-keeps-fired',
+        what='m1: rearm leaves the escalation fired, so a healed latch never re-escalates',
+        file=POLICY,
+        search="""    this.#interrupt();
+    this.#fired = false;
+  }
+
+  /** A reading that is not witness-only""",
+        replace="""    this.#interrupt();
+  }
+
+  /** A reading that is not witness-only""",
+        specs=[POLICY_SPEC],
+    ),
+    Mutation(
+        id='chip-paused-constant-false',
+        what='B2: the chip input pausedByServer is a constant false',
+        file=CHIP,
+        search="""    pausedByServer: sources.pausedByServer(),
+""",
+        replace="""    pausedByServer: false,
+""",
+        specs=[CHIP_SPEC],
+    ),
+    Mutation(
+        id='chip-present-from-publishers',
+        what='M1: present identities are read from publishers only, so a silent member reads as departed',
+        file=CHIP,
+        search="""    presentIdentities: (room?.participants ?? []).map(
+      (participant) => participant.identity,
+    ),
+""",
+        replace="""    presentIdentities: publishing,
+""",
+        specs=[CHIP_SPEC],
+    ),
+    Mutation(
+        id='session-fatal-not-keyed',
+        what='F3: a fatal media error is not recorded as fatal',
+        file=SESSION,
+        search="""    this.#fatalMediaErrors.add(error);
+""",
+        replace="""""",
+        specs=[FATAL_SPEC],
+    ),
+    Mutation(
+        id='session-fatal-no-mode-drop',
+        what='F3: a fatal media error leaves the mode up (the gate is not held)',
+        file=SESSION,
+        search="""    this.#lastError = error;
+    this.#dropModeToNegotiating();
+    this.#latchLoud(error, "control");
+  }
+
+  /**
+   * The decode witness""",
+        replace="""    this.#lastError = error;
+    this.#latchLoud(error, "control");
+  }
+
+  /**
+   * The decode witness""",
+        specs=[FATAL_SPEC],
+    ),
+    Mutation(
+        id='session-fatal-media-origin',
+        what='F3: a fatal media error latches media-origin, so remote evidence heals it',
+        file=SESSION,
+        search="""    this.#dropModeToNegotiating();
+    this.#latchLoud(error, "control");
+  }
+
+  /**
+   * The decode witness""",
+        replace="""    this.#dropModeToNegotiating();
+    this.#latchLoud(error, "media");
+  }
+
+  /**
+   * The decode witness""",
+        specs=[FATAL_SPEC],
+    ),
+    Mutation(
+        id='session-fatal-via-surface',
+        what='F3: noteFatalMediaError routes through the healable noteEncryptionError surface',
+        file=SESSION,
+        search="""    if (this.#loudLatched && this.#loudOrigin === "control") return;
+    console.error("[mls] fatal media-plane error""",
+        replace="""    if (this.#loudLatched && this.#loudOrigin === "control") return;
+    this.noteEncryptionError(error);
+    return;
+    console.error("[mls] fatal media-plane error""",
+        specs=[FATAL_SPEC],
+    ),
+    Mutation(
+        id='session-fatal-survival-removed',
+        what="MAJOR-2: #resetRotationState clears a fatal latch, so a fatal error replayed at start() is wiped by the join route's reset",
+        file=SESSION,
+        search="""    if (!(this.#loudLatched && this.#fatalNoted)) {""",
+        replace="""    if (true) {""",
+        specs=[FATAL_SPEC],
+    ),
+    Mutation(
+        id='session-fatal-noted-only-when-latching',
+        what='MAJOR-2: #fatalNoted is set only when this call latches, so a fatal error over an existing control latch is forgotten at the next reset',
+        file=SESSION,
+        search="""    this.#fatalNoted = true;
+    if (this.#loudLatched && this.#loudOrigin === "control") return;""",
+        replace="""    if (this.#loudLatched && this.#loudOrigin === "control") return;
+    this.#fatalNoted = true;""",
+        specs=[FATAL_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-f4-born-not-judged',
+        what='F4: a live born track is never judged, so a sender born mid-hold is released unacked',
+        file=SENDER_HOLD,
+        search="""    else judged.push(track);""",
+        replace="""    else void track;""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-f4-ended-born-judged',
+        what='F4: an ended born track is still judged',
+        file=SENDER_HOLD,
+        search="""    if (track.ended) endedBorn.push(track.ref);
+    else judged.push(track);""",
+        replace="""    if (track.ended) endedBorn.push(track.ref);
+    judged.push(track);""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-f4-ended-born-unreported',
+        what='F4: an ended born track is never reported for pruning',
+        file=SENDER_HOLD,
+        search="""    if (track.ended) endedBorn.push(track.ref);""",
+        replace="""    if (track.ended) void 0;""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-f4-trackless-publication-skipped',
+        what='F4: a publication with no track is skipped instead of holding (no_senders)',
+        file=SENDER_HOLD,
+        search="""  const judged: (WebkitHoldTrack<T> | undefined)[] = [...state.publications];""",
+        replace="""  const judged: (WebkitHoldTrack<T> | undefined)[] = state.publications.filter(Boolean);""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-f4-local-key-first',
+        what='F4: the FIRST local key is taken, not the current (last) one',
+        file=SENDER_HOLD,
+        search="""    if (key.participantIdentity === local) {""",
+        replace="""    if (key.participantIdentity === local && localKey === undefined) {""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-f4-local-key-prefix',
+        what='F4: any identity starting with the local identity counts as local',
+        file=SENDER_HOLD,
+        search="""    if (key.participantIdentity === local) {""",
+        replace="""    if (key.participantIdentity.startsWith(local)) {""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-f4-codec-sender-trusts-ack',
+        what='F4: a codec sender (never given a transform) is trusted on an attached ack',
+        file=SENDER_HOLD,
+        search="""    !trackId.includes(CODEC_SENDER_MARK) && state.attached(trackId);""",
+        replace="""    state.attached(trackId);""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-f4-codec-senders-dropped',
+        what="F4: codec senders are left out of a track's sender ids",
+        file=SENDER_HOLD,
+        search="""    ...track.codecSenders.map(""",
+        replace="""    ...[].map(""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-f4-enabled-any-identity',
+        what="F4: any identity's enable reply counts as the local one's",
+        file=SENDER_HOLD,
+        search="""  const localIdentityEnabled = state.workerEnabled.get(local) === true;""",
+        replace="""  const localIdentityEnabled = [...state.workerEnabled.values()].includes(true);""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-f4-released-any',
+        what="F4: the hold releases when ANY publication's verdict releases",
+        file=SENDER_HOLD,
+        search="""  return inputs.every((input) => senderHoldVerdict(input).release);""",
+        replace="""  return inputs.some((input) => senderHoldVerdict(input).release);""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-f4-overdue-while-disconnected',
+        what='F4: the hold reads overdue while the room is disconnected',
+        file=SENDER_HOLD,
+        search="""  if (input.roomConnected !== true) return false;""",
+        replace="""""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-f4-overdue-strict',
+        what='F4: the overdue bound is exclusive (one tick late)',
+        file=SENDER_HOLD,
+        search="""  return nowMs - heldSinceMs >= WEBKIT_HOLD_BOUND_MS;""",
+        replace="""  return nowMs - heldSinceMs > WEBKIT_HOLD_BOUND_MS;""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-f4-overdue-nan-exempt',
+        what='F4: a non-finite clock is never overdue',
+        file=SENDER_HOLD,
+        search="""  if (!Number.isFinite(heldSinceMs) || !Number.isFinite(nowMs)) return true;""",
+        replace="""""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-f4-bound-doubled',
+        what='F4: WEBKIT_HOLD_BOUND_MS is doubled',
+        file=SENDER_HOLD,
+        search="""export const WEBKIT_HOLD_BOUND_MS = KEY_ACK_TIMEOUT_MS;""",
+        replace="""export const WEBKIT_HOLD_BOUND_MS = 2 * KEY_ACK_TIMEOUT_MS;""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='settings-switch-not-pending',
+        what='F6: Settings claims a state before the bounded switch answer arrives',
+        file=ENCRYPTION_SETTINGS,
+        search="""  const switchKnown = () => platform !== "ios" || switchRead() !== undefined;""",
+        replace="""  const switchKnown = () => true;""",
+        specs=[IOS_GATE_SPEC],
+    ),
+    Mutation(
+        id='settings-desc-on-capable',
+        what='F6: Settings says calls are encrypted whenever the device is capable, paused or not',
+        file=ENCRYPTION_SETTINGS,
+        search="""              when={offered()}""",
+        replace="""              when={mediaCapable()}""",
+        specs=[IOS_GATE_SPEC],
+    ),
+    Mutation(
+        id='settings-switch-coerced',
+        what='F6: Settings coerces the fetched switch, so an absent field reads OFF',
+        file=ENCRYPTION_SETTINGS,
+        search="""      iosCallSwitch({ platform, serverValue: switchRead()?.serverValue }),""",
+        replace="""      iosCallSwitch({ platform, serverValue: !!switchRead()?.serverValue }),""",
+        specs=[IOS_GATE_SPEC],
+    ),
+    Mutation(
+        id='settings-switch-ignored',
+        what='F6: Settings ignores the switch',
+        file=ENCRYPTION_SETTINGS,
+        search="""      iosCallSwitch({ platform, serverValue: switchRead()?.serverValue }),""",
+        replace="""      "on",""",
+        specs=[IOS_GATE_SPEC],
+    ),
+    Mutation(
+        id='state-ios-chip-paused-unbound',
+        what="B2: the chip's pausedByServer source is a constant false",
+        file=STATE,
+        search="""      pausedByServer: () => this.callEncryptionReadiness() === "paused",""",
+        replace="""      pausedByServer: () => false,""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-r21-readiness-gets-offer',
+        what='R21: readiness gets the combined offer as its shell term, so a paused iPhone reads unsupported',
+        file=STATE,
+        search="""    const readiness = callEncryptionReadiness({
+      shellSupported,
+""",
+        replace="""    const readiness = callEncryptionReadiness({
+      shellSupported: callMediaE2EEOffered(
+        shellSupported,
+        iosCallSwitch({ platform: Capacitor.getPlatform(), serverValue: iosSwitchValue }),
+      ),
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-push-lost-healable',
+        what='A-M1: a lost key push goes to the healable error surface instead of the fatal one',
+        file=STATE,
+        search="""                    this.#mlsSession?.noteFatalMediaError(
+                      new Error(KEY_PUSH_LOST),""",
+        replace="""                    this.#mlsSession?.noteEncryptionError(
+                      new Error(KEY_PUSH_LOST),""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-overdue-healable',
+        what='A-M1: an overdue hold goes to the healable error surface instead of the fatal one',
+        file=STATE,
+        search="""      session.noteFatalMediaError(new Error(WEBKIT_HOLD_OVERDUE));""",
+        replace="""      session.noteEncryptionError(new Error(WEBKIT_HOLD_OVERDUE));""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-overdue-clock-restarts-every-tick',
+        what='R20: the overdue clock restarts on every tick, so a held hold is never overdue',
+        file=STATE,
+        search="""    hold.heldSince ??= now;""",
+        replace="""    hold.heldSince = now;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-overdue-clock-before-key-ack',
+        what='R20: the overdue clock starts before the local key is acked',
+        file=STATE,
+        search="""    if (!this.#publishGate.has("webkit-hold") || !connected || !keyAcked) {""",
+        replace="""    if (!this.#publishGate.has("webkit-hold") || !connected) {""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-presession-error-dropped',
+        what='B-m4: a handleSender failure before the session is dropped, not buffered',
+        file=STATE,
+        search="""            this.#preSessionMediaErrors.push(error);
+""",
+        replace="""            void error;
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-presession-replay-healable',
+        what='B-m4: a buffered pre-session failure is replayed as healable, not fatal',
+        file=STATE,
+        search="""        for (const error of early) session.noteFatalMediaError(error);""",
+        replace="""        for (const error of early) session.noteEncryptionError(error);""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-audio-stop-without-interruption',
+        what='C-M1: the audio bracket stops and starts without a seen mic interruption (visibility alone)',
+        file=STATE,
+        search="""    if (!audio || !this.#micInterruptedSinceStart) return;""",
+        replace="""    if (!audio) return;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-audio-interruption-never-flagged',
+        what='MUST 2: a raw mic mute never flags the interruption, so the audio session is never restarted',
+        file=STATE,
+        search="""          this.#micInterruptedSinceStart = true;
+""",
+        replace="""          void 0;
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-construct-catch-no-zeroing',
+        what='A-3: the construct-catch drops the provider without zeroing its raw key bytes',
+        file=STATE,
+        search="""        this.#mlsKeyProvider?.resetForGroup();
+        this.#mlsKeyProvider = undefined;
+""",
+        replace="""        this.#mlsKeyProvider = undefined;
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-teardown-no-zeroing',
+        what='A-3: teardown drops the provider without zeroing its raw key bytes',
+        file=STATE,
+        search="""        this.#mlsKeyProvider?.resetForGroup();
+      } catch {""",
+        replace="""        void 0;
+      } catch {""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-no-session-press-not-inert',
+        what='B-m2/R19: on iOS the no-session in-app press flips to plaintext while a webkit hold exists',
+        file=STATE,
+        search="""    if (IOS_WEBKIT && this.#webkitHold !== undefined) return;""",
+        replace="""    if (false) return;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-overdue-inflight-branch-dropped',
+        what='NEW-1: a wrapped publish in flight no longer stops the overdue clock, so a camera prompt runs the bound out on a healthy call',
+        file=STATE,
+        search="""    if (hold.publishes > 0) {
+      hold.heldSince = undefined;
+      hold.overdueReported = false;
+      return;
+    }
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-overdue-inflight-keeps-clock',
+        what='NEW-1: a wrapped publish in flight pauses the judge but keeps the clock running',
+        file=STATE,
+        search="""    if (hold.publishes > 0) {
+      hold.heldSince = undefined;
+      hold.overdueReported = false;
+      return;
+    }
+""",
+        replace="""    if (hold.publishes > 0) {
+      return;
+    }
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-escalation-never-rearmed',
+        what="B-m1: the escalation is never re-armed when the session's latch heals",
+        file=STATE,
+        search="""          if (gen === this.#connectGen) this.#witnessAmber.rearm();""",
+        replace="""          if (gen === this.#connectGen) void 0;""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+]
+
+
 if __name__ == "__main__":
     sys.exit(main())

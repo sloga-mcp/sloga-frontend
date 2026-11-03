@@ -5,8 +5,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
+import { classifyEnvelopeError } from "../client/mlsEnvelopeClassify.ts";
 import {
   drainAction,
+  keyUnreadableErrorType,
   shouldParkForPendingFetch,
   spliceParkedAfterWelcome,
   type DrainBounds,
@@ -118,6 +120,54 @@ test("needs_identity NEVER acks/drops the Welcome (fail-closed, every progress/r
 test("error bounded → retry, then ack_drop_poison at the retry cap", () => {
   assert.deepEqual(A(errDisp(), 0, 0, BOUNDS), { do: "retry" });
   assert.deepEqual(A(errDisp(), BOUNDS.maxRetries, 0, BOUNDS), { do: "ack_drop_poison" });
+});
+
+// D10 (locked device mid-call). The dispositions below are built by the REAL
+// classifier from the native error shape `{ type: "<snake_case>" }`, so this
+// pins the classify → drain chain the session runs, not a hand-made stand-in.
+const nativeErr = (type: string) => classifyEnvelopeError({ type });
+
+test("D10: a locked store (protector_locked / protector) is held loud at EVERY retry count, never acked or dropped", () => {
+  for (const type of ["protector_locked", "protector"] as const) {
+    const disp = nativeErr(type);
+    assert.equal(disp.kind, "error"); // the classifier side of the contract
+    assert.equal(disp.ack, false);
+    // Well past the cap: a phone stays locked far longer than ~2.5 s.
+    for (let retries = 0; retries <= BOUNDS.maxRetries * 4; retries++) {
+      assert.deepEqual(A(disp, retries, 0, BOUNDS), {
+        do: "hold_locked",
+        errorType: type,
+      });
+    }
+  }
+});
+
+test("D10: only the key-unreadable class is held; every other error keeps retry → ack_drop_poison", () => {
+  const others: unknown[] = [
+    { type: "storage" },
+    { type: "ipc" },
+    { type: "protector_locked_v2" }, // a near-miss spelling is NOT the class
+    { type: "Protector" },
+    { reason: "protector_locked" }, // the type field, nothing else
+    "protector_locked", // a bare string is not the IPC shape
+    null,
+    undefined,
+    new Error("protector_locked"),
+  ];
+  for (const error of others) {
+    const disp = { kind: "error", error, ack: false };
+    assert.deepEqual(A(disp, 0, 0, BOUNDS), { do: "retry" });
+    assert.deepEqual(A(disp, BOUNDS.maxRetries, 0, BOUNDS), {
+      do: "ack_drop_poison",
+    });
+  }
+  assert.equal(keyUnreadableErrorType({ type: "protector" }), "protector");
+  assert.equal(
+    keyUnreadableErrorType({ type: "protector_locked" }),
+    "protector_locked",
+  );
+  assert.equal(keyUnreadableErrorType({ type: "storage" }), undefined);
+  assert.equal(keyUnreadableErrorType(null), undefined);
 });
 
 // D10 (6.4 gate MED-2): park same-group envelopes while an identity-fetch is

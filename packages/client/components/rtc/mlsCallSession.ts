@@ -101,7 +101,7 @@ import {
   enrolmentVerdict,
   isAdmitTargetRefusal,
 } from "./mlsAdmitPolicy";
-import { MissingLocalFrameKeyError } from "./mlsCallKeys";
+import { LocalKeyAckError, MissingLocalFrameKeyError } from "./mlsCallKeys";
 import {
   type CallMode,
   type CallModeEvent,
@@ -114,6 +114,7 @@ import {
   classifyEncryptionError,
   classifyMediaError,
   interludeStickyAcrossResecure,
+  joinWindowMissPredatesEpoch,
   latestPresentAddedAt,
   loudHealVerdict,
   loudModeFallback,
@@ -188,6 +189,12 @@ const MAX_PARK_ATTEMPTS = 8;
 const MAX_ENVELOPE_RETRIES = 5;
 /** Backoff before re-draining a transiently-failed envelope. */
 const RETRY_DELAY_MS = 500;
+/**
+ * D10: the cap on the re-feed delay of an envelope held on a locked store.
+ * The delay starts at `RETRY_DELAY_MS` and doubles per hold, so a phone that
+ * stays locked is asked at most every 5 s; any processed envelope resets it.
+ */
+const LOCKED_RETRY_MAX_MS = 5_000;
 /** Bound on successive rejoin/successor re-establishes before failing loud. */
 const MAX_REESTABLISH = 3;
 /**
@@ -497,6 +504,16 @@ function installEntries(
     : remotes;
 }
 
+/**
+ * The key index half of a `keyPairId` (`<identity>@<index>`); NaN when the
+ * pair has no index, which `joinWindowMissPredatesEpoch` counts (fails
+ * closed).
+ */
+function pairKeyIndex(pair: string): number {
+  const index = /@(\d+)$/.exec(pair);
+  return index ? Number(index[1]) : Number.NaN;
+}
+
 function cryptorErrorParticipant(error: unknown): string | undefined {
   if (typeof error !== "object" || error === null) return undefined;
   const identity = (error as { participantIdentity?: unknown })
@@ -660,6 +677,11 @@ export function classifyLocalKeyInstall(
     return inbound.removed ? "immediate" : "grace";
   return "immediate"; // fail-safe (C1): unknown ⇒ never delay the send-key
 }
+
+// `joinWindowMissPredatesEpoch` (the Welcome-window false-red guard) lives in
+// `mlsCallModePolicy.ts`, its one source of truth: `MediaErrorLedger` applies
+// the same rule to the heal's `unfilledPairs`, and that module cannot import
+// this one back.
 
 /** What a receiver-lag reading calls for (plan §1.5 wraparound). */
 export type LagAction =
@@ -1156,6 +1178,21 @@ export interface MlsCallSessionDeps {
    * prefetch was started.
    */
   abortResumePrefetch?: () => void;
+  /**
+   * Whether `confirmPlaintext` may fall back to the in-app
+   * `confirmLocalPlaintext()` when the native confirm dialog cannot answer:
+   * no usable group to compute its roster against, or a rejection other than
+   * `declined`. `false` on iOS (W3 MUST 3): nothing there can arm the native
+   * announce gate without that dialog, and a `declined` there also covers a
+   * dialog that could not be shown at all (busy, its deadline, navigation).
+   * With `false` every such case keeps the gate paused, and every case but a
+   * decline latches loud (`#refuseConfirmFallback`).
+   *
+   * Required, so every typed construction site states it, and read as
+   * `=== true`: anything but an explicit `true` (an untyped caller that omits
+   * it) refuses the fallback. Fails closed.
+   */
+  confirmFallbackAllowed: boolean;
 }
 
 /** What the resume prefetch hands the session: commits carry their bodies. */
@@ -1360,6 +1397,8 @@ export class MlsCallSession {
   #seen = new Set<string>();
   /** Per-envelope transient-error retry counter (bounded, item 4). */
   #retries = new Map<string, number>();
+  /** D10: the next re-feed delay for a `hold_locked` envelope (backs off). */
+  #lockedRetryDelayMs = RETRY_DELAY_MS;
   /** Consecutive park/gap-refetch attempts (bounded → rejoin, M4). */
   #parkAttempts = 0;
   /**
@@ -1631,6 +1670,19 @@ export class MlsCallSession {
   >();
   /** Loud NOT-ENCRYPTED latched (terminal for the media chip until re-establish). */
   #loudLatched = false;
+  /**
+   * Errors latched through `noteFatalMediaError`: read un-keyed by
+   * `#latchLoud` (this device's own media path failed), like the two key
+   * classes it excludes by type.
+   */
+  #fatalMediaErrors = new WeakSet<object>();
+  /**
+   * `noteFatalMediaError` ran in this session, latching or not (it does not
+   * re-latch over an existing control latch). While it holds, a re-establish
+   * keeps the latch (`#resetRotationState`). Never reset: it ends with the
+   * session object.
+   */
+  #fatalNoted = false;
   /** What raised the latch: only a `media` latch can heal (`loudHealVerdict`). */
   #loudOrigin: LoudLatchOrigin = "control";
   /** The latched error object — the UI clears exactly this one on heal/re-establish. */
@@ -1694,17 +1746,18 @@ export class MlsCallSession {
    * cancel this branch removed from `media`, surviving under the one token
    * nobody attacked (media-E2EE review, 2026-09-08).
    *
-   * 🔴 They are also NOT covered, and this branch deliberately stops trying to
-   * cover them. Giving them a bounded verdict at the first install turns the
-   * ordinary Welcome — a sender that has since moved on from a stale index
-   * nothing will ever re-fill — into a guaranteed false red; exempting them
-   * hides a live invalid index when the sender advanced while we were joining
-   * and its commit is withheld. The two are indistinguishable locally, because
-   * the worker emits one error per index and then drops silently. `main` has
-   * the same blind spot. `#reviewJoinerWindowMisses` logs the unanswered pairs
-   * so a live leg can at least see them; closing it wants the worker `setKey`
-   * ack or a per-index re-check on the sender's next epoch, which is its own
-   * piece of work (media-E2EE reviews, 2026-09-08).
+   * 🔴 They are counted once the window closes (`#reviewJoinerWindowMisses`,
+   * Wave J). They used to be logged and dropped: giving every one a bounded
+   * verdict at the first install turns the ordinary Welcome — a sender that
+   * has since moved on from a stale index nothing will ever re-fill — into a
+   * guaranteed false red, and exempting every one hid a live invalid index
+   * when the sender advanced while we were joining and its commit was
+   * withheld (amber, then green, over silent drops). The two are told apart
+   * by the INDEX, relative to the epoch this device first held: an index one
+   * of the epochs before it used predates our admission and is exempt
+   * (`joinWindowMissPredatesEpoch`); any other unfilled index gets the
+   * join-race hold and its deadline. The aliasing residual is documented
+   * there.
    */
   #joinerWindowMisses = new Map<string, { identity: string; error: unknown }>();
   /**
@@ -4577,6 +4630,8 @@ export class MlsCallSession {
       this.#deps.userId,
     );
     if (disp.kind === "processed") this.#noteStartupApplied(disp);
+    // The store opened: a later hold (another lock) starts its backoff over.
+    if (disp.kind === "processed") this.#lockedRetryDelayMs = RETRY_DELAY_MS;
     const action = drainAction(
       disp,
       this.#retries.get(envelope.id) ?? 0,
@@ -4747,6 +4802,43 @@ export class MlsCallSession {
           this.#scheduleRetry(envelope);
         return "retry";
       }
+      case "hold_locked": {
+        // D10, a locked phone mid-call: native could not open the store, so
+        // the envelope was NOT applied and this device is behind the group.
+        // The store is intact. Never ack, never drop, never rejoin (each loses
+        // state); kept OFF #seen and re-fed on a backed-off delay, so the
+        // first delivery after the unlock processes normally. The counter is
+        // NOT bumped: the hold is not a failure the cap may count, and once
+        // unlocked this envelope starts its own transient budget from zero.
+        // The resume catch-up's synthetics are not re-queued, as in `retry`.
+        // The re-feed BACKS OFF (doubling to `LOCKED_RETRY_MAX_MS`) so a phone
+        // that stays locked is not asked every 500 ms.
+        const delayMs = this.#lockedRetryDelayMs;
+        this.#lockedRetryDelayMs = Math.min(delayMs * 2, LOCKED_RETRY_MAX_MS);
+        if (!(this.#resumeCatchingUp && envelope.id.startsWith("mls-synth:")))
+          this.#scheduleLockedRetry(envelope, delayMs);
+        // LOUD, and it stays latched for the call: a CONTROL latch, so no
+        // heal clears it and the publish gate holds (`loudModeFallback`)
+        // through the lock and after it; unlocking resumes processing, a
+        // rejoin is what clears the red. The error is the readable one native
+        // rejected with when it is an Error (on iOS `CallProtectorLockedError`,
+        // whose message is `e2eeProtectorCopy`'s), else the curated one.
+        if (!this.#loudLatched) {
+          console.error(
+            "[mls] the encryption key is unreadable (locked device): the " +
+              "envelope is held for redelivery and the call goes loud",
+            action.errorType,
+            envelope.content_type,
+          );
+        }
+        this.#latchLoud(
+          disp.kind === "error" && disp.error instanceof Error
+            ? disp.error
+            : new Error(ENCRYPTION_UNCONFIRMED),
+          "control",
+        );
+        return "hold_locked";
+      }
       case "ack_drop_poison": {
         // carried item 4: an unrecognised terminal error can't spin forever.
         this.#seen.add(envelope.id);
@@ -4767,6 +4859,15 @@ export class MlsCallSession {
           );
         }
         return "ack_drop_poison";
+      }
+      default: {
+        // Exhaustive: a drain action added to `mlsDrainPolicy.ts` without an
+        // arm here fails tsc, and at runtime throws into `#onDrainStepThrew`
+        // (bounded retries, then loud) instead of returning nothing.
+        const exhaustive: never = action;
+        throw new Error(
+          `unhandled drain action ${(exhaustive as { do: string }).do}`,
+        );
       }
     }
   }
@@ -5206,6 +5307,17 @@ export class MlsCallSession {
       this.#inbound.push(envelope);
       void this.#pump();
     }, RETRY_DELAY_MS);
+    this.#timers.add(timer);
+  }
+
+  /** `#scheduleRetry` for a `hold_locked` envelope, on its backed-off delay. */
+  #scheduleLockedRetry(envelope: MlsEnvelope, delayMs: number): void {
+    const timer = setTimeout(() => {
+      this.#timers.delete(timer);
+      if (this.#terminal()) return;
+      this.#inbound.push(envelope);
+      void this.#pump();
+    }, delayMs);
     this.#timers.add(timer);
   }
 
@@ -5685,7 +5797,7 @@ export class MlsCallSession {
           isRemove,
           performance.now() - installStart,
         );
-        this.#onLocalKeyInstalled();
+        this.#onLocalKeyInstalled(epoch);
       } else {
         // Add-grace: remotes now; the local send-key switch is deferred and
         // epoch-fenced (NEW-1). We keep publishing on the OLD local key
@@ -5731,13 +5843,29 @@ export class MlsCallSession {
    * banner's `held` pause clause true and lets `confirmReachable` admit the
    * Leave / "Stay unencrypted" escape, so this is a terminus the user can act
    * on rather than a hang.
+   *
+   * `LocalKeyAckError` takes the same terminus (owner ruling, Wave 3): the
+   * worker never confirmed THIS epoch's send key (iOS, raw-key mode), so on
+   * WebKit the encoder is still on the PREVIOUS key — on a Remove, the key
+   * the removed member holds. The debounce would keep publishing under it and
+   * any remote's encrypted status would clear the amber. Not retried here,
+   * never healed by remote evidence (control origin), and excluded from
+   * `mediaKeyed` in `#latchLoud` for the same reason as a missing frame key.
    */
   #onRotationError(error: unknown): void {
-    if (!(error instanceof MissingLocalFrameKeyError)) {
+    if (
+      !(error instanceof MissingLocalFrameKeyError) &&
+      !(error instanceof LocalKeyAckError)
+    ) {
       this.#onMediaError(error);
       return;
     }
-    console.error("[mls] no local frame key for the current epoch", error);
+    console.error(
+      error instanceof LocalKeyAckError
+        ? "[mls] the worker did not confirm the local send key"
+        : "[mls] no local frame key for the current epoch",
+      error,
+    );
     this.#lastError = error;
     this.#dropModeToNegotiating();
     this.#latchLoud(error, "control");
@@ -5791,10 +5919,22 @@ export class MlsCallSession {
    * Mark the local send-key installed and, until E2EE is enabled, kick a fresh
    * reconcile so the enable gate (step 6) fires promptly once the first key is
    * ready (the periodic tick would otherwise take up to a full interval).
+   * `heldEpoch` is the epoch whose local key just installed: the reference the
+   * Welcome-window review judges "before our admission" against.
    */
-  #onLocalKeyInstalled(): void {
+  #onLocalKeyInstalled(heldEpoch: number): void {
     this.#hasLocalKey = true;
     this.#joinTimeline?.stamp("keysInstalled");
+    // The heal's `unfilledPairs` judges pre-first-key pairs against the SAME
+    // reference the review below uses; the ledger keeps only the first call
+    // since its last reset, and with none recorded it counts every pair.
+    this.#mediaErrors.noteFirstHeldEpoch(heldEpoch);
+    // The Welcome-window misses are judged FIRST, while the joiner escalation
+    // below still holds the amber: a miss that counts opens its own hold
+    // here, so the amber passes from one to the other with no `false` edge
+    // in between (`#refreshMediaHold` is edge-triggered and the chip reads
+    // every edge).
+    this.#reviewJoinerWindowMisses(heldEpoch);
     // 6.7b MEDIUM-1: installing the FIRST local key is the genuine recovery
     // that closes the joiner window (`!#hasLocalKey` — see #surfaceError /
     // classifyEncryptionError). Clear the awaiting-first-key escalation HERE,
@@ -5806,7 +5946,7 @@ export class MlsCallSession {
     // about a peer's wrong key (media-E2EE review, 2026-09-08)...
     this.#clearResecureTimer("joiner");
     // ...and the errors it covered are re-judged now that we hold keys.
-    this.#reviewJoinerWindowMisses();
+    // (That review ran above, before this clear: see its comment.)
     this.#firstEstablishDone = true;
     if (!this.#e2eeEnabled) void this.reconcileNow();
   }
@@ -5828,7 +5968,7 @@ export class MlsCallSession {
       try {
         await this.#media?.installer.applyLocalKey(frameKeys, identity);
         if (this.#installEpoch === epoch) this.#ownSendKeyEpoch = epoch;
-        this.#onLocalKeyInstalled();
+        this.#onLocalKeyInstalled(epoch);
       } catch (error) {
         this.#onRotationError(error);
       }
@@ -6296,8 +6436,17 @@ export class MlsCallSession {
    * was withheld, in which case the hold reaches its deadline and goes loud.
    * Either way it gets a verdict instead of being discarded with the joiner
    * escalation.
+   *
+   * ONE exemption, the false-red guard: an unfilled index that one of the
+   * epochs BEFORE `heldEpoch` used (`joinWindowMissPredatesEpoch`). Those
+   * frames predate our admission, nothing will ever fill that index, and the
+   * ordinary Welcome produces them (Add-grace keeps members at E-1), so a
+   * verdict there would be a red on every join.
+   *
+   * Runs BEFORE the joiner escalation is cleared (`#onLocalKeyInstalled`), so
+   * a counted miss's hold is open while that escalation's amber still is.
    */
-  #reviewJoinerWindowMisses(): void {
+  #reviewJoinerWindowMisses(heldEpoch: number): void {
     if (this.#joinerWindowMisses.size === 0) return;
     const pending = [...this.#joinerWindowMisses];
     this.#joinerWindowMisses.clear();
@@ -6305,12 +6454,39 @@ export class MlsCallSession {
       ([pair, { identity }]) =>
         this.#mediaErrors.pairFilledAtSeq(identity, pair) === undefined,
     );
-    if (unanswered.length > 0) {
-      console.warn(
-        "[mls] join-window misses the first install did not answer",
-        unanswered.map(([pair]) => pair),
+    if (unanswered.length === 0) return;
+    const predates = unanswered.filter(([pair]) =>
+      joinWindowMissPredatesEpoch(pairKeyIndex(pair), heldEpoch),
+    );
+    const counted = unanswered.filter(
+      ([pair]) => !joinWindowMissPredatesEpoch(pairKeyIndex(pair), heldEpoch),
+    );
+    if (predates.length > 0) {
+      console.info(
+        `[mls] join-window misses from before epoch ${heldEpoch}, exempt`,
+        predates.map(([pair]) => pair),
       );
     }
+    if (counted.length === 0) return;
+    console.warn(
+      `[mls] join-window misses the first install (epoch ${heldEpoch}) did ` +
+        `not answer, held for a verdict`,
+      counted.map(([pair]) => pair),
+    );
+    // A latch is already the strictest reading, and a dead session reports
+    // nothing (`#surfaceError` takes the same two exits).
+    if (!this.#media || this.#terminal() || this.#loudLatched) return;
+    for (const [pair, { identity, error }] of counted) {
+      if (!this.#holdJoinRace(pair, identity, error)) {
+        // No amber to show a deferral with: the strict verdict, as
+        // `#surfaceError` takes it (it also drops the joiner escalation).
+        this.#latchLoud(error, "media");
+        return;
+      }
+    }
+    // A sender already gone from the SFU, or from the group, is settled
+    // here exactly as for a hold armed after the window.
+    this.#resolveJoinRaceHolds();
   }
 
   /** Stop a hold's deadline without deciding anything. */
@@ -6456,8 +6632,16 @@ export class MlsCallSession {
     // is exactly what is absent (a removed leaf), so a naive snapshot would
     // read keyed and be wrong. Every un-keyed control latch (first-join
     // ladder spent, re-establish caps after `#resetRotationState`) reads
-    // false here by construction.
+    // false here by construction. A `LocalKeyAckError` is excluded for the
+    // same reason: the flags read true from the previous epoch's key, and the
+    // current one is exactly what the worker never confirmed.
     const mediaKeyed =
+      !(
+        typeof error === "object" &&
+        error !== null &&
+        this.#fatalMediaErrors.has(error)
+      ) &&
+      !(error instanceof LocalKeyAckError) &&
       this.#e2eeEnabled &&
       this.#hasLocalKey &&
       !this.#localDeclarationPlain &&
@@ -6798,10 +6982,20 @@ export class MlsCallSession {
     // `callEncryptionLatch` follows the session's latch instead of outliving
     // it (it used to stay set until disconnect, leaving a successfully
     // re-established call red with no banner and no escape).
-    if (this.#loudLatched && this.#loudError !== undefined) {
-      this.#media?.onEncryptionState?.("clear", this.#loudError);
+    //
+    // EXCEPT once a fatal media-plane error was noted (`#fatalNoted`): what
+    // failed is this device's own media path (a dead worker, a lost key push,
+    // a sender that never got its transform), which no new group repairs.
+    // The latch then survives every re-establish and ends only with the
+    // session, so a fatal error `state.tsx` replays at `start()` is not wiped
+    // by the join route's reset (re-review MAJOR-2). Everything else here
+    // still runs.
+    if (!(this.#loudLatched && this.#fatalNoted)) {
+      if (this.#loudLatched && this.#loudError !== undefined) {
+        this.#media?.onEncryptionState?.("clear", this.#loudError);
+      }
+      this.#clearLoudLatch();
     }
-    this.#clearLoudLatch();
     // The group and its key indexes are being replaced: a missing-key record
     // for one of the old group's pairs would otherwise hold every later latch
     // until an install that can never come.
@@ -7943,7 +8137,9 @@ export class MlsCallSession {
    * resume (invariant 1), then a best-effort announce. Decline keeps the
    * mixed pause. Without a usable group (`hasUsableGroup()`), or when the
    * native dialog fails for any reason OTHER than a decline, routes to the
-   * in-app `confirmLocalPlaintext()` so the banner's escape is never inert.
+   * in-app `confirmLocalPlaintext()` so the banner's escape is never inert —
+   * except on a shell with `confirmFallbackAllowed: false` (iOS), which never
+   * reaches it from here: those cases keep the pause (`#refuseConfirmFallback`).
    */
   async confirmPlaintext(displayNames: Record<string, string>): Promise<void> {
     if (!this.confirmReachable()) return;
@@ -7956,6 +8152,13 @@ export class MlsCallSession {
     // (`groupId === null` is already inside `!hasUsableGroup()`; the local
     // read only narrows the id for the bridge call.)
     const groupId = this.#groupId;
+    // A shell that refuses the in-app fallback (iOS) never reaches it from
+    // here: no group for the dialog means no confirmation at all.
+    const fallbackAllowed = this.#deps.confirmFallbackAllowed === true;
+    if (!fallbackAllowed && (groupId === null || !this.hasUsableGroup())) {
+      this.#refuseConfirmFallback("no usable group for the native dialog");
+      return;
+    }
     if (groupId === null || !this.hasUsableGroup()) {
       return this.confirmLocalPlaintext();
     }
@@ -7964,6 +8167,14 @@ export class MlsCallSession {
       // The native dialog computes its own non-enrolled set; Declined throws.
       await this.#deps.bridge.callConfirmDowngrade(groupId, sfu, displayNames);
     } catch (e) {
+      if (!fallbackAllowed) {
+        // Every rejection keeps the pause; only a decline is the user's own
+        // answer, so everything else is also a loud, readable failure.
+        if ((e as { type?: string })?.type !== "declined") {
+          this.#refuseConfirmFallback("the native confirm dialog failed", e);
+        }
+        return;
+      }
       // Only an explicit user DECLINE keeps the pause (receive-only; banner
       // persists). Any other failure — IPC, a group the native side no longer
       // holds, a dialog that could not open — falls through to the in-app
@@ -8040,6 +8251,90 @@ export class MlsCallSession {
     if (!this.confirmReachable()) return;
     this.#announcedBy = undefined;
     this.#applyMode({ type: "local_confirm", via: "app" });
+  }
+
+  /**
+   * `confirmPlaintext` on a shell that refuses the in-app fallback
+   * (`confirmFallbackAllowed: false`, iOS) when the native dialog cannot give
+   * a confirmation: the gate stays paused and the call goes loud with the
+   * curated `ENCRYPTION_UNCONFIRMED` error, as a CONTROL latch (a failed
+   * confirmation is not a media-plane fact, so the heal never clears it).
+   * Nothing at all under an existing latch: it already holds the gate and the
+   * banner, and re-latching as `control` would upgrade a MEDIA latch and take
+   * away a heal the media facts still allow. The banner's escape stays
+   * reachable (`confirmReachable` admits a latched `negotiating` call), so a
+   * later press asks the native dialog again.
+   */
+  #refuseConfirmFallback(why: string, cause?: unknown): void {
+    console.error(
+      `[mls] plaintext confirm refused, the call stays paused: ${why}`,
+      cause,
+    );
+    if (this.#terminal() || this.#loudLatched) return;
+    this.#latchLoud(new Error(ENCRYPTION_UNCONFIRMED), "control");
+  }
+
+  /**
+   * A media-plane failure no remote evidence can answer (Stage 5 fix F3):
+   * `state.tsx` routes the dead E2EE worker, a lost key push, an overdue
+   * WebKit sender hold and a handleSender failure from before the session
+   * existed here, never to `noteEncryptionError`, whose rotation-window
+   * debounce any remote's SFU-declared encrypted status cancels.
+   *
+   * The `LocalKeyAckError` terminus (`#onRotationError`): the mode drops to
+   * `negotiating` so the publish gate holds (a user-confirmed interlude is
+   * kept, as there), and a CONTROL latch. Read un-keyed (`mediaKeyed: false`,
+   * `#fatalMediaErrors`): what failed is this device's own media path, so the
+   * chip is `not_encrypted`, never `cannot_verify`.
+   *
+   * What clears it: NOTHING inside this session. Not the heal (a control
+   * latch never heals), so not a remote encrypted echo, a clean decode
+   * witness, a peer's departure or re-Add, or a later epoch; and NOT a
+   * re-establish either (`#resetRotationState` keeps the latch once a fatal
+   * error was noted, `#fatalNoted`), so not a join, a fresh rejoin or a
+   * successor migration. It ends only when this session object does: a
+   * hang-up (`dispose`) or a NEW session, which starts without it. The user's
+   * way out meanwhile is the latched banner's own: Leave, or an explicit
+   * "Stay unencrypted" (`confirmReachable` admits a latched `negotiating`
+   * call), which the latch does not block.
+   *
+   * Idempotent under an existing CONTROL latch (nothing to add, but the
+   * re-establish rule above still applies to it), and it never downgrades
+   * one: over a MEDIA latch it is `#latchLoud`'s evidence-based upgrade to
+   * control. A closed or plaintext session reports nothing.
+   */
+  noteFatalMediaError(error: Error): void {
+    if (this.#terminal()) return;
+    this.#fatalNoted = true;
+    if (this.#loudLatched && this.#loudOrigin === "control") return;
+    console.error("[mls] fatal media-plane error: latching loud", error);
+    this.#fatalMediaErrors.add(error);
+    this.#lastError = error;
+    this.#dropModeToNegotiating();
+    this.#latchLoud(error, "control");
+  }
+
+  /**
+   * The decode witness held the chip amber past its bound
+   * (`WitnessAmberEscalation` in `mlsCallModePolicy.ts`, which `state.tsx`
+   * runs and reports here once it reads `escalated`). That rule is a chip rule
+   * and holds no gate; this is the session's half of it: the same loud MEDIA
+   * latch a join-race hold takes when its deadline finds a silent drop, so
+   * the publish gate folds to `negotiating` and the banner promises a pause
+   * that is real. The error is the curated `ENCRYPTION_UNCONFIRMED`; it names
+   * no pair, so only the heal's peer witnesses (a re-Add with all-new tracks,
+   * a departure) can clear it, never the witness itself (it may contradict a
+   * green, never rescue a red). Idempotent; a terminal session reports
+   * nothing.
+   */
+  noteWitnessEscalated(): void {
+    if (this.#terminal() || !this.#media) return;
+    if (!this.#loudLatched) {
+      console.error(
+        "[mls] decode witness amber passed its bound: latching loud",
+      );
+    }
+    this.#latchLoud(new Error(ENCRYPTION_UNCONFIRMED), "media");
   }
 
   /** Courier a best-effort §3.4 mode announcement (ME-4/ME-12). */

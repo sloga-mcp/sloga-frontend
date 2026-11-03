@@ -182,6 +182,12 @@ export interface ChipSources {
   /** Another participant is device-qualified — LIVE. See `ChipInputs`. */
   peerCouldEncrypt: () => boolean;
   decodeWitness: () => DecodeWitness;
+  /**
+   * The server's switch has encrypted calls paused for this shell for this
+   * call. See `ChipInputs.pausedByServer`. Required: there is no default,
+   * because "not paused" is the reassuring answer.
+   */
+  pausedByServer: () => boolean;
   /** The SFU room snapshot, or undefined when there is no room. */
   room: () => ChipRoom | undefined;
   /** LiveKit's observed encryption status for one identity, if it has one. */
@@ -374,5 +380,11 @@ export function chipInputsFrom(sources: ChipSources): ChipInputs {
     deviceNeedsSetup: sources.deviceNeedsSetup(),
     peerCouldEncrypt: sources.peerCouldEncrypt(),
     decodeWitness: sources.decodeWitness(),
+    pausedByServer: sources.pausedByServer(),
+    // EVERY participant, trackless ones included: gate (d)'s time bound asks
+    // whether a failing sender LEFT, and one that unpublished has not.
+    presentIdentities: (room?.participants ?? []).map(
+      (participant) => participant.identity,
+    ),
   };
 }

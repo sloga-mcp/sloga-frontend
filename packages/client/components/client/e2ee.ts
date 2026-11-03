@@ -45,6 +45,8 @@ import {
 } from "stoat.js";
 
 import type { ResumeCommitRef, ResumePrefetch } from "../rtc/mlsRejoinPolicy";
+import { workerProbeResult } from "../rtc/workerProbe";
+import { nativeRejectError } from "./e2eeCallPlaneIos";
 import { decryptBump } from "./e2eeConversationBump";
 import {
   type GroupGrowthOutcome,
@@ -69,6 +71,7 @@ import {
   capacitorClipboardImageInWebview,
   capacitorCouriersOrphanedRecovery,
   capacitorNativeE2EE,
+  iosMediaE2EEReady,
   mediaE2EEPlatformSupported,
 } from "./e2eePlatform";
 import { protectorSendErrorCopy } from "./e2eeProtectorCopy";
@@ -911,7 +914,8 @@ export function nativeE2EEAvailable(): boolean {
 // desktop, a Capacitor plugin over uniffi on Android and iOS. Command names,
 // argument shapes and error payloads are identical by construction, so every
 // security decision above this seam is platform-independent. (A shell may
-// leave commands out: iOS rejects the call and MLS commands.)
+// leave commands out: iOS rejects the desktop-only ones, such as remote
+// control and the protected text plane.)
 // ================================================================
 
 interface NativeTransport {
@@ -1168,6 +1172,18 @@ class ElectronTransport implements NativeTransport {
   }
 }
 
+/**
+ * The one window global the iOS shell installs for the page (call E2EE
+ * phase 2, C4): `SlogaBridgeViewController` defines `__slogaIosCaps` at
+ * document start as a frozen, non-writable, non-configurable
+ * `{ mediaE2EE: <Info.plist SlogaMediaE2EE> }`. Typed here and nowhere else,
+ * with `mediaE2EE` left `unknown` so only `iosMediaE2EEReady`'s literal-true
+ * check can read it. Absent on every other platform and on a phase-1 build.
+ */
+type SlogaIosCapsWindow = {
+  readonly __slogaIosCaps?: { readonly mediaE2EE?: unknown };
+};
+
 /** Capacitor plugin surface (see android `E2eePlugin.kt`) */
 type E2eeCapacitorPlugin = {
   call(options: Record<string, unknown>): Promise<{ json: string }>;
@@ -1269,19 +1285,14 @@ class CapacitorTransport implements NativeTransport {
   /**
    * Reject payloads are the core's scrubbed error JSON in the exception
    * message; parse it back so callers see the SAME typed error objects the
-   * desktop Tauri IPC rejects with.
+   * desktop Tauri IPC rejects with, `type` intact (`callConfirmDowngrade`'s
+   * `declined`, `crypto_failure`, `invalid_argument` included). A call-plane
+   * `command` rejected `protector_locked` (a locked iPhone, plan D10) is
+   * thrown as the readable `CallProtectorLockedError` instead
+   * (`e2eeCallPlaneIos.ts`).
    */
-  #rethrow(error: unknown): never {
-    const message = (error as { message?: string })?.message;
-    if (message?.startsWith("{")) {
-      try {
-        throw JSON.parse(message);
-      } catch (parsed) {
-        if (parsed && typeof parsed === "object" && "type" in parsed)
-          throw parsed;
-      }
-    }
-    throw error;
+  #rethrow(error: unknown, command?: string): never {
+    throw nativeRejectError(command, error, Capacitor.getPlatform());
   }
 
   async invoke<T>(
@@ -1384,7 +1395,7 @@ class CapacitorTransport implements NativeTransport {
       });
       return JSON.parse(json) as T;
     } catch (error) {
-      this.#rethrow(error);
+      this.#rethrow(error, command);
     }
   }
 
@@ -1478,13 +1489,31 @@ class CapacitorTransport implements NativeTransport {
     // A remote-webview config would reintroduce skew (new JS asserting this
     // against an old shell) and must NOT be used while media E2EE ships.
     //
-    // 🔴 iOS answers false ON PURPOSE (plan D7, media gate pin): calls on
-    // iPhone are plaintext in phase 1, and `platformMediaE2EESupported()` is
-    // TRUE there (no `slogaShell`), so this false is the only thing keeping
-    // `mediaE2EEPlatformSupported()` and `shellSupported` false and iOS calls
-    // honest. NEVER flip it to true for iOS.
+    // 🔴 iOS answers true ONLY through `iosMediaE2EEReady` (plan D6 + D8, W3
+    // MUST 1). `platformMediaE2EESupported()` is TRUE on iOS (no
+    // `slogaShell`), so this answer alone decides
+    // `mediaE2EEPlatformSupported()`, `shellSupported` and the KeyPackage
+    // prepublish there. All four terms
+    // are required and each fails closed: the build carries the call surface
+    // (the shell's frozen `__slogaIosCaps.mediaE2EE`, literal `true` only;
+    // phase-1 and Release builds say nothing or false), the E2ee plugin
+    // registered (the same check `nativeE2EEAvailable` makes: the caps flag
+    // describes the build, the plugin says the guard installed), WebKit has
+    // `RTCRtpScriptTransform` (iOS 15.0-15.3 does not), and the app-start
+    // worker probe PASSED (`"pending"` reads false like `"fail"`). Never
+    // answer true for iOS on fewer terms, and never on any other platform.
+    const platform = Capacitor.getPlatform();
     return (
-      Capacitor.isNativePlatform() && Capacitor.getPlatform() === "android"
+      Capacitor.isNativePlatform() &&
+      (platform === "android" ||
+        (platform === "ios" &&
+          iosMediaE2EEReady({
+            capsMediaE2EE: (window as SlogaIosCapsWindow).__slogaIosCaps
+              ?.mediaE2EE,
+            pluginPresent: Capacitor.isPluginAvailable("E2ee"),
+            scriptTransform: typeof RTCRtpScriptTransform !== "undefined",
+            probe: workerProbeResult(),
+          })))
     );
   }
 
@@ -8854,10 +8883,10 @@ export class E2EEBridge implements E2EEAdapter {
    * the Android Capacitor key-push channel BOTH update together.
    *
    * The RTC layer folds this into `e2eeCapable` at Room-construction time. A
-   * shell that is `nativeE2EEAvailable()` but CANNOT receive key pushes (today:
-   * the Capacitor iOS shell; Android before its 6.7a `callKeysChanged`)
-   * must be built WITHOUT the LiveKit `e2ee` option — never an E2EE-capable
-   * Room whose first-key install can never arrive, which would leave the
+   * shell that is `nativeE2EEAvailable()` but CANNOT receive key pushes (an
+   * iOS build or device that fails `iosMediaE2EEReady`; Android before its
+   * 6.7a `callKeysChanged`) must be built WITHOUT the LiveKit `e2ee` option —
+   * never an E2EE-capable Room whose first-key install can never arrive, which would leave the
    * pause-publish window permanently open and publish plaintext to the SFU
    * while believing it is encrypted (invariant 1). Fail CLOSED: no key-push
    * channel ⇒ treat as a non-E2EE shell (the loud non-enrolled path).
@@ -8870,7 +8899,9 @@ export class E2EEBridge implements E2EEAdapter {
    * Tauri gates on `window.__TAURI__.event`; the Capacitor Android shell
    * returns true (its `callKeysChanged` channel landed in 6.7a). Both update
    * together there, as the 6.4 H3/NEW-4 note anticipated. The Capacitor iOS
-   * shell returns false on purpose (plan D7 media gate pin).
+   * shell returns true only when `iosMediaE2EEReady` holds (plan D6 + D8: the
+   * build's caps flag, the E2ee plugin, `RTCRtpScriptTransform` and a passed
+   * worker probe), and false on any missing term.
    */
   nativeKeyPushAvailable(): boolean {
     return this.#transport.keyPushAvailable();
@@ -8881,7 +8912,8 @@ export class E2EEBridge implements E2EEAdapter {
    * call-key pushes AND its media path is audited (`e2eePlatform.ts`). The
    * ONE predicate for that question (plan D7, audit MINOR 17):
    * `shellSupported` in rtc/state.tsx and `#prepublishMlsKeyPackages` both
-   * use it. False on iOS (see `CapacitorTransport.keyPushAvailable`).
+   * use it. On iOS it is `iosMediaE2EEReady` (see
+   * `CapacitorTransport.keyPushAvailable`).
    */
   mediaE2EEPlatformSupported(): boolean {
     return mediaE2EEPlatformSupported(this.nativeKeyPushAvailable());

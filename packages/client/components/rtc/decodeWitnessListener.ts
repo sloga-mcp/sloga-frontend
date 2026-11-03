@@ -30,8 +30,34 @@
  * whose ABSENCE means "fine", which is how a destroyed or never-created
  * verdict read green through every one of them.
  *
+ * 🔴 Amber is not enough on iOS, and that is what `onDead` is for. Spike S3
+ * killed the e2ee worker mid-call on WebKit: the device stopped sending and
+ * stopped decoding, so it failed CLOSED — but SILENTLY. The only trace was
+ * this heartbeat stopping, and amber is a chip the user can read as "probably
+ * fine". A worker that is gone for the rest of the call is a call the user
+ * believes is encrypted and is not getting media from, so it has to become
+ * loud. `onDead` is the loud hook (R7): it fires ONCE per listener when the
+ * heartbeat has been silent for {@link DECODE_WITNESS_DEAD_MS}, or when a
+ * heartbeat says its worker has no `RTCTransformEvent` (the `rte` field —
+ * a worker that cannot transform is not protecting anything, whatever else it
+ * reports). Without `onDead` the listener behaves exactly as it did before
+ * the hook existed; Chromium keeps the amber.
+ *
+ * 🔴 Silence is judged at TWO ticks, never one. iOS throttles the page's main
+ * thread (S2: one heartbeat per two seconds while hidden) and may freeze it
+ * outright. When a stalled thread resumes, its queued interval callbacks and
+ * queued worker messages are delivered in a burst, and the event loop does
+ * not promise the timers run after the messages. A single late tick therefore
+ * reads a worker as dead whose next heartbeat is already sitting in the queue
+ * behind it. So a dead verdict needs two consecutive ticks that both saw the
+ * silence AND are at least half a sweep apart in `now()` — two callbacks
+ * fired back to back out of a burst are one observation, not two — and a
+ * heartbeat landing between them breaks the pair.
+ *
  * 🔴 ONE-WAY. This may withhold a green. It never resolves a hold, cancels an
- * escalation, clears a latch or promotes anything.
+ * escalation, clears a latch or promotes anything. `onDead` only ever moves a
+ * call LOUDER, and nothing here takes it back: a heartbeat after it still
+ * feeds the chip, but the dead verdict stands.
  */
 
 import {
@@ -58,6 +84,20 @@ export const DECODE_WITNESS_CHECK_MS = 1_000;
  * load does not flap the chip.
  */
 export const DECODE_WITNESS_STALE_MS = 3 * DECODE_WITNESS_CHECK_MS;
+
+/**
+ * How long without a worker heartbeat before `onDead` may fire. Twice the
+ * staleness threshold: the chip has already been amber for three seconds by
+ * then, and a thread that iOS throttled to one post every two seconds (S2) is
+ * still three posts short of it. The first tick to see six seconds of silence
+ * lands up to a sweep after the six, and the verdict needs the next one, so a
+ * dead worker reads amber for seven to eight seconds before the call goes
+ * loud.
+ */
+export const DECODE_WITNESS_DEAD_MS = 6 * DECODE_WITNESS_CHECK_MS;
+
+/** What a worker that CAN transform says `typeof self.RTCTransformEvent` is. */
+const TRANSFORM_EVENT_TYPE = "function";
 
 /**
  * 🔴 What the chip's witness signal MUST start at, and the reason this
@@ -117,6 +157,19 @@ export interface DecodeWitnessListenerOptions {
   staleMs?: number;
   checkMs?: number;
   log?: DecodeWitnessLog;
+  /**
+   * The loud hook (R7): called ONCE per listener when the worker is judged
+   * dead — silent for {@link DecodeWitnessListenerOptions.deadAfterMs} at two
+   * consecutive ticks, or posting a heartbeat whose `rte` is not
+   * `"function"`. Absent, none of the dead-worker judgement runs and the
+   * listener is exactly what it was before the hook (Chromium).
+   *
+   * A throw out of it is not a delivery: it is called again at the next
+   * qualifying tick or heartbeat until one call returns.
+   */
+  onDead?: () => void;
+  /** Silence before `onDead`; read only with `onDead`. Must exceed `staleMs`. */
+  deadAfterMs?: number;
 }
 
 export interface DecodeWitnessListener {
@@ -202,6 +255,26 @@ export function parseDecodeWitnessMessage(
 }
 
 /**
+ * The heartbeat's `rte` — the worker's own `typeof self.RTCTransformEvent` —
+ * or `undefined` when the message is not ours, or carries no `rte`, or a
+ * non-string one.
+ *
+ * Separate from {@link parseDecodeWitnessMessage} on purpose: that one's
+ * return is the chip's input and its shape is pinned, and `rte` is not a
+ * decode window. `undefined` is not "fine": a worker built without the field
+ * is a worker nobody checked, and with `onDead` armed it reads as one that
+ * cannot transform.
+ */
+export function parseDecodeWitnessRte(data: unknown): string | undefined {
+  if (!isDecodeWitnessKind(data)) return undefined;
+  // Narrowing only, as in `parseDecodeWitnessMessage`.
+  if (!isRecord(data)) return undefined;
+  const body = data.data;
+  if (!isRecord(body)) return undefined;
+  return typeof body.rte === "string" ? body.rte : undefined;
+}
+
+/**
  * Build the listener. It owns no timer and no worker: the caller attaches
  * {@link DecodeWitnessListener.onMessage} to the worker, runs
  * {@link DecodeWitnessListener.tick} on an interval of
@@ -218,6 +291,8 @@ export function createDecodeWitnessListener(
     staleMs = DECODE_WITNESS_STALE_MS,
     checkMs = DECODE_WITNESS_CHECK_MS,
     log = console,
+    onDead,
+    deadAfterMs = DECODE_WITNESS_DEAD_MS,
   } = options;
 
   // 🔴 The sweep interval and the staleness threshold were independently
@@ -235,6 +310,22 @@ export function createDecodeWitnessListener(
     );
   }
 
+  // 🔴 Checked only when the hook is armed, so a caller without it keeps
+  // every construction it had (a `staleMs` above the dead default included).
+  // Strictly ABOVE the staleness threshold: dead has to imply stale, or the
+  // tick that reaches the verdict could return before it delivers it. And
+  // finite, because `Infinity` is a hook that is armed and can never fire —
+  // the "present, so fine" read this file exists to delete.
+  if (
+    onDead !== undefined &&
+    !(Number.isFinite(deadAfterMs) && deadAfterMs > staleMs)
+  ) {
+    throw new RangeError(
+      `decode witness: deadAfterMs (${deadAfterMs}) must be finite and ` +
+        `above staleMs (${staleMs}), or a dead worker is never called dead`,
+    );
+  }
+
   let lastAt = now();
   /** Gates the console noise ONLY. The witness write below is unconditional. */
   let warned = false;
@@ -249,6 +340,47 @@ export function createDecodeWitnessListener(
    * defects on this branch were introduced.
    */
   let stopped = false;
+  /** `onDead` has RETURNED once. Latched after the call, never before it. */
+  let deadDelivered = false;
+  /**
+   * `now()` at the previous tick that found the heartbeat at least
+   * `deadAfterMs` old, or `undefined` when the previous tick did not — or a
+   * heartbeat has been credited since. One half of the two-tick pair.
+   */
+  let deadSeenAt: number | undefined;
+
+  /**
+   * Record this tick's view of the silence and say whether it completes a
+   * dead pair. Never calls `onDead` itself, so the tick's amber write cannot
+   * be skipped by it.
+   */
+  const deadTick = (): boolean => {
+    const at = now();
+    if (at - lastAt < deadAfterMs) {
+      deadSeenAt = undefined;
+      return false;
+    }
+    const previous = deadSeenAt;
+    deadSeenAt = at;
+    // Two observations, half a sweep apart. A burst of queued callbacks after
+    // a frozen thread resumes lands within a few milliseconds and counts once.
+    return previous !== undefined && at - previous >= checkMs / 2;
+  };
+
+  const fireDead = (cause: string): void => {
+    if (onDead === undefined || deadDelivered) return;
+    // A superseded session's listener is not this call's evidence, in either
+    // direction — the same guard that keeps its posts off the new call's chip.
+    if (!isCurrentSession()) return;
+    // 🔴 CALL FIRST, LATCH AFTER — the rule `stop()` follows below. Latching
+    // first treats a throw as a delivery and leaves a dead worker quiet.
+    onDead();
+    deadDelivered = true;
+    log.warn(
+      `[mls] the e2ee worker is ${cause} — reported dead; this call is ` +
+        "not protected.",
+    );
+  };
 
   return {
     checkMs,
@@ -272,6 +404,19 @@ export function createDecodeWitnessListener(
         return;
       }
       if (!isCurrentSession()) return;
+      // 🔴 A worker that cannot transform is not a heartbeat, whatever its
+      // windows say: with the hook armed it is the dead verdict, and the
+      // sample is NOT handed to the chip or credited to the clock — the
+      // witness may withhold a green, never take one from a worker like that.
+      // `undefined` counts: a worker that does not say is a worker that has
+      // not been checked.
+      if (
+        onDead !== undefined &&
+        parseDecodeWitnessRte(data) !== TRANSFORM_EVENT_TYPE
+      ) {
+        fireDead("running without RTCTransformEvent");
+        return;
+      }
       onWitness(summarizeDecodeWitness(participants));
       // 🔴 Credited AFTER the write, never before it. `onWitness` is a Solid
       // setter that synchronously drives the chip derivation, and that walks
@@ -281,6 +426,10 @@ export function createDecodeWitnessListener(
       // green for the life of the call. An undelivered witness is not a
       // heartbeat, for the same reason an unreadable one is not.
       lastAt = now();
+      // A heartbeat between two late ticks is the thread resuming, not the
+      // worker dying: the silence the earlier tick saw has ended, so it is
+      // not half of any pair.
+      deadSeenAt = undefined;
       if (warned || skewWarned) {
         warned = false;
         skewWarned = false;
@@ -290,6 +439,11 @@ export function createDecodeWitnessListener(
 
     tick(): void {
       if (stopped) return;
+      // Judged before the staleness return below and delivered after the
+      // amber write. Dead implies stale (`deadAfterMs > staleMs`, checked at
+      // construction, and the clock is monotonic), so a dead tick always
+      // reaches the delivery.
+      const dead = onDead !== undefined && deadTick();
       if (now() - lastAt <= staleMs) return;
       if (!warned) {
         warned = true;
@@ -300,7 +454,17 @@ export function createDecodeWitnessListener(
       }
       // Written on EVERY stale tick, not just the first: `warned` exists to
       // stop the console repeating, never to stop the chip being told.
-      onWitness(DECODE_WITNESS_UNAVAILABLE);
+      //
+      // 🔴 The verdict is delivered in `finally`, because each of the two must
+      // survive the other throwing: `onWitness` is the Solid setter that can
+      // throw out of the chip derivation on every tick of a half-disposed
+      // room, and a dead worker that never goes loud because the chip threw
+      // is the silent failure this hook exists to end.
+      try {
+        onWitness(DECODE_WITNESS_UNAVAILABLE);
+      } finally {
+        if (dead) fireDead("silent during the call");
+      }
     },
 
     stop(): void {
