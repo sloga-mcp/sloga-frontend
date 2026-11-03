@@ -10120,6 +10120,11 @@ msgid "This device was removed from your account's encryption."
 msgstr "This device was removed from your account's encryption."
 
 #: components/i18n/errors.ts
+#: components/modal/modals/E2EEDisable.tsx
+msgid "This app shares its encryption identity with another of your apps. Turning encryption off here would turn it off there too. Make this app a separate device instead. Don't recognize the other app? Change your password, then remove it in Settings > Encryption on a device you trust."
+msgstr "This app shares its encryption identity with another of your apps. Turning encryption off here would turn it off there too. Make this app a separate device instead. Don't recognize the other app? Change your password, then remove it in Settings > Encryption on a device you trust."
+
+#: components/i18n/errors.ts
 msgid "This account is not activated! Please check your account's inbox and try again."
 msgstr "This account is not activated! Please check your account's inbox and try again."
 
@@ -10888,6 +10893,10 @@ msgstr "Turn length"
 #: components/modal/modals/E2EEDisable.tsx
 msgid "Turn off"
 msgstr "Turn off"
+
+#: components/modal/modals/E2EEDisable.tsx
+msgid "This app was sharing encryption with another of your apps, which keeps working. Set this app up again as a new device."
+msgstr "This app was sharing encryption with another of your apps, which keeps working. Set this app up again as a new device."
 
 #: components/app/interface/settings/channel/Overview.tsx
 msgid "Turn off calls"

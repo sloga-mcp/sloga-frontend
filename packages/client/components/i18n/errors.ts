@@ -153,6 +153,11 @@ export function useError() {
       // whose modal offers to set this install up again as a new device.
       if (errType === "E2EEDeviceRemoved")
         return t`This device was removed from your account's encryption.`;
+      // The server refused to remove a device another live install of this
+      // account is using (same lag pattern). `disable()` normally catches
+      // this before it wipes anything and offers the split instead.
+      if (errType === "E2EEDeviceHeldElsewhere")
+        return t`This app shares its encryption identity with another of your apps. Turning encryption off here would turn it off there too. Make this app a separate device instead. Don't recognize the other app? Change your password, then remove it in Settings > Encryption on a device you trust.`;
 
       switch (err.type) {
         case "AlreadyFriends":

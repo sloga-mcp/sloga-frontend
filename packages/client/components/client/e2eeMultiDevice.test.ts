@@ -17,7 +17,7 @@
 // Run: node --test --conditions=browser components/client/e2eeMultiDevice.test.ts
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
+import { createRequire, stripTypeScriptTypes } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, afterEach, before, beforeEach, mock, test } from "node:test";
@@ -617,8 +617,11 @@ test("reason:held_elsewhere - dismiss and wipe forget the first refusal", async 
   bridge.dismissDeviceShared();
   assert.equal(storage.has(key), false, "dismiss");
   await heldElsewhere(bridge);
-  revokeAnswer(() => json({ remaining_devices: 1 }));
-  await bridge.disable("ticket");
+  // disable() refuses a shared install, so the wipe here is start-over's
+  assert.equal(
+    await bridge.startOverAsNewDevice(async () => undefined),
+    "wiped",
+  );
   assert.equal(storage.has(key), false, "wipe");
 });
 
@@ -1281,18 +1284,20 @@ test("disable:declined - a refused wipe changes nothing", async () => {
   native.handlers.set("e2ee_wipe", () => {
     throw { type: "declined" };
   });
-  storage.set(SHARED_KEY, JSON.stringify({ via: "diverged", at: 1 }));
   const { bridge } = await readyBridge();
   await assert.rejects(bridge.disable("ticket"));
   assert.equal(log.filter((l) => l.startsWith("DELETE")).length, 0);
-  assert.ok(bridge.deviceShared.has("state"));
+  assert.equal(bridge.status.get("state")?.device_id, DEV);
 });
 
-test("disable:wipe - deviceShared goes with the wiped device", async () => {
-  revokeAnswer(() => json({ remaining_devices: 1 }));
+test("wipe - deviceShared goes with the wiped device", async () => {
+  // disable() refuses a shared install, so the wipe here is start-over's
   storage.set(SHARED_KEY, JSON.stringify({ via: "diverged", at: 1 }));
   const { bridge } = await readyBridge();
-  await bridge.disable("ticket");
+  assert.equal(
+    await bridge.startOverAsNewDevice(async () => undefined),
+    "wiped",
+  );
   assert.equal(bridge.deviceShared.has("state"), false);
   assert.equal(storage.has(SHARED_KEY), false);
 });
@@ -1469,4 +1474,291 @@ test("startOverAsNewDevice - declined and dismissed", async () => {
     "wiped",
   );
   assert.equal(requests.filter((r) => r.method === "PUT").length, 0);
+});
+
+// ---- disable:twin (an install sharing its device is never wiped) ----------
+
+const ERRORS_TS =
+  process.env.E2EE_ERRORS_TS ||
+  fileURLToPath(new URL("../i18n/errors.ts", import.meta.url));
+const DISABLE_TSX =
+  process.env.E2EE_DISABLE_TSX ||
+  fileURLToPath(new URL("../modal/modals/E2EEDisable.tsx", import.meta.url));
+const HELD_COPY =
+  "This app shares its encryption identity with another of your apps. Turning encryption off here would turn it off there too. Make this app a separate device instead. Don't recognize the other app? Change your password, then remove it in Settings > Encryption on a device you trust.";
+const HELD_KEY = `sloga.e2ee.heldStrike.v1:${USER}:${DEV}`;
+
+function deletes(): number {
+  return log.filter((l) => l.startsWith("DELETE")).length;
+}
+
+test("disable:shared - deviceShared raised: no wipe, no DELETE, no flag edit", async () => {
+  storage.set(SHARED_KEY, JSON.stringify({ via: "held_elsewhere", at: 3 }));
+  revokeAnswer(() => json({ remaining_devices: 0 }));
+  const { bridge } = await readyBridge();
+  log = [];
+  assert.deepEqual(await bridge.disable("ticket"), { kind: "shared" });
+  assert.equal(nativeCalls("e2ee_wipe"), 0, "not wiped");
+  assert.equal(deletes(), 0, "not revoked");
+  assert.equal(flagEdits(), 0);
+  assert.ok(bridge.deviceShared.has("state"), "still offered the split");
+});
+
+test("disable:shared - a persisted first held_elsewhere refusal alone is enough", async () => {
+  storage.set(HELD_KEY, JSON.stringify({ at: 5 }));
+  revokeAnswer(() => json({ remaining_devices: 0 }));
+  const { bridge } = await readyBridge();
+  assert.equal(bridge.deviceShared.has("state"), false);
+  log = [];
+  assert.deepEqual(await bridge.disable("ticket"), { kind: "shared" });
+  assert.equal(nativeCalls("e2ee_wipe"), 0);
+  assert.equal(deletes(), 0);
+});
+
+test("disable:shared - this connection's refusal counts after Not now; a later accepted connection does not", async () => {
+  revokeAnswer(() => json({ remaining_devices: 1 }));
+  const { bridge, client } = await readyBridge();
+  await heldElsewhere(bridge);
+  bridge.dismissDeviceShared();
+  assert.equal(storage.has(HELD_KEY), false, "Not now cleared the record");
+  log = [];
+  assert.deepEqual(await bridge.disable("ticket"), { kind: "shared" });
+  assert.equal(nativeCalls("e2ee_wipe"), 0);
+
+  client.emit("ready");
+  await settle();
+  bridge.onEvent({ type: "E2EEClaimResult", device_id: DEV, accepted: true });
+  await settle();
+  log = [];
+  const result = await bridge.disable("ticket");
+  assert.equal(result.kind, "disabled");
+  assert.equal(nativeCalls("e2ee_wipe"), 1, "an ordinary disable again");
+});
+
+test("disable:held-elsewhere - a refused revoke after the wipe keeps the flag and routes to start fresh", async () => {
+  revokeAnswer(() => json({ type: "E2EEDeviceHeldElsewhere" }, 403));
+  const { bridge } = await readyBridge();
+  routes.set(`GET /e2ee/devices/${USER}`, () => json([]));
+  log = [];
+  assert.deepEqual(await bridge.disable("ticket"), {
+    kind: "held_elsewhere",
+    deviceId: DEV,
+  });
+  assert.equal(nativeCalls("e2ee_wipe"), 1, "the wipe had already run");
+  assert.equal(deletes(), 1);
+  assert.equal(flagEdits(), 0, "the account flag is kept");
+  assert.ok(
+    !log.includes(`GET /e2ee/devices/${USER}`),
+    "no listing fallback for a refused revoke",
+  );
+});
+
+test("disable:normal - an unshared install still wipes, revokes and reports disabled", async () => {
+  revokeAnswer(() => json({ remaining_devices: 0 }));
+  const { bridge } = await readyBridge();
+  log = [];
+  const result = await bridge.disable("ticket");
+  assert.deepEqual(result, {
+    kind: "disabled",
+    revokeFailed: false,
+    deviceId: DEV,
+    remainingDevices: 0,
+  });
+  assert.equal(nativeCalls("e2ee_wipe"), 1);
+  assert.equal(flagEdits(), 1);
+});
+
+test("removeDevice - a held-elsewhere refusal surfaces with its type", async () => {
+  routes.set("DELETE /e2ee/keys/01A", () =>
+    json({ type: "E2EEDeviceHeldElsewhere" }, 403),
+  );
+  const { bridge } = await readyBridge();
+  await assert.rejects(
+    bridge.removeDevice("01A", { deleteBackup: false }, async () => "t"),
+    (error: { type?: string }) => error.type === "E2EEDeviceHeldElsewhere",
+  );
+});
+
+test("errors:held-elsewhere - mapped on the string chain before the typed switch", () => {
+  const src = readFileSync(ERRORS_TS, "utf8");
+  const at = src.indexOf('if (errType === "E2EEDeviceHeldElsewhere")');
+  const typed = src.indexOf("switch (err.type)");
+  assert.ok(at >= 0, "mapped");
+  assert.ok(typed > at, "before the typed switch");
+  assert.equal(src.includes('case "E2EEDeviceHeldElsewhere"'), false);
+  assert.ok(
+    src.slice(at, at + 600).includes("return t`" + HELD_COPY + "`"),
+    "with the copy",
+  );
+});
+
+test("ui:disable - shared opens the split, held_elsewhere opens start fresh, with the copy", () => {
+  const src = readFileSync(DISABLE_TSX, "utf8");
+  assert.match(
+    src,
+    /case "shared":\s*case "held_elsewhere":\s*setTwin\(result\.kind\);/,
+  );
+  assert.match(
+    src,
+    /twin\(\) === "shared"[\s\S]*?openModal\(\{ type: "e2ee_device_shared" \}\)/,
+  );
+  assert.match(
+    src,
+    /twin\(\) === "held_elsewhere"[\s\S]*?openModal\(\{ type: "e2ee_enable", offerRestore: true \}\)/,
+  );
+  assert.ok(src.includes("{t`" + HELD_COPY + "`}"), "the errors.ts msgid");
+  assert.ok(
+    src
+      .replace(/\s+/g, " ")
+      .includes(
+        "This app was sharing encryption with another of your apps, which keeps working. Set this app up again as a new device.",
+      ),
+    "the start-fresh copy",
+  );
+});
+
+// ---- disablePreflight: refused before any password prompt ------------------
+
+const BANNER_TSX =
+  process.env.E2EE_BANNER_TSX ||
+  fileURLToPath(
+    new URL(
+      "../ui/components/features/voice/callCard/VoiceCallDowngradeBanner.tsx",
+      import.meta.url,
+    ),
+  );
+
+/** Source from `head` to the `}` closing its body (strings/comments skipped). */
+function liftBlock(src: string, head: string): string {
+  const start = src.indexOf(head);
+  assert.ok(start >= 0, `found: ${head}`);
+  let depth = 0;
+  for (let i = src.indexOf("{", start + head.length - 1); i < src.length; i++) {
+    const c = src[i];
+    if (c === "/" && src[i + 1] === "/") {
+      i = src.indexOf("\n", i);
+      continue;
+    }
+    if (c === '"' || c === "'" || c === "`") {
+      for (i++; src[i] !== c; i++) if (src[i] === "\\") i++;
+      continue;
+    }
+    if (c === "{") depth++;
+    if (c === "}" && --depth === 0) return src.slice(start, i + 1);
+  }
+  throw new Error(`unbalanced: ${head}`);
+}
+
+/** Run a lifted UI handler on stubs; returns what it asked for. */
+async function runHandler(
+  code: string,
+  name: string,
+  preflight: "shared" | null,
+) {
+  const calls: string[] = [];
+  const e2ee = {
+    disablePreflight: () => {
+      calls.push("preflight");
+      return preflight;
+    },
+    disable: async () => {
+      calls.push("disable");
+      return { kind: "disabled", revokeFailed: false, remainingDevices: 1 };
+    },
+  };
+  const stubs: Record<string, unknown> = {
+    e2ee,
+    client: () => ({
+      account: {
+        mfa: async () => {
+          calls.push("mfa");
+          return {};
+        },
+      },
+    }),
+    mfaFlow: async () => {
+      calls.push("mfaFlow");
+      return { token: "ticket" };
+    },
+    openModal: (m: { type: string }) => calls.push(`open:${m.type}`),
+    setTwin: (v: string) => calls.push(`twin:${v}`),
+    setBusy: () => {},
+    setDone: () => calls.push("done"),
+    setFailedDeviceId: () => {},
+    showError: (e: unknown) => calls.push(`error:${String(e)}`),
+    props: { onClose: () => {} },
+    resetting: () => false,
+    setResetting: () => {},
+  };
+  const js = stripTypeScriptTypes(code);
+  const fn = new Function(...Object.keys(stubs), `${js}\nreturn ${name};`)(
+    ...Object.values(stubs),
+  ) as () => Promise<void>;
+  await fn();
+  return calls;
+}
+
+test("disablePreflight - the three shared conditions answer shared, an unshared install null", async () => {
+  const fresh = await readyBridge();
+  assert.equal(
+    (
+      fresh.bridge as unknown as { disablePreflight(): unknown }
+    ).disablePreflight(),
+    null,
+  );
+
+  const check = async (name: string, bridge: Bridge) => {
+    log = [];
+    const pre = (
+      bridge as unknown as { disablePreflight(): unknown }
+    ).disablePreflight();
+    assert.equal(pre, "shared", name);
+    assert.equal(log.length, 0, `${name}: nothing native, nothing sent`);
+    assert.deepEqual(await bridge.disable("ticket"), { kind: "shared" }, name);
+  };
+
+  storage.set(SHARED_KEY, JSON.stringify({ via: "diverged", at: 1 }));
+  await check("deviceShared", (await readyBridge()).bridge);
+  storage.clear();
+  storage.set(HELD_KEY, JSON.stringify({ at: 5 }));
+  await check("persisted first strike", (await readyBridge()).bridge);
+  storage.clear();
+  const refusedNow = (await readyBridge()).bridge;
+  await heldElsewhere(refusedNow);
+  refusedNow.dismissDeviceShared();
+  await check("this connection's refusal", refusedNow);
+});
+
+test("ui:disable-preflight - a shared install is refused before the password prompt", async () => {
+  const code = liftBlock(
+    readFileSync(DISABLE_TSX, "utf8"),
+    "async function disable() {",
+  );
+  const shared = await runHandler(code, "disable", "shared");
+  assert.ok(
+    !shared.includes("mfa") && !shared.includes("mfaFlow"),
+    shared.join(),
+  );
+  assert.ok(!shared.includes("disable"), "never reached disable()");
+  assert.ok(shared.includes("twin:shared"), "shows the split offer");
+  const normal = await runHandler(code, "disable", null);
+  assert.deepEqual(
+    normal.filter((c) => c !== "preflight"),
+    ["mfa", "mfaFlow", "disable", "done"],
+  );
+});
+
+test("ui:banner-preflight - the call banner's reset is refused before the password prompt", async () => {
+  const code = liftBlock(
+    readFileSync(BANNER_TSX, "utf8"),
+    "const resetDevice = async () => {",
+  ).replace(/^const resetDevice = /, "var resetDevice = ");
+  const shared = await runHandler(code, "resetDevice", "shared");
+  assert.ok(
+    !shared.includes("mfa") && !shared.includes("mfaFlow"),
+    shared.join(),
+  );
+  assert.ok(shared.includes("open:e2ee_device_shared"));
+  const normal = await runHandler(code, "resetDevice", null);
+  assert.ok(normal.includes("mfa") && normal.includes("disable"));
 });

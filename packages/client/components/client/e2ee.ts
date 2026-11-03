@@ -460,6 +460,24 @@ export type SplitResult =
   /** An MLS call is active on this bridge; nothing was asked or staged. */
   | { kind: "in_call" };
 
+/**
+ * What `disable()` did. `shared`: this install shares its device with
+ * another live install, so nothing was wiped or revoked (turning it off
+ * here would turn it off there too); offer the split. `held_elsewhere`: the
+ * server refused the revoke after the local wipe because the other install
+ * holds the device; it keeps working, the account flag is kept, and this
+ * install can only start fresh.
+ */
+export type DisableResult =
+  | {
+      kind: "disabled";
+      revokeFailed: boolean;
+      deviceId?: string;
+      remainingDevices: number | null;
+    }
+  | { kind: "shared" }
+  | { kind: "held_elsewhere"; deviceId?: string };
+
 /** Server count after a device removal; null when unknown (old server). */
 export type RemoveDeviceResult = {
   remainingDevices: number | null;
@@ -1965,6 +1983,11 @@ export class E2EEBridge implements E2EEAdapter {
 
   /** `held_elsewhere` refusals on this connection (reset on `ready`). */
   #heldStrikes = 0;
+  /**
+   * This connection's claim was refused `held_elsewhere` and none has been
+   * accepted since. Not cleared by "Not now": `disable()` reads it.
+   */
+  #claimRefusedHeldElsewhere = false;
   /** The one retry after a first `held_elsewhere` (`CLAIM_RETRY_DELAY_MS`). */
   #claimRetryTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -1995,6 +2018,7 @@ export class E2EEBridge implements E2EEAdapter {
       this.#claimWaitSpent = false;
       this.#socketDown = false;
       this.#heldStrikes = 0;
+      this.#claimRefusedHeldElsewhere = false;
       this.#clearClaimRetry();
       // A (re)connect may follow any amount of missed device traffic
       this.#invalidateProof();
@@ -2922,6 +2946,7 @@ export class E2EEBridge implements E2EEAdapter {
     // the lock between our connections is still a twin (Q12). The refusal
     // count starts over, across connections too.
     this.#heldStrikes = 0;
+    this.#claimRefusedHeldElsewhere = false;
     this.#clearClaimRetry();
     this.#clearHeldFirst(state?.device_id);
     // The server accepted a claim for this device under the signed-in
@@ -2967,6 +2992,7 @@ export class E2EEBridge implements E2EEAdapter {
    */
   #onHeldElsewhere(): void {
     this.#heldStrikes++;
+    this.#claimRefusedHeldElsewhere = true;
     this.#clearClaimRetry();
     // The first refusal for this device, across connections and reloads: a
     // twin that reconnects inside the retry window would otherwise start
@@ -6659,6 +6685,10 @@ export class E2EEBridge implements E2EEAdapter {
    * encrypting to it.
    *
    * Order matters for safe cancellation:
+   *  0. Pre-flight: an install that shares its device with another live
+   *     install (`deviceShared`, or a claim refused `held_elsewhere`) is
+   *     not wiped and not revoked: the device is the other install's too,
+   *     and the split needs this install's keys. Returns `shared`.
    *  1. Native `e2ee_wipe` runs FIRST — it shows a blocking OS confirmation
    *     (design §9a; a compromised webview cannot destroy data without a
    *     physical click). Declining it throws here and NOTHING else changed,
@@ -6672,13 +6702,15 @@ export class E2EEBridge implements E2EEAdapter {
    *     or, with no count (a 404, an old server's empty answer, a
    *     malformed count), an own listing that is empty. A failed revoke or
    *     a failed listing keeps it: clearing it would turn peers away from
-   *     the account's other devices.
+   *     the account's other devices. So does a revoke the server refuses
+   *     as `E2EEDeviceHeldElsewhere` (a refusal that landed after the
+   *     pre-flight): the other install keeps the device, and this one can
+   *     only start fresh. Returns `held_elsewhere`.
    */
-  async disable(mfaTicketToken: string): Promise<{
-    revokeFailed: boolean;
-    deviceId?: string;
-    remainingDevices: number | null;
-  }> {
+  async disable(mfaTicketToken: string): Promise<DisableResult> {
+    // (0) Never wipe or revoke a device another live install is using
+    if (this.#sharesDevice()) return { kind: "shared" };
+
     // Capture the device id before the wipe removes it from local state
     const deviceId = this.status.get("state")?.device_id;
 
@@ -6688,6 +6720,7 @@ export class E2EEBridge implements E2EEAdapter {
     // (2) Post-wipe revoke. Failures here never resurrect local state.
     let revokeFailed = false;
     let revoked = false;
+    let heldElsewhere = false;
     let remainingDevices: number | null = null;
     if (deviceId) {
       try {
@@ -6703,6 +6736,11 @@ export class E2EEBridge implements E2EEAdapter {
         // NotFound: the row is already gone, so there is nothing to retry
         if (isNotFoundError(error)) {
           revoked = true;
+        } else if (
+          error instanceof E2EEApiError &&
+          error.type === "E2EEDeviceHeldElsewhere"
+        ) {
+          heldElsewhere = true;
         } else {
           // NOT harmless (device-lifecycle fixes §3): peers keep fanning
           // envelopes to the lingering row, wasting queue + one-time-key
@@ -6720,11 +6758,38 @@ export class E2EEBridge implements E2EEAdapter {
     await this.refreshStatus();
     // `device_id` is nullable on the status record; the caller's contract is
     // "absent" rather than "explicitly null".
+    if (heldElsewhere) {
+      return { kind: "held_elsewhere", deviceId: deviceId ?? undefined };
+    }
     return {
+      kind: "disabled",
       revokeFailed,
       deviceId: deviceId ?? undefined,
       remainingDevices,
     };
+  }
+
+  /**
+   * `disable()`'s pre-flight for the UI, run BEFORE the MFA prompt so a
+   * shared install is never asked for the password just to be refused:
+   * `"shared"` when this install shares its device with another live one
+   * (the same conditions `disable()` checks again), else null. Local only.
+   */
+  disablePreflight(): "shared" | null {
+    return this.#sharesDevice() ? "shared" : null;
+  }
+
+  /**
+   * Whether this install shares its device with another live install:
+   * `deviceShared` is raised, a first `held_elsewhere` refusal for this
+   * device is on record, or this connection's claim was refused that way.
+   */
+  #sharesDevice(): boolean {
+    return (
+      this.deviceShared.has("state") ||
+      this.#claimRefusedHeldElsewhere ||
+      this.#heldFirstAt() !== null
+    );
   }
 
   /**
@@ -7015,6 +7080,8 @@ export class E2EEBridge implements E2EEAdapter {
       // The protected text manager captured the old device id
       this.#protectedDispose();
       this.#protectedEnsureManager();
+      // Refusals were for the old device
+      this.#claimRefusedHeldElsewhere = false;
     } catch (error) {
       console.error("[e2ee] split housekeeping failed", error);
     } finally {
