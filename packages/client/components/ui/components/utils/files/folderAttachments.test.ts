@@ -253,3 +253,86 @@ describe("folder picker", () => {
     });
   });
 });
+
+describe("zip progress", () => {
+  it("zipStore reports rising fractions ending at 1", async () => {
+    const seen: number[] = [];
+    // over one 4 MB read slice, so the big file reports twice
+    const big = new Blob([new Uint8Array(5 * 1024 * 1024)]);
+    await zipStore(
+      [
+        { path: "f/big.bin", file: big },
+        { path: "f/small.txt", file: new Blob(["hi"]) },
+      ],
+      (fraction) => seen.push(fraction),
+    );
+    assert.equal(seen[0], 0);
+    assert.equal(seen.at(-1), 1);
+    assert.ok(seen.length >= 4, `progress reported ${seen.length} times`);
+    for (let i = 1; i < seen.length; i++) assert.ok(seen[i] >= seen[i - 1]);
+  });
+
+  it("refuses an over-4 GB folder before reading any of it", async () => {
+    let reads = 0;
+    const huge = {
+      size: 0x100000000,
+      slice() {
+        reads++;
+        return new Blob([]);
+      },
+    } as unknown as Blob;
+    await assert.rejects(
+      zipStore([{ path: "f/huge", file: huge }]),
+      ZipTooLargeError,
+    );
+    assert.equal(reads, 0);
+  });
+
+  /** Observer that records what it was told */
+  function recorder() {
+    const log: string[] = [];
+    const watch = (name: string) => {
+      log.push(`start ${name}`);
+      return {
+        progress: (f: number | null) =>
+          log.push(f === null ? "listing" : `p${f}`),
+        done: () => log.push("done"),
+      };
+    };
+    return { log, watch };
+  }
+
+  it("a dropped folder is followed from listing to done", async () => {
+    const { log, watch } = recorder();
+    const root = dirEntry("trip", [fileEntry("a.txt", "A")]);
+    await resolveDroppedItems(
+      [{ kind: "folder", entry: root as never }],
+      watch,
+    );
+    assert.deepEqual(log, ["start trip", "listing", "p0", "p1", "done"]);
+  });
+
+  it("done is still called when the zip fails", async () => {
+    const { log, watch } = recorder();
+    const broken = {
+      name: "broken",
+      isDirectory: true,
+      createReader: () => ({
+        readEntries: (_ok: unknown, fail: (e: Error) => void) =>
+          fail(new Error("gone")),
+      }),
+    };
+    const { failures } = await resolveDroppedItems(
+      [{ kind: "folder", entry: broken as never }],
+      watch,
+    );
+    assert.deepEqual(failures, [{ name: "broken", reason: "read_failed" }]);
+    assert.deepEqual(log, ["start broken", "listing", "done"]);
+  });
+
+  it("a picked folder is followed too", async () => {
+    const { log, watch } = recorder();
+    await resolvePickedFolder([picked("trip/a.txt", "A")], watch);
+    assert.deepEqual(log, ["start trip", "listing", "p0", "p1", "done"]);
+  });
+});

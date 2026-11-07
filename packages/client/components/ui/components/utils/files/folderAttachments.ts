@@ -22,6 +22,21 @@ export type DropFailure =
   | { name: string; reason: "too_large" }
   | { name: string; reason: "read_failed" };
 
+/** Follows one folder while it is zipped */
+export interface ZipObserver {
+  /**
+   * Fraction of the folder's bytes read so far, or null while the folder is
+   * still being listed (the total is not known yet)
+   */
+  progress(fraction: number | null): void;
+
+  /** The zip is finished or failed; always called once */
+  done(): void;
+}
+
+/** Starts following a folder about to be zipped, by its name */
+export type WatchZip = (name: string) => ZipObserver;
+
 /**
  * Take every file and folder off a DataTransfer. Must run synchronously
  * inside the event handler: the item list is emptied once it returns.
@@ -142,9 +157,13 @@ export async function walkFolder(root: FileSystemDirectoryEntry) {
  * Turn taken items into attachable Files: folders become `<name>.zip`,
  * unreadable phantoms are refused
  * @param items From `takeDroppedItems`
+ * @param watch Follows each folder while it is zipped
  * @returns Files to attach, and what could not be attached
  */
-export async function resolveDroppedItems(items: DroppedItem[]) {
+export async function resolveDroppedItems(
+  items: DroppedItem[],
+  watch?: WatchZip,
+) {
   const files: File[] = [];
   const failures: DropFailure[] = [];
 
@@ -156,7 +175,7 @@ export async function resolveDroppedItems(items: DroppedItem[]) {
     }
 
     const entry = item.entry;
-    const zipped = await zipFolder(entry.name, () => walkFolder(entry));
+    const zipped = await zipFolder(entry.name, () => walkFolder(entry), watch);
     if (zipped instanceof File) files.push(zipped);
     else failures.push(zipped);
   }
@@ -168,14 +187,20 @@ export async function resolveDroppedItems(items: DroppedItem[]) {
  * Zip a folder's entries into `<name>.zip`
  * @param name Folder name
  * @param entries Gets the folder's entries
+ * @param watch Follows the zip while it is made
  * @returns The zip, or why it could not be made
  */
 async function zipFolder(
   name: string,
   entries: () => Promise<ZipEntry[]>,
+  watch?: WatchZip,
 ): Promise<File | DropFailure> {
+  const observer = watch?.(name);
   try {
-    const blob = await zipStore(await entries());
+    observer?.progress(null);
+    const blob = await zipStore(await entries(), (fraction) =>
+      observer?.progress(fraction),
+    );
     return new File([blob], `${name}.zip`, {
       type: "application/zip",
       lastModified: Date.now(),
@@ -186,6 +211,8 @@ async function zipFolder(
       name,
       reason: error instanceof ZipTooLargeError ? "too_large" : "read_failed",
     };
+  } finally {
+    observer?.done();
   }
 }
 
@@ -195,9 +222,10 @@ async function zipFolder(
  * each with its path from the chosen folder down in `webkitRelativePath`
  * (empty subfolders are not listed, so they are not in the archive).
  * @param picked Files from the picker
+ * @param watch Follows the folder while it is zipped
  * @returns The zip (none for an empty folder), and what went wrong
  */
-export async function resolvePickedFolder(picked: File[]) {
+export async function resolvePickedFolder(picked: File[], watch?: WatchZip) {
   const files: File[] = [];
   const failures: DropFailure[] = [];
 
@@ -205,14 +233,17 @@ export async function resolvePickedFolder(picked: File[]) {
   if (!withPath.length) return { files, failures };
 
   const name = withPath[0].webkitRelativePath.split("/")[0];
-  const zipped = await zipFolder(name, async () =>
-    withPath
-      .map((file) => ({
-        path: file.webkitRelativePath,
-        file,
-        lastModified: file.lastModified,
-      }))
-      .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)),
+  const zipped = await zipFolder(
+    name,
+    async () =>
+      withPath
+        .map((file) => ({
+          path: file.webkitRelativePath,
+          file,
+          lastModified: file.lastModified,
+        }))
+        .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)),
+    watch,
   );
   if (zipped instanceof File) files.push(zipped);
   else failures.push(zipped);

@@ -8,12 +8,14 @@ import { CONFIGURATION } from "@revolt/common";
 import { ALLOWED_IMAGE_TYPES } from "@revolt/state/stores/Draft";
 import { Ripple, typography } from "@revolt/ui/components/design";
 import { OverflowingText, iconSize } from "@revolt/ui/components/utils";
+import type { ZipJob } from "@revolt/ui/components/utils/files/zipProgress";
 
 import MdAdd from "@material-design-icons/svg/outlined/add.svg?component-solid";
 import MdCancel from "@material-design-icons/svg/outlined/cancel.svg?component-solid";
 import MdFile from "@material-design-icons/svg/outlined/description.svg?component-solid";
 import MdFolderUpload from "@material-design-icons/svg/outlined/drive_folder_upload.svg?component-solid";
 import MdEdit from "@material-design-icons/svg/outlined/edit.svg?component-solid";
+import MdFolderZip from "@material-design-icons/svg/outlined/folder_zip.svg?component-solid";
 
 interface Props {
   /**
@@ -40,6 +42,11 @@ interface Props {
    * can't be picked)
    */
   addFolder?(): void;
+
+  /**
+   * Folders being zipped, shown as placeholders until their zip is attached
+   */
+  zipping?: ZipJob[];
 
   /**
    * Remove file by ID
@@ -76,7 +83,7 @@ export function FileCarousel(props: Props) {
   const { t } = useLingui();
 
   return (
-    <Show when={props.files.length}>
+    <Show when={props.files.length || props.zipping?.length}>
       <Container>
         <div class={carousel()} use:scrollable={{ direction: "x" }}>
           <For each={props.files}>
@@ -147,6 +154,53 @@ export function FileCarousel(props: Props) {
                     <Size>{determineFileSize(file().file.size)}</Size>
                   </Entry>
                 </>
+              );
+            }}
+          </For>
+          <For each={props.zipping ?? []}>
+            {(job) => {
+              /**
+               * Whole percent read, or null while the folder is listed
+               */
+              const percent = () => {
+                const fraction = job.fraction();
+                return fraction === null ? null : Math.floor(fraction * 100);
+              };
+
+              /**
+               * Status line under the name
+               */
+              const status = () => {
+                const value = percent();
+                return value === null
+                  ? t`Reading folder…`
+                  : t`Zipping… ${value}%`;
+              };
+
+              return (
+                <Entry aria-busy="true">
+                  <PreviewBox>
+                    <ZipIcon>
+                      <MdFolderZip {...iconSize(36)} />
+                    </ZipIcon>
+                    <ZipTrack
+                      role="progressbar"
+                      aria-label={t`Zipping folder`}
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-valuenow={percent() ?? undefined}
+                    >
+                      <ZipBar
+                        indeterminate={percent() === null}
+                        style={{ width: `${percent() ?? 30}%` }}
+                      />
+                    </ZipTrack>
+                  </PreviewBox>
+                  <FileName>
+                    <OverflowingText>{`${job.name}.zip`}</OverflowingText>
+                  </FileName>
+                  <Size>{status()}</Size>
+                </Entry>
               );
             }}
           </For>
@@ -284,6 +338,58 @@ const EmptyEntry = styled("div", {
     borderRadius: "var(--gap-md)",
     fill: "var(--md-sys-color-on-surface-variant)",
     background: "var(--md-sys-color-surface-variant)",
+  },
+});
+
+/**
+ * Icon of a folder being zipped
+ */
+const ZipIcon = styled("div", {
+  base: {
+    display: "grid",
+    placeItems: "center",
+    width: "var(--preview-size)",
+    height: "var(--preview-size)",
+    fill: "var(--md-sys-color-on-surface-variant)",
+  },
+});
+
+/**
+ * Track of the zip progress bar, along the bottom of the preview
+ */
+const ZipTrack = styled("div", {
+  base: {
+    alignSelf: "end",
+    width: "calc(100% - 2 * var(--gap-md))",
+    height: "4px",
+    marginBottom: "var(--gap-md)",
+    overflow: "hidden",
+    borderRadius: "var(--borderRadius-full)",
+    background: "var(--md-sys-color-outline-variant)",
+  },
+});
+
+/**
+ * Filled part of the zip progress bar
+ */
+const ZipBar = styled("div", {
+  base: {
+    height: "100%",
+    borderRadius: "var(--borderRadius-full)",
+    background: "var(--md-sys-color-primary)",
+    transition: "width 120ms linear",
+  },
+  variants: {
+    indeterminate: {
+      true: {
+        // Still listing the folder, so no total yet: a slow fade says
+        // "working" without a fake percentage
+        animation: "voiceRecordingPulse 1.6s ease-in-out infinite",
+        "@media (prefers-reduced-motion: reduce)": {
+          animation: "none",
+        },
+      },
+    },
   },
 });
 

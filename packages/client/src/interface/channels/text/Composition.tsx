@@ -76,6 +76,7 @@ import {
   canPickFolder,
   humanFileSize,
   usePickedFolder,
+  zipJobs,
 } from "@revolt/ui";
 import { ProtectedShieldIcon } from "@revolt/ui/components/features/protected/ProtectedShieldIcon";
 import { expandTrailingEmoticon } from "@revolt/ui/components/features/texteditor/emoticonExpansion";
@@ -127,7 +128,13 @@ export function MessageComposition(props: Props) {
   const sound = useSound();
   const { openModal } = useModals();
   const { layout, isMobile } = useDevice();
-  const resolvePickedFolder = usePickedFolder();
+
+  /**
+   * Identifies this composer to the folder zipper, so a folder being zipped
+   * shows in this composer's attachment strip and no other
+   */
+  const zipOwner = {};
+  const resolvePickedFolder = usePickedFolder(zipOwner);
 
   /**
    * Window this composer renders in: the main window, or a chat window whose
@@ -1951,6 +1958,7 @@ export function MessageComposition(props: Props) {
         getFile={state.draft.getFile}
         addFile={addFile}
         addFolder={folderPickable ? addFolder : undefined}
+        zipping={zipJobs(zipOwner)}
         removeFile={removeFile}
         editFile={editFile}
       />
@@ -2669,11 +2677,13 @@ export function MessageComposition(props: Props) {
       <FilePasteCollector
         onFiles={onFiles}
         ctx={windowCtx}
+        zipOwner={zipOwner}
         active={() => !protectedHides("attachments")}
       />
       <FileDropAnywhereCollector
         onFiles={onFiles}
         ctx={windowCtx}
+        zipOwner={zipOwner}
         active={() => !protectedHides("attachments")}
       />
     </>

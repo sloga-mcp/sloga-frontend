@@ -20,13 +20,19 @@ interface Props {
    * Whether this collector may take the paste right now (defaults to always)
    */
   active?: () => boolean;
+
+  /**
+   * Composer whose attachment strip shows a folder zipping (read once)
+   */
+  zipOwner?: object;
 }
 
 /**
  * Utility for capturing pasted files
  */
 export function FilePasteCollector(props: Props) {
-  const resolveDropped = useDroppedItems();
+  // eslint-disable-next-line solid/reactivity -- fixed for the collector lifetime
+  const resolveDropped = useDroppedItems(props.zipOwner);
 
   /**
    * Handle document paste event

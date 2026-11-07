@@ -50,6 +50,11 @@ interface Props {
    * Whether drops should currently be collected (defaults to always)
    */
   active?: () => boolean;
+
+  /**
+   * Composer whose attachment strip shows a folder zipping (read once)
+   */
+  zipOwner?: object;
 }
 
 /**
@@ -105,7 +110,8 @@ const DropText = styled("div", {
  */
 export function FileDropAnywhereCollector(props: Props) {
   const { isOpen } = useModals();
-  const resolveDropped = useDroppedItems();
+  // eslint-disable-next-line solid/reactivity -- fixed for the collector lifetime
+  const resolveDropped = useDroppedItems(props.zipOwner);
   const [showIndicator, setShowIndicator] = createSignal(false);
   const [hideIndicator, setHideIndicator] = createSignal(false);
   const [items, setItems] = createSignal<DataTransferItem[]>([]);

@@ -8,6 +8,7 @@ import {
   resolveDroppedItems,
   resolvePickedFolder,
 } from "./folderAttachments";
+import { watchZips } from "./zipProgress";
 
 /**
  * Report attach failures in one error dialog, so nothing disappears without
@@ -49,22 +50,27 @@ function useReportFailures() {
 /**
  * Resolve taken drop/paste items into Files (folders zipped), reporting
  * anything that could not be attached
+ * @param zipOwner Composer whose strip shows the zip progress
  * @returns Resolver; resolves to the Files to attach
  */
-export function useDroppedItems() {
+export function useDroppedItems(zipOwner?: object) {
   const report = useReportFailures();
+  const watch = zipOwner ? watchZips(zipOwner) : undefined;
   return async (items: DroppedItem[]) =>
-    report(await resolveDroppedItems(items));
+    report(await resolveDroppedItems(items, watch));
 }
 
 /**
  * Resolve the files of a folder chosen in a folder picker into one zip,
  * reporting a folder that could not be zipped
+ * @param zipOwner Composer whose strip shows the zip progress
  * @returns Resolver; resolves to the Files to attach
  */
-export function usePickedFolder() {
+export function usePickedFolder(zipOwner?: object) {
   const report = useReportFailures();
-  return async (picked: File[]) => report(await resolvePickedFolder(picked));
+  const watch = zipOwner ? watchZips(zipOwner) : undefined;
+  return async (picked: File[]) =>
+    report(await resolvePickedFolder(picked, watch));
 }
 
 /**

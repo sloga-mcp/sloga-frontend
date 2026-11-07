@@ -65,13 +65,15 @@ const CHUNK = 4 * 1024 * 1024;
  * CRC-32 of a whole blob, read a slice at a time so a large file is never
  * held in memory at once
  * @param blob Blob
+ * @param onRead Called with the byte count of each slice once it is read
  * @returns CRC-32
  */
-async function blobCrc(blob: Blob) {
+async function blobCrc(blob: Blob, onRead?: (bytes: number) => void) {
   let crc = 0;
   for (let offset = 0; offset < blob.size; offset += CHUNK) {
     const part = await blob.slice(offset, offset + CHUNK).arrayBuffer();
     crc = crc32(crc, new Uint8Array(part));
+    onRead?.(part.byteLength);
   }
   return crc;
 }
@@ -96,11 +98,28 @@ function dosDateTime(ms: number): [number, number] {
 /**
  * Build a stored ZIP archive
  * @param entries Files and empty directories, in archive order
+ * @param onProgress Called with the fraction of file bytes read so far
+ * (0 to 1), as reading goes
  * @returns Archive bytes as a Blob
  * @throws ZipTooLargeError past the classic ZIP limits
  */
-export async function zipStore(entries: ZipEntry[]): Promise<Blob> {
+export async function zipStore(
+  entries: ZipEntry[],
+  onProgress?: (fraction: number) => void,
+): Promise<Blob> {
   if (entries.length > MAX_ENTRIES) throw new ZipTooLargeError();
+
+  // Refused before anything is read: the file bytes alone are over the
+  // limit, so there is no point reading gigabytes to find out
+  const total = entries.reduce((sum, e) => sum + (e.file?.size ?? 0), 0);
+  if (total > MAX_BYTES) throw new ZipTooLargeError();
+
+  let read = 0;
+  onProgress?.(0);
+  const onRead = (bytes: number) => {
+    read += bytes;
+    onProgress?.(total ? read / total : 1);
+  };
 
   const encoder = new TextEncoder();
   const parts: BlobPart[] = [];
@@ -110,7 +129,7 @@ export async function zipStore(entries: ZipEntry[]): Promise<Blob> {
   for (const entry of entries) {
     const name = encoder.encode(entry.path);
     const size = entry.file?.size ?? 0;
-    const crc = entry.file ? await blobCrc(entry.file) : 0;
+    const crc = entry.file ? await blobCrc(entry.file, onRead) : 0;
     const [time, date] = dosDateTime(entry.lastModified ?? Date.now());
 
     if (offset + 30 + name.length + size > MAX_BYTES) {
