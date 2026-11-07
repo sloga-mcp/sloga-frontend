@@ -1987,7 +1987,18 @@ export function MessageComposition(props: Props) {
         }
         initialValue={initialValue()}
         nodeReplacement={nodeReplacement()}
-        onSendMessage={() => sendMessage()}
+        onSendMessage={() =>
+          // Anything sendMessage doesn't handle itself (e.g. an attachment
+          // that couldn't be read for encryption) would otherwise be an
+          // unhandled rejection: the message vanishes without a word.
+          // sendDraft has already put the draft back.
+          sendMessage().catch((error) =>
+            openModal({
+              type: "error2",
+              error: error instanceof Error ? error : new Error(String(error)),
+            }),
+          )
+        }
         onTyping={delayedStopTyping}
         onEditLastMessage={() => {
           // Edits are refused on a protected channel (plan D11)

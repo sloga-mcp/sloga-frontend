@@ -1,6 +1,9 @@
 import { type WindowCtx, MAIN_CTX } from "@revolt/client/windowCtx";
 import { onCleanup, onMount } from "solid-js";
 
+import { takeDroppedItems } from "./folderAttachments";
+import { useDroppedItems } from "./useDroppedItems";
+
 interface Props {
   /**
    * Callback for pasted files
@@ -23,6 +26,8 @@ interface Props {
  * Utility for capturing pasted files
  */
 export function FilePasteCollector(props: Props) {
+  const resolveDropped = useDroppedItems();
+
   /**
    * Handle document paste event
    * @param event Event
@@ -32,18 +37,21 @@ export function FilePasteCollector(props: Props) {
     // must neither attach the files nor preventDefault on another's paste.
     if (props.active && !props.active()) return;
 
-    const items = event.clipboardData?.items;
-    if (typeof items === "undefined") return;
+    const data = event.clipboardData;
+    if (!data?.items) return;
 
-    // Filter for files
-    const files: File[] = [...items]
-      .filter((item) => !item.type.startsWith("text/"))
-      .map((item) => item.getAsFile()!)
-      .filter((item) => item);
+    // Files only (text pastes into the composer as usual). Taken now: the
+    // clipboard items are emptied once this handler returns. A copied folder
+    // arrives as a 0-byte phantom File; it is zipped instead.
+    const items = takeDroppedItems(data).filter(
+      (item) => item.kind === "folder" || !item.file.type.startsWith("text/"),
+    );
 
-    if (files.length) {
+    if (items.length) {
       event.preventDefault();
-      props.onFiles(files);
+      void resolveDropped(items).then((files) => {
+        if (files.length) props.onFiles(files);
+      });
     }
   }
 

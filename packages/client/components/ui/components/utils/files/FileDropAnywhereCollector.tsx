@@ -24,6 +24,8 @@ import { useModals } from "@revolt/modal";
 // import { typography } from "../../design";
 import { PreviewStack } from "../PreviewStack";
 import { isFileDrag } from "./FileDropGuard";
+import { takeDroppedItems } from "./folderAttachments";
+import { useDroppedItems } from "./useDroppedItems";
 
 interface Props {
   /**
@@ -103,6 +105,7 @@ const DropText = styled("div", {
  */
 export function FileDropAnywhereCollector(props: Props) {
   const { isOpen } = useModals();
+  const resolveDropped = useDroppedItems();
   const [showIndicator, setShowIndicator] = createSignal(false);
   const [hideIndicator, setHideIndicator] = createSignal(false);
   const [items, setItems] = createSignal<DataTransferItem[]>([]);
@@ -183,9 +186,13 @@ export function FileDropAnywhereCollector(props: Props) {
 
     event.preventDefault();
 
-    const files = event.dataTransfer?.files;
-    if (files?.length) {
-      props.onFiles([...files]);
+    // Taken now: the item list is emptied once this handler returns. A
+    // folder arrives as a 0-byte phantom File; it is zipped instead.
+    const items = takeDroppedItems(event.dataTransfer);
+    if (items.length) {
+      void resolveDropped(items).then((files) => {
+        if (files.length) props.onFiles(files);
+      });
     }
 
     setShowIndicator(false);
