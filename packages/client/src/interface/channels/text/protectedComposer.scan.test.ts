@@ -274,6 +274,7 @@ test("P3 paste and drop collectors are inactive on a protected channel", () => {
   for (const header of [
     "function onFiles(files: File[]) {",
     "function addFile() {",
+    "function addFolder() {",
   ]) {
     assert.ok(
       code(functionBody(COMPOSITION, header)).startsWith(
@@ -289,6 +290,10 @@ test("P3 paste and drop collectors are inactive on a protected channel", () => {
 test("P4 forbidden actions are gated by the protected predicate", () => {
   assertGated(
     "<IconButton onPress={addFile}>",
+    /protectedHides\("attachments"\)/,
+  );
+  assertGated(
+    "<IconButton onPress={addFolder}>",
     /protectedHides\("attachments"\)/,
   );
   assertGated("<CameraMessageButton", /protectedHides\("camera"\)/);

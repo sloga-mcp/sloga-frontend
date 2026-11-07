@@ -9795,6 +9795,11 @@ msgstr "The encrypted message history stored on THIS device will be permanently 
 msgid "The file \"{0}\" ({fileSize}) exceeds the maximum size limit of {maxSizeFormatted}."
 msgstr "The file \"{0}\" ({fileSize}) exceeds the maximum size limit of {maxSizeFormatted}."
 
+#: components/ui/components/features/messaging/composition/FileCarousel.tsx
+#: src/interface/channels/text/Composition.tsx
+msgid "Attach folder"
+msgstr "Attach folder"
+
 #: components/ui/components/utils/files/useDroppedItems.ts
 msgid "The folder \"{name}\" couldn't be read, so it wasn't attached."
 msgstr "The folder \"{name}\" couldn't be read, so it wasn't attached."

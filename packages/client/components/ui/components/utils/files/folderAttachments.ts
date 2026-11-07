@@ -155,23 +155,67 @@ export async function resolveDroppedItems(items: DroppedItem[]) {
       continue;
     }
 
-    const name = item.entry.name;
-    try {
-      const blob = await zipStore(await walkFolder(item.entry));
-      files.push(
-        new File([blob], `${name}.zip`, {
-          type: "application/zip",
-          lastModified: Date.now(),
-        }),
-      );
-    } catch (error) {
-      console.warn("[attachments] couldn't zip folder", name, error);
-      failures.push({
-        name,
-        reason: error instanceof ZipTooLargeError ? "too_large" : "read_failed",
-      });
-    }
+    const entry = item.entry;
+    const zipped = await zipFolder(entry.name, () => walkFolder(entry));
+    if (zipped instanceof File) files.push(zipped);
+    else failures.push(zipped);
   }
+
+  return { files, failures };
+}
+
+/**
+ * Zip a folder's entries into `<name>.zip`
+ * @param name Folder name
+ * @param entries Gets the folder's entries
+ * @returns The zip, or why it could not be made
+ */
+async function zipFolder(
+  name: string,
+  entries: () => Promise<ZipEntry[]>,
+): Promise<File | DropFailure> {
+  try {
+    const blob = await zipStore(await entries());
+    return new File([blob], `${name}.zip`, {
+      type: "application/zip",
+      lastModified: Date.now(),
+    });
+  } catch (error) {
+    console.warn("[attachments] couldn't zip folder", name, error);
+    return {
+      name,
+      reason: error instanceof ZipTooLargeError ? "too_large" : "read_failed",
+    };
+  }
+}
+
+/**
+ * Turn the files of a folder chosen in a `webkitdirectory` picker into one
+ * `<folder>.zip`. The picker hands over every file in the folder, flat,
+ * each with its path from the chosen folder down in `webkitRelativePath`
+ * (empty subfolders are not listed, so they are not in the archive).
+ * @param picked Files from the picker
+ * @returns The zip (none for an empty folder), and what went wrong
+ */
+export async function resolvePickedFolder(picked: File[]) {
+  const files: File[] = [];
+  const failures: DropFailure[] = [];
+
+  const withPath = picked.filter((file) => file.webkitRelativePath);
+  if (!withPath.length) return { files, failures };
+
+  const name = withPath[0].webkitRelativePath.split("/")[0];
+  const zipped = await zipFolder(name, async () =>
+    withPath
+      .map((file) => ({
+        path: file.webkitRelativePath,
+        file,
+        lastModified: file.lastModified,
+      }))
+      .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)),
+  );
+  if (zipped instanceof File) files.push(zipped);
+  else failures.push(zipped);
 
   return { files, failures };
 }

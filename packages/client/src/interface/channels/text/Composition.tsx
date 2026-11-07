@@ -73,7 +73,9 @@ import {
   MessageReplyPreview,
   Tooltip,
   VoiceMessageButton,
+  canPickFolder,
   humanFileSize,
+  usePickedFolder,
 } from "@revolt/ui";
 import { ProtectedShieldIcon } from "@revolt/ui/components/features/protected/ProtectedShieldIcon";
 import { expandTrailingEmoticon } from "@revolt/ui/components/features/texteditor/emoticonExpansion";
@@ -124,7 +126,8 @@ export function MessageComposition(props: Props) {
   const e2ee = useE2EE();
   const sound = useSound();
   const { openModal } = useModals();
-  const { layout } = useDevice();
+  const { layout, isMobile } = useDevice();
+  const resolvePickedFolder = usePickedFolder();
 
   /**
    * Window this composer renders in: the main window, or a chat window whose
@@ -1624,6 +1627,38 @@ export function MessageComposition(props: Props) {
   }
 
   /**
+   * Whether to offer the folder picker (desktop browsers and shells only)
+   */
+  const folderPickable = canPickFolder(isMobile);
+
+  /**
+   * Add a folder to the message, sent as `<folder>.zip`
+   */
+  function addFolder() {
+    if (refuseProtectedFiles()) return;
+
+    // Same document rule as addFile: the picker opens over this window
+    const doc = windowCtx.doc;
+    const input = doc.createElement("input");
+    input.type = "file";
+    input.webkitdirectory = true;
+    input.style.display = "none";
+
+    input.addEventListener("cancel", () => input.remove());
+    input.addEventListener("change", async (e) => {
+      const files = (e.currentTarget as HTMLInputElement)?.files;
+      input.remove();
+      if (!files?.length) return;
+
+      const zipped = await resolvePickedFolder([...files]);
+      if (zipped.length) onFiles(zipped);
+    });
+
+    doc.body.appendChild(input);
+    input.click();
+  }
+
+  /**
    * Remove a file by its ID
    * @param fileId File ID
    */
@@ -1915,6 +1950,7 @@ export function MessageComposition(props: Props) {
         files={draft().files ?? []}
         getFile={state.draft.getFile}
         addFile={addFile}
+        addFolder={folderPickable ? addFolder : undefined}
         removeFile={removeFile}
         editFile={editFile}
       />
@@ -2029,6 +2065,15 @@ export function MessageComposition(props: Props) {
                   <Symbol>add</Symbol>
                 </IconButton>
               </MessageBox.InlineIcon>
+              <Show when={folderPickable}>
+                <MessageBox.InlineIcon>
+                  <Tooltip content={t`Attach folder`} placement="top">
+                    <IconButton onPress={addFolder}>
+                      <Symbol>drive_folder_upload</Symbol>
+                    </IconButton>
+                  </Tooltip>
+                </MessageBox.InlineIcon>
+              </Show>
             </Match>
           </Switch>
         }

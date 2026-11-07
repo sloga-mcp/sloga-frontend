@@ -28,8 +28,19 @@ registerHooks({
 });
 
 const { crc32, zipStore, ZipTooLargeError } = await import("./zipStore.ts");
-const { resolveDroppedItems, takeDroppedItems, walkFolder } =
-  await import("./folderAttachments.ts");
+const {
+  resolveDroppedItems,
+  resolvePickedFolder,
+  takeDroppedItems,
+  walkFolder,
+} = await import("./folderAttachments.ts");
+
+/** A File as a webkitdirectory picker hands it over */
+function picked(path: string, body: string) {
+  const file = new File([body], path.split("/").pop()!);
+  Object.defineProperty(file, "webkitRelativePath", { value: path });
+  return file;
+}
 
 /** Fake FileSystemFileEntry */
 function fileEntry(name: string, body: string) {
@@ -217,5 +228,28 @@ describe("folders", () => {
       ["empty.txt"],
     );
     assert.deepEqual(failures, [{ name: "My Folder", reason: "unreadable" }]);
+  });
+});
+
+describe("folder picker", () => {
+  it("zips the picked files under the chosen folder's name", async () => {
+    const { files, failures } = await resolvePickedFolder([
+      picked("trip/day1/x.txt", "X"),
+      picked("trip/a.txt", "A"),
+    ]);
+    assert.deepEqual(failures, []);
+    assert.equal(files.length, 1);
+    assert.equal(files[0].name, "trip.zip");
+    assert.deepEqual(
+      Object.keys(readZip(new Uint8Array(await files[0].arrayBuffer()))),
+      ["trip/a.txt", "trip/day1/x.txt"],
+    );
+  });
+
+  it("attaches nothing for an empty pick", async () => {
+    assert.deepEqual(await resolvePickedFolder([]), {
+      files: [],
+      failures: [],
+    });
   });
 });

@@ -12,6 +12,7 @@ import { OverflowingText, iconSize } from "@revolt/ui/components/utils";
 import MdAdd from "@material-design-icons/svg/outlined/add.svg?component-solid";
 import MdCancel from "@material-design-icons/svg/outlined/cancel.svg?component-solid";
 import MdFile from "@material-design-icons/svg/outlined/description.svg?component-solid";
+import MdFolderUpload from "@material-design-icons/svg/outlined/drive_folder_upload.svg?component-solid";
 import MdEdit from "@material-design-icons/svg/outlined/edit.svg?component-solid";
 
 interface Props {
@@ -33,6 +34,12 @@ interface Props {
    * Invoke file picker to add file
    */
   addFile(): void;
+
+  /**
+   * Invoke folder picker to add a folder as a zip (omitted where folders
+   * can't be picked)
+   */
+  addFolder?(): void;
 
   /**
    * Remove file by ID
@@ -147,6 +154,19 @@ export function FileCarousel(props: Props) {
             <Ripple />
             <MdAdd {...iconSize(48)} />
           </EmptyEntry>
+          <Show when={props.addFolder}>
+            {(addFolder) => (
+              <EmptyEntry
+                role="button"
+                aria-label={t`Attach folder`}
+                title={t`Attach folder`}
+                onClick={() => addFolder()()}
+              >
+                <Ripple />
+                <MdFolderUpload {...iconSize(40)} />
+              </EmptyEntry>
+            )}
+          </Show>
         </div>
       </Container>
     </Show>

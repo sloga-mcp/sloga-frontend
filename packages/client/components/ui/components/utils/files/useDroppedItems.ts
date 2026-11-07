@@ -6,15 +6,15 @@ import {
   type DropFailure,
   type DroppedItem,
   resolveDroppedItems,
+  resolvePickedFolder,
 } from "./folderAttachments";
 
 /**
- * Resolve taken drop/paste items into Files (folders zipped) and tell the
- * user about anything that could not be attached, so nothing disappears
- * without a word
- * @returns Resolver; resolves to the Files to attach
+ * Report attach failures in one error dialog, so nothing disappears without
+ * a word
+ * @returns Takes a resolver's result, reports its failures, returns its files
  */
-export function useDroppedItems() {
+function useReportFailures() {
   const { t } = useLingui();
   const { openModal } = useModals();
 
@@ -35,16 +35,48 @@ export function useDroppedItems() {
     }
   }
 
-  return async (items: DroppedItem[]) => {
-    const { files, failures } = await resolveDroppedItems(items);
-
+  return ({ files, failures }: { files: File[]; failures: DropFailure[] }) => {
     if (failures.length) {
       openModal({
         type: "error2",
         error: new Error(failures.map(describe).join("\n")),
       });
     }
-
     return files;
   };
+}
+
+/**
+ * Resolve taken drop/paste items into Files (folders zipped), reporting
+ * anything that could not be attached
+ * @returns Resolver; resolves to the Files to attach
+ */
+export function useDroppedItems() {
+  const report = useReportFailures();
+  return async (items: DroppedItem[]) =>
+    report(await resolveDroppedItems(items));
+}
+
+/**
+ * Resolve the files of a folder chosen in a folder picker into one zip,
+ * reporting a folder that could not be zipped
+ * @returns Resolver; resolves to the Files to attach
+ */
+export function usePickedFolder() {
+  const report = useReportFailures();
+  return async (picked: File[]) => report(await resolvePickedFolder(picked));
+}
+
+/**
+ * Whether this browser can pick a folder. Mobile browsers and the Android
+ * webview expose the property but open an ordinary file picker.
+ * @param isMobile From `useDevice`
+ * @returns Whether to offer folder picking
+ */
+export function canPickFolder(isMobile: boolean) {
+  return (
+    !isMobile &&
+    typeof HTMLInputElement !== "undefined" &&
+    "webkitdirectory" in HTMLInputElement.prototype
+  );
 }
