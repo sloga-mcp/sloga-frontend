@@ -9801,6 +9801,10 @@ msgid "Attach folder"
 msgstr "Attach folder"
 
 #: components/ui/components/features/messaging/composition/FileCarousel.tsx
+msgid "Cancel zipping"
+msgstr "Cancel zipping"
+
+#: components/ui/components/features/messaging/composition/FileCarousel.tsx
 msgid "Reading folder…"
 msgstr "Reading folder…"
 

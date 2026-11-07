@@ -195,6 +195,16 @@ export function FileCarousel(props: Props) {
                         style={{ width: `${percent() ?? 30}%` }}
                       />
                     </ZipTrack>
+                    <Overlay>
+                      <OverlayAction
+                        type="button"
+                        aria-label={t`Cancel zipping`}
+                        title={t`Cancel zipping`}
+                        onClick={() => job.cancel()}
+                      >
+                        <MdCancel {...iconSize(28)} />
+                      </OverlayAction>
+                    </Overlay>
                   </PreviewBox>
                   <FileName>
                     <OverflowingText>{`${job.name}.zip`}</OverflowingText>

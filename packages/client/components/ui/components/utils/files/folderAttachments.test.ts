@@ -336,3 +336,68 @@ describe("zip progress", () => {
     assert.deepEqual(log, ["start trip", "listing", "p0", "p1", "done"]);
   });
 });
+
+describe("cancelling a zip", () => {
+  /** Observer that aborts when it sees a given progress call */
+  function cancelOn(when: "listing" | "zipping") {
+    const controller = new AbortController();
+    const log: string[] = [];
+    const watch = () => ({
+      signal: controller.signal,
+      progress: (f: number | null) => {
+        log.push(f === null ? "listing" : `p${f}`);
+        if ((when === "listing") === (f === null)) controller.abort();
+      },
+      done: () => log.push("done"),
+    });
+    return { log, watch };
+  }
+
+  it("while listing: nothing attached, nothing reported", async () => {
+    const { log, watch } = cancelOn("listing");
+    const root = dirEntry("trip", [fileEntry("a.txt", "A")]);
+    const result = await resolveDroppedItems(
+      [{ kind: "folder", entry: root as never }],
+      watch,
+    );
+    assert.deepEqual(result, { files: [], failures: [] });
+    assert.deepEqual(log, ["listing", "done"]);
+  });
+
+  it("while zipping: nothing attached, nothing reported", async () => {
+    const { log, watch } = cancelOn("zipping");
+    const result = await resolvePickedFolder(
+      [picked("trip/a.txt", "A"), picked("trip/b.txt", "B")],
+      watch,
+    );
+    assert.deepEqual(result, { files: [], failures: [] });
+    assert.deepEqual(log, ["listing", "p0", "done"]);
+  });
+
+  it("zipStore stops reading once aborted", async () => {
+    const controller = new AbortController();
+    let reads = 0;
+    const counted = (body: string) => {
+      const blob = new Blob([body]);
+      return {
+        size: blob.size,
+        slice: (...args: [number, number]) => {
+          reads++;
+          return blob.slice(...args);
+        },
+      } as unknown as Blob;
+    };
+    await assert.rejects(
+      zipStore(
+        [
+          { path: "f/a", file: counted("a") },
+          { path: "f/b", file: counted("b") },
+        ],
+        (fraction) => fraction > 0 && controller.abort(),
+        controller.signal,
+      ),
+      { name: "AbortError" },
+    );
+    assert.equal(reads, 1, "the second file is never read");
+  });
+});

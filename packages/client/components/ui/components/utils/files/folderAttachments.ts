@@ -30,8 +30,14 @@ export interface ZipObserver {
    */
   progress(fraction: number | null): void;
 
-  /** The zip is finished or failed; always called once */
+  /** The zip is finished, failed or cancelled; always called once */
   done(): void;
+
+  /**
+   * Aborted when the user cancels this zip: the folder is then dropped
+   * quietly (neither attached nor reported as a failure)
+   */
+  signal?: AbortSignal;
 }
 
 /** Starts following a folder about to be zipped, by its name */
@@ -119,12 +125,17 @@ function entryFile(entry: FileSystemFileEntry) {
  * Walk a folder into ZIP entries, paths starting with the folder's own name
  * so the archive unpacks into one folder
  * @param root Folder
+ * @param signal Stops the walk (rejecting with its reason) once aborted
  * @returns Entries; empty subfolders are kept as directory entries
  */
-export async function walkFolder(root: FileSystemDirectoryEntry) {
+export async function walkFolder(
+  root: FileSystemDirectoryEntry,
+  signal?: AbortSignal,
+) {
   const entries: ZipEntry[] = [];
 
   async function walk(dir: FileSystemDirectoryEntry, prefix: string) {
+    signal?.throwIfAborted();
     const children = await readAll(dir);
     if (!children.length) {
       entries.push({ path: prefix });
@@ -133,6 +144,7 @@ export async function walkFolder(root: FileSystemDirectoryEntry) {
 
     children.sort((a, b) => a.name.localeCompare(b.name));
     for (const child of children) {
+      signal?.throwIfAborted();
       if (child.isDirectory) {
         await walk(
           child as FileSystemDirectoryEntry,
@@ -175,9 +187,13 @@ export async function resolveDroppedItems(
     }
 
     const entry = item.entry;
-    const zipped = await zipFolder(entry.name, () => walkFolder(entry), watch);
+    const zipped = await zipFolder(
+      entry.name,
+      (signal) => walkFolder(entry, signal),
+      watch,
+    );
     if (zipped instanceof File) files.push(zipped);
-    else failures.push(zipped);
+    else if (zipped) failures.push(zipped);
   }
 
   return { files, failures };
@@ -188,24 +204,30 @@ export async function resolveDroppedItems(
  * @param name Folder name
  * @param entries Gets the folder's entries
  * @param watch Follows the zip while it is made
- * @returns The zip, or why it could not be made
+ * @returns The zip, why it could not be made, or null if it was cancelled
  */
 async function zipFolder(
   name: string,
-  entries: () => Promise<ZipEntry[]>,
+  entries: (signal?: AbortSignal) => Promise<ZipEntry[]>,
   watch?: WatchZip,
-): Promise<File | DropFailure> {
+): Promise<File | DropFailure | null> {
   const observer = watch?.(name);
+  const signal = observer?.signal;
   try {
     observer?.progress(null);
-    const blob = await zipStore(await entries(), (fraction) =>
-      observer?.progress(fraction),
+    const blob = await zipStore(
+      await entries(signal),
+      (fraction) => observer?.progress(fraction),
+      signal,
     );
+    // Cancelled during the last read: still dropped, as the user asked
+    if (signal?.aborted) return null;
     return new File([blob], `${name}.zip`, {
       type: "application/zip",
       lastModified: Date.now(),
     });
   } catch (error) {
+    if (signal?.aborted) return null;
     console.warn("[attachments] couldn't zip folder", name, error);
     return {
       name,
@@ -246,7 +268,7 @@ export async function resolvePickedFolder(picked: File[], watch?: WatchZip) {
     watch,
   );
   if (zipped instanceof File) files.push(zipped);
-  else failures.push(zipped);
+  else if (zipped) failures.push(zipped);
 
   return { files, failures };
 }

@@ -9,6 +9,8 @@ export interface ZipJob {
   name: string;
   /** Fraction read (0 to 1), or null while the folder is still listed */
   fraction: Accessor<number | null>;
+  /** Stop zipping; the folder is not attached and nothing is reported */
+  cancel(): void;
 }
 
 interface OwnedJob extends ZipJob {
@@ -27,19 +29,32 @@ let nextId = 0;
 export function watchZips(owner: object): WatchZip {
   return (name) => {
     const [fraction, setFraction] = createSignal<number | null>(null);
-    const job: OwnedJob = { id: ++nextId, owner, name, fraction };
+    const controller = new AbortController();
+    const remove = () =>
+      setJobs((list) => list.filter((entry) => entry !== job));
+
+    const job: OwnedJob = {
+      id: ++nextId,
+      owner,
+      name,
+      fraction,
+      cancel() {
+        controller.abort();
+        // Gone at once: the zip notices between reads and then calls done
+        remove();
+      },
+    };
     setJobs((list) => [...list, job]);
 
     return {
+      signal: controller.signal,
       progress(value) {
         // Whole percent steps: a 4 MB read per update is plenty, but there
         // is no point re-rendering for a change nobody can see
         const rounded = value === null ? null : Math.floor(value * 100) / 100;
         if (rounded !== fraction()) setFraction(rounded);
       },
-      done() {
-        setJobs((list) => list.filter((entry) => entry !== job));
-      },
+      done: remove,
     };
   };
 }

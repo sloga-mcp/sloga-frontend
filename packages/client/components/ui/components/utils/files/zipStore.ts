@@ -66,11 +66,17 @@ const CHUNK = 4 * 1024 * 1024;
  * held in memory at once
  * @param blob Blob
  * @param onRead Called with the byte count of each slice once it is read
+ * @param signal Stops between slices once aborted
  * @returns CRC-32
  */
-async function blobCrc(blob: Blob, onRead?: (bytes: number) => void) {
+async function blobCrc(
+  blob: Blob,
+  onRead?: (bytes: number) => void,
+  signal?: AbortSignal,
+) {
   let crc = 0;
   for (let offset = 0; offset < blob.size; offset += CHUNK) {
+    signal?.throwIfAborted();
     const part = await blob.slice(offset, offset + CHUNK).arrayBuffer();
     crc = crc32(crc, new Uint8Array(part));
     onRead?.(part.byteLength);
@@ -100,13 +106,16 @@ function dosDateTime(ms: number): [number, number] {
  * @param entries Files and empty directories, in archive order
  * @param onProgress Called with the fraction of file bytes read so far
  * (0 to 1), as reading goes
+ * @param signal Stops the zip (rejecting with its reason) once aborted
  * @returns Archive bytes as a Blob
  * @throws ZipTooLargeError past the classic ZIP limits
  */
 export async function zipStore(
   entries: ZipEntry[],
   onProgress?: (fraction: number) => void,
+  signal?: AbortSignal,
 ): Promise<Blob> {
+  signal?.throwIfAborted();
   if (entries.length > MAX_ENTRIES) throw new ZipTooLargeError();
 
   // Refused before anything is read: the file bytes alone are over the
@@ -129,7 +138,8 @@ export async function zipStore(
   for (const entry of entries) {
     const name = encoder.encode(entry.path);
     const size = entry.file?.size ?? 0;
-    const crc = entry.file ? await blobCrc(entry.file, onRead) : 0;
+    signal?.throwIfAborted();
+    const crc = entry.file ? await blobCrc(entry.file, onRead, signal) : 0;
     const [time, date] = dosDateTime(entry.lastModified ?? Date.now());
 
     if (offset + 30 + name.length + size > MAX_BYTES) {
