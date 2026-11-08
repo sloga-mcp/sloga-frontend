@@ -9825,6 +9825,10 @@ msgid "The folder \"{name}\" is too large to send (over 4 GB or 65,535 files)."
 msgstr "The folder \"{name}\" is too large to send (over 4 GB or 65,535 files)."
 
 #: components/ui/components/utils/files/useDroppedItems.ts
+msgid "The folder \"{name}\" is over the {limit} upload limit, so it wasn't attached."
+msgstr "The folder \"{name}\" is over the {limit} upload limit, so it wasn't attached."
+
+#: components/ui/components/utils/files/useDroppedItems.ts
 msgid "\"{name}\" couldn't be read, so it wasn't attached. If it's a folder, zip it first."
 msgstr "\"{name}\" couldn't be read, so it wasn't attached. If it's a folder, zip it first."
 

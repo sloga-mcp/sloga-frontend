@@ -4,8 +4,9 @@
  * Entries are STORED (no compression): the archive is a Blob made of the
  * headers plus the original File objects, so the bytes are not copied into
  * memory. Each file is read once, in chunks, to get its CRC-32. Classic ZIP
- * only (no ZIP64), so it refuses more than 65,535 entries or 4 GB in total.
- * That is well above any attachment size limit.
+ * only (no ZIP64): it refuses 65,535 entries or more, or an archive of 4 GB
+ * or more (0xFFFF and 0xFFFFFFFF are the ZIP64 markers, so they are never
+ * written as real values). That is well above any attachment size limit.
  */
 
 /** One file (or empty directory, `file` omitted) inside the archive */
@@ -25,8 +26,79 @@ export class ZipTooLargeError extends Error {
   }
 }
 
+/** Thrown when the archive would be over the upload limit it was given */
+export class ZipOverLimitError extends Error {
+  readonly limit: number;
+
+  /**
+   * @param limit Upload limit in bytes
+   */
+  constructor(limit: number) {
+    super("Folder is over the upload limit");
+    this.name = "ZipOverLimitError";
+    this.limit = limit;
+  }
+}
+
+/** Entry count and byte values at or past these are the ZIP64 markers */
 const MAX_ENTRIES = 0xffff;
 const MAX_BYTES = 0xffffffff;
+
+const encoder = new TextEncoder();
+
+/**
+ * Bytes one entry adds to a stored archive: its local header, its data and
+ * its central directory record (no extra fields, no comment)
+ * @param entry Entry
+ * @returns Bytes
+ */
+function entryBytes(entry: ZipEntry) {
+  const name = encoder.encode(entry.path).length;
+  return 30 + name + (entry.file?.size ?? 0) + 46 + name;
+}
+
+/**
+ * Exact size of the stored archive `zipStore` would build
+ * @param entries Entries
+ * @returns Bytes
+ */
+export function zipSize(entries: ZipEntry[]) {
+  return entries.reduce((sum, entry) => sum + entryBytes(entry), 22);
+}
+
+/**
+ * Running check while a folder is listed, so a folder that cannot be sent
+ * is refused as soon as that is known instead of after the whole walk
+ */
+export class ZipBudget {
+  private count = 0;
+  private bytes = 22;
+  private readonly limit?: number;
+
+  /**
+   * @param limit Upload limit in bytes, if any (below the ZIP maximum)
+   */
+  constructor(limit?: number) {
+    this.limit = limit;
+  }
+
+  /**
+   * Count one more entry
+   * @param entry Entry
+   * @throws ZipTooLargeError past the classic ZIP limits
+   * @throws ZipOverLimitError past the upload limit
+   */
+  add(entry: ZipEntry) {
+    this.count += 1;
+    this.bytes += entryBytes(entry);
+    if (this.count >= MAX_ENTRIES || this.bytes >= MAX_BYTES) {
+      throw new ZipTooLargeError();
+    }
+    if (this.limit !== undefined && this.bytes > this.limit) {
+      throw new ZipOverLimitError(this.limit);
+    }
+  }
+}
 
 let crcTable: Uint32Array | undefined;
 
@@ -108,7 +180,7 @@ function dosDateTime(ms: number): [number, number] {
  * (0 to 1), as reading goes
  * @param signal Stops the zip (rejecting with its reason) once aborted
  * @returns Archive bytes as a Blob
- * @throws ZipTooLargeError past the classic ZIP limits
+ * @throws ZipTooLargeError at or past the classic ZIP limits
  */
 export async function zipStore(
   entries: ZipEntry[],
@@ -116,12 +188,15 @@ export async function zipStore(
   signal?: AbortSignal,
 ): Promise<Blob> {
   signal?.throwIfAborted();
-  if (entries.length > MAX_ENTRIES) throw new ZipTooLargeError();
 
-  // Refused before anything is read: the file bytes alone are over the
-  // limit, so there is no point reading gigabytes to find out
+  // Refused before anything is read: the archive size is known exactly up
+  // front, so there is no point reading gigabytes to find out. Every offset
+  // and size field is below the total, so none can reach the ZIP64 marker.
+  if (entries.length >= MAX_ENTRIES || zipSize(entries) >= MAX_BYTES) {
+    throw new ZipTooLargeError();
+  }
+
   const total = entries.reduce((sum, e) => sum + (e.file?.size ?? 0), 0);
-  if (total > MAX_BYTES) throw new ZipTooLargeError();
 
   let read = 0;
   onProgress?.(0);
@@ -130,7 +205,6 @@ export async function zipStore(
     onProgress?.(total ? read / total : 1);
   };
 
-  const encoder = new TextEncoder();
   const parts: BlobPart[] = [];
   const central: Uint8Array[] = [];
   let offset = 0;
@@ -141,10 +215,6 @@ export async function zipStore(
     signal?.throwIfAborted();
     const crc = entry.file ? await blobCrc(entry.file, onRead, signal) : 0;
     const [time, date] = dosDateTime(entry.lastModified ?? Date.now());
-
-    if (offset + 30 + name.length + size > MAX_BYTES) {
-      throw new ZipTooLargeError();
-    }
 
     const local = new Uint8Array(30 + name.length);
     const lv = new DataView(local.buffer);
@@ -190,7 +260,6 @@ export async function zipStore(
   }
 
   const centralSize = central.reduce((sum, c) => sum + c.length, 0);
-  if (offset + centralSize + 22 > MAX_BYTES) throw new ZipTooLargeError();
 
   const end = new Uint8Array(22);
   const ev = new DataView(end.buffer);

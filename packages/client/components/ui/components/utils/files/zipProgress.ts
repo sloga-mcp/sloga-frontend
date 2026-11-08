@@ -60,6 +60,15 @@ export function watchZips(owner: object): WatchZip {
 }
 
 /**
+ * Cancel every zip of an owner (its composer is going away), so none lands
+ * later or reports an error over another screen
+ * @param owner Owner passed to `watchZips`
+ */
+export function cancelZips(owner: object) {
+  for (const job of jobs()) if (job.owner === owner) job.cancel();
+}
+
+/**
  * Zips in progress for an owner
  * @param owner Owner passed to `watchZips`
  * @returns Jobs, in start order

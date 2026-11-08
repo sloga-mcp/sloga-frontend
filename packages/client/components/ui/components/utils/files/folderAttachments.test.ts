@@ -27,7 +27,8 @@ registerHooks({
   },
 });
 
-const { crc32, zipStore, ZipTooLargeError } = await import("./zipStore.ts");
+const { crc32, zipSize, zipStore, ZipBudget, ZipTooLargeError } =
+  await import("./zipStore.ts");
 const {
   resolveDroppedItems,
   resolvePickedFolder,
@@ -399,5 +400,141 @@ describe("cancelling a zip", () => {
       { name: "AbortError" },
     );
     assert.equal(reads, 1, "the second file is never read");
+  });
+});
+
+describe("limits are checked early and exactly", () => {
+  /** Blob of a given size that counts its reads */
+  function sized(size: number, reads: { n: number }) {
+    return {
+      size,
+      slice() {
+        reads.n++;
+        return new Blob([]);
+      },
+    } as unknown as Blob;
+  }
+
+  it("zipSize is the exact size of the archive", async () => {
+    const entries = [
+      { path: "f/", file: undefined },
+      { path: "f/a.txt", file: new Blob(["hello"]) },
+      { path: "f/čšž ünï.txt", file: new Blob(["x".repeat(1000)]) },
+    ];
+    const blob = await zipStore(entries);
+    assert.equal(zipSize(entries), blob.size);
+  });
+
+  it("never writes the ZIP64 entry-count marker (65,535 entries)", async () => {
+    const at = Array.from({ length: 0xffff }, (_, i) => ({ path: `d${i}/` }));
+    await assert.rejects(zipStore(at), ZipTooLargeError);
+    const below = at.slice(1);
+    const blob = await zipStore(below);
+    const view = new DataView(await blob.slice(blob.size - 22).arrayBuffer());
+    assert.equal(view.getUint16(10, true), 0xfffe);
+  });
+
+  it("never writes the ZIP64 size marker (a 0xFFFFFFFF-byte archive)", async () => {
+    const reads = { n: 0 };
+    const path = "f/x";
+    // 22 end record + 30 + 46 headers + 2 names of 3 bytes
+    const size = 0xffffffff - (22 + 30 + 46 + 2 * path.length);
+    const entry = { path, file: sized(size, reads) };
+    assert.equal(zipSize([entry]), 0xffffffff);
+    await assert.rejects(zipStore([entry]), ZipTooLargeError);
+    assert.equal(reads.n, 0);
+  });
+
+  it("ZipBudget stops at the entry cap and at the upload limit", () => {
+    const budget = new ZipBudget();
+    for (let i = 0; i < 0xfffe; i++) budget.add({ path: "d/" });
+    assert.throws(() => budget.add({ path: "d/" }), ZipTooLargeError);
+
+    const limited = new ZipBudget(1000);
+    limited.add({ path: "f/a", file: new Blob(["x".repeat(500)]) });
+    assert.throws(
+      () => limited.add({ path: "f/b", file: new Blob(["x".repeat(500)]) }),
+      { name: "ZipOverLimitError", limit: 1000 },
+    );
+  });
+
+  it("a dropped folder over the upload limit stops the walk and reads nothing", async () => {
+    let listed = 0;
+    const children = Array.from({ length: 50 }, (_, i) => {
+      const entry = fileEntry(
+        `f${String(i).padStart(2, "0")}`,
+        "x".repeat(100),
+      );
+      return {
+        ...entry,
+        file: (ok: (f: File) => void) => {
+          listed++;
+          entry.file(ok);
+        },
+      };
+    });
+    const { files, failures } = await resolveDroppedItems(
+      [{ kind: "folder", entry: dirEntry("big", children) as never }],
+      undefined,
+      1000,
+    );
+    assert.deepEqual(files, []);
+    assert.deepEqual(failures, [
+      { name: "big", reason: "over_limit", limit: 1000 },
+    ]);
+    assert.ok(listed < 10, `walk went on after the limit (${listed} listed)`);
+  });
+
+  it("a dropped folder past 65,535 entries stops the walk there", async () => {
+    let listed = 0;
+    const children = Array.from({ length: 70000 }, (_, i) => {
+      const entry = fileEntry(`f${i}`, "");
+      return {
+        ...entry,
+        file: (ok: (f: File) => void) => {
+          listed++;
+          entry.file(ok);
+        },
+      };
+    });
+    const dir = {
+      name: "many",
+      isFile: false,
+      isDirectory: true,
+      createReader() {
+        let i = 0;
+        return {
+          readEntries(ok: (batch: unknown[]) => void) {
+            ok(children.slice(i, (i += 1000)));
+          },
+        };
+      },
+    };
+    const { failures } = await resolveDroppedItems([
+      { kind: "folder", entry: dir as never },
+    ]);
+    assert.deepEqual(failures, [{ name: "many", reason: "too_large" }]);
+    // the 65,535th is listed, then refused; nothing past it
+    assert.equal(listed, 0xffff);
+  });
+
+  it("a picked folder over the upload limit is refused before any read", async () => {
+    const reads = { n: 0 };
+    const big = new File([], "a.bin");
+    Object.defineProperty(big, "size", { value: 5000 });
+    Object.defineProperty(big, "slice", {
+      value: () => (reads.n++, new Blob([])),
+    });
+    Object.defineProperty(big, "webkitRelativePath", { value: "trip/a.bin" });
+    const { files, failures } = await resolvePickedFolder(
+      [big],
+      undefined,
+      1000,
+    );
+    assert.deepEqual(files, []);
+    assert.deepEqual(failures, [
+      { name: "trip", reason: "over_limit", limit: 1000 },
+    ]);
+    assert.equal(reads.n, 0);
   });
 });

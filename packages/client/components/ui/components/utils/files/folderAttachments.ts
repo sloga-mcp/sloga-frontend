@@ -1,4 +1,10 @@
-import { type ZipEntry, ZipTooLargeError, zipStore } from "./zipStore";
+import {
+  type ZipEntry,
+  ZipBudget,
+  ZipOverLimitError,
+  ZipTooLargeError,
+  zipStore,
+} from "./zipStore";
 
 /**
  * Turning dropped or pasted folders into attachments.
@@ -20,6 +26,7 @@ export type DroppedItem =
 export type DropFailure =
   | { name: string; reason: "unreadable" }
   | { name: string; reason: "too_large" }
+  | { name: string; reason: "over_limit"; limit: number }
   | { name: string; reason: "read_failed" };
 
 /** Follows one folder while it is zipped */
@@ -126,19 +133,27 @@ function entryFile(entry: FileSystemFileEntry) {
  * so the archive unpacks into one folder
  * @param root Folder
  * @param signal Stops the walk (rejecting with its reason) once aborted
+ * @param budget Checked as each entry is found, so an oversized folder
+ * stops the walk at once
  * @returns Entries; empty subfolders are kept as directory entries
+ * @throws ZipTooLargeError or ZipOverLimitError from the budget
  */
 export async function walkFolder(
   root: FileSystemDirectoryEntry,
   signal?: AbortSignal,
+  budget: ZipBudget = new ZipBudget(),
 ) {
   const entries: ZipEntry[] = [];
+  const push = (entry: ZipEntry) => {
+    budget.add(entry);
+    entries.push(entry);
+  };
 
   async function walk(dir: FileSystemDirectoryEntry, prefix: string) {
     signal?.throwIfAborted();
     const children = await readAll(dir);
     if (!children.length) {
-      entries.push({ path: prefix });
+      push({ path: prefix });
       return;
     }
 
@@ -152,7 +167,7 @@ export async function walkFolder(
         );
       } else if (child.isFile) {
         const file = await entryFile(child as FileSystemFileEntry);
-        entries.push({
+        push({
           path: `${prefix}${child.name}`,
           file,
           lastModified: file.lastModified,
@@ -170,11 +185,13 @@ export async function walkFolder(
  * unreadable phantoms are refused
  * @param items From `takeDroppedItems`
  * @param watch Follows each folder while it is zipped
+ * @param maxBytes Upload limit: a bigger folder is refused before it is read
  * @returns Files to attach, and what could not be attached
  */
 export async function resolveDroppedItems(
   items: DroppedItem[],
   watch?: WatchZip,
+  maxBytes?: number,
 ) {
   const files: File[] = [];
   const failures: DropFailure[] = [];
@@ -189,7 +206,7 @@ export async function resolveDroppedItems(
     const entry = item.entry;
     const zipped = await zipFolder(
       entry.name,
-      (signal) => walkFolder(entry, signal),
+      (signal) => walkFolder(entry, signal, new ZipBudget(maxBytes)),
       watch,
     );
     if (zipped instanceof File) files.push(zipped);
@@ -228,11 +245,12 @@ async function zipFolder(
     });
   } catch (error) {
     if (signal?.aborted) return null;
+    if (error instanceof ZipOverLimitError) {
+      return { name, reason: "over_limit", limit: error.limit };
+    }
+    if (error instanceof ZipTooLargeError) return { name, reason: "too_large" };
     console.warn("[attachments] couldn't zip folder", name, error);
-    return {
-      name,
-      reason: error instanceof ZipTooLargeError ? "too_large" : "read_failed",
-    };
+    return { name, reason: "read_failed" };
   } finally {
     observer?.done();
   }
@@ -245,9 +263,14 @@ async function zipFolder(
  * (empty subfolders are not listed, so they are not in the archive).
  * @param picked Files from the picker
  * @param watch Follows the folder while it is zipped
+ * @param maxBytes Upload limit: a bigger folder is refused before it is read
  * @returns The zip (none for an empty folder), and what went wrong
  */
-export async function resolvePickedFolder(picked: File[], watch?: WatchZip) {
+export async function resolvePickedFolder(
+  picked: File[],
+  watch?: WatchZip,
+  maxBytes?: number,
+) {
   const files: File[] = [];
   const failures: DropFailure[] = [];
 
@@ -257,14 +280,18 @@ export async function resolvePickedFolder(picked: File[], watch?: WatchZip) {
   const name = withPath[0].webkitRelativePath.split("/")[0];
   const zipped = await zipFolder(
     name,
-    async () =>
-      withPath
+    async () => {
+      const entries = withPath
         .map((file) => ({
           path: file.webkitRelativePath,
           file,
           lastModified: file.lastModified,
         }))
-        .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)),
+        .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+      const budget = new ZipBudget(maxBytes);
+      for (const entry of entries) budget.add(entry);
+      return entries;
+    },
     watch,
   );
   if (zipped instanceof File) files.push(zipped);

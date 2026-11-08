@@ -2,14 +2,15 @@ import { type WindowCtx, MAIN_CTX } from "@revolt/client/windowCtx";
 import { onCleanup, onMount } from "solid-js";
 
 import { takeDroppedItems } from "./folderAttachments";
-import { useDroppedItems } from "./useDroppedItems";
+import { type ZipTarget, useDroppedItems } from "./useDroppedItems";
 
 interface Props {
   /**
    * Callback for pasted files
    * @param files List of files
+   * @param target What `zipTarget` gave at the gesture, if anything
    */
-  onFiles: (files: File[]) => void;
+  onFiles: (files: File[], target?: ZipTarget) => void;
 
   /**
    * Window whose document receives the paste (defaults to the main window)
@@ -22,17 +23,17 @@ interface Props {
   active?: () => boolean;
 
   /**
-   * Composer whose attachment strip shows a folder zipping (read once)
+   * Where a folder goes, read at the moment of the gesture: the zip may
+   * finish after the composer has moved to another channel
    */
-  zipOwner?: object;
+  zipTarget?: () => ZipTarget;
 }
 
 /**
  * Utility for capturing pasted files
  */
 export function FilePasteCollector(props: Props) {
-  // eslint-disable-next-line solid/reactivity -- fixed for the collector lifetime
-  const resolveDropped = useDroppedItems(props.zipOwner);
+  const resolveDropped = useDroppedItems();
 
   /**
    * Handle document paste event
@@ -55,8 +56,9 @@ export function FilePasteCollector(props: Props) {
 
     if (items.length) {
       event.preventDefault();
-      void resolveDropped(items).then((files) => {
-        if (files.length) props.onFiles(files);
+      const target = props.zipTarget?.();
+      void resolveDropped(items, target).then((files) => {
+        if (files.length) props.onFiles(files, target);
       });
     }
   }

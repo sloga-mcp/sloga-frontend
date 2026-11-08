@@ -7,5 +7,9 @@ export { FileDropGuard } from "./FileDropGuard";
 export { FileInput } from "./FileInput";
 export { FilePasteCollector } from "./FilePasteCollector";
 export { humanFileSize } from "./humanFileSize";
-export { canPickFolder, usePickedFolder } from "./useDroppedItems";
-export { type ZipJob, zipJobs } from "./zipProgress";
+export {
+  type ZipTarget,
+  canPickFolder,
+  usePickedFolder,
+} from "./useDroppedItems";
+export { type ZipJob, cancelZips, zipJobs } from "./zipProgress";
