@@ -10752,16 +10752,16 @@ msgid "Create a server"
 msgstr "Create a server"
 
 #: src/interface/home/WhatsNewCard.tsx
-msgid "A new Modern style, with a Classic option"
-msgstr "A new Modern style, with a Classic option"
+msgid "Restore encryption on a second device"
+msgstr "Restore encryption on a second device"
 
 #: src/interface/home/WhatsNewCard.tsx
-msgid "A Discord color scheme and new backgrounds"
-msgstr "A Discord color scheme and new backgrounds"
+msgid "Send a whole folder as a .zip"
+msgstr "Send a whole folder as a .zip"
 
 #: src/interface/home/WhatsNewCard.tsx
-msgid "Change your voice's pitch in calls"
-msgstr "Change your voice's pitch in calls"
+msgid "Images open again in chat windows"
+msgstr "Images open again in chat windows"
 
 #: src/interface/home/WhatsNewCard.tsx
 msgid "New in v{HIGHLIGHTS_RELEASE}"
