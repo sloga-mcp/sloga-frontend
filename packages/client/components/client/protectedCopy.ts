@@ -144,6 +144,13 @@ export function noticeCopy(
       return t`This channel's member list is now signed by a different person. This is not allowed and the channel has been locked.`;
     case "join_stalled":
       return t`This device couldn't finish joining this protected channel. Try opening the channel again later.`;
+    // S5b Prot tank (contracts 16.4)
+    case "tank_grace":
+      return t`Grace period: new members can't be added until it's topped up.`;
+    case "tank_frozen":
+      return t`Frozen: top it up to send messages again.`;
+    case "tank_deleted":
+      return t`Deleted from Sloga's servers.`;
     // flows
     case "channel_full":
       return t`This protected channel is full.`;
@@ -326,7 +333,7 @@ export function shieldLabel(state: ProtectedShieldState): string {
       return t`Not available on this device`;
     case "unverified":
       return unverifiedLabelCopy();
-    // S5 reserved: typed and labelled, never produced in S1.
+    // S5b: from the Prot tank stage (protectedShield step 3c / step 8).
     case "grace":
       return t({ message: "Grace period", comment: "Protected channel state" });
     case "frozen":

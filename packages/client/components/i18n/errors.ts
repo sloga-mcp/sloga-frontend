@@ -195,6 +195,19 @@ export function useError() {
         );
         return t`You don't have enough Prot for this: it needs ${protNeeded} Prot and you have ${protAvailable}.`;
       }
+      // Prot tanks and goals (S5b, same lag pattern). The refusal carries no
+      // hours and this hook has no client to read the advert from, so the
+      // contribute dialog words the hold with the advert's
+      // `contribute_hold_hours` itself (contracts 16.4, NIT 26); this is the
+      // copy for anywhere else, with no number in it.
+      if (errType === "ProtHeldPurchase")
+        return t`Prot bought recently can't be contributed yet.`;
+      if (errType === "ProtTankFrozen")
+        return t`This Protected channel is frozen until it's topped up.`;
+      // Goals only (NIT 23): a closed tank answers InvalidOperation
+      if (errType === "ProtGoalClosed") return t`This goal is closed.`;
+      if (errType === "ProtTierBelowSeats")
+        return t`Some members are still seated or cooling down. Unseat members first, or wait for their seats to free up.`;
 
       switch (err.type) {
         case "AlreadyFriends":

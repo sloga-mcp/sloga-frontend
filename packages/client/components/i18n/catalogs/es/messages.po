@@ -651,6 +651,209 @@ msgstr "Reconocer"
 msgid "Active"
 msgstr "Activo"
 
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Protected until {date}"
+msgstr "Protegido hasta {date}"
+
+#. Protected channel state
+#: components/client/protectedCopy.ts
+msgid "Grace period"
+msgstr "Periodo de gracia"
+
+#. Protected channel state
+#: components/client/protectedCopy.ts
+msgid "Frozen"
+msgstr "Congelado"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Closing"
+msgstr "Cerrándose"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Deleted"
+msgstr "Eliminado"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Closed by Sloga"
+msgstr "Cerrado por Sloga"
+
+#: components/modal/modals/ProtectedTank.tsx
+msgid "This Protected channel's tank is being set up."
+msgstr "El tanque de este canal Protected se está configurando."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+#: src/interface/channels/text/ProtBanner.tsx
+msgid "This Protected channel has run out of Prot. It keeps working until {date}, but new members can't be added. Top it up to keep it active."
+msgstr "Este canal Protected se ha quedado sin Prot. Sigue funcionando hasta {date}, pero no se pueden añadir miembros nuevos. Recárgalo para mantenerlo activo."
+
+#: src/interface/channels/text/ProtBanner.tsx
+msgid "This Protected channel is closing."
+msgstr "Este canal Protected está en proceso de cierre."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+#: src/interface/channels/text/ProtBanner.tsx
+msgid "This Protected channel is frozen. You can read its history, but nothing can be sent until it's topped up."
+msgstr "Este canal Protected está congelado. Puedes leer su historial, pero no se puede enviar nada hasta que se recargue."
+
+#: components/modal/modals/ProtectedTank.tsx
+msgid "This Protected channel is being closed."
+msgstr "Este canal Protected se está cerrando."
+
+#: components/modal/modals/ProtectedTank.tsx
+#: src/interface/channels/text/ProtBanner.tsx
+msgid "This Protected channel was deleted from Sloga's servers because it ran out of Prot."
+msgstr "Este canal Protected se eliminó de los servidores de Sloga porque se quedó sin Prot."
+
+#: src/interface/channels/text/ProtBanner.tsx
+msgid "This Protected channel has about {days} days of Prot left."
+msgstr "A este canal Protected le queda Prot para unos {days} días."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+#: src/interface/channels/text/ProtBanner.tsx
+msgid "It may be deleted from Sloga's servers after {date}."
+msgstr "Puede eliminarse de los servidores de Sloga después del {date}."
+
+#: src/interface/channels/text/ProtBanner.tsx
+msgid "This Protected channel was deleted from Sloga's servers."
+msgstr "Este canal Protected se eliminó de los servidores de Sloga."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+msgid "Move to {slots} seats? The tank pays the extra cost for the rest of today now, then {amount} Prot a day."
+msgstr "¿Pasar a {slots} plazas? El tanque paga ahora el coste adicional del resto del día y después {amount} Prot al día."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+msgid "Move to {slots} seats? The tank pays {amount} Prot a day from the next day. If more members are seated or cooling down than that, the change waits until enough seats are free."
+msgstr "¿Pasar a {slots} plazas? El tanque paga {amount} Prot al día a partir del día siguiente. Si hay más miembros con plaza o en periodo de espera que eso, el cambio espera hasta que haya suficientes plazas libres."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Uses {amount} Prot a day"
+msgstr "Usa {amount} Prot al día"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Moving to {tier} seats once enough seats are free."
+msgstr "Pasará a {tier} plazas cuando haya suficientes plazas libres."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Upgrade goal"
+msgstr "Meta de ampliación"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Launch goal"
+msgstr "Meta de lanzamiento"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "{slots} seats"
+msgstr "{slots} plazas"
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "{days} days"
+msgstr "{days} días"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "{amount} Prot a day"
+msgstr "{amount} Prot al día"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "{pledged} of {target} Prot"
+msgstr "{pledged} de {target} Prot"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Ends {date}"
+msgstr "Termina el {date}"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Funded"
+msgstr "Financiada"
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Funded. Launch it by {date}."
+msgstr "Financiada. Lánzala a más tardar el {date}."
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Launched on #{name}. Protect the channel from its settings to finish."
+msgstr "Lanzada en #{name}. Protege el canal desde sus ajustes para terminar."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Funded, waiting to launch"
+msgstr "Financiada, pendiente de lanzamiento"
+
+#: components/modal/modals/ProtServerGoals.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "You pledged {pledged} Prot"
+msgstr "Has comprometido {pledged} Prot"
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "You can withdraw until {date}."
+msgstr "Puedes retirar tu promesa hasta el {date}."
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Withdraw your pledge of {amount} Prot? It goes back to your wallet."
+msgstr "¿Retirar tu promesa de aporte de {amount} Prot? Vuelve a tu monedero."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Target: {amount} Prot"
+msgstr "Objetivo: {amount} Prot"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+msgid "Open a goal for {slots} seats with a target of {amount} Prot?"
+msgstr "¿Abrir una meta de {slots} plazas con un objetivo de {amount} Prot?"
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Choose from {min} to {max} days."
+msgstr "Elige entre {min} y {max} días."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Members have {days} days to fund it."
+msgstr "Los miembros tienen {days} días para financiarla."
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Launch on #{name}"
+msgstr "Lanzar en #{name}"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgctxt "Prot contributor"
+msgid "Anonymous"
+msgstr "Anónimo"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgctxt "Prot contributor"
+msgid "Deleted user"
+msgstr "Usuario eliminado"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+msgid "Prot is the credit that keeps Protected servers and channels running. Members fund this channel's tank, and the tank pays for its seats each day."
+msgstr "Prot es el crédito que mantiene en marcha los servidores y canales Protected. Los miembros financian el tanque de este canal, y el tanque paga sus plazas cada día."
+
 #: components/ui/components/features/profiles/ProfileStatus.tsx
 msgid "Activity"
 msgstr "Actividad"
@@ -1432,6 +1635,39 @@ msgstr ""
 msgid "Cancel"
 msgstr "Cancelar"
 
+#: components/modal/modals/ProtContribute.tsx
+msgid "Contribute"
+msgstr "Contribuir"
+
+#: components/modal/modals/ProtContribute.tsx
+msgid "Goal"
+msgstr "Meta"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Contributors"
+msgstr "Colaboradores"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "No contributions yet."
+msgstr "Todavía no hay contribuciones."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "You"
+msgstr "Tú"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "This channel doesn't have a Prot tank."
+msgstr "Este canal no tiene un tanque de Prot."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+msgid "To fund a new Protected channel, open a launch goal from the server menu."
+msgstr "Para financiar un nuevo canal Protected, abre una meta de lanzamiento desde el menú del servidor."
+
 #: src/interface/ServerEvents.tsx
 msgid "Cancel (can't attend)"
 msgstr "Cancelar (no puedo asistir)"
@@ -1763,6 +1999,89 @@ msgstr "Los clics en la pantalla compartida van a su computadora, por lo que los
 #: components/modal/modals/AddFriend.tsx
 msgid "Close"
 msgstr "Cerrar"
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Prot is the credit that keeps Protected servers and channels running. With a launch goal, members pool Prot to fund a new Protected channel on this server."
+msgstr "Prot es el crédito que mantiene en marcha los servidores y canales Protected. Con una meta de lanzamiento, los miembros reúnen Prot para financiar un nuevo canal Protected en este servidor."
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Prot is switched off right now, so launch goals can't be opened or changed."
+msgstr "Prot está desactivado ahora mismo, así que no se pueden abrir ni cambiar metas de lanzamiento."
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Launch goals aren't available yet."
+msgstr "Las metas de lanzamiento todavía no están disponibles."
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Open a launch goal"
+msgstr "Abrir una meta de lanzamiento"
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Launch goals can't be opened right now."
+msgstr "No se pueden abrir metas de lanzamiento ahora mismo."
+
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Prot is the credit that keeps Protected servers and channels running. This channel uses Prot from its tank each day."
+msgstr "Prot es el crédito que mantiene en marcha los servidores y canales Protected. Este canal usa Prot de su tanque cada día."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Tank balance"
+msgstr "Saldo del tanque"
+
+#. Protected channel member seats
+#: components/client/protectedCopy.ts
+msgid "Seats"
+msgstr "Plazas"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+msgid "Only the server owner can change the seats or open goals."
+msgstr "Solo el propietario del servidor puede cambiar las plazas o abrir metas."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+msgid "Prot is switched off right now, so the seats and goals can't be changed."
+msgstr "Prot está desactivado ahora mismo, así que no se pueden cambiar las plazas ni las metas."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+msgid "Changing the seats and opening goals isn't available yet."
+msgstr "Todavía no se pueden cambiar las plazas ni abrir metas."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+msgid "Seat tier"
+msgstr "Nivel de plazas"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+msgid "Choose how many seats the tank pays for."
+msgstr "Elige cuántas plazas paga el tanque."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+msgid "The seats can't change while an upgrade goal is open."
+msgstr "Las plazas no pueden cambiar mientras haya una meta de ampliación abierta."
+
+#: components/modal/modals/ProtectedTank.tsx
+msgid "You contributed"
+msgstr "Has contribuido"
+
+#: components/modal/modals/ProtContribute.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Contributing supports this server. It does not reserve a seat; the owner chooses members."
+msgstr "Contribuir ayuda a este servidor. No reserva una plaza; el propietario elige a los miembros."
+
+#: components/modal/modals/ProtContribute.tsx
+msgid "Contributing isn't available in this version of Sloga."
+msgstr "Las contribuciones no están disponibles en esta versión de Sloga."
+
+#: components/modal/modals/ProtContribute.tsx
+#: components/modal/modals/ProtectedTank.tsx
+#: src/interface/channels/text/ProtBanner.tsx
+msgid "Top up"
+msgstr "Recargar"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Goals"
+msgstr "Metas"
 
 #: components/app/menus/UserContextMenu.tsx
 msgid "Close chat"
@@ -2318,6 +2637,18 @@ msgstr "Formato de fecha"
 #: components/ui/components/utils/AutoArchiveField.tsx
 msgid "Days"
 msgstr ""
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Open launch goal"
+msgstr "Abrir meta de lanzamiento"
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "This server already has an open launch goal. Only one can be open at a time."
+msgstr "Este servidor ya tiene una meta de lanzamiento abierta. Solo puede haber una abierta a la vez."
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "No open launch goals."
+msgstr "No hay metas de lanzamiento abiertas."
 
 #: src/interface/navigation/UserFooter.tsx
 #: components/ui/components/features/voice/callCard/VoiceCallCardActions.tsx
@@ -4933,6 +5264,39 @@ msgstr "no ir"
 msgid "Not now"
 msgstr "Ahora no"
 
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+msgid "Change seats"
+msgstr "Cambiar plazas"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+msgid "An upgrade goal needs at least one full day of Prot in the tank."
+msgstr "Una meta de ampliación necesita al menos un día completo de Prot en el tanque."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+msgid "Ask members to fund more seats. The target covers the extra cost for the days of Prot the tank has left."
+msgstr "Pide a los miembros que financien más plazas. El objetivo cubre el coste adicional de los días de Prot que le quedan al tanque."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+msgid "Open upgrade goal"
+msgstr "Abrir meta de ampliación"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Cancel goal"
+msgstr "Cancelar meta"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Cancel this goal? Every pledge goes back to the member who made it."
+msgstr "¿Cancelar esta meta? Cada promesa de aporte vuelve al miembro que la hizo."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Keep goal"
+msgstr "Mantener meta"
+
 #: components/modal/modals/ReportContent.tsx
 msgid "Not of minimum age to use the platform"
 msgstr "No tener la edad mínima para utilizar la plataforma."
@@ -6584,10 +6948,36 @@ msgstr "Compartir actividad de juego"
 msgid "Your Prot wallet couldn't be loaded. Try again in a moment."
 msgstr "No se ha podido cargar tu monedero de Prot. Inténtalo de nuevo en un momento."
 
+#: components/modal/modals/ProtContribute.tsx
+msgid "We couldn't confirm that this went through. Try again; it won't be counted twice."
+msgstr "No hemos podido confirmar que se haya completado. Inténtalo de nuevo; no se contará dos veces."
+
+#: components/modal/modals/ProtContribute.tsx
+msgid "Your name setting couldn't be saved. Try again in a moment."
+msgstr "No se ha podido guardar tu ajuste de nombre. Inténtalo de nuevo en un momento."
+
+#: components/modal/modals/ProtContribute.tsx
+#: components/modal/modals/ProtContribute.tsx
+msgid "This was already added earlier, so nothing more was taken from your wallet."
+msgstr "Esto ya se había añadido antes, así que no se ha cobrado nada más de tu monedero."
+
+#: components/modal/modals/ProtContribute.tsx
+msgid "Your contribution of {amount} Prot was added."
+msgstr "Se ha añadido tu contribución de {amount} Prot."
+
+#: components/modal/modals/ProtContribute.tsx
+msgid "Your pledge of {amount} Prot was added."
+msgstr "Se ha añadido tu promesa de aporte de {amount} Prot."
+
 #: components/app/interface/settings/user/ProtSettings.tsx
 #: components/app/interface/settings/user/ProtSettings.tsx
 msgid "{amount} Prot"
 msgstr "{amount} Prot"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Launching"
+msgstr "En lanzamiento"
 
 #: components/app/interface/settings/user/ProtSettings.tsx
 msgid "{held} Prot on hold"
@@ -6616,6 +7006,34 @@ msgstr "Contribución"
 #: components/app/interface/settings/user/ProtSettings.tsx
 msgid "Pledge"
 msgstr "Promesa de aporte"
+
+#: components/modal/modals/ProtServerGoals.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+#: components/modal/modals/ProtectedTank.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Withdraw pledge"
+msgstr "Retirar promesa de aporte"
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Keep pledge"
+msgstr "Mantener promesa de aporte"
+
+#: components/modal/modals/ProtServerGoals.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Launch"
+msgstr "Lanzar"
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Pick an empty text channel to launch on. It becomes a Protected channel once you protect it from its settings."
+msgstr "Elige un canal de texto vacío para el lanzamiento. Se convierte en un canal Protected cuando lo proteges desde sus ajustes."
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "There's no empty text channel to launch on. Create a new text channel first."
+msgstr "No hay ningún canal de texto vacío para el lanzamiento. Crea primero un canal de texto nuevo."
+
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Withdraw your pledge?"
+msgstr "¿Retirar tu promesa de aporte?"
 
 #: components/app/interface/settings/user/ProtSettings.tsx
 msgid "Returned to your wallet"
@@ -6649,6 +7067,18 @@ msgstr "El mínimo es {min} Prot."
 msgid "The maximum is {max} Prot."
 msgstr "El máximo es {max} Prot."
 
+#: components/modal/modals/ProtContribute.tsx
+msgid "This goal needs {open} more Prot."
+msgstr "A esta meta le faltan {open} Prot."
+
+#: components/modal/modals/ProtContribute.tsx
+msgid "The goal needs only {open} Prot, so that's what will be pledged."
+msgstr "La meta solo necesita {open} Prot, así que ese es el valor que se comprometerá."
+
+#: components/modal/modals/ProtContribute.tsx
+msgid "Prot bought in the last {hours} hours can't be contributed yet."
+msgstr "El Prot comprado en las últimas {hours} horas todavía no se puede aportar."
+
 #: components/app/interface/settings/user/ProtSettings.tsx
 msgid "A wallet can hold up to {max} Prot."
 msgstr "Un monedero puede contener hasta {max} Prot."
@@ -6672,6 +7102,14 @@ msgstr "Pagar una cantidad exacta"
 #: components/app/interface/settings/user/ProtSettings.tsx
 msgid "Amount of Prot"
 msgstr "Cantidad de Prot"
+
+#: components/modal/modals/ProtContribute.tsx
+msgid "Hide my name"
+msgstr "Ocultar mi nombre"
+
+#: components/modal/modals/ProtContribute.tsx
+msgid "Hidden contributors show as Anonymous to everyone, the server owner included. This applies to all your contributions and pledges on this server."
+msgstr "Los colaboradores ocultos aparecen como Anónimo para todos, incluido el propietario del servidor. Esto se aplica a todas tus contribuciones y promesas de aporte en este servidor."
 
 #: components/app/interface/settings/user/ProtSettings.tsx
 msgid "Enter an amount"
@@ -6724,6 +7162,36 @@ msgstr ""
 #: components/client/toastShell.ts
 msgid "Slow down — try again in a moment"
 msgstr "Más despacio — inténtalo de nuevo en un momento"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Something went wrong. Try again in a moment."
+msgstr "Algo ha salido mal. Inténtalo de nuevo en un momento."
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "This server's launch goals couldn't be loaded. Try again in a moment."
+msgstr "No se han podido cargar las metas de lanzamiento de este servidor. Inténtalo de nuevo en un momento."
+
+#: components/modal/modals/ProtContribute.tsx
+msgid "This couldn't be loaded. Try again in a moment."
+msgstr "No se ha podido cargar. Inténtalo de nuevo en un momento."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "This channel's funding couldn't be loaded. Try again in a moment."
+msgstr "No se ha podido cargar la financiación de este canal. Inténtalo de nuevo en un momento."
+
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Your pledge couldn't be withdrawn. Try again in a moment."
+msgstr "No se ha podido retirar tu promesa de aporte. Inténtalo de nuevo en un momento."
+
+#: components/app/interface/settings/ChannelSettings.tsx
+#: components/app/menus/ChannelContextMenu.tsx
+#: components/app/menus/ServerContextMenu.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Protected channel funding"
+msgstr "Financiación de canales Protected"
 
 #: components/app/interface/settings/user/CipherSettings.tsx
 msgid "Checkout couldn't be started. Try again in a moment."
@@ -7642,6 +8110,19 @@ msgstr "El proveedor de pagos no ha respondido. Inténtalo de nuevo."
 #: components/i18n/errors.ts
 msgid "Prot isn't available right now."
 msgstr "Prot no está disponible ahora mismo."
+
+#: components/i18n/errors.ts
+#: components/modal/modals/ProtContribute.tsx
+msgid "This goal is closed."
+msgstr "Esta meta está cerrada."
+
+#: components/i18n/errors.ts
+msgid "Some members are still seated or cooling down. Unseat members first, or wait for their seats to free up."
+msgstr "Algunos miembros todavía tienen plaza o están en periodo de espera. Quita primero la plaza a algunos miembros o espera a que se liberen las plazas."
+
+#: components/modal/modals/ProtContribute.tsx
+msgid "This channel isn't taking contributions right now."
+msgstr "Este canal no acepta contribuciones ahora mismo."
 
 #: components/i18n/errors.ts
 msgid "Prot isn't on sale right now."
@@ -8782,6 +9263,19 @@ msgstr "Estás prohibido en este servidor."
 msgid "You are in slowmode, wait before invoking commands."
 msgstr "Estás en modo lento, espera antes de invocar comandos."
 
+#: components/client/protectedCopy.ts
+#: src/interface/channels/text/ProtBanner.tsx
+msgid "Grace period: new members can't be added until it's topped up."
+msgstr "Periodo de gracia: no se pueden añadir miembros nuevos hasta que se recargue."
+
+#: components/client/protectedCopy.ts
+msgid "Frozen: top it up to send messages again."
+msgstr "Congelado: recárgalo para volver a enviar mensajes."
+
+#: components/client/protectedCopy.ts
+msgid "Deleted from Sloga's servers."
+msgstr "Eliminado de los servidores de Sloga."
+
 #: components/ui/components/features/voice/callCard/VoiceCallRecordingBanner.tsx
 msgid "You are recording"
 msgstr "estas grabando"
@@ -9035,6 +9529,10 @@ msgstr "Tu importación de Discord falló."
 msgid "Your Discord import finished."
 msgstr "Tu importación de Discord finalizó."
 
+#: components/client/protectedCopy.ts
+msgid "Seats used: {used} of {cap}"
+msgstr "Plazas en uso: {used} de {cap}"
+
 #: components/i18n/errors.ts
 msgid "Your discriminator change has been ratelimited, please try again later."
 msgstr "Su cambio de discriminador ha sido limitado, inténtelo nuevamente más tarde."
@@ -9099,6 +9597,14 @@ msgstr "Su suspensión ha expirado; intente iniciar sesión nuevamente."
 #: components/i18n/errors.ts
 msgid "Your user has already been created? Try logging in again or refreshing the app."
 msgstr "¿Tu usuario ya ha sido creado? Intente iniciar sesión nuevamente o actualizar la aplicación."
+
+#: components/i18n/errors.ts
+msgid "Prot bought recently can't be contributed yet."
+msgstr "El Prot comprado recientemente todavía no se puede aportar."
+
+#: components/i18n/errors.ts
+msgid "This Protected channel is frozen until it's topped up."
+msgstr "Este canal Protected está congelado hasta que se recargue."
 
 #: components/ui/components/features/voice/watch/WatchOverlay.tsx
 msgid "YouTube"

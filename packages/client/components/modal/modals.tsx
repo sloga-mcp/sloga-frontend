@@ -73,7 +73,10 @@ import { MFARecoveryModal } from "./modals/MFARecovery";
 import { OnboardingModal } from "./modals/Onboarding";
 import { PolicyChangeModal } from "./modals/PolicyChange";
 import { PollVotersModal } from "./modals/PollVoters";
+import { ProtContributeModal } from "./modals/ProtContribute";
+import { ProtServerGoalsModal } from "./modals/ProtServerGoals";
 import { ProtectedSeatPickerModal } from "./modals/ProtectedSeatPicker";
+import { ProtectedTankModal } from "./modals/ProtectedTank";
 import { RemoveMemberModal } from "./modals/RemoveMember";
 import { RenameSessionModal } from "./modals/RenameSession";
 import { ReportContentModal } from "./modals/ReportContent";
@@ -236,6 +239,12 @@ export function RenderModal(props: ActiveModal & { onClose: () => void }) {
       return <E2EEGroupPlaintextConfirmModal {...modalProps} />;
     case "protected_seat_picker":
       return <ProtectedSeatPickerModal {...modalProps} />;
+    case "prot_tank":
+      return <ProtectedTankModal {...modalProps} />;
+    case "prot_contribute":
+      return <ProtContributeModal {...modalProps} />;
+    case "prot_server_goals":
+      return <ProtServerGoalsModal {...modalProps} />;
     case "image_editor":
       return <ImageEditorModal {...modalProps} />;
     case "image_viewer":
