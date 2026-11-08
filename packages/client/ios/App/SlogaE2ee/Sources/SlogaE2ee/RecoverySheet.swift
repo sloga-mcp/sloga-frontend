@@ -1452,18 +1452,17 @@ private final class RecoverySheetController: UIViewController, UITextFieldDelega
         default:
             if restore {
                 titleLabel.text = "Restore from recovery code"
-                // Restore moves the old device's identity here unchanged (design
-                // section 6.4); this is the last surface before the code is entered,
-                // so it repeats the webview's warning.
+                // Restore adds this install as a new device (multi-device plan
+                // D1); this is the last surface before the code is entered, so
+                // it says so.
                 bodyLabel.text =
-                    "Enter the recovery code you saved. This moves your encryption identity and message "
-                    + "history onto this device.\n\n"
-                    + "Only restore if the device that created this code no longer runs Sloga. Restoring "
-                    + "replaces that device; it does not add a second one. To keep using it, cancel and "
-                    + "choose Start fresh instead."
+                    "Enter the recovery code you saved. This brings your encrypted message history "
+                    + "onto this device. It is added as a new device; your other devices keep working."
             } else if kind == .rotate {
                 titleLabel.text = "Create a new recovery code"
-                bodyLabel.text = "This makes a new recovery code to replace your current one."
+                bodyLabel.text =
+                    "This makes a new recovery code for this device's backup, replacing its current one. "
+                    + "Your other devices keep their own codes."
             } else {
                 titleLabel.text = "Create a recovery code"
                 bodyLabel.text =

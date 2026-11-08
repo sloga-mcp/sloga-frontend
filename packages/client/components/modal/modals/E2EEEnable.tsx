@@ -23,22 +23,17 @@ import { Modals } from "../types";
  * restore recovers the old device's identity + history from a server backup
  * and must run as the FIRST E2EE op on this fresh install, whereas start-fresh
  * provisions a new identity (after which restore would refuse,
- * `StoreAlreadyProvisioned`). Each branch takes exactly one MFA prompt (the
- * choice is presented up front rather than probing `GET /e2ee/backup` first,
- * which would burn a single-use ticket for users who just want to start
- * fresh). The recovery CODE is entered only on the native surface (the
- * bundled recovery window on desktop / a native dialog from the Capacitor
- * E2ee plugin on Android and iOS) — it never reaches this webview;
+ * `StoreAlreadyProvisioned`). The choice is presented up front rather than
+ * probing `GET /e2ee/backup` first, which would burn a single-use ticket for
+ * users who just want to start fresh. Start fresh takes one MFA prompt.
+ * Restore takes two (multi-device D3): this modal's prompt fetches the backup,
+ * and a restored install registers as a NEW device, whose first publication
+ * needs a second ticket; that second prompt is the "finish setting up" modal
+ * the shell opens on `publishPending`. The recovery CODE is entered only on
+ * the native surface (the bundled recovery window on desktop / a native
+ * dialog from the Capacitor E2ee plugin on Android and iOS) — it never
+ * reaches this webview;
  * `restoreFromBackup` only couriers opaque ciphertext.
- *
- * Restore REPLACES a device, it never adds one: the backup carries the old
- * device's identity and device_id unchanged (design §2, §6.4). If the old
- * install is still running, both installs share one device. The account's own
- * fan-out skips that device id, so neither install receives what the other
- * sends, and a peer's message opens only on whichever install drains it first.
- * So the restore button opens a warning step first ("Only restore if that
- * device no longer runs Sloga"), and that step offers Start fresh as the way
- * to add a device. Only the warning step's button calls restore().
  */
 export function E2EEEnableModal(
   props: DialogProps & Modals & { type: "e2ee_enable" },
@@ -53,9 +48,6 @@ export function E2EEEnableModal(
   // Restore was attempted but the account had no backup for this device — let
   // the user fall back to starting fresh instead of surfacing a hard error.
   const [noBackup, setNoBackup] = createSignal(false);
-  // The restore button was pressed: say what restore does to the other device
-  // before anything runs (design §6.4).
-  const [confirmRestore, setConfirmRestore] = createSignal(false);
 
   /** Prove account ownership; returns the MFA ticket token or undefined. */
   async function reauth(): Promise<string | undefined> {
@@ -106,7 +98,6 @@ export function E2EEEnableModal(
       if (count === 0) {
         // No blob for this account (or the native surface was dismissed).
         // Keep the dialog open so the user can start fresh instead.
-        setConfirmRestore(false);
         setNoBackup(true);
         setBusy(false);
         return;
@@ -116,7 +107,9 @@ export function E2EEEnableModal(
       // republish asynchronously (the completion courier lives in the bridge).
       // Capacitor (Android, iOS): the native dialog already restored before
       // resolving (a cancel there returned 0 above). Either way this device
-      // is on its way to provisioned — close the prompt.
+      // is on its way to provisioned — close the prompt. The second MFA
+      // prompt (registering this device) is the finish-setup modal, opened
+      // by the shell once the bridge raises `publishPending`.
       e2ee.restoreAvailable.delete("state");
       props.onClose();
     } catch (error) {
@@ -133,9 +126,7 @@ export function E2EEEnableModal(
       show={props.show}
       onClose={props.onClose}
       title={
-        confirmRestore() && !done() ? (
-          <Trans>Restoring replaces your other device</Trans>
-        ) : leadRestore() && !done() ? (
+        leadRestore() && !done() ? (
           <Trans>Restore your encrypted messages</Trans>
         ) : (
           <Trans>Turn on encrypted direct messages</Trans>
@@ -167,64 +158,35 @@ export function E2EEEnableModal(
               },
               { text: <Trans>Skip for now</Trans>, onClick: () => props.onClose() },
             ]
-          : confirmRestore()
-            ? [
-                {
-                  text: <Trans>Back</Trans>,
-                  onClick: () => {
-                    setConfirmRestore(false);
-                    return false;
-                  },
-                  isDisabled: busy(),
+          : [
+              {
+                text: <Trans>Cancel</Trans>,
+                onClick: () => {
+                  props.onClose();
+                  return false;
                 },
-                {
-                  text: <Trans>Start fresh</Trans>,
-                  onClick: () => {
-                    void enable();
-                    return false;
-                  },
-                  isDisabled: busy(),
+              },
+              {
+                text: <Trans>Restore from a recovery code</Trans>,
+                onClick: () => {
+                  void restore();
+                  return false;
                 },
-                {
-                  text: <Trans>Restore and replace</Trans>,
-                  onClick: () => {
-                    void restore();
-                    return false;
-                  },
-                  isDisabled: busy(),
-                  destructive: true,
+                isDisabled: busy(),
+              },
+              {
+                text: leadRestore() ? (
+                  <Trans>Start fresh</Trans>
+                ) : (
+                  <Trans>Turn on</Trans>
+                ),
+                onClick: () => {
+                  void enable();
+                  return false;
                 },
-              ]
-            : [
-                {
-                  text: <Trans>Cancel</Trans>,
-                  onClick: () => {
-                    props.onClose();
-                    return false;
-                  },
-                },
-                {
-                  text: <Trans>Restore from a recovery code</Trans>,
-                  onClick: () => {
-                    setNoBackup(false);
-                    setConfirmRestore(true);
-                    return false;
-                  },
-                  isDisabled: busy(),
-                },
-                {
-                  text: leadRestore() ? (
-                    <Trans>Start fresh</Trans>
-                  ) : (
-                    <Trans>Turn on</Trans>
-                  ),
-                  onClick: () => {
-                    void enable();
-                    return false;
-                  },
-                  isDisabled: busy(),
-                },
-              ]
+                isDisabled: busy(),
+              },
+            ]
       }
     >
       <Column>
@@ -247,42 +209,26 @@ export function E2EEEnableModal(
               </Trans>
             </Text>
           </Match>
-          <Match when={confirmRestore()}>
-            <Text>
-              <Trans>
-                A recovery code moves the encryption identity of the device that
-                created it onto this one. It does not add a second device.
-              </Trans>
-            </Text>
-            <Text>
-              <Trans>
-                Only restore if that device no longer runs Sloga — it was lost,
-                wiped or replaced. If both keep running, some encrypted messages
-                will open on only one of them and encrypted calls may not
-                connect.
-              </Trans>
-            </Text>
-            <Text>
-              <Trans>
-                To use encryption here and keep using your other device, choose
-                Start fresh instead.
-              </Trans>
-            </Text>
-          </Match>
           <Match when={leadRestore()}>
             <Text>
               <Trans>
-                You have encryption set up on your account. If the device that
-                holds it was lost, wiped or replaced, restore your recovery code
-                here to move your identity and message history onto this device
-                — your contacts will not see a security warning.
+                You have encryption set up on your account. If you saved a
+                recovery code, restore it here to bring back your message
+                history on this device. It is added as a new device, and your
+                contacts will see that you added one. Your other devices keep
+                working.
               </Trans>
             </Text>
             <Text>
               <Trans>
-                Still using that device? Start fresh to set this up as a new
-                device alongside it. You keep sending and receiving encrypted
-                messages on both, but earlier history stays on the other device.
+                Or start fresh to set this up as a new device without your
+                earlier history. That history stays on your other devices.
+              </Trans>
+            </Text>
+            <Text class="label">
+              <Trans>
+                Confirm your password twice: once to fetch your backup, once to
+                register this device
               </Trans>
             </Text>
           </Match>
@@ -296,11 +242,17 @@ export function E2EEEnableModal(
             </Text>
             <Text>
               <Trans>
-                Replacing a lost or wiped device? Choose "Restore from a
-                recovery code" to move its identity and history here. Otherwise,
-                encrypted history lives on THIS device only and cannot be
-                recovered if the device is lost. You will confirm your identity
-                to continue.
+                Already have a recovery code from another device? Choose
+                "Restore from a recovery code" to bring back your history.
+                Otherwise, encrypted history lives on THIS device only and
+                cannot be recovered if the device is lost. You will confirm your
+                identity to continue.
+              </Trans>
+            </Text>
+            <Text class="label">
+              <Trans>
+                Confirm your password twice: once to fetch your backup, once to
+                register this device
               </Trans>
             </Text>
           </Match>

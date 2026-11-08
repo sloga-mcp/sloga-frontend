@@ -2,8 +2,8 @@
 // command table and its Capacitor bridge contract (plan D5, §5).
 //
 // What is pinned, and why it matters:
-//   - The table: counts, name shape, the exact 37 generic commands, the 6
-//     confirm-gated names and the 12 dedicated methods. A confirm-gated name
+//   - The table: counts, name shape, the exact 39 generic commands, the 7
+//     confirm-gated names and the 13 dedicated methods. A confirm-gated name
 //     drifting to generic would run a consent commit on the engine worker
 //     instead of its own thread; a native-only, secret-bearing name becoming
 //     routable would hand a recovery code or plaintext to the webview.
@@ -47,6 +47,8 @@ private let contractGeneric: [String] = [
     "e2ee_mark_published",
     "e2ee_replenish",
     "e2ee_sign_claim",
+    "e2ee_split_commit",
+    "e2ee_split_discard",
     "e2ee_encrypt",
     "e2ee_decrypt",
     "e2ee_history",
@@ -91,6 +93,7 @@ private let contractDedicated: [String: String] = [
     "e2ee_add_group_member": "addGroupMember",
     "e2ee_mark_verified": "markVerified",
     "e2ee_accept_identity_change": "acceptIdentityChange",
+    "e2ee_split_begin": "splitBegin",
 ]
 
 private let contractDedicatedMethods: [String] = [
@@ -101,6 +104,7 @@ private let contractDedicatedMethods: [String] = [
     "addGroupMember",
     "markVerified",
     "acceptIdentityChange",
+    "splitBegin",
     "backupCreate",
     "backupRotate",
     "backupRestore",
@@ -159,6 +163,7 @@ private let peerId = "01J9Z3K4M5N6P7Q8R9S0T1V2W3"
 private let selfId = "01J9Z3K4M5N6P7Q8R9S0T1V2W4"
 private let deviceId = "01J9Z3K4M5N6P7Q8R9S0T1V2W5"
 private let conversationId = "01J9Z3K4M5N6P7Q8R9S0T1V2W6"
+private let sessionId = "01J9Z3K4M5N6P7Q8R9S0T1V2W7"
 
 // MARK: - Table helpers
 
@@ -319,14 +324,14 @@ final class CommandTableTests: XCTestCase {
         let dedicated = tableNames { dedicatedTarget($0) != nil }
         let out = tableNames { $0 == .out }
 
-        XCTAssertEqual(generic.count, pin(37, wrong: 36))
+        XCTAssertEqual(generic.count, pin(39, wrong: 38))
         XCTAssertEqual(native.count, 2)
-        XCTAssertEqual(dedicated.count, 6)
+        XCTAssertEqual(dedicated.count, 7)
         XCTAssertEqual(out.count, E2eeCommands.outCount)
-        XCTAssertEqual(E2eeCommands.genericCount, 37)
+        XCTAssertEqual(E2eeCommands.genericCount, 39)
         XCTAssertEqual(E2eeCommands.nativeCount, 2)
-        XCTAssertEqual(E2eeCommands.dedicatedCount, 6)
-        XCTAssertEqual(E2eeCommands.table.count, 37 + 2 + 6 + E2eeCommands.outCount)
+        XCTAssertEqual(E2eeCommands.dedicatedCount, 7)
+        XCTAssertEqual(E2eeCommands.table.count, 39 + 2 + 7 + E2eeCommands.outCount)
     }
 
     func testEveryNameIsAnE2eeCommandName() {
@@ -338,8 +343,8 @@ final class CommandTableTests: XCTestCase {
         XCTAssertEqual(malformedNames(E2eeCommands.table.map { $0.name }), pin([], wrong: ["e2ee_status"]))
     }
 
-    func testGenericSetIsExactlyTheContract37() {
-        XCTAssertEqual(contractGeneric.count, 37, "the hand-typed contract list itself")
+    func testGenericSetIsExactlyTheContract39() {
+        XCTAssertEqual(contractGeneric.count, 39, "the hand-typed contract list itself")
         XCTAssertEqual(duplicates(contractGeneric), [])
 
         let generic = Set(tableNames { $0 == .generic })
@@ -479,6 +484,7 @@ final class CommandTableTests: XCTestCase {
             ("e2ee_add_group_member", ["conversationId": conversationId, "userId": peerId, "selfUserId": selfId]),
             ("e2ee_mark_verified", ["peerUserId": peerId, "deviceId": deviceId, "selfUserId": selfId]),
             ("e2ee_accept_identity_change", ["peerUserId": peerId, "deviceId": deviceId, "selfUserId": selfId]),
+            ("e2ee_split_begin", ["sessionId": sessionId]),
         ]
         XCTAssertEqual(Set(cases.map { $0.0 }), Set(contractDedicated.keys))
         for (name, arguments) in cases {
@@ -588,6 +594,10 @@ final class CommandTableTests: XCTestCase {
             ("addGroupMember", ["conversationId": conversationId, "userId": peerId, "selfUserId": selfId, "displayNames": [peerId: 1]], "displayNames"),
             ("markVerified", ["peerUserId": peerId, "selfUserId": selfId], "deviceId"),
             ("acceptIdentityChange", ["peerUserId": 5, "deviceId": deviceId, "selfUserId": selfId], "peerUserId"),
+            // No sessionId (or a mistyped one) is refused before the split
+            // dialog could come up.
+            ("splitBegin", [:], "sessionId"),
+            ("splitBegin", ["sessionId": 5], "sessionId"),
             ("backupCreate", [:], "userId"),
             ("backupRotate", ["userId": true], "userId"),
             // Android parity: a missing blobsJson reports field "blobs".

@@ -1070,6 +1070,10 @@ msgstr "Allow the microphone to list devices"
 msgid "Already friends with this user."
 msgstr "Already friends with this user."
 
+#: components/modal/modals/E2EEEnable.tsx
+msgid "Already have a recovery code from another device? Choose \"Restore from a recovery code\" to bring back your history. Otherwise, encrypted history lives on THIS device only and cannot be recovered if the device is lost. You will confirm your identity to continue."
+msgstr "Already have a recovery code from another device? Choose \"Restore from a recovery code\" to bring back your history. Otherwise, encrypted history lives on THIS device only and cannot be recovered if the device is lost. You will confirm your identity to continue."
+
 #: components/app/interface/settings/user/Language.tsx
 msgid "Also read translated captions aloud using your device's voice. Runs on the receiving side and never reads your own captions back to you."
 msgstr "Also read translated captions aloud using your device's voice. Runs on the receiving side and never reads your own captions back to you."
@@ -1192,6 +1196,11 @@ msgstr "Apply"
 #: components/modal/modals/DiscoveryQueue.tsx
 msgid "Approve"
 msgstr "Approve"
+
+#: components/modal/modals/E2EEDeviceRemoved.tsx
+#: components/modal/modals/E2EEFinishSetup.tsx
+msgid "Create a recovery code for this device"
+msgstr "Create a recovery code for this device"
 
 #: src/interface/Home.tsx
 msgid "Approve or reject servers asking to be publicly listed."
@@ -2194,6 +2203,14 @@ msgstr "Confirm action"
 msgid "Confirm identity"
 msgstr "Confirm identity"
 
+#: components/modal/modals/E2EEFinishSetup.tsx
+msgid "Your other devices still work. If one of them is lost or replaced, remove it."
+msgstr "Your other devices still work. If one of them is lost or replaced, remove it."
+
+#: components/modal/modals/E2EEFinishSetup.tsx
+msgid "It is added as a new device, and your contacts will see that you added one."
+msgstr "It is added as a new device, and your contacts will see that you added one."
+
 #: components/ui/components/features/voice/watch/JellyfinConnect.tsx
 #: components/app/interface/settings/user/Connections.tsx
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
@@ -2652,6 +2669,14 @@ msgstr "Create a recovery code"
 #: components/modal/modals/E2EEEnable.tsx
 msgid "Create a recovery code so you can restore your identity and message history if you lose this device. Without one, encrypted history is gone for good if the device is lost. You can also do this later from Settings › Privacy & Safety › Encryption."
 msgstr "Create a recovery code so you can restore your identity and message history if you lose this device. Without one, encrypted history is gone for good if the device is lost. You can also do this later from Settings › Privacy & Safety › Encryption."
+
+#: components/modal/modals/E2EEEnable.tsx
+msgid "You have encryption set up on your account. If you saved a recovery code, restore it here to bring back your message history on this device. It is added as a new device, and your contacts will see that you added one. Your other devices keep working."
+msgstr "You have encryption set up on your account. If you saved a recovery code, restore it here to bring back your message history on this device. It is added as a new device, and your contacts will see that you added one. Your other devices keep working."
+
+#: components/modal/modals/E2EEEnable.tsx
+msgid "Or start fresh to set this up as a new device without your earlier history. That history stays on your other devices."
+msgstr "Or start fresh to set this up as a new device without your earlier history. That history stays on your other devices."
 
 #: components/modal/modals/CreateWebhook.tsx
 msgid "Create a webhook"
@@ -3247,6 +3272,38 @@ msgstr "Discard recording"
 msgid "Disconnect"
 msgstr "Disconnect"
 
+#: components/app/interface/settings/user/Encryption.tsx
+#: components/modal/modals/E2EEDeviceRemoved.tsx
+msgid "This device was removed from your account's encryption. Set it up again as a new device?"
+msgstr "This device was removed from your account's encryption. Set it up again as a new device?"
+
+#: components/app/interface/settings/user/Encryption.tsx
+#: components/modal/modals/E2EEDeviceRemoved.tsx
+#: components/modal/modals/E2EEDeviceRemoved.tsx
+msgid "Set up as a new device"
+msgstr "Set up as a new device"
+
+#: components/app/interface/settings/user/Encryption.tsx
+#: components/modal/modals/E2EEFinishSetup.tsx
+msgid "This device is not registered for encryption yet, so it cannot send or receive encrypted messages. Confirm your identity to finish."
+msgstr "This device is not registered for encryption yet, so it cannot send or receive encrypted messages. Confirm your identity to finish."
+
+#: components/app/interface/settings/user/Encryption.tsx
+#: components/modal/modals/E2EEFinishSetup.tsx
+msgid "Finish setting up encryption on this device"
+msgstr "Finish setting up encryption on this device"
+
+#: components/app/interface/settings/user/Encryption.tsx
+#: components/modal/modals/E2EEDeviceShared.tsx
+msgid "This app shares its encryption identity with another of your apps (it was restored from your recovery code). Messages can go missing on one of them. Make this app a separate device: it keeps its message history, and your contacts will see you added a device."
+msgstr "This app shares its encryption identity with another of your apps (it was restored from your recovery code). Messages can go missing on one of them. Make this app a separate device: it keeps its message history, and your contacts will see you added a device."
+
+#: components/app/interface/settings/user/Encryption.tsx
+#: components/modal/modals/E2EEDeviceShared.tsx
+#: components/modal/modals/E2EEDeviceShared.tsx
+msgid "Make this a separate device"
+msgstr "Make this a separate device"
+
 #: components/app/menus/UserContextMenu.tsx
 msgid "Disconnect from call"
 msgstr "Disconnect from call"
@@ -3682,6 +3739,26 @@ msgstr "Encrypted direct messages"
 #: components/modal/modals/E2EEEnable.tsx
 msgid "Encrypted direct messages are on for this device. Messages you send in an encrypted conversation are stored only on the devices that receive them — not on the server, and not in your web session."
 msgstr "Encrypted direct messages are on for this device. Messages you send in an encrypted conversation are stored only on the devices that receive them — not on the server, and not in your web session."
+
+#: components/modal/modals/E2EEDeviceRemoved.tsx
+msgid "This deletes the encrypted message history stored on this device. You will confirm the deletion, then your identity."
+msgstr "This deletes the encrypted message history stored on this device. You will confirm the deletion, then your identity."
+
+#: components/modal/modals/E2EEDeviceShared.tsx
+msgid "Close the recovery code window first, then try again."
+msgstr "Close the recovery code window first, then try again."
+
+#: components/modal/modals/E2EEDeviceShared.tsx
+msgid "End the call first, then try again."
+msgstr "End the call first, then try again."
+
+#: components/modal/modals/E2EEDeviceShared.tsx
+msgid "This app cannot be made a separate device right now."
+msgstr "This app cannot be made a separate device right now."
+
+#: components/modal/modals/E2EEDeviceShared.tsx
+msgid "This app is now a separate device."
+msgstr "This app is now a separate device."
 
 #: components/app/interface/settings/user/Encryption.tsx
 msgid "Encrypted messaging is on"
@@ -6223,6 +6300,10 @@ msgstr "Not going"
 msgid "Not now"
 msgstr "Not now"
 
+#: components/app/interface/settings/user/Encryption.tsx
+msgid "Your devices"
+msgstr "Your devices"
+
 #: components/modal/modals/ReportContent.tsx
 msgid "Not of minimum age to use the platform"
 msgstr "Not of minimum age to use the platform"
@@ -6485,6 +6566,11 @@ msgstr "Open thread settings"
 #: components/modal/modals/ScheduleMessage.tsx
 msgid "Or pick a time"
 msgstr "Or pick a time"
+
+#: components/modal/modals/E2EEEnable.tsx
+#: components/modal/modals/E2EEEnable.tsx
+msgid "Confirm your password twice: once to fetch your backup, once to register this device"
+msgstr "Confirm your password twice: once to fetch your backup, once to register this device"
 
 #: src/interface/channels/text/Composition.tsx
 msgid "Or type /roll 2d6+3 in chat"
@@ -7608,38 +7694,6 @@ msgstr "Restore from a recovery code"
 #: components/modal/modals/E2EEEnable.tsx
 msgid "Restore your encrypted messages"
 msgstr "Restore your encrypted messages"
-
-#: components/modal/modals/E2EEEnable.tsx
-msgid "Restoring replaces your other device"
-msgstr "Restoring replaces your other device"
-
-#: components/modal/modals/E2EEEnable.tsx
-msgid "Restore and replace"
-msgstr "Restore and replace"
-
-#: components/modal/modals/E2EEEnable.tsx
-msgid "A recovery code moves the encryption identity of the device that created it onto this one. It does not add a second device."
-msgstr "A recovery code moves the encryption identity of the device that created it onto this one. It does not add a second device."
-
-#: components/modal/modals/E2EEEnable.tsx
-msgid "Only restore if that device no longer runs Sloga — it was lost, wiped or replaced. If both keep running, some encrypted messages will open on only one of them and encrypted calls may not connect."
-msgstr "Only restore if that device no longer runs Sloga — it was lost, wiped or replaced. If both keep running, some encrypted messages will open on only one of them and encrypted calls may not connect."
-
-#: components/modal/modals/E2EEEnable.tsx
-msgid "To use encryption here and keep using your other device, choose Start fresh instead."
-msgstr "To use encryption here and keep using your other device, choose Start fresh instead."
-
-#: components/modal/modals/E2EEEnable.tsx
-msgid "You have encryption set up on your account. If the device that holds it was lost, wiped or replaced, restore your recovery code here to move your identity and message history onto this device — your contacts will not see a security warning."
-msgstr "You have encryption set up on your account. If the device that holds it was lost, wiped or replaced, restore your recovery code here to move your identity and message history onto this device — your contacts will not see a security warning."
-
-#: components/modal/modals/E2EEEnable.tsx
-msgid "Still using that device? Start fresh to set this up as a new device alongside it. You keep sending and receiving encrypted messages on both, but earlier history stays on the other device."
-msgstr "Still using that device? Start fresh to set this up as a new device alongside it. You keep sending and receiving encrypted messages on both, but earlier history stays on the other device."
-
-#: components/modal/modals/E2EEEnable.tsx
-msgid "Replacing a lost or wiped device? Choose \"Restore from a recovery code\" to move its identity and history here. Otherwise, encrypted history lives on THIS device only and cannot be recovered if the device is lost. You will confirm your identity to continue."
-msgstr "Replacing a lost or wiped device? Choose \"Restore from a recovery code\" to move its identity and history here. Otherwise, encrypted history lives on THIS device only and cannot be recovered if the device is lost. You will confirm your identity to continue."
 
 #: components/modal/modals/CreateSoftRes.tsx
 msgid "Restrict items to classes that can use them"
@@ -10062,6 +10116,15 @@ msgid "The payment provider didn't respond. Please try again."
 msgstr "The payment provider didn't respond. Please try again."
 
 #: components/i18n/errors.ts
+msgid "This device was removed from your account's encryption."
+msgstr "This device was removed from your account's encryption."
+
+#: components/i18n/errors.ts
+#: components/modal/modals/E2EEDisable.tsx
+msgid "This app shares its encryption identity with another of your apps. Turning encryption off here would turn it off there too. Make this app a separate device instead. Don't recognize the other app? Change your password, then remove it in Settings > Encryption on a device you trust."
+msgstr "This app shares its encryption identity with another of your apps. Turning encryption off here would turn it off there too. Make this app a separate device instead. Don't recognize the other app? Change your password, then remove it in Settings > Encryption on a device you trust."
+
+#: components/i18n/errors.ts
 msgid "This account is not activated! Please check your account's inbox and try again."
 msgstr "This account is not activated! Please check your account's inbox and try again."
 
@@ -10831,6 +10894,10 @@ msgstr "Turn length"
 msgid "Turn off"
 msgstr "Turn off"
 
+#: components/modal/modals/E2EEDisable.tsx
+msgid "This app was sharing encryption with another of your apps, which keeps working. Set this app up again as a new device."
+msgstr "This app was sharing encryption with another of your apps, which keeps working. Set this app up again as a new device."
+
 #: components/app/interface/settings/channel/Overview.tsx
 msgid "Turn off calls"
 msgstr "Turn off calls"
@@ -11244,6 +11311,19 @@ msgstr "Your {sourceLabel} import failed."
 #: components/client/DiscordImportWorker.tsx
 msgid "Your {sourceLabel} import finished."
 msgstr "Your {sourceLabel} import finished."
+
+#: components/client/E2EEDeviceToastWorker.tsx
+msgid "Your other app became a separate device."
+msgstr "Your other app became a separate device."
+
+#: components/client/E2EEDeviceToastWorker.tsx
+#: components/client/E2EEDeviceToastWorker.tsx
+msgid "Encryption was set up on another of your devices. Not you? Remove it in Settings > Encryption, change your password, then log out other sessions."
+msgstr "Encryption was set up on another of your devices. Not you? Remove it in Settings > Encryption, change your password, then log out other sessions."
+
+#: components/client/E2EEDeviceToastWorker.tsx
+msgid "Encryption was set up on another of your devices ({sessionName}). Not you? Remove it in Settings > Encryption, change your password, then log out other sessions."
+msgstr "Encryption was set up on another of your devices ({sessionName}). Not you? Remove it in Settings > Encryption, change your password, then log out other sessions."
 
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "View Channel"
@@ -11714,6 +11794,10 @@ msgstr "You don't have permission to send messages in this channel."
 msgid "You have a recovery code. Anyone with this code and access to your account can read your message history — Sloga cannot recover it for you. Choose \"Change recovery code\" to replace it."
 msgstr "You have a recovery code. Anyone with this code and access to your account can read your message history — Sloga cannot recover it for you. Choose \"Change recovery code\" to replace it."
 
+#: components/app/interface/settings/user/Encryption.tsx
+msgid "This changes the recovery code for this device's backup only."
+msgstr "This changes the recovery code for this device's backup only."
+
 #: components/i18n/errors.ts
 msgid "You have been locked out for entering a wrong password multiple times. Please wait a couple minutes and try again."
 msgstr "You have been locked out for entering a wrong password multiple times. Please wait a couple minutes and try again."
@@ -11877,6 +11961,42 @@ msgstr "your contact"
 #: components/modal/modals/E2EEReenroll.tsx
 msgid "Your contacts will see this device come back — with no security warning, because its keys are unchanged."
 msgstr "Your contacts will see this device come back — with no security warning, because its keys are unchanged."
+
+#: components/modal/modals/E2EERemoveDevice.tsx
+msgid "Created {createdAgo}"
+msgstr "Created {createdAgo}"
+
+#: components/modal/modals/E2EERemoveDevice.tsx
+msgid "Last seen {seenAgo}"
+msgstr "Last seen {seenAgo}"
+
+#: components/modal/modals/E2EERemoveDevice.tsx
+msgid "never seen"
+msgstr "never seen"
+
+#: components/modal/modals/E2EERemoveDevice.tsx
+msgid "This device"
+msgstr "This device"
+
+#: components/modal/modals/E2EERemoveDevice.tsx
+msgid "Remove device"
+msgstr "Remove device"
+
+#: components/modal/modals/E2EERemoveDevice.tsx
+msgid "The device was removed, but its backup was not deleted."
+msgstr "The device was removed, but its backup was not deleted."
+
+#: components/modal/modals/E2EERemoveDevice.tsx
+msgid "It stops receiving your encrypted messages. If it is still running, it has to be set up again as a new device."
+msgstr "It stops receiving your encrypted messages. If it is still running, it has to be set up again as a new device."
+
+#: components/modal/modals/E2EERemoveDevice.tsx
+msgid "Its backup can still restore its message history unless you delete it too. You confirm your identity once to remove the device, and once more to delete its backup."
+msgstr "Its backup can still restore its message history unless you delete it too. You confirm your identity once to remove the device, and once more to delete its backup."
+
+#: components/modal/modals/E2EERemoveDevice.tsx
+msgid "Also delete this device's backup"
+msgstr "Also delete this device's backup"
 
 #: components/client/DiscordImportWorker.tsx
 #: components/client/DiscordImportWorker.tsx
