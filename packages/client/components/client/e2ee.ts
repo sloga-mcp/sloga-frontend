@@ -45,6 +45,7 @@ import {
 } from "stoat.js";
 
 import type { ResumeCommitRef, ResumePrefetch } from "../rtc/mlsRejoinPolicy";
+import { classifyDeviceDelete } from "./deviceDeleteClassifier.ts";
 import {
   CLAIM_RETRY_DELAY_MS,
   claimRefusal,
@@ -890,7 +891,11 @@ export type MlsSinkEvent =
   // the native wire shape): the intent came from a device that is already a
   // member, so verifying members remove its stale leaf instead of admitting.
   | { kind: "join_request"; request: MlsJoinRequest; rejoin: boolean }
-  | { kind: "envelope"; envelope: MlsEnvelope; recipientDeviceId: string };
+  | { kind: "envelope"; envelope: MlsEnvelope; recipientDeviceId: string }
+  // A device was removed from its account (`E2EEDeviceDelete`), once native
+  // has handled it. `own` is this install's device. Never held: with no
+  // call there is no leaf to remove and no call to end.
+  | { kind: "device_revoked"; userId: string; deviceId: string; own: boolean };
 
 /** The active call session's inbound MLS event sink. */
 export type MlsSessionSink = (event: MlsSinkEvent) => void;
@@ -3594,10 +3599,50 @@ export class E2EEBridge implements E2EEAdapter {
       if (!this.status.get("state")?.enabled) return;
 
       await this.#invoke("e2ee_device_removed", { userId, deviceId });
+      // Before the mode/sync work, so a failure there cannot cost the call
+      // its notice
+      this.#emitDeviceRevoked(userId, deviceId);
       await this.#refreshMode(userId);
       await this.#syncRecent(userId);
     } catch (error) {
       console.error("[e2ee] device-delete handling failed", error);
+    }
+  }
+
+  /**
+   * Tell the active call session that a device was removed, once native has
+   * handled it (a peer's pin is revoked by then): a peer's leaf is removed
+   * from the call, and our own device ends the call. Status is read fresh, after the awaits above: a
+   * wipe that ran meanwhile has already zeroed it. A delete that lands while
+   * this install is mid-restore, mid-split or has a publication pending is
+   * not acted on (`classifyDeviceDelete`). Never raises `deviceRemoved`: an
+   * own removal here may still be re-enrolled. No call, no sink: a no-op.
+   */
+  #emitDeviceRevoked(userId: string, deviceId: string): void {
+    try {
+      const selfId = this.#client.user?.id;
+      if (!selfId) return;
+      const status = this.status.get("state");
+      const verdict = classifyDeviceDelete(
+        { userId, deviceId },
+        { userId: selfId, deviceId: status?.device_id ?? null },
+        {
+          echoWindow: !status?.enabled,
+          restoreOrSplitOrPublish:
+            this.#split !== null ||
+            this.#pendingRestoreRepublish !== null ||
+            this.publishPending.has("state"),
+        },
+      );
+      if (verdict === "ignore") return;
+      this.#mlsSink?.({
+        kind: "device_revoked",
+        userId,
+        deviceId,
+        own: verdict === "own",
+      });
+    } catch (error) {
+      console.error("[e2ee] device-revoked hand-off failed", error);
     }
   }
 
