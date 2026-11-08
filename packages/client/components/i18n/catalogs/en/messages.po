@@ -9873,6 +9873,43 @@ msgstr "The encrypted message history stored on THIS device will be permanently 
 msgid "The file \"{0}\" ({fileSize}) exceeds the maximum size limit of {maxSizeFormatted}."
 msgstr "The file \"{0}\" ({fileSize}) exceeds the maximum size limit of {maxSizeFormatted}."
 
+#: components/ui/components/features/messaging/composition/FileCarousel.tsx
+#: src/interface/channels/text/Composition.tsx
+msgid "Attach folder"
+msgstr "Attach folder"
+
+#: components/ui/components/features/messaging/composition/FileCarousel.tsx
+msgid "Cancel zipping"
+msgstr "Cancel zipping"
+
+#: components/ui/components/features/messaging/composition/FileCarousel.tsx
+msgid "Reading folder…"
+msgstr "Reading folder…"
+
+#: components/ui/components/features/messaging/composition/FileCarousel.tsx
+msgid "Zipping folder"
+msgstr "Zipping folder"
+
+#: components/ui/components/features/messaging/composition/FileCarousel.tsx
+msgid "Zipping… {value}%"
+msgstr "Zipping… {value}%"
+
+#: components/ui/components/utils/files/useDroppedItems.ts
+msgid "The folder \"{name}\" couldn't be read, so it wasn't attached."
+msgstr "The folder \"{name}\" couldn't be read, so it wasn't attached."
+
+#: components/ui/components/utils/files/useDroppedItems.ts
+msgid "The folder \"{name}\" is too large to send (over 4 GB or 65,535 files)."
+msgstr "The folder \"{name}\" is too large to send (over 4 GB or 65,535 files)."
+
+#: components/ui/components/utils/files/useDroppedItems.ts
+msgid "The folder \"{name}\" is over the {limit} upload limit, so it wasn't attached."
+msgstr "The folder \"{name}\" is over the {limit} upload limit, so it wasn't attached."
+
+#: components/ui/components/utils/files/useDroppedItems.ts
+msgid "\"{name}\" couldn't be read, so it wasn't attached. If it's a folder, zip it first."
+msgstr "\"{name}\" couldn't be read, so it wasn't attached. If it's a folder, zip it first."
+
 #: components/modal/modals/ForwardMessage.tsx
 msgid "The forward keeps a copy of the message as it is right now — later edits or deletion of the original won't change it. Encrypted conversations can't receive forwards."
 msgstr "The forward keeps a copy of the message as it is right now — later edits or deletion of the original won't change it. Encrypted conversations can't receive forwards."
