@@ -832,10 +832,6 @@ msgstr ""
 msgid "Already friends with this user."
 msgstr "Ești deja prieten cu acest utilizator."
 
-#: components/modal/modals/E2EEEnable.tsx
-msgid "Already have a recovery code from another device? Choose \"Restore from a recovery code\" to bring back your history. Otherwise, encrypted history lives on THIS device only and cannot be recovered if the device is lost. You will confirm your identity to continue."
-msgstr ""
-
 #: components/app/interface/settings/user/Language.tsx
 msgid "Also read translated captions aloud using your device's voice. Runs on the receiving side and never reads your own captions back to you."
 msgstr ""
@@ -5141,10 +5137,6 @@ msgstr ""
 msgid "Or pick a time"
 msgstr ""
 
-#: components/modal/modals/E2EEEnable.tsx
-msgid "Or start fresh to set this up as a new device. You keep sending and receiving encrypted messages, but earlier history that lived only on your old device stays there."
-msgstr ""
-
 #: src/interface/channels/text/Composition.tsx
 msgid "Or type /roll 2d6+3 in chat"
 msgstr ""
@@ -6008,6 +6000,38 @@ msgstr ""
 
 #: components/modal/modals/E2EEEnable.tsx
 msgid "Restore your encrypted messages"
+msgstr ""
+
+#: components/modal/modals/E2EEEnable.tsx
+msgid "Restoring replaces your other device"
+msgstr ""
+
+#: components/modal/modals/E2EEEnable.tsx
+msgid "Restore and replace"
+msgstr ""
+
+#: components/modal/modals/E2EEEnable.tsx
+msgid "A recovery code moves the encryption identity of the device that created it onto this one. It does not add a second device."
+msgstr ""
+
+#: components/modal/modals/E2EEEnable.tsx
+msgid "Only restore if that device no longer runs Sloga — it was lost, wiped or replaced. If both keep running, some encrypted messages will open on only one of them and encrypted calls may not connect."
+msgstr ""
+
+#: components/modal/modals/E2EEEnable.tsx
+msgid "To use encryption here and keep using your other device, choose Start fresh instead."
+msgstr ""
+
+#: components/modal/modals/E2EEEnable.tsx
+msgid "You have encryption set up on your account. If the device that holds it was lost, wiped or replaced, restore your recovery code here to move your identity and message history onto this device — your contacts will not see a security warning."
+msgstr ""
+
+#: components/modal/modals/E2EEEnable.tsx
+msgid "Still using that device? Start fresh to set this up as a new device alongside it. You keep sending and receiving encrypted messages on both, but earlier history stays on the other device."
+msgstr ""
+
+#: components/modal/modals/E2EEEnable.tsx
+msgid "Replacing a lost or wiped device? Choose \"Restore from a recovery code\" to move its identity and history here. Otherwise, encrypted history lives on THIS device only and cannot be recovered if the device is lost. You will confirm your identity to continue."
 msgstr ""
 
 #: components/modal/modals/CreateSoftRes.tsx
@@ -8618,10 +8642,6 @@ msgstr ""
 
 #: components/i18n/errors.ts
 msgid "You have been locked out for entering a wrong password multiple times. Please wait a couple minutes and try again."
-msgstr ""
-
-#: components/modal/modals/E2EEEnable.tsx
-msgid "You have encryption set up on your account. If you saved a recovery code, restore it here to bring back your identity and message history on this device — your contacts will not see a security warning."
 msgstr ""
 
 #: components/i18n/errors.ts
