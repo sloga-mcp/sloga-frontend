@@ -50,25 +50,35 @@ export default function FlowVerify() {
         }
       }
 
+      // An email change answers with a bare `null` (no ticket), and the
+      // change is already saved by then
       const data = (await api.post(`/auth/account/verify/${params.token}`)) as {
         ticket?: { token: string };
-      };
+      } | null;
 
-      setState({ state: "success", mfa_ticket: data.ticket?.token });
+      setState({ state: "success", mfa_ticket: data?.ticket?.token });
     } catch (err) {
       setState({ state: "error", error: err });
     }
   });
 
   /**
+   * MFA ticket returned by a signup verification, if any
+   */
+  const mfaTicket = () => {
+    const v = state();
+    return v.state === "success" ? v.mfa_ticket : undefined;
+  };
+
+  /**
    * Use MFA ticket to login
    */
   async function performLogin() {
-    const v = state();
-    if (v.state === "success" && v.mfa_ticket) {
+    const ticket = mfaTicket();
+    if (ticket) {
       await login(
         {
-          mfa_ticket: v.mfa_ticket,
+          mfa_ticket: ticket,
         },
         modals,
       );
@@ -106,7 +116,7 @@ export default function FlowVerify() {
         <FlowTitle>
           <Trans>Your account has been verified!</Trans>
         </FlowTitle>
-        <Show when={"mfa_ticket" in state()}>
+        <Show when={mfaTicket()}>
           <Button onPress={performLogin}>
             <Trans>Continue to app</Trans>
           </Button>
