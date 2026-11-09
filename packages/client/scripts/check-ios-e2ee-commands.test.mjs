@@ -116,7 +116,7 @@ describe("the real tree", () => {
     assert.equal(result.status, 0, result.stdout + result.stderr);
     assert.match(
       result.stdout,
-      /^ok: table generic 37, native 2, dedicated 6, out \d+;/,
+      /^ok: table generic 39, native 2, dedicated 7, out \d+;/,
     );
   });
 
@@ -159,8 +159,8 @@ describe("G6 command table", () => {
   test("a changed count pin", () => {
     expectViolation("G6-count", [
       COMMANDS,
-      "static let genericCount = 37",
-      "static let genericCount = 38",
+      "static let genericCount = 39",
+      "static let genericCount = 40",
     ]);
   });
 

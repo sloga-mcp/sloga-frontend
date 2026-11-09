@@ -16,6 +16,12 @@ import { Modals } from "../types";
  * again by a native OS dialog inside `e2ee.disable` (so a compromised
  * webview cannot wipe history without a physical click). Declining that OS
  * dialog aborts the whole thing with nothing changed.
+ *
+ * An install that shares its encryption identity with another live install
+ * is never wiped (`disable` answers `shared`): this offers the split
+ * instead. If the server refuses the revoke after the wipe
+ * (`held_elsewhere`), the other install keeps working and this one can
+ * only start fresh.
  */
 export function E2EEDisableModal(
   props: DialogProps & Modals & { type: "e2ee_disable" },
@@ -23,14 +29,20 @@ export function E2EEDisableModal(
   const { t } = useLingui();
   const client = useClient();
   const e2ee = useE2EE();
-  const { mfaFlow, showError } = useModals();
+  const { mfaFlow, showError, openModal } = useModals();
 
   const [busy, setBusy] = createSignal(false);
   const [done, setDone] = createSignal(false);
   const [failedDeviceId, setFailedDeviceId] = createSignal<string>();
+  const [twin, setTwin] = createSignal<"shared" | "held_elsewhere">();
 
   async function disable() {
     if (!e2ee) return;
+    // A shared install is refused without asking for the password first
+    if (e2ee.disablePreflight() === "shared") {
+      setTwin("shared");
+      return;
+    }
     setBusy(true);
     try {
       const mfa = await client().account.mfa();
@@ -41,12 +53,24 @@ export function E2EEDisableModal(
       }
 
       const result = await e2ee.disable(ticket.token);
-      if (result.revokeFailed && result.deviceId) {
-        // Local wipe succeeded; the server-side revoke did not (rev-2
-        // MAJOR-2). Keep the device id for a DELETE-only retry.
-        setFailedDeviceId(result.deviceId);
-      } else {
-        setDone(true);
+      switch (result.kind) {
+        case "shared":
+        case "held_elsewhere":
+          setTwin(result.kind);
+          break;
+        case "disabled":
+          if (result.revokeFailed && result.deviceId) {
+            // Local wipe succeeded; the server-side revoke did not (rev-2
+            // MAJOR-2). Keep the device id for a DELETE-only retry.
+            setFailedDeviceId(result.deviceId);
+          } else {
+            setDone(true);
+          }
+          break;
+        default: {
+          const unhandled: never = result;
+          void unhandled;
+        }
       }
     } catch (error) {
       // Declining the native OS confirmation aborts cleanly — not an error
@@ -76,6 +100,13 @@ export function E2EEDisableModal(
       setFailedDeviceId(undefined);
       setDone(true);
     } catch (error) {
+      // The other install holds this device: it keeps working, and this
+      // one can only start fresh. Another retry would be refused the same.
+      if ((error as { type?: string })?.type === "E2EEDeviceHeldElsewhere") {
+        setFailedDeviceId(undefined);
+        setTwin("held_elsewhere");
+        return;
+      }
       showError(error);
     } finally {
       setBusy(false);
@@ -89,47 +120,89 @@ export function E2EEDisableModal(
       title={<Trans>Turn off encrypted direct messages</Trans>}
       isDisabled={busy()}
       actions={
-        done()
-          ? [{ text: <Trans>Done</Trans>, onClick: () => props.onClose() }]
-          : failedDeviceId()
+        twin() === "shared"
+          ? [
+              {
+                text: <Trans>Not now</Trans>,
+                onClick: () => props.onClose(),
+              },
+              {
+                text: <Trans>Make this a separate device</Trans>,
+                onClick: () => {
+                  props.onClose();
+                  openModal({ type: "e2ee_device_shared" });
+                },
+              },
+            ]
+          : twin() === "held_elsewhere"
             ? [
                 {
                   text: <Trans>Close</Trans>,
-                  onClick: () => {
-                    props.onClose();
-                    return false;
-                  },
+                  onClick: () => props.onClose(),
                 },
                 {
-                  text: <Trans>Retry</Trans>,
+                  text: <Trans>Start fresh</Trans>,
                   onClick: () => {
-                    void retryRevoke();
-                    return false;
+                    props.onClose();
+                    openModal({ type: "e2ee_enable", offerRestore: true });
                   },
-                  isDisabled: busy(),
                 },
               ]
-            : [
-              {
-                text: <Trans>Cancel</Trans>,
-                onClick: () => {
-                  props.onClose();
-                  return false;
-                },
-              },
-              {
-                text: <Trans>Turn off</Trans>,
-                onClick: () => {
-                  void disable();
-                  return false;
-                },
-                  isDisabled: busy(),
-                },
-              ]
+            : done()
+              ? [{ text: <Trans>Done</Trans>, onClick: () => props.onClose() }]
+              : failedDeviceId()
+                ? [
+                    {
+                      text: <Trans>Close</Trans>,
+                      onClick: () => {
+                        props.onClose();
+                        return false;
+                      },
+                    },
+                    {
+                      text: <Trans>Retry</Trans>,
+                      onClick: () => {
+                        void retryRevoke();
+                        return false;
+                      },
+                      isDisabled: busy(),
+                    },
+                  ]
+                : [
+                    {
+                      text: <Trans>Cancel</Trans>,
+                      onClick: () => {
+                        props.onClose();
+                        return false;
+                      },
+                    },
+                    {
+                      text: <Trans>Turn off</Trans>,
+                      onClick: () => {
+                        void disable();
+                        return false;
+                      },
+                      isDisabled: busy(),
+                    },
+                  ]
       }
     >
       <Column>
         <Switch>
+          <Match when={twin() === "shared"}>
+            {/* The msgid errors.ts maps E2EEDeviceHeldElsewhere to */}
+            <Text>
+              {t`This app shares its encryption identity with another of your apps. Turning encryption off here would turn it off there too. Make this app a separate device instead. Don't recognize the other app? Change your password, then remove it in Settings > Encryption on a device you trust.`}
+            </Text>
+          </Match>
+          <Match when={twin() === "held_elsewhere"}>
+            <Text>
+              <Trans>
+                This app was sharing encryption with another of your apps, which
+                keeps working. Set this app up again as a new device.
+              </Trans>
+            </Text>
+          </Match>
           <Match when={done()}>
             <Text>
               <Trans>

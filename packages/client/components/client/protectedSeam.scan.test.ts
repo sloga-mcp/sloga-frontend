@@ -57,8 +57,9 @@ const SRC = readFileSync(FILE, "utf8");
  * (f34aa475...) no longer applies. Re-pin it ONLY from main, never from
  * this branch.
  */
+// Re-pinned from feat/e2ee-add-device: multi-device W3 adds splitBegin.
 const TRANSPORT_REGION_SHA256 =
-  "f1d615dfa4dc5de12ac3af97ac1c68ff4023f109a9a9bcbd62afede7ed9b5909";
+  "e8145d6871ec19009e3c6fd2fc3555553725f5bf95314706add86bbd899c56d0";
 
 /**
  * `#encryptedIds.add(` call sites at 4363b406 and at origin/main 1dcdd1b4;

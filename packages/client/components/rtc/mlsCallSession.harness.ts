@@ -295,6 +295,41 @@ function poisonedEpoch(groupId: string, epoch: number): Error {
   });
 }
 
+/**
+ * A seat's pin for a peer device, as native's `verify_leaf_credential`
+ * (`mls/credential.rs`) reads it: `active` verifies; `revoked` (the peer's
+ * status is not Active, as `revoke_peer_device` leaves it) is refused
+ * `identity_changed`; `unpinned` (no `peers` row) is refused
+ * `unknown_identity`.
+ */
+export type PinState = "active" | "revoked" | "unpinned";
+
+/**
+ * Native's `MlsLeafRejected`, in the shape every shell hands a `catch`: a
+ * PLAIN object, not an `Error` (Tauri's serde-tagged error, Electron's napi
+ * and Android's uniffi JSON all deliver the fields as they are). Only the
+ * two reasons `PinState` produces are modelled.
+ */
+export interface LeafRejected {
+  type: "mls_leaf_rejected";
+  user_id: string;
+  device_id: string;
+  reason: "identity_changed" | "unknown_identity";
+}
+
+/** The `LeafRejected` native raises for `device` under the pin `state`. */
+export function leafRejected(
+  device: MlsMemberDevice,
+  state: Exclude<PinState, "active">,
+): LeafRejected {
+  return {
+    type: "mls_leaf_rejected",
+    user_id: device.user_id,
+    device_id: device.device_id,
+    reason: state === "revoked" ? "identity_changed" : "unknown_identity",
+  };
+}
+
 /** Native's `MlsUnsolicitedWelcome`: no own join intent for the group. */
 function unsolicitedWelcome(groupId: string): Error {
   return Object.assign(new Error("mls_unsolicited_welcome"), {
@@ -456,6 +491,16 @@ export class SeatNative {
   /** The keys the previous install answered with (`previous` of the next). */
   lastKeys: MlsFrameKey[] | null = null;
   /**
+   * This device's pins for OTHER devices (the `peers` rows), by
+   * `user:device`, holding only the ones that are NOT an Active, verified
+   * pin. Empty by default: every peer device is pinned Active, so no leaf is
+   * ever rejected and every native read answers as it did before pins were
+   * modelled. A row here is set by `World.revokePin` / `World.unpinPeer`;
+   * see `pinRejection` for what each one makes native refuse. Native store,
+   * so it outlives every page.
+   */
+  readonly pins = new Map<string, Exclude<PinState, "active">>();
+  /**
    * `mls_downgrade_confirmed`: the channels whose whole-call plaintext
    * downgrade the user confirmed in the native dialog. Engine MEMORY, not a
    * table, but the engine is the shell's, so it outlives every page: a
@@ -559,8 +604,8 @@ const copyInfo = (info: MlsCommitInfo): MlsCommitInfo => ({
  *     (`commits_submit.rs`), and its Welcome to each added device;
  *   - a join intent, as `MlsJoinRequested`, to every seat whose USER is a
  *     member (`.private(member_user)` — the requester's own user included),
- *     flagged `rejoin` when the device is already a member, with the solo
- *     and all-rejoining closes of `join_intent.rs`.
+ *     flagged `rejoin` when the device is already a member, with the solo,
+ *     all-rejoining and sole-stale-sibling closes of `join_intent.rs`.
  *
  * A `newWorld` gets a private one that does none of this: it `arbitrates`
  * nothing, answers every submit `Won` and applies nothing, so a one-seat
@@ -895,7 +940,35 @@ export class Ds {
     return { kind: "ok", body: { result: "Created" } };
   }
 
-  /** `POST /mls/groups/<id>/join_intent`. */
+  #siblingClose = true;
+  #sfuOracle: (() => readonly string[] | null) | null = null;
+
+  /**
+   * `features.mls_sibling_close`, the kill switch on `joinIntent`'s sibling
+   * close. On by default, as delta's embedded `Revolt.toml` ships it; off,
+   * every sibling intent gets the 400 it always got.
+   */
+  setSiblingClose(on: boolean): void {
+    this.#siblingClose = on;
+  }
+
+  /**
+   * What delta's SFU listing of the call room answers when `joinIntent`
+   * weighs a sibling close (`list_participants_if_present`): the room's
+   * identities as LiveKit reports them, legs included, or `null` for an SFU
+   * that did not answer. Called once per sibling intent, and only when the
+   * switch is on and the sibling is the sole member, as delta lists only
+   * then. Unset (the default) or `null` is no listing: the sibling 400, so a
+   * spec that never sets one runs exactly as before the close existed.
+   */
+  setSfuOracle(oracle: (() => readonly string[] | null) | null): void {
+    this.#sfuOracle = oracle;
+  }
+
+  /**
+   * `POST /mls/groups/<id>/join_intent`. A sibling intent (another device
+   * of a member's user) is refused with the 400, or meets the sibling close.
+   */
   joinIntent(
     seat: World,
     groupId: string,
@@ -908,6 +981,20 @@ export class Ds {
     let rejoin = false;
     if (existing) {
       if (existing.device_id !== payload.device_id) {
+        // Mirrors delta's `call_join_intent` sibling close (the
+        // mls-call-sibling-device-wedge plan): the group's ONLY leaf is this
+        // user's other device and the SFU listing answered without it, so no
+        // member is left to admit anyone. Closed, and answered 404 so the
+        // joiner CREATEs at once. The match is exact `user:device` equality,
+        // so a leg (`user:device:screen`) is not the sibling's seat. No
+        // listing, a live sibling, another member, or the switch off: the 400.
+        if (this.#siblingClose && members.length === 1) {
+          const live = this.#sfuOracle?.() ?? null;
+          if (live !== null && !live.includes(identityOf(existing))) {
+            this.#close(groupId);
+            return { kind: "not_found" };
+          }
+        }
         throw dsFailure(
           "POST",
           `/mls/groups/${groupId}/join_intent`,
@@ -1233,6 +1320,12 @@ export class World {
     | { kind: "hold"; active: boolean }
   )[] = [];
   modes: string[] = [];
+  /**
+   * The reason of every `autoLeave` the session asked the media binding for
+   * (`state.tsx` disconnects the Voice on it), in order. The fake only
+   * records it: the session, the SFU room and the gate stay as they are.
+   */
+  autoLeaves: string[] = [];
   /**
    * `state.tsx`'s publish gate — a REASON SET, not a boolean: publishing flows
    * only while it is EMPTY, and it is SEEDED with the `negotiating` reason
@@ -1977,6 +2070,67 @@ export class World {
     });
     await flush();
   }
+  /**
+   * This seat's native now holds `device`'s pin as REVOKED, as
+   * `revoke_peer_device` (an `E2EEDeviceDelete` it saw) or a listing that
+   * dropped the device leaves it. From now on, while any group this seat
+   * reads holds a leaf for `device`, native's whole-roster verify refuses
+   * it with `leafRejected(device, "revoked")` (`identity_changed`):
+   *   - `callState` (and the resume prefetch's state read), `callFrameKeys`
+   *     and `callConfirmDowngrade` (its non-enrolled roster) throw it;
+   *   - `callAdmit` throws it, whoever the joiner is, and so does
+   *     `callVerifyJoinIntent` for an intent FROM `device`;
+   *   - a Welcome seating `device` is refused with it (nothing joined);
+   *   - an inbound commit whose resulting roster still holds `device`
+   *     POISONS the row (`mls_poisoned_epoch` at the commit's epoch), and
+   *     every later `callRemove` on it throws `mls_poisoned_epoch` at the
+   *     row's epoch. A commit that removes the leaf applies normally.
+   * `callRemove` of the leaf itself still stages (no verify on the remove
+   * path); once that Remove is merged the roster verifies again. A
+   * one-seat world stages it on GROUP too, where every other target still
+   * answers `mls_group_not_found`. `callRosterIdentities` keeps answering
+   * the unverified roster. A reconcile never restores a revoked pin (native
+   * pins insert-if-absent only).
+   *
+   * Never this seat's own device: native never pins itself. An own
+   * revocation reaches the session as `emitDeviceRevoked(…, true)`.
+   */
+  revokePin(device: MlsMemberDevice): void {
+    this.#assertPeer(device, "revokePin");
+    this.native.pins.set(identityOf(device), "revoked");
+  }
+  /**
+   * This seat's native holds NO pin for `device` (an identity it never
+   * learned): every refusal `revokePin` lists, with reason
+   * `unknown_identity`, until this seat's `reconcileCallRoster` is called
+   * with an entry for `device`'s user that lists `device`, which pins it
+   * Active (as `pin_call_identities` does from the signed listing). A
+   * reconcile of this seat's OWN user pins nothing, as native refuses it.
+   */
+  unpinPeer(device: MlsMemberDevice): void {
+    this.#assertPeer(device, "unpinPeer");
+    this.native.pins.set(identityOf(device), "unpinned");
+  }
+  /** This seat's native pin for `device` (`active` unless set otherwise). */
+  pinOf(device: MlsMemberDevice): PinState {
+    return this.native.pins.get(identityOf(device)) ?? "active";
+  }
+  #assertPeer(device: MlsMemberDevice, method: string): void {
+    assert.ok(
+      !sameDevice(device, this.me),
+      `${method}(${identityOf(device)}): a device never pins itself`,
+    );
+  }
+  /**
+   * The bridge's `device_revoked` sink event (an `E2EEDeviceDelete` it
+   * took), delivered NOW, the way `join_request` arrives: to the registered
+   * sink, or nowhere when none is (it is never held). It touches no pin:
+   * the bridge revokes natively before it emits, so a spec modelling a peer
+   * revocation calls `revokePin` first.
+   */
+  emitDeviceRevoked(userId: string, deviceId: string, own: boolean): void {
+    this.receive({ kind: "device_revoked", userId, deviceId, own });
+  }
   /** Declare one local publication to the SFU as NONE (the unmute shape). */
   declarePlaintext(trackSid = "TR_local"): void {
     this.localPublications = [{ trackSid, encryption: 0 }];
@@ -2413,6 +2567,10 @@ export class World {
     return { group_id: GROUP, epoch: this.epoch, keys, previous };
   }
 
+  /**
+   * GROUP's row as this world holds it, UNVERIFIED: the bridge's
+   * `callState` verifies it against the pins first (`verifiedCallState`).
+   */
   callState(): MlsCallState {
     return {
       group_id: GROUP,
@@ -2892,6 +3050,9 @@ function fakeMedia(world: World, page: Page): MlsMediaBinding {
     onCallModeChanged: (mode) => {
       if (!page.dead) world.modes.push(mode.kind);
     },
+    autoLeave: (reason) => {
+      if (!page.dead) world.autoLeaves.push(reason);
+    },
     setEncryptionEnabled: async () => {},
   };
 }
@@ -2985,19 +3146,31 @@ function bridgeFor(world: World, page: Page): E2EEBridge {
     // resume tail (`#catchUpTail`) reads native's epoch here first and then
     // asks exactly the range a Welcome at that epoch would arm, so a default
     // still armed would answer the tail.
+    // Both verify the roster against this seat's pins first (`SeatNative.
+    // pins`), as `mls_call_state` and `mls_call_frame_keys` do; with no pin
+    // set that is a no-op.
     callState: record("callState", async () => {
       if (heldCurrencyFetches === 0) world.welcomeCurrencyEpoch = null;
-      return world.callState();
+      return verifiedCallState(world, GROUP);
     }),
-    callFrameKeys: record("callFrameKeys", async () => world.frameKeys()),
+    callFrameKeys: record("callFrameKeys", async () => {
+      const rejected = rosterRejection(world, world.roster);
+      if (rejected) throw rejected;
+      return world.frameKeys();
+    }),
     // Joiner pre-pin: no local group before the Welcome (the session
     // tolerates the throw and pins from the SFU set).
     callRosterIdentities: record("callRosterIdentities", async () => {
       throw new Error("mls_group_not_found");
     }),
-    // Counted by `record` BEFORE it waits on `holdReconcileRoster`.
-    reconcileCallRoster: record("reconcileCallRoster", async () => {
+    // Counted by `record` BEFORE it waits on `holdReconcileRoster`. Past the
+    // hold the listing has arrived: every UNPINNED device it was asked for
+    // is pinned Active (`pin_call_identities`, insert-if-absent: a revoked
+    // pin stays revoked, and this seat's own user is never pinned). A page
+    // that died under the hold pins nothing.
+    reconcileCallRoster: record("reconcileCallRoster", async (roster) => {
       if (world.reconcileRosterGate) await world.reconcileRosterGate;
+      if (!page.dead) pinFromListing(world, roster);
       return [];
     }),
     // Both intent stubs are counted by `record` BEFORE they wait on a hold
@@ -3179,18 +3352,30 @@ function bridgeFor(world: World, page: Page): E2EEBridge {
     // `remove_members` and is refused `remove-members` (`UseAfterEviction`).
     //
     // In a fleet a held target is REMOVED: the Remove is staged for the next
-    // epoch on the seat's own row, and submitted like any commit.
+    // epoch on the seat's own row, and submitted like any commit. A
+    // poisoned row refuses first, at its own epoch (`MlsPoisonedEpoch`).
+    //
+    // No roster verify on this path (`mls_call_remove` locates the leaf by
+    // its unverified credential), so a leaf this seat's pins refuse is
+    // still removable. A one-seat world stages that Remove on GROUP as a
+    // fleet would; every other target there still answers
+    // `mls_group_not_found`.
     callRemove: record("callRemove", async (groupId, userId, deviceId) => {
       const target = `${userId}:${deviceId}`;
       const self = identityOf(world.me);
       const local = world.fleet ? world.native.localGroups.get(groupId) : null;
+      if (local && local.state !== "active") {
+        throw poisonedEpoch(groupId, local.epoch);
+      }
       const roster = local ? membersOf(local.leaves) : world.roster;
       const held = roster.some(
         (m) => identityOf(m) === target && identityOf(m) !== self,
       );
       if (world.evicted.has(groupId) && held) throw mlsCode("remove-members");
-      if (local && held) {
-        const epoch = local.epoch + 1;
+      const refused =
+        !world.fleet && groupId === GROUP && world.native.pins.has(target);
+      if ((local || refused) && held) {
+        const epoch = (local ? local.epoch : world.epoch) + 1;
         const commit: MlsSubmitCommit = {
           device_id: world.me.device_id,
           epoch,
@@ -3215,7 +3400,12 @@ function bridgeFor(world: World, page: Page): E2EEBridge {
     // raised here as an `Error` carrying it, as `callRemove`'s is.
     //
     // Read-only native pin check: resolves, or rejects on an unpinned leaf.
-    callVerifyJoinIntent: record("callVerifyJoinIntent", async () => {}),
+    // The requester's pin is the one read (`verify_join_intent`): a revoked
+    // or unpinned requester is refused as `pinRejection` says.
+    callVerifyJoinIntent: record("callVerifyJoinIntent", async (request) => {
+      const rejected = pinRejection(world, request);
+      if (rejected) throw rejected;
+    }),
     // `POST /mls/key_packages/claim`: one `Claimed` result per target.
     mlsClaimKeyPackage: record(
       "mlsClaimKeyPackage",
@@ -3240,10 +3430,14 @@ function bridgeFor(world: World, page: Page): E2EEBridge {
     // `add_members` fails `UseAfterEviction`: `add-members`. In a fleet the
     // next epoch is the seat's own row's, and a group it does not hold is
     // `mls_group_not_found`; the commit and Welcome name their committer, so
-    // two seats' commits at one epoch never read as the same commit.
+    // two seats' commits at one epoch never read as the same commit. Before
+    // any of it, the pins (`admitRejection`): native verifies the
+    // requester's intent and then the whole roster before `add_members`.
     callAdmit: record(
       "callAdmit",
       async (request): Promise<MlsSubmitCommit> => {
+        const rejected = admitRejection(world, request);
+        if (rejected) throw rejected;
         if (world.evicted.has(request.group_id)) throw mlsCode("add-members");
         let epoch = world.epoch + 1;
         let suffix = "";
@@ -3395,7 +3589,10 @@ function bridgeFor(world: World, page: Page): E2EEBridge {
           sfuParticipants: [...sfuParticipants],
           displayNames: { ...displayNames },
         });
-        const { channel_id } = localCallState(world, groupId);
+        // The non-enrolled roster is VERIFIED (`mls_call_non_enrolled`), so
+        // a leaf the pins refuse fails it before any dialog, as a missing
+        // group does.
+        const { channel_id } = verifiedCallState(world, groupId);
         const outcome = world.confirmDowngradeOutcome;
         if (outcome) {
           world.confirmDowngradeOutcome = null;
@@ -3514,7 +3711,7 @@ function bridgeFor(world: World, page: Page): E2EEBridge {
           now: () => Date.now(),
           self: { userId: world.me.user_id, deviceId: world.me.device_id },
           openGroup: (channel, s) => world.ds.requestOpenGroup(channel, s),
-          callState: async (groupId) => localCallState(world, groupId),
+          callState: async (groupId) => verifiedCallState(world, groupId),
           pendingCommitEpoch: async (groupId) =>
             pendingCommitEpoch(world, groupId),
           fetchCommits: (groupId, fromEpoch, s) =>
@@ -3613,6 +3810,95 @@ function localCallState(world: World, groupId: string): MlsCallState {
 }
 
 /**
+ * `mls_call_state` as the bridge answers it: `localCallState`, then the
+ * whole-roster verify (`verify_roster`), which throws the FIRST leaf in
+ * leaf order whose pin this seat refuses. Native reads the row's state
+ * after the verify, so a poisoned row with a refused leaf throws the leaf.
+ */
+function verifiedCallState(world: World, groupId: string): MlsCallState {
+  const state = localCallState(world, groupId);
+  const rejected = rosterRejection(world, state.members);
+  if (rejected) throw rejected;
+  return state;
+}
+
+/**
+ * Native's pin lookup for one leaf or intent (`verify_leaf_credential` /
+ * `verify_join_intent`): the refusal for a device this seat holds revoked
+ * or unpinned, or `null`. This seat's own device is never refused here
+ * (native checks its own leaf against its own identity, never a pin).
+ */
+function pinRejection(
+  world: World,
+  device: MlsMemberDevice,
+): LeafRejected | null {
+  if (sameDevice(device, world.me)) return null;
+  const state = world.native.pins.get(identityOf(device));
+  return state === undefined ? null : leafRejected(device, state);
+}
+
+/**
+ * `verify_roster`: every leaf of `members` (leaf order) checked, stopping
+ * at the first refused one. `null` at once with no pin set, so a seat no
+ * spec touched verifies exactly as before.
+ */
+function rosterRejection(
+  world: World,
+  members: readonly MlsMemberDevice[],
+): LeafRejected | null {
+  if (world.native.pins.size === 0) return null;
+  for (const member of members) {
+    const rejected = pinRejection(world, member);
+    if (rejected) return rejected;
+  }
+  return null;
+}
+
+/**
+ * `mls_call_admit`'s refusals before `add_members`, in its order: the
+ * requester's intent against its pin, then the whole roster. On a POISONED
+ * fleet row native refuses `MlsPoisonedEpoch` before either, so a refusal
+ * there is reported as that. `null` when the pins refuse nothing; the
+ * admit then runs exactly as before (a group the fleet seat does not hold
+ * is left to its own `mls_group_not_found`).
+ */
+function admitRejection(world: World, request: MlsJoinRequest): unknown {
+  if (world.native.pins.size === 0) return null;
+  const local = world.fleet
+    ? world.native.localGroups.get(request.group_id)
+    : undefined;
+  if (world.fleet && !local) return null;
+  const rejected =
+    pinRejection(world, request) ??
+    rosterRejection(world, local ? membersOf(local.leaves) : world.roster);
+  if (rejected && local && local.state !== "active") {
+    return poisonedEpoch(request.group_id, local.epoch);
+  }
+  return rejected;
+}
+
+/**
+ * `pin_call_identities` for each listing the reconcile fetched: a device
+ * this seat holds UNPINNED and the entry asks for is pinned Active. A
+ * revoked pin is left revoked (insert-if-absent), and this seat's own user
+ * is never pinned from a listing.
+ */
+function pinFromListing(
+  world: World,
+  roster: readonly { userId: string; deviceIds: readonly string[] }[],
+): void {
+  for (const { userId, deviceIds } of roster) {
+    if (userId === world.me.user_id) continue;
+    for (const deviceId of deviceIds) {
+      const key = `${userId}:${deviceId}`;
+      if (world.native.pins.get(key) === "unpinned") {
+        world.native.pins.delete(key);
+      }
+    }
+  }
+}
+
+/**
  * `mls_call_pending_commit_epoch`: `load_group` first (a group the store
  * does not hold is `MlsGroupNotFound`), then the epoch the staged own commit
  * would establish — the group's epoch + 1 — or `null` with none staged.
@@ -3697,12 +3983,22 @@ function fleetStubs(world: World, record: Recorder): BridgeStubs {
     ),
     callState: record(
       "callState",
-      async (groupId): Promise<MlsCallState> => localCallState(world, groupId),
+      async (groupId): Promise<MlsCallState> =>
+        verifiedCallState(world, groupId),
     ),
+    // `mls_call_frame_keys` refuses a poisoned row before it verifies, so a
+    // refused leaf on a poisoned row reads as the poison.
     callFrameKeys: record(
       "callFrameKeys",
       async (groupId): Promise<MlsFrameKeys> => {
         const group = row(groupId);
+        const rejected = rosterRejection(world, membersOf(group.leaves));
+        if (rejected) {
+          if (group.state !== "active") {
+            throw poisonedEpoch(groupId, group.epoch);
+          }
+          throw rejected;
+        }
         const keys = membersOf(group.leaves).map((m) => ({
           livekit_identity: identityOf(m),
           user_id: m.user_id,
@@ -3716,6 +4012,8 @@ function fleetStubs(world: World, record: Recorder): BridgeStubs {
         return { group_id: groupId, epoch: group.epoch, keys, previous };
       },
     ),
+    // UNVERIFIED (`mls_call_roster_identities`): it never reads the pins,
+    // so it still names a leaf every verified read refuses.
     callRosterIdentities: record("callRosterIdentities", async (groupId) =>
       membersOf(row(groupId).leaves).map(identityOf),
     ),
@@ -3754,7 +4052,10 @@ function keysChanged(
  *     `duplicate`; a gap is `MlsEpochGap`, applying nothing; a commit that
  *     is not the DS's winner at its epoch, or one landing on the epoch this
  *     device still holds a staged commit for, POISONS the row — the H1
- *     clear is the session's job, and this is what skipping it costs.
+ *     clear is the session's job, and this is what skipping it costs. So
+ *     does one whose resulting roster holds a leaf this seat's pins refuse
+ *     (`World.revokePin` / `World.unpinPeer`); a Welcome seating such a
+ *     leaf is refused with the `mls_leaf_rejected` itself.
  * Envelope-id replay dedup (`processed_envelopes`) answers `duplicate`.
  */
 function processNatively(
@@ -3792,6 +4093,10 @@ function processNatively(
       const welcome = world.ds.welcomeAt(groupId, envelope.epoch);
       if (!welcome) throw mlsCode("welcome");
       if (native.localGroups.has(groupId)) throw mlsCode("welcome-join");
+      // Every leaf verified before the group counts as joined; a refusal
+      // rolls the join back (no row, the intent kept).
+      const refused = rosterRejection(world, membersOf(welcome.leaves));
+      if (refused) throw refused;
       native.localGroups.set(groupId, {
         channelId: welcome.channelId,
         epoch: envelope.epoch,
@@ -3830,13 +4135,21 @@ function processNatively(
       group.state = "poisoned";
       throw poisonedEpoch(groupId, envelope.epoch);
     }
-    const removedSelf = info.removed.some((m) => sameDevice(m, world.me));
-    group.leaves = applyToLeaves(
+    const leaves = applyToLeaves(
       group.leaves,
       info.removed,
       info.added,
       world.ds.cast,
     );
+    // The post-merge roster is verified whole: a leaf the pins refuse that
+    // this commit did not remove (or one it added) fails the WINNING
+    // commit, which poisons the row at this epoch and applies nothing.
+    if (rosterRejection(world, membersOf(leaves))) {
+      group.state = "poisoned";
+      throw poisonedEpoch(groupId, envelope.epoch);
+    }
+    const removedSelf = info.removed.some((m) => sameDevice(m, world.me));
+    group.leaves = leaves;
     group.epoch = envelope.epoch;
     native.processed.add(envelope.id);
     if (removedSelf) native.evicted.add(groupId);

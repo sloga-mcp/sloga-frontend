@@ -898,6 +898,14 @@ internal open class UniffiVTableCallbackInterfaceKeyProtector(
 
 
 
+
+
+
+
+
+
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -913,7 +921,9 @@ internal open class UniffiVTableCallbackInterfaceKeyProtector(
 // when the library is loaded.
 internal interface IntegrityCheckingUniffiLib : Library {
     // Integrity check functions only
-    fun uniffi_acutest_e2ee_checksum_method_e2eeengine_accept_identity_change(
+    fun uniffi_acutest_e2ee_checksum_func_split_confirm_copy(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_accept_identity_change(
 ): Short
 fun uniffi_acutest_e2ee_checksum_method_e2eeengine_acknowledge_group_plaintext(
 ): Short
@@ -1056,6 +1066,12 @@ fun uniffi_acutest_e2ee_checksum_method_e2eeengine_send_mode(
 fun uniffi_acutest_e2ee_checksum_method_e2eeengine_send_mode_group(
 ): Short
 fun uniffi_acutest_e2ee_checksum_method_e2eeengine_sign_claim(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_split_commit(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_split_discard(
+): Short
+fun uniffi_acutest_e2ee_checksum_method_e2eeengine_split_stage(
 ): Short
 fun uniffi_acutest_e2ee_checksum_method_e2eeengine_status(
 ): Short
@@ -1269,6 +1285,12 @@ fun uniffi_acutest_e2ee_fn_method_e2eeengine_send_mode_group(`ptr`: Pointer,`con
 ): RustBuffer.ByValue
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_sign_claim(`ptr`: Pointer,`sessionId`: RustBuffer.ByValue,`nonce`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_split_commit(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_split_discard(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_acutest_e2ee_fn_method_e2eeengine_split_stage(`ptr`: Pointer,`sessionId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_status(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_acutest_e2ee_fn_method_e2eeengine_store_owner(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
@@ -1284,6 +1306,8 @@ fun uniffi_acutest_e2ee_fn_init_callback_vtable_keyprotector(`vtable`: UniffiVTa
 fun uniffi_acutest_e2ee_fn_method_keyprotector_protect(`ptr`: Pointer,`plaintext`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_acutest_e2ee_fn_method_keyprotector_unprotect(`ptr`: Pointer,`blob`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_acutest_e2ee_fn_func_split_confirm_copy(uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun ffi_acutest_e2ee_rustbuffer_alloc(`size`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
@@ -1411,6 +1435,9 @@ private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
 }
 @Suppress("UNUSED_PARAMETER")
 private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
+    if (lib.uniffi_acutest_e2ee_checksum_func_split_confirm_copy() != 3728.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_accept_identity_change() != 51466.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1588,7 +1615,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_pin_call_identities() != 10275.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_post_restore_rekey() != 44810.toShort()) {
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_post_restore_rekey() != 42097.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_preview_accept_identity_change() != 48856.toShort()) {
@@ -1612,7 +1639,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_resend_downgrade() != 49394.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_restore() != 19265.toShort()) {
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_restore() != 62382.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_safety_number() != 25612.toShort()) {
@@ -1627,13 +1654,22 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_sign_claim() != 48068.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_split_commit() != 26630.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_split_discard() != 38104.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_split_stage() != 47124.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_status() != 12604.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_store_owner() != 49521.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_wipe() != 31954.toShort()) {
+    if (lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_wipe() != 3432.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_acutest_e2ee_checksum_method_keyprotector_protect() != 64859.toShort()) {
@@ -2585,10 +2621,19 @@ public interface E2eeEngineInterface {
     fun `pinCallIdentities`(`selfUserId`: kotlin.String, `userId`: kotlin.String, `targets`: List<kotlin.String>, `devicesJson`: kotlin.String): kotlin.String
     
     /**
-     * After a restore, mint a FRESH one-time-key batch + rotate the fallback
-     * key; returns the JSON `PUT /e2ee/keys` publish payload. The webview
-     * publishes it with `replace_one_time_keys: true` so the server drops the
-     * stale OTKs whose private halves died with the old install (design §6.3).
+     * LEGACY (§6.4 re-enroll self-heal, multi-device plan D1): for a store
+     * restored by a build BEFORE plan D1, which cloned the source device.
+     * Mints a FRESH one-time-key batch + rotates the fallback key of the
+     * CURRENT device and returns the JSON `PUT /e2ee/keys` publish payload,
+     * which the webview publishes with `replace_one_time_keys: true` so the
+     * server drops the stale OTKs whose private halves died with the old
+     * install (design §6.3). Kept exported for that path only (the Kotlin
+     * `e2ee_backup_rederive_republish` arm; desktop
+     * `ShellEngine::backup_rederive_republish`).
+     *
+     * Must NOT be called after a [`Self::restore`] by this build: that
+     * store is a new, unpublished device, published through the payload
+     * [`Self::enable`] re-offers.
      */
     fun `postRestoreRekey`(): kotlin.String
     
@@ -2678,6 +2723,13 @@ public interface E2eeEngineInterface {
      * Keystore key did not survive the reinstall — a fresh master is
      * correct), opens the engine on it, and returns the `RestoreReport` JSON.
      *
+     * The restored store is a NEW, UNPUBLISHED device (multi-device plan
+     * D1): `new_device_id` is this install, `device_id` the SOURCE device,
+     * which keeps working. Nothing is rekeyed. The caller must NOT follow
+     * this with [`Self::post_restore_rekey`]; it publishes the new device
+     * with the first-publish payload [`Self::enable`] re-offers for an
+     * unpublished account, behind its own MFA prompt (plan D3).
+     *
      * The CODE crosses only this FFI (Rust ↔ Kotlin) and is never returned to
      * any caller. Refuses to run over a cleanly-provisioned store
      * (`StoreAlreadyProvisioned`) — wiping live state is the wipe flow's job.
@@ -2715,6 +2767,50 @@ public interface E2eeEngineInterface {
     fun `signClaim`(`sessionId`: kotlin.String, `nonce`: kotlin.String): kotlin.String
     
     /**
+     * Split step 3 of 3, after the server accepted the staged first
+     * publication: make the staged account this install's, in one store
+     * transaction (`E2ee::split_commit`). The stage is consumed only on
+     * success. On ANY error the transaction rolled back, the install is
+     * still the old device and the stage stays held, so a retry commits
+     * the same (already published) new device. No stage held ⇒
+     * `invalid_argument` `split`. Never provisions (a wipe drops the stage
+     * anyway).
+     */
+    fun `splitCommit`()
+    
+    /**
+     * Drop a held split stage without committing it: a dismissed MFA
+     * prompt or a refused publication. The install stays the old device,
+     * byte for byte (the stage never touched the store). Idempotent; never
+     * opens the store.
+     */
+    fun `splitDiscard`()
+    
+    /**
+     * Split step 1 of 3: stage a fresh device account IN MEMORY and return
+     * its JSON first-publish body (`PublishKeysPayload`, carrying
+     * `split_from` = this device's id and `split_proof`, the old identity's
+     * signature binding the new device to `session_id`). Writes NOTHING to
+     * the store; the install stays the old device until
+     * [`Self::split_commit`]. The stage is held in this engine; a second
+     * stage replaces (and drops) the first, so only the latest body can
+     * ever be committed.
+     *
+     * 🔴 NOT CONFIRM-GATED IN RUST. The Kotlin plugin (`E2eePlugin.kt`)
+     * MUST show a system `AlertDialog` with [`split_confirm_copy`] and call
+     * this only from its positive button, from a dialog-backed method that
+     * is never on its generic webview call path (wipe parity). Each commit
+     * mints a new device id and sends every contact a `device_added` note,
+     * so a compromised webview that could reach this unprompted could churn
+     * this install's identity and spam its contacts (plan D5).
+     *
+     * Never provisions: no store ⇒ `not_enabled`. The engine's refusals
+     * (`not_published`, `owner_of_record_unknown`, `invalid_argument`
+     * `session_id`) leave any earlier stage in place.
+     */
+    fun `splitStage`(`sessionId`: kotlin.String): kotlin.String
+    
+    /**
      * JSON `Status` (no key material — public snapshot only).
      * Never-provision fast path (post-wipe design §1): an unprovisioned
      * device answers from the filesystem — byte-identical to what
@@ -2746,6 +2842,10 @@ public interface E2eeEngineInterface {
      * and calls this only on an explicit "Destroy" click) — the webview
      * can merely REQUEST a wipe, exactly like desktop. This method itself
      * must never be exported to any path that skips that dialog.
+     *
+     * A held split stage names the device being destroyed: it is dropped,
+     * and `split` is held across the deletion so a `split_stage` racing
+     * this wipe cannot stage against the store after it is gone.
      */
     fun `wipe`()
     
@@ -3974,10 +4074,19 @@ open class E2eeEngine: Disposable, AutoCloseable, E2eeEngineInterface
 
     
     /**
-     * After a restore, mint a FRESH one-time-key batch + rotate the fallback
-     * key; returns the JSON `PUT /e2ee/keys` publish payload. The webview
-     * publishes it with `replace_one_time_keys: true` so the server drops the
-     * stale OTKs whose private halves died with the old install (design §6.3).
+     * LEGACY (§6.4 re-enroll self-heal, multi-device plan D1): for a store
+     * restored by a build BEFORE plan D1, which cloned the source device.
+     * Mints a FRESH one-time-key batch + rotates the fallback key of the
+     * CURRENT device and returns the JSON `PUT /e2ee/keys` publish payload,
+     * which the webview publishes with `replace_one_time_keys: true` so the
+     * server drops the stale OTKs whose private halves died with the old
+     * install (design §6.3). Kept exported for that path only (the Kotlin
+     * `e2ee_backup_rederive_republish` arm; desktop
+     * `ShellEngine::backup_rederive_republish`).
+     *
+     * Must NOT be called after a [`Self::restore`] by this build: that
+     * store is a new, unpublished device, published through the payload
+     * [`Self::enable`] re-offers.
      */
     @Throws(E2eeException::class)override fun `postRestoreRekey`(): kotlin.String {
             return FfiConverterString.lift(
@@ -4155,6 +4264,13 @@ open class E2eeEngine: Disposable, AutoCloseable, E2eeEngineInterface
      * Keystore key did not survive the reinstall — a fresh master is
      * correct), opens the engine on it, and returns the `RestoreReport` JSON.
      *
+     * The restored store is a NEW, UNPUBLISHED device (multi-device plan
+     * D1): `new_device_id` is this install, `device_id` the SOURCE device,
+     * which keeps working. Nothing is rekeyed. The caller must NOT follow
+     * this with [`Self::post_restore_rekey`]; it publishes the new device
+     * with the first-publish payload [`Self::enable`] re-offers for an
+     * unpublished account, behind its own MFA prompt (plan D3).
+     *
      * The CODE crosses only this FFI (Rust ↔ Kotlin) and is never returned to
      * any caller. Refuses to run over a cleanly-provisioned store
      * (`StoreAlreadyProvisioned`) — wiping live state is the wipe flow's job.
@@ -4247,6 +4363,81 @@ open class E2eeEngine: Disposable, AutoCloseable, E2eeEngineInterface
 
     
     /**
+     * Split step 3 of 3, after the server accepted the staged first
+     * publication: make the staged account this install's, in one store
+     * transaction (`E2ee::split_commit`). The stage is consumed only on
+     * success. On ANY error the transaction rolled back, the install is
+     * still the old device and the stage stays held, so a retry commits
+     * the same (already published) new device. No stage held ⇒
+     * `invalid_argument` `split`. Never provisions (a wipe drops the stage
+     * anyway).
+     */
+    @Throws(E2eeException::class)override fun `splitCommit`()
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_split_commit(
+        it, _status)
+}
+    }
+    
+    
+
+    
+    /**
+     * Drop a held split stage without committing it: a dismissed MFA
+     * prompt or a refused publication. The install stays the old device,
+     * byte for byte (the stage never touched the store). Idempotent; never
+     * opens the store.
+     */
+    @Throws(E2eeException::class)override fun `splitDiscard`()
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_split_discard(
+        it, _status)
+}
+    }
+    
+    
+
+    
+    /**
+     * Split step 1 of 3: stage a fresh device account IN MEMORY and return
+     * its JSON first-publish body (`PublishKeysPayload`, carrying
+     * `split_from` = this device's id and `split_proof`, the old identity's
+     * signature binding the new device to `session_id`). Writes NOTHING to
+     * the store; the install stays the old device until
+     * [`Self::split_commit`]. The stage is held in this engine; a second
+     * stage replaces (and drops) the first, so only the latest body can
+     * ever be committed.
+     *
+     * 🔴 NOT CONFIRM-GATED IN RUST. The Kotlin plugin (`E2eePlugin.kt`)
+     * MUST show a system `AlertDialog` with [`split_confirm_copy`] and call
+     * this only from its positive button, from a dialog-backed method that
+     * is never on its generic webview call path (wipe parity). Each commit
+     * mints a new device id and sends every contact a `device_added` note,
+     * so a compromised webview that could reach this unprompted could churn
+     * this install's identity and spam its contacts (plan D5).
+     *
+     * Never provisions: no store ⇒ `not_enabled`. The engine's refusals
+     * (`not_published`, `owner_of_record_unknown`, `invalid_argument`
+     * `session_id`) leave any earlier stage in place.
+     */
+    @Throws(E2eeException::class)override fun `splitStage`(`sessionId`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(E2eeException) { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_method_e2eeengine_split_stage(
+        it, FfiConverterString.lower(`sessionId`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
      * JSON `Status` (no key material — public snapshot only).
      * Never-provision fast path (post-wipe design §1): an unprovisioned
      * device answers from the filesystem — byte-identical to what
@@ -4300,6 +4491,10 @@ open class E2eeEngine: Disposable, AutoCloseable, E2eeEngineInterface
      * and calls this only on an explicit "Destroy" click) — the webview
      * can merely REQUEST a wipe, exactly like desktop. This method itself
      * must never be exported to any path that skips that dialog.
+     *
+     * A held split stage names the device being destroyed: it is dropped,
+     * and `split` is held across the deletion so a `split_stage` racing
+     * this wipe cannot stage against the store after it is gone.
      */
     @Throws(E2eeException::class)override fun `wipe`()
         = 
@@ -4879,6 +5074,57 @@ public object FfiConverterTypeIdentityPrompt: FfiConverterRustBuffer<IdentityPro
 
 
 
+/**
+ * The core-owned copy of the "make this a separate device" system dialog
+ * (`ConfirmRequest::Split`, multi-device plan D5), the same fields and the
+ * same `ConfirmRequest::copy()` source as [`GroupGrowthPrompt`] and
+ * [`IdentityPrompt`], so Kotlin carries no strings of its own. Fixed
+ * wording, nothing webview- or server-supplied. A warning whose default
+ * button is Cancel.
+ */
+data class SplitPrompt (
+    var `title`: kotlin.String, 
+    var `message`: kotlin.String, 
+    /**
+     * Label of the button whose press is consent.
+     */
+    var `confirmLabel`: kotlin.String, 
+    var `cancelLabel`: kotlin.String
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeSplitPrompt: FfiConverterRustBuffer<SplitPrompt> {
+    override fun read(buf: ByteBuffer): SplitPrompt {
+        return SplitPrompt(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: SplitPrompt) = (
+            FfiConverterString.allocationSize(value.`title`) +
+            FfiConverterString.allocationSize(value.`message`) +
+            FfiConverterString.allocationSize(value.`confirmLabel`) +
+            FfiConverterString.allocationSize(value.`cancelLabel`)
+    )
+
+    override fun write(value: SplitPrompt, buf: ByteBuffer) {
+            FfiConverterString.write(value.`title`, buf)
+            FfiConverterString.write(value.`message`, buf)
+            FfiConverterString.write(value.`confirmLabel`, buf)
+            FfiConverterString.write(value.`cancelLabel`, buf)
+    }
+}
+
+
+
 
 
 /**
@@ -5085,4 +5331,17 @@ public object FfiConverterMapStringString: FfiConverterRustBuffer<Map<kotlin.Str
         }
     }
 }
+        /**
+         * The dialog the Kotlin plugin MUST show, and have confirmed, before it
+         * calls [`E2eeEngine::split_stage`] (which is not confirm-gated in Rust).
+         */ fun `splitConfirmCopy`(): SplitPrompt {
+            return FfiConverterTypeSplitPrompt.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_acutest_e2ee_fn_func_split_confirm_copy(
+        _status)
+}
+    )
+    }
+    
+
 

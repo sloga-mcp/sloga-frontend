@@ -62,6 +62,7 @@ import { useModals } from "@revolt/modal";
 import { useState } from "@revolt/state";
 import { ALLOWED_IMAGE_TYPES } from "@revolt/state/stores/Draft";
 import {
+  type ZipTarget,
   CameraMessageButton,
   ComposerPopover,
   CompositionMediaPicker,
@@ -73,7 +74,11 @@ import {
   MessageReplyPreview,
   Tooltip,
   VoiceMessageButton,
+  canPickFolder,
+  cancelZips,
   humanFileSize,
+  usePickedFolder,
+  zipJobs,
 } from "@revolt/ui";
 import { ProtectedShieldIcon } from "@revolt/ui/components/features/protected/ProtectedShieldIcon";
 import { expandTrailingEmoticon } from "@revolt/ui/components/features/texteditor/emoticonExpansion";
@@ -124,7 +129,49 @@ export function MessageComposition(props: Props) {
   const e2ee = useE2EE();
   const sound = useSound();
   const { openModal } = useModals();
-  const { layout } = useDevice();
+  const { layout, isMobile } = useDevice();
+
+  /**
+   * One zip owner per channel this composer has shown. The composer is not
+   * remounted on a channel switch, and a folder can take a while to zip, so
+   * a zip belongs to the channel it was dropped in: its tile shows only
+   * there and its file goes into that channel's draft, never the one on
+   * screen when it finishes.
+   */
+  const zipOwners = new Map<string, object>();
+  const zipChannels = new WeakMap<object, string>();
+
+  /**
+   * Zip owner for a channel
+   * @param channelId Channel
+   * @returns Owner, the same object each time
+   */
+  function zipOwnerFor(channelId: string) {
+    let owner = zipOwners.get(channelId);
+    if (!owner) {
+      owner = {};
+      zipOwners.set(channelId, owner);
+      zipChannels.set(owner, channelId);
+    }
+    return owner;
+  }
+
+  /**
+   * Target for a folder gesture made now: this channel and its upload limit
+   * @returns Target
+   */
+  const zipTarget = (): ZipTarget => ({
+    owner: zipOwnerFor(props.channel.id),
+    maxBytes: attachmentSizeLimit(),
+  });
+
+  // Leaving the composer cancels its zips: nothing lands later or reports
+  // an error over another screen
+  onCleanup(() => {
+    for (const owner of zipOwners.values()) cancelZips(owner);
+  });
+
+  const resolvePickedFolder = usePickedFolder();
 
   /**
    * Window this composer renders in: the main window, or a chat window whose
@@ -1118,6 +1165,23 @@ export function MessageComposition(props: Props) {
   }
 
   /**
+   * Send, showing whatever sendMessage doesn't handle itself (e.g. an
+   * attachment that couldn't be read for encryption). Otherwise it is an
+   * unhandled rejection and the message vanishes without a word; sendDraft
+   * has already put the draft back. Used by Enter, the send button and the
+   * media picker alike.
+   * @param useContent Content to send
+   */
+  function sendReporting(useContent?: unknown) {
+    return sendMessage(useContent).catch((error) =>
+      openModal({
+        type: "error2",
+        error: error instanceof Error ? error : new Error(String(error)),
+      }),
+    );
+  }
+
+  /**
    * Send a message using the current draft
    * @param useContent Content to send
    */
@@ -1528,13 +1592,18 @@ export function MessageComposition(props: Props) {
   /**
    * Handle files being added to the draft.
    * @param files List of files
+   * @param target Captured at the gesture for a drop, paste or folder pick:
+   * the files go to that channel, which may no longer be the one on screen
    */
-  function onFiles(files: File[]) {
-    if (refuseProtectedFiles()) return;
+  function onFiles(files: File[], target?: ZipTarget) {
+    if (refuseProtectedFiles(target)) return;
+
+    const channelId =
+      (target && zipChannels.get(target.owner)) ?? props.channel.id;
 
     const rejectedFiles: File[] = [];
     const validFiles: File[] = [];
-    const maxSize = attachmentSizeLimit();
+    const maxSize = target?.maxBytes ?? attachmentSizeLimit();
 
     for (const file of files) {
       if (file.size > maxSize) {
@@ -1572,16 +1641,22 @@ export function MessageComposition(props: Props) {
     }
 
     for (const file of validFiles) {
-      state.draft.addFile(props.channel.id, file);
+      state.draft.addFile(channelId, file);
     }
   }
 
   /**
    * Protected channels take no files yet (plan D9; attachments are S3).
    * Every entry point is hidden there; this is the composer's second key.
+   * @param target For files from an earlier gesture: whose channel they go
+   * to. The gesture was refused there already if it was protected, and the
+   * channel on screen now is not where they go.
    * @returns Whether the files were refused
    */
-  function refuseProtectedFiles() {
+  function refuseProtectedFiles(target?: ZipTarget) {
+    if (target && zipChannels.get(target.owner) !== props.channel.id) {
+      return false;
+    }
     if (!protectedHides("attachments")) return false;
     openModal({
       type: "error2",
@@ -1619,6 +1694,42 @@ export function MessageComposition(props: Props) {
 
     // iOS requires us to append the file input
     // to DOM to allow us to add any images
+    doc.body.appendChild(input);
+    input.click();
+  }
+
+  /**
+   * Whether to offer the folder picker (desktop browsers and shells only)
+   */
+  const folderPickable = canPickFolder(isMobile);
+
+  /**
+   * Add a folder to the message, sent as `<folder>.zip`
+   */
+  function addFolder() {
+    if (refuseProtectedFiles()) return;
+
+    // Taken now: the folder belongs to this channel even if the composer
+    // has moved on by the time it is zipped
+    const target = zipTarget();
+
+    // Same document rule as addFile: the picker opens over this window
+    const doc = windowCtx.doc;
+    const input = doc.createElement("input");
+    input.type = "file";
+    input.webkitdirectory = true;
+    input.style.display = "none";
+
+    input.addEventListener("cancel", () => input.remove());
+    input.addEventListener("change", async (e) => {
+      const files = (e.currentTarget as HTMLInputElement)?.files;
+      input.remove();
+      if (!files?.length) return;
+
+      const zipped = await resolvePickedFolder([...files], target);
+      if (zipped.length) onFiles(zipped, target);
+    });
+
     doc.body.appendChild(input);
     input.click();
   }
@@ -1915,6 +2026,8 @@ export function MessageComposition(props: Props) {
         files={draft().files ?? []}
         getFile={state.draft.getFile}
         addFile={addFile}
+        addFolder={folderPickable ? addFolder : undefined}
+        zipping={zipJobs(zipOwnerFor(props.channel.id))}
         removeFile={removeFile}
         editFile={editFile}
       />
@@ -1987,7 +2100,7 @@ export function MessageComposition(props: Props) {
         }
         initialValue={initialValue()}
         nodeReplacement={nodeReplacement()}
-        onSendMessage={() => sendMessage()}
+        onSendMessage={() => sendReporting()}
         onTyping={delayedStopTyping}
         onEditLastMessage={() => {
           // Edits are refused on a protected channel (plan D11)
@@ -2018,6 +2131,15 @@ export function MessageComposition(props: Props) {
                   <Symbol>add</Symbol>
                 </IconButton>
               </MessageBox.InlineIcon>
+              <Show when={folderPickable}>
+                <MessageBox.InlineIcon>
+                  <Tooltip content={t`Attach folder`} placement="top">
+                    <IconButton onPress={addFolder}>
+                      <Symbol>drive_folder_upload</Symbol>
+                    </IconButton>
+                  </Tooltip>
+                </MessageBox.InlineIcon>
+              </Show>
             </Match>
           </Switch>
         }
@@ -2035,7 +2157,7 @@ export function MessageComposition(props: Props) {
             </Show>
             <MessageBox.ActionContainer>
               <CompositionMediaPicker
-                onMessage={sendMessage}
+                onMessage={sendReporting}
                 onTextReplacement={(text) => setNodeReplacement([text])}
                 // Protected: the picker offers emoji only, no GIF or
                 // sticker tab (plan D11)
@@ -2570,7 +2692,7 @@ export function MessageComposition(props: Props) {
               variant="tonal"
               shape="square"
               isDisabled={!canSend()}
-              onPress={sendMessage}
+              onPress={() => sendReporting()}
               // Logo-styled send button: a dark Sloga-navy chip with an
               // orange rim and a Discord-style send arrow in the logo ball's
               // blue. Brand colours light up only when a send is possible;
@@ -2613,11 +2735,13 @@ export function MessageComposition(props: Props) {
       <FilePasteCollector
         onFiles={onFiles}
         ctx={windowCtx}
+        zipTarget={zipTarget}
         active={() => !protectedHides("attachments")}
       />
       <FileDropAnywhereCollector
         onFiles={onFiles}
         ctx={windowCtx}
+        zipTarget={zipTarget}
         active={() => !protectedHides("attachments")}
       />
     </>
