@@ -2,11 +2,14 @@
  * Query-string deep links that have to survive the login redirect.
  *
  * Pure: no DOM, no client, no Solid, so `node --test` can load it
- * (see deepLinks.test.ts). The stoat.js import is a type and is erased.
+ * (see deepLinks.test.ts). The stoat.js and protWallet imports are types
+ * and are erased.
  */
 import type { CipherTier } from "stoat.js";
 
-export type { CipherTier };
+import type { ProtSettingsContext } from "../../components/app/interface/settings/user/protWallet";
+
+export type { CipherTier, ProtSettingsContext };
 
 /**
  * Cipher tiers a `/settings?cipher_tier=` link may preselect: the literals
@@ -43,6 +46,36 @@ export type CipherReturn = (typeof CIPHER_RETURNS)[number];
 export function parseCipherReturn(search: string): CipherReturn | undefined {
   const value = new URLSearchParams(search).get("cipher");
   return CIPHER_RETURNS.find((outcome) => outcome === value);
+}
+
+/** Checkout outcomes Stripe sends Prot buyers back with (`?prot=`). */
+export const PROT_RETURNS = ["success", "cancel"] as const;
+
+export type ProtReturn = (typeof PROT_RETURNS)[number];
+
+/**
+ * Checkout outcome from a `?prot=` query string (the Stripe return URL of a
+ * Prot purchase). Only the two exact literals count; anything else is
+ * ignored. This only picks what the Prot page shows: the balance itself is
+ * always read back from the server.
+ * @param search `location.search`, with or without the leading `?`
+ * @returns The outcome, or undefined when absent or not one of the literals
+ */
+export function parseProtReturn(search: string): ProtReturn | undefined {
+  const value = new URLSearchParams(search).get("prot");
+  return PROT_RETURNS.find((outcome) => outcome === value);
+}
+
+/**
+ * Settings context for a Prot checkout return (`?prot=`).
+ * @param search `location.search`
+ * @returns The context, or undefined when the param is absent or invalid
+ */
+export function protSettingsContext(
+  search: string,
+): ProtSettingsContext | undefined {
+  const checkout = parseProtReturn(search);
+  return checkout ? { page: "prot", checkout } : undefined;
 }
 
 /** Settings modal context for the Cipher page. */
