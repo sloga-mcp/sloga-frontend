@@ -643,7 +643,10 @@ public protocol E2eeEngineProtocol: AnyObject, Sendable {
     
     /**
      * Re-derive a fresh post-restore first-publish payload on demand.
-     * JSON `PUT /e2ee/keys` body, public key material only.
+     * JSON `PUT /e2ee/keys` body, public key material only. The legacy
+     * path: only a store restored by a build before multi-device plan D1
+     * (which kept the source device) needs it; a store restored now is a
+     * new device whose first publication [`Self::enable`] re-offers.
      */
     func backupRederiveRepublish() throws  -> String
     
@@ -666,7 +669,11 @@ public protocol E2eeEngineProtocol: AnyObject, Sendable {
     /**
      * Take the stashed post-restore republish payload: JSON
      * `PUT /e2ee/keys` body, or the string `null` when there is none.
-     * Swift-internal; must never be routed from the webview (G8b).
+     * Kept for the legacy path and its bridge shape: no restore stashes
+     * one since multi-device plan D1, so after a restore by this build it
+     * answers `null` (the new device's first publication comes from
+     * [`Self::enable`]). Swift-internal; must never be routed from the
+     * webview (G8b).
      */
     func backupTakePendingRepublish() throws  -> String
     
@@ -893,7 +900,10 @@ public protocol E2eeEngineProtocol: AnyObject, Sendable {
     
     /**
      * Generate identity + initial key batch. Returns the JSON
-     * `PUT /e2ee/keys` body (public material only).
+     * `PUT /e2ee/keys` body (public material only). On an enabled but
+     * unpublished account (a restored install, which is a NEW device:
+     * multi-device plan D1/D3) it re-offers that device's first
+     * publication instead of minting another.
      */
     func enable() throws  -> String
     
@@ -1070,8 +1080,14 @@ public protocol E2eeEngineProtocol: AnyObject, Sendable {
     
     /**
      * Restore from the stashed blobs with the CODE the user typed into the
-     * native sheet; returns the JSON `RestoreReport`. The republish
-     * payload is stashed for [`Self::backup_take_pending_republish`].
+     * native sheet; returns the JSON `RestoreReport`. The restored install
+     * is a NEW, unpublished device (multi-device plan D1):
+     * `new_device_id` is this install, `device_id` the SOURCE device,
+     * which keeps working. Nothing is stashed for
+     * [`Self::backup_take_pending_republish`] (it answers `null`); the
+     * webview publishes the new device with the payload [`Self::enable`]
+     * re-offers, behind its own MFA prompt (plan D3). No backup is set up
+     * for the new device: recovery codes are per device.
      * Argon2id: call off the main thread. Swift-internal; must never be
      * routed from the webview (G8b).
      */
@@ -1124,6 +1140,45 @@ public protocol E2eeEngineProtocol: AnyObject, Sendable {
      * Signature (base64) over the bonfire device-claim challenge.
      */
     func signClaim(sessionId: String, nonce: String) throws  -> String
+    
+    /**
+     * "Make this a separate device", step 1 of 3 (multi-device plan D5):
+     * stage a fresh device account IN MEMORY and return its JSON
+     * `PUT /e2ee/keys` first-publication body, carrying `split_from` (this
+     * install's current device id) and `split_proof` (signed by the
+     * current device). Writes nothing to the store; the install stays the
+     * old device until [`Self::split_commit`]. BLOCKS on a native dialog
+     * (core's `Split` confirm, core wording), so like every method in this
+     * block it runs on its own dedicated Swift `Thread`, never the main
+     * thread. Cancel is `declined` and stages nothing (an earlier stage
+     * stays held). A second begin replaces the held stage. `session_id` is
+     * this login session's id, bound into the proof.
+     *
+     * The webview may request it (`e2ee_split_begin`, like `e2ee_wipe`)
+     * and then drives the rest: begin → publish the body under its MFA
+     * ticket → [`Self::split_commit`]; on a dismissed MFA prompt or a
+     * publish error, [`Self::split_discard`].
+     */
+    func splitBegin(sessionId: String) throws  -> String
+    
+    /**
+     * "Make this a separate device", step 3 of 3 (multi-device plan D5),
+     * after the server accepted the publication [`Self::split_begin`]
+     * returned: make the staged account this install's, in one store
+     * transaction. On any error the install is still the old device and
+     * the stage is kept, so a retry commits the same (already published)
+     * device. No stage held is `invalid_argument{split}`. No dialog: the
+     * consent was the begin's.
+     */
+    func splitCommit() throws 
+    
+    /**
+     * Drop a staged split without committing it (D5): the webview calls it
+     * when the MFA prompt for the publication is dismissed or the
+     * publication fails. The install stays the old device; the stage never
+     * touched the store. Idempotent, no dialog.
+     */
+    func splitDiscard() throws 
     
     /**
      * JSON `Status` (public snapshot only). Never provisions: an
@@ -1419,7 +1474,10 @@ open func backupMarkUploaded(generation: Int64)throws   {try rustCallWithError(F
     
     /**
      * Re-derive a fresh post-restore first-publish payload on demand.
-     * JSON `PUT /e2ee/keys` body, public key material only.
+     * JSON `PUT /e2ee/keys` body, public key material only. The legacy
+     * path: only a store restored by a build before multi-device plan D1
+     * (which kept the source device) needs it; a store restored now is a
+     * new device whose first publication [`Self::enable`] re-offers.
      */
 open func backupRederiveRepublish()throws  -> String  {
     return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeE2eeError_lift) {
@@ -1458,7 +1516,11 @@ open func backupStatus()throws  -> String  {
     /**
      * Take the stashed post-restore republish payload: JSON
      * `PUT /e2ee/keys` body, or the string `null` when there is none.
-     * Swift-internal; must never be routed from the webview (G8b).
+     * Kept for the legacy path and its bridge shape: no restore stashes
+     * one since multi-device plan D1, so after a restore by this build it
+     * answers `null` (the new device's first publication comes from
+     * [`Self::enable`]). Swift-internal; must never be routed from the
+     * webview (G8b).
      */
 open func backupTakePendingRepublish()throws  -> String  {
     return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeE2eeError_lift) {
@@ -1855,7 +1917,10 @@ open func downgradedConversations()throws  -> String  {
     
     /**
      * Generate identity + initial key batch. Returns the JSON
-     * `PUT /e2ee/keys` body (public material only).
+     * `PUT /e2ee/keys` body (public material only). On an enabled but
+     * unpublished account (a restored install, which is a NEW device:
+     * multi-device plan D1/D3) it re-offers that device's first
+     * publication instead of minting another.
      */
 open func enable()throws  -> String  {
     return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeE2eeError_lift) {
@@ -2192,8 +2257,14 @@ open func recoveryOpen(mode: String, userId: String, blobsJson: String?)throws  
     
     /**
      * Restore from the stashed blobs with the CODE the user typed into the
-     * native sheet; returns the JSON `RestoreReport`. The republish
-     * payload is stashed for [`Self::backup_take_pending_republish`].
+     * native sheet; returns the JSON `RestoreReport`. The restored install
+     * is a NEW, unpublished device (multi-device plan D1):
+     * `new_device_id` is this install, `device_id` the SOURCE device,
+     * which keeps working. Nothing is stashed for
+     * [`Self::backup_take_pending_republish`] (it answers `null`); the
+     * webview publishes the new device with the payload [`Self::enable`]
+     * re-offers, behind its own MFA prompt (plan D3). No backup is set up
+     * for the new device: recovery codes are per device.
      * Argon2id: call off the main thread. Swift-internal; must never be
      * routed from the webview (G8b).
      */
@@ -2304,6 +2375,59 @@ open func signClaim(sessionId: String, nonce: String)throws  -> String  {
         FfiConverterString.lower(nonce),$0
     )
 })
+}
+    
+    /**
+     * "Make this a separate device", step 1 of 3 (multi-device plan D5):
+     * stage a fresh device account IN MEMORY and return its JSON
+     * `PUT /e2ee/keys` first-publication body, carrying `split_from` (this
+     * install's current device id) and `split_proof` (signed by the
+     * current device). Writes nothing to the store; the install stays the
+     * old device until [`Self::split_commit`]. BLOCKS on a native dialog
+     * (core's `Split` confirm, core wording), so like every method in this
+     * block it runs on its own dedicated Swift `Thread`, never the main
+     * thread. Cancel is `declined` and stages nothing (an earlier stage
+     * stays held). A second begin replaces the held stage. `session_id` is
+     * this login session's id, bound into the proof.
+     *
+     * The webview may request it (`e2ee_split_begin`, like `e2ee_wipe`)
+     * and then drives the rest: begin → publish the body under its MFA
+     * ticket → [`Self::split_commit`]; on a dismissed MFA prompt or a
+     * publish error, [`Self::split_discard`].
+     */
+open func splitBegin(sessionId: String)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeE2eeError_lift) {
+    uniffi_acutest_e2ee_ios_fn_method_e2eeengine_split_begin(self.uniffiClonePointer(),
+        FfiConverterString.lower(sessionId),$0
+    )
+})
+}
+    
+    /**
+     * "Make this a separate device", step 3 of 3 (multi-device plan D5),
+     * after the server accepted the publication [`Self::split_begin`]
+     * returned: make the staged account this install's, in one store
+     * transaction. On any error the install is still the old device and
+     * the stage is kept, so a retry commits the same (already published)
+     * device. No stage held is `invalid_argument{split}`. No dialog: the
+     * consent was the begin's.
+     */
+open func splitCommit()throws   {try rustCallWithError(FfiConverterTypeE2eeError_lift) {
+    uniffi_acutest_e2ee_ios_fn_method_e2eeengine_split_commit(self.uniffiClonePointer(),$0
+    )
+}
+}
+    
+    /**
+     * Drop a staged split without committing it (D5): the webview calls it
+     * when the MFA prompt for the publication is dismissed or the
+     * publication fails. The install stays the old device; the stage never
+     * touched the store. Idempotent, no dialog.
+     */
+open func splitDiscard()throws   {try rustCallWithError(FfiConverterTypeE2eeError_lift) {
+    uniffi_acutest_e2ee_ios_fn_method_e2eeengine_split_discard(self.uniffiClonePointer(),$0
+    )
+}
 }
     
     /**
@@ -3565,7 +3689,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_backup_mark_uploaded() != 32366) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_backup_rederive_republish() != 18532) {
+    if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_backup_rederive_republish() != 24714) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_backup_refresh_if_due() != 62674) {
@@ -3574,7 +3698,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_backup_status() != 59099) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_backup_take_pending_republish() != 24835) {
+    if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_backup_take_pending_republish() != 13020) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_backup_take_pending_upload() != 34219) {
@@ -3655,7 +3779,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_downgraded_conversations() != 63742) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_enable() != 45995) {
+    if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_enable() != 35441) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_enable_group() != 57554) {
@@ -3727,7 +3851,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_recovery_open() != 5463) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_recovery_restore() != 9777) {
+    if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_recovery_restore() != 65397) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_recovery_rotate() != 63276) {
@@ -3752,6 +3876,15 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_sign_claim() != 26929) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_split_begin() != 41918) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_split_commit() != 60990) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_split_discard() != 11791) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_acutest_e2ee_ios_checksum_method_e2eeengine_status() != 8469) {

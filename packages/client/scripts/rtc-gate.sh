@@ -114,6 +114,13 @@ EXPECTED=(
   "components/rtc/mlsCallSession.falsered.test.ts 11 0"
   "components/rtc/mlsCallSession.fleet.test.ts 31 0"
   "components/rtc/mlsCallSession.groupscope.test.ts 19 0"
+  # Out of alphabetical order on purpose: its sorted slot sits between the
+  # `resume` row (the most often bumped) and the `serveguard` row another
+  # branch inserts after. A refused roster leaf: removed, re-pinned, or this
+  # device's own removal ending the call, and the bounds at which a leaf
+  # that can be neither pinned nor removed replaces the group. First
+  # measured at 10; 12 with those two bounds.
+  "components/rtc/mlsCallSession.revokedleaf.test.ts 12 0"
   "components/rtc/mlsCallSession.heal.test.ts 7 0"
   "components/rtc/mlsCallSession.joinrace.test.ts 37 0"
   "components/rtc/mlsCallSession.leggrace.test.ts 25 0"
@@ -121,6 +128,7 @@ EXPECTED=(
   "components/rtc/mlsCallSession.resecure.test.ts 23 0"
   "components/rtc/mlsCallSession.resume.test.ts 75 0"
   "components/rtc/mlsCallSession.serveguard.test.ts 7 0"
+  "components/rtc/mlsCallSession.sibling.test.ts 5 0"
   "components/rtc/mlsCallSession.timeline.test.ts 4 0"
   # iOS call E2EE phase 2 (wave J + wave 3): the welcome window's drop
   # count, the iOS confirm with no in-app plaintext fallback (R14), the
@@ -139,6 +147,9 @@ EXPECTED=(
   "components/rtc/mlsDrainPolicy.test.ts 16 0"
   "components/rtc/mlsJoinRequestPolicy.test.ts 4 0"
   "components/rtc/mlsJoinTimeline.test.ts 10 0"
+  # Which refused roster leaves a session may remove or re-pin. First
+  # measured at 26.
+  "components/rtc/mlsLeafRejectionPolicy.test.ts 26 0"
   "components/rtc/mlsNegotiatingFailsafe.test.ts 13 0"
   "components/rtc/mlsRejoinPolicy.test.ts 54 0"
   "components/rtc/mlsSessionSetupPolicy.test.ts 19 0"
@@ -168,6 +179,9 @@ EXPECTED=(
   "components/client/mlsInboundBuffer.test.ts 17 0"
   "components/client/mlsEnvelopeClassify.test.ts 13 0"
   "components/client/mlsResumeKeep.test.ts 64 0"
+  # Whose device a device deletion removed, as far as a call is concerned
+  # (own / peer / ignore). First measured at 13.
+  "components/client/deviceDeleteClassifier.test.ts 13 0"
   # Voice changer: the pitch range helpers and the worklet DSP, including the
   # level floors that catch an unaligned (warbling) splice.
   "components/rtc/voicePitch.test.ts 26 0"
@@ -435,6 +449,11 @@ SPECS=(components/rtc/mls*.test.ts components/rtc/rosterReconcile.test.ts
   # may ever claim it; without this literal its spec runs nowhere and its
   # EXPECTED row trips "never ran".
   components/client/mlsResumeKeep.test.ts
+  # 🔴 Same reason, and the same directory. The device-deletion classifier
+  # decides whether a deletion event ends THIS device's call, removes a
+  # peer's leaf, or is ignored; without this literal its spec runs nowhere
+  # and its EXPECTED row trips "never ran".
+  components/client/deviceDeleteClassifier.test.ts
   # Call-view suggestions. The watch policy decides which remote shares we
   # subscribe to (a share nobody chose to watch must never be pulled); the
   # voice-move policy decides whether a move token is usable here, how a
@@ -591,6 +610,16 @@ FILES=(components/rtc/mlsCallSession.ts components/rtc/mlsCallModePolicy.ts
   # at base c219c107), and eslint exits 0 on it with ONE pre-existing warning
   # (see the eslint step below).
   components/client/e2ee.ts
+  # The refused-leaf work's new modules and specs. Enrolled because each is
+  # clean: `prettier --check` and `eslint --max-warnings 0` both exit 0 on
+  # it, one file at a time (measured at base 41039f32 plus that work).
+  # mlsCallSession.ts, its harness and e2ee.ts, which it also edits, were
+  # already enrolled above.
+  components/rtc/mlsLeafRejectionPolicy.ts
+  components/rtc/mlsLeafRejectionPolicy.test.ts
+  components/rtc/mlsCallSession.revokedleaf.test.ts
+  components/client/deviceDeleteClassifier.ts
+  components/client/deviceDeleteClassifier.test.ts
   # Enrolled because it is clean: `prettier --check` and eslint each exit 0
   # on it, with no warnings (measured when the rejoin-resume plan's wave 3
   # added the resume spec).
@@ -936,6 +965,44 @@ check_witness_call_site() {
   return $rc
 }
 run "gate (d) call site in state.tsx" 12 check_witness_call_site
+
+# 🔴 Every native call-state read in the session goes through
+# `#callStateClassified`. Native refuses the WHOLE roster at the first leaf
+# its pins reject, so a read that skips the wrapper sees that refusal and
+# never feeds it to the leaf classifier: the leaf is never removed or
+# re-pinned through that path, and every read of the group keeps failing
+# while every spec that happens to take another path stays green. The
+# wrapper itself holds the ONE direct read, so the live count is exactly 1.
+#
+# Two needles, both required at exactly 1. `bridge.callState(` is the direct
+# call. `.callState` also counts an optional call (`bridge?.callState(`) and
+# a method taken without calling it (`const read = bridge.callState`), and it
+# does not match `this.#callStateClassified` (a `#` follows the dot). Comments
+# and strings are blanked first (`count_live`), so a commented-out read or the
+# `E2EEBridge["callState"]` type does not count.
+#
+# NOT caught, and not claimed: destructuring (`const { callState } =
+# this.#deps.bridge`), a computed key, or the read moved into another module.
+# Nor does a count of 1 prove the remaining read is the wrapper's; tsc does,
+# because every caller names the wrapper.
+check_call_state_reads() {
+  local f=components/rtc/mlsCallSession.ts needle n
+  echo "=============== native callState reads go through the classifier ==============="
+  for needle in 'bridge.callState(' '.callState'; do
+    if ! n=$(count_live "$f" "$needle"); then
+      note_fail "$f: could not count live '$needle' — refusing to report a" \
+        "pass on an unreadable file"
+      continue
+    fi
+    if [ "$n" = 1 ]; then
+      echo "ok:   $f has exactly 1 live '$needle' (the wrapper's)"
+    else
+      note_fail "$f has $n live '$needle', EXPECTED exactly 1 (the read" \
+        "inside #callStateClassified) — route the read through the wrapper"
+    fi
+  done
+}
+check_call_state_reads
 
 # 🔴 The e2ee-worker patch check does NOT live here — see
 # scripts/rtc-build-preflight.sh, and run it before any build or live leg.

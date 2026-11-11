@@ -1197,6 +1197,11 @@ msgstr "Apply"
 msgid "Approve"
 msgstr "Approve"
 
+#: components/modal/modals/E2EEDeviceRemoved.tsx
+#: components/modal/modals/E2EEFinishSetup.tsx
+msgid "Create a recovery code for this device"
+msgstr "Create a recovery code for this device"
+
 #: src/interface/Home.tsx
 msgid "Approve or reject servers asking to be publicly listed."
 msgstr "Approve or reject servers asking to be publicly listed."
@@ -2198,6 +2203,14 @@ msgstr "Confirm action"
 msgid "Confirm identity"
 msgstr "Confirm identity"
 
+#: components/modal/modals/E2EEFinishSetup.tsx
+msgid "Your other devices still work. If one of them is lost or replaced, remove it."
+msgstr "Your other devices still work. If one of them is lost or replaced, remove it."
+
+#: components/modal/modals/E2EEFinishSetup.tsx
+msgid "It is added as a new device, and your contacts will see that you added one."
+msgstr "It is added as a new device, and your contacts will see that you added one."
+
 #: components/ui/components/features/voice/watch/JellyfinConnect.tsx
 #: components/app/interface/settings/user/Connections.tsx
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
@@ -2656,6 +2669,14 @@ msgstr "Create a recovery code"
 #: components/modal/modals/E2EEEnable.tsx
 msgid "Create a recovery code so you can restore your identity and message history if you lose this device. Without one, encrypted history is gone for good if the device is lost. You can also do this later from Settings › Privacy & Safety › Encryption."
 msgstr "Create a recovery code so you can restore your identity and message history if you lose this device. Without one, encrypted history is gone for good if the device is lost. You can also do this later from Settings › Privacy & Safety › Encryption."
+
+#: components/modal/modals/E2EEEnable.tsx
+msgid "You have encryption set up on your account. If you saved a recovery code, restore it here to bring back your message history on this device. It is added as a new device, and your contacts will see that you added one. Your other devices keep working."
+msgstr "You have encryption set up on your account. If you saved a recovery code, restore it here to bring back your message history on this device. It is added as a new device, and your contacts will see that you added one. Your other devices keep working."
+
+#: components/modal/modals/E2EEEnable.tsx
+msgid "Or start fresh to set this up as a new device without your earlier history. That history stays on your other devices."
+msgstr "Or start fresh to set this up as a new device without your earlier history. That history stays on your other devices."
 
 #: components/modal/modals/CreateWebhook.tsx
 msgid "Create a webhook"
@@ -3251,6 +3272,38 @@ msgstr "Discard recording"
 msgid "Disconnect"
 msgstr "Disconnect"
 
+#: components/app/interface/settings/user/Encryption.tsx
+#: components/modal/modals/E2EEDeviceRemoved.tsx
+msgid "This device was removed from your account's encryption. Set it up again as a new device?"
+msgstr "This device was removed from your account's encryption. Set it up again as a new device?"
+
+#: components/app/interface/settings/user/Encryption.tsx
+#: components/modal/modals/E2EEDeviceRemoved.tsx
+#: components/modal/modals/E2EEDeviceRemoved.tsx
+msgid "Set up as a new device"
+msgstr "Set up as a new device"
+
+#: components/app/interface/settings/user/Encryption.tsx
+#: components/modal/modals/E2EEFinishSetup.tsx
+msgid "This device is not registered for encryption yet, so it cannot send or receive encrypted messages. Confirm your identity to finish."
+msgstr "This device is not registered for encryption yet, so it cannot send or receive encrypted messages. Confirm your identity to finish."
+
+#: components/app/interface/settings/user/Encryption.tsx
+#: components/modal/modals/E2EEFinishSetup.tsx
+msgid "Finish setting up encryption on this device"
+msgstr "Finish setting up encryption on this device"
+
+#: components/app/interface/settings/user/Encryption.tsx
+#: components/modal/modals/E2EEDeviceShared.tsx
+msgid "This app shares its encryption identity with another of your apps (it was restored from your recovery code). Messages can go missing on one of them. Make this app a separate device: it keeps its message history, and your contacts will see you added a device."
+msgstr "This app shares its encryption identity with another of your apps (it was restored from your recovery code). Messages can go missing on one of them. Make this app a separate device: it keeps its message history, and your contacts will see you added a device."
+
+#: components/app/interface/settings/user/Encryption.tsx
+#: components/modal/modals/E2EEDeviceShared.tsx
+#: components/modal/modals/E2EEDeviceShared.tsx
+msgid "Make this a separate device"
+msgstr "Make this a separate device"
+
 #: components/app/menus/UserContextMenu.tsx
 msgid "Disconnect from call"
 msgstr "Disconnect from call"
@@ -3694,6 +3747,26 @@ msgstr "Encrypted direct messages"
 #: components/modal/modals/E2EEEnable.tsx
 msgid "Encrypted direct messages are on for this device. Messages you send in an encrypted conversation are stored only on the devices that receive them — not on the server, and not in your web session."
 msgstr "Encrypted direct messages are on for this device. Messages you send in an encrypted conversation are stored only on the devices that receive them — not on the server, and not in your web session."
+
+#: components/modal/modals/E2EEDeviceRemoved.tsx
+msgid "This deletes the encrypted message history stored on this device. You will confirm the deletion, then your identity."
+msgstr "This deletes the encrypted message history stored on this device. You will confirm the deletion, then your identity."
+
+#: components/modal/modals/E2EEDeviceShared.tsx
+msgid "Close the recovery code window first, then try again."
+msgstr "Close the recovery code window first, then try again."
+
+#: components/modal/modals/E2EEDeviceShared.tsx
+msgid "End the call first, then try again."
+msgstr "End the call first, then try again."
+
+#: components/modal/modals/E2EEDeviceShared.tsx
+msgid "This app cannot be made a separate device right now."
+msgstr "This app cannot be made a separate device right now."
+
+#: components/modal/modals/E2EEDeviceShared.tsx
+msgid "This app is now a separate device."
+msgstr "This app is now a separate device."
 
 #: components/app/interface/settings/user/Encryption.tsx
 msgid "Encrypted messaging is on"
@@ -6235,6 +6308,10 @@ msgstr "Not going"
 msgid "Not now"
 msgstr "Not now"
 
+#: components/app/interface/settings/user/Encryption.tsx
+msgid "Your devices"
+msgstr "Your devices"
+
 #: components/modal/modals/ReportContent.tsx
 msgid "Not of minimum age to use the platform"
 msgstr "Not of minimum age to use the platform"
@@ -6499,8 +6576,9 @@ msgid "Or pick a time"
 msgstr "Or pick a time"
 
 #: components/modal/modals/E2EEEnable.tsx
-msgid "Or start fresh to set this up as a new device. You keep sending and receiving encrypted messages, but earlier history that lived only on your old device stays there."
-msgstr "Or start fresh to set this up as a new device. You keep sending and receiving encrypted messages, but earlier history that lived only on your old device stays there."
+#: components/modal/modals/E2EEEnable.tsx
+msgid "Confirm your password twice: once to fetch your backup, once to register this device"
+msgstr "Confirm your password twice: once to fetch your backup, once to register this device"
 
 #: src/interface/channels/text/Composition.tsx
 msgid "Or type /roll 2d6+3 in chat"
@@ -7027,6 +7105,10 @@ msgstr "Supporter"
 #: components/app/interface/settings/UserSettings.tsx
 msgid "Cipher"
 msgstr "Cipher"
+
+#: components/app/interface/settings/UserSettings.tsx
+msgid "Prot"
+msgstr "Prot"
 
 #: components/app/interface/settings/user/profile/UserProfileEditor.tsx
 msgid "Profile Bio"
@@ -8261,6 +8343,127 @@ msgstr "Share Computer Sound"
 msgid "Share Game Activity"
 msgstr "Share Game Activity"
 
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Your Prot wallet couldn't be loaded. Try again in a moment."
+msgstr "Your Prot wallet couldn't be loaded. Try again in a moment."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "{amount} Prot"
+msgstr "{amount} Prot"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "{held} Prot on hold"
+msgstr "{held} Prot on hold"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Prot purchase"
+msgstr "Prot purchase"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Cipher Prot"
+msgstr "Cipher Prot"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Removed after a refund or chargeback"
+msgstr "Removed after a refund or chargeback"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Adjustment by Sloga"
+msgstr "Adjustment by Sloga"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Contribution"
+msgstr "Contribution"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Pledge"
+msgstr "Pledge"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Returned to your wallet"
+msgstr "Returned to your wallet"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Forfeited"
+msgstr "Forfeited"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Other activity"
+msgstr "Other activity"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Includes {bonus} bonus Prot"
+msgstr "Includes {bonus} bonus Prot"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Choose any amount from {min} to {max} Prot."
+msgstr "Choose any amount from {min} to {max} Prot."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Enter a whole number of Prot."
+msgstr "Enter a whole number of Prot."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "The minimum is {min} Prot."
+msgstr "The minimum is {min} Prot."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "The maximum is {max} Prot."
+msgstr "The maximum is {max} Prot."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "A wallet can hold up to {max} Prot."
+msgstr "A wallet can hold up to {max} Prot."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "You can choose a different amount after {expires}, when your open checkout expires."
+msgstr "You can choose a different amount after {expires}, when your open checkout expires."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Get Prot"
+msgstr "Get Prot"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Every US cent buys 1 Prot, and bigger packs include bonus Prot."
+msgstr "Every US cent buys 1 Prot, and bigger packs include bonus Prot."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Pay an exact amount"
+msgstr "Pay an exact amount"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Amount of Prot"
+msgstr "Amount of Prot"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Enter an amount"
+msgstr "Enter an amount"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Prot is the credit you'll use for Protected servers and channels. Your balance and recent activity are below."
+msgstr "Prot is the credit you'll use for Protected servers and channels. Your balance and recent activity are below."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Thank you! Your Prot is in your wallet."
+msgstr "Thank you! Your Prot is in your wallet."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Your balance"
+msgstr "Your balance"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Prot bought in the last 72 hours stays in your wallet, but it can't be spent on Protected servers and channels until the hold ends. This guards against card fraud."
+msgstr "Prot bought in the last 72 hours stays in your wallet, but it can't be spent on Protected servers and channels until the hold ends. This guards against card fraud."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Recent activity"
+msgstr "Recent activity"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "No Prot activity yet."
+msgstr "No Prot activity yet."
+
 #: components/app/interface/settings/user/Referrals.tsx
 msgid "Invite friends to Sloga with your referral code or link. Each friend who sticks around brings you closer to the next reward."
 msgstr "Invite friends to Sloga with your referral code or link. Each friend who sticks around brings you closer to the next reward."
@@ -8598,6 +8801,10 @@ msgstr "Cipher {label}"
 #: components/app/interface/settings/user/CipherSettings.tsx
 msgid "{price} tier"
 msgstr "{price} tier"
+
+#: components/app/interface/settings/user/CipherSettings.tsx
+msgid "{amount} Prot, in your Prot wallet"
+msgstr "{amount} Prot, in your Prot wallet"
 
 #: components/app/interface/settings/user/CipherSettings.tsx
 msgid "{amount} Prot at launch"
@@ -9803,6 +10010,43 @@ msgstr "The encrypted message history stored on THIS device will be permanently 
 msgid "The file \"{0}\" ({fileSize}) exceeds the maximum size limit of {maxSizeFormatted}."
 msgstr "The file \"{0}\" ({fileSize}) exceeds the maximum size limit of {maxSizeFormatted}."
 
+#: components/ui/components/features/messaging/composition/FileCarousel.tsx
+#: src/interface/channels/text/Composition.tsx
+msgid "Attach folder"
+msgstr "Attach folder"
+
+#: components/ui/components/features/messaging/composition/FileCarousel.tsx
+msgid "Cancel zipping"
+msgstr "Cancel zipping"
+
+#: components/ui/components/features/messaging/composition/FileCarousel.tsx
+msgid "Reading folder…"
+msgstr "Reading folder…"
+
+#: components/ui/components/features/messaging/composition/FileCarousel.tsx
+msgid "Zipping folder"
+msgstr "Zipping folder"
+
+#: components/ui/components/features/messaging/composition/FileCarousel.tsx
+msgid "Zipping… {value}%"
+msgstr "Zipping… {value}%"
+
+#: components/ui/components/utils/files/useDroppedItems.ts
+msgid "The folder \"{name}\" couldn't be read, so it wasn't attached."
+msgstr "The folder \"{name}\" couldn't be read, so it wasn't attached."
+
+#: components/ui/components/utils/files/useDroppedItems.ts
+msgid "The folder \"{name}\" is too large to send (over 4 GB or 65,535 files)."
+msgstr "The folder \"{name}\" is too large to send (over 4 GB or 65,535 files)."
+
+#: components/ui/components/utils/files/useDroppedItems.ts
+msgid "The folder \"{name}\" is over the {limit} upload limit, so it wasn't attached."
+msgstr "The folder \"{name}\" is over the {limit} upload limit, so it wasn't attached."
+
+#: components/ui/components/utils/files/useDroppedItems.ts
+msgid "\"{name}\" couldn't be read, so it wasn't attached. If it's a folder, zip it first."
+msgstr "\"{name}\" couldn't be read, so it wasn't attached. If it's a folder, zip it first."
+
 #: components/modal/modals/ForwardMessage.tsx
 msgid "The forward keeps a copy of the message as it is right now — later edits or deletion of the original won't change it. Encrypted conversations can't receive forwards."
 msgstr "The forward keeps a copy of the message as it is right now — later edits or deletion of the original won't change it. Encrypted conversations can't receive forwards."
@@ -10044,6 +10288,51 @@ msgstr "You already have a checkout in progress. Finish it, or pick again after 
 #: components/i18n/errors.ts
 msgid "The payment provider didn't respond. Please try again."
 msgstr "The payment provider didn't respond. Please try again."
+
+#: components/i18n/errors.ts
+msgid "Prot isn't available right now."
+msgstr "Prot isn't available right now."
+
+#: components/i18n/errors.ts
+msgid "Prot isn't on sale right now."
+msgstr "Prot isn't on sale right now."
+
+#: components/i18n/errors.ts
+msgid "That Prot amount isn't available. Pick a pack, or an amount within the limits shown."
+msgstr "That Prot amount isn't available. Pick a pack, or an amount within the limits shown."
+
+#: components/i18n/errors.ts
+msgid "This would take your Prot wallet over its limit of {protCap} Prot."
+msgstr "This would take your Prot wallet over its limit of {protCap} Prot."
+
+#: components/i18n/errors.ts
+msgid "You can't do this with Prot right now. If a payment on your account is disputed, try again once the dispute is resolved."
+msgstr "You can't do this with Prot right now. If a payment on your account is disputed, try again once the dispute is resolved."
+
+#: components/i18n/errors.ts
+msgid "Prot isn't on sale in your country yet."
+msgstr "Prot isn't on sale in your country yet."
+
+#: components/i18n/errors.ts
+msgid "Prot is temporarily unavailable. Please try again later."
+msgstr "Prot is temporarily unavailable. Please try again later."
+
+#: components/i18n/errors.ts
+msgid "This Prot request was already sent with different details. Refresh and try again."
+msgstr "This Prot request was already sent with different details. Refresh and try again."
+
+#: components/i18n/errors.ts
+msgid "You don't have enough Prot for this: it needs {protNeeded} Prot and you have {protAvailable}."
+msgstr "You don't have enough Prot for this: it needs {protNeeded} Prot and you have {protAvailable}."
+
+#: components/i18n/errors.ts
+msgid "This device was removed from your account's encryption."
+msgstr "This device was removed from your account's encryption."
+
+#: components/i18n/errors.ts
+#: components/modal/modals/E2EEDisable.tsx
+msgid "This app shares its encryption identity with another of your apps. Turning encryption off here would turn it off there too. Make this app a separate device instead. Don't recognize the other app? Change your password, then remove it in Settings > Encryption on a device you trust."
+msgstr "This app shares its encryption identity with another of your apps. Turning encryption off here would turn it off there too. Make this app a separate device instead. Don't recognize the other app? Change your password, then remove it in Settings > Encryption on a device you trust."
 
 #: components/i18n/errors.ts
 msgid "This account is not activated! Please check your account's inbox and try again."
@@ -10636,16 +10925,16 @@ msgid "Create a server"
 msgstr "Create a server"
 
 #: src/interface/home/WhatsNewCard.tsx
-msgid "A new Modern style, with a Classic option"
-msgstr "A new Modern style, with a Classic option"
+msgid "Restore encryption on a second device"
+msgstr "Restore encryption on a second device"
 
 #: src/interface/home/WhatsNewCard.tsx
-msgid "A Discord color scheme and new backgrounds"
-msgstr "A Discord color scheme and new backgrounds"
+msgid "Send a whole folder as a .zip"
+msgstr "Send a whole folder as a .zip"
 
 #: src/interface/home/WhatsNewCard.tsx
-msgid "Change your voice's pitch in calls"
-msgstr "Change your voice's pitch in calls"
+msgid "Images open again in chat windows"
+msgstr "Images open again in chat windows"
 
 #: src/interface/home/WhatsNewCard.tsx
 msgid "New in v{HIGHLIGHTS_RELEASE}"
@@ -10814,6 +11103,10 @@ msgstr "Turn length"
 #: components/modal/modals/E2EEDisable.tsx
 msgid "Turn off"
 msgstr "Turn off"
+
+#: components/modal/modals/E2EEDisable.tsx
+msgid "This app was sharing encryption with another of your apps, which keeps working. Set this app up again as a new device."
+msgstr "This app was sharing encryption with another of your apps, which keeps working. Set this app up again as a new device."
 
 #: components/app/interface/settings/channel/Overview.tsx
 msgid "Turn off calls"
@@ -11228,6 +11521,19 @@ msgstr "Your {sourceLabel} import failed."
 #: components/client/DiscordImportWorker.tsx
 msgid "Your {sourceLabel} import finished."
 msgstr "Your {sourceLabel} import finished."
+
+#: components/client/E2EEDeviceToastWorker.tsx
+msgid "Your other app became a separate device."
+msgstr "Your other app became a separate device."
+
+#: components/client/E2EEDeviceToastWorker.tsx
+#: components/client/E2EEDeviceToastWorker.tsx
+msgid "Encryption was set up on another of your devices. Not you? Remove it in Settings > Encryption, change your password, then log out other sessions."
+msgstr "Encryption was set up on another of your devices. Not you? Remove it in Settings > Encryption, change your password, then log out other sessions."
+
+#: components/client/E2EEDeviceToastWorker.tsx
+msgid "Encryption was set up on another of your devices ({sessionName}). Not you? Remove it in Settings > Encryption, change your password, then log out other sessions."
+msgstr "Encryption was set up on another of your devices ({sessionName}). Not you? Remove it in Settings > Encryption, change your password, then log out other sessions."
 
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "View Channel"
@@ -11698,13 +12004,13 @@ msgstr "You don't have permission to send messages in this channel."
 msgid "You have a recovery code. Anyone with this code and access to your account can read your message history — Sloga cannot recover it for you. Choose \"Change recovery code\" to replace it."
 msgstr "You have a recovery code. Anyone with this code and access to your account can read your message history — Sloga cannot recover it for you. Choose \"Change recovery code\" to replace it."
 
+#: components/app/interface/settings/user/Encryption.tsx
+msgid "This changes the recovery code for this device's backup only."
+msgstr "This changes the recovery code for this device's backup only."
+
 #: components/i18n/errors.ts
 msgid "You have been locked out for entering a wrong password multiple times. Please wait a couple minutes and try again."
 msgstr "You have been locked out for entering a wrong password multiple times. Please wait a couple minutes and try again."
-
-#: components/modal/modals/E2EEEnable.tsx
-msgid "You have encryption set up on your account. If you saved a recovery code, restore it here to bring back your identity and message history on this device — your contacts will not see a security warning."
-msgstr "You have encryption set up on your account. If you saved a recovery code, restore it here to bring back your identity and message history on this device — your contacts will not see a security warning."
 
 #: components/i18n/errors.ts
 msgid "You have this user blocked."
@@ -11865,6 +12171,42 @@ msgstr "your contact"
 #: components/modal/modals/E2EEReenroll.tsx
 msgid "Your contacts will see this device come back — with no security warning, because its keys are unchanged."
 msgstr "Your contacts will see this device come back — with no security warning, because its keys are unchanged."
+
+#: components/modal/modals/E2EERemoveDevice.tsx
+msgid "Created {createdAgo}"
+msgstr "Created {createdAgo}"
+
+#: components/modal/modals/E2EERemoveDevice.tsx
+msgid "Last seen {seenAgo}"
+msgstr "Last seen {seenAgo}"
+
+#: components/modal/modals/E2EERemoveDevice.tsx
+msgid "never seen"
+msgstr "never seen"
+
+#: components/modal/modals/E2EERemoveDevice.tsx
+msgid "This device"
+msgstr "This device"
+
+#: components/modal/modals/E2EERemoveDevice.tsx
+msgid "Remove device"
+msgstr "Remove device"
+
+#: components/modal/modals/E2EERemoveDevice.tsx
+msgid "The device was removed, but its backup was not deleted."
+msgstr "The device was removed, but its backup was not deleted."
+
+#: components/modal/modals/E2EERemoveDevice.tsx
+msgid "It stops receiving your encrypted messages. If it is still running, it has to be set up again as a new device."
+msgstr "It stops receiving your encrypted messages. If it is still running, it has to be set up again as a new device."
+
+#: components/modal/modals/E2EERemoveDevice.tsx
+msgid "Its backup can still restore its message history unless you delete it too. You confirm your identity once to remove the device, and once more to delete its backup."
+msgstr "Its backup can still restore its message history unless you delete it too. You confirm your identity once to remove the device, and once more to delete its backup."
+
+#: components/modal/modals/E2EERemoveDevice.tsx
+msgid "Also delete this device's backup"
+msgstr "Also delete this device's backup"
 
 #: components/client/DiscordImportWorker.tsx
 #: components/client/DiscordImportWorker.tsx

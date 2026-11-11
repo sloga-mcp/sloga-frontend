@@ -125,8 +125,9 @@ describe("the real tree", () => {
     assert.equal(result.status, 0, result.stdout + result.stderr);
     assert.match(
       result.stdout,
-      // Phase 2 C-W2-8: the call route and the 100-name split.
-      /^ok: table generic 37, native 2, call 22, dedicated 7, out 32;/,
+      // Phase 2 C-W2-8: the call route and the 100-name split; multi-device
+      // (split_begin/commit/discard) makes it 103.
+      /^ok: table generic 39, native 2, call 22, dedicated 8, out 32;/,
     );
   });
 
@@ -169,8 +170,8 @@ describe("G6 command table", () => {
   test("a changed count pin", () => {
     expectViolation("G6-count", [
       COMMANDS,
-      "static let genericCount = 37",
-      "static let genericCount = 38",
+      "static let genericCount = 39",
+      "static let genericCount = 40",
     ]);
   });
 
@@ -859,6 +860,8 @@ const W_GENERIC = [
   "e2ee_mark_published",
   "e2ee_replenish",
   "e2ee_sign_claim",
+  "e2ee_split_commit",
+  "e2ee_split_discard",
   "e2ee_encrypt",
   "e2ee_decrypt",
   "e2ee_history",
@@ -923,6 +926,7 @@ const W_DEDICATED = {
   e2ee_mark_verified: "markVerified",
   e2ee_accept_identity_change: "acceptIdentityChange",
   e2ee_call_confirm_downgrade: "callConfirmDowngrade",
+  e2ee_split_begin: "splitBegin",
 };
 const W_DEDICATED_METHODS = [
   "wipe",
@@ -933,6 +937,7 @@ const W_DEDICATED_METHODS = [
   "markVerified",
   "acceptIdentityChange",
   "callConfirmDowngrade",
+  "splitBegin",
   "backupCreate",
   "backupRotate",
   "backupRestore",
@@ -982,6 +987,7 @@ const W_GATED = {
   mark_verified: "markVerified",
   accept_identity_change: "acceptIdentityChange",
   call_confirm_downgrade: "callConfirmDowngrade",
+  split_begin: "splitBegin",
 };
 const W_NATIVE_ONLY = [
   "recovery_open",
@@ -1029,10 +1035,10 @@ const W_COMMANDS_SWIFT = [
   ...W_DEDICATED_METHODS.map((m) => `        "${m}",`),
   "    ]",
   "",
-  "    static let genericCount = 37",
+  "    static let genericCount = 39",
   "    static let nativeCount = 2",
   "    static let callCount = 22",
-  "    static let dedicatedCount = 7",
+  "    static let dedicatedCount = 8",
   "    static let outCount = 32",
   "",
   "    static func route(for name: String) -> E2eeRoute {",
@@ -1681,13 +1687,13 @@ describe("phase 2: the command table (C-W2-3)", () => {
     worldExpect(
       "G6-dedicated-order",
       [
-        "acceptIdentityChange, backupCreate, callConfirmDowngrade, backupRotate",
-        "the contract order is [wipe, downgrade, confirmPeerDowngradeAccept, enableGroup, addGroupMember, markVerified, acceptIdentityChange, callConfirmDowngrade, backupCreate,",
+        "acceptIdentityChange, splitBegin, backupCreate, callConfirmDowngrade, backupRotate",
+        "the contract order is [wipe, downgrade, confirmPeerDowngradeAccept, enableGroup, addGroupMember, markVerified, acceptIdentityChange, callConfirmDowngrade, splitBegin, backupCreate,",
       ],
       [
         COMMANDS,
-        '        "callConfirmDowngrade",\n        "backupCreate",\n',
-        '        "backupCreate",\n        "callConfirmDowngrade",\n',
+        '        "callConfirmDowngrade",\n        "splitBegin",\n        "backupCreate",\n',
+        '        "splitBegin",\n        "backupCreate",\n        "callConfirmDowngrade",\n',
       ],
     );
   });

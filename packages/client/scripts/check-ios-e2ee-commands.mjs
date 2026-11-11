@@ -31,15 +31,19 @@
  *                      `.native`, `.call`, `.out` or `.dedicated("m")`, one
  *                      per line; `dedicatedMethods` is one `"m",` per line
  *   G6-table-duplicate a name listed twice (any route)
- *   G6-count           generic 37 / native 2 / call 22 / dedicated 7 / out 32,
+ *   G6-count           generic 39 / native 2 / call 22 / dedicated 8 / out 32,
  *                      each equal to its static <route>Count (all five must
- *                      exist)
+ *                      exist); so outCount also equals the number of `.out`
+ *                      lines
  *   G6-table-route     the generic, native, call and dedicated sets are
  *                      exactly the contract's (names and dedicated method per
  *                      name; phase 2 adds the 22 call-plane names and
- *                      e2ee_call_confirm_downgrade → callConfirmDowngrade)
- *   G6-dedicated-order `dedicatedMethods` is the 13 methods in contract order
- *                      (callConfirmDowngrade right after acceptIdentityChange)
+ *                      e2ee_call_confirm_downgrade → callConfirmDowngrade;
+ *                      multi-device adds e2ee_split_commit/e2ee_split_discard
+ *                      generic and e2ee_split_begin → splitBegin)
+ *   G6-dedicated-order `dedicatedMethods` is the 14 methods in contract order
+ *                      (callConfirmDowngrade right after acceptIdentityChange,
+ *                      then splitBegin)
  *   G6-dedicated-method each dedicated method is an
  *                      `@objc func m(_ call: CAPPluginCall)`; no other @objc
  *                      CAPPluginCall method but `call`; pluginMethods is
@@ -78,9 +82,9 @@
  *   G7-gated-case      no dedicated (confirm-gated) name is a case label
  *                      anywhere in E2eePlugin.swift
  *   G7-gated-call      wipe/downgrade/enableGroup/addGroupMember/markVerified/
- *                      acceptIdentityChange/callConfirmDowngrade on an engine
- *                      value only inside
- *                      their own dedicated @objc method, inside an
+ *                      acceptIdentityChange/callConfirmDowngrade/splitBegin on
+ *                      an engine value only inside their own dedicated @objc
+ *                      method, inside an
  *                      onDedicatedThread/runOnDedicatedThread closure;
  *                      confirmPeerDowngrade likewise in
  *                      confirmPeerDowngradeAccept, or in the generic arm when
@@ -356,6 +360,8 @@ const GENERIC = [
   "e2ee_mark_published",
   "e2ee_replenish",
   "e2ee_sign_claim",
+  "e2ee_split_commit",
+  "e2ee_split_discard",
   "e2ee_encrypt",
   "e2ee_decrypt",
   "e2ee_history",
@@ -426,6 +432,7 @@ const DEDICATED = {
   e2ee_mark_verified: "markVerified",
   e2ee_accept_identity_change: "acceptIdentityChange",
   e2ee_call_confirm_downgrade: "callConfirmDowngrade",
+  e2ee_split_begin: "splitBegin",
 };
 /** The plugin's dedicated methods, in contract order (`call` excluded). */
 const DEDICATED_METHODS = [
@@ -437,13 +444,14 @@ const DEDICATED_METHODS = [
   "markVerified",
   "acceptIdentityChange",
   "callConfirmDowngrade",
+  "splitBegin",
   "backupCreate",
   "backupRotate",
   "backupRestore",
   "attachmentUpload",
   "attachmentFetch",
 ];
-const COUNTS = { generic: 37, native: 2, call: 22, dedicated: 7, out: 32 };
+const COUNTS = { generic: 39, native: 2, call: 22, dedicated: 8, out: 32 };
 /** Every route of the table, in the order the counts are reported. */
 const ROUTES = ["generic", "native", "call", "dedicated", "out"];
 
@@ -465,6 +473,7 @@ const GATED = {
   addGroupMember: "addGroupMember",
   markVerified: "markVerified",
   acceptIdentityChange: "acceptIdentityChange",
+  splitBegin: "splitBegin",
   confirmPeerDowngrade: "confirmPeerDowngradeAccept",
   callConfirmDowngrade: "callConfirmDowngrade",
 };

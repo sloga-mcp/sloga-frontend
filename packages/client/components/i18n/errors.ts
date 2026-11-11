@@ -1,9 +1,29 @@
 import { useLingui } from "@lingui-solid/solid/macro";
+import { i18n } from "@lingui/core";
 import { API } from "stoat.js";
 
 import { databaseErrorDetail, untranslatedErrorText } from "./errorDetail";
 
 const RE_BREAK = /\s*\n\s*/g;
+
+/**
+ * An amount from an error body as grouped digits in the app locale
+ * ("100,000"), as the Prot page shows amounts. Anything not a finite number
+ * reads 0.
+ */
+function formatAmount(value: unknown): string {
+  const amount =
+    typeof value === "number" && Number.isFinite(value) ? value : 0;
+  try {
+    return new Intl.NumberFormat((i18n.locale || "en").replace(/_/g, "-"), {
+      maximumFractionDigits: 0,
+    }).format(amount);
+  } catch {
+    return new Intl.NumberFormat("en", { maximumFractionDigits: 0 }).format(
+      amount,
+    );
+  }
+}
 
 /**
  * Translate any error
@@ -148,6 +168,43 @@ export function useError() {
         if (feature === "e2ee")
           return t`Encrypted messaging is unavailable right now.`;
       }
+      // Prot (same lag pattern). Amounts are grouped in the app locale.
+      if (errType === "ProtDisabled") return t`Prot isn't available right now.`;
+      if (errType === "ProtSalesClosed")
+        return t`Prot isn't on sale right now.`;
+      if (errType === "ProtPackInvalid")
+        return t`That Prot amount isn't available. Pick a pack, or an amount within the limits shown.`;
+      if (errType === "ProtWalletCap") {
+        const protCap = formatAmount(errMax);
+        return t`This would take your Prot wallet over its limit of ${protCap} Prot.`;
+      }
+      // For example a checkout while a payment of the account is disputed
+      if (errType === "ProtNotEligible")
+        return t`You can't do this with Prot right now. If a payment on your account is disputed, try again once the dispute is resolved.`;
+      if (errType === "ProtRegionUnavailable")
+        return t`Prot isn't on sale in your country yet.`;
+      // The server's database is misconfigured (no replica set)
+      if (errType === "ProtReplicaSetRequired")
+        return t`Prot is temporarily unavailable. Please try again later.`;
+      if (errType === "ProtIdempotencyConflict")
+        return t`This Prot request was already sent with different details. Refresh and try again.`;
+      if (errType === "InsufficientProt") {
+        const protNeeded = formatAmount((err as { needed?: unknown }).needed);
+        const protAvailable = formatAmount(
+          (err as { available?: unknown }).available,
+        );
+        return t`You don't have enough Prot for this: it needs ${protNeeded} Prot and you have ${protAvailable}.`;
+      }
+      // A first publication of a device id removed from the account's
+      // encryption (same lag pattern). The bridge also raises `deviceRemoved`,
+      // whose modal offers to set this install up again as a new device.
+      if (errType === "E2EEDeviceRemoved")
+        return t`This device was removed from your account's encryption.`;
+      // The server refused to remove a device another live install of this
+      // account is using (same lag pattern). `disable()` normally catches
+      // this before it wipes anything and offers the split instead.
+      if (errType === "E2EEDeviceHeldElsewhere")
+        return t`This app shares its encryption identity with another of your apps. Turning encryption off here would turn it off there too. Make this app a separate device instead. Don't recognize the other app? Change your password, then remove it in Settings > Encryption on a device you trust.`;
 
       switch (err.type) {
         case "AlreadyFriends":

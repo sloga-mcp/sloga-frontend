@@ -1,6 +1,6 @@
-desktop_sha: c1d70cf693d9799f1f16ba5fbb7a31259aaa567a
-desktop_branch: feat/ios-e2ee
-built_utc: 2026-11-02T05:29:33Z
+desktop_sha: 38426086eff668f4e4155ec79f0fa78085a19c09
+desktop_branch: HEAD
+built_utc: 2026-11-11T18:29:37Z
 rustc: rustc 1.98.1 (48a229cea 2026-09-01)
 rustc_host: aarch64-apple-darwin
 cargo: cargo 1.98.1 (797e8a9bc 2026-08-05)
@@ -9,15 +9,15 @@ xcode: Xcode 26.6 / Build version 17F113
 iphoneos_deployment_target: 15.0
 lto: fat (cargo rustc --crate-type staticlib)
 slice.aarch64-apple-ios.path: AcutestE2ee.xcframework/ios-arm64/libacutest_e2ee_ios.a
-slice.aarch64-apple-ios.sha256: 3f97773d014a09a3697cbff6b5170d8f297397fc188b31184acc62e708fd25c0
-slice.aarch64-apple-ios.bytes: 8428752
+slice.aarch64-apple-ios.sha256: 97af7a09ff06f6899f2fcb3388064b8c114039f646440f055f15a5c34421bc8b
+slice.aarch64-apple-ios.bytes: 8479128
 slice.aarch64-apple-ios-sim.path: AcutestE2ee.xcframework/ios-arm64-simulator/libacutest_e2ee_ios.a
-slice.aarch64-apple-ios-sim.sha256: fac9f8f71c0478ab0963f3017f365b69b84479637b48bd26fe653340305f381e
-slice.aarch64-apple-ios-sim.bytes: 8453112
-bindings.swift.sha256: 330972a5454cde26f3dbc307e8dc34b0f7a4eedee29dcc0d942678fffa042f4a
-bindings.header.sha256: 0c0185ccf377eab7c4fba67437a55584c805388a6012ac1d0cec0ea732fd3e8f
+slice.aarch64-apple-ios-sim.sha256: 9bdcc78061e9251eef5320505a6d26b9ff1c29f3e67dbae6c4b04b45955ddbf1
+slice.aarch64-apple-ios-sim.bytes: 8503144
+bindings.swift.sha256: 481db03d4e66906a2281b7a42b2186de11a3bf6bdaf6ab86e52fe08906d0c12b
+bindings.header.sha256: fc79c213dc557f59c6e323e38d52a9ca6045f0f11af7e5b0eba7e51c5686bc1b
 bindings.modulemap.sha256: 235a03a92c3a35b97da1197a87e91dcdfda1fe34a6c1aee8983443254ecdaa85
-xcframework.info_plist.sha256: 3b5f7707b70a89a3db6804c16fae07f59ffe92ba68de13260bb2d1b9f0d41a0e
+xcframework.info_plist.sha256: d2194137377b02a359ab88bb5a4a2c13ffc4a4b79399592abf8e5beff33bdf6e
 regen_rule: bindings and binary are regenerated together from desktop_sha; never hand-edit
 rustc_cfg.acutest_e2ee_ios.aarch64-apple-ios: none
 rustc_cfg.acutest_e2ee_core.aarch64-apple-ios: feature="ios-keychain-protector"

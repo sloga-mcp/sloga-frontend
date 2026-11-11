@@ -131,6 +131,7 @@ import {
 } from "./mlsDrainPolicy";
 import { joinRequestAction } from "./mlsJoinRequestPolicy";
 import { type JoinTimelineSummary, JoinTimeline } from "./mlsJoinTimeline";
+import { classifyLeafRejection } from "./mlsLeafRejectionPolicy";
 import {
   type NegotiatingFailsafeInput,
   negotiatingFailsafeAction,
@@ -373,6 +374,32 @@ const ADMIT_GRACE_MAX_MS = 60_000;
 const GHOST_DIVERGENCE_MS = 30_000;
 /** Periodic reconciliation tick — a safety net over the event-driven path. */
 const RECONCILE_INTERVAL_MS = 5_000;
+/**
+ * Removes of one leaf this device's pins reject (`#onRemovableLeaf`) that may
+ * leave it in the group before the group is replaced instead.
+ */
+const MAX_LEAF_REMOVE_FAILURES = 2;
+/**
+ * Periodic reconcile ticks (`#startReconcile`) an unpinned leaf may stay
+ * unpinned after a listing reconcile for it first succeeded before the group
+ * is replaced instead (`#onRepinLeaf`).
+ */
+const REPIN_PERSIST_TICKS = 2;
+
+/**
+ * An unpinned leaf's repair (`#onRepinLeaf`): whether a listing reconcile for
+ * it is in flight, the `#reconcileTicks` value at which one first SUCCEEDED
+ * (null until one has; the persistence clock starts there), and the value at
+ * which the last one started (at most one per tick).
+ */
+interface LeafRepin {
+  inFlight: boolean;
+  reconciledAtTick: number | null;
+  startedAtTick: number | null;
+}
+/** Why the call ends when this device itself is removed from encryption. */
+const OWN_DEVICE_REVOKED_REASON =
+  "This device was removed from encryption, so it left the call.";
 
 // ---- Resume (join-latency phase 2; resume plan "The resume path") ---------
 
@@ -1876,6 +1903,34 @@ export class MlsCallSession {
   #admitGraceUsed = new Map<string, number>();
   /** Pending 30 s ghost-divergence removals, keyed by identity. */
   #ghostTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /**
+   * Repairs of a leaf a `callState` refusal named (`#callStateClassified`),
+   * each keyed `${groupId}|${user}:${device}`. `#leafRemovals` holds a Remove
+   * that is scheduled or in flight (a slot whose timer is null while the
+   * roster read runs); `#leafRemoveFailures` counts Removes that left the
+   * leaf in place; `#leafRepins` tracks an unpinned leaf's listing
+   * reconcile (`LeafRepin`). The failure and repin records end on a clean
+   * `callState` of the group; all three end with the group
+   * (`#resetGroupBuffers`).
+   */
+  #leafRemovals = new Map<
+    string,
+    { timer: ReturnType<typeof setTimeout> | null }
+  >();
+  #leafRemoveFailures = new Map<string, number>();
+  #leafRepins = new Map<string, LeafRepin>();
+  /**
+   * Periodic reconcile ticks fired so far: the repin persistence clock. Only
+   * the timer in `#startReconcile` advances it, never an event-driven
+   * reconcile. Those arrive in bursts (`participantConnected` per joiner,
+   * `trackPublished` per publication), and counted they would run the clock
+   * out in well under one interval. A wall-clock bound is not used either:
+   * it counts time the page spent suspended, when nothing ran, so the first
+   * refusal after a resume would replace the group with no retry made. Each
+   * tick here is a roster read this device really made, and with it one
+   * more chance to fetch the leaf's listing (`#onRepinLeaf`).
+   */
+  #reconcileTicks = 0;
   /** Last-computed non-enrolled identities (step 6 reads this synchronously). */
   #nonEnrolled: string[] = [];
   /** Periodic reconcile tick (safety net over the event-driven path). */
@@ -2290,7 +2345,7 @@ export class MlsCallSession {
     const groupId = this.#groupId;
     if (!groupId) return false;
     try {
-      const state = await this.#deps.bridge.callState(groupId);
+      const state = await this.#callStateClassified(groupId);
       return state.members.some(
         (m) =>
           m.user_id === this.#deps.userId &&
@@ -3058,7 +3113,7 @@ export class MlsCallSession {
         if ("cause" in tail) return tail;
         confirmed = tail.epoch;
       }
-      const state = await this.#deps.bridge.callState(groupId);
+      const state = await this.#callStateClassified(groupId);
       const selfPresent = state.members.some(
         (m) =>
           m.user_id === this.#deps.userId &&
@@ -3174,7 +3229,7 @@ export class MlsCallSession {
     let from: number;
     let res: Awaited<ReturnType<E2EEBridge["mlsFetchCommits"]>>;
     try {
-      from = (await this.#deps.bridge.callState(groupId)).epoch;
+      from = (await this.#callStateClassified(groupId)).epoch;
       if (stale()) return stopped;
       res = await this.#deps.bridge.mlsFetchCommits(groupId, from + 1);
     } catch (error) {
@@ -3625,7 +3680,7 @@ export class MlsCallSession {
     // depends on the heuristic — DS arbitration is total.
     let leaf: number;
     try {
-      const state = await this.#deps.bridge.callState(this.#groupId);
+      const state = await this.#callStateClassified(this.#groupId);
       leaf = state.members.findIndex(
         (m) =>
           m.user_id === this.#deps.userId &&
@@ -3834,7 +3889,7 @@ export class MlsCallSession {
     let scheduledAtEpoch: number;
     const scheduledGeneration = this.#establishGeneration;
     try {
-      const state = await this.#deps.bridge.callState(this.#groupId);
+      const state = await this.#callStateClassified(this.#groupId);
       if (this.#serveOutlivedRead(request, scheduledGeneration)) return;
       if (
         !state.members.some(
@@ -3982,7 +4037,7 @@ export class MlsCallSession {
     // Re-check under FRESH state at fire time: the lowest leaf usually wins
     // during our stagger delay, making this a clean no-op.
     try {
-      const state = await this.#deps.bridge.callState(this.#groupId);
+      const state = await this.#callStateClassified(this.#groupId);
       if (
         !state.members.some(
           (m) =>
@@ -4102,7 +4157,7 @@ export class MlsCallSession {
     // media-key admission (plan A3; the "call full for E2EE" refusal — its UX
     // is 6.5, this is the refusal itself).
     try {
-      const state = await this.#deps.bridge.callState(this.#groupId);
+      const state = await this.#callStateClassified(this.#groupId);
       if (
         state.members.some(
           (m) =>
@@ -5112,7 +5167,7 @@ export class MlsCallSession {
       // at the DS's current epoch.
       let caughtUp = false;
       try {
-        const state = await this.#deps.bridge.callState(groupId);
+        const state = await this.#callStateClassified(groupId);
         caughtUp =
           state.epoch === currentEpoch &&
           state.members.some(
@@ -5543,6 +5598,17 @@ export class MlsCallSession {
     this.#healAdds.clear();
     this.#rejoinServed.clear(); // so are served-rejoin observations
     this.#lastRosterIdentities.clear();
+    // Refused-leaf repairs are group-scoped too: a scheduled Remove dies with
+    // its group, and the counters start over on the next one.
+    for (const slot of this.#leafRemovals.values()) {
+      if (slot.timer) {
+        clearTimeout(slot.timer);
+        this.#timers.delete(slot.timer);
+      }
+    }
+    this.#leafRemovals.clear();
+    this.#leafRemoveFailures.clear();
+    this.#leafRepins.clear();
     if (this.#admitRetryTimer) {
       clearTimeout(this.#admitRetryTimer);
       this.#timers.delete(this.#admitRetryTimer);
@@ -5575,6 +5641,16 @@ export class MlsCallSession {
     if (this.#terminal()) return;
     if (event.kind === "join_request") {
       void this.#onJoinRequest(event.request, event.rejoin);
+      return;
+    }
+    if (event.kind === "device_revoked") {
+      if (event.own) {
+        this.#onOwnDeviceRevoked();
+      } else if (this.#groupId) {
+        // Confirmed against the roster, and against our own native verdict
+        // at fire time, by the removal path itself.
+        this.#onRemovableLeaf(this.#groupId, event.userId, event.deviceId);
+      }
       return;
     }
     // envelope — only our own device's copy (another device acks its own)
@@ -7195,7 +7271,7 @@ export class MlsCallSession {
     let mlsIdentities: string[];
     let members: MlsRosterMember[];
     try {
-      const state = await this.#deps.bridge.callState(this.#groupId);
+      const state = await this.#callStateClassified(this.#groupId);
       members = state.members;
       mlsIdentities = state.members.map((m) => `${m.user_id}:${m.device_id}`);
     } catch {
@@ -7393,7 +7469,7 @@ export class MlsCallSession {
 
     let member: { user_id: string; device_id: string } | undefined;
     try {
-      const state = await this.#deps.bridge.callState(this.#groupId);
+      const state = await this.#callStateClassified(this.#groupId);
       member = state.members.find(
         (m) => `${m.user_id}:${m.device_id}` === identity,
       );
@@ -7417,6 +7493,277 @@ export class MlsCallSession {
     );
   }
 
+  // ---- Refused leaves (a removed device's leaf, an unpinned leaf) ----------
+
+  /**
+   * The ONE native call-state read. Native verifies the whole roster on every
+   * read and refuses it at the first leaf our pins reject, so while such a
+   * leaf sits in the group every caller fails the same way. The refusal is
+   * classified first (a removed device's leaf is removed, an unpinned one
+   * re-pinned) and then rethrown unchanged, so each caller keeps its own
+   * control flow. A clean read ends the group's repair records.
+   */
+  async #callStateClassified(
+    groupId: string,
+  ): Promise<Awaited<ReturnType<E2EEBridge["callState"]>>> {
+    let state: Awaited<ReturnType<E2EEBridge["callState"]>>;
+    try {
+      state = await this.#deps.bridge.callState(groupId);
+    } catch (error) {
+      try {
+        const verdict = classifyLeafRejection(error, {
+          userId: this.#deps.userId,
+          deviceId: this.#deps.deviceId,
+        });
+        if (verdict.kind === "removable") {
+          this.#onRemovableLeaf(groupId, verdict.userId, verdict.deviceId);
+        } else if (verdict.kind === "repin") {
+          this.#onRepinLeaf(groupId, verdict.userId, verdict.deviceId);
+        }
+      } catch (dispatchError) {
+        console.error("[mls] refused-leaf repair failed", dispatchError);
+      }
+      throw error;
+    }
+    this.#forgetLeafRepairs(groupId);
+    return state;
+  }
+
+  /** A clean roster read of `groupId`: its failure and repin records end. */
+  #forgetLeafRepairs(groupId: string): void {
+    const prefix = `${groupId}|`;
+    for (const key of [...this.#leafRemoveFailures.keys()]) {
+      if (key.startsWith(prefix)) this.#leafRemoveFailures.delete(key);
+    }
+    for (const key of [...this.#leafRepins.keys()]) {
+      if (key.startsWith(prefix)) this.#leafRepins.delete(key);
+    }
+  }
+
+  /**
+   * Remove a removed device's leaf: one our own pins refuse (`removable`), or
+   * a peer device reported removed (the sink's `device_revoked`). Staged
+   * through `#stageAndSubmit` directly, never `#removeMember`, whose
+   * SFU-presence guard keeps a device that is still connected. Staggered by
+   * OUR index in the roster with the target left out, so the lowest member
+   * stages and the rest find the leaf gone. One per group and leaf at a time.
+   */
+  #onRemovableLeaf(groupId: string, userId: string, deviceId: string): void {
+    if (
+      this.#terminal() ||
+      this.#state !== "active" ||
+      groupId !== this.#groupId
+    ) {
+      return;
+    }
+    const key = `${groupId}|${userId}:${deviceId}`;
+    if (this.#leafRemovals.has(key)) return;
+    // Reserved before the roster read, so a second refusal meanwhile dedups.
+    const slot: { timer: ReturnType<typeof setTimeout> | null } = {
+      timer: null,
+    };
+    this.#leafRemovals.set(key, slot);
+    void this.#scheduleLeafRemoval(groupId, userId, deviceId, key, slot);
+  }
+
+  async #scheduleLeafRemoval(
+    groupId: string,
+    userId: string,
+    deviceId: string,
+    key: string,
+    slot: { timer: ReturnType<typeof setTimeout> | null },
+  ): Promise<void> {
+    const identity = `${userId}:${deviceId}`;
+    const self = `${this.#deps.userId}:${this.#deps.deviceId}`;
+    let index = -1;
+    try {
+      // Signalling only: it names the leaf and orders the stagger. Whether
+      // the leaf is removed is decided by native at fire time.
+      const roster = await this.#deps.bridge.callRosterIdentities(groupId);
+      if (roster.includes(identity)) {
+        index = roster.filter((id) => id !== identity).indexOf(self);
+      }
+    } catch {
+      index = -1;
+    }
+    if (this.#leafRemovals.get(key) !== slot) return; // the group was reset
+    if (
+      index < 0 ||
+      this.#terminal() ||
+      this.#state !== "active" ||
+      groupId !== this.#groupId
+    ) {
+      this.#leafRemovals.delete(key);
+      return;
+    }
+    const timer = setTimeout(() => {
+      this.#timers.delete(timer);
+      slot.timer = null;
+      void this.#removeRefusedLeaf(groupId, userId, deviceId, key).finally(
+        () => {
+          if (this.#leafRemovals.get(key) === slot) {
+            this.#leafRemovals.delete(key);
+          }
+        },
+      );
+    }, leafStaggerDelayMs(index));
+    slot.timer = timer;
+    this.#timers.add(timer);
+  }
+
+  async #removeRefusedLeaf(
+    groupId: string,
+    userId: string,
+    deviceId: string,
+    key: string,
+  ): Promise<void> {
+    const identity = `${userId}:${deviceId}`;
+    const live = () =>
+      !this.#terminal() &&
+      this.#state === "active" &&
+      groupId === this.#groupId;
+    if (!live()) return;
+    // Our own native verdict decides, read fresh at fire time: a leaf another
+    // member's Remove already took, or one our pins accept again, stays.
+    try {
+      await this.#callStateClassified(groupId);
+      return;
+    } catch (error) {
+      const verdict = classifyLeafRejection(error, {
+        userId: this.#deps.userId,
+        deviceId: this.#deps.deviceId,
+      });
+      if (
+        verdict.kind !== "removable" ||
+        verdict.userId !== userId ||
+        verdict.deviceId !== deviceId
+      ) {
+        return;
+      }
+    }
+    if (!live()) return;
+    console.warn(`[mls] removing ${identity}: revoked leaf`);
+    this.#noteMembershipObserved(identity);
+    await this.#stageAndSubmit(async () => {
+      // The group changed while we waited for the lock: there is nothing of
+      // ours to remove, which the remove path treats as benign.
+      if (groupId !== this.#groupId) {
+        throw Object.assign(new Error("mls_group_not_found"), {
+          type: "mls_group_not_found",
+        });
+      }
+      return this.#deps.bridge.callRemove(groupId, userId, deviceId);
+    }, "remove");
+    if (!live()) return;
+    let present: boolean;
+    try {
+      const roster = await this.#deps.bridge.callRosterIdentities(groupId);
+      present = roster.includes(identity);
+    } catch {
+      present = true; // an unconfirmed Remove is not a landed one
+    }
+    if (!present || !live()) return;
+    const failures = (this.#leafRemoveFailures.get(key) ?? 0) + 1;
+    if (failures < MAX_LEAF_REMOVE_FAILURES) {
+      this.#leafRemoveFailures.set(key, failures);
+      console.warn(
+        `[mls] ${identity} is still in the group after a Remove ` +
+          `(${failures}/${MAX_LEAF_REMOVE_FAILURES})`,
+      );
+      return;
+    }
+    this.#leafRemoveFailures.delete(key);
+    this.#replaceUnrepairableGroup(groupId, identity, "could not be removed");
+  }
+
+  /**
+   * A leaf our pins do not hold yet (`repin`): fetch and pin its signed
+   * listing the way an admit does (`#reconcileRoster`). Never a Remove and
+   * never loud. The persistence clock starts at the first listing reconcile
+   * that SUCCEEDED. One that failed (a 429, a deadline) pinned nothing and
+   * proves nothing about the leaf, so it starts no clock, and the leaf's
+   * listing is fetched again on a later periodic tick. Only a leaf still
+   * refused `REPIN_PERSIST_TICKS` periodic ticks after the clock started
+   * replaces the group. At most one fetch starts per tick, so a burst of
+   * reads refused on the same leaf asks the server once.
+   */
+  #onRepinLeaf(groupId: string, userId: string, deviceId: string): void {
+    if (this.#terminal() || groupId !== this.#groupId) return;
+    const identity = `${userId}:${deviceId}`;
+    const key = `${groupId}|${identity}`;
+    const entry: LeafRepin = this.#leafRepins.get(key) ?? {
+      inFlight: false,
+      reconciledAtTick: null,
+      startedAtTick: null,
+    };
+    if (
+      entry.reconciledAtTick !== null &&
+      this.#reconcileTicks - entry.reconciledAtTick >= REPIN_PERSIST_TICKS &&
+      this.#state === "active"
+    ) {
+      this.#leafRepins.delete(key);
+      this.#replaceUnrepairableGroup(groupId, identity, "could not be pinned");
+      return;
+    }
+    if (entry.inFlight || entry.startedAtTick === this.#reconcileTicks) return;
+    entry.inFlight = true;
+    entry.startedAtTick = this.#reconcileTicks;
+    this.#leafRepins.set(key, entry);
+    void this.#reconcileRoster([{ userId, deviceId }]).then(
+      () => {
+        // A clean read or a group change dropped the record: keep nothing.
+        if (this.#leafRepins.get(key) !== entry) return;
+        entry.inFlight = false;
+        entry.reconciledAtTick ??= this.#reconcileTicks;
+      },
+      (error: unknown) => {
+        console.warn(`[mls] listing reconcile for ${identity} failed`, error);
+        if (this.#leafRepins.get(key) !== entry) return;
+        entry.inFlight = false;
+      },
+    );
+  }
+
+  /**
+   * A leaf that can be neither removed nor pinned leaves a group nothing here
+   * can verify again, so the group is replaced: `#poisonedSuccessor` has the
+   * DS close it and builds the successor from devices that can still join,
+   * bounded by `MAX_REESTABLISH`, loud at the cap and never plaintext. Not
+   * `#rejoinFresh`, which rejoins the same DS group and meets the same leaf.
+   */
+  #replaceUnrepairableGroup(
+    groupId: string,
+    identity: string,
+    why: string,
+  ): void {
+    if (
+      this.#terminal() ||
+      this.#state !== "active" ||
+      groupId !== this.#groupId
+    ) {
+      return;
+    }
+    console.warn(`[mls] replacing the call group: ${identity} ${why}`);
+    this.#scheduleGroupAction(async () => {
+      if (this.#state !== "active" || groupId !== this.#groupId) return;
+      await this.#poisonedSuccessor();
+    }, "successor:unrepairable_leaf");
+  }
+
+  /**
+   * This device itself was removed from encryption: its leaf never verifies
+   * again, so the call ends. The local group and its resume record go with
+   * the session (the sign-out discard), then the binding leaves the call with
+   * the notice. Idempotent: a closed session takes no further events.
+   */
+  #onOwnDeviceRevoked(): void {
+    if (this.#state === "closed") return;
+    const media = this.#media;
+    console.warn("[mls] this device was removed from encryption; leaving");
+    this.dispose({ discard: true });
+    media?.autoLeave?.(OWN_DEVICE_REVOKED_REASON);
+  }
+
   /** Start (or restart) the periodic reconcile tick — a safety net. */
   #startReconcile(): void {
     this.#stopReconcile();
@@ -7431,6 +7778,9 @@ export class MlsCallSession {
         if (this.#state === "active" && this.#groupId) {
           this.#touchResumeRecord(this.#groupId, this.#installEpoch);
         }
+        // The repin persistence clock: this timer is the only thing that
+        // advances it (see `#reconcileTicks`).
+        this.#reconcileTicks++;
         // Chain the next tick only after this reconcile settles; the enabled
         // flag (cleared by #stopReconcile) prevents a stale re-arm.
         void this.reconcileNow().finally(tick);
@@ -8478,7 +8828,7 @@ export class MlsCallSession {
     if (this.#state !== "active" || !this.#groupId) return;
     let lowest: { user_id: string; device_id: string } | undefined;
     try {
-      const state = await this.#deps.bridge.callState(this.#groupId);
+      const state = await this.#callStateClassified(this.#groupId);
       lowest = state.members[0];
     } catch {
       return;

@@ -63,8 +63,12 @@ const SRC = readFileSync(FILE, "utf8");
  * `protector_locked` to a typed error (D10). Protected-channels work still
  * never edits it.
  */
+// Re-pinned from feat/e2ee-add-device: multi-device W3 adds splitBegin.
+// Re-pinned again when feat/ios-call-e2ee merged main v0.71 (11-11): the
+// merged region is exactly the phase 2 region plus main's own add-device
+// change (restore docs, splitBegin, isMissingCommandError), nothing else.
 const TRANSPORT_REGION_SHA256 =
-  "81c232b32316c4feb5a788743a593b0cb265c9717362a7ca4aef06bbaa88e568";
+  "582a2e4978b22b01ab25afa2fea157294c990ccb6aa3f1554222e0cdd1d35fe7";
 
 /**
  * `#encryptedIds.add(` call sites at 4363b406 and at origin/main 1dcdd1b4;

@@ -6,17 +6,21 @@ import { Trans } from "@lingui-solid/solid/macro";
 import type { BackupStatusView } from "@revolt/client";
 import { useClient, useE2EE } from "@revolt/client";
 import { useModals } from "@revolt/modal";
+import { useE2EESplit } from "@revolt/modal/modals/E2EEDeviceShared";
+import { E2EEOwnDeviceList } from "@revolt/modal/modals/E2EERemoveDevice";
 import { platformMediaE2EESupported } from "@revolt/rtc";
 import {
   callMediaE2EEOffered,
   fetchIosCallSwitchValue,
   iosCallSwitch,
 } from "@revolt/rtc/iosCallSwitch";
-import { CategoryButton, Checkbox, Column, iconSize } from "@revolt/ui";
+import { CategoryButton, Checkbox, Column, Text, iconSize } from "@revolt/ui";
 
+import MdDevices from "@material-design-icons/svg/outlined/devices.svg?component-solid";
 import MdKey from "@material-design-icons/svg/outlined/key.svg?component-solid";
 import MdLock from "@material-design-icons/svg/outlined/lock.svg?component-solid";
 import MdVideocam from "@material-design-icons/svg/outlined/videocam.svg?component-solid";
+import MdWarning from "@material-design-icons/svg/outlined/warning.svg?component-solid";
 
 /**
  * Encryption settings page (sidebar id `security`, kept for deep links).
@@ -33,10 +37,135 @@ import MdVideocam from "@material-design-icons/svg/outlined/videocam.svg?compone
 export function EncryptionSettings() {
   return (
     <Column gap="lg">
+      <DeviceStateCards />
       <EncryptionCard />
       <CallEncryptionCard />
       <RecoveryBackupCard />
+      <OwnDevicesCard />
     </Column>
+  );
+}
+
+/**
+ * Multi-device states that need the user (D3, D5, D8). Each card is the
+ * persistent entry behind a dismissable auto-modal, so closing the modal is
+ * never the end of it:
+ * - removed (D8): this device was removed from the account's encryption; set
+ *   it up again as a new device. Outranks the other two, which cannot finish
+ *   for a removed device.
+ * - publishPending (D3): keys never registered (a restore's second prompt).
+ * - deviceShared (D5): this install shares its device with another install.
+ *   The refused twin also gets the modal; the install that only sees
+ *   divergence gets just this card. Offered only while the server advertises
+ *   the split (`splitSupported` exactly true); "Not now" dismisses the
+ *   signal for this device.
+ */
+function DeviceStateCards() {
+  const e2ee = useE2EE();
+  const { openModal } = useModals();
+  const split = useE2EESplit();
+
+  if (!e2ee) return null;
+
+  const removed = () => !!e2ee.deviceRemoved.get("state");
+  const pending = () => !!e2ee.publishPending.get("state");
+  const shared = () => !!e2ee.deviceShared.get("state");
+
+  return (
+    <>
+      <Show when={removed()}>
+        <CategoryButton.Group>
+          <CategoryButton
+            icon={<MdWarning {...iconSize(24)} />}
+            action="chevron"
+            description={
+              <Trans>
+                This device was removed from your account's encryption. Set it
+                up again as a new device?
+              </Trans>
+            }
+            onClick={() => openModal({ type: "e2ee_device_removed" })}
+          >
+            <Trans>Set up as a new device</Trans>
+          </CategoryButton>
+        </CategoryButton.Group>
+      </Show>
+
+      <Show when={pending() && !removed()}>
+        <CategoryButton.Group>
+          <CategoryButton
+            icon={<MdKey {...iconSize(24)} />}
+            action="chevron"
+            description={
+              <Trans>
+                This device is not registered for encryption yet, so it cannot
+                send or receive encrypted messages. Confirm your identity to
+                finish.
+              </Trans>
+            }
+            onClick={() => openModal({ type: "e2ee_finish_setup" })}
+          >
+            <Trans>Finish setting up encryption on this device</Trans>
+          </CategoryButton>
+        </CategoryButton.Group>
+      </Show>
+
+      <Show
+        when={
+          shared() && !removed() && e2ee.splitSupported.get("state") === true
+        }
+      >
+        <CategoryButton.Group>
+          <CategoryButton
+            icon={<MdDevices {...iconSize(24)} />}
+            disabled={split.busy()}
+            description={
+              <Trans>
+                This app shares its encryption identity with another of your
+                apps (it was restored from your recovery code). Messages can go
+                missing on one of them. Make this app a separate device: it
+                keeps its message history, and your contacts will see you added
+                a device.
+              </Trans>
+            }
+            onClick={() => void split.run()}
+          >
+            <Trans>Make this a separate device</Trans>
+          </CategoryButton>
+          <CategoryButton
+            icon="blank"
+            disabled={split.busy()}
+            onClick={() => e2ee.dismissDeviceShared()}
+          >
+            <Trans>Not now</Trans>
+          </CategoryButton>
+        </CategoryButton.Group>
+        <Show when={split.notice()}>
+          <Text class="label">{split.notice()}</Text>
+        </Show>
+      </Show>
+    </>
+  );
+}
+
+/**
+ * Multi-device D7: the user's own encrypted devices, with Remove for the
+ * others. Only for a registered device (the listing is keyed on it).
+ */
+function OwnDevicesCard() {
+  const e2ee = useE2EE();
+
+  if (!e2ee) return null;
+
+  const enabled = () => {
+    const state = e2ee.status.get("state");
+    return !!state?.enabled && !!state?.published;
+  };
+
+  return (
+    <Show when={enabled() && !e2ee.deviceRemoved.get("state")}>
+      <E2EEOwnDeviceList title={<Trans>Your devices</Trans>} />
+    </Show>
   );
 }
 
@@ -218,8 +347,16 @@ function EncryptionCard() {
             </Trans>
           )
         }
+        // Keys that were never registered (D3) finish setup rather than
+        // starting the opt-in again.
         onClick={() =>
-          openModal({ type: enabled() ? "e2ee_disable" : "e2ee_enable" })
+          openModal({
+            type: enabled()
+              ? "e2ee_disable"
+              : e2ee.publishPending.get("state")
+                ? "e2ee_finish_setup"
+                : "e2ee_enable",
+          })
         }
       >
         <Switch>
@@ -389,12 +526,18 @@ function RecoveryBackupCard() {
             disabled={busy()}
             description={
               hasBackup() ? (
-                <Trans>
-                  You have a recovery code. Anyone with this code and access to
-                  your account can read your message history — Sloga cannot
-                  recover it for you. Choose "Change recovery code" to replace
-                  it.
-                </Trans>
+                <>
+                  <Trans>
+                    You have a recovery code. Anyone with this code and access
+                    to your account can read your message history — Sloga cannot
+                    recover it for you. Choose "Change recovery code" to replace
+                    it.
+                  </Trans>{" "}
+                  <Trans>
+                    This changes the recovery code for this device's backup
+                    only.
+                  </Trans>
+                </>
               ) : (
                 <Trans>
                   Without a recovery code, your encrypted messages cannot be

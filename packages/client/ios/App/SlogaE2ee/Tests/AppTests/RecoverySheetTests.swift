@@ -516,7 +516,7 @@ final class RecoverySheetTests: XCTestCase {
     }
 
     /// The device id the engine published on enable (the restore test
-    /// compares the restored device against it).
+    /// checks the restored install is a different, new device).
     private func enableDeviceId(_ holder: EngineHolder) -> String? {
         guard let json = holder.enableJson.value,
               let object = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any],
@@ -541,6 +541,22 @@ final class RecoverySheetTests: XCTestCase {
             return nil
         }
         return fields
+    }
+
+    /// Core's Status object (enabled, published, device_id) of the store.
+    private func engineStatus(_ holder: EngineHolder, file: StaticString = #filePath, line: UInt = #line) -> [String: Any]? {
+        let json = offMain("status", file: file, line: line) { () -> String in
+            dispatchPrecondition(condition: .notOnQueue(.main))
+            return try holder.get().status()
+        }
+        guard let json else {
+            return nil
+        }
+        guard let object = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any] else {
+            XCTFail("status is not a Status object", file: file, line: line)
+            return nil
+        }
+        return object
     }
 
     /// What a take would courier now (and promote, if core held a mint).
@@ -1106,7 +1122,10 @@ final class RecoverySheetTests: XCTestCase {
         tap("restore")
         XCTAssertEqual(stage, "restoring", "Restore starts the check")
         RecoverySheet.teardownForNavigation()
-        let checked = subject(result(of: flow), bad: Result<String, Error>.success("null"))
+        // The known-bad subject is the old clone semantics: a republish
+        // payload for the backed-up device.
+        let checked = subject(result(of: flow),
+                              bad: Result<String, Error>.success(#"{"device_id":"\#(deviceId)"}"#))
         guard case .success(let republish)? = checked else {
             if case .failure(let error)? = checked {
                 XCTFail("restore rejected with \(rejectJson(for: error))")
@@ -1115,19 +1134,29 @@ final class RecoverySheetTests: XCTestCase {
             }
             return
         }
-        let object = try? JSONSerialization.jsonObject(with: Data(republish.utf8)) as? [String: Any]
-        XCTAssertNotNil(object, "restore resolves the republish payload object, not null")
-        XCTAssertEqual(object?["device_id"] as? String, deviceId, "the restored device is the backed-up one")
+        // Multi-device plan D1: a restore adds a NEW device and stashes no
+        // republish; the page publishes the new device with the payload
+        // enable() re-offers, behind its own MFA prompt (D3).
+        XCTAssertEqual(republish, "null", "restore resolves null: no republish payload")
         let bare = backup.code.replacingOccurrences(of: "-", with: "")
         XCTAssertFalse(republish.contains(backup.code) || republish.contains(bare),
-                       "the republish payload does not contain the code")
+                       "the restore result does not contain the code")
         waitOnMain("the sheet is gone") { stage == nil && !sheetOnScreen }
 
         XCTAssertEqual(isProvisioned(target), true, "the target store was rebuilt")
-        let restored = status(target)
-        XCTAssertEqual(restored?.exists, true, "restore re-establishes the backup state")
-        XCTAssertEqual(restored?.generation, backup.fields.generation, "at the restored generation")
-        XCTAssertEqual(restored?.uploadedGeneration, backup.fields.generation, "which the server already holds")
+        let device = subject(engineStatus(target),
+                             bad: ["enabled": true, "published": true, "device_id": deviceId] as [String: Any]?)
+        let restoredId = device?["device_id"] as? String
+        XCTAssertFalse((restoredId ?? "").isEmpty, "the restored store has a device id")
+        XCTAssertNotEqual(restoredId, deviceId, "the restored install is a new device, not the backed-up one")
+        XCTAssertEqual((device?["enabled"] as? NSNumber)?.boolValue, true, "the restored store holds an account")
+        XCTAssertEqual((device?["published"] as? NSNumber)?.boolValue, false, "the new device is not published yet")
+        // Plan O6: recovery codes are per device. Nothing of the source's
+        // backup carries over; this device has none until it makes a code.
+        let restored = subject(status(target), bad: StatusFields.liveBackup)
+        XCTAssertEqual(restored?.exists, false, "restore carries no backup state over")
+        XCTAssertEqual(restored?.generation, 0, "no backup generation on the new device")
+        XCTAssertEqual(restored?.uploadedGeneration, 0, "nothing uploaded for the new device")
     }
 
     func testRestoreWrongCodeThenCancelDeclines() {

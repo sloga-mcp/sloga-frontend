@@ -341,6 +341,22 @@ public final class E2eePlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
+    @objc func splitBegin(_ call: CAPPluginCall) {
+        guard Self.armedOrReject(call) else { return }
+        guard let sessionId = Self.validated(call, { try E2eeCallArgs(call).string("sessionId") }) else {
+            return
+        }
+        Self.onDedicatedThread(call, "gg.sloga.e2ee.split-begin") {
+            dispatchPrecondition(condition: .notOnQueue(.main))
+            // Blocks on the core's split dialog, as for wipe; cancel rejects
+            // `declined` and stages nothing. Resolves the staged device's
+            // first-publication body (public keys, split_from, split_proof);
+            // the store is untouched until e2ee_split_commit.
+            let json = try E2eeRuntime.shared.engine().splitBegin(sessionId: sessionId)
+            return .json(json)
+        }
+    }
+
     @objc func backupCreate(_ call: CAPPluginCall) {
         guard Self.armedOrReject(call) else { return }
         guard let userId = Self.validated(call, { try E2eeCallArgs(call).string("userId") }) else {
@@ -502,7 +518,7 @@ private extension E2eePlugin {
     }
 
     /// The generic commands, on the engine worker. The case labels are
-    /// exactly the 37 generic names of E2eeCommands: a confirm-gated
+    /// exactly the 39 generic names of E2eeCommands: a confirm-gated
     /// command here would run without its own thread, and a native-only
     /// engine method here would hand a recovery code or plaintext to the
     /// webview (G8), so neither kind ever appears. JSON text from the core
@@ -529,6 +545,14 @@ private extension E2eePlugin {
             return try engine.replenish(serverRemaining: args.uint64("serverRemaining"))
         case "e2ee_sign_claim":
             return try jsonQuote(engine.signClaim(sessionId: args.string("sessionId"), nonce: args.string("nonce")))
+        case "e2ee_split_commit":
+            // No dialog: the consent was splitBegin's. With no stage held
+            // the core refuses it, so this cannot start a split.
+            try engine.splitCommit()
+            return "null"
+        case "e2ee_split_discard":
+            try engine.splitDiscard()
+            return "null"
         case "e2ee_encrypt":
             return try engine.encrypt(
                 peerUserId: args.string("peerUserId"),
