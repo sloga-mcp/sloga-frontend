@@ -13,6 +13,29 @@ enum SourceScan {
         .deletingLastPathComponent() // Tests
         .deletingLastPathComponent() // SlogaStore
 
+    /// The four files the package is known to have; allSourceFiles() fails
+    /// the calling test if the enumeration misses one.
+    static let knownFiles = [
+        "ProtStoreKit.swift", "ProtStorePlugin.swift", "ProtStoreResults.swift", "ProtStoreUpdateGate.swift",
+    ]
+
+    /// Every .swift file under Sources/SlogaStore (paths relative to it,
+    /// sorted), enumerated so a new source file is always scanned. Fails the
+    /// calling test when it finds none or misses a known file.
+    static func allSourceFiles() throws -> [String] {
+        let sources = packageRoot.appendingPathComponent("Sources/SlogaStore")
+        let enumerator = try XCTUnwrap(
+            FileManager.default.enumerator(atPath: sources.path),
+            "cannot enumerate \(sources.path)"
+        )
+        let files = enumerator.compactMap { $0 as? String }.filter { $0.hasSuffix(".swift") }.sorted()
+        XCTAssertFalse(files.isEmpty, "found no .swift files under \(sources.path)")
+        for known in knownFiles {
+            XCTAssertTrue(files.contains(known), "the enumeration missed \(known)")
+        }
+        return files
+    }
+
     /// The file's lines with every `//` comment line removed (a comment that
     /// says "finish" must not count as a call).
     static func code(_ file: String) throws -> [String] {

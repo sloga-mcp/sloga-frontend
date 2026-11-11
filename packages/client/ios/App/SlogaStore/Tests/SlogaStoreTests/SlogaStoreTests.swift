@@ -6,8 +6,12 @@
 //       -destination 'platform=iOS Simulator,name=<an iPhone simulator>'
 // They drive the very functions the plugin calls (ProtStoreKit), with
 // dialogs disabled, so no sheet appears. `swift test` on macOS does not
-// build this package (iOS-only Capacitor binary). A failing session setup
-// FAILS the test; nothing here skips.
+// build this package (iOS-only Capacitor binary). Every session case starts
+// with startSession(): when storekitd refuses StoreKit testing to this
+// process (SKInternalErrorDomain code 3, see StoreKitTestingAvailability.swift)
+// the case SKIPS with that reason, or fails when
+// SLOGA_REQUIRE_STOREKIT_SESSION=1. Any other probe outcome runs the case;
+// any other setup error FAILS the test.
 import StoreKit
 import StoreKitTest
 import XCTest
@@ -25,18 +29,23 @@ final class SlogaStoreTests: XCTestCase {
 
     private var session: SKTestSession!
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
+    /// The first line of every session case (not setUp, so the session-free
+    /// testPurchaseSourceNeverFinishes never skips).
+    private func startSession() async throws {
         let url = try XCTUnwrap(
             Bundle.module.url(forResource: "Prot", withExtension: "storekit"),
             "Prot.storekit is missing from the test bundle"
         )
-        session = try SKTestSession(contentsOf: url)
+        let session = try SKTestSession(contentsOf: url)
+        try await StoreKitTestingAvailability.check(probe: {
+            try StoreKitTestingAvailability.probe(session)
+        })
         session.resetToDefaultState()
         session.disableDialogs = true
         session.askToBuyEnabled = false
         session.storefront = "USA"
         session.clearTransactions()
+        self.session = session
     }
 
     override func tearDownWithError() throws {
@@ -56,6 +65,7 @@ final class SlogaStoreTests: XCTestCase {
     // MARK: products
 
     func testFivePacksAtTheContractPrices() async throws {
+        try await startSession()
         let products = try await ProtStoreKit.products(ids: Self.ids)
         XCTAssertEqual(products.map(\.id), Self.ids, "request order, every pack")
         for product in products {
@@ -70,6 +80,7 @@ final class SlogaStoreTests: XCTestCase {
     }
 
     func testUnknownProductsAreLeftOut() async throws {
+        try await startSession()
         let products = try await ProtStoreKit.products(ids: ["gg.sloga.prot.p5", "gg.sloga.prot.nope"])
         XCTAssertEqual(products.map(\.id), ["gg.sloga.prot.p5"])
     }
@@ -78,6 +89,7 @@ final class SlogaStoreTests: XCTestCase {
 
     /// Contracts §28 L4c control: finishing inside purchase() must fail this.
     func testPurchaseNeverFinishes() async throws {
+        try await startSession()
         let token = UUID()
         let outcome = await ProtStoreKit.purchase(productId: "gg.sloga.prot.p5", accountToken: token)
         guard case .purchased(let purchase) = outcome else {
@@ -108,15 +120,17 @@ final class SlogaStoreTests: XCTestCase {
         let plugin = try SourceScan.region("ProtStorePlugin.swift", from: "@objc func purchase(", to: "@objc func ")
         XCTAssertFalse(plugin.isEmpty)
         XCTAssertFalse(plugin.contains("finish("), "the plugin's purchase() calls finish")
-        // The only finish call in the package is ProtStoreKit.finish's.
+        // The only finish call in the package (every source file, enumerated)
+        // is ProtStoreKit.finish's.
         var finishCalls = 0
-        for file in ["ProtStoreResults.swift", "ProtStoreKit.swift", "ProtStorePlugin.swift", "ProtStoreUpdateGate.swift"] {
+        for file in try SourceScan.allSourceFiles() {
             finishCalls += try SourceScan.code(file).filter { $0.contains(".finish()") }.count
         }
         XCTAssertEqual(finishCalls, 1)
     }
 
     func testPurchasedResultCarriesTheJwsAndId() async throws {
+        try await startSession()
         let outcome = await ProtStoreKit.purchase(productId: "gg.sloga.prot.p25", accountToken: UUID())
         guard case .purchased(let purchase) = outcome else {
             return XCTFail("expected purchased, got \(outcome)")
@@ -129,6 +143,7 @@ final class SlogaStoreTests: XCTestCase {
     }
 
     func testAskToBuyIsPendingAndLeavesNothingUnfinished() async throws {
+        try await startSession()
         session.askToBuyEnabled = true
         let outcome = await ProtStoreKit.purchase(productId: "gg.sloga.prot.p10", accountToken: UUID())
         XCTAssertEqual(outcome, .pending)
@@ -136,7 +151,8 @@ final class SlogaStoreTests: XCTestCase {
         XCTAssertTrue(unfinished.isEmpty, "a pending Ask to Buy produced a transaction")
     }
 
-    func testUnknownProductIsProductNotFound() async {
+    func testUnknownProductIsProductNotFound() async throws {
+        try await startSession()
         let outcome = await ProtStoreKit.purchase(productId: "gg.sloga.prot.nope", accountToken: UUID())
         XCTAssertEqual(outcome, .failed(.productNotFound, nil))
     }
@@ -144,6 +160,7 @@ final class SlogaStoreTests: XCTestCase {
     // MARK: recovery
 
     func testPendingTransactionsListEveryUnfinishedPurchase() async throws {
+        try await startSession()
         var ids: Set<String> = []
         for product in ["gg.sloga.prot.p5", "gg.sloga.prot.p50"] {
             let outcome = await ProtStoreKit.purchase(productId: product, accountToken: UUID())
@@ -160,14 +177,16 @@ final class SlogaStoreTests: XCTestCase {
         }
     }
 
-    func testFinishOfAnUnknownIdIsFalse() async {
+    func testFinishOfAnUnknownIdIsFalse() async throws {
+        try await startSession()
         let finished = await ProtStoreKit.finish(transactionId: 999_999_999_999)
         XCTAssertFalse(finished)
     }
 
     // MARK: storefront
 
-    func testStorefrontIsRawAlpha3() async {
+    func testStorefrontIsRawAlpha3() async throws {
+        try await startSession()
         session.storefront = "DEU"
         let country = await ProtStoreKit.storefrontCountry()
         XCTAssertEqual(country, "DEU")

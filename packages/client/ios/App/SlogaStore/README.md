@@ -55,4 +55,23 @@ xcodebuild -scheme SlogaStore test -destination 'platform=iOS Simulator,name=<an
 - `SlogaStoreTests`: StoreKit testing with `SKTestSession` and `Tests/SlogaStoreTests/Prot.storekit`
   (the five packs at $5.99 / $11.99 / $29.99 / $58.99 / $117.99). Simulator only.
 
-Known-bad controls: `/home/mcp/pc-logs/s6/L4c/` (each patch names the test that must fail).
+The session cases SKIP when storekitd refuses StoreKit testing to the test process
+(SKInternalErrorDomain code 3: no `get-task-allow`, and Xcode signs simulator builds ad hoc), which
+is the case for a plain `xcodebuild test` of this package. To require them (a refusal then
+fails), set `SLOGA_REQUIRE_STOREKIT_SESSION=1` in the test process; xcodebuild forwards only
+`TEST_RUNNER_`-prefixed variables to it:
+
+```
+TEST_RUNNER_SLOGA_REQUIRE_STOREKIT_SESSION=1 xcodebuild -scheme SlogaStore test -destination 'platform=iOS Simulator,name=<an iPhone simulator>'
+```
+
+Purchase-never-finishes stays covered by `testPurchaseSourceNeverFinishes`, which needs no session.
+
+Known-bad controls (each patch names the test that must fail):
+- `/home/mcp/pc-logs/s6/L4c/`: c1–c9.
+- `/home/mcp/pc-logs/s6/iosfix/`: cS1 (a new source file calling `perform(`), cS2 (a new source file
+  with a finish call), cS3 (a new source file using `NSSelectorFromString` only), cS5 (a new source
+  file calling `eval(`); cS4 (a new source file calling `retrieval(`) must PASS
+  `testNoWebLinkAndNoLogging`.
+- `/home/mcp/pc-logs/s6/iosfix/skip/`: ca (classifier true for every error), cb (skip on any probe
+  error), cc (no `SLOGA_REQUIRE_STOREKIT_SESSION` override).
