@@ -189,6 +189,10 @@ dependencies {
     // the same way so each flavor's firebase-messaging still gets its version.
     playImplementation platform('com.google.firebase:firebase-bom:33.7.0')
     playImplementation 'com.google.firebase:firebase-messaging'
+    // Play Billing (Prot in-app purchase, S6): play flavor ONLY. Pinned exactly; Play requires
+    // billing >= 8 for new apps and updates since 2026-08-31. verifyFossClasspathGoogleFree and
+    // verifySideloadClasspathBillingFree (below) fail any other flavor that resolves it.
+    playImplementation 'com.android.billingclient:billing:9.1.0'
     sideloadImplementation platform('com.google.firebase:firebase-bom:33.7.0')
     sideloadImplementation 'com.google.firebase:firebase-messaging'
     // foss push goes through UnifiedPush instead of FCM.
@@ -223,13 +227,14 @@ configurations.matching { it.name.startsWith('foss') }.configureEach {
 // (gradle.properties), so a plain doLast resolving the configurations is fine.
 def verifyFossClasspathGoogleFree = tasks.register('verifyFossClasspathGoogleFree') {
     group = 'verification'
-    description = 'Fails if the foss runtime classpath contains Google Play services or Firebase.'
+    description = 'Fails if the foss runtime classpath contains Google Play services, Firebase or Play Billing.'
     doLast {
         def bannedGroups = [
             'com.google.android.gms',
             'com.google.firebase',
             'com.google.android.datatransport',
-            'com.google.android.play'
+            'com.google.android.play',
+            'com.android.billingclient'
         ]
         ['fossDebugRuntimeClasspath', 'fossReleaseRuntimeClasspath'].each { configName ->
             def result = configurations.getByName(configName).incoming.resolutionResult
@@ -257,12 +262,51 @@ def verifyFossClasspathGoogleFree = tasks.register('verifyFossClasspathGoogleFre
         }
     }
 }
+// Fail-closed gate, same shape as the foss one: Play Billing is play-only (the
+// in-app Prot purchase), and its AAR merges com.android.vending.BILLING into any
+// manifest whose classpath carries it, so a sideload build must resolve none of
+// it. Firebase stays allowed here; only the billing group is banned.
+def verifySideloadClasspathBillingFree = tasks.register('verifySideloadClasspathBillingFree') {
+    group = 'verification'
+    description = 'Fails if the sideload runtime classpath contains Play Billing.'
+    doLast {
+        def bannedGroups = [
+            'com.android.billingclient'
+        ]
+        ['sideloadDebugRuntimeClasspath', 'sideloadReleaseRuntimeClasspath'].each { configName ->
+            def result = configurations.getByName(configName).incoming.resolutionResult
+            def unresolved = result.allDependencies.findAll {
+                it instanceof org.gradle.api.artifacts.result.UnresolvedDependencyResult
+            }
+            if (!unresolved.isEmpty()) {
+                throw new GradleException("verifySideloadClasspathBillingFree: ${configName} has unresolved dependencies: ${unresolved*.requested.join(', ')}")
+            }
+            def modules = result.allComponents.findAll {
+                it.id instanceof org.gradle.api.artifacts.component.ModuleComponentIdentifier
+            }*.moduleVersion
+            if (modules.isEmpty()) {
+                throw new GradleException("verifySideloadClasspathBillingFree: ${configName} resolved no external modules; refusing to pass vacuously")
+            }
+            def offending = modules.findAll { m ->
+                bannedGroups.any { g -> m.group == g || m.group.startsWith(g + '.') }
+            }
+            if (!offending.isEmpty()) {
+                def coords = offending.collect { m -> m.group + ':' + m.name + ':' + m.version }.join(', ')
+                throw new GradleException("verifySideloadClasspathBillingFree: ${configName} contains Play Billing: ${coords}")
+            }
+            logger.lifecycle("verifySideloadClasspathBillingFree: ${configName} OK (${modules.size()} external modules)")
+        }
+    }
+}
 // configureEach rather than afterEvaluate + tasks.named: AGP 8 registers the
 // variant tasks lazily from its own afterEvaluate, and configureEach reaches
 // them whenever they are realized, with no dependence on callback order.
 tasks.configureEach { task ->
     if (task.name == 'preFossDebugBuild' || task.name == 'preFossReleaseBuild') {
         task.dependsOn verifyFossClasspathGoogleFree
+    }
+    if (task.name == 'preSideloadDebugBuild' || task.name == 'preSideloadReleaseBuild') {
+        task.dependsOn verifySideloadClasspathBillingFree
     }
 }
 

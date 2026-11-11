@@ -6,8 +6,8 @@
 //   - the `e2ee-att://` scheme handler that serves decrypted attachments
 //     from memory (a same-origin path is not possible on iOS: `loadView` is
 //     final, and WKWebView refuses handlers for http/https);
-//   - the main-frame bridge guard, and the E2ee plugin ONLY when the guard
-//     is in place;
+//   - the main-frame bridge guard, and the E2ee plugin (and the in-app Prot
+//     ProtStore plugin, S6) ONLY when the guard is in place;
 //   - teardown of any open consent dialog, save folder picker and
 //     not-yet-minting recovery sheet whenever the main frame starts loading
 //     a new page;
@@ -15,9 +15,11 @@
 //
 // It never constructs the engine and never calls into it: the engine is
 // built lazily by the first command the webview sends, so a user who never
-// enabled E2EE never opens a store or touches the keychain at launch.
+// enabled E2EE never opens the E2EE key store or touches the keychain at
+// launch.
 import Capacitor
 import Foundation
+import SlogaStore
 import UIKit
 import WebKit
 
@@ -67,6 +69,9 @@ open class SlogaBridgeViewController: CAPBridgeViewController {
                 // stays inert unless the guard got this far (E2eePlugin.arm).
                 E2eePlugin.arm()
                 bridge.registerPluginInstance(E2eePlugin())
+                // In-app Prot (S6). Behind the same guard: an embed frame must never open a store sheet.
+                ProtStorePlugin.arm()
+                bridge.registerPluginInstance(ProtStorePlugin())
             }
         }
 

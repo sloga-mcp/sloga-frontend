@@ -17,6 +17,7 @@ import UIKit
 import WebKit
 import XCTest
 @testable import SlogaE2ee
+@testable import SlogaStore
 
 final class BridgeGuardTests: XCTestCase {
     private typealias Origin = MainFrameBridgeGuard.Origin
@@ -563,6 +564,51 @@ final class BridgeGuardTests: XCTestCase {
             RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
         }
         return true
+    }
+
+    // MARK: - 4. the in-app Prot store plugin (S6 contracts §25, §28 L4d, R39)
+
+    /// The ProtStore plugin is armed once and registered once, both INSIDE the
+    /// `if bridgeGuard != nil {` block, arm first. A live app cannot tell
+    /// "registered behind the guard" from "registered before it" (the guard
+    /// installs fine there), so the first half is a source scan of the bridge VC.
+    func testStorePluginNeedsTheGuard() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // AppTests
+            .deletingLastPathComponent() // Tests
+            .deletingLastPathComponent() // SlogaE2ee
+            .appendingPathComponent("Sources/SlogaE2ee/SlogaBridgeViewController.swift")
+        let lines = try String(contentsOf: url, encoding: .utf8)
+            .components(separatedBy: "\n")
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
+        func indices(_ needle: String) -> [Int] { lines.indices.filter { lines[$0].contains(needle) } }
+        let install = try XCTUnwrap(indices("MainFrameBridgeGuard.install(on: bridge)").first, "no guard install")
+        let open = try XCTUnwrap(indices("if bridgeGuard != nil {").first, "no `if bridgeGuard != nil {`")
+        var depth = 0
+        var close = open
+        for i in open..<lines.count {
+            depth += lines[i].filter { $0 == "{" }.count - lines[i].filter { $0 == "}" }.count
+            if depth == 0 {
+                close = i
+                break
+            }
+        }
+        let arms = indices("ProtStorePlugin.arm()")
+        let registers = indices("registerPluginInstance(ProtStorePlugin())")
+        XCTAssertEqual(arms.count, 1, "ProtStorePlugin.arm() must appear exactly once")
+        XCTAssertEqual(registers.count, 1, "ProtStorePlugin must be registered exactly once")
+        let arm = try XCTUnwrap(arms.first)
+        let register = try XCTUnwrap(registers.first)
+        XCTAssertLessThan(install, open, "the guard is not installed before the guard check")
+        XCTAssertTrue(open < arm && arm < close, "ProtStorePlugin.arm() is outside the guard block")
+        XCTAssertTrue(open < register && register < close, "the ProtStore registration is outside the guard block")
+        XCTAssertLessThan(arm, register, "ProtStorePlugin.arm() must come before the registration")
+
+        // Live half: the running app has the guard, the plugin and the latch.
+        let app = try liveApp()
+        XCTAssertTrue(app.controller.bridge?.plugin(withName: "ProtStore") is ProtStorePlugin,
+                      "the ProtStore plugin is not registered")
+        XCTAssertTrue(ProtStorePlugin.isArmed(), "the ProtStore plugin was registered without arm()")
     }
 }
 

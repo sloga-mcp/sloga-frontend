@@ -28,7 +28,10 @@ let package = Package(
     ],
     dependencies: [
         // The SAME exact version CapApp-SPM pins, so SwiftPM resolves one copy.
-        .package(url: "https://github.com/ionic-team/capacitor-swift-pm.git", exact: "8.4.3")
+        .package(url: "https://github.com/ionic-team/capacitor-swift-pm.git", exact: "8.4.3"),
+        // In-app Prot (S6): the ProtStore plugin, registered by the bridge VC
+        // behind the main-frame guard. Pins the same capacitor-swift-pm.
+        .package(path: "../SlogaStore"),
     ],
     targets: [
         .binaryTarget(
@@ -54,6 +57,7 @@ let package = Package(
                 .product(name: "Capacitor", package: "capacitor-swift-pm"),
                 // Capacitor.framework's module imports Cordova.
                 .product(name: "Cordova", package: "capacitor-swift-pm"),
+                .product(name: "SlogaStore", package: "SlogaStore"),
             ],
             path: "Sources/SlogaE2ee"
         ),

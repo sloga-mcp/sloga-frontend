@@ -1,0 +1,95 @@
+{
+  "identifier" : "5D0C4E21",
+  "nonRenewingSubscriptions" : [
+
+  ],
+  "products" : [
+    {
+      "displayPrice" : "5.99",
+      "familyShareable" : false,
+      "internalID" : "6A1D0005",
+      "localizations" : [
+        {
+          "description" : "500 Prot for your Sloga wallet.",
+          "displayName" : "500 Prot",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "gg.sloga.prot.p5",
+      "referenceName" : "Prot 500",
+      "type" : "Consumable"
+    },
+    {
+      "displayPrice" : "11.99",
+      "familyShareable" : false,
+      "internalID" : "6A1D0010",
+      "localizations" : [
+        {
+          "description" : "1,000 Prot for your Sloga wallet.",
+          "displayName" : "1,000 Prot",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "gg.sloga.prot.p10",
+      "referenceName" : "Prot 1000",
+      "type" : "Consumable"
+    },
+    {
+      "displayPrice" : "29.99",
+      "familyShareable" : false,
+      "internalID" : "6A1D0025",
+      "localizations" : [
+        {
+          "description" : "2,600 Prot for your Sloga wallet.",
+          "displayName" : "2,600 Prot",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "gg.sloga.prot.p25",
+      "referenceName" : "Prot 2600",
+      "type" : "Consumable"
+    },
+    {
+      "displayPrice" : "58.99",
+      "familyShareable" : false,
+      "internalID" : "6A1D0050",
+      "localizations" : [
+        {
+          "description" : "5,300 Prot for your Sloga wallet.",
+          "displayName" : "5,300 Prot",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "gg.sloga.prot.p50",
+      "referenceName" : "Prot 5300",
+      "type" : "Consumable"
+    },
+    {
+      "displayPrice" : "117.99",
+      "familyShareable" : false,
+      "internalID" : "6A1D0100",
+      "localizations" : [
+        {
+          "description" : "11,000 Prot for your Sloga wallet.",
+          "displayName" : "11,000 Prot",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "gg.sloga.prot.p100",
+      "referenceName" : "Prot 11000",
+      "type" : "Consumable"
+    }
+  ],
+  "settings" : {
+    "_failTransactionsEnabled" : false,
+    "_locale" : "en_US",
+    "_storefront" : "USA"
+  },
+  "subscriptionGroups" : [
+
+  ],
+  "version" : {
+    "major" : 2,
+    "minor" : 0
+  }
+}
