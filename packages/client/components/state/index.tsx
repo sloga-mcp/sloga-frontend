@@ -21,6 +21,7 @@ import { Draft } from "./stores/Draft";
 import { Experiments } from "./stores/Experiments";
 import { FriendGroups } from "./stores/FriendGroups";
 import { Friends } from "./stores/Friends";
+import { HomeLayout } from "./stores/HomeLayout";
 import { Keybinds } from "./stores/Keybinds";
 import { Layout } from "./stores/Layout";
 import { LinkSafety } from "./stores/LinkSafety";
@@ -68,6 +69,7 @@ export class State {
   experiments = new Experiments(this);
   friends = new Friends(this);
   "friend-groups" = new FriendGroups(this);
+  "home-layout" = new HomeLayout(this);
   keybinds = new Keybinds(this);
   layout = new Layout(this);
   linkSafety = new LinkSafety(this);
@@ -90,6 +92,14 @@ export class State {
    */
   get friendGroups(): FriendGroups {
     return this["friend-groups"];
+  }
+
+  /**
+   * Home page layout store; named like `friendGroups` above for the same
+   * reason
+   */
+  get homeLayout(): HomeLayout {
+    return this["home-layout"];
   }
 
   /**

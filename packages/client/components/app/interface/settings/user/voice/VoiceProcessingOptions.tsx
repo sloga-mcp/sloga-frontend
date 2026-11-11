@@ -8,6 +8,12 @@ import {
   type BindingConflict,
 } from "@revolt/keybinds/globalKeybinds";
 import { DISABLE_WEB_AUDIO_MIX_KEY } from "@revolt/rtc";
+import {
+  formatVoicePitch,
+  VOICE_PITCH_DEFAULT,
+  VOICE_PITCH_MAX,
+  VOICE_PITCH_MIN,
+} from "@revolt/rtc/voicePitch";
 import { useState } from "@revolt/state";
 import {
   CategoryButton,
@@ -98,6 +104,9 @@ export function VoiceProcessingOptions() {
    * explicitly declines to claim which one the user got.
    */
   const globalPttPossible = () => tauriInvoke() !== undefined;
+
+  /** "+3" / "-5" for the voice changer label. */
+  const pitchLabel = () => formatVoicePitch(voice.voicePitchSemitones);
 
   /**
    * The store's bare `KeyboardEvent.code` as the `Binding` the widget wants.
@@ -309,6 +318,58 @@ export function VoiceProcessingOptions() {
         >
           <Trans>How it works</Trans>
         </CategoryButton>
+      </CategoryButton.Group>
+
+      <Text class="title">
+        <Trans>Voice Changer</Trans>
+      </Text>
+      <CategoryButton.Group>
+        {/* Copy rule (rtc/voicePitch.ts): a toy for calls. It moves your
+            pitch; it does not make you anonymous, so never say it does. */}
+        <CategoryButton
+          icon="blank"
+          description={
+            <Column gap="sm">
+              <Text class="label">
+                <Show
+                  when={voice.voicePitchSemitones !== VOICE_PITCH_DEFAULT}
+                  fallback={<Trans>Pitch: normal</Trans>}
+                >
+                  {/* Bare "+3": "semitones" needs a plural for ±1. */}
+                  <Trans>Pitch: {pitchLabel()}</Trans>
+                </Show>
+              </Text>
+              <Slider
+                min={VOICE_PITCH_MIN}
+                max={VOICE_PITCH_MAX}
+                step={1}
+                value={voice.voicePitchSemitones}
+                onInput={(e) =>
+                  (voice.voicePitchSemitones = Number(e.currentTarget.value))
+                }
+                labelFormatter={formatVoicePitch}
+              />
+              <Text class="label">
+                <Trans>
+                  Slide left for a deeper voice, right for a higher one. Just
+                  for fun: it applies live during calls, stays on until you
+                  reset it, and does not hide who you are.
+                </Trans>
+              </Text>
+            </Column>
+          }
+        >
+          <Trans>Voice Pitch</Trans>
+        </CategoryButton>
+        <Show when={voice.voicePitchSemitones !== VOICE_PITCH_DEFAULT}>
+          <CategoryButton
+            icon="blank"
+            onClick={() => (voice.voicePitchSemitones = VOICE_PITCH_DEFAULT)}
+            description={<Trans>Put your voice back to normal.</Trans>}
+          >
+            <Trans>Reset Pitch</Trans>
+          </CategoryButton>
+        </Show>
       </CategoryButton.Group>
 
       <Text class="title">

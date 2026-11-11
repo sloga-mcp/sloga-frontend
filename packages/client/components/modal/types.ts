@@ -326,6 +326,23 @@ export type Modals =
       channelId: string;
     }
   | {
+      /**
+       * Protected channel seat picker (W4 lane C12). `current` = the seated
+       * user ids (owner included); `onConfirm` gets the FULL new list, the
+       * owner always included. `slotCap` null = unknown (shown as unknown,
+       * never treated as 0 or unlimited); a number caps the selection.
+       * `removed` (W4d): users the server removed whom the signed list still
+       * names; never selected or offered, and a list that only drops them
+       * may be confirmed. Absent = none.
+       */
+      type: "protected_seat_picker";
+      channel: Channel;
+      current: string[];
+      slotCap: number | null;
+      onConfirm: (userIds: string[]) => Promise<void>;
+      removed?: string[];
+    }
+  | {
       type: "e2ee_enable";
       /**
        * Lead with the restore-vs-start-fresh choice (slice 5.5). Set when the
@@ -348,6 +365,39 @@ export type Modals =
     }
   | {
       type: "e2ee_disable";
+    }
+  | {
+      /**
+       * Multi-device D3: this device holds keys that were never registered
+       * (a restore that still needs its second MFA prompt, or an interrupted
+       * start fresh). Auto-opened by the shell on `e2ee.publishPending`.
+       */
+      type: "e2ee_finish_setup";
+    }
+  | {
+      /**
+       * Multi-device D5: this install shares its device identity with another
+       * of the user's installs. Auto-opened by the shell when a claim was
+       * refused twice (`deviceShared.via === "held_elsewhere"`).
+       */
+      type: "e2ee_device_shared";
+    }
+  | {
+      /**
+       * Multi-device D8: this device was removed from the account's
+       * encryption. Auto-opened by the shell on `e2ee.deviceRemoved`.
+       */
+      type: "e2ee_device_removed";
+    }
+  | {
+      /**
+       * Multi-device D7: remove ANOTHER of the user's own devices. `onRemoved`
+       * runs after the device was removed (refresh the device list).
+       */
+      type: "e2ee_remove_device";
+      deviceId: string;
+      sessionName: string | null;
+      onRemoved?: () => void;
     }
   | {
       type: "image_editor";

@@ -44,7 +44,9 @@ export function DraftMessageContextMenu(props: Props) {
         // A group this device cannot confirm is unencrypted refuses the
         // retry before anything leaves the device. Ask for consent; the
         // entry stays failed and nothing is resent automatically. Any other
-        // refusal already shows on the entry.
+        // refusal already shows on the entry, including every protected
+        // rejection: the retry went out under this entry's key, and Draft
+        // marked it failed with its notice kind, which DraftMessage shows.
         if (
           error instanceof E2EESendError &&
           (error.kind === "group_unconfirmed" ||

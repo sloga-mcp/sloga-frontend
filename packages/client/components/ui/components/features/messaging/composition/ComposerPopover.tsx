@@ -120,10 +120,18 @@ const Anchor = styled("div", {
   },
 });
 
+/*
+ * Starts below the desktop main window's own title bar (`--titlebar-height`,
+ * 0 without one): it is later in the page than #titlebar, so where it
+ * overlapped the bar it would take the window buttons' clicks.
+ */
 const Backdrop = styled("div", {
   base: {
     position: "fixed",
-    inset: 0,
+    top: "var(--titlebar-height, 0px)",
+    right: 0,
+    bottom: 0,
+    left: 0,
     zIndex: 999,
   },
 });

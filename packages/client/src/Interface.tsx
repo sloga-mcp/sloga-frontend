@@ -14,13 +14,14 @@ import { Server } from "stoat.js";
 import { styled } from "styled-system/jsx";
 
 import { ChannelContextMenu, ServerContextMenu } from "@revolt/app";
+import { ConnectionIndicator } from "@revolt/app/interface/ConnectionIndicator";
 import { MessageCache } from "@revolt/app/interface/channels/text/MessageCache";
-import { Titlebar } from "@revolt/app/interface/desktop/Titlebar";
 import { useClient, useClientLifecycle } from "@revolt/client";
 import { ActivityWorker } from "@revolt/client/ActivityWorker";
 import { ApkUpdateWorker } from "@revolt/client/ApkUpdateWorker";
 import { ChannelListQueriesWorker } from "@revolt/client/ChannelListQueriesWorker";
 import { DiscordImportWorker } from "@revolt/client/DiscordImportWorker";
+import { E2EEDeviceToastWorker } from "@revolt/client/E2EEDeviceToastWorker";
 import { FossUpdateNotice } from "@revolt/client/FossUpdateNotice";
 import { KeybindsWorker } from "@revolt/client/KeybindsWorker";
 import { NotificationsWorker } from "@revolt/client/NotificationsWorker";
@@ -151,7 +152,7 @@ const Interface = (props: { children: JSX.Element }) => {
   return (
     <MessageCache client={client()}>
       <AppRoot ref={rootRef} class="app_root">
-        <Titlebar />
+        <ConnectionIndicator />
         <Show
           when={
             streamerModeActive(state.settings) &&
@@ -223,6 +224,7 @@ const Interface = (props: { children: JSX.Element }) => {
         </Switch>
 
         <NotificationsWorker />
+        <E2EEDeviceToastWorker />
         {/* Receives friends-popout actions and notification clicks from the
             shell (or, on web, the popout's postMessage) and runs them in this
             window. Main window only: the popout and overlay never reach this
@@ -408,8 +410,8 @@ const Layout = styled("div", {
     // copied down from the title bar. The other half painted this whole
     // container brand-accent blue whenever the socket was down, which is not
     // something an app-wide container should ever do; the connection notice
-    // belongs to <Titlebar/> above. Kept as the base so every connected state
-    // looks exactly as it did.
+    // belongs to <ConnectionIndicator/> above. Kept as the base so every
+    // connected state looks exactly as it did.
     color: "var(--md-sys-color-outline)",
     background: "var(--md-sys-color-surface-container-high)",
   },

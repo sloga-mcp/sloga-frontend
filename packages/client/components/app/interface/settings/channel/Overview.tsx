@@ -27,6 +27,12 @@ import {
 } from "../../../../../src/lib/channelPassword";
 
 import { useClient } from "@revolt/client";
+import { errorUiCopy, settingsCopy } from "@revolt/client/protectedCopy";
+import {
+  PROTECTED_SERVER_ERROR_TYPES,
+  protectedActionsBlocked,
+  protectedNoticeForError,
+} from "@revolt/client/protectedShield";
 import { CONFIGURATION } from "@revolt/common";
 import { channelNounOf } from "@revolt/common/lib/channelNoun";
 import { useModals } from "@revolt/modal";
@@ -52,6 +58,57 @@ export default function ChannelOverview(props: ChannelSettingsProps) {
   const { openModal, showError } = useModals();
 
   const canManageChannel = () => props.channel.havePermission("ManageChannel");
+
+  /**
+   * Whether this is a Protected channel on this client: the server's flag
+   * or this device's pin (reactive). The server refuses any edit carrying
+   * `voice` or `announcement: true` on one with `ChannelProtected` (design
+   * 7.4), so plan D11 hides those controls instead of offering a refusal.
+   * Name, description, icon, slowmode, password, spoiler and mature edits
+   * are allowed and stay.
+   */
+  const isProtected = () => client().isProtectedChannel(props.channel.id);
+
+  /** Plan D11: the voice, calls, announcement and AFK controls. */
+  const typeTogglesHidden = () =>
+    protectedActionsBlocked(isProtected(), "channel_type_toggles");
+
+  /** Where a protected refusal is shown, so it sits by the control. */
+  type ProtectedNoticeAt = "info" | "password" | "announcement" | "spoiler";
+
+  const [protectedNotice, setProtectedNotice] = createSignal<{
+    at: ProtectedNoticeAt;
+    text: string;
+  } | null>(null);
+
+  /** The protected refusal copy shown at `at`, if any. */
+  const protectedNoticeAt = (at: ProtectedNoticeAt) => {
+    const notice = protectedNotice();
+    return notice?.at === at ? notice.text : null;
+  };
+
+  /**
+   * Show a protected server refusal (design 9.2 copy through A2's mapping,
+   * never `error.message`) by the control that caused it. Returns false for
+   * every other error, which keeps its existing handling. Keyed on the
+   * answer, not the flag: `ChannelProtected` for a channel this client has
+   * not seen protected yet still gets the right copy.
+   * @param error Rejection from the edit
+   * @param at Where to show it
+   */
+  function protectedRefusal(error: unknown, at: ProtectedNoticeAt): boolean {
+    const type = (error as { type?: unknown } | null | undefined)?.type;
+    if (
+      typeof type !== "string" ||
+      !(PROTECTED_SERVER_ERROR_TYPES as readonly string[]).includes(type)
+    ) {
+      return false;
+    }
+    const text = errorUiCopy(protectedNoticeForError(error, { op: "action" }));
+    if (text === null) return false;
+    setProtectedNotice({ at, text });
+    return true;
+  }
 
   /** What this channel is called in the labels below: post, thread or channel. */
   const noun = () => channelNounOf(props.channel);
@@ -84,9 +141,13 @@ export default function ChannelOverview(props: ChannelSettingsProps) {
    * is why those three already render on voice channels — a real bug, out of
    * scope here. `isVoice` on its own is also true for DMs and group DMs, which
    * have no server to designate anything on, hence the `serverId` term.
+   * Never on a Protected channel (plan D11): it is never a voice channel.
    */
   const canConfigureAfk = () =>
-    props.channel.isVoice && !!props.channel.serverId && canManageServer();
+    !typeTogglesHidden() &&
+    props.channel.isVoice &&
+    !!props.channel.serverId &&
+    canManageServer();
 
   /** Whether this channel is the one the server currently points at. */
   const isDesignatedAfk = () =>
@@ -219,12 +280,18 @@ export default function ChannelOverview(props: ChannelSettingsProps) {
 
   /** Toggle this text channel's announcement-channel flag. */
   async function toggleAnnouncement() {
+    if (typeTogglesHidden()) return;
+    setProtectedNotice(null);
     setAnnouncementSaving(true);
     try {
       await props.channel.edit({
         // stoat-api predates `announcement` — pass it through verbatim.
         announcement: !props.channel.isAnnouncement,
       } as never);
+    } catch (error) {
+      // Only a protected refusal is caught (the channel was protected
+      // after this page loaded); every other error is rethrown as before.
+      if (!protectedRefusal(error, "announcement")) throw error;
     } finally {
       setAnnouncementSaving(false);
     }
@@ -239,6 +306,7 @@ export default function ChannelOverview(props: ChannelSettingsProps) {
    * and a refusal must not look like nothing happened.
    */
   async function toggleSpoiler() {
+    setProtectedNotice(null);
     setSpoilerSaving(true);
     setSpoilerFailed(false);
     try {
@@ -248,7 +316,7 @@ export default function ChannelOverview(props: ChannelSettingsProps) {
       } as never);
     } catch (error) {
       setSpoilerFailed(true);
-      showError(error);
+      if (!protectedRefusal(error, "spoiler")) showError(error);
     } finally {
       setSpoilerSaving(false);
     }
@@ -265,6 +333,7 @@ export default function ChannelOverview(props: ChannelSettingsProps) {
    * answer back after the update.
    */
   async function toggleCalls() {
+    if (typeTogglesHidden()) return;
     setCallsSaving(true);
     try {
       await props.channel.edit({
@@ -345,6 +414,7 @@ export default function ChannelOverview(props: ChannelSettingsProps) {
    */
   async function setChannelPassword() {
     const pw = pwInput().trim();
+    setProtectedNotice(null);
     setPwSaving(true);
     setPwFailed(false);
     try {
@@ -361,7 +431,7 @@ export default function ChannelOverview(props: ChannelSettingsProps) {
       setTimeout(() => setPwStatus("idle"), 2500);
     } catch (error) {
       setPwFailed(true);
-      showError(error);
+      if (!protectedRefusal(error, "password")) showError(error);
     } finally {
       setPwSaving(false);
     }
@@ -444,7 +514,23 @@ export default function ChannelOverview(props: ChannelSettingsProps) {
     await props.channel.edit(changes);
   }
 
-  const submit = Form2.useSubmitHandler(editGroup, onSubmit, onReset);
+  /**
+   * The info form's save. `Form2` keeps a failure on the group, which this
+   * page does not render, so on a Protected channel it is shown: a
+   * protected refusal by the form, anything else in the error dialog. It is
+   * rethrown either way, so the form keeps the unsaved edits.
+   */
+  async function onSubmitShown() {
+    setProtectedNotice(null);
+    try {
+      await onSubmit();
+    } catch (error) {
+      if (!protectedRefusal(error, "info") && isProtected()) showError(error);
+      throw error;
+    }
+  }
+
+  const submit = Form2.useSubmitHandler(editGroup, onSubmitShown, onReset);
 
   return (
     <Column gap="xl">
@@ -546,6 +632,9 @@ export default function ChannelOverview(props: ChannelSettingsProps) {
               <CircularProgress />
             </Show>
           </Row>
+          <Show when={protectedNoticeAt("info")}>
+            {(text) => <Text>{text()}</Text>}
+          </Show>
         </Column>
       </form>
       <Show when={!isThread()}>
@@ -645,10 +734,23 @@ export default function ChannelOverview(props: ChannelSettingsProps) {
               <Trans>That change was not saved.</Trans>
             </Text>
           </Show>
+          <Show when={protectedNoticeAt("password")}>
+            {(text) => <Text>{text()}</Text>}
+          </Show>
         </Column>
       </Show>
 
-      <Show when={props.channel.type === "TextChannel" && canManageChannel()}>
+      <Show when={typeTogglesHidden() && canManageChannel()}>
+        <Text>{settingsCopy.typeTogglesHidden()}</Text>
+      </Show>
+
+      <Show
+        when={
+          !typeTogglesHidden() &&
+          props.channel.type === "TextChannel" &&
+          canManageChannel()
+        }
+      >
         <Column>
           <Text class="label">
             <Trans>Announcement Channel</Trans>
@@ -671,6 +773,9 @@ export default function ChannelOverview(props: ChannelSettingsProps) {
               </Switch>
             </Button>
           </div>
+          <Show when={protectedNoticeAt("announcement")}>
+            {(text) => <Text>{text()}</Text>}
+          </Show>
         </Column>
       </Show>
 
@@ -712,10 +817,19 @@ export default function ChannelOverview(props: ChannelSettingsProps) {
               <Trans>That change was not saved.</Trans>
             </Text>
           </Show>
+          <Show when={protectedNoticeAt("spoiler")}>
+            {(text) => <Text>{text()}</Text>}
+          </Show>
         </Column>
       </Show>
 
-      <Show when={props.channel.type === "Group" && canManageChannel()}>
+      <Show
+        when={
+          !typeTogglesHidden() &&
+          props.channel.type === "Group" &&
+          canManageChannel()
+        }
+      >
         <Column>
           <Text class="label">
             <Trans>Voice and Video Calls</Trans>

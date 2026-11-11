@@ -177,24 +177,91 @@ const button = cva({
 
     color: "var(--color)",
     fill: "var(--color)",
+
+    // Modern: a ring that shows only for keyboard focus. An outline rather
+    // than a shadow, so it never fights the variant's own shadows.
+    _modern: {
+      _focusVisible: {
+        outline: "2px solid var(--md-sys-color-primary)",
+        outlineOffset: "2px",
+      },
+    },
   },
   variants: {
     /**
      * Variant is equivalent to 'color' in Material spec
+     *
+     * Under the Modern style the filled ones are raised: a translucent light
+     * gradient over the fill (so a `bg` colour still shows through it), a
+     * lit top edge and a soft shadow tinted with the fill. Hover lifts them a
+     * pixel (unless reduced motion is on), press sinks them.
      */
     variant: {
       elevated: {
         boxShadow: "0 0.5px 1.5px #0004",
         background: "var(--md-sys-color-surface-container-low)",
         "--color": "var(--md-sys-color-primary)",
+        _modern: {
+          backgroundImage:
+            "linear-gradient(180deg, rgb(255 255 255 / 0.07), rgb(255 255 255 / 0) 70%)",
+          boxShadow:
+            "inset 0 0 0 1px color-mix(in srgb, var(--md-sys-color-on-surface) 10%, transparent), inset 0 1px 0 rgb(255 255 255 / 0.06), 0 1px 2px rgb(0 0 0 / 0.25)",
+          _enabled: {
+            _hover: {
+              boxShadow:
+                "inset 0 0 0 1px color-mix(in srgb, var(--md-sys-color-on-surface) 14%, transparent), inset 0 1px 0 rgb(255 255 255 / 0.08), 0 2px 4px rgb(0 0 0 / 0.25), 0 8px 18px -8px rgb(0 0 0 / 0.45)",
+              _motionSafe: { transform: "translateY(-1px)" },
+            },
+            _active: {
+              transform: "none",
+              boxShadow:
+                "inset 0 0 0 1px color-mix(in srgb, var(--md-sys-color-on-surface) 10%, transparent), inset 0 2px 3px rgb(0 0 0 / 0.3)",
+            },
+          },
+        },
       },
       filled: {
         background: "var(--md-sys-color-primary)",
         "--color": "var(--md-sys-color-on-primary)",
+        _modern: {
+          backgroundImage:
+            "linear-gradient(180deg, rgb(255 255 255 / 0.18), rgb(255 255 255 / 0) 65%)",
+          boxShadow:
+            "inset 0 1px 0 rgb(255 255 255 / 0.25), 0 1px 2px rgb(0 0 0 / 0.3), 0 6px 16px -6px color-mix(in srgb, var(--md-sys-color-primary) 55%, transparent)",
+          _enabled: {
+            _hover: {
+              boxShadow:
+                "inset 0 1px 0 rgb(255 255 255 / 0.3), 0 2px 4px rgb(0 0 0 / 0.3), 0 10px 22px -6px color-mix(in srgb, var(--md-sys-color-primary) 70%, transparent)",
+              _motionSafe: { transform: "translateY(-1px)" },
+            },
+            _active: {
+              transform: "none",
+              boxShadow: "inset 0 2px 4px rgb(0 0 0 / 0.28)",
+            },
+          },
+        },
       },
       tonal: {
         background: "var(--md-sys-color-secondary-container)",
         "--color": "var(--md-sys-color-on-secondary-container)",
+        _modern: {
+          backgroundImage:
+            "linear-gradient(180deg, rgb(255 255 255 / 0.07), rgb(255 255 255 / 0) 70%)",
+          boxShadow:
+            "inset 0 0 0 1px color-mix(in srgb, var(--md-sys-color-on-surface) 10%, transparent), inset 0 1px 0 rgb(255 255 255 / 0.06), 0 1px 2px rgb(0 0 0 / 0.25)",
+          _enabled: {
+            _hover: {
+              boxShadow:
+                "inset 0 0 0 1px color-mix(in srgb, var(--md-sys-color-on-surface) 14%, transparent), inset 0 1px 0 rgb(255 255 255 / 0.08), 0 2px 4px rgb(0 0 0 / 0.25), 0 8px 18px -8px rgb(0 0 0 / 0.45)",
+              _motionSafe: { transform: "translateY(-1px)" },
+            },
+            _active: {
+              transform: "none",
+              boxShadow:
+                "inset 0 0 0 1px color-mix(in srgb, var(--md-sys-color-on-surface) 10%, transparent), inset 0 2px 3px rgb(0 0 0 / 0.3)",
+            },
+          },
+        },
       },
       outlined: {
         border: "1px solid var(--md-sys-color-outline-variant)",
@@ -206,6 +273,23 @@ const button = cva({
       _error: {
         background: "var(--md-sys-color-error)",
         "--color": "var(--md-sys-color-on-error)",
+        _modern: {
+          backgroundImage:
+            "linear-gradient(180deg, rgb(255 255 255 / 0.16), rgb(255 255 255 / 0) 65%)",
+          boxShadow:
+            "inset 0 1px 0 rgb(255 255 255 / 0.22), 0 1px 2px rgb(0 0 0 / 0.3), 0 6px 16px -6px color-mix(in srgb, var(--md-sys-color-error) 50%, transparent)",
+          _enabled: {
+            _hover: {
+              boxShadow:
+                "inset 0 1px 0 rgb(255 255 255 / 0.26), 0 2px 4px rgb(0 0 0 / 0.3), 0 10px 22px -6px color-mix(in srgb, var(--md-sys-color-error) 65%, transparent)",
+              _motionSafe: { transform: "translateY(-1px)" },
+            },
+            _active: {
+              transform: "none",
+              boxShadow: "inset 0 2px 4px rgb(0 0 0 / 0.28)",
+            },
+          },
+        },
       },
       /**
        * Tertiary-container fill, for a consequential ACTION sitting in a row
@@ -408,6 +492,8 @@ const button = cva({
           "color-mix(in srgb, 38% var(--md-sys-color-on-surface), transparent)",
         background:
           "color-mix(in srgb, 10% var(--md-sys-color-on-surface), transparent)",
+        // a disabled button is flat in either style
+        _modern: { backgroundImage: "none", boxShadow: "none" },
       },
     },
     {

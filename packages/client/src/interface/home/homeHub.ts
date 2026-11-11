@@ -145,8 +145,41 @@ export function streamThumbnail(
 
 /** Most rows each "Jump back in" card shows */
 export const JUMP_UNREAD_LIMIT = 4;
-export const JUMP_VOICE_LIMIT = 4;
 export const JUMP_EVENT_LIMIT = 3;
+
+/** Most calls "Happening now" lists */
+export const HAPPENING_ROOM_LIMIT = 6;
+
+/** Most mentions the Mentions card lists (one message fetch each) */
+export const HOME_MENTION_LIMIT = 5;
+
+/**
+ * Most mentions the card will fetch to fill its rows. Mentions from blocked
+ * authors are fetched and then left out, so the card reads further down the
+ * list to fill their place, up to here.
+ */
+export const HOME_MENTION_SCAN_LIMIT = 15;
+
+/** Mention fetches in flight at once */
+export const HOME_MENTION_CONCURRENCY = 2;
+
+/**
+ * How long a mention whose message failed to load (deleted, no access) is
+ * skipped before the card asks for it again
+ */
+export const HOME_MENTION_RETRY_MS = 10 * 60 * 1000;
+
+/** Longest mention preview, in characters */
+export const MENTION_PREVIEW_LENGTH = 140;
+
+/** Most friends the Friends online card lists; "All friends" has the rest */
+export const HOME_FRIEND_LIMIT = 8;
+
+/** Servers the suggestions card shows */
+export const HOME_DISCOVER_LIMIT = 3;
+
+/** How long the suggestions are reused before Home asks the directory again */
+export const HOME_DISCOVER_CACHE_MS = 10 * 60 * 1000;
 
 /**
  * Most events Home asks the cross-server upcoming route for. It returns them
@@ -204,10 +237,11 @@ export type VoiceRoomCandidate = {
 };
 
 /**
- * Voice channels with friends in them, busiest first. The viewer is never
- * counted, and the call the viewer is already in is left out.
+ * Calls with someone in them for "Happening now": rooms with friends first,
+ * then the busiest. The viewer is never counted, and the call the viewer is
+ * already in is left out.
  */
-export function pickVoiceRooms<T extends VoiceRoomCandidate>(
+export function pickHappening<T extends VoiceRoomCandidate>(
   rooms: readonly T[],
   friendIds: ReadonlySet<string>,
   options: {
@@ -215,18 +249,192 @@ export function pickVoiceRooms<T extends VoiceRoomCandidate>(
     currentChannelId?: string;
     limit?: number;
   } = {},
-): { room: T; friendIds: string[] }[] {
+): { room: T; people: string[]; friendIds: string[] }[] {
   return rooms
     .filter((room) => room.channelId !== options.currentChannelId)
-    .map((room) => ({
-      room,
-      friendIds: room.participantIds.filter(
-        (id) => id !== options.viewerId && friendIds.has(id),
-      ),
-    }))
-    .filter((entry) => entry.friendIds.length > 0)
-    .sort((a, b) => b.friendIds.length - a.friendIds.length)
-    .slice(0, options.limit ?? JUMP_VOICE_LIMIT);
+    .map((room) => {
+      const people = room.participantIds.filter(
+        (id) => id !== options.viewerId,
+      );
+      return {
+        room,
+        people,
+        friendIds: people.filter((id) => friendIds.has(id)),
+      };
+    })
+    .filter((entry) => entry.people.length > 0)
+    .sort(
+      (a, b) =>
+        b.friendIds.length - a.friendIds.length ||
+        b.people.length - a.people.length ||
+        (a.room.channelId < b.room.channelId
+          ? -1
+          : a.room.channelId > b.room.channelId
+            ? 1
+            : 0),
+    )
+    .slice(0, options.limit ?? HAPPENING_ROOM_LIMIT);
+}
+
+// Uppercase Crockford ULID, the shape of every message id
+const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+
+/** A channel and the unread messages in it that mention the viewer */
+export type MentionCandidate = {
+  channelId: string;
+  messageIds: Iterable<string>;
+};
+
+/**
+ * The newest unread mentions across channels. Message ids are ULIDs, so
+ * sorting them sorts by time.
+ */
+export function pickMentionIds(
+  channels: readonly MentionCandidate[],
+  limit = HOME_MENTION_LIMIT,
+): { channelId: string; messageId: string }[] {
+  const seen = new Set<string>();
+  const out: { channelId: string; messageId: string }[] = [];
+  for (const channel of channels) {
+    for (const messageId of channel.messageIds) {
+      if (typeof messageId !== "string" || !ULID.test(messageId)) continue;
+      if (seen.has(messageId)) continue;
+      seen.add(messageId);
+      out.push({ channelId: channel.channelId, messageId });
+    }
+  }
+  return out
+    .sort((a, b) =>
+      a.messageId < b.messageId ? 1 : a.messageId > b.messageId ? -1 : 0,
+    )
+    .slice(0, limit);
+}
+
+/**
+ * Fetch a list's items in order, a few at a time, until `want` of them pass
+ * `keep` or the list runs out. Results come back in list order; an item
+ * whose fetch fails or finds nothing is left out. No new fetch starts once
+ * enough have been kept; fetches already running when that happens still
+ * finish, so a slow one can let the other workers read a few items past
+ * what filling the rows needed.
+ * @param count Items in the list
+ * @param fetchOne Fetch the item at an index
+ * @param options How many to keep, which count, and fetches in flight at once
+ */
+export async function fetchInOrder<T>(
+  count: number,
+  fetchOne: (index: number) => Promise<T | undefined>,
+  options: { want: number; keep: (value: T) => boolean; concurrency: number },
+): Promise<T[]> {
+  const results: (T | undefined)[] = new Array(count);
+  let next = 0;
+  let kept = 0;
+
+  const worker = async () => {
+    while (next < count && kept < options.want) {
+      const index = next++;
+      try {
+        const value = await fetchOne(index);
+        results[index] = value;
+        if (value !== undefined && options.keep(value)) kept++;
+      } catch {
+        // gone or not ours to read: skip it
+      }
+    }
+  };
+
+  await Promise.all(
+    Array.from({ length: Math.min(options.concurrency, count) }, worker),
+  );
+  return results.filter((value): value is T => value !== undefined);
+}
+
+/**
+ * One line of plain text from a message for the Mentions card, or undefined
+ * when there is no text to show. Mentions and custom emoji are written out
+ * as names instead of their raw `<@id>` and `:id:` forms; nothing is parsed
+ * as markdown.
+ */
+export function mentionPreview(
+  content: unknown,
+  names: {
+    user?: (id: string) => string | undefined;
+    channel?: (id: string) => string | undefined;
+  } = {},
+): string | undefined {
+  if (typeof content !== "string") return undefined;
+
+  const line = content
+    .replace(
+      /<@([0-9A-HJKMNP-TV-Z]{26})>/g,
+      (_, id: string) => `@${names.user?.(id) ?? "user"}`,
+    )
+    .replace(
+      /<#([0-9A-HJKMNP-TV-Z]{26})>/g,
+      (_, id: string) => `#${names.channel?.(id) ?? "channel"}`,
+    )
+    .replace(/<%[0-9A-HJKMNP-TV-Z]{26}>/g, "@role")
+    .replace(/:[0-9A-HJKMNP-TV-Z]{26}:/g, ":emoji:")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!line) return undefined;
+
+  // counted in code points so the cut never splits an emoji
+  const chars = Array.from(line);
+  if (chars.length <= MENTION_PREVIEW_LENGTH) return line;
+  return `${chars
+    .slice(0, MENTION_PREVIEW_LENGTH - 1)
+    .join("")
+    .trimEnd()}…`;
+}
+
+/** An online friend as far as the Friends online card decides */
+export type FriendCandidate = {
+  id: string;
+  name: string;
+  inVoice: boolean;
+  playing: boolean;
+};
+
+/**
+ * Online friends in the order the card lists them: in a call, then playing
+ * something, then everyone else, each group by name
+ */
+export function pickOnlineFriends<T extends FriendCandidate>(
+  friends: readonly T[],
+  limit = HOME_FRIEND_LIMIT,
+): T[] {
+  const rank = (friend: T) => (friend.inVoice ? 0 : friend.playing ? 1 : 2);
+  return [...friends]
+    .sort(
+      (a, b) =>
+        rank(a) - rank(b) ||
+        a.name.localeCompare(b.name, undefined, { sensitivity: "base" }) ||
+        (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+    )
+    .slice(0, limit);
+}
+
+/**
+ * Directory servers to suggest: ones the viewer is not in, in the
+ * directory's own order, each once. Anything without a usable id is skipped.
+ */
+export function pickDiscover<T extends { _id: unknown }>(
+  servers: readonly T[] | undefined,
+  joined: ReadonlySet<string>,
+  limit = HOME_DISCOVER_LIMIT,
+): T[] {
+  if (!Array.isArray(servers)) return [];
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const server of servers) {
+    const id = server?._id;
+    if (typeof id !== "string" || joined.has(id) || seen.has(id)) continue;
+    seen.add(id);
+    out.push(server);
+    if (out.length >= limit) break;
+  }
+  return out;
 }
 
 /** A calendar series and its occurrence starts (ms epoch) */

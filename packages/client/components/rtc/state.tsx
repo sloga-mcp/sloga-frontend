@@ -52,6 +52,8 @@ interface MicPipelineWants {
   denoise: boolean;
   gainPercent: number;
   tonePreset: VoiceTonePresetId;
+  /** Voice changer pitch in semitones; 0 = off (`voicePitch.ts`). */
+  pitchSemitones: number;
 }
 
 /** Native Android foreground service keeping calls alive in the background */
@@ -239,6 +241,7 @@ import {
   moveTokenUsable,
 } from "./voiceMovePolicy";
 import { voiceNodeForChannel } from "./voiceNode";
+import { voicePitchIsActive } from "./voicePitch";
 import {
   isRejoinPreempted,
   MAX_REJOIN_ATTEMPTS,
@@ -412,32 +415,11 @@ export interface DiceRollToast {
  */
 export const DICE_TOAST_MS = 3400;
 
-/**
- * Whether THIS platform's shell has an AUDITED media-E2EE path (EL1 audit
- * S7, hard exit criterion; EL4 flip, mechanism A). TRUE with no Electron
- * shell at all (Windows Tauri / Android Capacitor / web — unchanged), or
- * when the shell's nonce-gated e2ee surface itself advertises the audited
- * capability: `slogaShell.e2ee.mediaE2EE === true`, set only by the Linux
- * shell's preload (platform-gated there, so a future mac build from the
- * shared shell source cannot inherit it — I6). FALSE for any other
- * `slogaShell` (older Linux shells, any unaudited shell) even though
- * insertable streams and the key-push channel both probe TRUE there.
- * Skew fails closed: a new dist over an old shell finds no flag and stays
- * closed, an old dist over a new shell never consults it (I9
- * defense-in-depth beyond the one-artifact rule). The real trust boundary
- * is contextIsolation on Electron (a page cannot mint the preload flag);
- * on web, fabricating the whole surface — flag included — requires
- * page-script execution, which is already total renderer compromise, and
- * the failure direction of a fabricated-but-dead bridge is a broken loud
- * call, never a false "encrypted" claim (chips derive from the
- * media-plane witness, I10).
- */
-export function platformMediaE2EESupported(): boolean {
-  if (!("slogaShell" in window)) return true;
-  const shell = (window as { slogaShell?: { e2ee?: { mediaE2EE?: unknown } } })
-    .slogaShell;
-  return shell?.e2ee?.mediaE2EE === true;
-}
+// `platformMediaE2EESupported` (the audited-media-path rule, EL4) moved to
+// the pure `e2eePlatform.ts` (plan D7), where the bridge's KeyPackage
+// prepublish shares it through `mediaE2EEPlatformSupported`. Re-exported so
+// `@revolt/rtc` importers are unchanged.
+export { platformMediaE2EESupported } from "../client/e2eePlatform";
 
 /**
  * Cap the visible toast stack (roomy enough for a party rolling initiative at
@@ -3350,18 +3332,22 @@ class Voice {
     // releases it.
     //
     // Fail-CLOSED on a no-key-push shell (slice 6.4 step 7, audit H3/NEW-4):
-    // `nativeE2EEAvailable()` is TRUE on the Capacitor Android shell, but that
-    // shell cannot yet RECEIVE `e2ee:call-keys-changed` (its listener is 6.7),
-    // so an E2EE-capable Room there would never install a first local key — the
-    // pause-publish window would stay open forever and publish plaintext under
-    // an "encrypted" Room (invariant 1). `nativeKeyPushAvailable()` is a
-    // SYNCHRONOUS probe decided HERE, at construction (never gated on the async
-    // `onCallKeysChanged` return, which resolves too late); a shell without the
-    // key-push channel is built as a non-E2EE shell (the loud non-enrolled
-    // path). The bridge is sourced once here and reused below.
+    // `nativeE2EEAvailable()` is TRUE on a Capacitor shell that does not
+    // RECEIVE `e2ee:call-keys-changed` (Android before 6.7a; iOS, which
+    // answers false on purpose, plan D7), so an E2EE-capable Room there would
+    // never install a first local key — the pause-publish window would stay
+    // open forever and publish plaintext under an "encrypted" Room (invariant
+    // 1). `nativeKeyPushAvailable()` (inside `mediaE2EEPlatformSupported()`
+    // below) is a SYNCHRONOUS probe decided HERE, at construction (never gated
+    // on the async `onCallKeysChanged` return, which resolves too late); a
+    // shell without the key-push channel is built as a non-E2EE shell (the
+    // loud non-enrolled path). The bridge is sourced once here and reused
+    // below.
     const bridge = this.getClient()?.e2ee as E2EEBridge | undefined;
     // Wire the "Encrypt my calls" accessor into the bridge (§0.2 #9) so the
     // media-E2EE KeyPackage pre-publish is gated on the local toggle (ME-14).
+    // This runs on every shell and the accessor hard-returns true today, so
+    // the pre-publish checks `mediaE2EEPlatformSupported()` first (plan D7).
     bridge?.setCallsEnabled(() => this.#settings.e2eeCallsEnabled);
     // The PLATFORM terms — what this SHELL could do, independent of whether
     // this install has any encryption set up. Split from the device terms
@@ -3371,13 +3357,15 @@ class Voice {
     const shellSupported =
       isE2EESupported() &&
       nativeE2EEAvailable() &&
-      !!bridge?.nativeKeyPushAvailable() &&
-      // Media E2EE arms on Electron only for an audited shell build that
-      // advertises the nonce-gated capability flag (EL4 mechanism A);
-      // every other slogaShell stays fail-closed even though insertable
-      // streams + the key-push channel both probe TRUE there (EL1 audit
-      // S7, hard exit criterion).
-      platformMediaE2EESupported() &&
+      // ONE predicate (plan D7), shared with the bridge's KeyPackage
+      // pre-publish: the shell can receive native call-key pushes AND its
+      // media path is audited. Media E2EE arms on Electron only for an
+      // audited shell build that advertises the nonce-gated capability flag
+      // (EL4 mechanism A); every other slogaShell stays fail-closed even
+      // though insertable streams + the key-push channel both probe TRUE
+      // there (EL1 audit S7, hard exit criterion). iOS reads false: its key
+      // push answers false on purpose (D7 media gate pin).
+      !!bridge?.mediaE2EEPlatformSupported() &&
       // "Encrypt my calls" (§0.2 #9): with it OFF we negotiate plaintext —
       // no session, no E2EE Room — and appear non-enrolled to E2EE peers
       // (their loud downgrade attributes it to us). LOCAL per-device toggle.
@@ -3850,7 +3838,8 @@ class Voice {
       // feed watched.
       this.#pruneWatchedShares();
       this.#watchControlledShares();
-      // Voice shaper, input gain and the noise filter apply LIVE: the mic
+      // Voice changer, voice shaper, input gain and the noise filter apply
+      // LIVE: the mic
       // runs one processor and every stage of it is tunable in place. The
       // settings reads are tracked, the apply is not — nothing it writes
       // may re-trigger it. Runs once at root creation too, which is a no-op
@@ -6768,6 +6757,7 @@ class Voice {
       denoise: this.#settings.noiseSupression === "enhanced",
       gainPercent: this.#settings.microphoneGain ?? 100,
       tonePreset: this.#settings.voiceTonePreset,
+      pitchSemitones: this.#settings.voicePitchSemitones,
     };
   }
 
@@ -6819,7 +6809,8 @@ class Voice {
    * Reconcile the mic processor with the settings. LiveKit gives a track
    * ONE processor slot, so every mic stage lives in the same
    * `VoiceAudioPipeline` and this is the only place that attaches one.
-   * All-default settings (browser/no noise filter, unity gain, shaper off)
+   * All-default settings (browser/no noise filter, unity gain, shaper and
+   * voice changer off)
    * run the raw capture with no Web Audio hop at all; the pipeline is
    * attached the first time any stage is wanted WHILE THE PUBLISH GATE IS
    * EMPTY, and then stays for the life of the track, tuned in place. Under
@@ -6838,7 +6829,8 @@ class Voice {
       wantsDefault:
         !want.denoise &&
         want.gainPercent === 100 &&
-        want.tonePreset === VOICE_TONE_PRESET_DEFAULT,
+        want.tonePreset === VOICE_TONE_PRESET_DEFAULT &&
+        !voicePitchIsActive(want.pitchSemitones),
     });
     if (action === "tune") {
       // "tune" is the `hasPipeline` arm, so the slot is live here; the guard
@@ -6846,6 +6838,8 @@ class Voice {
       if (!pipeline) return;
       pipeline.setGain(want.gainPercent);
       pipeline.setTonePreset(want.tonePreset).catch(() => undefined);
+      // Same fallback for the voice changer worklet: pitch stays off.
+      pipeline.setPitch(want.pitchSemitones).catch(() => undefined);
       // Asset load can fail (offline at first enable): denoise stays off and
       // audio keeps flowing — the same fallback as a join-time failure.
       pipeline.setDenoiseEnabled(want.denoise).catch(() => undefined);

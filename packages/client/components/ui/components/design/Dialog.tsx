@@ -1,5 +1,5 @@
 import { useWindowCtx } from "@revolt/client/windowCtx";
-import type { JSX } from "solid-js";
+import type { ComponentProps, JSX } from "solid-js";
 import { For, Show } from "solid-js";
 import { Portal } from "solid-js/web";
 import { Motion, Presence } from "solid-motionone";
@@ -82,9 +82,7 @@ export function Dialog(props: Props) {
                   <Icon>{props.icon}</Icon>
                 </Show>
                 <Show when={props.title}>
-                  <Title withIcon={typeof props.icon !== "undefined"}>
-                    {props.title}
-                  </Title>
+                  <Title>{props.title}</Title>
                 </Show>
                 <Content class={typography()}>{props.children}</Content>
                 <Show when={props.actions}>
@@ -122,12 +120,8 @@ export function Dialog(props: Props) {
   );
 }
 
-/**
- * Full-screen scrim shown below dialogs
- *
- * @specification https://m3.material.io/components/dialogs
- */
-Dialog.Scrim = styled("div", {
+/** The scrim's look; use `Dialog.Scrim`, which marks it. */
+const ScrimBase = styled("div", {
   base: {
     top: 0,
     left: 0,
@@ -151,6 +145,12 @@ Dialog.Scrim = styled("div", {
   },
   variants: {
     show: {
+      // Modern: blur what is behind an open dialog. Only while it is shown:
+      // a closed modal stays mounted for its exit, and the blur must not
+      // outlive it. Off with the appearance menu's blur switch.
+      true: {
+        _modern: { backdropFilter: "var(--effects-blur-md)" },
+      },
       false: {
         animationName: "unset",
         pointerEvents: "none",
@@ -185,6 +185,18 @@ Dialog.Scrim = styled("div", {
   },
 });
 
+/**
+ * Full-screen scrim shown below dialogs
+ *
+ * Marked `data-scrim` on every use, so `ui/styles.css` can keep it from
+ * cancelling the desktop main window's title bar drag region.
+ *
+ * @specification https://m3.material.io/components/dialogs
+ */
+Dialog.Scrim = (props: ComponentProps<typeof ScrimBase>) => (
+  <ScrimBase data-scrim="" {...props} />
+);
+
 const Container = styled("div", {
   base: {
     padding: "24px",
@@ -197,6 +209,15 @@ const Container = styled("div", {
 
     color: "var(--md-sys-color-on-surface)",
     background: "var(--md-sys-color-surface-container-high)",
+
+    // Modern: a crisper frame that floats off the page
+    _modern: {
+      borderRadius: "16px",
+      border:
+        "1px solid color-mix(in srgb, var(--md-sys-color-on-surface) 9%, transparent)",
+      boxShadow:
+        "inset 0 1px 0 rgb(255 255 255 / 0.04), 0 24px 60px -16px rgb(0 0 0 / 0.6)",
+    },
   },
 });
 
@@ -212,22 +233,14 @@ const Title = styled("span", {
   base: {
     ...typography.raw({ class: "headline", size: "small" }),
     marginBlockEnd: "16px",
-  },
-  variants: {
-    withIcon: {
-      true: {
-        textAlign: "center",
-      },
-    },
-  },
-  defaultVariants: {
-    withIcon: false,
+    textAlign: "center",
   },
 });
 
 const Content = styled("div", {
   base: {
     color: "var(--md-sys-color-on-surface-variant)",
+    textAlign: "center",
   },
 });
 
@@ -235,7 +248,16 @@ const Actions = styled("div", {
   base: {
     gap: "8px",
     display: "flex",
-    justifyContent: "end",
+    // Buttons carry flexShrink: 0, so a row that does not fit cannot squash --
+    // without wrapping it overflows, and because the row used to be
+    // end-justified the overflow ran off the START edge, clipping the FIRST
+    // action rather than the last. On a phone "Start a Chat Room or Server"
+    // lost the left half of "Chat Room" that way.
+    flexWrap: "wrap",
+    // Centred rather than M3's end-alignment, matching the title and content
+    // above: dialogs share ONE centre axis, so every element lines up. Mixing
+    // the two (left-aligned text over centred buttons) is what read as broken.
+    justifyContent: "center",
     marginBlockStart: "24px",
   },
 });

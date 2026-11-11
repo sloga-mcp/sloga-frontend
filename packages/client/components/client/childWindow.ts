@@ -188,8 +188,14 @@ export function isMirroredHeadNode(node: Node): node is HTMLElement {
   return rel.toLowerCase().split(/\s+/).includes("stylesheet");
 }
 
-/** `<html>` / `<body>` attributes mirrored into the child (theme, layout, locale). */
+/**
+ * `<html>` / `<body>` attributes mirrored into the child (theme, layout,
+ * locale). Not `data-main-titlebar`: it says main draws its own title bar,
+ * and the rules keyed on it (the 32 px offset, the scrim and settings-page
+ * drag exemptions) must not reach a child window, which has its own bar.
+ */
 export function isMirroredRootAttribute(name: string): boolean {
+  if (name === "data-main-titlebar") return false;
   return (
     name === "class" ||
     name === "style" ||

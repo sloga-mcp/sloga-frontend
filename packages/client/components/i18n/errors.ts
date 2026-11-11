@@ -127,6 +127,47 @@ export function useError() {
         return t`You already have a checkout in progress. Finish it, or pick again after it expires.`;
       if (errType === "PaymentProviderError")
         return t`The payment provider didn't respond. Please try again.`;
+      // Protected channels (same lag pattern). The protected-channel UI maps
+      // these itself through `protectedNoticeForError`; this is the copy for
+      // anywhere else. Same msgids as `protectedCopy.ts` (design 9.2). The
+      // Resecuring `reason` does not change the copy, and `ChannelProtected`
+      // carries no context here, so it gets the general wording.
+      const rawMax = (err as { max?: unknown }).max;
+      const max =
+        typeof rawMax === "number" &&
+        Number.isSafeInteger(rawMax) &&
+        rawMax >= 0
+          ? rawMax
+          : null;
+      if (errType === "ProtectedChannelResecuring")
+        return t`Re-securing this channel…`;
+      if (errType === "NotSeated")
+        return t`You don't have a seat in this protected channel. Ask the owner for a seat.`;
+      if (errType === "SeatCapReached")
+        return max === null
+          ? t`All seats are in use. Released seats count for 14 days.`
+          : t`All ${max} seats are in use. Released seats count for 14 days.`;
+      if (errType === "DeviceCapReached")
+        return max === null
+          ? t`This member already has the maximum number of devices in this channel.`
+          : t`This member already has ${max} devices in this channel.`;
+      if (errType === "ChannelProtected")
+        return t`Not available in protected channels.`;
+      if (errType === "ProtectedFieldRefused")
+        return t`This message couldn't be sent securely.`;
+      // Seat PUT refused for naming users the server removed (the users are
+      // ids, so the generic copy here; the owner UI can name them).
+      if (errType === "SeatListNamesRemovedUsers")
+        return t`Some members were removed from this server and were left off the seat list.`;
+      // `FeatureDisabled` for the two protected-channel features; any other
+      // feature falls through to the generic copy in the switch below.
+      if (errType === "FeatureDisabled") {
+        const feature = (err as { feature?: unknown }).feature;
+        if (feature === "protected_channels")
+          return t`Protected channels are unavailable right now.`;
+        if (feature === "e2ee")
+          return t`Encrypted messaging is unavailable right now.`;
+      }
       // Prot (same lag pattern). Amounts are grouped in the app locale.
       if (errType === "ProtDisabled") return t`Prot isn't available right now.`;
       if (errType === "ProtSalesClosed")
@@ -154,6 +195,16 @@ export function useError() {
         );
         return t`You don't have enough Prot for this: it needs ${protNeeded} Prot and you have ${protAvailable}.`;
       }
+      // A first publication of a device id removed from the account's
+      // encryption (same lag pattern). The bridge also raises `deviceRemoved`,
+      // whose modal offers to set this install up again as a new device.
+      if (errType === "E2EEDeviceRemoved")
+        return t`This device was removed from your account's encryption.`;
+      // The server refused to remove a device another live install of this
+      // account is using (same lag pattern). `disable()` normally catches
+      // this before it wipes anything and offers the split instead.
+      if (errType === "E2EEDeviceHeldElsewhere")
+        return t`This app shares its encryption identity with another of your apps. Turning encryption off here would turn it off there too. Make this app a separate device instead. Don't recognize the other app? Change your password, then remove it in Settings > Encryption on a device you trust.`;
 
       switch (err.type) {
         case "AlreadyFriends":

@@ -1,0 +1,169 @@
+diff --git a/dist/state/index.cjs.js b/dist/state/index.cjs.js
+index 361f414bd5158d4531bab62dec706af7e7fd8e5c..7bab52b75bde8504402cd554dea60768abae81d6 100644
+--- a/dist/state/index.cjs.js
++++ b/dist/state/index.cjs.js
+@@ -181,6 +181,8 @@ function createMotionState(options$1 = {}, parent) {
+             };
+         },
+         isMounted: () => Boolean(element),
++        // Sloga patch: the scheduler flushes on this element's window.
++        getElement: () => element,
+     };
+     return state;
+ }
+diff --git a/dist/state/index.es.js b/dist/state/index.es.js
+index 84cd37ed2dd4a6b8e07fcf3bd94af793a58d6ce2..3956230cae448bdcf09a45312552b4fdbd380b3a 100644
+--- a/dist/state/index.es.js
++++ b/dist/state/index.es.js
+@@ -179,6 +179,8 @@ function createMotionState(options = {}, parent) {
+             };
+         },
+         isMounted: () => Boolean(element),
++        // Sloga patch: the scheduler flushes on this element's window.
++        getElement: () => element,
+     };
+     return state;
+ }
+diff --git a/dist/state/utils/schedule.cjs.js b/dist/state/utils/schedule.cjs.js
+index e51138db3aed4e7e5b995b933b197c25e183e2be..f9fc0d68a8f90bb8bd45a74ea870cce63a89aa5e 100644
+--- a/dist/state/utils/schedule.cjs.js
++++ b/dist/state/utils/schedule.cjs.js
+@@ -2,26 +2,57 @@
+ 
+ var utils = require('@motionone/utils');
+ 
+-let scheduled = undefined;
+-function processScheduledAnimations() {
+-    if (!scheduled)
++/**
++ * Sloga patch: one batch per window, flushed on that window's own frame clock.
++ *
++ * Chat windows are same-realm `about:blank` children that the main realm
++ * renders into, so the global `requestAnimationFrame` here is the MAIN
++ * window's, and it stops firing while the main window is minimized or hidden.
++ * A Motion element mounted in a child (a dialog, the image viewer) then kept
++ * its `initial` styles, opacity 0, until the main window was shown again.
++ */
++const scheduled = new Map();
++function frameWindowOf(state) {
++    const element = state.getElement ? state.getElement() : undefined;
++    const doc = element && element.ownerDocument;
++    const view = doc && doc.defaultView;
++    if (view && view !== window) {
++        try {
++            if (!view.closed && typeof view.requestAnimationFrame === "function")
++                return view;
++        }
++        catch (e) { }
++    }
++    return window;
++}
++function processScheduledAnimations(view) {
++    const batch = scheduled.get(view);
++    if (!batch)
+         return;
+-    const generators = scheduled.sort(compareByDepth).map(fireAnimateUpdates);
++    const generators = batch.sort(compareByDepth).map(fireAnimateUpdates);
+     generators.forEach(fireNext);
+     generators.forEach(fireNext);
+-    scheduled = undefined;
++    scheduled.delete(view);
+ }
+ function scheduleAnimation(state) {
+-    if (!scheduled) {
+-        scheduled = [state];
+-        requestAnimationFrame(processScheduledAnimations);
++    const view = frameWindowOf(state);
++    const batch = scheduled.get(view);
++    if (!batch) {
++        // A window that closed with a batch pending never fires its frame.
++        for (const pending of scheduled.keys()) {
++            if (pending !== window && pending.closed)
++                scheduled.delete(pending);
++        }
++        scheduled.set(view, [state]);
++        view.requestAnimationFrame(() => processScheduledAnimations(view));
+     }
+     else {
+-        utils.addUniqueItem(scheduled, state);
++        utils.addUniqueItem(batch, state);
+     }
+ }
+ function unscheduleAnimation(state) {
+-    scheduled && utils.removeItem(scheduled, state);
++    for (const batch of scheduled.values())
++        utils.removeItem(batch, state);
+ }
+ const compareByDepth = (a, b) => a.getDepth() - b.getDepth();
+ const fireAnimateUpdates = (state) => state.animateUpdates();
+diff --git a/dist/state/utils/schedule.es.js b/dist/state/utils/schedule.es.js
+index 6ee64d5ee77483092064d581331d1265042a22b6..c09f1cab5df50a404e7859f2867f56477819202c 100644
+--- a/dist/state/utils/schedule.es.js
++++ b/dist/state/utils/schedule.es.js
+@@ -1,25 +1,56 @@
+ import { addUniqueItem, removeItem } from '@motionone/utils';
+ 
+-let scheduled = undefined;
+-function processScheduledAnimations() {
+-    if (!scheduled)
++/**
++ * Sloga patch: one batch per window, flushed on that window's own frame clock.
++ *
++ * Chat windows are same-realm `about:blank` children that the main realm
++ * renders into, so the global `requestAnimationFrame` here is the MAIN
++ * window's, and it stops firing while the main window is minimized or hidden.
++ * A Motion element mounted in a child (a dialog, the image viewer) then kept
++ * its `initial` styles, opacity 0, until the main window was shown again.
++ */
++const scheduled = new Map();
++function frameWindowOf(state) {
++    const element = state.getElement ? state.getElement() : undefined;
++    const doc = element && element.ownerDocument;
++    const view = doc && doc.defaultView;
++    if (view && view !== window) {
++        try {
++            if (!view.closed && typeof view.requestAnimationFrame === "function")
++                return view;
++        }
++        catch (e) { }
++    }
++    return window;
++}
++function processScheduledAnimations(view) {
++    const batch = scheduled.get(view);
++    if (!batch)
+         return;
+-    const generators = scheduled.sort(compareByDepth).map(fireAnimateUpdates);
++    const generators = batch.sort(compareByDepth).map(fireAnimateUpdates);
+     generators.forEach(fireNext);
+     generators.forEach(fireNext);
+-    scheduled = undefined;
++    scheduled.delete(view);
+ }
+ function scheduleAnimation(state) {
+-    if (!scheduled) {
+-        scheduled = [state];
+-        requestAnimationFrame(processScheduledAnimations);
++    const view = frameWindowOf(state);
++    const batch = scheduled.get(view);
++    if (!batch) {
++        // A window that closed with a batch pending never fires its frame.
++        for (const pending of scheduled.keys()) {
++            if (pending !== window && pending.closed)
++                scheduled.delete(pending);
++        }
++        scheduled.set(view, [state]);
++        view.requestAnimationFrame(() => processScheduledAnimations(view));
+     }
+     else {
+-        addUniqueItem(scheduled, state);
++        addUniqueItem(batch, state);
+     }
+ }
+ function unscheduleAnimation(state) {
+-    scheduled && removeItem(scheduled, state);
++    for (const batch of scheduled.values())
++        removeItem(batch, state);
+ }
+ const compareByDepth = (a, b) => a.getDepth() - b.getDepth();
+ const fireAnimateUpdates = (state) => state.animateUpdates();

@@ -4,6 +4,7 @@ import {
   NORMALIZER_DEFAULT_STRENGTH,
   clampStrength,
 } from "../../rtc/audioNormalizer";
+import { VOICE_PITCH_DEFAULT, clampVoicePitch } from "../../rtc/voicePitch";
 import {
   VOICE_TONE_PRESET_DEFAULT,
   VoiceTonePresetId,
@@ -227,6 +228,9 @@ export interface TypeVoice extends TypeVoiceOverlay {
   /** Voice shaper preset (rtc/voiceTonePresets.ts). Exactly one at a time:
    *  the mic has a single processor and the shaper is one stage of it. */
   voiceTonePreset: VoiceTonePresetId;
+  /** Voice changer pitch, whole semitones in -12 … +12; 0 = off
+   *  (rtc/voicePitch.ts). Another stage of the same mic processor. */
+  voicePitchSemitones: number;
   cameraBrightness: number;
   cameraQuality: CameraQualityName;
   cameraMaxBitrateKbps: number;
@@ -367,6 +371,7 @@ export class Voice extends AbstractStore<"voice", TypeVoice> {
       androidScreenShareTier: "default",
       microphoneGain: 100,
       voiceTonePreset: VOICE_TONE_PRESET_DEFAULT,
+      voicePitchSemitones: VOICE_PITCH_DEFAULT,
       cameraBrightness: 100,
       cameraQuality: "auto",
       cameraMaxBitrateKbps: 0,
@@ -566,6 +571,10 @@ export class Voice extends AbstractStore<"voice", TypeVoice> {
     // edited value) falls back to the default rather than persisting.
     if (isVoiceTonePresetId(input.voiceTonePreset)) {
       data.voiceTonePreset = input.voiceTonePreset;
+    }
+
+    if (typeof input.voicePitchSemitones === "number") {
+      data.voicePitchSemitones = clampVoicePitch(input.voicePitchSemitones);
     }
 
     if (typeof input.cameraBrightness === "number") {
@@ -901,6 +910,11 @@ export class Voice extends AbstractStore<"voice", TypeVoice> {
     if (isVoiceTonePresetId(value)) this.set("voiceTonePreset", value);
   }
 
+  /** Set the voice changer pitch; clamped to whole semitones in range. */
+  set voicePitchSemitones(value: number) {
+    this.set("voicePitchSemitones", clampVoicePitch(value));
+  }
+
   get cameraBrightness(): number {
     return this.get().cameraBrightness ?? 100;
   }
@@ -1180,6 +1194,11 @@ export class Voice extends AbstractStore<"voice", TypeVoice> {
   /** Get the voice shaper preset */
   get voiceTonePreset(): VoiceTonePresetId {
     return this.get().voiceTonePreset ?? VOICE_TONE_PRESET_DEFAULT;
+  }
+
+  /** Get the voice changer pitch in semitones (0 = off) */
+  get voicePitchSemitones(): number {
+    return clampVoicePitch(this.get().voicePitchSemitones);
   }
 
   /**

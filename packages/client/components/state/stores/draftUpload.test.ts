@@ -176,6 +176,8 @@ function makeDraft() {
 }
 
 const client = {
+  // sendDraft asks this first (protected channels take another path)
+  isProtectedChannel: () => false,
   configuration: { features: { autumn: { url: "https://autumn.test" } } },
   authenticationHeader: ["X-Session-Token", "test"],
 };
@@ -422,5 +424,82 @@ describe("successful uploads", () => {
     const sent = sentBodies[0].get("file") as File;
     assert.equal(sent, cached.file, "the upload sends the cached snapshot");
     assert.equal(await sent.text(), "hello");
+  });
+});
+
+describe("a send that fails before reaching the outbox", () => {
+  it("puts the popped draft back and rethrows instead of losing it", async () => {
+    setUserAgent(DESKTOP_UA);
+    const draft = makeDraft();
+    const channel = makeChannel();
+    await draft.addFile(channel.id, textFile());
+    draft.setDraft(channel.id, {
+      ...draft.getDraft(channel.id),
+      content: "see attached",
+    });
+    const [fileId] = draft.getDraft(channel.id).files;
+
+    const failing = {
+      ...client,
+      e2ee: {
+        prepareDraftAttachments: async () => {
+          throw new DOMException(
+            "A requested file could not be found",
+            "NotFoundError",
+          );
+        },
+      },
+    };
+
+    await assert.rejects(draft.sendDraft(failing as never, channel as never), {
+      name: "NotFoundError",
+    });
+
+    const restored = draft.getDraft(channel.id);
+    assert.equal(restored.content, "see attached");
+    assert.deepEqual(restored.files, [fileId]);
+    assert.ok(draft.getFile(fileId), "the file is still cached");
+    assert.equal(draft.getPendingMessages(channel.id).length, 0);
+    setUserAgent(ANDROID_UA);
+  });
+
+  it("keeps text typed since and puts the files back in front", async () => {
+    setUserAgent(DESKTOP_UA);
+    const draft = makeDraft();
+    const channel = makeChannel();
+    await draft.addFile(channel.id, textFile());
+    draft.setDraft(channel.id, {
+      ...draft.getDraft(channel.id),
+      content: "old",
+    });
+    const [first] = draft.getDraft(channel.id).files;
+
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const failing = {
+      ...client,
+      e2ee: {
+        prepareDraftAttachments: async () => {
+          await gate;
+          throw new Error("boom");
+        },
+      },
+    };
+
+    const sending = draft.sendDraft(failing as never, channel as never);
+    // While the send is in flight the user types and attaches something new
+    await draft.addFile(channel.id, textFile());
+    draft.setDraft(channel.id, {
+      ...draft.getDraft(channel.id),
+      content: "new",
+    });
+    const [second] = draft.getDraft(channel.id).files;
+    release();
+    await assert.rejects(sending, /boom/);
+
+    const restored = draft.getDraft(channel.id);
+    assert.equal(restored.content, "new");
+    assert.deepEqual(restored.files, [first, second]);
+    setUserAgent(ANDROID_UA);
   });
 });

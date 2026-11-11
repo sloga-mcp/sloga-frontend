@@ -1,9 +1,12 @@
 import { For, Show, createMemo } from "solid-js";
+import { Portal } from "solid-js/web";
 
 import { styled } from "styled-system/jsx";
 
 import { useClientLifecycle } from "@revolt/client";
 import { State, TransitionType } from "@revolt/client/Controller";
+
+import { titleBarStatusSlot } from "./desktop/MainTitleBar";
 
 /**
  * The eight orbiting dots of the Sloga mark, taken verbatim from
@@ -52,6 +55,13 @@ const DUR_MS = 1200;
  * 4. The greyscale filter wraps ONLY the orbit. Applied to the whole mark it
  *    desaturated the red core too, and the lost state lost the one colour that
  *    was carrying its meaning.
+ *
+ * While the desktop main window draws its own title bar (MainTitleBar), the
+ * fixed dot is not shown: the same mark, states and retry sit inline in the
+ * bar's status slot instead, portalled there from this tree, which has the
+ * client lifecycle the bar's own root lacks. The slot exists exactly while
+ * the bar is drawn, so the dot comes back the moment the bar goes. Web,
+ * Android, iOS and Linux never have the bar and always get the dot.
  */
 export function ConnectionIndicator() {
   const { lifecycle } = useClientLifecycle();
@@ -91,50 +101,80 @@ export function ConnectionIndicator() {
     typeof window !== "undefined" &&
     !!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
 
+  const retry = () => lifecycle.transition({ type: TransitionType.Retry });
+
+  /** The mark, drawn for the state; a fresh copy on every call. */
+  const mark = () => (
+    <svg viewBox="0 0 100 100" width="100%" height="100%">
+      <g style={lost() ? { filter: "grayscale(1)", opacity: 0.55 } : undefined}>
+        <For each={ORBIT}>
+          {(dot, i) => (
+            <circle cx={dot.cx} cy={dot.cy} r="10" fill={dot.fill}>
+              <Show when={!still && !lost()}>
+                {/* Staggered around the ring so the shrink reads as one
+                    wave travelling the orbit, not eight dots blinking at
+                    once. */}
+                <animate
+                  attributeName="r"
+                  values="10;5.5;10"
+                  dur={`${DUR_MS / 1000}s`}
+                  begin={`${((i() * DUR_MS) / ORBIT.length / 1000).toFixed(3)}s`}
+                  repeatCount="indefinite"
+                />
+              </Show>
+            </circle>
+          )}
+        </For>
+      </g>
+      <circle
+        cx="50"
+        cy="50"
+        r="14.5"
+        fill={lost() ? "var(--md-sys-color-error)" : CORE_OK}
+      />
+    </svg>
+  );
+
   return (
-    <Show when={visible()}>
-      <Dock
-        lost={lost()}
-        type="button"
-        title={label()}
-        aria-label={label()}
-        role="status"
-        aria-live="polite"
-        onClick={() => lifecycle.transition({ type: TransitionType.Retry })}
-      >
-        <svg viewBox="0 0 100 100" width="100%" height="100%">
-          <g
-            style={
-              lost() ? { filter: "grayscale(1)", opacity: 0.55 } : undefined
-            }
+    <Show
+      when={titleBarStatusSlot()}
+      keyed
+      fallback={
+        <Show when={visible()}>
+          <Dock
+            lost={lost()}
+            type="button"
+            title={label()}
+            aria-label={label()}
+            role="status"
+            aria-live="polite"
+            onClick={retry}
           >
-            <For each={ORBIT}>
-              {(dot, i) => (
-                <circle cx={dot.cx} cy={dot.cy} r="10" fill={dot.fill}>
-                  <Show when={!still && !lost()}>
-                    {/* Staggered around the ring so the shrink reads as one
-                        wave travelling the orbit, not eight dots blinking at
-                        once. */}
-                    <animate
-                      attributeName="r"
-                      values="10;5.5;10"
-                      dur={`${DUR_MS / 1000}s`}
-                      begin={`${((i() * DUR_MS) / ORBIT.length / 1000).toFixed(3)}s`}
-                      repeatCount="indefinite"
-                    />
-                  </Show>
-                </circle>
-              )}
-            </For>
-          </g>
-          <circle
-            cx="50"
-            cy="50"
-            r="14.5"
-            fill={lost() ? "var(--md-sys-color-error)" : CORE_OK}
-          />
-        </svg>
-      </Dock>
+            {mark()}
+          </Dock>
+        </Show>
+      }
+    >
+      {(slot) => (
+        <Portal mount={slot}>
+          <Show when={visible()}>
+            {/* no-drag: the bar around it is a caption region, which would
+                take the press as a window move */}
+            <Inline
+              lost={lost()}
+              type="button"
+              data-app-region="no-drag"
+              title={label()}
+              aria-label={label()}
+              role="status"
+              aria-live="polite"
+              onClick={retry}
+            >
+              {mark()}
+            </Inline>
+          </Show>
+        </Portal>
+      )}
     </Show>
   );
 }
@@ -190,6 +230,42 @@ const Dock = styled("button", {
       "&::after": {
         inset: "0",
       },
+    },
+  },
+  variants: {
+    lost: {
+      true: {
+        border: "1px solid var(--md-sys-color-error)",
+      },
+      false: {
+        border: "1px solid var(--md-sys-color-outline-variant)",
+      },
+    },
+  },
+});
+
+/**
+ * The same mark inline in main's title bar (32px tall): sized to the bar,
+ * flat, and with no invisible hit-area growth, which would spill over the
+ * bar's caption region.
+ */
+const Inline = styled("button", {
+  base: {
+    width: "22px",
+    height: "22px",
+    padding: "3px",
+    borderRadius: "50%",
+    cursor: "pointer",
+
+    display: "grid",
+    placeItems: "center",
+
+    background: "var(--md-sys-color-surface-container-high)",
+    transition: "opacity .3s, border-color .3s",
+
+    "&:focus-visible": {
+      outline: "2px solid var(--md-sys-color-primary)",
+      outlineOffset: "1px",
     },
   },
   variants: {

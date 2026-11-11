@@ -32,9 +32,38 @@ body {
   font-family: var(--fonts-primary);
 }
 
+/*
+ * Height of the desktop main window's own title bar (MainTitleBar, in
+ * #titlebar), 0 without one. The bar sets `data-main-titlebar` on <html>
+ * while it is drawn; 32px is its TITLEBAR_HEIGHT. #root starts below it, and
+ * any fixed layer that must not sit under the bar offsets itself by it.
+ */
+html {
+  --titlebar-height: 0px;
+}
+
+html[data-main-titlebar] {
+  --titlebar-height: 32px;
+}
+
+/*
+ * Over everything in #root (which starts below it anyway). It comes BEFORE
+ * #floating in the page on purpose: WebView2 resolves drag regions in
+ * document order, not paint order, so the menus and tooltips in #floating
+ * (z-index 999 too, later in the page, no-drag below) stay clickable where
+ * they overlap the bar, while modal scrims (998) paint below it.
+ */
+#titlebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 999;
+}
+
 #root {
   position: fixed;
-  top: env(safe-area-inset-top);
+  top: calc(env(safe-area-inset-top, 0px) + var(--titlebar-height, 0px));
   left: env(safe-area-inset-left);
   right: env(safe-area-inset-right);
   bottom: env(safe-area-inset-bottom);
@@ -106,6 +135,30 @@ html[data-overlay="1"] #root {
 #floating * {
   -webkit-app-region: no-drag;
   app-region: no-drag;
+}
+
+/*
+ * Main's own title bar (MainTitleBar) with a modal open. A modal scrim
+ * covers the whole window, bar included, but paints below the bar (998 vs
+ * 999), so the bar's buttons stay the click target. Left no-drag by the rule
+ * above, though, it would still cancel the bar's caption region (document
+ * order, see #titlebar), and the window could not be moved while a modal is
+ * open. `initial`, not `none`: WebView2 ignores `none` here. The dialog on
+ * the scrim stays no-drag. The settings page's full-window layer (pointer
+ * events off, the page inside it) is the same case, and the page itself
+ * starts below the bar, as its close button sits at the top. Scoped to the
+ * bar being drawn; child windows never get `data-main-titlebar` (see
+ * isMirroredRootAttribute), so the chat windows' bars are unchanged.
+ */
+html[data-main-titlebar] #floating [data-scrim],
+html[data-main-titlebar] #floating div:has(> .settings_overlay) {
+  -webkit-app-region: initial;
+  app-region: initial;
+}
+
+html[data-main-titlebar] .settings_overlay {
+  margin-top: var(--titlebar-height);
+  height: calc(100% - var(--titlebar-height));
 }
 
 /* HighlightJs */

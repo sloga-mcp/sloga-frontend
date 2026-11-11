@@ -59,7 +59,8 @@ export interface MicPipelineInput {
   hasPipeline: boolean;
   /**
    * `#micPipelineWants()` is all-default: no noise filter, unity gain,
-   * shaper off. The raw capture is what the settings ask for.
+   * shaper off, voice changer pitch 0. The raw capture is what the settings
+   * ask for.
    */
   wantsDefault: boolean;
 }

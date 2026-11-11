@@ -8,6 +8,10 @@ for (const bp in Breakpoint) {
   condExt[bp] = `@media ${Breakpoint[bp as keyof typeof Breakpoint]}`;
 }
 
+// The Modern style (Settings → Appearance), set on <html> by LoadTheme.
+// `_modern` blocks only ever add to a component's Classic styles.
+condExt.modern = "[data-style=modern] &";
+
 export default defineConfig({
   // Whether to use css reset
   preflight: true,

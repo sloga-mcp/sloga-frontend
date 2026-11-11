@@ -7,19 +7,26 @@ import {
 import { Match, Switch } from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
-import { Channel } from "stoat.js";
+import { type Client, Channel } from "stoat.js";
 
 import { useClient } from "@revolt/client";
+import { settingsCopy } from "@revolt/client/protectedCopy";
+import { protectedUiOf } from "@revolt/client/useProtectedChannel";
 import { channelNounOf } from "@revolt/common/lib/channelNoun";
 import { TextWithEmoji } from "@revolt/markdown";
 import { useModals } from "@revolt/modal";
 import { ColouredText } from "@revolt/ui";
+import { Symbol } from "@revolt/ui/components/utils/Symbol";
 
 import { SettingsConfiguration } from ".";
 import ForumSettings from "./channel/ForumSettings";
 import ChannelOverview from "./channel/Overview";
 import { ChannelPermissionsEditor } from "./channel/permissions/ChannelPermissionsEditor";
 import { ChannelPermissionsOverview } from "./channel/permissions/ChannelPermissionsOverview";
+import {
+  ProtectedChannelSettings,
+  protectedSettingsVisibleFor,
+} from "./channel/protected/ProtectedChannelSettings";
 import { ViewWebhook } from "./channel/webhooks/ViewWebhook";
 import { WebhooksList } from "./channel/webhooks/WebhooksList";
 import { BackCard } from "./user/_AccountCard";
@@ -30,6 +37,26 @@ const PERMISSION_PAGE_TYPES: Channel["type"][] = [
   "TextChannel",
   "Forum",
 ];
+
+// protected-tab:begin
+/**
+ * Whether the "Protected channel" tab and page exist for `channel` (S1
+ * F2): the owner-only rule (product choice 4), and the feature stays
+ * invisible while it is dark. Shown only when the D13 flag is on or the
+ * channel is already protected or pinned. Web and Electron have no
+ * protected bridge surface, so there only `isProtectedChannel` shows it.
+ */
+function protectedTabShown(
+  channel: Channel,
+  client: Client | undefined,
+): boolean {
+  if (!protectedSettingsVisibleFor(channel, client)) return false;
+  return (
+    client?.isProtectedChannel(channel.id) === true ||
+    protectedUiOf(client?.e2ee)?.protectedFlag().enabled === true
+  );
+}
+// protected-tab:end
 
 const Config: SettingsConfiguration<Channel> = {
   /**
@@ -102,7 +129,16 @@ const Config: SettingsConfiguration<Channel> = {
             return null;
         }
       case "webhooks":
-        return <WebhooksList channel={channel} />;
+        // The server refuses webhooks on protected channels (C13 note).
+        return client().isProtectedChannel(channel.id) ? null : (
+          <WebhooksList channel={channel} />
+        );
+      case "protected":
+        // Server owner only (product choice 4), invisible while dark (F2);
+        // the page re-checks ownership.
+        return protectedTabShown(channel, client()) ? (
+          <ProtectedChannelSettings channel={channel} />
+        ) : null;
       default:
         return null;
     }
@@ -115,6 +151,7 @@ const Config: SettingsConfiguration<Channel> = {
    */
   list(channel, onClose) {
     const { openModal } = useModals();
+    const client = useClient();
 
     return {
       context: channel,
@@ -152,11 +189,20 @@ const Config: SettingsConfiguration<Channel> = {
               hidden:
                 // forums have no message stream, so no webhooks either
                 channel.type === "Forum" ||
+                // the server refuses webhooks on protected channels
+                client().isProtectedChannel(channel.id) ||
                 (!channel.havePermission("ManageWebhooks") &&
                   import.meta.env.DEV),
               id: "webhooks",
               icon: <BiSolidCloud size={20} />,
               title: <Trans>Webhooks</Trans>,
+            },
+            {
+              // Server owner only (product choice 4), invisible while dark.
+              hidden: !protectedTabShown(channel, client()),
+              id: "protected",
+              icon: <Symbol size={20}>verified_user</Symbol>,
+              title: settingsCopy.title(),
             },
           ],
         },

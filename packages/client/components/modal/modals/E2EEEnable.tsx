@@ -23,12 +23,17 @@ import { Modals } from "../types";
  * restore recovers the old device's identity + history from a server backup
  * and must run as the FIRST E2EE op on this fresh install, whereas start-fresh
  * provisions a new identity (after which restore would refuse,
- * `StoreAlreadyProvisioned`). Each branch takes exactly one MFA prompt (the
- * choice is presented up front rather than probing `GET /e2ee/backup` first,
- * which would burn a single-use ticket for users who just want to start
- * fresh). The recovery CODE is entered only on the native surface (the
- * bundled recovery window on desktop / an AlertDialog on Android) — it never
- * reaches this webview; `restoreFromBackup` only couriers opaque ciphertext.
+ * `StoreAlreadyProvisioned`). The choice is presented up front rather than
+ * probing `GET /e2ee/backup` first, which would burn a single-use ticket for
+ * users who just want to start fresh. Start fresh takes one MFA prompt.
+ * Restore takes two (multi-device D3): this modal's prompt fetches the backup,
+ * and a restored install registers as a NEW device, whose first publication
+ * needs a second ticket; that second prompt is the "finish setting up" modal
+ * the shell opens on `publishPending`. The recovery CODE is entered only on
+ * the native surface (the bundled recovery window on desktop / a native
+ * dialog from the Capacitor E2ee plugin on Android and iOS) — it never
+ * reaches this webview;
+ * `restoreFromBackup` only couriers opaque ciphertext.
  */
 export function E2EEEnableModal(
   props: DialogProps & Modals & { type: "e2ee_enable" },
@@ -100,8 +105,11 @@ export function E2EEEnableModal(
 
       // Desktop: the recovery WINDOW is now open and drives code entry +
       // republish asynchronously (the completion courier lives in the bridge).
-      // Android: the native dialog already restored before resolving. Either
-      // way this device is on its way to provisioned — close the prompt.
+      // Capacitor (Android, iOS): the native dialog already restored before
+      // resolving (a cancel there returned 0 above). Either way this device
+      // is on its way to provisioned — close the prompt. The second MFA
+      // prompt (registering this device) is the finish-setup modal, opened
+      // by the shell once the bridge raises `publishPending`.
       e2ee.restoreAvailable.delete("state");
       props.onClose();
     } catch (error) {
@@ -131,8 +139,17 @@ export function E2EEEnableModal(
               {
                 text: <Trans>Create recovery code</Trans>,
                 onClick: () => {
-                  // Opens the native recovery window (desktop). A no-op on a
-                  // shell without one; the nag in settings keeps prompting.
+                  // Never a silent no-op. Desktop (Tauri, Electron) opens the
+                  // bundled recovery window, and the bridge uploads the bundle
+                  // when it closes. Capacitor (Android, and iOS with its
+                  // native E2ee plugin) shows a native dialog and uploads the
+                  // bundle on return; cancelling it resolves quietly. Any
+                  // other failure, including a shell that lacks the command
+                  // or plugin method (Capacitor rejects UNIMPLEMENTED), lands
+                  // in showError. With no native layer there is no bridge and
+                  // enable() bails before this button can show. If the user
+                  // skips or cancels, the Encryption settings card keeps
+                  // offering to create one.
                   void e2ee?.createRecoveryCode().catch((error) =>
                     showError(error),
                   );
@@ -196,16 +213,22 @@ export function E2EEEnableModal(
             <Text>
               <Trans>
                 You have encryption set up on your account. If you saved a
-                recovery code, restore it here to bring back your identity and
-                message history on this device — your contacts will not see a
-                security warning.
+                recovery code, restore it here to bring back your message
+                history on this device. It is added as a new device, and your
+                contacts will see that you added one. Your other devices keep
+                working.
               </Trans>
             </Text>
             <Text>
               <Trans>
-                Or start fresh to set this up as a new device. You keep sending
-                and receiving encrypted messages, but earlier history that lived
-                only on your old device stays there.
+                Or start fresh to set this up as a new device without your
+                earlier history. That history stays on your other devices.
+              </Trans>
+            </Text>
+            <Text class="label">
+              <Trans>
+                Confirm your password twice: once to fetch your backup, once to
+                register this device
               </Trans>
             </Text>
           </Match>
@@ -224,6 +247,12 @@ export function E2EEEnableModal(
                 Otherwise, encrypted history lives on THIS device only and
                 cannot be recovered if the device is lost. You will confirm your
                 identity to continue.
+              </Trans>
+            </Text>
+            <Text class="label">
+              <Trans>
+                Confirm your password twice: once to fetch your backup, once to
+                register this device
               </Trans>
             </Text>
           </Match>

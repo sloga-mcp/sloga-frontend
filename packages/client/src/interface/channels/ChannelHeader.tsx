@@ -6,6 +6,7 @@ import { css } from "styled-system/css";
 import { styled } from "styled-system/jsx";
 
 import { useClient } from "@revolt/client";
+import { useProtectedShield } from "@revolt/client/useProtectedChannel";
 import { useDevice } from "@revolt/common";
 import { channelNounOf } from "@revolt/common/lib/channelNoun";
 import { TextWithEmoji } from "@revolt/markdown";
@@ -24,6 +25,7 @@ import {
   UserStatus,
 } from "@revolt/ui";
 import { DisplayName } from "@revolt/ui/components/features/DisplayName";
+import { ProtectedShieldIcon } from "@revolt/ui/components/features/protected/ProtectedShieldIcon";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
 
 import { parseChannelPassword } from "../../lib/channelPassword";
@@ -35,6 +37,10 @@ import MdSettings from "@material-design-icons/svg/outlined/settings.svg?compone
 import MdKeep from "../../svg/keep.svg?component-solid";
 import { HeaderIcon } from "../common/CommonHeader";
 
+import {
+  ProtectedChannelPill,
+  protectedHeaderNameStyle,
+} from "./ProtectedChannelPill";
 import { canIHasSidebar, SidebarState } from "./text/TextChannel";
 
 interface Props {
@@ -67,6 +73,9 @@ export function ChannelHeader(props: Props) {
   const state = useState();
   const voice = useVoice();
   const { layout } = useDevice();
+  // Read-only (plan D27); null for a channel that is neither protected nor
+  // pinned, which keeps its header exactly as before.
+  const protectedShield = useProtectedShield(() => props.channel.id);
 
   // Tags on a forum post can be changed after posting by its author or by
   // anyone who manages the forum (the same rule delta's channel edit
@@ -99,7 +108,14 @@ export function ChannelHeader(props: Props) {
           }
         >
           <HeaderIcon>
-            <Symbol>grid_3x3</Symbol>
+            <Show when={protectedShield()} fallback={<Symbol>grid_3x3</Symbol>}>
+              {(shield) => (
+                <ProtectedShieldIcon
+                  state={shield().state}
+                  tauriE2eeOff={shield().notice === "enable_e2ee"}
+                />
+              )}
+            </Show>
           </HeaderIcon>
           <NonBreakingText
             class={
@@ -107,6 +123,7 @@ export function ChannelHeader(props: Props) {
               " " +
               mobileOverflow
             }
+            style={protectedHeaderNameStyle(protectedShield()?.state)}
             onClick={() =>
               openModal({
                 type: "channel_info",
@@ -116,6 +133,7 @@ export function ChannelHeader(props: Props) {
           >
             <TextWithEmoji content={props.channel.name!} />
           </NonBreakingText>
+          <ProtectedChannelPill channel={props.channel} />
           <Show when={layout() !== "phone" && cleanDescription()}>
             <Divider />
             <a

@@ -1,0 +1,7 @@
+module acutest_e2ee_iosFFI {
+    header "acutest_e2ee_iosFFI.h"
+    export *
+    use "Darwin"
+    use "_Builtin_stdbool"
+    use "_Builtin_stdint"
+}

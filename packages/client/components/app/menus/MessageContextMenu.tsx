@@ -5,6 +5,11 @@ import { File, Message } from "stoat.js";
 import { styled } from "styled-system/jsx";
 
 import { useClient, useE2EE, useUser } from "@revolt/client";
+import {
+  type ProtectedAction,
+  protectedActionsBlocked,
+} from "@revolt/client/protectedShield";
+import { useProtectedMessage } from "@revolt/client/useProtectedChannel";
 import { CustomEmoji, UnicodeEmoji } from "@revolt/markdown/emoji";
 import { useModals } from "@revolt/modal";
 import { useState } from "@revolt/state";
@@ -142,12 +147,47 @@ export function MessageContextMenu(props: {
     serverActionsBlocked(e2ee, props.message!.channel, user()?.id);
 
   /**
+   * Whether this message is in a Protected channel, server-flagged or
+   * pinned on this device (plan D2). Keyed on the CHANNEL, never on
+   * `isEncryptedMessage` (DM/group rows only; Protected ids never enter
+   * that set), so the gates above stay as they are and delete, react, pin,
+   * reply, mark unread and the copy actions keep working (plan D11).
+   */
+  const protectedRow = () =>
+    !!props.message && client().isProtectedChannel(props.message.channelId);
+
+  /**
+   * Whether `action` is hidden on this message: everything that edits,
+   * re-sends or hands server-held content elsewhere (edit, forward,
+   * publish, threads, polls, report; plan D11, product choice 1).
+   */
+  const hidden = (action: ProtectedAction) =>
+    protectedActionsBlocked(protectedRow(), action);
+
+  /** The decrypted view; never read for any other row. */
+  const protectedView = useProtectedMessage(() =>
+    protectedRow() ? props.message!.id : undefined,
+  );
+
+  /**
+   * What "Copy text" puts on the clipboard. On a Protected channel only the
+   * decrypted `view.text` of an ok view, never server `content`; anything
+   * else (no view yet, pending, a marker) is null and hides the action.
+   */
+  const copyableText = (): string | null => {
+    if (!protectedRow()) return props.message!.content;
+    const view = protectedView();
+    return view?.status === "ok" ? view.text : null;
+  };
+
+  /**
    * Whether the message can be forwarded: needs server-side substance
    * (content or attachments), and never system messages, polls (state
    * wouldn't travel), ephemerals, or locally-decrypted E2EE messages
    * (their server-side form is useless ciphertext — nothing to forward).
    */
   const canForward = () =>
+    !hidden("forward") &&
     !props.message!.isEphemeral &&
     !props.message!.systemMessage &&
     !props.message!.isPoll &&
@@ -167,6 +207,7 @@ export function MessageContextMenu(props: {
     const message = props.message!;
     const channel = message.channel;
     if (
+      hidden("publish") ||
       !channel?.isAnnouncement ||
       message.isCrossposted ||
       message.isCrosspost ||
@@ -250,7 +291,9 @@ export function MessageContextMenu(props: {
    * Copy message contents to clipboard
    */
   function copyText() {
-    navigator.clipboard.writeText(props.message!.content);
+    const text = copyableText();
+    if (text === null) return;
+    navigator.clipboard.writeText(text);
   }
 
   /**
@@ -352,7 +395,7 @@ export function MessageContextMenu(props: {
 
         <ContextMenuDivider />
       </Show>
-      <Show when={props.file}>
+      <Show when={props.file && !hidden("attachments")}>
         <ContextMenuButton icon={MdOpenInNew} onClick={openFile}>
           <Trans>Open file</Trans>
         </ContextMenuButton>
@@ -437,6 +480,7 @@ export function MessageContextMenu(props: {
         </Show>
         <Show
           when={
+            !hidden("create_thread") &&
             !props.message!.isEphemeral &&
             !isEncrypted() &&
             props.message!.channel?.type === "TextChannel" &&
@@ -462,9 +506,11 @@ export function MessageContextMenu(props: {
             <Trans>Mark as unread</Trans>
           </ContextMenuButton>
         </Show>
-        <ContextMenuButton icon={MdContentCopy} onClick={copyText}>
-          <Trans>Copy text</Trans>
-        </ContextMenuButton>
+        <Show when={copyableText() !== null}>
+          <ContextMenuButton icon={MdContentCopy} onClick={copyText}>
+            <Trans>Copy text</Trans>
+          </ContextMenuButton>
+        </Show>
 
         <ContextMenuDivider />
 
@@ -487,6 +533,7 @@ export function MessageContextMenu(props: {
 
         <Show
           when={
+            !hidden("edit") &&
             props.message!.author?.self &&
             !isEncrypted() &&
             !actionsBlocked() &&
@@ -527,6 +574,7 @@ export function MessageContextMenu(props: {
         </Show>
         <Show
           when={
+            !hidden("poll") &&
             props.message!.isPoll &&
             !props.message!.pollState?.closed &&
             (props.message!.author?.self ||
@@ -601,6 +649,7 @@ export function MessageContextMenu(props: {
         </Show>
         <Show
           when={
+            !hidden("report") &&
             !props.message!.isEphemeral &&
             !props.message!.author?.self &&
             !props.message!.systemMessage

@@ -8,10 +8,10 @@ import { fetchAllChangelogs } from "@revolt/modal/modals/Changelog";
 import { iconSize } from "@revolt/ui";
 
 import MdArrowForward from "@material-design-icons/svg/filled/arrow_forward.svg?component-solid";
-import MdCallEnd from "@material-design-icons/svg/filled/call_end.svg?component-solid";
 import MdClose from "@material-design-icons/svg/filled/close.svg?component-solid";
-import MdFolder from "@material-design-icons/svg/filled/folder.svg?component-solid";
-import MdWebAsset from "@material-design-icons/svg/filled/web_asset.svg?component-solid";
+import MdDevices from "@material-design-icons/svg/filled/devices.svg?component-solid";
+import MdFolderZip from "@material-design-icons/svg/filled/folder_zip.svg?component-solid";
+import MdImage from "@material-design-icons/svg/filled/image.svg?component-solid";
 
 import pkg from "../../../../../package.json";
 
@@ -21,23 +21,23 @@ import { showWhatsNew, WHATS_NEW_KEY } from "./homeHub";
  * The release these highlights were written for. Update it together with
  * HIGHLIGHTS each release; until both are updated the card stays hidden.
  */
-const HIGHLIGHTS_RELEASE = "0.69";
+const HIGHLIGHTS_RELEASE = "0.71";
 
 const ACCENT = "#3BB8ED";
 
 /** Two or three headline changes, short enough for one line each */
 const HIGHLIGHTS: { icon: () => JSX.Element; text: () => JSX.Element }[] = [
   {
-    icon: () => <MdFolder {...iconSize(18)} />,
-    text: () => <Trans>Sort your friends into categories</Trans>,
+    icon: () => <MdDevices {...iconSize(18)} />,
+    text: () => <Trans>Restore encryption on a second device</Trans>,
   },
   {
-    icon: () => <MdWebAsset {...iconSize(18)} />,
-    text: () => <Trans>A new title bar for chat windows</Trans>,
+    icon: () => <MdFolderZip {...iconSize(18)} />,
+    text: () => <Trans>Send a whole folder as a .zip</Trans>,
   },
   {
-    icon: () => <MdCallEnd {...iconSize(18)} />,
-    text: () => <Trans>Push to talk fixes and a hang-up button</Trans>,
+    icon: () => <MdImage {...iconSize(18)} />,
+    text: () => <Trans>Images open again in chat windows</Trans>,
   },
 ];
 
@@ -50,6 +50,11 @@ const Card = styled("section", {
     padding: "16px 20px",
     borderRadius: "20px",
     background: "var(--md-sys-color-surface-container)",
+    // Modern: same ring and shadow as the other Home cards (cardParts Panel)
+    _modern: {
+      boxShadow:
+        "inset 0 0 0 1px color-mix(in srgb, var(--md-sys-color-on-surface) 8%, transparent), 0 10px 26px -14px rgb(0 0 0 / 0.55)",
+    },
     color: "var(--md-sys-color-on-surface)",
 
     "@media (max-width: 640px)": {
@@ -86,7 +91,8 @@ const List = styled("ul", {
     padding: 0,
     listStyle: "none",
     display: "grid",
-    gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+    // three across in the wide column, one per line in the narrow one
+    gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))",
     gap: "10px",
 
     "@media (max-width: 640px)": {
@@ -171,13 +177,10 @@ function readDismissed(): string | null {
 }
 
 /**
- * "New in vX" card: this release's headline changes and a link to the full
- * patch notes. Dismissed per release.
+ * Whether the What's New card shows, and its dismiss. Kept apart from the
+ * card so Home can ask before it draws a frame for it.
  */
-export function WhatsNewCard() {
-  const { openModal } = useModals();
-  const { t } = useLingui();
-
+export function createWhatsNewState() {
   const [dismissed, setDismissed] = createSignal(readDismissed());
 
   const visible = () =>
@@ -196,15 +199,32 @@ export function WhatsNewCard() {
     }
   }
 
+  return { visible, dismiss };
+}
+
+/**
+ * "New in vX" card: this release's headline changes and a link to the full
+ * patch notes. Dismissed per release.
+ */
+export function WhatsNewCard(props: {
+  state: ReturnType<typeof createWhatsNewState>;
+}) {
+  const { openModal } = useModals();
+  const { t } = useLingui();
+
   async function openNotes() {
     const changelogs = await fetchAllChangelogs().catch(() => []);
     if (changelogs.length) openModal({ type: "changelog_history", changelogs });
   }
 
   return (
-    <Show when={visible()}>
+    <Show when={props.state.visible()}>
       <Card aria-labelledby="home-whats-new-title">
-        <Close type="button" aria-label={t`Dismiss`} onClick={dismiss}>
+        <Close
+          type="button"
+          aria-label={t`Dismiss`}
+          onClick={() => props.state.dismiss()}
+        >
           <MdClose {...iconSize(18)} />
         </Close>
         <Tag>
