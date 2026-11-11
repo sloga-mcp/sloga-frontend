@@ -3,8 +3,10 @@
 //   node --test --conditions=browser components/client/protectedShield.test.ts
 // Focus: design 9.1 precedence (every step incl. 6c/6d/6e and the 3b
 // fail-closed catch-all), "green only from verdict ok", never green with an
-// off-list or locally removed leaf, the D3 capable variants, the D14
-// presentation, the D17 notice mapping (every tag + catch-all) and D11.
+// off-list or locally removed leaf, the D3 capable variants (and, S7 D9,
+// Electron / Android capable and `not_available` rows built from lane C4's
+// real `structuralState` / `storeOwnerAllows`), the D14 presentation, the
+// D17 notice mapping (every tag + catch-all) and D11.
 // The step 3 / 6e tag lists are pinned ALWAYS against the in-repo fixture
 // `__fixtures__/protected/design-9-1-shield-lists.json`; an extra test checks
 // that fixture against the design copy in `/home/mcp/w4-notes/w4_design.md`
@@ -14,6 +16,14 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 
+import {
+  type AndroidProbe,
+  type FlagState,
+  type StoreOwnerCheck,
+  type StructuralInput,
+  storeOwnerAllows,
+  structuralState,
+} from "./protectedPlatform.ts";
 import {
   type ProtectedAction,
   type ProtectedErrorOp,
@@ -257,6 +267,359 @@ test("step 2 + D3 capable variants: anything but capable === true is not_availab
   );
   // the hint never changes the state of a capable device
   expectShield(green({ tauriE2eeOff: true }), "protected", "8");
+});
+
+// ---------------------------------------------------------------------------
+// S7 D9: Electron / Android rows. `capable` is built from lane C4's REAL
+// `structuralState` / `storeOwnerAllows`, ANDed like `protectedTextCapable()`
+// (protectedSeam.scan S5 pins those terms in e2ee.ts; the wiring scan W1
+// runs them). The shield itself only ever sees the boolean.
+// ---------------------------------------------------------------------------
+
+const PROBE_OK: AndroidProbe = {
+  state: "ok",
+  value: { protocol: 1, listenerBridge: true },
+};
+
+/** A window's platform facts; the Tauri main window unless overridden. */
+function shell(over: Partial<StructuralInput> = {}): StructuralInput {
+  return {
+    transport: "tauri",
+    platform: "",
+    electronProtocol: undefined,
+    androidProbe: null,
+    popout: false,
+    overlay: false,
+    flag: "unknown",
+    ...over,
+  };
+}
+
+const electron = (
+  flag: FlagState = "on",
+  over: Partial<StructuralInput> = {},
+) => shell({ transport: "electron", electronProtocol: 1, flag, ...over });
+
+const android = (
+  probe: AndroidProbe | null = PROBE_OK,
+  flag: FlagState = "on",
+  over: Partial<StructuralInput> = {},
+) =>
+  shell({
+    transport: "capacitor",
+    platform: "android",
+    androidProbe: probe,
+    flag,
+    ...over,
+  });
+
+/** The bridge's live status terms of `protectedTextCapable()`. */
+interface DeviceFacts {
+  enabled: boolean;
+  published: boolean;
+  deviceId: string | null;
+  userId: string | null;
+  owner: StoreOwnerCheck;
+  storeOwnedElsewhere: boolean;
+  deviceOwnedElsewhere: boolean;
+}
+
+const DEVICE: DeviceFacts = {
+  enabled: true,
+  published: true,
+  deviceId: "D1",
+  userId: "U1",
+  owner: { state: "known", owner: "U1" },
+  storeOwnedElsewhere: false,
+  deviceOwnedElsewhere: false,
+};
+
+/** D3 + S7 D9: `protectedTextCapable()` over C4's real functions. */
+function capableOn(p: StructuralInput, d: Partial<DeviceFacts> = {}): boolean {
+  const x = { ...DEVICE, ...d };
+  const s = structuralState(p);
+  return (
+    s.structural &&
+    !s.hold &&
+    x.enabled &&
+    !!x.deviceId &&
+    !x.storeOwnedElsewhere &&
+    !x.deviceOwnedElsewhere &&
+    !!x.userId &&
+    storeOwnerAllows(p.transport, x.owner, x.userId)
+  );
+}
+
+/**
+ * The S7 D9 notice split (the hook's `tauriE2eeOff`, its shell term now
+ * `structuralShell()`, lane C5): a structural shell whose E2EE is merely
+ * off or unpublished is told to turn it on.
+ */
+function e2eeOffOn(p: StructuralInput, d: Partial<DeviceFacts> = {}): boolean {
+  const x = { ...DEVICE, ...d };
+  return (
+    structuralState(p).structural &&
+    !capableOn(p, d) &&
+    (!x.enabled || !x.published)
+  );
+}
+
+function shieldOn(
+  p: StructuralInput,
+  d: Partial<DeviceFacts> = {},
+  over: Partial<ShieldInputs> = {},
+): ShieldInputs {
+  return green({
+    capable: capableOn(p, d),
+    tauriE2eeOff: e2eeOffOn(p, d),
+    ...over,
+  });
+}
+
+test("S7 D9: a capable Electron / Android shell runs the full 9.1 ladder and can be green", () => {
+  for (const [label, p] of [
+    ["electron protocol 1, flag on", electron("on")],
+    ["android probe ok, listener bridge, flag on", android(PROBE_OK, "on")],
+  ] as const) {
+    for (const owner of [
+      { state: "known", owner: "U1" },
+      { state: "known", owner: null }, // a fresh store
+    ] as StoreOwnerCheck[]) {
+      const why = `${label}, owner ${JSON.stringify(owner)}`;
+      assert.equal(capableOn(p, { owner }), true, why);
+      expectShield(shieldOn(p, { owner }), "protected", "8", why);
+      // capable is only step 2: steps 3-9 still decide, as on Tauri
+      expectShield(
+        shieldOn(p, { owner }, { seatListError: "bad_sig" }),
+        "unverified",
+        "3",
+        why,
+      );
+      expectShield(
+        shieldOn(p, { owner }, { native: null }),
+        "resecuring",
+        "4",
+        why,
+      );
+      expectShield(
+        shieldOn(p, { owner }, { native: nativeOk({ verdict: "not_seated" }) }),
+        "not_seated",
+        "5",
+        why,
+      );
+      assert.equal(explainShield(shieldOn(p, { owner }))?.notice, null);
+    }
+  }
+  // Tauri keeps W4: the flag is not consulted, an unknown owner is capable.
+  for (const flag of ["on", "off", "unknown"] as FlagState[]) {
+    const t = shell({ flag });
+    assert.equal(capableOn(t, { owner: { state: "unknown" } }), true, flag);
+    expectShield(
+      shieldOn(t, { owner: { state: "unknown" } }),
+      "protected",
+      "8",
+    );
+  }
+});
+
+test("S7 D9: every closed, held or foreign Electron / Android / iOS / web window is not_available", () => {
+  const rows: [string, StructuralInput, Partial<DeviceFacts>?][] = [
+    ["electron, no protocol", electron("on", { electronProtocol: undefined })],
+    ["electron, protocol 2", electron("on", { electronProtocol: 2 })],
+    ["electron, protocol 0", electron("on", { electronProtocol: 0 })],
+    ["electron, flag off", electron("off")],
+    ["electron, flag unknown (hold)", electron("unknown")],
+    [
+      "electron, owner unknown (A8)",
+      electron(),
+      { owner: { state: "unknown" } },
+    ],
+    [
+      "electron, foreign owner",
+      electron(),
+      { owner: { state: "known", owner: "U2" } },
+    ],
+    ["electron, no user", electron(), { userId: null }],
+    ["electron, no device id", electron(), { deviceId: null }],
+    ["electron, store latch", electron(), { storeOwnedElsewhere: true }],
+    ["electron, device latch", electron(), { deviceOwnedElsewhere: true }],
+    ["electron popout", electron("on", { popout: true })],
+    ["electron overlay", electron("on", { overlay: true })],
+    [
+      "android, legacy bridge",
+      android({ state: "ok", value: { protocol: 1, listenerBridge: false } }),
+    ],
+    [
+      "android, protocol 2",
+      android({ state: "ok", value: { protocol: 2, listenerBridge: true } }),
+    ],
+    ["android, probe pending (hold)", android({ state: "pending" })],
+    ["android, probe failed", android({ state: "failed" })],
+    ["android, no probe", android(null)],
+    ["android, flag off", android(PROBE_OK, "off")],
+    ["android, flag unknown (hold)", android(PROBE_OK, "unknown")],
+    ["android, owner unknown (A8)", android(), { owner: { state: "unknown" } }],
+    [
+      "android, foreign owner",
+      android(),
+      { owner: { state: "known", owner: "U2" } },
+    ],
+    ["android, no user", android(), { userId: null }],
+    ["android popout", android(PROBE_OK, "on", { popout: true })],
+    ["android overlay", android(PROBE_OK, "on", { overlay: true })],
+    ["ios", android(PROBE_OK, "on", { platform: "ios" })],
+    ["web", shell({ transport: "web", flag: "on" })],
+    ["tauri popout", shell({ popout: true })],
+    [
+      "tauri, foreign owner (W4 latch)",
+      shell(),
+      { owner: { state: "known", owner: "U2" } },
+    ],
+  ];
+  for (const [label, p, d] of rows) {
+    assert.equal(capableOn(p, d), false, label);
+    expectShield(shieldOn(p, d), "not_available", "2", label);
+    // E2EE is on in every row: the notice never says "turn it on".
+    assert.equal(explainShield(shieldOn(p, d))?.notice, "not_available", label);
+    // not_available beats loud errors and loading, as on Tauri
+    expectShield(
+      shieldOn(p, d, { seatListError: "bad_sig", native: null }),
+      "not_available",
+      "2",
+      label,
+    );
+  }
+});
+
+test("S7 D9 notice split: a structural Electron / Android shell with E2EE off gets enable_e2ee", () => {
+  const off = { enabled: false };
+  for (const [label, p] of [
+    ["electron", electron("on")],
+    ["electron, flag unknown", electron("unknown")],
+    ["android", android(PROBE_OK, "on")],
+    ["android, probe pending", android({ state: "pending" })],
+    ["tauri", shell()],
+  ] as const) {
+    expectShield(shieldOn(p, off), "not_available", "2", label);
+    assert.equal(explainShield(shieldOn(p, off))?.notice, "enable_e2ee", label);
+    assert.equal(
+      shieldPresentation("not_available", {
+        tauriE2eeOff: e2eeOffOn(p, off),
+      }).notice,
+      "enable_e2ee",
+      label,
+    );
+  }
+  // Enabled but not yet published is still capable (W4: `published` is a
+  // notice term only), so it is never told to turn E2EE on.
+  for (const p of [electron("on"), android(PROBE_OK, "on")]) {
+    expectShield(shieldOn(p, { published: false }), "protected", "8");
+  }
+  // Not a text-plane shell: turning E2EE on would not help, so no such hint.
+  for (const [label, p] of [
+    ["electron, no protocol", electron("on", { electronProtocol: undefined })],
+    ["electron, flag off", electron("off")],
+    [
+      "android, legacy bridge",
+      android({ state: "ok", value: { protocol: 1, listenerBridge: false } }),
+    ],
+    ["android, probe failed", android({ state: "failed" })],
+    ["android, flag off", android(PROBE_OK, "off")],
+    ["ios", android(PROBE_OK, "on", { platform: "ios" })],
+    ["web", shell({ transport: "web", flag: "on" })],
+    ["electron popout", electron("on", { popout: true })],
+    ["android overlay", android(PROBE_OK, "on", { overlay: true })],
+    ["tauri popout", shell({ popout: true })],
+  ] as const) {
+    expectShield(shieldOn(p, off), "not_available", "2", label);
+    assert.equal(
+      explainShield(shieldOn(p, off))?.notice,
+      "not_available",
+      label,
+    );
+  }
+});
+
+test("S7 D9: across the platform grid, green only on a decided, owned, main-window text shell", () => {
+  const probes: (AndroidProbe | null)[] = [
+    null,
+    { state: "pending" },
+    { state: "failed" },
+    PROBE_OK,
+    { state: "ok", value: { protocol: 1, listenerBridge: false } },
+    { state: "ok", value: { protocol: 2, listenerBridge: true } },
+  ];
+  const owners: StoreOwnerCheck[] = [
+    { state: "unknown" },
+    { state: "known", owner: null },
+    { state: "known", owner: "U1" },
+    { state: "known", owner: "U2" },
+  ];
+  const greens = { tauri: 0, electron: 0, capacitor: 0, web: 0 };
+  let rows = 0;
+  for (const transport of ["tauri", "electron", "capacitor", "web"] as const)
+    for (const platform of ["", "android", "ios"])
+      for (const electronProtocol of [undefined, 1, 2])
+        for (const androidProbe of probes)
+          for (const flag of ["on", "off", "unknown"] as FlagState[])
+            for (const [popout, overlay] of [
+              [false, false],
+              [true, false],
+              [false, true],
+            ])
+              for (const owner of owners) {
+                rows++;
+                const p: StructuralInput = {
+                  transport,
+                  platform,
+                  electronProtocol,
+                  androidProbe,
+                  popout,
+                  overlay,
+                  flag,
+                };
+                const s = structuralState(p);
+                const got = computeShieldState(shieldOn(p, { owner }));
+                if (got !== "protected") {
+                  assert.equal(got, "not_available");
+                  continue;
+                }
+                greens[transport]++;
+                const why = JSON.stringify({ p, owner });
+                assert.ok(!popout && !overlay, `main window only: ${why}`);
+                assert.ok(s.structural && !s.hold, `decided: ${why}`);
+                assert.notEqual(transport, "web", why);
+                assert.notEqual(
+                  owner.state === "known" && owner.owner,
+                  "U2",
+                  why,
+                );
+                if (transport === "electron") {
+                  assert.equal(electronProtocol, 1, why);
+                  assert.equal(flag, "on", why);
+                  assert.equal(owner.state, "known", `A8: ${why}`);
+                }
+                if (transport === "capacitor") {
+                  assert.equal(platform, "android", `never iOS: ${why}`);
+                  assert.deepEqual(androidProbe, PROBE_OK, why);
+                  assert.equal(flag, "on", why);
+                  assert.equal(owner.state, "known", `A8: ${why}`);
+                }
+              }
+  assert.equal(rows, 4 * 3 * 3 * probes.length * 3 * 3 * owners.length);
+  // Not vacuous, and exactly the green rows C4 + D3 allow (C4 ignores the
+  // facts of other shells, e.g. an Electron row's probe):
+  // - tauri: main window, owner not foreign: 3 platforms x 3 protocols x
+  //   6 probes x 3 flags x 3 owners;
+  // - electron: protocol 1, flag on, owner null or self: 3 x 6 x 2;
+  // - capacitor: android, probe ok + listener, flag on, owner null or self:
+  //   3 protocols x 2.
+  assert.deepEqual(greens, {
+    tauri: 3 * 3 * 6 * 3 * 3,
+    electron: 3 * 6 * 2,
+    capacitor: 3 * 2,
+    web: 0,
+  });
 });
 
 test("step 3: every loud seat-list error is unverified, even over verdict ok / loading", () => {

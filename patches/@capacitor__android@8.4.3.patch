@@ -1,16 +1,25 @@
 diff --git a/capacitor/src/main/java/com/getcapacitor/MessageHandler.java b/capacitor/src/main/java/com/getcapacitor/MessageHandler.java
 --- a/capacitor/src/main/java/com/getcapacitor/MessageHandler.java
 +++ b/capacitor/src/main/java/com/getcapacitor/MessageHandler.java
-@@ -16,7 +16,7 @@
+@@ -16,24 +16,35 @@
      private Bridge bridge;
      private WebView webView;
      private PluginManager cordovaPluginManager;
 -    private JavaScriptReplyProxy javaScriptReplyProxy;
 +    private volatile JavaScriptReplyProxy javaScriptReplyProxy;
++
++    // Sloga: whether the live bridge is the main-frame-only WebMessageListener. The fallback,
++    // addJavascriptInterface, takes calls from every frame of the page, so native code that must
++    // only serve the main frame (the protected-text commands) refuses unless this is true. It
++    // starts false and is set true in one place only: after addWebMessageListener has returned.
++    public static volatile boolean usingWebMessageListener = false;
  
      public MessageHandler(Bridge bridge, WebView webView, PluginManager cordovaPluginManager) {
          this.bridge = bridge;
-@@ -26,8 +26,11 @@
+         this.webView = webView;
+         this.cordovaPluginManager = cordovaPluginManager;
++        usingWebMessageListener = false;
+ 
          if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER) && !bridge.getConfig().isUsingLegacyBridge()) {
              WebViewCompat.WebMessageListener capListener = (view, message, sourceOrigin, isMainFrame, replyProxy) -> {
                  if (isMainFrame) {
@@ -23,3 +32,10 @@ diff --git a/capacitor/src/main/java/com/getcapacitor/MessageHandler.java b/capa
                  } else {
                      Logger.warn("Plugin execution is allowed in Main Frame only");
                  }
+             };
+             try {
+                 WebViewCompat.addWebMessageListener(webView, "androidBridge", bridge.getAllowedOriginRules(), capListener);
++                usingWebMessageListener = true;
+             } catch (Exception ex) {
+                 webView.addJavascriptInterface(this, "androidBridge");
+             }

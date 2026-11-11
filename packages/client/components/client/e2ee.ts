@@ -146,6 +146,20 @@ import {
 import { IS_OVERLAY_WINDOW, IS_POPOUT_WINDOW } from "./popout";
 import { fetchProtectedChannelsFlag } from "./protectedChannelsFlag";
 import {
+  type AndroidProbe,
+  type AndroidTextCapability,
+  type FlagEvent,
+  type FlagState,
+  type ShellTransportKind,
+  type StoreOwnerCheck,
+  type StructuralInput,
+  mapTextInvokeError,
+  protectedPlatformTag,
+  reduceFlag,
+  storeOwnerAllows,
+  structuralState,
+} from "./protectedPlatform";
+import {
   type TextSinkSource,
   routeMls,
   textSinkEnvelope,
@@ -1190,6 +1204,12 @@ export type SlogaShellGlobal = {
      * Consumed by `platformMediaE2EESupported()`.
      */
     mediaE2EE?: boolean;
+    /**
+     * Protected channels text-plane protocol (S7 D8): present, as a number,
+     * only on a Linux shell whose loaded native module backs every text
+     * command. Read by the bridge's `structuralState` input; only `1` counts.
+     */
+    protectedText?: number;
     invoke(command: string, args?: unknown): Promise<unknown>;
     /** Allowlisted event subscription; returns an unsubscribe fn */
     on(name: string, callback: (payload: unknown) => void): () => void;
@@ -1337,6 +1357,25 @@ type E2eeCapacitorPlugin = {
     options: Record<string, unknown>,
   ): Promise<{ json: string }>;
   /**
+   * Protected channels (S7 D3): the three text commands that show a native
+   * confirmation, as dedicated methods (the `enableGroup` pattern). Reject
+   * `declined` on cancel, `busy` while another consent dialog is open, and
+   * `unavailable` on the legacy bridge or when no prompt could be shown.
+   */
+  textSeatListSign(options: Record<string, unknown>): Promise<{ json: string }>;
+  textOwnerConfirmChange(
+    options: Record<string, unknown>,
+  ): Promise<{ json: string }>;
+  textOwnerHandoverSign(
+    options: Record<string, unknown>,
+  ): Promise<{ json: string }>;
+  /**
+   * Protected channels (S7 D9): the Android text-plane probe. Not an
+   * `e2ee_*` command. `listenerBridge` is false when the WebView fell back
+   * to the all-frames JavaScript interface; every text arm refuses then.
+   */
+  textCapability(): Promise<AndroidTextCapability>;
+  /**
    * Subscribe to native `callKeysChanged` epoch-advance pushes (the
    * desktop `e2ee:call-keys-changed` analog). The event payload is the
    * PUBLIC `{group_id, epoch}` pair — never key material.
@@ -1478,6 +1517,28 @@ class CapacitorTransport implements NativeTransport {
       // native side computes the non-enrolled roster itself.
       if (command === "e2ee_call_confirm_downgrade") {
         const { json } = await this.#plugin.callConfirmDowngrade(
+          (args as Record<string, unknown>) ?? {},
+        );
+        return JSON.parse(json) as T;
+      }
+
+      // Protected channels (S7 D3): a seat list, an owner change and an
+      // owner handover are signed only after a tap on a native dialog the
+      // webview cannot draw → dedicated methods, never the generic `call()`.
+      if (command === "e2ee_text_seat_list_sign") {
+        const { json } = await this.#plugin.textSeatListSign(
+          (args as Record<string, unknown>) ?? {},
+        );
+        return JSON.parse(json) as T;
+      }
+      if (command === "e2ee_text_owner_confirm_change") {
+        const { json } = await this.#plugin.textOwnerConfirmChange(
+          (args as Record<string, unknown>) ?? {},
+        );
+        return JSON.parse(json) as T;
+      }
+      if (command === "e2ee_text_owner_handover_sign") {
+        const { json } = await this.#plugin.textOwnerHandoverSign(
           (args as Record<string, unknown>) ?? {},
         );
         return JSON.parse(json) as T;
@@ -1628,6 +1689,18 @@ class CapacitorTransport implements NativeTransport {
     return () => {
       void handle.remove();
     };
+  }
+
+  /**
+   * Protected channels (S7 D9): the Android text-plane probe, asked once per
+   * bridge. Android only; the bridge never asks on iOS.
+   */
+  async textCapability(): Promise<AndroidTextCapability> {
+    try {
+      return await this.#plugin.textCapability();
+    } catch (error) {
+      this.#rethrow(error);
+    }
   }
 }
 
@@ -2254,8 +2327,9 @@ export class E2EEBridge implements E2EEAdapter {
    * A throw leaves calls and DMs as they were (UNKNOWN), but the protected
    * text plane fails closed on it (S1-final A-1): `#storeOwnerUnread` starts
    * set and keeps `protectedTextCapable()` false until a read SUCCEEDS (an
-   * owner, or no MLS row: nobody's groups). Retries run only on the Tauri
-   * main window, the one window the text plane runs in; elsewhere the text
+   * owner, or no MLS row: nobody's groups). Retries run only on a structural
+   * window (`#protectedStructural()`: the Tauri main window, and Electron or
+   * Android per S7), the windows the text plane runs in; elsewhere the text
    * plane is never capable, so a shell without the accessor stays the benign
    * case. The first successful read runs the F4 boot gate.
    */
@@ -2271,6 +2345,7 @@ export class E2EEBridge implements E2EEAdapter {
       // No accessor on this shell, or it failed (busy, storage, protector,
       // corrupt store): the server-side signals stand for calls and DMs.
       this.#storeOwnerUnread = true;
+      this.#protectedNoteStoreOwner({ state: "unknown" });
       this.#scheduleStoreOwnerRetry();
       return;
     }
@@ -2281,6 +2356,16 @@ export class E2EEBridge implements E2EEAdapter {
       clearTimeout(this.#storeOwnerRetryTimer);
       this.#storeOwnerRetryTimer = null;
     }
+    // Protected channels (S7 Step 0 fold 1): what this check found, for
+    // `protectedTextCapable()`. `null` is a store with no MLS row yet; any
+    // other non-string or empty answer is unknown, never an owner.
+    this.#protectedNoteStoreOwner(
+      owner === null
+        ? { state: "known", owner: null }
+        : typeof owner === "string" && owner !== ""
+          ? { state: "known", owner }
+          : { state: "unknown" },
+    );
 
     if (owner && owner !== userId) {
       this.#raiseStoreOwnedByAnotherAccount();
@@ -2314,7 +2399,7 @@ export class E2EEBridge implements E2EEAdapter {
    * boot-race `#ensureBootStatus`, or `enable()` on a device that was
    * unprovisioned at connect, where no read ran). The text plane asks for
    * the read instead of trusting the status: deduped, never while a backoff
-   * retry is pending, and only on the Tauri main window with an enabled
+   * retry is pending, and only on a structural window with an enabled
    * status.
    */
   #requestStoreOwnerRead(): void {
@@ -2379,6 +2464,14 @@ export class E2EEBridge implements E2EEAdapter {
 
   async #onReady(): Promise<void> {
     try {
+      // Protected channels (S7 D9): on Electron and Android, the server flag
+      // and the Android probe are settled ONCE, before anything below runs,
+      // so this connect's claim (and the mailbox drain it starts) meets a
+      // decided router; until then MLS envelopes are held, never routed.
+      // Never rejects. Null where nothing is undecided (Tauri, iOS, web).
+      const platformStart = this.#protectedPlatformStart();
+      if (platformStart) await platformStart;
+
       // A fresh/unprovisioned device must NOT open the engine on connect:
       // `refreshStatus` → `e2ee_status` → `E2ee::open` writes master.key +
       // store.db, and a provisioned store makes key-backup RESTORE unreachable
@@ -2408,6 +2501,9 @@ export class E2EEBridge implements E2EEAdapter {
         // flag can therefore never be created — self-sustaining until restart,
         // with the enrol route hidden (media-e2ee-reviewer, HIGH-3).
         this.storeOwnedByAnotherAccount.delete("state");
+        // The same holds for the text plane's owner check: a store that
+        // this session's enable or restore creates belongs to this account.
+        this.#protectedNoteStoreOwner({ state: "known", owner: null });
         // Returning user on a new device (account opted in on another device)
         // ⇒ surface the restore-vs-start-fresh choice; the engine stays
         // unopened until the user picks. A brand-new user (never opted in) is
@@ -6929,6 +7025,9 @@ export class E2EEBridge implements E2EEAdapter {
     // of its own kind. Leaving it set is what stranded the user in the state
     // the reset was supposed to fix (media-e2ee-reviewer, HIGH-3).
     this.storeOwnedByAnotherAccount.delete("state");
+    // So is the text plane's owner check: a store this session re-creates
+    // belongs to this account (as on the unprovisioned path of `#onReady`).
+    this.#protectedNoteStoreOwner({ state: "known", owner: null });
 
     // Multi-device signals all named the wiped device
     this.#clearClaimRetry();
@@ -8779,35 +8878,337 @@ export class E2EEBridge implements E2EEAdapter {
   }
 
   /**
-   * D4 `structural`: the Tauri main window. No status terms, so a Tauri
-   * device that is merely disabled or unprovisioned still routes indexed
-   * envelopes away from the call session.
+   * S7 D9 / RR-1: the server's protected-channels advert as THIS bridge
+   * knows it. Seeded and fetched once, at bridge start, and changed only
+   * through `reduceFlag`. Not consulted on Tauri.
    */
-  #protectedStructural(): boolean {
-    return (
-      this.#transport instanceof TauriTransport &&
-      !IS_POPOUT_WINDOW &&
-      !IS_OVERLAY_WINDOW
-    );
+  #ptServerFlag: FlagState = "unknown";
+  /** S7 D9 / PA-8: the Android `textCapability()` probe (read on Android). */
+  #ptProbe: AndroidProbe = { state: "pending" };
+  /**
+   * Step 0 fold 1 (A8): `#checkStoreOwner`'s last result. Unknown until it
+   * completes; on Electron and Android unknown is NOT capable.
+   */
+  #ptStoreOwner: StoreOwnerCheck = { state: "unknown" };
+  /** Bumped whenever an input above changes, so UI readers re-evaluate. */
+  readonly #ptPlatformVersion = new ReactiveMap<"state", number>();
+  /** The bridge start; undefined until asked, null when none is needed. */
+  #ptStart: Promise<void> | null | undefined = undefined;
+  #ptPlatformLogged = false;
+  /** The flag fetch and the Android probe each get this long (Final look 4). */
+  readonly #ptStartTimeoutMs = 5_000;
+
+  /** Which carrier this bridge speaks through (`structuralState` input). */
+  #protectedTransportKind(): ShellTransportKind {
+    const transport = this.#transport;
+    if (transport instanceof TauriTransport) return "tauri";
+    if (transport instanceof ElectronTransport) return "electron";
+    if (transport instanceof CapacitorTransport && Capacitor.isNativePlatform())
+      return "capacitor";
+    return "web";
+  }
+
+  /** The facts `structuralState` decides on, as this bridge holds them. */
+  #protectedPlatformInput(): StructuralInput {
+    // A tracked read: a UI memo over any reader re-runs once these settle.
+    this.#ptPlatformVersion.get("state");
+    const transport = this.#protectedTransportKind();
+    const platform = transport === "capacitor" ? Capacitor.getPlatform() : "";
+    const protocol =
+      transport === "electron"
+        ? (window as { slogaShell?: SlogaShellGlobal }).slogaShell?.e2ee
+            ?.protectedText
+        : undefined;
+    return {
+      transport,
+      platform,
+      electronProtocol: typeof protocol === "number" ? protocol : undefined,
+      androidProbe:
+        transport === "capacitor" && platform === "android"
+          ? this.#ptProbe
+          : null,
+      popout: IS_POPOUT_WINDOW,
+      overlay: IS_OVERLAY_WINDOW,
+      flag: this.#ptServerFlag,
+    };
+  }
+
+  /** `structuralState` over this bridge's current facts. */
+  #protectedPlatformState(): { structural: boolean; hold: boolean } {
+    return structuralState(this.#protectedPlatformInput());
   }
 
   /**
-   * D3: whether this window can run the text plane. Electron, Android, iOS
-   * and web are never capable; neither is a Tauri device that is not
-   * provisioned and enabled, or whose store or device belongs elsewhere.
-   * An owner check that threw is NOT an all-clear here (A-1): `e2ee_text_*`
-   * carries no user id, so a store of unknown owner could decrypt another
-   * account's channels.
+   * D4 `structural` (S7 D9): may this window run the text plane at all. The
+   * Tauri main window always (W4), Electron and Android per their native
+   * capability and the server flag, never iOS, web, popout or overlay. No
+   * status terms, so a device that is merely disabled or unprovisioned still
+   * routes indexed envelopes away from the call session.
+   */
+  #protectedStructural(): boolean {
+    return this.#protectedPlatformState().structural;
+  }
+
+  /**
+   * S7 D9 notice split: whether this window is a shell that runs the text
+   * plane once E2EE is on (`enable_e2ee`, not `not_available`).
+   */
+  structuralShell(): boolean {
+    return this.#protectedStructural();
+  }
+
+  /**
+   * D3: whether this window can run the text plane: a structural shell that
+   * is not on hold (a pending probe or an unknown flag reaches no native text
+   * command), E2EE provisioned and enabled, a signed-in user, and neither the
+   * store nor the device belonging elsewhere. An owner check that threw is
+   * NOT an all-clear here (A-1): `e2ee_text_*` carries no user id, so a
+   * store of unknown owner could decrypt another account's channels. On
+   * Electron and Android the check must also have answered this account or
+   * no owner (A8); Tauri keeps W4's latch and never holds.
    */
   protectedTextCapable(): boolean {
     const status = this.status.get("state");
+    const userId = this.#client.user?.id ?? null;
     return (
       this.#protectedStructural() &&
+      !this.#protectedPlatformState().hold &&
       status?.enabled === true &&
       !!status.device_id &&
       !this.#storeOwnerUnread &&
       !this.storeOwnedByAnotherAccount.has("state") &&
-      !this.deviceOwnedElsewhere.has("state")
+      !this.deviceOwnedElsewhere.has("state") &&
+      !!userId &&
+      storeOwnerAllows(
+        this.#protectedTransportKind(),
+        this.#ptStoreOwner,
+        userId,
+      )
+    );
+  }
+
+  /** Record `#checkStoreOwner`'s result (its own latch is unchanged). */
+  #protectedNoteStoreOwner(check: StoreOwnerCheck): void {
+    this.#ptStoreOwner = check;
+    this.#protectedPlatformChanged();
+  }
+
+  #protectedPlatformChanged(): void {
+    this.#ptPlatformVersion.set(
+      "state",
+      (this.#ptPlatformVersion.get("state") ?? 0) + 1,
+    );
+  }
+
+  /**
+   * S7 D9 bridge start, once per bridge (the first `#onReady`). Only a shell
+   * that holds while undecided (Electron with protocol 1, Android) has
+   * anything to settle; everywhere else this logs the platform tag and
+   * answers null, so Tauri's `#onReady` awaits nothing new.
+   */
+  #protectedPlatformStart(): Promise<void> | null {
+    if (this.#ptStart === undefined) {
+      const undecided = structuralState({
+        ...this.#protectedPlatformInput(),
+        flag: "unknown",
+      }).hold;
+      if (undecided) {
+        this.#ptStart = this.#protectedPlatformDecide();
+      } else {
+        this.#ptStart = null;
+        this.#protectedPlatformLog();
+      }
+    }
+    return this.#ptStart;
+  }
+
+  /**
+   * Settle the flag and the Android probe (RR-1, PA-8).
+   * - The flag is seeded from this account's last-known value. A seed
+   *   decides at once and the start does not wait for the network; only a
+   *   first run (no seed) waits for the server, at most 5 s.
+   * - The fetch always runs, independently of capability, and its answer is
+   *   routed through `#protectedFlagEvent` whenever it lands, also after the
+   *   start, so a slow first answer or a changed server value takes effect
+   *   in this session.
+   * - The Android probe is a local plugin call, awaited on every start (5 s,
+   *   then failed).
+   * - The start window then closes like a timeout: a known value stays,
+   *   unknown becomes off, so the router never holds for the bridge's life.
+   * Never rejects.
+   */
+  async #protectedPlatformDecide(): Promise<void> {
+    const userId = this.#client.user?.id ?? null;
+    const android = this.#protectedPlatformInput().androidProbe !== null;
+    try {
+      const seed = this.#protectedFlagLastKnown(userId);
+      this.#ptServerFlag = reduceFlag(this.#ptServerFlag, {
+        kind: "seed",
+        value: seed,
+      });
+      const answered = this.#protectedFlagFetch()
+        .then(({ event }) => {
+          this.#protectedFlagEvent(event);
+          return true;
+        })
+        .catch((error: unknown) => {
+          console.error("[protected] flag answer failed", errorName(error));
+          return false;
+        });
+      const [, probe] = await Promise.all([
+        seed === null ? this.#protectedWithin(answered, false) : null,
+        android ? this.#protectedAndroidProbe() : Promise.resolve(null),
+      ]);
+      this.#ptServerFlag = reduceFlag(this.#ptServerFlag, { kind: "timeout" });
+      if (probe) this.#ptProbe = probe;
+    } catch (error) {
+      console.error("[protected] platform start failed", errorName(error));
+      this.#ptServerFlag = reduceFlag(this.#ptServerFlag, { kind: "timeout" });
+      if (android) this.#ptProbe = { state: "failed" };
+    } finally {
+      this.#protectedPlatformChanged();
+      this.#protectedPlatformLog();
+    }
+  }
+
+  /**
+   * Audit fix 3: the ONE way the server flag moves after its seed. Every
+   * answer the bridge gets (the start's fetch, the boot probe, the D13
+   * refresh) is reduced here: an answer replaces the state and is
+   * remembered for this account; a failure changes nothing (sticky).
+   */
+  #protectedFlagEvent(event: FlagEvent): void {
+    const before = this.#protectedPlatformState();
+    const prev = this.#ptServerFlag;
+    this.#ptServerFlag = reduceFlag(this.#ptServerFlag, event);
+    if (event.kind === "fetch_ok") {
+      this.#protectedFlagRemember(this.#client.user?.id ?? null, event.enabled);
+    }
+    if (this.#ptServerFlag === prev) return;
+    this.#protectedPlatformChanged();
+    this.#protectedPlatformApply(before);
+  }
+
+  /**
+   * Act on a platform change once the bridge's first `#protectedOnReady`
+   * has run (before that, it settles both itself): held envelopes are
+   * re-routed; a window that stopped being structural drops its manager
+   * (D10: off is today's call path); one that became structural and is not
+   * on hold boots the manager the normal way. Never runs on Tauri, whose
+   * structural state never changes.
+   */
+  #protectedPlatformApply(before: {
+    structural: boolean;
+    hold: boolean;
+  }): void {
+    if (!this.#ptIndex.ready) return;
+    const after = this.#protectedPlatformState();
+    if (after.structural === before.structural && after.hold === before.hold)
+      return;
+    if (before.structural && !after.structural) this.#protectedDispose();
+    this.#protectedFlushPreIndex();
+    if (after.structural && !after.hold) this.#protectedBootManager();
+  }
+
+  /**
+   * `GET /` for the advert, telling a failed request (`fetch_failed`) from
+   * an answer: `protectedChannelsFlag.ts` reads a failure as off, which is
+   * NOT this input (D9). A malformed answer still parses as off. `flag` is
+   * the parsed advert as W4 reads it (off on a failure).
+   */
+  async #protectedFlagFetch(): Promise<{
+    event: FlagEvent;
+    flag: ProtectedChannelsFlag;
+  }> {
+    let failed = false;
+    const flag = await fetchProtectedChannelsFlag({
+      api: {
+        get: async (path) => {
+          try {
+            return await this.#client.api.get(path);
+          } catch (error) {
+            failed = true;
+            throw error;
+          }
+        },
+      },
+    });
+    return {
+      event: failed
+        ? { kind: "fetch_failed" }
+        : { kind: "fetch_ok", enabled: flag.enabled },
+      flag,
+    };
+  }
+
+  /** The Android probe, bounded; any failure or a timeout is `failed`. */
+  async #protectedAndroidProbe(): Promise<AndroidProbe> {
+    const transport = this.#transport;
+    if (!(transport instanceof CapacitorTransport)) return { state: "failed" };
+    return this.#protectedWithin<AndroidProbe>(
+      transport.textCapability().then(
+        (value): AndroidProbe =>
+          value && typeof value === "object"
+            ? {
+                state: "ok",
+                value: {
+                  protocol: value.protocol,
+                  listenerBridge: value.listenerBridge,
+                },
+              }
+            : { state: "failed" },
+        (): AndroidProbe => ({ state: "failed" }),
+      ),
+      { state: "failed" },
+    );
+  }
+
+  /** `work`, or `fallback` once `#ptStartTimeoutMs` passes first. */
+  #protectedWithin<T>(work: Promise<T>, fallback: T): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<T>((resolve) => {
+      timer = setTimeout(() => resolve(fallback), this.#ptStartTimeoutMs);
+    });
+    return Promise.race([work, deadline]).finally(() => clearTimeout(timer));
+  }
+
+  /** The per-account last-known flag key (localStorage). */
+  #protectedFlagKey(userId: string): string {
+    return `protected-flag:${userId}`;
+  }
+
+  /** This account's last-known flag; null when none or unreadable. */
+  #protectedFlagLastKnown(userId: string | null): "on" | "off" | null {
+    if (!userId) return null;
+    try {
+      const value = globalThis.localStorage.getItem(
+        this.#protectedFlagKey(userId),
+      );
+      return value === "on" || value === "off" ? value : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Persist a server answer as this account's last-known flag. */
+  #protectedFlagRemember(userId: string | null, enabled: boolean): void {
+    if (!userId) return;
+    try {
+      globalThis.localStorage.setItem(
+        this.#protectedFlagKey(userId),
+        enabled ? "on" : "off",
+      );
+    } catch {
+      // storage unavailable: the next bridge starts unknown
+    }
+  }
+
+  /** The one `[protected]` platform line per bridge (no ids, no user data). */
+  #protectedPlatformLog(): void {
+    if (this.#ptPlatformLogged) return;
+    this.#ptPlatformLogged = true;
+    console.info(
+      `[protected] ${protectedPlatformTag(this.#protectedPlatformInput())}`,
     );
   }
 
@@ -8839,9 +9240,11 @@ export class E2EEBridge implements E2EEAdapter {
     if (contentType === "mls_ctl" || event.content_type === "mls_ctl") {
       return "call";
     }
+    // S7 D9: an undecided platform (pending probe, unknown flag) holds.
+    const platform = this.#protectedPlatformState();
     const route = routeMls({
-      structural: this.#protectedStructural(),
-      indexReady: this.#ptIndex.ready,
+      structural: platform.structural,
+      indexReady: this.#ptIndex.ready && !platform.hold,
       inIndex: this.#ptIndex.has(sinkEvent.envelope.group_id),
       managerReady: this.#protectedManagerReady(),
       kind: "envelope",
@@ -8879,9 +9282,10 @@ export class E2EEBridge implements E2EEAdapter {
     request: MlsJoinRequest,
     rejoin: boolean,
   ): "call" | "handled" {
+    const platform = this.#protectedPlatformState();
     const route = routeMls({
-      structural: this.#protectedStructural(),
-      indexReady: this.#ptIndex.ready,
+      structural: platform.structural,
+      indexReady: this.#ptIndex.ready && !platform.hold,
       inIndex: this.#ptIndex.has(request.group_id),
       managerReady: this.#protectedManagerReady(),
       kind: "join_request",
@@ -9072,10 +9476,14 @@ export class E2EEBridge implements E2EEAdapter {
       });
       if (!answered) {
         this.#ptFlagProbeFailures++;
+        // Audit fix 3: sticky; a failure never moves the S7 flag.
+        this.#protectedFlagEvent({ kind: "fetch_failed" });
         return;
       }
       this.#ptFlagProbed = true;
       this.#ptFlagState.set("state", flag);
+      // Audit fix 3: the S7 platform flag follows this answer too.
+      this.#protectedFlagEvent({ kind: "fetch_ok", enabled: flag.enabled });
       if (flag.enabled) this.#protectedEnsureManager();
     } finally {
       this.#ptFlagProbing = false;
@@ -9388,8 +9796,13 @@ export class E2EEBridge implements E2EEAdapter {
     return {
       selfUserId: userId,
       selfDeviceId: deviceId,
+      // D7: a dialog command's `unavailable` reaches the manager as `busy`.
+      // Mapped at `#textInvoke`'s one caller, so its literal arms (S5, iOS
+      // G6) keep their shape.
       invoke: <C extends TextCommand>(cmd: C, args: TextCommandArgs[C]) =>
-        this.#textInvoke(cmd, args),
+        this.#textInvoke(cmd, args).catch((error: unknown) => {
+          throw mapTextInvokeError(cmd, error);
+        }),
       pinCallIdentities: (peer, targets) =>
         this.#protectedPinIdentities(peer, targets),
       ownDeviceListing: () => this.#protectedOwnListing(),
@@ -9566,8 +9979,11 @@ export class E2EEBridge implements E2EEAdapter {
 
   /** D13: fetch the flag; when enabled, run the D12 ready-time replenish. */
   async #protectedRefreshFlag(): Promise<void> {
-    const flag = await fetchProtectedChannelsFlag(this.#client);
+    // `flag` reads a failure as off, as before; `event` tells the two apart
+    // for the S7 platform flag (audit fix 3), where a failure is sticky.
+    const { event, flag } = await this.#protectedFlagFetch();
     this.#ptFlagState.set("state", flag);
+    this.#protectedFlagEvent(event);
     if (flag.enabled) await this.#protectedReplenish();
   }
 
