@@ -7194,6 +7194,46 @@ msgid "Enter an amount"
 msgstr "Introduz uma quantidade"
 
 #: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Waiting for approval. Your Prot arrives when the purchase completes."
+msgstr "A aguardar aprovação. O teu Prot chega quando a compra for concluída."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Prot added to your wallet."
+msgstr "Prot adicionado à tua carteira."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "This purchase was refunded, so no Prot was added."
+msgstr "Esta compra foi reembolsada, por isso não foi adicionado Prot."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Test purchases aren't credited on this server."
+msgstr "As compras de teste não são creditadas neste servidor."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Sign in to the account that bought this to receive the Prot."
+msgstr "Inicia sessão na conta que fez esta compra para receber o Prot."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "This purchase needs our help. Contact support and we'll add the Prot to your account."
+msgstr "Esta compra precisa da nossa ajuda. Contacta o suporte e adicionamos o Prot à tua conta."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "We couldn't reach Sloga to confirm your purchase. It's safe, and we'll try again."
+msgstr "Não conseguimos estabelecer ligação à Sloga para confirmar a tua compra. Está segura e vamos tentar novamente."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Prot packs"
+msgstr "Pacotes de Prot"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Protected channels open in Sloga for desktop and Android. On iPhone you can buy Prot and fund channels."
+msgstr "Os canais Protected abrem na app Sloga para computador e Android. No iPhone, podes comprar Prot e financiar canais."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Purchase"
+msgstr "Comprar"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
 msgid "Prot is the credit you'll use for Protected servers and channels. Your balance and recent activity are below."
 msgstr "Prot é o crédito que vais usar nos servidores e canais Protected. O teu saldo e a tua atividade recente estão abaixo."
 
@@ -8233,6 +8273,22 @@ msgstr "Este pedido de Prot já foi enviado com outros dados. Atualiza e tenta n
 #: components/i18n/errors.ts
 msgid "You don't have enough Prot for this: it needs {protNeeded} Prot and you have {protAvailable}."
 msgstr "Não tens Prot suficiente para isto: é preciso {protNeeded} Prot e tens {protAvailable}."
+
+#: components/i18n/errors.ts
+msgid "Prot isn't on sale in the app right now."
+msgstr "O Prot não está à venda na app de momento."
+
+#: components/i18n/errors.ts
+msgid "That Prot pack isn't available."
+msgstr "Esse pacote de Prot não está disponível."
+
+#: components/i18n/errors.ts
+msgid "We couldn't confirm this purchase with the store. Please try again."
+msgstr "Não conseguimos confirmar esta compra com a loja. Tenta novamente."
+
+#: components/i18n/errors.ts
+msgid "In-app purchases aren't available right now. Please try again later."
+msgstr "As compras dentro da app não estão disponíveis de momento. Tenta novamente mais tarde."
 
 #: components/i18n/errors.ts
 msgid "This device was removed from your account's encryption."

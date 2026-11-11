@@ -208,6 +208,16 @@ export function useError() {
       if (errType === "ProtGoalClosed") return t`This goal is closed.`;
       if (errType === "ProtTierBelowSeats")
         return t`Some members are still seated or cooling down. Unseat members first, or wait for their seats to free up.`;
+      // In-app Prot purchases (S6, same lag pattern). Verify answers a wrong
+      // account or a test purchase as a 200 `rejected` reason, not an error.
+      if (errType === "ProtStoreClosed")
+        return t`Prot isn't on sale in the app right now.`;
+      if (errType === "ProtStoreProductUnknown")
+        return t`That Prot pack isn't available.`;
+      if (errType === "ProtStoreVerifyFailed")
+        return t`We couldn't confirm this purchase with the store. Please try again.`;
+      if (errType === "ProtStoreUnavailable")
+        return t`In-app purchases aren't available right now. Please try again later.`;
       // A first publication of a device id removed from the account's
       // encryption (same lag pattern). The bridge also raises `deviceRemoved`,
       // whose modal offers to set this install up again as a new device.

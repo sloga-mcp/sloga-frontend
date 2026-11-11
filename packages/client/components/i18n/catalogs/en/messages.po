@@ -8619,6 +8619,46 @@ msgid "Enter an amount"
 msgstr "Enter an amount"
 
 #: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Waiting for approval. Your Prot arrives when the purchase completes."
+msgstr "Waiting for approval. Your Prot arrives when the purchase completes."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Prot added to your wallet."
+msgstr "Prot added to your wallet."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "This purchase was refunded, so no Prot was added."
+msgstr "This purchase was refunded, so no Prot was added."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Test purchases aren't credited on this server."
+msgstr "Test purchases aren't credited on this server."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Sign in to the account that bought this to receive the Prot."
+msgstr "Sign in to the account that bought this to receive the Prot."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "This purchase needs our help. Contact support and we'll add the Prot to your account."
+msgstr "This purchase needs our help. Contact support and we'll add the Prot to your account."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "We couldn't reach Sloga to confirm your purchase. It's safe, and we'll try again."
+msgstr "We couldn't reach Sloga to confirm your purchase. It's safe, and we'll try again."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Prot packs"
+msgstr "Prot packs"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Protected channels open in Sloga for desktop and Android. On iPhone you can buy Prot and fund channels."
+msgstr "Protected channels open in Sloga for desktop and Android. On iPhone you can buy Prot and fund channels."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
+msgid "Purchase"
+msgstr "Purchase"
+
+#: components/app/interface/settings/user/ProtSettings.tsx
 msgid "Prot is the credit you'll use for Protected servers and channels. Your balance and recent activity are below."
 msgstr "Prot is the credit you'll use for Protected servers and channels. Your balance and recent activity are below."
 
@@ -10782,6 +10822,22 @@ msgstr "This Prot request was already sent with different details. Refresh and t
 #: components/i18n/errors.ts
 msgid "You don't have enough Prot for this: it needs {protNeeded} Prot and you have {protAvailable}."
 msgstr "You don't have enough Prot for this: it needs {protNeeded} Prot and you have {protAvailable}."
+
+#: components/i18n/errors.ts
+msgid "Prot isn't on sale in the app right now."
+msgstr "Prot isn't on sale in the app right now."
+
+#: components/i18n/errors.ts
+msgid "That Prot pack isn't available."
+msgstr "That Prot pack isn't available."
+
+#: components/i18n/errors.ts
+msgid "We couldn't confirm this purchase with the store. Please try again."
+msgstr "We couldn't confirm this purchase with the store. Please try again."
+
+#: components/i18n/errors.ts
+msgid "In-app purchases aren't available right now. Please try again later."
+msgstr "In-app purchases aren't available right now. Please try again later."
 
 #: components/i18n/errors.ts
 msgid "This device was removed from your account's encryption."

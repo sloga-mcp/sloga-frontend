@@ -25,6 +25,7 @@ import { E2EEDeviceToastWorker } from "@revolt/client/E2EEDeviceToastWorker";
 import { FossUpdateNotice } from "@revolt/client/FossUpdateNotice";
 import { KeybindsWorker } from "@revolt/client/KeybindsWorker";
 import { NotificationsWorker } from "@revolt/client/NotificationsWorker";
+import { ProtStoreWorker } from "@revolt/client/ProtStoreWorker";
 import { ShellBridgeWorker } from "@revolt/client/ShellBridgeWorker";
 import { StreamerModeWorker } from "@revolt/client/StreamerModeWorker";
 import {
@@ -233,6 +234,7 @@ const Interface = (props: { children: JSX.Element }) => {
         <ActivityWorker />
         <StreamerModeWorker />
         <ApkUpdateWorker />
+        <ProtStoreWorker />
         <ChannelListQueriesWorker />
         <FossUpdateNotice />
         {/* Global and in-app keybinds, over the native hook and the focused
