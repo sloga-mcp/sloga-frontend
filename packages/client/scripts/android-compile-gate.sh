@@ -39,9 +39,11 @@
 #      The same invocation runs test{Sideload,Play,Foss}DebugUnitTest, each
 #      filtered to the GATE_TESTS classes in com.acutest.app.screenshare
 #      (ScreenVideoGateTest, ScreenAudioSenderGateTest,
-#      ScreenUnpublishGuardTest).
-#   5. Anti-vacuity: a compiled Kotlin class (ScreenSharePlugin.class) and a
-#      compiled Java class (MainActivity.class) must exist for every flavor.
+#      ScreenUnpublishGuardTest) and the GATE_E2EE_TESTS classes in
+#      com.acutest.app.e2ee (E2eeGenericCallTest).
+#   5. Anti-vacuity: compiled Kotlin classes (ScreenSharePlugin.class,
+#      E2eePlugin.class) and a compiled Java class (MainActivity.class) must
+#      exist for every flavor.
 #      A green run that produced neither compiled nothing.
 #   6. Anti-vacuity for the tests: for every flavor AND every GATE_TESTS
 #      class, the JUnit XML report must exist, written by THIS run, with at
@@ -98,13 +100,30 @@ GATE_TESTS=(
   ScreenAudioSenderGateTest:19
   ScreenUnpublishGuardTest:12
 )
+# The E2EE plugin's JVM unit tests, same row format, in their own package:
+# android/app/src/test/java/com/acutest/app/e2ee/<class>.kt. Steps 4 and 6
+# treat them exactly like the screen-share rows.
+GATE_E2EE_TEST_PKG=com.acutest.app.e2ee
+GATE_E2EE_TESTS=(
+  E2eeGenericCallTest:9
+)
 TEST_RESULTS="$ANDROID/app/build/test-results"
 
 [ "${#GATE_TESTS[@]}" -ge 1 ] ||
   fail 2 "GATE_TESTS has no rows (expected at least one <class>:<min> row)"
-for row in "${GATE_TESTS[@]}"; do
+[ "${#GATE_E2EE_TESTS[@]}" -ge 1 ] ||
+  fail 2 "GATE_E2EE_TESTS has no rows (expected at least one <class>:<min> row)"
+for row in "${GATE_TESTS[@]}" "${GATE_E2EE_TESTS[@]}"; do
   [[ "$row" =~ ^[A-Za-z][A-Za-z0-9_]*:[1-9][0-9]*$ ]] ||
     fail 2 "malformed GATE_TESTS row '$row' (expected <class>:<min>, min >= 1)"
+done
+# Both tables as <package>.<class>:<min>, the form steps 4 and 6 read.
+GATE_CLASSES=()
+for row in "${GATE_TESTS[@]}"; do
+  GATE_CLASSES+=("$GATE_TEST_PKG.$row")
+done
+for row in "${GATE_E2EE_TESTS[@]}"; do
+  GATE_CLASSES+=("$GATE_E2EE_TEST_PKG.$row")
 done
 
 # --- toolchain -----------------------------------------------------------------
@@ -316,8 +335,8 @@ done
 # add up. A filter that matches no test at all fails the task; step 6 still
 # checks every class on its own.
 TEST_FILTER=()
-for row in "${GATE_TESTS[@]}"; do
-  TEST_FILTER+=(--tests "$GATE_TEST_PKG.${row%%:*}")
+for row in "${GATE_CLASSES[@]}"; do
+  TEST_FILTER+=(--tests "${row%%:*}")
 done
 for f in "${FLAVORS[@]}"; do
   TASKS+=("test${f^}DebugUnitTest" "${TEST_FILTER[@]}")
@@ -327,8 +346,8 @@ done
 # also makes gradle rerun a test task it would otherwise skip as up to date,
 # so the only reports step 6 can find are ones this invocation wrote.
 for f in "${FLAVORS[@]}"; do
-  for row in "${GATE_TESTS[@]}"; do
-    rm -f "$TEST_RESULTS/test${f^}DebugUnitTest/TEST-$GATE_TEST_PKG.${row%%:*}.xml"
+  for row in "${GATE_CLASSES[@]}"; do
+    rm -f "$TEST_RESULTS/test${f^}DebugUnitTest/TEST-${row%%:*}.xml"
   done
 done
 
@@ -350,18 +369,22 @@ BUILD="$ANDROID/app/build"
 for f in "${FLAVORS[@]}"; do
   v="${f}Debug"
   kt="$BUILD/tmp/kotlin-classes/$v/com/acutest/app/screenshare/ScreenSharePlugin.class"
+  e2ee="$BUILD/tmp/kotlin-classes/$v/com/acutest/app/e2ee/E2eePlugin.class"
   jv="$BUILD/intermediates/javac/$v/compile${f^}DebugJavaWithJavac/classes/com/acutest/app/MainActivity.class"
   [ -s "$kt" ] ||
     fail 4 "gradle exited 0 but the Kotlin output $kt is missing: nothing proves kotlinc compiled $v"
+  [ -s "$e2ee" ] ||
+    fail 4 "gradle exited 0 but the Kotlin output $e2ee is missing: nothing proves kotlinc compiled $v"
   [ -s "$jv" ] ||
     fail 4 "gradle exited 0 but the Java output $jv is missing: nothing proves javac compiled $v"
 done
 
-# --- 6. anti-vacuity for the screen-share tests ----------------------------------------
+# --- 6. anti-vacuity for the unit tests ------------------------------------------------
 #
 # gradle already fails the run on a failing test and on a filter that matches
-# nothing. This step proves every GATE_TESTS class RAN, for every flavor, in
-# this invocation: each flavor's JUnit XML report for each class (the AGP 8.13
+# nothing. This step proves every GATE_TESTS and GATE_E2EE_TESTS class RAN,
+# for every flavor, in this invocation: each flavor's JUnit XML report for
+# each class (the AGP 8.13
 # location; after a toolchain bump, find it with
 #   find packages/client/android/app/build -name 'TEST-*Screen*Test.xml'
 # and update TEST_RESULTS) must name the suite, count at least that class's
@@ -374,8 +397,8 @@ done
 # non-negative integer, else empty.
 xml_attr() { printf '%s\n' "$2" | sed -n "s/.* $1=\"\([0-9][0-9]*\)\".*/\1/p"; }
 class_results=()
-for row in "${GATE_TESTS[@]}"; do
-  cls="$GATE_TEST_PKG.${row%%:*}"
+for row in "${GATE_CLASSES[@]}"; do
+  cls="${row%%:*}"
   min="${row##*:}"
   test_counts=()
   for f in "${FLAVORS[@]}"; do

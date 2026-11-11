@@ -5044,10 +5044,10 @@ MUTATIONS += [
         file=SESSION,
         # The check occurs TWICE (the read's success path and its catch), so
         # each is anchored with the line above it and both are dropped.
-        search="""      const state = await this.#deps.bridge.callState(this.#groupId);
+        search="""      const state = await this.#callStateClassified(this.#groupId);
       if (this.#serveOutlivedRead(request, scheduledGeneration)) return;
 """,
-        replace="""      const state = await this.#deps.bridge.callState(this.#groupId);
+        replace="""      const state = await this.#callStateClassified(this.#groupId);
 """,
         also=[
             (
@@ -5856,6 +5856,173 @@ MUTATIONS += [
 """,
         specs=[RESUME_SPEC],
         must_red=[RESUME_SPEC],
+    ),
+]
+
+
+# --- Refused roster leaves and this device's own removal -----------------------
+#
+# Native `callState` verifies the WHOLE roster and refuses it at the first
+# leaf its pins reject, so while one removed device's leaf is in the group
+# every member's read of it fails. Every read goes through
+# `#callStateClassified`, which hands the refusal to the pure
+# `classifyLeafRejection` first: an `identity_changed` leaf of another user is
+# removed, an unpinned one is re-pinned through its listing and never
+# removed, and anything else goes to the reader's own error handling. A leaf
+# whose Remove fails twice, or that stays unpinned for `REPIN_PERSIST_TICKS`
+# periodic ticks after a listing fetch for it succeeded, replaces the group
+# once (`#poisonedSuccessor`). A device-deletion event naming THIS device ends
+# its call, and the group and resume record go with it.
+#
+# The two read bypasses below each restore ONE direct read. `rtc-gate.sh`'s
+# call-state read count goes red on either as well; these entries prove the
+# SPEC notices, which the count cannot (it only reads source text).
+#
+# Appended mid-file, ahead of the call-view block, on purpose: another branch
+# appends at the end of this table.
+
+LEAF_POLICY = "mlsLeafRejectionPolicy.ts"
+#: 🔴 Relative to `RTC`, like `INBOUND_BUFFER`: not under `components/rtc`.
+DEVICE_DELETE = "../client/deviceDeleteClassifier.ts"
+LEAF_POLICY_SPEC = "components/rtc/mlsLeafRejectionPolicy.test.ts"
+REVOKEDLEAF_SPEC = "components/rtc/mlsCallSession.revokedleaf.test.ts"
+DEVICE_DELETE_SPEC = "components/client/deviceDeleteClassifier.test.ts"
+
+MUTATIONS += [
+    # ---- the policy ---------------------------------------------------------
+    Mutation(
+        id="leaf-policy-never-removes",
+        what="an `identity_changed` refusal is never classified removable, so a removed device's leaf stays in the group and every member's roster read of it keeps failing",
+        file=LEAF_POLICY,
+        search="""        ? "removable"
+""",
+        replace="""        ? null
+""",
+        specs=[LEAF_POLICY_SPEC, REVOKEDLEAF_SPEC],
+        must_red=[LEAF_POLICY_SPEC, REVOKEDLEAF_SPEC],
+    ),
+    Mutation(
+        id="leaf-policy-removes-unpinned",
+        what="an `unknown_identity` / `binding_unverified` refusal is classified removable, so a leaf the member merely has no pin for yet is removed instead of re-pinned through its listing",
+        file=LEAF_POLICY,
+        search="""          ? "repin"
+""",
+        replace="""          ? "removable"
+""",
+        specs=[LEAF_POLICY_SPEC, REVOKEDLEAF_SPEC],
+        must_red=[LEAF_POLICY_SPEC, REVOKEDLEAF_SPEC],
+    ),
+    Mutation(
+        id="leaf-policy-accepts-error-instances",
+        what="the classifier accepts any object carrying the right fields, an `Error` or other class instance included, rather than only the plain object every bridge delivers",
+        file=LEAF_POLICY,
+        search="""    if (proto !== Object.prototype && proto !== null) return { ...OTHER };
+""",
+        replace="",
+        specs=[LEAF_POLICY_SPEC],
+        must_red=[LEAF_POLICY_SPEC],
+    ),
+    # ---- the session's reads -------------------------------------------------
+    Mutation(
+        id="reconcile-read-bypasses-classifier",
+        what="the reconcile tick reads `callState` directly, so the refusal it sees on every tick never reaches the classifier and the leaf is never removed or re-pinned from that path",
+        file=SESSION,
+        search="""    let members: MlsRosterMember[];
+    try {
+      const state = await this.#callStateClassified(this.#groupId);
+""",
+        replace="""    let members: MlsRosterMember[];
+    try {
+      const state = await this.#deps.bridge.callState(this.#groupId);
+""",
+        specs=[REVOKEDLEAF_SPEC],
+        must_red=[REVOKEDLEAF_SPEC],
+    ),
+    Mutation(
+        id="join-request-read-bypasses-classifier",
+        what="`#onJoinRequest`'s stagger read takes `callState` directly, so a join request arriving before the next reconcile tick neither removes the refused leaf nor gets admitted",
+        file=SESSION,
+        search="""    let leaf: number;
+    try {
+      const state = await this.#callStateClassified(this.#groupId);
+      leaf = state.members.findIndex(
+""",
+        replace="""    let leaf: number;
+    try {
+      const state = await this.#deps.bridge.callState(this.#groupId);
+      leaf = state.members.findIndex(
+""",
+        specs=[REVOKEDLEAF_SPEC],
+        must_red=[REVOKEDLEAF_SPEC],
+    ),
+    # ---- the bounds that replace the group ------------------------------------
+    Mutation(
+        id="repin-clock-counts-event-reconciles",
+        what="every roster reconcile advances the repin clock, event-driven ones included, so a burst of `participantConnected` / `trackPublished` reconciles runs out `REPIN_PERSIST_TICKS` in well under one interval and replaces the group while its leaf is still being re-pinned",
+        file=SESSION,
+        search="""    let members: MlsRosterMember[];
+    try {
+""",
+        replace="""    let members: MlsRosterMember[];
+    this.#reconcileTicks++;
+    try {
+""",
+        specs=[REVOKEDLEAF_SPEC],
+        must_red=[REVOKEDLEAF_SPEC],
+    ),
+    Mutation(
+        id="repin-failed-fetch-starts-clock",
+        what="a listing fetch that FAILED (a 429, a deadline) starts the repin clock as a successful one does, so a listing that keeps failing to arrive replaces the group after two ticks with nothing ever reconciled",
+        file=SESSION,
+        search="""        console.warn(`[mls] listing reconcile for ${identity} failed`, error);
+        if (this.#leafRepins.get(key) !== entry) return;
+        entry.inFlight = false;
+""",
+        replace="""        console.warn(`[mls] listing reconcile for ${identity} failed`, error);
+        if (this.#leafRepins.get(key) !== entry) return;
+        entry.inFlight = false;
+        entry.reconciledAtTick ??= this.#reconcileTicks;
+""",
+        specs=[REVOKEDLEAF_SPEC],
+        must_red=[REVOKEDLEAF_SPEC],
+    ),
+    Mutation(
+        id="leaf-remove-bound-off",
+        what="every failed Remove of a refused leaf is only counted, never escalated, so a leaf that can be neither verified nor removed stays in the group and the group is never replaced",
+        file=SESSION,
+        search="""    if (failures < MAX_LEAF_REMOVE_FAILURES) {
+""",
+        replace="""    if (failures > 0) {
+""",
+        specs=[REVOKEDLEAF_SPEC],
+        must_red=[REVOKEDLEAF_SPEC],
+    ),
+    # ---- this device's own removal -------------------------------------------
+    Mutation(
+        id="own-device-revoked-keeps-group",
+        what="this device's own removal ends the call but keeps the local group and its resume record, so a later join can try to resume on an identity the group no longer trusts",
+        file=SESSION,
+        search="""    this.dispose({ discard: true });
+    media?.autoLeave?.(OWN_DEVICE_REVOKED_REASON);
+""",
+        replace="""    this.dispose();
+    media?.autoLeave?.(OWN_DEVICE_REVOKED_REASON);
+""",
+        specs=[REVOKEDLEAF_SPEC],
+        must_red=[REVOKEDLEAF_SPEC],
+    ),
+    Mutation(
+        id="device-delete-own-sibling-reads-own",
+        what="a deletion of ANOTHER device of our own user is classified `own`, so removing a sibling device ends this device's call",
+        file=DEVICE_DELETE,
+        search="""    // Our own other device: not a call peer; the DS sibling rules cover it.
+    return "ignore";
+""",
+        replace="""    // Our own other device: not a call peer; the DS sibling rules cover it.
+    return "own";
+""",
+        specs=[DEVICE_DELETE_SPEC],
+        must_red=[DEVICE_DELETE_SPEC],
     ),
 ]
 
@@ -7227,7 +7394,7 @@ function isGatedFor(
         file=CHANNEL_OVERVIEW,
         search="""    } catch (error) {
       setSpoilerFailed(true);
-      showError(error);
+      if (!protectedRefusal(error, "spoiler")) showError(error);
     } finally {
       setSpoilerSaving(false);""",
         replace="""    } finally {
@@ -7241,7 +7408,7 @@ function isGatedFor(
         file=CHANNEL_OVERVIEW,
         search="""    } catch (error) {
       setPwFailed(true);
-      showError(error);
+      if (!protectedRefusal(error, "password")) showError(error);
     } finally {
       setPwSaving(false);""",
         replace="""    } finally {
@@ -7255,14 +7422,14 @@ function isGatedFor(
         file=CHANNEL_OVERVIEW,
         search="""    } catch (error) {
       setPwFailed(true);
-      showError(error);
+      if (!protectedRefusal(error, "password")) showError(error);
     } finally {
       setPwSaving(false);
     }""",
         replace="""      setPwSaving(false);
     } catch (error) {
       setPwFailed(true);
-      showError(error);
+      if (!protectedRefusal(error, "password")) showError(error);
     }""",
         specs=[AFK_CHANNEL_SETTINGS_SPEC],
         must_red=[AFK_CHANNEL_SETTINGS_SPEC],

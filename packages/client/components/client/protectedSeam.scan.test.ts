@@ -80,9 +80,17 @@ const SRC = readFileSync(FILE, "utf8");
  * neither W4's S1-final fixes (0cdb58ce, 19b5a693) nor main touch the
  * region (W4's own region is still f1d615df...), so the merged region is
  * exactly the S7 one.
+ *
+ * Re-pinned on the S7 re-land over main v0.71.0 (S7 665b1ee8 + main
+ * 4b9de141): main's add-device changed the region on its own
+ * (e8145d68...: the `splitBegin` plugin entry and its `CapacitorTransport`
+ * route, the restore-dialog `RestoreReport` docs, `SPLIT_COMMIT_ATTEMPTS`
+ * and `isMissingCommandError`). The merged region is exactly the union of
+ * that and the S7 additions above, nothing else.
  */
+// Re-pinned from feat/e2ee-add-device: multi-device W3 adds splitBegin.
 const TRANSPORT_REGION_SHA256 =
-  "b56392d20550bfe803558ae29689144d940269ba601ed2e23355e32876c9c2e8";
+  "88e76b2aaaa40af81200cd56dd31611e35ea245167770d8066007e3a0d7347c0";
 
 /**
  * S7 D9 / PA-7: the text commands Android signs only after a tap on a native
@@ -575,7 +583,7 @@ test("S6: NativeTransport and the transport classes carry only the S7 additions"
   assert.equal(
     sha,
     TRANSPORT_REGION_SHA256,
-    "transport region byte-identical to the pinned S7 region (C3 3b5b1b3c)",
+    "transport region byte-identical to the pinned S7 + add-device region",
   );
 });
 

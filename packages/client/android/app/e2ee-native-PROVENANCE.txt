@@ -1,11 +1,11 @@
 # libacutest_e2ee.so + acutest_e2ee.kt provenance. Written by regen-android.sh; do not edit.
 format: regen-android/1
 generator: acutest-desktop/src-tauri/e2ee-android/scripts/regen-android.sh
-generated_utc: 2026-10-27T10:57:46Z
-desktop_commit: e8939a5bd0209e410e718fee8214d0fdff0559c7
+generated_utc: 2026-11-11T18:31:29Z
+desktop_commit: 37497811348255b363bfb2d5c6aaeabdbb148916
 desktop_branch: feat/protected-channels-s7
-tree.e2ee-core: 11f86534150215cd493df610e9490d6a0ab755d8
-tree.e2ee-android: 2f9a7b3f6af118c35a605483eb66ef08ea1a23e0
+tree.e2ee-core: 12e2109dd9a55aea3409720f3066cf35ecf3a709
+tree.e2ee-android: c65661d406403b6de4eac31925479b156d85bef7
 dirty: false
 rustc: rustc 1.97.1 (8bab26f4f 2026-07-14)
 cargo: cargo 1.97.1 (c980f4866 2026-06-30)
@@ -18,12 +18,12 @@ features: default (uniffi-bindgen: cli)
 profile: release, CARGO_PROFILE_RELEASE_STRIP=false; shipped = llvm-strip --strip-all (idempotent)
 bindgen: uniffi-bindgen generate --library <unstripped arm64-v8a .so> --language kotlin --no-format
 kt_cross_abi: byte-identical from arm64-v8a, armeabi-v7a, x86_64
-kt_checksums: 101
+kt_checksums: 105
 regen_rule: Regenerate whenever acutest-desktop/src-tauri/e2ee-core or e2ee-android changes, from a clean committed desktop tree: cargo-ndk release builds for arm64-v8a, armeabi-v7a and x86_64 with CARGO_PROFILE_RELEASE_STRIP=false; acutest_e2ee.kt from uniffi-bindgen --library on the unstripped arm64-v8a .so, byte-identical from the other two ABIs; shipped .so = llvm-strip --strip-all of the unstripped one; commit the 3 .so, the .kt and this file together.
-sha256.unstripped.arm64-v8a: 2063c543f25c67e80ff78ec0e4c64caf7fd8d010f99d8a0632441aeadf36b37e
-sha256.unstripped.armeabi-v7a: 87c5767af52f5b77d61d328743065783ea808bae1d2d265cf440cca44cba3560
-sha256.unstripped.x86_64: b93dd523520df81a382b52bed948a0d342446d79d99087de9dc319454045fc8e
-sha256.shipped.arm64-v8a: ec84df20b9152d6dc9ddeb6a50fd30bdf296ac238f7c0844e9fc4cad2ce9e789
-sha256.shipped.armeabi-v7a: 900876ccd599fb5f9737193dd6cb6acc8e83b9adb3318e1a98bb6878e1941dff
-sha256.shipped.x86_64: dcbfbcf0edbe63e3b3d1447b5a08c833ba43285fdee72de2a5a482d6952d91b5
-sha256.kt: 96bc3368f0e49ee33b05e1a5184bcae4377e69093cfb670c7d398c191a0a2325
+sha256.unstripped.arm64-v8a: a2da3260d5bf50f0d6bf40e0a03920f014020f3e7ce9b35899406b69c64f7a74
+sha256.unstripped.armeabi-v7a: d978db0f8e9a42955fc38f984c8cf34637abb0fbd871c727848267cfe3219754
+sha256.unstripped.x86_64: 708f7f5bb2c19ad5a73be562d47710664fdcec152062a12700987648e28a1d8a
+sha256.shipped.arm64-v8a: a8b9b131b3b6bd16056edc9d35e6e609497ffcde250608e4af2e6c52b41df91c
+sha256.shipped.armeabi-v7a: ef6c08c207f00515526a57b62b56e8f056fce393c836b6e9f5120adf6dbefa0e
+sha256.shipped.x86_64: 22876db76919435a076f7bfc6dda1125d5b63e9db36d56dd91ae2bb3ddc79bb7
+sha256.kt: a4204de08b7debcfc6382d5a4874ea41e2e912a968279a3f90c3d7d2d08dc97a

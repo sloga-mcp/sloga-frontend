@@ -35,12 +35,15 @@ export {
 export type { DistributionChannel } from "./distribution";
 export {
   classifyEnvelopeError,
+  E2EEApiError,
   E2EEBridge,
   E2EESendError,
   nativeE2EEAvailable,
 } from "./e2ee";
 export type { BackupStatusView, E2EEAttachmentMeta, SafetyNumber } from "./e2ee";
 export type {
+  DeviceRemovedState,
+  DeviceSharedState,
   EnvelopeDisposition,
   MlsCallCreated,
   MlsCallState,
@@ -60,8 +63,13 @@ export type {
   MlsSessionSink,
   MlsSinkEvent,
   MlsSubmitCommit,
+  OwnDeviceAddedEntry,
+  OwnDeviceView,
+  PublishPendingState,
+  RemoveDeviceResult,
   ResponseCreateMlsGroup,
   ResponseSubmitMlsCommit,
+  SplitResult,
 } from "./e2ee";
 
 /**
@@ -132,7 +140,7 @@ export function ClientContext(props: { state: State; children: JSXElement }) {
   // opens the engine on a fresh install); open the opt-in modal in
   // restore-first mode, once per session. A plain effect (no `on`) so it fires
   // whether the flag is already set on first run or set later after ready.
-  // Both E2EE launch effects below need the current client's native bridge —
+  // The E2EE launch effects below need the current client's native bridge —
   // extract the cast once.
   const currentE2EE = () =>
     controller.getCurrentClient()?.e2ee as
@@ -176,6 +184,70 @@ export function ClientContext(props: { state: State; children: JSXElement }) {
       openModal({ type: "e2ee_reenroll" });
     } else if (!needed) {
       offeredReenroll = false;
+    }
+  });
+
+  // Multi-device plan D3: this install holds an identity the server has not
+  // registered yet (a restore, or an interrupted start-fresh), so the bridge
+  // raised `publishPending`. Offer the MFA'd first publication. Like the
+  // re-enroll modal above, a backstop opened once per episode: the Settings
+  // card stays until the publish lands, and a new bridge re-raises the flag.
+  let offeredFinishSetup = false;
+  createEffect(() => {
+    if (!controller.isLoggedIn()) {
+      offeredFinishSetup = false;
+      return;
+    }
+    const e2ee = currentE2EE();
+    if (!e2ee) return;
+    const pending = !!e2ee.publishPending.get("state");
+    if (pending && !offeredFinishSetup) {
+      offeredFinishSetup = true;
+      openModal({ type: "e2ee_finish_setup" });
+    } else if (!pending) {
+      offeredFinishSetup = false;
+    }
+  });
+
+  // Plan D5: this install's claim was refused twice because another of the
+  // user's apps holds the same device (a clone from a recovery-code restore).
+  // Only that refused twin gets the modal; a divergence seen by the lock
+  // holder (`via: "diverged"`) is a Settings card only. Once per episode:
+  // "Not now" clears the flag, and a new refusal raises it again.
+  let offeredDeviceShared = false;
+  createEffect(() => {
+    if (!controller.isLoggedIn()) {
+      offeredDeviceShared = false;
+      return;
+    }
+    const e2ee = currentE2EE();
+    if (!e2ee) return;
+    const refused = e2ee.deviceShared.get("state")?.via === "held_elsewhere";
+    if (refused && !offeredDeviceShared) {
+      offeredDeviceShared = true;
+      openModal({ type: "e2ee_device_shared" });
+    } else if (!refused) {
+      offeredDeviceShared = false;
+    }
+  });
+
+  // Plan D8: the server refused this device as removed from the account's
+  // encryption, so re-enrolling it would bring the removed identity back.
+  // Offer to set it up again as a new device instead, once per episode.
+  let offeredDeviceRemoved = false;
+  createEffect(() => {
+    if (!controller.isLoggedIn()) {
+      offeredDeviceRemoved = false;
+      return;
+    }
+    const e2ee = currentE2EE();
+    if (!e2ee) return;
+    const removed = !!e2ee.deviceRemoved.get("state");
+    if (removed && !offeredDeviceRemoved) {
+      offeredDeviceRemoved = true;
+      openModal({ type: "e2ee_device_removed" });
+    } else if (!removed) {
+      offeredDeviceRemoved = false;
     }
   });
 

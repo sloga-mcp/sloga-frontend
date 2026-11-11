@@ -30,6 +30,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import uniffi.acutest_e2ee.E2eeException
 import uniffi.acutest_e2ee.GroupGrowthPrompt
 import uniffi.acutest_e2ee.TextConfirm
+import uniffi.acutest_e2ee.splitConfirmCopy
 
 /**
  * Bounds the inbound attachment ciphertext GET. The native core bundled in
@@ -79,6 +80,19 @@ private const val GROWTH_CONFIRM_DELAY_MS: Long = 700L
 private const val DOWNGRADE_CONFIRM_DELAY_MS: Long = GROWTH_CONFIRM_DELAY_MS
 
 /**
+ * Command names the generic `call()` refuses before it dispatches anything,
+ * with the same rejection as an unknown name. Each has a dedicated
+ * `@PluginMethod` behind a native dialog, and an arm for it in `call()`
+ * would skip that dialog. `e2ee_split_begin` is listed by name because its
+ * engine call (`splitStage`) is NOT confirm-gated in Rust: only
+ * [E2eePlugin.splitBegin]'s positive button may reach it.
+ */
+internal val GENERIC_CALL_REFUSED: Set<String> = setOf("e2ee_split_begin")
+
+/** Whether the generic `call()` refuses [name] outright (see [GENERIC_CALL_REFUSED]). */
+internal fun genericCallRefuses(name: String): Boolean = name in GENERIC_CALL_REFUSED
+
+/**
  * Capacitor bridge for the native E2EE layer (slice 4) — the Android analog
  * of the desktop Tauri command surface (`src-tauri/src/e2ee.rs`).
  *
@@ -99,8 +113,9 @@ private const val DOWNGRADE_CONFIRM_DELAY_MS: Long = GROWTH_CONFIRM_DELAY_MS
  *    slice-2 gate MEDIUM #4), `downgrade`, `confirmPeerDowngradeAccept`,
  *    `callConfirmDowngrade`, the growth pair `enableGroup` /
  *    `addGroupMember`, the trust pair `markVerified` /
- *    `acceptIdentityChange`, and the recovery-code flows `backupCreate` /
- *    `backupRotate` / `backupRestore`.
+ *    `acceptIdentityChange`, the recovery-code flows `backupCreate` /
+ *    `backupRotate` / `backupRestore`, and `splitBegin` (make this install
+ *    a separate device; `call()` refuses `e2ee_split_begin` by name).
  *  - The three protected-text dialog commands `textSeatListSign` /
  *    `textOwnerConfirmChange` / `textOwnerHandoverSign`, whose gate is in
  *    Rust: the native method runs the whole flow and asks
@@ -189,6 +204,12 @@ class E2eePlugin : Plugin() {
         // `name` is a legitimate argument of e2ee_attachment_prepare
         val name = call.getString("__cmd") ?: run {
             call.reject("{\"type\":\"invalid_argument\",\"field\":\"__cmd\"}")
+            return
+        }
+        // Dedicated dialog-backed commands never reach the `when` below,
+        // whatever arms it grows (the unit test E2eeGenericCallTest pins it).
+        if (genericCallRefuses(name)) {
+            call.reject("{\"type\":\"invalid_argument\",\"field\":\"name\"}")
             return
         }
 
@@ -453,10 +474,26 @@ class E2eePlugin : Plugin() {
                 // shape as e2ee_enable), re-callable, and it never touches the
                 // recovery CODE — so it belongs on this ciphertext-only
                 // allowlist, not with the code-bearing dialog methods below. The
-                // uniffi postRestoreRekey already existed for the restore
-                // dialog; this exposes it re-callably to the webview.
+                // restore dialog no longer calls postRestoreRekey (a restore
+                // now makes a new, unpublished device that e2ee_enable
+                // publishes); this arm stays for stores older builds restored.
                 "e2ee_backup_rederive_republish" ->
                     resolveJson(call, engine.postRestoreRekey())
+                // ---- Separate device (multi-device plan D5) ----
+                // Steps 2 and 3 of a split whose stage only the dedicated
+                // splitBegin dialog can create (e2ee_split_begin is refused
+                // above). Commit makes that confirmed, server-accepted stage
+                // this install's (no stage held: invalid_argument `split`);
+                // discard drops it. Neither mints anything or prompts, as on
+                // desktop, where both are generic commands too.
+                "e2ee_split_commit" -> {
+                    engine.splitCommit()
+                    resolveJson(call, "null")
+                }
+                "e2ee_split_discard" -> {
+                    engine.splitDiscard()
+                    resolveJson(call, "null")
+                }
                 // ---- Media E2EE — MLS call control plane (slice 6.7a) ----
                 // Public wire shapes / opaque ciphertext in and out, 1:1 with
                 // the desktop Tauri surface (`src-tauri/src/e2ee.rs`). The one
@@ -680,6 +717,10 @@ class E2eePlugin : Plugin() {
                 // that could arm the announce gate directly would reduce the
                 // dialog to decoration; the core `mls_not_confirmed` gate is
                 // the backstop).
+                //
+                // e2ee_split_begin (stages a new device identity: the
+                // dedicated `splitBegin` dialog method below; refused by name
+                // before this `when`, see GENERIC_CALL_REFUSED).
                 //
                 // e2ee_acknowledge_group_plaintext IS routed here, without a
                 // dialog: the documented exception, see its arm above.
@@ -932,11 +973,12 @@ class E2eePlugin : Plugin() {
     // ================================================================
 
     /**
-     * One consent request in flight, prompt or not, across all SEVEN consent
+     * One consent request in flight, prompt or not, across all EIGHT consent
      * methods: the growth pair ([enableGroup], [addGroupMember]), the trust
-     * pair ([markVerified], [acceptIdentityChange]) and the three
-     * protected-text dialog methods ([runTextDialog]), so their dialogs
-     * never stack (desktop `consent_in_flight`). Claimed before the preview;
+     * pair ([markVerified], [acceptIdentityChange]), [splitBegin] and the
+     * three protected-text dialog methods ([runTextDialog]), so their
+     * dialogs never stack (desktop `consent_in_flight`). Claimed before the
+     * preview;
      * each request releases it exactly once, through its own `held` flag, so
      * a path that releases early and a catch-all that releases again can
      * never clear a LATER request's claim.
@@ -1696,6 +1738,173 @@ class E2eePlugin : Plugin() {
         }
     }
 
+    // ================================================================
+    // Make this install a separate device (multi-device plan D5)
+    //
+    // `e2ee_split_begin` stages a fresh device identity for this install and
+    // returns its first-publish body, signed by the current identity. Every
+    // completed split mints a new device id and tells every contact a device
+    // was added, so the webview can only REQUEST it. The engine's
+    // `splitStage` is NOT confirm-gated in Rust (desktop and iOS go through
+    // `ShellEngine::split_begin`, whose prompt is `ConfirmRequest::Split`);
+    // here the gate is this method: the same core-written copy
+    // (`splitConfirmCopy()`) in an OS dialog, and `splitStage` only from its
+    // positive button. Steps:
+    //  1. Validate `sessionId`.
+    //  2. Claim [consentInFlight] (shared with the growth and trust
+    //     methods, so consent dialogs never stack); held: `busy`, no dialog.
+    //  3. On the executor, the cheap refusals before any dialog: `status()`
+    //     (never provisions) must be enabled (`not_enabled`) and published
+    //     (`not_published`), the same order as the desktop pre-checks. The
+    //     remaining refusals (`owner_of_record_unknown`, `invalid_argument`
+    //     `session_id`) come from `splitStage` itself after the tap.
+    //  4. The dialog. Cancel is the default (keyboard focus), confirm stays
+    //     disabled for GROWTH_CONFIRM_DELAY_MS and both buttons ignore
+    //     obscured touches. Cancel, back, an outside tap and a dismiss from
+    //     activity teardown ([handleOnDestroy]) all end in the dismiss
+    //     listener: `declined`, nothing staged.
+    //  5. Confirm: `splitStage(sessionId)`, resolved as `{ json }` with the
+    //     payload for `PUT /e2ee/keys`. Commit and discard are the generic
+    //     `e2ee_split_commit` / `e2ee_split_discard` arms.
+    // Every core refusal reaches the webview as the core's own typed JSON
+    // through [rejectScrubbed] (`not_enabled`, `not_published`,
+    // `owner_of_record_unknown`, `invalid_argument`); the plugin's own
+    // refusals use the same shape (`busy`, `declined`, `invalid_argument`
+    // `sessionId`). No decline lockout: desktop has none for this prompt.
+    // ================================================================
+
+    /**
+     * The open split dialog, if any. UI thread only. Kept so
+     * [handleOnDestroy] can dismiss it, as for [growthDialog].
+     */
+    private var splitDialog: AlertDialog? = null
+
+    /**
+     * Make this install a separate device: the `e2ee_split_begin` command,
+     * behind the native split dialog (steps in the section comment above).
+     * Args: `sessionId` (this session, bound into the split proof). Resolves
+     * `{ json }` with the staged first-publish payload (`split_from` +
+     * `split_proof`).
+     */
+    @PluginMethod
+    fun splitBegin(call: PluginCall) {
+        val sessionId = call.getString("sessionId") ?: run {
+            call.reject("{\"type\":\"invalid_argument\",\"field\":\"sessionId\"}")
+            return
+        }
+
+        if (!consentInFlight.compareAndSet(false, true)) {
+            call.reject("{\"type\":\"busy\"}")
+            return
+        }
+        val held = AtomicBoolean(true)
+        fun release() {
+            if (held.compareAndSet(true, false)) consentInFlight.set(false)
+        }
+
+        try {
+            executor.execute {
+                try {
+                    val status = org.json.JSONObject(engine().status())
+                    if (!status.optBoolean("enabled", false)) {
+                        throw E2eeException.Failure("{\"type\":\"not_enabled\"}")
+                    }
+                    if (!status.optBoolean("published", false)) {
+                        throw E2eeException.Failure("{\"type\":\"not_published\"}")
+                    }
+                    val prompt = splitConfirmCopy()
+                    activity.runOnUiThread {
+                        // Resolve-once: the positive button and the dismiss
+                        // listener race to settle the call; one wins.
+                        val settled = AtomicBoolean(false)
+                        try {
+                            // A dialog without the core's warning or button
+                            // copy is no consent: fail closed.
+                            if (
+                                prompt.title.isBlank() ||
+                                    prompt.message.isBlank() ||
+                                    prompt.confirmLabel.isBlank() ||
+                                    prompt.cancelLabel.isBlank()
+                            ) {
+                                throw E2eeException.Failure("{\"type\":\"crypto_failure\"}")
+                            }
+                            val dialog =
+                                AlertDialog.Builder(activity)
+                                    .setTitle(prompt.title)
+                                    .setMessage(prompt.message)
+                                    .setPositiveButton(prompt.confirmLabel) { _, _ ->
+                                        if (settled.compareAndSet(false, true)) {
+                                            try {
+                                                run(call) {
+                                                    val json =
+                                                        try {
+                                                            engine().splitStage(sessionId)
+                                                        } finally {
+                                                            release()
+                                                        }
+                                                    resolveJson(call, json)
+                                                }
+                                            } catch (error: Throwable) {
+                                                release()
+                                                rejectScrubbed(call, error)
+                                            }
+                                        }
+                                    }
+                                    // No listener: the button dismisses the
+                                    // dialog, and the dismiss listener declines.
+                                    .setNegativeButton(prompt.cancelLabel, null)
+                                    .create()
+                            // Back and an outside tap cancel, and a cancel
+                            // dismisses: both reach the dismiss listener.
+                            dialog.setCanceledOnTouchOutside(true)
+                            dialog.setOnDismissListener {
+                                if (splitDialog === dialog) splitDialog = null
+                                // Lost the race to a confirm: already settled.
+                                if (settled.compareAndSet(false, true)) {
+                                    release()
+                                    call.reject("{\"type\":\"declined\"}")
+                                }
+                            }
+                            dialog.setOnShowListener {
+                                // Tapjacking: confirm ignores touches while
+                                // another window covers it, and stays disabled
+                                // for the first GROWTH_CONFIRM_DELAY_MS, so a
+                                // tap aimed at what was under the dialog, or
+                                // timed to its arrival, cannot commit.
+                                dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.let { confirm ->
+                                    confirm.isEnabled = false
+                                    confirm.filterTouchesWhenObscured = true
+                                    confirm.postDelayed(
+                                        { confirm.isEnabled = true },
+                                        GROWTH_CONFIRM_DELAY_MS,
+                                    )
+                                }
+                                // Cancel is the default: keyboard focus starts there.
+                                dialog.getButton(AlertDialog.BUTTON_NEGATIVE)?.let { cancel ->
+                                    cancel.filterTouchesWhenObscured = true
+                                    cancel.requestFocus()
+                                }
+                            }
+                            dialog.show()
+                            splitDialog = dialog
+                        } catch (error: Throwable) {
+                            if (settled.compareAndSet(false, true)) {
+                                release()
+                                rejectScrubbed(call, error)
+                            }
+                        }
+                    }
+                } catch (error: Throwable) {
+                    release()
+                    rejectScrubbed(call, error)
+                }
+            }
+        } catch (error: Throwable) {
+            release()
+            rejectScrubbed(call, error)
+        }
+    }
+
     override fun handleOnDestroy() {
         // Activity teardown would remove a consent dialog's window without
         // running its listeners, leaving the request unanswered and the hold
@@ -1705,6 +1914,8 @@ class E2eePlugin : Plugin() {
         growthDialog = null
         identityDialog?.dismiss()
         identityDialog = null
+        splitDialog?.dismiss()
+        splitDialog = null
         // Protected-text dialogs: the flag first, so a dialog runnable still
         // queued behind this one finds it and never shows; then every open
         // one, whose dismiss answers Declined to the worker waiting on it.
@@ -1965,8 +2176,9 @@ class E2eePlugin : Plugin() {
     // exactly the wipe/downgrade trust pattern. The engine returns the code to
     // THIS native code (Rust ↔ Kotlin, both installer-bundled and signed —
     // same trust class); the plugin displays it and forwards ONLY the opaque
-    // ciphertext bundle (create/rotate) or the post-restore republish payload
-    // (restore) to the webview courier, which PUT/GETs it like any envelope.
+    // ciphertext bundle (create/rotate) or the restore report (restore:
+    // device ids and counts) to the webview courier, which PUT/GETs bundles
+    // like any envelope.
     // The webview can REQUEST these flows and nothing else — it never sees the
     // code in either direction.
     // ================================================================
@@ -2170,9 +2382,13 @@ class E2eePlugin : Plugin() {
      * webview has already fetched the opaque blobs (MFA-ticketed) and passes
      * them down as JSON; the code is entered natively and never leaves this
      * process. On success the store is rebuilt atomically under a fresh
-     * Keystore-wrapped master and the post-restore republish payload (fresh
-     * OTKs) is returned for the webview to `PUT /e2ee/keys`
-     * (`replace_one_time_keys`). A wrong code keeps the dialog open to retry.
+     * Keystore-wrapped master as a NEW, unpublished device (multi-device
+     * plan D1), and the core's `RestoreReport` JSON is returned verbatim:
+     * `new_device_id` (this install), `device_id` (the source device, which
+     * keeps working) and counts. Nothing is rekeyed or republished here; the
+     * webview publishes the new device through `e2ee_enable`, which re-offers
+     * its first publication behind its own MFA prompt (plan D3). A wrong
+     * code keeps the dialog open to retry.
      */
     @PluginMethod
     fun backupRestore(call: PluginCall) {
@@ -2194,11 +2410,14 @@ class E2eePlugin : Plugin() {
                 orientation = LinearLayout.VERTICAL
                 setPadding(pad, pad, pad, dpToPx(8))
             }
+        // Restore adds this install as a new device (multi-device plan D1);
+        // this is the last surface before the code is entered, so it says so.
         val prompt =
             TextView(activity).apply {
                 text =
-                    "Enter your recovery code to restore your encrypted message history " +
-                        "on this device."
+                    "Enter your recovery code to bring your encrypted message history " +
+                        "onto this device. It is added as a new device; your other " +
+                        "devices keep working."
                 setPadding(0, 0, 0, dpToPx(16))
             }
         val input =
@@ -2250,13 +2469,14 @@ class E2eePlugin : Plugin() {
                 // Restore runs Argon2id per blob — off the UI thread.
                 executor.execute {
                     try {
-                        // Rebuild the store (also re-wraps a fresh master via
-                        // the Keystore protector) and open the engine on it.
-                        engine().restore(userId, blobsJson, code)
-                        // Mint fresh OTKs + fallback for the webview to publish.
-                        val republishJson = engine().postRestoreRekey()
+                        // Rebuild the store as a new device (also re-wraps a
+                        // fresh master via the Keystore protector) and open
+                        // the engine on it. No postRestoreRekey: the restored
+                        // device is new and unpublished, and e2ee_enable
+                        // re-offers its first publication (plan D3).
+                        val reportJson = engine().restore(userId, blobsJson, code)
                         activity.runOnUiThread { dialog.dismiss() }
-                        resolveJson(call, republishJson)
+                        resolveJson(call, reportJson)
                     } catch (error: E2eeException) {
                         val type = errorType(error.message)
                         if (type == "backup_code_mismatch") {

@@ -45,7 +45,27 @@ import {
 } from "stoat.js";
 
 import type { ResumeCommitRef, ResumePrefetch } from "../rtc/mlsRejoinPolicy";
+import { classifyDeviceDelete } from "./deviceDeleteClassifier.ts";
+import {
+  CLAIM_RETRY_DELAY_MS,
+  claimRefusal,
+  heldElsewhereStep,
+} from "./e2eeClaimPolicy.ts";
 import { decryptBump } from "./e2eeConversationBump";
+import {
+  type DeviceSharedState,
+  type DeviceSharedStorage,
+  clearDeviceShared,
+  clearHeldStrike,
+  clearWasShared,
+  mergeDeviceShared,
+  readDeviceShared,
+  readHeldStrike,
+  readWasShared,
+  writeDeviceShared,
+  writeHeldStrike,
+  writeWasShared,
+} from "./e2eeDeviceShared.ts";
 import {
   type GroupGrowthOutcome,
   groupEnableNamedIds,
@@ -65,6 +85,12 @@ import {
   PROBE_WINDOW_CAP,
 } from "./e2eeGroupSendGate.ts";
 import {
+  type OwnDeviceView,
+  parseRemainingDevices,
+  sessionNameOf,
+  toOwnDeviceViews,
+} from "./e2eeOwnDevices.ts";
+import {
   capacitorAttachmentUrl,
   capacitorClipboardImageInWebview,
   capacitorCouriersOrphanedRecovery,
@@ -83,6 +109,7 @@ import {
 } from "./e2eeRatelimitPolicy";
 import { isNoteToSelfConversation, resolveDmConversation } from "./e2eeSelfDm";
 import { errorName, settleDelivered } from "./e2eeSendSettle";
+import { parseSplitCapability } from "./e2eeSplitCapability.ts";
 import {
   adoptTrustedRow,
   isTrustedId,
@@ -413,6 +440,83 @@ export type BackupStatusView = {
   createdAt: number;
   refreshedAt: number;
 };
+
+/**
+ * This device is enabled but its first publication has not landed: a
+ * restore (which mints a new device) or an interrupted "Start fresh"
+ * (multi-device plan D3). `sourceDeviceId` is the restored-from device,
+ * where the shell reports it (Android); null elsewhere.
+ */
+export type PublishPendingState = {
+  via: "restore" | "resume";
+  sourceDeviceId: string | null;
+  at: number;
+};
+
+export type { DeviceSharedState };
+
+/** The server refused a claim or publish because this device was removed. */
+export type DeviceRemovedState = { deviceId: string; at: number };
+
+/** Another of this account's devices published keys (D7 toast). */
+export type OwnDeviceAddedEntry = {
+  deviceId: string;
+  splitFrom: string | null;
+  sessionName: string | null;
+  at: number;
+};
+
+export type { OwnDeviceView };
+
+/** What `splitDevice` did ("make this a separate device", D5). */
+export type SplitResult =
+  | { kind: "split"; deviceId: string; previousDeviceId: string }
+  | { kind: "declined" }
+  | { kind: "cancelled" }
+  | { kind: "unavailable" }
+  | { kind: "busy" }
+  /** An MLS call is active on this bridge; nothing was asked or staged. */
+  | { kind: "in_call" };
+
+/**
+ * What `disable()` did. `shared`: this install shares its device with
+ * another live install, so nothing was wiped or revoked (turning it off
+ * here would turn it off there too); offer the split. `held_elsewhere`: the
+ * server refused the revoke after the local wipe because the other install
+ * holds the device; it keeps working, the account flag is kept, and this
+ * install can only start fresh.
+ */
+export type DisableResult =
+  | {
+      kind: "disabled";
+      revokeFailed: boolean;
+      deviceId?: string;
+      remainingDevices: number | null;
+    }
+  | { kind: "shared" }
+  | { kind: "held_elsewhere"; deviceId?: string };
+
+/** Server count after a device removal; null when unknown (old server). */
+export type RemoveDeviceResult = {
+  remainingDevices: number | null;
+  backupDeleted: boolean | null;
+};
+
+/**
+ * A non-2xx answer from an /e2ee route. The message text is the one `#api`
+ * always threw (callers match on it); `type` is the JSON body's error tag,
+ * when there was one.
+ */
+export class E2EEApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly type?: string,
+  ) {
+    super(message);
+    this.name = "E2EEApiError";
+  }
+}
 
 /** IPC-safe attachment metadata (mirrors native `AttachmentMeta` — no keys) */
 export type E2EEAttachmentMeta = {
@@ -801,7 +905,11 @@ export type MlsSinkEvent =
   // the native wire shape): the intent came from a device that is already a
   // member, so verifying members remove its stale leaf instead of admitting.
   | { kind: "join_request"; request: MlsJoinRequest; rejoin: boolean }
-  | { kind: "envelope"; envelope: MlsEnvelope; recipientDeviceId: string };
+  | { kind: "envelope"; envelope: MlsEnvelope; recipientDeviceId: string }
+  // A device was removed from its account (`E2EEDeviceDelete`), once native
+  // has handled it. `own` is this install's device. Never held: with no
+  // call there is no leaf to remove and no call to end.
+  | { kind: "device_revoked"; userId: string; deviceId: string; own: boolean };
 
 /** The active call session's inbound MLS event sink. */
 export type MlsSessionSink = (event: MlsSinkEvent) => void;
@@ -983,8 +1091,13 @@ interface NativeTransport {
   /**
    * Enter the code natively and restore. `blobs` are the opaque
    * `{header, ciphertext, server_generation}` triples fetched (MFA-ticketed)
-   * from the server. Returns the post-restore republish payload (fresh OTKs)
-   * for the caller to `PUT /e2ee/keys` with `replace_one_time_keys`.
+   * from the server. A restore adds a NEW device (multi-device plan D1), so
+   * this returns the `RestoreReport` (`new_device_id` = this install,
+   * `device_id` = the source device; Android) or null (iOS); the new
+   * device's first publication waits for `finishSetup`. A shell built
+   * before that returns the post-restore republish payload (fresh OTKs) of
+   * a cloned device instead, for the caller to `PUT /e2ee/keys` with
+   * `replace_one_time_keys` after the claim.
    */
   backupRestoreDialog?(
     userId: string,
@@ -1221,8 +1334,18 @@ type E2eeCapacitorPlugin = {
   backupCreate(options: Record<string, unknown>): Promise<{ json: string }>;
   /** Native-dialog ROTATE: as create, continuing the generation counter */
   backupRotate(options: Record<string, unknown>): Promise<{ json: string }>;
-  /** Native-dialog RESTORE: enters the code, returns the republish payload */
+  /**
+   * Native-dialog RESTORE: enters the code and restores. Returns the
+   * `RestoreReport` (Android), null (iOS), or on an older shell the
+   * republish payload of a cloned device
+   */
   backupRestore(options: Record<string, unknown>): Promise<{ json: string }>;
+  /**
+   * Native-dialog-gated split step 1 ("make this a separate device"):
+   * stages a fresh device account and returns its first-publish payload.
+   * Rejects `declined` on cancel, `busy` while a recovery flow is open
+   */
+  splitBegin(options: Record<string, unknown>): Promise<{ json: string }>;
   /**
    * Native-dialog-gated whole-call downgrade (media E2EE 6.7a) — the
    * desktop `e2ee_call_confirm_downgrade` analog. The non-enrolled roster
@@ -1421,6 +1544,16 @@ class CapacitorTransport implements NativeTransport {
         return JSON.parse(json) as T;
       }
 
+      // Split step 1 → dedicated native-dialog method: a new device id is
+      // announced to every contact, so it is minted only after a tap on a
+      // dialog the webview cannot draw. Commit and discard are generic.
+      if (command === "e2ee_split_begin") {
+        const { json } = await this.#plugin.splitBegin(
+          (args as Record<string, unknown>) ?? {},
+        );
+        return JSON.parse(json) as T;
+      }
+
       let callArgs: Record<string, unknown>;
       if (args instanceof Uint8Array) {
         // Desktop raw-body convention → base64 + explicit fields. Only
@@ -1571,6 +1704,35 @@ class CapacitorTransport implements NativeTransport {
   }
 }
 
+/** `e2ee_split_commit` tries: the first and two retries (the stage survives). */
+const SPLIT_COMMIT_ATTEMPTS = 3;
+
+/**
+ * A shell that does not have the command at all (one built before it):
+ * Tauri's "command ... not found", Electron's `invalid_argument`/`command`
+ * table refusal or a TypeError from a native module without the method,
+ * Capacitor's `UNIMPLEMENTED` plugin method. Any other typed core error is
+ * a real answer, not a missing command.
+ */
+function isMissingCommandError(error: unknown): boolean {
+  if (error instanceof TypeError) return true;
+  if (typeof error === "string") {
+    return /not found|not implemented|unimplemented|is not a function/i.test(
+      error,
+    );
+  }
+  if (typeof error !== "object" || error === null) return false;
+  const shape = error as { type?: unknown; field?: unknown; code?: unknown };
+  if (shape.type === "invalid_argument") return shape.field === "command";
+  if (typeof shape.type === "string") return false;
+  if (shape.code === "UNIMPLEMENTED") return true;
+  const message = (error as { message?: unknown }).message;
+  return (
+    typeof message === "string" &&
+    /not found|not implemented|unimplemented|is not a function/i.test(message)
+  );
+}
+
 /** Chunk-safe base64 of a byte array (bridge-friendly) */
 function bytesToBase64(bytes: Uint8Array): string {
   let binary = "";
@@ -1601,6 +1763,11 @@ function resumeRecordStorage(): ResumeStorage | null {
   } catch {
     return null;
   }
+}
+
+/** A `#api` NotFound (the message text callers have always matched). */
+function isNotFoundError(error: unknown): boolean {
+  return /failed: 404$/.test((error as Error)?.message ?? "");
 }
 
 export class E2EEBridge implements E2EEAdapter {
@@ -1839,6 +2006,95 @@ export class E2EEBridge implements E2EEAdapter {
    */
   readonly storeOwnedByAnotherAccount = new ReactiveMap<"state", number>();
 
+  /**
+   * Multi-device (plan D3): enabled here, first publication not landed.
+   * Drives "Finish setting up encryption on this device"; `finishSetup`
+   * publishes and clears it. Raised again by every `#onReady` that finds
+   * the store unpublished, so it survives a reload.
+   */
+  readonly publishPending = new ReactiveMap<"state", PublishPendingState>();
+
+  /**
+   * Multi-device (plan D5/D6): this install shares its device identity with
+   * another live install (two `held_elsewhere` refusals, or a divergence the
+   * native self reconcile detected). Persisted per (user, device) in
+   * `e2eeDeviceShared`; cleared by a split (ours or the twin's) and by
+   * `dismissDeviceShared`.
+   */
+  readonly deviceShared = new ReactiveMap<"state", DeviceSharedState>();
+
+  /**
+   * Multi-device (plan D8): the server refused this device as removed (a
+   * claim with `reason: "removed"`, or a first publish refused with
+   * `E2EEDeviceRemoved`). The only way on is `startOverAsNewDevice`.
+   */
+  readonly deviceRemoved = new ReactiveMap<"state", DeviceRemovedState>();
+
+  /**
+   * Multi-device (plan D7): own devices that appeared while this bridge ran,
+   * keyed by the new device id. Display only; never a trust decision.
+   */
+  readonly ownDeviceAdded = new ReactiveMap<string, OwnDeviceAddedEntry>();
+
+  /**
+   * Whether the server advertises `features.e2ee.split_from`. Absent means
+   * unknown: the split control stays hidden.
+   */
+  readonly splitSupported = new ReactiveMap<"state", boolean>();
+
+  /**
+   * A split in progress (`splitDevice`), from its native begin until its
+   * commit or discard. While set, no device claim and no claim proof leaves
+   * this bridge (`#requestClaim`, `#proveDevice`): between the publish and
+   * the commit the server knows the new device and the store still holds
+   * the old one, so a claim for either would bind the wrong state.
+   */
+  #split: { oldId: string; newId: string | null } | null = null;
+
+  /** A claim or proof `#split` held back; the split's end claims instead. */
+  #claimHeldBySplit = false;
+
+  /**
+   * Device ids this bridge itself published (enable, finishSetup, split).
+   * Their own `E2EEDeviceCreate` echo is reconciled and nothing more: the
+   * server echoes a split to our private topic before the commit, when
+   * `split_from` still names this install's live device id.
+   */
+  #ownPublishIds = new Set<string>();
+
+  /** `held_elsewhere` refusals on this connection (reset on `ready`). */
+  #heldStrikes = 0;
+  /**
+   * This connection's claim was refused `held_elsewhere` and none has been
+   * accepted since. Not cleared by "Not now": `disable()` reads it.
+   */
+  #claimRefusedHeldElsewhere = false;
+  /** The one retry after a first `held_elsewhere` (`CLAIM_RETRY_DELAY_MS`). */
+  #claimRetryTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * `deviceShared`'s current (user, device) key: a state raised or restored
+   * for another device id does not apply to this one.
+   */
+  #deviceSharedFor: string | null = null;
+
+  /**
+   * The first `held_elsewhere` refusal for a (user, device) key, mirrored
+   * from storage (`readHeldStrike`) so a store that cannot persist still
+   * counts it for this run. Survives `ready`, unlike `#heldStrikes`.
+   */
+  #heldFirst: { key: string; at: number } | null = null;
+
+  /**
+   * The (user, device) key of this run's sticky "was shared" record
+   * (`readWasShared`), for a store that cannot persist it.
+   */
+  #wasSharedFor: string | null = null;
+
+  /** The `splitSupported` probe: one success per bridge, one at a time. */
+  #splitProbed = false;
+  #splitProbing = false;
+
   constructor(client: Client) {
     this.#client = client;
     this.#transport = createNativeTransport();
@@ -1848,6 +2104,9 @@ export class E2EEBridge implements E2EEAdapter {
       this.#claimAccepted = null;
       this.#claimWaitSpent = false;
       this.#socketDown = false;
+      this.#heldStrikes = 0;
+      this.#claimRefusedHeldElsewhere = false;
+      this.#clearClaimRetry();
       // A (re)connect may follow any amount of missed device traffic
       this.#invalidateProof();
       void this.#onReady();
@@ -1945,7 +2204,20 @@ export class E2EEBridge implements E2EEAdapter {
     );
 
     if (!response.ok) {
-      throw new Error(`E2EE API ${method} ${path} failed: ${response.status}`);
+      // The error tag (e.g. `E2EEDeviceRemoved`) rides on the error; the
+      // message stays the one callers match (`retryDeviceRevoke`'s 404).
+      let type: string | undefined;
+      try {
+        const parsed = (await response.json()) as { type?: unknown } | null;
+        if (typeof parsed?.type === "string") type = parsed.type;
+      } catch {
+        // No JSON body: no tag.
+      }
+      throw new E2EEApiError(
+        `E2EE API ${method} ${path} failed: ${response.status}`,
+        response.status,
+        type,
+      );
     }
 
     return response.status === 204
@@ -2247,14 +2519,33 @@ export class E2EEBridge implements E2EEAdapter {
       // have to infer from three server round trips.
       await this.#checkStoreOwner();
 
+      // A split stage lives in the native engine, which outlives a webview
+      // reload (an iOS WebContent kill during the MFA prompt): with no
+      // split running in THIS page, drop any stage an earlier page left,
+      // before anything here can claim. Idempotent; best effort.
+      if (!this.#split) await this.#discardSplit();
+
       const status = await this.refreshStatus();
+      // A "this app shares its identity" verdict from an earlier run of
+      // this install, for this device id (multi-device D5/D6).
+      if (status.device_id) this.#restoreDeviceShared(status.device_id);
+
+      if (status.enabled && !status.published) {
+        // A restore, or a "Start fresh" whose MFA'd first publication never
+        // landed (multi-device D3): no row on the server yet, so no claim
+        // and no opt-in advertisement. The user finishes with `finishSetup`.
+        this.#raisePublishPending("resume", null);
+      }
+
       if (status.enabled && status.published && status.device_id) {
         // Claiming grants queue drain/ack rights AND rebinds this session
         // as the device-bound one for the HTTP route gates
-        this.#client.events.send({
-          type: "E2EERequestChallenge",
-          device_id: status.device_id,
-        });
+        this.#requestClaim(status.device_id);
+
+        // Whether this server takes a split publication (the "make this a
+        // separate device" control). Once per bridge; a failure retries on
+        // the next connect.
+        void this.#probeSplitCapability();
 
         // Self-heal the advertised opt-in flag: peers' sender-initiated
         // upgrade discovers us through it, and the PATCH in enable() is
@@ -2283,12 +2574,6 @@ export class E2EEBridge implements E2EEAdapter {
           void this.#seedConversationOrder(++this.#seedGeneration);
         }
       }
-      // NB: a §6.4 restore strand is NOT caught here. A restored store carries
-      // `published = true` (restore imports the source device's published flag,
-      // e2ee-core backup.rs), so a stranded restored device takes the branch
-      // ABOVE, sends its challenge, and the server rejects it (revoked row) →
-      // the durable re-enroll re-detection lives in `#onClaimResult`, which is
-      // exactly where that rejection lands.
     } catch (error) {
       console.error("[e2ee] startup failed", error);
     } finally {
@@ -2492,7 +2777,7 @@ export class E2EEBridge implements E2EEAdapter {
           this.#mlsBuffer.clear();
           this.#ptPreIndex.clear();
         }
-        void this.#onClaimResult(event.accepted);
+        void this.#onClaimResult(event.accepted, event.reason);
         // Peer listings need the device-bound session this binds: drop
         // anything learned before it and re-run the probes it failed.
         if (event.accepted) this.#reprobeAfterClaim();
@@ -2526,9 +2811,17 @@ export class E2EEBridge implements E2EEAdapter {
         break;
       }
       case "E2EEDeviceCreate":
-        // The server fans this to the user's DM peers and group co-members
+        // The server fans this to the user's DM peers and group co-members,
+        // and to the user's own other sessions
         this.#invalidateProof(event.user_id);
-        void this.#onDeviceCreate(event.user_id);
+        if (event.user_id === this.#client.user?.id) {
+          void this.#onOwnDeviceCreate(
+            event.device_id,
+            event.split_from ?? null,
+          );
+        } else {
+          void this.#onDeviceCreate(event.user_id);
+        }
         break;
       case "E2EEDeviceDelete":
         void this.#onDeviceDelete(event.user_id, event.device_id);
@@ -2582,7 +2875,28 @@ export class E2EEBridge implements E2EEAdapter {
     }
   }
 
+  /**
+   * The one place a device claim is requested (`E2EERequestChallenge`).
+   * Refused while a split runs (`#split`): the split's end claims the
+   * device the store then holds.
+   */
+  #requestClaim(deviceId: string): void {
+    if (this.#split) {
+      this.#claimHeldBySplit = true;
+      return;
+    }
+    this.#client.events.send({
+      type: "E2EERequestChallenge",
+      device_id: deviceId,
+    });
+  }
+
   async #proveDevice(nonce: string): Promise<void> {
+    // No proof mid-split, for the reason `#requestClaim` gives
+    if (this.#split) {
+      this.#claimHeldBySplit = true;
+      return;
+    }
     const status = this.status.get("state");
     const sessionId = this.#client.sessionId;
     if (!status?.device_id || !sessionId) return;
@@ -2592,6 +2906,11 @@ export class E2EEBridge implements E2EEAdapter {
         sessionId,
         nonce,
       });
+      // A split that began while the signature was made holds it back too
+      if (this.#split) {
+        this.#claimHeldBySplit = true;
+        return;
+      }
       this.#client.events.send({
         type: "E2EEProveDevice",
         device_id: status.device_id,
@@ -2602,12 +2921,26 @@ export class E2EEBridge implements E2EEAdapter {
     }
   }
 
-  async #onClaimResult(accepted: boolean): Promise<void> {
+  async #onClaimResult(accepted: boolean, reason?: string): Promise<void> {
     const state = this.status.get("state");
     if (state) this.status.set("state", { ...state, claimed: accepted });
     this.#settleClaim(accepted);
 
     if (!accepted) {
+      // Multi-device refusals (plan D4/D8) say why, so neither needs the
+      // directory corroboration below, and neither may re-derive a §6.4
+      // re-enroll: that would bring a removed identity back, or fight the
+      // live install that holds this device.
+      const refusal = claimRefusal(reason);
+      if (refusal === "removed") {
+        this.#raiseDeviceRemoved(state?.device_id ?? null);
+        return;
+      }
+      if (refusal === "held_elsewhere") {
+        this.#onHeldElsewhere();
+        return;
+      }
+
       // §6.4 revoked-device restore. A rejected claim WITH a stashed
       // post-restore republish CAN mean the restored device's identity row was
       // revoked while this install was dead (the claim had nothing to bind to)
@@ -2646,12 +2979,7 @@ export class E2EEBridge implements E2EEAdapter {
             "[e2ee] post-restore claim rejected but device row present; re-claiming once",
           );
           const retry = this.status.get("state");
-          if (retry?.device_id) {
-            this.#client.events.send({
-              type: "E2EERequestChallenge",
-              device_id: retry.device_id,
-            });
-          }
+          if (retry?.device_id) this.#requestClaim(retry.device_id);
           return;
         }
         console.error(
@@ -2724,6 +3052,13 @@ export class E2EEBridge implements E2EEAdapter {
     // MFA, and reset the one-shot reclaim guard.
     this.reenrollNeeded.delete("state");
     this.#restoreReclaimTried = false;
+    // The claim lock is ours now. `deviceShared` stays: a twin that holds
+    // the lock between our connections is still a twin (Q12). The refusal
+    // count starts over, across connections too.
+    this.#heldStrikes = 0;
+    this.#claimRefusedHeldElsewhere = false;
+    this.#clearClaimRetry();
+    this.#clearHeldFirst(state?.device_id);
     // The server accepted a claim for this device under the signed-in
     // account, so it is ours: clear any inherited-store verdict (signing
     // back in as the owner is the no-op remedy).
@@ -2753,6 +3088,306 @@ export class E2EEBridge implements E2EEAdapter {
     if (this.#transport.subscribeBackupBundleWaiting) {
       await this.#courierOrphanedBackup();
     }
+  }
+
+  // ================================================================
+  // Multi-device state (plan D3-D8)
+  // ================================================================
+
+  /**
+   * Another live session holds this device's claim lock (D4). The first
+   * refusal on a connection retries once after the lock TTL, in case the
+   * holder was this install's own dead connection; a second says another
+   * install shares this device, and stops retrying until the next connect.
+   */
+  #onHeldElsewhere(): void {
+    this.#heldStrikes++;
+    this.#claimRefusedHeldElsewhere = true;
+    this.#clearClaimRetry();
+    // The first refusal for this device, across connections and reloads: a
+    // twin that reconnects inside the retry window would otherwise start
+    // over at strike 1 every time and never be told it is shared
+    const now = Date.now();
+    const firstAt = this.#heldFirstAt() ?? now;
+    this.#noteHeldFirst(firstAt);
+    if (heldElsewhereStep(this.#heldStrikes, firstAt, now) === "shared") {
+      console.warn(
+        "[e2ee] device claim refused again: another install holds this device",
+      );
+      this.#raiseDeviceShared("held_elsewhere");
+      return;
+    }
+    console.warn(
+      "[e2ee] device claim refused: held by another session; retrying once",
+    );
+    this.#claimRetryTimer = setTimeout(() => {
+      this.#claimRetryTimer = null;
+      if (this.#disposed || this.#split) return;
+      const deviceId = this.status.get("state")?.device_id;
+      if (deviceId) this.#requestClaim(deviceId);
+    }, CLAIM_RETRY_DELAY_MS);
+  }
+
+  /** The persisted (or this run's) first refusal for the current device. */
+  #heldFirstAt(): number | null {
+    const userId = this.#client.user?.id;
+    const deviceId = this.status.get("state")?.device_id;
+    if (!userId || !deviceId) return null;
+    const key = `${userId}:${deviceId}`;
+    const stored = readHeldStrike(
+      this.#deviceSharedStorage(),
+      userId,
+      deviceId,
+    );
+    if (stored !== null) return stored;
+    return this.#heldFirst?.key === key ? this.#heldFirst.at : null;
+  }
+
+  #noteHeldFirst(at: number): void {
+    const userId = this.#client.user?.id;
+    const deviceId = this.status.get("state")?.device_id;
+    if (!userId || !deviceId) return;
+    this.#heldFirst = { key: `${userId}:${deviceId}`, at };
+    writeHeldStrike(this.#deviceSharedStorage(), userId, deviceId, at);
+  }
+
+  /** Forget the first refusal for `deviceId` (memory + storage). */
+  #clearHeldFirst(deviceId: string | null | undefined): void {
+    this.#heldFirst = null;
+    const userId = this.#client.user?.id;
+    if (userId && deviceId) {
+      clearHeldStrike(this.#deviceSharedStorage(), userId, deviceId);
+    }
+  }
+
+  #clearClaimRetry(): void {
+    if (this.#claimRetryTimer === null) return;
+    clearTimeout(this.#claimRetryTimer);
+    this.#claimRetryTimer = null;
+  }
+
+  /**
+   * The server says this device was removed (D8): a claim refused with
+   * `reason: "removed"`, or a first publication refused with
+   * `E2EEDeviceRemoved`. A §6.4 re-enroll or a pending first publication
+   * would only try to bring the removed identity back, so both go.
+   */
+  #raiseDeviceRemoved(deviceId: string | null): void {
+    this.#clearClaimRetry();
+    this.reenrollNeeded.delete("state");
+    this.#pendingRestoreRepublish = null;
+    this.publishPending.delete("state");
+    if (!this.deviceRemoved.has("state")) {
+      console.warn("[e2ee] this device was removed from the account");
+      this.deviceRemoved.set("state", {
+        deviceId: deviceId ?? "",
+        at: Date.now(),
+      });
+    }
+  }
+
+  /** `#raiseDeviceRemoved` when `error` is the server's `E2EEDeviceRemoved`. */
+  #noteDeviceRemovedError(error: unknown, deviceId: string | null): void {
+    if (error instanceof E2EEApiError && error.type === "E2EEDeviceRemoved") {
+      this.#raiseDeviceRemoved(deviceId);
+    }
+  }
+
+  /** D3: keeps a standing state (a restore stays a restore across connects). */
+  #raisePublishPending(
+    via: PublishPendingState["via"],
+    sourceDeviceId: string | null,
+  ): void {
+    if (this.publishPending.has("state")) return;
+    this.publishPending.set("state", { via, sourceDeviceId, at: Date.now() });
+  }
+
+  /** D3 restore paths: pending only when the store really is unpublished. */
+  #raisePublishPendingIfUnpublished(sourceDeviceId: string | null): void {
+    const status = this.status.get("state");
+    if (status?.enabled && !status.published) {
+      this.#raisePublishPending("restore", sourceDeviceId);
+    }
+  }
+
+  /** Where `deviceShared` persists: localStorage, or nowhere. */
+  #deviceSharedStorage(): DeviceSharedStorage | null {
+    try {
+      return globalThis.localStorage ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Raise (or upgrade: a refusal outranks a divergence) `deviceShared` for
+   * this device and persist it. Never mid-split: the split ends it.
+   */
+  #raiseDeviceShared(via: DeviceSharedState["via"]): void {
+    if (this.#split) return;
+    const userId = this.#client.user?.id;
+    const deviceId = this.status.get("state")?.device_id;
+    if (!userId || !deviceId) return;
+    const key = `${userId}:${deviceId}`;
+    const current =
+      this.#deviceSharedFor === key ? this.deviceShared.get("state") : null;
+    const next = mergeDeviceShared(current, { via, at: Date.now() });
+    this.#deviceSharedFor = key;
+    this.deviceShared.set("state", next);
+    writeDeviceShared(this.#deviceSharedStorage(), userId, deviceId, next);
+    this.#noteWasShared(userId, deviceId);
+  }
+
+  /**
+   * Record that this device was shared (sticky: "Not now" and an accepted
+   * claim keep it; `disable()` reads it).
+   */
+  #noteWasShared(userId: string, deviceId: string): void {
+    this.#wasSharedFor = `${userId}:${deviceId}`;
+    writeWasShared(this.#deviceSharedStorage(), userId, deviceId, Date.now());
+  }
+
+  /** Whether the current device carries the sticky "was shared" record. */
+  #wasShared(): boolean {
+    const userId = this.#client.user?.id;
+    const deviceId = this.status.get("state")?.device_id;
+    if (!userId || !deviceId) return false;
+    return (
+      this.#wasSharedFor === `${userId}:${deviceId}` ||
+      readWasShared(this.#deviceSharedStorage(), userId, deviceId)
+    );
+  }
+
+  /** End the record for `deviceId`: a split (ours or the twin's) or a wipe. */
+  #clearWasShared(deviceId: string | null | undefined): void {
+    this.#wasSharedFor = null;
+    const userId = this.#client.user?.id;
+    if (userId && deviceId) {
+      clearWasShared(this.#deviceSharedStorage(), userId, deviceId);
+    }
+  }
+
+  /** Clear `deviceShared` for `deviceId` (memory + storage) and the strikes. */
+  #clearDeviceShared(deviceId: string | null | undefined): void {
+    this.deviceShared.delete("state");
+    this.#deviceSharedFor = null;
+    this.#heldStrikes = 0;
+    this.#clearHeldFirst(deviceId);
+    const userId = this.#client.user?.id;
+    if (userId && deviceId) {
+      clearDeviceShared(this.#deviceSharedStorage(), userId, deviceId);
+    }
+  }
+
+  /**
+   * `#onReady`: take over a persisted `deviceShared` for this (user,
+   * device), and drop an in-memory one that was raised for another key.
+   */
+  #restoreDeviceShared(deviceId: string): void {
+    const userId = this.#client.user?.id;
+    if (!userId) return;
+    const key = `${userId}:${deviceId}`;
+    // A first refusal counted for another device id does not apply here
+    if (this.#heldFirst && this.#heldFirst.key !== key) this.#heldFirst = null;
+    const current =
+      this.#deviceSharedFor === key ? this.deviceShared.get("state") : null;
+    const stored = readDeviceShared(
+      this.#deviceSharedStorage(),
+      userId,
+      deviceId,
+    );
+    if (stored) {
+      this.#deviceSharedFor = key;
+      this.#noteWasShared(userId, deviceId);
+      this.deviceShared.set(
+        "state",
+        mergeDeviceShared(stored, current ?? stored),
+      );
+    } else if (!current) {
+      this.deviceShared.delete("state");
+      this.#deviceSharedFor = null;
+    }
+  }
+
+  /** "Not now" (Q12): a new refusal or divergence raises it again. */
+  dismissDeviceShared(): void {
+    this.#clearDeviceShared(this.status.get("state")?.device_id);
+  }
+
+  /** `splitSupported` from the root config (R9): once per bridge. */
+  async #probeSplitCapability(): Promise<void> {
+    if (this.#splitProbed || this.#splitProbing) return;
+    this.#splitProbing = true;
+    try {
+      const body: unknown = await this.#client.api.get("/");
+      this.splitSupported.set("state", parseSplitCapability(body));
+      this.#splitProbed = true;
+    } catch (error) {
+      // Unknown stays unknown (hidden); the next connect asks again
+      console.error("[e2ee] split capability probe failed:", errorName(error));
+    } finally {
+      this.#splitProbing = false;
+    }
+  }
+
+  /**
+   * One of this account's devices published keys (own private topic).
+   * Three cases: our own publication's echo (reconcile only); the install
+   * we shared a device with became a separate device (`split_from` names
+   * our live id: re-bind at once, since the split unbound the old row from
+   * its session, and a "log out other sessions" now would revoke it); or
+   * another device appeared, which the toast worker surfaces.
+   */
+  async #onOwnDeviceCreate(
+    deviceId: string,
+    splitFrom: string | null,
+  ): Promise<void> {
+    const userId = this.#client.user?.id;
+    if (!userId) return;
+    const mine = this.status.get("state")?.device_id ?? null;
+    if (this.#ownPublishIds.has(deviceId) || deviceId === mine) {
+      await this.#onDeviceCreate(userId);
+      return;
+    }
+
+    if (splitFrom !== null && splitFrom === mine && !this.#split) {
+      // The other install left: this device is no longer shared
+      this.#clearDeviceShared(mine);
+      this.#clearWasShared(mine);
+      this.#requestClaim(mine);
+      let report: { listing: unknown[] } | null = null;
+      try {
+        report = await this.#reconcileDevices(userId);
+        // The self reconcile queues a fallback-key rotation; this publishes
+        await this.#replenish();
+      } catch (error) {
+        console.error("[e2ee] own split reconcile failed", error);
+      }
+      this.#noteOwnDeviceAdded(deviceId, splitFrom, report);
+      return;
+    }
+
+    let report: { listing: unknown[] } | null = null;
+    try {
+      report = await this.#reconcileDevices(userId);
+    } catch (error) {
+      console.error("[e2ee] device-create reconcile failed", error);
+    }
+    this.#noteOwnDeviceAdded(deviceId, splitFrom, report);
+  }
+
+  #noteOwnDeviceAdded(
+    deviceId: string,
+    splitFrom: string | null,
+    report: { listing: unknown[] } | null,
+  ): void {
+    if (this.ownDeviceAdded.has(deviceId)) return;
+    this.ownDeviceAdded.set(deviceId, {
+      deviceId,
+      splitFrom,
+      sessionName: sessionNameOf(report?.listing, deviceId),
+      at: Date.now(),
+    });
   }
 
   async #replenish(): Promise<void> {
@@ -2836,10 +3471,21 @@ export class E2EEBridge implements E2EEAdapter {
       revoked: string[];
       changed: string[];
       new_devices: string[];
+      /**
+       * Self reconcile only: our own listing row carries a fallback key
+       * this install never minted, twice running (multi-device D6).
+       */
+      own_device_diverged?: boolean;
     }>("e2ee_reconcile_devices", { userId, devices });
 
     if (userId === this.#client.user?.id && report.new_devices.length) {
       this.#selfDevicesUnpinned = true;
+    }
+    if (
+      userId === this.#client.user?.id &&
+      report.own_device_diverged === true
+    ) {
+      this.#raiseDeviceShared("diverged");
     }
 
     // Peer new devices: arm (or, when the listing is fully covered,
@@ -3049,10 +3695,50 @@ export class E2EEBridge implements E2EEAdapter {
       if (!this.status.get("state")?.enabled) return;
 
       await this.#invoke("e2ee_device_removed", { userId, deviceId });
+      // Before the mode/sync work, so a failure there cannot cost the call
+      // its notice
+      this.#emitDeviceRevoked(userId, deviceId);
       await this.#refreshMode(userId);
       await this.#syncRecent(userId);
     } catch (error) {
       console.error("[e2ee] device-delete handling failed", error);
+    }
+  }
+
+  /**
+   * Tell the active call session that a device was removed, once native has
+   * handled it (a peer's pin is revoked by then): a peer's leaf is removed
+   * from the call, and our own device ends the call. Status is read fresh, after the awaits above: a
+   * wipe that ran meanwhile has already zeroed it. A delete that lands while
+   * this install is mid-restore, mid-split or has a publication pending is
+   * not acted on (`classifyDeviceDelete`). Never raises `deviceRemoved`: an
+   * own removal here may still be re-enrolled. No call, no sink: a no-op.
+   */
+  #emitDeviceRevoked(userId: string, deviceId: string): void {
+    try {
+      const selfId = this.#client.user?.id;
+      if (!selfId) return;
+      const status = this.status.get("state");
+      const verdict = classifyDeviceDelete(
+        { userId, deviceId },
+        { userId: selfId, deviceId: status?.device_id ?? null },
+        {
+          echoWindow: !status?.enabled,
+          restoreOrSplitOrPublish:
+            this.#split !== null ||
+            this.#pendingRestoreRepublish !== null ||
+            this.publishPending.has("state"),
+        },
+      );
+      if (verdict === "ignore") return;
+      this.#mlsSink?.({
+        kind: "device_revoked",
+        userId,
+        deviceId,
+        own: verdict === "own",
+      });
+    } catch (error) {
+      console.error("[e2ee] device-revoked hand-off failed", error);
     }
   }
 
@@ -6083,22 +6769,31 @@ export class E2EEBridge implements E2EEAdapter {
    */
   async enable(mfaTicketToken: string): Promise<void> {
     const payload = await this.#invoke<unknown>("e2ee_enable");
+    // Our own publication's E2EEDeviceCreate echo is not "another device"
+    const publishedId = (payload as { device_id?: unknown } | null)?.device_id;
+    if (typeof publishedId === "string") this.#ownPublishIds.add(publishedId);
 
-    await this.#api("PUT", "/e2ee/keys", payload, {
-      "X-MFA-Ticket": mfaTicketToken,
-    });
+    try {
+      await this.#api("PUT", "/e2ee/keys", payload, {
+        "X-MFA-Ticket": mfaTicketToken,
+      });
+    } catch (error) {
+      this.#noteDeviceRemovedError(
+        error,
+        typeof publishedId === "string" ? publishedId : null,
+      );
+      throw error;
+    }
     await this.#invoke("e2ee_mark_published");
     await this.refreshStatus();
+    // Published: nothing is left to finish, and nothing to restore
+    this.publishPending.delete("state");
+    this.restoreAvailable.delete("state");
 
     // Claim on the live connection so drain/ack and the HTTP route gates
     // recognise this session immediately
     const status = this.status.get("state");
-    if (status?.device_id) {
-      this.#client.events.send({
-        type: "E2EERequestChallenge",
-        device_id: status.device_id,
-      });
-    }
+    if (status?.device_id) this.#requestClaim(status.device_id);
 
     // Advertise opt-in to peers (UI/discovery hint only — invariant 2).
     // Deliberately NOT awaited into the enable() result: the keys are
@@ -6173,23 +6868,125 @@ export class E2EEBridge implements E2EEAdapter {
    * encrypting to it.
    *
    * Order matters for safe cancellation:
+   *  0. Pre-flight: an install that shares its device with another live
+   *     install (`deviceShared`, or a claim refused `held_elsewhere`) is
+   *     not wiped and not revoked: the device is the other install's too,
+   *     and the split needs this install's keys. Returns `shared`.
    *  1. Native `e2ee_wipe` runs FIRST — it shows a blocking OS confirmation
    *     (design §9a; a compromised webview cannot destroy data without a
    *     physical click). Declining it throws here and NOTHING else changed,
    *     so the toggle simply snaps back on.
-   *  2. Only after the wipe succeeds do we clear the opt-in hint and revoke
-   *     the device server-side (MFA-gated). Those are best-effort: if the
-   *     revoke fails the device is already gone locally and cannot decrypt
-   *     anything, so a lingering registry entry is harmless and its queued
-   *     envelopes expire by TTL.
+   *  2. Only after the wipe succeeds do we revoke the device server-side
+   *     (MFA-gated). Best-effort: if the revoke fails the device is already
+   *     gone locally and cannot decrypt anything, so a lingering registry
+   *     entry is harmless and its queued envelopes expire by TTL.
+   *  3. The account-wide opt-in hint is cleared only when the server says
+   *     no device is left (multi-device D7): a `remaining_devices` of 0,
+   *     or, with no count (a 404, an old server's empty answer, a
+   *     malformed count), an own listing that is empty. A failed revoke or
+   *     a failed listing keeps it: clearing it would turn peers away from
+   *     the account's other devices. So does a revoke the server refuses
+   *     as `E2EEDeviceHeldElsewhere` (a refusal that landed after the
+   *     pre-flight): the other install keeps the device, and this one can
+   *     only start fresh. Returns `held_elsewhere`.
    */
-  async disable(
-    mfaTicketToken: string,
-  ): Promise<{ revokeFailed: boolean; deviceId?: string }> {
+  async disable(mfaTicketToken: string): Promise<DisableResult> {
+    // (0) Never wipe or revoke a device another live install is using
+    if (this.#sharesDevice()) return { kind: "shared" };
+
     // Capture the device id before the wipe removes it from local state
     const deviceId = this.status.get("state")?.device_id;
 
     // (1) Local wipe with the native OS confirmation — throws on decline
+    await this.#wipeLocalStore();
+
+    // (2) Post-wipe revoke. Failures here never resurrect local state.
+    let revokeFailed = false;
+    let revoked = false;
+    let heldElsewhere = false;
+    let remainingDevices: number | null = null;
+    if (deviceId) {
+      try {
+        const body = await this.#api<unknown>(
+          "DELETE",
+          `/e2ee/keys/${deviceId}`,
+          undefined,
+          { "X-MFA-Ticket": mfaTicketToken },
+        );
+        remainingDevices = parseRemainingDevices(body);
+        revoked = true;
+      } catch (error) {
+        // NotFound: the row is already gone, so there is nothing to retry
+        if (isNotFoundError(error)) {
+          revoked = true;
+        } else if (
+          error instanceof E2EEApiError &&
+          error.type === "E2EEDeviceHeldElsewhere"
+        ) {
+          heldElsewhere = true;
+        } else {
+          // NOT harmless (device-lifecycle fixes §3): peers keep fanning
+          // envelopes to the lingering row, wasting queue + one-time-key
+          // claims — and clients without the §1 prefetch lose messages to
+          // it outright. Surfaced to the caller for a loud retry.
+          console.error("[e2ee] server-side device revoke failed", error);
+          revokeFailed = true;
+        }
+      }
+    }
+
+    // (3) The opt-in hint, only once the server says no device is left
+    if (revoked) await this.#clearOptInIfNoDevices(remainingDevices);
+
+    await this.refreshStatus();
+    // `device_id` is nullable on the status record; the caller's contract is
+    // "absent" rather than "explicitly null".
+    if (heldElsewhere) {
+      return { kind: "held_elsewhere", deviceId: deviceId ?? undefined };
+    }
+    return {
+      kind: "disabled",
+      revokeFailed,
+      deviceId: deviceId ?? undefined,
+      remainingDevices,
+    };
+  }
+
+  /**
+   * `disable()`'s pre-flight for the UI, run BEFORE the MFA prompt so a
+   * shared install is never asked for the password just to be refused:
+   * `"shared"` when this install shares its device with another live one
+   * (the same conditions `disable()` checks again), else null. Local only.
+   */
+  disablePreflight(): "shared" | null {
+    return this.#sharesDevice() ? "shared" : null;
+  }
+
+  /**
+   * Whether this install shares its device with another live install:
+   * `deviceShared` is raised, the sticky "was shared" record is set for
+   * this device, a first `held_elsewhere` refusal for it is on record, or
+   * this connection's claim was refused that way.
+   */
+  #sharesDevice(): boolean {
+    return (
+      this.deviceShared.has("state") ||
+      this.#wasShared() ||
+      this.#claimRefusedHeldElsewhere ||
+      this.#heldFirstAt() !== null
+    );
+  }
+
+  /**
+   * The local half of turning E2EE off: the native wipe (blocking OS
+   * confirmation; declining throws and nothing changed) and the bridge
+   * state that must not outlive it. No server call, and the account-wide
+   * opt-in flag is untouched. `disable()` and `startOverAsNewDevice()`.
+   */
+  async #wipeLocalStore(): Promise<void> {
+    const userId = this.#client.user?.id;
+    const deviceId = this.status.get("state")?.device_id;
+
     await this.#invoke("e2ee_wipe");
 
     // Bridge session state must not survive the wipe (post-wipe design
@@ -6217,11 +7014,12 @@ export class E2EEBridge implements E2EEAdapter {
     void this.#kept.discardAll();
 
     // Zero the status snapshot SYNCHRONOUSLY (diff-review HIGH-1): the
-    // steps below are network round-trips, and the DELETE's own-device
-    // E2EEDeviceDelete fans back INSIDE that window — every enabled-gate
-    // reading the stale pre-wipe snapshot would pass and re-open the
-    // engine. The trailing refreshStatus() below re-reads native truth,
-    // but the gates must never see `enabled: true` after this line.
+    // steps after a wipe are network round-trips, and the DELETE's
+    // own-device E2EEDeviceDelete fans back INSIDE that window — every
+    // enabled-gate reading the stale pre-wipe snapshot would pass and
+    // re-open the engine. `disable()`'s trailing refreshStatus() re-reads
+    // native truth, but the gates must never see `enabled: true` after
+    // this line.
     this.#setDisabledStatus();
     // The store this named is gone, so the verdict about it is too — evidence
     // of its own kind. Leaving it set is what stranded the user in the state
@@ -6231,7 +7029,48 @@ export class E2EEBridge implements E2EEAdapter {
     // belongs to this account (as on the unprovisioned path of `#onReady`).
     this.#protectedNoteStoreOwner({ state: "known", owner: null });
 
-    // (2) Post-wipe cleanup. Failures here never resurrect local state.
+    // Multi-device signals all named the wiped device
+    this.#clearClaimRetry();
+    if (userId && deviceId) {
+      clearDeviceShared(this.#deviceSharedStorage(), userId, deviceId);
+    }
+    this.#clearHeldFirst(deviceId);
+    this.#clearWasShared(deviceId);
+    this.deviceShared.delete("state");
+    this.#deviceSharedFor = null;
+    this.#heldStrikes = 0;
+    this.publishPending.delete("state");
+    this.deviceRemoved.delete("state");
+  }
+
+  /**
+   * After a revoke: clear the opt-in hint when the server counts no device
+   * left. Without a count (a 404, an old server's empty 204, a malformed
+   * body) the own listing decides, and only a successful EMPTY listing
+   * clears it; any error or other answer keeps it.
+   */
+  async #clearOptInIfNoDevices(remaining: number | null): Promise<void> {
+    if (remaining === 0) {
+      await this.#clearOptIn();
+      return;
+    }
+    if (remaining !== null) return;
+    const userId = this.#client.user?.id;
+    if (!userId) return;
+    let listing: unknown;
+    try {
+      listing = await this.#api<unknown>("GET", `/e2ee/devices/${userId}`);
+    } catch (error) {
+      console.error("[e2ee] device listing after revoke failed", error);
+      return;
+    }
+    if (Array.isArray(listing) && listing.length === 0) {
+      await this.#clearOptIn();
+    }
+  }
+
+  /** Clear the account-wide opt-in hint (`e2ee_enabled`); best effort. */
+  async #clearOptIn(): Promise<void> {
     try {
       const user = this.#client.user;
       if (user?.e2eeEnabled) {
@@ -6242,47 +7081,345 @@ export class E2EEBridge implements E2EEAdapter {
     } catch (error) {
       console.error("[e2ee] clearing opt-in flag failed", error);
     }
-
-    let revokeFailed = false;
-    if (deviceId) {
-      try {
-        await this.#api("DELETE", `/e2ee/keys/${deviceId}`, undefined, {
-          "X-MFA-Ticket": mfaTicketToken,
-        });
-      } catch (error) {
-        // NOT harmless (device-lifecycle fixes §3): peers keep fanning
-        // envelopes to the lingering row, wasting queue + one-time-key
-        // claims — and clients without the §1 prefetch lose messages to
-        // it outright. Surfaced to the caller for a loud retry.
-        console.error("[e2ee] server-side device revoke failed", error);
-        revokeFailed = true;
-      }
-    }
-
-    await this.refreshStatus();
-    // `device_id` is nullable on the status record; the caller's contract is
-    // "absent" rather than "explicitly null".
-    return { revokeFailed, deviceId: deviceId ?? undefined };
   }
 
   /**
    * Retry ONLY the server-side revoke from a failed [disable] (rev-2
    * MAJOR-2): re-issues the DELETE with a fresh MFA ticket — never the
    * wipe. NotFound means the original DELETE actually landed and the
-   * response was lost: SUCCESS, not an error.
+   * response was lost: SUCCESS, not an error, but with no count, so the
+   * own listing decides the opt-in flag (`#clearOptInIfNoDevices`).
    */
   async retryDeviceRevoke(
     deviceId: string,
     mfaTicketToken: string,
-  ): Promise<void> {
+  ): Promise<{ remainingDevices: number | null }> {
+    let body: unknown;
     try {
-      await this.#api("DELETE", `/e2ee/keys/${deviceId}`, undefined, {
-        "X-MFA-Ticket": mfaTicketToken,
-      });
+      body = await this.#api<unknown>(
+        "DELETE",
+        `/e2ee/keys/${deviceId}`,
+        undefined,
+        { "X-MFA-Ticket": mfaTicketToken },
+      );
     } catch (error) {
-      if (/failed: 404$/.test((error as Error)?.message ?? "")) return;
+      if (isNotFoundError(error)) {
+        await this.#clearOptInIfNoDevices(null);
+        return { remainingDevices: null };
+      }
       throw error;
     }
+    const remainingDevices = parseRemainingDevices(body);
+    await this.#clearOptInIfNoDevices(remainingDevices);
+    return { remainingDevices };
+  }
+
+  /**
+   * Finish setting up this device (plan D3): `enable()` re-offers the
+   * first publication of an enabled, unpublished store (a restore, or an
+   * interrupted "Start fresh"), publishes it under the MFA ticket, marks it
+   * published and claims; `publishPending` then clears.
+   */
+  async finishSetup(mfaTicketToken: string): Promise<void> {
+    await this.enable(mfaTicketToken);
+    this.publishPending.delete("state");
+  }
+
+  /**
+   * "Make this a separate device" (plan D5): stage natively behind a native
+   * confirm, publish with MFA, commit natively, then claim the new device.
+   *
+   * From the begin to the commit or discard, `#split` holds every claim
+   * and proof back: after the publish the server knows the new device
+   * while the store still holds the old one. A failed publish or commit
+   * discards the stage and re-claims the OLD device at once: the server
+   * may already have unbound it from this session. A reload mid-split
+   * loses the stage; the store is still the old device, the next connect
+   * claims it, and the claim-time sweep removes an orphaned new row.
+   */
+  async splitDevice(
+    reauth: () => Promise<string | undefined>,
+  ): Promise<SplitResult> {
+    const status = this.status.get("state");
+    const sessionId = this.#client.sessionId;
+    if (
+      this.splitSupported.get("state") !== true ||
+      !status?.enabled ||
+      !status.published ||
+      !status.device_id ||
+      !sessionId ||
+      this.#split
+    ) {
+      return { kind: "unavailable" };
+    }
+    // An active call holds an MLS leaf bound to the old device's
+    // credential, which the commit deletes: refuse before any native prompt
+    if (this.#mlsSink) return { kind: "in_call" };
+    const oldId = status.device_id;
+    this.#clearClaimRetry();
+    const split: { oldId: string; newId: string | null } = {
+      oldId,
+      newId: null,
+    };
+    this.#split = split;
+    this.#claimHeldBySplit = false;
+
+    // (1) Stage: the native confirm, then a fresh account in memory
+    let payload: Record<string, unknown> | null;
+    try {
+      payload = await this.#invoke<Record<string, unknown> | null>(
+        "e2ee_split_begin",
+        { sessionId },
+      );
+    } catch (error) {
+      await this.#endSplitUnchanged(oldId);
+      const type = (error as { type?: unknown } | null)?.type;
+      if (type === "declined") return { kind: "declined" };
+      if (type === "busy") return { kind: "busy" };
+      if (isMissingCommandError(error)) return { kind: "unavailable" };
+      throw error;
+    }
+    const newId = payload?.device_id;
+    if (typeof newId !== "string" || payload?.split_from !== oldId) {
+      await this.#endSplitUnchanged(oldId);
+      throw new Error("[e2ee] split stage returned an unexpected payload");
+    }
+    split.newId = newId;
+    this.#ownPublishIds.add(newId);
+
+    // (2) The MFA ticket for the publication; none means the user backed out
+    let token: string | undefined;
+    try {
+      token = await reauth();
+    } catch (error) {
+      await this.#endSplitUnchanged(oldId);
+      throw error;
+    }
+    if (!token) {
+      await this.#endSplitUnchanged(oldId);
+      return { kind: "cancelled" };
+    }
+
+    // (3) Publish the staged body as-is (`split_from` + `split_proof`)
+    try {
+      await this.#api("PUT", "/e2ee/keys", payload, {
+        "X-MFA-Ticket": token,
+      });
+    } catch (error) {
+      // Not even `E2EEDeviceRemoved` raises `deviceRemoved` here: the old
+      // device is still ours and was not removed; it is claimed again
+      await this.#abortSplit(oldId);
+      throw error;
+    }
+
+    // (4) Commit; the stage survives a failed attempt, so retry it. A
+    // failure can be reported for a commit that landed (the answer lost on
+    // the way back): when the store already holds the new device it is
+    // committed, and the old id must never be claimed with the new account.
+    let committed = false;
+    let commitError: unknown;
+    for (let attempt = 0; attempt < SPLIT_COMMIT_ATTEMPTS; attempt++) {
+      try {
+        await this.#invoke("e2ee_split_commit");
+        committed = true;
+        break;
+      } catch (error) {
+        commitError = error;
+      }
+      try {
+        if ((await this.refreshStatus()).device_id === newId) {
+          committed = true;
+          break;
+        }
+      } catch (error) {
+        console.error("[e2ee] status read after a failed split commit", error);
+      }
+    }
+    if (!committed) {
+      // Re-claiming the old device re-binds its row; the claim-time sweep
+      // removes the published-but-uncommitted new one.
+      await this.#abortSplit(oldId);
+      throw commitError;
+    }
+
+    // (5) The store is the new device now. Whatever fails below, the split
+    // ends and the new device is claimed.
+    try {
+      try {
+        await this.refreshStatus();
+      } catch (error) {
+        console.error("[e2ee] status refresh after split failed", error);
+        const current = this.status.get("state");
+        if (current) {
+          this.status.set("state", {
+            ...current,
+            device_id: newId,
+            published: true,
+          });
+        }
+      }
+      // This connection's claim was for the old device
+      this.#claimAccepted = null;
+      this.#claimWaitSpent = false;
+      const after = this.status.get("state");
+      if (after) this.status.set("state", { ...after, claimed: false });
+      this.#clearDeviceShared(oldId);
+      this.#clearWasShared(oldId);
+      this.reenrollNeeded.delete("state");
+      this.#pendingRestoreRepublish = null;
+      // The protected text manager captured the old device id
+      this.#protectedDispose();
+      this.#protectedEnsureManager();
+      // Refusals were for the old device
+      this.#claimRefusedHeldElsewhere = false;
+    } catch (error) {
+      console.error("[e2ee] split housekeeping failed", error);
+    } finally {
+      // (6) Claim the new device; a socket that is down claims on `ready`
+      this.#split = null;
+      this.#claimHeldBySplit = false;
+      this.#requestClaim(newId);
+    }
+    return { kind: "split", deviceId: newId, previousDeviceId: oldId };
+  }
+
+  /**
+   * A split that published nothing ends: drop the native stage (an error
+   * after the begin may still leave one, or an earlier page's), then send a
+   * held-back claim.
+   */
+  async #endSplitUnchanged(oldId: string): Promise<void> {
+    await this.#discardSplit();
+    this.#split = null;
+    if (this.#claimHeldBySplit) {
+      this.#claimHeldBySplit = false;
+      this.#requestClaim(oldId);
+    }
+  }
+
+  /**
+   * A split whose publish or commit failed: discard the stage and claim the
+   * OLD device straight away, since the server may have unbound its row
+   * from this session before the failure.
+   */
+  async #abortSplit(oldId: string): Promise<void> {
+    const discarding = this.#discardSplit();
+    this.#split = null;
+    this.#claimHeldBySplit = false;
+    this.#requestClaim(oldId);
+    await discarding;
+  }
+
+  /**
+   * Drop the native stage (idempotent natively, opens no store); never
+   * throws. A shell without the command has no stage to drop.
+   */
+  async #discardSplit(): Promise<void> {
+    try {
+      await this.#invoke("e2ee_split_discard");
+    } catch (error) {
+      if (isMissingCommandError(error)) return;
+      console.error("[e2ee] split discard failed:", errorName(error));
+    }
+  }
+
+  /**
+   * This account's devices for Settings > Encryption (plan D7): this device
+   * first, the rest newest first. Display only (an unsigned listing).
+   */
+  async listOwnDevices(): Promise<OwnDeviceView[]> {
+    const userId = this.#client.user?.id;
+    if (!userId) throw new Error("not signed in");
+    const listing = await this.#api<unknown>("GET", `/e2ee/devices/${userId}`);
+    return toOwnDeviceViews(
+      listing,
+      this.status.get("state")?.device_id ?? null,
+    );
+  }
+
+  /**
+   * Remove ANOTHER of this account's devices (plan D7/D8; this device is
+   * `disable()`). The first MFA ticket deletes (and tombstones) the device;
+   * with `deleteBackup`, a second deletes its backup blob, since a ticket is
+   * single-use. A dismissed first prompt removes nothing (both fields
+   * null); a dismissed or failed second one leaves the backup
+   * (`backupDeleted: false`). A device already gone (404) is no error.
+   */
+  async removeDevice(
+    deviceId: string,
+    opts: { deleteBackup: boolean },
+    reauth: () => Promise<string | undefined>,
+  ): Promise<RemoveDeviceResult> {
+    const userId = this.#client.user?.id;
+    if (!userId) throw new Error("not signed in");
+    if (deviceId === this.status.get("state")?.device_id) {
+      throw new Error("[e2ee] this device is turned off with disable()");
+    }
+
+    const removeToken = await reauth();
+    if (!removeToken) return { remainingDevices: null, backupDeleted: null };
+    let remainingDevices: number | null = null;
+    try {
+      const body = await this.#api<unknown>(
+        "DELETE",
+        `/e2ee/keys/${deviceId}`,
+        undefined,
+        { "X-MFA-Ticket": removeToken },
+      );
+      remainingDevices = parseRemainingDevices(body);
+    } catch (error) {
+      if (!/failed: 404$/.test((error as Error)?.message ?? "")) throw error;
+    }
+    if (remainingDevices === 0) await this.#clearOptIn();
+
+    let backupDeleted: boolean | null = null;
+    if (opts.deleteBackup) {
+      backupDeleted = false;
+      try {
+        const backupToken = await reauth();
+        if (backupToken) {
+          await this.#api("DELETE", `/e2ee/backup/${deviceId}`, undefined, {
+            "X-MFA-Ticket": backupToken,
+          });
+          backupDeleted = true;
+        }
+      } catch (error) {
+        console.error("[e2ee] backup delete failed", error);
+      }
+    }
+
+    try {
+      await this.#reconcileDevices(userId);
+    } catch (error) {
+      console.error("[e2ee] reconcile after device removal failed", error);
+    }
+    return { remainingDevices, backupDeleted };
+  }
+
+  /**
+   * A removed device sets itself up again as a new device (plan D8): the
+   * native wipe confirm (declining changes nothing), the local half of
+   * `disable()` (no revoke: the server already removed the device, and the
+   * opt-in flag stays), then `enable()` under a fresh MFA ticket. A
+   * dismissed prompt leaves the install wiped; the next connect then
+   * offers restore or start fresh.
+   */
+  async startOverAsNewDevice(
+    reauth: () => Promise<string | undefined>,
+  ): Promise<"enabled" | "wiped" | "declined"> {
+    try {
+      await this.#wipeLocalStore();
+    } catch (error) {
+      if ((error as { type?: unknown } | null)?.type === "declined") {
+        return "declined";
+      }
+      throw error;
+    }
+    this.deviceRemoved.delete("state");
+    const token = await reauth();
+    if (!token) return "wiped";
+    await this.enable(token);
+    return "enabled";
   }
 
   // ================================================================
@@ -6406,9 +7543,18 @@ export class E2EEBridge implements E2EEAdapter {
     // FIRST publication of the restored identity: MFA-gated, and WITHOUT
     // `replace_one_time_keys` (there is no prior server row to replace against;
     // the flag is only honoured on the device-bound republish path anyway).
-    await this.#api("PUT", "/e2ee/keys", payload, {
-      "X-MFA-Ticket": mfaTicketToken,
-    });
+    // A removed (tombstoned) device is refused for good (multi-device D8).
+    try {
+      await this.#api("PUT", "/e2ee/keys", payload, {
+        "X-MFA-Ticket": mfaTicketToken,
+      });
+    } catch (error) {
+      this.#noteDeviceRemovedError(
+        error,
+        this.status.get("state")?.device_id ?? null,
+      );
+      throw error;
+    }
     // Row now exists — never re-first-publish this bundle.
     this.#pendingRestoreRepublish = null;
     this.reenrollNeeded.delete("state");
@@ -6424,12 +7570,7 @@ export class E2EEBridge implements E2EEAdapter {
     // the accepted claim drains envelopes and runs post-claim housekeeping
     // (#pendingRestoreRepublish is now null, so its republish is a no-op).
     const status = this.status.get("state");
-    if (status?.device_id) {
-      this.#client.events.send({
-        type: "E2EERequestChallenge",
-        device_id: status.device_id,
-      });
-    }
+    if (status?.device_id) this.#requestClaim(status.device_id);
 
     // Re-seed the MLS KeyPackage directory too (publish-UX plan §3.2): the
     // revocation cascade deleted this device's packages, and the re-enroll
@@ -6471,26 +7612,36 @@ export class E2EEBridge implements E2EEAdapter {
       if (!bundle) return;
       await this.#putBackup(bundle);
     } else if (mode === "restore") {
-      // The store was rebuilt natively. The fresh-OTK republish (design §6.3)
-      // must run on a DEVICE-BOUND session — i.e. AFTER the claim, not before
-      // (the restored device_id already exists server-side, so the PUT takes
-      // the server's `assert_bound_session` republish path). Stash it and let
-      // the claim result (#onClaimResult) publish it.
-      this.#pendingRestoreRepublish = await this.#invoke<Record<
-        string,
-        unknown
-      > | null>("e2ee_backup_take_pending_republish");
+      // The store was rebuilt natively. A restore now adds a NEW device
+      // (multi-device D1) and stashes nothing, so the take is null: the new
+      // device has no server row yet, nothing may claim it, and its first
+      // publication waits for `finishSetup` (D3).
+      const republish = await this.#invoke<Record<string, unknown> | null>(
+        "e2ee_backup_take_pending_republish",
+      );
+      if (republish === null) {
+        const restored = await this.refreshStatus();
+        // A store that is somehow already published is claimed as usual
+        if (restored.enabled && restored.published && restored.device_id) {
+          this.#requestClaim(restored.device_id);
+          return;
+        }
+        this.#raisePublishPendingIfUnpublished(null);
+        return;
+      }
+      // A store restored by an older core: a clone of the source device.
+      // The fresh-OTK republish (design §6.3) must run on a DEVICE-BOUND
+      // session — i.e. AFTER the claim, not before (the restored device_id
+      // already exists server-side, so the PUT takes the server's
+      // `assert_bound_session` republish path). Stash it and let the claim
+      // result (#onClaimResult) publish it.
+      this.#pendingRestoreRepublish = republish;
       await this.refreshStatus();
       // Claim the device on the live connection so route gates + drain
       // recognise the restored identity; the claim result drains the stashed
       // republish.
       const status = this.status.get("state");
-      if (status?.device_id) {
-        this.#client.events.send({
-          type: "E2EERequestChallenge",
-          device_id: status.device_id,
-        });
-      }
+      if (status?.device_id) this.#requestClaim(status.device_id);
     }
     // mode "cancel" (or unknown): nothing to courier.
   }
@@ -6635,6 +7786,8 @@ export class E2EEBridge implements E2EEAdapter {
     // early return below, so its timers and publish loops never outlive a
     // replaced client on any shell. Idempotent.
     this.disposeProtected();
+    // The held_elsewhere retry must not claim for a replaced client
+    this.#clearClaimRetry();
     if (this.#disposed) return;
     this.#disposed = true;
     this.#claimAccepted = null;
@@ -6793,9 +7946,9 @@ export class E2EEBridge implements E2EEAdapter {
     }));
 
     if (this.#transport.backupRestoreDialog) {
-      // Android: the dialog enters the code and restores natively, returning
-      // the fresh-OTK republish payload. A dialog cancel rejects `declined`:
-      // report 0 restored (the user backed out) rather than surfacing an error.
+      // Capacitor: the dialog enters the code and restores natively. A dialog
+      // cancel rejects `declined`: report 0 restored (the user backed out)
+      // rather than surfacing an error.
       let republish: Record<string, unknown> | null;
       try {
         republish = await this.#transport.backupRestoreDialog(selfId, blobs);
@@ -6803,19 +7956,27 @@ export class E2EEBridge implements E2EEAdapter {
         if ((error as { type?: string })?.type === "declined") return 0;
         throw error;
       }
-      // Defer the fresh-OTK republish until AFTER the claim (design §6.3): the
+      // The restore added a NEW device (multi-device D1): iOS answers null,
+      // Android its `RestoreReport` (`new_device_id` = this install,
+      // `device_id` = the source). No server row yet, so no claim; the first
+      // publication waits for `finishSetup` (D3).
+      if (republish === null || typeof republish.new_device_id === "string") {
+        await this.refreshStatus();
+        const source = republish?.device_id;
+        this.#raisePublishPendingIfUnpublished(
+          typeof source === "string" ? source : null,
+        );
+        return res.backups.length;
+      }
+      // An older shell cloned the source device and returned its fresh-OTK
+      // republish. Defer it until AFTER the claim (design §6.3): the
       // restored device_id already exists server-side, so the republish PUT
       // needs a device-bound session, which only the accepted claim provides.
       // #onClaimResult drains it.
       this.#pendingRestoreRepublish = republish;
       await this.refreshStatus();
       const status = this.status.get("state");
-      if (status?.device_id) {
-        this.#client.events.send({
-          type: "E2EERequestChallenge",
-          device_id: status.device_id,
-        });
-      }
+      if (status?.device_id) this.#requestClaim(status.device_id);
       return res.backups.length;
     }
 

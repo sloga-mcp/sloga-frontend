@@ -1199,14 +1199,19 @@ test("W2: the store-gone paths record a fresh store (unprovisioned connect, wipe
     /this\.storeOwnedByAnotherAccount\.delete\("state"\);\s*this\.#protectedNoteStoreOwner\(\{ state: "known", owner: null \}\);/,
     "unprovisioned branch",
   );
+  // add-device (v0.71.0) moved the wipe into `#wipeLocalStore`, which
+  // `disable()` (now `Promise<DisableResult>`) calls.
   const disable = stripComments(
     member(
       SRC,
-      /\n {2}async disable\(\s*mfaTicketToken: string,\s*\): Promise<\{ revokeFailed: boolean; deviceId\?: string \}> /,
+      /\n {2}async disable\(\s*mfaTicketToken: string,?\s*\): Promise<DisableResult> /,
     ),
   );
+  assert.match(disable, /await this\.#wipeLocalStore\(\);/, "disable wipes");
   assert.match(
-    disable,
+    stripComments(
+      member(SRC, /\n {2}async #wipeLocalStore\(\): Promise<void> /),
+    ),
     /this\.storeOwnedByAnotherAccount\.delete\("state"\);\s*this\.#protectedNoteStoreOwner\(\{ state: "known", owner: null \}\);/,
     "wipe",
   );
@@ -1239,13 +1244,21 @@ test("W3: #onReady settles the bridge start before anything else (probe awaited)
     "the first statements of the try",
   );
   const start = onReady.indexOf("await platformStart;");
+  // add-device (v0.71.0) moved the claim into `#requestClaim`, the one
+  // sender of `E2EERequestChallenge`; #onReady's claim is its call.
   for (const later of [
     "#checkStoreOwner()",
     "refreshStatus()",
-    '"E2EERequestChallenge"',
+    "this.#requestClaim(",
   ]) {
     assert.ok(onReady.indexOf(later) > start, `awaited before ${later}`);
   }
+  assert.equal(count(SRC, '"E2EERequestChallenge"'), 1, "one claim sender");
+  assert.match(
+    stripComments(member(SRC, /\n {2}#requestClaim\(/)),
+    /type: "E2EERequestChallenge"/,
+    "and it is #requestClaim",
+  );
   assert.equal(
     count(SRC, "#protectedPlatformStart("),
     2,

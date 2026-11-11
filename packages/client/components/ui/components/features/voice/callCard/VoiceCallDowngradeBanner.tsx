@@ -230,12 +230,24 @@ export function VoiceCallDowngradeBanner() {
    */
   const resetDevice = async () => {
     if (resetting() || !e2ee) return;
+    // A shared install is refused without asking for the password first
+    if (e2ee.disablePreflight() === "shared") {
+      openModal({ type: "e2ee_device_shared" });
+      return;
+    }
     setResetting(true);
     try {
       const mfa = await client().account.mfa();
       const ticket = await mfaFlow(mfa);
       if (!ticket?.token) return; // cancelled at the re-auth step
-      await e2ee.disable(ticket.token);
+      const result = await e2ee.disable(ticket.token);
+      // Another live install shares this device: nothing was wiped, and
+      // the split is the remedy. Refused after the wipe: start fresh.
+      if (result.kind === "shared") {
+        openModal({ type: "e2ee_device_shared" });
+      } else if (result.kind === "held_elsewhere") {
+        openModal({ type: "e2ee_enable", offerRestore: true });
+      }
     } catch (error) {
       // The native decline is typed `declined` and means "user said no".
       // Anything else is a genuine failure the user should see, because they

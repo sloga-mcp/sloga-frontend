@@ -24,13 +24,16 @@ import { useModals } from "@revolt/modal";
 // import { typography } from "../../design";
 import { PreviewStack } from "../PreviewStack";
 import { isFileDrag } from "./FileDropGuard";
+import { takeDroppedItems } from "./folderAttachments";
+import { type ZipTarget, useDroppedItems } from "./useDroppedItems";
 
 interface Props {
   /**
    * Callback for dropped files
    * @param files List of files
+   * @param target What `zipTarget` gave at the gesture, if anything
    */
-  onFiles: (files: File[]) => void;
+  onFiles: (files: File[], target?: ZipTarget) => void;
 
   /**
    * Whether to allow dropping files while in a modal
@@ -48,6 +51,12 @@ interface Props {
    * Whether drops should currently be collected (defaults to always)
    */
   active?: () => boolean;
+
+  /**
+   * Where a folder goes, read at the moment of the gesture: the zip may
+   * finish after the composer has moved to another channel
+   */
+  zipTarget?: () => ZipTarget;
 }
 
 /**
@@ -103,6 +112,7 @@ const DropText = styled("div", {
  */
 export function FileDropAnywhereCollector(props: Props) {
   const { isOpen } = useModals();
+  const resolveDropped = useDroppedItems();
   const [showIndicator, setShowIndicator] = createSignal(false);
   const [hideIndicator, setHideIndicator] = createSignal(false);
   const [items, setItems] = createSignal<DataTransferItem[]>([]);
@@ -183,9 +193,14 @@ export function FileDropAnywhereCollector(props: Props) {
 
     event.preventDefault();
 
-    const files = event.dataTransfer?.files;
-    if (files?.length) {
-      props.onFiles([...files]);
+    // Taken now: the item list is emptied once this handler returns. A
+    // folder arrives as a 0-byte phantom File; it is zipped instead.
+    const items = takeDroppedItems(event.dataTransfer);
+    if (items.length) {
+      const target = props.zipTarget?.();
+      void resolveDropped(items, target).then((files) => {
+        if (files.length) props.onFiles(files, target);
+      });
     }
 
     setShowIndicator(false);

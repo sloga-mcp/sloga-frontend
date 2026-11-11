@@ -1,0 +1,86 @@
+diff --git a/dist/panzoom.es.js b/dist/panzoom.es.js
+index 761874911912ea1e0a772649c8c02930e04556d0..7d2ffa8b575e2387da21b93c40f96a955c401e2a 100644
+--- a/dist/panzoom.es.js
++++ b/dist/panzoom.es.js
+@@ -297,7 +297,9 @@ function getDistance(pointers) {
+ function isAttached(node) {
+     var currentNode = node;
+     while (currentNode && currentNode.parentNode) {
+-        if (currentNode.parentNode === document)
++        // Sloga patch: attached to ITS document, which for a chat window
++        // (a same-realm child window) is not the global `document`.
++        if (currentNode.parentNode === node.ownerDocument)
+             return true;
+         currentNode =
+             currentNode.parentNode instanceof ShadowRoot
+@@ -747,20 +749,23 @@ function Panzoom(elem, options) {
+         origX = origY = startClientX = startClientY = undefined;
+     }
+     var bound = false;
++    // Sloga patch: drag on the element's own document (see isAttached).
++    var boundDoc = document;
+     function bind() {
+         if (bound) {
+             return;
+         }
+         bound = true;
++        boundDoc = elem.ownerDocument || document;
+         onPointer('down', options.canvas ? parent : elem, handleDown);
+-        onPointer('move', document, handleMove, { passive: true });
+-        onPointer('up', document, handleUp, { passive: true });
++        onPointer('move', boundDoc, handleMove, { passive: true });
++        onPointer('up', boundDoc, handleUp, { passive: true });
+     }
+     function destroy() {
+         bound = false;
+         destroyPointer('down', options.canvas ? parent : elem, handleDown);
+-        destroyPointer('move', document, handleMove);
+-        destroyPointer('up', document, handleUp);
++        destroyPointer('move', boundDoc, handleMove);
++        destroyPointer('up', boundDoc, handleUp);
+     }
+     if (!options.noBind) {
+         bind();
+diff --git a/dist/panzoom.js b/dist/panzoom.js
+index 980d865d8c94fedf35a44386f232759d90acd473..efc543bcd6caac1e949bf75128c8e4e3029299c9 100644
+--- a/dist/panzoom.js
++++ b/dist/panzoom.js
+@@ -303,7 +303,9 @@
+     function isAttached(node) {
+         var currentNode = node;
+         while (currentNode && currentNode.parentNode) {
+-            if (currentNode.parentNode === document)
++            // Sloga patch: attached to ITS document, which for a chat window
++            // (a same-realm child window) is not the global `document`.
++            if (currentNode.parentNode === node.ownerDocument)
+                 return true;
+             currentNode =
+                 currentNode.parentNode instanceof ShadowRoot
+@@ -753,20 +755,23 @@
+             origX = origY = startClientX = startClientY = undefined;
+         }
+         var bound = false;
++        // Sloga patch: drag on the element's own document (see isAttached).
++        var boundDoc = document;
+         function bind() {
+             if (bound) {
+                 return;
+             }
+             bound = true;
++            boundDoc = elem.ownerDocument || document;
+             onPointer('down', options.canvas ? parent : elem, handleDown);
+-            onPointer('move', document, handleMove, { passive: true });
+-            onPointer('up', document, handleUp, { passive: true });
++            onPointer('move', boundDoc, handleMove, { passive: true });
++            onPointer('up', boundDoc, handleUp, { passive: true });
+         }
+         function destroy() {
+             bound = false;
+             destroyPointer('down', options.canvas ? parent : elem, handleDown);
+-            destroyPointer('move', document, handleMove);
+-            destroyPointer('up', document, handleUp);
++            destroyPointer('move', boundDoc, handleMove);
++            destroyPointer('up', boundDoc, handleUp);
+         }
+         if (!options.noBind) {
+             bind();

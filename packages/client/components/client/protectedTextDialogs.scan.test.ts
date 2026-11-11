@@ -2068,9 +2068,14 @@ const CONTROLS: Control[] = [
     rule: "R1",
     file: "plugin",
     edits: [
+      // Anchored on the `when`'s `else ->` arm: since the add-device merge,
+      // call() opens with a genericCallRefuses guard that rejects with the
+      // same literal, so the bare reject is no longer unique.
       [
-        String.raw`call.reject("{\"type\":\"invalid_argument\",\"field\":\"name\"}")`,
-        String.raw`if (name.startsWith("e2ee_text_")) resolveText(call) { engine.textState(it) } else call.reject("{\"type\":\"invalid_argument\",\"field\":\"name\"}")`,
+        "                else ->\n" +
+          String.raw`                    call.reject("{\"type\":\"invalid_argument\",\"field\":\"name\"}")`,
+        "                else ->\n" +
+          String.raw`                    if (name.startsWith("e2ee_text_")) resolveText(call) { engine.textState(it) } else call.reject("{\"type\":\"invalid_argument\",\"field\":\"name\"}")`,
       ],
     ],
     expect: "fail",

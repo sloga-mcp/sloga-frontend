@@ -8,10 +8,10 @@ import { fetchAllChangelogs } from "@revolt/modal/modals/Changelog";
 import { iconSize } from "@revolt/ui";
 
 import MdArrowForward from "@material-design-icons/svg/filled/arrow_forward.svg?component-solid";
-import MdAutoAwesome from "@material-design-icons/svg/filled/auto_awesome.svg?component-solid";
 import MdClose from "@material-design-icons/svg/filled/close.svg?component-solid";
-import MdGraphicEq from "@material-design-icons/svg/filled/graphic_eq.svg?component-solid";
-import MdPalette from "@material-design-icons/svg/filled/palette.svg?component-solid";
+import MdDevices from "@material-design-icons/svg/filled/devices.svg?component-solid";
+import MdFolderZip from "@material-design-icons/svg/filled/folder_zip.svg?component-solid";
+import MdImage from "@material-design-icons/svg/filled/image.svg?component-solid";
 
 import pkg from "../../../../../package.json";
 
@@ -21,23 +21,23 @@ import { showWhatsNew, WHATS_NEW_KEY } from "./homeHub";
  * The release these highlights were written for. Update it together with
  * HIGHLIGHTS each release; until both are updated the card stays hidden.
  */
-const HIGHLIGHTS_RELEASE = "0.70";
+const HIGHLIGHTS_RELEASE = "0.71";
 
 const ACCENT = "#3BB8ED";
 
 /** Two or three headline changes, short enough for one line each */
 const HIGHLIGHTS: { icon: () => JSX.Element; text: () => JSX.Element }[] = [
   {
-    icon: () => <MdAutoAwesome {...iconSize(18)} />,
-    text: () => <Trans>A new Modern style, with a Classic option</Trans>,
+    icon: () => <MdDevices {...iconSize(18)} />,
+    text: () => <Trans>Restore encryption on a second device</Trans>,
   },
   {
-    icon: () => <MdPalette {...iconSize(18)} />,
-    text: () => <Trans>A Discord color scheme and new backgrounds</Trans>,
+    icon: () => <MdFolderZip {...iconSize(18)} />,
+    text: () => <Trans>Send a whole folder as a .zip</Trans>,
   },
   {
-    icon: () => <MdGraphicEq {...iconSize(18)} />,
-    text: () => <Trans>Change your voice's pitch in calls</Trans>,
+    icon: () => <MdImage {...iconSize(18)} />,
+    text: () => <Trans>Images open again in chat windows</Trans>,
   },
 ];
 

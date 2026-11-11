@@ -28,12 +28,12 @@
  *                      `.native`, `.out` or `.dedicated("m")`, one per line;
  *                      `dedicatedMethods` is one `"m",` per line
  *   G6-table-duplicate a name listed twice
- *   G6-count           generic 37 / native 2 / dedicated 6, equal to the
+ *   G6-count           generic 39 / native 2 / dedicated 7, equal to the
  *                      static genericCount/nativeCount/dedicatedCount;
  *                      outCount equals the number of `.out` lines
  *   G6-table-route     the generic, native and dedicated sets are exactly the
  *                      W3 contract's (names and dedicated method per name)
- *   G6-dedicated-order `dedicatedMethods` is the 12 methods in contract order
+ *   G6-dedicated-order `dedicatedMethods` is the 13 methods in contract order
  *   G6-dedicated-method each dedicated method is an
  *                      `@objc func m(_ call: CAPPluginCall)`; no other @objc
  *                      CAPPluginCall method but `call`; pluginMethods is
@@ -68,8 +68,8 @@
  *   G7-gated-case      no dedicated (confirm-gated) name is a case label
  *                      anywhere in E2eePlugin.swift
  *   G7-gated-call      wipe/downgrade/enableGroup/addGroupMember/markVerified/
- *                      acceptIdentityChange on an engine value only inside
- *                      their own dedicated @objc method, inside an
+ *                      acceptIdentityChange/splitBegin on an engine value only
+ *                      inside their own dedicated @objc method, inside an
  *                      onDedicatedThread/runOnDedicatedThread closure;
  *                      confirmPeerDowngrade likewise in
  *                      confirmPeerDowngradeAccept, or in the generic arm when
@@ -251,6 +251,8 @@ const GENERIC = [
   "e2ee_mark_published",
   "e2ee_replenish",
   "e2ee_sign_claim",
+  "e2ee_split_commit",
+  "e2ee_split_discard",
   "e2ee_encrypt",
   "e2ee_decrypt",
   "e2ee_history",
@@ -291,6 +293,7 @@ const DEDICATED = {
   e2ee_add_group_member: "addGroupMember",
   e2ee_mark_verified: "markVerified",
   e2ee_accept_identity_change: "acceptIdentityChange",
+  e2ee_split_begin: "splitBegin",
 };
 /** The plugin's dedicated methods, in contract order (`call` excluded). */
 const DEDICATED_METHODS = [
@@ -301,13 +304,14 @@ const DEDICATED_METHODS = [
   "addGroupMember",
   "markVerified",
   "acceptIdentityChange",
+  "splitBegin",
   "backupCreate",
   "backupRotate",
   "backupRestore",
   "attachmentUpload",
   "attachmentFetch",
 ];
-const COUNTS = { generic: 37, native: 2, dedicated: 6 };
+const COUNTS = { generic: 39, native: 2, dedicated: 7 };
 
 /**
  * Android-only plugin methods (protected channels S7 D9) → the check that
@@ -393,6 +397,7 @@ const GATED = {
   addGroupMember: "addGroupMember",
   markVerified: "markVerified",
   acceptIdentityChange: "acceptIdentityChange",
+  splitBegin: "splitBegin",
   confirmPeerDowngrade: "confirmPeerDowngradeAccept",
 };
 /** The generic arm that may call confirmPeerDowngrade, decline only. */
