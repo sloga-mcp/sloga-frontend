@@ -209,15 +209,31 @@ final class ProtStoreResultsTests: XCTestCase {
     }
 
     /// No web purchase link or external-purchase API anywhere (E8 owner
-    /// decision), and no logging of any kind.
+    /// decision), no logging of any kind, and no script evaluation or
+    /// dynamic (selector / key-value) dispatch. Scans EVERY .swift file under
+    /// Sources/SlogaStore, enumerated, so a new source file is covered too.
     func testNoWebLinkAndNoLogging() throws {
-        for file in ["ProtStoreResults.swift", "ProtStoreKit.swift", "ProtStorePlugin.swift", "ProtStoreUpdateGate.swift"] {
+        let sources = SourceScan.packageRoot.appendingPathComponent("Sources/SlogaStore")
+        let enumerator = try XCTUnwrap(
+            FileManager.default.enumerator(atPath: sources.path),
+            "cannot enumerate \(sources.path)"
+        )
+        let files = enumerator.compactMap { $0 as? String }.filter { $0.hasSuffix(".swift") }.sorted()
+        XCTAssertFalse(files.isEmpty, "found no .swift files under \(sources.path)")
+        for known in ["ProtStoreResults.swift", "ProtStoreKit.swift", "ProtStorePlugin.swift", "ProtStoreUpdateGate.swift"] {
+            XCTAssertTrue(files.contains(known), "the enumeration missed \(known)")
+        }
+        for file in files {
             let code = try SourceScan.code(file).joined(separator: "\n")
             // PurchaseIntent / SKPaymentQueue / shouldAddStorePayment: promoted
             // IAP is not supported (E10), and StoreKit 1 is never used.
+            // evaluateJavaScript / evalWithPlugin / eval(: the plugin never runs
+            // script in the page. Selector / perform / KVC: no dynamic dispatch.
             for banned in ["ExternalPurchase", "openURL", "UIApplication.shared.open", "http://", "https://",
                            "PurchaseIntent", "SKPaymentQueue", "shouldAddStorePayment",
-                           "print(", "NSLog(", "os_log(", "Logger(", "debugPrint(", "dump("] {
+                           "print(", "NSLog(", "os_log(", "Logger(", "debugPrint(", "dump(",
+                           "evaluateJavaScript", "evalWithPlugin", "eval(",
+                           "Selector(", "#selector(", "perform(", "value(forKey", "setValue("] {
                 XCTAssertFalse(code.contains(banned), "\(file) contains \(banned)")
             }
         }
