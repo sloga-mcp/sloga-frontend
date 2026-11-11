@@ -26,6 +26,12 @@
 // manager, so all 20 are `.out`. The same grep now yields 107 names; 100 =
 // 37 generic + 2 native + 6 dedicated + 55 out.
 //
+// Multi-device ("make this a separate device", plan D5) adds 3 more:
+// e2ee_split_begin (dedicated `splitBegin`: core's Split confirm runs
+// inside the engine call) and e2ee_split_commit / e2ee_split_discard
+// (generic: no dialog, the consent was the begin's). The grep yields 110
+// names; 103 = 39 generic + 2 native + 7 dedicated + 55 out.
+//
 // e2ee_recovery_* (context/create/rotate/restore/finish) are NOT here: no FE
 // file sends them (only the desktop recovery window does). They are unknown
 // names, so `route(for:)` answers `.out` for them anyway.
@@ -46,7 +52,7 @@ enum E2eeRoute: Equatable {
 enum E2eeCommands {
     /// Every `e2ee_*` command name the frontend can send, one entry per line.
     static let table: [(name: String, route: E2eeRoute)] = [
-        // Generic (37): `call` mux on the engine worker.
+        // Generic (39): `call` mux on the engine worker.
         // Device lifecycle
         ("e2ee_status", .generic),
         ("e2ee_is_provisioned", .generic),
@@ -55,6 +61,10 @@ enum E2eeCommands {
         ("e2ee_mark_published", .generic),
         ("e2ee_replenish", .generic),
         ("e2ee_sign_claim", .generic),
+        // Split, steps 2 and 3: commit or drop the stage the confirm-gated
+        // splitBegin made. No dialog; neither can start a split.
+        ("e2ee_split_commit", .generic),
+        ("e2ee_split_discard", .generic),
         // DM messaging
         ("e2ee_encrypt", .generic),
         ("e2ee_decrypt", .generic),
@@ -106,7 +116,7 @@ enum E2eeCommands {
         ("e2ee_attachment_copy_image", .native),
         ("e2ee_attachment_save", .native),
 
-        // Dedicated (6): confirm-gated. Absent from the `call` switch so the
+        // Dedicated (7): confirm-gated. Absent from the `call` switch so the
         // webview can only request the change; a native dialog commits it.
         ("e2ee_wipe", .dedicated("wipe")),
         ("e2ee_downgrade", .dedicated("downgrade")),
@@ -114,6 +124,7 @@ enum E2eeCommands {
         ("e2ee_add_group_member", .dedicated("addGroupMember")),
         ("e2ee_mark_verified", .dedicated("markVerified")),
         ("e2ee_accept_identity_change", .dedicated("acceptIdentityChange")),
+        ("e2ee_split_begin", .dedicated("splitBegin")),
 
         // Out (55): desktop-only. `call` rejects invalid_argument{field:"name"}.
         // Desktop binary attachment path (iOS moves ciphertext natively)
@@ -191,6 +202,7 @@ enum E2eeCommands {
         "addGroupMember",
         "markVerified",
         "acceptIdentityChange",
+        "splitBegin",
         "backupCreate",
         "backupRotate",
         "backupRestore",
@@ -199,9 +211,9 @@ enum E2eeCommands {
     ]
 
     /// Count pins (G6/G9).
-    static let genericCount = 37
+    static let genericCount = 39
     static let nativeCount = 2
-    static let dedicatedCount = 6
+    static let dedicatedCount = 7
     /// Desktop-only FE names in the table; tests pin it with the others.
     static let outCount = 55
 

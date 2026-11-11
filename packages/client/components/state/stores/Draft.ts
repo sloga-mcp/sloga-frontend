@@ -665,8 +665,10 @@ export class Draft extends AbstractStore<"draft", TypeDraft> {
     } catch (error) {
       // Nothing was queued or sent. A retried entry is still in the outbox
       // (retrySend only marks it "sending"), so put it back as failed
-      // rather than letting the message disappear.
+      // rather than letting the message disappear. A fresh send was popped
+      // out of the composer above, so it goes back there instead.
       if (retryOf) this.markFailed(channel.id, retryOf, error);
+      else if (!existingDraft) this.restoreUnsentDraft(channel.id, draft);
       throw error;
     }
 
@@ -1017,6 +1019,28 @@ export class Draft extends AbstractStore<"draft", TypeDraft> {
     // too (it was emptied by the pop, so this is the whole text)
     this.replaceNode(channelId, [content]);
     return true;
+  }
+
+  /**
+   * Put a popped draft that never reached the outbox back in the composer.
+   * Its files go back in front of any added since; its text only if the
+   * user has not typed something new in the meantime.
+   * @param channelId Channel ID
+   * @param draft Popped draft
+   */
+  private restoreUnsentDraft(channelId: string, draft: DraftData) {
+    const current = this.getDraft(channelId);
+    const restoreText = !current.content && !!draft.content;
+
+    this.setDraft(channelId, {
+      ...current,
+      content: restoreText ? draft.content : current.content,
+      replies: current.replies?.length ? current.replies : draft.replies,
+      files: [...(draft.files ?? []), ...(current.files ?? [])],
+    });
+
+    // A mounted composer shows the editor, not the draft: write it there too
+    if (restoreText) this.replaceNode(channelId, [draft.content!]);
   }
 
   /**

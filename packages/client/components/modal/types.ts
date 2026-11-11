@@ -343,6 +343,38 @@ export type Modals =
       removed?: string[];
     }
   | {
+      /**
+       * A Protected channel's Prot tank (S5b, contracts 16.3 L6c): stage
+       * and dates, balance, seats, goals and contributors, for anyone who
+       * can see the channel. Its "Top up" and "Pledge" open
+       * `prot_contribute` only where `allowsProtSpending()` is true.
+       */
+      type: "prot_tank";
+      channel: Channel;
+    }
+  | {
+      /**
+       * Top up a channel's tank or pledge to a goal (S5b, contracts 16.3
+       * L6d). Open it only behind `allowsProtSpending()` (D5): the store
+       * scan `components/client/protStore.scan.test.ts` lists every open
+       * site. `onDone` runs after a contribution or pledge was added.
+       */
+      type: "prot_contribute";
+      target:
+        | { kind: "tank"; channel: Channel }
+        | { kind: "goal"; goalId: string; serverId: string };
+      onDone?: () => void;
+    }
+  | {
+      /**
+       * A server's launch goals (S5b, contracts 16.3 L6e): members pool
+       * Prot for a new Protected channel; the owner opens, cancels and
+       * launches them.
+       */
+      type: "prot_server_goals";
+      server: Server;
+    }
+  | {
       type: "e2ee_enable";
       /**
        * Lead with the restore-vs-start-fresh choice (slice 5.5). Set when the
@@ -365,6 +397,39 @@ export type Modals =
     }
   | {
       type: "e2ee_disable";
+    }
+  | {
+      /**
+       * Multi-device D3: this device holds keys that were never registered
+       * (a restore that still needs its second MFA prompt, or an interrupted
+       * start fresh). Auto-opened by the shell on `e2ee.publishPending`.
+       */
+      type: "e2ee_finish_setup";
+    }
+  | {
+      /**
+       * Multi-device D5: this install shares its device identity with another
+       * of the user's installs. Auto-opened by the shell when a claim was
+       * refused twice (`deviceShared.via === "held_elsewhere"`).
+       */
+      type: "e2ee_device_shared";
+    }
+  | {
+      /**
+       * Multi-device D8: this device was removed from the account's
+       * encryption. Auto-opened by the shell on `e2ee.deviceRemoved`.
+       */
+      type: "e2ee_device_removed";
+    }
+  | {
+      /**
+       * Multi-device D7: remove ANOTHER of the user's own devices. `onRemoved`
+       * runs after the device was removed (refresh the device list).
+       */
+      type: "e2ee_remove_device";
+      deviceId: string;
+      sessionName: string | null;
+      onRemoved?: () => void;
     }
   | {
       type: "image_editor";

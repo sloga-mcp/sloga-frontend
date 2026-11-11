@@ -38,13 +38,17 @@ import { DeleteRoleModal } from "./modals/DeleteRole";
 import { DeleteServerModal } from "./modals/DeleteServer";
 import { DiscoverJoinModal } from "./modals/DiscoverJoin";
 import { DiscoveryQueueModal } from "./modals/DiscoveryQueue";
+import { E2EEDeviceRemovedModal } from "./modals/E2EEDeviceRemoved";
+import { E2EEDeviceSharedModal } from "./modals/E2EEDeviceShared";
 import { E2EEDisableModal } from "./modals/E2EEDisable";
 import { E2EEEnableModal } from "./modals/E2EEEnable";
 import { E2EEEnableGroupModal } from "./modals/E2EEEnableGroup";
+import { E2EEFinishSetupModal } from "./modals/E2EEFinishSetup";
 import { E2EEGroupPlaintextConfirmModal } from "./modals/E2EEGroupPlaintextConfirm";
 import { E2EEIdentityChangeModal } from "./modals/E2EEIdentityChange";
 import { E2EEPeerDowngradeModal } from "./modals/E2EEPeerDowngrade";
 import { E2EEReenrollModal } from "./modals/E2EEReenroll";
+import { E2EERemoveDeviceModal } from "./modals/E2EERemoveDevice";
 import { E2EEVerifyModal } from "./modals/E2EEVerify";
 import { EditCategoryModal } from "./modals/EditCategory";
 import { EditEmailModal } from "./modals/EditEmail";
@@ -73,7 +77,10 @@ import { MFARecoveryModal } from "./modals/MFARecovery";
 import { OnboardingModal } from "./modals/Onboarding";
 import { PolicyChangeModal } from "./modals/PolicyChange";
 import { PollVotersModal } from "./modals/PollVoters";
+import { ProtContributeModal } from "./modals/ProtContribute";
+import { ProtServerGoalsModal } from "./modals/ProtServerGoals";
 import { ProtectedSeatPickerModal } from "./modals/ProtectedSeatPicker";
+import { ProtectedTankModal } from "./modals/ProtectedTank";
 import { RemoveMemberModal } from "./modals/RemoveMember";
 import { RenameSessionModal } from "./modals/RenameSession";
 import { ReportContentModal } from "./modals/ReportContent";
@@ -224,6 +231,14 @@ export function RenderModal(props: ActiveModal & { onClose: () => void }) {
       return <E2EEDisableModal {...modalProps} />;
     case "e2ee_reenroll":
       return <E2EEReenrollModal {...modalProps} />;
+    case "e2ee_finish_setup":
+      return <E2EEFinishSetupModal {...modalProps} />;
+    case "e2ee_device_shared":
+      return <E2EEDeviceSharedModal {...modalProps} />;
+    case "e2ee_device_removed":
+      return <E2EEDeviceRemovedModal {...modalProps} />;
+    case "e2ee_remove_device":
+      return <E2EERemoveDeviceModal {...modalProps} />;
     case "e2ee_identity_change":
       return <E2EEIdentityChangeModal {...modalProps} />;
     case "e2ee_peer_downgrade":
@@ -236,6 +251,12 @@ export function RenderModal(props: ActiveModal & { onClose: () => void }) {
       return <E2EEGroupPlaintextConfirmModal {...modalProps} />;
     case "protected_seat_picker":
       return <ProtectedSeatPickerModal {...modalProps} />;
+    case "prot_tank":
+      return <ProtectedTankModal {...modalProps} />;
+    case "prot_contribute":
+      return <ProtContributeModal {...modalProps} />;
+    case "prot_server_goals":
+      return <ProtServerGoalsModal {...modalProps} />;
     case "image_editor":
       return <ImageEditorModal {...modalProps} />;
     case "image_viewer":

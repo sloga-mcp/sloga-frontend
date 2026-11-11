@@ -853,6 +853,11 @@ msgstr "Acknowledge"
 msgid "Active"
 msgstr "Active"
 
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Protected until {date}"
+msgstr "Protected until {date}"
+
 #: components/ui/components/features/profiles/ProfileBadges.tsx
 msgid "Active Sloga supporter"
 msgstr "Active Sloga supporter"
@@ -1196,6 +1201,11 @@ msgstr "Apply"
 #: components/modal/modals/DiscoveryQueue.tsx
 msgid "Approve"
 msgstr "Approve"
+
+#: components/modal/modals/E2EEDeviceRemoved.tsx
+#: components/modal/modals/E2EEFinishSetup.tsx
+msgid "Create a recovery code for this device"
+msgstr "Create a recovery code for this device"
 
 #: src/interface/Home.tsx
 msgid "Approve or reject servers asking to be publicly listed."
@@ -1796,6 +1806,39 @@ msgstr "Can't verify"
 msgid "Cancel"
 msgstr "Cancel"
 
+#: components/modal/modals/ProtContribute.tsx
+msgid "Contribute"
+msgstr "Contribute"
+
+#: components/modal/modals/ProtContribute.tsx
+msgid "Goal"
+msgstr "Goal"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Contributors"
+msgstr "Contributors"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "No contributions yet."
+msgstr "No contributions yet."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "You"
+msgstr "You"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "This channel doesn't have a Prot tank."
+msgstr "This channel doesn't have a Prot tank."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+msgid "To fund a new Protected channel, open a launch goal from the server menu."
+msgstr "To fund a new Protected channel, open a launch goal from the server menu."
+
 #: src/interface/channels/text/GameLookupPicker.tsx
 msgid "Enter to send, Esc to cancel"
 msgstr "Enter to send, Esc to cancel"
@@ -2123,6 +2166,35 @@ msgstr "Clicks on the shared screen go to their computer, so Sloga's own buttons
 msgid "Close"
 msgstr "Close"
 
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Prot is the credit that keeps Protected servers and channels running. With a launch goal, members pool Prot to fund a new Protected channel on this server."
+msgstr "Prot is the credit that keeps Protected servers and channels running. With a launch goal, members pool Prot to fund a new Protected channel on this server."
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Prot is switched off right now, so launch goals can't be opened or changed."
+msgstr "Prot is switched off right now, so launch goals can't be opened or changed."
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Launch goals aren't available yet."
+msgstr "Launch goals aren't available yet."
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Open a launch goal"
+msgstr "Open a launch goal"
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Launch goals can't be opened right now."
+msgstr "Launch goals can't be opened right now."
+
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Prot is the credit that keeps Protected servers and channels running. This channel uses Prot from its tank each day."
+msgstr "Prot is the credit that keeps Protected servers and channels running. This channel uses Prot from its tank each day."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Tank balance"
+msgstr "Tank balance"
+
 #: components/app/menus/UserContextMenu.tsx
 msgid "Close chat"
 msgstr "Close chat"
@@ -2197,6 +2269,14 @@ msgstr "Confirm action"
 #: components/modal/modals/E2EEReenroll.tsx
 msgid "Confirm identity"
 msgstr "Confirm identity"
+
+#: components/modal/modals/E2EEFinishSetup.tsx
+msgid "Your other devices still work. If one of them is lost or replaced, remove it."
+msgstr "Your other devices still work. If one of them is lost or replaced, remove it."
+
+#: components/modal/modals/E2EEFinishSetup.tsx
+msgid "It is added as a new device, and your contacts will see that you added one."
+msgstr "It is added as a new device, and your contacts will see that you added one."
 
 #: components/ui/components/features/voice/watch/JellyfinConnect.tsx
 #: components/app/interface/settings/user/Connections.tsx
@@ -2657,6 +2737,14 @@ msgstr "Create a recovery code"
 msgid "Create a recovery code so you can restore your identity and message history if you lose this device. Without one, encrypted history is gone for good if the device is lost. You can also do this later from Settings › Privacy & Safety › Encryption."
 msgstr "Create a recovery code so you can restore your identity and message history if you lose this device. Without one, encrypted history is gone for good if the device is lost. You can also do this later from Settings › Privacy & Safety › Encryption."
 
+#: components/modal/modals/E2EEEnable.tsx
+msgid "You have encryption set up on your account. If you saved a recovery code, restore it here to bring back your message history on this device. It is added as a new device, and your contacts will see that you added one. Your other devices keep working."
+msgstr "You have encryption set up on your account. If you saved a recovery code, restore it here to bring back your message history on this device. It is added as a new device, and your contacts will see that you added one. Your other devices keep working."
+
+#: components/modal/modals/E2EEEnable.tsx
+msgid "Or start fresh to set this up as a new device without your earlier history. That history stays on your other devices."
+msgstr "Or start fresh to set this up as a new device without your earlier history. That history stays on your other devices."
+
 #: components/modal/modals/CreateWebhook.tsx
 msgid "Create a webhook"
 msgstr "Create a webhook"
@@ -2854,6 +2942,18 @@ msgstr "Date format"
 #: components/ui/components/utils/AutoArchiveField.tsx
 msgid "Days"
 msgstr "Days"
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Open launch goal"
+msgstr "Open launch goal"
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "This server already has an open launch goal. Only one can be open at a time."
+msgstr "This server already has an open launch goal. Only one can be open at a time."
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "No open launch goals."
+msgstr "No open launch goals."
 
 #: src/interface/navigation/UserFooter.tsx
 #: components/ui/components/features/voice/callCard/VoiceCallCardActions.tsx
@@ -3250,6 +3350,38 @@ msgstr "Discard recording"
 #: components/app/interface/settings/user/Connections.tsx
 msgid "Disconnect"
 msgstr "Disconnect"
+
+#: components/app/interface/settings/user/Encryption.tsx
+#: components/modal/modals/E2EEDeviceRemoved.tsx
+msgid "This device was removed from your account's encryption. Set it up again as a new device?"
+msgstr "This device was removed from your account's encryption. Set it up again as a new device?"
+
+#: components/app/interface/settings/user/Encryption.tsx
+#: components/modal/modals/E2EEDeviceRemoved.tsx
+#: components/modal/modals/E2EEDeviceRemoved.tsx
+msgid "Set up as a new device"
+msgstr "Set up as a new device"
+
+#: components/app/interface/settings/user/Encryption.tsx
+#: components/modal/modals/E2EEFinishSetup.tsx
+msgid "This device is not registered for encryption yet, so it cannot send or receive encrypted messages. Confirm your identity to finish."
+msgstr "This device is not registered for encryption yet, so it cannot send or receive encrypted messages. Confirm your identity to finish."
+
+#: components/app/interface/settings/user/Encryption.tsx
+#: components/modal/modals/E2EEFinishSetup.tsx
+msgid "Finish setting up encryption on this device"
+msgstr "Finish setting up encryption on this device"
+
+#: components/app/interface/settings/user/Encryption.tsx
+#: components/modal/modals/E2EEDeviceShared.tsx
+msgid "This app shares its encryption identity with another of your apps (it was restored from your recovery code). Messages can go missing on one of them. Make this app a separate device: it keeps its message history, and your contacts will see you added a device."
+msgstr "This app shares its encryption identity with another of your apps (it was restored from your recovery code). Messages can go missing on one of them. Make this app a separate device: it keeps its message history, and your contacts will see you added a device."
+
+#: components/app/interface/settings/user/Encryption.tsx
+#: components/modal/modals/E2EEDeviceShared.tsx
+#: components/modal/modals/E2EEDeviceShared.tsx
+msgid "Make this a separate device"
+msgstr "Make this a separate device"
 
 #: components/app/menus/UserContextMenu.tsx
 msgid "Disconnect from call"
@@ -3686,6 +3818,26 @@ msgstr "Encrypted direct messages"
 #: components/modal/modals/E2EEEnable.tsx
 msgid "Encrypted direct messages are on for this device. Messages you send in an encrypted conversation are stored only on the devices that receive them — not on the server, and not in your web session."
 msgstr "Encrypted direct messages are on for this device. Messages you send in an encrypted conversation are stored only on the devices that receive them — not on the server, and not in your web session."
+
+#: components/modal/modals/E2EEDeviceRemoved.tsx
+msgid "This deletes the encrypted message history stored on this device. You will confirm the deletion, then your identity."
+msgstr "This deletes the encrypted message history stored on this device. You will confirm the deletion, then your identity."
+
+#: components/modal/modals/E2EEDeviceShared.tsx
+msgid "Close the recovery code window first, then try again."
+msgstr "Close the recovery code window first, then try again."
+
+#: components/modal/modals/E2EEDeviceShared.tsx
+msgid "End the call first, then try again."
+msgstr "End the call first, then try again."
+
+#: components/modal/modals/E2EEDeviceShared.tsx
+msgid "This app cannot be made a separate device right now."
+msgstr "This app cannot be made a separate device right now."
+
+#: components/modal/modals/E2EEDeviceShared.tsx
+msgid "This app is now a separate device."
+msgstr "This app is now a separate device."
 
 #: components/app/interface/settings/user/Encryption.tsx
 msgid "Encrypted messaging is on"
@@ -6227,6 +6379,43 @@ msgstr "Not going"
 msgid "Not now"
 msgstr "Not now"
 
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+msgid "Change seats"
+msgstr "Change seats"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+msgid "An upgrade goal needs at least one full day of Prot in the tank."
+msgstr "An upgrade goal needs at least one full day of Prot in the tank."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+msgid "Ask members to fund more seats. The target covers the extra cost for the days of Prot the tank has left."
+msgstr "Ask members to fund more seats. The target covers the extra cost for the days of Prot the tank has left."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+msgid "Open upgrade goal"
+msgstr "Open upgrade goal"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Cancel goal"
+msgstr "Cancel goal"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Cancel this goal? Every pledge goes back to the member who made it."
+msgstr "Cancel this goal? Every pledge goes back to the member who made it."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Keep goal"
+msgstr "Keep goal"
+
+#: components/app/interface/settings/user/Encryption.tsx
+msgid "Your devices"
+msgstr "Your devices"
+
 #: components/modal/modals/ReportContent.tsx
 msgid "Not of minimum age to use the platform"
 msgstr "Not of minimum age to use the platform"
@@ -6491,8 +6680,9 @@ msgid "Or pick a time"
 msgstr "Or pick a time"
 
 #: components/modal/modals/E2EEEnable.tsx
-msgid "Or start fresh to set this up as a new device. You keep sending and receiving encrypted messages, but earlier history that lived only on your old device stays there."
-msgstr "Or start fresh to set this up as a new device. You keep sending and receiving encrypted messages, but earlier history that lived only on your old device stays there."
+#: components/modal/modals/E2EEEnable.tsx
+msgid "Confirm your password twice: once to fetch your backup, once to register this device"
+msgstr "Confirm your password twice: once to fetch your backup, once to register this device"
 
 #: src/interface/channels/text/Composition.tsx
 msgid "Or type /roll 2d6+3 in chat"
@@ -8261,10 +8451,36 @@ msgstr "Share Game Activity"
 msgid "Your Prot wallet couldn't be loaded. Try again in a moment."
 msgstr "Your Prot wallet couldn't be loaded. Try again in a moment."
 
+#: components/modal/modals/ProtContribute.tsx
+msgid "We couldn't confirm that this went through. Try again; it won't be counted twice."
+msgstr "We couldn't confirm that this went through. Try again; it won't be counted twice."
+
+#: components/modal/modals/ProtContribute.tsx
+msgid "Your name setting couldn't be saved. Try again in a moment."
+msgstr "Your name setting couldn't be saved. Try again in a moment."
+
+#: components/modal/modals/ProtContribute.tsx
+#: components/modal/modals/ProtContribute.tsx
+msgid "This was already added earlier, so nothing more was taken from your wallet."
+msgstr "This was already added earlier, so nothing more was taken from your wallet."
+
+#: components/modal/modals/ProtContribute.tsx
+msgid "Your contribution of {amount} Prot was added."
+msgstr "Your contribution of {amount} Prot was added."
+
+#: components/modal/modals/ProtContribute.tsx
+msgid "Your pledge of {amount} Prot was added."
+msgstr "Your pledge of {amount} Prot was added."
+
 #: components/app/interface/settings/user/ProtSettings.tsx
 #: components/app/interface/settings/user/ProtSettings.tsx
 msgid "{amount} Prot"
 msgstr "{amount} Prot"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Launching"
+msgstr "Launching"
 
 #: components/app/interface/settings/user/ProtSettings.tsx
 msgid "{held} Prot on hold"
@@ -8293,6 +8509,34 @@ msgstr "Contribution"
 #: components/app/interface/settings/user/ProtSettings.tsx
 msgid "Pledge"
 msgstr "Pledge"
+
+#: components/modal/modals/ProtServerGoals.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+#: components/modal/modals/ProtectedTank.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Withdraw pledge"
+msgstr "Withdraw pledge"
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Keep pledge"
+msgstr "Keep pledge"
+
+#: components/modal/modals/ProtServerGoals.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Launch"
+msgstr "Launch"
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Pick an empty text channel to launch on. It becomes a Protected channel once you protect it from its settings."
+msgstr "Pick an empty text channel to launch on. It becomes a Protected channel once you protect it from its settings."
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "There's no empty text channel to launch on. Create a new text channel first."
+msgstr "There's no empty text channel to launch on. Create a new text channel first."
+
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Withdraw your pledge?"
+msgstr "Withdraw your pledge?"
 
 #: components/app/interface/settings/user/ProtSettings.tsx
 msgid "Returned to your wallet"
@@ -8326,6 +8570,18 @@ msgstr "The minimum is {min} Prot."
 msgid "The maximum is {max} Prot."
 msgstr "The maximum is {max} Prot."
 
+#: components/modal/modals/ProtContribute.tsx
+msgid "This goal needs {open} more Prot."
+msgstr "This goal needs {open} more Prot."
+
+#: components/modal/modals/ProtContribute.tsx
+msgid "The goal needs only {open} Prot, so that's what will be pledged."
+msgstr "The goal needs only {open} Prot, so that's what will be pledged."
+
+#: components/modal/modals/ProtContribute.tsx
+msgid "Prot bought in the last {hours} hours can't be contributed yet."
+msgstr "Prot bought in the last {hours} hours can't be contributed yet."
+
 #: components/app/interface/settings/user/ProtSettings.tsx
 msgid "A wallet can hold up to {max} Prot."
 msgstr "A wallet can hold up to {max} Prot."
@@ -8349,6 +8605,14 @@ msgstr "Pay an exact amount"
 #: components/app/interface/settings/user/ProtSettings.tsx
 msgid "Amount of Prot"
 msgstr "Amount of Prot"
+
+#: components/modal/modals/ProtContribute.tsx
+msgid "Hide my name"
+msgstr "Hide my name"
+
+#: components/modal/modals/ProtContribute.tsx
+msgid "Hidden contributors show as Anonymous to everyone, the server owner included. This applies to all your contributions and pledges on this server."
+msgstr "Hidden contributors show as Anonymous to everyone, the server owner included. This applies to all your contributions and pledges on this server."
 
 #: components/app/interface/settings/user/ProtSettings.tsx
 msgid "Enter an amount"
@@ -8703,6 +8967,36 @@ msgstr "Slogatron minigame"
 #: components/client/toastShell.ts
 msgid "Slow down — try again in a moment"
 msgstr "Slow down — try again in a moment"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Something went wrong. Try again in a moment."
+msgstr "Something went wrong. Try again in a moment."
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "This server's launch goals couldn't be loaded. Try again in a moment."
+msgstr "This server's launch goals couldn't be loaded. Try again in a moment."
+
+#: components/modal/modals/ProtContribute.tsx
+msgid "This couldn't be loaded. Try again in a moment."
+msgstr "This couldn't be loaded. Try again in a moment."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "This channel's funding couldn't be loaded. Try again in a moment."
+msgstr "This channel's funding couldn't be loaded. Try again in a moment."
+
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Your pledge couldn't be withdrawn. Try again in a moment."
+msgstr "Your pledge couldn't be withdrawn. Try again in a moment."
+
+#: components/app/interface/settings/ChannelSettings.tsx
+#: components/app/menus/ChannelContextMenu.tsx
+#: components/app/menus/ServerContextMenu.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Protected channel funding"
+msgstr "Protected channel funding"
 
 #: components/app/interface/settings/user/CipherSettings.tsx
 msgid "Checkout couldn't be started. Try again in a moment."
@@ -9682,6 +9976,194 @@ msgstr "Grace period"
 msgid "Frozen"
 msgstr "Frozen"
 
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Closing"
+msgstr "Closing"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Deleted"
+msgstr "Deleted"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Closed by Sloga"
+msgstr "Closed by Sloga"
+
+#: components/modal/modals/ProtectedTank.tsx
+msgid "This Protected channel's tank is being set up."
+msgstr "This Protected channel's tank is being set up."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+#: src/interface/channels/text/ProtBanner.tsx
+msgid "This Protected channel has run out of Prot. It keeps working until {date}, but new members can't be added. Top it up to keep it active."
+msgstr "This Protected channel has run out of Prot. It keeps working until {date}, but new members can't be added. Top it up to keep it active."
+
+#: src/interface/channels/text/ProtBanner.tsx
+msgid "This Protected channel is closing."
+msgstr "This Protected channel is closing."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+#: src/interface/channels/text/ProtBanner.tsx
+msgid "This Protected channel is frozen. You can read its history, but nothing can be sent until it's topped up."
+msgstr "This Protected channel is frozen. You can read its history, but nothing can be sent until it's topped up."
+
+#: components/modal/modals/ProtectedTank.tsx
+msgid "This Protected channel is being closed."
+msgstr "This Protected channel is being closed."
+
+#: components/modal/modals/ProtectedTank.tsx
+#: src/interface/channels/text/ProtBanner.tsx
+msgid "This Protected channel was deleted from Sloga's servers because it ran out of Prot."
+msgstr "This Protected channel was deleted from Sloga's servers because it ran out of Prot."
+
+#: src/interface/channels/text/ProtBanner.tsx
+msgid "This Protected channel has about {days} days of Prot left."
+msgstr "This Protected channel has about {days} days of Prot left."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+#: src/interface/channels/text/ProtBanner.tsx
+msgid "It may be deleted from Sloga's servers after {date}."
+msgstr "It may be deleted from Sloga's servers after {date}."
+
+#: src/interface/channels/text/ProtBanner.tsx
+msgid "This Protected channel was deleted from Sloga's servers."
+msgstr "This Protected channel was deleted from Sloga's servers."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+msgid "Move to {slots} seats? The tank pays the extra cost for the rest of today now, then {amount} Prot a day."
+msgstr "Move to {slots} seats? The tank pays the extra cost for the rest of today now, then {amount} Prot a day."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+msgid "Move to {slots} seats? The tank pays {amount} Prot a day from the next day. If more members are seated or cooling down than that, the change waits until enough seats are free."
+msgstr "Move to {slots} seats? The tank pays {amount} Prot a day from the next day. If more members are seated or cooling down than that, the change waits until enough seats are free."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Uses {amount} Prot a day"
+msgstr "Uses {amount} Prot a day"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Moving to {tier} seats once enough seats are free."
+msgstr "Moving to {tier} seats once enough seats are free."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Upgrade goal"
+msgstr "Upgrade goal"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Launch goal"
+msgstr "Launch goal"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "{slots} seats"
+msgstr "{slots} seats"
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "{days} days"
+msgstr "{days} days"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "{amount} Prot a day"
+msgstr "{amount} Prot a day"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "{pledged} of {target} Prot"
+msgstr "{pledged} of {target} Prot"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Ends {date}"
+msgstr "Ends {date}"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Funded"
+msgstr "Funded"
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Funded. Launch it by {date}."
+msgstr "Funded. Launch it by {date}."
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Launched on #{name}. Protect the channel from its settings to finish."
+msgstr "Launched on #{name}. Protect the channel from its settings to finish."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Funded, waiting to launch"
+msgstr "Funded, waiting to launch"
+
+#: components/modal/modals/ProtServerGoals.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "You pledged {pledged} Prot"
+msgstr "You pledged {pledged} Prot"
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "You can withdraw until {date}."
+msgstr "You can withdraw until {date}."
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Withdraw your pledge of {amount} Prot? It goes back to your wallet."
+msgstr "Withdraw your pledge of {amount} Prot? It goes back to your wallet."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Target: {amount} Prot"
+msgstr "Target: {amount} Prot"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+msgid "Open a goal for {slots} seats with a target of {amount} Prot?"
+msgstr "Open a goal for {slots} seats with a target of {amount} Prot?"
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Choose from {min} to {max} days."
+msgstr "Choose from {min} to {max} days."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Members have {days} days to fund it."
+msgstr "Members have {days} days to fund it."
+
+#: components/modal/modals/ProtServerGoals.tsx
+msgid "Launch on #{name}"
+msgstr "Launch on #{name}"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgctxt "Prot contributor"
+msgid "Anonymous"
+msgstr "Anonymous"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgctxt "Prot contributor"
+msgid "Deleted user"
+msgstr "Deleted user"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+msgid "Prot is the credit that keeps Protected servers and channels running. Members fund this channel's tank, and the tank pays for its seats each day."
+msgstr "Prot is the credit that keeps Protected servers and channels running. Members fund this channel's tank, and the tank pays for its seats each day."
+
 #: components/client/protectedCopy.ts
 msgid "Status: {label}"
 msgstr "Status: {label}"
@@ -9742,6 +10224,55 @@ msgstr "Only the server owner can manage this protected channel."
 #: components/client/protectedCopy.ts
 msgid "Seats"
 msgstr "Seats"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+msgid "Only the server owner can change the seats or open goals."
+msgstr "Only the server owner can change the seats or open goals."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+msgid "Prot is switched off right now, so the seats and goals can't be changed."
+msgstr "Prot is switched off right now, so the seats and goals can't be changed."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+msgid "Changing the seats and opening goals isn't available yet."
+msgstr "Changing the seats and opening goals isn't available yet."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+msgid "Seat tier"
+msgstr "Seat tier"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+msgid "Choose how many seats the tank pays for."
+msgstr "Choose how many seats the tank pays for."
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+msgid "The seats can't change while an upgrade goal is open."
+msgstr "The seats can't change while an upgrade goal is open."
+
+#: components/modal/modals/ProtectedTank.tsx
+msgid "You contributed"
+msgstr "You contributed"
+
+#: components/modal/modals/ProtContribute.tsx
+#: components/modal/modals/ProtServerGoals.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Contributing supports this server. It does not reserve a seat; the owner chooses members."
+msgstr "Contributing supports this server. It does not reserve a seat; the owner chooses members."
+
+#: components/modal/modals/ProtContribute.tsx
+msgid "Contributing isn't available in this version of Sloga."
+msgstr "Contributing isn't available in this version of Sloga."
+
+#: components/modal/modals/ProtContribute.tsx
+#: components/modal/modals/ProtectedTank.tsx
+#: src/interface/channels/text/ProtBanner.tsx
+msgid "Top up"
+msgstr "Top up"
+
+#: components/app/interface/settings/channel/protected/ProtTankSettings.tsx
+#: components/modal/modals/ProtectedTank.tsx
+msgid "Goals"
+msgstr "Goals"
 
 #: components/client/protectedCopy.ts
 msgid "Each member can use up to {max} devices."
@@ -9923,6 +10454,43 @@ msgstr "The encrypted message history stored on THIS device will be permanently 
 #: src/interface/channels/text/Composition.tsx
 msgid "The file \"{0}\" ({fileSize}) exceeds the maximum size limit of {maxSizeFormatted}."
 msgstr "The file \"{0}\" ({fileSize}) exceeds the maximum size limit of {maxSizeFormatted}."
+
+#: components/ui/components/features/messaging/composition/FileCarousel.tsx
+#: src/interface/channels/text/Composition.tsx
+msgid "Attach folder"
+msgstr "Attach folder"
+
+#: components/ui/components/features/messaging/composition/FileCarousel.tsx
+msgid "Cancel zipping"
+msgstr "Cancel zipping"
+
+#: components/ui/components/features/messaging/composition/FileCarousel.tsx
+msgid "Reading folder…"
+msgstr "Reading folder…"
+
+#: components/ui/components/features/messaging/composition/FileCarousel.tsx
+msgid "Zipping folder"
+msgstr "Zipping folder"
+
+#: components/ui/components/features/messaging/composition/FileCarousel.tsx
+msgid "Zipping… {value}%"
+msgstr "Zipping… {value}%"
+
+#: components/ui/components/utils/files/useDroppedItems.ts
+msgid "The folder \"{name}\" couldn't be read, so it wasn't attached."
+msgstr "The folder \"{name}\" couldn't be read, so it wasn't attached."
+
+#: components/ui/components/utils/files/useDroppedItems.ts
+msgid "The folder \"{name}\" is too large to send (over 4 GB or 65,535 files)."
+msgstr "The folder \"{name}\" is too large to send (over 4 GB or 65,535 files)."
+
+#: components/ui/components/utils/files/useDroppedItems.ts
+msgid "The folder \"{name}\" is over the {limit} upload limit, so it wasn't attached."
+msgstr "The folder \"{name}\" is over the {limit} upload limit, so it wasn't attached."
+
+#: components/ui/components/utils/files/useDroppedItems.ts
+msgid "\"{name}\" couldn't be read, so it wasn't attached. If it's a folder, zip it first."
+msgstr "\"{name}\" couldn't be read, so it wasn't attached. If it's a folder, zip it first."
 
 #: components/modal/modals/ForwardMessage.tsx
 msgid "The forward keeps a copy of the message as it is right now — later edits or deletion of the original won't change it. Encrypted conversations can't receive forwards."
@@ -10171,6 +10739,19 @@ msgid "Prot isn't available right now."
 msgstr "Prot isn't available right now."
 
 #: components/i18n/errors.ts
+#: components/modal/modals/ProtContribute.tsx
+msgid "This goal is closed."
+msgstr "This goal is closed."
+
+#: components/i18n/errors.ts
+msgid "Some members are still seated or cooling down. Unseat members first, or wait for their seats to free up."
+msgstr "Some members are still seated or cooling down. Unseat members first, or wait for their seats to free up."
+
+#: components/modal/modals/ProtContribute.tsx
+msgid "This channel isn't taking contributions right now."
+msgstr "This channel isn't taking contributions right now."
+
+#: components/i18n/errors.ts
 msgid "Prot isn't on sale right now."
 msgstr "Prot isn't on sale right now."
 
@@ -10201,6 +10782,15 @@ msgstr "This Prot request was already sent with different details. Refresh and t
 #: components/i18n/errors.ts
 msgid "You don't have enough Prot for this: it needs {protNeeded} Prot and you have {protAvailable}."
 msgstr "You don't have enough Prot for this: it needs {protNeeded} Prot and you have {protAvailable}."
+
+#: components/i18n/errors.ts
+msgid "This device was removed from your account's encryption."
+msgstr "This device was removed from your account's encryption."
+
+#: components/i18n/errors.ts
+#: components/modal/modals/E2EEDisable.tsx
+msgid "This app shares its encryption identity with another of your apps. Turning encryption off here would turn it off there too. Make this app a separate device instead. Don't recognize the other app? Change your password, then remove it in Settings > Encryption on a device you trust."
+msgstr "This app shares its encryption identity with another of your apps. Turning encryption off here would turn it off there too. Make this app a separate device instead. Don't recognize the other app? Change your password, then remove it in Settings > Encryption on a device you trust."
 
 #: components/i18n/errors.ts
 msgid "This account is not activated! Please check your account's inbox and try again."
@@ -10793,16 +11383,16 @@ msgid "Create a server"
 msgstr "Create a server"
 
 #: src/interface/home/WhatsNewCard.tsx
-msgid "A new Modern style, with a Classic option"
-msgstr "A new Modern style, with a Classic option"
+msgid "Restore encryption on a second device"
+msgstr "Restore encryption on a second device"
 
 #: src/interface/home/WhatsNewCard.tsx
-msgid "A Discord color scheme and new backgrounds"
-msgstr "A Discord color scheme and new backgrounds"
+msgid "Send a whole folder as a .zip"
+msgstr "Send a whole folder as a .zip"
 
 #: src/interface/home/WhatsNewCard.tsx
-msgid "Change your voice's pitch in calls"
-msgstr "Change your voice's pitch in calls"
+msgid "Images open again in chat windows"
+msgstr "Images open again in chat windows"
 
 #: src/interface/home/WhatsNewCard.tsx
 msgid "New in v{HIGHLIGHTS_RELEASE}"
@@ -10971,6 +11561,10 @@ msgstr "Turn length"
 #: components/modal/modals/E2EEDisable.tsx
 msgid "Turn off"
 msgstr "Turn off"
+
+#: components/modal/modals/E2EEDisable.tsx
+msgid "This app was sharing encryption with another of your apps, which keeps working. Set this app up again as a new device."
+msgstr "This app was sharing encryption with another of your apps, which keeps working. Set this app up again as a new device."
 
 #: components/app/interface/settings/channel/Overview.tsx
 msgid "Turn off calls"
@@ -11386,6 +11980,19 @@ msgstr "Your {sourceLabel} import failed."
 msgid "Your {sourceLabel} import finished."
 msgstr "Your {sourceLabel} import finished."
 
+#: components/client/E2EEDeviceToastWorker.tsx
+msgid "Your other app became a separate device."
+msgstr "Your other app became a separate device."
+
+#: components/client/E2EEDeviceToastWorker.tsx
+#: components/client/E2EEDeviceToastWorker.tsx
+msgid "Encryption was set up on another of your devices. Not you? Remove it in Settings > Encryption, change your password, then log out other sessions."
+msgstr "Encryption was set up on another of your devices. Not you? Remove it in Settings > Encryption, change your password, then log out other sessions."
+
+#: components/client/E2EEDeviceToastWorker.tsx
+msgid "Encryption was set up on another of your devices ({sessionName}). Not you? Remove it in Settings > Encryption, change your password, then log out other sessions."
+msgstr "Encryption was set up on another of your devices ({sessionName}). Not you? Remove it in Settings > Encryption, change your password, then log out other sessions."
+
 #: components/app/interface/settings/channel/permissions/ChannelPermissionsEditor.tsx
 msgid "View Channel"
 msgstr "View Channel"
@@ -11751,6 +12358,19 @@ msgstr "You are banned from this server."
 msgid "You are in slowmode, wait before invoking commands."
 msgstr "You are in slowmode, wait before invoking commands."
 
+#: components/client/protectedCopy.ts
+#: src/interface/channels/text/ProtBanner.tsx
+msgid "Grace period: new members can't be added until it's topped up."
+msgstr "Grace period: new members can't be added until it's topped up."
+
+#: components/client/protectedCopy.ts
+msgid "Frozen: top it up to send messages again."
+msgstr "Frozen: top it up to send messages again."
+
+#: components/client/protectedCopy.ts
+msgid "Deleted from Sloga's servers."
+msgstr "Deleted from Sloga's servers."
+
 #: components/ui/components/features/voice/callCard/VoiceCallRecordingBanner.tsx
 msgid "You are recording"
 msgstr "You are recording"
@@ -11855,13 +12475,13 @@ msgstr "You don't have permission to send messages in this channel."
 msgid "You have a recovery code. Anyone with this code and access to your account can read your message history — Sloga cannot recover it for you. Choose \"Change recovery code\" to replace it."
 msgstr "You have a recovery code. Anyone with this code and access to your account can read your message history — Sloga cannot recover it for you. Choose \"Change recovery code\" to replace it."
 
+#: components/app/interface/settings/user/Encryption.tsx
+msgid "This changes the recovery code for this device's backup only."
+msgstr "This changes the recovery code for this device's backup only."
+
 #: components/i18n/errors.ts
 msgid "You have been locked out for entering a wrong password multiple times. Please wait a couple minutes and try again."
 msgstr "You have been locked out for entering a wrong password multiple times. Please wait a couple minutes and try again."
-
-#: components/modal/modals/E2EEEnable.tsx
-msgid "You have encryption set up on your account. If you saved a recovery code, restore it here to bring back your identity and message history on this device — your contacts will not see a security warning."
-msgstr "You have encryption set up on your account. If you saved a recovery code, restore it here to bring back your identity and message history on this device — your contacts will not see a security warning."
 
 #: components/i18n/errors.ts
 msgid "You have this user blocked."
@@ -12023,6 +12643,42 @@ msgstr "your contact"
 msgid "Your contacts will see this device come back — with no security warning, because its keys are unchanged."
 msgstr "Your contacts will see this device come back — with no security warning, because its keys are unchanged."
 
+#: components/modal/modals/E2EERemoveDevice.tsx
+msgid "Created {createdAgo}"
+msgstr "Created {createdAgo}"
+
+#: components/modal/modals/E2EERemoveDevice.tsx
+msgid "Last seen {seenAgo}"
+msgstr "Last seen {seenAgo}"
+
+#: components/modal/modals/E2EERemoveDevice.tsx
+msgid "never seen"
+msgstr "never seen"
+
+#: components/modal/modals/E2EERemoveDevice.tsx
+msgid "This device"
+msgstr "This device"
+
+#: components/modal/modals/E2EERemoveDevice.tsx
+msgid "Remove device"
+msgstr "Remove device"
+
+#: components/modal/modals/E2EERemoveDevice.tsx
+msgid "The device was removed, but its backup was not deleted."
+msgstr "The device was removed, but its backup was not deleted."
+
+#: components/modal/modals/E2EERemoveDevice.tsx
+msgid "It stops receiving your encrypted messages. If it is still running, it has to be set up again as a new device."
+msgstr "It stops receiving your encrypted messages. If it is still running, it has to be set up again as a new device."
+
+#: components/modal/modals/E2EERemoveDevice.tsx
+msgid "Its backup can still restore its message history unless you delete it too. You confirm your identity once to remove the device, and once more to delete its backup."
+msgstr "Its backup can still restore its message history unless you delete it too. You confirm your identity once to remove the device, and once more to delete its backup."
+
+#: components/modal/modals/E2EERemoveDevice.tsx
+msgid "Also delete this device's backup"
+msgstr "Also delete this device's backup"
+
 #: components/client/DiscordImportWorker.tsx
 #: components/client/DiscordImportWorker.tsx
 msgid "Your Discord import failed."
@@ -12106,6 +12762,14 @@ msgstr "Your suspension has expired — try logging in again."
 #: components/i18n/errors.ts
 msgid "Your user has already been created? Try logging in again or refreshing the app."
 msgstr "Your user has already been created? Try logging in again or refreshing the app."
+
+#: components/i18n/errors.ts
+msgid "Prot bought recently can't be contributed yet."
+msgstr "Prot bought recently can't be contributed yet."
+
+#: components/i18n/errors.ts
+msgid "This Protected channel is frozen until it's topped up."
+msgstr "This Protected channel is frozen until it's topped up."
 
 #: components/ui/components/features/voice/watch/WatchOverlay.tsx
 msgid "YouTube"

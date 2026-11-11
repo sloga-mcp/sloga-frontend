@@ -3,6 +3,8 @@ import { For, Match, Show, Switch } from "solid-js";
 import { Trans } from "@lingui-solid/solid/macro";
 import { Channel } from "stoat.js";
 
+import { parseProtFeature } from "@revolt/app/interface/settings/user/protWallet";
+import { useClient } from "@revolt/client";
 import { useDevice } from "@revolt/common";
 import { channelNounOf } from "@revolt/common/lib/channelNoun";
 import { useModals } from "@revolt/modal";
@@ -21,6 +23,8 @@ import MdSettings from "@material-design-icons/svg/outlined/settings.svg?compone
 import MdShare from "@material-design-icons/svg/outlined/share.svg?component-solid";
 import MdSwapVert from "@material-design-icons/svg/outlined/swap_vert.svg?component-solid";
 
+import MdToll from "@material-symbols/svg-400/outlined/toll.svg?component-solid";
+
 import { enterReorderMode } from "../../../src/interface/navigation/channels/reorderMode";
 
 import {
@@ -36,8 +40,38 @@ import { NotificationContextMenu } from "./shared/NotificationContextMenu";
  */
 export function ChannelContextMenu(props: { channel: Channel }) {
   const state = useState();
+  const client = useClient();
   const { openModal } = useModals();
   const { isMobile } = useDevice();
+
+  /**
+   * Whether to offer the channel's Prot tank (S5b, contracts 16.3 L6h): on
+   * a protected channel, while the server advertises Prot or this client
+   * already holds the channel's tank (reads stay open while Prot is off).
+   * The panel shows "no tank" for a protected channel without one.
+   */
+  const protTankShown = () => {
+    const current = client();
+    if (current?.isProtectedChannel(props.channel.id) !== true) return false;
+    // The upstream stoat-api config type has no `prot`
+    const advert = (
+      current.configuration?.features as { prot?: unknown } | undefined
+    )?.prot;
+    return (
+      parseProtFeature(advert).enabled ||
+      current.protTanks.has(props.channel.id)
+    );
+  };
+
+  /**
+   * Open the channel's Prot tank panel
+   */
+  function openProtTank() {
+    openModal({
+      type: "prot_tank",
+      channel: props.channel,
+    });
+  }
 
   /**
    * What this channel goes by in the menu copy: post, thread or channel
@@ -212,6 +246,13 @@ export function ChannelContextMenu(props: { channel: Channel }) {
       <NotificationContextMenu channel={props.channel} />
 
       <ContextMenuDivider />
+
+      <Show when={protTankShown()}>
+        <ContextMenuButton symbol={MdToll} onClick={openProtTank}>
+          <Trans>Protected channel funding</Trans>
+        </ContextMenuButton>
+        <ContextMenuDivider />
+      </Show>
 
       <Show when={showServerChannelActions()}>
         <ContextMenuButton icon={MdLibraryAdd} onClick={createChannel}>

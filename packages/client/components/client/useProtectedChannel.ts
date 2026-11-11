@@ -11,6 +11,9 @@
  * - `useProtectedMessage(messageId)` / `useProtectedTimeline(channelId)`:
  *   read-only views of the bridge's `protectedViews` and
  *   `protectedTimelineMarkers` maps (D22).
+ * - S5b: the shield reads the tank stage from `client.protTanks`;
+ *   `noteProtTankRefusal` latches a `ProtTankFrozen` refusal as `Frozen`
+ *   until the next tank read (contracts 22.1 item 3).
  *
  * Chat windows are same-realm children of the main window
  * (`childWindow.ts`): every component inside them runs in the main realm
@@ -42,8 +45,13 @@ import { useClient } from ".";
 import type { E2EEBridge } from "./e2ee";
 import { IS_OVERLAY_WINDOW, IS_POPOUT_WINDOW } from "./popout.ts";
 import {
+  type ProtTankRefusalLatch,
   type ShieldExplanation,
+  effectiveTankStage,
   explainShield,
+  isProtTankFrozenRefusal,
+  PROT_TANK_REFUSAL_LATCH_MS,
+  protTankRefusalRecheckInMs,
   ROSTER_MISMATCH_UNVERIFIED_MS,
   shieldInputsFromView,
 } from "./protectedShield.ts";
@@ -201,6 +209,43 @@ export async function readChannelProtectedFlag(
 }
 
 // ---------------------------------------------------------------------------
+// S5b: `ProtTankFrozen` refusal latch (contracts 22.1 item 3, BR3)
+// ---------------------------------------------------------------------------
+
+/** Per channel id; `useProtectedShield` reads it via `effectiveTankStage`. */
+const [tankRefusals, setTankRefusals] = createSignal<
+  ReadonlyMap<string, ProtTankRefusalLatch>
+>(new Map());
+
+/**
+ * Records a `ProtTankFrozen` refusal for `channelId`: the shield reads the
+ * tank as `Frozen` until the next tank read (or the latch bound). Call it
+ * from the catch of a protected send, react or pin; any other error is
+ * ignored. Returns whether it latched.
+ */
+export function noteProtTankRefusal(
+  client: Pick<Client, "protTanks"> | undefined,
+  channelId: string,
+  error: unknown,
+  nowMs: number = Date.now(),
+): boolean {
+  if (!client || !channelId || !isProtTankFrozenRefusal(error)) return false;
+  const latch: ProtTankRefusalLatch = {
+    summary: client.protTanks.get(channelId) ?? null,
+    atMs: nowMs,
+  };
+  setTankRefusals((prev) => {
+    const next = new Map<string, ProtTankRefusalLatch>();
+    for (const [id, l] of prev) {
+      if (nowMs - l.atMs < PROT_TANK_REFUSAL_LATCH_MS) next.set(id, l);
+    }
+    next.set(channelId, latch);
+    return next;
+  });
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // Hooks
 // ---------------------------------------------------------------------------
 
@@ -251,6 +296,21 @@ export function useProtectedShield(
     onCleanup(() => clearTimeout(timer));
   });
 
+  // S5b: re-evaluate when a `ProtTankFrozen` latch runs out.
+  createEffect(() => {
+    const id = access(channelId);
+    const c = client();
+    if (!id || !c) return;
+    const wait = protTankRefusalRecheckInMs(
+      tankRefusals().get(id),
+      c.protTanks.get(id),
+      Date.now(),
+    );
+    if (wait === null) return;
+    const timer = setTimeout(() => setNow(Date.now()), wait + 1);
+    onCleanup(() => clearTimeout(timer));
+  });
+
   const shield = createMemo((): ProtectedShield | null => {
     const id = access(channelId);
     if (!id) return null;
@@ -267,6 +327,7 @@ export function useProtectedShield(
     const e2ee = c.e2ee as E2EEBridge | undefined;
     const status = e2ee?.status.get("state");
     const v = view();
+    const nowMs = Math.max(now(), Date.now());
     const explanation = explainShield(
       shieldInputsFromView(
         v,
@@ -280,8 +341,14 @@ export function useProtectedShield(
             capable,
             status,
           }),
+          // S5b: `client.protTanks` (L6a) plus the refusal latch
+          tankStage: effectiveTankStage(
+            c.protTanks.get(id),
+            tankRefusals().get(id),
+            nowMs,
+          ),
         },
-        Math.max(now(), Date.now()),
+        nowMs,
       ),
     );
     if (!explanation) return null;

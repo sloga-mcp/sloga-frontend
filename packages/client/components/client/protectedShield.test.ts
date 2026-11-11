@@ -14,15 +14,23 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 
+import type { ProtTankStage } from "stoat.js";
+
+import { ProtectedSendError } from "./protectedSendError.ts";
 import {
   type ProtectedAction,
   type ProtectedErrorOp,
   type ProtectedErrorUi,
   type ProtectedMarkerKind,
   type ProtectedShieldState,
+  type ProtTankRefusalLatch,
   type ShieldInputs,
   computeShieldState,
+  effectiveTankStage,
   explainShield,
+  isProtTankFrozenRefusal,
+  PROT_TANK_REFUSAL_LATCH_MS,
+  PROT_TANK_STOPPED_STAGES,
   PROTECTED_CLIENT_REASONS,
   PROTECTED_HIDDEN_ACTIONS,
   PROTECTED_KEPT_ACTIONS,
@@ -31,6 +39,8 @@ import {
   PROTECTED_SHIELD_STATES,
   protectedActionsBlocked,
   protectedNoticeForError,
+  protTankRefusalLatched,
+  protTankRefusalRecheckInMs,
   REMOVED_USERS_MAX,
   SHIELD_BENIGN_GROUP_ERRORS,
   SHIELD_BENIGN_SEAT_LIST_ERRORS,
@@ -848,7 +858,7 @@ test("shieldPresentation: D14 glyphs, hues, tint, composer per state", () => {
         "hidden",
       ],
       unverified: ["gpp_bad", "--sloga-protected-alert", true, "hidden"],
-      grace: ["verified_user", "--sloga-protected-grace", false, "hidden"],
+      grace: ["verified_user", "--sloga-protected-grace", false, "enabled"],
       frozen: ["shield", "--sloga-protected-frozen", false, "hidden"],
     };
   assert.deepEqual(
@@ -1376,4 +1386,363 @@ test("protectedActionsBlocked: D11 hide/keep lists", () => {
     (PROTECTED_KEPT_ACTIONS as readonly string[]).includes(a),
   );
   assert.deepEqual(both, []);
+});
+
+// ---------------------------------------------------------------------------
+// S5b Prot tank stage (contracts 16.3 L6g, 22.1 items 3 and 6, 26 BR3)
+// Controls (20.3 L6g): `grace` composer back to "hidden" turns the D14 grace
+// test red; step 3c removed turns the step 3c frozen test red.
+// ---------------------------------------------------------------------------
+
+const TANK_STAGES: ProtTankStage[] = [
+  "Launching",
+  "Active",
+  "Grace",
+  "Frozen",
+  "Settling",
+  "Deleted",
+  "Terminated",
+];
+const STOPPED: ProtTankStage[] = [
+  "Frozen",
+  "Settling",
+  "Deleted",
+  "Terminated",
+];
+const tankNotice = (s: ProtTankStage | null) =>
+  s === "Deleted" || s === "Terminated" ? "tank_deleted" : "tank_frozen";
+const withTank = (i: ShieldInputs, s: unknown): ShieldInputs => ({
+  ...i,
+  tankStage: s as ProtTankStage | null,
+});
+
+/** One non-green shield per step, without a tank stage. */
+const NOT_GREEN: [string, ShieldInputs][] = [
+  ["1", green({ serverProtected: false })],
+  ["2", green({ capable: false })],
+  ["3", green({ seatListError: "bad_sig" })],
+  ["3 owner", withVerdict("owner_changed")],
+  ["3b", green({ groupError: "unknown" })],
+  ["4", green({ native: null })],
+  ["5", withVerdict("not_seated")],
+  ["6 brief", withVerdict("roster_mismatch")],
+  [
+    "6 hostile",
+    withVerdict("roster_mismatch", { rosterMismatchAgeMs: 60_000 }),
+  ],
+  ["6c", green({ signerLeafMissingRetries: 3 })],
+  ["6d", green({ welcomeRetriesExhausted: true })],
+  ["7", withVerdict("joining")],
+  ["7 behind", green({ seatListError: "seat_list_behind" })],
+  ["7 server", green({ serverGroup: serverGroup({ current_epoch: 9 }) })],
+  ["9", green({ native: nativeOk({ self_seated: false }) })],
+  ["9 bogus", withVerdict("bogus")],
+];
+const LOUD_STEPS = ["1", "2", "3", "3b"];
+
+test("S5b step 3c: every stopped tank stage is frozen with its notice, over steps 4-9", () => {
+  assert.deepEqual([...PROT_TANK_STOPPED_STAGES].sort(), [...STOPPED].sort());
+  for (const stage of STOPPED) {
+    const want = { state: "frozen", step: "3c", notice: tankNotice(stage) };
+    assert.deepEqual(explainShield(withTank(green(), stage)), want, stage);
+    let covered = 0;
+    for (const [label, i] of NOT_GREEN) {
+      const base = explainShield(i);
+      assert.ok(base, label);
+      if (LOUD_STEPS.includes(base.step)) continue;
+      covered++;
+      assert.deepEqual(
+        explainShield(withTank(i, stage)),
+        want,
+        `${stage}/${label}`,
+      );
+    }
+    assert.ok(covered >= 10, `${stage}: ${covered} later-step samples`);
+  }
+  const p = shieldPresentation("frozen");
+  assert.equal(p.composer, "hidden");
+  assert.equal(p.notice, "tank_frozen");
+});
+
+test("S5b step 3c: steps 1-3b still win over a stopped tank (an alert is never hidden)", () => {
+  let loud = 0;
+  for (const [label, i] of NOT_GREEN) {
+    const base = explainShield(i);
+    assert.ok(base, label);
+    if (!LOUD_STEPS.includes(base.step)) continue;
+    loud++;
+    for (const stage of STOPPED) {
+      assert.deepEqual(
+        explainShield(withTank(i, stage)),
+        base,
+        `${stage}/${label}`,
+      );
+    }
+  }
+  assert.equal(loud, 5);
+});
+
+test("S5b D14: Grace over a green shield is `grace` at step 8 and the composer stays enabled", () => {
+  assert.deepEqual(explainShield(withTank(green(), "Grace")), {
+    state: "grace",
+    step: "8",
+    notice: "tank_grace",
+  });
+  const p = shieldPresentation("grace");
+  assert.equal(p.composer, "enabled");
+  assert.equal(p.notice, "tank_grace");
+  assert.equal(p.tintName, false);
+  assert.equal(p.glyph, "verified_user");
+});
+
+test("S5b: Grace never lifts a non-green shield; Launching / Active / none leave S1's answer", () => {
+  for (const [label, i] of NOT_GREEN) {
+    const base = explainShield(i);
+    for (const stage of ["Grace", "Launching", "Active", null, undefined]) {
+      assert.deepEqual(
+        explainShield(withTank(i, stage)),
+        base,
+        `${String(stage)}/${label}`,
+      );
+    }
+  }
+  for (const stage of ["Launching", "Active", null, undefined]) {
+    expectShield(withTank(green(), stage), "protected", "8", String(stage));
+  }
+});
+
+test("S5b never plaintext, never unprotected: no tank stage opens a composer S1 kept shut", () => {
+  const samples: [string, ShieldInputs][] = [
+    ["green", green()],
+    ["green unpinned", green({ locallyPinned: false })],
+    ...NOT_GREEN,
+  ];
+  let checked = 0;
+  for (const [label, i] of samples) {
+    const base = explainShield(i);
+    for (const stage of [...TANK_STAGES, null, undefined, "Bogus", 7]) {
+      const e = explainShield(withTank(i, stage));
+      const at = `${String(stage)}/${label}`;
+      checked++;
+      // a protected or pinned channel always keeps a shield
+      assert.ok(e, at);
+      const composer = shieldPresentation(e.state).composer;
+      if (composer === "enabled") {
+        // only green prerequisites ever send
+        assert.ok(e.state === "protected" || e.state === "grace", at);
+        assert.equal(e.step, "8", at);
+        assert.equal(base?.state, "protected", at);
+      }
+      if (STOPPED.includes(stage as ProtTankStage)) {
+        assert.notEqual(composer, "enabled", at);
+        assert.ok(e.state !== "protected" && e.state !== "grace", at);
+      }
+      if (e.state === "grace") assert.equal(stage, "Grace", at);
+      if (e.state === "frozen") {
+        assert.ok(STOPPED.includes(stage as ProtTankStage), at);
+      }
+      assert.equal(e.notice === null, e.state === "protected", at);
+      if (e.notice !== null) {
+        assert.ok(PROTECTED_NOTICE_KINDS.includes(e.notice), at);
+      }
+    }
+  }
+  assert.ok(checked > 100, `${checked}`);
+  // no shield stays no shield
+  for (const stage of TANK_STAGES) {
+    const none = green({ serverProtected: false, locallyPinned: false });
+    assert.equal(explainShield(withTank(none, stage)), null, stage);
+  }
+});
+
+test("S5b shieldInputsFromView carries flags.tankStage (null when absent)", () => {
+  const flags = { serverProtected: true, locallyPinned: false, capable: true };
+  assert.equal(shieldInputsFromView(null, flags, 0).tankStage, null);
+  assert.equal(
+    shieldInputsFromView(null, { ...flags, tankStage: null }, 0).tankStage,
+    null,
+  );
+  const frozen = shieldInputsFromView(
+    null,
+    { ...flags, tankStage: "Frozen" },
+    0,
+  );
+  assert.equal(frozen.tankStage, "Frozen");
+  // 3c precedes step 4: a loading view of a frozen channel is frozen
+  assert.deepEqual(explainShield(frozen), {
+    state: "frozen",
+    step: "3c",
+    notice: "tank_frozen",
+  });
+});
+
+test("S5b notice kinds and copy (contracts 16.4, verbatim)", () => {
+  for (const k of ["tank_grace", "tank_frozen", "tank_deleted"] as const) {
+    assert.ok(PROTECTED_NOTICE_KINDS.includes(k), k);
+  }
+  const copy = readFileSync(
+    new URL("./protectedCopy.ts", import.meta.url),
+    "utf8",
+  );
+  for (const [kind, text] of [
+    [
+      "tank_grace",
+      "Grace period: new members can't be added until it's topped up.",
+    ],
+    ["tank_frozen", "Frozen: top it up to send messages again."],
+    ["tank_deleted", "Deleted from Sloga's servers."],
+  ]) {
+    assert.ok(
+      copy.includes(`case "${kind}":\n      return t\`${text}\`;`),
+      kind,
+    );
+  }
+});
+
+test("S5b ProtTankFrozen: its own notice, and recognised for the latch", () => {
+  const refusal = {
+    source: "server",
+    status: 403,
+    type: "ProtTankFrozen",
+    body: { type: "ProtTankFrozen" },
+  };
+  assert.ok(
+    (PROTECTED_SERVER_ERROR_TYPES as readonly string[]).includes(
+      "ProtTankFrozen",
+    ),
+  );
+  for (const op of OPS) {
+    const u = ui(refusal, op);
+    wellFormed(u, op);
+    assert.deepEqual(
+      u,
+      op === "message"
+        ? { kind: "marker", marker: "error", tag: "ProtTankFrozen" }
+        : {
+            kind: "notice",
+            notice: "tank_frozen",
+            max: null,
+            tag: "ProtTankFrozen",
+          },
+      op,
+    );
+  }
+  for (const yes of [
+    refusal,
+    { ...refusal, type: null },
+    { type: "ProtTankFrozen" },
+    new ProtectedSendError(refusal),
+    new ProtectedSendError({ type: "ProtTankFrozen" }),
+  ]) {
+    assert.equal(isProtTankFrozenRefusal(yes), true, JSON.stringify(yes));
+  }
+  for (const no of [
+    null,
+    undefined,
+    "ProtTankFrozen",
+    {},
+    { type: "NotSeated" },
+    { ...refusal, type: "ProtTankFrozenX", body: {} },
+    { source: "native", error: { type: "ProtTankFrozen" } },
+    { source: "native", type: "ProtTankFrozen" },
+    { source: "transport" },
+    { source: "client", reason: "ProtTankFrozen" },
+    new ProtectedSendError({ source: "transport" }),
+    new ProtectedSendError("ProtTankFrozen"),
+    new Error("ProtTankFrozen"),
+  ]) {
+    assert.equal(isProtTankFrozenRefusal(no), false, String(no));
+  }
+});
+
+test("S5b latch: a ProtTankFrozen refusal reads Frozen until the next tank read", () => {
+  const at = 1_000_000;
+  const active = { stage: "Active" as ProtTankStage };
+  const latch = (summary: unknown): ProtTankRefusalLatch => ({
+    summary,
+    atMs: at,
+  });
+  // no latch: the stored stage, null without a tank
+  assert.equal(effectiveTankStage(undefined, undefined, at), null);
+  assert.equal(effectiveTankStage(null, null, at), null);
+  assert.equal(effectiveTankStage(active, null, at), "Active");
+  // a refusal over a stale summary, or over none (22.1 item 3)
+  assert.equal(effectiveTankStage(active, latch(active), at + 1), "Frozen");
+  assert.equal(effectiveTankStage(undefined, latch(null), at + 1), "Frozen");
+  assert.equal(effectiveTankStage(null, latch(null), at + 1), "Frozen");
+  // the next read stores a new object (or deletes it): the latch ends
+  const reread = { stage: "Active" as ProtTankStage };
+  assert.equal(effectiveTankStage(reread, latch(active), at + 1), "Active");
+  assert.equal(effectiveTankStage(undefined, latch(active), at + 1), null);
+  const grace = { stage: "Grace" as ProtTankStage };
+  assert.equal(effectiveTankStage(grace, latch(active), at + 1), "Grace");
+  // a stored stopped stage wins over the latch (more specific notice)
+  const deleted = { stage: "Deleted" as ProtTankStage };
+  assert.equal(effectiveTankStage(deleted, latch(deleted), at + 1), "Deleted");
+  // the bound, and a clock that went backwards
+  const end = at + PROT_TANK_REFUSAL_LATCH_MS;
+  assert.equal(effectiveTankStage(active, latch(active), end - 1), "Frozen");
+  assert.equal(effectiveTankStage(active, latch(active), end), "Active");
+  assert.equal(
+    effectiveTankStage(active, latch(active), at - 60_000),
+    "Frozen",
+  );
+  assert.equal(protTankRefusalLatched(latch(null), undefined, at), true);
+  assert.equal(protTankRefusalLatched(latch(null), active, at), false);
+  // the recheck timer
+  assert.equal(
+    protTankRefusalRecheckInMs(latch(active), active, at + 1_000),
+    PROT_TANK_REFUSAL_LATCH_MS - 1_000,
+  );
+  assert.equal(protTankRefusalRecheckInMs(latch(active), reread, at), null);
+  assert.equal(protTankRefusalRecheckInMs(null, active, at), null);
+  assert.equal(protTankRefusalRecheckInMs(latch(active), active, end), null);
+  // end to end: latched → frozen with a hidden composer; re-read → green
+  const latched = explainShield(
+    withTank(green(), effectiveTankStage(active, latch(active), at + 1)),
+  );
+  assert.ok(latched);
+  assert.deepEqual(latched, {
+    state: "frozen",
+    step: "3c",
+    notice: "tank_frozen",
+  });
+  assert.equal(shieldPresentation(latched.state).composer, "hidden");
+  expectShield(
+    withTank(green(), effectiveTankStage(reread, latch(active), at + 1)),
+    "protected",
+    "8",
+  );
+});
+
+test("S5b 22.1 item 6: the tank stage never hides delete, react or pin", () => {
+  // Frozen allows delete / un-react / unpin; the action lists take no tank
+  // input, so a frozen channel keeps the kept actions.
+  for (const a of ["delete", "react", "pin", "copy"] as const) {
+    assert.ok((PROTECTED_KEPT_ACTIONS as readonly string[]).includes(a), a);
+    assert.equal(protectedActionsBlocked(true, a), false, a);
+  }
+  assert.equal(protectedActionsBlocked.length, 2);
+});
+
+test("S5b wiring (scan): the shield's tankStage comes from client.protTanks plus the latch", () => {
+  const src = readFileSync(
+    new URL("./useProtectedChannel.ts", import.meta.url),
+    "utf8",
+  );
+  const start = src.indexOf("export function useProtectedShield(");
+  const body = src.slice(
+    start,
+    src.indexOf("export function useProtectedChannelOpen(", start),
+  );
+  assert.ok(start >= 0 && body.length > 0);
+  assert.match(
+    body,
+    /tankStage: effectiveTankStage\(\s*c\.protTanks\.get\(id\),\s*tankRefusals\(\)\.get\(id\),\s*nowMs,\s*\)/,
+  );
+  assert.match(body, /protTankRefusalRecheckInMs\(/);
+  assert.match(
+    src,
+    /export function noteProtTankRefusal\([\s\S]*?isProtTankFrozenRefusal\(error\)/,
+  );
 });

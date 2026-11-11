@@ -1,6 +1,7 @@
 import { type JSX, Show } from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
+import { css } from "styled-system/css";
 import { styled } from "styled-system/jsx";
 
 import { ContextMenu, ContextMenuButton } from "@revolt/app/menus/ContextMenu";
@@ -59,27 +60,28 @@ const Controls = styled("div", {
   },
 });
 
-const ControlButton = styled("button", {
-  base: {
-    width: "32px",
-    height: "32px",
-    display: "grid",
-    placeItems: "center",
-    padding: 0,
-    border: 0,
-    borderRadius: "var(--borderRadius-full)",
-    background: "transparent",
-    color: "var(--md-sys-color-on-surface-variant)",
-    cursor: "pointer",
+// A class on a plain <button>, not a styled() component: `use:floating` only
+// attaches to native elements (or components that forward it), so on a
+// styled() button the menu never opened
+const controlButton = css({
+  width: "32px",
+  height: "32px",
+  display: "grid",
+  placeItems: "center",
+  padding: 0,
+  border: 0,
+  borderRadius: "var(--borderRadius-full)",
+  background: "transparent",
+  color: "var(--md-sys-color-on-surface-variant)",
+  cursor: "pointer",
 
-    "&:hover": {
-      background: "var(--md-sys-color-surface-container-high)",
-      color: "var(--md-sys-color-on-surface)",
-    },
-    "&:focus-visible": {
-      outline: "2px solid var(--md-sys-color-primary)",
-      outlineOffset: "-2px",
-    },
+  "&:hover": {
+    background: "var(--md-sys-color-surface-container-high)",
+    color: "var(--md-sys-color-on-surface)",
+  },
+  "&:focus-visible": {
+    outline: "2px solid var(--md-sys-color-primary)",
+    outlineOffset: "-2px",
   },
 });
 
@@ -134,9 +136,10 @@ export function HomeBlock(props: {
     return t`Options for ${name}`;
   };
 
-  // Whether the menu was opened from the keyboard (a key press on a button
-  // fires a click with no pointer detail); only then does a move put focus
-  // back on this button, so a mouse move neither scrolls nor pins the pill
+  // Whether the menu was opened from the keyboard; only then does a move put
+  // focus back on this button, so a mouse move neither scrolls nor pins the
+  // pill. Read from keydown/pointerdown: the menu's own click listener stops
+  // the click before Solid's delegated onClick would see it.
   let openedFromKeyboard = false;
   const move = (direction: HomeMove) =>
     props.onMove(direction, openedFromKeyboard);
@@ -157,12 +160,16 @@ export function HomeBlock(props: {
             </Grip>
           )}
         </Show>
-        <ControlButton
+        <button
           type="button"
+          class={controlButton}
           data-home-menu={props.id}
           aria-label={menuLabel()}
-          onClick={(event) => (openedFromKeyboard = event.detail === 0)}
-          onContextMenu={() => (openedFromKeyboard = false)}
+          onPointerDown={() => (openedFromKeyboard = false)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ")
+              openedFromKeyboard = true;
+          }}
           use:floating={{
             contextMenu: () => (
               <ContextMenu>
@@ -192,7 +199,7 @@ export function HomeBlock(props: {
           }}
         >
           <Symbol size={20}>more_horiz</Symbol>
-        </ControlButton>
+        </button>
       </Controls>
     </Frame>
   );

@@ -1452,11 +1452,17 @@ private final class RecoverySheetController: UIViewController, UITextFieldDelega
         default:
             if restore {
                 titleLabel.text = "Restore from recovery code"
+                // Restore adds this install as a new device (multi-device plan
+                // D1); this is the last surface before the code is entered, so
+                // it says so.
                 bodyLabel.text =
-                    "Enter the recovery code you saved. This restores your encrypted messages on this device."
+                    "Enter the recovery code you saved. This brings your encrypted message history "
+                    + "onto this device. It is added as a new device; your other devices keep working."
             } else if kind == .rotate {
                 titleLabel.text = "Create a new recovery code"
-                bodyLabel.text = "This makes a new recovery code to replace your current one."
+                bodyLabel.text =
+                    "This makes a new recovery code for this device's backup, replacing its current one. "
+                    + "Your other devices keep their own codes."
             } else {
                 titleLabel.text = "Create a recovery code"
                 bodyLabel.text =

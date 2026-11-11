@@ -270,18 +270,34 @@ test("P3 paste and drop collectors are inactive on a protected channel", () => {
     );
   }
   assert.ok(!COMPOSITION.includes("active={() => true}"));
-  // onFiles and addFile refuse as a second key
-  for (const header of [
-    "function onFiles(files: File[]) {",
-    "function addFile() {",
+  // onFiles and addFile refuse as a second key. onFiles passes the target
+  // of a drop/paste/pick so files bound for another channel are judged by
+  // that channel's gesture, not by the one on screen when they arrive.
+  for (const [header, first] of [
+    [
+      "function onFiles(files: File[], target?: ZipTarget) {",
+      "if (refuseProtectedFiles(target)) return;",
+    ],
+    ["function addFile() {", "if (refuseProtectedFiles()) return;"],
+    ["function addFolder() {", "if (refuseProtectedFiles()) return;"],
   ]) {
     assert.ok(
-      code(functionBody(COMPOSITION, header)).startsWith(
-        "if (refuseProtectedFiles()) return;",
-      ),
+      code(functionBody(COMPOSITION, header)).startsWith(first),
       `${header} must refuse first`,
     );
   }
+  // ...and the only pass refuseProtectedFiles gives is for files whose
+  // channel is not the one on screen
+  assert.ok(
+    code(
+      functionBody(
+        COMPOSITION,
+        "function refuseProtectedFiles(target?: ZipTarget) {",
+      ),
+    ).startsWith(
+      "if (target && zipChannels.get(target.owner) !== props.channel.id) {",
+    ),
+  );
 });
 
 // ---- P4 ---------------------------------------------------------------------
@@ -289,6 +305,10 @@ test("P3 paste and drop collectors are inactive on a protected channel", () => {
 test("P4 forbidden actions are gated by the protected predicate", () => {
   assertGated(
     "<IconButton onPress={addFile}>",
+    /protectedHides\("attachments"\)/,
+  );
+  assertGated(
+    "<IconButton onPress={addFolder}>",
     /protectedHides\("attachments"\)/,
   );
   assertGated("<CameraMessageButton", /protectedHides\("camera"\)/);
