@@ -1051,6 +1051,8 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
           channelId,
           userId: this.#port.selfUserId,
           supersedes,
+          recovery: false,
+          supersedesGeneration: null,
         }),
       );
     } catch (err) {
@@ -1275,6 +1277,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         out = await this.#invoke("e2ee_text_process", {
           envelope: wire,
           userId: this.#port.selfUserId,
+          catchUpTip: null,
         });
       } catch (err) {
         const verdict = classifyTextEnvelopeError(err);
@@ -1551,6 +1554,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       serverOwnerId: owner,
       asOfEpoch: withAsOf ? seats.as_of_epoch : null,
       asOfGroupId: withAsOf ? seats.as_of_group_id : null,
+      asOfGeneration: null,
     };
     try {
       await this.#enqueue(rec.id, () =>
@@ -2161,6 +2165,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
               targets,
               rejoinIntent,
               pendingRemovalUsers,
+              pendingDeviceTargets: [],
             }),
           );
         } catch (err) {
@@ -2567,6 +2572,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
                 wonEpoch: ctx.epoch,
                 storedCommitB64: won.storedCommitB64,
                 rejoinIntents,
+                removedReasons: [],
               });
               await this.#onOutcome(out);
             });
@@ -3322,6 +3328,9 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       recreateAvailable: rec.recreateAvailable,
       publishInFlight: rec.publishInFlight,
       maybeUnsent: rec.maybeUnsent,
+      capacity: null,
+      clientOutdated: null,
+      ownerNotice: null,
     };
   }
 

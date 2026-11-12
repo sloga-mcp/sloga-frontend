@@ -138,7 +138,10 @@ function takeNewProtectedToasts(
  */
 function protectedToastIsAlert(kind: ProtectedToastKind): boolean {
   switch (kind) {
+    // S2 placeholder (no producer yet): `owner_notice` gets the default's
+    // answer.
     case "unsolicited_welcome":
+    case "owner_notice":
       return true;
     default: {
       const _exhaustive: never = kind;

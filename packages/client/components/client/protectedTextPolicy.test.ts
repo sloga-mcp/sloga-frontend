@@ -1290,6 +1290,8 @@ const EXPECTED: Record<
   wrong_group_kind: [false, "refuse_wrong_kind", true],
   identity_pin_required: [false, "pin_identities_retry", false],
   handover_target_invalid: [false, "hold", true],
+  catch_up_leaf_unresolvable: [false, "hold", true],
+  unsupported_envelope_version: [false, "hold", true],
   mls_group_not_found: [true, "join", true],
   mls_unsolicited_welcome: [true, "drop_unsolicited_welcome", false],
   mls_leaf_rejected: [true, "await_successor", true],

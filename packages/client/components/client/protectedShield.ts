@@ -705,6 +705,10 @@ const NATIVE_RULES: Record<TextNativeErrorTag, Rule> = {
   identity_pin_required: () => notice("unverified", ""),
   // Handover UI is S2; an S1 caller fails closed.
   handover_target_invalid: () => notice("unverified", ""),
+  // S2 placeholders: the catch-all's `unverified`, as before these tags
+  // were typed. L1s writes their rules.
+  catch_up_leaf_unresolvable: () => notice("unverified", ""),
+  unsupported_envelope_version: () => notice("unverified", ""),
   mls_group_not_found: resecuring,
   mls_unsolicited_welcome: () => ({
     kind: "toast",

@@ -207,6 +207,8 @@ export function markerCopy(kind: ProtectedMarkerKind): string {
       return t`Unreadable message.`;
     case "unencrypted_row":
       return t`Unencrypted message in a protected channel. It did not come from a member's protected app.`;
+    // S2 placeholder (no producer yet): the catch-all; L2c writes the copy.
+    case "unsupported_version":
     case "error":
       return verifyMessageFailedCopy();
     default: {
@@ -243,6 +245,9 @@ export function toastCopy(kind: ProtectedToastKind): string {
   switch (kind) {
     case "unsolicited_welcome":
       return t`Blocked an unexpected invitation to a protected channel.`;
+    // S2 placeholder (no producer yet): the catch-all; L2c writes the copy.
+    case "owner_notice":
+      return verifyChannelFailedCopy();
     default: {
       const _exhaustive: never = kind;
       return verifyChannelFailedCopy();

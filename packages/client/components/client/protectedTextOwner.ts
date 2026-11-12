@@ -349,6 +349,7 @@ async function verifyList(
     serverOwnerId: ctx.serverOwnerId,
     asOfEpoch,
     asOfGroupId,
+    asOfGeneration: null,
   };
   let caughtUp = false;
   let pinned = false;
@@ -704,6 +705,9 @@ export async function protect(
       seats: unique,
       deviceCap,
       serverList: null,
+      format: null,
+      authority: null,
+      recovery: false,
       channelName: ctx.channelName,
       displayNames: port.displayNames(unique),
     });
@@ -750,6 +754,9 @@ export async function setSeats(
       seats: unique,
       deviceCap,
       serverList: { version: snap.list.version, body: snap.list.body },
+      format: null,
+      authority: null,
+      recovery: false,
       channelName: ctx.channelName,
       displayNames: port.displayNames(unique),
     });

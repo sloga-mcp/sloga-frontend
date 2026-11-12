@@ -23,7 +23,7 @@ import {
   parseProtectedChannelsFeature,
 } from "./protectedChannelsFlag.ts";
 
-const OFF = { enabled: false, defaultDeviceCap: null };
+const OFF = { enabled: false, defaultDeviceCap: null, formatsV2: false };
 
 // Compile-time: the real SDK client satisfies the narrow parameter type.
 export const _sdkClientFits: ProtectedFlagClient = null as unknown as Client;
@@ -53,18 +53,18 @@ function root(protectedChannels: unknown): unknown {
 test("well-formed advert parses both fields", () => {
   assert.deepEqual(
     parseProtectedChannelsFeature({ enabled: true, default_device_cap: 7 }),
-    { enabled: true, defaultDeviceCap: 7 },
+    { enabled: true, defaultDeviceCap: 7, formatsV2: false },
   );
   assert.deepEqual(
     parseProtectedChannelsFeature({ enabled: false, default_device_cap: 5 }),
-    { enabled: false, defaultDeviceCap: 5 },
+    { enabled: false, defaultDeviceCap: 5, formatsV2: false },
   );
 });
 
 test("device cap 0 (unlimited) is kept as 0, not unknown", () => {
   assert.deepEqual(
     parseProtectedChannelsFeature({ enabled: true, default_device_cap: 0 }),
-    { enabled: true, defaultDeviceCap: 0 },
+    { enabled: true, defaultDeviceCap: 0, formatsV2: false },
   );
 });
 
@@ -74,7 +74,7 @@ test("u32 bounds: max accepted, one above refused", () => {
       enabled: true,
       default_device_cap: 4_294_967_295,
     }),
-    { enabled: true, defaultDeviceCap: 4_294_967_295 },
+    { enabled: true, defaultDeviceCap: 4_294_967_295, formatsV2: false },
   );
   assert.deepEqual(
     parseProtectedChannelsFeature({
@@ -92,7 +92,7 @@ test("unknown extra keys are tolerated", () => {
       default_device_cap: 3,
       future_field: { x: 1 },
     }),
-    { enabled: true, defaultDeviceCap: 3 },
+    { enabled: true, defaultDeviceCap: 3, formatsV2: false },
   );
 });
 
@@ -137,6 +137,7 @@ test("fetch asks GET / once and parses the advert", async () => {
   assert.deepEqual(await fetchProtectedChannelsFlag(client), {
     enabled: true,
     defaultDeviceCap: 7,
+    formatsV2: false,
   });
   assert.deepEqual(paths, ["/"]);
 });
@@ -195,6 +196,7 @@ test("pinned backend advert shape drives the parser", async () => {
   assert.deepEqual(parseProtectedChannelsFeature(advert), {
     enabled: true,
     defaultDeviceCap: 3,
+    formatsV2: false,
   });
   // each key is load-bearing: dropping either one fails closed
   for (const key of [enabledKey, capKey]) {
@@ -212,6 +214,7 @@ test("pinned backend advert shape drives the parser", async () => {
   assert.deepEqual(await fetchProtectedChannelsFlag(client), {
     enabled: true,
     defaultDeviceCap: 3,
+    formatsV2: false,
   });
 });
 

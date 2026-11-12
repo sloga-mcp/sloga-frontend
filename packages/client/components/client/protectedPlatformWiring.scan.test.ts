@@ -31,6 +31,7 @@ import { test as nodeTest } from "node:test";
 import { fetchProtectedChannelsFlag } from "./protectedChannelsFlag.ts";
 import {
   PROTECTED_PLATFORM_MARKER,
+  TEXT_PROTOCOL,
   protectedPlatformTag,
   reduceFlag,
   storeOwnerAllows,
@@ -444,7 +445,7 @@ const ROOT_ON = {
 const ROOT_OFF = {
   features: { protected_channels: { enabled: false, default_device_cap: 0 } },
 };
-const PROBE_OK = { protocol: 1, listenerBridge: true };
+const PROBE_OK = { protocol: TEXT_PROTOCOL, listenerBridge: true };
 
 /** A finished start: flag answered `root`, probe answered `probe`. */
 async function started(env: Env): Promise<Rig> {
@@ -476,10 +477,13 @@ test("W1: the transport kind and the input carry the right facts per shell", () 
       flag: undefined,
     },
   );
-  const e = rig({ shell: "electron", protectedText: 1 }).bridge.input();
+  const e = rig({
+    shell: "electron",
+    protectedText: TEXT_PROTOCOL,
+  }).bridge.input();
   assert.equal(e.transport, "electron");
   assert.equal(e.platform, "");
-  assert.equal(e.electronProtocol, 1);
+  assert.equal(e.electronProtocol, TEXT_PROTOCOL);
   assert.equal(e.androidProbe, null);
   const a = rig({ shell: "android" }).bridge.input();
   assert.equal(a.transport, "capacitor");
@@ -519,13 +523,14 @@ test("W1: Tauri stays structural and never holds; the flag is not consulted", as
   }
 });
 
-test("W1: iOS, web and an Electron shell without protocol 1 are closed and never start", async () => {
+test("W1: iOS, web and an Electron shell without protocol 2 are closed and never start", async () => {
   for (const env of [
     { shell: "ios" },
     { shell: "web" },
     { shell: "electron" },
-    { shell: "electron", protectedText: 2 },
-    { shell: "electron", protectedText: "1" },
+    { shell: "electron", protectedText: 1 }, // an S1 shell
+    { shell: "electron", protectedText: 3 },
+    { shell: "electron", protectedText: "2" },
     { shell: "android", popout: true },
   ] as Env[]) {
     const r = rig({
@@ -546,11 +551,11 @@ test("W1: iOS, web and an Electron shell without protocol 1 are closed and never
   }
 });
 
-test("W1: Electron protocol 1 holds until the flag is settled, then follows it", async () => {
+test("W1: Electron protocol 2 holds until the flag is settled, then follows it", async () => {
   const root = deferred<unknown>();
   const r = rig({
     shell: "electron",
-    protectedText: 1,
+    protectedText: TEXT_PROTOCOL,
     fetch: () => root.promise,
   });
   assert.deepEqual(r.bridge.state(), { structural: true, hold: true });
@@ -595,8 +600,9 @@ test("W1: Android holds while the probe is pending, then follows probe and flag"
   assert.deepEqual(r.bridge.state(), { structural: true, hold: false });
 
   for (const [answer, why] of [
-    [{ protocol: 1, listenerBridge: false }, "legacy bridge"],
-    [{ protocol: 2, listenerBridge: true }, "protocol 2"],
+    [{ protocol: TEXT_PROTOCOL, listenerBridge: false }, "legacy bridge"],
+    [{ protocol: 1, listenerBridge: true }, "protocol 1 (an S1 shell)"],
+    [{ protocol: 3, listenerBridge: true }, "protocol 3"],
     [null, "no answer"],
   ] as const) {
     const x = await started({
@@ -646,7 +652,7 @@ test("W1: the flag is seeded from this account's last-known value", async () => 
   const root = deferred<unknown>();
   const r = rig({
     shell: "electron",
-    protectedText: 1,
+    protectedText: TEXT_PROTOCOL,
     storage,
     fetch: () => root.promise,
   });
@@ -660,7 +666,7 @@ test("W1: the flag is seeded from this account's last-known value", async () => 
   // Another account's value is not this account's.
   const other = await started({
     shell: "electron",
-    protectedText: 1,
+    protectedText: TEXT_PROTOCOL,
     userId: "U2",
     storage: new Map([["protected-flag:U1", "on"]]),
     fetch: async () => {
@@ -673,7 +679,7 @@ test("W1: the flag is seeded from this account's last-known value", async () => 
 test("W1: a failed fetch with no last-known ends off, never a hold for the bridge's life", async () => {
   const r = await started({
     shell: "electron",
-    protectedText: 1,
+    protectedText: TEXT_PROTOCOL,
     fetch: async () => {
       throw new Error("offline");
     },
@@ -691,7 +697,7 @@ test("W1: a successful off replaces a seeded on, and is persisted", async () => 
   const storage = new Map([["protected-flag:U1", "on"]]);
   const r = await started({
     shell: "electron",
-    protectedText: 1,
+    protectedText: TEXT_PROTOCOL,
     storage,
     fetch: async () => ROOT_OFF,
   });
@@ -714,13 +720,13 @@ test("W1: a successful off replaces a seeded on, and is persisted", async () => 
 test("W1: a malformed answer is an answer (off); a timed-out seed on stays on", async () => {
   const bad = await started({
     shell: "electron",
-    protectedText: 1,
+    protectedText: TEXT_PROTOCOL,
     fetch: async () => "<html>",
   });
   assert.equal(bad.bridge.flag(), "off");
   const r = rig({
     shell: "electron",
-    protectedText: 1,
+    protectedText: TEXT_PROTOCOL,
     storage: new Map([["protected-flag:U1", "on"]]),
   });
   const p = r.bridge.start();
@@ -733,7 +739,7 @@ test("W1: a malformed answer is an answer (off); a timed-out seed on stays on", 
 test("W1: unreadable storage seeds nothing and never throws", async () => {
   const r = await started({
     shell: "electron",
-    protectedText: 1,
+    protectedText: TEXT_PROTOCOL,
     storage: "throws",
     fetch: async () => ROOT_ON,
   });
@@ -758,7 +764,7 @@ test("W4 (fix 4): a seeded start decides from the seed and does not wait for GET
     const root = deferred<unknown>();
     const r = rig({
       shell: "electron",
-      protectedText: 1,
+      protectedText: TEXT_PROTOCOL,
       storage: new Map([["protected-flag:U1", seed]]),
       fetch: () => root.promise,
     });
@@ -799,7 +805,7 @@ test("W4 (fix 4): a first run (no seed) waits for the answer, at most 5 s", asyn
   const root = deferred<unknown>();
   const r = rig({
     shell: "electron",
-    protectedText: 1,
+    protectedText: TEXT_PROTOCOL,
     fetch: () => root.promise,
   });
   const p = r.bridge.start();
@@ -819,7 +825,7 @@ test("W4 (fix 3): a late answer to the start's own fetch lands after the deadlin
   const storage = new Map<string, string>();
   const r = rig({
     shell: "electron",
-    protectedText: 1,
+    protectedText: TEXT_PROTOCOL,
     storage,
     fetch: () => root.promise,
   });
@@ -877,7 +883,7 @@ test("W4 (fix 3): a failed refresh or probe after on stays on; W4's advert still
   const storage = new Map<string, string>();
   const r = rig({
     shell: "electron",
-    protectedText: 1,
+    protectedText: TEXT_PROTOCOL,
     storage,
     fetch: async () => {
       if (fail.now) throw new Error("offline");
@@ -961,7 +967,9 @@ test("W1: one [protected] platform line per bridge, starting with the marker", a
   assert.equal(a.info.length, 1);
   assert.match(
     a.info[0],
-    /probe=ok\/protocol=1\/listener=true .*flag=on structural=true hold=false$/,
+    new RegExp(
+      `probe=ok/protocol=${TEXT_PROTOCOL}/listener=true .*flag=on structural=true hold=false$`,
+    ),
   );
   assert.ok(!a.info[0].includes("U1"), "no user id in the line");
   // The guard itself: a second log request is a no-op.
@@ -986,7 +994,11 @@ test("W1: nothing is capable while the platform is on hold", async () => {
     ],
     [
       "Electron, flag unknown",
-      rig({ shell: "electron", protectedText: 1, fetch: () => root.promise }),
+      rig({
+        shell: "electron",
+        protectedText: TEXT_PROTOCOL,
+        fetch: () => root.promise,
+      }),
       () => root.resolve(ROOT_ON),
     ],
   ] as const) {
@@ -1015,7 +1027,7 @@ test("W1: nothing is capable while the platform is on hold", async () => {
 test("W1: settling bumps the reactive version so UI readers re-evaluate", async () => {
   const r = rig({
     shell: "electron",
-    protectedText: 1,
+    protectedText: TEXT_PROTOCOL,
     fetch: async () => ROOT_ON,
   });
   const before = r.bridge.version();
@@ -1030,7 +1042,11 @@ test("W1: settling bumps the reactive version so UI readers re-evaluate", async 
 
 test("W1: Electron and Android need a completed owner check: this account or no owner", async () => {
   for (const env of [
-    { shell: "electron", protectedText: 1, fetch: async () => ROOT_ON },
+    {
+      shell: "electron",
+      protectedText: TEXT_PROTOCOL,
+      fetch: async () => ROOT_ON,
+    },
     {
       shell: "android",
       fetch: async () => ROOT_ON,
@@ -1086,7 +1102,7 @@ test("W1: Tauri keeps W4's latch (unknown is capable); every shell needs a user 
   const e = (
     await started({
       shell: "electron",
-      protectedText: 1,
+      protectedText: TEXT_PROTOCOL,
       userId: null,
       fetch: async () => ROOT_ON,
     })
@@ -1100,11 +1116,15 @@ test("W1: a closed shell is never capable, whatever its status", async () => {
   for (const env of [
     { shell: "ios" },
     { shell: "web" },
-    { shell: "electron", protectedText: 1, fetch: async () => ROOT_OFF },
+    {
+      shell: "electron",
+      protectedText: TEXT_PROTOCOL,
+      fetch: async () => ROOT_OFF,
+    },
     {
       shell: "android",
       fetch: async () => ROOT_ON,
-      probe: async () => ({ protocol: 1, listenerBridge: false }),
+      probe: async () => ({ protocol: TEXT_PROTOCOL, listenerBridge: false }),
     },
   ] as Env[]) {
     const b = (await started(env)).bridge;
@@ -1133,7 +1153,11 @@ test("W2: #checkStoreOwner records the A8 state; its W4 latch is unchanged", asy
     ["foreign store", async () => "U2", { state: "known", owner: "U2" }, 1],
   ];
   for (const [why, storeOwner, want, raised] of cases) {
-    const b = rig({ shell: "electron", protectedText: 1, storeOwner }).bridge;
+    const b = rig({
+      shell: "electron",
+      protectedText: TEXT_PROTOCOL,
+      storeOwner,
+    }).bridge;
     b.storeOwnedByAnotherAccount.set("state", 7);
     await b.checkOwner();
     assert.deepEqual(b.owner(), want, why);
@@ -1353,7 +1377,7 @@ test("W3: #textInvoke errors reach the manager through mapTextInvokeError", () =
   );
 });
 
-test("W3: CapacitorTransport routes the 3 dialog commands to their plugin methods", () => {
+test("W3: CapacitorTransport routes the 4 dialog commands to their plugin methods", () => {
   const open = SRC.indexOf(
     "class CapacitorTransport implements NativeTransport {",
   );
@@ -1365,6 +1389,7 @@ test("W3: CapacitorTransport routes the 3 dialog commands to their plugin method
     ["e2ee_text_seat_list_sign", "textSeatListSign"],
     ["e2ee_text_owner_confirm_change", "textOwnerConfirmChange"],
     ["e2ee_text_owner_handover_sign", "textOwnerHandoverSign"],
+    ["e2ee_text_authority_sign", "textAuthoritySign"],
   ];
   for (const [cmd, method] of routes) {
     const re = new RegExp(

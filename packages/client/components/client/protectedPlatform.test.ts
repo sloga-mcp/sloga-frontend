@@ -2,13 +2,15 @@
 // Node's built-in runner from packages/client:
 //   node --test --conditions=browser components/client/protectedPlatform.test.ts
 // Focus: the plan D9 matrix. Tauri keeps W4's behaviour (the flag is not
-// consulted); Electron and Android run the text plane only with protocol 1,
-// (Android) the WebMessageListener bridge, and the server flag; an unknown
-// flag or a pending Android probe HOLDS (structural, index not ready) and
-// never hands envelopes to the call path; iOS, web, popout and overlay are
-// closed. The flag reducer is sticky on failed refreshes only (RR-1, Final
-// scoped look 4/5). The store owner fails closed on UNKNOWN off Tauri (Step 0
-// fold 1). `unavailable` from the 3 dialog commands is `busy` (D7).
+// consulted, and S2 OR-1: the protocol is not checked); Electron and Android
+// run the text plane only with protocol `TEXT_PROTOCOL` (2 since S2, OR-2:
+// exactly 2), (Android) the WebMessageListener bridge, and the server flag;
+// an unknown flag or a pending Android probe HOLDS (structural, index not
+// ready) and never hands envelopes to the call path; iOS, web, popout and
+// overlay are closed. The flag reducer is sticky on failed refreshes only
+// (RR-1, Final scoped look 4/5). The store owner fails closed on UNKNOWN off
+// Tauri (Step 0 fold 1). `unavailable` from the 4 dialog commands is `busy`
+// (D7).
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -21,6 +23,7 @@ import {
   type StoreOwnerCheck,
   type StructuralInput,
   PROTECTED_PLATFORM_MARKER,
+  TEXT_PROTOCOL,
   mapTextInvokeError,
   protectedPlatformTag,
   reduceFlag,
@@ -43,22 +46,24 @@ const TRANSPORTS: readonly ShellTransportKind[] = [
 
 const OK: AndroidProbe = {
   state: "ok",
-  value: { protocol: 1, listenerBridge: true },
+  value: { protocol: 2, listenerBridge: true },
 };
 const PROBES: readonly (AndroidProbe | null)[] = [
   null,
   { state: "pending" },
   { state: "failed" },
   OK,
-  { state: "ok", value: { protocol: 1, listenerBridge: false } },
+  { state: "ok", value: { protocol: 2, listenerBridge: false } },
   { state: "ok", value: { protocol: 0, listenerBridge: true } },
-  { state: "ok", value: { protocol: 2, listenerBridge: true } },
+  { state: "ok", value: { protocol: 1, listenerBridge: true } },
+  { state: "ok", value: { protocol: 3, listenerBridge: true } },
 ];
 const ELECTRON_PROTOCOLS: readonly (number | undefined)[] = [
   undefined,
   0,
   1,
   2,
+  3,
   1.5,
   Number.NaN,
 ];
@@ -80,7 +85,7 @@ function electron(over: Partial<StructuralInput> = {}): StructuralInput {
   return {
     transport: "electron",
     platform: "",
-    electronProtocol: 1,
+    electronProtocol: 2,
     androidProbe: null,
     popout: false,
     overlay: false,
@@ -138,8 +143,41 @@ test("D9 Tauri main window: structural, never held, flag not consulted", () => {
         );
 });
 
-test("D9 Electron protocol 1 + flag on: structural", () => {
+test("D9 Electron protocol 2 + flag on: structural", () => {
   assert.deepEqual(structuralState(electron()), T);
+});
+
+test("S2 OR-1/OR-2: TEXT_PROTOCOL is 2; Electron and Android need exactly 2, Tauri is unchecked", () => {
+  assert.equal(TEXT_PROTOCOL, 2);
+  // Electron: 1 (an S1 shell) closed, 2 follows the flag, 3 closed.
+  for (const flag of FLAGS) {
+    assert.deepEqual(
+      structuralState(electron({ electronProtocol: 1, flag })),
+      F,
+      `electron 1 flag=${flag}`,
+    );
+    assert.deepEqual(
+      structuralState(electron({ electronProtocol: 2, flag })),
+      flag === "on" ? T : flag === "unknown" ? HOLD : F,
+      `electron 2 flag=${flag}`,
+    );
+    assert.deepEqual(
+      structuralState(electron({ electronProtocol: 3, flag })),
+      F,
+      `electron 3 flag=${flag}`,
+    );
+  }
+  // Android: probe 1 closed, 2 ok, 3 closed.
+  const probe = (protocol: number): AndroidProbe => ({
+    state: "ok",
+    value: { protocol, listenerBridge: true },
+  });
+  assert.deepEqual(structuralState(android({ androidProbe: probe(1) })), F);
+  assert.deepEqual(structuralState(android({ androidProbe: probe(2) })), T);
+  assert.deepEqual(structuralState(android({ androidProbe: probe(3) })), F);
+  // Tauri ships its own frontend: no protocol input at all.
+  for (const electronProtocol of [undefined, 1, 2, 3])
+    assert.deepEqual(structuralState(tauri({ electronProtocol })), T);
 });
 
 test("D9 Electron without the protectedText flag (no protocol): closed", () => {
@@ -151,18 +189,18 @@ test("D9 Electron without the protectedText flag (no protocol): closed", () => {
     );
 });
 
-test("D9 Electron protocol 2 (or any value other than 1): closed", () => {
-  for (const electronProtocol of [0, 2, 1.5, Number.NaN, -1])
+test("D9 Electron protocol 1, 3 (or any value other than 2): closed", () => {
+  for (const electronProtocol of [0, 1, 3, 1.5, Number.NaN, -1])
     for (const flag of FLAGS)
       assert.deepEqual(
         structuralState(electron({ electronProtocol, flag })),
         F,
         `protocol=${electronProtocol} flag=${flag}`,
       );
-  // A string "1" from an untyped bridge is not the number 1.
+  // A string "2" from an untyped bridge is not the number 2.
   assert.deepEqual(
     structuralState(
-      electron({ electronProtocol: "1" as unknown as number, flag: "on" }),
+      electron({ electronProtocol: "2" as unknown as number, flag: "on" }),
     ),
     F,
   );
@@ -195,7 +233,7 @@ test("D9 Android legacy bridge (no WebMessageListener): closed", () => {
         android({
           androidProbe: {
             state: "ok",
-            value: { protocol: 1, listenerBridge: false },
+            value: { protocol: 2, listenerBridge: false },
           },
           flag,
         }),
@@ -209,7 +247,7 @@ test("D9 Android legacy bridge (no WebMessageListener): closed", () => {
       android({
         androidProbe: {
           state: "ok",
-          value: { protocol: 1, listenerBridge: 1 as unknown as boolean },
+          value: { protocol: 2, listenerBridge: 1 as unknown as boolean },
         },
       }),
     ),
@@ -217,8 +255,8 @@ test("D9 Android legacy bridge (no WebMessageListener): closed", () => {
   );
 });
 
-test("D9 Android protocol other than 1: closed", () => {
-  for (const protocol of [0, 2, -1, 1.5, Number.NaN])
+test("D9 Android protocol other than 2: closed", () => {
+  for (const protocol of [0, 1, 3, -1, 1.5, Number.NaN])
     for (const flag of FLAGS)
       assert.deepEqual(
         structuralState(
@@ -316,14 +354,14 @@ test("D9 every input agrees with the plan's predicate; hold implies structural",
     const p = i.androidProbe;
     const okNative =
       p?.state === "ok" &&
-      p.value.protocol === 1 &&
+      p.value.protocol === 2 &&
       p.value.listenerBridge === true;
     const structural =
       !i.popout &&
       !i.overlay &&
       (i.transport === "tauri" ||
         (i.transport === "electron" &&
-          i.electronProtocol === 1 &&
+          i.electronProtocol === 2 &&
           i.flag !== "off") ||
         (i.transport === "capacitor" &&
           i.platform === "android" &&
@@ -338,7 +376,7 @@ test("D9 every input agrees with the plan's predicate; hold implies structural",
     assert.deepEqual(got, { structural, hold }, JSON.stringify(i));
     if (got.hold) assert.equal(got.structural, true);
   }
-  assert.equal(n, 4 * 4 * 6 * 7 * 2 * 2 * 3);
+  assert.equal(n, 4 * 4 * 7 * 8 * 2 * 2 * 3);
 });
 
 test("structuralState returns a fresh object each call", () => {
@@ -546,6 +584,7 @@ const DIALOG = [
   "e2ee_text_seat_list_sign",
   "e2ee_text_owner_confirm_change",
   "e2ee_text_owner_handover_sign",
+  "e2ee_text_authority_sign",
 ] as const;
 
 test("mapTextInvokeError: the dialog commands are text commands", () => {
@@ -624,7 +663,7 @@ test("protectedPlatformTag reports the facts and the verdict", () => {
   assert.equal(
     tag,
     "sloga:s7-protected-platform:v1 transport=capacitor platform=android" +
-      " electronProtocol=undefined probe=ok/protocol=1/listener=true" +
+      " electronProtocol=undefined probe=ok/protocol=2/listener=true" +
       " popout=false overlay=false flag=unknown structural=true hold=true",
   );
   const e = protectedPlatformTag(electron({ flag: "off" }));

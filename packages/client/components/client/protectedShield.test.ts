@@ -23,6 +23,7 @@ import {
   type StructuralInput,
   storeOwnerAllows,
   structuralState,
+  TEXT_PROTOCOL,
 } from "./protectedPlatform.ts";
 import {
   type ProtectedAction,
@@ -278,7 +279,7 @@ test("step 2 + D3 capable variants: anything but capable === true is not_availab
 
 const PROBE_OK: AndroidProbe = {
   state: "ok",
-  value: { protocol: 1, listenerBridge: true },
+  value: { protocol: TEXT_PROTOCOL, listenerBridge: true },
 };
 
 /** A window's platform facts; the Tauri main window unless overridden. */
@@ -298,7 +299,13 @@ function shell(over: Partial<StructuralInput> = {}): StructuralInput {
 const electron = (
   flag: FlagState = "on",
   over: Partial<StructuralInput> = {},
-) => shell({ transport: "electron", electronProtocol: 1, flag, ...over });
+) =>
+  shell({
+    transport: "electron",
+    electronProtocol: TEXT_PROTOCOL,
+    flag,
+    ...over,
+  });
 
 const android = (
   probe: AndroidProbe | null = PROBE_OK,
@@ -378,7 +385,7 @@ function shieldOn(
 
 test("S7 D9: a capable Electron / Android shell runs the full 9.1 ladder and can be green", () => {
   for (const [label, p] of [
-    ["electron protocol 1, flag on", electron("on")],
+    ["electron protocol 2, flag on", electron("on")],
     ["android probe ok, listener bridge, flag on", android(PROBE_OK, "on")],
   ] as const) {
     for (const owner of [
@@ -425,7 +432,10 @@ test("S7 D9: a capable Electron / Android shell runs the full 9.1 ladder and can
 test("S7 D9: every closed, held or foreign Electron / Android / iOS / web window is not_available", () => {
   const rows: [string, StructuralInput, Partial<DeviceFacts>?][] = [
     ["electron, no protocol", electron("on", { electronProtocol: undefined })],
-    ["electron, protocol 2", electron("on", { electronProtocol: 2 })],
+    [
+      "electron, protocol 1 (an S1 shell)",
+      electron("on", { electronProtocol: 1 }),
+    ],
     ["electron, protocol 0", electron("on", { electronProtocol: 0 })],
     ["electron, flag off", electron("off")],
     ["electron, flag unknown (hold)", electron("unknown")],
@@ -447,11 +457,14 @@ test("S7 D9: every closed, held or foreign Electron / Android / iOS / web window
     ["electron overlay", electron("on", { overlay: true })],
     [
       "android, legacy bridge",
-      android({ state: "ok", value: { protocol: 1, listenerBridge: false } }),
+      android({
+        state: "ok",
+        value: { protocol: TEXT_PROTOCOL, listenerBridge: false },
+      }),
     ],
     [
-      "android, protocol 2",
-      android({ state: "ok", value: { protocol: 2, listenerBridge: true } }),
+      "android, protocol 1 (an S1 shell)",
+      android({ state: "ok", value: { protocol: 1, listenerBridge: true } }),
     ],
     ["android, probe pending (hold)", android({ state: "pending" })],
     ["android, probe failed", android({ state: "failed" })],
@@ -521,7 +534,10 @@ test("S7 D9 notice split: a structural Electron / Android shell with E2EE off ge
     ["electron, flag off", electron("off")],
     [
       "android, legacy bridge",
-      android({ state: "ok", value: { protocol: 1, listenerBridge: false } }),
+      android({
+        state: "ok",
+        value: { protocol: TEXT_PROTOCOL, listenerBridge: false },
+      }),
     ],
     ["android, probe failed", android({ state: "failed" })],
     ["android, flag off", android(PROBE_OK, "off")],
@@ -546,8 +562,8 @@ test("S7 D9: across the platform grid, green only on a decided, owned, main-wind
     { state: "pending" },
     { state: "failed" },
     PROBE_OK,
-    { state: "ok", value: { protocol: 1, listenerBridge: false } },
-    { state: "ok", value: { protocol: 2, listenerBridge: true } },
+    { state: "ok", value: { protocol: TEXT_PROTOCOL, listenerBridge: false } },
+    { state: "ok", value: { protocol: 1, listenerBridge: true } },
   ];
   const owners: StoreOwnerCheck[] = [
     { state: "unknown" },
@@ -595,7 +611,7 @@ test("S7 D9: across the platform grid, green only on a decided, owned, main-wind
                   why,
                 );
                 if (transport === "electron") {
-                  assert.equal(electronProtocol, 1, why);
+                  assert.equal(electronProtocol, TEXT_PROTOCOL, why);
                   assert.equal(flag, "on", why);
                   assert.equal(owner.state, "known", `A8: ${why}`);
                 }
@@ -611,7 +627,7 @@ test("S7 D9: across the platform grid, green only on a decided, owned, main-wind
   // facts of other shells, e.g. an Electron row's probe):
   // - tauri: main window, owner not foreign: 3 platforms x 3 protocols x
   //   6 probes x 3 flags x 3 owners;
-  // - electron: protocol 1, flag on, owner null or self: 3 x 6 x 2;
+  // - electron: protocol 2, flag on, owner null or self: 3 x 6 x 2;
   // - capacitor: android, probe ok + listener, flag on, owner null or self:
   //   3 protocols x 2.
   assert.deepEqual(greens, {
@@ -1162,6 +1178,9 @@ test("shieldInputsFromView: loading view, roster age, backwards clock", () => {
     recreateAvailable: false,
     publishInFlight: false,
     maybeUnsent: false,
+    capacity: null,
+    clientOutdated: null,
+    ownerNotice: null,
   };
   assert.equal(
     shieldInputsFromView(view, flags, 61_000).rosterMismatchAgeMs,
@@ -1379,6 +1398,9 @@ test("D17 channel-level table (9.2)", () => {
     wrong_group_kind: "security_check_failed",
     identity_pin_required: "unverified",
     handover_target_invalid: "unverified",
+    // S2 placeholders (the catch-all's outcome); L1s writes their rules.
+    catch_up_leaf_unresolvable: "unverified",
+    unsupported_envelope_version: "unverified",
     mls_group_not_found: "resecuring",
     mls_unsolicited_welcome: "toast:unsolicited_welcome",
     mls_leaf_rejected: "invalid_change",

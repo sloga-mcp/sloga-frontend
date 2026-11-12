@@ -783,6 +783,8 @@ test("protect → genesis create → seat → admit → message", async () => {
     channelId: CH,
     userId: SELF,
     supersedes: null,
+    recovery: false,
+    supersedesGeneration: null,
   });
   const post = env.api$("POST", /^\/mls\/groups$/);
   assert.equal(post.length, 1);
@@ -817,6 +819,7 @@ test("protect → genesis create → seat → admit → message", async () => {
     wonEpoch: 1,
     storedCommitB64: "ADM",
     rejoinIntents: [],
+    removedReasons: [],
   });
 
   // Message: live row decrypted through B4. The own send's view comes from
@@ -877,6 +880,7 @@ test("unseat: removeDevices passes pending_removal_users and commits", async () 
     targets: [{ user_id: PEER, device_id: PEER_DEV }],
     rejoinIntent: null,
     pendingRemovalUsers: [PEER],
+    pendingDeviceTargets: [],
   });
   assert.equal(
     env.calls("e2ee_text_commit_won").at(-1)?.storedCommitB64,
@@ -1625,7 +1629,13 @@ test("F1 commit_won: a plain 2xx win reads the stored row and passes the SERVER'
   await env.advance(10_000);
   assert.deepEqual(env.calls("e2ee_text_remove")[0]?.rejoinIntent, ours);
   assert.deepEqual(env.calls("e2ee_text_commit_won"), [
-    { groupId: G0, wonEpoch: 4, storedCommitB64: "REM", rejoinIntents: [ds] },
+    {
+      groupId: G0,
+      wonEpoch: 4,
+      storedCommitB64: "REM",
+      rejoinIntents: [ds],
+      removedReasons: [],
+    },
   ]);
   const read = at(env, /^GET \/mls\/groups\/[0-9a-f]+\/commits\?from_epoch=4$/);
   assert.ok(read > at(env, /^POST .*\/commits$/), "read after the 2xx");
@@ -1645,6 +1655,7 @@ test("F1 commit_won: a plain 2xx win reads the stored row and passes the SERVER'
       wonEpoch: 4,
       storedCommitB64: "DS-BYTES",
       rejoinIntents: [],
+      removedReasons: [],
     },
   ]);
   m2.dispose();
@@ -1765,7 +1776,13 @@ test("F1 R2: a successor created locally but never accepted is re-created, not j
   await m.refresh(CH, "open");
   await env.advance(1_000);
   assert.deepEqual(env.calls("e2ee_text_group_create"), [
-    { channelId: CH, userId: SELF, supersedes: G0 },
+    {
+      channelId: CH,
+      userId: SELF,
+      supersedes: G0,
+      recovery: false,
+      supersedesGeneration: null,
+    },
   ]);
   const post = env.api$("POST", /^\/mls\/groups$/);
   assert.equal(post.length, 1);
@@ -1792,7 +1809,13 @@ test("F1 R2: a successor created locally but never accepted is re-created, not j
   await m2.refresh(CH, "open");
   await env2.advance(1_000);
   assert.deepEqual(env2.calls("e2ee_text_group_create"), [
-    { channelId: CH, userId: SELF, supersedes: null },
+    {
+      channelId: CH,
+      userId: SELF,
+      supersedes: null,
+      recovery: false,
+      supersedesGeneration: null,
+    },
   ]);
   m2.dispose();
 
@@ -1846,7 +1869,13 @@ test("F1 commit_won: Lost{self} and refetched rows pass the DS's rejoin_intents 
   const m = make(env);
   await removeWith(env, m, ours);
   assert.deepEqual(env.calls("e2ee_text_commit_won"), [
-    { groupId: G0, wonEpoch: 4, storedCommitB64: "REM", rejoinIntents: [ds] },
+    {
+      groupId: G0,
+      wonEpoch: 4,
+      storedCommitB64: "REM",
+      rejoinIntents: [ds],
+      removedReasons: [],
+    },
   ]);
   m.dispose();
 
@@ -2028,6 +2057,8 @@ test("D21: poisoned + this device signed the list → successor; crash → genes
     channelId: CH,
     userId: SELF,
     supersedes: G0,
+    recovery: false,
+    supersedesGeneration: null,
   });
   m.dispose();
 
@@ -2363,6 +2394,7 @@ test("W4d X#2 (C-X2a): a persisted own commit stage is resumed at seed (restart 
       wonEpoch: 4,
       storedCommitB64: "PERSISTED",
       rejoinIntents: [],
+      removedReasons: [],
     },
   ]);
   assert.equal(env.api$("POST", /\/commits$/).length, 0, "row existed");
@@ -2537,7 +2569,13 @@ test("W4d N1 (C-N1a): a stage without its persisted full body is NEVER resubmitt
   await m2.start();
   await env2.advance(1_000);
   assert.deepEqual(env2.calls("e2ee_text_commit_won"), [
-    { groupId: G0, wonEpoch: 4, storedCommitB64: "ADM", rejoinIntents: [] },
+    {
+      groupId: G0,
+      wonEpoch: 4,
+      storedCommitB64: "ADM",
+      rejoinIntents: [],
+      removedReasons: [],
+    },
   ]);
   assert.equal(env2.api$("POST", /\/commits$/).length, 0);
   m2.dispose();
@@ -2593,6 +2631,7 @@ test("W4d N4 (C-N4): while a resume holds the group, no routine commit or stagin
       wonEpoch: 4,
       storedCommitB64: "PERSISTED",
       rejoinIntents: [],
+      removedReasons: [],
     },
     "the resumed stage won",
   );
@@ -3076,6 +3115,7 @@ function nativeDecryptDeps(env: Env): ProtectedTextManagerDeps {
     replies: [],
     sender_verified: true,
     ts_skew: false,
+    files: [],
   });
   return fakeDeps(env, {
     messages: {

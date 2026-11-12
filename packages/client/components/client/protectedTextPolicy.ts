@@ -1098,6 +1098,10 @@ function textEnvelopeVerdict(tag: TextNativeErrorTag): TextEnvelopeVerdict {
     case "mls_poisoned_epoch":
       return set(true, "await_successor");
     // Message-, sign- or encrypt-only tags: unexpected from `_process`.
+    // S2 placeholders: both held like the default (L1p writes
+    // catch_up_leaf_unresolvable's rule).
+    case "catch_up_leaf_unresolvable":
+    case "unsupported_envelope_version":
     case "unknown_epoch":
     case "unknown_sender":
     case "removed_sender":

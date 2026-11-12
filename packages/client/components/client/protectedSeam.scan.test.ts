@@ -47,6 +47,7 @@ import {
   type StructuralInput,
   storeOwnerAllows,
   structuralState,
+  TEXT_PROTOCOL,
 } from "./protectedPlatform.ts";
 import {
   isProtectedSendError,
@@ -87,10 +88,15 @@ const SRC = readFileSync(FILE, "utf8");
  * route, the restore-dialog `RestoreReport` docs, `SPLIT_COMMIT_ATTEMPTS`
  * and `isMissingCommandError`). The merged region is exactly the union of
  * that and the S7 additions above, nothing else.
+ *
+ * Re-pinned for protected channels S2 (lane L0T, W4-0; was 88e76b2a...):
+ * the region gains exactly the `textAuthoritySign` plugin entry, its
+ * `CapacitorTransport.invoke` dialog route (the S5 pattern above) and one
+ * comment line beside each. Nothing else in the region changed.
  */
-// Re-pinned from feat/e2ee-add-device: multi-device W3 adds splitBegin.
+// Re-pinned for S2 L0T: textAuthoritySign (see above).
 const TRANSPORT_REGION_SHA256 =
-  "88e76b2aaaa40af81200cd56dd31611e35ea245167770d8066007e3a0d7347c0";
+  "2817d5fc7d54bcd0af6956462a36d83cb775b1ad79f74acfd5871ac26947fa43";
 
 /**
  * S7 D9 / PA-7: the text commands Android signs only after a tap on a native
@@ -102,6 +108,8 @@ const CAPACITOR_DIALOG_ROUTES: Readonly<Record<string, string>> = {
   e2ee_text_seat_list_sign: "textSeatListSign",
   e2ee_text_owner_confirm_change: "textOwnerConfirmChange",
   e2ee_text_owner_handover_sign: "textOwnerHandoverSign",
+  // S2: the channel authority (lane L0T).
+  e2ee_text_authority_sign: "textAuthoritySign",
 };
 
 /**
@@ -516,8 +524,11 @@ test("S5 (S7 D9): #protectedStructural is structuralState over the bridge's fact
   ).map((transport) => ({
     transport,
     platform: transport === "capacitor" ? "android" : "",
-    electronProtocol: 1,
-    androidProbe: { state: "ok", value: { protocol: 1, listenerBridge: true } },
+    electronProtocol: TEXT_PROTOCOL,
+    androidProbe: {
+      state: "ok",
+      value: { protocol: TEXT_PROTOCOL, listenerBridge: true },
+    },
     popout: false,
     overlay: false,
     flag: "on",

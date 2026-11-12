@@ -55,6 +55,8 @@ export function markerTone(
   kind: ProtectedMessageMarkerKind,
 ): ProtectedMarkerTone {
   switch (kind) {
+    // S2 placeholder (no producer yet): the default's red; U1 sets gray.
+    case "unsupported_version":
     case "decrypt_failed":
     case "unverified_sender":
     case "removed_sender":

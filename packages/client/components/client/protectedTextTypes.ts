@@ -7,12 +7,15 @@
  *
  * Rules:
  * - Native mirrors follow the pinned native sources (`e2ee-core`
- *   `mls/text/types.rs` and `error.rs`, copies in `/home/mcp/w4-notes/`):
- *   struct fields snake_case as named, enums snake_case, and every Rust
- *   `Option` arrives as `null` (no `skip_serializing_if` on these structs),
- *   so it is `T | null` here, never an optional key.
+ *   `mls/text/types.rs` and `error.rs`; S1 copies in `/home/mcp/w4-notes/`,
+ *   S2 at desktop 876c034): struct fields snake_case as named, enums
+ *   snake_case, and every Rust `Option` arrives as `null`, so it is
+ *   `T | null` here. The exception is the S2 fields native marks
+ *   `skip_serializing_if` (omitted when `None`, so the S1 bytes are
+ *   unchanged): those are optional keys.
  * - Command arguments follow Tauri's mapping: top-level argument names in
- *   camelCase, nested structs snake_case.
+ *   camelCase, nested structs snake_case. An optional native parameter is
+ *   `T | null` and always sent; never an omitted key.
  * - Type-only apart from the `as const` tables; no runtime imports. Loadable
  *   by `node --test --conditions=browser` (the spec pins the tables against
  *   the native sources).
@@ -27,8 +30,11 @@ import type {
   MlsJoinRequest,
   MlsMemberDevice,
   MlsPublishKeyPackages,
+  MlsRemovedReason,
   MlsSubmitCommit,
 } from "./e2ee";
+
+export type { MlsRemovalReason, MlsRemovedReason } from "./e2ee";
 
 // ---------------------------------------------------------------------------
 // Compile-time helpers (types only)
@@ -66,6 +72,21 @@ export type TextCreateGroupPayload = MlsCreateGroupPayload & {
   kind: "Text";
   generation: number;
 };
+
+/**
+ * The Text create body as POSTed: native's payload plus the client's text
+ * protocol (S4 protocol floor, OR-3). Native never returns `protocol`; the
+ * manager adds it to the object as received.
+ */
+export type TextCreateGroupBody = TextCreateGroupPayload & {
+  protocol: number;
+};
+
+/**
+ * The `/mls/groups/:id/join_intent` body as POSTed: native's signed intent
+ * plus the client's text protocol (OR-3). `protocol` is not signed.
+ */
+export type TextJoinIntentBody = MlsJoinIntentPayload & { protocol: number };
 
 /**
  * `SubmitMlsCommitPayload` from `_admit` / `_remove` / `_update`. Couriered
@@ -142,6 +163,8 @@ export interface TextProcessOutcome {
   off_list: string[];
   /** Version adopted from the commit's embedded list; null when not newer. */
   seat_list_adopted: number | null;
+  /** S2: owner-device alert raised by that adoption; absent when none. */
+  owner_notice?: OwnerDeviceNotice;
 }
 
 /** `e2ee_text_encrypt`. `nonce` is the cid native minted (plan D10). */
@@ -164,6 +187,24 @@ export interface TextDecrypted {
   replies: string[];
   sender_verified: boolean;
   ts_skew: boolean;
+  /** One entry per file of a v2 envelope; `[]` for v1. Always present. */
+  files: FileMeta[];
+}
+
+/**
+ * A protected message's file as the UI sees it (S3 plan 2.3). Never a key,
+ * blob reference or digest. S2 reports every file `failed`/`unsupported`.
+ */
+export interface FileMeta {
+  /** Position in the envelope's `files`. */
+  idx: number;
+  name: string;
+  mime: string;
+  size: number;
+  /** Native: `pending` | `ready` | `failed` | `expired` (a free string). */
+  state: string;
+  /** Set with `state: "failed"`; absent otherwise. */
+  fail_reason?: string;
 }
 
 /** `e2ee_text_pending_commit` (null when nothing is staged). */
@@ -212,7 +253,13 @@ export interface SeatListSummary {
 
 export type OwnerPinStatus = "unpinned" | "pinned" | "changed";
 
-export type PinSource = "protect" | "first_sight" | "handover" | "confirmed";
+export type PinSource =
+  | "protect"
+  | "first_sight"
+  | "handover"
+  | "confirmed"
+  /** S2: a list signed by a device the held authority names. */
+  | "owner_device";
 
 /** The signer awaiting an owner-change confirmation (no key is returned). */
 export interface PendingSignerInfo {
@@ -247,7 +294,16 @@ export interface TextChannelState {
   roster_matches_list: boolean;
   update_due: boolean;
   update_required: boolean;
+  /**
+   * `verdict: "no_group"` while `state` is `active` also means the held
+   * group was superseded (S2).
+   */
   verdict: TextVerdict;
+  /**
+   * S2: the persistent `dropped_this_device` alert (`device_id` is THIS
+   * device); absent when none.
+   */
+  owner_alert?: OwnerDeviceNotice;
 }
 
 export type SeatListStatus = "accepted" | "unchanged";
@@ -261,6 +317,23 @@ export interface SeatListVerdict {
   signer_user_id: string;
   signer_device_id: string;
   pinned_now: boolean;
+  /** S2: owner-device alert raised by this adoption; absent when none. */
+  owner_notice?: OwnerDeviceNotice;
+}
+
+/** S2 (design 4.4.1 rule 9): why an owner-user device is told. */
+export type OwnerNoticeKind =
+  | "dropped_this_device"
+  | "changed_by_other"
+  | "seated_by_other";
+
+/** `owner_notice` / `owner_alert`. Ids only; the UI never renders them. */
+export interface OwnerDeviceNotice {
+  kind: OwnerNoticeKind;
+  /** The other owner device that signed the adopted list. */
+  device_id: string;
+  /** User ids the list seated (`seated_by_other`); empty otherwise. */
+  seated: string[];
 }
 
 /** `e2ee_text_seat_list_sign`. Persists nothing natively. */
@@ -270,6 +343,17 @@ export interface SignedSeatList {
   signature: string;
   signer_user_id: string;
   signer_device_id: string;
+  /** S2, v2 lists only: the channel authority the body names. */
+  authority?: SignedAuthority;
+}
+
+/**
+ * S2 channel authority (design 2.4, 4.10): `e2ee_text_authority_sign`'s
+ * result and a v2 list's `authority`.
+ */
+export interface SignedAuthority {
+  body: string;
+  signature: string;
 }
 
 /** Handover statement: `_owner_handover_sign` result, verify chain element. */
@@ -284,6 +368,8 @@ export interface SeatListInput {
   signature: string;
   signer_user_id: string;
   signer_device_id: string;
+  /** S2, v2 lists only: the server's `list.authority`; absent when none. */
+  authority?: SignedAuthority;
 }
 
 /** The `server_list` argument of `e2ee_text_seat_list_sign`. */
@@ -302,7 +388,8 @@ export interface DisplayName {
 export type GroupKind = "call" | "text";
 
 // ---------------------------------------------------------------------------
-// Commands (20: design 8.3 + W3 D12 `_mark_left` + W3 D7 `_pin_own_devices`)
+// Commands (21: design 8.3 + W3 D12 `_mark_left` + W3 D7 `_pin_own_devices`
+// + S2 `_authority_sign`)
 // ---------------------------------------------------------------------------
 
 /** The text command allow-list (B5 `textInvoke` refuses anything else). */
@@ -321,6 +408,7 @@ export const TEXT_COMMANDS = [
   "e2ee_text_owner_pin_state",
   "e2ee_text_owner_confirm_change",
   "e2ee_text_owner_handover_sign",
+  "e2ee_text_authority_sign",
   "e2ee_text_remove",
   "e2ee_text_update",
   "e2ee_text_state",
@@ -340,18 +428,27 @@ export const TEXT_LEFT_REASONS = [
 
 export type TextLeftReason = (typeof TEXT_LEFT_REASONS)[number];
 
-/** Dialog copy arguments shared by the three dialog commands (W3 D16). */
+/** Dialog copy arguments shared by the four dialog commands (W3 D16). */
 export interface TextDialogCopyArgs {
   channelName: string | null;
   displayNames: DisplayName[];
 }
 
-/** Per-command arguments (camelCase top level, snake_case nested). */
+/**
+ * Per-command arguments (camelCase top level, snake_case nested). Every key
+ * is always sent: an optional native parameter is `T | null`.
+ */
 export interface TextCommandArgs {
+  /**
+   * `recovery` / `supersedesGeneration` are the S2 recovery create (`false`
+   * / null otherwise).
+   */
   e2ee_text_group_create: {
     channelId: string;
     userId: string;
     supersedes: string | null;
+    recovery: boolean;
+    supersedesGeneration: number | null;
   };
   e2ee_text_join: {
     groupId: string;
@@ -363,8 +460,15 @@ export interface TextCommandArgs {
     request: MlsJoinRequest;
     claimed: MlsClaimedKeyPackage;
   };
-  /** `envelope` WITHOUT `recipientDeviceId` (native may deny unknown keys). */
-  e2ee_text_process: { envelope: TextWireEnvelope; userId: string };
+  /**
+   * `envelope` WITHOUT `recipientDeviceId` (native may deny unknown keys).
+   * `catchUpTip`: the server tip epoch while catching up; null when live.
+   */
+  e2ee_text_process: {
+    envelope: TextWireEnvelope;
+    userId: string;
+    catchUpTip: number | null;
+  };
   /**
    * `storedCommitB64` is the DS's stored string on a refetch path, our own
    * bytes only on a plain 2xx (plan D20). `rejoinIntents` is ALWAYS passed
@@ -372,12 +476,15 @@ export interface TextCommandArgs {
    * the DS's `MlsCommitInfo.rejoin_intents` verbatim (absent = `[]`); on a
    * plain 2xx exactly the intents this device's commit carried (the
    * `_remove` `rejoinIntent`; `[]` for Adds and Updates).
+   * `removedReasons` (S2) is ALWAYS passed too: the stored commit's
+   * `removed_reasons` (absent = `[]`).
    */
   e2ee_text_commit_won: {
     groupId: string;
     wonEpoch: number;
     storedCommitB64: string;
     rejoinIntents: MlsJoinRequest[];
+    removedReasons: MlsRemovedReason[];
   };
   e2ee_text_commit_lost: { groupId: string };
   e2ee_text_pending_commit: { groupId: string };
@@ -396,18 +503,32 @@ export interface TextCommandArgs {
     encrypted: EncryptedPayload;
     live: boolean;
   };
-  /** `serverList` null only when the server holds no list (genesis). */
+  /**
+   * `serverList` null only when the server holds no list (genesis).
+   * S2: `format` (null = native's choice), `authority` (null = none) and
+   * `recovery` (a recovery list always gets the recovery dialog).
+   */
   e2ee_text_seat_list_sign: TextDialogCopyArgs & {
     channelId: string;
     userId: string;
     seats: string[];
     deviceCap: number;
     serverList: ServerSeatList | null;
+    format: number | null;
+    authority: SignedAuthority | null;
+    recovery: boolean;
+  };
+  /** S2: ALWAYS a native dialog naming every owner device. */
+  e2ee_text_authority_sign: TextDialogCopyArgs & {
+    channelId: string;
+    userId: string;
+    ownerDevices: string[];
   };
   /**
    * `asOfEpoch` / `asOfGroupId` from `GET .../seats` (W3 D14, plan D24):
    * required by native whenever this device holds a group; null only when it
-   * holds none (plan D26 first-sight verify).
+   * holds none (plan D26 first-sight verify). `asOfGeneration` (S2): the
+   * server's `as_of_generation`, null when absent.
    */
   e2ee_text_seat_list_verify: {
     channelId: string;
@@ -416,6 +537,7 @@ export interface TextCommandArgs {
     serverOwnerId: string;
     asOfEpoch: number | null;
     asOfGroupId: string | null;
+    asOfGeneration: number | null;
   };
   e2ee_text_owner_pin_state: { channelId: string };
   e2ee_text_owner_confirm_change: TextDialogCopyArgs & { channelId: string };
@@ -428,12 +550,14 @@ export interface TextCommandArgs {
   /**
    * `pendingRemovalUsers` from `GET .../text_group` `pending_removals`
    * (W3 D13). No `revokedDevices`: W3 D26 dropped it for S1.
+   * `pendingDeviceTargets` (S2-D17a) is always sent, `[]` when none.
    */
   e2ee_text_remove: {
     groupId: string;
     targets: MlsMemberDevice[];
     rejoinIntent: MlsJoinRequest | null;
     pendingRemovalUsers: string[];
+    pendingDeviceTargets: MlsMemberDevice[];
   };
   e2ee_text_update: { groupId: string };
   e2ee_text_state: { channelId: string };
@@ -462,6 +586,7 @@ export interface TextCommandResult {
   e2ee_text_owner_pin_state: OwnerPinState;
   e2ee_text_owner_confirm_change: null;
   e2ee_text_owner_handover_sign: SignedHandover;
+  e2ee_text_authority_sign: SignedAuthority;
   e2ee_text_remove: TextSubmitCommitPayload;
   e2ee_text_update: TextSubmitCommitPayload;
   e2ee_text_state: TextChannelState;
@@ -476,6 +601,23 @@ export type _TextCommandArgsComplete = Assert<
 >;
 export type _TextCommandResultComplete = Assert<
   Equal<TextCommand, keyof TextCommandResult>
+>;
+
+/** `true` when every key of `T` is required and never `undefined`. */
+type AlwaysSent<T> = {
+  [K in keyof T]-?: T extends Required<Pick<T, K>>
+    ? undefined extends T[K]
+      ? false
+      : true
+    : false;
+}[keyof T];
+
+/** No command argument is an optional key: each one is always sent. */
+export type _TextCommandArgsAlwaysSent = Assert<
+  Equal<
+    { [C in TextCommand]: AlwaysSent<TextCommandArgs[C]> }[TextCommand],
+    true
+  >
 >;
 
 // ---------------------------------------------------------------------------
@@ -519,7 +661,10 @@ export type SeatListRejection =
   | "duplicate"
   | "signer_not_seated"
   | "signer_mismatch"
-  | "too_many_seats";
+  | "too_many_seats"
+  // S2
+  | "immutable_changed"
+  | "authority_invalid";
 
 export type MalformedTextReason =
   | "structure"
@@ -600,13 +745,18 @@ export const NATIVE_ERROR_TAGS = [
   "wrong_group_kind",
   "identity_pin_required",
   "handover_target_invalid",
+  // Appended in slice order (S2, S3); the spec pins the order
+  "catch_up_leaf_unresolvable",
+  "unsupported_envelope_version",
 ] as const;
 
 export type NativeErrorTag = (typeof NATIVE_ERROR_TAGS)[number];
 
 /**
  * The text-plane tags: every W3 variant (design 8.4 table plus W3's
- * `identity_pin_required` / `handover_target_invalid`) and the existing
+ * `identity_pin_required` / `handover_target_invalid`, then the appended
+ * S2 `catch_up_leaf_unresolvable` and S3-N0 `unsupported_envelope_version`)
+ * and the existing
  * variants design 8.4 says apply to text groups. Plan D17's total mapping
  * must name each of these; any other `NativeErrorTag` (e.g. `busy`,
  * `storage`, `not_enabled`) and any untyped rejection go to the fail-closed
@@ -640,6 +790,8 @@ export const TEXT_NATIVE_ERROR_TAGS = [
   "wrong_group_kind",
   "identity_pin_required",
   "handover_target_invalid",
+  "catch_up_leaf_unresolvable",
+  "unsupported_envelope_version",
   // existing variants that apply to text groups (design 8.4)
   "mls_group_not_found",
   "mls_unsolicited_welcome",
@@ -784,7 +936,11 @@ export type NativeError =
   | { type: "malformed_text_payload"; reason: MalformedTextReason }
   | { type: "wrong_group_kind"; group_id: string }
   | { type: "identity_pin_required"; user_id: string; device_id: string }
-  | { type: "handover_target_invalid"; channel_id: string };
+  | { type: "handover_target_invalid"; channel_id: string }
+  /** S2-D31: rolled back, not poisoned; mark `left` and rejoin. */
+  | { type: "catch_up_leaf_unresolvable"; group_id: string; epoch: number }
+  /** S3-N0: a newer format than this build reads; `v` is never shown. */
+  | { type: "unsupported_envelope_version"; v: number };
 
 /** Plan `TextNativeError`: the text-plane subset of `NativeError`. */
 export type TextNativeError = Extract<
@@ -814,6 +970,8 @@ export interface ProtectedSeatsResponse {
     | null;
   as_of_epoch: number | null;
   as_of_group_id: string | null;
+  /** S2-D33: the open Text group's generation; absent without one. */
+  as_of_generation?: number | null;
   entitlement_device_cap: number | null;
   slot_cap: number | null;
   device_cap: number | null;
@@ -824,8 +982,43 @@ export interface ProtectedSeatsResponse {
     /** Present only when the caller is the server owner. */
     seated_without_access?: boolean;
   }[];
-  cooling: { user_id: string; released_at: string; cooldown_until: string }[];
+  cooling: {
+    user_id: string;
+    released_at: string;
+    cooldown_until: string;
+    /** S2: present only when the caller is the server owner. */
+    cause?: SeatReleaseCause;
+  }[];
+  /**
+   * S2 (R27), owner caller only: authority `owner_devices` with no
+   * registered identity or a changed key. Absent = empty.
+   */
+  revoked_owner_devices?: string[];
 }
+
+/** S2: why a seat was released (`cooling[].cause`, design 2.3). */
+export type SeatReleaseCause =
+  | "owner_unseat"
+  | "server_removal"
+  | "access_lost"
+  | "device_never_joined";
+
+/** S2: one outstanding join intent (`text_group.join_requests`, 6.3). */
+export interface ProtectedJoinRequestInfo {
+  user_id: string;
+  device_id: string;
+  /** The signed generation (v2 lists); absent on an S1 intent. */
+  generation?: number;
+  key_package_ref: string;
+  signature: string;
+  /** The signed issue time in ms (v2 lists); absent on an S1 intent. */
+  issued_at?: number;
+  created_at: string;
+  rejoin: boolean;
+}
+
+/** S2 (design 6.3, #222): why the current list's signer device is lost. */
+export type SignerLostCause = "device_revoked" | "account_unavailable";
 
 /** `GET /mls/channels/:id/text_group` (404 when no open Text group). */
 export interface ProtectedTextGroupResponse {
@@ -841,12 +1034,29 @@ export interface ProtectedTextGroupResponse {
     epoch: number;
     at: string;
   }[];
+  /** S2, seated callers only; absent = empty. */
+  join_requests?: ProtectedJoinRequestInfo[];
+  /** S2-D17a, seated callers only; absent = empty. */
+  pending_device_removals?: {
+    user_id: string;
+    device_id: string;
+    created_at: string;
+  }[];
+  /** S2-D17d, seated callers only; absent = none. */
+  signer_lost?: {
+    user_id: string;
+    device_id: string;
+    cause: SignerLostCause;
+    at: string;
+  };
 }
 
 /** Plan D13 flag (`GET /`); absent/malformed/failed is `enabled: false`. */
 export interface ProtectedChannelsFlag {
   enabled: boolean;
   defaultDeviceCap: number | null;
+  /** S2 `formats_v2`; absent/malformed is `false` and never turns `enabled` off. */
+  formatsV2: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -854,6 +1064,13 @@ export interface ProtectedChannelsFlag {
 // ---------------------------------------------------------------------------
 
 export type TextApiMethod = "GET" | "POST" | "PUT" | "DELETE";
+
+/**
+ * The only extra header the courier sends (D40 / OR-14): the audit-log
+ * reason, as stoat.js sends it (trimmed; blank = no header; otherwise
+ * `encodeURIComponent`). The server caps it at 512 characters.
+ */
+export type TextApiHeaders = Readonly<Record<"X-Audit-Log-Reason", string>>;
 
 /**
  * `bridge.textApi` answer. Never thrown for a non-2xx; only a network
@@ -881,6 +1098,7 @@ export type ProtectedMarkerKind =
   | "removed_sender" // RemovedSender (red)
   | "replay" // Replay (red)
   | "malformed" // MalformedTextPayload (red)
+  | "unsupported_version" // S3-N0 UnsupportedEnvelopeVersion (gray)
   | "unencrypted_row" // no `encrypted` in a protected/pinned channel (red)
   | "error"; // any other or unknown error (red, fail closed)
 
@@ -955,10 +1173,16 @@ export interface ProtectedChannelView {
   publishInFlight: boolean;
   /** An orphan send could not be confirmed (D10 `maybe_unsent`). */
   maybeUnsent: boolean;
+  /** S2 D35: this device's join was refused for capacity; null otherwise. */
+  capacity: { reason: "device_cap" | "group_full" } | null;
+  /** S4 protocol floor: the server's `min`; null unless refused as outdated. */
+  clientOutdated: number | null;
+  /** S2: the last one-shot owner notice; null when none. */
+  ownerNotice: OwnerDeviceNotice | null;
 }
 
 /** Toasts the manager raises through `port.notify` (D22). */
-export type ProtectedToastKind = "unsolicited_welcome";
+export type ProtectedToastKind = "unsolicited_welcome" | "owner_notice";
 
 // ---------------------------------------------------------------------------
 // Port (plan 4.3) and manager-facing types
@@ -1009,6 +1233,7 @@ export interface ProtectedTextPort {
     method: TextApiMethod,
     path: string,
     body?: unknown,
+    headers?: TextApiHeaders,
   ): Promise<TextApiResponse>;
   /** Ack processed envelope ids (only after durable processing). */
   ack(ids: string[]): Promise<void>;
@@ -1054,7 +1279,9 @@ export type TextRefreshReason =
   | "resecuring"
   | "start"
   | "owner_confirmed"
-  | "send_refused";
+  | "send_refused"
+  /** S2: a `ProtectedChannelChanged` event. */
+  | "event";
 
 /** Per-channel state the manager exposes to the owner/message flows. */
 export interface ManagerState {
@@ -1181,6 +1408,13 @@ export interface ProtectedTextManagerApi {
     silent: boolean,
     key: string,
   ): Promise<ProtectedSendOutcome>;
+  /**
+   * S2 (design 7.5): a `ProtectedChannelChanged` refetch hint, `scope` as
+   * received (unknown items are the manager's to ignore). Never a security
+   * input. Optional until the manager implements it; the bridge calls it
+   * only when present.
+   */
+  onChannelChanged?(channelId: string, scope: readonly string[]): void;
 }
 
 /** `new ProtectedTextManager(port, cb, deps)`. */
@@ -1216,6 +1450,18 @@ export interface ProtectedUiApi {
   ): Promise<void>;
   confirmOwnerChange(channelId: string): Promise<void>;
   recreateGroup(channelId: string): Promise<void>;
+  /**
+   * S2: re-sign the channel authority naming `ownerDevices` (native dialog),
+   * then the seat list carrying it. Optional until the bridge implements
+   * it (W4-2); a UI calls it only when present.
+   */
+  authoritySign?(channelId: string, ownerDevices: string[]): Promise<void>;
+  /**
+   * S2 (design 6.3): recover ownership on this device after the signer
+   * device was lost. Never automatic. Optional until the bridge implements
+   * it (W4-2).
+   */
+  recoverOwnership?(channelId: string): Promise<void>;
   /** The last `GET .../seats` body, or null. */
   seatsSnapshot(channelId: string): ProtectedSeatsResponse | null;
   protectedFlag(): ProtectedChannelsFlag;

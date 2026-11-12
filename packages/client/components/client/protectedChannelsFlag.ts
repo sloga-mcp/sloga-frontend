@@ -40,7 +40,7 @@ export interface ProtectedFlagClient {
 
 /** A fresh "off" flag (never a shared object a caller could mutate). */
 function flagOff(): ProtectedChannelsFlag {
-  return { enabled: false, defaultDeviceCap: null };
+  return { enabled: false, defaultDeviceCap: null, formatsV2: false };
 }
 
 /** A non-null, non-array object. */
@@ -75,7 +75,7 @@ export function parseProtectedChannelsFeature(
     return flagOff();
   }
 
-  return { enabled, defaultDeviceCap: cap };
+  return { enabled, defaultDeviceCap: cap, formatsV2: false };
 }
 
 /**
