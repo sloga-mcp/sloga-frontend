@@ -18,11 +18,18 @@
  * values interpolated are display names, channel names and session names
  * (all from the caller) and counts; never ids, key material or message text.
  *
- * The macro cannot run outside the build, so this file has no spec. The
- * error and state mapping it renders is spec'd in `protectedShield.test.ts`.
+ * The macro cannot run outside the build. `protectedCopy.test.ts` loads this
+ * file with a stand-in `t` (a module hook) and checks the decisions made
+ * here (which copy a failure gets, which values fill it), not the catalog.
+ * The error and state mapping it renders is spec'd in `protectedShield.test.ts`.
  */
 import { t } from "@lingui/core/macro";
 
+import type {
+  AUDIT_LOG_REASON_MAX_CHARS,
+  BAN_REASON_MAX_CHARS,
+  RemovalReasonProblem,
+} from "./protectedRemovalReasonPolicy";
 import type {
   ProtectedErrorUi,
   ProtectedNoticeKind,
@@ -428,22 +435,68 @@ function resolvedNames(
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// Client failure reasons with copy of their own (S2)
+// ---------------------------------------------------------------------------
+
+/**
+ * `TextFlowFailure` client reasons the shield leaves to its catch-all (they
+ * are not in `PROTECTED_CLIENT_REASONS`) but that have a plain cause and a
+ * plain next step. `errorUiCopy` shows them when given `opts.failure`.
+ */
+export const CLIENT_REASONS_WITH_COPY = ["authority_needs_v2"] as const;
+
+export type ClientReasonWithCopy = (typeof CLIENT_REASONS_WITH_COPY)[number];
+
+/** Text for a client failure reason in `CLIENT_REASONS_WITH_COPY`. */
+export function clientReasonCopy(reason: ClientReasonWithCopy): string {
+  switch (reason) {
+    // `signOwnerDevices` (design 4.10): an authority rides on a v2 seat list
+    // only, and no v2 list is held while `formats_v2` is off. Refused before
+    // any dialog; nothing was signed. Changing the seats first does not help
+    // (the next list stays v1 while the flag is off), and once the flag is
+    // on this same flow moves the list to v2 itself: so, try again later.
+    case "authority_needs_v2":
+      return t`This channel's member list uses an older format, so its signing devices can't be changed yet. Try again later.`;
+    default: {
+      const _exhaustive: never = reason;
+      return verifyChannelFailedCopy();
+    }
+  }
+}
+
+/** The failure's reason when it is a client failure with copy here. */
+function clientReasonOf(failure: unknown): ClientReasonWithCopy | null {
+  if (typeof failure !== "object" || failure === null) return null;
+  const f = failure as { source?: unknown; reason?: unknown };
+  if (f.source !== "client" || typeof f.reason !== "string") return null;
+  return (CLIENT_REASONS_WITH_COPY as readonly string[]).includes(f.reason)
+    ? (f.reason as ClientReasonWithCopy)
+    : null;
+}
+
 /**
  * Text for a `protectedNoticeForError` answer; null for `none` (the bridge
  * handled it, or the user cancelled a native dialog). `opts.removedUserNames`
  * lets the owner UI name the users of `seat_list_names_removed_users`.
+ * `opts.failure` is the failure `ui` was mapped from: a client reason in
+ * `CLIENT_REASONS_WITH_COPY` replaces a notice's text. A marker, toast or
+ * `none` is never replaced.
  */
 export function errorUiCopy(
   ui: ProtectedErrorUi,
-  opts: { removedUserNames?: RemovedUserNames } = {},
+  opts: { removedUserNames?: RemovedUserNames; failure?: unknown } = {},
 ): string | null {
   switch (ui.kind) {
-    case "notice":
+    case "notice": {
+      const reason = clientReasonOf(opts.failure);
+      if (reason !== null) return clientReasonCopy(reason);
       return noticeCopy(
         ui.notice,
         ui.max,
         resolvedNames(ui, opts.removedUserNames),
       );
+    }
     case "marker":
       return markerCopy(ui.marker);
     case "toast":
@@ -604,6 +657,45 @@ export const seatPickerCopy = {
   /** Confirm button. */
   confirm: (): string => t`Save seats`,
 };
+
+// ---------------------------------------------------------------------------
+// Removal reason (S2-D40; kick, ban, unseat; `protectedRemovalReasonPolicy`)
+// ---------------------------------------------------------------------------
+
+/**
+ * A removal reason cap, as the policy's constants type it: the audit header
+ * (kick, unseat) or a ban body. Pass the constant, never a literal.
+ */
+export type RemovalReasonCap =
+  | typeof AUDIT_LOG_REASON_MAX_CHARS
+  | typeof BAN_REASON_MAX_CHARS;
+
+/** `validReason` or `reasonRefusal` said `too_long`. */
+export function reasonTooLongCopy(cap: RemovalReasonCap): string {
+  return t`Use a shorter reason (up to ${cap} characters).`;
+}
+
+/** `validReason` said `empty`: nothing left once sanitized and trimmed. */
+export function reasonEmptyCopy(): string {
+  return t`Add a reason to continue.`;
+}
+
+/** Text for a `RemovalReasonProblem`; `cap` is the carrier's cap. */
+export function reasonProblemCopy(
+  why: RemovalReasonProblem,
+  cap: RemovalReasonCap,
+): string {
+  switch (why) {
+    case "empty":
+      return reasonEmptyCopy();
+    case "too_long":
+      return reasonTooLongCopy(cap);
+    default: {
+      const _exhaustive: never = why;
+      return reasonEmptyCopy();
+    }
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Composer (lane C4) and drafts (lane C5)

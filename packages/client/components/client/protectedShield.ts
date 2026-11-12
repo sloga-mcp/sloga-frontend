@@ -10,7 +10,8 @@
  *   5b (`capacity`). GREEN (`protected`) comes only from
  *   step 8, which needs the native verdict `ok`; it is never derived from a
  *   server field, and never shown while any leaf is off the signed list or
- *   locally removed.
+ *   locally removed. A step 3 owner change also says whether Review is
+ *   offered (`reviewOffered`, S2 OR-10); that never changes the state.
  * - `shieldPresentation`: plan D14 glyph, hue variable, name tint, composer
  *   mode and default notice per state.
  * - `protectedNoticeForError`: plan D17, total over every text-plane native
@@ -165,6 +166,13 @@ export interface ShieldInputs {
   tauriE2eeOff?: boolean;
   /** Notice only (never the state): D15 "Review owner change" is offered. */
   ownerChangePending?: boolean;
+  /**
+   * Notice only (never the state), S2 OR-10: the manager's
+   * `view.ownerChangeUnlisted`. A same-user owner change this device already
+   * confirmed stayed unsettled, so it shows `owner_changed_unlisted` and
+   * Review is not offered. Absent = false.
+   */
+  ownerChangeUnlisted?: boolean;
 }
 
 /** Which design 9.1 step decided (`3b` is the fail-closed error catch-all). */
@@ -189,6 +197,14 @@ export interface ShieldExplanation {
   step: ShieldStep;
   /** The most specific notice for this state; null only for `protected`. */
   notice: ProtectedNoticeKind | null;
+  /**
+   * Presentation only (S2 OR-10): whether the UI may offer "Review owner
+   * change". Set only on a step 3 owner change and true exactly when the
+   * notice is `owner_changed_review`; absent anywhere else, so read it as
+   * `=== true`. It can only withhold: the pill keeps its own D15
+   * precondition (`pillOwnerChangeReviewable`) and ANDs this in.
+   */
+  reviewOffered?: boolean;
 }
 
 const has = (list: readonly string[], tag: string | null): boolean =>
@@ -230,7 +246,11 @@ function serverSaysResecuring(
 function ownerChangeNotice(i: ShieldInputs): ProtectedNoticeKind {
   const signer = i.native?.owner_pin?.pending_signer ?? null;
   if (i.ownerChangePending === true || signer?.same_user === true) {
-    return "owner_changed_review";
+    // OR-10: the signer is not on the carried authority's owner devices,
+    // so another confirm can't settle it. Same user only; the state stays.
+    return i.ownerChangeUnlisted === true && signer?.same_user === true
+      ? "owner_changed_unlisted"
+      : "owner_changed_review";
   }
   if (signer !== null && signer.same_user === false) {
     return "owner_changed_locked";
@@ -238,17 +258,16 @@ function ownerChangeNotice(i: ShieldInputs): ProtectedNoticeKind {
   return "unverified";
 }
 
+const ownerChanged = (i: ShieldInputs): boolean =>
+  i.seatListError === "owner_changed" ||
+  i.groupError === "owner_changed" ||
+  i.native?.verdict === "owner_changed";
+
 /** The step 3 notice: the most specific cause, seat list first. */
 function loudNotice(i: ShieldInputs): ProtectedNoticeKind {
   const s = i.seatListError;
   const g = i.groupError;
-  if (
-    s === "owner_changed" ||
-    g === "owner_changed" ||
-    i.native?.verdict === "owner_changed"
-  ) {
-    return ownerChangeNotice(i);
-  }
+  if (ownerChanged(i)) return ownerChangeNotice(i);
   if (has(SHIELD_LOUD_SEAT_LIST_ERRORS, s)) return "seat_list_failed";
   switch (g) {
     case "bad_sig":
@@ -294,7 +313,11 @@ export function explainShield(i: ShieldInputs): ShieldExplanation | null {
     has(SHIELD_LOUD_GROUP_ERRORS, i.groupError) ||
     i.native?.verdict === "owner_changed"
   ) {
-    return { state: "unverified", step: "3", notice: loudNotice(i) };
+    const notice = loudNotice(i);
+    if (!ownerChanged(i)) return { state: "unverified", step: "3", notice };
+    // The Review offer is derived from the notice, so they never disagree.
+    const reviewOffered = notice === "owner_changed_review";
+    return { state: "unverified", step: "3", notice, reviewOffered };
   }
   // 3b. Any other error tag (incl. "unknown") fails closed.
   if (
@@ -411,6 +434,7 @@ export function shieldInputsFromView(
     capacity: view?.capacity ?? null,
     clientOutdated: view?.clientOutdated ?? null,
     ownerChangePending: view?.ownerChangePending ?? false,
+    ownerChangeUnlisted: view?.ownerChangeUnlisted === true,
   };
 }
 

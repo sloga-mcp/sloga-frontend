@@ -741,6 +741,8 @@ function fakeDeps(
       protect: async () => undefined,
       setSeats: async () => undefined,
       signOwnerDevices: async () => undefined,
+      pendingSeats: () => null,
+      cancelPendingSeats: () => ({ discarded: false, why: "none" }),
       ...over.owner,
     },
     messages: {
@@ -4150,6 +4152,55 @@ test("S2 D40: setSeats re-validates the reason (header rule) and hands the owner
   assert.equal(inFlight, true);
   assert.deepEqual(seen.at(-1), ["sign", CH, [OWNER_DEV, "dev-owner-2"]]);
   assert.equal(env.views.get(CH)?.publishInFlight, false);
+  m.dispose();
+});
+
+test("S2 F3: pendingSeats / cancelPendingSeats pass the channel and the flow port to the owner flows and return their answer; a discard re-emits the view", async () => {
+  const env = new Env();
+  const seen: unknown[][] = [];
+  const pending = {
+    kind: "owner_devices" as const,
+    reasonRequired: true,
+    discardable: true,
+  };
+  let answer: { discarded: true } | { discarded: false; why: "busy" } = {
+    discarded: false,
+    why: "busy",
+  };
+  const m = make(
+    env,
+    fakeDeps(env, {
+      owner: {
+        pendingSeats: (port, ch) => {
+          seen.push(["pending", ch, port.selfUserId]);
+          return pending;
+        },
+        cancelPendingSeats: (port, ch) => {
+          seen.push(["cancel", ch, port.selfUserId]);
+          return answer;
+        },
+      },
+    }),
+  );
+  await m.refresh(CH, "open");
+  assert.equal(m.pendingSeats(CH), pending);
+  let emitted = 0;
+  const views = env.views;
+  const set = views.set.bind(views);
+  views.set = (k, v) => {
+    if (k === CH) emitted++;
+    return set(k, v);
+  };
+  assert.deepEqual(m.cancelPendingSeats(CH), { discarded: false, why: "busy" });
+  assert.equal(emitted, 0, "nothing discarded: no new view");
+  answer = { discarded: true };
+  assert.deepEqual(m.cancelPendingSeats(CH), { discarded: true });
+  assert.equal(emitted, 1, "the discard re-emits the view");
+  assert.deepEqual(seen, [
+    ["pending", CH, SELF],
+    ["cancel", CH, SELF],
+    ["cancel", CH, SELF],
+  ]);
   m.dispose();
 });
 

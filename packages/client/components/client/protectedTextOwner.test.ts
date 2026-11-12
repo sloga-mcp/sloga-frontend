@@ -14,6 +14,8 @@ import { reasonRefusal } from "./protectedRemovalReasonPolicy.ts";
 import { protectedNoticeForError } from "./protectedShield.ts";
 import {
   _resetOwnerFlowsForTest,
+  cancelPendingSeats,
+  pendingSeats,
   proposedOwnerDevices,
   protect,
   publishStoreKey,
@@ -33,7 +35,13 @@ import type {
 } from "./protectedTextTypes.ts";
 
 // Compile-time: the exports are exactly what B5 wires as `deps.owner`.
-const _ownerFlows: OwnerFlows = { protect, setSeats, signOwnerDevices };
+const _ownerFlows: OwnerFlows = {
+  protect,
+  setSeats,
+  signOwnerDevices,
+  pendingSeats,
+  cancelPendingSeats,
+};
 void _ownerFlows;
 
 const CH = "01CHANNEL0000000000000000A";
@@ -1553,6 +1561,263 @@ test("S2 D40: a blank reason is refused before any request or sign", async () =>
     );
   }
   assert.equal(h.calls.length + h.invokes.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// S2 F3: pendingSeats / cancelPendingSeats
+// ---------------------------------------------------------------------------
+
+/** Requests and native calls so far (cancel must add neither). */
+const traffic = (h: Harness) => h.calls.length + h.invokes.length;
+
+const storedEntry = (h: Harness) => {
+  const raw = h.store.get(publishStoreKey(ME, CH));
+  return raw === undefined ? null : JSON.parse(raw);
+};
+
+test("S2 F3: a publish refused for its reason is discarded: pendingSeats then null, nothing signed or sent by the discard; the next setSeats signs afresh", async () => {
+  const h = harness({
+    routes: listRoutes(heldV2, nextV2, [res(400, REASON_REQUIRED), res(200)]),
+    invoke: seatNative(nextV2),
+  });
+  await assert.rejects(setSeats(h.ops, h.port, CH, [ME], 5), {
+    type: "RemovalReasonRequired",
+  });
+  assert.deepEqual(pendingSeats(h.port, CH), {
+    kind: "seats",
+    reasonRequired: true,
+    discardable: true,
+  });
+  assert.equal(storedEntry(h)?.answer, "refused");
+  const before = traffic(h);
+  assert.deepEqual(cancelPendingSeats(h.port, CH), { discarded: true });
+  assert.equal(traffic(h), before, "the discard signs and sends nothing");
+  assert.equal(pendingSeats(h.port, CH), null);
+  assert.equal(h.store.size, 0);
+  assert.deepEqual(cancelPendingSeats(h.port, CH), {
+    discarded: false,
+    why: "none",
+  });
+
+  // No longer blocked: the next change verifies, signs and publishes anew.
+  await setSeats(h.ops, h.port, CH, [ME, BOB], 5);
+  assert.equal(signArgs(h).length, 2);
+  assert.equal(h.store.size, 0, "resolved");
+});
+
+test("S2 F3: a reason re-send that may have reached the server is never discarded; the next flow re-sends the SAME bytes", async () => {
+  const h = harness({
+    routes: listRoutes(heldV2, nextV2, [
+      res(400, REASON_REQUIRED),
+      "transport",
+    ]),
+    invoke: seatNative(nextV2),
+    sleepRejectsAfter: 0,
+  });
+  await assert.rejects(setSeats(h.ops, h.port, CH, [ME], 5), {
+    type: "RemovalReasonRequired",
+  });
+  assert.equal(pendingSeats(h.port, CH)?.discardable, true);
+  // The owner adds a reason; that PUT gets no answer, then the flow ends.
+  await assert.rejects(setSeats(h.ops, h.port, CH, [ME], 5, REASON), {
+    reason: "aborted",
+  });
+  assert.deepEqual(pendingSeats(h.port, CH), {
+    kind: "seats",
+    reasonRequired: true,
+    discardable: false,
+  });
+  const before = traffic(h);
+  assert.deepEqual(cancelPendingSeats(h.port, CH), {
+    discarded: false,
+    why: "maybe_accepted",
+  });
+  assert.equal(traffic(h), before);
+  const kept = storedEntry(h);
+  assert.deepEqual(kept?.signed, nextV2, "the bytes stay");
+  assert.equal(kept?.answer, "sent");
+
+  // Resume after a reload: same bytes, no sign.
+  _resetOwnerFlowsForTest();
+  const h2 = harness({
+    routes: listRoutes(heldV2, nextV2, [res(200)]),
+    invoke: seatNative(nextV2),
+  });
+  h2.store.set(publishStoreKey(ME, CH), JSON.stringify(kept));
+  await setSeats(h2.ops, h2.port, CH, [ME], 5, REASON);
+  assert.equal(signArgs(h2).length, 0);
+  assert.deepEqual(puts(h2)[0].body, puts(h)[0].body, "SAME bytes");
+  assert.equal(h2.store.size, 0);
+});
+
+test("S2 F3: one maybe-accepted attempt is sticky: a transport error before the reason refusal keeps the publish", async () => {
+  const h = harness({
+    routes: listRoutes(heldV2, nextV2, [
+      "transport",
+      res(400, REASON_REQUIRED),
+    ]),
+    invoke: seatNative(nextV2),
+  });
+  await assert.rejects(setSeats(h.ops, h.port, CH, [ME], 5), {
+    type: "RemovalReasonRequired",
+  });
+  assert.equal(puts(h).length, 2);
+  assert.deepEqual(pendingSeats(h.port, CH), {
+    kind: "seats",
+    reasonRequired: true,
+    discardable: false,
+  });
+  assert.deepEqual(cancelPendingSeats(h.port, CH), {
+    discarded: false,
+    why: "maybe_accepted",
+  });
+  assert.ok(storedEntry(h), "kept");
+});
+
+test("S2 F3: an entry persisted before F3 (no answer recorded) is never discarded, not even after a fresh reason refusal", async () => {
+  for (const old of [
+    { v: 1, op: "seats", signed: nextV2, reasonRequired: true },
+    { v: 1, op: "seats", signed: nextV2NewAuth, ownerDevices: true },
+    { v: 1, op: "seats", signed: nextV2, reasonRequired: true, answer: "x" },
+  ]) {
+    _resetOwnerFlowsForTest();
+    const h = harness({
+      routes: listRoutes(heldV2, nextV2, [res(400, REASON_REQUIRED)]),
+      invoke: seatNative(nextV2),
+    });
+    h.store.set(publishStoreKey(ME, CH), JSON.stringify(old));
+    const label = JSON.stringify(Object.keys(old));
+    assert.equal(pendingSeats(h.port, CH)?.discardable, false, label);
+    assert.deepEqual(
+      cancelPendingSeats(h.port, CH),
+      { discarded: false, why: "maybe_accepted" },
+      label,
+    );
+    // Resumed (same bytes) and refused for its reason again: still kept.
+    await assert.rejects(setSeats(h.ops, h.port, CH, [ME], 5), {
+      type: "RemovalReasonRequired",
+    });
+    assert.equal(signArgs(h).length, 0, label);
+    assert.equal(pendingSeats(h.port, CH)?.reasonRequired, true, label);
+    assert.deepEqual(
+      cancelPendingSeats(h.port, CH),
+      { discarded: false, why: "maybe_accepted" },
+      label,
+    );
+    assert.deepEqual(storedEntry(h)?.signed, old.signed, label);
+  }
+});
+
+test("S2 F3: an owner-devices publish only ever refused by the rate limiter (429) is discarded; after a 5xx it is kept; a plain seat publish is never abandoned this way", async () => {
+  const h = harness({
+    routes: listRoutes(heldV2, nextV2NewAuth, [res(429)]),
+    invoke: seatNative(nextV2NewAuth),
+    sleepRejectsAfter: 0,
+  });
+  await assert.rejects(signOwnerDevices(h.ops, h.port, CH, [MY_DEV]), {
+    reason: "aborted",
+  });
+  assert.deepEqual(pendingSeats(h.port, CH), {
+    kind: "owner_devices",
+    reasonRequired: false,
+    discardable: true,
+  });
+  const before = traffic(h);
+  assert.deepEqual(cancelPendingSeats(h.port, CH), { discarded: true });
+  assert.equal(traffic(h), before, "no dialog, no sign, no request");
+  assert.equal(h.store.size, 0);
+
+  _resetOwnerFlowsForTest();
+  const h2 = harness({
+    routes: listRoutes(heldV2, nextV2NewAuth, [res(429), res(503)]),
+    invoke: seatNative(nextV2NewAuth),
+    sleepRejectsAfter: 1,
+  });
+  await assert.rejects(signOwnerDevices(h2.ops, h2.port, CH, [MY_DEV]), {
+    reason: "aborted",
+  });
+  assert.equal(puts(h2).length, 2);
+  assert.deepEqual(pendingSeats(h2.port, CH), {
+    kind: "owner_devices",
+    reasonRequired: false,
+    discardable: false,
+  });
+  assert.deepEqual(cancelPendingSeats(h2.port, CH), {
+    discarded: false,
+    why: "maybe_accepted",
+  });
+
+  _resetOwnerFlowsForTest();
+  const h3 = harness({
+    routes: listRoutes(heldV2, nextV2, [res(429)]),
+    invoke: seatNative(nextV2),
+    sleepRejectsAfter: 0,
+  });
+  await assert.rejects(setSeats(h3.ops, h3.port, CH, [ME], 5), {
+    reason: "aborted",
+  });
+  assert.deepEqual(pendingSeats(h3.port, CH), {
+    kind: "seats",
+    reasonRequired: false,
+    discardable: false,
+  });
+  assert.deepEqual(cancelPendingSeats(h3.port, CH), {
+    discarded: false,
+    why: "maybe_accepted",
+  });
+});
+
+test("S2 F3: while an owner flow runs on the channel, cancel answers busy and keeps the entry", async () => {
+  const h = harness({
+    routes: listRoutes(heldV2, nextV2NewAuth, [res(429)]),
+    invoke: seatNative(nextV2NewAuth),
+  });
+  let release: (e: Error) => void = () => undefined;
+  h.port.sleep = () =>
+    new Promise<void>((_ok, fail) => {
+      release = fail;
+    });
+  const flow = signOwnerDevices(h.ops, h.port, CH, [MY_DEV]);
+  for (let i = 0; i < 100 && storedEntry(h)?.answer !== "refused"; i++) {
+    await new Promise((r) => setImmediate(r));
+  }
+  assert.equal(storedEntry(h)?.answer, "refused", "parked after the 429");
+  assert.equal(pendingSeats(h.port, CH)?.discardable, false);
+  assert.deepEqual(cancelPendingSeats(h.port, CH), {
+    discarded: false,
+    why: "busy",
+  });
+  assert.ok(storedEntry(h));
+  release(new Error("aborted"));
+  await assert.rejects(flow, { reason: "aborted" });
+  assert.deepEqual(cancelPendingSeats(h.port, CH), { discarded: true });
+});
+
+test("S2 F3: a re-send whose write-ahead cannot reach the store is not sent while the store still says refused", async () => {
+  const h = harness({
+    routes: listRoutes(heldV2, nextV2, [res(200)]),
+    invoke: seatNative(nextV2),
+    storeSetFails: true,
+  });
+  // A reason-refused entry from an earlier session (stored directly).
+  h.store.set(
+    publishStoreKey(ME, CH),
+    JSON.stringify({
+      v: 1,
+      op: "seats",
+      signed: nextV2,
+      reasonRequired: true,
+      answer: "refused",
+    }),
+  );
+  await assert.rejects(setSeats(h.ops, h.port, CH, [ME], 5, REASON), {
+    source: "client",
+    reason: "publish_not_persisted",
+  });
+  assert.equal(puts(h).length, 0, "nothing went out");
+  assert.equal(signArgs(h).length, 0);
+  // Still never accepted: the owner may discard it.
+  assert.equal(pendingSeats(h.port, CH)?.discardable, true);
 });
 
 const seatsWith = (

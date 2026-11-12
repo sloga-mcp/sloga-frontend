@@ -176,7 +176,13 @@ import {
   encryptAndSend,
   markerForError,
 } from "./protectedTextMessages";
-import { protect, setSeats, signOwnerDevices } from "./protectedTextOwner";
+import {
+  cancelPendingSeats,
+  pendingSeats,
+  protect,
+  setSeats,
+  signOwnerDevices,
+} from "./protectedTextOwner";
 import {
   type ProtectedChannelInfo,
   type ProtectedChannelsFlag,
@@ -9664,7 +9670,13 @@ export class E2EEBridge implements E2EEAdapter {
       this.#protectedPort(userId, deviceId, life.signal),
       callbacks,
       {
-        owner: { protect, setSeats, signOwnerDevices },
+        owner: {
+          protect,
+          setSeats,
+          signOwnerDevices,
+          pendingSeats,
+          cancelPendingSeats,
+        },
         messages: { encryptAndSend, decryptRow, markerForError },
       },
     );
@@ -10474,6 +10486,22 @@ export class E2EEBridge implements E2EEAdapter {
   async recoverOwnership(channelId: string): Promise<void> {
     const manager = await this.#protectedManagerFor(channelId);
     return manager.recoverOwnership(channelId);
+  }
+
+  /**
+   * S2 F3: the stored seat publish U8 offers to discard, or null. Reads
+   * the view map first so a UI memo re-runs on every view change (a
+   * discard re-emits the view); null while no manager exists.
+   */
+  pendingSeats(channelId: string) {
+    void this.protectedChannels.get(channelId);
+    return this.#ptManager?.pendingSeats(channelId) ?? null;
+  }
+
+  /** S2 F3: discards only a publish the server never accepted. */
+  async cancelPendingSeats(channelId: string) {
+    const manager = await this.#protectedManagerFor(channelId);
+    return manager.cancelPendingSeats(channelId);
   }
 
   /** This device's id for comparisons (never rendered); reactive. */

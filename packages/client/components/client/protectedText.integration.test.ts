@@ -27,6 +27,8 @@ import {
 } from "./protectedTextMessages.ts";
 import {
   _resetOwnerFlowsForTest,
+  cancelPendingSeats,
+  pendingSeats,
   protect,
   setSeats,
   signOwnerDevices,
@@ -54,7 +56,13 @@ const G0 = await textGroupId(CH, 0);
 const CID = "01J9Z3K4M5N6P7Q8R9S0T1V2W7";
 
 const DEPS: ProtectedTextManagerDeps = {
-  owner: { protect, setSeats, signOwnerDevices },
+  owner: {
+    protect,
+    setSeats,
+    signOwnerDevices,
+    pendingSeats,
+    cancelPendingSeats,
+  },
   messages: { encryptAndSend, decryptRow, markerForError },
 };
 

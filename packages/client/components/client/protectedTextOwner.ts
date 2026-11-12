@@ -32,6 +32,9 @@
  *   does NOT use up the bytes (4.9): they stay stored and are re-sent as
  *   they are, with `X-Audit-Log-Reason`, once the caller has a reason.
  *   Nothing is re-signed because a reason was added.
+ * - F3: `cancelPendingSeats` drops a stored seat publish only when its
+ *   recorded answers prove the server never took it (`answer`, written
+ *   ahead of every PUT); resume is unchanged (the same bytes).
  *
  * Pure of Solid / livekit / lingui; driven through `GroupOps` and the port,
  * so `node --test --conditions=browser` loads it over fakes.
@@ -49,8 +52,10 @@ import {
   signAllowed,
 } from "./protectedTextPolicy.ts";
 import type {
+  CancelPendingSeatsResult,
   GroupOps,
   NativeError,
+  PendingSeats,
   ProtectedSeatsResponse,
   ProtectedTextPort,
   SeatListInput,
@@ -90,7 +95,29 @@ export interface StoredPublish {
    * a `setSeats` with a reason re-sends them and signs nothing new.
    */
   reasonRequired?: true;
+  /**
+   * S2 F3: what the server has answered for these bytes (seat publishes
+   * only); `cancelPendingSeats` decides on it alone.
+   * - `"unsent"`: stored at sign time; no PUT of them has gone out.
+   * - `"sent"`: written BEFORE every PUT (write-ahead) and left in place
+   *   unless the answer proves nothing was written: a transport error, a
+   *   5xx, no answer at all (aborted mid-PUT), a 2xx. The server MAY hold
+   *   these bytes.
+   * - `"refused"`: EVERY PUT of them so far was answered with a refusal
+   *   that writes nothing: a 429 (the rate-limit fairing reroutes the
+   *   request to `/ratelimit` before any route runs) or a reason refusal
+   *   (`RemovalReasonRequired` / `AuditLogReasonTooLong`, decided before
+   *   the write). Set only when the state before that PUT was `"unsent"`
+   *   or `"refused"`: one maybe-accepted attempt keeps the entry `"sent"`
+   *   for good, as a later refusal says nothing about an earlier attempt.
+   * Absent (stored before F3) or unknown: read as `"sent"` (ambiguous).
+   */
+  answer?: PublishAnswerSeen;
 }
+
+type PublishAnswerSeen = "unsent" | "sent" | "refused";
+
+const ANSWERS_SEEN: readonly string[] = ["unsent", "sent", "refused"];
 
 /**
  * In-memory copy of every stored publish, so a failed `localStorage` write
@@ -242,7 +269,10 @@ function reasonHeader(reason: string | null): TextApiHeaders | undefined {
   return reason === null ? undefined : { "X-Audit-Log-Reason": reason };
 }
 
-function readStored(ctx: Ctx): StoredPublish | "corrupt" | null {
+/** Where a stored publish lives: the flow context, or `{ port, key }`. */
+type StoreAt = Pick<Ctx, "port" | "key">;
+
+function readStored(ctx: StoreAt): StoredPublish | "corrupt" | null {
   const raw = ctx.port.store.get(ctx.key) ?? memo.get(ctx.key) ?? null;
   if (raw === null) return null;
   try {
@@ -251,12 +281,17 @@ function readStored(ctx: Ctx): StoredPublish | "corrupt" | null {
     if (v.op !== "protect" && v.op !== "seats") return "corrupt";
     const signed = parseSigned(v.signed);
     if (signed === null) return "corrupt";
+    const answer =
+      typeof v.answer === "string" && ANSWERS_SEEN.includes(v.answer)
+        ? (v.answer as PublishAnswerSeen)
+        : null;
     return {
       v: 1,
       op: v.op,
       signed,
       ...(v.ownerDevices === true ? { ownerDevices: true as const } : {}),
       ...(v.reasonRequired === true ? { reasonRequired: true as const } : {}),
+      ...(answer !== null ? { answer } : {}),
     };
   } catch {
     return "corrupt";
@@ -274,7 +309,7 @@ function persist(ctx: Ctx, entry: StoredPublish): void {
   }
 }
 
-function clearStored(ctx: Ctx): void {
+function clearStored(ctx: StoreAt): void {
   memo.delete(ctx.key);
   ctx.port.store.delete(ctx.key);
 }
@@ -619,6 +654,27 @@ function refusedForReason(step: PublishStep, answer: PublishAnswer): boolean {
 }
 
 /**
+ * F3 write-ahead: record `"sent"` BEFORE a PUT goes out, so a crash or an
+ * abort mid-PUT leaves the entry "maybe accepted". If the store write
+ * failed and the store still says `"unsent"` / `"refused"` (what a later
+ * session would read), nothing is sent: that stale record would let
+ * `cancelPendingSeats` drop bytes the server may hold.
+ */
+function writeAhead(ctx: Ctx, entry: StoredPublish): StoredPublish {
+  const sent: StoredPublish = { ...entry, answer: "sent" };
+  persist(ctx, sent);
+  const now = readStored(ctx);
+  if (
+    now !== null &&
+    now !== "corrupt" &&
+    (now.answer === "unsent" || now.answer === "refused")
+  ) {
+    throw clientFailure("publish_not_persisted");
+  }
+  return sent;
+}
+
+/**
  * PUT the SAME list bytes until resolved (design 4.9), then finish. With a
  * `reason`, every attempt carries it as `X-Audit-Log-Reason`.
  */
@@ -628,7 +684,11 @@ async function publishSeats(
   reason: string | null,
 ) {
   const { signed } = entry;
+  let current = entry;
   for (let failures = 0; ; failures++) {
+    // F3: no PUT of these bytes so far was possibly accepted.
+    const clean = current.answer === "unsent" || current.answer === "refused";
+    current = writeAhead(ctx, current);
     const answer = await request(
       ctx,
       "PUT",
@@ -638,13 +698,23 @@ async function publishSeats(
     );
     const step = publishStep(answer, { op: "seats", failures });
     if (step.kind === "resend") {
+      if (clean && step.cause === "rate_limited") {
+        // A 429 never reached the route: still never accepted.
+        current = { ...current, answer: "refused" };
+        persist(ctx, current);
+      }
       await pause(ctx, step.delayMs);
       continue;
     }
     if (refusedForReason(step, answer) && answer.kind === "response") {
       // Still unresolved: keep the bytes (nothing new may be signed) and
       // let the caller come back with a reason. Ids only (D16).
-      persist(ctx, { ...entry, reasonRequired: true });
+      current = {
+        ...current,
+        reasonRequired: true,
+        answer: clean ? "refused" : "sent",
+      };
+      persist(ctx, current);
       ctx.port.log("warn", "[protected] seat list needs a removal reason", {
         channelId: ctx.channelId,
       });
@@ -968,7 +1038,12 @@ export async function setSeats(
     ) {
       throw clientFailure("publish_refused");
     }
-    const entry: StoredPublish = { v: 1, op: "seats", signed };
+    const entry: StoredPublish = {
+      v: 1,
+      op: "seats",
+      signed,
+      answer: "unsent",
+    };
     persist(ctx, entry);
     await publishSeats(ctx, entry, sentReason);
   });
@@ -1051,10 +1126,82 @@ export async function signOwnerDevices(
       op: "seats",
       signed,
       ownerDevices: true,
+      answer: "unsent",
     };
     persist(ctx, entry);
     await publishSeats(ctx, entry, null);
   });
+}
+
+/**
+ * S2 F3: whether the server NEVER took a stored seat publish, from the
+ * entry alone: `answer` is `"refused"` (every PUT of these bytes was
+ * refused without a write, see `StoredPublish.answer`) and the entry is one
+ * the owner may abandon: refused for its reason header (`reasonRequired`)
+ * or an owner-devices publish. Anything else, a pre-F3 entry without
+ * `answer` included, may be on the server and is never dropped.
+ */
+function neverAccepted(e: StoredPublish): boolean {
+  return (
+    e.op === "seats" &&
+    e.answer === "refused" &&
+    (e.reasonRequired === true || e.ownerDevices === true)
+  );
+}
+
+/** The stored seat publish of a channel, or null (none, protect, corrupt). */
+function storedSeats(at: StoreAt): StoredPublish | null {
+  const e = readStored(at);
+  return e === null || e === "corrupt" || e.op !== "seats" ? null : e;
+}
+
+/**
+ * S2 F3: the stored (unresolved) seat-list publish of `channelId`, for U8's
+ * "Discard this change"; null when there is none. A stored protect or an
+ * unreadable entry is not a pending seat change (the next flow resolves or
+ * drops it). `discardable`: `cancelPendingSeats` would discard it now.
+ * Reads the D7c store only; no request, no native call.
+ */
+export function pendingSeats(
+  port: ProtectedTextPort,
+  channelId: string,
+): PendingSeats | null {
+  const key = publishStoreKey(port.selfUserId, channelId);
+  const e = storedSeats({ port, key });
+  if (e === null) return null;
+  return {
+    kind: e.ownerDevices === true ? "owner_devices" : "seats",
+    reasonRequired: e.reasonRequired === true,
+    discardable: neverAccepted(e) && !running.has(key),
+  };
+}
+
+/**
+ * S2 F3: discard the stored seat publish of `channelId` ONLY if the server
+ * never accepted it (`neverAccepted`: the stored entry plus its recorded
+ * answers, see `StoredPublish.answer`). `busy`: an owner flow on the
+ * channel is running (a PUT may be in flight); `maybe_accepted`: the bytes
+ * stay and the next owner flow resumes them as before (same bytes, D7c).
+ * Signs nothing, sends nothing; ids only in the log (D16).
+ */
+export function cancelPendingSeats(
+  port: ProtectedTextPort,
+  channelId: string,
+): CancelPendingSeatsResult {
+  const key = publishStoreKey(port.selfUserId, channelId);
+  const at = { port, key };
+  const e = storedSeats(at);
+  if (e === null) return { discarded: false, why: "none" };
+  if (running.has(key)) return { discarded: false, why: "busy" };
+  if (!neverAccepted(e)) {
+    port.log("info", "[protected] pending seat list kept (maybe accepted)", {
+      channelId,
+    });
+    return { discarded: false, why: "maybe_accepted" };
+  }
+  clearStored(at);
+  port.log("info", "[protected] pending seat list discarded", { channelId });
+  return { discarded: true };
 }
 
 /**

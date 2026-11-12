@@ -1356,6 +1356,27 @@ export interface ProtectedSendOutcome {
   raw: unknown;
 }
 
+/**
+ * S2 F3: a channel's stored (unresolved) seat-list publish, for U8's
+ * "Discard this change". `kind`: `owner_devices` for a `signOwnerDevices`
+ * publish. `discardable`: `cancelPendingSeats` would discard it now (the
+ * server never accepted these bytes).
+ */
+export interface PendingSeats {
+  kind: "seats" | "owner_devices";
+  reasonRequired: boolean;
+  discardable: boolean;
+}
+
+/**
+ * S2 F3: `cancelPendingSeats`. `none`: no stored seat publish; `busy`: an
+ * owner flow on the channel is running; `maybe_accepted`: the server may
+ * hold the bytes, so they stay and the next owner flow re-sends them.
+ */
+export type CancelPendingSeatsResult =
+  | { discarded: true }
+  | { discarded: false; why: "none" | "busy" | "maybe_accepted" };
+
 /** B2 (`protectedTextOwner.ts`) signatures, injected by B5. */
 export interface OwnerFlows {
   protect(
@@ -1388,6 +1409,16 @@ export interface OwnerFlows {
     channelId: string,
     ownerDevices: string[],
   ): Promise<void>;
+  /** S2 F3: the stored seat publish (D7c store only), or null. */
+  pendingSeats(port: ProtectedTextPort, channelId: string): PendingSeats | null;
+  /**
+   * S2 F3: drop the stored seat publish only if the server never accepted
+   * it; never signs, never sends.
+   */
+  cancelPendingSeats(
+    port: ProtectedTextPort,
+    channelId: string,
+  ): CancelPendingSeatsResult;
 }
 
 /** B4 (`protectedTextMessages.ts`) signatures, injected by B5. */
@@ -1450,6 +1481,10 @@ export interface ProtectedTextManagerApi {
    * the `signer_lost` user, and only when the UI calls it (never automatic).
    */
   recoverOwnership(channelId: string): Promise<void>;
+  /** S2 F3: `OwnerFlows.pendingSeats` (pass-through). */
+  pendingSeats(channelId: string): PendingSeats | null;
+  /** S2 F3: `OwnerFlows.cancelPendingSeats` (pass-through). */
+  cancelPendingSeats(channelId: string): CancelPendingSeatsResult;
   send(
     channelId: string,
     text: string,
@@ -1513,6 +1548,17 @@ export interface ProtectedUiApi {
    * device was lost. Never automatic: only this call starts it.
    */
   recoverOwnership(channelId: string): Promise<void>;
+  /**
+   * S2 F3: the channel's stored (unresolved) seat-list publish, or null.
+   * U8 offers "Discard this change" while it is non-null (enabled when
+   * `discardable`). Reactive through the channel's view.
+   */
+  pendingSeats(channelId: string): PendingSeats | null;
+  /**
+   * S2 F3: discard that publish ONLY if the server never accepted it; a
+   * publish it may have accepted is kept (`maybe_accepted`). Never signs.
+   */
+  cancelPendingSeats(channelId: string): Promise<CancelPendingSeatsResult>;
   /**
    * S2-D36: the channel's view plus the three inputs it does not carry,
    * ready for `resecureCause`; null while the manager has no view of it.

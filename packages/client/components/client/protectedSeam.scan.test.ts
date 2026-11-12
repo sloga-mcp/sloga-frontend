@@ -648,10 +648,33 @@ test("S8: the manager is built only once status.device_id is known (and capable)
     ensure,
     /if \(!key \|\| !userId \|\| !deviceId\) return;[\s\S]*new ProtectedTextManager\(/,
   );
-  assert.match(ensure, /owner: \{ protect, setSeats, signOwnerDevices \}/);
+  // S2 F3: the owner flows also read / discard the stored seat publish.
+  assert.match(
+    ensure,
+    /owner: \{\s*protect,\s*setSeats,\s*signOwnerDevices,\s*pendingSeats,\s*cancelPendingSeats,\s*\}/,
+  );
   assert.match(
     ensure,
     /messages: \{ encryptAndSend, decryptRow, markerForError \}/,
+  );
+});
+
+test("S2 F3: pendingSeats / cancelPendingSeats are bridge pass-throughs to the current manager, inside the block", () => {
+  const block = seamBlock();
+  const pending = stripComments(
+    member(block, /\n {2}pendingSeats\(channelId: string\)/),
+  );
+  assert.match(pending, /void this\.protectedChannels\.get\(channelId\);/);
+  assert.match(
+    pending,
+    /return this\.#ptManager\?\.pendingSeats\(channelId\) \?\? null;/,
+  );
+  const cancel = stripComments(
+    member(block, /\n {2}async cancelPendingSeats\(channelId: string\)/),
+  );
+  assert.match(
+    cancel,
+    /^\{\s*const manager = await this\.#protectedManagerFor\(channelId\);\s*return manager\.cancelPendingSeats\(channelId\);\s*\}$/,
   );
 });
 

@@ -87,11 +87,13 @@ import {
   retryAfterMs,
 } from "./protectedTextPolicy.ts";
 import type {
+  CancelPendingSeatsResult,
   GroupOps,
   ManagerState,
   NativeError,
   NativeErrorTag,
   OwnerDeviceNotice,
+  PendingSeats,
   ProtectedChannelView,
   ProtectedMarkerKind,
   ProtectedMessageRow,
@@ -964,6 +966,25 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       this.#emit(rec);
     }
     this.#background(this.refresh(channelId, "commit"));
+  }
+
+  /** S2 F3: `OwnerFlows.pendingSeats` (the D7c store only). */
+  pendingSeats(channelId: string): PendingSeats | null {
+    return this.#deps.owner.pendingSeats(this.#flowPort, channelId);
+  }
+
+  /**
+   * S2 F3: `OwnerFlows.cancelPendingSeats`. A discard re-emits the view, so
+   * a UI reading `pendingSeats` through the view map reads it again.
+   */
+  cancelPendingSeats(channelId: string): CancelPendingSeatsResult {
+    const result = this.#deps.owner.cancelPendingSeats(
+      this.#flowPort,
+      channelId,
+    );
+    const rec = this.#channels.get(channelId);
+    if (result.discarded && rec) this.#emit(rec);
+    return result;
   }
 
   /**

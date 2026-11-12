@@ -10,6 +10,9 @@
 // S2 (W4 lane L1s): step 3c client outdated, step 5b `capacity`, step 6d
 // as `resecuring`, `seat_list_rollback` loud as a groupError, the grey
 // `unsupported_version` marker and the S2 server types.
+// S2 OR-10 (W4-3-0 lane F1): `ownerChangeUnlisted` swaps a same-user
+// `owner_changed_review` for `owner_changed_unlisted`, withholds Review
+// (`reviewOffered`) and never changes the state.
 // The step 3 / 6e tag lists are pinned ALWAYS against the in-repo fixture
 // `__fixtures__/protected/design-9-1-shield-lists.json` (plus the S2 additions
 // below); an extra test checks that fixture against the design copy in
@@ -1519,6 +1522,259 @@ test("S2 shieldInputsFromView maps capacity and clientOutdated from the view", (
   const none = shieldInputsFromView(null, flags, 5);
   assert.equal(none.capacity, null);
   assert.equal(none.clientOutdated, null);
+});
+
+// ---------------------------------------------------------------------------
+// S2 OR-10 (W4-3-0 F1): a same-user owner change this device confirmed that
+// stayed unsettled. Notice and Review offer only; never the state.
+// ---------------------------------------------------------------------------
+
+/** Native holding a pending owner signer (`same_user` may be malformed). */
+function pendingOwner(
+  sameUser: unknown,
+  verdict: TextVerdict = "owner_changed",
+): TextChannelState {
+  return nativeOk({
+    verdict,
+    owner_pin: {
+      ...nativeOk().owner_pin,
+      status: "changed",
+      pending_signer: {
+        user_id: "U1",
+        device_id: "D7",
+        same_user: sameUser as boolean,
+        verified: true,
+      },
+    },
+  });
+}
+
+/** Every way the shield reaches a same-user `owner_changed_review`. */
+const SAME_USER_CHANGES: [string, Partial<ShieldInputs>][] = [
+  ["native verdict", { native: pendingOwner(true) }],
+  ["parked", { native: pendingOwner(true), ownerChangePending: true }],
+  [
+    "seat list error",
+    {
+      native: pendingOwner(true, "ok"),
+      seatListError: "owner_changed",
+      ownerChangePending: true,
+    },
+  ],
+  [
+    "group error",
+    { native: pendingOwner(true, "ok"), groupError: "owner_changed" },
+  ],
+];
+
+test("S2 OR-10: an unlisted same-user owner change shows owner_changed_unlisted and offers no Review", () => {
+  for (const [label, over] of SAME_USER_CHANGES) {
+    assert.deepEqual(
+      explainShield(green({ ...over, ownerChangeUnlisted: true })),
+      {
+        state: "unverified",
+        step: "3",
+        notice: "owner_changed_unlisted",
+        reviewOffered: false,
+      },
+      label,
+    );
+  }
+});
+
+test("S2 OR-10: without the flag (absent or false) a same-user owner change shows owner_changed_review and offers Review", () => {
+  for (const [label, over] of SAME_USER_CHANGES) {
+    for (const flag of [undefined, false]) {
+      const i = green(over);
+      if (flag !== undefined) i.ownerChangeUnlisted = flag;
+      assert.ok(!(flag === undefined && "ownerChangeUnlisted" in i));
+      assert.deepEqual(
+        explainShield(i),
+        {
+          state: "unverified",
+          step: "3",
+          notice: "owner_changed_review",
+          reviewOffered: true,
+        },
+        `${label} flag=${String(flag)}`,
+      );
+    }
+  }
+  // parked with no signer named: the S1 notice, Review offered as before
+  assert.equal(
+    explainShield(
+      green({ seatListError: "owner_changed", ownerChangePending: true }),
+    )?.reviewOffered,
+    true,
+  );
+  // an owner change of unknown kind: generic notice, no Review
+  assert.deepEqual(explainShield(green({ seatListError: "owner_changed" })), {
+    state: "unverified",
+    step: "3",
+    notice: "unverified",
+    reviewOffered: false,
+  });
+  // outside a step 3 owner change the field is absent (read as not offered)
+  for (const over of [
+    {},
+    { seatListError: "bad_sig" },
+    { serverProtected: false, native: pendingOwner(true) },
+    { capable: false, native: pendingOwner(true) },
+    { native: pendingOwner(true, "ok") },
+  ] as Partial<ShieldInputs>[]) {
+    const e = explainShield(green(over));
+    assert.ok(e);
+    assert.equal("reviewOffered" in e, false, JSON.stringify(e));
+  }
+});
+
+test("S2 OR-10: the unlisted flag never changes the state or step and never masks a stronger red", () => {
+  const cases: [string, Partial<ShieldInputs>][] = [
+    ["green", {}],
+    ["step 1", { serverProtected: false, native: pendingOwner(true) }],
+    ["step 2", { capable: false, native: pendingOwner(true) }],
+    ["step 3 same user", { native: pendingOwner(true) }],
+    [
+      "step 3 same user + bad_sig",
+      { native: pendingOwner(true), seatListError: "bad_sig" },
+    ],
+    [
+      "step 3 same user + equivocation",
+      { native: pendingOwner(true), groupError: "seat_list_equivocation" },
+    ],
+    [
+      "step 3 same user + outdated + capacity",
+      {
+        native: pendingOwner(true),
+        clientOutdated: 2,
+        capacity: { reason: "device_cap" },
+      },
+    ],
+    ["step 3 different user", { native: pendingOwner(false) }],
+    ["step 3 bad_sig", { seatListError: "bad_sig" }],
+    ["step 3 rollback", { groupError: "seat_list_rollback" }],
+    ["step 3b", { groupError: "unknown" }],
+    ["step 3c", { clientOutdated: 2 }],
+    ["step 4", { native: null }],
+    ["step 5b", { capacity: { reason: "group_full" } }],
+    [
+      "step 6 red",
+      {
+        native: nativeOk({ verdict: "roster_mismatch" }),
+        rosterMismatchAgeMs: 60_000,
+      },
+    ],
+    ["step 6c", { signerLeafMissingRetries: 3 }],
+    ["step 7", { native: nativeOk({ verdict: "poisoned" }) }],
+    [
+      "step 9 off-list",
+      { native: nativeOk({ members: [member({ on_signed_list: false })] }) },
+    ],
+    ["step 9 pin changed", { native: pendingOwner(true, "ok") }],
+  ];
+  for (const [label, over] of cases) {
+    const off = explainShield(green(over));
+    const on = explainShield(green({ ...over, ownerChangeUnlisted: true }));
+    assert.ok(off && on, label);
+    assert.equal(on.state, off.state, label);
+    assert.equal(on.step, off.step, label);
+    assert.deepEqual(
+      on,
+      off.notice === "owner_changed_review"
+        ? { ...off, notice: "owner_changed_unlisted", reviewOffered: false }
+        : off,
+      label,
+    );
+  }
+  expectShield(green({ ownerChangeUnlisted: true }), "protected", "8");
+});
+
+test("S2 OR-10: a different-user or unknown-signer owner change is unaffected by the unlisted flag", () => {
+  const cases: [string, Partial<ShieldInputs>][] = [
+    ["different user", { native: pendingOwner(false) }],
+    [
+      "different user, parked",
+      { native: pendingOwner(false), ownerChangePending: true },
+    ],
+    [
+      "different user, seat list",
+      { native: pendingOwner(false, "ok"), seatListError: "owner_changed" },
+    ],
+    [
+      "no signer, parked",
+      { seatListError: "owner_changed", ownerChangePending: true },
+    ],
+    [
+      "malformed same_user, parked",
+      { native: pendingOwner("yes"), ownerChangePending: true },
+    ],
+  ];
+  for (const [label, over] of cases) {
+    assert.deepEqual(
+      explainShield(green({ ...over, ownerChangeUnlisted: true })),
+      explainShield(green(over)),
+      label,
+    );
+  }
+  assert.deepEqual(
+    explainShield(
+      green({ native: pendingOwner(false), ownerChangeUnlisted: true }),
+    ),
+    {
+      state: "unverified",
+      step: "3",
+      notice: "owner_changed_locked",
+      reviewOffered: false,
+    },
+  );
+});
+
+test("S2 OR-10: shieldInputsFromView reads ownerChangeUnlisted from the view; absent or malformed is false", () => {
+  const flags = { serverProtected: true, locallyPinned: true, capable: true };
+  const view: ProtectedChannelView = {
+    channelId: "C1",
+    seatListError: "owner_changed",
+    groupError: null,
+    native: pendingOwner(true),
+    serverGroup: serverGroup(),
+    seats: null,
+    rosterMismatchSinceMs: null,
+    signerLeafMissingRetries: 0,
+    welcomeRetriesExhausted: false,
+    ownerChangePending: true,
+    recreateAvailable: false,
+    publishInFlight: false,
+    maybeUnsent: false,
+    capacity: null,
+    clientOutdated: null,
+    ownerNotice: null,
+    ownerChangeUnlisted: true,
+  };
+  const at = (v: ProtectedChannelView | null) =>
+    explainShield(shieldInputsFromView(v, flags, 5));
+  assert.equal(shieldInputsFromView(view, flags, 5).ownerChangeUnlisted, true);
+  assert.deepEqual(at(view), {
+    state: "unverified",
+    step: "3",
+    notice: "owner_changed_unlisted",
+    reviewOffered: false,
+  });
+  const absent: ProtectedChannelView = { ...view };
+  delete absent.ownerChangeUnlisted;
+  for (const v of [
+    { ...view, ownerChangeUnlisted: false },
+    absent,
+    { ...view, ownerChangeUnlisted: "true" as unknown as boolean },
+  ]) {
+    assert.equal(shieldInputsFromView(v, flags, 5).ownerChangeUnlisted, false);
+    assert.deepEqual(at(v), {
+      state: "unverified",
+      step: "3",
+      notice: "owner_changed_review",
+      reviewOffered: true,
+    });
+  }
+  assert.equal(shieldInputsFromView(null, flags, 5).ownerChangeUnlisted, false);
 });
 
 // ---------------------------------------------------------------------------
