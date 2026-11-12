@@ -13,7 +13,10 @@
  *   `publishBackoffMs`, `publishStep`, `publishResolved`, `signAllowed`,
  *   `resolveProtectReadBack` (D7b).
  * - Commit outcome (plan D20, design 2.5): `classifySubmit`,
- *   `isCatchUpDesync` (M5).
+ *   `isCatchUpDesync` (M5); S2 OR-5 removal labels for `_commit_won`.
+ * - Held group (S2, OR-8): `holdsCurrentGroup`.
+ * - Join refusal (S2-D35 capacity, S4 protocol floor; OR-4, OR-11):
+ *   `joinRefusal`.
  * - Protected send (plan D10, design 3.10 / 7.3 / 9.2): `classifySendAnswer`
  *   with the unknown-outcome rule, `confirmAfterId`.
  * - Envelope errors (design 8.4 / 9.2): `classifyTextEnvelopeError`.
@@ -42,12 +45,13 @@
  * - `GET /mls/groups/:id/commits?from_epoch=e`: `{ commits, current_epoch }`,
  *   ascending, starting AT `e`.
  */
-import type { MlsJoinRequest } from "./e2ee";
+import type { MlsJoinRequest, MlsMemberDevice, MlsRemovedReason } from "./e2ee";
 import type {
   SeatListInput,
   SignedHandover,
   SignedSeatList,
   TextApiResponse,
+  TextChannelState,
   TextCommitInfo,
   TextLeftReason,
   TextNativeErrorTag,
@@ -122,6 +126,20 @@ export function errorTypeOf(body: unknown): string | null {
 /** `ProtectedChannelResecuring.reason`, or null. */
 function reasonOf(body: unknown): string | null {
   return isRecord(body) && typeof body.reason === "string" ? body.reason : null;
+}
+
+// ---------------------------------------------------------------------------
+// Held group (S2 superseded verdict, OR-8)
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether this device holds the channel's CURRENT text group. Native keeps a
+ * superseded group `active` and reports it with verdict `no_group` (S2), so
+ * `state === "active"` alone is also true for a group whose successor this
+ * device has not joined yet.
+ */
+export function holdsCurrentGroup(n: TextChannelState): boolean {
+  return n.state === "active" && n.verdict !== "no_group";
 }
 
 // ---------------------------------------------------------------------------
@@ -408,6 +426,12 @@ export type RefetchPurpose =
   | { kind: "unknown_outcome" }
   /** 409 Lost naming THIS device: confirm with the stored row. */
   | { kind: "lost_self" }
+  /**
+   * OR-5: a plain 2xx that may have removed devices. The commit WON; the
+   * stored row is read for its `removed_reasons` (a bare `Won` carries
+   * none), which `_commit_won` needs and which only the DS's row decides.
+   */
+  | { kind: "labels" }
   /** A definitive refusal: re-fetch ONCE, it may have raced our insert. */
   | {
       kind: "after_refusal";
@@ -431,6 +455,13 @@ export interface SubmitContext {
   resubmit: boolean;
   /** Consecutive retries so far (backoff index). */
   failures: number;
+  /**
+   * OR-5: the `removed` of the submitted body. Empty: a plain 2xx is `won`
+   * with no labels. Non-empty, null or absent: a plain 2xx reads the
+   * stored row for its labels (absent is never taken as empty). Optional
+   * only so the W4-0 manager's `#submitCtx` literal compiles.
+   */
+  ownRemoved?: readonly MlsMemberDevice[] | null;
 }
 
 export type SubmitAnswer =
@@ -440,10 +471,13 @@ export type SubmitAnswer =
   | { kind: "refetch_transport_error"; purpose: RefetchPurpose };
 
 /**
- * - `won`: `_commit_won(group, epoch, storedCommitB64, rejoinIntents)`.
- *   `storedCommitB64` is our bytes ONLY on a plain 2xx; on every refetch
- *   path it is the DS's stored string (RC NEW-5: native merges equal bytes
- *   and answers `own_commit_mismatch` for different ones).
+ * - `won`: `_commit_won(group, epoch, storedCommitB64, rejoinIntents,
+ *   removedReasons)`. `storedCommitB64` is our bytes ONLY on a plain 2xx;
+ *   on every refetch path it is the DS's stored string (RC NEW-5: native
+ *   merges equal bytes and answers `own_commit_mismatch` for different
+ *   ones). `removedReasons` (OR-5) is the stored row's validated labels on
+ *   every refetch path and `[]` on a plain 2xx that removed nothing; a
+ *   plain 2xx that removed devices is a `labels` refetch, never `won`.
  * - `lost`: `_commit_lost(group)`, then `then`: `process_winner` (gap
  *   refetch and process the winner), `reverify_restage` (stale_seat_list:
  *   verify `GET .../seats` with `as_of_*`, re-stage ONCE),
@@ -457,7 +491,17 @@ export type SubmitAnswer =
  * - `mark_left`: `_mark_left(group, reason)`, then the rejoin path.
  */
 export type SubmitAction =
-  | { kind: "won"; storedCommitB64: string; rejoinIntents: MlsJoinRequest[] }
+  | {
+      kind: "won";
+      storedCommitB64: string;
+      rejoinIntents: MlsJoinRequest[];
+      /**
+       * Every `won` this module returns sets it. Optional only so the W4-0
+       * manager's own `won` literal (`#readWonRow`) compiles until W4-2;
+       * absent means UNKNOWN: read the stored row, never pass `[]`.
+       */
+      removedReasons?: MlsRemovedReason[];
+    }
   | {
       kind: "lost";
       winner: TextCommitInfo | null;
@@ -483,10 +527,45 @@ export const COMMIT_CAP_REFUSALS: readonly string[] = [
 ];
 
 /**
+ * One stored removal label, by the router's rule (`removedReason`, mirrored
+ * here, not imported): the three wire keys as verbatim strings, an unknown
+ * `reason` passing (native maps it to `Unknown`); anything else is
+ * malformed (null). Only the wire keys are copied (native may deny others).
+ */
+function removedReason(v: unknown): MlsRemovedReason | null {
+  if (!isRecord(v)) return null;
+  const { user_id, device_id, reason } = v;
+  if (
+    typeof user_id !== "string" ||
+    typeof device_id !== "string" ||
+    typeof reason !== "string"
+  ) {
+    return null;
+  }
+  return { user_id, device_id, reason };
+}
+
+/**
+ * A row's `removed_reasons`: absent or null is `[]` (the DS omits an empty
+ * vector); not an array, or any malformed element, is null.
+ */
+function removedReasons(v: unknown): MlsRemovedReason[] | null {
+  if (v === undefined || v === null) return [];
+  if (!Array.isArray(v)) return null;
+  const out: MlsRemovedReason[] = [];
+  for (const e of v) {
+    const label = removedReason(e);
+    if (label === null) return null;
+    out.push(label);
+  }
+  return out;
+}
+
+/**
  * A stored commit row, or null when the shape is not one. Only the fields
- * read here are checked; unknown extra fields (W2's advisory
- * `removed_reasons`) are tolerated and never forwarded to native (the
- * router's envelope builders copy declared fields only).
+ * read here are checked, and `removed_reasons` (OR-5): a malformed label
+ * vector makes the whole row malformed. A present vector comes back as the
+ * validated copy; an absent one stays absent.
  */
 function parseCommitInfo(v: unknown): TextCommitInfo | null {
   if (!isRecord(v)) return null;
@@ -501,7 +580,11 @@ function parseCommitInfo(v: unknown): TextCommitInfo | null {
   ) {
     return null;
   }
-  return v as unknown as TextCommitInfo;
+  const row = v as unknown as TextCommitInfo;
+  if (v.removed_reasons === undefined) return row;
+  const labels = removedReasons(v.removed_reasons);
+  if (labels === null) return null;
+  return { ...row, removed_reasons: labels };
 }
 
 /** `ResponseFetchMlsCommits.commits`, or null when malformed. */
@@ -529,13 +612,18 @@ function rejoinIntentsOf(row: TextCommitInfo): MlsJoinRequest[] {
 
 const UNKNOWN_OUTCOME: RefetchPurpose = { kind: "unknown_outcome" };
 
-/** The committer rule (RC NEW-5): classify a stored row by committer only. */
+/**
+ * The committer rule (RC NEW-5): classify a stored row by committer only.
+ * An own row is `won` with the row's labels (OR-5; `parseCommitInfo` has
+ * validated them, and an absent vector is the DS's empty one).
+ */
 function committerRule(row: TextCommitInfo, ctx: SubmitContext): SubmitAction {
   return isOwnCommit(row, ctx)
     ? {
         kind: "won",
         storedCommitB64: row.commit,
         rejoinIntents: rejoinIntentsOf(row),
+        removedReasons: row.removed_reasons ?? [],
       }
     : { kind: "lost", winner: row, then: "process_winner" };
 }
@@ -546,11 +634,18 @@ function classifySubmitResponse(
 ): SubmitAction {
   const { status, body } = response;
   if (is2xx(status)) {
-    return {
-      kind: "won",
-      storedCommitB64: ctx.ownCommitB64,
-      rejoinIntents: [],
-    };
+    // OR-5: a bare `Won` carries no labels. Only a body known to remove
+    // nothing has none; otherwise the stored row decides (never inferred
+    // locally: the committer could diverge from the members).
+    if (Array.isArray(ctx.ownRemoved) && ctx.ownRemoved.length === 0) {
+      return {
+        kind: "won",
+        storedCommitB64: ctx.ownCommitB64,
+        rejoinIntents: [],
+        removedReasons: [],
+      };
+    }
+    return { kind: "refetch", purpose: { kind: "labels" }, delayMs: 0 };
   }
   const type = errorTypeOf(body);
   if (status === 409 && isRecord(body) && body.result === "Lost") {
@@ -609,6 +704,12 @@ function classifyRefetch(
         ? rateLimitDelayMs(response, ctx.failures)
         : publishBackoffMs(ctx.failures),
   };
+  // OR-5: a labels read follows a 2xx `Won`, so the outcome is decided: a
+  // refused read is never a loss (no `_commit_lost` of a won stage) and
+  // never a desync wipe (design 7.5). It is read again, like a 5xx.
+  if (purpose.kind === "labels" && (status === 403 || status === 404)) {
+    return retry;
+  }
   // A 403/404 is a desync (wipe and rejoin) ONLY on a resubmit (D20). On a
   // first submit it never wipes local state (design 7.5: a visibility loss
   // must not wipe native state): a 404 drops the stage and refreshes, a
@@ -646,6 +747,10 @@ function classifyRefetch(
         delayMs: publishBackoffMs(ctx.failures),
         asResubmit: true,
       };
+    case "labels":
+      // The commit WON (a 2xx); a missing row is a DS defect. Read again,
+      // backed off: never a resubmit (the bytes already won) or a loss.
+      return retry;
     case "after_refusal":
       // W4d X#5: the DS says this device holds no leaf in the group, and
       // no own row raced the refusal: native is out of step. Wipe and
@@ -694,6 +799,96 @@ export function classifySubmit(
         delayMs: publishBackoffMs(ctx.failures),
       };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Join refusal (S2-D35 capacity, S4 protocol floor; OR-4, OR-11)
+// ---------------------------------------------------------------------------
+
+/** Native `MAX_TEXT_LEAVES` (`mls/text/formats.rs`): the leaf ceiling. */
+export const MAX_TEXT_LEAVES = 100;
+
+/** `ProtectedChannelView.capacity.reason`. */
+export type CapacityReason = "device_cap" | "group_full";
+
+/**
+ * - `capacity`: this device's join (or its Add) was refused for capacity;
+ *   the manager records it in `view.capacity` (design 9.1 S2: read-only,
+ *   not alarming).
+ * - `outdated`: the server's protocol floor `min` is above this build's;
+ *   the manager stops join/create retries until reload.
+ */
+export type JoinRefusal =
+  | { kind: "capacity"; reason: CapacityReason }
+  | { kind: "outdated"; min: number };
+
+/** A server answer: a `TextApiResponse` or a `source: "server"` failure. */
+function serverAnswerOf(a: unknown): { status: number; body: unknown } | null {
+  if (!isRecord(a) || typeof a.status !== "number") return null;
+  if (a.source === "server") return { status: a.status, body: a.body };
+  if ("source" in a || !("body" in a)) return null;
+  return { status: a.status, body: a.body };
+}
+
+/** A native error: bare, or unwrapped from a `source: "native"` failure. */
+function nativeErrorBody(a: unknown): Record<string, unknown> | null {
+  if (!isRecord(a)) return null;
+  if (a.source === "native") return isRecord(a.error) ? a.error : null;
+  if ("source" in a || "status" in a || typeof a.type !== "string") {
+    return null;
+  }
+  return a;
+}
+
+/**
+ * What this device's OWN join-intent or Add answer says about capacity or
+ * the protocol floor; null for anything else (the caller's normal handling
+ * applies). The ONLY producer of `capacity` (OR-11): it reads an error
+ * answer, never a seats, text_group or any other server field.
+ *
+ * Takes a `TextApiResponse`, a `TextFlowFailure` (server or native) or a
+ * bare native error. Server types are read only from a server answer at
+ * the route's status; the native tag only from a native error.
+ * - `DeviceCapReached { max }`, 400 (join intent, Text Add commit):
+ *   `device_cap`.
+ * - `MlsCallFull { max }`, 409 (the Text Add commit's 100-leaf cap):
+ *   `group_full`.
+ * - native `text_group_full { max }` (`_admit`): native raises it for the
+ *   signed per-user device cap (`max` = that cap) AND for the leaf ceiling
+ *   (`max` = 100; `lifecycle.rs` `text_admit`). A `max` below the ceiling
+ *   can only be the device cap; at or above it (or unreadable) the group
+ *   is over the ceiling either way: `group_full`.
+ * - `ProtectedClientOutdated { min }`, 400 (S4 appendix; on no BE branch
+ *   yet, OR-4): `outdated` when `min` is a safe integer >= 1, else null.
+ */
+export function joinRefusal(answer: unknown): JoinRefusal | null {
+  const server = serverAnswerOf(answer);
+  if (server !== null) {
+    const { status, body } = server;
+    const type = errorTypeOf(body);
+    if (type === "DeviceCapReached" && status === 400) {
+      return { kind: "capacity", reason: "device_cap" };
+    }
+    if (type === "MlsCallFull" && status === 409) {
+      return { kind: "capacity", reason: "group_full" };
+    }
+    if (type === "ProtectedClientOutdated" && status === 400) {
+      const min = isRecord(body) ? body.min : undefined;
+      return typeof min === "number" && Number.isSafeInteger(min) && min >= 1
+        ? { kind: "outdated", min }
+        : null;
+    }
+    return null;
+  }
+  const native = nativeErrorBody(answer);
+  if (native === null || native.type !== "text_group_full") return null;
+  const max = native.max;
+  const deviceCap =
+    typeof max === "number" &&
+    Number.isSafeInteger(max) &&
+    max >= 1 &&
+    max < MAX_TEXT_LEAVES;
+  return { kind: "capacity", reason: deviceCap ? "device_cap" : "group_full" };
 }
 
 // ---------------------------------------------------------------------------
@@ -1005,6 +1200,8 @@ export function classifySendAnswer(
  *   change" (D15); `same_user: false` parks too (the same button shows
  *   native's inform dialog), final in S1.
  * - `rejoin`: this device is out of step (`left`); take the rejoin path.
+ *   With `markLeft`, FIRST `_mark_left(group, markLeft)`: native has not
+ *   moved the group to `left` itself (S2-D31 `catch_up_leaf_unresolvable`).
  * - `join`: no local group for it; enter the join flow.
  * - `signer_leaf_missing_retry`: discard the Welcome, retry the join intent
  *   (counts toward `SIGNER_LEAF_MISSING_BUDGET`).
@@ -1033,11 +1230,14 @@ export type TextEnvelopeAction =
 /**
  * `ack`: whether the envelope id may be acked. `groupError`: the tag to
  * record as the view's `groupError`; absent leaves it unchanged.
+ * `markLeft`: only with `rejoin`; the `_mark_left` reason to apply to the
+ * envelope's group before the rejoin path.
  */
 export interface TextEnvelopeVerdict {
   ack: boolean;
   action: TextEnvelopeAction;
   groupError?: ViewErrorTag;
+  markLeft?: TextLeftReason;
 }
 
 /** The `type` of a native error, unwrapping a `TextFlowFailure`. */
@@ -1068,6 +1268,13 @@ function textEnvelopeVerdict(tag: TextNativeErrorTag): TextEnvelopeVerdict {
       return set(false, "park_owner_change");
     case "own_commit_mismatch":
       return set(true, "rejoin");
+    // S2-D31 (design 6.3, 9.2): a commit behind the server tip whose leaf
+    // has no usable identity (unpinned past its budget, or revoked). Native
+    // rolled back and did NOT poison (it refuses `_mark_left` on a poisoned
+    // group); the bridge marks the group left and rejoins, and the Welcome
+    // re-verifies every leaf. The tag is `resecuring`, never sticky or loud.
+    case "catch_up_leaf_unresolvable":
+      return { ...set(true, "rejoin"), markLeft: "catch_up_failed" };
     case "mls_group_not_found":
       return set(true, "join");
     case "signer_leaf_missing":
@@ -1098,9 +1305,12 @@ function textEnvelopeVerdict(tag: TextNativeErrorTag): TextEnvelopeVerdict {
     case "mls_poisoned_epoch":
       return set(true, "await_successor");
     // Message-, sign- or encrypt-only tags: unexpected from `_process`.
-    // S2 placeholders: both held like the default (L1p writes
-    // catch_up_leaf_unresolvable's rule).
-    case "catch_up_leaf_unresolvable":
+    // `unsupported_envelope_version` is raised only by `_decrypt` (outer
+    // payload `v` 2..=255 in `formats.rs` `parse_encrypted_payload`, inner
+    // envelope `v` 3..=255 in `decode_envelope`, both via `message.rs`
+    // `text_decrypt`); `_process` reads neither, so here it is unexpected
+    // like its siblings: held, never acked or dropped. The grey "update to
+    // read" marker is the message path's, never a channel op's.
     case "unsupported_envelope_version":
     case "unknown_epoch":
     case "unknown_sender":

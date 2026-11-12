@@ -12,15 +12,16 @@
  * it, F3).
  *
  * `textSinkEnvelope` builds the `TextEnvelope` the manager receives from a
- * bonfire event and keeps all four commit declarations (`committer`,
- * `added`, `removed`, `rejoin_intents`); the call builder (`e2ee.ts`
- * `mlsSinkEnvelope`) drops them and stays unchanged. `textEnvelopeFromCommitInfo`
- * does the same for a stored commit (409 `Lost.winning`, gap-refetch row).
+ * bonfire event and keeps all five commit declarations (`committer`,
+ * `added`, `removed`, `rejoin_intents`, S2 `removed_reasons`); the call
+ * builder (`e2ee.ts` `mlsSinkEnvelope`) drops them and stays unchanged.
+ * `textEnvelopeFromCommitInfo` does the same for a stored commit (409
+ * `Lost.winning`, gap-refetch row).
  *
  * Pure module: type-only imports, no Solid / SDK / livekit / lingui, so
  * `node --test --conditions=browser` loads it. Holds no key material.
  */
-import type { MlsJoinRequest, MlsMemberDevice } from "./e2ee";
+import type { MlsJoinRequest, MlsMemberDevice, MlsRemovedReason } from "./e2ee";
 import type {
   TextCommitInfo,
   TextEnvelope,
@@ -106,8 +107,9 @@ export function routeMls(i: RouteMlsInput): MlsRoute {
 /**
  * The bonfire event fields `textSinkEnvelope` reads: the `E2EEMessage` /
  * `MlsCommit` / `MlsWelcome` payload (stoat.js `E2EEEnvelope`, which lane S1
- * extends with the four declarations), stated structurally so this module
- * does not depend on the SDK build. Declarations may arrive absent or null.
+ * extends with the four declarations and S2 with `removed_reasons`), stated
+ * structurally so this module does not depend on the SDK build.
+ * Declarations may arrive absent or null.
  */
 export interface TextSinkSource {
   id: string;
@@ -120,14 +122,16 @@ export interface TextSinkSource {
   added?: MlsMemberDevice[] | null;
   removed?: MlsMemberDevice[] | null;
   rejoin_intents?: MlsJoinRequest[] | null;
+  removed_reasons?: MlsRemovedReason[] | null;
 }
 
-/** The four declarations, normalized (absent vectors are empty). */
+/** The five declarations, normalized (absent vectors are empty). */
 interface Declarations {
   committer?: MlsMemberDevice;
   added: MlsMemberDevice[];
   removed: MlsMemberDevice[];
   rejoin_intents: MlsJoinRequest[];
+  removed_reasons: MlsRemovedReason[];
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -143,8 +147,35 @@ function memberDevice(v: unknown): MlsMemberDevice | null {
   };
 }
 
+/**
+ * The signed S2 fields of a join intent (OR-6), the same rule as `e2ee.ts`
+ * `joinIntentSignedFields` (mirrored, not imported: e2ee.ts imports this
+ * module and loads Capacitor / Solid, which this pure module must not).
+ * Absent fields keep the S1 shape (`{}`). A field that is present but not a
+ * safe non-negative integer (`null` included) is malformed: null, never a
+ * fall back to the S1 shape, which native would verify over the wrong
+ * payload.
+ */
+function signedIntentFields(
+  v: Record<string, unknown>,
+): Pick<MlsJoinRequest, "generation" | "issued_at"> | null {
+  const out: Pick<MlsJoinRequest, "generation" | "issued_at"> = {};
+  for (const key of ["generation", "issued_at"] as const) {
+    const x = v[key];
+    if (x === undefined) continue;
+    if (typeof x !== "number" || !Number.isSafeInteger(x) || x < 0) {
+      return null;
+    }
+    out[key] = x;
+  }
+  return out;
+}
+
+/** S1 wire keys, then `generation` / `issued_at` ONLY when present. */
 function joinRequest(v: unknown): MlsJoinRequest | null {
   if (!isRecord(v)) return null;
+  const signed = signedIntentFields(v);
+  if (signed === null) return null;
   return {
     group_id: v.group_id as string,
     channel_id: v.channel_id as string,
@@ -152,13 +183,34 @@ function joinRequest(v: unknown): MlsJoinRequest | null {
     device_id: v.device_id as string,
     key_package_ref: v.key_package_ref as string,
     signature: v.signature as string,
+    ...signed,
   };
+}
+
+/**
+ * One removed device's advisory reason (S2, `wire::MlsRemovedReason`), the
+ * three strings copied verbatim. A reason this build does not know passes:
+ * native maps it to its own `Unknown`, so a newer server never fails the
+ * commit here. A field that is not a string is malformed (null).
+ */
+export function removedReason(v: unknown): MlsRemovedReason | null {
+  if (!isRecord(v)) return null;
+  const { user_id, device_id, reason } = v;
+  if (
+    typeof user_id !== "string" ||
+    typeof device_id !== "string" ||
+    typeof reason !== "string"
+  ) {
+    return null;
+  }
+  return { user_id, device_id, reason };
 }
 
 /**
  * An absent/null vector is `[]`; anything else that is not an array of
  * objects is malformed (null). Elements keep their wire keys only; their
- * values pass through for native to verify.
+ * values pass through for native to verify, except what the element's own
+ * rule checks (intent `generation` / `issued_at`, removed-reason strings).
  */
 function vector<T>(v: unknown, pick: (e: unknown) => T | null): T[] | null {
   if (v === undefined || v === null) return [];
@@ -177,12 +229,20 @@ function declarations(src: {
   added?: unknown;
   removed?: unknown;
   rejoin_intents?: unknown;
+  removed_reasons?: unknown;
 }): Declarations | null {
   const added = vector(src.added, memberDevice);
   const removed = vector(src.removed, memberDevice);
   const rejoin = vector(src.rejoin_intents, joinRequest);
+  const reasons = vector(src.removed_reasons, removedReason);
   if (added === null || removed === null || rejoin === null) return null;
-  const out: Declarations = { added, removed, rejoin_intents: rejoin };
+  if (reasons === null) return null;
+  const out: Declarations = {
+    added,
+    removed,
+    rejoin_intents: rejoin,
+    removed_reasons: reasons,
+  };
   // An absent committer stays ABSENT (native D2 decides); never invented.
   if (src.committer !== undefined && src.committer !== null) {
     const committer = memberDevice(src.committer);
@@ -239,9 +299,11 @@ export function isSynthTextEnvelopeId(id: string): boolean {
 
 /**
  * The wire envelope for a stored commit (409 `Lost.winning`, gap-refetch
- * row), carrying ALL FOUR declarations (M8). Native dedups by (group, epoch);
- * the synthetic id `text-synth:{group}:{epoch}` is only the manager's own
- * dedup key and is never acked. Null when a declaration is malformed.
+ * row), carrying ALL FIVE declarations (M8 + S2 `removed_reasons`, as in
+ * native `wire::MlsCommitInfo` / `MlsEnvelope`). Native dedups by (group,
+ * epoch); the synthetic id `text-synth:{group}:{epoch}` is only the
+ * manager's own dedup key and is never acked. Null when a declaration is
+ * malformed.
  */
 export function textEnvelopeFromCommitInfo(
   info: TextCommitInfo,

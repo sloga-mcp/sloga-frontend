@@ -11,11 +11,16 @@
 // marked "control:". W4d (lane L-MGR): the own-send binding (X#4, control
 // C-X4) and `not_member` on a send and a commit (X#5, C-X5a / C-X5b). S7 C9
 // (the tests named "C9 protector ..."): the protector back-off reducers and
-// the `protector` envelope verdict (EL-F7, AND-F13).
+// the `protector` envelope verdict (EL-F7, AND-F13). S2-W4 lane L1p (the
+// tests named "S2 ..."): `holdsCurrentGroup` (OR-8), the `_commit_won`
+// removal labels (OR-5), `catch_up_leaf_unresolvable` (S2-D31) and
+// `joinRefusal` (OR-4, OR-11).
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { SHIELD_LOUD_GROUP_ERRORS } from "./protectedShield.ts";
 import {
+  type CapacityReason,
   type PublishAnswer,
   type PublishStep,
   type SendContext,
@@ -25,15 +30,19 @@ import {
   classifySendAnswer,
   classifySubmit,
   classifyTextEnvelopeError,
+  COMMIT_CAP_REFUSALS,
   CONFIRM_WINDOW_MS,
   confirmAfterId,
   errorTypeOf,
+  holdsCurrentGroup,
   isCatchUpDesync,
   isProtectorError,
   JOIN_RETRIES,
   JOIN_RETRY_MS,
+  joinRefusal,
   LEAF_STAGGER_MS,
   leafStaggerMs,
+  MAX_TEXT_LEAVES,
   ownSendRowBinds,
   PROTECTOR_BACKOFF,
   PROTECTOR_GATE_OPEN,
@@ -53,8 +62,13 @@ import {
   SIGNER_LEAF_MISSING_BUDGET,
 } from "./protectedTextPolicy.ts";
 import {
+  type ProtectedChannelView,
   type SignedSeatList,
   type TextApiResponse,
+  type TextChannelState,
+  type TextGroupState,
+  type TextLeftReason,
+  type TextVerdict,
   TEXT_NATIVE_ERROR_TAGS,
 } from "./protectedTextTypes.ts";
 
@@ -451,13 +465,20 @@ const INTENT = {
 
 const UNKNOWN = { kind: "unknown_outcome" } as const;
 
-test("D20: 2xx is won with our own bytes and no rejoin intents", () => {
+// S2 OR-5: this was "2xx is won" for any body; a plain 2xx is now `won` only
+// when the submitted body removed nothing (see the OR-5 tests below).
+test("D20: 2xx with nothing removed is won with our own bytes, no rejoin intents, no labels", () => {
   assert.deepEqual(
     classifySubmit(
       { kind: "submit", response: res(200, { result: "Won" }) },
-      sctx(),
+      sctx({ ownRemoved: [] }),
     ),
-    { kind: "won", storedCommitB64: "T1dO", rejoinIntents: [] },
+    {
+      kind: "won",
+      storedCommitB64: "T1dO",
+      rejoinIntents: [],
+      removedReasons: [],
+    },
   );
 });
 
@@ -497,6 +518,7 @@ test("D20: 409 Lost naming this device confirms by refetch, then won with the ST
     kind: "won",
     storedCommitB64: "U1RPUkVE",
     rejoinIntents: [INTENT],
+    removedReasons: [],
   });
 });
 
@@ -552,7 +574,12 @@ test("D20: a refusal that raced a winning own insert is won", () => {
       { kind: "refetch", purpose, response: res(200, commits(row(SELF))) },
       sctx(),
     ),
-    { kind: "won", storedCommitB64: "U1RPUkVE", rejoinIntents: [] },
+    {
+      kind: "won",
+      storedCommitB64: "U1RPUkVE",
+      rejoinIntents: [],
+      removedReasons: [],
+    },
   );
   // Raced another committer's insert: lost to that winner.
   assert.deepEqual(
@@ -633,6 +660,7 @@ test("D20 committer rule: an own row with DIFFERENT bytes still goes to _commit_
     kind: "won",
     storedCommitB64: "RElGRkVSRU5U",
     rejoinIntents: [],
+    removedReasons: [],
   });
 });
 
@@ -848,6 +876,256 @@ test("M5 isCatchUpDesync", () => {
   assert.equal(isCatchUpDesync(5, [{ epoch: 4 }]), true);
   assert.equal(isCatchUpDesync(5, [{ epoch: 5 }, { epoch: 7 }]), true);
   assert.equal(isCatchUpDesync(5, [{ epoch: 5 }, { epoch: 5 }]), true);
+});
+
+// ---------------------------------------------------------------------------
+// S2 OR-5: `_commit_won` removal labels
+// ---------------------------------------------------------------------------
+
+const LABELS = { kind: "labels" } as const;
+const LABEL = {
+  user_id: OTHER.user_id,
+  device_id: OTHER.device_id,
+  reason: "off_list",
+};
+/** An unknown reason passes verbatim (native maps it to `Unknown`). */
+const FUTURE_LABEL = {
+  user_id: OTHER.user_id,
+  device_id: "c".repeat(32),
+  reason: "from_the_future",
+};
+const WON_2XX = res(200, { result: "Won" });
+
+test("S2 OR-5 control: a plain 2xx whose body removed devices reads the stored row for its labels, never won", () => {
+  for (const over of [
+    { ownRemoved: [OTHER] },
+    { ownRemoved: [OTHER], resubmit: true, failures: 3 },
+    // Unknown removals are never read as none.
+    {},
+    { ownRemoved: null },
+  ] as Partial<SubmitContext>[]) {
+    for (const status of [200, 201, 204]) {
+      const out = classifySubmit(
+        { kind: "submit", response: res(status, { result: "Won" }) },
+        sctx(over),
+      );
+      assert.deepEqual(
+        out,
+        { kind: "refetch", purpose: LABELS, delayMs: 0 },
+        JSON.stringify(over),
+      );
+    }
+  }
+  // Known-empty removals: won with no labels, on a resubmit too.
+  assert.deepEqual(
+    classifySubmit(
+      { kind: "submit", response: WON_2XX },
+      sctx({ ownRemoved: [], resubmit: true }),
+    ),
+    {
+      kind: "won",
+      storedCommitB64: "T1dO",
+      rejoinIntents: [],
+      removedReasons: [],
+    },
+  );
+});
+
+test("S2 OR-5: the labels refetch is won with the stored row's labels, verbatim, wire keys only", () => {
+  const stored = row(SELF, {
+    removed: [OTHER, { user_id: OTHER.user_id, device_id: "c".repeat(32) }],
+    removed_reasons: [LABEL, { ...FUTURE_LABEL, extra: "dropped" }],
+    rejoin_intents: [INTENT],
+  });
+  assert.deepEqual(
+    classifySubmit(
+      { kind: "refetch", purpose: LABELS, response: res(200, commits(stored)) },
+      sctx({ ownRemoved: [OTHER] }),
+    ),
+    {
+      kind: "won",
+      storedCommitB64: "U1RPUkVE",
+      rejoinIntents: [INTENT],
+      removedReasons: [LABEL, FUTURE_LABEL],
+    },
+  );
+  // The DS stored none (it omits an empty vector), or null: the row says [].
+  for (const labels of [undefined, null, []]) {
+    const r = row(SELF, { removed: [OTHER], removed_reasons: labels });
+    const out = classifySubmit(
+      { kind: "refetch", purpose: LABELS, response: res(200, commits(r)) },
+      sctx({ ownRemoved: [OTHER] }),
+    );
+    assert.deepEqual(
+      out,
+      {
+        kind: "won",
+        storedCommitB64: "U1RPUkVE",
+        rejoinIntents: [],
+        removedReasons: [],
+      },
+      String(labels),
+    );
+  }
+});
+
+test("S2 OR-5: a labels refetch never resubmits or drops the stage; a failed read is read again", () => {
+  for (const r of [
+    res(200, commits()),
+    res(500),
+    res(503, { type: "DatabaseError" }),
+    res(200, "<html>"),
+    res(200, { commits: [{ epoch: 7 }] }),
+  ]) {
+    assert.deepEqual(
+      classifySubmit(
+        { kind: "refetch", purpose: LABELS, response: r },
+        sctx({ ownRemoved: [OTHER], failures: 2 }),
+      ),
+      { kind: "refetch", purpose: LABELS, delayMs: 1000 },
+      JSON.stringify(r.body),
+    );
+  }
+  assert.deepEqual(
+    classifySubmit(
+      { kind: "refetch_transport_error", purpose: LABELS },
+      sctx({ failures: 1 }),
+    ),
+    { kind: "refetch", purpose: LABELS, delayMs: 500 },
+  );
+  // A refused read after a won commit: never `lost` (no `_commit_lost` of
+  // the won stage) and never `mark_left`, on a first submit or a resubmit.
+  for (const r of [
+    res(404, { type: "NotFound" }),
+    res(403, { type: "NotSeated" }),
+    res(403, { type: "MissingPermission" }),
+  ]) {
+    for (const resubmit of [false, true]) {
+      assert.deepEqual(
+        classifySubmit(
+          { kind: "refetch", purpose: LABELS, response: r },
+          sctx({ ownRemoved: [OTHER], resubmit, failures: 2 }),
+        ),
+        { kind: "refetch", purpose: LABELS, delayMs: 1000 },
+        `${r.status} resubmit=${resubmit}`,
+      );
+    }
+  }
+  // The committer rule still applies to the stored row.
+  assert.deepEqual(
+    classifySubmit(
+      {
+        kind: "refetch",
+        purpose: LABELS,
+        response: res(200, commits(row(OTHER))),
+      },
+      sctx(),
+    ),
+    { kind: "lost", winner: row(OTHER), then: "process_winner" },
+  );
+});
+
+test("S2 OR-5: every refetch path's won carries the stored row's labels", () => {
+  for (const purpose of [
+    UNKNOWN,
+    { kind: "lost_self" } as const,
+    {
+      kind: "after_refusal",
+      status: 409,
+      type: "ProtectedChannelResecuring",
+      reason: "stale_seat_list",
+    } as const,
+    LABELS,
+  ]) {
+    const stored = row(SELF, {
+      removed: [OTHER],
+      removed_reasons: [LABEL, FUTURE_LABEL],
+    });
+    assert.deepEqual(
+      classifySubmit(
+        { kind: "refetch", purpose, response: res(200, commits(stored)) },
+        sctx(),
+      ),
+      {
+        kind: "won",
+        storedCommitB64: "U1RPUkVE",
+        rejoinIntents: [],
+        removedReasons: [LABEL, FUTURE_LABEL],
+      },
+      purpose.kind,
+    );
+  }
+});
+
+test("S2 OR-5 control: a malformed removed_reasons makes the stored row malformed", () => {
+  const bad: unknown[] = [
+    "off_list",
+    3,
+    {},
+    { ...LABEL },
+    [null],
+    ["off_list"],
+    [[LABEL]],
+    [LABEL, null],
+    [{ user_id: OTHER.user_id, device_id: OTHER.device_id }],
+    [{ ...LABEL, reason: 3 }],
+    [{ ...LABEL, reason: null }],
+    [{ ...LABEL, user_id: null }],
+    [{ ...LABEL, device_id: 7 }],
+  ];
+  for (const labels of bad) {
+    const tag = JSON.stringify(labels);
+    // A 409 Lost whose winner carries them: the outcome is unknown.
+    assert.deepEqual(
+      classifySubmit(
+        {
+          kind: "submit",
+          response: res(409, {
+            result: "Lost",
+            winning: row(OTHER, { removed_reasons: labels }),
+          }),
+        },
+        sctx(),
+      ),
+      { kind: "refetch", purpose: UNKNOWN, delayMs: 0 },
+      tag,
+    );
+    // A refetched row carrying them: read again, never won or lost.
+    for (const purpose of [UNKNOWN, LABELS]) {
+      assert.deepEqual(
+        classifySubmit(
+          {
+            kind: "refetch",
+            purpose,
+            response: res(200, commits(row(SELF, { removed_reasons: labels }))),
+          },
+          sctx({ failures: 1 }),
+        ),
+        { kind: "refetch", purpose, delayMs: 500 },
+        tag,
+      );
+    }
+  }
+  // Well-formed labels keep the winner (copied with wire keys only).
+  assert.deepEqual(
+    classifySubmit(
+      {
+        kind: "submit",
+        response: res(409, {
+          result: "Lost",
+          winning: row(OTHER, {
+            removed_reasons: [{ ...FUTURE_LABEL, extra: 1 }],
+          }),
+        }),
+      },
+      sctx(),
+    ),
+    {
+      kind: "lost",
+      winner: row(OTHER, { removed_reasons: [FUTURE_LABEL] }),
+      then: "process_winner",
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -1261,6 +1539,7 @@ const EXPECTED: Record<
     ack: boolean,
     action: TextEnvelopeVerdict["action"],
     recordsGroupError: boolean,
+    markLeft?: TextLeftReason,
   ]
 > = {
   unknown_epoch: [false, "hold", true],
@@ -1290,7 +1569,9 @@ const EXPECTED: Record<
   wrong_group_kind: [false, "refuse_wrong_kind", true],
   identity_pin_required: [false, "pin_identities_retry", false],
   handover_target_invalid: [false, "hold", true],
-  catch_up_leaf_unresolvable: [false, "hold", true],
+  // S2-D31 (L1p): replaces the W4-0 placeholder row [false, "hold", true].
+  catch_up_leaf_unresolvable: [true, "rejoin", true, "catch_up_failed"],
+  // Decrypt-only (native `text_decrypt`); unexpected from `_process`: held.
   unsupported_envelope_version: [false, "hold", true],
   mls_group_not_found: [true, "join", true],
   mls_unsolicited_welcome: [true, "drop_unsolicited_welcome", false],
@@ -1306,10 +1587,11 @@ test("envelope classifier: every text tag, as pinned", () => {
     [...TEXT_NATIVE_ERROR_TAGS].sort(),
   );
   for (const tag of TEXT_NATIVE_ERROR_TAGS) {
-    const [ack, action, records] = EXPECTED[tag];
+    const [ack, action, records, markLeft] = EXPECTED[tag];
     const expected: TextEnvelopeVerdict = records
       ? { ack, action, groupError: tag }
       : { ack, action };
+    if (markLeft !== undefined) expected.markLeft = markLeft;
     assert.deepEqual(classifyTextEnvelopeError({ type: tag }), expected, tag);
     // Unwrapped from a TextFlowFailure the same way.
     assert.deepEqual(
@@ -1335,6 +1617,56 @@ test("envelope classifier: anything else fails closed (held, never acked)", () =
     { source: "server", status: 500, type: null, body: null },
   ]) {
     assert.deepEqual(classifyTextEnvelopeError(err), hold);
+  }
+});
+
+test("S2-D31 control: catch_up_leaf_unresolvable marks the group left (catch_up_failed) and rejoins; never held, never loud", () => {
+  for (const err of [
+    { type: "catch_up_leaf_unresolvable", group_id: GROUP, epoch: 3 },
+    {
+      source: "native",
+      error: { type: "catch_up_leaf_unresolvable", group_id: GROUP, epoch: 3 },
+    },
+  ]) {
+    const v = classifyTextEnvelopeError(err);
+    assert.deepEqual(v, {
+      ack: true,
+      action: "rejoin",
+      groupError: "catch_up_leaf_unresolvable",
+      markLeft: "catch_up_failed",
+    });
+    // Not the placeholder hold, and not the poisoned path.
+    assert.notEqual(v.action, "hold");
+    assert.notEqual(v.action, "await_successor");
+  }
+  // The recorded tag is never a loud (hence never a sticky) one.
+  assert.equal(
+    (SHIELD_LOUD_GROUP_ERRORS as readonly string[]).includes(
+      "catch_up_leaf_unresolvable",
+    ),
+    false,
+  );
+  // No other tag asks for a mark_left.
+  for (const tag of TEXT_NATIVE_ERROR_TAGS) {
+    if (tag === "catch_up_leaf_unresolvable") continue;
+    assert.equal(
+      "markLeft" in classifyTextEnvelopeError({ type: tag }),
+      false,
+      tag,
+    );
+  }
+});
+
+test("S2: unsupported_envelope_version on a channel op is held and recorded, never acked or dropped", () => {
+  for (const err of [
+    { type: "unsupported_envelope_version", v: 3 },
+    { source: "native", error: { type: "unsupported_envelope_version", v: 2 } },
+  ]) {
+    assert.deepEqual(classifyTextEnvelopeError(err), {
+      ack: false,
+      action: "hold",
+      groupError: "unsupported_envelope_version",
+    });
   }
 });
 
@@ -1504,6 +1836,238 @@ test("envelope classifier: never acks a parked owner change or a wrong-kind id",
   ]) {
     assert.equal(classifyTextEnvelopeError(err).ack, false);
   }
+});
+
+// ---------------------------------------------------------------------------
+// S2 held group (superseded verdict, OR-8)
+// ---------------------------------------------------------------------------
+
+// Every member, checked by tsc (`satisfies` a total record).
+const GROUP_STATES = Object.keys({
+  none: 1,
+  joining: 1,
+  active: 1,
+  poisoned: 1,
+  left: 1,
+} satisfies Record<TextGroupState, 1>) as TextGroupState[];
+const VERDICTS = Object.keys({
+  ok: 1,
+  no_group: 1,
+  joining: 1,
+  not_seated: 1,
+  no_seat_list: 1,
+  roster_mismatch: 1,
+  owner_changed: 1,
+  poisoned: 1,
+} satisfies Record<TextVerdict, 1>) as TextVerdict[];
+
+const nativeState = (
+  state: TextGroupState,
+  verdict: TextVerdict,
+): TextChannelState => ({
+  channel_id: CHAN,
+  group_id: GROUP,
+  generation: 1,
+  epoch: 3,
+  state,
+  members: [],
+  seat_list: null,
+  owner_pin: {
+    channel_id: CHAN,
+    status: "pinned",
+    owner_user_id: OTHER.user_id,
+    owner_device_id: OTHER.device_id,
+    owner_verified: true,
+    source: "protect",
+    pending_signer: null,
+  },
+  self_seated: true,
+  roster_matches_list: true,
+  update_due: false,
+  update_required: false,
+  verdict,
+});
+
+test("S2 OR-8 control: a superseded group (active, verdict no_group) is not the held current group", () => {
+  assert.equal(holdsCurrentGroup(nativeState("active", "no_group")), false);
+  assert.equal(holdsCurrentGroup(nativeState("active", "ok")), true);
+  // Other verdicts of an active group still hold it (the shield decides).
+  for (const v of ["joining", "roster_mismatch", "owner_changed"] as const) {
+    assert.equal(holdsCurrentGroup(nativeState("active", v)), true, v);
+  }
+});
+
+test("S2 OR-8: holdsCurrentGroup is state active AND verdict not no_group, for every pair", () => {
+  assert.equal(GROUP_STATES.length, 5);
+  assert.equal(VERDICTS.length, 8);
+  for (const s of GROUP_STATES) {
+    for (const v of VERDICTS) {
+      assert.equal(
+        holdsCurrentGroup(nativeState(s, v)),
+        s === "active" && v !== "no_group",
+        `${s}/${v}`,
+      );
+    }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// S2 join refusal (D35 capacity, S4 protocol floor; OR-4, OR-11)
+// ---------------------------------------------------------------------------
+
+/** `CapacityReason` is exactly the view's `capacity.reason` (tsc). */
+type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+const capacityReasonIsTheView: Same<
+  CapacityReason,
+  NonNullable<ProtectedChannelView["capacity"]>["reason"]
+> = true;
+void capacityReasonIsTheView;
+
+const DEVICE_CAP = { kind: "capacity", reason: "device_cap" } as const;
+const GROUP_FULL = { kind: "capacity", reason: "group_full" } as const;
+
+/** The manager's `serverFailure(r)` shape for the same answer. */
+const failure = (r: TextApiResponse) => ({
+  source: "server" as const,
+  status: r.status,
+  type: errorTypeOf(r.body),
+  body: r.body,
+});
+
+test("S2 joinRefusal: DeviceCapReached 400 is device_cap; MlsCallFull 409 is group_full", () => {
+  const cap = res(400, { type: "DeviceCapReached", max: 5 });
+  const full = res(409, { type: "MlsCallFull", max: 100 });
+  assert.deepEqual(joinRefusal(cap), DEVICE_CAP);
+  assert.deepEqual(joinRefusal(failure(cap)), DEVICE_CAP);
+  assert.deepEqual(joinRefusal(full), GROUP_FULL);
+  assert.deepEqual(joinRefusal(failure(full)), GROUP_FULL);
+  // The commit transaction's typed refusals are unchanged.
+  assert.deepEqual(COMMIT_CAP_REFUSALS, ["DeviceCapReached", "MlsCallFull"]);
+});
+
+test("S2 joinRefusal: native text_group_full is device_cap below the 100-leaf ceiling, else group_full", () => {
+  assert.equal(MAX_TEXT_LEAVES, 100);
+  const cases: [unknown, "device_cap" | "group_full"][] = [
+    // `text_admit`: the signed per-user cap (`max` = that cap) ...
+    [1, "device_cap"],
+    [5, "device_cap"],
+    [99, "device_cap"],
+    // ... and the leaf ceiling (`max` = 100), or a cap at or above it.
+    [100, "group_full"],
+    [150, "group_full"],
+    // Unreadable: the group_full default.
+    [0, "group_full"],
+    [-1, "group_full"],
+    [2.5, "group_full"],
+    ["5", "group_full"],
+    [null, "group_full"],
+    [undefined, "group_full"],
+  ];
+  for (const [max, reason] of cases) {
+    const err =
+      max === undefined
+        ? { type: "text_group_full" }
+        : { type: "text_group_full", max };
+    const want = { kind: "capacity", reason };
+    assert.deepEqual(joinRefusal(err), want, String(max));
+    assert.deepEqual(
+      joinRefusal({ source: "native", error: err }),
+      want,
+      String(max),
+    );
+  }
+});
+
+test("S2 joinRefusal OR-4: ProtectedClientOutdated 400 is outdated only with a safe integer min of at least 1", () => {
+  for (const min of [1, 2, 3, 4_294_967_295, Number.MAX_SAFE_INTEGER]) {
+    const r = res(400, { type: "ProtectedClientOutdated", min });
+    assert.deepEqual(joinRefusal(r), { kind: "outdated", min }, String(min));
+    assert.deepEqual(joinRefusal(failure(r)), { kind: "outdated", min });
+  }
+  for (const min of [
+    0,
+    -1,
+    1.5,
+    "2",
+    null,
+    true,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    2 ** 53,
+    undefined,
+  ]) {
+    const body =
+      min === undefined
+        ? { type: "ProtectedClientOutdated" }
+        : { type: "ProtectedClientOutdated", min };
+    assert.equal(joinRefusal(res(400, body)), null, String(min));
+    assert.equal(joinRefusal(failure(res(400, body))), null, String(min));
+  }
+  for (const status of [200, 409, 403, 429, 500]) {
+    assert.equal(
+      joinRefusal(res(status, { type: "ProtectedClientOutdated", min: 2 })),
+      null,
+      String(status),
+    );
+  }
+});
+
+test("S2 control: capacity comes only from a join answer, never a seats or group read", () => {
+  // A seats read that shows the cap reached is not a refusal (OR-11).
+  const seatsAtCap = {
+    ...seatsBody(serverList()),
+    entitlement_device_cap: 1,
+    device_cap: 1,
+    seats_used: 1,
+    slot_cap: 1,
+  };
+  const answers: unknown[] = [
+    res(200, seatsAtCap),
+    failure(res(200, seatsAtCap)),
+    res(200, { group_id: GROUP, generation: 1, epoch: 3, members: [] }),
+    // A cap type at another status is not the route's refusal.
+    res(200, { type: "DeviceCapReached", max: 5 }),
+    res(409, { type: "DeviceCapReached", max: 5 }),
+    res(403, { type: "DeviceCapReached", max: 5 }),
+    res(429, { type: "DeviceCapReached", max: 5 }),
+    res(500, { type: "DeviceCapReached", max: 5 }),
+    res(400, { type: "MlsCallFull", max: 100 }),
+    res(200, { type: "MlsCallFull", max: 100 }),
+    res(400, { type: "SeatCapReached", max: 10 }),
+    // A native tag in a server body, a server type from native.
+    res(400, { type: "text_group_full", max: 100 }),
+    { source: "native", error: { type: "DeviceCapReached", max: 5 } },
+    { source: "native", error: { type: "MlsCallFull", max: 100 } },
+    // A bare error body (no status) is not an answer.
+    { type: "DeviceCapReached", max: 5 },
+    { type: "MlsCallFull", max: 100 },
+    // The server failure's body decides, not its `type` field.
+    { source: "server", status: 400, type: "DeviceCapReached", body: null },
+    { source: "transport" },
+    { source: "client", reason: "join_stalled" },
+    { type: "roster_mismatch" },
+    { source: "native", error: { type: "busy" } },
+    "DeviceCapReached",
+    new Error("DeviceCapReached"),
+    null,
+    undefined,
+  ];
+  for (const a of answers) {
+    assert.equal(joinRefusal(a), null, JSON.stringify(a));
+  }
+  // No other classifier reads a cap answer as capacity.
+  assert.deepEqual(
+    classifyTextEnvelopeError({ type: "text_group_full", max: 100 }),
+    { ack: true, action: "await_successor", groupError: "text_group_full" },
+  );
+  const first = classifySubmit(
+    {
+      kind: "submit",
+      response: res(400, { type: "DeviceCapReached", max: 5 }),
+    },
+    sctx(),
+  );
+  assert.equal(first.kind, "refetch");
 });
 
 // ---------------------------------------------------------------------------

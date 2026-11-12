@@ -3,11 +3,14 @@
  *
  * The node advertises the feature in the root config route, `GET /`:
  *
- *   { features: { protected_channels: { enabled: bool, default_device_cap: u32 } } }
+ *   { features: { protected_channels: {
+ *       enabled: bool, default_device_cap: u32, formats_v2: bool } } }
  *
  * (backend `crates/delta/src/routes/root.rs` `ProtectedChannelsFeature`;
  * `enabled` is already the effective value, i.e. false unless E2EE is on as
- * well; `default_device_cap` 0 means unlimited.)
+ * well; `default_device_cap` 0 means unlimited; `formats_v2` (S2) is the
+ * configured value, advertised even with growth off, and absent on an S1
+ * server.)
  *
  * Fetched raw through `client.api.get("/")`. **Never read it from
  * `client.configuration`:** the controller pre-assigns a local stub there, so
@@ -15,11 +18,11 @@
  * F13).
  *
  * Parsing fails closed: an absent, malformed or failed advert is
- * `{ enabled: false, defaultDeviceCap: null }`. Unknown extra keys are
- * tolerated (additive server changes). The flag gates growth UI (protect,
- * adding seats) and KeyPackage pre-publish only (D12); it never gates the
- * shield, markers, refusals, decrypt, or sends to an existing Protected
- * channel, so "off" is always the safe answer here.
+ * `{ enabled: false, defaultDeviceCap: null, formatsV2: false }`. Unknown
+ * extra keys are tolerated (additive server changes). The flag gates growth
+ * UI (protect, adding seats) and KeyPackage pre-publish only (D12); it never
+ * gates the shield, markers, refusals, decrypt, or sends to an existing
+ * Protected channel, so "off" is always the safe answer here.
  *
  * Pure: no Solid / SDK runtime imports, loadable by `node --test`.
  */
@@ -54,8 +57,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * Well-formed means: a plain object whose `enabled` is a boolean and whose
  * `default_device_cap` is an integer in `0..=u32::MAX`. Anything else turns
  * the whole flag off; a valid `enabled: true` with a broken cap is still off.
+ *
+ * `formats_v2` is read on its own (OR-12): only the boolean `true` is true.
+ * Absent (an S1 server) or malformed is `false`, and it never turns the
+ * flag off or changes `enabled` / `defaultDeviceCap`. A malformed advert
+ * stays fully off whatever `formats_v2` says.
  * @param raw The `features.protected_channels` value, as received
- * @returns The flag; `{ enabled: false, defaultDeviceCap: null }` when malformed
+ * @returns The flag; all off when malformed
  */
 export function parseProtectedChannelsFeature(
   raw: unknown,
@@ -75,7 +83,10 @@ export function parseProtectedChannelsFeature(
     return flagOff();
   }
 
-  return { enabled, defaultDeviceCap: cap, formatsV2: false };
+  // Strict: "true", 1 or an object is not `true`; never a reason to go off.
+  const formatsV2 = raw.formats_v2 === true;
+
+  return { enabled, defaultDeviceCap: cap, formatsV2 };
 }
 
 /**

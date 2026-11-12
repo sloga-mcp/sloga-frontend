@@ -15,8 +15,8 @@
  *
  * Copy follows the design 9.2 suggestions where one exists. Naming rule:
  * never "Protected" alone as a noun, always "Protected channel(s)". The only
- * values interpolated are display names (from the caller) and counts; never
- * ids, key material or message text.
+ * values interpolated are display names, channel names and session names
+ * (all from the caller) and counts; never ids, key material or message text.
  *
  * The macro cannot run outside the build, so this file has no spec. The
  * error and state mapping it renders is spec'd in `protectedShield.test.ts`.
@@ -29,6 +29,7 @@ import type {
   ProtectedShieldState,
 } from "./protectedShield";
 import type {
+  OwnerNoticeKind,
   OwnerPinStatus,
   ProtectedMarkerKind,
   ProtectedToastKind,
@@ -72,6 +73,29 @@ function ownerPinUnverifiedCopy(): string {
   return t`The owner's device isn't verified on this device yet.`;
 }
 
+/** Notices `channel_full` and S2 `capacity_group_full` (design 9.2). */
+function channelFullCopy(): string {
+  return t`This protected channel is full.`;
+}
+
+/** A caller-supplied name, trimmed; null when absent or blank. */
+function displayName(name: string | null | undefined): string | null {
+  if (typeof name !== "string") return null;
+  const s = name.trim();
+  return s.length === 0 ? null : s;
+}
+
+/**
+ * S2 alert `owner_device_dropped` (the `dropped_this_device` owner alert or
+ * notice). `channelName` is the channel's display name, never its id.
+ */
+function ownerDeviceDroppedCopy(channelName: string | null): string {
+  const channel = displayName(channelName);
+  return channel === null
+    ? t`This device can no longer sign this channel's member list. If you didn't do this, secure your account.`
+    : t`This device can no longer sign #${channel}'s member list. If you didn't do this, secure your account.`;
+}
+
 // ---------------------------------------------------------------------------
 // Channel notices (design 9.2, plan D17; `ProtectedNoticeKind` from A2)
 // ---------------------------------------------------------------------------
@@ -106,12 +130,15 @@ function removedUsersNamedCopy(names: readonly string[] | null): string {
  * Notice text for a channel-level kind. `max` is `ProtectedErrorUi.max`
  * (seat or device cap); null or absent falls back to copy without a count.
  * `names`: display names for `seat_list_names_removed_users` (from the
- * caller; never ids), ignored by every other kind.
+ * caller; never ids), ignored by every other kind. `channelName`: the
+ * channel's display name for `capacity_device_cap` and `owner_device_dropped`
+ * (never its id); null or blank reads "this channel".
  */
 export function noticeCopy(
   kind: ProtectedNoticeKind,
   max: number | null = null,
   names: readonly string[] | null = null,
+  channelName: string | null = null,
 ): string {
   switch (kind) {
     // shield states
@@ -125,6 +152,30 @@ export function noticeCopy(
       return t`Turn on end-to-end encryption on this device to use Protected channels.`;
     case "unverified":
       return verifyChannelFailedCopy();
+    // S2 shield causes (D35, OR-4, 6d)
+    case "capacity_device_cap": {
+      const channel = displayName(channelName);
+      return channel === null
+        ? t`This device can't open this channel yet.`
+        : t`This device can't open #${channel} yet.`;
+    }
+    case "capacity_group_full":
+      return channelFullCopy();
+    case "client_outdated":
+      return t`Update Sloga to use this protected channel.`;
+    case "waiting_for_member":
+      return t`Waiting for a member to come online…`;
+    // S2 owner signing device (9.2, OR-10)
+    case "owner_device_lost":
+      return t`The owner's signing device was signed out. Messages are paused until the owner signs in on another device.`;
+    case "owner_account_unavailable":
+      return t`The owner's account is unavailable. Messages are paused.`;
+    case "owner_device_dropped":
+      return ownerDeviceDroppedCopy(channelName);
+    case "owner_changed_unlisted":
+      return t`Your other device isn't on this channel's list of signing devices, so it can't take over. Sign from a listed device to add it.`;
+    case "revoked_owner_devices":
+      return t`A device that could sign this channel's member list was signed out or changed its key. Re-sign your signing devices.`;
     // specific `unverified` causes
     case "flag_stripped":
       return t`The server stopped marking this channel as protected. This device still treats it as a protected channel and won't send unencrypted messages here.`;
@@ -146,7 +197,7 @@ export function noticeCopy(
       return t`This device couldn't finish joining this protected channel. Try opening the channel again later.`;
     // flows
     case "channel_full":
-      return t`This protected channel is full.`;
+      return channelFullCopy();
     case "seat_cap_reached":
       return max === null
         ? t`All seats are in use. Released seats count for 14 days.`
@@ -177,8 +228,98 @@ export function noticeCopy(
       return t`A message may not have been sent.`;
     case "network_error":
       return t`Couldn't reach the server. Check your connection and try again.`;
+    // S2 flows
+    case "removal_reason_required":
+      return t`This member is protected from removal without a reason. Add a reason to continue.`;
+    case "resecured_too_often":
+      // OR-21: an owner-op InSlowmode (sent on the successor create).
+      return t`This channel was re-secured too many times today. Try again later.`;
     default: {
       const _exhaustive: never = kind;
+      return verifyChannelFailedCopy();
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Owner-device notices (S2, design 4.4.1 rule 9; OR-9)
+// ---------------------------------------------------------------------------
+
+/**
+ * An `OwnerDeviceNotice` (view `ownerNotice`) or native `owner_alert`,
+ * resolved by the caller into display values. The copy layer never takes
+ * the notice itself: its `device_id` and `seated` are ids. The caller maps
+ * `device_id` to that device's session name from the own device listing
+ * (null when unknown or unnamed: the copy says "another device") and
+ * `seated` to display names (null unless every user resolved: the copy
+ * says "new members"). `channel` is the channel's display name.
+ */
+export type OwnerNoticeDisplay =
+  | { kind: "dropped_this_device"; channel: string | null }
+  | { kind: "changed_by_other"; device: string | null }
+  | {
+      kind: "seated_by_other";
+      device: string | null;
+      names: readonly string[] | null;
+    };
+
+type OwnerNoticeDisplayKey = OwnerNoticeDisplay extends infer D
+  ? D extends unknown
+    ? keyof D
+    : never
+  : never;
+
+// Compile-time pins: every native kind has a display shape, and no display
+// shape carries an id field (`device_id`, `seated`, `user_id`).
+const _ownerKindsCovered: [
+  Exclude<OwnerNoticeKind, OwnerNoticeDisplay["kind"]>,
+] extends [never]
+  ? true
+  : never = true;
+const _ownerNoIdFields: [
+  Extract<OwnerNoticeDisplayKey, "device_id" | "seated" | "user_id">,
+] extends [never]
+  ? true
+  : never = true;
+
+/** Display names listed inline; null when the list can't be shown whole. */
+function namedList(names: readonly string[] | null): string | null {
+  const shown = (names ?? []).map((n) => n.trim());
+  if (
+    shown.length === 0 ||
+    shown.length > REMOVED_NAMES_LISTED_MAX ||
+    shown.some((n) => n.length === 0)
+  ) {
+    return null;
+  }
+  return shown.join(", ");
+}
+
+/** Banner or notice text for an owner-device notice or alert. */
+export function ownerNoticeCopy(n: OwnerNoticeDisplay): string {
+  switch (n.kind) {
+    case "dropped_this_device":
+      return ownerDeviceDroppedCopy(n.channel);
+    case "changed_by_other": {
+      const device = displayName(n.device);
+      return device === null
+        ? t`Your signing devices were changed from another device. If you didn't do this, secure your account.`
+        : t`Your signing devices were changed from ${device}. If you didn't do this, secure your account.`;
+    }
+    case "seated_by_other": {
+      const device = displayName(n.device);
+      const names = namedList(n.names);
+      if (device === null) {
+        return names === null
+          ? t`Another of your devices seated new members. If you didn't do this, secure your account.`
+          : t`Another of your devices seated ${names}. If you didn't do this, secure your account.`;
+      }
+      return names === null
+        ? t`Your other device ${device} seated new members. If you didn't do this, secure your account.`
+        : t`Your other device ${device} seated ${names}. If you didn't do this, secure your account.`;
+    }
+    default: {
+      const _exhaustive: never = n;
       return verifyChannelFailedCopy();
     }
   }
@@ -207,8 +348,9 @@ export function markerCopy(kind: ProtectedMarkerKind): string {
       return t`Unreadable message.`;
     case "unencrypted_row":
       return t`Unencrypted message in a protected channel. It did not come from a member's protected app.`;
-    // S2 placeholder (no producer yet): the catch-all; L2c writes the copy.
+    // S3-N0 (OR-19): a newer envelope version; grey, `v` never shown.
     case "unsupported_version":
+      return t`Update Sloga to see this message.`;
     case "error":
       return verifyMessageFailedCopy();
     default: {
@@ -245,9 +387,10 @@ export function toastCopy(kind: ProtectedToastKind): string {
   switch (kind) {
     case "unsolicited_welcome":
       return t`Blocked an unexpected invitation to a protected channel.`;
-    // S2 placeholder (no producer yet): the catch-all; L2c writes the copy.
+    // S2 (OR-9): one-shot, carries no kind; the channel view shows which
+    // notice it was (`ownerNoticeCopy`).
     case "owner_notice":
-      return verifyChannelFailedCopy();
+      return t`Another of your devices changed a protected channel. Open the channel to see what changed.`;
     default: {
       const _exhaustive: never = kind;
       return verifyChannelFailedCopy();
@@ -327,6 +470,9 @@ export function shieldLabel(state: ProtectedShieldState): string {
       return t({ message: "Re-securing", comment: "Protected channel state" });
     case "not_seated":
       return t({ message: "Not seated", comment: "Protected channel state" });
+    // S2 D35: read-only, for either reason (device cap or a full group).
+    case "capacity":
+      return t({ message: "At capacity", comment: "Protected channel state" });
     case "not_available":
       return t`Not available on this device`;
     case "unverified":
@@ -373,6 +519,14 @@ export const panelCopy = {
   },
   /** D15 button; opens the native dialog only on this click. */
   reviewOwnerChange: (): string => t`Review owner change`,
+  /** S2 D41: the owner-change review was declined; the channel stays locked. */
+  ownerReviewStillLocked: (): string => t`Still locked.`,
+  /** S2 D41 button: reopens the review (the native dialog, as D15). */
+  reviewAgain: (): string => t`Review again`,
+  /** S2 D41 button. */
+  leaveChannel: (): string => t`Leave channel`,
+  /** S2 owner-user action while the owner's signing device is lost (D42). */
+  recoverOwnership: (): string => t`Recover ownership on this device`,
   /** D21 owner-only button. */
   recreateGroup: (): string => t`Re-create the protected group`,
   /** Explains when the D21 button appears. */
@@ -482,6 +636,12 @@ export const messageCopy = {
   /** The view's `senderVerified` is false. */
   senderNotVerified: (): string =>
     t`The sender's device isn't verified on this device yet.`,
+  /**
+   * S2 (OR-20): an `ok` view with `filesUnsupported > 0`. No count and no
+   * file names (S3 renders files); shown only when the count is above 0.
+   */
+  filesUnsupported: (): string =>
+    t`This message has attachments. Update Sloga to see them.`,
 };
 
 export const searchCopy = {

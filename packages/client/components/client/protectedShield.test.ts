@@ -7,10 +7,14 @@
 // Electron / Android capable and `not_available` rows built from lane C4's
 // real `structuralState` / `storeOwnerAllows`), the D14 presentation, the
 // D17 notice mapping (every tag + catch-all) and D11.
+// S2 (W4 lane L1s): step 3c client outdated, step 5b `capacity`, step 6d
+// as `resecuring`, `seat_list_rollback` loud as a groupError, the grey
+// `unsupported_version` marker and the S2 server types.
 // The step 3 / 6e tag lists are pinned ALWAYS against the in-repo fixture
-// `__fixtures__/protected/design-9-1-shield-lists.json`; an extra test checks
-// that fixture against the design copy in `/home/mcp/w4-notes/w4_design.md`
-// (override with `W4_NOTES_DIR`) and skips, loudly, when the copy is absent.
+// `__fixtures__/protected/design-9-1-shield-lists.json` (plus the S2 additions
+// below); an extra test checks that fixture against the design copy in
+// `/home/mcp/w4-notes/w4_design.md` (override with `W4_NOTES_DIR`) and skips,
+// loudly, when the copy is absent.
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -86,6 +90,13 @@ const SHIELD_LISTS = JSON.parse(
   step3_group_errors: string[];
   step6e_group_errors: string[];
 };
+
+/**
+ * S2 additions to the design 9.1 step 3 `groupError` list. The S1 list in
+ * 9.1 itself is unchanged at 74390c37; the S2 shield bullet (design :5067)
+ * adds `seat_list_rollback` (the commit-AD pre-check, 3.12.3 "S2").
+ */
+const S2_STEP3_GROUP_ADDS = ["seat_list_rollback"];
 
 const GROUP = "G0";
 
@@ -163,6 +174,8 @@ function green(over: Partial<ShieldInputs> = {}): ShieldInputs {
     rosterMismatchAgeMs: 0,
     signerLeafMissingRetries: 0,
     welcomeRetriesExhausted: false,
+    capacity: null,
+    clientOutdated: null,
     ...over,
   };
 }
@@ -685,6 +698,11 @@ test("step 3 notices name the cause", () => {
     n(green({ groupError: "seat_list_invalid" })),
     "seat_list_failed",
   );
+  // S2 (design :5067): the commit-AD pre-check's rollback, as a groupError
+  assert.equal(
+    n(green({ groupError: "seat_list_rollback" })),
+    "seat_list_failed",
+  );
   assert.equal(
     n(green({ groupError: "channel_mismatch" })),
     "security_check_failed",
@@ -927,22 +945,263 @@ test("step 6c: SignerLeafMissing budget exhausted is unverified, before step 7",
   );
 });
 
-test("step 6d: welcome retries exhausted is unverified, before step 7", () => {
+// S2 replaces S1's 6d red (design :5052-5056): a missing Welcome is
+// silence, never a verified failure.
+test("S2 step 6d: welcome retries exhausted is resecuring, waiting for a member, never unverified", () => {
+  for (const v of [
+    "joining",
+    "no_group",
+    "ok",
+    "poisoned",
+    "no_seat_list",
+  ] as const) {
+    expectShield(
+      withVerdict(v, { welcomeRetriesExhausted: true }),
+      "resecuring",
+      "6d",
+      v,
+    );
+    assert.equal(
+      explainShield(withVerdict(v, { welcomeRetriesExhausted: true }))?.notice,
+      "waiting_for_member",
+      v,
+    );
+  }
+  // never green with the budget spent, even over a consistent verdict ok
+  assert.notEqual(
+    computeShieldState(green({ welcomeRetriesExhausted: true })),
+    "protected",
+  );
+  // a verified failure still wins: step 3, step 6 past 60 s, step 6c
   expectShield(
-    withVerdict("joining", { welcomeRetriesExhausted: true }),
+    green({ welcomeRetriesExhausted: true, groupError: "bad_sig" }),
     "unverified",
-    "6d",
+    "3",
   );
   expectShield(
-    withVerdict("no_group", { welcomeRetriesExhausted: true }),
+    withVerdict("roster_mismatch", {
+      welcomeRetriesExhausted: true,
+      rosterMismatchAgeMs: 60_000,
+    }),
     "unverified",
-    "6d",
+    "6",
   );
+  expectShield(
+    withVerdict("joining", {
+      welcomeRetriesExhausted: true,
+      signerLeafMissingRetries: 3,
+    }),
+    "unverified",
+    "6c",
+  );
+  // only `true` spends the budget
+  expectShield(
+    withVerdict("joining", {
+      welcomeRetriesExhausted: "true" as unknown as boolean,
+    }),
+    "resecuring",
+    "7",
+  );
+});
+
+// Planner ruling (W4-1 r2): `clientOutdated` comes only from a server 4xx,
+// so it is decided after the step 3 / 3b reds and never masks one.
+test("S2 step 3c: client outdated is not_available, after the step 3 and 3b reds, before step 4", () => {
+  for (const min of [2, 3, 0, Number.NaN]) {
+    expectShield(
+      green({ clientOutdated: min }),
+      "not_available",
+      "3c",
+      String(min),
+    );
+    assert.equal(
+      explainShield(green({ clientOutdated: min }))?.notice,
+      "client_outdated",
+    );
+  }
+  // steps 1 and 2 still come first
+  expectShield(
+    green({ clientOutdated: 2, serverProtected: false }),
+    "unverified",
+    "1",
+  );
+  expectShield(
+    green({ clientOutdated: 2, capable: false }),
+    "not_available",
+    "2",
+  );
+  // a verified red stays red: equivocation, owner changed, rollback, ...
+  for (const over of [
+    { seatListError: "seat_list_equivocation" },
+    { groupError: "seat_list_equivocation" },
+    { seatListError: "owner_changed" },
+    { native: nativeOk({ verdict: "owner_changed" }) },
+    { groupError: "seat_list_rollback" },
+    { seatListError: "bad_sig" },
+  ] as Partial<ShieldInputs>[]) {
+    expectShield(
+      green({ clientOutdated: 2, ...over }),
+      "unverified",
+      "3",
+      JSON.stringify(over),
+    );
+  }
+  // and so does the 3b fail-closed red
+  expectShield(
+    green({ clientOutdated: 2, groupError: "unknown" }),
+    "unverified",
+    "3b",
+  );
+  // it decides before steps 4-9: loading, not seated, capacity, 6d
+  for (const over of [
+    { native: null },
+    { capacity: { reason: "device_cap" } },
+    { welcomeRetriesExhausted: true },
+    { native: nativeOk({ verdict: "not_seated" }) },
+    { groupError: "mls_epoch_gap" },
+  ] as Partial<ShieldInputs>[]) {
+    expectShield(
+      green({ clientOutdated: 2, ...over }),
+      "not_available",
+      "3c",
+      JSON.stringify(over),
+    );
+  }
+  // null (and a missing field) is not outdated
+  expectShield(green({ clientOutdated: null }), "protected", "8");
+  expectShield(
+    green({ clientOutdated: undefined as unknown as null }),
+    "protected",
+    "8",
+  );
+});
+
+test("S2 step 5b: capacity comes after step 5 and before step 6, only from i.capacity", () => {
+  const cap = (reason: "device_cap" | "group_full") => ({ reason });
+  expectShield(green({ capacity: cap("device_cap") }), "capacity", "5b");
   assert.equal(
-    explainShield(withVerdict("joining", { welcomeRetriesExhausted: true }))
-      ?.notice,
-    "join_stalled",
+    explainShield(green({ capacity: cap("device_cap") }))?.notice,
+    "capacity_device_cap",
   );
+  expectShield(green({ capacity: cap("group_full") }), "capacity", "5b");
+  assert.equal(
+    explainShield(green({ capacity: cap("group_full") }))?.notice,
+    "capacity_group_full",
+  );
+  // an unknown reason still holds the state, with the copy true for both
+  const odd = { reason: "bogus" } as unknown as ShieldInputs["capacity"];
+  expectShield(green({ capacity: odd }), "capacity", "5b");
+  assert.equal(
+    explainShield(green({ capacity: odd }))?.notice,
+    "capacity_device_cap",
+  );
+  // steps 1-5 win over it
+  expectShield(
+    green({ capacity: cap("device_cap"), serverProtected: false }),
+    "unverified",
+    "1",
+  );
+  expectShield(
+    green({ capacity: cap("device_cap"), capable: false }),
+    "not_available",
+    "2",
+  );
+  expectShield(
+    green({ capacity: cap("device_cap"), groupError: "bad_sig" }),
+    "unverified",
+    "3",
+  );
+  expectShield(
+    green({ capacity: cap("device_cap"), groupError: "unknown" }),
+    "unverified",
+    "3b",
+  );
+  expectShield(
+    green({ capacity: cap("group_full"), native: null }),
+    "resecuring",
+    "4",
+  );
+  expectShield(
+    withVerdict("not_seated", { capacity: cap("device_cap") }),
+    "not_seated",
+    "5",
+  );
+  // it wins over steps 6-9
+  for (const [label, over] of [
+    ["6", withVerdict("roster_mismatch", { rosterMismatchAgeMs: 0 })],
+    ["6c", withVerdict("joining", { signerLeafMissingRetries: 3 })],
+    ["6d", withVerdict("joining", { welcomeRetriesExhausted: true })],
+    ["7", withVerdict("no_group")],
+    ["7 server", green({ serverGroup: serverGroup({ current_epoch: 9 }) })],
+    ["8", green()],
+    ["9", withVerdict("bogus")],
+  ] as const) {
+    expectShield(
+      { ...over, capacity: cap("device_cap") },
+      "capacity",
+      "5b",
+      label,
+    );
+  }
+  // never from anything else: no capacity input, no capacity state
+  for (const i of [
+    green({ groupError: "text_group_full" }),
+    green({ groupError: "mls_epoch_gap" }),
+    withVerdict("joining"),
+    green({ capacity: undefined as unknown as null }),
+  ]) {
+    assert.notEqual(computeShieldState(i), "capacity");
+  }
+});
+
+test("S2: capacity and client outdated are never green, and capacity only with its input", () => {
+  const caps = [
+    null,
+    { reason: "device_cap" },
+    { reason: "group_full" },
+  ] as ShieldInputs["capacity"][];
+  let seen = 0;
+  for (const verdict of [...VERDICTS, "bogus"]) {
+    for (const capable of [false, true]) {
+      for (const ge of [null, "bad_sig", "mls_epoch_gap", "unknown"] as const) {
+        for (const capacity of caps) {
+          for (const clientOutdated of [null, 2]) {
+            for (const exhausted of [false, true]) {
+              const e = explainShield(
+                green({
+                  native: nativeOk({ verdict: verdict as TextVerdict }),
+                  capable,
+                  groupError: ge,
+                  capacity,
+                  clientOutdated,
+                  welcomeRetriesExhausted: exhausted,
+                }),
+              );
+              assert.ok(e);
+              seen++;
+              if (e.state === "protected") {
+                assert.equal(capacity, null);
+                assert.equal(clientOutdated, null);
+              }
+              if (e.state === "capacity") {
+                assert.notEqual(capacity, null);
+                assert.equal(e.step, "5b");
+              }
+              if (e.step === "3c") assert.notEqual(clientOutdated, null);
+              // a server-only signal never turns a red into not_available
+              if (clientOutdated !== null && ge === "bad_sig") {
+                assert.ok(
+                  e.state === "unverified" || e.step === "2",
+                  `${verdict}/${String(capable)}`,
+                );
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  assert.equal(seen, 9 * 2 * 4 * 3 * 2 * 2);
 });
 
 test("step 6e: own_commit_mismatch / already_member / unexpected_mls_content never unverified by themselves", () => {
@@ -1126,8 +1385,12 @@ test("step 3 and 6e tag lists match the pinned design rows (9.1)", () => {
   );
   assert.deepEqual(
     sortedCopy(SHIELD_LOUD_GROUP_ERRORS),
-    sortedCopy(SHIELD_LISTS.step3_group_errors),
+    sortedCopy([...SHIELD_LISTS.step3_group_errors, ...S2_STEP3_GROUP_ADDS]),
   );
+  // the S2 additions are new, not already in the 9.1 rows
+  for (const tag of S2_STEP3_GROUP_ADDS) {
+    assert.ok(!SHIELD_LISTS.step3_group_errors.includes(tag), tag);
+  }
   assert.deepEqual(
     sortedCopy(SHIELD_FALL_THROUGH_GROUP_ERRORS),
     sortedCopy(SHIELD_LISTS.step6e_group_errors),
@@ -1213,6 +1476,51 @@ test("shieldInputsFromView: loading view, roster age, backwards clock", () => {
   );
 });
 
+test("S2 shieldInputsFromView maps capacity and clientOutdated from the view", () => {
+  const flags = { serverProtected: true, locallyPinned: true, capable: true };
+  const view: ProtectedChannelView = {
+    channelId: "C1",
+    seatListError: null,
+    groupError: null,
+    native: nativeOk(),
+    serverGroup: serverGroup(),
+    seats: null,
+    rosterMismatchSinceMs: null,
+    signerLeafMissingRetries: 0,
+    welcomeRetriesExhausted: false,
+    ownerChangePending: false,
+    recreateAvailable: false,
+    publishInFlight: false,
+    maybeUnsent: false,
+    capacity: null,
+    clientOutdated: null,
+    ownerNotice: null,
+  };
+  const at = (v: ProtectedChannelView | null) =>
+    explainShield(shieldInputsFromView(v, flags, 5));
+  assert.equal(at(view)?.state, "protected");
+  const capped = { ...view, capacity: { reason: "group_full" as const } };
+  assert.deepEqual(shieldInputsFromView(capped, flags, 5).capacity, {
+    reason: "group_full",
+  });
+  assert.deepEqual(at(capped), {
+    state: "capacity",
+    step: "5b",
+    notice: "capacity_group_full",
+  });
+  const old = { ...view, clientOutdated: 3 };
+  assert.equal(shieldInputsFromView(old, flags, 5).clientOutdated, 3);
+  assert.deepEqual(at(old), {
+    state: "not_available",
+    step: "3c",
+    notice: "client_outdated",
+  });
+  // a loading view carries neither
+  const none = shieldInputsFromView(null, flags, 5);
+  assert.equal(none.capacity, null);
+  assert.equal(none.clientOutdated, null);
+});
+
 // ---------------------------------------------------------------------------
 // Presentation (D14)
 // ---------------------------------------------------------------------------
@@ -1223,6 +1531,8 @@ test("shieldPresentation: D14 glyphs, hues, tint, composer per state", () => {
       protected: ["verified_user", "--sloga-protected-ok", true, "enabled"],
       resecuring: ["shield", "--sloga-protected-resecuring", false, "disabled"],
       not_seated: ["shield", "--sloga-protected-unavailable", false, "hidden"],
+      // S2 D35: neutral, read-only, never tints
+      capacity: ["shield", "--sloga-protected-unavailable", false, "hidden"],
       not_available: [
         "remove_moderator",
         "--sloga-protected-unavailable",
@@ -1252,6 +1562,11 @@ test("shieldPresentation: D14 glyphs, hues, tint, composer per state", () => {
     shieldPresentation("unverified", { tauriE2eeOff: true }).notice,
     "unverified",
   );
+  // capacity is never the alarm hue or glyph
+  const cap = shieldPresentation("capacity");
+  assert.notEqual(cap.hueVar, "--sloga-protected-alert");
+  assert.notEqual(cap.glyph, "gpp_bad");
+  assert.equal(cap.notice, "capacity_device_cap");
   assert.throws(() => shieldPresentation("bogus" as ProtectedShieldState));
 });
 
@@ -1269,6 +1584,9 @@ test("every explainShield notice is a declared notice kind and matches its state
     withVerdict("joining", { welcomeRetriesExhausted: true }),
     withVerdict("poisoned"),
     withVerdict("bogus"),
+    green({ clientOutdated: 2 }),
+    green({ capacity: { reason: "device_cap" } }),
+    green({ capacity: { reason: "group_full" } }),
   ];
   for (const i of samples) {
     const e = explainShield(i);
@@ -1276,6 +1594,30 @@ test("every explainShield notice is a declared notice kind and matches its state
     assert.equal(e.notice === null, e.state === "protected");
     if (e.notice !== null) assert.ok(PROTECTED_NOTICE_KINDS.includes(e.notice));
   }
+});
+
+test("S2 notice kinds are declared once each", () => {
+  for (const k of [
+    "capacity_device_cap",
+    "capacity_group_full",
+    "client_outdated",
+    "waiting_for_member",
+    "owner_device_lost",
+    "owner_account_unavailable",
+    "owner_device_dropped",
+    "owner_changed_unlisted",
+    "removal_reason_required",
+    "resecured_too_often",
+    "revoked_owner_devices",
+  ]) {
+    assert.equal(PROTECTED_NOTICE_KINDS.filter((x) => x === k).length, 1, k);
+  }
+  assert.equal(
+    new Set(PROTECTED_NOTICE_KINDS).size,
+    PROTECTED_NOTICE_KINDS.length,
+  );
+  // S1's stalled-join notice still exists for step 6c
+  assert.ok(PROTECTED_NOTICE_KINDS.includes("join_stalled"));
 });
 
 test("exhaustiveness scan: shieldPresentation ends in `const _x: never = state`", () => {
@@ -1303,6 +1645,18 @@ const OPS: ProtectedErrorOp[] = [
 const MARKERS: ProtectedMarkerKind[] = [
   "sent_before_join",
   "unknown_key",
+  "decrypt_failed",
+  "unverified_sender",
+  "removed_sender",
+  "replay",
+  "malformed",
+  "unsupported_version",
+  "unencrypted_row",
+  "error",
+];
+
+/** Design 9.2 red markers (the grey ones: sent_before_join, unknown_key, unsupported_version). */
+const RED_MARKERS: ProtectedMarkerKind[] = [
   "decrypt_failed",
   "unverified_sender",
   "removed_sender",
@@ -1398,8 +1752,8 @@ test("D17 channel-level table (9.2)", () => {
     wrong_group_kind: "security_check_failed",
     identity_pin_required: "unverified",
     handover_target_invalid: "unverified",
-    // S2 placeholders (the catch-all's outcome); L1s writes their rules.
-    catch_up_leaf_unresolvable: "unverified",
+    // S2: left + rejoin (9.2); a decrypt-only tag fails closed off a row
+    catch_up_leaf_unresolvable: "resecuring",
     unsupported_envelope_version: "unverified",
     mls_group_not_found: "resecuring",
     mls_unsolicited_welcome: "toast:unsolicited_welcome",
@@ -1467,6 +1821,10 @@ test("D17 message rows -> markers (9.2 / 9.3)", () => {
   assert.equal(m(native("replay")), "marker:replay");
   assert.equal(m(native("malformed_text_payload")), "marker:malformed");
   assert.equal(m(native("mls_group_not_found")), "marker:unknown_key");
+  assert.equal(
+    m(native("unsupported_envelope_version", { v: 3 })),
+    "marker:unsupported_version",
+  );
   for (const tag of TEXT_NATIVE_ERROR_TAGS) {
     const u = ui(native(tag), "message");
     if (tag === "unknown_epoch") continue;
@@ -1475,6 +1833,107 @@ test("D17 message rows -> markers (9.2 / 9.3)", () => {
   // a server error or transport failure on a message row is the red marker
   assert.equal(m({ type: "NotSeated" }), "marker:error");
   assert.equal(m({ source: "transport" }), "marker:error");
+});
+
+test("S3-N0: a newer envelope version on a row is the grey unsupported_version marker, never red", () => {
+  for (const f of [{ v: 3 }, { v: 255 }, {}, { v: "x" }]) {
+    for (const err of [
+      native("unsupported_envelope_version", f),
+      { source: "native", error: native("unsupported_envelope_version", f) },
+    ]) {
+      const u = ui(err, "message");
+      assert.deepEqual(
+        u,
+        {
+          kind: "marker",
+          marker: "unsupported_version",
+          tag: "unsupported_envelope_version",
+        },
+        JSON.stringify(err),
+      );
+      assert.ok(
+        u.kind === "marker" && !RED_MARKERS.includes(u.marker),
+        "grey, never a red marker",
+      );
+    }
+  }
+  // off a row it is unexpected: fails closed, and never the marker
+  for (const op of OPS) {
+    if (op === "message") continue;
+    assert.equal(
+      brief(ui(native("unsupported_envelope_version", { v: 3 }), op)),
+      "unverified",
+      op,
+    );
+  }
+  // as a shield input it is outside every benign list: 3b, never green
+  expectShield(
+    green({ groupError: "unsupported_envelope_version" }),
+    "unverified",
+    "3b",
+  );
+});
+
+test("S2: catch_up_leaf_unresolvable is resecuring and a benign groupError, never sticky red", () => {
+  for (const op of OPS) {
+    if (op === "message") continue;
+    assert.equal(
+      brief(ui(native("catch_up_leaf_unresolvable", { epoch: 4 }), op)),
+      "resecuring",
+      op,
+    );
+  }
+  assert.ok(
+    (SHIELD_BENIGN_GROUP_ERRORS as readonly string[]).includes(
+      "catch_up_leaf_unresolvable",
+    ),
+  );
+  // the native verdict decides: left + rejoin reads as resecuring
+  expectShield(
+    withVerdict("no_group", { groupError: "catch_up_leaf_unresolvable" }),
+    "resecuring",
+    "7",
+  );
+  expectShield(
+    green({ groupError: "catch_up_leaf_unresolvable", native: null }),
+    "resecuring",
+    "4",
+  );
+});
+
+test("S2 seat_list_rollback as a groupError is loud at step 3, never green", () => {
+  assert.ok(
+    (SHIELD_LOUD_GROUP_ERRORS as readonly string[]).includes(
+      "seat_list_rollback",
+    ),
+  );
+  assert.ok(
+    !(SHIELD_BENIGN_GROUP_ERRORS as readonly string[]).includes(
+      "seat_list_rollback",
+    ),
+  );
+  for (const v of [...VERDICTS, "bogus"]) {
+    expectShield(
+      withVerdict(v, { groupError: "seat_list_rollback" }),
+      "unverified",
+      "3",
+      v,
+    );
+  }
+  expectShield(
+    green({ groupError: "seat_list_rollback", native: null }),
+    "unverified",
+    "3",
+  );
+  // capacity never hides it
+  expectShield(
+    green({
+      groupError: "seat_list_rollback",
+      capacity: { reason: "device_cap" },
+    }),
+    "unverified",
+    "3",
+  );
 });
 
 test("D17 server types (7.6 + extras)", () => {
@@ -1524,7 +1983,10 @@ test("D17 server types (7.6 + extras)", () => {
     for (const op of OPS) {
       const u = s(type, { feature: "e2ee", max: 1 }, op);
       wellFormed(u, `${type}/${op}`);
-      assert.equal(u.tag, type, `${type}/${op}`);
+      // OR-21: InSlowmode is protected only on the owner path (below)
+      const generic =
+        type === "InSlowmode" && op !== "owner" && op !== "message";
+      assert.equal(u.tag, generic ? "unknown" : type, `${type}/${op}`);
     }
   }
   // bare body and a type only on the failure
@@ -1552,6 +2014,83 @@ test("D17 server types (7.6 + extras)", () => {
     ),
     "not_seated",
   );
+});
+
+test("S2 server types: RemovalReasonRequired, ProtectedClientOutdated, InSlowmode, owner_device_lost", () => {
+  const s = (
+    type: string,
+    body: Record<string, unknown>,
+    op: ProtectedErrorOp,
+  ) => ui({ source: "server", status: 400, type, body: { type, ...body } }, op);
+  for (const op of ["owner", "action", "send", "channel"] as const) {
+    assert.deepEqual(s("RemovalReasonRequired", {}, op), {
+      kind: "notice",
+      notice: "removal_reason_required",
+      max: null,
+      tag: "RemovalReasonRequired",
+    });
+  }
+  // OR-4: never the catch-all `unverified`; `min` never read or shown
+  for (const op of ["channel", "owner", "send"] as const) {
+    for (const body of [{ min: 2 }, { min: "x" }, {}]) {
+      assert.deepEqual(
+        s("ProtectedClientOutdated", body, op),
+        {
+          kind: "notice",
+          notice: "client_outdated",
+          max: null,
+          tag: "ProtectedClientOutdated",
+        },
+        `${op} ${JSON.stringify(body)}`,
+      );
+    }
+  }
+  assert.equal(
+    brief(ui({ type: "ProtectedClientOutdated", min: 2 }, "channel")),
+    "client_outdated",
+  );
+  // OR-21: protected copy on the owner's successor create only
+  assert.deepEqual(s("InSlowmode", { retry_after: 3600 }, "owner"), {
+    kind: "notice",
+    notice: "resecured_too_often",
+    max: null,
+    tag: "InSlowmode",
+  });
+  for (const op of ["send", "channel", "action", "transfer"] as const) {
+    assert.deepEqual(
+      s("InSlowmode", { retry_after: 5 }, op),
+      { kind: "notice", notice: "unverified", max: null, tag: "unknown" },
+      op,
+    );
+  }
+  // ProtectedChannelResecuring: only the S2 reason changes the copy
+  assert.equal(
+    brief(
+      s("ProtectedChannelResecuring", { reason: "owner_device_lost" }, "send"),
+    ),
+    "owner_device_lost",
+  );
+  for (const reason of [
+    "pending_removal",
+    "stale_seat_list",
+    "OWNER_DEVICE_LOST",
+    7,
+    undefined,
+  ]) {
+    assert.equal(
+      brief(s("ProtectedChannelResecuring", { reason }, "send")),
+      "resecuring",
+      String(reason),
+    );
+  }
+  // a message row never reads any of them
+  for (const type of [
+    "RemovalReasonRequired",
+    "ProtectedClientOutdated",
+    "InSlowmode",
+  ]) {
+    assert.equal(brief(s(type, {}, "message")), "marker:error", type);
+  }
 });
 
 // W2 C1 (cross-session note 10-25): `PUT /channels/:id/seats` answers 400

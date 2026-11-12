@@ -6,7 +6,8 @@
  * maps each kind to a lingui string.
  *
  * - `computeShieldState` / `explainShield`: design 9.1, first match wins,
- *   steps 1-9 including 6c, 6d and 6e. GREEN (`protected`) comes only from
+ *   steps 1-9 including 6c, 6d and 6e, plus S2's 3c (client outdated) and
+ *   5b (`capacity`). GREEN (`protected`) comes only from
  *   step 8, which needs the native verdict `ok`; it is never derived from a
  *   server field, and never shown while any leaf is off the signed list or
  *   locally removed.
@@ -43,6 +44,7 @@ export const PROTECTED_SHIELD_STATES = [
   "protected",
   "resecuring",
   "not_seated",
+  "capacity",
   "not_available",
   "unverified",
   "grace",
@@ -51,7 +53,7 @@ export const PROTECTED_SHIELD_STATES = [
 
 /**
  * `grace` and `frozen` are reserved for S5: typed and presented, never
- * produced in S1.
+ * produced in S1. `capacity` (S2 D35) is read-only and not alarming.
  */
 export type ProtectedShieldState = (typeof PROTECTED_SHIELD_STATES)[number];
 
@@ -70,7 +72,10 @@ export const SHIELD_LOUD_SEAT_LIST_ERRORS = [
   "seat_list_invalid",
 ] as const satisfies readonly NativeErrorTag[];
 
-/** Step 3: a `groupError` in this set is `unverified`. */
+/**
+ * Step 3: a `groupError` in this set is `unverified`. The design 9.1 list
+ * plus S2's `seat_list_rollback` (the commit-AD pre-check, 3.12.3 "S2").
+ */
 export const SHIELD_LOUD_GROUP_ERRORS = [
   "channel_mismatch",
   "roster_mismatch",
@@ -85,6 +90,7 @@ export const SHIELD_LOUD_GROUP_ERRORS = [
   "commit_declaration_mismatch",
   "duplicate_leaf",
   "replayed_rejoin_intent",
+  "seat_list_rollback",
 ] as const satisfies readonly NativeErrorTag[];
 
 /** Step 6e: never `unverified` by themselves; they fall through. */
@@ -112,6 +118,8 @@ export const SHIELD_BENIGN_GROUP_ERRORS = [
   "mls_unsolicited_welcome",
   "seat_list_behind",
   "declined",
+  // S2: the bridge marks the group left and rejoins (design 9.2).
+  "catch_up_leaf_unresolvable",
 ] as const satisfies readonly NativeErrorTag[];
 
 /**
@@ -145,6 +153,14 @@ export interface ShieldInputs {
   rosterMismatchAgeMs: number;
   signerLeafMissingRetries: number;
   welcomeRetriesExhausted: boolean;
+  /**
+   * S2 D35: this device's own join or Add was refused for capacity (the
+   * bridge's recorded `joinRefusal`, OR-11); null otherwise. The ONLY source
+   * of the `capacity` state.
+   */
+  capacity: ProtectedChannelView["capacity"];
+  /** S2 OR-4: `ProtectedClientOutdated.min` from the server; null otherwise. */
+  clientOutdated: number | null;
   /** Notice only (never the state): D3 `enable_e2ee` vs `not_available`. */
   tauriE2eeOff?: boolean;
   /** Notice only (never the state): D15 "Review owner change" is offered. */
@@ -157,8 +173,10 @@ export type ShieldStep =
   | "2"
   | "3"
   | "3b"
+  | "3c"
   | "4"
   | "5"
+  | "5b"
   | "6"
   | "6c"
   | "6d"
@@ -236,6 +254,7 @@ function loudNotice(i: ShieldInputs): ProtectedNoticeKind {
     case "bad_sig":
     case "seat_list_invalid":
     case "seat_list_equivocation":
+    case "seat_list_rollback":
       return "seat_list_failed";
     case "channel_mismatch":
     case "wrong_group_kind":
@@ -285,6 +304,12 @@ export function explainShield(i: ShieldInputs): ShieldExplanation | null {
   ) {
     return { state: "unverified", step: "3b", notice: "unverified" };
   }
+  // 3c. S2 OR-4: the server refused this client's text protocol; nothing
+  // here can join until Sloga is updated. After 3 / 3b on purpose: it
+  // comes only from a server 4xx, so it never masks a verified red.
+  if ((i.clientOutdated ?? null) !== null) {
+    return { state: "not_available", step: "3c", notice: "client_outdated" };
+  }
   const n = i.native;
   // 4. Still loading.
   if (!n) {
@@ -293,6 +318,21 @@ export function explainShield(i: ShieldInputs): ShieldExplanation | null {
   // 5.
   if (n.verdict === "not_seated") {
     return { state: "not_seated", step: "5", notice: "not_seated" };
+  }
+  // 5b. S2 D35: this device's own join was refused for capacity. Only
+  // from `i.capacity` (the recorded refusal), never from a server field.
+  // Deliberate (design 9.1 S2 precedence): it outranks the step 6
+  // off-list red past 60 s, the 6c red and the step 9 fail-closed red.
+  const cap = i.capacity ?? null;
+  if (cap !== null) {
+    return {
+      state: "capacity",
+      step: "5b",
+      notice:
+        cap.reason === "group_full"
+          ? "capacity_group_full"
+          : "capacity_device_cap",
+    };
   }
   // 6. An off-list leaf: brief during a legitimate unseat, hostile after.
   if (n.verdict === "roster_mismatch") {
@@ -304,9 +344,11 @@ export function explainShield(i: ShieldInputs): ShieldExplanation | null {
   if (!(i.signerLeafMissingRetries < SIGNER_LEAF_MISSING_UNVERIFIED_RETRIES)) {
     return { state: "unverified", step: "6c", notice: "join_stalled" };
   }
-  // 6d. The R5 stranded Welcome is never an endless `resecuring`.
+  // 6d. S2 replaces S1's red: with async join (design 6.3) a missing
+  // Welcome is silence, not a verified failure; the joiner keeps
+  // re-broadcasting. `unverified` comes only from a VERIFIED failure.
   if (i.welcomeRetriesExhausted === true) {
-    return { state: "unverified", step: "6d", notice: "join_stalled" };
+    return { state: "resecuring", step: "6d", notice: "waiting_for_member" };
   }
   // 6e. `own_commit_mismatch`, `already_member`, `unexpected_mls_content`
   // fell through step 3 / 3b on purpose (SHIELD_BENIGN_GROUP_ERRORS).
@@ -366,6 +408,8 @@ export function shieldInputsFromView(
     rosterMismatchAgeMs: since === null ? 0 : Math.max(0, nowMs - since),
     signerLeafMissingRetries: view?.signerLeafMissingRetries ?? 0,
     welcomeRetriesExhausted: view?.welcomeRetriesExhausted ?? false,
+    capacity: view?.capacity ?? null,
+    clientOutdated: view?.clientOutdated ?? null,
     ownerChangePending: view?.ownerChangePending ?? false,
   };
 }
@@ -436,6 +480,16 @@ export function shieldPresentation(
         composer: "hidden",
         notice: "not_seated",
       };
+    // S2 D35: read-only, neutral hue, no tint. `explainShield` names the
+    // reason; the default copy holds for either.
+    case "capacity":
+      return {
+        glyph: "shield",
+        hueVar: "--sloga-protected-unavailable",
+        tintName: false,
+        composer: "hidden",
+        notice: "capacity_device_cap",
+      };
     case "not_available":
       return {
         glyph: "remove_moderator",
@@ -488,6 +542,17 @@ export const PROTECTED_NOTICE_KINDS = [
   "not_available",
   "enable_e2ee",
   "unverified",
+  // S2 shield causes (D35, OR-4, 6d)
+  "capacity_device_cap",
+  "capacity_group_full",
+  "client_outdated",
+  "waiting_for_member",
+  // S2 owner signing device (9.2; `owner_device_dropped` is the alert)
+  "owner_device_lost",
+  "owner_account_unavailable",
+  "owner_device_dropped",
+  "owner_changed_unlisted",
+  "revoked_owner_devices",
   // specific `unverified` causes
   "flag_stripped",
   "seat_list_failed",
@@ -513,6 +578,9 @@ export const PROTECTED_NOTICE_KINDS = [
   "send_refused",
   "maybe_unsent",
   "network_error",
+  // S2 flows
+  "removal_reason_required",
+  "resecured_too_often",
 ] as const;
 
 export type ProtectedNoticeKind = (typeof PROTECTED_NOTICE_KINDS)[number];
@@ -646,6 +714,10 @@ function onMessage(
       return marker("replay", tag);
     case "malformed_text_payload":
       return marker("malformed", tag);
+    // S3-N0 (OR-19): a newer envelope format. Grey, never the red
+    // `malformed`; `v` is never shown.
+    case "unsupported_envelope_version":
+      return marker("unsupported_version", tag);
     case "mls_group_not_found":
       return marker("unknown_key", tag);
     default:
@@ -705,9 +777,10 @@ const NATIVE_RULES: Record<TextNativeErrorTag, Rule> = {
   identity_pin_required: () => notice("unverified", ""),
   // Handover UI is S2; an S1 caller fails closed.
   handover_target_invalid: () => notice("unverified", ""),
-  // S2 placeholders: the catch-all's `unverified`, as before these tags
-  // were typed. L1s writes their rules.
-  catch_up_leaf_unresolvable: () => notice("unverified", ""),
+  // S2: the bridge marks the group left and rejoins (design 9.2).
+  catch_up_leaf_unresolvable: resecuring,
+  // A decrypt error: rows get the grey marker in `onMessage`. Any other
+  // op never expects it, so it fails closed.
   unsupported_envelope_version: () => notice("unverified", ""),
   mls_group_not_found: resecuring,
   mls_unsolicited_welcome: () => ({
@@ -733,13 +806,21 @@ export const PROTECTED_SERVER_ERROR_TYPES = [
   "FeatureDisabled",
   "MlsCallFull",
   "SeatListNamesRemovedUsers",
+  "RemovalReasonRequired",
+  "ProtectedClientOutdated",
+  "InSlowmode",
 ] as const;
 
 export type ProtectedServerErrorType =
   (typeof PROTECTED_SERVER_ERROR_TYPES)[number];
 
 const SERVER_RULES: Record<ProtectedServerErrorType, Rule> = {
-  ProtectedChannelResecuring: () => notice("resecuring", ""),
+  // S2: the owner's signing device was signed out (`signer_lost`).
+  ProtectedChannelResecuring: (f) =>
+    notice(
+      f.reason === "owner_device_lost" ? "owner_device_lost" : "resecuring",
+      "",
+    ),
   NotSeated: () => notice("not_seated", ""),
   SeatCapReached: (f) => notice("seat_cap_reached", "", count(f.max)),
   ChannelProtected: (_f, c) =>
@@ -770,6 +851,14 @@ const SERVER_RULES: Record<ProtectedServerErrorType, Rule> = {
     ...notice("seat_list_names_removed_users", ""),
     users: userIds(f.users),
   }),
+  // S2 D40: kick, ban or unseat of a protected member needs a reason.
+  RemovalReasonRequired: () => notice("removal_reason_required", ""),
+  // S2 OR-4: the copy has no number, so `min` is never read here.
+  ProtectedClientOutdated: () => notice("client_outdated", ""),
+  // OR-21: a generic server type. Protected copy only on the owner's
+  // successor create; any other op keeps the catch-all it had before.
+  InSlowmode: (_f, c) =>
+    c.op === "owner" ? notice("resecured_too_often", "") : catchAll(c),
 };
 
 /** `TextFlowFailure.source === "client"` reasons that carry a notice. */
