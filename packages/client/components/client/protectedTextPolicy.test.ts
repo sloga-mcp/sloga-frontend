@@ -436,6 +436,7 @@ const sctx = (over: Partial<SubmitContext> = {}): SubmitContext => ({
   ownCommitB64: "T1dO",
   resubmit: false,
   failures: 0,
+  ownRemoved: null,
   ...over,
 });
 

@@ -33,6 +33,7 @@ import type {
   MlsRemovedReason,
   MlsSubmitCommit,
 } from "./e2ee";
+import type { ResecureInputs } from "./protectedResecurePolicy";
 
 export type { MlsRemovalReason, MlsRemovedReason } from "./e2ee";
 
@@ -1112,6 +1113,8 @@ export type ProtectedMessageView =
       senderVerified: boolean;
       tsSkew: boolean;
       cid: string;
+      /** S2 (OR-20): files of a v2 envelope this build cannot show; 0 for v1. */
+      filesUnsupported: number;
     }
   | { status: "marker"; kind: ProtectedMarkerKind };
 
@@ -1179,6 +1182,20 @@ export interface ProtectedChannelView {
   clientOutdated: number | null;
   /** S2: the last one-shot owner notice; null when none. */
   ownerNotice: OwnerDeviceNotice | null;
+  /**
+   * S2-D36 input: `port.now()` when this channel's shield entered
+   * `resecuring`, null while it is not. The manager always sets it; optional
+   * only so view literals written before S2 still compile. Read it through
+   * `ProtectedUiApi.resecureInputs`.
+   */
+  resecuringSinceMs?: number | null;
+  /**
+   * OR-10: an owner change was confirmed on this device, yet the next verify
+   * again named the same same-user signer device (not on the authority's
+   * owner devices). "Review owner change" is not offered for it until the
+   * list or the pin changes. The manager always sets it (see above).
+   */
+  ownerChangeUnlisted?: boolean;
 }
 
 /** Toasts the manager raises through `port.notify` (D22). */
@@ -1269,6 +1286,13 @@ export interface ProtectedTextPort {
    * orphan scan logs and skips rather than treat a live entry as orphaned.
    */
   liveOutboxKeys?(): ReadonlySet<string>;
+  /**
+   * S2 (j): the root advert's `formats_v2` as the bridge holds it. Optional:
+   * absent reads as false. The owner flows read it through their port to
+   * pick `format: 2` (genesis, first list over a held v1); never inferred
+   * from a server list.
+   */
+  formatsV2?(): boolean;
 }
 
 /** Why a refresh runs (D8, D26). */
@@ -1341,12 +1365,28 @@ export interface OwnerFlows {
     seats: string[],
     deviceCap: number,
   ): Promise<void>;
+  /**
+   * `reason` (S2 D40): the ALREADY-VALIDATED audit-log reason
+   * (`validReason(s, "header").reason`), sent as `X-Audit-Log-Reason` on the
+   * PUT of the stored signed bytes (never re-signed for it).
+   */
   setSeats(
     ops: GroupOps,
     port: ProtectedTextPort,
     channelId: string,
     seats: string[],
     deviceCap: number,
+    reason?: string,
+  ): Promise<void>;
+  /**
+   * S2: `_authority_sign` naming `ownerDevices` (always a native dialog),
+   * then `_seat_list_sign(authority)`, then the seat PUT.
+   */
+  signOwnerDevices(
+    ops: GroupOps,
+    port: ProtectedTextPort,
+    channelId: string,
+    ownerDevices: string[],
   ): Promise<void>;
 }
 
@@ -1396,11 +1436,20 @@ export interface ProtectedTextManagerApi {
   confirmOwnerChange(channelId: string): Promise<void>;
   recreateGroup(channelId: string): Promise<void>;
   protect(channelId: string, seats: string[], deviceCap: number): Promise<void>;
+  /** `reason`: see `OwnerFlows.setSeats`; re-validated before it is sent. */
   setSeats(
     channelId: string,
     seats: string[],
     deviceCap: number,
+    reason?: string,
   ): Promise<void>;
+  /** S2: `OwnerFlows.signOwnerDevices`, with the publish bookkeeping. */
+  authoritySign(channelId: string, ownerDevices: string[]): Promise<void>;
+  /**
+   * S2 (design 6.3 "Owner signing device lost"): only on another device of
+   * the `signer_lost` user, and only when the UI calls it (never automatic).
+   */
+  recoverOwnership(channelId: string): Promise<void>;
   send(
     channelId: string,
     text: string,
@@ -1411,10 +1460,9 @@ export interface ProtectedTextManagerApi {
   /**
    * S2 (design 7.5): a `ProtectedChannelChanged` refetch hint, `scope` as
    * received (unknown items are the manager's to ignore). Never a security
-   * input. Optional until the manager implements it; the bridge calls it
-   * only when present.
+   * input.
    */
-  onChannelChanged?(channelId: string, scope: readonly string[]): void;
+  onChannelChanged(channelId: string, scope: readonly string[]): void;
 }
 
 /** `new ProtectedTextManager(port, cb, deps)`. */
@@ -1443,25 +1491,39 @@ export interface ProtectedUiApi {
   protectedOpen(channelId: string): void;
   protectedClose(channelId: string): void;
   protect(channelId: string, seats: string[], deviceCap: number): Promise<void>;
+  /**
+   * `reason` (S2 D40): the unseat reason, validated by the caller with
+   * `validReason(s, "header")`; checked again before it is sent.
+   */
   setSeats(
     channelId: string,
     seats: string[],
     deviceCap: number,
+    reason?: string,
   ): Promise<void>;
   confirmOwnerChange(channelId: string): Promise<void>;
   recreateGroup(channelId: string): Promise<void>;
   /**
    * S2: re-sign the channel authority naming `ownerDevices` (native dialog),
-   * then the seat list carrying it. Optional until the bridge implements
-   * it (W4-2); a UI calls it only when present.
+   * then the seat list carrying it.
    */
-  authoritySign?(channelId: string, ownerDevices: string[]): Promise<void>;
+  authoritySign(channelId: string, ownerDevices: string[]): Promise<void>;
   /**
    * S2 (design 6.3): recover ownership on this device after the signer
-   * device was lost. Never automatic. Optional until the bridge implements
-   * it (W4-2).
+   * device was lost. Never automatic: only this call starts it.
    */
-  recoverOwnership?(channelId: string): Promise<void>;
+  recoverOwnership(channelId: string): Promise<void>;
+  /**
+   * S2-D36: the channel's view plus the three inputs it does not carry,
+   * ready for `resecureCause`; null while the manager has no view of it.
+   */
+  resecureInputs(channelId: string): ResecureInputs | null;
+  /**
+   * This device's id (E2EE status), or null while unknown. For comparisons
+   * only (e.g. `proposedOwnerDevices(seatsSnapshot(id), selfDeviceId())`);
+   * never rendered.
+   */
+  selfDeviceId(): string | null;
   /** The last `GET .../seats` body, or null. */
   seatsSnapshot(channelId: string): ProtectedSeatsResponse | null;
   protectedFlag(): ProtectedChannelsFlag;

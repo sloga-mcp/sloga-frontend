@@ -457,11 +457,10 @@ export interface SubmitContext {
   failures: number;
   /**
    * OR-5: the `removed` of the submitted body. Empty: a plain 2xx is `won`
-   * with no labels. Non-empty, null or absent: a plain 2xx reads the
-   * stored row for its labels (absent is never taken as empty). Optional
-   * only so the W4-0 manager's `#submitCtx` literal compiles.
+   * with no labels. Non-empty or null (unknown, e.g. a resume without the
+   * stored body): a plain 2xx reads the stored row for its labels.
    */
-  ownRemoved?: readonly MlsMemberDevice[] | null;
+  ownRemoved: readonly MlsMemberDevice[] | null;
 }
 
 export type SubmitAnswer =
@@ -495,12 +494,8 @@ export type SubmitAction =
       kind: "won";
       storedCommitB64: string;
       rejoinIntents: MlsJoinRequest[];
-      /**
-       * Every `won` this module returns sets it. Optional only so the W4-0
-       * manager's own `won` literal (`#readWonRow`) compiles until W4-2;
-       * absent means UNKNOWN: read the stored row, never pass `[]`.
-       */
-      removedReasons?: MlsRemovedReason[];
+      /** OR-5: the labels `_commit_won` gets (never defaulted). */
+      removedReasons: MlsRemovedReason[];
     }
   | {
       kind: "lost";

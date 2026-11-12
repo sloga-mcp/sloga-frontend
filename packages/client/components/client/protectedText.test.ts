@@ -27,13 +27,17 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { MlsJoinRequest, MlsMemberDevice } from "./e2ee";
+import { TEXT_PROTOCOL } from "./protectedPlatform.ts";
+import { validReason } from "./protectedRemovalReasonPolicy.ts";
 import {
   computeShieldState,
+  explainShield,
   protectedNoticeForError,
   shieldInputsFromView,
 } from "./protectedShield.ts";
 import {
   type ProtectedTextPortExtensions,
+  CHANNEL_CHANGED_COALESCE_MS,
   FIRST_SIGHT_PER_MINUTE,
   HOLD_RETRY_BUDGET,
   KEY_PACKAGE_PUT_429_BUDGET,
@@ -47,6 +51,7 @@ import { textGroupId } from "./protectedTextIds.ts";
 import { JOIN_RETRIES } from "./protectedTextPolicy.ts";
 import type {
   MessageFlows,
+  OwnerDeviceNotice,
   OwnerFlows,
   PendingCommit,
   ProtectedChannelView,
@@ -276,6 +281,11 @@ function joinIntent(n: number): TextJoinIntent {
   };
 }
 
+/** The join_intent POST body: native's intent plus the S2 protocol (a). */
+function intentBody(n: number) {
+  return { ...joinIntent(n).intent, protocol: TEXT_PROTOCOL };
+}
+
 /** A fanned-out join intent (the `MlsJoinRequested` shape). */
 function joinRequest(signature: string): MlsJoinRequest {
   return {
@@ -371,11 +381,16 @@ class Env implements ProtectedTextPort, ProtectedTextPortExtensions {
     added: MlsMemberDevice[];
     removed: MlsMemberDevice[];
     rejoin_intents?: MlsJoinRequest[];
+    removed_reasons?: unknown;
   }[] = [];
   /** The DS's own `rejoin_intents` for the rows it stores (null: absent). */
   dsRejoin: MlsJoinRequest[] | null = null;
   /** Overrides the stored `commit` string (RC NEW-5 on a plain win). */
   storedCommit: string | null = null;
+  /** The DS's `removed_reasons` for the rows it stores (undefined: absent). */
+  dsLabels: unknown = undefined;
+  /** `onGroupReported` calls (S2 h), also traced as `reported <id>`. */
+  reported: [string, string, number][] = [];
 
   constructor() {
     this.handlers = defaultHandlers(this);
@@ -506,7 +521,7 @@ class Env implements ProtectedTextPort, ProtectedTextPortExtensions {
     return this.liveKeys;
   }
 
-  notify(kind: "unsolicited_welcome") {
+  notify(kind: string) {
     this.notified.push(kind);
   }
 
@@ -541,6 +556,18 @@ class Env implements ProtectedTextPort, ProtectedTextPortExtensions {
         this.clock,
       ),
     );
+  }
+
+  /** The shield's state and notice (design 9.1 with the deciding step). */
+  explain(ch = CH) {
+    const e = explainShield(
+      shieldInputsFromView(
+        this.views.get(ch),
+        { serverProtected: true, locallyPinned: true, capable: true },
+        this.clock,
+      ),
+    );
+    return e ? { state: e.state, notice: e.notice } : null;
   }
 }
 
@@ -660,6 +687,9 @@ function defaultRoute(env: Env): Route {
           added: b.added ?? [],
           removed: b.removed ?? [],
           ...(env.dsRejoin ? { rejoin_intents: env.dsRejoin } : {}),
+          ...(env.dsLabels !== undefined
+            ? { removed_reasons: env.dsLabels }
+            : {}),
         });
       }
       return ok({ result: "Won" });
@@ -710,6 +740,7 @@ function fakeDeps(
     owner: {
       protect: async () => undefined,
       setSeats: async () => undefined,
+      signOwnerDevices: async () => undefined,
       ...over.owner,
     },
     messages: {
@@ -727,6 +758,7 @@ function fakeDeps(
           senderVerified: true,
           tsSkew: false,
           cid: row.nonce ?? "",
+          filesUnsupported: 0,
         };
       },
       markerForError: () => "error",
@@ -742,7 +774,11 @@ function make(env: Env, deps?: ProtectedTextManagerDeps) {
       onView: (ch, v) => env.views.set(ch, v),
       onMessageView: (id, v) => env.msgViews.set(id, v),
       onTimelineMarker: (_ch, m) => env.markers.push(m),
-    },
+      onGroupReported: (ch: string, groupId: string, generation: number) => {
+        env.reported.push([ch, groupId, generation]);
+        env.trace.push(`reported ${groupId}`);
+      },
+    } as ConstructorParameters<typeof ProtectedTextManager>[1],
     deps ?? fakeDeps(env),
   );
 }
@@ -1444,13 +1480,18 @@ test("join: member_added at/after our intent stops the retries", async () => {
     (e: { reason?: string }) => e.reason === "welcome_pending",
   );
   // W4d X#6 (was `false`): the bounded Welcome window ran out, so the join
-  // is stalled LOUD (9.1 6d) instead of being restarted by the next refresh.
+  // is stalled (9.1 6d) instead of being restarted by the next refresh.
+  // S2 6d: silence is not a verified failure: `resecuring`, "Waiting for a
+  // member to come online", never `unverified`.
   assert.equal(env.views.get(CH)?.welcomeRetriesExhausted, true);
-  assert.equal(env.shield(), "unverified");
+  assert.deepEqual(env.explain(), {
+    state: "resecuring",
+    notice: "waiting_for_member",
+  });
   m.dispose();
 });
 
-test("join: retries exhausted → welcomeRetriesExhausted → unverified (6d)", async () => {
+test("join: retries exhausted → welcomeRetriesExhausted → resecuring, waiting for a member (S2 6d)", async () => {
   const env = joiningEnv();
   const m = make(env);
   const p = silence(m.ensureJoined(CH));
@@ -1461,7 +1502,11 @@ test("join: retries exhausted → welcomeRetriesExhausted → unverified (6d)", 
   );
   assert.equal(env.api$("POST", /join_intent$/).length, 1 + JOIN_RETRIES);
   assert.equal(env.views.get(CH)?.welcomeRetriesExhausted, true);
-  assert.equal(env.shield(), "unverified");
+  // S2 6d: no Welcome is silence, never a verified failure.
+  assert.deepEqual(env.explain(), {
+    state: "resecuring",
+    notice: "waiting_for_member",
+  });
   m.dispose();
 });
 
@@ -1487,13 +1532,17 @@ test("F1 join: PUT exactly key_packages BEFORE posting the intent alone, fresh _
   );
   assert.deepEqual(first[0].body, joinIntent(1).key_packages);
   assert.equal(first[1].path, `/mls/groups/${G0}/join_intent`);
-  assert.deepEqual(first[1].body, joinIntent(1).intent, "the intent alone");
+  assert.deepEqual(
+    first[1].body,
+    intentBody(1),
+    "the intent alone (+ protocol)",
+  );
   await env.advance(200_000);
   await assert.rejects(p);
   assert.equal(env.calls("e2ee_text_join").length, 1 + JOIN_RETRIES);
   const expected = Array.from({ length: 1 + JOIN_RETRIES }, (_, i) => [
     ["PUT", joinIntent(i + 1).key_packages],
-    ["POST", joinIntent(i + 1).intent],
+    ["POST", intentBody(i + 1)],
   ]).flat();
   assert.deepEqual(
     joinTraffic(env).map((c) => [c.method, c.body]),
@@ -1536,7 +1585,7 @@ test("F1 join: a 429 PUT is waited out and re-PUT; 5xx/transport retry with a fr
       ["PUT", joinIntent(1).key_packages],
       ["PUT", joinIntent(2).key_packages],
       ["PUT", joinIntent(3).key_packages],
-      ["POST", joinIntent(3).intent],
+      ["POST", intentBody(3)],
     ],
   );
   assert.equal(env.calls("e2ee_text_join").length, 3);
@@ -2198,6 +2247,7 @@ test("L2: a history decrypt in flight never swallows the live one", async () => 
           senderVerified: true,
           tsSkew: false,
           cid: r.nonce ?? "",
+          filesUnsupported: 0,
         };
       },
     },
@@ -2234,6 +2284,7 @@ test("forget(ids): deleted messages drop views and dedupe state", async () => {
           senderVerified: true,
           tsSkew: false,
           cid: r.nonce ?? "",
+          filesUnsupported: 0,
         };
       },
     },
@@ -2881,7 +2932,7 @@ test("W4d X#5 (C-X5b): a send refused not_member → _mark_left(not_member) → 
   m2.dispose();
 });
 
-test("W4d X#6 (C-X6): member_added suppresses EVERY _join; the bounded window ends loud, never a restarted join", async () => {
+test("W4d X#6 (C-X6): member_added suppresses EVERY _join; the bounded window ends waiting (S2 6d), never a restarted join", async () => {
   const env = joiningEnv();
   const m = make(env);
   const p = silence(m.ensureJoined(CH));
@@ -2904,7 +2955,11 @@ test("W4d X#6 (C-X6): member_added suppresses EVERY _join; the bounded window en
   assert.equal(env.calls("e2ee_text_join").length, 1, "no second _join");
   assert.equal(env.api$("POST", /join_intent$/).length, 1);
   assert.equal(env.views.get(CH)?.welcomeRetriesExhausted, true);
-  assert.equal(env.shield(), "unverified");
+  // S2 6d: `resecuring` "Waiting for a member", never `unverified`.
+  assert.deepEqual(env.explain(), {
+    state: "resecuring",
+    notice: "waiting_for_member",
+  });
   m.dispose();
 });
 
@@ -3043,34 +3098,59 @@ test("W4d cap (C-MGRcap): DeviceCapReached / MlsCallFull on a commit: _commit_lo
   }
 });
 
-test("W4d: unknown extra commit fields (W2 advisory removed_reasons) are tolerated and never reach native", async () => {
+test("S2 removed_reasons (was W4d advisory): a label without device_id makes the commit row malformed and it never reaches native; well-formed labels, unknown reasons included, reach native verbatim", async () => {
+  const rowWith = (removed_reasons: unknown) =>
+    ok({
+      commits: [
+        {
+          group_id: G0,
+          epoch: 4,
+          committer: { user_id: OWNER, device_id: OWNER_DEV },
+          commit: "C4",
+          added: [],
+          removed: [{ user_id: PEER, device_id: PEER_DEV }],
+          removed_reasons,
+        },
+      ],
+      current_epoch: 4,
+    });
+  // S2 (L1r): a reason without device_id is a malformed envelope.
   const env = new Env();
   env.group = groupBody({ current_epoch: 4 });
   env.routes.push((method, path) =>
     method === "GET" && path.includes("from_epoch=4")
-      ? ok({
-          commits: [
-            {
-              group_id: G0,
-              epoch: 4,
-              committer: { user_id: OWNER, device_id: OWNER_DEV },
-              commit: "C4",
-              added: [],
-              removed: [{ user_id: PEER, device_id: PEER_DEV }],
-              removed_reasons: [{ user_id: PEER, reason: "unseated" }],
-            },
-          ],
-          current_epoch: 4,
-        })
+      ? rowWith([{ user_id: PEER, reason: "unseated" }])
       : undefined,
   );
   const m = make(env);
   await m.refresh(CH, "open");
   await env.advance(1_000);
-  const processed = env.calls("e2ee_text_process");
-  assert.equal(processed.length, 1, "the row was processed");
-  assert.equal("removed_reasons" in processed[0].envelope, false);
+  assert.equal(env.calls("e2ee_text_process").length, 0, "never processed");
+  assert.ok(
+    env.logs.some((l) => l.msg === "[protected] catch-up row malformed"),
+    "logged as malformed (ids only)",
+  );
   m.dispose();
+
+  // Well-formed: carried verbatim (an unknown reason passes; native maps it).
+  const labels = [
+    { user_id: PEER, device_id: PEER_DEV, reason: "off_list" },
+    { user_id: PEER, device_id: "dev-old", reason: "from_the_future" },
+  ];
+  const env2 = new Env();
+  env2.group = groupBody({ current_epoch: 4 });
+  env2.routes.push((method, path) =>
+    method === "GET" && path.includes("from_epoch=4")
+      ? rowWith(labels)
+      : undefined,
+  );
+  const m2 = make(env2);
+  await m2.refresh(CH, "open");
+  await env2.advance(1_000);
+  const processed = env2.calls("e2ee_text_process");
+  assert.equal(processed.length, 1, "the row was processed");
+  assert.deepEqual(processed[0].envelope.removed_reasons, labels);
+  m2.dispose();
 });
 
 // ---------------------------------------------------------------------------
@@ -3136,6 +3216,7 @@ function nativeDecryptDeps(env: Env): ProtectedTextManagerDeps {
             senderVerified: d.sender_verified,
             tsSkew: d.ts_skew,
             cid: d.cid,
+            filesUnsupported: 0,
           };
         } catch {
           return { status: "marker", kind: "error" };
@@ -3330,4 +3411,774 @@ test("W4e O1 (C-O1): protected while OPEN → the join starts at once; while clo
   await env2.advance(1_000);
   assert.equal(env2.calls("e2ee_text_join").length, 1, "joins on open");
   m2.dispose();
+});
+
+// ---------------------------------------------------------------------------
+// S2-W4 lane L2m: the manager's S2 items (a)-(j) and inherited rules. Tests
+// named "S2 ..." are the targets of /home/mcp/pc-logs/s2/w4/ctl/L2m.
+// ---------------------------------------------------------------------------
+
+test("S2 (a): the join intent and the Text create carry the shell protocol (TEXT_PROTOCOL) beside native's payload as received", async () => {
+  assert.equal(TEXT_PROTOCOL, 2);
+  const env = joiningEnv();
+  const m = make(env);
+  const p = silence(m.ensureJoined(CH));
+  await env.advance(0);
+  const post = env.api$("POST", /join_intent$/);
+  assert.equal(post.length, 1);
+  assert.deepEqual(post[0].body, { ...joinIntent(1).intent, protocol: 2 });
+  m.dispose();
+  await p.catch(() => undefined);
+
+  const env2 = new Env();
+  env2.states.set(CH, noGroup(CH));
+  env2.group = null;
+  const m2 = make(
+    env2,
+    fakeDeps(env2, {
+      owner: {
+        protect: async (ops, _port, ch) => {
+          await ops.createGroup(ch, null);
+        },
+      },
+    }),
+  );
+  await m2.protect(CH, [SELF], 5);
+  const create = env2.api$("POST", /^\/mls\/groups$/);
+  assert.equal(create.length, 1);
+  assert.deepEqual(create[0].body, {
+    group_id: G0,
+    channel_id: CH,
+    device_id: DEV,
+    supersedes: null,
+    kind: "Text",
+    generation: 0,
+    protocol: 2,
+  });
+  m2.dispose();
+});
+
+test("S2 (a) OR-4: ProtectedClientOutdated on the join intent sets clientOutdated = min (not_available, client_outdated); no further intent or create until reload", async () => {
+  const env = joiningEnv();
+  env.routes.push((method, path) =>
+    method === "POST" && /join_intent$/.test(path)
+      ? ok({ type: "ProtectedClientOutdated", min: 3 }, 400)
+      : undefined,
+  );
+  const m = make(env);
+  const p = silence(m.ensureJoined(CH));
+  await env.advance(0);
+  await assert.rejects(
+    p,
+    (e: { source?: string; type?: string }) =>
+      e.source === "server" && e.type === "ProtectedClientOutdated",
+  );
+  assert.equal(env.views.get(CH)?.clientOutdated, 3);
+  assert.deepEqual(env.explain(), {
+    state: "not_available",
+    notice: "client_outdated",
+  });
+  await m.refresh(CH, "interval");
+  await m.open(CH);
+  await env.advance(600_000);
+  await assert.rejects(
+    m.ensureJoined(CH),
+    (e: { reason?: string }) => e.reason === "client_outdated",
+  );
+  await assert.rejects(
+    m.createGroup(CH, null),
+    (e: { reason?: string }) => e.reason === "client_outdated",
+  );
+  assert.equal(env.api$("POST", /join_intent$/).length, 1, "never retried");
+  assert.equal(env.api$("POST", /^\/mls\/groups$/).length, 0);
+  assert.equal(env.calls("e2ee_text_group_create").length, 0);
+  assert.equal(env.views.get(CH)?.welcomeRetriesExhausted, false);
+  assert.ok(
+    env.logs.some(
+      (l) =>
+        l.msg === "[protected] client outdated for this channel" &&
+        JSON.stringify(l.ids) === JSON.stringify({ channelId: CH }),
+    ),
+    "logged with ids only",
+  );
+  m.dispose();
+});
+
+test("S2 (b): catchUpTip is the page's server tip only for commits a catch-up fetched; a live envelope gets null", async () => {
+  const env = new Env();
+  env.group = groupBody({ current_epoch: 5 });
+  const row = (epoch: number) => ({
+    group_id: G0,
+    epoch,
+    committer: { user_id: OWNER, device_id: OWNER_DEV },
+    commit: "C" + epoch,
+    added: [],
+    removed: [],
+  });
+  env.routes.push((method, path) =>
+    method === "GET" && path.endsWith("from_epoch=4")
+      ? ok({ commits: [row(4), row(5)], current_epoch: 5 })
+      : undefined,
+  );
+  const m = make(env);
+  await m.refresh(CH, "open");
+  await env.advance(1_000);
+  assert.deepEqual(
+    env.calls("e2ee_text_process").map((a) => [a.envelope.epoch, a.catchUpTip]),
+    [
+      [4, 5],
+      [5, 5],
+    ],
+  );
+  m.onEnvelope(envelope("LIVE6", 6));
+  await env.advance(1_000);
+  const live = env
+    .calls("e2ee_text_process")
+    .filter((a) => a.envelope.id === "LIVE6");
+  assert.equal(live.length, 1);
+  assert.equal(live[0].catchUpTip, null);
+  m.dispose();
+});
+
+test("S2 (b): verify gets the server's as_of_generation (null when absent); _remove gets pending devices minus self and the list signer (rule 3a duty)", async () => {
+  const env = new Env();
+  env.seats = seatsBody({ as_of_generation: 0 });
+  const m = make(env);
+  await m.refresh(CH, "open");
+  assert.equal(
+    env.calls("e2ee_text_seat_list_verify").at(-1)?.asOfGeneration,
+    0,
+  );
+  env.seats = seatsBody();
+  await m.refresh(CH, "interval");
+  assert.equal(
+    env.calls("e2ee_text_seat_list_verify").at(-1)?.asOfGeneration,
+    null,
+  );
+  m.dispose();
+
+  const env2 = new Env();
+  env2.group = groupBody({
+    pending_device_removals: [
+      { user_id: PEER, device_id: PEER_DEV, created_at: "" },
+      { user_id: SELF, device_id: DEV, created_at: "" },
+      { user_id: OWNER, device_id: OWNER_DEV, created_at: "" },
+      { user_id: PEER, device_id: "dev-gone", created_at: "" },
+    ],
+  });
+  const won = env2.handlers.e2ee_text_commit_won!;
+  env2.handlers.e2ee_text_commit_won = (a) => {
+    const s = env2.state();
+    s.members = s.members.filter((x) => x.device_id !== PEER_DEV);
+    return won(a);
+  };
+  const m2 = make(env2);
+  await m2.refresh(CH, "open");
+  await env2.advance(10_000);
+  const rm = env2.calls("e2ee_text_remove");
+  assert.equal(rm.length, 1);
+  assert.deepEqual(rm[0].targets, [{ user_id: PEER, device_id: PEER_DEV }]);
+  assert.deepEqual(rm[0].pendingDeviceTargets, [
+    { user_id: PEER, device_id: PEER_DEV },
+    { user_id: PEER, device_id: "dev-gone" },
+  ]);
+  assert.deepEqual(rm[0].pendingRemovalUsers, []);
+  m2.dispose();
+});
+
+test("S2 (c): a superseded group (active, verdict no_group) is not held: ensureJoined takes the join path to the server's successor", async () => {
+  const env = new Env();
+  env.states.set(CH, st({ verdict: "no_group" }));
+  env.group = groupBody({ group_id: G1, generation: 1, current_epoch: 0 });
+  const m = make(env);
+  const p = silence(m.ensureJoined(CH));
+  await env.advance(0);
+  assert.deepEqual(env.calls("e2ee_text_join")[0], {
+    groupId: G1,
+    channelId: CH,
+    generation: 1,
+    userId: SELF,
+  });
+  assert.equal(
+    env.api$("POST", /join_intent$/)[0]?.path,
+    "/mls/groups/" + G1 + "/join_intent",
+  );
+  m.dispose();
+  await p.catch(() => undefined);
+});
+
+test("S2 (c) D1: re-running an unaccepted create names the server's open group at generation - 1 as supersedes, never a derived or held id", async () => {
+  const GX = "ab".repeat(32);
+  const GS = "cd".repeat(32);
+  const signer = {
+    ...st().seat_list!,
+    signer_user_id: SELF,
+    signer_device_id: DEV,
+  };
+  const untouched = () =>
+    st({
+      group_id: GX,
+      generation: 70,
+      epoch: 0,
+      members: [mem(SELF, DEV)],
+      seat_list: signer,
+    });
+  const env = new Env();
+  env.states.set(CH, untouched());
+  env.group = groupBody({ group_id: GS, generation: 69 });
+  env.handlers.e2ee_text_group_create = (a) => ({
+    group_id: GX,
+    generation: 70,
+    payload: {
+      group_id: GX,
+      channel_id: a.channelId,
+      device_id: DEV,
+      supersedes: a.supersedes,
+      kind: "Text",
+      generation: 70,
+    },
+  });
+  const m = make(env);
+  await m.refresh(CH, "open");
+  await env.advance(1_000);
+  assert.deepEqual(env.calls("e2ee_text_group_create"), [
+    {
+      channelId: CH,
+      userId: SELF,
+      supersedes: GS,
+      recovery: false,
+      supersedesGeneration: null,
+    },
+  ]);
+  m.dispose();
+
+  // The server does not hold generation - 1: nothing is re-run or guessed.
+  const env2 = new Env();
+  env2.states.set(CH, untouched());
+  env2.group = groupBody({ group_id: GS, generation: 60 });
+  const m2 = make(env2);
+  await m2.refresh(CH, "open");
+  await env2.advance(1_000);
+  assert.equal(env2.calls("e2ee_text_group_create").length, 0);
+  assert.ok(
+    env2.logs.some(
+      (l) => l.msg === "[protected] unaccepted group: predecessor unknown",
+    ),
+  );
+  m2.dispose();
+});
+
+test("S2 (d) recovery: only the UI call recovers; sign(recovery) FIRST, then the successor create (no leaf in the open group), then the seat PUT of the same bytes (design 6.3, 213)", async () => {
+  const LOST = "dev-lost";
+  const lostList = {
+    ...st().seat_list!,
+    signer_user_id: SELF,
+    signer_device_id: LOST,
+  };
+  const signerLost = {
+    user_id: SELF,
+    device_id: LOST,
+    cause: "device_revoked",
+    at: "",
+  };
+  const signed = {
+    version: 2,
+    body: "sloga-seat-list-v2\nR",
+    signature: "RSIG",
+    signer_user_id: SELF,
+    signer_device_id: DEV,
+    authority: { body: "AUTH", signature: "ASIG" },
+  };
+  const env = new Env();
+  env.states.set(CH, st({ seat_list: lostList }));
+  env.group = groupBody({
+    members: [
+      { user_id: OWNER, device_id: OWNER_DEV },
+      { user_id: PEER, device_id: PEER_DEV },
+    ],
+    signer_lost: signerLost,
+  });
+  env.handlers.e2ee_text_seat_list_sign = () => signed;
+  env.routes.push((method, path) =>
+    method === "PUT" && path === "/channels/" + CH + "/seats"
+      ? ok(seatsBody())
+      : undefined,
+  );
+  const m = make(env);
+  await m.refresh(CH, "open");
+  await m.refresh(CH, "interval");
+  await env.advance(120_000);
+  assert.equal(env.calls("e2ee_text_seat_list_sign").length, 0, "never auto");
+  assert.equal(env.calls("e2ee_text_group_create").length, 0);
+  assert.equal(env.api$("PUT", /\/seats$/).length, 0);
+
+  await m.recoverOwnership(CH);
+  const sign = env.calls("e2ee_text_seat_list_sign");
+  assert.equal(sign.length, 1);
+  assert.equal(sign[0].recovery, true);
+  assert.equal(sign[0].format, null);
+  assert.equal(sign[0].authority, null);
+  assert.deepEqual(sign[0].serverList, {
+    version: 1,
+    body: seatsBody().list.body,
+  });
+  assert.deepEqual(sign[0].seats, lostList.seats);
+  assert.equal(sign[0].deviceCap, lostList.device_cap);
+  assert.deepEqual(env.calls("e2ee_text_group_create"), [
+    {
+      channelId: CH,
+      userId: SELF,
+      supersedes: G0,
+      recovery: true,
+      supersedesGeneration: 0,
+    },
+  ]);
+  const put = env.api$("PUT", /\/seats$/);
+  assert.equal(put.length, 1);
+  assert.deepEqual(put[0].body, {
+    body: signed.body,
+    signature: signed.signature,
+    signer_device_id: DEV,
+    authority: signed.authority,
+  });
+  const order = [
+    "e2ee_text_seat_list_sign",
+    "e2ee_text_group_create",
+    "POST /mls/groups",
+    "PUT /channels/" + CH + "/seats",
+  ].map((t) => env.trace.indexOf(t));
+  assert.ok(
+    order.every((v, i) => v >= 0 && (i === 0 || v > order[i - 1])),
+    "sign, create, POST, PUT: " + order.join(","),
+  );
+  m.dispose();
+
+  // Holding a leaf in the open group: no successor, just the PUT.
+  const env3 = new Env();
+  env3.states.set(CH, st({ seat_list: lostList }));
+  env3.group = groupBody({ signer_lost: signerLost });
+  env3.handlers.e2ee_text_seat_list_sign = () => signed;
+  env3.routes.push((method, path) =>
+    method === "PUT" && path === "/channels/" + CH + "/seats"
+      ? ok(seatsBody())
+      : undefined,
+  );
+  const m3 = make(env3);
+  await m3.recoverOwnership(CH);
+  assert.equal(env3.calls("e2ee_text_group_create").length, 0);
+  assert.equal(env3.api$("PUT", /\/seats$/).length, 1);
+  m3.dispose();
+
+  // The lost device is this one, or nothing was lost: never available.
+  for (const lost of [{ ...signerLost, device_id: DEV }, undefined]) {
+    const env2 = new Env();
+    env2.group = groupBody(lost ? { signer_lost: lost } : {});
+    const m2 = make(env2);
+    await assert.rejects(
+      m2.recoverOwnership(CH),
+      (e: { reason?: string }) => e.reason === "recovery_unavailable",
+    );
+    assert.equal(env2.calls("e2ee_text_seat_list_sign").length, 0);
+    m2.dispose();
+  }
+});
+
+test("S2 (e): catch_up_leaf_unresolvable: _mark_left(catch_up_failed) BEFORE the rejoin's _join; resecuring, never a sticky loud tag", async () => {
+  const env = new Env();
+  const m = make(env);
+  await m.refresh(CH, "open");
+  env.handlers.e2ee_text_process = () => {
+    throw { type: "catch_up_leaf_unresolvable", group_id: G0, epoch: 4 };
+  };
+  m.onEnvelope(envelope("E4", 4));
+  await env.advance(1_000);
+  assert.deepEqual(env.calls("e2ee_text_mark_left"), [
+    { groupId: G0, reason: "catch_up_failed" },
+  ]);
+  const left = env.trace.indexOf("e2ee_text_mark_left");
+  const join = env.trace.indexOf("e2ee_text_join");
+  assert.ok(left >= 0 && join > left, "mark_left, then the rejoin's _join");
+  assert.ok(env.acks.includes("E4"), "acked");
+  assert.equal(env.views.get(CH)?.groupError, "catch_up_leaf_unresolvable");
+  assert.notEqual(env.shield(), "unverified");
+  assert.equal(
+    (STICKY_GROUP_ERRORS as readonly string[]).includes(
+      "catch_up_leaf_unresolvable",
+    ),
+    false,
+  );
+  m.dispose();
+});
+
+test("S2 (f): DeviceCapReached on the join intent: capacity (device_cap), never a Welcome retry; only an open or ProtectedChannelChanged retries; the event clears it and rejoins", async () => {
+  const env = joiningEnv();
+  let full = true;
+  env.routes.push((method, path) =>
+    full && method === "POST" && /join_intent$/.test(path)
+      ? ok({ type: "DeviceCapReached", max: 5 }, 400)
+      : undefined,
+  );
+  const m = make(env);
+  const p = silence(m.ensureJoined(CH));
+  await env.advance(0);
+  await assert.rejects(
+    p,
+    (e: { type?: string }) => e.type === "DeviceCapReached",
+  );
+  assert.deepEqual(env.views.get(CH)?.capacity, { reason: "device_cap" });
+  assert.deepEqual(env.explain(), {
+    state: "capacity",
+    notice: "capacity_device_cap",
+  });
+  await m.refresh(CH, "interval");
+  await env.advance(300_000);
+  assert.equal(env.api$("POST", /join_intent$/).length, 1, "no auto retry");
+  // An open is the manual retry ("Try again"): refused again, never 6d.
+  await m.open(CH);
+  await env.advance(0);
+  m.close(CH);
+  assert.equal(env.api$("POST", /join_intent$/).length, 2);
+  assert.equal(env.views.get(CH)?.welcomeRetriesExhausted, false);
+  assert.deepEqual(env.views.get(CH)?.capacity, { reason: "device_cap" });
+  // The cap was raised: the event clears capacity and the join runs.
+  full = false;
+  m.onChannelChanged(CH, ["seats"]);
+  assert.equal(env.views.get(CH)?.capacity, null, "cleared by the event");
+  await env.advance(CHANNEL_CHANGED_COALESCE_MS);
+  assert.equal(env.api$("POST", /join_intent$/).length, 3, "rejoined");
+  m.dispose();
+});
+
+test("S2 (g): ProtectedChannelChanged: a burst costs ONE refresh after the coalesce window; unknown scope items and unknown channels are ignored", async () => {
+  const env = new Env();
+  const m = make(env);
+  await m.refresh(CH, "open");
+  await env.advance(0);
+  const seatsGets = () => env.api$("GET", /^\/channels\/[^/]+\/seats$/).length;
+  const before = seatsGets();
+  for (let i = 0; i < 5; i++) m.onChannelChanged(CH, ["seats", "text_group"]);
+  m.onChannelChanged(CH, ["from_the_future"]);
+  m.onChannelChanged("01J9Z3K4M5N6P7Q8R9S0T1V2XX", ["seats"]);
+  await env.advance(CHANNEL_CHANGED_COALESCE_MS - 1);
+  assert.equal(seatsGets(), before, "nothing inside the window");
+  await env.advance(1);
+  assert.equal(seatsGets(), before + 1, "one refresh for the burst");
+  await env.advance(10_000);
+  assert.equal(seatsGets(), before + 1);
+  m.onChannelChanged(CH, ["text_group"]);
+  await env.advance(CHANNEL_CHANGED_COALESCE_MS);
+  assert.equal(seatsGets(), before + 2, "a later event is a new burst");
+  m.dispose();
+});
+
+test("S2 (h): a server-reported id (non-v1, g > 63) is indexed in both indexes BEFORE the _join, and its Welcome lands in this channel", async () => {
+  const GX = "ef".repeat(32);
+  const env = joiningEnv();
+  env.group = groupBody({ group_id: GX, generation: 70 });
+  env.handlers.e2ee_text_process = (a) => {
+    env.states.set(CH, st({ group_id: GX, generation: 70, epoch: 4 }));
+    return outcome({
+      kind: "welcome_joined",
+      epoch: 4,
+      group_id: a.envelope.group_id,
+    });
+  };
+  const m = make(env);
+  const p = m.ensureJoined(CH);
+  await env.advance(0);
+  assert.deepEqual(
+    env.reported.find((r) => r[1] === GX),
+    [CH, GX, 70],
+  );
+  const reported = env.trace.indexOf("reported " + GX);
+  const joined = env.trace.indexOf("e2ee_text_join");
+  assert.ok(reported >= 0 && joined > reported, "indexed before the join");
+  assert.equal(env.calls("e2ee_text_join")[0]?.groupId, GX);
+  m.onEnvelope(
+    envelope("W70", 4, { content_type: "mls_welcome", group_id: GX }),
+  );
+  await env.advance(0);
+  await p;
+  assert.equal(env.views.get(CH)?.native?.group_id, GX);
+  m.dispose();
+});
+
+test("S2 (h): a malformed reported id is logged and skipped; one mapped elsewhere is logged without ids and never re-routed", async () => {
+  const env = new Env();
+  // G0 is generation 0 of CH: native claiming generation 5 conflicts.
+  env.states.set(CH, st({ generation: 5 }));
+  env.group = groupBody({ group_id: "NOT-HEX", generation: 1 });
+  const m = make(env);
+  await m.refresh(CH, "open");
+  assert.ok(
+    env.logs.some(
+      (l) =>
+        l.msg === "[protected] reported group id malformed" &&
+        JSON.stringify(l.ids) ===
+          JSON.stringify({ channelId: CH, source: "text_group" }),
+    ),
+  );
+  const conflicts = env.logs.filter(
+    (l) => l.msg === "[protected] reported group id conflict",
+  );
+  assert.ok(conflicts.length >= 1);
+  assert.ok(
+    conflicts.every(
+      (l) => JSON.stringify(l.ids) === JSON.stringify({ source: "state" }),
+    ),
+    "no ids in a conflict log",
+  );
+  assert.deepEqual(
+    env.reported.filter((r) => r[1] === "NOT-HEX" || r[2] === 5),
+    [],
+  );
+  m.dispose();
+});
+
+test("S2 (i): owner_notice of a verify verdict or a process outcome sets view.ownerNotice and raises ONE owner_notice toast each; owner_alert is read from native state only; a malformed notice raises nothing", async () => {
+  const env = new Env();
+  const notice1: OwnerDeviceNotice = {
+    kind: "changed_by_other",
+    device_id: "dev-other",
+    seated: [],
+  };
+  let withNotice = true;
+  env.handlers.e2ee_text_seat_list_verify = () => ({
+    status: "accepted",
+    version: 1,
+    seats: [OWNER, PEER, SELF],
+    device_cap: 5,
+    signer_user_id: OWNER,
+    signer_device_id: OWNER_DEV,
+    pinned_now: false,
+    ...(withNotice ? { owner_notice: notice1 } : {}),
+  });
+  const m = make(env);
+  await m.refresh(CH, "open");
+  withNotice = false;
+  assert.deepEqual(env.views.get(CH)?.ownerNotice, notice1);
+  assert.deepEqual(env.notified, ["owner_notice"]);
+  await m.refresh(CH, "interval");
+  assert.deepEqual(env.notified, ["owner_notice"], "one-shot");
+  assert.deepEqual(env.views.get(CH)?.ownerNotice, notice1, "the last one");
+  const notice2: OwnerDeviceNotice = {
+    kind: "seated_by_other",
+    device_id: "dev-other",
+    seated: [PEER],
+  };
+  env.handlers.e2ee_text_process = (a) =>
+    outcome({ epoch: a.envelope.epoch, owner_notice: notice2 });
+  m.onEnvelope(envelope("E4", 4));
+  await env.advance(1_000);
+  assert.deepEqual(env.views.get(CH)?.ownerNotice, notice2);
+  assert.deepEqual(env.notified, ["owner_notice", "owner_notice"]);
+  env.handlers.e2ee_text_process = (a) =>
+    outcome({
+      epoch: a.envelope.epoch,
+      owner_notice: { kind: "bogus" } as unknown as OwnerDeviceNotice,
+    });
+  m.onEnvelope(envelope("E5", 5));
+  await env.advance(1_000);
+  assert.equal(env.notified.length, 2, "a malformed notice raises nothing");
+  assert.ok(
+    env.logs.some((l) => l.msg === "[protected] owner notice malformed"),
+  );
+  const alert: OwnerDeviceNotice = {
+    kind: "dropped_this_device",
+    device_id: DEV,
+    seated: [],
+  };
+  env.states.set(CH, st({ epoch: 5, owner_alert: alert }));
+  await m.refresh(CH, "interval");
+  assert.deepEqual(env.views.get(CH)?.native?.owner_alert, alert);
+  assert.equal(env.notified.length, 2, "an alert is not a toast");
+  m.dispose();
+});
+
+test("S2 OR-10: a confirm that resolves but whose next verify is again owner_changed{same_user} for that device withholds Review for it until the list or pin changes", async () => {
+  const OWNER2 = "dev-owner-2";
+  const env = new Env();
+  env.states.set(
+    CH,
+    st({
+      verdict: "owner_changed",
+      owner_pin: {
+        ...st().owner_pin,
+        status: "changed",
+        pending_signer: {
+          user_id: OWNER,
+          device_id: OWNER2,
+          same_user: true,
+          verified: true,
+        },
+      },
+    }),
+  );
+  env.handlers.e2ee_text_seat_list_verify = () => {
+    throw {
+      type: "owner_changed",
+      channel_id: CH,
+      signer_user_id: OWNER,
+      signer_device_id: OWNER2,
+      same_user: true,
+      verified: true,
+    };
+  };
+  const m = make(env);
+  await m.refresh(CH, "open");
+  assert.equal(env.views.get(CH)?.ownerChangePending, true);
+  assert.equal(env.views.get(CH)?.ownerChangeUnlisted, false, "no confirm yet");
+  await m.confirmOwnerChange(CH);
+  await env.advance(0);
+  assert.equal(env.views.get(CH)?.ownerChangeUnlisted, true);
+  await m.refresh(CH, "interval");
+  assert.equal(env.views.get(CH)?.ownerChangeUnlisted, true, "kept");
+  // A new list (version 2) offers Review again.
+  env.seats = seatsBody({
+    list: { ...seatsBody().list, version: 2, signature: "SIG2" },
+  });
+  await m.refresh(CH, "interval");
+  assert.equal(env.views.get(CH)?.ownerChangeUnlisted, false);
+  m.dispose();
+});
+
+test("S2 OR-5: a plain 2xx that removed devices reads the stored row through the won-row read and passes ITS labels to _commit_won; malformed labels park it, never []", async () => {
+  const labels = [{ user_id: PEER, device_id: PEER_DEV, reason: "off_list" }];
+  const removing = (env: Env) => {
+    env.handlers.e2ee_text_remove = () => {
+      const p = {
+        ...commitPayload((env.state().epoch ?? 0) + 1, "REM"),
+        removed: [{ user_id: PEER, device_id: PEER_DEV }],
+      };
+      env.pending = { epoch: p.epoch, commit_b64: p.commit };
+      return p;
+    };
+  };
+  const env = new Env();
+  removing(env);
+  env.dsLabels = labels;
+  const m = make(env);
+  await removeWith(env, m, null);
+  assert.deepEqual(
+    env.calls("e2ee_text_commit_won")[0]?.removedReasons,
+    labels,
+  );
+  m.dispose();
+
+  const env2 = new Env();
+  removing(env2);
+  env2.dsLabels = [{ user_id: PEER, reason: "off_list" }];
+  const m2 = make(env2);
+  await m2.refresh(CH, "open");
+  const p = silence(
+    m2.removeDevices(CH, [{ user_id: PEER, device_id: PEER_DEV }], {
+      rejoinIntent: null,
+    }),
+  );
+  await env2.advance(600_000);
+  await assert.rejects(
+    p,
+    (e: { reason?: string }) => e.reason === "commit_parked",
+  );
+  assert.equal(env2.calls("e2ee_text_commit_won").length, 0);
+  assert.equal(env2.api$("GET", /from_epoch=4$/).length, WON_ROW_READ_BUDGET);
+  assert.ok(
+    env2.logs.some(
+      (l) =>
+        l.msg === "[protected] won row labels malformed" &&
+        JSON.stringify(l.ids) === JSON.stringify({ groupId: G0, epoch: 4 }),
+    ),
+  );
+  m2.dispose();
+});
+
+test("S2-D36 input: resecuringSinceMs is stamped when the shield enters resecuring, kept while it stays, cleared when it leaves", async () => {
+  const env = new Env();
+  const m = make(env);
+  await m.refresh(CH, "open");
+  assert.equal(env.shield(), "protected");
+  assert.equal(env.views.get(CH)?.resecuringSinceMs, null);
+  env.group = groupBody({ current_epoch: 4 });
+  const t0 = env.clock;
+  await m.refresh(CH, "interval");
+  assert.equal(env.shield(), "resecuring");
+  assert.equal(env.views.get(CH)?.resecuringSinceMs, t0);
+  await env.advance(30_000);
+  await m.refresh(CH, "interval");
+  assert.equal(env.views.get(CH)?.resecuringSinceMs, t0, "kept");
+  env.group = groupBody();
+  await m.refresh(CH, "interval");
+  assert.equal(env.shield(), "protected");
+  assert.equal(env.views.get(CH)?.resecuringSinceMs, null);
+  m.dispose();
+});
+
+test("S2 D40: setSeats re-validates the reason (header rule) and hands the owner flow the sanitized value; an invalid one is refused first; authoritySign runs signOwnerDevices with the publish bookkeeping", async () => {
+  const env = new Env();
+  const seen: unknown[][] = [];
+  let inFlight = false;
+  const m = make(
+    env,
+    fakeDeps(env, {
+      owner: {
+        setSeats: async (...a: unknown[]) => {
+          seen.push(a.slice(2));
+        },
+        signOwnerDevices: async (ops, _port, ch, devices) => {
+          inFlight = ops.stateOf(ch)?.publishInFlight === true;
+          seen.push(["sign", ch, devices]);
+        },
+      },
+    }),
+  );
+  const raw = "  Spam " + String.fromCharCode(7);
+  const clean = validReason(raw, "header");
+  assert.ok(clean.ok);
+  await m.setSeats(CH, [OWNER, SELF], 5);
+  await m.setSeats(CH, [OWNER], 5, raw);
+  for (const bad of ["   ", "x".repeat(513)]) {
+    await assert.rejects(
+      m.setSeats(CH, [OWNER], 5, bad),
+      (e: { reason?: string }) => e.reason === "invalid_reason",
+    );
+  }
+  assert.deepEqual(seen, [
+    [CH, [OWNER, SELF], 5],
+    [CH, [OWNER], 5, clean.ok ? clean.reason : null],
+  ]);
+  await m.authoritySign(CH, [OWNER_DEV, "dev-owner-2"]);
+  assert.equal(inFlight, true);
+  assert.deepEqual(seen.at(-1), ["sign", CH, [OWNER_DEV, "dev-owner-2"]]);
+  assert.equal(env.views.get(CH)?.publishInFlight, false);
+  m.dispose();
+});
+
+test("Inherited L1s: InSlowmode on key_packages/claim holds admissions into that group until its retry_after; never a notice", async () => {
+  const env = new Env();
+  let claims = 0;
+  env.routes.push((method, path) =>
+    method === "POST" && path === "/mls/key_packages/claim" && ++claims === 1
+      ? ok({ type: "InSlowmode", retry_after: 60 }, 429)
+      : undefined,
+  );
+  const fresh = (signature: string) => ({
+    ...joinRequest(signature),
+    device_id: "dev-new",
+  });
+  const m = make(env);
+  await m.refresh(CH, "open");
+  m.onJoinRequest(fresh("A"), false);
+  await env.advance(1_000);
+  assert.equal(claims, 1);
+  m.onJoinRequest(fresh("B"), false);
+  await env.advance(30_000);
+  assert.equal(claims, 1, "held inside retry_after");
+  assert.equal(env.calls("e2ee_text_admit").length, 0);
+  await env.advance(30_000);
+  m.onJoinRequest(fresh("C"), false);
+  await env.advance(1_000);
+  assert.equal(claims, 2, "claimed after retry_after");
+  assert.equal(env.calls("e2ee_text_admit").length, 1);
+  assert.deepEqual(env.notified, []);
+  m.dispose();
 });

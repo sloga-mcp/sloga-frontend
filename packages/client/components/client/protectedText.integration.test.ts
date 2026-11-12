@@ -29,6 +29,7 @@ import {
   _resetOwnerFlowsForTest,
   protect,
   setSeats,
+  signOwnerDevices,
 } from "./protectedTextOwner.ts";
 import type {
   PendingCommit,
@@ -53,7 +54,7 @@ const G0 = await textGroupId(CH, 0);
 const CID = "01J9Z3K4M5N6P7Q8R9S0T1V2W7";
 
 const DEPS: ProtectedTextManagerDeps = {
-  owner: { protect, setSeats },
+  owner: { protect, setSeats, signOwnerDevices },
   messages: { encryptAndSend, decryptRow, markerForError },
 };
 

@@ -648,7 +648,7 @@ test("S8: the manager is built only once status.device_id is known (and capable)
     ensure,
     /if \(!key \|\| !userId \|\| !deviceId\) return;[\s\S]*new ProtectedTextManager\(/,
   );
-  assert.match(ensure, /owner: \{ protect, setSeats \}/);
+  assert.match(ensure, /owner: \{ protect, setSeats, signOwnerDevices \}/);
   assert.match(
     ensure,
     /messages: \{ encryptAndSend, decryptRow, markerForError \}/,

@@ -42,14 +42,22 @@ import type {
   MlsJoinRequest,
   MlsMemberDevice,
   MlsPublishKeyPackages,
+  MlsRemovedReason,
 } from "./e2ee";
+import { TEXT_PROTOCOL } from "./protectedPlatform.ts";
+import { validReason } from "./protectedRemovalReasonPolicy.ts";
 import {
   isSynthTextEnvelopeId,
+  removedReason,
   textEnvelopeFromCommitInfo,
   toWireEnvelope,
 } from "./protectedRouter.ts";
-import { SHIELD_LOUD_GROUP_ERRORS } from "./protectedShield.ts";
-import { textGroupId, TextIdIndex } from "./protectedTextIds.ts";
+import {
+  computeShieldState,
+  SHIELD_LOUD_GROUP_ERRORS,
+  shieldInputsFromView,
+} from "./protectedShield.ts";
+import { TextIdIndex } from "./protectedTextIds.ts";
 import {
   type ProtectorAnswer,
   type ProtectorGate,
@@ -58,19 +66,23 @@ import {
   type SendTrigger,
   type SubmitAction,
   type SubmitContext,
+  type TextEnvelopeVerdict,
   classifySendAnswer,
   classifySubmit,
   classifyTextEnvelopeError,
   errorTypeOf,
+  holdsCurrentGroup,
   isCatchUpDesync,
   isProtectorError,
   JOIN_RETRIES,
   JOIN_RETRY_MS,
+  joinRefusal,
   leafStaggerMs,
   PROTECTOR_GATE_OPEN,
   protectorGateAfter,
   protectorGateStep,
   publishBackoffMs,
+  publishStep,
   REFRESH_INTERVAL_MS,
   retryAfterMs,
 } from "./protectedTextPolicy.ts";
@@ -79,6 +91,7 @@ import type {
   ManagerState,
   NativeError,
   NativeErrorTag,
+  OwnerDeviceNotice,
   ProtectedChannelView,
   ProtectedMarkerKind,
   ProtectedMessageRow,
@@ -91,6 +104,7 @@ import type {
   ProtectedTextManagerDeps,
   ProtectedTextPort,
   RemoveDevicesOptions,
+  SignedSeatList,
   TextApiMethod,
   TextApiResponse,
   TextChannelState,
@@ -98,9 +112,11 @@ import type {
   TextCommandArgs,
   TextCommandResult,
   TextCommitInfo,
+  TextCreateGroupBody,
   TextEnvelope,
   TextFlowFailure,
   TextGroupCreated,
+  TextJoinIntentBody,
   TextLogIds,
   TextProcessOutcome,
   TextRefreshReason,
@@ -191,8 +207,8 @@ export const MESSAGE_LEVEL_TAGS: readonly NativeErrorTag[] = [
 /**
  * W4d X#1: loud poisoned-path `groupError` tags are STICKY per group. They
  * are the design 9.1 step-3 `groupError` list (the commit-AD pre-check and
- * the step-6 commit checks of 3.12.3) plus `seat_list_rollback` (the same
- * AD pre-check; loud through step 3b). A benign tag (`mls_poisoned_epoch`
+ * the step-6 commit checks of 3.12.3), which carries `seat_list_rollback`
+ * since S2 (the same AD pre-check). A benign tag (`mls_poisoned_epoch`
  * from the next envelope of the poisoned group, a dropped duplicate) never
  * overwrites one and a processed `duplicate` / `commit_applied` never
  * clears one; only joining a HIGHER generation of the channel does (a
@@ -201,10 +217,18 @@ export const MESSAGE_LEVEL_TAGS: readonly NativeErrorTag[] = [
  * has its own defined reset (the D15 owner-change confirm), and native's
  * `owner_changed` verdict keeps step 3 loud until then.
  */
-export const STICKY_GROUP_ERRORS: readonly NativeErrorTag[] = [
-  ...SHIELD_LOUD_GROUP_ERRORS.filter((t) => t !== "owner_changed"),
-  "seat_list_rollback",
-];
+export const STICKY_GROUP_ERRORS: readonly NativeErrorTag[] =
+  SHIELD_LOUD_GROUP_ERRORS.filter((t) => t !== "owner_changed");
+
+/**
+ * S2 (g): `ProtectedChannelChanged` events for one channel inside this
+ * window cost ONE refresh (a seat PUT emits seats and text_group changes
+ * back to back).
+ */
+export const CHANNEL_CHANGED_COALESCE_MS = 250;
+
+/** Re-sends of the recovery seat list after a 429 / 5xx / transport. */
+export const RECOVERY_PUT_RETRY_BUDGET = 8;
 
 /**
  * W4d X#3: re-GETs of `.../seats` when the snapshot under verify is older
@@ -230,9 +254,15 @@ export interface ProtectedTextPortExtensions {
   liveOutboxKeys(): ReadonlySet<string>;
 }
 
-/** Callback extras (optional): D12 replenish after this device's Welcome. */
+/**
+ * Callback extras (optional): D12 replenish after this device's Welcome;
+ * S2 (h) every group id native or the server reported for a channel, so
+ * the bridge's routing index holds it before any join or process for it
+ * (called only after the manager's own index accepted it).
+ */
 export interface ProtectedTextManagerExtraCallbacks {
   onWelcomeJoined(channelId: string, groupId: string): void;
+  onGroupReported(channelId: string, groupId: string, generation: number): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -361,7 +391,81 @@ function parseSeats(body: unknown): ProtectedSeatsResponse | null {
   }
   if (body.as_of_epoch !== null && !int(body.as_of_epoch)) return null;
   if (body.as_of_group_id !== null && !str(body.as_of_group_id)) return null;
+  const gen = body.as_of_generation;
+  if (gen !== undefined && gen !== null && !int(gen)) return null;
   return body as unknown as ProtectedSeatsResponse;
+}
+
+/**
+ * A stored row's `removed_reasons` by the router's rule (`removedReason`):
+ * absent or null is the DS's empty vector; anything malformed is null
+ * (never defaulted to `[]`, OR-5).
+ */
+function labelsOf(v: unknown): MlsRemovedReason[] | null {
+  if (v === undefined || v === null) return [];
+  if (!Array.isArray(v)) return null;
+  const out: MlsRemovedReason[] = [];
+  for (const e of v) {
+    const label = removedReason(e);
+    if (label === null) return null;
+    out.push(label);
+  }
+  return out;
+}
+
+const OWNER_NOTICE_KINDS: readonly string[] = [
+  "dropped_this_device",
+  "changed_by_other",
+  "seated_by_other",
+];
+
+/** An `owner_notice` as native reports it, or null (absent / malformed). */
+function ownerNoticeOf(v: unknown): OwnerDeviceNotice | null {
+  if (
+    !isRecord(v) ||
+    !str(v.kind) ||
+    !OWNER_NOTICE_KINDS.includes(v.kind) ||
+    !str(v.device_id) ||
+    !Array.isArray(v.seated) ||
+    !v.seated.every(str)
+  ) {
+    return null;
+  }
+  return {
+    kind: v.kind as OwnerDeviceNotice["kind"],
+    device_id: v.device_id,
+    seated: [...v.seated],
+  };
+}
+
+/**
+ * S2 rule 3a (b): the server's `pending_device_removals` of `g`, minus this
+ * device and minus the held list's signer device (rule g; native re-checks
+ * both and that each target holds a leaf). Malformed entries are skipped.
+ */
+function pendingDeviceTargetsOf(
+  g: ProtectedTextGroupResponse | null,
+  n: TextChannelState,
+  selfUserId: string,
+  selfDeviceId: string,
+): MlsMemberDevice[] {
+  const raw: unknown = g?.pending_device_removals;
+  if (!Array.isArray(raw)) return [];
+  const signer = n.seat_list;
+  const out: MlsMemberDevice[] = [];
+  for (const p of raw) {
+    if (!isRecord(p) || !str(p.user_id) || !str(p.device_id)) continue;
+    if (p.user_id === selfUserId && p.device_id === selfDeviceId) continue;
+    if (
+      signer !== null &&
+      p.user_id === signer.signer_user_id &&
+      p.device_id === signer.signer_device_id
+    ) {
+      continue;
+    }
+    out.push({ user_id: p.user_id, device_id: p.device_id });
+  }
+  return out;
 }
 
 /** `GET /mls/channels/:id/text_group` body, shape-checked. */
@@ -509,6 +613,28 @@ interface ChannelRec {
   /** The in-flight re-run of an unaccepted create (D21 crash recovery). */
   recreating: Promise<void> | null;
   seeded: boolean;
+  /**
+   * S2 (f): this device's own join intent was refused for capacity
+   * (`joinRefusal`, OR-11). Cleared by an accepted intent, a Welcome or a
+   * `ProtectedChannelChanged`; while set, refreshes do not re-join on
+   * their own (only an open or the event does).
+   */
+  capacity: ProtectedChannelView["capacity"];
+  /**
+   * S4 floor (a): `ProtectedClientOutdated.min`. While set, no join intent
+   * and no create is sent for the channel (until reload).
+   */
+  clientOutdated: number | null;
+  /** S2 (i): the last one-shot owner notice. */
+  ownerNotice: OwnerDeviceNotice | null;
+  /** S2-D36: when the shield entered `resecuring` (see `#emit`). */
+  resecuringSinceMs: number | null;
+  /** OR-10: the same-user signer device this device just confirmed. */
+  confirmedSigner: string | null;
+  /** OR-10: Review withheld for `deviceId` while `key` is unchanged. */
+  ownerChangeUnlisted: { deviceId: string; key: string } | null;
+  /** S2 (g): a coalesced `ProtectedChannelChanged` refresh is pending. */
+  changePending: boolean;
 }
 
 type ProcessResult = "ok" | "held" | "parked" | "dropped";
@@ -566,6 +692,11 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
   readonly #forgotten = new Set<string>();
   /** Group ids whose create this manager POSTed or re-ran (D21 retry). */
   readonly #createPosted = new Set<string>();
+  /**
+   * Inherited L1s: a `key_packages/claim` answered `InSlowmode` (429) holds
+   * admissions into that group until its `retry_after` (never a notice).
+   */
+  readonly #claimHold = new Map<string, number>();
   readonly #firstSightQueue: ChannelRec[] = [];
   #firstSightRunning = false;
   #firstSightWindowStart = 0;
@@ -773,27 +904,212 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     this.#background(this.refresh(channelId, "commit"));
   }
 
+  /**
+   * `reason` (D40): the unseat reason. Checked again here with the header
+   * rule (`validReason`); an invalid one is refused before anything is
+   * signed, never sent. The owner flow sends the sanitized value as
+   * `X-Audit-Log-Reason` on the PUT of the stored bytes.
+   */
   async setSeats(
     channelId: string,
     seats: string[],
     deviceCap: number,
+    reason?: string,
+  ): Promise<void> {
+    let header: string | undefined;
+    if (reason !== undefined) {
+      const checked = validReason(reason, "header");
+      if (!checked.ok) throw clientFailure("invalid_reason");
+      header = checked.reason;
+    }
+    const rec = await this.#register(channelId);
+    rec.publishInFlight = true;
+    this.#emit(rec);
+    try {
+      const owner = this.#deps.owner;
+      await (header === undefined
+        ? owner.setSeats(this, this.#flowPort, channelId, seats, deviceCap)
+        : owner.setSeats(
+            this,
+            this.#flowPort,
+            channelId,
+            seats,
+            deviceCap,
+            header,
+          ));
+    } finally {
+      rec.publishInFlight = false;
+      this.#emit(rec);
+    }
+    this.#background(this.refresh(channelId, "commit"));
+  }
+
+  /** S2: the owner flow re-signs the authority, then the list carrying it. */
+  async authoritySign(
+    channelId: string,
+    ownerDevices: string[],
   ): Promise<void> {
     const rec = await this.#register(channelId);
     rec.publishInFlight = true;
     this.#emit(rec);
     try {
-      await this.#deps.owner.setSeats(
+      await this.#deps.owner.signOwnerDevices(
         this,
         this.#flowPort,
         channelId,
-        seats,
-        deviceCap,
+        ownerDevices,
       );
     } finally {
       rec.publishInFlight = false;
       this.#emit(rec);
     }
     this.#background(this.refresh(channelId, "commit"));
+  }
+
+  /**
+   * S2 (d), design 6.3 "Owner signing device lost" (S2-D17d, S2-D22, #213):
+   * on ANOTHER device of the `signer_lost` user, and only from this call
+   * (never automatic). Order per #213: the recovery list is signed FIRST
+   * (its native dialog runs before anything is created or sent), then,
+   * when this device holds no leaf in the open group, the recovery
+   * successor `g + 1` is created, and only then the list is PUT (the
+   * server's 4.3 step 5b checks the leaf against that successor). Native
+   * persists nothing for it: a failure part-way is retried by calling
+   * this again (a successor already created is then the open group).
+   */
+  async recoverOwnership(channelId: string): Promise<void> {
+    const rec = await this.#register(channelId);
+    if (rec.stripped) throw clientFailure("flag_stripped");
+    if (rec.publishInFlight) throw clientFailure("publish_in_flight");
+    rec.publishInFlight = true;
+    this.#emit(rec);
+    try {
+      await this.refresh(channelId, "commit");
+      await this.#recover(rec);
+    } finally {
+      rec.publishInFlight = false;
+      this.#emit(rec);
+    }
+    this.#background(this.refresh(channelId, "commit"));
+  }
+
+  async #recover(rec: ChannelRec): Promise<void> {
+    const self = this.#port.selfUserId;
+    const dev = this.#port.selfDeviceId;
+    const g = rec.serverGroup;
+    const n = rec.native;
+    const list = rec.seats?.list ?? null;
+    const lost = g?.signer_lost ?? null;
+    if (
+      g === null ||
+      lost === null ||
+      lost.user_id !== self ||
+      lost.device_id === dev ||
+      !n?.seat_list ||
+      list === null
+    ) {
+      throw clientFailure("recovery_unavailable");
+    }
+    const held = n.seat_list;
+    const info = this.#port.channelInfo(rec.id);
+    let signed: SignedSeatList;
+    try {
+      // A dialog: never inside the lane (it waits on the user).
+      signed = await this.#invoke("e2ee_text_seat_list_sign", {
+        channelId: rec.id,
+        userId: self,
+        seats: held.seats,
+        deviceCap: held.device_cap,
+        serverList: { version: list.version, body: list.body },
+        format: null,
+        authority: null,
+        recovery: true,
+        channelName: info?.name ?? null,
+        displayNames: this.#port.displayNames(held.seats),
+      });
+    } catch (err) {
+      throw toFailure(err);
+    }
+    if (signed.signer_user_id !== self || signed.signer_device_id !== dev) {
+      throw clientFailure("publish_refused");
+    }
+    const leaf = g.members.some(
+      (m) => m.user_id === self && m.device_id === dev,
+    );
+    if (!leaf) {
+      await this.#createGroup(rec, g.group_id, true, g.generation);
+    }
+    await this.#putRecoveryList(rec, signed);
+    this.#log("info", "ownership recovered on this device", {
+      channelId: rec.id,
+    });
+  }
+
+  /**
+   * The recovery list's seat PUT: the SAME signed bytes re-sent after a
+   * 429 / 5xx / transport (`publishStep`, bounded here); a 4xx refuses.
+   */
+  async #putRecoveryList(rec: ChannelRec, signed: SignedSeatList) {
+    const body = {
+      body: signed.body,
+      signature: signed.signature,
+      signer_device_id: signed.signer_device_id,
+      ...(signed.authority ? { authority: signed.authority } : {}),
+    };
+    for (let failures = 0; ; failures++) {
+      const r = await this.#api("PUT", `/channels/${rec.id}/seats`, body);
+      const step = publishStep(
+        r === null
+          ? { kind: "transport_error" }
+          : { kind: "response", response: r },
+        { op: "seats", failures },
+      );
+      if (step.kind === "resolved_ok") return;
+      if (step.kind !== "resend") {
+        throw r === null ? clientFailure("publish_refused") : serverFailure(r);
+      }
+      if (failures >= RECOVERY_PUT_RETRY_BUDGET) {
+        throw r === null
+          ? ({ source: "transport" } as const)
+          : serverFailure(r);
+      }
+      await this.#sleep(step.delayMs);
+    }
+  }
+
+  /**
+   * S2 (g), design 7.5: a `ProtectedChannelChanged` refetch hint for a
+   * channel this manager holds. Unknown scope items are ignored; never a
+   * security input. A burst costs ONE `refresh(id, "event")` after
+   * `CHANNEL_CHANGED_COALESCE_MS`. It also ends a recorded capacity
+   * refusal (f): the refresh then joins again.
+   */
+  onChannelChanged(channelId: string, scope: readonly string[]): void {
+    if (this.#disposed) return;
+    const rec = this.#channels.get(channelId);
+    if (!rec) return;
+    if (
+      !Array.isArray(scope) ||
+      !scope.some((s) => s === "seats" || s === "text_group")
+    ) {
+      return;
+    }
+    if (rec.capacity !== null) {
+      rec.capacity = null;
+      this.#emit(rec);
+    }
+    if (rec.changePending) return;
+    rec.changePending = true;
+    this.#background(
+      (async () => {
+        try {
+          await this.#sleep(CHANNEL_CHANGED_COALESCE_MS);
+        } finally {
+          rec.changePending = false;
+        }
+        await this.refresh(channelId, "event");
+      })(),
+    );
   }
 
   async send(
@@ -986,7 +1302,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
   async #afterSend(rec: ChannelRec): Promise<void> {
     await this.#readState(rec);
     const n = rec.native;
-    if (n && n.state === "active" && (n.update_due || n.update_required)) {
+    if (n && holdsCurrentGroup(n) && (n.update_due || n.update_required)) {
       await this.#commitUpdate(rec, false);
     }
   }
@@ -1003,12 +1319,16 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
   async ensureJoined(channelId: string): Promise<void> {
     const rec = await this.#register(channelId);
     if (rec.stripped) throw clientFailure("flag_stripped");
+    // S4 floor (a): no join intent until reload.
+    if (rec.clientOutdated !== null) throw clientFailure("client_outdated");
     if (rec.join) return rec.join.promise;
     await this.#readState(rec);
     const n = rec.native;
+    // S2 (c): a superseded group is still `active` natively (verdict
+    // `no_group`): it is never "joined"; the join path takes the successor.
     if (
       n &&
-      n.state === "active" &&
+      holdsCurrentGroup(n) &&
       (rec.serverGroup === null || rec.serverGroup.group_id === n.group_id)
     ) {
       if (n.update_required) {
@@ -1044,6 +1364,22 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     supersedes: string | null,
   ): Promise<TextGroupCreated> {
     const rec = await this.#register(channelId);
+    return this.#createGroup(rec, supersedes, false, null);
+  }
+
+  /**
+   * `createGroup`, plus the S2 recovery successor (`recovery: true` with
+   * the superseded generation, design 6.3; only `#recover` passes it).
+   */
+  async #createGroup(
+    rec: ChannelRec,
+    supersedes: string | null,
+    recovery: boolean,
+    supersedesGeneration: number | null,
+  ): Promise<TextGroupCreated> {
+    const channelId = rec.id;
+    // S4 floor (a): no create until reload.
+    if (rec.clientOutdated !== null) throw clientFailure("client_outdated");
     let created: TextGroupCreated;
     try {
       created = await this.#enqueue(rec.id, () =>
@@ -1051,16 +1387,28 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
           channelId,
           userId: this.#port.selfUserId,
           supersedes,
-          recovery: false,
-          supersedesGeneration: null,
+          recovery,
+          supersedesGeneration,
         }),
       );
     } catch (err) {
       throw toFailure(err);
     }
+    // (h) Indexed before the server (or any envelope) can name it.
+    this.#report(channelId, created.group_id, created.generation, "create");
+    // (a, OR-3) native's payload as received, plus the shell protocol.
+    const body: TextCreateGroupBody = {
+      ...created.payload,
+      protocol: TEXT_PROTOCOL,
+    };
     for (let failures = 0; ; failures++) {
-      const r = await this.#api("POST", "/mls/groups", created.payload);
+      const r = await this.#api("POST", "/mls/groups", body);
       if (r !== null && is2xx(r.status)) break;
+      const refusal = r !== null ? joinRefusal(r) : null;
+      if (r !== null && refusal?.kind === "outdated") {
+        this.#markOutdated(rec, refusal.min);
+        throw serverFailure(r);
+      }
       if (r !== null && r.status === 409) {
         const b = r.body;
         if (
@@ -1172,6 +1520,8 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       throw toFailure(err);
     }
     rec.ownerChangePending = false;
+    // OR-10: the next verify tells whether this confirm settled it.
+    rec.confirmedSigner = signer?.same_user === true ? signer.device_id : null;
     // D15: re-run GET .../seats + _seat_list_verify, then reprocess.
     await this.refresh(channelId, "owner_confirmed");
     const parked = rec.parked.splice(0);
@@ -1234,10 +1584,15 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
   // Envelope processing (runs INSIDE the channel lane)
   // -------------------------------------------------------------------------
 
+  /**
+   * `catchUpTip` (b): the server's current epoch while `#catchUpInner`
+   * pages commits; null for a live envelope (native's S1 path).
+   */
   async #processWire(
     laneRec: ChannelRec | null,
     wire: TextWireEnvelope,
     depth: number,
+    catchUpTip: number | null = null,
   ): Promise<ProcessResult> {
     const synth = isSynthTextEnvelopeId(wire.id);
     const ids = { groupId: wire.group_id, envelopeId: wire.id };
@@ -1277,7 +1632,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         out = await this.#invoke("e2ee_text_process", {
           envelope: wire,
           userId: this.#port.selfUserId,
-          catchUpTip: null,
+          catchUpTip,
         });
       } catch (err) {
         const verdict = classifyTextEnvelopeError(err);
@@ -1300,7 +1655,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
           await this.#ack([wire.id]);
           this.#markSeen(wire.id);
         }
-        return this.#envelopeAction(rec, wire, verdict.action, depth);
+        return this.#envelopeAction(rec, wire, verdict, depth);
       }
       if (!synth) await this.#ack([wire.id]);
       this.#markSeen(wire.id);
@@ -1309,14 +1664,15 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     }
   }
 
+  /** Runs inside the channel lane (`#processWire`'s caller holds it). */
   async #envelopeAction(
     rec: ChannelRec | null,
     wire: TextWireEnvelope,
-    action: ReturnType<typeof classifyTextEnvelopeError>["action"],
+    verdict: TextEnvelopeVerdict,
     depth: number,
   ): Promise<ProcessResult> {
     const ids = { groupId: wire.group_id, envelopeId: wire.id };
-    switch (action) {
+    switch (verdict.action) {
       case "catch_up": {
         // Never skip ahead: gap-refetch to this envelope's epoch, then
         // reprocess it once (a duplicate is acked as processed).
@@ -1351,7 +1707,29 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         return "parked";
       case "rejoin":
       case "join":
-        if (rec) this.#background(this.ensureJoined(rec.id));
+        if (!rec) return "dropped";
+        // (e) S2-D31 `catch_up_leaf_unresolvable`: native rolled back and
+        // did NOT move the group to `left`; `_mark_left` FIRST (in this
+        // lane), or the rejoin would find the group still active.
+        if (verdict.action === "rejoin" && verdict.markLeft !== undefined) {
+          const reason = verdict.markLeft;
+          try {
+            await this.#invoke("e2ee_text_mark_left", {
+              groupId: wire.group_id,
+              reason,
+            });
+            this.#log("warn", "group left", { groupId: wire.group_id, reason });
+          } catch (err) {
+            if (isDisposed(err)) throw err;
+            this.#log("warn", "mark_left failed", {
+              ...ids,
+              type: viewTagOf(err),
+            });
+          }
+          await this.#readStateDirect(rec);
+          this.#emit(rec);
+        }
+        this.#background(this.ensureJoined(rec.id));
         return "dropped";
       case "signer_leaf_missing_retry":
         // The joiner discards the Welcome; its join loop retries the intent.
@@ -1460,6 +1838,8 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       rec.signerLeafMissingRetries = 0;
       rec.welcomeRetriesExhausted = false;
       rec.recreateAvailable = false;
+      // (f) Joined: a recorded capacity refusal is over.
+      rec.capacity = null;
       const js = rec.join;
       if (js) {
         // Eviction-loop guard: a processed Welcome cancels every retry.
@@ -1476,6 +1856,8 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     // D26: `_state` after each processed envelope.
     await this.#readStateDirect(rec);
     this.#emit(rec);
+    // (i) An adoption from the commit's embedded list told this owner.
+    this.#noteOwnerNotice(rec, out.owner_notice);
     if (out.removed_self) this.#background(this.ensureJoined(rec.id));
     // W4-3: a fresh leaf commits its Update promptly.
     if (out.kind === "welcome_joined") {
@@ -1503,11 +1885,18 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     let fresh: ProtectedSeatsResponse | null = null;
     if (seatsRes !== null && is2xx(seatsRes.status)) {
       fresh = parseSeats(seatsRes.body);
-      if (fresh) rec.seats = fresh;
+      if (fresh) {
+        this.#reportSeats(rec, fresh);
+        rec.seats = fresh;
+      }
     }
     if (groupRes !== null && is2xx(groupRes.status)) {
       const g = parseTextGroup(groupRes.body);
       if (g) {
+        // (h) A create's 409 names `open_group_id` without a generation
+        // (v0/mls.rs `Conflict`); it is indexed here, by the refresh that
+        // path runs before any join.
+        this.#report(rec.id, g.group_id, g.generation, "text_group");
         rec.serverGroup = g;
         rec.serverGroupMissing = false;
       }
@@ -1554,13 +1943,18 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       serverOwnerId: owner,
       asOfEpoch: withAsOf ? seats.as_of_epoch : null,
       asOfGroupId: withAsOf ? seats.as_of_group_id : null,
-      asOfGeneration: null,
+      asOfGeneration: withAsOf ? (seats.as_of_generation ?? null) : null,
     };
+    // OR-10: only the verify right after a confirm can show it unsettled.
+    const confirmed = rec.confirmedSigner;
+    rec.confirmedSigner = null;
     try {
-      await this.#enqueue(rec.id, () =>
+      const verdict = await this.#enqueue(rec.id, () =>
         this.#invoke("e2ee_text_seat_list_verify", args),
       );
       rec.seatListError = null;
+      rec.ownerChangeUnlisted = null;
+      this.#noteOwnerNotice(rec, verdict.owner_notice);
       return;
     } catch (err) {
       if (isDisposed(err)) throw err;
@@ -1585,6 +1979,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
             await this.#enqueue(rec.id, () =>
               this.#catchUpInner(rec, to, groupId),
             );
+            rec.confirmedSigner = confirmed;
             return this.#verifySeats(
               rec,
               seats,
@@ -1597,6 +1992,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         case "identity_pin_required":
           if (!retried && native?.type === "identity_pin_required") {
             await this.#pinFor(native.user_id, [native.device_id]);
+            rec.confirmedSigner = confirmed;
             return this.#verifySeats(
               rec,
               seats,
@@ -1615,8 +2011,12 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
               const r = await this.#api("GET", `/channels/${rec.id}/seats`);
               const next =
                 r !== null && is2xx(r.status) ? parseSeats(r.body) : null;
-              if (next) rec.seats = next;
+              if (next) {
+                this.#reportSeats(rec, next);
+                rec.seats = next;
+              }
               if (next?.list) {
+                rec.confirmedSigner = confirmed;
                 return this.#verifySeats(
                   rec,
                   next,
@@ -1634,6 +2034,25 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
           break;
         case "owner_changed":
           rec.ownerChangePending = true;
+          // OR-10 (4.7, FX2-D): the confirm resolved, yet the same-user
+          // signer device is again unsettled: it is not on the carried
+          // authority's owner devices. Review is withheld for it until the
+          // list or the pin changes (`#ownerKey`).
+          if (
+            native?.type === "owner_changed" &&
+            native.same_user &&
+            confirmed !== null &&
+            native.signer_device_id === confirmed
+          ) {
+            await this.#readState(rec);
+            rec.ownerChangeUnlisted = {
+              deviceId: confirmed,
+              key: this.#ownerKey(rec),
+            };
+            this.#log("warn", "owner change unsettled after confirm", {
+              channelId: rec.id,
+            });
+          }
           break;
         case "mls_group_not_found":
           // D24: a newer generation exists; take the join path.
@@ -1692,9 +2111,12 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       // a routine Update would re-stage over the pending stage.
       this.#maintain(rec);
     }
+    // S4 floor (a): an outdated client creates and joins nothing here.
+    const outdated = rec.clientOutdated !== null;
     // D21 successor: native poisoned, this device signed the current list,
     // and the server still names the poisoned group as open.
     if (
+      !outdated &&
       n.state === "poisoned" &&
       g &&
       g.group_id === n.group_id &&
@@ -1705,6 +2127,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     // D21 crash recovery: protected, no open text group, this device is
     // the current list signer → create generation 0.
     if (
+      !outdated &&
       !g &&
       rec.serverGroupMissing &&
       n.group_id === null &&
@@ -1716,6 +2139,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     // create once per group per session (a refusal never loops).
     const unaccepted = this.#unacceptedCreate(rec);
     if (
+      !outdated &&
       unaccepted &&
       !rec.successorInFlight &&
       !rec.recreating &&
@@ -1728,18 +2152,23 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       rec.recreating = run;
       this.#background(run);
     }
+    // S2 (c): a superseded group (`active`, verdict `no_group`) is not held.
     const holds =
       g !== null &&
       n.group_id === g.group_id &&
-      (n.state === "active" || n.state === "poisoned");
+      (holdsCurrentGroup(n) || n.state === "poisoned");
     const seated = n.self_seated && n.seat_list?.seats.includes(self) === true;
     // Joining the server's older group would only answer ChannelMismatch.
+    // S2 (f): after a capacity refusal only an open or a
+    // `ProtectedChannelChanged` (which clears it) joins again.
     const wantsJoin =
       g !== null &&
       seated &&
       !holds &&
       unaccepted === null &&
+      !outdated &&
       !rec.welcomeRetriesExhausted &&
+      (rec.capacity === null || reason === "open") &&
       (reason !== "start" || n.state === "left");
     if (wantsJoin && !rec.join) this.#background(this.ensureJoined(rec.id));
   }
@@ -1749,8 +2178,15 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     if (this.#disposed || rec.stripped) return;
     const n = rec.native;
     const g = rec.serverGroup;
-    if (!n || !g || n.state !== "active" || n.group_id !== g.group_id) return;
-    if (g.pending_removals.length > 0) {
+    if (!n || !g || !holdsCurrentGroup(n) || n.group_id !== g.group_id) return;
+    const self = this.#port.selfUserId;
+    const dev = this.#port.selfDeviceId;
+    const leafPending = pendingDeviceTargetsOf(g, n, self, dev).some((d) =>
+      n.members.some(
+        (m) => m.user_id === d.user_id && m.device_id === d.device_id,
+      ),
+    );
+    if (g.pending_removals.length > 0 || leafPending) {
       this.#background(this.#commitPendingRemovals(rec));
     } else if (n.epoch !== null && n.epoch < g.current_epoch) {
       // W4d X#9: not while an owner change is parked; the catch-up would
@@ -1838,6 +2274,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     if (r === null || !is2xx(r.status)) return;
     const seats = parseSeats(r.body);
     if (!seats) return;
+    this.#reportSeats(rec, seats);
     rec.seats = seats;
     await this.#verifySeats(rec, seats, false);
     await this.#readState(rec);
@@ -1853,7 +2290,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     let n = rec.native;
     let g = rec.serverGroup;
     if (!n) throw clientFailure("state_unavailable");
-    if (n.state === "active" && g && n.group_id === g.group_id) return;
+    if (holdsCurrentGroup(n) && g && n.group_id === g.group_id) return;
     if (n.verdict === "not_seated" || !n.self_seated) {
       throw {
         source: "native",
@@ -1936,16 +2373,41 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         continue;
       }
       if (js.cancelled) return;
-      const r = await this.#api("POST", `/mls/groups/${gid}/join_intent`, {
+      // S4 floor (a, OR-3): the verified shell protocol, unsigned, beside
+      // native's signed intent (sent as received, never rebuilt).
+      const body: TextJoinIntentBody = {
         ...joined.intent,
-      });
+        protocol: TEXT_PROTOCOL,
+      };
+      const r = await this.#api("POST", `/mls/groups/${gid}/join_intent`, body);
       attempts += 1;
-      if (r !== null && r.status === 404) {
+      if (r !== null && is2xx(r.status)) {
+        // (f) The server took the intent: no longer over a cap.
+        if (rec.capacity !== null) {
+          rec.capacity = null;
+          this.#emit(rec);
+        }
+      } else if (r !== null && r.status === 404) {
         await this.refresh(rec.id, "commit");
         if (!rec.serverGroup) throw clientFailure("no_group");
       } else if (r !== null && r.status === 429) {
+        // `InSlowmode` included: its `retry_after` is honoured, never a
+        // notice (inherited L1s).
         await this.#sleep(retryAfterMs(r) ?? publishBackoffMs(attempts));
       } else if (r !== null && is4xx(r.status)) {
+        // (a)(f) `joinRefusal` BEFORE the generic refusal. Neither is a
+        // Welcome retry: the join stops here (never counted toward 6d).
+        const refusal = joinRefusal(r);
+        if (refusal?.kind === "outdated") {
+          this.#markOutdated(rec, refusal.min);
+        } else if (refusal?.kind === "capacity") {
+          rec.capacity = { reason: refusal.reason };
+          this.#log("warn", "join refused for capacity", {
+            channelId: rec.id,
+            reason: refusal.reason,
+          });
+          this.#emit(rec);
+        }
         throw serverFailure(r);
       }
       const welcomed = await this.#awaitWelcome(js, JOIN_RETRY_MS);
@@ -1953,7 +2415,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       await this.refresh(rec.id, "commit");
       n = rec.native;
       g = rec.serverGroup;
-      if (n && g && n.state === "active" && n.group_id === g.group_id) return;
+      if (n && g && holdsCurrentGroup(n) && n.group_id === g.group_id) return;
       if (!g) throw clientFailure("no_group");
       // design 7.2 member_added: a re-Add at/after our intent is handled at
       // the top of the loop (wait for the Welcome, never another intent).
@@ -2037,7 +2499,15 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     try {
       await this.#readState(rec);
       let n = rec.native;
-      if (!n || n.state !== "active" || n.group_id !== req.group_id) return;
+      // S2 (c): never admit into a superseded group.
+      if (!n || !holdsCurrentGroup(n) || n.group_id !== req.group_id) return;
+      const held = this.#claimHold.get(req.group_id);
+      if (held !== undefined && this.#port.now() < held) {
+        this.#log("debug", "admission held: claims rate limited", {
+          groupId: req.group_id,
+        });
+        return;
+      }
       if (!rejoin) {
         if (!rec.seats) await this.refresh(rec.id, "commit");
         const seated = rec.seats?.seats.some((s) => s.user_id === req.user_id);
@@ -2051,7 +2521,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       await this.#sleep(leafStaggerMs(ownLeafIndex(n, self, dev)));
       await this.#readState(rec);
       n = rec.native;
-      if (!n || n.state !== "active" || n.group_id !== req.group_id) return;
+      if (!n || !holdsCurrentGroup(n) || n.group_id !== req.group_id) return;
       const present = n.members.some(
         (m) => m.user_id === req.user_id && m.device_id === req.device_id,
       );
@@ -2114,6 +2584,15 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       group_id: req.group_id,
       targets: [{ user_id: req.user_id, device_id: req.device_id }],
     });
+    if (r !== null && r.status === 429) {
+      // Inherited L1s: `InSlowmode` (or the limiter) on a claim: no claim
+      // into this group before its `retry_after`; the joiner's intent is
+      // admitted after it. Never a notice.
+      const wait = retryAfterMs(r) ?? publishBackoffMs(0);
+      this.#claimHold.set(req.group_id, this.#port.now() + wait);
+      this.#log("info", "claim rate limited", { groupId: req.group_id });
+      return null;
+    }
     if (r === null || !is2xx(r.status) || !isRecord(r.body)) return null;
     const results = r.body.results;
     const c = Array.isArray(results) ? results[0] : null;
@@ -2148,15 +2627,22 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     for (let stage = 0; stage < 2; stage++) {
       await this.#readState(rec);
       const n = rec.native;
-      if (!n || n.state !== "active" || n.group_id === null) {
+      if (!n || !holdsCurrentGroup(n) || n.group_id === null) {
         throw clientFailure("no_group");
       }
       const groupId = n.group_id;
-      // D24 / W3 D13: pending_removal_users from GET .../text_group.
-      const pendingRemovalUsers =
-        rec.serverGroup?.group_id === groupId
-          ? rec.serverGroup.pending_removals.map((p) => p.user_id)
-          : [];
+      // D24 / W3 D13: pending_removal_users from GET .../text_group; S2
+      // rule 3a: pending_device_removals minus self and the signer device.
+      const g = rec.serverGroup?.group_id === groupId ? rec.serverGroup : null;
+      const pendingRemovalUsers = g
+        ? g.pending_removals.map((p) => p.user_id)
+        : [];
+      const pendingDeviceTargets = pendingDeviceTargetsOf(
+        g,
+        n,
+        this.#port.selfUserId,
+        this.#port.selfDeviceId,
+      );
       const r = await this.#staged(rec, groupId, async () => {
         try {
           return await this.#enqueue(rec.id, () =>
@@ -2165,7 +2651,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
               targets,
               rejoinIntent,
               pendingRemovalUsers,
-              pendingDeviceTargets: [],
+              pendingDeviceTargets,
             }),
           );
         } catch (err) {
@@ -2178,7 +2664,11 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     throw clientFailure("commit_restage_exhausted");
   }
 
-  /** Rule 4a: any member device removes every device of pending users. */
+  /**
+   * Rule 4a: any member device removes every device of pending users; S2
+   * rule 3a: and every pending device the server reports that holds a
+   * leaf (never this device or the held list's signer device).
+   */
   async #commitPendingRemovals(rec: ChannelRec): Promise<void> {
     if (rec.removalInFlight) return;
     rec.removalInFlight = true;
@@ -2192,17 +2682,26 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       const r = await this.#api("GET", `/mls/channels/${rec.id}/text_group`);
       if (r !== null && is2xx(r.status)) {
         const g = parseTextGroup(r.body);
-        if (g) rec.serverGroup = g;
+        if (g) {
+          this.#report(rec.id, g.group_id, g.generation, "text_group");
+          rec.serverGroup = g;
+        }
       }
       await this.#readState(rec);
       const n = rec.native;
       const g = rec.serverGroup;
-      if (!n || !g || n.state !== "active" || n.group_id !== g.group_id) return;
+      if (!n || !g || !holdsCurrentGroup(n) || n.group_id !== g.group_id) {
+        return;
+      }
       const users = new Set(g.pending_removals.map((p) => p.user_id));
+      const devices = pendingDeviceTargetsOf(g, n, self, dev);
       const targets = n.members
         .filter(
           (m) =>
-            users.has(m.user_id) &&
+            (users.has(m.user_id) ||
+              devices.some(
+                (d) => d.user_id === m.user_id && d.device_id === m.device_id,
+              )) &&
             !(m.user_id === self && m.device_id === dev),
         )
         .map((m) => ({ user_id: m.user_id, device_id: m.device_id }));
@@ -2249,7 +2748,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       for (let stage = 0; stage < 2; stage++) {
         await this.#readState(rec);
         const n = rec.native;
-        if (!n || n.state !== "active" || n.group_id === null) return;
+        if (!n || !holdsCurrentGroup(n) || n.group_id === null) return;
         if (!force && !n.update_due && !n.update_required) return;
         const groupId = n.group_id;
         const r = await this.#staged(rec, groupId, () =>
@@ -2323,8 +2822,21 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       this.#log("warn", "unaccepted group has a staged commit", ids);
       throw clientFailure("create_staged");
     }
-    const supersedes =
-      c.generation === 0 ? null : await textGroupId(rec.id, c.generation - 1);
+    // S2 (c, OR-7/8): the re-run names the SAME predecessor the first
+    // create did, never a re-derived id (v1 derivation stops at g 63 and
+    // a v2 id cannot be derived here). That predecessor is the open group
+    // the server still holds at generation - 1; native accepts the re-run
+    // only when that row's `superseded_by` is this group. Anything else
+    // is unknown: nothing is re-run.
+    const g = rec.serverGroup;
+    let supersedes: string | null = null;
+    if (c.generation > 0) {
+      if (g === null || g.generation !== c.generation - 1) {
+        this.#log("warn", "unaccepted group: predecessor unknown", ids);
+        throw clientFailure("create_predecessor_unknown");
+      }
+      supersedes = g.group_id;
+    }
     this.#log("info", "re-running an unaccepted group create", ids);
     const created = await this.createGroup(rec.id, supersedes);
     if (created.group_id !== c.groupId) {
@@ -2336,6 +2848,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     if (rec.successorInFlight) return;
     rec.successorInFlight = true;
     try {
+      // The held (poisoned) group's own id, never a derivation.
       const n = rec.native;
       const supersedes = n && n.state === "poisoned" ? n.group_id : null;
       await this.createGroup(rec.id, supersedes);
@@ -2397,7 +2910,12 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     groupId: string,
     payload: TextSubmitCommitPayload,
   ): Promise<SubmitResult> {
-    const ctx: SubmitContext = this.#submitCtx(groupId, payload, false);
+    const ctx: SubmitContext = this.#submitCtx(
+      groupId,
+      payload,
+      false,
+      payload.removed ?? [],
+    );
     this.#persistStage(groupId, payload);
     const r = await this.#api(
       "POST",
@@ -2448,10 +2966,16 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     }
   }
 
+  /**
+   * `ownRemoved` (OR-5): the submitted body's `removed` (`[]` when it has
+   * none); null when the body is unknown (a resume without the stored full
+   * body), so a plain 2xx then reads the stored row for its labels.
+   */
   #submitCtx(
     groupId: string,
     payload: TextSubmitCommitPayload,
     resubmit: boolean,
+    ownRemoved: readonly MlsMemberDevice[] | null,
   ): SubmitContext {
     return {
       groupId,
@@ -2461,6 +2985,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       ownCommitB64: payload.commit,
       resubmit,
       failures: 0,
+      ownRemoved,
     };
   }
 
@@ -2490,7 +3015,10 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
             str(c.committer.user_id) &&
             str(c.committer.device_id),
         );
-        if (row) {
+        // OR-5: the stored row's labels, by the router's rule; a malformed
+        // vector is read again (never defaulted to `[]`).
+        const labels = row ? labelsOf(row.removed_reasons) : null;
+        if (row && labels !== null) {
           const own =
             row.committer.user_id === this.#port.selfUserId &&
             row.committer.device_id === this.#port.selfDeviceId;
@@ -2501,10 +3029,15 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
                 rejoinIntents: Array.isArray(row.rejoin_intents)
                   ? row.rejoin_intents
                   : [],
+                removedReasons: labels,
               }
             : { kind: "lost", winner: row, then: "process_winner" };
         }
-        this.#log("warn", "won row missing", { groupId, epoch });
+        if (row) {
+          this.#log("warn", "won row labels malformed", { groupId, epoch });
+        } else {
+          this.#log("warn", "won row missing", { groupId, epoch });
+        }
       } else if (r !== null && r.status === 429) {
         wait = retryAfterMs(r) ?? wait;
       } else if (r !== null && r.status < 500) {
@@ -2572,7 +3105,8 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
                 wonEpoch: ctx.epoch,
                 storedCommitB64: won.storedCommitB64,
                 rejoinIntents,
-                removedReasons: [],
+                // OR-5: the stored row's labels (`#readWonRow` / policy).
+                removedReasons: won.removedReasons,
               });
               await this.#onOutcome(out);
             });
@@ -2630,6 +3164,20 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         }
         case "refetch": {
           const purpose = action.purpose;
+          if (purpose.kind === "labels") {
+            // OR-5: a plain 2xx that may have removed devices. The commit
+            // WON; `#readWonRow` owns the read budget, the park and the
+            // log, and returns the stored row's labels.
+            await this.#sleep(action.delayMs);
+            const read = await this.#readWonRow(ctx);
+            if (read === null) {
+              this.#log("warn", "won row unread, commit parked", ids);
+              return "parked";
+            }
+            action = read;
+            plain = false;
+            break;
+          }
           await this.#sleep(action.delayMs);
           const r = await this.#api(
             "GET",
@@ -2881,7 +3429,12 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       fullBody: full !== null,
     });
     try {
-      const ctx = this.#submitCtx(groupId, payload, false);
+      const ctx = this.#submitCtx(
+        groupId,
+        payload,
+        false,
+        full === null ? null : (full.removed ?? []),
+      );
       const first: SubmitAction = {
         kind: "refetch",
         purpose: { kind: "unknown_outcome" },
@@ -2944,6 +3497,12 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         this.#log("warn", "catch-up answer malformed", ids);
         return false;
       }
+      // (b) The server tip of THIS page (`ResponseFetchMlsCommits`); only
+      // ever passed to `_process` for rows fetched here. Absent: null.
+      const tip =
+        isRecord(r.body) && int(r.body.current_epoch)
+          ? r.body.current_epoch
+          : null;
       if (rows.length === 0) return false;
       if (
         isCatchUpDesync(from, rows) ||
@@ -2974,7 +3533,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
           });
           return false;
         }
-        const res = await this.#processWire(rec, wire, 1);
+        const res = await this.#processWire(rec, wire, 1, tip);
         if (res !== "ok") return false;
       }
     }
@@ -3161,6 +3720,13 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         successorInFlight: false,
         recreating: null,
         seeded: false,
+        capacity: null,
+        clientOutdated: null,
+        ownerNotice: null,
+        resecuringSinceMs: null,
+        confirmedSigner: null,
+        ownerChangeUnlisted: null,
+        changePending: false,
       };
       this.#channels.set(channelId, rec);
     }
@@ -3260,6 +3826,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
   async #readStateDirect(rec: ChannelRec): Promise<TextChannelState | null> {
     try {
       const n = await this.#invoke("e2ee_text_state", { channelId: rec.id });
+      this.#report(rec.id, n.group_id, n.generation, "state");
       rec.native = n;
       if (n.verdict === "roster_mismatch") {
         rec.rosterMismatchSinceMs ??= this.#port.now();
@@ -3328,19 +3895,156 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       recreateAvailable: rec.recreateAvailable,
       publishInFlight: rec.publishInFlight,
       maybeUnsent: rec.maybeUnsent,
-      capacity: null,
-      clientOutdated: null,
-      ownerNotice: null,
+      capacity: rec.capacity,
+      clientOutdated: rec.clientOutdated,
+      ownerNotice: rec.ownerNotice,
+      resecuringSinceMs: rec.resecuringSinceMs,
+      ownerChangeUnlisted:
+        rec.ownerChangeUnlisted !== null &&
+        rec.native?.owner_pin?.pending_signer?.device_id ===
+          rec.ownerChangeUnlisted.deviceId,
     };
   }
 
   #emit(rec: ChannelRec): void {
     if (this.#disposed) return;
+    // OR-10: a new list or pin state offers Review again.
+    if (
+      rec.ownerChangeUnlisted !== null &&
+      rec.ownerChangeUnlisted.key !== this.#ownerKey(rec)
+    ) {
+      rec.ownerChangeUnlisted = null;
+    }
+    this.#trackResecuring(rec);
     try {
       this.#cb.onView(rec.id, this.#view(rec));
     } catch {
       this.#log("error", "onView threw", { channelId: rec.id });
     }
+  }
+
+  /**
+   * S2-D36 input: the shield this view yields (flags from the client cache;
+   * this manager only runs where the text plane is capable). Entering
+   * `resecuring` stamps `port.now()`, leaving it clears the stamp. Never a
+   * security input: it only times the amber escalation.
+   */
+  #trackResecuring(rec: ChannelRec): void {
+    let state: string | null = null;
+    try {
+      const info = this.#port.channelInfo(rec.id);
+      state = computeShieldState(
+        shieldInputsFromView(
+          this.#view(rec),
+          {
+            serverProtected: info ? info.serverProtected : !rec.stripped,
+            locallyPinned: info ? info.locallyPinned : true,
+            capable: true,
+          },
+          this.#port.now(),
+        ),
+      );
+    } catch {
+      state = null;
+    }
+    if (state === "resecuring") {
+      rec.resecuringSinceMs ??= this.#port.now();
+    } else {
+      rec.resecuringSinceMs = null;
+    }
+  }
+
+  /** OR-10: the list and pin state a withheld Review is bound to. */
+  #ownerKey(rec: ChannelRec): string {
+    const l = rec.seats?.list ?? null;
+    const pin = rec.native?.owner_pin ?? null;
+    return JSON.stringify([
+      l?.version ?? null,
+      l?.signature ?? null,
+      pin?.status ?? null,
+      pin?.owner_device_id ?? null,
+      pin?.pending_signer?.device_id ?? null,
+    ]);
+  }
+
+  /**
+   * S2 (h): index a group id native or the server reported for `channelId`
+   * (both indexes: this manager's, then the bridge's through
+   * `onGroupReported`), BEFORE any join or process for it. A malformed id
+   * or generation (`RangeError`) is logged and skipped; one that maps
+   * elsewhere is logged without ids and never re-routed.
+   */
+  #report(
+    channelId: string,
+    groupId: unknown,
+    generation: unknown,
+    source: string,
+  ): void {
+    if (groupId === null || groupId === undefined) return;
+    if (generation === null || generation === undefined) return;
+    try {
+      this.#index.addReported(
+        groupId as string,
+        channelId,
+        generation as number,
+      );
+    } catch (err) {
+      if (err instanceof RangeError) {
+        this.#log("warn", "reported group id malformed", { channelId, source });
+      } else {
+        this.#log("warn", "reported group id conflict", { source });
+      }
+      return;
+    }
+    const extra = this.#cb as Partial<ProtectedTextManagerExtraCallbacks>;
+    try {
+      extra.onGroupReported?.(
+        channelId,
+        groupId as string,
+        generation as number,
+      );
+    } catch {
+      this.#log("error", "onGroupReported threw", { channelId });
+    }
+  }
+
+  /** (h) The `as_of_*` group of a seats snapshot (skipped without both). */
+  #reportSeats(rec: ChannelRec, seats: ProtectedSeatsResponse): void {
+    this.#report(rec.id, seats.as_of_group_id, seats.as_of_generation, "seats");
+  }
+
+  /**
+   * S2 (i): an `owner_notice` of a verify verdict or a process outcome:
+   * the view keeps the latest, and ONE `owner_notice` toast is raised.
+   * Neither changes the shield.
+   */
+  #noteOwnerNotice(rec: ChannelRec, raw: unknown): void {
+    if (raw === undefined || raw === null) return;
+    const notice = ownerNoticeOf(raw);
+    if (notice === null) {
+      this.#log("warn", "owner notice malformed", { channelId: rec.id });
+      return;
+    }
+    rec.ownerNotice = notice;
+    this.#log("info", "owner notice", { channelId: rec.id, kind: notice.kind });
+    this.#emit(rec);
+    try {
+      this.#port.notify("owner_notice");
+    } catch {
+      this.#log("error", "notify threw", { channelId: rec.id });
+    }
+  }
+
+  /**
+   * S4 floor (a): the server refused this client's text protocol. Join and
+   * create stop for the channel until reload (no retry loop). Ids only.
+   */
+  #markOutdated(rec: ChannelRec, min: number): void {
+    rec.clientOutdated = min;
+    this.#log("warn", "client outdated for this channel", {
+      channelId: rec.id,
+    });
+    this.#emit(rec);
   }
 
   #enqueue<T>(key: string, fn: () => Promise<T>): Promise<T> {

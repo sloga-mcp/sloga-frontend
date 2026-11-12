@@ -10,25 +10,30 @@
 import assert from "node:assert/strict";
 import { beforeEach, test } from "node:test";
 
+import { reasonRefusal } from "./protectedRemovalReasonPolicy.ts";
 import { protectedNoticeForError } from "./protectedShield.ts";
 import {
   _resetOwnerFlowsForTest,
+  proposedOwnerDevices,
   protect,
   publishStoreKey,
   setSeats,
+  signOwnerDevices,
 } from "./protectedTextOwner.ts";
 import type {
   GroupOps,
   ManagerState,
   OwnerFlows,
+  ProtectedSeatsResponse,
   ProtectedTextPort,
+  SignedAuthority,
   SignedSeatList,
   TextApiResponse,
   TextChannelState,
 } from "./protectedTextTypes.ts";
 
 // Compile-time: the exports are exactly what B5 wires as `deps.owner`.
-const _ownerFlows: OwnerFlows = { protect, setSeats };
+const _ownerFlows: OwnerFlows = { protect, setSeats, signOwnerDevices };
 void _ownerFlows;
 
 const CH = "01CHANNEL0000000000000000A";
@@ -38,7 +43,7 @@ const BOB = "01USERBOB00000000000000000";
 const SERVER_OWNER = ME;
 
 type Reply = TextApiResponse | "transport";
-type Call = { method: string; path: string; body: unknown };
+type Call = { method: string; path: string; body: unknown; headers?: unknown };
 type Invoke = { cmd: string; args: Record<string, unknown> };
 
 const res = (
@@ -120,6 +125,8 @@ interface Harness {
   opsLog: unknown[][];
   /** Store contents seen at each PUT. */
   storeAtPut: (string | null)[];
+  /** Every request (`METHOD path`) and native command, in order. */
+  trace: string[];
 }
 
 function harness(opts: {
@@ -128,6 +135,8 @@ function harness(opts: {
   state?: Partial<ManagerState> | null;
   storeSetFails?: boolean;
   sleepRejectsAfter?: number;
+  /** The root advert's `formats_v2` as the port reports it (default off). */
+  formatsV2?: boolean;
 }): Harness {
   const h = {
     calls: [] as Call[],
@@ -136,11 +145,14 @@ function harness(opts: {
     store: new Map<string, string>(),
     opsLog: [] as unknown[][],
     storeAtPut: [] as (string | null)[],
+    trace: [] as string[],
   };
   const key = publishStoreKey(ME, CH);
   const port: ProtectedTextPort = {
+    formatsV2: () => opts.formatsV2 === true,
     async invoke(cmd, args) {
       h.invokes.push({ cmd, args: args as Record<string, unknown> });
+      h.trace.push(cmd);
       const fn = opts.invoke?.[cmd];
       if (fn) return fn(args as Record<string, unknown>) as never;
       throw { type: "invalid_argument", field: `unscripted ${cmd}` };
@@ -152,9 +164,13 @@ function harness(opts: {
     async ownDeviceListing() {
       return { hash: "h", listing: [{ device: MY_DEV }] };
     },
-    async api(method, path, body) {
-      const c = { method, path, body };
+    async api(method, path, body, headers) {
+      const c: Call =
+        headers === undefined
+          ? { method, path, body }
+          : { method, path, body, headers };
       h.calls.push(c);
+      h.trace.push(`${method} ${path}`);
       if (method === "PUT") h.storeAtPut.push(h.store.get(key) ?? null);
       const route = opts.routes[`${method} ${path}`];
       let r: Reply | undefined;
@@ -1084,4 +1100,507 @@ test("setSeats: a signed version that is not current+1 or not this device is ref
   });
   assert.equal(puts(h).length, 0);
   assert.equal(h.store.size, 0);
+});
+
+// ---------------------------------------------------------------------------
+// S2 (W4 L2o): format rule (j), authority, signOwnerDevices, D40 reason
+// ---------------------------------------------------------------------------
+
+const OTHER_DEV = "bb".repeat(16);
+const THIRD_DEV = "cc".repeat(16);
+const AUTH: SignedAuthority = {
+  body: `sloga-channel-authority-v1\nv:1\nowner_devices:${MY_DEV}.K1,${OTHER_DEV}.K2`,
+  signature: "ASIG1",
+};
+const NEW_AUTH: SignedAuthority = {
+  body: `sloga-channel-authority-v1\nv:1\nowner_devices:${MY_DEV}.K1`,
+  signature: "ASIG2",
+};
+const heldV1 = genesis({
+  version: 2,
+  body: "sloga-seat-list-v1\nv:1\nversion:2",
+  signature: "S2V1",
+});
+const heldV2 = genesis({
+  version: 2,
+  body: "sloga-seat-list-v2\nv:2\nversion:2",
+  signature: "S2V2",
+  authority: AUTH,
+});
+const nextV2 = genesis({
+  version: 3,
+  body: "sloga-seat-list-v2\nv:2\nversion:3",
+  signature: "S3V2",
+  authority: AUTH,
+});
+const nextV2NewAuth = genesis({
+  version: 3,
+  body: "sloga-seat-list-v2\nv:2\nversion:3\nnew-authority",
+  signature: "S3NA",
+  authority: NEW_AUTH,
+});
+
+/** GET .../seats serves `start` until a 2xx seat PUT, then `after`. */
+function listRoutes(
+  start: SignedSeatList,
+  after: SignedSeatList,
+  putReplies: Reply[],
+  extra: Record<string, unknown> = {},
+) {
+  let current = start;
+  const queue = [...putReplies];
+  return {
+    [`GET /channels/${CH}/seats`]: () =>
+      res(200, { ...seatsBody(listOf(current), 7, "g0"), ...extra }),
+    [`PUT /channels/${CH}/seats`]: (): Reply => {
+      const r = queue.length > 1 ? queue.shift()! : queue[0];
+      if (r !== "transport" && r.status < 300) current = after;
+      return r;
+    },
+  };
+}
+
+/** Native fakes for a seat flow; verify answers v3 for `next`, else v2. */
+const seatNative = (
+  next: SignedSeatList,
+  members = [{ user_id: ME, device_id: MY_DEV }],
+) => ({
+  e2ee_text_seat_list_verify: (a: Record<string, unknown>) =>
+    verdict([ME, BOB], (a.list as { body: string }).body === next.body ? 3 : 2),
+  e2ee_text_seat_list_sign: () => next,
+  e2ee_text_authority_sign: () => NEW_AUTH,
+  e2ee_text_state: () => nativeState(members),
+});
+
+const signArgs = (h: Harness) =>
+  cmds(h, "e2ee_text_seat_list_sign").map((c) => c.args);
+
+test("S2 format (rule j): a genesis asks for 2 only while formats_v2 is on; authority null, recovery false", async () => {
+  for (const [flag, want] of [
+    [true, 2],
+    [false, null],
+  ] as const) {
+    _resetOwnerFlowsForTest();
+    const g = genesis();
+    const h = harness({
+      routes: protectRoutes(g, [res(200)]),
+      invoke: {
+        e2ee_text_seat_list_sign: () => g,
+        e2ee_text_seat_list_verify: () => verdict([ME]),
+      },
+      formatsV2: flag,
+    });
+    await protect(h.ops, h.port, CH, [], 0);
+    const [a] = signArgs(h);
+    assert.equal(a.format, want, `formats_v2 ${flag}`);
+    assert.equal(a.authority, null);
+    assert.equal(a.recovery, false);
+  }
+});
+
+test("S2 format (rule j): a port without formatsV2 never asks for 2", async () => {
+  const g = genesis();
+  const h = harness({
+    routes: protectRoutes(g, [res(200)]),
+    invoke: {
+      e2ee_text_seat_list_sign: () => g,
+      e2ee_text_seat_list_verify: () => verdict([ME]),
+    },
+    formatsV2: true,
+  });
+  delete h.port.formatsV2;
+  await protect(h.ops, h.port, CH, [], 0);
+  assert.equal(signArgs(h)[0].format, null);
+});
+
+test("S2 format (rule j): the first list over a held v1 asks for 2 with formats_v2 on, null with it off", async () => {
+  for (const [flag, want] of [
+    [true, 2],
+    [false, null],
+  ] as const) {
+    _resetOwnerFlowsForTest();
+    const h = harness({
+      routes: listRoutes(heldV1, nextV2, [res(200)]),
+      invoke: seatNative(nextV2),
+      formatsV2: flag,
+    });
+    await setSeats(h.ops, h.port, CH, [ME, BOB], 5);
+    const [a] = signArgs(h);
+    assert.equal(a.format, want, `formats_v2 ${flag}`);
+    assert.equal(a.authority, null);
+    assert.equal(a.recovery, false);
+  }
+});
+
+test("S2 format (rule j): never 2 under a held v2 list, whatever formats_v2 says", async () => {
+  for (const flag of [true, false]) {
+    _resetOwnerFlowsForTest();
+    const h = harness({
+      routes: listRoutes(heldV2, nextV2, [res(200)]),
+      invoke: seatNative(nextV2),
+      formatsV2: flag,
+    });
+    await setSeats(h.ops, h.port, CH, [ME, BOB], 5);
+    assert.equal(signArgs(h)[0].format, null, `formats_v2 ${flag}`);
+  }
+});
+
+test("S2 authority: the served list's authority reaches verify; the signed list's authority rides on the PUT and the D7c entry", async () => {
+  const h = harness({
+    routes: listRoutes(heldV2, nextV2, [res(200)]),
+    invoke: seatNative(nextV2),
+    formatsV2: true,
+  });
+  await setSeats(h.ops, h.port, CH, [ME, BOB], 5);
+  const [v] = cmds(h, "e2ee_text_seat_list_verify");
+  assert.deepEqual(v.args.list, {
+    body: heldV2.body,
+    signature: heldV2.signature,
+    signer_user_id: ME,
+    signer_device_id: MY_DEV,
+    authority: AUTH,
+  });
+  assert.deepEqual(puts(h)[0].body, {
+    body: nextV2.body,
+    signature: nextV2.signature,
+    signer_device_id: MY_DEV,
+    authority: AUTH,
+  });
+  assert.deepEqual(JSON.parse(h.storeAtPut[0]!).signed.authority, AUTH);
+});
+
+test("S2-D33: verify carries the snapshot's as_of_generation, null when absent or malformed", async () => {
+  for (const [gen, want] of [
+    [4, 4],
+    [undefined, null],
+    [-1, null],
+    ["4", null],
+  ] as const) {
+    _resetOwnerFlowsForTest();
+    const h = harness({
+      routes: listRoutes(heldV2, nextV2, [res(200)], {
+        as_of_generation: gen,
+      }),
+      invoke: seatNative(nextV2),
+    });
+    await setSeats(h.ops, h.port, CH, [ME, BOB], 5);
+    const verifies = cmds(h, "e2ee_text_seat_list_verify");
+    assert.equal(verifies.length, 2);
+    for (const c of verifies) {
+      assert.equal(c.args.asOfGeneration, want, String(gen));
+    }
+  }
+});
+
+test("S2 signOwnerDevices: verify, ONE authority dialog, the list signed with it over the same seats, persisted, PUT with authority", async () => {
+  const h = harness({
+    routes: listRoutes(heldV2, nextV2NewAuth, [res(503), res(200)]),
+    invoke: seatNative(nextV2NewAuth),
+    formatsV2: true,
+  });
+  await signOwnerDevices(h.ops, h.port, CH, [MY_DEV]);
+
+  assert.deepEqual(h.trace.slice(0, 4), [
+    `GET /channels/${CH}/seats`,
+    "e2ee_text_seat_list_verify",
+    "e2ee_text_authority_sign",
+    "e2ee_text_seat_list_sign",
+  ]);
+  const auths = cmds(h, "e2ee_text_authority_sign");
+  assert.equal(auths.length, 1, "the dialog runs exactly once");
+  assert.deepEqual(auths[0].args.ownerDevices, [MY_DEV]);
+  assert.equal(auths[0].args.userId, ME);
+  assert.equal(auths[0].args.channelName, "secret");
+  const [a] = signArgs(h);
+  assert.deepEqual(a.authority, NEW_AUTH);
+  assert.deepEqual(a.seats, [ME, BOB], "the verified list's seats");
+  assert.equal(a.deviceCap, 5);
+  assert.deepEqual(a.serverList, { version: 2, body: heldV2.body });
+  assert.equal(a.format, null, "held v2: native's choice");
+  assert.equal(a.recovery, false);
+
+  const p = puts(h);
+  assert.equal(p.length, 2, "the 503 is re-sent");
+  assert.deepEqual(p[1].body, p[0].body, "SAME bytes");
+  assert.deepEqual(p[0].body, {
+    body: nextV2NewAuth.body,
+    signature: nextV2NewAuth.signature,
+    signer_device_id: MY_DEV,
+    authority: NEW_AUTH,
+  });
+  assert.ok(h.storeAtPut[0], "persisted before the PUT");
+  assert.equal(signArgs(h).length, 1);
+  assert.equal(h.store.size, 0, "resolved");
+});
+
+test("S2 signOwnerDevices: a retry after an aborted publish re-sends the stored bytes; no dialog, no sign", async () => {
+  const h = harness({
+    routes: listRoutes(heldV2, nextV2NewAuth, ["transport"]),
+    invoke: seatNative(nextV2NewAuth),
+    sleepRejectsAfter: 0,
+  });
+  await assert.rejects(signOwnerDevices(h.ops, h.port, CH, [MY_DEV]), {
+    reason: "aborted",
+  });
+  const key = publishStoreKey(ME, CH);
+  const stored = h.store.get(key);
+  assert.ok(stored, "the signed bytes stay stored");
+
+  // A reload: memory is gone, the D7c entry is not.
+  _resetOwnerFlowsForTest();
+  const h2 = harness({
+    routes: listRoutes(heldV2, nextV2NewAuth, [res(200)]),
+    invoke: seatNative(nextV2NewAuth),
+  });
+  h2.store.set(key, stored);
+  await signOwnerDevices(h2.ops, h2.port, CH, [MY_DEV]);
+  assert.equal(cmds(h2, "e2ee_text_authority_sign").length, 0, "no dialog");
+  assert.equal(signArgs(h2).length, 0, "no re-sign");
+  assert.equal(puts(h2).length, 1);
+  assert.deepEqual(puts(h2)[0].body, puts(h)[0].body, "SAME bytes");
+  assert.equal(h2.store.size, 0);
+});
+
+test("S2 signOwnerDevices: no v2 list held and formats_v2 off is refused before any dialog; on, it upgrades", async () => {
+  const h = harness({
+    routes: listRoutes(heldV1, nextV2NewAuth, [res(200)]),
+    invoke: seatNative(nextV2NewAuth),
+  });
+  await assert.rejects(signOwnerDevices(h.ops, h.port, CH, [MY_DEV]), {
+    source: "client",
+    reason: "authority_needs_v2",
+  });
+  assert.equal(cmds(h, "e2ee_text_authority_sign").length, 0);
+  assert.equal(puts(h).length, 0);
+
+  _resetOwnerFlowsForTest();
+  const h2 = harness({
+    routes: listRoutes(heldV1, nextV2NewAuth, [res(200)]),
+    invoke: seatNative(nextV2NewAuth),
+    formatsV2: true,
+  });
+  await signOwnerDevices(h2.ops, h2.port, CH, [MY_DEV]);
+  assert.equal(signArgs(h2)[0].format, 2, "the upgrade list carries it");
+  assert.equal(cmds(h2, "e2ee_text_authority_sign").length, 1);
+});
+
+test("S2 signOwnerDevices: a signed list that does not carry the new authority is never published", async () => {
+  const h = harness({
+    routes: listRoutes(heldV2, nextV2, [res(200)]),
+    invoke: seatNative(nextV2),
+  });
+  await assert.rejects(signOwnerDevices(h.ops, h.port, CH, [MY_DEV]), {
+    reason: "publish_refused",
+  });
+  assert.equal(puts(h).length, 0);
+  assert.equal(h.store.size, 0);
+});
+
+test("S2 signOwnerDevices: empty or non-string device lists are refused before any request", async () => {
+  const h = harness({ routes: {}, sleepRejectsAfter: 0 });
+  for (const bad of [[], [""], [1], null]) {
+    await assert.rejects(
+      signOwnerDevices(h.ops, h.port, CH, bad as never),
+      { reason: "invalid_argument" },
+      JSON.stringify(bad),
+    );
+  }
+  assert.equal(h.calls.length + h.invokes.length, 0);
+});
+
+const REASON_REQUIRED = { type: "RemovalReasonRequired" };
+const TOO_LONG = { type: "FailedValidation", error: "AuditLogReasonTooLong" };
+const REASON = "spam in general";
+const WITH_BOB = [
+  { user_id: ME, device_id: MY_DEV },
+  { user_id: BOB, device_id: "b1" },
+];
+
+test("S2 D40: RemovalReasonRequired keeps the bytes; the retry with a reason re-sends them with the header, one sign in all", async () => {
+  const h = harness({
+    routes: listRoutes(heldV2, nextV2, [res(400, REASON_REQUIRED), res(200)]),
+    invoke: {
+      ...seatNative(nextV2, WITH_BOB),
+      // the new list leaves Bob off
+      e2ee_text_seat_list_verify: (a: Record<string, unknown>) =>
+        (a.list as { body: string }).body === nextV2.body
+          ? verdict([ME], 3)
+          : verdict([ME, BOB], 2),
+    },
+  });
+  let failure: unknown = null;
+  await assert.rejects(setSeats(h.ops, h.port, CH, [ME], 5), (e) => {
+    failure = e;
+    return true;
+  });
+  assert.deepEqual(failure, {
+    source: "server",
+    status: 400,
+    type: "RemovalReasonRequired",
+    body: REASON_REQUIRED,
+  });
+  const ui = protectedNoticeForError(failure, { op: "owner" });
+  assert.equal(ui.kind === "notice" && ui.notice, "removal_reason_required");
+  const kept = JSON.parse(h.store.get(publishStoreKey(ME, CH))!);
+  assert.deepEqual(kept.signed, nextV2, "the signed bytes are kept");
+  assert.equal(kept.reasonRequired, true);
+  assert.equal(puts(h)[0].headers, undefined, "no reason yet");
+  assert.equal(h.opsLog.filter((o) => o[0] === "removeDevices").length, 0);
+
+  // The owner adds a reason in the UI; the caller retries with it.
+  await setSeats(h.ops, h.port, CH, [ME], 5, REASON);
+  const p = puts(h);
+  assert.equal(p.length, 2);
+  assert.deepEqual(p[1].body, p[0].body, "the SAME bytes");
+  assert.deepEqual(p[1].headers, { "X-Audit-Log-Reason": REASON });
+  assert.equal(signArgs(h).length, 1, "exactly one sign");
+  assert.equal(h.store.size, 0, "resolved");
+  assert.deepEqual(
+    h.opsLog.filter((o) => o[0] === "removeDevices"),
+    [
+      [
+        "removeDevices",
+        CH,
+        [{ user_id: BOB, device_id: "b1" }],
+        { rejoinIntent: null },
+      ],
+    ],
+  );
+});
+
+test("S2 D40: a reason given up front rides on every seat PUT attempt and never on a GET", async () => {
+  const h = harness({
+    routes: listRoutes(heldV2, nextV2, [res(503), res(200)]),
+    invoke: seatNative(nextV2),
+  });
+  await setSeats(h.ops, h.port, CH, [ME], 5, REASON);
+  const p = puts(h);
+  assert.equal(p.length, 2);
+  for (const c of p) {
+    assert.deepEqual(c.headers, { "X-Audit-Log-Reason": REASON });
+  }
+  for (const c of h.calls.filter((c) => c.method === "GET")) {
+    assert.equal(c.headers, undefined);
+  }
+});
+
+test("S2 D40: without a reason the kept publish is re-sent bare, refused again, still kept; nothing signed", async () => {
+  const h = harness({
+    routes: listRoutes(heldV2, nextV2, [res(400, REASON_REQUIRED)]),
+    invoke: seatNative(nextV2),
+  });
+  await assert.rejects(setSeats(h.ops, h.port, CH, [ME], 5), {
+    type: "RemovalReasonRequired",
+  });
+  await assert.rejects(setSeats(h.ops, h.port, CH, [ME, BOB], 5), {
+    type: "RemovalReasonRequired",
+  });
+  const p = puts(h);
+  assert.equal(p.length, 2);
+  assert.deepEqual(p[1].body, p[0].body);
+  assert.equal(p[1].headers, undefined);
+  assert.equal(signArgs(h).length, 1);
+  assert.ok(h.store.get(publishStoreKey(ME, CH)), "still kept");
+});
+
+test("S2 D40: AuditLogReasonTooLong keeps the bytes and surfaces through reasonRefusal; a shorter reason re-sends them", async () => {
+  const h = harness({
+    routes: listRoutes(heldV2, nextV2, [res(400, TOO_LONG), res(200)]),
+    invoke: seatNative(nextV2),
+  });
+  let failure: unknown = null;
+  await assert.rejects(setSeats(h.ops, h.port, CH, [ME], 5, "x"), (e) => {
+    failure = e;
+    return true;
+  });
+  assert.deepEqual(failure, {
+    source: "server",
+    status: 400,
+    type: "FailedValidation",
+    body: TOO_LONG,
+  });
+  assert.equal(reasonRefusal((failure as { body: unknown }).body), "too_long");
+  assert.ok(h.store.get(publishStoreKey(ME, CH)), "the bytes are kept");
+  await setSeats(h.ops, h.port, CH, [ME], 5, "y");
+  const p = puts(h);
+  assert.equal(p.length, 2);
+  assert.deepEqual(p[1].body, p[0].body);
+  assert.deepEqual(p[1].headers, { "X-Audit-Log-Reason": "y" });
+  assert.equal(signArgs(h).length, 1);
+  assert.equal(h.store.size, 0);
+});
+
+test("S2 D40: any other FailedValidation still resolves the publish (the bytes are used up)", async () => {
+  const other = { type: "FailedValidation", error: "SomethingElse" };
+  const h = harness({
+    routes: listRoutes(heldV2, nextV2, [res(400, other)]),
+    invoke: seatNative(nextV2),
+  });
+  await assert.rejects(setSeats(h.ops, h.port, CH, [ME], 5, REASON), {
+    type: "FailedValidation",
+  });
+  assert.equal(h.store.size, 0);
+});
+
+test("S2 D40: a blank reason is refused before any request or sign", async () => {
+  // sleepRejectsAfter 0: a reason let through ends at the first backoff
+  const h = harness({ routes: {}, sleepRejectsAfter: 0 });
+  for (const bad of ["", "   ", " \n ", null, 7]) {
+    await assert.rejects(
+      setSeats(h.ops, h.port, CH, [ME], 5, bad as never),
+      { source: "client", reason: "invalid_argument" },
+      JSON.stringify(bad),
+    );
+  }
+  assert.equal(h.calls.length + h.invokes.length, 0);
+});
+
+const seatsWith = (
+  authority: SignedAuthority | undefined,
+  revoked: unknown,
+): ProtectedSeatsResponse =>
+  ({
+    ...seatsBody(listOf({ ...heldV2, authority }), 7, "g0"),
+    revoked_owner_devices: revoked,
+  }) as ProtectedSeatsResponse;
+
+const authOf = (devices: string): SignedAuthority => ({
+  body: `sloga-channel-authority-v1\nv:1\nowner_devices:${devices}\nprev:`,
+  signature: "A",
+});
+
+test("S2 R27: proposedOwnerDevices drops the revoked devices of the served authority and keeps this device", () => {
+  const three = authOf(`${THIRD_DEV}.K3,${MY_DEV}.K1,${OTHER_DEV}.K2`);
+  assert.deepEqual(
+    proposedOwnerDevices(seatsWith(three, [OTHER_DEV]), MY_DEV),
+    [MY_DEV, THIRD_DEV],
+  );
+  // This device not listed yet: added (native needs the signer in the set).
+  const others = authOf(`${OTHER_DEV}.K2,${THIRD_DEV}.K3`);
+  assert.deepEqual(
+    proposedOwnerDevices(seatsWith(others, [OTHER_DEV]), MY_DEV),
+    [MY_DEV, THIRD_DEV],
+  );
+});
+
+test("S2 R27: proposedOwnerDevices offers nothing when there is nothing safe to offer", () => {
+  const cases: [string, ProtectedSeatsResponse | null][] = [
+    ["no snapshot", null],
+    ["absent", seatsWith(AUTH, undefined)],
+    ["empty", seatsWith(AUTH, [])],
+    ["not an array", seatsWith(AUTH, OTHER_DEV)],
+    ["no authority", seatsWith(undefined, [OTHER_DEV])],
+    ["not of this authority", seatsWith(AUTH, [THIRD_DEV])],
+    ["this device revoked", seatsWith(AUTH, [MY_DEV])],
+    ["unreadable entry", seatsWith(authOf("x"), [OTHER_DEV])],
+    [
+      "no owner_devices line",
+      seatsWith({ body: "sloga-channel-authority-v1", signature: "A" }, [
+        OTHER_DEV,
+      ]),
+    ],
+  ];
+  for (const [label, seats] of cases) {
+    assert.equal(proposedOwnerDevices(seats, MY_DEV), null, label);
+  }
 });

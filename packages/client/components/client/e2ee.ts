@@ -159,6 +159,7 @@ import {
   storeOwnerAllows,
   structuralState,
 } from "./protectedPlatform";
+import type { ResecureInputs } from "./protectedResecurePolicy";
 import {
   type TextSinkSource,
   routeMls,
@@ -175,14 +176,13 @@ import {
   encryptAndSend,
   markerForError,
 } from "./protectedTextMessages";
-import { protect, setSeats } from "./protectedTextOwner";
+import { protect, setSeats, signOwnerDevices } from "./protectedTextOwner";
 import {
   type ProtectedChannelInfo,
   type ProtectedChannelsFlag,
   type ProtectedChannelView,
   type ProtectedMessageRow,
   type ProtectedMessageView,
-  type ProtectedTextManagerApi,
   type ProtectedTextManagerCallbacks,
   type ProtectedTextPort,
   type ProtectedToastKind,
@@ -2967,13 +2967,10 @@ export class E2EEBridge implements E2EEAdapter {
       case "ProtectedChannelChanged": {
         // Protected channels (S2, design 7.5): a refetch hint for the text
         // manager only (no manager = no-op). Never a security input; the
-        // manager filters the scope items it knows.
-        const manager = this.#ptManager as
-          | (ProtectedTextManager &
-              Pick<ProtectedTextManagerApi, "onChannelChanged">)
-          | null;
+        // manager filters the scope items it knows. The call stays guarded
+        // although the method is required: a manager without it is a no-op.
         if (typeof event.id === "string" && Array.isArray(event.scope)) {
-          manager?.onChannelChanged?.(event.id, event.scope);
+          this.#ptManager?.onChannelChanged?.(event.id, event.scope);
         }
         break;
       }
@@ -9467,6 +9464,27 @@ export class E2EEBridge implements E2EEAdapter {
   }
 
   /**
+   * S2 (h): index one group id the manager reported for `channelId` (its
+   * own index already took it). A malformed id is logged and skipped; one this
+   * index maps elsewhere is logged without ids and never re-routed.
+   */
+  #protectedIndexReported(
+    channelId: string,
+    groupId: string,
+    generation: number,
+  ): void {
+    try {
+      this.#ptIndex.addReported(groupId, channelId, generation);
+    } catch (error) {
+      if (error instanceof RangeError) {
+        console.warn("[protected] reported group id malformed", { channelId });
+      } else {
+        console.warn("[protected] reported group id conflict");
+      }
+    }
+  }
+
+  /**
    * End of every `#onReady` (W4a audit, binding): seed the index from the
    * pins and the cache (`allSettled`: a non-ULID pin must not block the
    * rest), rebuild the manager when the account/device changed or the device
@@ -9635,12 +9653,18 @@ export class E2EEBridge implements E2EEAdapter {
         this.#ptServerKeyPackages = Math.max(0, this.#ptServerKeyPackages - 1);
         void this.#protectedReplenish();
       },
+      // S2 (h): a group id native or the server reported (v2, g > 63),
+      // indexed for routing before any join or process for it.
+      onGroupReported: (channelId, groupId, generation) => {
+        if (!current()) return;
+        this.#protectedIndexReported(channelId, groupId, generation);
+      },
     };
     manager = new ProtectedTextManager(
       this.#protectedPort(userId, deviceId, life.signal),
       callbacks,
       {
-        owner: { protect, setSeats },
+        owner: { protect, setSeats, signOwnerDevices },
         messages: { encryptAndSend, decryptRow, markerForError },
       },
     );
@@ -10014,6 +10038,8 @@ export class E2EEBridge implements E2EEAdapter {
         if (!accessor) throw new Error("[protected] outbox keys not wired");
         return accessor();
       },
+      // S2 (j): the owner flows pick `format: 2` from the root advert.
+      formatsV2: () => this.protectedFlag().formatsV2 === true,
     };
   }
 
@@ -10430,9 +10456,46 @@ export class E2EEBridge implements E2EEAdapter {
     channelId: string,
     seats: string[],
     deviceCap: number,
+    reason?: string,
   ): Promise<void> {
     const manager = await this.#protectedManagerFor(channelId);
-    return manager.setSeats(channelId, seats, deviceCap);
+    return manager.setSeats(channelId, seats, deviceCap, reason);
+  }
+
+  async authoritySign(
+    channelId: string,
+    ownerDevices: string[],
+  ): Promise<void> {
+    const manager = await this.#protectedManagerFor(channelId);
+    return manager.authoritySign(channelId, ownerDevices);
+  }
+
+  /** S2 (design 6.3): only from this UI call, never automatic. */
+  async recoverOwnership(channelId: string): Promise<void> {
+    const manager = await this.#protectedManagerFor(channelId);
+    return manager.recoverOwnership(channelId);
+  }
+
+  /** This device's id for comparisons (never rendered); reactive. */
+  selfDeviceId(): string | null {
+    return this.status.get("state")?.device_id ?? null;
+  }
+
+  /**
+   * S2-D36: the view plus this account's ids, for `resecureCause`. Reads
+   * the reactive view map, so a UI memo re-runs on every view change.
+   */
+  resecureInputs(channelId: string): ResecureInputs | null {
+    const view = this.protectedChannels.get(channelId);
+    const selfUserId = this.#client.user?.id;
+    const selfDeviceId = this.selfDeviceId();
+    if (!view || !selfUserId || !selfDeviceId) return null;
+    return {
+      ...view,
+      resecuringSinceMs: view.resecuringSinceMs ?? null,
+      selfUserId,
+      selfDeviceId,
+    };
   }
 
   async confirmOwnerChange(channelId: string): Promise<void> {

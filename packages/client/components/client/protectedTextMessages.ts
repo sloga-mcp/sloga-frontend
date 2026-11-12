@@ -11,7 +11,8 @@
  *   have failed.
  * - `decryptRow` (plan D22): a row without `encrypted` is a loud marker and
  *   never reaches native; `UnknownEpoch` ahead of `current` catches up and
- *   retries once. Never rejects: every failure is a marker.
+ *   retries once. Never rejects: every failure is a marker. S2 (OR-20): an
+ *   `ok` view carries only the COUNT of its files (`filesUnsupported`).
  * - `markerForError`: D17's message mapping (A2), fail closed.
  *
  * Never plaintext: the typed text goes to `e2ee_text_encrypt` and nowhere
@@ -443,7 +444,11 @@ export async function encryptAndSend(
 // Decrypt (D22)
 // ---------------------------------------------------------------------------
 
-/** D17 message mapping (A2), with the one catch-up already spent. */
+/**
+ * D17 message mapping (A2), with the one catch-up already spent. Delegates
+ * to the shield: `unsupported_envelope_version` is the grey
+ * `unsupported_version` (OR-19, `v` never shown), never `error`/`malformed`.
+ */
 export function markerForError(err: unknown): ProtectedMarkerKind {
   const ui = protectedNoticeForError(err, { op: "message", catchUpDone: true });
   return ui.kind === "marker" ? ui.marker : "error";
@@ -454,7 +459,44 @@ const marker = (kind: ProtectedMarkerKind): ProtectedMessageView => ({
   kind,
 });
 
-function okView(row: ProtectedMessageRow, d: TextDecrypted) {
+/**
+ * The `ok` view this module builds. `filesUnsupported` (OR-20) counts the
+ * message's files this client cannot show: every file in S2, whatever its
+ * native `state` (S3 renders files). Names, mimes and sizes never reach
+ * the view.
+ */
+export type ProtectedOkView = Extract<
+  ProtectedMessageView,
+  { status: "ok" }
+> & {
+  filesUnsupported: number;
+};
+
+const isCount = (v: unknown): boolean =>
+  typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
+
+/** Native `FileMeta` (mls/text/types.rs); `fail_reason` absent or a string. */
+function isFileMeta(f: unknown): boolean {
+  return (
+    isRecord(f) &&
+    isCount(f.idx) &&
+    typeof f.name === "string" &&
+    typeof f.mime === "string" &&
+    isCount(f.size) &&
+    typeof f.state === "string" &&
+    (f.fail_reason === undefined || typeof f.fail_reason === "string")
+  );
+}
+
+/**
+ * Native's result, checked against the row. `files` is always serialized
+ * (876c034): absent, not an array or any element not FileMeta-shaped is a
+ * mismatch, never dropped to a count of 0.
+ */
+function okView(
+  row: ProtectedMessageRow,
+  d: TextDecrypted,
+): ProtectedOkView | null {
   if (
     !isRecord(d) ||
     d.message_id !== row.id ||
@@ -463,17 +505,20 @@ function okView(row: ProtectedMessageRow, d: TextDecrypted) {
     d.cid !== row.nonce ||
     typeof d.text !== "string" ||
     !Array.isArray(d.replies) ||
-    !d.replies.every((r) => typeof r === "string")
+    !d.replies.every((r) => typeof r === "string") ||
+    !Array.isArray(d.files) ||
+    !d.files.every((f) => isFileMeta(f))
   ) {
     return null;
   }
-  const view: ProtectedMessageView = {
+  const view: ProtectedOkView = {
     status: "ok",
     text: d.text,
     replies: [...d.replies],
     senderVerified: d.sender_verified === true,
     tsSkew: d.ts_skew === true,
     cid: d.cid,
+    filesUnsupported: d.files.length,
   };
   return view;
 }
