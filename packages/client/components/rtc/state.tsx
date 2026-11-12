@@ -136,24 +136,6 @@ function webkitHoldTrack(track: LocalTrack): WebkitHoldTrack<LocalTrack> {
   };
 }
 
-/** The worker's `enable` reply, `{kind:"enable", data:{participantIdentity, enabled}}`. */
-function workerEnableReply(
-  data: unknown,
-): { identity: string; enabled: boolean } | undefined {
-  if (typeof data !== "object" || data === null) return undefined;
-  const { kind, data: body } = data as { kind?: unknown; data?: unknown };
-  if (kind !== "enable" || typeof body !== "object" || body === null)
-    return undefined;
-  const { participantIdentity, enabled } = body as {
-    participantIdentity?: unknown;
-    enabled?: unknown;
-  };
-  if (typeof participantIdentity !== "string" || participantIdentity === "")
-    return undefined;
-  if (typeof enabled !== "boolean") return undefined;
-  return { identity: participantIdentity, enabled };
-}
-
 /**
  * The longest an iOS call's audio session waits for its Room's disconnect to
  * settle before it is released anyway (R18e). livekit's disconnect is a
@@ -519,8 +501,11 @@ import {
   type WebkitHoldState,
   type WebkitHoldTrack,
   type WorkerAckTracker,
+  type WorkerEnableLedger,
   createWorkerAckTracker,
+  createWorkerEnableLedger,
   isScriptTransformEngine,
+  NO_WORKER_ENABLED,
   webkitHoldInputs,
   webkitHoldOverdue,
   webkitHoldReleased,
@@ -1191,10 +1176,15 @@ class Voice {
    */
   #workerAcks: WorkerAckTracker | undefined;
   /**
-   * The worker's own `enable` replies, by identity: the hold verdict's
-   * `localIdentityEnabled` term (R2, D7.3). Cleared with the tracker.
+   * The bound worker's own `enable` replies, by identity: the hold verdict's
+   * `localIdentityEnabled` term (R2, D7.3). ONE ledger per worker (Stage 6
+   * MINOR 1): `#bindE2EEWorker` replaces it with a fresh one, only that
+   * worker's listener writes it, and its unbind closes it. A teardown that
+   * never reached the unbind, or a late message from an old worker, cannot
+   * carry the last call's `local → true` into the next call's hold.
+   * Undefined with no worker bound.
    */
-  #workerEnabled = new Map<string, boolean>();
+  #workerEnabled: WorkerEnableLedger | undefined;
   /**
    * Undo `#bindE2EEWorker`: stop the key-freshness tick, detach the ack
    * listener, THEN reset the tracker (R13c: a message delivered between a
@@ -12344,10 +12334,11 @@ class Voice {
    * later. Chromium never ticks, so its switch stays unarmed.
    */
   #bindE2EEWorker(worker: Worker, tracker: WorkerAckTracker): void {
+    const ledger = createWorkerEnableLedger();
+    this.#workerEnabled = ledger;
     const onMessage = (ev: MessageEvent) => {
       tracker.onMessage(ev.data);
-      const enable = workerEnableReply(ev.data);
-      if (enable) this.#workerEnabled.set(enable.identity, enable.enabled);
+      ledger.record(ev.data);
       const room = this.room();
       if (room) this.#reviewWebkitHold(room);
     };
@@ -12366,7 +12357,8 @@ class Voice {
       stopTick?.();
       worker.removeEventListener("message", onMessage);
       tracker.reset();
-      this.#workerEnabled.clear();
+      ledger.close();
+      if (this.#workerEnabled === ledger) this.#workerEnabled = undefined;
     };
   }
 
@@ -12411,7 +12403,7 @@ class Voice {
       ),
       born: [...born].map(webkitHoldTrack),
       providerKeys: this.#mlsKeyProvider?.getKeys(),
-      workerEnabled: this.#workerEnabled,
+      workerEnabled: this.#workerEnabled?.enabled ?? NO_WORKER_ENABLED,
       attached: tracker.attached,
       keyAcked: tracker.keyAcked,
     };

@@ -2442,7 +2442,7 @@ test("source pin (W3 R1, R15): the release is the pure hold verdict over every l
     ),`,
     `born: [...born].map(webkitHoldTrack),`,
     `providerKeys: this.#mlsKeyProvider?.getKeys(),`,
-    `workerEnabled: this.#workerEnabled,`,
+    `workerEnabled: this.#workerEnabled?.enabled ?? NO_WORKER_ENABLED,`,
     `attached: tracker.attached,`,
     `keyAcked: tracker.keyAcked,`,
   ])
@@ -2567,11 +2567,12 @@ test("source pin (W3 R13c/R17/R8): the worker is bound once, the tick runs for i
         stopTick?.();
         worker.removeEventListener("message", onMessage);
         tracker.reset();
-        this.#workerEnabled.clear();
+        ledger.close();
+        if (this.#workerEnabled === ledger) this.#workerEnabled = undefined;
       };`,
     ),
     1,
-    "detach BEFORE reset (R13c)",
+    "detach BEFORE reset (R13c), then close THIS worker's enable ledger",
   );
   // R8: the tick starts with the worker, nowhere per session.
   assert.equal(countWired(STATE_CODE, `startKeyFreshnessTick(`), 1);
@@ -2582,6 +2583,75 @@ test("source pin (W3 R13c/R17/R8): the worker is bound once, the tick runs for i
     at(`this.#unbindE2EEWorker?.();`) < at(`this.#e2eeWorker?.terminate();`),
     "the tick stops and the tracker resets with its worker",
   );
+});
+
+// Stage 6 MINOR 1: the enable replies used to be ONE Map on the Voice object,
+// emptied only by the unbind. A teardown that threw before the unbind left
+// the last call's `local → true` in it, and the next call (same identity)
+// released its WebKit senders before the new worker had processed `enable`:
+// plaintext frames. The behaviour of the ledger is `webkitSenderHold.test.ts`'s;
+// these pins hold state.tsx to one ledger per worker.
+test("source pin (Stage 6 MINOR 1): one enable ledger per worker, written only by its own listener and closed with it", () => {
+  const bind = bodyOf(
+    `#bindE2EEWorker(worker: Worker, tracker: WorkerAckTracker): void {`,
+  );
+  const fresh = `const ledger = createWorkerEnableLedger();
+    this.#workerEnabled = ledger;`;
+  assert.ok(
+    bind.startsWith(codeOf(fresh)),
+    "the bind OPENS with a fresh ledger, assigned unconditionally",
+  );
+  const at = (s: string) => firstAt("#bindE2EEWorker", bind, s);
+  assert.ok(
+    at(fresh) < at(`worker.addEventListener("message", onMessage);`),
+    "the ledger exists before the worker can deliver a message",
+  );
+  const listener = bodyAfter(bind, `const onMessage = (ev: MessageEvent) => {`);
+  assert.equal(countWired(listener, `ledger.record(ev.data);`), 1);
+  assert.equal(
+    countWired(listener, `#workerEnabled`),
+    0,
+    "the listener writes its OWN ledger, never whatever the field holds now",
+  );
+  const unbind = bodyAfter(bind, `this.#unbindE2EEWorker = () => {`);
+  const ua = (s: string) => firstAt("the unbind", unbind, s);
+  assert.equal(countWired(unbind, `ledger.close();`), 1);
+  const clear = `if (this.#workerEnabled === ledger) this.#workerEnabled = undefined;`;
+  assert.equal(countWired(unbind, clear), 1, "cleared only if still ours");
+  assert.ok(ua(`tracker.reset();`) < ua(`ledger.close();`));
+  assert.ok(ua(`ledger.close();`) < ua(clear));
+  assert.equal(countWired(STATE_CODE, `createWorkerEnableLedger(`), 1);
+  // The field: a slot for the bound worker's ledger, no Map of its own.
+  assert.equal(
+    countWired(STATE_CODE, `#workerEnabled: WorkerEnableLedger | undefined;`),
+    1,
+  );
+  assert.equal(countWired(STATE_CODE, `#workerEnabled = new Map`), 0);
+  // Every write of the field, in file order: the bind, then its unbind.
+  assert.deepEqual(
+    [
+      ...STATE_CODE.matchAll(
+        /(?:[\w$]+\.)?#workerEnabled(?:\?\?|\|\||&&)?=(?![=>])[^;}]*/g,
+      ),
+    ].map((m) => m[0]),
+    [`this.#workerEnabled=ledger`, `this.#workerEnabled=undefined`],
+  );
+  // The hold reads the bound worker's ledger, or the empty map: never a
+  // ledger the listener does not write.
+  assert.equal(
+    countWired(
+      bodyOf(`#webkitHoldState(
+    room: Room,
+    born: ReadonlySet<LocalTrack>,
+    tracker: WorkerAckTracker,
+  ): WebkitHoldState<LocalTrack> {`),
+      `workerEnabled: this.#workerEnabled?.enabled ?? NO_WORKER_ENABLED,`,
+    ),
+    1,
+  );
+  assert.equal(countWired(STATE_CODE, `this.#workerEnabled?.enabled`), 1);
+  // field, bind write, unbind compare and clear, hold read: nothing else.
+  assert.equal(countWired(STATE_CODE, `#workerEnabled`), 5);
 });
 
 // Stage 5 F7 (A-M1): the dead worker, a lost key push, an overdue hold and a

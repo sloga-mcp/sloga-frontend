@@ -13805,7 +13805,7 @@ MUTATIONS += [
         id='state-ios-hold-enable-term-forged',
         what="R2: the hold's enable term is forged true instead of the worker's enable reply",
         file=STATE,
-        search="""      workerEnabled: this.#workerEnabled,""",
+        search="""      workerEnabled: this.#workerEnabled?.enabled ?? NO_WORKER_ENABLED,""",
         replace="""      workerEnabled: new Map([[room.localParticipant.identity, true]]),""",
         specs=[STATE_WIRING_SPEC],
     ),
@@ -13869,6 +13869,38 @@ MUTATIONS += [
         replace="""      tracker.reset();
       worker.removeEventListener("message", onMessage);
 """,
+        specs=[STATE_WIRING_SPEC],
+    ),
+    # Stage 6 MINOR 1: one enable ledger per worker. A stale `local → true`
+    # left by a teardown that never reached the unbind (or written by an old
+    # worker's listener) released the next call's WebKit senders before the
+    # new worker had processed `enable`: plaintext frames. The ledger's own
+    # behaviour is held by the `sender-hold-enable-ledger-*` entries.
+    Mutation(
+        id='state-ios-enable-ledger-reused',
+        what='MINOR 1: the bind reuses a ledger a skipped unbind left behind instead of a fresh one',
+        file=STATE,
+        search="""    const ledger = createWorkerEnableLedger();
+    this.#workerEnabled = ledger;
+""",
+        replace="""    const ledger = (this.#workerEnabled ??= createWorkerEnableLedger());
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-enable-ledger-listener-writes-field',
+        what="MINOR 1: the listener records into whatever ledger the field holds now, so an old worker's late reply lands in the new call's ledger",
+        file=STATE,
+        search="""      ledger.record(ev.data);""",
+        replace="""      this.#workerEnabled?.record(ev.data);""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-enable-ledger-unbind-clears-any',
+        what="MINOR 1: an unbind clears the field whatever ledger it holds, including a newer worker's",
+        file=STATE,
+        search="""      if (this.#workerEnabled === ledger) this.#workerEnabled = undefined;""",
+        replace="""      this.#workerEnabled = undefined;""",
         specs=[STATE_WIRING_SPEC],
     ),
     Mutation(
@@ -14318,6 +14350,26 @@ MUTATIONS += [
         file=SENDER_HOLD,
         search="""export const WEBKIT_HOLD_BOUND_MS = KEY_ACK_TIMEOUT_MS;""",
         replace="""export const WEBKIT_HOLD_BOUND_MS = 2 * KEY_ACK_TIMEOUT_MS;""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    # Stage 6 MINOR 1: the per-worker enable ledger (the `state-ios-enable-
+    # ledger-*` entries hold state.tsx to using one per worker).
+    Mutation(
+        id='sender-hold-enable-ledger-records-after-close',
+        what="MINOR 1: a closed ledger still records, so a dead worker's late enable reply repopulates it",
+        file=SENDER_HOLD,
+        search="""      if (closed) return;
+""",
+        replace="""""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-enable-ledger-close-keeps-entries',
+        what="MINOR 1: close does not empty the ledger, so a closed worker's local → true survives",
+        file=SENDER_HOLD,
+        search="""      replies.clear();
+""",
+        replace="""""",
         specs=[SENDER_HOLD_SPEC],
     ),
     Mutation(

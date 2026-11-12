@@ -214,7 +214,7 @@ EXPECTED=(
   # overdue hold, the fatal producers, the pre-session replay, the re-arm,
   # the zeroing and the no-session press; 73 after the re-review's NEW-1 (a
   # wrapped publish in flight stops the overdue clock).
-  "components/rtc/stateWiring.test.ts 73 0"
+  "components/rtc/stateWiring.test.ts 74 0"
   # The AFK channel and its merge with member moves (FE-2). Before it this
   # gate ran NO AFK spec, and none of the ladder that decides whether a
   # client follows a move. memberGate's opt-in skip is not in its row: see
@@ -255,7 +255,7 @@ EXPECTED=(
   # webkitSenderHold 39 -> 57 (F4: the hold assembly and overdue clock) and
   # iosCallSwitch 7 -> 20 (F1: the fetched switch and the offer helper) in
   # Stage 5 fix round F.
-  "components/rtc/webkitSenderHold.test.ts 57 0"
+  "components/rtc/webkitSenderHold.test.ts 64 0"
   "components/rtc/workerProbe.test.ts 16 0"
   "components/rtc/keyFreshnessTick.test.ts 10 0"
   "components/rtc/iosCallSwitch.test.ts 20 0"

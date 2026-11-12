@@ -265,6 +265,71 @@ export function createWorkerAckTracker(
   };
 }
 
+// --- the worker's enable replies (Stage 6 MINOR 1) ----------------------------
+
+/** The worker's `enable` reply, `{kind:"enable", data:{participantIdentity, enabled}}`. */
+function workerEnableReply(
+  data: unknown,
+): { identity: string; enabled: boolean } | undefined {
+  if (typeof data !== "object" || data === null) return undefined;
+  const { kind, data: body } = data as { kind?: unknown; data?: unknown };
+  if (kind !== "enable" || typeof body !== "object" || body === null)
+    return undefined;
+  const { participantIdentity, enabled } = body as {
+    participantIdentity?: unknown;
+    enabled?: unknown;
+  };
+  if (typeof participantIdentity !== "string" || participantIdentity === "")
+    return undefined;
+  if (typeof enabled !== "boolean") return undefined;
+  return { identity: participantIdentity, enabled };
+}
+
+/**
+ * ONE call worker's `enable` replies, by identity: the hold verdict's
+ * `localIdentityEnabled` term (R2, D7.3).
+ *
+ * 🔴 One per worker, never reused. A single map shared across workers was
+ * emptied only by the old worker's unbind; a teardown that threw before it
+ * carried the last call's `local → true` into the next call, whose identity
+ * is the same `user:device`, so the NEW worker's senders were released before
+ * it had processed `enable` — plaintext on WebKit. A ledger is written only
+ * by its own worker's listener, and once closed nothing writes it again, so a
+ * late message from a dead worker cannot repopulate it either.
+ */
+export interface WorkerEnableLedger {
+  /** The replies recorded so far; live, and empty once closed. */
+  readonly enabled: ReadonlyMap<string, boolean>;
+  /** Feed every worker message (`MessageEvent.data`); non-enable ones are ignored. */
+  record(data: unknown): void;
+  /** The worker is gone: empty the ledger; every later `record` is ignored. */
+  close(): void;
+}
+
+/**
+ * The enable replies when no worker is bound: none. Typed read-only and
+ * never written by this module; no ledger is backed by it.
+ */
+export const NO_WORKER_ENABLED: ReadonlyMap<string, boolean> = new Map();
+
+/** A fresh, empty ledger for one newly bound worker. */
+export function createWorkerEnableLedger(): WorkerEnableLedger {
+  const replies = new Map<string, boolean>();
+  let closed = false;
+  return {
+    enabled: replies,
+    record(data: unknown): void {
+      if (closed) return;
+      const reply = workerEnableReply(data);
+      if (reply) replies.set(reply.identity, reply.enabled);
+    },
+    close(): void {
+      closed = true;
+      replies.clear();
+    },
+  };
+}
+
 export interface SenderHoldInput {
   scriptTransformEngine: boolean;
   /** Every sender of ONE local publication, incl. `simulcastCodecs` senders. */

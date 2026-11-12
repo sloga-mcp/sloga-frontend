@@ -30,8 +30,10 @@ import {
   type WebkitHoldState,
   type WebkitHoldTrack,
   createWorkerAckTracker,
+  createWorkerEnableLedger,
   isScriptTransformEngine,
   KEY_ACK_TIMEOUT_MS,
+  NO_WORKER_ENABLED,
   parseSlogaWorkerAck,
   senderHoldVerdict,
   WEBKIT_HOLD_BOUND_MS,
@@ -876,6 +878,144 @@ test("the review's input is the tracker's own predicates, unbound", () => {
   t.onMessage(attachedAck("TR_cam", "encode"));
   t.onMessage(setKeyAck("jeff:dev1", 3, true));
   assert.equal(webkitHoldReleased(webkitHoldInputs(state).inputs), true);
+});
+
+// --- the worker's enable ledger (Stage 6 MINOR 1) -------------------------------
+//
+// The hold's `not_enabled` term reads the worker's `enable` replies. They
+// used to live in ONE Map on the Voice object, cleared only by the worker's
+// unbind: a teardown that threw before reaching it carried the last call's
+// `local → true` into the next call (same `user:device` identity), releasing
+// the new worker's senders before it had processed `enable`, which on WebKit
+// is plaintext. Now each worker gets its own ledger, and a closed one can
+// never be written again.
+
+const enableReply = (participantIdentity: unknown, enabled: unknown) => ({
+  kind: "enable",
+  data: { participantIdentity, enabled },
+});
+
+test("the enable ledger is empty at birth, and so is the no-worker map", () => {
+  const ledger = createWorkerEnableLedger();
+  assert.equal(ledger.enabled.size, 0);
+  assert.equal(ledger.enabled.get("jeff:dev1"), undefined);
+  assert.equal(NO_WORKER_ENABLED.size, 0);
+  // Not the shared constant: a ledger's writes must never reach it.
+  assert.notEqual(ledger.enabled, NO_WORKER_ENABLED);
+  ledger.record(enableReply("jeff:dev1", true));
+  assert.equal(NO_WORKER_ENABLED.size, 0);
+  assert.deepEqual(verdicts(roomState({ workerEnabled: NO_WORKER_ENABLED })), [
+    { release: false, reason: "not_enabled" },
+    { release: false, reason: "not_enabled" },
+  ]);
+});
+
+test("an enable reply records true or false per identity, latest wins", () => {
+  const ledger = createWorkerEnableLedger();
+  ledger.record(enableReply("jeff:dev1", true));
+  ledger.record(enableReply("velvetfly:dev9", false));
+  assert.deepEqual(
+    [...ledger.enabled],
+    [
+      ["jeff:dev1", true],
+      ["velvetfly:dev9", false],
+    ],
+  );
+  ledger.record(enableReply("jeff:dev1", false));
+  assert.equal(ledger.enabled.get("jeff:dev1"), false);
+});
+
+test("🔴 a message that is not a well-formed enable reply records nothing", () => {
+  const ledger = createWorkerEnableLedger();
+  for (const data of [
+    setKeyAck("jeff:dev1", 3, true),
+    attachedAck("TR_cam", "encode"),
+    { kind: "enable" },
+    { kind: "enable", data: null },
+    {
+      kind: "Enable",
+      data: { participantIdentity: "jeff:dev1", enabled: true },
+    },
+    enableReply("", true),
+    enableReply(7, true),
+    enableReply("jeff:dev1", "true"),
+    enableReply("jeff:dev1", 1),
+    "enable",
+    null,
+    undefined,
+  ]) {
+    ledger.record(data);
+    assert.equal(ledger.enabled.size, 0, JSON.stringify(data));
+  }
+});
+
+test("🔴 close empties the ledger", () => {
+  const ledger = createWorkerEnableLedger();
+  ledger.record(enableReply("jeff:dev1", true));
+  ledger.record(enableReply("velvetfly:dev9", true));
+  ledger.close();
+  assert.equal(ledger.enabled.size, 0);
+  assert.equal(ledger.enabled.get("jeff:dev1"), undefined);
+});
+
+test("🔴 a record after close is ignored: a dead worker cannot repopulate it", () => {
+  const ledger = createWorkerEnableLedger();
+  ledger.close();
+  ledger.record(enableReply("jeff:dev1", true));
+  assert.equal(ledger.enabled.size, 0);
+  // Closing twice is harmless, and still nothing records.
+  ledger.close();
+  ledger.record(enableReply("jeff:dev1", true));
+  assert.equal(ledger.enabled.get("jeff:dev1"), undefined);
+});
+
+test("🔴 two ledgers are independent: the old worker's messages never reach the new one", () => {
+  const old = createWorkerEnableLedger();
+  old.record(enableReply("jeff:dev1", true));
+  const fresh = createWorkerEnableLedger();
+  assert.notEqual(fresh.enabled, old.enabled);
+  assert.equal(fresh.enabled.size, 0, "born empty, whatever the old one holds");
+  // A late message delivered to an old worker's listener that was never
+  // removed.
+  old.record(enableReply("velvetfly:dev9", true));
+  assert.equal(fresh.enabled.size, 0);
+  fresh.record(enableReply("jeff:dev1", false));
+  assert.equal(old.enabled.get("jeff:dev1"), true);
+  assert.equal(fresh.enabled.get("jeff:dev1"), false);
+});
+
+test("🔴 a stale ledger's local → true never releases the new worker's hold", () => {
+  // Every other term satisfied: only the enable term decides.
+  const local = "jeff:dev1";
+  const closed = createWorkerEnableLedger();
+  closed.record(enableReply(local, true));
+  const leaked = createWorkerEnableLedger(); // its unbind never ran
+  leaked.record(enableReply(local, true));
+  closed.close();
+  const fresh = createWorkerEnableLedger();
+  const released = (workerEnabled: ReadonlyMap<string, boolean>) =>
+    webkitHoldReleased(webkitHoldInputs(roomState({ workerEnabled })).inputs);
+
+  assert.equal(
+    released(fresh.enabled),
+    false,
+    "new worker has not enabled yet",
+  );
+  assert.deepEqual(verdicts(roomState({ workerEnabled: fresh.enabled }))[0], {
+    release: false,
+    reason: "not_enabled",
+  });
+  assert.equal(released(closed.enabled), false, "a closed ledger reads empty");
+  assert.equal(released(NO_WORKER_ENABLED), false, "no worker bound");
+  // The stale ledger still says yes; it is simply not the one consulted.
+  assert.equal(leaked.enabled.get(local), true);
+  leaked.record(enableReply(local, true));
+  closed.record(enableReply(local, true));
+  assert.equal(released(fresh.enabled), false);
+
+  // The NEW worker's own reply releases it.
+  fresh.record(enableReply(local, true));
+  assert.equal(released(fresh.enabled), true);
 });
 
 // --- webkitHoldOverdue: the hold's bound ---------------------------------------
