@@ -8643,6 +8643,10 @@ msgid "This purchase needs our help. Contact support and we'll add the Prot to y
 msgstr "This purchase needs our help. Contact support and we'll add the Prot to your account."
 
 #: components/app/interface/settings/user/ProtSettings.tsx
+msgid "This purchase is under review because it would take your Prot wallet over its limit. We'll add the Prot or help you get a refund."
+msgstr "This purchase is under review because it would take your Prot wallet over its limit. We'll add the Prot or help you get a refund."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
 msgid "We couldn't reach Sloga to confirm your purchase. It's safe, and we'll try again."
 msgstr "We couldn't reach Sloga to confirm your purchase. It's safe, and we'll try again."
 

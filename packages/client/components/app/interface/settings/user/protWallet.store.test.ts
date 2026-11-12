@@ -17,11 +17,12 @@
  *   checkout, no checkout notes, no web link (E8), the Stripe Shop still
  *   rendered once, the iPhone honesty line (E2) on iOS only, outcomes from
  *   the worker and never from ledger rows (R30), and a failed sheet noted
- *   from its code only, its native message logged and never shown (R31);
+ *   from its code only, its native message logged and never shown (R31),
+ *   and a purchase held over the wallet cap shown as under review (R63);
  * - nothing reads the web-link flag, and `store_preview` is read only as
  *   `=== true`.
  *
- * The nine StoreShop pins need lane L3f's `function StoreShop(`: until it
+ * The ten StoreShop pins need lane L3f's `function StoreShop(`: until it
  * exists each of them FAILS with a message saying so, never passes on an
  * empty slice.
  */
@@ -446,6 +447,30 @@ describe("StoreShop (source level)", () => {
       "StoreShop has STORE_HANDOFF_SLACK_MS",
     );
     assert.ok(shop.includes("protStoreOutcome("), "StoreShop reads the worker");
+  });
+
+  it("shows its own note for a purchase under review (R63)", () => {
+    const shop = storeShop();
+    const note =
+      "This purchase is under review because it would take your Prot wallet over its limit. We'll add the Prot or help you get a refund.";
+    assert.equal(fold(shop).split(note).length - 1, 1, "the note, once");
+    const at = shop.indexOf('case "under_review":');
+    assert.ok(at >= 0, 'StoreShop has case "under_review":');
+    // No other case falls into it, and it falls into no other case
+    assert.ok(shop.slice(0, at).trimEnd().endsWith(";"), "a case falls in");
+    const ret = shop.indexOf("return ", at);
+    assert.equal(
+      shop
+        .slice(at, ret)
+        .replace(/\/\/[^\n]*/g, "")
+        .trim(),
+      'case "under_review":',
+    );
+    // Its return is the note itself, never the pending wait
+    assert.ok(
+      fold(shop.slice(ret)).startsWith(`return t\`${note}\`;`),
+      "under_review returns the under-review note",
+    );
   });
 
   it("notes a failed sheet only from its code (R31)", () => {

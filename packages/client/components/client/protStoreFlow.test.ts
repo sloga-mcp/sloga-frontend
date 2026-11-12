@@ -15,6 +15,9 @@
  *   count, any other 4xx stops at once, and neither ever finishes;
  * - a pending sheet result never verifies, and a pending verify answer is
  *   kept unfinished;
+ * - a pending verify answer with reason over_cap (held for staff review, R63)
+ *   is kept as its own outcome, under_review, and never finished: shown as
+ *   the plain pending wait, the buyer is told the store is still deciding;
  * - wrong_account, unbound, unknown_product and no_buyer are kept unfinished;
  * - a cancelled or failed sheet cancels the intent (best effort) and keeps
  *   only the fail code, never the native text;
@@ -490,6 +493,96 @@ describe("pending", () => {
       assert.equal(c.verifies.length, 1);
       assert.deepEqual(c.finishes, []);
     }
+  });
+});
+
+describe("over the wallet cap (R63)", () => {
+  test("over_cap_is_under_review_and_never_finishes", () => {
+    const overCap = answer("pending", "over_cap");
+    assert.equal(shouldFinish(overCap), false);
+
+    // The server's body, read through the whitelist, keeps the reason
+    assert.deepEqual(
+      readVerifyAnswer({
+        status: "pending",
+        reason: "over_cap",
+        purchase_id: "apple:prod:2000000912345678",
+      }),
+      overCap,
+    );
+
+    for (const p of [APPLE, PLAY]) {
+      // Its own outcome, never the plain pending wait
+      assert.deepEqual(
+        protStoreStep(verifying(p), { type: "verified", answer: overCap }),
+        { step: "kept", purchase: p, why: "under_review" },
+      );
+      const calls = drive(verifying(p), { verify: ok(overCap) });
+      assert.equal(calls.verifies.length, 1);
+      assert.deepEqual(calls.finishes, []);
+      assert.deepEqual(calls.cancels, []);
+      assert.deepEqual(calls.final, {
+        step: "kept",
+        purchase: p,
+        why: "under_review",
+      });
+    }
+
+    // The whole purchase: one verify, no finish, and the intent is not
+    // cancelled (the purchase is bound to it)
+    const bought = drive(
+      { step: "intent", productId: APPLE.product_id },
+      {
+        intent: () => ({
+          type: "intentOk",
+          intentId: "01JBZ7Y2Q8M3K4N5P6R7S8T9VW",
+          token: "t",
+        }),
+        sheet: () => ({ result: "purchased", purchase: APPLE }),
+        verify: ok(overCap),
+      },
+    );
+    assert.equal(bought.verifies.length, 1);
+    assert.deepEqual(bought.finishes, []);
+    assert.deepEqual(bought.cancels, []);
+    assert.deepEqual(bought.final, {
+      step: "kept",
+      purchase: APPLE,
+      why: "under_review",
+    });
+    // Nothing that arrives after it moves it to a finish
+    assertNeverFinishes(
+      steps(verifying(APPLE), [
+        { type: "verified", answer: overCap },
+        { type: "finished" },
+        { type: "verified", answer: answer("credited") },
+        { type: "verifyFailed", status: 503 },
+      ]),
+    );
+
+    // A pending answer without the reason still waits on the store
+    assert.deepEqual(
+      protStoreStep(verifying(APPLE), {
+        type: "verified",
+        answer: answer("pending"),
+      }),
+      { step: "kept", purchase: APPLE, why: "pending" },
+    );
+    // The reason means under review only on a pending answer: a rejection
+    // carrying it is one this client cannot read, kept and never finished
+    const rejected = answer("rejected", "over_cap");
+    assert.equal(shouldFinish(rejected), false);
+    assert.deepEqual(
+      protStoreStep(verifying(APPLE), { type: "verified", answer: rejected }),
+      { step: "kept", purchase: APPLE, why: "retry" },
+    );
+
+    // Once staff release it, the next launch's replay answers
+    // already_credited and finishes it, once
+    const released = drive(verifying(APPLE), {
+      verify: ok(answer("already_credited")),
+    });
+    assert.deepEqual(released.finishes, [APPLE.transaction_id]);
   });
 });
 

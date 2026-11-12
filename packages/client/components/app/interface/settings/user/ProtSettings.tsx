@@ -1138,6 +1138,10 @@ export function ProtSettings(props: { context?: unknown }) {
         case "unknown_product":
         case "no_buyer":
           return t`This purchase needs our help. Contact support and we'll add the Prot to your account.`;
+        case "under_review":
+          // Held for staff review (R63): unfinished until it is credited
+          // or refunded
+          return t`This purchase is under review because it would take your Prot wallet over its limit. We'll add the Prot or help you get a refund.`;
         case "retry":
           return t`We couldn't reach Sloga to confirm your purchase. It's safe, and we'll try again.`;
         default: {

@@ -21,6 +21,11 @@
  *   through `transactionUpdated` or the next launch.
  * - A verify answer `status: "pending"` (Play PENDING, or the credit pause) is
  *   kept `"pending"`: unfinished, no finish.
+ * - A verify answer `status: "pending", reason: "over_cap"` (the credit would
+ *   take the wallet over its cap, so staff review it) is kept
+ *   `"under_review"`: unfinished, no finish, exactly like `pending`. The
+ *   store re-delivers it at each launch until staff release it and verify
+ *   answers `already_credited`, or until it is refunded.
  * - `wrong_account`, `unbound`, `unknown_product` and `no_buyer` are kept
  *   unfinished, so the store re-delivers the purchase.
  * - 5xx, network errors and 429 are retried with backoff
@@ -56,7 +61,8 @@ export type ProtStoreVerifyAnswer = {
     | "refunded"
     | "unknown_product"
     | "wrong_account"
-    | "no_buyer";
+    | "no_buyer"
+    | "over_cap";
   purchase_id?: string;
   balance?: number;
   ledger_id?: string;
@@ -83,6 +89,7 @@ export type ProtStoreFlowState =
         | "unknown_product"
         | "no_buyer"
         | "pending"
+        | "under_review"
         | "retry";
     }
   /** A cancelled or failed sheet: the flow cancels the intent (POST …/store/intent/<id>/cancel, 12.1), best effort */
@@ -241,6 +248,7 @@ const VERIFY_REASONS: readonly NonNullable<ProtStoreVerifyAnswer["reason"]>[] =
     "unknown_product",
     "wrong_account",
     "no_buyer",
+    "over_cap",
   ];
 
 /**
@@ -269,7 +277,10 @@ function verifyFailureRetries(status: number | null): boolean {
 function keptWhy(
   answer: ProtStoreVerifyAnswer,
 ): Extract<ProtStoreFlowState, { step: "kept" }>["why"] {
-  if (answer?.status === "pending") return "pending";
+  if (answer?.status === "pending") {
+    // Held for staff review (R63), not waiting on the store
+    return answer.reason === "over_cap" ? "under_review" : "pending";
+  }
   if (answer?.status === "rejected") {
     switch (answer.reason) {
       case "wrong_account":

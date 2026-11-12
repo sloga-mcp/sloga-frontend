@@ -30,6 +30,8 @@
  *   in the same launch never verifies the purchase;
  * - every step of `recover` is written to the reactive `protStoreOutcome`
  *   (R30): otherwise the sheet shows a stale step for a claim the worker holds;
+ * - a purchase the worker keeps under review (over the wallet cap, R63)
+ *   reaches StoreShop unchanged and shows the under-review note there;
  * - the verify body, answer and purchase readers come from protStoreFlow.ts
  *   (R33), so there is one whitelist;
  * - it is mounted once, after ApkUpdateWorker (contracts section 23).
@@ -44,6 +46,10 @@ const worker = readFileSync(
 );
 const shell = readFileSync(
   new URL("../../src/Interface.tsx", import.meta.url),
+  "utf8",
+);
+const settings = readFileSync(
+  new URL("../app/interface/settings/user/ProtSettings.tsx", import.meta.url),
   "utf8",
 );
 
@@ -230,6 +236,24 @@ describe("ProtStoreWorker (source level)", () => {
       body.match(/\bstate = [^;]+;\s*noteOutcome\(run, key, state\);/g) ?? [];
     assert.ok(moves.length >= 2, "recover moves the state");
     assert.equal(recorded.length, moves.length, "every move is recorded");
+  });
+
+  test("worker_under_review_outcome_shows_the_review_note", () => {
+    // R63: the worker renders nothing. It records the kept state as the
+    // flow made it (never a `why` of its own), and StoreShop shows the
+    // outcome of a purchase the worker took through the same keptNote
+    assert.doesNotMatch(worker, /\bwhy\s*:/);
+    assert.doesNotMatch(worker, /"under_review"|"over_cap"/);
+    const shop = settings.replace(/\/\/[^\n]*/g, "").replace(/\s+/g, " ");
+    assert.match(
+      shop,
+      /const outcome = handedOutcome\(\); return outcome \? stateNote\(outcome\) : undefined;/,
+    );
+    assert.match(shop, /case "kept": return keptNote\(state\.why\);/);
+    assert.match(
+      shop,
+      /case "under_review": return t`This purchase is under review because it would take your Prot wallet over its limit\. We'll add the Prot or help you get a refund\.`;/,
+    );
   });
 
   test("verify readers come from protStoreFlow.ts (R33)", () => {

@@ -7218,6 +7218,10 @@ msgid "This purchase needs our help. Contact support and we'll add the Prot to y
 msgstr "Esta compra precisa da nossa ajuda. Entre em contato com o suporte e adicionaremos o Prot à sua conta."
 
 #: components/app/interface/settings/user/ProtSettings.tsx
+msgid "This purchase is under review because it would take your Prot wallet over its limit. We'll add the Prot or help you get a refund."
+msgstr "Esta compra está em análise porque faria sua carteira de Prot passar do limite. Adicionaremos o Prot ou ajudaremos você a obter um reembolso."
+
+#: components/app/interface/settings/user/ProtSettings.tsx
 msgid "We couldn't reach Sloga to confirm your purchase. It's safe, and we'll try again."
 msgstr "Não conseguimos nos conectar à Sloga para confirmar sua compra. Ela está segura e vamos tentar novamente."
 
