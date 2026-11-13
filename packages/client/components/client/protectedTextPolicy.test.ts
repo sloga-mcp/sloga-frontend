@@ -27,9 +27,13 @@ import {
   type SendTrigger,
   type SubmitContext,
   type TextEnvelopeVerdict,
+  ADMIT_REFUSED_CAP,
+  admitRefusalKey,
+  admitRefusedByNative,
   classifySendAnswer,
   classifySubmit,
   classifyTextEnvelopeError,
+  coalescedRefreshReason,
   COMMIT_CAP_REFUSALS,
   CONFIRM_WINDOW_MS,
   confirmAfterId,
@@ -37,9 +41,11 @@ import {
   holdsCurrentGroup,
   isCatchUpDesync,
   isProtectorError,
+  JOIN_EVENT_RESET_GAP_MS,
   JOIN_REBROADCAST,
   JOIN_RETRIES,
   JOIN_RETRY_MS,
+  joinEventResetAllowed,
   joinRebroadcastDelayMs,
   joinRefusal,
   LEAF_STAGGER_MS,
@@ -69,6 +75,7 @@ import {
   WELCOME_FETCH_RETRY_BUDGET,
   welcomeDue,
   welcomeFetchStep,
+  welcomePending,
 } from "./protectedTextPolicy.ts";
 import {
   type ProtectedChannelView,
@@ -2313,4 +2320,132 @@ test("FXJ STORED_ADMIT_REASONS: open, the 60 s refresh, start, event and manual;
   ] as const) {
     assert.equal(STORED_ADMIT_REASONS.includes(r), false, r);
   }
+});
+
+// ---------------------------------------------------------------------------
+// S2-W4 fix lane FX-J2 (re-review NEW-1, NEW-2, NEW-3, NEW-5). Tests named
+// "FXJ2 ..." are the targets of /home/mcp/pc-logs/s2/w4/ctl/FXJ2.
+// ---------------------------------------------------------------------------
+
+test("FXJ2 welcomePending: an Add owes ONE Welcome path while due and not done; done, a new Add owes its own", () => {
+  const a4 = { key: "G:4", epoch: 4 };
+  assert.equal(welcomePending(a4, 3, null), true, "due, never ran");
+  assert.equal(welcomePending(a4, 4, "G:2"), true, "another Add ran");
+  assert.equal(welcomePending(a4, 3, "G:4"), false, "this Add is done");
+  assert.equal(welcomePending(a4, 5, null), false, "before our last intent");
+  assert.equal(welcomePending(a4, null, null), false, "no intent sent yet");
+  assert.equal(welcomePending(null, 3, null), false, "no Add");
+  assert.equal(
+    welcomePending({ key: "G:6", epoch: 6 }, 3, "G:4"),
+    true,
+    "a new Add is a new path",
+  );
+});
+
+test("FXJ2 joinEventResetAllowed: an event restarts the join backoff at most once per window (the backoff cap); a broken clock refuses", () => {
+  assert.equal(JOIN_EVENT_RESET_GAP_MS, JOIN_REBROADCAST.capMs);
+  const t = 1_700_000_000_000;
+  assert.equal(joinEventResetAllowed(null, t), true, "the first one");
+  assert.equal(joinEventResetAllowed(t, t), false);
+  assert.equal(
+    joinEventResetAllowed(t, t + JOIN_EVENT_RESET_GAP_MS - 1),
+    false,
+  );
+  assert.equal(joinEventResetAllowed(t, t + JOIN_EVENT_RESET_GAP_MS), true);
+  assert.equal(joinEventResetAllowed(t, t - 1), false, "clock ran backwards");
+  assert.equal(joinEventResetAllowed(Number.NaN, t), false);
+  assert.equal(joinEventResetAllowed(t, Number.POSITIVE_INFINITY), false);
+});
+
+test("FXJ2 coalescedRefreshReason: a stored-admit reason wins over one that does not admit; open is strongest; a tie keeps the running reason", () => {
+  const admits = ["open", "interval", "event", "manual", "start"] as const;
+  const plain = [
+    "commit",
+    "resecuring",
+    "owner_confirmed",
+    "send_refused",
+  ] as const;
+  for (const a of admits) {
+    for (const p of plain) {
+      assert.equal(coalescedRefreshReason(p, a), a, `${p} + ${a}`);
+      assert.equal(coalescedRefreshReason(a, p), a, `${a} + ${p}`);
+    }
+    assert.ok(STORED_ADMIT_REASONS.includes(a), a);
+  }
+  for (const r of [...admits, ...plain]) {
+    assert.equal(coalescedRefreshReason(r, "open"), "open", r);
+    assert.equal(coalescedRefreshReason(r, r), r, `${r} tie`);
+  }
+  assert.equal(coalescedRefreshReason("interval", "event"), "interval");
+  assert.equal(coalescedRefreshReason("commit", "send_refused"), "commit");
+  // "start" admits but joins only a left group: any other admit beats it.
+  assert.equal(coalescedRefreshReason("start", "interval"), "interval");
+  assert.equal(coalescedRefreshReason("interval", "start"), "interval");
+});
+
+test("FXJ2 admitRefusalKey / admitRefusedByNative: a request is its group, device and KeyPackage ref; only a native refusal that is not transient counts", () => {
+  const req = {
+    group_id: "G",
+    channel_id: "C",
+    user_id: "U",
+    device_id: "D",
+    key_package_ref: "K1",
+    signature: "S",
+  };
+  assert.equal(
+    admitRefusalKey(req),
+    admitRefusalKey({ ...req, signature: "X" }),
+  );
+  assert.equal(
+    admitRefusalKey(req),
+    admitRefusalKey({ ...req, generation: 2 }),
+  );
+  for (const over of [
+    { key_package_ref: "K2" },
+    { device_id: "D2" },
+    { group_id: "G2" },
+  ]) {
+    assert.notEqual(admitRefusalKey(req), admitRefusalKey({ ...req, ...over }));
+  }
+  // No separator collision between fields.
+  assert.notEqual(
+    admitRefusalKey({ ...req, group_id: "a:b", device_id: "c" }),
+    admitRefusalKey({ ...req, group_id: "a", device_id: "b:c" }),
+  );
+  for (const type of [
+    "mls_leaf_rejected",
+    "roster_mismatch",
+    "replayed_rejoin_intent",
+    "duplicate_leaf",
+    "text_group_full",
+    "channel_mismatch",
+    "invalid_argument",
+  ]) {
+    assert.equal(admitRefusedByNative({ type }), true, type);
+    assert.equal(
+      admitRefusedByNative({ source: "native", error: { type } }),
+      true,
+      `wrapped ${type}`,
+    );
+  }
+  for (const type of [
+    "busy",
+    "storage",
+    "protector",
+    "protector_locked",
+    "identity_pin_required",
+  ]) {
+    assert.equal(admitRefusedByNative({ type }), false, type);
+  }
+  for (const err of [
+    { source: "server", status: 403, type: "NotSeated", body: null },
+    { source: "transport" },
+    { source: "client", reason: "disposed" },
+    new Error("x"),
+    null,
+    "busy",
+  ]) {
+    assert.equal(admitRefusedByNative(err), false, JSON.stringify(err));
+  }
+  assert.ok(Number.isSafeInteger(ADMIT_REFUSED_CAP) && ADMIT_REFUSED_CAP > 0);
 });

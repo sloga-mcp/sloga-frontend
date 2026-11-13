@@ -24,7 +24,9 @@
  *   `protectorBackoffMs`, `protectorGateStep`, `protectorGateAfter`.
  * - Admission stagger (plan D19): `leafStaggerMs`.
  * - Async Text join (S2-D28 / S2-D29): `joinRebroadcastDelayMs`,
- *   `welcomeFetchStep`, `ownAddedEntry`, `welcomeDue`, `storedJoinRequests`.
+ *   `welcomeFetchStep`, `ownAddedEntry`, `welcomeDue`, `welcomePending`,
+ *   `joinEventResetAllowed`, `storedJoinRequests`, `admitRefusalKey`,
+ *   `admitRefusedByNative`, `coalescedRefreshReason`.
  *
  * Fail-closed rules this module holds everywhere:
  * - An answer whose outcome is unknown (transport error, lost response, 5xx)
@@ -1624,6 +1626,42 @@ export function welcomeDue(
   return added !== null && fromEpoch !== null && added.epoch >= fromEpoch;
 }
 
+/**
+ * S2-D29 (FX-J2 NEW-1): that Add still owes its ONE stored-Welcome path: a
+ * Welcome is due for it and `done` (the last Add whose path ran) is not it.
+ * Once the path ran, whatever it gave, the Add is done: the joiner
+ * re-broadcasts its intent on the backoff and never fetches it again.
+ */
+export function welcomePending(
+  added: { key: string; epoch: number } | null,
+  fromEpoch: number | null,
+  done: string | null,
+): boolean {
+  return added !== null && welcomeDue(added, fromEpoch) && done !== added.key;
+}
+
+/**
+ * FX-J2 NEW-2: a `ProtectedChannelChanged` restarts the join backoff at
+ * most once per this window (the backoff cap), so a busy or hostile server
+ * cannot hold the joiner at the first step. An open (a user action) always
+ * restarts it.
+ */
+export const JOIN_EVENT_RESET_GAP_MS = JOIN_REBROADCAST.capMs;
+
+/**
+ * FX-J2 NEW-2: whether an event may restart the join backoff now, given
+ * when the last one did (null: never). A clock that is not finite or ran
+ * backwards refuses (the slower pace, never a storm).
+ */
+export function joinEventResetAllowed(
+  lastAtMs: number | null,
+  nowMs: number,
+): boolean {
+  if (lastAtMs === null) return true;
+  if (!Number.isFinite(lastAtMs) || !Number.isFinite(nowMs)) return false;
+  return nowMs - lastAtMs >= JOIN_EVENT_RESET_GAP_MS;
+}
+
 /** S2-D28: refreshes on which members admit from stored `join_requests`. */
 export const STORED_ADMIT_REASONS: readonly TextRefreshReason[] = [
   "open",
@@ -1632,6 +1670,76 @@ export const STORED_ADMIT_REASONS: readonly TextRefreshReason[] = [
   "event",
   "manual",
 ];
+
+/**
+ * FX-J2 NEW-5: what a refresh does for each reason, strongest first. An
+ * open admits from stored intents and retries a capacity-refused join; the
+ * other stored-admit reasons admit; "start" admits but joins only a group
+ * native has left; the rest do not admit.
+ */
+const REFRESH_REASON_RANK: Record<TextRefreshReason, number> = {
+  open: 4,
+  interval: 3,
+  event: 3,
+  manual: 3,
+  start: 2,
+  commit: 1,
+  resecuring: 1,
+  owner_confirmed: 1,
+  send_refused: 1,
+};
+
+/**
+ * FX-J2 NEW-5: the reason of a refresh pass that also serves a coalesced
+ * call: the stronger of the two (`REFRESH_REASON_RANK`), `held` on a tie.
+ * A stored-admit reason always wins over one that does not admit, so a
+ * reconnect refresh is never absorbed by a running commit refresh.
+ */
+export function coalescedRefreshReason(
+  held: TextRefreshReason,
+  incoming: TextRefreshReason,
+): TextRefreshReason {
+  const h = REFRESH_REASON_RANK[held] ?? 0;
+  const i = REFRESH_REASON_RANK[incoming] ?? 0;
+  return i > h ? incoming : held;
+}
+
+/**
+ * FX-J2 NEW-3: refused stored admissions remembered per session, oldest
+ * forgotten first past this many (a later sweep may then claim one again).
+ */
+export const ADMIT_REFUSED_CAP = 1024;
+
+/**
+ * FX-J2 NEW-3: the identity of one join request for the negative cache:
+ * its group, device and KeyPackage ref. A re-broadcast mints a new
+ * KeyPackage, so a new ref is a new request.
+ */
+export function admitRefusalKey(req: MlsJoinRequest): string {
+  return JSON.stringify([req.group_id, req.device_id, req.key_package_ref]);
+}
+
+/** Native answers to `_admit` that say nothing about the request itself. */
+const ADMIT_TRANSIENT_TAGS: readonly string[] = [
+  "busy",
+  "storage",
+  "protector",
+  "protector_locked",
+  "identity_pin_required",
+];
+
+/**
+ * FX-J2 NEW-3: native `_admit` refused the request (a native error that is
+ * not transient: lock contention, storage, the protector, a missing pin).
+ * A server, transport or client failure is never a native refusal.
+ */
+export function admitRefusedByNative(err: unknown): boolean {
+  if (isRecord(err) && "source" in err && err.source !== "native") {
+    return false;
+  }
+  const type = nativeTypeOf(err);
+  return type !== null && !ADMIT_TRANSIENT_TAGS.includes(type);
+}
 
 /** One stored intent, as the live `MlsJoinRequested` handler takes it. */
 export interface StoredJoinRequest {

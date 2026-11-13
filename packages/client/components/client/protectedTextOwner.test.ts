@@ -2475,3 +2475,94 @@ test("FXR NIT: a resumed publish carries the caller's reason only when it is a p
     assert.deepEqual(p[1].headers, REASON, `${label}: its own list`);
   }
 });
+
+// ---------------------------------------------------------------------------
+// S2-W4 fix lane FX-J2 (re-review NEW-4): a stored recovery entry no PUT
+// of which went out can be discarded (F3), so it never blocks this device's
+// owner flows for good. Tests named "FXJ2 ..." are the targets of
+// /home/mcp/pc-logs/s2/w4/ctl/FXJ2.
+// ---------------------------------------------------------------------------
+
+test("FXJ2 NEW-4: a recovery entry still unsent is offered for discard and discarded, signing and sending nothing, and the owner flows run again; one whose PUTs were all 429 or that may be on the server stays hidden and kept, and resumes the same bytes", async () => {
+  const key = publishStoreKey(ME, CH);
+  const entry = (answer: string) =>
+    JSON.stringify({
+      v: 1,
+      op: "seats",
+      signed: recV3,
+      recovery: true,
+      answer,
+    });
+  const v3 = genesis({ version: 3, body: "body-v3", signature: "S3" });
+
+  // (a) Signed and stored, no PUT went out (the successor step failed).
+  _resetOwnerFlowsForTest();
+  const h = harness({
+    routes: listRoutes(lostV2, v3, [res(200)]),
+    invoke: seatNative(v3),
+  });
+  h.store.set(key, entry("unsent"));
+  await assert.rejects(setSeats(h.ops, h.port, CH, [ME, BOB], 5), {
+    reason: "publish_in_flight",
+  });
+  assert.deepEqual(pendingSeats(h.port, CH), {
+    kind: "seats",
+    reasonRequired: false,
+    discardable: true,
+  });
+  assert.deepEqual(cancelPendingSeats(h.port, CH), { discarded: true });
+  assert.equal(h.store.size, 0);
+  assert.equal(signArgs(h).length, 0, "the discard signs nothing");
+  assert.equal(puts(h).length, 0, "and sends nothing");
+  assert.equal(pendingSeats(h.port, CH), null);
+  await setSeats(h.ops, h.port, CH, [ME, BOB], 5);
+  assert.equal(puts(h).length, 1, "the owner flows run again");
+  assert.equal((puts(h)[0].body as { body: string }).body, "body-v3");
+
+  // (b) Every PUT of it a 429 (planner ruling): maybe-accepted like a
+  // 429-only plain publish. Hidden, kept, never discarded; the next
+  // recovery re-sends the SAME bytes (no fresh signature for the version).
+  // `sleepRejectsAfter` (here and in c): a loop that ignored the budget
+  // ends as "aborted" (this test fails) instead of spinning.
+  _resetOwnerFlowsForTest();
+  const h2 = recoveryHarness([res(429)], 20);
+  const first = recoveryPlan(h2, { retryBudget: 1 });
+  await assert.rejects(recoverOwnership(h2.ops, h2.port, CH, first.plan));
+  assert.equal(puts(h2).length, 2);
+  const limited = h2.store.get(key);
+  assert.equal(JSON.parse(limited ?? "null")?.answer, "refused");
+  assert.equal(pendingSeats(h2.port, CH), null);
+  assert.deepEqual(cancelPendingSeats(h2.port, CH), {
+    discarded: false,
+    why: "none",
+  });
+  assert.equal(h2.store.get(key), limited, "kept");
+  _resetOwnerFlowsForTest();
+  const h2b = recoveryHarness([res(200)]);
+  h2b.store.set(key, limited ?? "");
+  const again = recoveryPlan(h2b);
+  await recoverOwnership(h2b.ops, h2b.port, CH, again.plan);
+  assert.equal(again.seen.signs, 0, "no fresh signature");
+  assert.deepEqual(puts(h2b)[0].body, puts(h2)[0].body, "SAME bytes");
+  assert.equal(h2b.store.size, 0);
+
+  // (c) A PUT that may have landed (503): hidden, kept for
+  // `recoverOwnership`, never discarded.
+  _resetOwnerFlowsForTest();
+  const h3 = recoveryHarness([res(503)], 20);
+  const third = recoveryPlan(h3, { retryBudget: 1 });
+  await assert.rejects(recoverOwnership(h3.ops, h3.port, CH, third.plan));
+  const kept = h3.store.get(key);
+  assert.equal(JSON.parse(kept ?? "null")?.answer, "sent");
+  assert.equal(pendingSeats(h3.port, CH), null);
+  assert.deepEqual(cancelPendingSeats(h3.port, CH), {
+    discarded: false,
+    why: "none",
+  });
+  assert.equal(h3.store.get(key), kept);
+  for (const answer of ["sent", "unknown"]) {
+    h3.store.set(key, entry(answer));
+    assert.equal(pendingSeats(h3.port, CH), null, answer);
+    assert.equal(cancelPendingSeats(h3.port, CH).discarded, false, answer);
+  }
+});

@@ -69,14 +69,19 @@ import {
   type SubmitAction,
   type SubmitContext,
   type TextEnvelopeVerdict,
+  ADMIT_REFUSED_CAP,
+  admitRefusalKey,
+  admitRefusedByNative,
   classifySendAnswer,
   classifySubmit,
   classifyTextEnvelopeError,
+  coalescedRefreshReason,
   errorTypeOf,
   holdsCurrentGroup,
   isCatchUpDesync,
   isProtectorError,
   JOIN_RETRIES,
+  joinEventResetAllowed,
   joinRebroadcastDelayMs,
   joinRefusal,
   leafStaggerMs,
@@ -91,8 +96,8 @@ import {
   STORED_ADMIT_REASONS,
   storedJoinRequests,
   WELCOME_FETCH_AFTER_MS,
-  welcomeDue,
   welcomeFetchStep,
+  welcomePending,
 } from "./protectedTextPolicy.ts";
 import type {
   CancelPendingSeatsResult,
@@ -592,8 +597,16 @@ interface JoinState {
   backoff: number;
 }
 
-/** What the S2-D29 stored-Welcome path did. */
-type StoredWelcomeResult = "joined" | "rejoin" | "processed" | "unavailable";
+/**
+ * What the S2-D29 stored-Welcome path did. "held": native was busy and the
+ * synthetic Welcome is never retried by `#hold`.
+ */
+type StoredWelcomeResult =
+  | "joined"
+  | "rejoin"
+  | "processed"
+  | "held"
+  | "unavailable";
 
 /** A sticky loud `groupError` (W4d X#1) and the group it poisoned. */
 interface StickyGroupError {
@@ -631,6 +644,8 @@ interface ChannelRec {
   joinFromEpoch: number | null;
   refreshing: Promise<void> | null;
   refreshAgain: boolean;
+  /** FX-J2 NEW-5: the strongest reason of the calls coalesced meanwhile. */
+  refreshAgainReason: TextRefreshReason | null;
   removalInFlight: boolean;
   /** The in-flight Update; later callers await it (W4b audit M1). */
   updating: Promise<void> | null;
@@ -664,11 +679,13 @@ interface ChannelRec {
   manualPending: boolean;
   /**
    * S2-D29: the `member_added` observation (`ownAddedEntry().key`) whose
-   * stored Welcome path is finished: native processed the fetched Welcome,
-   * or its 404 sent the ONE rejoin intent. While the server still shows
-   * that Add the join only waits (never a second rejoin for it).
+   * ONE stored-Welcome path ran (a 404, a Welcome native processed without
+   * a join, a busy hold, or nothing usable). That Add is never fetched
+   * again; the join re-broadcasts its intent on the backoff (FX-J2 NEW-1).
    */
   welcomeDone: string | null;
+  /** FX-J2 NEW-2: when an event last restarted the join backoff. */
+  joinEventResetAtMs: number | null;
   /** S2-D29: the stored-Welcome fetch in flight (one per channel). */
   welcomeFetch: Promise<StoredWelcomeResult> | null;
   /** S2-D28: the admission pass over stored `join_requests` in flight. */
@@ -703,6 +720,12 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
   readonly #queued = new Set<string>();
   readonly #holds = new Map<string, number>();
   readonly #admitting = new Set<string>();
+  /**
+   * FX-J2 NEW-3: join requests native `_admit` refused this session
+   * (`admitRefusalKey`), insertion-ordered. The stored-intent sweep never
+   * claims for them again (each claim burns a KeyPackage of the target).
+   */
+  readonly #admitRefused = new Set<string>();
   /** In-flight decrypts keyed by `id:live` (W4b audit L2). */
   readonly #decrypting = new Set<string>();
   /** Final message views (cache restore re-requests re-emit these). */
@@ -891,7 +914,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     // Opening is the manual retry of a stalled join (design 9.1 6d); the
     // re-broadcast backoff restarts with it (S2-D28).
     rec.welcomeRetriesExhausted = false;
-    this.#resetJoinBackoff(rec);
+    this.#resetJoinBackoff(rec, "open");
     await this.refresh(channelId, "open");
   }
 
@@ -1185,8 +1208,9 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         } finally {
           rec.changePending = false;
         }
-        // S2-D28: a change restarts the re-broadcast backoff (once a burst).
-        this.#resetJoinBackoff(rec);
+        // S2-D28: a change restarts the re-broadcast backoff (once a burst,
+        // and at most once per JOIN_EVENT_RESET_GAP_MS: FX-J2 NEW-2).
+        this.#resetJoinBackoff(rec, "event");
         await this.refresh(channelId, "event");
       })(),
     );
@@ -1574,24 +1598,37 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     if (!ok) throw clientFailure("catch_up_incomplete");
   }
 
-  /** D8 refresh; concurrent calls coalesce. Never rejects (logs). */
+  /**
+   * D8 refresh; concurrent calls coalesce. Never rejects (logs). FX-J2
+   * NEW-5: the pass re-run for coalesced calls takes the strongest reason
+   * seen (`coalescedRefreshReason`), so a stored-admit reason is never
+   * absorbed by a running pass that does not admit.
+   */
   refresh(channelId: string, reason: TextRefreshReason): Promise<void> {
     return this.#register(channelId).then((rec) => {
       if (rec.refreshing) {
         rec.refreshAgain = true;
+        rec.refreshAgainReason =
+          rec.refreshAgainReason === null
+            ? reason
+            : coalescedRefreshReason(rec.refreshAgainReason, reason);
         return rec.refreshing;
       }
+      let pass = reason;
       const run = (async () => {
         try {
-          do {
+          for (;;) {
             rec.refreshAgain = false;
-            await this.#refreshOnce(rec, reason);
-          } while (rec.refreshAgain && !this.#disposed);
+            rec.refreshAgainReason = null;
+            await this.#refreshOnce(rec, pass);
+            if (!rec.refreshAgain || this.#disposed) break;
+            pass = coalescedRefreshReason(pass, rec.refreshAgainReason ?? pass);
+          }
         } catch (err) {
           if (!isDisposed(err)) {
             this.#log("warn", "refresh failed", {
               channelId,
-              reason,
+              reason: pass,
               type: viewTagOf(err),
             });
           }
@@ -2353,9 +2390,22 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         count: dropped,
       });
     }
-    if (requests.length === 0) return;
+    // FX-J2 NEW-3: a request native refused this session is never claimed
+    // for again from the stored list (a live intent with a new
+    // KeyPackage ref is a new request).
+    const fresh = requests.filter(
+      ({ request }) => !this.#admitRefused.has(admitRefusalKey(request)),
+    );
+    if (fresh.length < requests.length) {
+      this.#log("debug", "refused stored join requests skipped", {
+        channelId: rec.id,
+        groupId: g.group_id,
+        count: requests.length - fresh.length,
+      });
+    }
+    if (fresh.length === 0) return;
     const run = (async () => {
-      for (const { request, rejoin } of requests) {
+      for (const { request, rejoin } of fresh) {
         if (this.#disposed) return;
         await this.#admit(request, rejoin);
       }
@@ -2521,6 +2571,9 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     // publish failures (a server failure, bounded; never silence).
     let sent = 0;
     let unpublishedRuns = 0;
+    // FX-J2 NEW-2: a Welcome path ran since the last intent. A newer Add
+    // right behind it waits a backoff step first (no fetch per refresh).
+    let pathRan = false;
     const self = this.#port.selfUserId;
     const dev = this.#port.selfDeviceId;
     for (;;) {
@@ -2529,37 +2582,40 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       // W4d X#6 / S2-D29, before EVERY `_join`: re-Added at/after our last
       // intent means a Welcome is due, and another intent would read as a
       // rejoin and evict that fresh leaf. Wait for it, then fetch the
-      // stored one (`#welcomeDue`); only its 404 sends ONE rejoin intent
-      // for that Add. While the server still shows an Add whose path is
-      // done, the join only waits.
+      // stored one (`#welcomeDue`): ONE path per Add. FX-J2 NEW-1: short of
+      // a join (a 404, a Welcome native processed without a join, e.g. a
+      // `signer_leaf_missing` counted toward 6c, a busy hold, nothing
+      // usable) the Add is done and the intent is re-broadcast on the
+      // backoff below; that Add is never fetched again.
       const added = ownAddedEntry(g, self, dev);
-      const due = welcomeDue(added, rec.joinFromEpoch);
-      let rejoin = false;
-      if (added !== null && due && rec.welcomeDone !== added.key) {
-        const step = await this.#welcomeDue(rec, js, g.group_id);
-        if (step === "joined" || js.cancelled) return;
-        if (step === "rejoin" || step === "processed") {
+      if (
+        added !== null &&
+        welcomePending(added, rec.joinFromEpoch, rec.welcomeDone)
+      ) {
+        if (pathRan) {
+          pathRan = false;
+          if (await this.#joinWait(js, joinRebroadcastDelayMs(js.backoff++))) {
+            return;
+          }
+        } else {
+          const step = await this.#welcomeDue(rec, js, g.group_id);
+          if (step === "joined" || js.cancelled) return;
           rec.welcomeDone = added.key;
-        }
-        rejoin = step === "rejoin";
-      }
-      if (!rejoin && added !== null && (due || rec.welcomeDone === added.key)) {
-        this.#markJoinStalled(rec);
-        if (await this.#joinWait(js, joinRebroadcastDelayMs(js.backoff++))) {
-          return;
+          pathRan = true;
+          this.#log("info", "stored welcome path done: rejoin intent", {
+            channelId: rec.id,
+            groupId: g.group_id,
+            why: step,
+          });
         }
         if (js.cancelled) return;
+        // A held group or a verified failure (the 6c budget) ends it here.
         const next = await this.#joinRecheck(rec);
         if (next === null) return;
         g = next;
         continue;
       }
-      if (rejoin) {
-        this.#log("info", "stored welcome missing: rejoin intent", {
-          channelId: rec.id,
-          groupId: g.group_id,
-        });
-      }
+      pathRan = false;
       rec.joinFromEpoch = g.current_epoch;
       // Every attempt is a fresh `_join`: native mints a new one-time
       // KeyPackage per intent (W3 2026-10-25).
@@ -2648,10 +2704,14 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       if (next === null) return;
       g = next;
       // design 7.2 member_added: a re-Add at/after our intent is handled at
-      // the top of the loop (wait for the Welcome, never another intent).
+      // the top of the loop (its ONE Welcome path, then the re-broadcast).
       if (
         sent > JOIN_RETRIES &&
-        !welcomeDue(ownAddedEntry(g, self, dev), rec.joinFromEpoch)
+        !welcomePending(
+          ownAddedEntry(g, self, dev),
+          rec.joinFromEpoch,
+          rec.welcomeDone,
+        )
       ) {
         this.#markJoinStalled(rec);
       }
@@ -2701,11 +2761,18 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
   /**
    * S2-D28 (open, `ProtectedChannelChanged`): the backoff restarts at its
    * first step, and a pending join wait ends at most that step from now.
-   * Never an extra intent at once (an open joins the running join).
+   * Never an extra intent at once (an open joins the running join). FX-J2
+   * NEW-2: an event restarts it at most once per `JOIN_EVENT_RESET_GAP_MS`
+   * (`joinEventResetAllowed`); an open always does.
    */
-  #resetJoinBackoff(rec: ChannelRec): void {
+  #resetJoinBackoff(rec: ChannelRec, why: "open" | "event"): void {
     const js = rec.join;
     if (!js) return;
+    if (why === "event") {
+      const now = this.#port.now();
+      if (!joinEventResetAllowed(rec.joinEventResetAtMs, now)) return;
+      rec.joinEventResetAtMs = now;
+    }
     js.backoff = 0;
     if (js.wait) {
       js.reset = true;
@@ -2863,15 +2930,17 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       epoch: w.epoch,
       ciphertext: w.welcome,
     };
+    let held = false;
     await this.#enqueue(rec.id, async () => {
       const n = await this.#readStateDirect(rec);
       if (n && holdsCurrentGroup(n) && n.group_id === w.group_id) return;
-      await this.#processWire(rec, wire, 0);
+      held = (await this.#processWire(rec, wire, 0)) === "held";
     });
     const n = rec.native;
-    return n && holdsCurrentGroup(n) && n.group_id === w.group_id
-      ? "joined"
-      : "processed";
+    if (n && holdsCurrentGroup(n) && n.group_id === w.group_id) {
+      return "joined";
+    }
+    return held ? "held" : "processed";
   }
 
   /**
@@ -3001,8 +3070,21 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
           await this.#pinFor(native.user_id, [native.device_id]);
           continue;
         }
+        if (admitRefusedByNative(err)) this.#noteAdmitRefused(request);
         throw err;
       }
+    }
+  }
+
+  /** FX-J2 NEW-3: remember a refused request (bounded, oldest first out). */
+  #noteAdmitRefused(request: MlsJoinRequest): void {
+    const key = admitRefusalKey(request);
+    this.#admitRefused.delete(key);
+    this.#admitRefused.add(key);
+    while (this.#admitRefused.size > ADMIT_REFUSED_CAP) {
+      const oldest = this.#admitRefused.values().next().value;
+      if (oldest === undefined) break;
+      this.#admitRefused.delete(oldest);
     }
   }
 
@@ -4143,6 +4225,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         joinFromEpoch: null,
         refreshing: null,
         refreshAgain: false,
+        refreshAgainReason: null,
         removalInFlight: false,
         updating: null,
         successorInFlight: false,
@@ -4157,6 +4240,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         changePending: false,
         manualPending: false,
         welcomeDone: null,
+        joinEventResetAtMs: null,
         welcomeFetch: null,
         storedAdmit: null,
       };

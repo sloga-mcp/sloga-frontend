@@ -1476,12 +1476,17 @@ export async function recoverOwnership(
  * entry alone: `answer` is `"refused"` (every PUT of these bytes was
  * refused without a write, see `StoredPublish.answer`) and the entry is one
  * the owner may abandon: refused for its reason header (`reasonRequired`)
- * or an owner-devices publish. Anything else, a pre-F3 entry without
- * `answer` included, may be on the server and is never dropped.
+ * or an owner-devices publish. FX-J2 NEW-4 (planner ruling): a recovery
+ * publish only while `"unsent"` (no PUT of it went out: the write-ahead
+ * records `"sent"` before every PUT); one whose PUTs were all answered 429
+ * stays maybe-accepted, so a later recovery never signs fresh bytes for
+ * that version. Anything else, a pre-F3 entry without `answer` included,
+ * may be on the server and is never dropped.
  */
 function neverAccepted(e: StoredPublish): boolean {
+  if (e.op !== "seats") return false;
+  if (e.recovery === true) return e.answer === "unsent";
   return (
-    e.op === "seats" &&
     e.answer === "refused" &&
     (e.reasonRequired === true || e.ownerDevices === true)
   );
@@ -1489,14 +1494,16 @@ function neverAccepted(e: StoredPublish): boolean {
 
 /**
  * The stored seat publish of a channel, or null (none, protect, corrupt).
- * FX-R: a recovery publish is not a pending seat change either: only
- * `recoverOwnership` resumes it, and F3 never discards it.
+ * FX-R: a recovery publish is not a pending seat change: only
+ * `recoverOwnership` resumes it. FX-J2 NEW-4: except while no PUT of it
+ * went out (`neverAccepted`: still `"unsent"`): then F3 may discard it, so
+ * a recovery entry no other owner flow may send never blocks this device
+ * for good. Discarding signs nothing; a later recovery is a new decision.
  */
 function storedSeats(at: StoreAt): StoredPublish | null {
   const e = readStored(at);
-  return e === null || e === "corrupt" || e.op !== "seats" || e.recovery
-    ? null
-    : e;
+  if (e === null || e === "corrupt" || e.op !== "seats") return null;
+  return e.recovery === true && !neverAccepted(e) ? null : e;
 }
 
 /**
