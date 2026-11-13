@@ -27,6 +27,9 @@
  *   `welcomeFetchStep`, `ownAddedEntry`, `welcomeDue`, `welcomePending`,
  *   `joinEventResetAllowed`, `storedJoinRequests`, `admitRefusalKey`,
  *   `admitRefusedByNative`, `coalescedRefreshReason`.
+ * - The 6c budget's binding (S2 final audit FXF): `leafMissingSigner`,
+ *   `leafMissingApplies`, `leafMissingSpent`; a Welcome parked behind an
+ *   owner change: `welcomeParkedFor`, `parkedReplay`.
  *
  * Fail-closed rules this module holds everywhere:
  * - An answer whose outcome is unknown (transport error, lost response, 5xx)
@@ -1818,4 +1821,106 @@ function storedJoinRequest(
     request[key] = x;
   }
   return { request, rejoin };
+}
+
+// ---------------------------------------------------------------------------
+// S2 final audit FXF: the 6c budget's binding; a parked Welcome
+// ---------------------------------------------------------------------------
+
+/**
+ * FXF: what the 6c `signer_leaf_missing` budget was spent on: the server
+ * group the discarded Welcomes named and the list signer this device held
+ * then (`leafMissingSigner`).
+ */
+export interface LeafMissingBinding {
+  groupId: string;
+  signer: string | null;
+}
+
+/** FXF: the signer of the list native holds (null: none held). */
+export function leafMissingSigner(n: TextChannelState | null): string | null {
+  const l = n?.seat_list ?? null;
+  return l === null
+    ? null
+    : JSON.stringify([l.signer_user_id, l.signer_device_id]);
+}
+
+/**
+ * FXF: a budget spent on `on` still applies to a join into `groupId` while
+ * this device holds a list from the same signer. A successor group (owner
+ * recovery, D21) or a list from another signer (an owner change confirmed,
+ * a recovery list adopted) is a new start: the old failures say nothing
+ * about it. Never a reset by time or by a refresh alone.
+ */
+export function leafMissingApplies(
+  on: LeafMissingBinding | null,
+  groupId: string,
+  signer: string | null,
+): boolean {
+  return on !== null && on.groupId === groupId && on.signer === signer;
+}
+
+/**
+ * FXF (9.1 6c): the verified failure that ends a join into `groupId`: the
+ * budget spent on that group under the signer held now. `!(x < budget)` so
+ * a non-finite count fails closed; a spent count with no binding (never
+ * written by the manager) fails closed too.
+ */
+export function leafMissingSpent(
+  count: number,
+  on: LeafMissingBinding | null,
+  groupId: string,
+  signer: string | null,
+): boolean {
+  if (count < SIGNER_LEAF_MISSING_BUDGET) return false;
+  return on === null || leafMissingApplies(on, groupId, signer);
+}
+
+/** The fields of a parked envelope the FXF rules read. */
+interface ParkedEnvelope {
+  content_type: string;
+  group_id: string;
+  epoch: number;
+}
+
+/**
+ * FXF: a Welcome for `groupId` waits in the owner-change queue (D15). The
+ * Add it answers is pending: the joiner neither re-broadcasts nor rejoins
+ * (each would evict and re-add this device) until the confirm resolves it
+ * or the server's group moves on.
+ */
+export function welcomeParkedFor(
+  parked: readonly ParkedEnvelope[],
+  groupId: string,
+): boolean {
+  return parked.some(
+    (p) => p.content_type === "mls_welcome" && p.group_id === groupId,
+  );
+}
+
+/**
+ * FXF: what a confirmed owner change replays, in arrival order. Of the
+ * parked Welcomes only the latest for the server's current group
+ * (`currentGroupId`, null: none) is replayed (the highest epoch, the last
+ * of equal ones); every other is dropped, never replayed into a newer
+ * group. Every other envelope is replayed (native decides).
+ */
+export function parkedReplay<T extends ParkedEnvelope>(
+  parked: readonly T[],
+  currentGroupId: string | null,
+): { replay: T[]; dropped: T[] } {
+  let keep: T | null = null;
+  for (const p of parked) {
+    if (p.content_type !== "mls_welcome" || p.group_id !== currentGroupId) {
+      continue;
+    }
+    if (keep === null || p.epoch >= keep.epoch) keep = p;
+  }
+  const replay: T[] = [];
+  const dropped: T[] = [];
+  for (const p of parked) {
+    if (p.content_type === "mls_welcome" && p !== keep) dropped.push(p);
+    else replay.push(p);
+  }
+  return { replay, dropped };
 }

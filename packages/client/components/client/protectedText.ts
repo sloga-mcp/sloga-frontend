@@ -60,6 +60,7 @@ import {
 } from "./protectedShield.ts";
 import { TextIdIndex } from "./protectedTextIds.ts";
 import {
+  type LeafMissingBinding,
   type ProtectorAnswer,
   type ProtectorGate,
   type SendAction,
@@ -84,19 +85,23 @@ import {
   joinEventResetAllowed,
   joinRebroadcastDelayMs,
   joinRefusal,
+  leafMissingApplies,
+  leafMissingSigner,
+  leafMissingSpent,
   leafStaggerMs,
   ownAddedEntry,
+  parkedReplay,
   PROTECTOR_GATE_OPEN,
   protectorGateAfter,
   protectorGateStep,
   publishBackoffMs,
   REFRESH_INTERVAL_MS,
   retryAfterMs,
-  SIGNER_LEAF_MISSING_BUDGET,
   STORED_ADMIT_REASONS,
   storedJoinRequests,
   WELCOME_FETCH_AFTER_MS,
   welcomeFetchStep,
+  welcomeParkedFor,
   welcomePending,
 } from "./protectedTextPolicy.ts";
 import type {
@@ -599,13 +604,15 @@ interface JoinState {
 
 /**
  * What the S2-D29 stored-Welcome path did. "held": native was busy and the
- * synthetic Welcome is never retried by `#hold`.
+ * synthetic Welcome is never retried by `#hold`. "parked" (FXF): it waits
+ * behind an owner change (D15), never "processed".
  */
 type StoredWelcomeResult =
   | "joined"
   | "rejoin"
   | "processed"
   | "held"
+  | "parked"
   | "unavailable";
 
 /** A sticky loud `groupError` (W4d X#1) and the group it poisoned. */
@@ -629,6 +636,11 @@ interface ChannelRec {
   seats: ProtectedSeatsResponse | null;
   rosterMismatchSinceMs: number | null;
   signerLeafMissingRetries: number;
+  /**
+   * FXF: the group and held signer `signerLeafMissingRetries` counts for
+   * (null: nothing counted). Another server group or signer resets it.
+   */
+  signerLeafMissingOn: LeafMissingBinding | null;
   welcomeRetriesExhausted: boolean;
   ownerChangePending: boolean;
   recreateAvailable: boolean;
@@ -912,8 +924,10 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       this.#background(this.#intervalLoop(rec, ctl.signal));
     }
     // Opening is the manual retry of a stalled join (design 9.1 6d); the
-    // re-broadcast backoff restarts with it (S2-D28).
+    // re-broadcast backoff restarts with it (S2-D28). FXF: so is the 6c
+    // red ("try opening the channel again"): its budget starts over.
     rec.welcomeRetriesExhausted = false;
+    this.#resetLeafMissing(rec, "open");
     this.#resetJoinBackoff(rec, "open");
     await this.refresh(channelId, "open");
   }
@@ -1224,12 +1238,15 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
    * (that refresh re-reads the same state). Never a security input: a
    * refresh only re-reads server state and lets the existing flows act. A
    * "manual" refresh is not an open: it neither retries a capacity-refused
-   * join (f) nor resets the Welcome retry budget.
+   * join (f) nor resets the Welcome retry budget. FXF: it is a user's
+   * retry, so the 6c budget starts over (the refresh then joins again); a
+   * dropped call resets nothing.
    */
   retryNow(channelId: string): void {
     if (this.#disposed) return;
     const rec = this.#channels.get(channelId);
     if (!rec || rec.refreshing || rec.manualPending) return;
+    this.#resetLeafMissing(rec, "manual");
     rec.manualPending = true;
     this.#background(
       this.refresh(channelId, "manual").finally(() => {
@@ -1664,10 +1681,23 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     rec.ownerChangePending = false;
     // OR-10: the next verify tells whether this confirm settled it.
     rec.confirmedSigner = signer?.same_user === true ? signer.device_id : null;
-    // D15: re-run GET .../seats + _seat_list_verify, then reprocess.
+    // D15: re-run GET .../seats + _seat_list_verify, then reprocess. FXF:
+    // of the parked Welcomes only the latest for the server's current
+    // group is; the rest are acked and dropped, never replayed.
     await this.refresh(channelId, "owner_confirmed");
-    const parked = rec.parked.splice(0);
+    const { replay: parked, dropped } = parkedReplay(
+      rec.parked.splice(0),
+      rec.serverGroup?.group_id ?? null,
+    );
     await this.#enqueue(rec.id, async () => {
+      if (dropped.length > 0) {
+        this.#log("info", "stale parked welcomes dropped", {
+          channelId: rec.id,
+          count: dropped.length,
+        });
+        await this.#ack(dropped.map((p) => p.id));
+        for (const p of dropped) this.#markSeen(p.id);
+      }
       for (let i = 0; i < parked.length; i++) {
         const r = await this.#processWire(rec, parked[i], 0);
         if (r === "parked") {
@@ -1677,6 +1707,8 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         }
       }
     });
+    // FXF: a join waiting on a parked Welcome looks again within a step.
+    this.#resetJoinBackoff(rec, "confirm");
     this.#emit(rec);
   }
 
@@ -1687,7 +1719,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     await this.createGroup(channelId, supersedes);
     rec.welcomeRetriesExhausted = false;
     rec.recreateAvailable = false;
-    rec.signerLeafMissingRetries = 0;
+    this.#resetLeafMissing(rec, "recreate");
     this.#emit(rec);
   }
 
@@ -1907,6 +1939,11 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         return "dropped";
       case "signer_leaf_missing_retry":
         // The joiner discards the Welcome; its join loop retries the intent.
+        // FXF: counted only toward the budget of that Welcome's group, the
+        // server's current one, under the list signer held now.
+        if (rec && !this.#bindLeafMissing(rec, wire.group_id)) {
+          return "dropped";
+        }
         if (rec) {
           rec.signerLeafMissingRetries += 1;
           this.#emit(rec);
@@ -2015,7 +2052,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       });
     }
     if (out.kind === "welcome_joined") {
-      rec.signerLeafMissingRetries = 0;
+      this.#resetLeafMissing(rec, "joined");
       rec.welcomeRetriesExhausted = false;
       rec.recreateAvailable = false;
       // (f) Joined: a recorded capacity refusal is over.
@@ -2579,6 +2616,20 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     for (;;) {
       if (js.cancelled) return;
       this.#checkAlive();
+      // FXF: a Welcome for the server's group waits, parked, for the
+      // owner-change confirm (D15). Its Add is pending: no re-broadcast and
+      // no rejoin (members would evict and re-add this device each time)
+      // until the confirm resolves it or the server's group moves on.
+      if (welcomeParkedFor(rec.parked, g.group_id)) {
+        if (await this.#joinWait(js, joinRebroadcastDelayMs(js.backoff++))) {
+          return;
+        }
+        if (js.cancelled) return;
+        const next = await this.#joinRecheck(rec);
+        if (next === null) return;
+        g = next;
+        continue;
+      }
       // W4d X#6 / S2-D29, before EVERY `_join`: re-Added at/after our last
       // intent means a Welcome is due, and another intent would read as a
       // rejoin and evict that fresh leaf. Wait for it, then fetch the
@@ -2602,11 +2653,15 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
           if (step === "joined" || js.cancelled) return;
           rec.welcomeDone = added.key;
           pathRan = true;
-          this.#log("info", "stored welcome path done: rejoin intent", {
-            channelId: rec.id,
-            groupId: g.group_id,
-            why: step,
-          });
+          // FXF: a parked Welcome is that Add's path too; the wait above
+          // holds the rejoin until the confirm resolves it.
+          this.#log(
+            "info",
+            step === "parked"
+              ? "stored welcome parked: join waits for the owner change"
+              : "stored welcome path done: rejoin intent",
+            { channelId: rec.id, groupId: g.group_id, why: step },
+          );
         }
         if (js.cancelled) return;
         // A held group or a verified failure (the 6c budget) ends it here.
@@ -2763,9 +2818,10 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
    * first step, and a pending join wait ends at most that step from now.
    * Never an extra intent at once (an open joins the running join). FX-J2
    * NEW-2: an event restarts it at most once per `JOIN_EVENT_RESET_GAP_MS`
-   * (`joinEventResetAllowed`); an open always does.
+   * (`joinEventResetAllowed`); an open always does, and so does an owner
+   * change the user confirmed (FXF: a parked Welcome was replayed).
    */
-  #resetJoinBackoff(rec: ChannelRec, why: "open" | "event"): void {
+  #resetJoinBackoff(rec: ChannelRec, why: "open" | "event" | "confirm"): void {
     const js = rec.join;
     if (!js) return;
     if (why === "event") {
@@ -2824,14 +2880,76 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
   /**
    * S2-D28: a VERIFIED failure ends the join into `groupId` (and keeps a
    * refresh from restarting it): a sticky loud error recorded for that
-   * group (X#1), or the 6c `signer_leaf_missing` budget spent. A successor
-   * group is joined again; silence is never a failure.
+   * group (X#1), or the 6c `signer_leaf_missing` budget spent on that group
+   * under the list signer held now (`leafMissingSpent`). FXF: that budget
+   * starts over on a successor group, a list from another signer, an open
+   * or a `retryNow` (`#rebindLeafMissing`, `#resetLeafMissing`); never on
+   * a background refresh. Silence is never a failure.
    */
   #joinFailedVerified(rec: ChannelRec, groupId: string): boolean {
     return (
       rec.stickyGroupError?.groupId === groupId ||
-      !(rec.signerLeafMissingRetries < SIGNER_LEAF_MISSING_BUDGET)
+      leafMissingSpent(
+        rec.signerLeafMissingRetries,
+        rec.signerLeafMissingOn,
+        groupId,
+        leafMissingSigner(rec.native),
+      )
     );
+  }
+
+  /**
+   * FXF: the 6c budget starts over: a user's open or `retryNow`, a joined
+   * Welcome, a recreate, or (`#rebindLeafMissing`) a new group or signer.
+   */
+  #resetLeafMissing(rec: ChannelRec, why: string): void {
+    if (
+      rec.signerLeafMissingRetries === 0 &&
+      rec.signerLeafMissingOn === null
+    ) {
+      return;
+    }
+    rec.signerLeafMissingRetries = 0;
+    rec.signerLeafMissingOn = null;
+    this.#log("info", "join stall budget reset", { channelId: rec.id, why });
+  }
+
+  /**
+   * FXF: binds the 6c budget to a discarded Welcome for `groupId` before it
+   * is counted: a budget spent on another group or signer starts over.
+   * False (not counted) when the server's current group is known and is
+   * another one: that Welcome says nothing about the join.
+   */
+  #bindLeafMissing(rec: ChannelRec, groupId: string): boolean {
+    const current = rec.serverGroup?.group_id ?? null;
+    if (current !== null && current !== groupId) {
+      this.#log("info", "signer_leaf_missing for an old group not counted", {
+        channelId: rec.id,
+        groupId,
+      });
+      return false;
+    }
+    const signer = leafMissingSigner(rec.native);
+    if (!leafMissingApplies(rec.signerLeafMissingOn, groupId, signer)) {
+      this.#resetLeafMissing(rec, "rebound");
+    }
+    rec.signerLeafMissingOn = { groupId, signer };
+    return true;
+  }
+
+  /**
+   * FXF: the budget does not apply once the server names another current
+   * group (a successor: owner recovery, D21) or native holds a list from
+   * another signer (an owner change confirmed, a recovery list adopted).
+   * An unknown or absent server group keeps it. Runs before every view.
+   */
+  #rebindLeafMissing(rec: ChannelRec): void {
+    const on = rec.signerLeafMissingOn;
+    if (on === null) return;
+    const groupId = rec.serverGroup?.group_id ?? on.groupId;
+    if (!leafMissingApplies(on, groupId, leafMissingSigner(rec.native))) {
+      this.#resetLeafMissing(rec, "moved_on");
+    }
   }
 
   /**
@@ -2850,6 +2968,8 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     const n = rec.native;
     if (n && holdsCurrentGroup(n) && n.group_id === groupId) return "joined";
     if (rec.serverGroup?.group_id !== groupId) return "unavailable";
+    // FXF: a Welcome for this group already waits behind an owner change.
+    if (welcomeParkedFor(rec.parked, groupId)) return "parked";
     return this.#fetchStoredWelcome(rec, groupId);
   }
 
@@ -2910,7 +3030,8 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
    * `_process` decides exactly as for a mailbox Welcome, no other trust
    * path. Its synthetic id is never acked. Skipped when this device
    * already holds the group (a mailbox Welcome won the race; a second one
-   * would only be refused as unsolicited).
+   * would only be refused as unsolicited). FXF: one parked behind an owner
+   * change is "parked": its Add stays pending until the confirm.
    */
   async #processStoredWelcome(
     rec: ChannelRec,
@@ -2940,6 +3061,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     if (n && holdsCurrentGroup(n) && n.group_id === w.group_id) {
       return "joined";
     }
+    if (welcomeParkedFor(rec.parked, w.group_id)) return "parked";
     return held ? "held" : "processed";
   }
 
@@ -4213,6 +4335,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         seats: null,
         rosterMismatchSinceMs: null,
         signerLeafMissingRetries: 0,
+        signerLeafMissingOn: null,
         welcomeRetriesExhausted: false,
         ownerChangePending: false,
         recreateAvailable: false,
@@ -4441,6 +4564,8 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     ) {
       rec.ownerChangeUnlisted = null;
     }
+    // FXF: the 6c count shown is only ever the current group's.
+    this.#rebindLeafMissing(rec);
     this.#trackResecuring(rec);
     try {
       this.#cb.onView(rec.id, this.#view(rec));

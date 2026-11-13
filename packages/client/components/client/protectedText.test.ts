@@ -5375,3 +5375,450 @@ test("FXJ2 NEW-5: a stored-admit refresh that coalesces into a running commit re
   assert.deepEqual(claimedDevices(env), ["dev-new"], "the re-run admitted");
   m.dispose();
 });
+
+// ---------------------------------------------------------------------------
+// S2 final audit fix lane FXF (MAJOR: the 6c budget is bound to its group
+// and signer and starts over on an open or a retryNow; MINOR: a parked
+// Welcome keeps its Add pending). Tests named "FXF ..." are the targets of
+// /home/mcp/pc-logs/s2/w4/ctl/FXF.
+// ---------------------------------------------------------------------------
+
+const OWNER_DEV2 = "dev-owner-2";
+
+/** Native's D15 answer while a same-user signer change is unconfirmed. */
+const OWNER_CHANGED = {
+  type: "owner_changed",
+  channel_id: CH,
+  signer_user_id: OWNER,
+  signer_device_id: OWNER_DEV2,
+  same_user: true,
+  verified: true,
+};
+
+/**
+ * FXF: drives a joiner into the 9.1 6c red on G0 (the FXJ2 NEW-1 path:
+ * three fetched Welcomes discarded with `signer_leaf_missing`, as native
+ * step 8 answers when the list signer resolves to Revoked). A Welcome for
+ * any other group goes to `other`.
+ */
+async function reachSixC(env: Env, other?: Handlers["e2ee_text_process"]) {
+  let epoch = 4;
+  env.routes.push(
+    welcomeRoute(() => ok({ group_id: G0, epoch, welcome: "V0VM" })),
+  );
+  env.handlers.e2ee_text_process = (a) => {
+    if (a.envelope.group_id === G0) {
+      throw { type: "signer_leaf_missing", group_id: G0 };
+    }
+    if (other) return other(a);
+    env.states.set(
+      CH,
+      st({ group_id: G1, generation: 1, epoch: a.envelope.epoch }),
+    );
+    return outcome({
+      kind: "welcome_joined",
+      epoch: a.envelope.epoch,
+      group_id: a.envelope.group_id,
+    });
+  };
+  const m = make(env);
+  const p = endedOf(m.ensureJoined(CH));
+  await env.advance(0);
+  for (const e of [4, 6, 8]) {
+    epoch = e;
+    env.group = groupBody({ current_epoch: e, member_added: addedAt(e) });
+    await env.advance(5 * 60_000);
+  }
+  assert.equal(
+    env.views.get(CH)?.signerLeafMissingRetries,
+    SIGNER_LEAF_MISSING_BUDGET,
+  );
+  assert.deepEqual(p.err, { source: "client", reason: "join_failed" });
+  assert.equal(env.shield(), "unverified");
+  assert.equal(env.explain()?.notice, "join_stalled", "9.1 6c");
+  return m;
+}
+
+/** The group id each intent so far was posted to. */
+function intentGroups(env: Env) {
+  return env.api$("POST", /join_intent$/).map((c) => c.path.split("/")[3]);
+}
+
+test("FXF 6c: the verified red is bound to the group it was spent on: a successor group appears, the joiner leaves the red and joins it without a restart", async () => {
+  const env = joiningEnv();
+  const m = await reachSixC(env);
+  const before = intents(env);
+  // The owner recovered: the server names a successor (generation 1).
+  env.group = groupBody({
+    group_id: G1,
+    generation: 1,
+    current_epoch: 0,
+    members: [{ user_id: OWNER, device_id: OWNER_DEV }],
+  });
+  await m.refresh(CH, "interval");
+  await env.advance(0);
+  assert.equal(env.views.get(CH)?.signerLeafMissingRetries, 0, "reset");
+  assert.notEqual(env.explain()?.notice, "join_stalled");
+  assert.equal(intents(env), before + 1, "the successor is joined");
+  assert.equal(intentGroups(env).at(-1), G1);
+  m.onEnvelope(
+    envelope("W1", 1, { content_type: "mls_welcome", group_id: G1 }),
+  );
+  await env.advance(0);
+  assert.equal(env.views.get(CH)?.native?.group_id, G1);
+  assert.equal(env.views.get(CH)?.native?.state, "active");
+  assert.notEqual(env.shield(), "unverified");
+  m.dispose();
+});
+
+test("FXF 6c: a background refresh (the interval, ProtectedChannelChanged) keeps the verified red and sends nothing; reopening the channel starts the budget and the join over; three more failures on the same group are red again", async () => {
+  const env = joiningEnv();
+  const m = await reachSixC(env);
+  const before = intents(env);
+  await m.refresh(CH, "interval");
+  m.onChannelChanged(CH, ["seats", "text_group"]);
+  await env.advance(3_600_000);
+  assert.equal(intents(env), before, "no intent after the verified red");
+  assert.equal(
+    env.views.get(CH)?.signerLeafMissingRetries,
+    SIGNER_LEAF_MISSING_BUDGET,
+  );
+  assert.equal(env.explain()?.notice, "join_stalled", "still red");
+  // "Try opening the channel again": the open starts it over.
+  await m.open(CH);
+  await env.advance(0);
+  assert.equal(env.views.get(CH)?.signerLeafMissingRetries, 0);
+  assert.notEqual(env.explain()?.notice, "join_stalled");
+  assert.equal(intents(env), before + 1, "the join restarts");
+  assert.ok(
+    env.logs.some(
+      (l) =>
+        l.msg === "[protected] join stall budget reset" && l.ids.why === "open",
+    ),
+  );
+  // The red is still reachable on the same group (the 60 s interval runs).
+  for (const e of [10, 12, 14]) {
+    env.group = groupBody({ current_epoch: e, member_added: addedAt(e) });
+    await env.advance(5 * 60_000);
+  }
+  assert.equal(
+    env.views.get(CH)?.signerLeafMissingRetries,
+    SIGNER_LEAF_MISSING_BUDGET,
+  );
+  assert.equal(env.explain()?.notice, "join_stalled", "red again");
+  const after = intents(env);
+  await env.advance(3_600_000);
+  assert.equal(intents(env), after, "and it ends the join again");
+  m.dispose();
+});
+
+test("FXF 6c: a manual retry (retryNow) starts the budget and the join over after the verified red", async () => {
+  const env = joiningEnv();
+  const m = await reachSixC(env);
+  const before = intents(env);
+  m.retryNow(CH);
+  await env.advance(0);
+  assert.equal(env.views.get(CH)?.signerLeafMissingRetries, 0);
+  assert.notEqual(env.explain()?.notice, "join_stalled");
+  assert.equal(intents(env), before + 1, "the join restarts");
+  assert.equal(intentGroups(env).at(-1), G0);
+  assert.ok(
+    env.logs.some(
+      (l) =>
+        l.msg === "[protected] join stall budget reset" &&
+        l.ids.why === "manual",
+    ),
+  );
+  m.dispose();
+});
+
+test("FXF 6c (S2-D17d): the list signer is revoked and the joiner goes red; the owner recovers (a successor group, a list from the new signer device); the owner change is confirmed; the joiner joins without a restart and never re-broadcasts while the Welcome waits for the confirm", async () => {
+  const env = joiningEnv();
+  let confirmed = false;
+  const newList = {
+    ...st().seat_list!,
+    version: 2,
+    signer_device_id: OWNER_DEV2,
+  };
+  // Simulated native: a G1 Welcome parks (D15) until the confirm.
+  const m = await reachSixC(env, (a) => {
+    if (!confirmed) throw OWNER_CHANGED;
+    env.states.set(
+      CH,
+      st({
+        group_id: G1,
+        generation: 1,
+        epoch: a.envelope.epoch,
+        seat_list: newList,
+      }),
+    );
+    return outcome({
+      kind: "welcome_joined",
+      epoch: a.envelope.epoch,
+      group_id: a.envelope.group_id,
+    });
+  });
+  // Simulated recovery (FXR, owner side): successor G1, list v2 signed by
+  // the owner's new device; this device's native has not adopted it yet.
+  env.group = groupBody({
+    group_id: G1,
+    generation: 1,
+    current_epoch: 0,
+    members: [{ user_id: OWNER, device_id: OWNER_DEV2 }],
+  });
+  env.seats = seatsBody({
+    list: {
+      ...seatsBody().list,
+      version: 2,
+      signature: "SIG2",
+      signer_device_id: OWNER_DEV2,
+    },
+    as_of_group_id: G1,
+    as_of_epoch: 0,
+  });
+  env.handlers.e2ee_text_seat_list_verify = () => {
+    if (!confirmed) throw OWNER_CHANGED;
+    return {
+      status: "accepted",
+      version: 2,
+      seats: [OWNER, PEER, SELF],
+      device_cap: 5,
+      signer_user_id: OWNER,
+      signer_device_id: OWNER_DEV2,
+      pinned_now: false,
+    };
+  };
+  env.handlers.e2ee_text_owner_confirm_change = () => {
+    confirmed = true;
+    env.state().seat_list = newList;
+    return null;
+  };
+  m.onChannelChanged(CH, ["seats", "text_group"]);
+  await env.advance(1_000);
+  assert.equal(env.views.get(CH)?.signerLeafMissingRetries, 0, "new group");
+  assert.notEqual(env.explain()?.notice, "join_stalled");
+  assert.equal(env.views.get(CH)?.ownerChangePending, true);
+  assert.equal(intentGroups(env).at(-1), G1, "joins the successor");
+  // The new signer device admits it; its Welcome parks behind the change.
+  env.group = groupBody({
+    group_id: G1,
+    generation: 1,
+    current_epoch: 1,
+    members: [{ user_id: OWNER, device_id: OWNER_DEV2 }],
+    member_added: addedAt(1),
+  });
+  m.onEnvelope(
+    envelope("W1", 1, { content_type: "mls_welcome", group_id: G1 }),
+  );
+  await env.advance(0);
+  const parkedAt = intents(env);
+  const fetches = welcomeGets(env).length;
+  await env.advance(6 * 3_600_000);
+  assert.equal(intents(env), parkedAt, "no re-broadcast while parked");
+  assert.equal(welcomeGets(env).length, fetches, "no fetch while parked");
+  assert.equal(env.acks.includes("W1"), false, "parked, unacked");
+  await m.confirmOwnerChange(CH);
+  await env.advance(15_000);
+  assert.equal(env.views.get(CH)?.native?.group_id, G1);
+  assert.equal(env.views.get(CH)?.native?.state, "active");
+  assert.equal(env.views.get(CH)?.ownerChangePending, false);
+  assert.equal(env.views.get(CH)?.signerLeafMissingRetries, 0);
+  assert.notEqual(env.shield(), "unverified");
+  assert.equal(intents(env), parkedAt, "joined from the parked Welcome");
+  m.dispose();
+});
+
+test("FXF parked Welcome: a stored Welcome parked behind an owner change keeps its Add pending: no intent re-broadcast, no second fetch, nothing re-parked, until the confirm joins it", async () => {
+  const env = joiningEnv();
+  env.routes.push(
+    welcomeRoute(() => ok({ group_id: G0, epoch: 4, welcome: "V0VM" })),
+  );
+  let confirmed = false;
+  env.handlers.e2ee_text_process = (a) => {
+    if (!confirmed) throw OWNER_CHANGED;
+    env.states.set(CH, st({ epoch: a.envelope.epoch }));
+    return outcome({
+      kind: "welcome_joined",
+      epoch: a.envelope.epoch,
+      group_id: a.envelope.group_id,
+    });
+  };
+  env.handlers.e2ee_text_owner_confirm_change = () => {
+    confirmed = true;
+    return null;
+  };
+  const m = make(env);
+  const p = endedOf(m.ensureJoined(CH));
+  await env.advance(0);
+  env.group = groupBody({ member_added: addedAt(4) });
+  // 10 s wait, 20 s for the Welcome, the fetch: parked.
+  await env.advance(30_000);
+  assert.equal(welcomeGets(env).length, 1);
+  assert.equal(env.calls("e2ee_text_process").length, 1, "parked");
+  assert.equal(env.views.get(CH)?.ownerChangePending, true);
+  assert.equal(intents(env), 1, "the Add is pending: no rejoin intent");
+  assert.ok(
+    env.logs.some(
+      (l) =>
+        l.msg ===
+          "[protected] stored welcome parked: join waits for the owner change" &&
+        l.ids.why === "parked",
+    ),
+  );
+  await env.advance(24 * 3_600_000);
+  assert.equal(intents(env), 1, "no re-broadcast while parked");
+  assert.equal(welcomeGets(env).length, 1, "no second fetch");
+  assert.equal(
+    env.calls("e2ee_text_process").length,
+    1,
+    "nothing re-processed or re-parked",
+  );
+  assert.equal(p.done, false, "the join waits");
+  await m.confirmOwnerChange(CH);
+  await env.advance(0);
+  const ids = env.calls("e2ee_text_process").map((c) => c.envelope.id);
+  assert.equal(ids.length, 2, "the parked Welcome, once more");
+  assert.equal(ids[1], ids[0]);
+  assert.ok(ids[0].endsWith(`welcome:${G0}:4`), ids[0]);
+  assert.equal(p.done, true);
+  assert.equal(p.err, null, "joined");
+  assert.equal(env.views.get(CH)?.native?.state, "active");
+  assert.equal(intents(env), 1);
+  m.dispose();
+});
+
+test("FXF parked Welcome: after the confirm only the latest parked Welcome for the server's current group reaches native; older ones and another group's are acked and dropped, never replayed", async () => {
+  const env = joiningEnv();
+  env.group = groupBody({ group_id: G1, generation: 1, current_epoch: 5 });
+  let confirmed = false;
+  env.handlers.e2ee_text_process = (a) => {
+    if (!confirmed) throw OWNER_CHANGED;
+    if (a.envelope.content_type === "mls_welcome") {
+      env.states.set(
+        CH,
+        st({ group_id: G1, generation: 1, epoch: a.envelope.epoch }),
+      );
+      return outcome({
+        kind: "welcome_joined",
+        epoch: a.envelope.epoch,
+        group_id: a.envelope.group_id,
+      });
+    }
+    return outcome({ epoch: a.envelope.epoch, group_id: a.envelope.group_id });
+  };
+  env.handlers.e2ee_text_owner_confirm_change = () => {
+    confirmed = true;
+    return null;
+  };
+  const m = make(env);
+  await m.refresh(CH, "commit");
+  await env.advance(0);
+  const welcome = { content_type: "mls_welcome" as const };
+  m.onEnvelope(envelope("WA", 4, { ...welcome, group_id: G0 }));
+  await env.advance(0);
+  m.onEnvelope(envelope("WB", 2, { ...welcome, group_id: G1 }));
+  m.onEnvelope(envelope("WC", 5, { ...welcome, group_id: G1 }));
+  m.onEnvelope(envelope("C6", 6, { group_id: G1 }));
+  await env.advance(0);
+  const processed = () =>
+    env.calls("e2ee_text_process").map((c) => c.envelope.id);
+  assert.deepEqual(processed(), ["WA"], "the rest parked behind it");
+  assert.equal(env.acks.length, 0, "parked, unacked");
+  await m.confirmOwnerChange(CH);
+  await env.advance(0);
+  assert.deepEqual(processed(), ["WA", "WC", "C6"], "WA and WB never again");
+  assert.ok(env.acks.includes("WA") && env.acks.includes("WB"), "dropped");
+  assert.ok(
+    env.logs.some(
+      (l) =>
+        l.msg === "[protected] stale parked welcomes dropped" &&
+        l.ids.count === 2,
+    ),
+  );
+  assert.equal(env.views.get(CH)?.native?.group_id, G1);
+  // A redelivery of a dropped Welcome is a duplicate (never to native).
+  m.onEnvelope(envelope("WB", 2, { ...welcome, group_id: G1 }));
+  await env.advance(0);
+  assert.deepEqual(processed(), ["WA", "WC", "C6"]);
+  m.dispose();
+});
+
+test("FXF parked Welcome: a confirm whose replayed Welcome does not join (signer_leaf_missing, counted toward 6c) wakes the waiting join: its rejoin intent goes out within one backoff step, with no second fetch for that Add", async () => {
+  const env = joiningEnv();
+  env.routes.push(
+    welcomeRoute(() => ok({ group_id: G0, epoch: 4, welcome: "V0VM" })),
+  );
+  let confirmed = false;
+  env.handlers.e2ee_text_process = () => {
+    if (!confirmed) throw OWNER_CHANGED;
+    throw { type: "signer_leaf_missing", group_id: G0 };
+  };
+  env.handlers.e2ee_text_owner_confirm_change = () => {
+    confirmed = true;
+    return null;
+  };
+  const m = make(env);
+  const p = endedOf(m.ensureJoined(CH));
+  await env.advance(0);
+  env.group = groupBody({ member_added: addedAt(4) });
+  await env.advance(30_000);
+  assert.equal(env.calls("e2ee_text_process").length, 1, "parked");
+  // Long enough for the join's wait to reach the 15 min cap.
+  await env.advance(2 * 3_600_000);
+  assert.equal(intents(env), 1);
+  await m.confirmOwnerChange(CH);
+  await env.advance(0);
+  assert.equal(env.calls("e2ee_text_process").length, 2, "replayed once");
+  assert.equal(env.views.get(CH)?.signerLeafMissingRetries, 1, "6c counted");
+  await env.advance(joinRebroadcastDelayMs(0));
+  assert.equal(intents(env), 2, "the rejoin within one step");
+  assert.equal(welcomeGets(env).length, 1, "that Add is never fetched again");
+  assert.equal(p.done, false, "below the budget the join goes on");
+  m.dispose();
+});
+
+test("FXF 6c: the list signer this device holds changes on the same group (an owner change confirmed, a recovery list adopted): the budget starts over and the joiner joins again", async () => {
+  const env = joiningEnv();
+  const m = await reachSixC(env);
+  const before = intents(env);
+  // Native adopted a list from the owner's new signer device.
+  env.state().seat_list = {
+    ...st().seat_list!,
+    version: 2,
+    signer_device_id: OWNER_DEV2,
+  };
+  await m.refresh(CH, "interval");
+  await env.advance(0);
+  assert.equal(env.views.get(CH)?.signerLeafMissingRetries, 0, "reset");
+  assert.notEqual(env.explain()?.notice, "join_stalled");
+  assert.equal(intents(env), before + 1, "the join restarts");
+  assert.equal(intentGroups(env).at(-1), G0, "on the same group");
+  m.dispose();
+});
+
+test("FXF 6c: a Welcome discarded with signer_leaf_missing for a group the server no longer names is not counted; one for the server's current group is", async () => {
+  const env = joiningEnv();
+  env.group = groupBody({ group_id: G1, generation: 1, current_epoch: 0 });
+  env.handlers.e2ee_text_process = (a) => {
+    throw { type: "signer_leaf_missing", group_id: a.envelope.group_id };
+  };
+  const m = make(env);
+  await m.refresh(CH, "commit");
+  await env.advance(0);
+  const welcome = { content_type: "mls_welcome" as const };
+  m.onEnvelope(envelope("WOLD", 4, { ...welcome, group_id: G0 }));
+  await env.advance(0);
+  assert.equal(env.calls("e2ee_text_process").length, 1);
+  assert.equal(env.views.get(CH)?.signerLeafMissingRetries, 0, "old group");
+  assert.ok(
+    env.logs.some(
+      (l) =>
+        l.msg ===
+        "[protected] signer_leaf_missing for an old group not counted",
+    ),
+  );
+  m.onEnvelope(envelope("WNEW", 1, { ...welcome, group_id: G1 }));
+  await env.advance(0);
+  assert.equal(env.views.get(CH)?.signerLeafMissingRetries, 1, "current");
+  m.dispose();
+});

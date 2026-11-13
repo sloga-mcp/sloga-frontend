@@ -49,10 +49,14 @@ import {
   joinRebroadcastDelayMs,
   joinRefusal,
   LEAF_STAGGER_MS,
+  leafMissingApplies,
+  leafMissingSigner,
+  leafMissingSpent,
   leafStaggerMs,
   MAX_TEXT_LEAVES,
   ownAddedEntry,
   ownSendRowBinds,
+  parkedReplay,
   PROTECTOR_BACKOFF,
   PROTECTOR_GATE_OPEN,
   protectorBackoffMs,
@@ -75,6 +79,7 @@ import {
   WELCOME_FETCH_RETRY_BUDGET,
   welcomeDue,
   welcomeFetchStep,
+  welcomeParkedFor,
   welcomePending,
 } from "./protectedTextPolicy.ts";
 import {
@@ -2448,4 +2453,97 @@ test("FXJ2 admitRefusalKey / admitRefusedByNative: a request is its group, devic
     assert.equal(admitRefusedByNative(err), false, JSON.stringify(err));
   }
   assert.ok(Number.isSafeInteger(ADMIT_REFUSED_CAP) && ADMIT_REFUSED_CAP > 0);
+});
+
+// ---------------------------------------------------------------------------
+// S2 final audit fix lane FXF (MAJOR 6c budget binding, MINOR parked
+// Welcome). Tests named "FXF ..." are the targets of
+// /home/mcp/pc-logs/s2/w4/ctl/FXF.
+// ---------------------------------------------------------------------------
+
+test("FXF leafMissingApplies / leafMissingSpent: the 6c budget binds to the group and the held list signer it was spent on; a successor group or another signer starts over; a non-finite or unbound spent count fails closed", () => {
+  const listed = (signer_device_id: string): TextChannelState => ({
+    ...nativeState("none", "no_group"),
+    seat_list: {
+      version: 1,
+      signer_user_id: "UO",
+      signer_device_id,
+      seats: ["UO"],
+      device_cap: 5,
+      issued_at: 0,
+    },
+  });
+  const s1 = leafMissingSigner(listed("D1"));
+  const s2 = leafMissingSigner(listed("D2"));
+  assert.notEqual(s1, null);
+  assert.notEqual(s1, s2, "another signer device");
+  assert.equal(leafMissingSigner(null), null);
+  assert.equal(leafMissingSigner(nativeState("none", "no_group")), null);
+  assert.equal(leafMissingSigner(listed("D1")), s1, "stable");
+  const on = { groupId: "G0", signer: s1 };
+  assert.equal(leafMissingApplies(on, "G0", s1), true);
+  assert.equal(leafMissingApplies(on, "G1", s1), false, "successor group");
+  assert.equal(leafMissingApplies(on, "G0", s2), false, "another signer");
+  assert.equal(leafMissingApplies(null, "G0", s1), false);
+  const B = SIGNER_LEAF_MISSING_BUDGET;
+  assert.equal(leafMissingSpent(B - 1, on, "G0", s1), false, "below");
+  assert.equal(leafMissingSpent(B, on, "G0", s1), true, "6c");
+  assert.equal(leafMissingSpent(B + 4, on, "G0", s1), true);
+  assert.equal(leafMissingSpent(B, on, "G1", s1), false, "another group");
+  assert.equal(leafMissingSpent(B, on, "G0", s2), false, "another signer");
+  assert.equal(leafMissingSpent(Number.NaN, on, "G0", s1), true, "NaN");
+  assert.equal(leafMissingSpent(B, null, "G0", s1), true, "unbound");
+  assert.equal(leafMissingSpent(0, null, "G0", s1), false);
+});
+
+test("FXF welcomeParkedFor / parkedReplay: a parked Welcome for the group keeps its Add pending; a confirm replays only the latest one for the current group, drops the others, and keeps every other envelope in order", () => {
+  const w = (id: string, group_id: string, epoch: number) => ({
+    id,
+    content_type: "mls_welcome",
+    group_id,
+    epoch,
+  });
+  const c = (id: string, group_id: string, epoch: number) => ({
+    id,
+    content_type: "mls_commit",
+    group_id,
+    epoch,
+  });
+  const parked = [
+    c("C0", "G0", 4),
+    w("WA", "G0", 4),
+    w("WB", "G1", 2),
+    c("C1", "G1", 3),
+    w("WC", "G1", 5),
+    w("WD", "G1", 3),
+  ];
+  assert.equal(welcomeParkedFor(parked, "G1"), true);
+  assert.equal(welcomeParkedFor(parked, "G0"), true);
+  assert.equal(welcomeParkedFor([c("C1", "G1", 3)], "G1"), false, "commit");
+  assert.equal(welcomeParkedFor(parked, "G2"), false);
+  assert.equal(welcomeParkedFor([], "G1"), false);
+
+  const r = parkedReplay(parked, "G1");
+  assert.deepEqual(
+    r.replay.map((p) => p.id),
+    ["C0", "C1", "WC"],
+  );
+  assert.deepEqual(
+    r.dropped.map((p) => p.id),
+    ["WA", "WB", "WD"],
+  );
+  // Equal epochs: the last one parked.
+  const tie = parkedReplay([w("W1", "G1", 5), w("W2", "G1", 5)], "G1");
+  assert.deepEqual(
+    tie.replay.map((p) => p.id),
+    ["W2"],
+  );
+  // No current group: no Welcome is replayed.
+  const none = parkedReplay(parked, null);
+  assert.deepEqual(
+    none.replay.map((p) => p.id),
+    ["C0", "C1"],
+  );
+  assert.equal(none.dropped.length, 4);
+  assert.deepEqual(parkedReplay([], "G1"), { replay: [], dropped: [] });
 });
