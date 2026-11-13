@@ -29,7 +29,9 @@
 //  G12  NotificationsWorker.tsx: report notifications are untouched (R14);
 //  G13  AppearanceMenu.tsx + SlimViewChoice.tsx: one toggle, off in a call;
 //  G14  Sync.ts: the settings store is not synced (R11);
-//  G15  Settings.ts: `appearance:slim_view` is a boolean, off by default.
+//  G15  Settings.ts: `appearance:slim_view` is a boolean, off by default;
+//  G16  AndroidBackWorker.tsx: Back at the Slim view root does not slide to
+//       the placeholder pane.
 //
 // WHAT THIS SPEC CANNOT CATCH. It matches text; it never runs the app.
 //  - Wrong polarity inside an expression it does not parse. A few short
@@ -67,6 +69,7 @@ const USER_SETTINGS = `${SETTINGS_UI}/UserSettings.tsx`;
 const APPEARANCE_MENU = `${SETTINGS_UI}/user/appearance/AppearanceMenu.tsx`;
 const SLIM_VIEW_CHOICE = `${SETTINGS_UI}/user/appearance/SlimViewChoice.tsx`;
 const NOTIFICATIONS = "components/client/NotificationsWorker.tsx";
+const ANDROID_BACK = "components/client/AndroidBackWorker.tsx";
 const POLICY = "components/client/slimRoutePolicy.ts";
 const SYNC = "components/state/stores/Sync.ts";
 const SETTINGS = "components/state/stores/Settings.ts";
@@ -1031,4 +1034,33 @@ test("G15 Settings.ts: appearance:slim_view is a boolean, off by default", () =>
   const all = /"appearance:slim_view"\s*:\s*([^,;}\s]+)/g;
   for (let m = all.exec(src); m; m = all.exec(src)) values.push(m[1]);
   assert.deepEqual(values.sort(), ['"boolean"', "boolean", "false", "false"]);
+});
+
+test("G16 AndroidBackWorker.tsx: Back at the Slim view root skips the drawer step", () => {
+  const src = load(ANDROID_BACK);
+
+  assert.match(
+    src,
+    /\bconst\s+slim\s*=\s*useSlimMode\(\);/,
+    "Slim view must be resolved at setup: a back press has no owner",
+  );
+
+  // Pinned whole, polarity included: the account has loaded, Slim view is
+  // on, and the path is the Slim view root
+  assert.equal(
+    count(
+      src,
+      "const atSlimRoot = lifecycle.loadedOnce() && slim() && slimIsRoot(window.location.pathname);",
+    ),
+    1,
+    "atSlimRoot is missing or has changed",
+  );
+
+  // The drawer step is skipped there, and nowhere else
+  assert.equal(
+    count(src, "if (!atSlimRoot && drawer?.enabled &&"),
+    1,
+    "the drawer step must not run at the Slim view root",
+  );
+  assert.equal(count(src, "atSlimRoot"), 2, "atSlimRoot is read once");
 });
