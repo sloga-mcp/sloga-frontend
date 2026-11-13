@@ -605,6 +605,7 @@ export const PROTECTED_NOTICE_KINDS = [
   // S2 flows
   "removal_reason_required",
   "resecured_too_often",
+  "handover_target_not_joined",
 ] as const;
 
 export type ProtectedNoticeKind = (typeof PROTECTED_NOTICE_KINDS)[number];
@@ -799,8 +800,11 @@ const NATIVE_RULES: Record<TextNativeErrorTag, Rule> = {
   wrong_group_kind: () => notice("security_check_failed", ""),
   // Retried once after a pin (D18); a second one is a bounded failure.
   identity_pin_required: () => notice("unverified", ""),
-  // Handover UI is S2; an S1 caller fails closed.
-  handover_target_invalid: () => notice("unverified", ""),
+  // S2-D42 "Move ownership key" (owner op): the target holds no leaf in
+  // the active group yet (the page has ruled out self and another user).
+  // Any other op never expects it, so it fails closed. A notice only.
+  handover_target_invalid: (_f, c) =>
+    notice(c.op === "owner" ? "handover_target_not_joined" : "unverified", ""),
   // S2: the bridge marks the group left and rejoins (design 9.2).
   catch_up_leaf_unresolvable: resecuring,
   // A decrypt error: rows get the grey marker in `onMessage`. Any other

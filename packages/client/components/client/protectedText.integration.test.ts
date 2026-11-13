@@ -28,6 +28,7 @@ import {
 import {
   _resetOwnerFlowsForTest,
   cancelPendingSeats,
+  moveOwnerKey,
   pendingSeats,
   protect,
   setSeats,
@@ -60,6 +61,7 @@ const DEPS: ProtectedTextManagerDeps = {
     protect,
     setSeats,
     signOwnerDevices,
+    moveOwnerKey,
     pendingSeats,
     cancelPendingSeats,
   },

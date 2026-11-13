@@ -35,6 +35,9 @@
  * - F3: `cancelPendingSeats` drops a stored seat publish only when its
  *   recorded answers prove the server never took it (`answer`, written
  *   ahead of every PUT); resume is unchanged (the same bytes).
+ * - F5 (S2-D42, design 4.6): `moveOwnerKey` hands the owner key from this
+ *   signing device to another device of this user. The handover statement
+ *   is stored with the list bytes it rides on and re-sent with them.
  *
  * Pure of Solid / livekit / lingui; driven through `GroupOps` and the port,
  * so `node --test --conditions=browser` loads it over fakes.
@@ -113,6 +116,12 @@ export interface StoredPublish {
    * Absent (stored before F3) or unknown: read as `"sent"` (ambiguous).
    */
   answer?: PublishAnswerSeen;
+  /**
+   * S2 F5: the handover statement `moveOwnerKey` publishes on these bytes
+   * (the PUT's `handover`). Stored with them and re-sent with them, never
+   * signed again.
+   */
+  handover?: SignedHandover;
 }
 
 type PublishAnswerSeen = "unsent" | "sent" | "refused";
@@ -281,6 +290,9 @@ function readStored(ctx: StoreAt): StoredPublish | "corrupt" | null {
     if (v.op !== "protect" && v.op !== "seats") return "corrupt";
     const signed = parseSigned(v.signed);
     if (signed === null) return "corrupt";
+    const handover =
+      v.handover === undefined ? null : parseHandover(v.handover);
+    if (v.handover !== undefined && handover === null) return "corrupt";
     const answer =
       typeof v.answer === "string" && ANSWERS_SEEN.includes(v.answer)
         ? (v.answer as PublishAnswerSeen)
@@ -292,6 +304,7 @@ function readStored(ctx: StoreAt): StoredPublish | "corrupt" | null {
       ...(v.ownerDevices === true ? { ownerDevices: true as const } : {}),
       ...(v.reasonRequired === true ? { reasonRequired: true as const } : {}),
       ...(answer !== null ? { answer } : {}),
+      ...(handover !== null ? { handover } : {}),
     };
   } catch {
     return "corrupt";
@@ -325,16 +338,54 @@ function isOwn(
 }
 
 /**
- * The `DataSeatList` body of a PUT (no handover in S1). S2: `authority`
- * whenever the signed list carries one (design 4.3 step 3b).
+ * The `DataSeatList` body of a PUT. S2: `authority` whenever the signed
+ * list carries one (design 4.3 step 3b); F5: `handover`, the ONE statement
+ * the server appends to its stored chain (4.3 step 8), only on a
+ * `moveOwnerKey` publish.
  */
-function dataSeatList(s: SignedSeatList) {
+function dataSeatList(s: SignedSeatList, handover?: SignedHandover) {
   return {
     body: s.body,
     signature: s.signature,
     signer_device_id: s.signer_device_id,
     ...withAuthority(s.authority),
+    ...(handover === undefined ? {} : { handover }),
   };
+}
+
+/** One signed handover statement, or null when it is not one. */
+function parseHandover(v: unknown): SignedHandover | null {
+  if (
+    !isRecord(v) ||
+    typeof v.body !== "string" ||
+    typeof v.signature !== "string"
+  ) {
+    return null;
+  }
+  return { body: v.body, signature: v.signature };
+}
+
+const HANDOVER_CONTEXT = "sloga-owner-handover-v1";
+
+/**
+ * The `key:value` lines of a handover body (design 4.6), or null when the
+ * first line is not the handover context. Read for local checks only;
+ * native and the server parse it strictly.
+ */
+function handoverFields(body: string): Map<string, string> | null {
+  const [context, ...lines] = body.split("\n");
+  if (context !== HANDOVER_CONTEXT) return null;
+  const fields = new Map<string, string>();
+  for (const line of lines) {
+    const colon = line.indexOf(":");
+    if (colon > 0) fields.set(line.slice(0, colon), line.slice(colon + 1));
+  }
+  return fields;
+}
+
+/** The device a handover statement names as `to`, or null. */
+function handoverTarget(h: SignedHandover): string | null {
+  return handoverFields(h.body)?.get("to_device_id") ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -693,7 +744,7 @@ async function publishSeats(
       ctx,
       "PUT",
       `/channels/${ctx.channelId}/seats`,
-      dataSeatList(signed),
+      dataSeatList(signed, entry.handover),
       reasonHeader(reason),
     );
     const step = publishStep(answer, { op: "seats", failures });
@@ -1133,6 +1184,179 @@ export async function signOwnerDevices(
   });
 }
 
+/** Device ids of this user's listing (`GET /e2ee/devices/{self}` rows). */
+function ownDeviceIds(listing: unknown[]): Set<string> {
+  const ids = new Set<string>();
+  for (const row of listing) {
+    if (isRecord(row) && typeof row.device_id === "string") {
+      if (row.device_id !== "") ids.add(row.device_id);
+    }
+  }
+  return ids;
+}
+
+/**
+ * `_owner_handover_sign` (ALWAYS a native dialog) to `toDeviceId` of this
+ * user. `identity_pin_required` for this user pins the own devices from
+ * the complete listing and asks ONCE more (D18); native shows the dialog
+ * only after its own checks pass. The answer must be the statement asked
+ * for (this channel, from this device, to the target of this user), else
+ * nothing is published.
+ */
+async function signHandover(
+  ctx: Ctx,
+  toDeviceId: string,
+): Promise<SignedHandover> {
+  const self = ctx.port.selfUserId;
+  const args = {
+    channelId: ctx.channelId,
+    userId: self,
+    toUserId: self,
+    toDeviceId,
+    channelName: ctx.channelName,
+    displayNames: ctx.port.displayNames([self]),
+  };
+  let pinned = false;
+  for (;;) {
+    let raw: unknown;
+    try {
+      raw = await ctx.port.invoke("e2ee_text_owner_handover_sign", args);
+    } catch (e) {
+      const err = nativeErrorOf(e);
+      if (
+        err?.type === "identity_pin_required" &&
+        !pinned &&
+        err.user_id === self &&
+        typeof err.device_id === "string"
+      ) {
+        pinned = true;
+        await pinIdentity(ctx, self, err.device_id);
+        continue;
+      }
+      throw toFailure(e);
+    }
+    const h = parseHandover(raw);
+    const f = h === null ? null : handoverFields(h.body);
+    if (
+      h === null ||
+      f === null ||
+      f.get("channel_id") !== ctx.channelId ||
+      f.get("from_user_id") !== self ||
+      f.get("from_device_id") !== ctx.port.selfDeviceId ||
+      f.get("to_user_id") !== self ||
+      f.get("to_device_id") !== toDeviceId
+    ) {
+      throw clientFailure("publish_refused");
+    }
+    return h;
+  }
+}
+
+/**
+ * S2-D42 "Move ownership key" (design 4.6, 6.3 K0 to K1; W3 plan D19):
+ * hand the owner key from THIS device to `toDeviceId`, another device of
+ * this user. Same user only (S2-D4 cross-user handover is [b]).
+ *
+ * What native and the server require, and how it is met:
+ * - Only the signing device hands over: native `_owner_handover_sign`
+ *   wants this device to be the pinned owner device (`not_owner`), and the
+ *   server's 4.3 step 8 wants the statement `from` the list's signer
+ *   device. So the server's list must verify as signed by this device,
+ *   else `not_signing_device` before any dialog.
+ * - The statement rides on the NEXT list, signed by THIS device: the same
+ *   seats and device cap as the verified list (no growth, so no list
+ *   dialog), `serverList` = that list, no authority passed, format by rule
+ *   (j). The PUT carries it as `handover`; the server appends it to the
+ *   stored chain. The pin stays here until the target publishes a list it
+ *   signed (it qualifies through the held chain; members walk to it).
+ * - Under a served authority the chain qualifies no one (native
+ *   `require_owner_device`): the target could never sign, so it is refused
+ *   (`authority_held`); the owner devices change through `authoritySign`.
+ * - The target must be in this user's listing (`handover_target_not_own`)
+ *   and is never this device (`handover_self_target`). Native also wants
+ *   it pinned and holding a leaf in the active group.
+ * - Persisted with the list bytes (D7c) and PUT until resolved. A retry
+ *   of the same move resumes the stored bytes and the stored statement and
+ *   signs nothing (4.9).
+ */
+export async function moveOwnerKey(
+  ops: GroupOps,
+  port: ProtectedTextPort,
+  channelId: string,
+  toDeviceId: string,
+): Promise<void> {
+  if (typeof toDeviceId !== "string" || toDeviceId === "") {
+    throw clientFailure("invalid_argument");
+  }
+  if (toDeviceId === port.selfDeviceId) {
+    throw clientFailure("handover_self_target");
+  }
+  await run(ops, port, channelId, async (ctx) => {
+    const settled = await resumeStored(ctx, null);
+    if (
+      settled?.handover !== undefined &&
+      handoverTarget(settled.handover) === toDeviceId
+    ) {
+      return;
+    }
+    assertSignAllowed(ctx);
+    const self = port.selfUserId;
+    const { listing } = await port.ownDeviceListing();
+    if (!ownDeviceIds(listing).has(toDeviceId)) {
+      throw clientFailure("handover_target_not_own");
+    }
+    const snap = await readSeats(ctx);
+    if (snap.list === null) throw clientFailure("not_protected");
+    const verdict = await verifyList(
+      ctx,
+      snap.list,
+      snap.asOfEpoch,
+      snap.asOfGroupId,
+      snap.asOfGeneration,
+    );
+    if (
+      verdict.signer_user_id !== self ||
+      verdict.signer_device_id !== port.selfDeviceId
+    ) {
+      throw clientFailure("not_signing_device");
+    }
+    if (snap.list.authority !== undefined) {
+      throw clientFailure("authority_held");
+    }
+    const handover = await signHandover(ctx, toDeviceId);
+    const raw = await port.invoke("e2ee_text_seat_list_sign", {
+      channelId,
+      userId: self,
+      seats: verdict.seats,
+      deviceCap: verdict.device_cap,
+      serverList: { version: snap.list.version, body: snap.list.body },
+      format: nextFormat(port, snap.list),
+      authority: null,
+      recovery: false,
+      channelName: ctx.channelName,
+      displayNames: port.displayNames(verdict.seats),
+    });
+    const signed = parseSigned(raw);
+    if (
+      signed === null ||
+      signed.version !== snap.list.version + 1 ||
+      !isOwn(ctx, signed) ||
+      signed.authority !== undefined
+    ) {
+      throw clientFailure("publish_refused");
+    }
+    const entry: StoredPublish = {
+      v: 1,
+      op: "seats",
+      signed,
+      handover,
+      answer: "unsent",
+    };
+    persist(ctx, entry);
+    await publishSeats(ctx, entry, null);
+  });
+}
+
 /**
  * S2 F3: whether the server NEVER took a stored seat publish, from the
  * entry alone: `answer` is `"refused"` (every PUT of these bytes was
@@ -1243,6 +1467,33 @@ export function proposedOwnerDevices(
   if (kept.length === listed.length) return null;
   const next = [...new Set([...kept, selfDeviceId])].sort();
   return next.length <= 5 ? next : null;
+}
+
+/**
+ * S2-D42: the devices "Move ownership key" may offer as targets: this
+ * user's OTHER devices from `ownDevices` (the own listing's device ids),
+ * in their order, without repeats. Empty unless the served list was signed
+ * by this device and carries no authority (`moveOwnerKey` refuses
+ * otherwise). Native still checks each target (pinned, holding a leaf in
+ * the active group). Ids are for comparisons only: the UI shows the
+ * matching session names, never an id.
+ */
+export function ownerKeyMoveTargets(
+  seats: ProtectedSeatsResponse | null,
+  selfDeviceId: string | null,
+  ownDevices: readonly string[],
+): string[] {
+  const list = seats?.list ?? null;
+  if (selfDeviceId === null || selfDeviceId === "" || list === null) {
+    return [];
+  }
+  if (list.signer_device_id !== selfDeviceId || list.authority) return [];
+  const targets: string[] = [];
+  for (const d of ownDevices) {
+    if (typeof d !== "string" || d === "" || d === selfDeviceId) continue;
+    if (!targets.includes(d)) targets.push(d);
+  }
+  return targets;
 }
 
 /** Test hook: forget in-memory state (never called by the app). */

@@ -10,7 +10,7 @@
 //  P2  body order: the editor is gated off Protected rows, then the marker,
 //      then the decrypted view, all BEFORE any branch that reads server
 //      `content`; the decrypted branch renders `view().text` only and is
-//      never translated;
+//      never translated, and carries the S2 files note (`ProtectedFilesNote`);
 //  P3  attachments, encrypted attachments, embeds and components render
 //      only inside `<Show when={!protectedRow()}>`;
 //  P4  replies: server `replyIds` are dropped on Protected rows; the
@@ -187,6 +187,13 @@ test("P2: body order puts the protected branches before any server text", () => 
   assert.doesNotMatch(ok, /MessageTranslation/);
   assert.match(ok, /kind="ts_skew"/);
   assert.match(ok, /kind="sender_not_verified"/);
+  // S2 (OR-20): the files note, last and unwrapped (its count gate lives
+  // inside ProtectedFilesNote, never a second gate here).
+  assert.match(
+    ok,
+    /kind="sender_not_verified" \/>\s*<\/Show>\s*<ProtectedFilesNote view=\{view\(\)\} \/>\s*<\/>/,
+  );
+  assert.equal(MESSAGE_FN.split("<ProtectedFilesNote").length - 1, 1);
 
   const marker = between(
     BODY_SWITCH,

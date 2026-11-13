@@ -10,7 +10,13 @@
  *   `errorUiCopy`, where the shield answers its catch-all; only a client
  *   failure, only a notice;
  * - the removal reason copy names the cap the policy checks: 512 for the
- *   audit header (kick, unseat), 1024 for a ban body; `empty` has its own.
+ *   audit header (kick, unseat), 1024 for a ban body; `empty` has its own;
+ * - the kick/ban hint shown before a press says the rule is server-wide; it
+ *   is not the server refusal's "this member is protected" notice;
+ * - S2-D42 (lane U11b): the four `moveOwnerKey` client refusals get their
+ *   own copy the same way, native `handover_target_invalid` reads as "that
+ *   device hasn't joined" on the owner op only, and the server settings
+ *   page's owner-key strings.
  *
  * `@lingui/core/macro` only runs inside the build, so a module hook swaps it
  * for a stand-in `t` that fills in the values. The asserted text is the
@@ -24,6 +30,7 @@ import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
 import { test } from "node:test";
 
+import type { ClientReasonWithCopy } from "./protectedCopy.ts";
 import type {
   RemovalReasonCarrier,
   RemovalReasonProblem,
@@ -74,11 +81,14 @@ registerHooks({
 
 const {
   CLIENT_REASONS_WITH_COPY,
+  clientReasonCopy,
   errorUiCopy,
   noticeCopy,
+  ownerKeyCopy,
   reasonEmptyCopy,
   reasonProblemCopy,
   reasonTooLongCopy,
+  removalReasonHintCopy,
 }: typeof import("./protectedCopy.ts") = await import(COPY_URL);
 
 const AUTHORITY_NEEDS_V2 =
@@ -87,6 +97,24 @@ const CATCH_ALL = "Something went wrong verifying this channel.";
 const TOO_LONG_HEADER = "Use a shorter reason (up to 512 characters).";
 const TOO_LONG_BAN = "Use a shorter reason (up to 1024 characters).";
 const EMPTY = "Add a reason to continue.";
+const REASON_HINT =
+  "This server has protected channels, so removing someone needs a reason.";
+const REASON_REQUIRED_NOTICE =
+  "This member is protected from removal without a reason. Add a reason to continue.";
+
+/** S2-D42 `moveOwnerKey` client refusals and their copy (lane U11b). */
+const MOVE_REFUSALS: Record<string, string> = {
+  handover_self_target:
+    "Choose another of your devices to move the ownership key to.",
+  handover_target_not_own:
+    "You can only move the ownership key to another of your own devices.",
+  not_signing_device:
+    "Only the device that holds this channel's ownership key can move it.",
+  authority_held:
+    "This channel names its owner devices. Update that list to move ownership instead.",
+};
+const NOT_JOINED =
+  "That device hasn't joined this channel yet. Open the channel on it, then try again.";
 
 /** As `protectedTextOwner.ts` throws it (`clientFailure`). */
 const authorityFailure = { source: "client", reason: "authority_needs_v2" };
@@ -101,7 +129,11 @@ function ownerCopy(failure: unknown): string | null {
 // --------------------------------------------------- authority_needs_v2 --
 
 test("authority_needs_v2: the owner UI shows its own copy, not the catch-all", () => {
-  assert.deepEqual([...CLIENT_REASONS_WITH_COPY], ["authority_needs_v2"]);
+  // U11b added the four `moveOwnerKey` refusals (spec'd below).
+  assert.deepEqual(
+    [...CLIENT_REASONS_WITH_COPY],
+    ["authority_needs_v2", ...Object.keys(MOVE_REFUSALS)],
+  );
   const text = ownerCopy(authorityFailure);
   assert.equal(text, AUTHORITY_NEEDS_V2);
   assert.notEqual(text, CATCH_ALL);
@@ -161,6 +193,67 @@ test("authority_needs_v2: a marker, toast or none is never replaced", () => {
   );
 });
 
+// ------------------------------------------- S2-D42 move ownership key --
+
+test("move ownership key: each moveOwnerKey refusal has its own owner copy", () => {
+  const seen = new Set<string>();
+  for (const [reason, want] of Object.entries(MOVE_REFUSALS)) {
+    const failure = { source: "client", reason };
+    // The shield answers its catch-all; the copy layer names the cause.
+    assert.equal(
+      protectedNoticeForError(failure, { op: "owner" }).kind,
+      "notice",
+    );
+    const text = ownerCopy(failure);
+    assert.equal(text, want, reason);
+    assert.notEqual(text, CATCH_ALL, reason);
+    assert.equal(clientReasonCopy(reason as ClientReasonWithCopy), want);
+    seen.add(want);
+    // Only a client failure: the same reason from native or server keeps
+    // its own mapping.
+    for (const other of [
+      { source: "native", reason },
+      { source: "server", reason },
+    ]) {
+      assert.notEqual(ownerCopy(other), want, `${other.source} ${reason}`);
+    }
+  }
+  assert.equal(seen.size, 4, "four distinct texts");
+  // The page's line under a served authority is the same refusal copy.
+  assert.equal(ownerKeyCopy.authorityHeld(), MOVE_REFUSALS.authority_held);
+});
+
+test("move ownership key: native handover_target_invalid reads as 'not joined' for the owner only", () => {
+  const failure = {
+    source: "native",
+    error: { type: "handover_target_invalid", channel_id: "C1" },
+  };
+  assert.equal(ownerCopy(failure), NOT_JOINED);
+  assert.equal(noticeCopy("handover_target_not_joined"), NOT_JOINED);
+  // Off the owner op it stays the generic copy.
+  for (const op of ["channel", "send", "action"] as const) {
+    assert.equal(
+      errorUiCopy(protectedNoticeForError(failure, { op }), { failure }),
+      CATCH_ALL,
+      op,
+    );
+  }
+});
+
+test("move ownership key: the page's copy", () => {
+  assert.equal(ownerKeyCopy.moveKey(), "Move ownership key to another device");
+  assert.equal(
+    ownerKeyCopy.choose(),
+    "Choose the device to move this channel's ownership key to.",
+  );
+  assert.equal(ownerKeyCopy.unnamedDevice(), "Unnamed device");
+  assert.equal(ownerKeyCopy.cancel(), "Cancel");
+  assert.equal(
+    ownerKeyCopy.onOtherDevice(),
+    "This channel's ownership key is on another of your devices. Open this page on that device to move it.",
+  );
+});
+
 // ------------------------------------------------------- removal reason --
 
 test("too_long: the audit header cap (kick, unseat) is 512 and the copy names it", () => {
@@ -204,4 +297,11 @@ test("reason verdicts: validReason and reasonRefusal map to their copy with the 
   });
   assert.equal(refused, "too_long");
   assert.equal(reasonProblemCopy(refused ?? "empty", header), TOO_LONG_HEADER);
+});
+
+test("removal reason hint: server-wide copy, not the member-protected refusal notice", () => {
+  assert.equal(removalReasonHintCopy(), REASON_HINT);
+  // The server refusal keeps the 9.2 notice; the hint never reuses it.
+  assert.equal(noticeCopy("removal_reason_required"), REASON_REQUIRED_NOTICE);
+  assert.notEqual(removalReasonHintCopy(), REASON_REQUIRED_NOTICE);
 });

@@ -1865,6 +1865,7 @@ test("S2 notice kinds are declared once each", () => {
     "removal_reason_required",
     "resecured_too_often",
     "revoked_owner_devices",
+    "handover_target_not_joined",
   ]) {
     assert.equal(PROTECTED_NOTICE_KINDS.filter((x) => x === k).length, 1, k);
   }
@@ -2055,6 +2056,55 @@ test("D17 op-dependent rows", () => {
     const u = ui(native("text_group_full", { max: bad }), "owner");
     assert.equal(u.kind === "notice" && u.max, null, String(bad));
   }
+});
+
+// S2-D42 (lane U11b): "Move ownership key" maps native
+// `handover_target_invalid` (the target holds no leaf in the active group)
+// to its own owner notice. Any other op keeps the fail-closed generic, and
+// the shield state is never derived from it.
+test("S2-D42: handover_target_invalid is handover_target_not_joined on the owner op only, never a shield state", () => {
+  const err = native("handover_target_invalid", { channel_id: "C1" });
+  const want = {
+    kind: "notice",
+    notice: "handover_target_not_joined",
+    max: null,
+    tag: "handover_target_invalid",
+  };
+  assert.deepEqual(ui(err, "owner"), want);
+  assert.deepEqual(ui({ source: "native", error: err }, "owner"), want);
+  assert.ok(PROTECTED_NOTICE_KINDS.includes("handover_target_not_joined"));
+  for (const op of ["channel", "send", "action", "transfer"] as const) {
+    assert.deepEqual(
+      ui(err, op),
+      {
+        kind: "notice",
+        notice: "unverified",
+        max: null,
+        tag: "handover_target_invalid",
+      },
+      op,
+    );
+  }
+  assert.equal(brief(ui(err, "message")), "marker:error");
+  // A server type or a client reason with the same text is not the tag.
+  assert.equal(
+    brief(ui({ type: "HandoverTargetInvalid" }, "owner")),
+    "unverified",
+  );
+  assert.equal(
+    brief(ui({ source: "client", reason: "handover_target_invalid" }, "owner")),
+    "unverified",
+  );
+  // Never a shield input: the tag as a group error stays the 3b red.
+  const e = explainShield(
+    green({
+      groupError: "handover_target_invalid" as ShieldInputs["groupError"],
+    }),
+  );
+  assert.ok(e);
+  assert.equal(e.state, "unverified");
+  assert.equal(e.notice, "unverified");
+  assert.notEqual(e.notice, "handover_target_not_joined");
 });
 
 test("D17 message rows -> markers (9.2 / 9.3)", () => {

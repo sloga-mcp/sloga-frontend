@@ -648,10 +648,11 @@ test("S8: the manager is built only once status.device_id is known (and capable)
     ensure,
     /if \(!key \|\| !userId \|\| !deviceId\) return;[\s\S]*new ProtectedTextManager\(/,
   );
-  // S2 F3: the owner flows also read / discard the stored seat publish.
+  // S2 F3: the owner flows also read / discard the stored seat publish;
+  // F5: and hand the owner key over (S2-D42).
   assert.match(
     ensure,
-    /owner: \{\s*protect,\s*setSeats,\s*signOwnerDevices,\s*pendingSeats,\s*cancelPendingSeats,\s*\}/,
+    /owner: \{\s*protect,\s*setSeats,\s*signOwnerDevices,\s*moveOwnerKey,\s*pendingSeats,\s*cancelPendingSeats,\s*\}/,
   );
   assert.match(
     ensure,
@@ -676,6 +677,33 @@ test("S2 F3: pendingSeats / cancelPendingSeats are bridge pass-throughs to the c
     cancel,
     /^\{\s*const manager = await this\.#protectedManagerFor\(channelId\);\s*return manager\.cancelPendingSeats\(channelId\);\s*\}$/,
   );
+});
+
+test("S2 retryNow: a bridge pass-through to the current manager, inside the block, never the open set", () => {
+  const block = seamBlock();
+  const body = stripComments(
+    member(block, /\n {2}retryNow\(channelId: string\): void /),
+  );
+  assert.match(body, /^\{\s*this\.#ptManager\?\.retryNow\(channelId\);\s*\}$/);
+  // a retry never joins the open lifecycle (no 60 s loop) nor builds a
+  // manager
+  assert.doesNotMatch(body, /#ptOpen|protectedOpen|#protectedEnsureManager/);
+  assert.equal(count(SRC, "\n  retryNow(channelId: string): void {"), 1);
+});
+
+test("S2 F5: moveOwnerKey is a bridge pass-through to the current manager, inside the block, with the channel and the target as given", () => {
+  const block = seamBlock();
+  const body = stripComments(
+    member(
+      block,
+      /\n {2}async moveOwnerKey\(channelId: string, toDeviceId: string\)/,
+    ),
+  );
+  assert.match(
+    body,
+    /^\{\s*const manager = await this\.#protectedManagerFor\(channelId\);\s*return manager\.moveOwnerKey\(channelId, toDeviceId\);\s*\}$/,
+  );
+  assert.equal(count(SRC, "\n  async moveOwnerKey("), 1);
 });
 
 test("S8: port.sleep rejects on the manager's lifetime; dispose aborts it", () => {

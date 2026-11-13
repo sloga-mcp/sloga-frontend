@@ -241,6 +241,9 @@ export function noticeCopy(
     case "resecured_too_often":
       // OR-21: an owner-op InSlowmode (sent on the successor create).
       return t`This channel was re-secured too many times today. Try again later.`;
+    case "handover_target_not_joined":
+      // S2-D42: native `handover_target_invalid` on "Move ownership key".
+      return t`That device hasn't joined this channel yet. Open the channel on it, then try again.`;
     default: {
       const _exhaustive: never = kind;
       return verifyChannelFailedCopy();
@@ -444,7 +447,14 @@ function resolvedNames(
  * are not in `PROTECTED_CLIENT_REASONS`) but that have a plain cause and a
  * plain next step. `errorUiCopy` shows them when given `opts.failure`.
  */
-export const CLIENT_REASONS_WITH_COPY = ["authority_needs_v2"] as const;
+export const CLIENT_REASONS_WITH_COPY = [
+  "authority_needs_v2",
+  // S2-D42 `moveOwnerKey` refusals, all before any dialog.
+  "handover_self_target",
+  "handover_target_not_own",
+  "not_signing_device",
+  "authority_held",
+] as const;
 
 export type ClientReasonWithCopy = (typeof CLIENT_REASONS_WITH_COPY)[number];
 
@@ -458,6 +468,18 @@ export function clientReasonCopy(reason: ClientReasonWithCopy): string {
     // on this same flow moves the list to v2 itself: so, try again later.
     case "authority_needs_v2":
       return t`This channel's member list uses an older format, so its signing devices can't be changed yet. Try again later.`;
+    // S2-D42 "Move ownership key": the target is this device.
+    case "handover_self_target":
+      return t`Choose another of your devices to move the ownership key to.`;
+    // The target is not in this account's own device listing.
+    case "handover_target_not_own":
+      return t`You can only move the ownership key to another of your own devices.`;
+    // The served list does not verify as signed by this device.
+    case "not_signing_device":
+      return t`Only the device that holds this channel's ownership key can move it.`;
+    // A served authority names the owner devices; a handover can't qualify.
+    case "authority_held":
+      return t`This channel names its owner devices. Update that list to move ownership instead.`;
     default: {
       const _exhaustive: never = reason;
       return verifyChannelFailedCopy();
@@ -639,6 +661,27 @@ export const settingsCopy = {
 };
 
 // ---------------------------------------------------------------------------
+// Server settings "Protected channels" page: owner key (S2-D42, lane U11b)
+// ---------------------------------------------------------------------------
+
+export const ownerKeyCopy = {
+  /** Shown on the signing device only; opens the device picker. */
+  moveKey: (): string => t`Move ownership key to another device`,
+  /** Above the picker's device list. */
+  choose: (): string =>
+    t`Choose the device to move this channel's ownership key to.`,
+  /** A picker row whose session has no name (never its id). */
+  unnamedDevice: (): string => t`Unnamed device`,
+  /** Closes the picker without signing anything. */
+  cancel: (): string => t`Cancel`,
+  /** This user's other device signs the list: the move starts there. */
+  onOtherDevice: (): string =>
+    t`This channel's ownership key is on another of your devices. Open this page on that device to move it.`,
+  /** A served authority names the owner devices: no handover qualifies. */
+  authorityHeld: (): string => clientReasonCopy("authority_held"),
+};
+
+// ---------------------------------------------------------------------------
 // Seat picker modal (lane C12)
 // ---------------------------------------------------------------------------
 
@@ -695,6 +738,15 @@ export function reasonProblemCopy(
       return reasonEmptyCopy();
     }
   }
+}
+
+/**
+ * Shown before a kick or ban is pressed when a reason is required. The rule
+ * is server-wide (any protected channel), never about the member, so this
+ * is not the server refusal's `removal_reason_required` notice.
+ */
+export function removalReasonHintCopy(): string {
+  return t`This server has protected channels, so removing someone needs a reason.`;
 }
 
 // ---------------------------------------------------------------------------

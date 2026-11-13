@@ -741,6 +741,7 @@ function fakeDeps(
       protect: async () => undefined,
       setSeats: async () => undefined,
       signOwnerDevices: async () => undefined,
+      moveOwnerKey: async () => undefined,
       pendingSeats: () => null,
       cancelPendingSeats: () => ({ discarded: false, why: "none" }),
       ...over.owner,
@@ -3873,6 +3874,73 @@ test("S2 (g): ProtectedChannelChanged: a burst costs ONE refresh after the coale
   m.dispose();
 });
 
+test("S2 retryNow: ONE manual refresh, never the open interval; held channels only", async () => {
+  const env = new Env();
+  const m = make(env);
+  await m.refresh(CH, "interval");
+  await env.advance(0);
+  const seatsGets = () => env.api$("GET", /^\/channels\/[^/]+\/seats$/).length;
+  const before = seatsGets();
+  m.retryNow(CH);
+  await env.advance(0);
+  assert.equal(seatsGets(), before + 1, "one refresh now");
+  // no loop: nothing more however long the channel stays untouched
+  await env.advance(10 * 60_000);
+  assert.equal(seatsGets(), before + 1, "no interval started");
+  assert.equal(env.sleeps.length, 0, "no timer left behind");
+  // a channel the manager doesn't hold is ignored (no register, no GET)
+  m.retryNow("01J9Z3K4M5N6P7Q8R9S0T1V2XX");
+  await env.advance(0);
+  assert.equal(
+    env.api$("GET", /01J9Z3K4M5N6P7Q8R9S0T1V2XX/).length,
+    0,
+    "unknown channel",
+  );
+  // each later click is one more refresh
+  m.retryNow(CH);
+  await env.advance(0);
+  assert.equal(seatsGets(), before + 2);
+  m.dispose();
+});
+
+test("S2 retryNow: dropped while a refresh of the channel is in flight, and a double click is one refresh", async () => {
+  const env = new Env();
+  const m = make(env);
+  await m.refresh(CH, "interval");
+  await env.advance(0);
+  const seatsGets = () => env.api$("GET", /^\/channels\/[^/]+\/seats$/).length;
+  let release: () => void = () => {};
+  const gate = new Promise<void>((r) => {
+    release = r;
+  });
+  let hold = true;
+  env.routes.push((method, path, body) => {
+    if (!hold || method !== "GET" || !/^\/channels\/[^/]+\/seats$/.test(path)) {
+      return undefined;
+    }
+    hold = false;
+    return gate.then(() =>
+      defaultRoute(env)(method, path, body),
+    ) as unknown as ReturnType<Route>;
+  });
+  const before = seatsGets();
+  const running = m.refresh(CH, "interval");
+  await flush();
+  assert.equal(seatsGets(), before + 1, "the refresh waits on its GET");
+  m.retryNow(CH);
+  m.retryNow(CH);
+  release();
+  await running;
+  await env.advance(0);
+  assert.equal(seatsGets(), before + 1, "no second pass queued behind it");
+  // settled: a double click in one tick is still ONE refresh
+  m.retryNow(CH);
+  m.retryNow(CH);
+  await env.advance(0);
+  assert.equal(seatsGets(), before + 2, "one refresh for the double click");
+  m.dispose();
+});
+
 test("S2 (h): a server-reported id (non-v1, g > 63) is indexed in both indexes BEFORE the _join, and its Welcome lands in this channel", async () => {
   const GX = "ef".repeat(32);
   const env = joiningEnv();
@@ -4151,6 +4219,37 @@ test("S2 D40: setSeats re-validates the reason (header rule) and hands the owner
   await m.authoritySign(CH, [OWNER_DEV, "dev-owner-2"]);
   assert.equal(inFlight, true);
   assert.deepEqual(seen.at(-1), ["sign", CH, [OWNER_DEV, "dev-owner-2"]]);
+  assert.equal(env.views.get(CH)?.publishInFlight, false);
+  m.dispose();
+});
+
+test("S2 F5: moveOwnerKey hands the owner flow the channel, the flow port and the target under the publish bookkeeping; a refusal reaches the caller", async () => {
+  const env = new Env();
+  const seen: unknown[][] = [];
+  const inFlight: boolean[] = [];
+  let refuse = false;
+  const m = make(
+    env,
+    fakeDeps(env, {
+      owner: {
+        moveOwnerKey: async (ops, port, ch, to) => {
+          inFlight.push(ops.stateOf(ch)?.publishInFlight === true);
+          seen.push([ch, to, port.selfUserId]);
+          if (refuse) throw { source: "client", reason: "not_signing_device" };
+        },
+      },
+    }),
+  );
+  await m.moveOwnerKey(CH, "dev-owner-2");
+  assert.deepEqual(seen, [[CH, "dev-owner-2", SELF]]);
+  assert.equal(env.views.get(CH)?.publishInFlight, false);
+  refuse = true;
+  await assert.rejects(m.moveOwnerKey(CH, "dev-owner-3"), {
+    source: "client",
+    reason: "not_signing_device",
+  });
+  assert.deepEqual(seen.at(-1), [CH, "dev-owner-3", SELF]);
+  assert.deepEqual(inFlight, [true, true]);
   assert.equal(env.views.get(CH)?.publishInFlight, false);
   m.dispose();
 });

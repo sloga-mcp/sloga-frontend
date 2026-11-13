@@ -1305,7 +1305,9 @@ export type TextRefreshReason =
   | "owner_confirmed"
   | "send_refused"
   /** S2: a `ProtectedChannelChanged` event. */
-  | "event";
+  | "event"
+  /** S2: the UI's one-off `retryNow` (no interval; never an open). */
+  | "manual";
 
 /** Per-channel state the manager exposes to the owner/message flows. */
 export interface ManagerState {
@@ -1409,6 +1411,19 @@ export interface OwnerFlows {
     channelId: string,
     ownerDevices: string[],
   ): Promise<void>;
+  /**
+   * S2-D42 (design 4.6): on the device that signed the served list only,
+   * `_owner_handover_sign` to `toDeviceId`, another device of this user
+   * (always a native dialog), then the next list this device signs over
+   * the same seats, PUT with the statement as `handover`. A retry re-sends
+   * the stored bytes and statement; nothing is signed again.
+   */
+  moveOwnerKey(
+    ops: GroupOps,
+    port: ProtectedTextPort,
+    channelId: string,
+    toDeviceId: string,
+  ): Promise<void>;
   /** S2 F3: the stored seat publish (D7c store only), or null. */
   pendingSeats(port: ProtectedTextPort, channelId: string): PendingSeats | null;
   /**
@@ -1476,6 +1491,8 @@ export interface ProtectedTextManagerApi {
   ): Promise<void>;
   /** S2: `OwnerFlows.signOwnerDevices`, with the publish bookkeeping. */
   authoritySign(channelId: string, ownerDevices: string[]): Promise<void>;
+  /** S2-D42: `OwnerFlows.moveOwnerKey`, with the publish bookkeeping. */
+  moveOwnerKey(channelId: string, toDeviceId: string): Promise<void>;
   /**
    * S2 (design 6.3 "Owner signing device lost"): only on another device of
    * the `signer_lost` user, and only when the UI calls it (never automatic).
@@ -1498,6 +1515,12 @@ export interface ProtectedTextManagerApi {
    * input.
    */
   onChannelChanged(channelId: string, scope: readonly string[]): void;
+  /**
+   * S2: one `refresh(id, "manual")` of a channel this manager holds; no
+   * interval, dropped while a refresh of it is in flight. Never a security
+   * input.
+   */
+  retryNow(channelId: string): void;
 }
 
 /** `new ProtectedTextManager(port, cb, deps)`. */
@@ -1525,6 +1548,13 @@ export interface ProtectedUiApi {
   structuralShell(): boolean;
   protectedOpen(channelId: string): void;
   protectedClose(channelId: string): void;
+  /**
+   * S2: one refresh of a channel, now, for a UI retry (D36 "Retry removal"
+   * / "Rejoin", D39 "Finish now"). Unlike `protectedOpen` it never starts
+   * the 60 s loop; dropped while a refresh of the channel runs and for a
+   * channel the manager doesn't hold. Never a security input.
+   */
+  retryNow(channelId: string): void;
   protect(channelId: string, seats: string[], deviceCap: number): Promise<void>;
   /**
    * `reason` (S2 D40): the unseat reason, validated by the caller with
@@ -1543,6 +1573,16 @@ export interface ProtectedUiApi {
    * then the seat list carrying it.
    */
   authoritySign(channelId: string, ownerDevices: string[]): Promise<void>;
+  /**
+   * S2-D42 "Move ownership key": hand the owner key from this device (it
+   * must have signed the served list) to `toDeviceId`, another device of
+   * this user, behind a native dialog. Offer only
+   * `ownerKeyMoveTargets(seatsSnapshot(id), selfDeviceId(), own device
+   * ids)`; show session names, never ids. Client refusals (reason):
+   * `handover_self_target`, `handover_target_not_own`,
+   * `not_signing_device`, `authority_held`.
+   */
+  moveOwnerKey(channelId: string, toDeviceId: string): Promise<void>;
   /**
    * S2 (design 6.3): recover ownership on this device after the signer
    * device was lost. Never automatic: only this call starts it.

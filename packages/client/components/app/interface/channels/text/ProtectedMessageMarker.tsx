@@ -1,4 +1,4 @@
-import { createMemo } from "solid-js";
+import { Show, createMemo } from "solid-js";
 
 import { styled } from "styled-system/jsx";
 
@@ -7,7 +7,10 @@ import {
   messageCopy,
   shieldLabel,
 } from "@revolt/client/protectedCopy";
-import type { ProtectedMarkerKind } from "@revolt/client/protectedTextTypes";
+import type {
+  ProtectedMarkerKind,
+  ProtectedMessageView,
+} from "@revolt/client/protectedTextTypes";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
 
 /**
@@ -27,6 +30,12 @@ import { Symbol } from "@revolt/ui/components/utils/Symbol";
  *   place of the body; otherwise the row would sit on `pending` forever.
  * - `ts_skew` / `sender_not_verified`: informational notes for an `ok`
  *   view's `tsSkew` / `!senderVerified`, rendered UNDER the decrypted body.
+ * - `files_unsupported` (S2, OR-20): informational note for an `ok` view
+ *   whose `filesUnsupported` is above 0, via `ProtectedFilesNote` (never
+ *   the count, names or any file field).
+ *
+ * `unsupported_version` (S2, OR-19: a newer envelope version) is a gray
+ * marker: this build is outdated, nothing is under attack.
  *
  * Only C0 copy is rendered: never plaintext, ids or server content. Imports
  * are file paths (never a barrel) and the only `styled` call uses a string
@@ -35,7 +44,13 @@ import { Symbol } from "@revolt/ui/components/utils/Symbol";
  */
 
 /** Informational notes for an `ok` view (design 9.2 `ts_skew`). */
-export type ProtectedMessageNoteKind = "ts_skew" | "sender_not_verified";
+export type ProtectedMessageNoteKind =
+  | "ts_skew"
+  | "sender_not_verified"
+  | "files_unsupported";
+
+/** The `ok` arm of the decrypted view. */
+type ProtectedOkView = Extract<ProtectedMessageView, { status: "ok" }>;
 
 /** Everything this component renders. */
 export type ProtectedMessageMarkerKind =
@@ -55,8 +70,6 @@ export function markerTone(
   kind: ProtectedMessageMarkerKind,
 ): ProtectedMarkerTone {
   switch (kind) {
-    // S2 placeholder (no producer yet): the default's red; U1 sets gray.
-    case "unsupported_version":
     case "decrypt_failed":
     case "unverified_sender":
     case "removed_sender":
@@ -65,13 +78,17 @@ export function markerTone(
     case "unencrypted_row":
     case "error":
       return "red";
+    // `unsupported_version` (S2, OR-19): a newer envelope version, so this
+    // build is outdated; nothing is under attack.
     case "sent_before_join":
     case "unknown_key":
+    case "unsupported_version":
       return "gray";
     case "not_available":
       return "gray";
     case "ts_skew":
     case "sender_not_verified":
+    case "files_unsupported":
       return "info";
     case "pending":
       return "pending";
@@ -95,6 +112,8 @@ function markerText(kind: ProtectedMessageMarkerKind): string {
       return messageCopy.tsSkew();
     case "sender_not_verified":
       return messageCopy.senderNotVerified();
+    case "files_unsupported":
+      return messageCopy.filesUnsupported();
     default:
       // `markerCopy` is exhaustive and falls back to the catch-all copy.
       return markerCopy(kind);
@@ -137,6 +156,27 @@ export function ProtectedMessageMarker(props: Props) {
       </Symbol>
       <span>{text()}</span>
     </Marker>
+  );
+}
+
+/**
+ * S2 (OR-20): the files note shows only for a real count above 0 (v1 rows
+ * and v2 rows without files carry 0). Only the count is read; nothing about
+ * the files reaches the UI.
+ */
+export function filesNoteShown(
+  view: Pick<ProtectedOkView, "filesUnsupported">,
+): boolean {
+  const n: unknown = view.filesUnsupported;
+  return typeof n === "number" && n > 0;
+}
+
+/** The files note for an `ok` view, rendered UNDER the decrypted body. */
+export function ProtectedFilesNote(props: { view: ProtectedOkView }) {
+  return (
+    <Show when={filesNoteShown(props.view)}>
+      <ProtectedMessageMarker kind="files_unsupported" />
+    </Show>
   );
 }
 

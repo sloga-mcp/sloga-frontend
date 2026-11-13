@@ -8,6 +8,12 @@
 export type OwnDeviceView = {
   deviceId: string;
   isThisDevice: boolean;
+  /**
+   * S2-D38: the session the device is bound to (own listing only), for
+   * comparisons and the session delete; never rendered. Null when absent,
+   * empty or not a string.
+   */
+  sessionId: string | null;
   sessionName: string | null;
   createdAt: string | null;
   lastSeenAt: string | null;
@@ -63,7 +69,8 @@ export function sessionNameOf(
 /**
  * Map the own listing to views: this device first, then the rest newest
  * first by `created_at` (unknown creation times last). Rows without a
- * string `device_id` are dropped, and so is a repeated id.
+ * string `device_id` are dropped, and so is a repeated id. `session_id`
+ * and `session_name` are optional (own devices bound to a session only).
  */
 export function toOwnDeviceViews(
   listing: unknown,
@@ -78,9 +85,11 @@ export function toOwnDeviceViews(
     seen.add(deviceId);
     const createdAt = stringField(row, "created_at");
     const lastSeenAt = stringField(row, "last_seen_at");
+    const sessionId = stringField(row, "session_id");
     views.push({
       deviceId,
       isThisDevice: deviceId === myDeviceId,
+      sessionId: sessionId === "" ? null : sessionId,
       sessionName: stringField(row, "session_name"),
       createdAt,
       lastSeenAt,

@@ -1,6 +1,7 @@
 import { Match, Show, Switch, createMemo, createSignal } from "solid-js";
 
-import { Trans } from "@lingui-solid/solid/macro";
+import { Plural, Trans } from "@lingui-solid/solid/macro";
+import { styled } from "styled-system/jsx";
 
 import { useClient, useClientLifecycle } from "@revolt/client";
 import {
@@ -43,6 +44,7 @@ export function MyAccount() {
       <EditAccount />
       <MultiFactorAuth />
       <ManageAccount />
+      <ProtectedOwnedWarning />
     </Column>
   );
 }
@@ -351,3 +353,76 @@ function ManageAccount() {
     </CategoryButton.Group>
   );
 }
+
+/**
+ * S2-D43: tell an owner how many of their servers have a protected channel,
+ * worded to match the `stillOwnServers` gate above (delete or transfer
+ * first). A count only (no names, no ids); hidden at 0.
+ */
+function ProtectedOwnedWarning() {
+  const client = useClient();
+
+  // Client cache only (no request); this device's pins count too.
+  const protectedOwned = createMemo(() =>
+    ownedProtectedServerCount(
+      client().servers.toList(),
+      client().user?.id,
+      (channelId) => client().isProtectedChannel(channelId),
+    ),
+  );
+
+  return (
+    <Show when={protectedOwned() > 0}>
+      <ProtectedOwnedNote role="note">
+        <Plural
+          value={protectedOwned()}
+          one="You own # server with protected channels. Delete it or transfer it before deleting your account. Deleting a server deletes its protected channels for everyone."
+          other="You own # servers with protected channels. Delete or transfer them before deleting your account. Deleting a server deletes its protected channels for everyone."
+        />
+      </ProtectedOwnedNote>
+    </Show>
+  );
+}
+
+const ProtectedOwnedNote = styled("div", {
+  base: {
+    color: "var(--md-sys-color-error)",
+    fontSize: "14px",
+    lineHeight: "20px",
+  },
+});
+
+// protected-pure:begin (no imports: account.scan.test.ts runs this region
+// under Node)
+
+/** The fields of a cached server the count reads. */
+type OwnedServerView = {
+  readonly ownerId: unknown;
+  readonly channelIds?: Iterable<string> | null;
+};
+
+/**
+ * How many servers `selfId` owns that have at least one protected channel.
+ * Each server counts once, however many of its channels are protected. An
+ * unknown self counts nothing (an absent owner id never matches).
+ */
+function ownedProtectedServerCount(
+  servers: Iterable<OwnedServerView>,
+  selfId: unknown,
+  isProtected: (channelId: string) => boolean,
+): number {
+  if (typeof selfId !== "string" || selfId === "") return 0;
+  let count = 0;
+  for (const server of servers) {
+    if (server.ownerId !== selfId) continue;
+    for (const channelId of server.channelIds ?? []) {
+      if (isProtected(channelId) === true) {
+        count += 1;
+        break;
+      }
+    }
+  }
+  return count;
+}
+
+// protected-pure:end

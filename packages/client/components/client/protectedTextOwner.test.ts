@@ -15,6 +15,8 @@ import { protectedNoticeForError } from "./protectedShield.ts";
 import {
   _resetOwnerFlowsForTest,
   cancelPendingSeats,
+  moveOwnerKey,
+  ownerKeyMoveTargets,
   pendingSeats,
   proposedOwnerDevices,
   protect,
@@ -39,6 +41,7 @@ const _ownerFlows: OwnerFlows = {
   protect,
   setSeats,
   signOwnerDevices,
+  moveOwnerKey,
   pendingSeats,
   cancelPendingSeats,
 };
@@ -1868,4 +1871,351 @@ test("S2 R27: proposedOwnerDevices offers nothing when there is nothing safe to 
   for (const [label, seats] of cases) {
     assert.equal(proposedOwnerDevices(seats, MY_DEV), null, label);
   }
+});
+
+// ---------------------------------------------------------------------------
+// S2 F5 (S2-D42): moveOwnerKey, the same-user K0 -> K1 handover (design 4.6)
+// ---------------------------------------------------------------------------
+
+/** A handover statement as native signs it (design 4.6 line order). */
+const handoverOf = (to = OTHER_DEV, over: Record<string, string> = {}) => {
+  const fields: Record<string, string> = {
+    channel_id: CH,
+    from_user_id: ME,
+    from_device_id: MY_DEV,
+    from_identity_key: "K0KEY",
+    to_user_id: ME,
+    to_device_id: to,
+    to_identity_key: "K1KEY",
+    issued_at: "1700000000000",
+    ...over,
+  };
+  const lines = Object.entries(fields).map(([k, v]) => `${k}:${v}`);
+  return {
+    body: ["sloga-owner-handover-v1", "v:1", ...lines].join("\n"),
+    signature: `HSIG-${to}`,
+  };
+};
+
+const HANDOVER = handoverOf();
+const nextV1 = genesis({
+  version: 3,
+  body: "sloga-seat-list-v1\nv:1\nversion:3",
+  signature: "S3V1",
+});
+const OWN_LISTING = [
+  { device_id: MY_DEV, session_name: "this one" },
+  { device_id: OTHER_DEV, session_name: "laptop" },
+  { device: THIRD_DEV },
+];
+
+/** A seat-flow harness whose own listing holds this device and K1. */
+function moveHarness(
+  over: {
+    start?: SignedSeatList;
+    putReplies?: Reply[];
+    invoke?: Partial<
+      Record<string, (args: Record<string, unknown>) => unknown>
+    >;
+    sleepRejectsAfter?: number;
+    formatsV2?: boolean;
+  } = {},
+): Harness {
+  const h = harness({
+    routes: listRoutes(
+      over.start ?? heldV1,
+      nextV1,
+      over.putReplies ?? [res(200)],
+    ),
+    invoke: {
+      ...seatNative(nextV1),
+      e2ee_text_owner_handover_sign: () => HANDOVER,
+      e2ee_text_pin_own_devices: () => null,
+      ...over.invoke,
+    },
+    sleepRejectsAfter: over.sleepRejectsAfter,
+    formatsV2: over.formatsV2,
+  });
+  h.port.ownDeviceListing = async () => ({ hash: "h", listing: OWN_LISTING });
+  return h;
+}
+
+test("S2 F5 moveOwnerKey: verify, ONE handover dialog for this user's target, the next list signed HERE over the same seats, PUT with the statement as handover", async () => {
+  const h = moveHarness({ putReplies: [res(503), res(200)] });
+  await moveOwnerKey(h.ops, h.port, CH, OTHER_DEV);
+
+  assert.deepEqual(h.trace.slice(0, 5), [
+    `GET /channels/${CH}/seats`,
+    "e2ee_text_seat_list_verify",
+    "e2ee_text_owner_handover_sign",
+    "e2ee_text_seat_list_sign",
+    `PUT /channels/${CH}/seats`,
+  ]);
+  const hs = cmds(h, "e2ee_text_owner_handover_sign");
+  assert.equal(hs.length, 1, "the dialog runs exactly once");
+  assert.deepEqual(hs[0].args, {
+    channelId: CH,
+    userId: ME,
+    toUserId: ME,
+    toDeviceId: OTHER_DEV,
+    channelName: "secret",
+    displayNames: [{ user_id: ME, name: ME }],
+  });
+  const [a] = signArgs(h);
+  assert.deepEqual(a.seats, [ME, BOB], "the verified list's seats");
+  assert.equal(a.deviceCap, 5);
+  assert.deepEqual(a.serverList, { version: 2, body: heldV1.body });
+  assert.equal(a.authority, null);
+  assert.equal(a.recovery, false);
+  assert.equal(a.format, null, "formats_v2 off: native's choice");
+
+  const p = puts(h);
+  assert.equal(p.length, 2, "the 503 is re-sent");
+  assert.deepEqual(p[0].body, {
+    body: nextV1.body,
+    signature: nextV1.signature,
+    signer_device_id: MY_DEV,
+    handover: HANDOVER,
+  });
+  assert.deepEqual(p[1].body, p[0].body, "SAME bytes, SAME statement");
+  const stored = JSON.parse(h.storeAtPut[0]!);
+  assert.deepEqual(stored.handover, HANDOVER, "stored with the bytes");
+  assert.deepEqual(stored.signed, nextV1);
+  assert.equal(signArgs(h).length, 1);
+  assert.equal(h.store.size, 0, "resolved");
+  // Read back and verified (the chain is now served with the list).
+  assert.equal(cmds(h, "e2ee_text_seat_list_verify").length, 2);
+});
+
+test("S2 F5 moveOwnerKey: the first list over a held v1 follows rule (j) like every other list", async () => {
+  const h = moveHarness({ formatsV2: true });
+  await moveOwnerKey(h.ops, h.port, CH, OTHER_DEV);
+  assert.equal(signArgs(h)[0].format, 2);
+  assert.deepEqual(
+    (puts(h)[0].body as { handover?: unknown }).handover,
+    HANDOVER,
+  );
+});
+
+test("S2 F5 moveOwnerKey: a retry after an aborted publish re-sends the stored bytes WITH the stored statement; no dialog, no sign", async () => {
+  const h = moveHarness({ putReplies: ["transport"], sleepRejectsAfter: 0 });
+  await assert.rejects(moveOwnerKey(h.ops, h.port, CH, OTHER_DEV), {
+    reason: "aborted",
+  });
+  const key = publishStoreKey(ME, CH);
+  const stored = h.store.get(key);
+  assert.ok(stored, "the signed bytes stay stored");
+  assert.deepEqual(JSON.parse(stored).handover, HANDOVER);
+
+  // A reload: memory is gone, the D7c entry is not.
+  _resetOwnerFlowsForTest();
+  const h2 = moveHarness();
+  h2.store.set(key, stored);
+  await moveOwnerKey(h2.ops, h2.port, CH, OTHER_DEV);
+  assert.equal(
+    cmds(h2, "e2ee_text_owner_handover_sign").length,
+    0,
+    "no dialog",
+  );
+  assert.equal(signArgs(h2).length, 0, "no re-sign");
+  assert.equal(puts(h2).length, 1);
+  assert.deepEqual(
+    (puts(h2)[0].body as { handover?: unknown }).handover,
+    HANDOVER,
+    "the statement rides on the re-send",
+  );
+  assert.deepEqual(puts(h2)[0].body, puts(h)[0].body, "SAME bytes");
+  assert.equal(h2.store.size, 0);
+});
+
+test("S2 F5 moveOwnerKey: another flow resuming a stored handover publish re-sends the statement too, and never puts it on its own list", async () => {
+  const next4 = genesis({
+    version: 4,
+    body: "sloga-seat-list-v1\nv:1\nversion:4",
+    signature: "S4V1",
+  });
+  const h = moveHarness({
+    invoke: { e2ee_text_seat_list_sign: () => next4 },
+  });
+  h.store.set(
+    publishStoreKey(ME, CH),
+    JSON.stringify({
+      v: 1,
+      op: "seats",
+      signed: nextV1,
+      handover: HANDOVER,
+      answer: "sent",
+    }),
+  );
+  await setSeats(h.ops, h.port, CH, [ME, BOB], 5);
+  const p = puts(h);
+  assert.equal(p.length, 2);
+  assert.deepEqual(p[0].body, {
+    body: nextV1.body,
+    signature: nextV1.signature,
+    signer_device_id: MY_DEV,
+    handover: HANDOVER,
+  });
+  assert.deepEqual(p[1].body, {
+    body: next4.body,
+    signature: next4.signature,
+    signer_device_id: MY_DEV,
+  });
+});
+
+test("S2 F5 moveOwnerKey: on a device that did not sign the served list it is refused before any dialog", async () => {
+  const heldByK1 = genesis({
+    version: 2,
+    body: "sloga-seat-list-v1\nv:1\nversion:2\nby-k1",
+    signature: "S2K1",
+    signer_device_id: OTHER_DEV,
+  });
+  const h = moveHarness({
+    start: heldByK1,
+    invoke: {
+      e2ee_text_seat_list_verify: (a) => ({
+        ...verdict([ME, BOB], 2),
+        signer_device_id: (a.list as { signer_device_id: string })
+          .signer_device_id,
+      }),
+    },
+  });
+  h.port.ownDeviceListing = async () => ({
+    hash: "h2",
+    listing: [...OWN_LISTING, { device_id: THIRD_DEV }],
+  });
+  await assert.rejects(moveOwnerKey(h.ops, h.port, CH, THIRD_DEV), {
+    source: "client",
+    reason: "not_signing_device",
+  });
+  assert.equal(cmds(h, "e2ee_text_seat_list_verify").length, 1);
+  assert.equal(cmds(h, "e2ee_text_owner_handover_sign").length, 0);
+  assert.equal(signArgs(h).length, 0);
+  assert.equal(puts(h).length, 0);
+  assert.equal(h.store.size, 0);
+});
+
+test("S2 F5 moveOwnerKey: a device outside this user's listing (another user's, or unknown) is refused before any request or dialog", async () => {
+  const h = moveHarness();
+  for (const to of [THIRD_DEV, "dd".repeat(16)]) {
+    await assert.rejects(
+      moveOwnerKey(h.ops, h.port, CH, to),
+      { source: "client", reason: "handover_target_not_own" },
+      to,
+    );
+  }
+  assert.equal(h.calls.length + h.invokes.length, 0);
+});
+
+test("S2 F5 moveOwnerKey: this device as the target is refused before anything", async () => {
+  const h = moveHarness();
+  await assert.rejects(moveOwnerKey(h.ops, h.port, CH, MY_DEV), {
+    source: "client",
+    reason: "handover_self_target",
+  });
+  for (const bad of ["", null, 7]) {
+    await assert.rejects(
+      moveOwnerKey(h.ops, h.port, CH, bad as never),
+      { reason: "invalid_argument" },
+      String(bad),
+    );
+  }
+  assert.equal(h.calls.length + h.invokes.length, 0);
+});
+
+test("S2 F5 moveOwnerKey: under a served authority the chain would qualify no one: refused before any dialog", async () => {
+  const h = moveHarness({ start: heldV2 });
+  await assert.rejects(moveOwnerKey(h.ops, h.port, CH, OTHER_DEV), {
+    source: "client",
+    reason: "authority_held",
+  });
+  assert.equal(cmds(h, "e2ee_text_owner_handover_sign").length, 0);
+  assert.equal(puts(h).length, 0);
+});
+
+test("S2 F5 moveOwnerKey: a statement that is not the one asked for is never published", async () => {
+  const wrong = [
+    handoverOf(THIRD_DEV),
+    handoverOf(OTHER_DEV, { from_device_id: THIRD_DEV }),
+    handoverOf(OTHER_DEV, { to_user_id: BOB }),
+    handoverOf(OTHER_DEV, { channel_id: "01OTHERCHANNEL00000000000A" }),
+    { body: HANDOVER.body.replace("handover", "succession"), signature: "X" },
+    { body: HANDOVER.body },
+  ];
+  for (const answer of wrong) {
+    _resetOwnerFlowsForTest();
+    const h = moveHarness({
+      invoke: { e2ee_text_owner_handover_sign: () => answer },
+    });
+    await assert.rejects(moveOwnerKey(h.ops, h.port, CH, OTHER_DEV), {
+      source: "client",
+      reason: "publish_refused",
+    });
+    assert.equal(signArgs(h).length, 0);
+    assert.equal(puts(h).length, 0);
+    assert.equal(h.store.size, 0);
+  }
+});
+
+test("S2 F5 moveOwnerKey: identity_pin_required pins the own devices from the listing and asks ONCE more; a decline publishes nothing", async () => {
+  let asked = 0;
+  const h = moveHarness({
+    invoke: {
+      e2ee_text_owner_handover_sign: () => {
+        if (++asked === 1) {
+          throw {
+            type: "identity_pin_required",
+            user_id: ME,
+            device_id: OTHER_DEV,
+          };
+        }
+        return HANDOVER;
+      },
+    },
+  });
+  await moveOwnerKey(h.ops, h.port, CH, OTHER_DEV);
+  const pins = cmds(h, "e2ee_text_pin_own_devices");
+  assert.equal(pins.length, 1);
+  assert.deepEqual(pins[0].args, { userId: ME, devices: OWN_LISTING });
+  assert.equal(asked, 2);
+  assert.equal(puts(h).length, 1);
+
+  _resetOwnerFlowsForTest();
+  const h2 = moveHarness({
+    invoke: {
+      e2ee_text_owner_handover_sign: () => {
+        throw { type: "declined" };
+      },
+    },
+  });
+  await assert.rejects(moveOwnerKey(h2.ops, h2.port, CH, OTHER_DEV), {
+    source: "native",
+    error: { type: "declined" },
+  });
+  assert.equal(signArgs(h2).length, 0);
+  assert.equal(puts(h2).length, 0);
+  assert.equal(h2.store.size, 0);
+});
+
+test("S2 F5 ownerKeyMoveTargets: this user's other devices, in order, once each, only while this device signed the served list and no authority is served", () => {
+  const own = [MY_DEV, OTHER_DEV, "", OTHER_DEV, THIRD_DEV];
+  const mine = seatsBody(listOf(heldV1)) as ProtectedSeatsResponse;
+  assert.deepEqual(ownerKeyMoveTargets(mine, MY_DEV, own), [
+    OTHER_DEV,
+    THIRD_DEV,
+  ]);
+  const byK1 = seatsBody(
+    listOf({ ...heldV1, signer_device_id: OTHER_DEV }),
+  ) as ProtectedSeatsResponse;
+  const cases: [string, ProtectedSeatsResponse | null, string | null][] = [
+    ["no snapshot", null, MY_DEV],
+    ["not protected", seatsBody(null) as ProtectedSeatsResponse, MY_DEV],
+    ["this device unknown", mine, null],
+    ["signed by another device", byK1, MY_DEV],
+    ["authority served", seatsWith(AUTH, undefined), MY_DEV],
+  ];
+  for (const [label, seats, self] of cases) {
+    assert.deepEqual(ownerKeyMoveTargets(seats, self, own), [], label);
+  }
+  assert.deepEqual(ownerKeyMoveTargets(mine, MY_DEV, [MY_DEV]), []);
 });

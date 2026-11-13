@@ -6,6 +6,8 @@ import {
   createMemo,
   createSignal,
   on,
+  onCleanup,
+  onMount,
 } from "solid-js";
 
 import { Trans, useLingui } from "@lingui-solid/solid/macro";
@@ -19,13 +21,33 @@ import type { E2EEBridge } from "@revolt/client/e2ee";
 import {
   errorUiCopy,
   noticeCopy,
+  reasonProblemCopy,
+  seatPickerCopy,
   settingsCopy,
 } from "@revolt/client/protectedCopy";
+import {
+  AUDIT_LOG_REASON_MAX_CHARS,
+  reasonRefusal,
+  validReason,
+} from "@revolt/client/protectedRemovalReasonPolicy";
+import {
+  type SeatDiscardOutcome,
+  seatClientReason,
+  seatDeviceCounts,
+  seatDiscardOutcome,
+  seatFailureBody,
+  seatReasonRequired,
+  seatRemovalsWaiting,
+} from "@revolt/client/protectedSeatUiPolicy";
 import {
   type ProtectedErrorUi,
   protectedNoticeForError,
 } from "@revolt/client/protectedShield";
-import type { ProtectedSeatsResponse } from "@revolt/client/protectedTextTypes";
+import { proposedOwnerDevices } from "@revolt/client/protectedTextOwner";
+import type {
+  ProtectedSeatsResponse,
+  ProtectedUiApi,
+} from "@revolt/client/protectedTextTypes";
 import {
   protectedUiOf,
   structuralShellOf,
@@ -77,6 +99,9 @@ type RawSeats =
   | { key: string; state: "loading" | "failed" }
   | { key: string; state: "ok"; body: ProtectedSeatsResponse };
 
+/** How often "Removal waiting" re-checks the age of pending removals. */
+const REMOVAL_RECHECK_MS = 30_000;
+
 /**
  * Protected channel settings page (W4 lane C11; plan D7, D13, D17, product
  * choices 3 and 4; design 6.3 "Protect" / "Seat a member" / "Owner unseat",
@@ -89,6 +114,17 @@ type RawSeats =
  * "Remove seat" (an unseat after the row's inline confirm, W4c#4; native
  * shows no dialog for removals).
  * While a seat publish is unresolved both are disabled. No handover UI.
+ *
+ * S2 (D39 / D40 / R27 / F3, lane U10), the picker's (U8) surfaces where
+ * the page has them: "Update the list" for users the server removed (via
+ * SeatList, with the released seats and the device column); "Removal
+ * waiting" / "Finish now" (one `retryNow`); the revoked-owner-devices
+ * banner (`proposedOwnerDevices` -> `authoritySign`, one native dialog);
+ * a stored seat change (F3): "Discard this change" only when the bridge
+ * proves the server never took it, and, when the server refused it for
+ * its reason, the reason input that re-sends that SAME change with it
+ * (design 4.9: nothing is re-signed). Re-creating a poisoned group stays
+ * with the channel's own action, not this page.
  *
  * Seats come from the bridge's last `GET .../seats` (`seatsSnapshot`).
  * When it has none (the channel isn't protected yet, or the bridge has not
@@ -112,6 +148,31 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
     ui()?.protectedFlag() ?? { enabled: false, defaultDeviceCap: null };
   const view = () => ui()?.protectedChannels.get(props.channel.id) ?? null;
   const snapshot = () => ui()?.seatsSnapshot(props.channel.id) ?? null;
+
+  /**
+   * One S2 bridge read for render: `none` without a bridge surface, or
+   * when the read throws (an older bridge lacking the method, say).
+   */
+  function readUi<T>(read: (api: ProtectedUiApi) => T, none: T): T {
+    const api = ui();
+    if (!api) return none;
+    try {
+      return read(api);
+    } catch {
+      return none;
+    }
+  }
+
+  /** F3: this device's stored, unresolved seat publish, or null. */
+  const stored = () => {
+    const id = props.channel.id;
+    return readUi((api) => api.pendingSeats(id), null);
+  };
+  /**
+   * S2 D40: the stored change was refused for its reason (the bridge keeps
+   * that on the stored publish, so it survives a reload): ask for one.
+   */
+  const askReason = () => stored()?.reasonRequired === true;
   // A structural shell with E2EE off (S7 D9 notice split; the B6 hooks' rule).
   const tauriE2eeOff = () =>
     tauriE2eeOffOf({
@@ -255,10 +316,14 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
 
   // ---- actions ----------------------------------------------------------
 
-  const [pending, setPending] = createSignal<"protect" | "seats" | null>(null);
+  const [pending, setPending] = createSignal<
+    "protect" | "seats" | "authority" | "discard" | null
+  >(null);
   const [error, setError] = createSignal<string | null>(null);
   const [saved, setSaved] = createSignal(false);
   const [confirming, setConfirming] = createSignal(false);
+  /** A neutral S2 outcome line (Finish now, a discard); never an error. */
+  const [note, setNote] = createSignal<string | null>(null);
 
   /** D7: an unresolved publish refuses signing; so does our own call. */
   const busy = () => view()?.publishInFlight === true || pending() !== null;
@@ -285,6 +350,14 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
     if (isClientReason(err, "publish_in_flight")) {
       return settingsCopy.publishInFlight();
     }
+    // S2 D40: the server's too-long reason refusal (the failure BODY), before
+    // the notice mapping.
+    if (reasonRefusal(seatFailureBody(err)) === "too_long") {
+      return reasonProblemCopy("too_long", AUDIT_LOG_REASON_MAX_CHARS);
+    }
+    if (seatClientReason(err) === "publish_not_persisted") {
+      return notPersistedLine();
+    }
     const ui = errorUiOf(err);
     if (ui.kind !== "none") {
       // ids only (D16)
@@ -293,7 +366,10 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
         tag: ui.tag,
       });
     }
-    return errorUiCopy(ui, { removedUserNames: displayNames });
+    // S2 D40: the reason section says it (with its input) while the stored
+    // change waits for a reason; otherwise the notice says it here.
+    if (seatReasonRequired(ui) && askReason()) return null;
+    return errorUiCopy(ui, { removedUserNames: displayNames, failure: err });
   }
 
   /**
@@ -372,9 +448,15 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
   /** Adding seats is growth: flag-gated (D13). */
   const canAddSeats = () => canChangeSeats() && flag().enabled === true;
 
+  /**
+   * `reason` (S2 D40): `validReason(s, "header").reason`, sent as the
+   * unseat reason; with a stored change refused for its reason the bridge
+   * re-sends that change with it and signs nothing (design 4.9).
+   */
   async function runSetSeats(
     userIds: string[],
     rethrow: boolean,
+    reason?: string,
   ): Promise<void> {
     const api = ui();
     const owner = ownerId();
@@ -388,8 +470,14 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
     setPending("seats");
     setError(null);
     setSaved(false);
+    setNote(null);
     try {
-      await api.setSeats(props.channel.id, ownerFirst(userIds, owner), cap);
+      await api.setSeats(
+        props.channel.id,
+        ownerFirst(userIds, owner),
+        cap,
+        reason,
+      );
       setSaved(true);
     } catch (err) {
       noteRemovedRefusal(err, listBody);
@@ -426,11 +514,205 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
     const s = seats();
     const owner = ownerId();
     if (!s || owner === null || busy() || !canChangeSeats()) return;
+    // S2 D40: the stored change waiting for a reason would be re-sent
+    // without one; its reason section is the way on (Remove is hidden).
+    if (askReason()) return;
     // W4d: from the editable seats, so a list still naming another
     // server-removed user is never submitted
     const next = seatsAfterRemoval(editableIds(), owner, userId);
     if (next === null) return;
     void runSetSeats(next, false);
+  }
+
+  // ---- S2 owner surfaces (D39, D40, R27, F3) ------------------------------
+
+  const [reason, setReason] = createSignal("");
+  const [reasonProblem, setReasonProblem] = createSignal<string | null>(null);
+  const [now, setNow] = createSignal(Date.now());
+
+  onMount(() => {
+    const timer = setInterval(() => setNow(Date.now()), REMOVAL_RECHECK_MS);
+    onCleanup(() => clearInterval(timer));
+  });
+
+  // A stored change that resolved or was discarded takes its reason along.
+  createEffect(
+    on(askReason, (ask) => {
+      if (!ask) {
+        setReason("");
+        setReasonProblem(null);
+      }
+    }),
+  );
+
+  /** Owner actions on a protected channel this device can run. */
+  const canAct = () => eligible() && isProtected() && capable();
+
+  /** S2 D39: devices per user in the open Text group; null when unknown. */
+  const deviceCounts = createMemo(() =>
+    seatDeviceCounts(view()?.serverGroup?.members),
+  );
+
+  /** S2 D39: pending removals waiting 10 minutes or more. */
+  const waiting = createMemo(() =>
+    isProtected()
+      ? seatRemovalsWaiting(view()?.serverGroup?.pending_removals, now())
+      : [],
+  );
+  const poisoned = () => view()?.native?.state === "poisoned";
+
+  /** S2 (R27): the server reported revoked owner devices (owner reads). */
+  const revoked = () => {
+    const r = snapshot()?.revoked_owner_devices;
+    return isProtected() && Array.isArray(r) && r.length > 0;
+  };
+  /** The owner devices to sign instead; null when this device can't. */
+  const proposedDevices = createMemo(() => {
+    const self = readUi((api) => api.selfDeviceId(), null);
+    if (self === null) return null;
+    try {
+      return proposedOwnerDevices(snapshot(), self);
+    } catch {
+      // a malformed seat read offers nothing
+      return null;
+    }
+  });
+
+  // S2 D39: the waiting users are named; fetch any this client lacks.
+  const requested = new Set<string>();
+  createEffect(() => {
+    const c = client();
+    for (const id of waiting()) {
+      if (requested.has(id) || c.users.get(id)) continue;
+      requested.add(id);
+      c.users.fetch(id).catch(() => {
+        // the line reads "Unknown member"; nothing else depends on it
+      });
+    }
+  });
+
+  /** A display name for the S2 lines, never an id. */
+  const nameOf = (id: string): string =>
+    displayNames([id])[0] ?? unknownMember();
+
+  /**
+   * S2 D39 "Update the list": the signed list without the users the server
+   * removed (the editable seats). Removal only: no native dialog, never
+   * blocked by the seat limit.
+   */
+  function updateList() {
+    if (busy() || askReason() || !canChangeSeats()) return;
+    if (removedIds().length === 0) return;
+    void runSetSeats(editableIds(), false);
+  }
+
+  /**
+   * S2 D39 "Finish now": ONE manual refresh (`retryNow`, never the open's
+   * 60 s loop) lets the removal duty commit the pending Removes (design
+   * 6.3).
+   */
+  function finishNow() {
+    if (busy() || !canAct()) return;
+    const id = props.channel.id;
+    readUi((api) => api.retryNow(id), undefined);
+    setError(null);
+    setSaved(false);
+    setNote(finishLine());
+  }
+
+  /** S2 (R27): re-sign the owner devices without the revoked ones. */
+  async function resignDevices() {
+    const api = ui();
+    const devices = proposedDevices();
+    if (!api || devices === null || busy() || !canAct()) return;
+    setPending("authority");
+    setError(null);
+    setSaved(false);
+    setNote(null);
+    try {
+      await api.authoritySign(props.channel.id, devices);
+    } catch (err) {
+      // `none` (native Declined) maps to null: nothing shown
+      setError(errorText(err));
+    } finally {
+      setPending(null);
+    }
+  }
+
+  /** F3 "Discard this change": only a change the server never took. */
+  async function discard() {
+    const api = ui();
+    if (!api || busy() || !canAct()) return;
+    setPending("discard");
+    setError(null);
+    setSaved(false);
+    setNote(null);
+    try {
+      const outcome = seatDiscardOutcome(
+        await api.cancelPendingSeats(props.channel.id),
+      );
+      setNote(discardLine(outcome));
+    } catch (err) {
+      setError(errorText(err));
+    } finally {
+      setPending(null);
+    }
+  }
+
+  /**
+   * S2 D40: the reason, checked as the server will, then the stored change
+   * re-sent with it. That change IS this change (design 4.9): the bridge
+   * re-sends it byte for byte and signs nothing; `editableIds()` only
+   * fills the argument.
+   */
+  function submitReason() {
+    if (busy() || !askReason() || !canChangeSeats()) return;
+    const check = validReason(reason(), "header");
+    if (!check.ok) {
+      setReasonProblem(
+        reasonProblemCopy(check.why, AUDIT_LOG_REASON_MAX_CHARS),
+      );
+      return;
+    }
+    setReasonProblem(null);
+    void runSetSeats(editableIds(), false, check.reason);
+  }
+
+  // ---- S2 local msgids, the seat picker's texts (catalog owed, L9) -------
+
+  const unknownMember = () => t`Unknown member`;
+  const waitingTitle = () => t`Removal waiting`;
+  const finishLabel = () => t`Finish now`;
+  const finishLine = () => t`Trying the removal again…`;
+  const resignLabel = () => t`Re-sign signing devices`;
+  const reasonLabel = () => t`Reason for the removal`;
+  const discardLabel = () => t`Discard this change`;
+  const storedLine = () =>
+    t`An earlier change to the seats hasn't finished saving. Trying again sends that same change, exactly as it was.`;
+  const cantDiscardLine = () =>
+    t`This change can't be discarded now. The server may already have it.`;
+  const maybeAcceptedLine = () =>
+    t`The server may already have this change, so it can't be discarded.`;
+  const notPersistedLine = () =>
+    t`This change couldn't be stored on this device, so it wasn't sent. Try again.`;
+
+  /** F3 outcome copy; an unreadable answer reads as "maybe accepted". */
+  function discardLine(outcome: SeatDiscardOutcome): string {
+    switch (outcome) {
+      case "discarded":
+        return t`The change was discarded.`;
+      case "none":
+        return t`There's no change waiting to be discarded.`;
+      case "busy":
+        return t`This change is being sent right now. Try again in a moment.`;
+      case "maybe_accepted":
+      case "unknown":
+        return maybeAcceptedLine();
+      default: {
+        const _exhaustive: never = outcome;
+        return maybeAcceptedLine();
+      }
+    }
   }
 
   /** Why "Protect this channel" isn't offered (C0 copy where it exists). */
@@ -557,6 +839,91 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
                 </Progress>
               </Show>
 
+              {/* S2 R27: the server reports revoked owner devices. */}
+              <Show when={revoked()}>
+                <Alert role="alert" data-revoked-owner-devices>
+                  <span>{noticeCopy("revoked_owner_devices")}</span>
+                  <Show when={proposedDevices() !== null && canAct()}>
+                    <Button
+                      size="sm"
+                      variant="tonal"
+                      isDisabled={busy()}
+                      onPress={() => void resignDevices()}
+                    >
+                      {resignLabel()}
+                    </Button>
+                  </Show>
+                </Alert>
+              </Show>
+
+              {/* S2 D39: a pending removal 10 minutes old (design 6.3, 9.2).
+                  On a poisoned group Finish now can't help: the channel's
+                  own re-create applies there, never this page. */}
+              <Show when={waiting().length > 0}>
+                <Callout role="status" data-removal-waiting>
+                  <CalloutTitle>{waitingTitle()}</CalloutTitle>
+                  <span>{waiting().map(nameOf).join(", ")}</span>
+                  <Show when={!poisoned() && canAct()}>
+                    <Button
+                      size="sm"
+                      variant="tonal"
+                      isDisabled={busy()}
+                      onPress={finishNow}
+                    >
+                      {finishLabel()}
+                    </Button>
+                  </Show>
+                </Callout>
+              </Show>
+
+              {/* F3 / D40: a stored change wins over any new one (4.9). Not
+                  while a send runs: that send's own change is stored
+                  meanwhile. */}
+              <Show when={canAct() && !busy() && stored()}>
+                {(s) => (
+                  <Callout role="status" data-stored-change>
+                    <span>{storedLine()}</span>
+                    <Show when={s().reasonRequired}>
+                      <ReasonSection data-reason>
+                        <span>{noticeCopy("removal_reason_required")}</span>
+                        <ReasonInput
+                          value={reason()}
+                          placeholder={reasonLabel()}
+                          aria-label={reasonLabel()}
+                          aria-invalid={reasonProblem() !== null}
+                          onInput={(event) => {
+                            setReason(event.currentTarget.value);
+                            setReasonProblem(null);
+                          }}
+                        />
+                        <Show when={reasonProblem()}>
+                          {(problem) => <span role="alert">{problem()}</span>}
+                        </Show>
+                        <Button
+                          size="sm"
+                          variant="filled"
+                          isDisabled={busy() || !canChangeSeats()}
+                          onPress={submitReason}
+                        >
+                          {seatPickerCopy.confirm()}
+                        </Button>
+                      </ReasonSection>
+                    </Show>
+                    <Button
+                      size="sm"
+                      variant="text"
+                      isDisabled={busy() || s().discardable === false}
+                      onPress={() => void discard()}
+                    >
+                      {discardLabel()}
+                    </Button>
+                    <Show when={s().discardable === false}>
+                      <span>{cantDiscardLine()}</span>
+                    </Show>
+                  </Callout>
+                )}
+              </Show>
+
               <Show
                 when={seats()}
                 fallback={
@@ -586,9 +953,11 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
                       seats={s()}
                       ownerId={ownerId()!}
                       removed={removedIds()}
-                      hideRemove={!canChangeSeats()}
+                      hideRemove={!canChangeSeats() || askReason()}
                       disabled={busy()}
                       onRemove={removeSeat}
+                      deviceCounts={deviceCounts()}
+                      onUpdateList={updateList}
                     />
                   </>
                 )}
@@ -599,6 +968,9 @@ export function ProtectedChannelSettings(props: { channel: Channel }) {
 
         <Show when={saved() && !error()}>
           <Saved aria-live="polite">{settingsCopy.seatsSaved()}</Saved>
+        </Show>
+        <Show when={note()}>
+          {(line) => <Saved role="status">{line()}</Saved>}
         </Show>
         <Show when={error()}>
           <Notice role="alert">{error()}</Notice>
@@ -859,6 +1231,66 @@ const Saved = styled("div", {
   base: {
     fontSize: "0.85rem",
     color: "var(--md-sys-color-on-surface-variant)",
+  },
+});
+
+const Alert = styled("div", {
+  base: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "flex-start",
+    gap: "8px",
+    padding: "10px 12px",
+    borderRadius: "8px",
+    fontSize: "0.85rem",
+    background: "var(--md-sys-color-error-container)",
+    color: "var(--md-sys-color-on-error-container)",
+  },
+});
+
+const Callout = styled("div", {
+  base: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "flex-start",
+    gap: "8px",
+    padding: "10px 12px",
+    borderRadius: "8px",
+    fontSize: "0.85rem",
+    background: "var(--md-sys-color-tertiary-container)",
+    color: "var(--md-sys-color-on-tertiary-container)",
+  },
+});
+
+const CalloutTitle = styled("span", {
+  base: {
+    fontWeight: 600,
+  },
+});
+
+const ReasonSection = styled("div", {
+  base: {
+    display: "flex",
+    flexDirection: "column",
+    alignSelf: "stretch",
+    gap: "6px",
+  },
+});
+
+const ReasonInput = styled("textarea", {
+  base: {
+    minHeight: "64px",
+    padding: "10px 12px",
+    borderRadius: "8px",
+    background: "var(--md-sys-color-surface-container-high)",
+    border: "1px solid var(--md-sys-color-outline-variant)",
+    color: "var(--md-sys-color-on-surface)",
+    fontSize: "0.9rem",
+    resize: "vertical",
+    "&:focus": {
+      outline: "none",
+      borderColor: "var(--md-sys-color-primary)",
+    },
   },
 });
 

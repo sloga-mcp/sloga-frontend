@@ -4,6 +4,7 @@ import {
   createEffect,
   createMemo,
   createSignal,
+  onCleanup,
   onMount,
 } from "solid-js";
 
@@ -17,15 +18,42 @@ import { useClient } from "@revolt/client";
 import {
   errorUiCopy,
   noticeCopy,
+  panelCopy,
+  reasonProblemCopy,
   seatPickerCopy,
   settingsCopy,
 } from "@revolt/client/protectedCopy";
 import {
+  AUDIT_LOG_REASON_MAX_CHARS,
+  reasonRefusal,
+  validReason,
+} from "@revolt/client/protectedRemovalReasonPolicy";
+import {
+  type SeatDiscardOutcome,
+  type SeatReleaseCause,
+  seatAdds,
+  seatClientReason,
+  seatDeviceCounts,
+  seatDiscardOutcome,
+  seatFailureBody,
+  seatReasonRequired,
+  seatReleasedRows,
+  seatRemovalsWaiting,
+  seatUntilText,
+  seatUsedCount,
+} from "@revolt/client/protectedSeatUiPolicy";
+import {
   type ProtectedErrorUi,
   protectedNoticeForError,
 } from "@revolt/client/protectedShield";
-import { useProtectedShield } from "@revolt/client/useProtectedChannel";
+import { proposedOwnerDevices } from "@revolt/client/protectedTextOwner";
+import type { ProtectedUiApi } from "@revolt/client/protectedTextTypes";
+import {
+  protectedUiOf,
+  useProtectedShield,
+} from "@revolt/client/useProtectedChannel";
 import { Avatar } from "@revolt/ui/components/design/Avatar";
+import { Button } from "@revolt/ui/components/design/Button";
 import { type DialogProps, Dialog } from "@revolt/ui/components/design/Dialog";
 import { CircularProgress } from "@revolt/ui/components/design/LoadingProgress";
 import { Column } from "@revolt/ui/components/layout/Column";
@@ -35,6 +63,9 @@ import { Modals } from "../types";
 
 /** Rows shown for unseated members before the owner has to search. */
 const UNSEATED_ROW_LIMIT = 100;
+
+/** How often "Removal waiting" re-checks the age of pending removals. */
+const REMOVAL_RECHECK_MS = 30_000;
 
 interface SeatRow {
   candidate: SeatCandidate;
@@ -60,6 +91,18 @@ interface SeatRow {
  * confirmation dialog, design 4.9). The modal stays open with a spinner
  * until that settles; a rejection shows its plan D17 notice, a native
  * `Declined` (the user cancelled native's dialog) shows nothing.
+ *
+ * S2 (D39 / D40, lane U8), owner only, from the bridge's last seat read
+ * and channel view: released seats with their cause (they still count
+ * against the slot cap, so the counter and the cap clamp include them);
+ * the "no longer have seats" banner with a removal-only "Update the list";
+ * "Removal waiting" / "Finish now" for a pending removal older than 10
+ * minutes; a device count per seated row; the revoked-owner-devices banner
+ * (`proposedOwnerDevices` → `authoritySign`, one native dialog). A seat
+ * change the server refused for its reason asks for one and re-sends the
+ * SAME stored change with it (design 4.9: the stored publish wins, the
+ * rows lock and the modal says so); "Discard this change" drops a stored
+ * change only when the bridge proves the server never took it (F3).
  */
 export function ProtectedSeatPickerModal(
   props: DialogProps & Modals & { type: "protected_seat_picker" },
@@ -77,6 +120,44 @@ export function ProtectedSeatPickerModal(
     const owner = ownerId();
     return owner !== null && client().user?.id === owner;
   };
+
+  /** The bridge's protected surface (S2 reads and owner actions), or null. */
+  const bridgeUi = () => protectedUiOf(client()?.e2ee);
+
+  /**
+   * One bridge read for render: `none` without a bridge surface, or when
+   * the read throws (an older bridge lacking the method, say).
+   */
+  function readUi<T>(read: (api: ProtectedUiApi) => T, none: T): T {
+    const api = bridgeUi();
+    if (!api) return none;
+    try {
+      return read(api);
+    } catch {
+      return none;
+    }
+  }
+
+  /** The manager's view of this channel (text group, native state). */
+  const view = () => {
+    const id = props.channel.id;
+    return readUi((api) => api.protectedChannels.get(id) ?? null, null);
+  };
+  /** The last `GET .../seats` body the bridge holds. */
+  const snapshot = () => {
+    const id = props.channel.id;
+    return readUi((api) => api.seatsSnapshot(id), null);
+  };
+  /** F3: this device's stored, unresolved seat publish, or null. */
+  const stored = () => {
+    const id = props.channel.id;
+    return readUi((api) => api.pendingSeats(id), null);
+  };
+
+  // S2 D39: released seats still cooling (owner reads carry the cause).
+  const released = createMemo(() => seatReleasedRows(snapshot()?.cooling));
+  const cooling = createMemo(() => released().map((r) => r.userId));
+  const coolingSet = createMemo(() => new Set(cooling()));
 
   // W4d: users the server removed whom the signed list still names: the
   // page's `removed` prop at open, plus any a `SeatListNamesRemovedUsers`
@@ -98,6 +179,22 @@ export function ProtectedSeatPickerModal(
   const [error, setError] = createSignal<string | null>(null);
   const [loaded, setLoaded] = createSignal(false);
   const [loadFailed, setLoadFailed] = createSignal(false);
+  /** A neutral outcome line (discard, finish now); never an error. */
+  const [note, setNote] = createSignal<string | null>(null);
+
+  // S2 D40: the unseat reason, asked for once the server refused a seat
+  // change for it (or for a stored change already refused for it).
+  const [reasonWanted, setReasonWanted] = createSignal(false);
+  const [reason, setReason] = createSignal("");
+  const [reasonProblem, setReasonProblem] = createSignal<string | null>(null);
+  const askReason = () => reasonWanted() || stored()?.reasonRequired === true;
+
+  const [now, setNow] = createSignal(Date.now());
+
+  onMount(() => {
+    const timer = setInterval(() => setNow(Date.now()), REMOVAL_RECHECK_MS);
+    onCleanup(() => clearInterval(timer));
+  });
 
   onMount(() => {
     const server = props.channel.server;
@@ -199,32 +296,97 @@ export function ProtectedSeatPickerModal(
     };
   });
 
+  // S2 D39 cap clamp: released seats still cooling count (design 2.3).
   const used = () => {
     const owner = ownerId();
     return owner === null
       ? selected().size
-      : seatFinalList(currentIds(), selected(), owner).length;
+      : seatUsedCount(
+          seatFinalList(currentIds(), selected(), owner),
+          cooling(),
+        );
   };
 
   const blockOf = (row: SeatRow) =>
-    seatToggleBlock(row.candidate, selected(), current(), ownerId(), slotCap);
+    seatToggleBlock(
+      row.candidate,
+      selected(),
+      current(),
+      ownerId(),
+      slotCap,
+      coolingSet(),
+    );
 
+  // While a reason is asked for, Confirm re-sends the stored change (4.9).
   const canConfirm = () =>
     !pending() &&
     viewerIsOwner() &&
-    seatCanConfirm(
-      currentIds(),
-      selected(),
-      ownerId(),
-      slotCap,
-      dropped().size > 0,
-    );
+    (askReason() ||
+      seatCanConfirm(
+        currentIds(),
+        selected(),
+        ownerId(),
+        slotCap,
+        dropped().size > 0,
+        cooling(),
+      ));
 
   function toggle(row: SeatRow) {
     if (pending() || blockOf(row) !== null) return;
+    // The stored change is re-sent as signed: picks here can't join it.
+    if (askReason()) return;
     setSelected((prev) => seatToggled(prev, row.candidate.id));
     setError(null);
   }
+
+  /** "Update the list": only for a removal-only change (no dialog, D39). */
+  const canUpdateList = () => {
+    const owner = ownerId();
+    return (
+      owner !== null &&
+      !askReason() &&
+      canConfirm() &&
+      !seatAdds(currentIds(), selected(), owner)
+    );
+  };
+
+  /** S2 D39: devices per seated user in the open Text group. */
+  const deviceCounts = createMemo(() =>
+    seatDeviceCounts(view()?.serverGroup?.members),
+  );
+  /** A seated row's device count; null when not seated or not known. */
+  const devicesOf = (row: SeatRow): number | null => {
+    const id = row.candidate.id;
+    if (id !== ownerId() && !current().has(id)) return null;
+    const counts = deviceCounts();
+    return counts === null ? null : (counts.get(id) ?? 0);
+  };
+
+  /** S2 D39: pending removals waiting 10 minutes or more (owner only). */
+  const waiting = createMemo(() =>
+    viewerIsOwner()
+      ? seatRemovalsWaiting(view()?.serverGroup?.pending_removals, now())
+      : [],
+  );
+  const poisoned = () => view()?.native?.state === "poisoned";
+
+  /** S2 (R27): the server reported revoked owner devices (owner reads). */
+  const revoked = () => {
+    const r = snapshot()?.revoked_owner_devices;
+    return viewerIsOwner() && Array.isArray(r) && r.length > 0;
+  };
+  /** The owner devices to sign instead; null when this device can't. */
+  const proposedDevices = createMemo(() => {
+    if (!viewerIsOwner()) return null;
+    const self = readUi((api) => api.selfDeviceId(), null);
+    if (self === null) return null;
+    try {
+      return proposedOwnerDevices(snapshot(), self);
+    } catch {
+      // a malformed seat read offers nothing
+      return null;
+    }
+  });
 
   /** Plan D17 answer for a rejected `onConfirm`. */
   function errorUiOf(err: unknown): ProtectedErrorUi {
@@ -268,6 +430,24 @@ export function ProtectedSeatPickerModal(
     }
   });
 
+  // S2 D39: the released and waiting users are named too.
+  createEffect(() => {
+    const c = client();
+    for (const id of [...cooling(), ...waiting()]) {
+      if (requested.has(id) || c.users.get(id)) continue;
+      requested.add(id);
+      c.users.fetch(id).catch(() => {
+        // the row reads "Unknown member"; nothing else depends on it
+      });
+    }
+  });
+
+  /** S2 D39 local msgid: a user this client can't name (never the id). */
+  const unknownMember = () => t`Unknown member`;
+  /** A display name for the S2 sections, never an id. */
+  const nameOf = (id: string): string =>
+    displayNames([id])[0] ?? unknownMember();
+
   /** W4d N3: NEW local msgid (catalog owed), same text as SeatList's. */
   const leftOffLine = (names: string) =>
     t`Will be left off the seat list: ${names}`;
@@ -282,10 +462,27 @@ export function ProtectedSeatPickerModal(
   async function confirm() {
     const owner = ownerId();
     if (!canConfirm() || owner === null) return;
+    // S2 D40: the reason is checked as the server will, before any send.
+    let sendReason: string | null = null;
+    if (askReason()) {
+      const check = validReason(reason(), "header");
+      if (!check.ok) {
+        setReasonProblem(
+          reasonProblemCopy(check.why, AUDIT_LOG_REASON_MAX_CHARS),
+        );
+        return;
+      }
+      sendReason = check.reason;
+    }
+    setReasonProblem(null);
+    setNote(null);
     setPending(true);
     setError(null);
     try {
-      await props.onConfirm(seatFinalList(currentIds(), selected(), owner));
+      const list = seatFinalList(currentIds(), selected(), owner);
+      await (sendReason === null
+        ? props.onConfirm(list)
+        : setSeatsWithReason(list, sendReason));
       props.onClose();
     } catch (err) {
       const ui = errorUiOf(err);
@@ -300,9 +497,174 @@ export function ProtectedSeatPickerModal(
         setDropped((prev) => new Set([...prev, ...removed]));
         setSelected((prev) => new Set(seatWithout(prev, removed)));
       }
-      setError(errorUiCopy(ui, { removedUserNames: displayNames }));
+      // S2 D40: the reason refusals come before the notice mapping. Both
+      // leave the signed change stored (4.9) for a retry with a reason.
+      if (reasonRefusal(seatFailureBody(err)) === "too_long") {
+        setReasonWanted(true);
+        setReasonProblem(
+          reasonProblemCopy("too_long", AUDIT_LOG_REASON_MAX_CHARS),
+        );
+      } else if (seatReasonRequired(ui)) {
+        setReasonWanted(true);
+      } else if (seatClientReason(err) === "publish_not_persisted") {
+        setError(notPersistedLine());
+      } else {
+        setError(
+          errorUiCopy(ui, { removedUserNames: displayNames, failure: err }),
+        );
+      }
     } finally {
       setPending(false);
+    }
+  }
+
+  /**
+   * S2 D40: the seat PUT again, with the reason header. A stored change
+   * the server refused for its reason IS this change: the bridge re-sends
+   * it byte for byte and signs nothing (design 4.9), so `list` is used
+   * only when no change is stored. The device cap is the enforced one, as
+   * the settings page passes it.
+   */
+  async function setSeatsWithReason(list: string[], why: string) {
+    const api = bridgeUi();
+    const cap = seatCapOf(snapshot()?.device_cap);
+    if (!api || cap === null) throw new ProtectedChannelUnavailable();
+    await api.setSeats(props.channel.id, list, cap, why);
+  }
+
+  /** F3 "Discard this change": only what the server never took. */
+  async function discard() {
+    const api = bridgeUi();
+    if (!api || pending()) return;
+    setPending(true);
+    setError(null);
+    setNote(null);
+    try {
+      const outcome = seatDiscardOutcome(
+        await api.cancelPendingSeats(props.channel.id),
+      );
+      if (outcome === "discarded" || outcome === "none") {
+        setReasonWanted(false);
+        setReason("");
+        setReasonProblem(null);
+      }
+      setNote(discardLine(outcome));
+    } catch (err) {
+      setError(errorUiCopy(errorUiOf(err), { failure: err }));
+    } finally {
+      setPending(false);
+    }
+  }
+
+  /** R27: re-sign the owner devices without the revoked ones. */
+  async function resignDevices() {
+    const api = bridgeUi();
+    const devices = proposedDevices();
+    if (!api || devices === null || pending()) return;
+    setPending(true);
+    setError(null);
+    setNote(null);
+    try {
+      await api.authoritySign(props.channel.id, devices);
+    } catch (err) {
+      // `none` (native Declined) maps to null: nothing shown
+      setError(errorUiCopy(errorUiOf(err), { failure: err }));
+    } finally {
+      setPending(false);
+    }
+  }
+
+  /**
+   * "Finish now": one manual refresh (`retryNow`, never the open's 60 s
+   * loop) lets the removal duty commit the pending Removes (design 6.3).
+   */
+  function finishNow() {
+    const api = bridgeUi();
+    if (!api || pending()) return;
+    api.retryNow(props.channel.id);
+    setError(null);
+    setNote(finishLine());
+  }
+
+  /** On a poisoned group "Finish now" can't help: re-create it (9.2). */
+  async function recreate() {
+    const api = bridgeUi();
+    if (!api || pending()) return;
+    setPending(true);
+    setError(null);
+    setNote(null);
+    try {
+      await api.recreateGroup(props.channel.id);
+    } catch (err) {
+      setError(errorUiCopy(errorUiOf(err), { failure: err }));
+    } finally {
+      setPending(false);
+    }
+  }
+
+  // ---- S2 local msgids (catalog owed, L9) -------------------------------
+
+  const releasedTitle = () => t`Released seats`;
+
+  /** Why a released seat was released (owner reads only carry it). */
+  function causeLine(cause: SeatReleaseCause | null): string | null {
+    switch (cause) {
+      case null:
+        return null;
+      case "owner_unseat":
+        return t`Removed from the seat list`;
+      case "server_removal":
+        return t`Removed from the server`;
+      case "access_lost":
+        return t`Lost access to this channel`;
+      case "device_never_joined":
+        return t`No device joined before the seat was released`;
+      default: {
+        const _exhaustive: never = cause;
+        return null;
+      }
+    }
+  }
+
+  const untilLine = (until: string) =>
+    t`Counts toward the seat limit until ${until}`;
+  const noSeatsLine = (count: number) =>
+    t`People on your signed list who no longer have seats: ${count}`;
+  const updateListLabel = () => t`Update the list`;
+  const waitingTitle = () => t`Removal waiting`;
+  const finishLabel = () => t`Finish now`;
+  const finishLine = () => t`Trying the removal again…`;
+  const devicesLine = (count: number) => t`Devices: ${count}`;
+  const resignLabel = () => t`Re-sign signing devices`;
+  const reasonLabel = () => t`Reason for the removal`;
+  const discardLabel = () => t`Discard this change`;
+  const storedLine = () =>
+    t`An earlier change to the seats hasn't finished saving. Trying again sends that same change, exactly as it was.`;
+  const lockedLine = () =>
+    t`Seats you pick here aren't included. Discard the earlier change to make a different one.`;
+  const cantDiscardLine = () =>
+    t`This change can't be discarded now. The server may already have it.`;
+  const maybeAcceptedLine = () =>
+    t`The server may already have this change, so it can't be discarded.`;
+  const notPersistedLine = () =>
+    t`This change couldn't be stored on this device, so it wasn't sent. Try again.`;
+
+  /** F3 outcome copy; an unreadable answer reads as "maybe accepted". */
+  function discardLine(outcome: SeatDiscardOutcome): string {
+    switch (outcome) {
+      case "discarded":
+        return t`The change was discarded.`;
+      case "none":
+        return t`There's no change waiting to be discarded.`;
+      case "busy":
+        return t`This change is being sent right now. Try again in a moment.`;
+      case "maybe_accepted":
+      case "unknown":
+        return maybeAcceptedLine();
+      default: {
+        const _exhaustive: never = outcome;
+        return maybeAcceptedLine();
+      }
     }
   }
 
@@ -339,6 +701,70 @@ export function ProtectedSeatPickerModal(
 
         <Show when={!viewerIsOwner()}>
           <Notice role="alert">{settingsCopy.ownerOnly()}</Notice>
+        </Show>
+
+        {/* S2 R27: the server reports revoked owner devices (owner only). */}
+        <Show when={revoked()}>
+          <Alert role="alert" data-revoked-owner-devices>
+            <span>{noticeCopy("revoked_owner_devices")}</span>
+            <Show when={proposedDevices() !== null}>
+              <Button
+                size="xs"
+                variant="tonal"
+                isDisabled={pending()}
+                onPress={() => void resignDevices()}
+              >
+                {resignLabel()}
+              </Button>
+            </Show>
+          </Alert>
+        </Show>
+
+        {/* S2 D39: people the signed list names who no longer have seats. */}
+        <Show when={viewerIsOwner() && dropped().size > 0}>
+          <Callout role="status" data-update-list>
+            <span>{noSeatsLine(dropped().size)}</span>
+            <Show when={canUpdateList()}>
+              <Button
+                size="xs"
+                variant="tonal"
+                isDisabled={pending()}
+                onPress={() => void confirm()}
+              >
+                {updateListLabel()}
+              </Button>
+            </Show>
+          </Callout>
+        </Show>
+
+        {/* S2 D39: a pending removal 10 minutes old (design 6.3, 9.2). */}
+        <Show when={waiting().length > 0}>
+          <Callout role="status" data-removal-waiting>
+            <SectionTitle>{waitingTitle()}</SectionTitle>
+            <span>{waiting().map(nameOf).join(", ")}</span>
+            <Show
+              when={poisoned()}
+              fallback={
+                <Button
+                  size="xs"
+                  variant="tonal"
+                  isDisabled={pending()}
+                  onPress={finishNow}
+                >
+                  {finishLabel()}
+                </Button>
+              }
+            >
+              <Button
+                size="xs"
+                variant="tonal"
+                isDisabled={pending()}
+                onPress={() => void recreate()}
+              >
+                {panelCopy.recreateGroup()}
+              </Button>
+            </Show>
+          </Callout>
         </Show>
 
         <Counter aria-live="polite">
@@ -386,8 +812,8 @@ export function ProtectedSeatPickerModal(
                   type="button"
                   role="checkbox"
                   aria-checked={checked()}
-                  aria-disabled={block() !== null || pending()}
-                  data-blocked={block() !== null || undefined}
+                  aria-disabled={block() !== null || pending() || askReason()}
+                  data-blocked={block() !== null || askReason() || undefined}
                   disabled={pending()}
                   onClick={() => toggle(row)}
                 >
@@ -410,6 +836,12 @@ export function ProtectedSeatPickerModal(
                       </SeatNote>
                     </Show>
                   </SeatText>
+                  {/* S2 D39: the seated user's devices in the group. */}
+                  <Show when={devicesOf(row) !== null}>
+                    <SeatDevices data-devices>
+                      {devicesLine(devicesOf(row) ?? 0)}
+                    </SeatDevices>
+                  </Show>
                   <Show when={isOwner()}>
                     <Badge>{settingsCopy.ownerBadge()}</Badge>
                   </Show>
@@ -427,6 +859,85 @@ export function ProtectedSeatPickerModal(
             </Empty>
           </Show>
         </Rows>
+
+        {/* S2 D39: released seats still count for 14 days (design 2.3). */}
+        <Show when={viewerIsOwner() && released().length > 0}>
+          <Section data-released>
+            <SectionTitle>{releasedTitle()}</SectionTitle>
+            <For each={released()}>
+              {(seat) => (
+                <SectionRow>
+                  <SeatName>{nameOf(seat.userId)}</SeatName>
+                  <Show when={causeLine(seat.cause)}>
+                    {(line) => <SeatNote>{line()}</SeatNote>}
+                  </Show>
+                  <Show when={seatUntilText(seat.until)}>
+                    {(until) => <SeatNote>{untilLine(until())}</SeatNote>}
+                  </Show>
+                </SectionRow>
+              )}
+            </For>
+          </Section>
+        </Show>
+
+        {/* F3 / D40: a stored change wins over the picks here (4.9). Not
+            while a send runs: that send's own change is stored meanwhile. */}
+        <Show
+          when={
+            viewerIsOwner() &&
+            !pending() &&
+            (stored() !== null || reasonWanted())
+          }
+        >
+          <Callout role="status" data-stored-change>
+            <span>{storedLine()}</span>
+            <Show when={askReason()}>
+              <span>{lockedLine()}</span>
+            </Show>
+            <Show when={stored()}>
+              {(s) => (
+                <>
+                  <Button
+                    size="xs"
+                    variant="text"
+                    isDisabled={pending() || s().discardable === false}
+                    onPress={() => void discard()}
+                  >
+                    {discardLabel()}
+                  </Button>
+                  <Show when={s().discardable === false}>
+                    <SeatNote>{cantDiscardLine()}</SeatNote>
+                  </Show>
+                </>
+              )}
+            </Show>
+          </Callout>
+        </Show>
+
+        {/* S2 D40: the unseat reason, once the server asked for one. */}
+        <Show when={viewerIsOwner() && askReason()}>
+          <Section data-reason>
+            <SeatNote>{noticeCopy("removal_reason_required")}</SeatNote>
+            <ReasonInput
+              value={reason()}
+              placeholder={reasonLabel()}
+              aria-label={reasonLabel()}
+              aria-invalid={reasonProblem() !== null}
+              disabled={pending()}
+              onInput={(event) => {
+                setReason(event.currentTarget.value);
+                setReasonProblem(null);
+              }}
+            />
+            <Show when={reasonProblem()}>
+              {(problem) => <SeatNote role="alert">{problem()}</SeatNote>}
+            </Show>
+          </Section>
+        </Show>
+
+        <Show when={note()}>
+          {(line) => <Status role="status">{line()}</Status>}
+        </Show>
 
         <Show when={error()}>
           <Notice role="alert">{error()}</Notice>
@@ -446,7 +957,9 @@ export function ProtectedSeatPickerModal(
 }
 
 // protected-pure:begin
-// Seat rules, loaded by `protectedSeatPicker.scan.test.ts`: no imports.
+// Seat rules, loaded by `protectedSeatPicker.scan.test.ts`: no imports. The
+// one outside name they use, `seatUsedCount`, is the shared policy's
+// (`protectedSeatUiPolicy.ts`, imported above; the spec supplies it).
 
 /** What this client knows about one person, for the rules below. */
 interface SeatCandidate {
@@ -581,6 +1094,8 @@ function seatFinalList(
  * seat always may; a NEW seat needs a listed, non-staff member who can
  * view the channel and room under a known cap. Re-checking a current seat
  * is not a new claim (design 4.3 step 5: ViewChannel only for new ones).
+ * S2 D39: `cooling` seats count toward the cap, and re-seating a cooling
+ * user takes no new slot (design 2.3).
  */
 function seatToggleBlock(
   c: SeatCandidate,
@@ -588,6 +1103,7 @@ function seatToggleBlock(
   current: ReadonlySet<string>,
   ownerId: string | null,
   slotCap: number | null,
+  cooling: ReadonlySet<string> = new Set(),
 ): SeatBlock | null {
   if (ownerId === null || c.id === ownerId) return "owner";
   if (selected.has(c.id)) return null;
@@ -596,8 +1112,9 @@ function seatToggleBlock(
     if (c.privileged) return "staff";
     if (!c.canView) return "no_access";
   }
-  const count = seatFinalList([...current], selected, ownerId).length;
-  return seatCapFull(count, slotCap) ? "cap" : null;
+  if (cooling.has(c.id)) return null;
+  const list = seatFinalList([...current], selected, ownerId);
+  return seatCapFull(seatUsedCount(list, cooling), slotCap) ? "cap" : null;
 }
 
 /** `selected` with `id` flipped (a new set). */
@@ -616,6 +1133,7 @@ function seatToggled(selected: ReadonlySet<string>, id: string): Set<string> {
  * may be confirmed, the owner-only list included (design 6.3 "Protect").
  * `cleanup` (W4d): a refusal named removed users the server's list still
  * holds, so the list without them is a change even when nothing else is.
+ * S2 D39: the cap counts `cooling` seats the list doesn't re-seat.
  */
 function seatCanConfirm(
   current: readonly string[],
@@ -623,14 +1141,16 @@ function seatCanConfirm(
   ownerId: string | null,
   slotCap: number | null,
   cleanup = false,
+  cooling: readonly string[] = [],
 ): boolean {
   if (ownerId === null) return false;
   const list = seatFinalList(current, selected, ownerId);
-  if (current.length === 0) return !seatCapExceeded(list.length, slotCap);
+  const used = seatUsedCount(list, cooling);
+  if (current.length === 0) return !seatCapExceeded(used, slotCap);
   const before = new Set([ownerId, ...current]);
   const adds = list.some((id) => !before.has(id));
   if (!adds && list.length === before.size) return cleanup;
-  return !(adds && seatCapExceeded(list.length, slotCap));
+  return !(adds && seatCapExceeded(used, slotCap));
 }
 // protected-pure:end
 
@@ -669,6 +1189,81 @@ const LeftOff = styled("div", {
     fontSize: "0.85rem",
     background: "var(--md-sys-color-tertiary-container)",
     color: "var(--md-sys-color-on-tertiary-container)",
+  },
+});
+
+const Alert = styled("div", {
+  base: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "flex-start",
+    gap: "8px",
+    padding: "10px 12px",
+    borderRadius: "8px",
+    fontSize: "0.85rem",
+    background: "var(--md-sys-color-error-container)",
+    color: "var(--md-sys-color-on-error-container)",
+  },
+});
+
+const Callout = styled("div", {
+  base: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "flex-start",
+    gap: "8px",
+    padding: "10px 12px",
+    borderRadius: "8px",
+    fontSize: "0.85rem",
+    background: "var(--md-sys-color-tertiary-container)",
+    color: "var(--md-sys-color-on-tertiary-container)",
+  },
+});
+
+const Status = styled("div", {
+  base: {
+    fontSize: "0.85rem",
+    color: "var(--md-sys-color-on-surface-variant)",
+  },
+});
+
+const Section = styled("div", {
+  base: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "6px",
+  },
+});
+
+const SectionTitle = styled("span", {
+  base: {
+    fontSize: "0.85rem",
+    fontWeight: 600,
+  },
+});
+
+const SectionRow = styled("div", {
+  base: {
+    display: "flex",
+    flexDirection: "column",
+    padding: "4px 10px",
+  },
+});
+
+const ReasonInput = styled("textarea", {
+  base: {
+    minHeight: "64px",
+    padding: "10px 12px",
+    borderRadius: "8px",
+    background: "var(--md-sys-color-surface-container-high)",
+    border: "1px solid var(--md-sys-color-outline-variant)",
+    color: "var(--md-sys-color-on-surface)",
+    fontSize: "0.9rem",
+    resize: "vertical",
+    "&:focus": {
+      outline: "none",
+      borderColor: "var(--md-sys-color-primary)",
+    },
   },
 });
 
@@ -737,6 +1332,14 @@ const SeatName = styled("span", {
 
 const SeatNote = styled("span", {
   base: {
+    fontSize: "0.75rem",
+    color: "var(--md-sys-color-on-surface-variant)",
+  },
+});
+
+const SeatDevices = styled("span", {
+  base: {
+    flexShrink: 0,
     fontSize: "0.75rem",
     color: "var(--md-sys-color-on-surface-variant)",
   },

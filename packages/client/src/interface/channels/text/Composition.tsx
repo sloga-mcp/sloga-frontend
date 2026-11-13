@@ -42,13 +42,13 @@ import {
   type ProtectedComposerMode,
   type ProtectedErrorUi,
   type ProtectedNoticeKind,
+  type ProtectedShieldState,
   protectedActionsBlocked,
   protectedNoticeForError,
   shieldPresentation,
 } from "@revolt/client/protectedShield";
 import type { ProtectedChannelView } from "@revolt/client/protectedTextTypes";
 import {
-  protectedUiOf,
   useProtectedMessage,
   useProtectedShield,
 } from "@revolt/client/useProtectedChannel";
@@ -58,7 +58,8 @@ import { pickUploadLimit } from "@revolt/common/lib/uploadLimit";
 import { useTime } from "@revolt/i18n";
 import { Keybind, KeybindAction, createKeybind } from "@revolt/keybinds";
 import { unicodeEmojiPackPrefix } from "@revolt/markdown/emoji/UnicodeEmoji";
-import { useModals } from "@revolt/modal";
+import { type ModalRequest, useModals } from "@revolt/modal";
+import type { ProtectedOwnerReviewProps } from "@revolt/modal/modals/ProtectedOwnerReview";
 import { useState } from "@revolt/state";
 import { ALLOWED_IMAGE_TYPES } from "@revolt/state/stores/Draft";
 import {
@@ -619,21 +620,42 @@ export function MessageComposition(props: Props) {
   /**
    * Composer notice on a protected channel whose shield is not `protected`
    * (design 9.1): re-securing (the draft is kept), no seat, not available
-   * on this device (or E2EE off on this desktop, product choice 6), or
-   * verification failed (the loud banner above names the cause).
+   * on this device (or E2EE off on this desktop, product choice 6; or
+   * Sloga too old, S2 `client_outdated`), refused for capacity (S2 D35),
+   * or verification failed (the loud banner above names the cause). The
+   * rule is `protectedComposerLine`; the channel's display name fills the
+   * capacity copy, never its id.
    */
   const protectedBlockedText = (): string | undefined => {
     const mode = protectedComposer();
-    if (mode === undefined || mode === "enabled") return undefined;
-    if (mode === "disabled") {
-      const notice = noticeCopy(protectedNotice());
-      return draft().content?.trim()
-        ? `${notice} ${composerCopy.draftKept()}`
-        : notice;
+    if (mode === undefined) return undefined;
+    const line = protectedComposerLine({
+      mode,
+      state: protectedShield()?.state ?? null,
+      notice: protectedNotice(),
+      hasDraft: mode === "disabled" && !!draft().content?.trim(),
+    });
+    switch (line.kind) {
+      case "input":
+        return undefined;
+      case "sending_blocked":
+        return composerCopy.sendingBlocked();
+      case "notice": {
+        const notice = noticeCopy(
+          line.notice,
+          null,
+          null,
+          props.channel.name ?? null,
+        );
+        return line.draftKept
+          ? `${notice} ${composerCopy.draftKept()}`
+          : notice;
+      }
+      default: {
+        const _exhaustive: never = line;
+        return composerCopy.sendingBlocked();
+      }
     }
-    return protectedShield()?.state === "unverified"
-      ? composerCopy.sendingBlocked()
-      : noticeCopy(protectedNotice());
   };
 
   /**
@@ -1512,29 +1534,19 @@ export function MessageComposition(props: Props) {
   }
 
   /**
-   * Native owner-change dialog in flight (D15); blocks a second click
+   * S2 D41: "Review owner change" opens the owner-review screen, ONLY from
+   * the banner button's click. That screen runs `confirmOwnerChange` and
+   * native's dialog (D15) and shows "Still locked." after a Declined; the
+   * composer never calls the bridge for it.
    */
-  const [reviewingOwnerChange, setReviewingOwnerChange] = createSignal(false);
-
-  /**
-   * Plan D15 "Review owner change": opens native's dialog, ONLY from the
-   * banner button's click. A cancel (`declined`) maps to no copy and stays
-   * silent; any other failure shows its notice.
-   */
-  async function reviewOwnerChange() {
-    if (reviewingOwnerChange()) return;
-    const channelId = props.channel.id;
-    const ui = protectedUiOf(client().e2ee);
-    setReviewingOwnerChange(true);
-    try {
-      if (!ui) throw new ProtectedChannelUnavailable();
-      await ui.confirmOwnerChange(channelId);
-    } catch (error) {
-      const text = errorUiCopy(protectedOwnerErrorUi(error, protectedNotice()));
-      if (text) openModal({ type: "error2", error: new Error(text) });
-    } finally {
-      setReviewingOwnerChange(false);
-    }
+  function reviewOwnerChange() {
+    const request: ProtectedOwnerReviewProps = {
+      type: "protected_owner_review",
+      channel: props.channel,
+    };
+    // L9: protected_owner_review (union member not registered yet; drop the
+    // cast once `components/modal/types.ts` has it).
+    openModal(request as unknown as ModalRequest);
   }
 
   /**
@@ -1996,11 +2008,15 @@ export function MessageComposition(props: Props) {
         <ProtectedBanner role="status">
           <ProtectedShieldIcon state="unverified" size={16} />
           <span>{noticeCopy(protectedNotice())}</span>
-          <Show when={ownerChangeReviewable(protectedShield()?.view)}>
+          <Show
+            when={composerReviewOffered(
+              protectedShield()?.view,
+              protectedShield()?.reviewOffered,
+            )}
+          >
             <ProtectedBannerAction
               type="button"
-              disabled={reviewingOwnerChange()}
-              onClick={() => void reviewOwnerChange()}
+              onClick={() => reviewOwnerChange()}
             >
               {panelCopy.reviewOwnerChange()}
             </ProtectedBannerAction>
@@ -2829,26 +2845,78 @@ function protectedSendErrorUi(
   return protectedNoticeForError(cause, { op: "send" });
 }
 
+// protected-pure:begin (no runtime imports, types only:
+// protectedComposer.scan.test.ts strips the types and runs this region under
+// Node)
+
+/** What a protected channel's composer shows (design 9.1, S2 D35). */
+type ProtectedComposerLine =
+  | { kind: "input" }
+  | { kind: "notice"; notice: ProtectedNoticeKind; draftKept: boolean }
+  | { kind: "sending_blocked" };
+
 /**
- * Plan D17 answer for a failed D15 owner-change review. Native `declined`
- * (the user cancelled) maps to `none`, which shows nothing.
- * @param error Rejection from `confirmOwnerChange`
- * @param shieldNotice The shield's current notice (D3 `enable_e2ee`)
+ * The composer on a protected channel. `mode` is
+ * `shieldPresentation(state).composer`, never re-derived here: the input
+ * exists only when it is `enabled` (the `protected` state). A loading
+ * shield arrives as `disabled` with state null.
+ * @param i The composer mode, the shield state (null while loading), the
+ *   shield's notice and whether the draft holds text
  */
-function protectedOwnerErrorUi(
-  error: unknown,
-  shieldNotice: ProtectedNoticeKind,
-): ProtectedErrorUi {
-  if (
-    isErrorClass(
-      error,
-      ProtectedChannelUnavailable,
-      "ProtectedChannelUnavailable",
-    )
-  ) {
-    return protectedSendErrorUi(error, shieldNotice);
+function protectedComposerLine(i: {
+  mode: ProtectedComposerMode;
+  state: ProtectedShieldState | null;
+  notice: ProtectedNoticeKind;
+  hasDraft: boolean;
+}): ProtectedComposerLine {
+  switch (i.mode) {
+    case "enabled":
+      return { kind: "input" };
+    // re-securing: the draft is kept
+    case "disabled":
+      return { kind: "notice", notice: i.notice, draftKept: i.hasDraft };
+    case "hidden":
+      return hiddenComposerLine(i.state, i.notice);
+    default: {
+      const _exhaustive: never = i.mode;
+      return { kind: "sending_blocked" };
+    }
   }
-  return protectedNoticeForError(error, { op: "owner" });
+}
+
+/**
+ * A hidden composer's line, per shield state. Never the input.
+ * @param state The shield state (null while loading)
+ * @param notice The shield's notice
+ */
+function hiddenComposerLine(
+  state: ProtectedShieldState | null,
+  notice: ProtectedNoticeKind,
+): ProtectedComposerLine {
+  if (state === null) return { kind: "notice", notice, draftKept: false };
+  switch (state) {
+    // the loud banner above the composer names the cause
+    case "unverified":
+      return { kind: "sending_blocked" };
+    // S2 D35: read-only; the notice says device_cap or group_full
+    case "capacity":
+      return { kind: "notice", notice, draftKept: false };
+    // not on this device; S2 step 3c `client_outdated` is this state too
+    case "not_available":
+      return { kind: "notice", notice, draftKept: false };
+    case "not_seated":
+    case "grace":
+    case "frozen":
+      return { kind: "notice", notice, draftKept: false };
+    // never hidden today (`shieldPresentation`); a notice, not the input
+    case "protected":
+    case "resecuring":
+      return { kind: "notice", notice, draftKept: false };
+    default: {
+      const _exhaustive: never = state;
+      return { kind: "sending_blocked" };
+    }
+  }
 }
 
 /**
@@ -2866,6 +2934,22 @@ function ownerChangeReviewable(
   if (!pin || pin.pending_signer?.same_user !== true) return false;
   return view?.ownerChangePending === true || pin.status === "changed";
 }
+
+/**
+ * The composer offers Review only where the pill would (S2 OR-10, F1): the
+ * D15 precondition AND the shield's `reviewOffered`, read `=== true`, which
+ * is withheld for an unlisted signer (`owner_changed_unlisted`).
+ * @param view The manager's channel view
+ * @param reviewOffered `shield().reviewOffered`
+ */
+function composerReviewOffered(
+  view: ProtectedChannelView | null | undefined,
+  reviewOffered: unknown,
+): boolean {
+  return ownerChangeReviewable(view) && reviewOffered === true;
+}
+
+// protected-pure:end
 
 /**
  * Composer reply preview on a protected channel (plan D22, D25): the

@@ -66,7 +66,10 @@ import { InteractionContext } from "./InteractionContext";
 import { MessageComponents } from "./MessageComponents";
 import { MessageTranslation } from "./MessageTranslation";
 import { PollMessage, isPollMessage } from "./PollMessage";
-import { ProtectedMessageMarker } from "./ProtectedMessageMarker";
+import {
+  ProtectedFilesNote,
+  ProtectedMessageMarker,
+} from "./ProtectedMessageMarker";
 import { SoftResMessage, isSoftResMessage } from "./SoftResMessage";
 import { TimelockMessage, isTimelockMessage } from "./TimelockMessage";
 import { serverActionsBlocked } from "./e2eeTranscriptTrust";
@@ -627,6 +630,7 @@ export function Message(props: Props) {
                 <Show when={!view().senderVerified}>
                   <ProtectedMessageMarker kind="sender_not_verified" />
                 </Show>
+                <ProtectedFilesNote view={view()} />
               </>
             )}
           </Match>

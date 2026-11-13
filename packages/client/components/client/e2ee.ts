@@ -178,6 +178,7 @@ import {
 } from "./protectedTextMessages";
 import {
   cancelPendingSeats,
+  moveOwnerKey,
   pendingSeats,
   protect,
   setSeats,
@@ -9674,6 +9675,7 @@ export class E2EEBridge implements E2EEAdapter {
           protect,
           setSeats,
           signOwnerDevices,
+          moveOwnerKey,
           pendingSeats,
           cancelPendingSeats,
         },
@@ -10440,6 +10442,14 @@ export class E2EEBridge implements E2EEAdapter {
     this.#ptManager?.close(channelId);
   }
 
+  /**
+   * S2: one manual refresh (`ProtectedUiApi.retryNow`): straight to the
+   * current manager, never `#ptOpen` (no 60 s loop). No manager = no-op.
+   */
+  retryNow(channelId: string): void {
+    this.#ptManager?.retryNow(channelId);
+  }
+
   /** The current manager for a UI action on an indexed channel, or throw. */
   async #protectedManagerFor(channelId: string): Promise<ProtectedTextManager> {
     this.#protectedEnsureManager();
@@ -10480,6 +10490,12 @@ export class E2EEBridge implements E2EEAdapter {
   ): Promise<void> {
     const manager = await this.#protectedManagerFor(channelId);
     return manager.authoritySign(channelId, ownerDevices);
+  }
+
+  /** S2-D42: same-user owner-key handover from this device (native dialog). */
+  async moveOwnerKey(channelId: string, toDeviceId: string): Promise<void> {
+    const manager = await this.#protectedManagerFor(channelId);
+    return manager.moveOwnerKey(channelId, toDeviceId);
   }
 
   /** S2 (design 6.3): only from this UI call, never automatic. */

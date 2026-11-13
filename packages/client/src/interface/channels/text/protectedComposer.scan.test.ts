@@ -18,15 +18,42 @@
 //      its `never` exhaustiveness check.
 //  F4  (W4d) the D10 `maybeUnsent` view flag renders a dismissible notice,
 //      in every shield state, dismissed per channel for the session.
+//  U4  (S2 W4-3) the composer rule in Composition.tsx's
+//      `// protected-pure:begin` .. `// protected-pure:end` region (no
+//      runtime imports) is cut out, type-stripped with Node's own stripper
+//      and RUN against the real `explainShield` / `shieldPresentation`:
+//      capacity (D35) and client_outdated (OR-4) hide the composer behind
+//      their notice; the input exists only in `protected`; Review is
+//      offered only on F1 `reviewOffered === true` (OR-10); Review opens
+//      the D41 owner-review modal and the composer never calls
+//      `confirmOwnerChange` itself.
 //
 // Run: node --test --conditions=browser \
 //   src/interface/channels/text/protectedComposer.scan.test.ts
 // `PROTECTED_COMPOSER_TSX=<path>` / `PROTECTED_MESSAGEBOX_TSX=<path>` scan
-// another copy (named controls C-C4a/b/c, W4d C-F4).
+// another copy (named controls C-C4a/b/c, W4d C-F4, S2 W4-3 ctl/U4).
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { stripTypeScriptTypes } from "node:module";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
+import { pathToFileURL } from "node:url";
+
+import {
+  type ProtectedComposerMode,
+  type ProtectedNoticeKind,
+  type ProtectedShieldState,
+  type ShieldInputs,
+  explainShield,
+  PROTECTED_SHIELD_STATES,
+  shieldPresentation,
+} from "../../../../components/client/protectedShield.ts";
+import type {
+  ProtectedChannelView,
+  TextChannelState,
+} from "../../../../components/client/protectedTextTypes.ts";
 
 const COMPOSITION = readFileSync(
   process.env.PROTECTED_COMPOSER_TSX ||
@@ -488,10 +515,15 @@ test("P7 protected reply preview shows the decrypted view, never server text", (
 
 // ---- P8 (follow-up) ---------------------------------------------------------
 
+// S2 W4-3 (U4): the gate is `composerReviewOffered` (D15 precondition AND
+// F1 `reviewOffered`), and the click opens the D41 modal instead of calling
+// `confirmOwnerChange` here (the modal owns the native dialog, its failure
+// copy and "Still locked."). The old pins on `confirmOwnerChange` and
+// `protectedOwnerErrorUi` moved with that call into ProtectedOwnerReview.tsx.
 test("P8 'Review owner change' only for a same-user owner change, on click", () => {
   assertGated(
     "{panelCopy.reviewOwnerChange()}",
-    /^ownerChangeReviewable\(protectedShield\(\)\?\.view\)$/,
+    /^composerReviewOffered\( protectedShield\(\)\?\.view, protectedShield\(\)\?\.reviewOffered, \)$/,
   );
   assertGated("{panelCopy.reviewOwnerChange()}", /state === "unverified"/);
   const reviewable = code(
@@ -504,8 +536,7 @@ test("P8 'Review owner change' only for a same-user owner change, on click", () 
       "if (!pin || pin.pending_signer?.same_user !== true) return false; " +
       'return view?.ownerChangePending === true || pin.status === "changed";',
   );
-  // The dialog opens only from the button's click
-  assert.equal((COMPOSITION.match(/confirmOwnerChange\(/g) ?? []).length, 1);
+  // The modal opens only from the button's click
   const calls = [...COMPOSITION.matchAll(/[^.\w]reviewOwnerChange\(\)/g)].map(
     (m) => m[0].trim(),
   );
@@ -513,25 +544,8 @@ test("P8 'Review owner change' only for a same-user owner change, on click", () 
     "reviewOwnerChange()",
     "reviewOwnerChange()",
   ]);
-  assert.ok(COMPOSITION.includes("onClick={() => void reviewOwnerChange()}"));
-  assert.ok(COMPOSITION.includes("async function reviewOwnerChange() {"));
-  const review = code(
-    functionBody(COMPOSITION, "async function reviewOwnerChange() {"),
-  );
-  assert.ok(review.includes("await ui.confirmOwnerChange(channelId);"));
-  assert.ok(review.includes("protectedOwnerErrorUi(error, protectedNotice())"));
-  assert.ok(
-    review.includes(
-      'if (text) openModal({ type: "error2", error: new Error(text) });',
-    ),
-  );
-  assert.ok(!/\.message\b/.test(review), "reviewOwnerChange reads .message");
-  const ownerUi = code(
-    functionBody(COMPOSITION, "function protectedOwnerErrorUi("),
-  );
-  assert.ok(
-    ownerUi.includes('protectedNoticeForError(error, { op: "owner" })'),
-  );
+  assert.ok(COMPOSITION.includes("onClick={() => reviewOwnerChange()}"));
+  assert.ok(COMPOSITION.includes("function reviewOwnerChange() {"));
 });
 
 // ---- F4 (W4d final audit) ---------------------------------------------------
@@ -587,5 +601,270 @@ test("F4 the D10 maybe-unsent notice renders, dismissible per channel", () => {
     (COMPOSITION.match(/setMaybeUnsentDismissed\b/g) ?? []).length,
     2,
     "the dismissed set is written only by dismissMaybeUnsent",
+  );
+});
+
+// ---- U4 (S2 W4-3): capacity, client_outdated, Review -----------------------
+
+type ComposerLine =
+  | { kind: "input" }
+  | { kind: "notice"; notice: ProtectedNoticeKind; draftKept: boolean }
+  | { kind: "sending_blocked" };
+interface ComposerRules {
+  protectedComposerLine(i: {
+    mode: ProtectedComposerMode;
+    state: ProtectedShieldState | null;
+    notice: ProtectedNoticeKind;
+    hasDraft: boolean;
+  }): ComposerLine;
+  composerReviewOffered(
+    view: ProtectedChannelView | null | undefined,
+    reviewOffered: unknown,
+  ): boolean;
+}
+const PURE_BEGIN = "// protected-pure:begin";
+const PURE_END = "// protected-pure:end";
+const RULE_NAMES = ["protectedComposerLine", "composerReviewOffered"] as const;
+
+let rulesPromise: Promise<ComposerRules> | null = null;
+/** The real region of Composition.tsx (or the env copy), types stripped. */
+function loadRules(): Promise<ComposerRules> {
+  rulesPromise ??= (async () => {
+    const from = COMPOSITION.indexOf(PURE_BEGIN);
+    const to = COMPOSITION.indexOf(PURE_END);
+    assert.ok(from !== -1 && to > from, "protected-pure region missing");
+    assert.equal(
+      COMPOSITION.indexOf(PURE_BEGIN, from + 1),
+      -1,
+      "exactly one protected-pure region",
+    );
+    const region = COMPOSITION.slice(from, to);
+    assert.ok(!/^\s*import\s/m.test(region), "the region must not import");
+    const js =
+      stripTypeScriptTypes(region.replace(/^export /gm, ""), {
+        mode: "strip",
+      }) + `\nexport { ${RULE_NAMES.join(", ")} };\n`;
+    const out = join(
+      mkdtempSync(join(tmpdir(), "s2w43-U4-")),
+      "protectedComposerPure.mjs",
+    );
+    writeFileSync(out, js);
+    const mod = (await import(pathToFileURL(out).href)) as Record<
+      string,
+      unknown
+    >;
+    for (const name of RULE_NAMES) {
+      assert.equal(typeof mod[name], "function", `${name} missing`);
+    }
+    return mod as unknown as ComposerRules;
+  })();
+  return rulesPromise;
+}
+
+/** Shield inputs past steps 1-3b; `native` stands in for a seated device. */
+function inputs(over: Partial<ShieldInputs>): ShieldInputs {
+  return {
+    serverProtected: true,
+    locallyPinned: true,
+    capable: true,
+    seatListError: null,
+    groupError: null,
+    native: { verdict: "ok" } as unknown as TextChannelState,
+    serverGroup: null,
+    rosterMismatchAgeMs: 0,
+    signerLeafMissingRetries: 0,
+    welcomeRetriesExhausted: false,
+    capacity: null,
+    clientOutdated: null,
+    ...over,
+  };
+}
+
+/** The composer line exactly as Composition.tsx feeds it. */
+async function lineFor(i: ShieldInputs, hasDraft: boolean) {
+  const { protectedComposerLine } = await loadRules();
+  const ex = explainShield(i);
+  assert.ok(ex, "no shield");
+  const presentation = shieldPresentation(ex.state);
+  return {
+    ex,
+    line: protectedComposerLine({
+      mode: presentation.composer,
+      state: ex.state,
+      notice: ex.notice ?? presentation.notice ?? "unverified",
+      hasDraft,
+    }),
+  };
+}
+
+test("U4 capacity hides the composer behind its D35 notice", async () => {
+  for (const [reason, notice] of [
+    ["device_cap", "capacity_device_cap"],
+    ["group_full", "capacity_group_full"],
+  ] as const) {
+    const { ex, line } = await lineFor(inputs({ capacity: { reason } }), true);
+    assert.equal(ex.state, "capacity");
+    assert.deepEqual(line, { kind: "notice", notice, draftKept: false });
+  }
+});
+
+test("U4 client_outdated hides the composer behind the update notice", async () => {
+  for (const native of [
+    null,
+    { verdict: "ok" } as unknown as TextChannelState,
+  ]) {
+    const { ex, line } = await lineFor(
+      inputs({ clientOutdated: 2, native }),
+      true,
+    );
+    assert.deepEqual(
+      [ex.state, ex.notice],
+      ["not_available", "client_outdated"],
+    );
+    assert.deepEqual(line, {
+      kind: "notice",
+      notice: "client_outdated",
+      draftKept: false,
+    });
+  }
+});
+
+test("U4 the input exists only in the protected state; loading fails closed", async () => {
+  const { protectedComposerLine } = await loadRules();
+  for (const state of PROTECTED_SHIELD_STATES) {
+    const mode = shieldPresentation(state).composer;
+    for (const hasDraft of [false, true]) {
+      const line = protectedComposerLine({
+        mode,
+        state,
+        notice: "not_available",
+        hasDraft,
+      });
+      assert.equal(line.kind === "input", state === "protected", state);
+      // a hidden composer is never the input, whatever the state
+      assert.notEqual(
+        protectedComposerLine({
+          mode: "hidden",
+          state,
+          notice: "not_available",
+          hasDraft,
+        }).kind,
+        "input",
+        `hidden ${state}`,
+      );
+    }
+  }
+  assert.deepEqual(
+    protectedComposerLine({
+      mode: shieldPresentation("unverified").composer,
+      state: "unverified",
+      notice: "off_list_member",
+      hasDraft: true,
+    }),
+    { kind: "sending_blocked" },
+  );
+  // re-securing keeps the draft; a loading shield is `disabled`, state null
+  assert.deepEqual(
+    protectedComposerLine({
+      mode: shieldPresentation("resecuring").composer,
+      state: "resecuring",
+      notice: "resecuring",
+      hasDraft: true,
+    }),
+    { kind: "notice", notice: "resecuring", draftKept: true },
+  );
+  assert.deepEqual(
+    protectedComposerLine({
+      mode: "disabled",
+      state: null,
+      notice: "resecuring",
+      hasDraft: false,
+    }),
+    { kind: "notice", notice: "resecuring", draftKept: false },
+  );
+});
+
+test("U4 the composer reads the line, with the channel's name for the notice", () => {
+  const blocked = code(
+    COMPOSITION.slice(
+      COMPOSITION.indexOf(
+        "const protectedBlockedText = (): string | undefined => {",
+      ),
+      COMPOSITION.indexOf("const blockedText = () => {"),
+    ),
+  );
+  assert.ok(
+    blocked.includes(
+      "const line = protectedComposerLine({ mode, " +
+        "state: protectedShield()?.state ?? null, " +
+        "notice: protectedNotice(), " +
+        'hasDraft: mode === "disabled" && !!draft().content?.trim(), });',
+    ),
+    `protectedBlockedText does not read the line: ${blocked}`,
+  );
+  assert.ok(
+    blocked.includes(
+      "noticeCopy( line.notice, null, null, props.channel.name ?? null, );",
+    ),
+    "the notice must carry the channel's display name",
+  );
+  assert.ok(blocked.includes('case "input": return undefined;'));
+  assert.ok(
+    blocked.includes(
+      'case "sending_blocked": return composerCopy.sendingBlocked();',
+    ),
+  );
+  assert.match(blocked, /const _exhaustive: never = line;/);
+  assert.ok(!/channel\.id/.test(blocked), "an id reaches the copy");
+});
+
+test("U4 Review is offered only when the shield's reviewOffered is true (F1)", async () => {
+  const { composerReviewOffered } = await loadRules();
+  const view = (status: string, sameUser: boolean, pending: boolean) =>
+    ({
+      native: {
+        owner_pin: { status, pending_signer: { same_user: sameUser } },
+      },
+      ownerChangePending: pending,
+    }) as unknown as ProtectedChannelView;
+  for (const v of [view("changed", true, false), view("pinned", true, true)]) {
+    assert.equal(composerReviewOffered(v, true), true);
+    for (const offered of [false, undefined, null, "true", 1]) {
+      assert.equal(
+        composerReviewOffered(v, offered),
+        false,
+        `offered ${String(offered)}`,
+      );
+    }
+  }
+  for (const v of [
+    view("changed", false, true),
+    view("pinned", true, false),
+    null,
+    undefined,
+  ]) {
+    assert.equal(composerReviewOffered(v, true), false);
+  }
+});
+
+test("U4 Review opens the owner-review modal; the composer never confirms itself", () => {
+  const body = code(
+    functionBody(COMPOSITION, "function reviewOwnerChange() {"),
+  );
+  assert.equal(
+    body,
+    "const request: ProtectedOwnerReviewProps = { " +
+      'type: "protected_owner_review", channel: props.channel, }; ' +
+      "openModal(request as unknown as ModalRequest);",
+  );
+  const all = code(COMPOSITION);
+  assert.ok(!all.includes("confirmOwnerChange"), "the composer confirms");
+  assert.ok(!all.includes("protectedUiOf"), "the composer reaches the bridge");
+  // ONE cast, only for the unregistered union member
+  assert.equal((all.match(/as unknown as ModalRequest/g) ?? []).length, 1);
+  assert.ok(
+    COMPOSITION.includes(
+      'import type { ProtectedOwnerReviewProps } from "@revolt/modal/modals/ProtectedOwnerReview";',
+    ),
   );
 });

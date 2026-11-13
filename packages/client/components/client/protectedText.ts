@@ -637,6 +637,8 @@ interface ChannelRec {
   ownerChangeUnlisted: { deviceId: string; key: string } | null;
   /** S2 (g): a coalesced `ProtectedChannelChanged` refresh is pending. */
   changePending: boolean;
+  /** S2: a `retryNow` refresh was asked for and has not settled. */
+  manualPending: boolean;
 }
 
 type ProcessResult = "ok" | "held" | "parked" | "dropped";
@@ -968,6 +970,29 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     this.#background(this.refresh(channelId, "commit"));
   }
 
+  /**
+   * S2-D42: the owner flow hands the owner key to another device of this
+   * user, then publishes the list carrying the statement. Only from this
+   * call (the UI's "Move ownership key"), never automatic.
+   */
+  async moveOwnerKey(channelId: string, toDeviceId: string): Promise<void> {
+    const rec = await this.#register(channelId);
+    rec.publishInFlight = true;
+    this.#emit(rec);
+    try {
+      await this.#deps.owner.moveOwnerKey(
+        this,
+        this.#flowPort,
+        channelId,
+        toDeviceId,
+      );
+    } finally {
+      rec.publishInFlight = false;
+      this.#emit(rec);
+    }
+    this.#background(this.refresh(channelId, "commit"));
+  }
+
   /** S2 F3: `OwnerFlows.pendingSeats` (the D7c store only). */
   pendingSeats(channelId: string): PendingSeats | null {
     return this.#deps.owner.pendingSeats(this.#flowPort, channelId);
@@ -1130,6 +1155,28 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         }
         await this.refresh(channelId, "event");
       })(),
+    );
+  }
+
+  /**
+   * S2: the UI's one-off retry ("Retry removal", "Rejoin", "Finish now"):
+   * ONE `refresh(id, "manual")` for a channel this manager holds. It never
+   * starts the open interval (`open` does), and it is dropped while a
+   * refresh of the channel, or an earlier `retryNow`, has not settled
+   * (that refresh re-reads the same state). Never a security input: a
+   * refresh only re-reads server state and lets the existing flows act. A
+   * "manual" refresh is not an open: it neither retries a capacity-refused
+   * join (f) nor resets the Welcome retry budget.
+   */
+  retryNow(channelId: string): void {
+    if (this.#disposed) return;
+    const rec = this.#channels.get(channelId);
+    if (!rec || rec.refreshing || rec.manualPending) return;
+    rec.manualPending = true;
+    this.#background(
+      this.refresh(channelId, "manual").finally(() => {
+        rec.manualPending = false;
+      }),
     );
   }
 
@@ -3748,6 +3795,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         confirmedSigner: null,
         ownerChangeUnlisted: null,
         changePending: false,
+        manualPending: false,
       };
       this.#channels.set(channelId, rec);
     }
