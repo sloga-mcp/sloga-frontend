@@ -9,6 +9,11 @@ import {
 
 import { useWindowCtx } from "@revolt/client/windowCtx";
 
+import {
+  needsLongPressEmulation,
+  suppressNativePress,
+} from "../components/floating/iosLongPress";
+
 type Props = JSX.Directives["floating"] & object;
 
 export type FloatingElement = {
@@ -234,18 +239,21 @@ export function floating(element: HTMLElement, accessor: Accessor<Props>) {
       () => accessor().contextMenu,
       (contextMenu) => {
         if (contextMenu) {
-          element.addEventListener(
-            accessor().contextMenuHandler ?? "contextmenu",
-            onContextMenu,
-          );
+          // Read once, so the listener removed is the one that was added
+          const handler = accessor().contextMenuHandler ?? "contextmenu";
+          element.addEventListener(handler, onContextMenu);
 
-          // TODO: iOS events for touch
+          // iOS has no press-and-hold `contextmenu` of its own: the
+          // FloatingManager raises one (see iosLongPress.ts). Keep the
+          // system's text selection from starting under the same finger.
+          const restore =
+            handler === "contextmenu" && needsLongPressEmulation()
+              ? suppressNativePress(element)
+              : undefined;
 
           onCleanup(() => {
-            element.removeEventListener(
-              config.contextMenuHandler ?? "contextmenu",
-              onContextMenu,
-            );
+            element.removeEventListener(handler, onContextMenu);
+            restore?.();
           });
         }
       },
