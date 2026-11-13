@@ -50,7 +50,7 @@ internal class TextDialogs {
 }
 
 /**
- * The native dialog behind the three protected-text dialog commands
+ * The native dialog behind the four protected-text dialog commands
  * (`e2ee_text_seat_list_sign`, `e2ee_text_owner_confirm_change`,
  * `e2ee_text_owner_handover_sign`; S7 D2). The Rust method runs the whole
  * gated flow (preview, decline lockout, copy, this callback, the commit bound

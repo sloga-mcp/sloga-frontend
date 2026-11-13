@@ -116,10 +116,11 @@ internal fun genericCallRefuses(name: String): Boolean = name in GENERIC_CALL_RE
  *    `acceptIdentityChange`, the recovery-code flows `backupCreate` /
  *    `backupRotate` / `backupRestore`, and `splitBegin` (make this install
  *    a separate device; `call()` refuses `e2ee_split_begin` by name).
- *  - The three protected-text dialog commands `textSeatListSign` /
- *    `textOwnerConfirmChange` / `textOwnerHandoverSign`, whose gate is in
- *    Rust: the native method runs the whole flow and asks
- *    [TextConfirmDialog] only when the user must answer.
+ *  - The four protected-text dialog commands `textSeatListSign` /
+ *    `textOwnerConfirmChange` / `textOwnerHandoverSign` /
+ *    `textAuthoritySign` (S2), whose gate is in Rust: the native method
+ *    runs the whole flow and asks [TextConfirmDialog] only when the user
+ *    must answer.
  *  - `textCapability`, the webview's probe of the protected-text plane.
  *  - `attachmentUpload` / `attachmentFetch` move attachment CIPHERTEXT
  *    between the Rust core and Autumn natively, so multi-megabyte payloads
@@ -682,11 +683,12 @@ class E2eePlugin : Plugin() {
                 "e2ee_text_mark_left" -> resolveText(call) { engine.textMarkLeft(it) }
                 "e2ee_text_pin_own_devices" -> resolveText(call) { engine.textPinOwnDevices(it) }
                 // NOT here by design:
-                // e2ee_text_seat_list_sign, e2ee_text_owner_confirm_change and
-                // e2ee_text_owner_handover_sign (each may need a native dialog
-                // the Rust flow asks for: the dedicated textSeatListSign /
-                // textOwnerConfirmChange / textOwnerHandoverSign methods
-                // below); e2ee_mark_verified +
+                // e2ee_text_seat_list_sign, e2ee_text_owner_confirm_change,
+                // e2ee_text_owner_handover_sign and e2ee_text_authority_sign
+                // (each may need a native dialog the Rust flow asks for, and
+                // authority_sign always does: the dedicated textSeatListSign /
+                // textOwnerConfirmChange / textOwnerHandoverSign /
+                // textAuthoritySign methods below); e2ee_mark_verified +
                 // e2ee_accept_identity_change (they raise how far this device
                 // trusts a peer's keys: "verified by you", or a new key that
                 // then receives their messages; so they are native-dialog-gated
@@ -973,10 +975,10 @@ class E2eePlugin : Plugin() {
     // ================================================================
 
     /**
-     * One consent request in flight, prompt or not, across all EIGHT consent
+     * One consent request in flight, prompt or not, across all NINE consent
      * methods: the growth pair ([enableGroup], [addGroupMember]), the trust
      * pair ([markVerified], [acceptIdentityChange]), [splitBegin] and the
-     * three protected-text dialog methods ([runTextDialog]), so their
+     * four protected-text dialog methods ([runTextDialog]), so their
      * dialogs never stack (desktop `consent_in_flight`). Claimed before the
      * preview;
      * each request releases it exactly once, through its own `held` flag, so
@@ -1927,9 +1929,10 @@ class E2eePlugin : Plugin() {
     // ================================================================
     // Protected channels: the text plane's dialog commands (S7 D2/D3)
     //
-    // `e2ee_text_seat_list_sign`, `e2ee_text_owner_confirm_change` and
-    // `e2ee_text_owner_handover_sign` are gated in RUST: each native method
-    // runs the whole flow (preview, decline lockout, the core's copy, the
+    // `e2ee_text_seat_list_sign`, `e2ee_text_owner_confirm_change`,
+    // `e2ee_text_owner_handover_sign` and (S2) `e2ee_text_authority_sign`
+    // are gated in RUST: each native method runs the whole flow (preview,
+    // decline lockout, the core's copy, the
     // dialog, then the commit bound to exactly that preview), and no preview
     // or commit half is exported, so nothing here can skip the dialog. The
     // plugin only supplies the dialog ([TextConfirmDialog]) and the threading:
@@ -2016,6 +2019,17 @@ class E2eePlugin : Plugin() {
     @PluginMethod
     fun textOwnerHandoverSign(call: PluginCall) {
         runTextDialog(call) { args, confirm -> engine().textOwnerHandoverSign(args, confirm) }
+    }
+
+    /**
+     * Sign a channel's owner-device authority (S2): `e2ee_text_authority_sign`.
+     * Always asks. Persists nothing; the webview passes the result to
+     * `e2ee_text_seat_list_sign` as its `authority`. Resolves `{json}`
+     * (`SignedAuthority`).
+     */
+    @PluginMethod
+    fun textAuthoritySign(call: PluginCall) {
+        runTextDialog(call) { args, confirm -> engine().textAuthoritySign(args, confirm) }
     }
 
     /**

@@ -33,7 +33,7 @@
 //   R3. Nothing reachable through the file's own functions from a text arm,
 //       resolveText, runTextDialog, the dialog methods or textCapability is
 //       `emitKeysChanged` / `emitFromOutcome` or calls `notifyListeners`;
-//       TextConfirmDialog.kt names none of the three.
+//       TextConfirmDialog.kt names none of the four.
 //   R4. runTextDialog: a top-level
 //       `if (!consentInFlight.compareAndSet(false, true))` that rejects
 //       `busy` and returns; after it ONE `executor.execute` whose lambda
@@ -107,7 +107,7 @@ const DEFAULT_DIALOG = new URL(
 const PLUGIN_FILE = process.env.PROTECTED_TEXT_PLUGIN_KT || DEFAULT_PLUGIN;
 const DIALOG_FILE = process.env.PROTECTED_TEXT_DIALOG_KT || DEFAULT_DIALOG;
 
-/** The three dialog commands and their dedicated plugin methods (D3). */
+/** The four dialog commands and their dedicated plugin methods (D3). */
 const DIALOGS = [
   { command: "e2ee_text_seat_list_sign", method: "textSeatListSign" },
   {
@@ -118,6 +118,7 @@ const DIALOGS = [
     command: "e2ee_text_owner_handover_sign",
     method: "textOwnerHandoverSign",
   },
+  { command: "e2ee_text_authority_sign", method: "textAuthoritySign" },
 ] as const;
 
 const EMITS = ["emitKeysChanged", "emitFromOutcome"];
@@ -1962,7 +1963,7 @@ const DIALOG = ktLoad(readFileSync(DIALOG_FILE, "utf8"));
 test(`sources: ${String(PLUGIN_FILE)} + ${String(DIALOG_FILE)}`, () => {
   assert.match(PLUGIN.code, /\bclass\s+E2eePlugin\b/);
   assert.match(DIALOG.code, /\bclass\s+TextConfirmDialog\b/);
-  assert.equal(TEXT_COMMANDS.length, 20);
+  assert.equal(TEXT_COMMANDS.length, 21);
 });
 
 for (const [id, rule] of Object.entries(RULES)) {

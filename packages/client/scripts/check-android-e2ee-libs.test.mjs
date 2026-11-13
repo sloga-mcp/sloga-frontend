@@ -12,7 +12,8 @@
  * The stale-bindings control also runs on the real pre-S7 .kt, read from the
  * literal commit 5b61eef1 (the S7 frontend base, carrying the d12b6ed4 v0.69
  * regen), never from HEAD: a control against HEAD goes vacuous once the S7
- * regen lands.
+ * regen lands. Likewise the S2 control reads the real S7 .kt (the 37497811
+ * regen, no text_authority_sign) from the literal commit 68653961.
  */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -49,6 +50,7 @@ const CLIENT = dirname(here);
 const REPO = dirname(dirname(CLIENT));
 
 const PRE_S7_COMMIT = "5b61eef1";
+const S7_COMMIT = "68653961";
 const COMMIT = "e8939a5bd0209e410e718fee8214d0fdff0559c7";
 const OTHER_COMMIT = "0123456789abcdef0123456789abcdef01234567";
 
@@ -566,7 +568,7 @@ describe("negative controls (each must fail)", () => {
     const root = makeTree({ kt: goodKt({ methods: [] }) });
     assertFails(
       check(root),
-      /FAIL: .*acutest_e2ee\.kt lacks 21 of 21 protected-text methods \(stale bindings\?\)/,
+      /FAIL: .*acutest_e2ee\.kt lacks 22 of 22 protected-text methods \(stale bindings\?\)/,
     );
   });
 
@@ -585,7 +587,30 @@ describe("negative controls (each must fail)", () => {
     const root = makeTree({ kt });
     assertFails(
       check(root),
-      /acutest_e2ee\.kt lacks 21 of 21 protected-text methods/,
+      /acutest_e2ee\.kt lacks 22 of 22 protected-text methods/,
+    );
+  });
+
+  test(`stale .kt: the real S7 bindings at ${S7_COMMIT} (no text_authority_sign)`, () => {
+    const show = spawnSync(
+      "git",
+      ["-C", REPO, "show", `${S7_COMMIT}:packages/client/${KT_REL}`],
+      { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+    );
+    assert.equal(show.status, 0, `git show failed: ${show.stderr}`);
+    const kt = show.stdout;
+    assert.ok(kt.includes("package uniffi.acutest_e2ee"), "a uniffi .kt");
+    assert.ok(
+      kt.includes(
+        "lib.uniffi_acutest_e2ee_checksum_method_e2eeengine_text_owner_handover_sign()",
+      ),
+      "it carries the S7 text plane",
+    );
+    // As above: only the method S2 added can fail it.
+    const root = makeTree({ kt });
+    assertFails(
+      check(root),
+      /lacks 1 of 22 protected-text methods .*: text_authority_sign$/m,
     );
   });
 
@@ -597,7 +622,7 @@ describe("negative controls (each must fail)", () => {
     });
     assertFails(
       check(root),
-      /lacks 1 of 21 protected-text methods .*: text_capability$/m,
+      /lacks 1 of 22 protected-text methods .*: text_capability$/m,
     );
   });
 
