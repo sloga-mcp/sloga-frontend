@@ -61,11 +61,13 @@ import {
 import { notificationCopy, toastCopy } from "./protectedCopy";
 import type { ProtectedToastKind } from "./protectedTextTypes";
 import { playsWebRingtone } from "./pushPolicy";
+import { slimAllowsChannel, slimRedirectFor } from "./slimRoutePolicy";
 import { connectionUrl } from "./streamConnections";
 import { toastSurfaceFor } from "./toastPolicy";
 import { toastSupported, useToastShell } from "./toastShell";
 import { type UnreadBadge, sameBadge, unreadBadge } from "./unreadBadge";
 import { publishUnreadBadge } from "./unreadBadgeShell";
+import { useSlimMode } from "./useSlimMode";
 import { isViewingConversation } from "./viewingConversation";
 import { focusedConversations } from "./windowCtx";
 
@@ -161,6 +163,9 @@ export function NotificationsWorker() {
   const toastShell = useToastShell();
   const snackbar = useSnackbar();
   const { lifecycle } = useClientLifecycle();
+  // Whether Slim view is active on this device. Reactive, and read at each
+  // decision below: the user can switch it while this worker is mounted.
+  const slim = useSlimMode();
 
   /** The native bridge of the current client, where this shell has one. */
   const bridge = () => client()?.e2ee as E2EEBridge | undefined;
@@ -274,6 +279,18 @@ export function NotificationsWorker() {
     });
 
   /**
+   * Where a tapped notification goes. Slim view shows no server surface, so
+   * a path it blocks lands on the chat list instead. A `/channel/:id` path is
+   * left alone: the channel page redirects a server channel itself. Asked at
+   * the tap, since Slim view may have been switched after the notification
+   * was raised.
+   */
+  const tapTarget = (path: string) => {
+    if (!slim()) return path;
+    return slimRedirectFor(path) ?? path;
+  };
+
+  /**
    * Handle incoming messages
    * @param message Message
    */
@@ -305,6 +322,12 @@ export function NotificationsWorker() {
     // a thread of a server we just left, which stoat.js has swept from the
     // cache. There is nothing to notify about without the channel.
     if (!message.channel) return;
+
+    // Slim view shows no servers, so a server message is not announced here:
+    // no sound, no toast and no notification. Only this presentation is
+    // skipped. The message and its unread state are untouched, and DMs and
+    // groups (which is where system and official messages arrive) go on.
+    if (slim() && !slimAllowsChannel(message.channel)) return;
 
     // Ignore muted channels
     if (state.notifications.isMuted(message.channel)) return;
@@ -616,7 +639,7 @@ export function NotificationsWorker() {
       onClick: () => {
         const openInMain = () => {
           window.focus();
-          navigate(message.path);
+          navigate(tapTarget(message.path));
         };
         // Chat-windows mode opens a DM or group as a chat-window tab; server
         // channels always open in the main window.
@@ -813,7 +836,9 @@ export function NotificationsWorker() {
       callerId?: string | null,
     ) => {
       if (!path) return;
-      navigate(path);
+      // Only where the tap lands changes in Slim view. The call handling
+      // below still reads the path the notification carried.
+      navigate(tapTarget(path));
       if (!answer && !ring) return;
 
       const channelId = path.split("/").pop();

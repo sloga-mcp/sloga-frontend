@@ -6,6 +6,10 @@ import { useDismissTopmost } from "@revolt/keybinds/keybindHandler";
 import { useState } from "@revolt/state";
 import { SlideState } from "@revolt/ui/components/navigation/SlideDrawer";
 
+import { useClientLifecycle } from ".";
+import { slimIsRoot } from "./slimRoutePolicy";
+import { useSlimMode } from "./useSlimMode";
+
 /**
  * Window event the Android shell dispatches for every back press (hardware
  * key or predictive-back gesture), through `bridge.triggerWindowJSEvent` —
@@ -78,6 +82,11 @@ export function AndroidBackWorker() {
   // resolving it there would report "nothing to dismiss" forever.
   const dismissTopmost = useDismissTopmost();
 
+  // Resolved during setup for the same reason. Both are read inside the
+  // handler, at the moment of the press.
+  const slim = useSlimMode();
+  const { lifecycle } = useClientLifecycle();
+
   onMount(() => {
     if (
       !Capacitor.isNativePlatform() ||
@@ -134,8 +143,21 @@ export function AndroidBackWorker() {
       //    mid-swipe is absorbed instead of falling through and exiting the
       //    app; `setShown` early-returns `false` in those cases and every
       //    call site in the repo ignores that return, as here.
+      //
+      //    Not at the Slim view root: there the navigation column is the
+      //    chat list, which is the screen itself, and the content pane behind
+      //    it is only a placeholder. Sliding to it would spend a press on an
+      //    empty pane, so the press goes on to history and exit instead.
+      //    `loadedOnce` because a staff account never gets Slim view, and
+      //    that is only known once the signed-in user has loaded.
+      const atSlimRoot =
+        lifecycle.loadedOnce() &&
+        slim() &&
+        slimIsRoot(window.location.pathname);
+
       const drawer = state.appDrawer();
       if (
+        !atSlimRoot &&
         drawer?.enabled &&
         drawer.state !== SlideState.SHOWN &&
         drawer.state !== SlideState.SHOWING
