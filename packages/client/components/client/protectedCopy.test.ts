@@ -16,7 +16,11 @@
  * - S2-D42 (lane U11b): the four `moveOwnerKey` client refusals get their
  *   own copy the same way, native `handover_target_invalid` reads as "that
  *   device hasn't joined" on the owner op only, and the server settings
- *   page's owner-key strings.
+ *   page's owner-key strings;
+ * - S2 audit LOW-3: the manager's client refusals `recovery_unavailable`,
+ *   `publish_in_flight`, `client_outdated`, `invalid_reason` and
+ *   `create_predecessor_unknown` get their own copy from the shield's
+ *   notice, so callers that pass no failure (the pill) show it too.
  *
  * `@lingui/core/macro` only runs inside the build, so a module hook swaps it
  * for a stand-in `t` that fills in the values. The asserted text is the
@@ -89,6 +93,7 @@ const {
   reasonProblemCopy,
   reasonTooLongCopy,
   removalReasonHintCopy,
+  settingsCopy,
 }: typeof import("./protectedCopy.ts") = await import(COPY_URL);
 
 const AUTHORITY_NEEDS_V2 =
@@ -252,6 +257,81 @@ test("move ownership key: the page's copy", () => {
     ownerKeyCopy.onOtherDevice(),
     "This channel's ownership key is on another of your devices. Open this page on that device to move it.",
   );
+});
+
+// ------------------------------------ S2 client refusals (audit LOW-3) --
+
+/**
+ * The manager's own client refusals (protectedText.ts / protectedTextOwner
+ * `clientFailure(...)`) and their copy. `client_outdated` is the step 3c
+ * notice's text and `publish_in_flight` the settings page's line.
+ */
+const CLIENT_REFUSALS: Record<string, string> = {
+  recovery_unavailable:
+    "Ownership can't be recovered on this device right now.",
+  publish_in_flight:
+    "Saving the member list. You can make more changes when this finishes.",
+  client_outdated: "Update Sloga to use this protected channel.",
+  invalid_reason: "This reason can't be used. Check it and try again.",
+  create_predecessor_unknown:
+    "This channel's group couldn't be re-created right now. Try again later.",
+};
+
+test("S2 LOW-3: each client refusal has its own copy, with or without the failure passed", () => {
+  const seen = new Set<string>();
+  for (const [reason, want] of Object.entries(CLIENT_REFUSALS)) {
+    const failure = { source: "client", reason };
+    // The seat picker / settings / device-cap composition passes the failure.
+    assert.equal(ownerCopy(failure), want, reason);
+    // The pill (`run`) and the server settings page call errorUiCopy(answer)
+    // without it: the shield's notice carries the copy on its own.
+    const answer = protectedNoticeForError(failure, { op: "owner" });
+    assert.deepEqual(
+      answer,
+      { kind: "notice", notice: reason, max: null, tag: "client" },
+      reason,
+    );
+    assert.equal(errorUiCopy(answer), want, reason);
+    assert.notEqual(errorUiCopy(answer), CATCH_ALL, reason);
+    seen.add(want);
+    // Every op but `message` names the cause (client_outdated also comes
+    // from the send path's ensureJoined); a row never gets a notice.
+    for (const op of ["channel", "send", "action", "transfer"] as const) {
+      assert.equal(
+        errorUiCopy(protectedNoticeForError(failure, { op }), { failure }),
+        want,
+        `${reason}/${op}`,
+      );
+    }
+    assert.deepEqual(protectedNoticeForError(failure, { op: "message" }), {
+      kind: "marker",
+      marker: "error",
+      tag: "unknown",
+    });
+    // Only a client failure: the same reason from native or server keeps
+    // its own mapping.
+    for (const other of [
+      { source: "native", reason },
+      { source: "server", reason },
+    ]) {
+      assert.notEqual(ownerCopy(other), want, `${other.source} ${reason}`);
+    }
+  }
+  assert.equal(seen.size, 5, "five distinct texts");
+  // Reused wording, not a second msgid.
+  assert.equal(CLIENT_REFUSALS.client_outdated, noticeCopy("client_outdated"));
+  assert.equal(
+    CLIENT_REFUSALS.publish_in_flight,
+    settingsCopy.publishInFlight(),
+  );
+});
+
+test("S2 LOW-3: the copy names no id and blames no one", () => {
+  for (const text of Object.values(CLIENT_REFUSALS)) {
+    assert.doesNotMatch(text, /\b(id|ids|key|keys)\b|\{|\}/i, text);
+    assert.doesNotMatch(text, /\byou(r)? (did|made|broke|failed)\b/i, text);
+    assert.ok(text.length <= 80, `short: ${text}`);
+  }
 });
 
 // ------------------------------------------------------- removal reason --

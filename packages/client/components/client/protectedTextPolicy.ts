@@ -23,6 +23,8 @@
  * - Protector back-off (S7 plan D9, EL-F7 / AND-F13): `isProtectorError`,
  *   `protectorBackoffMs`, `protectorGateStep`, `protectorGateAfter`.
  * - Admission stagger (plan D19): `leafStaggerMs`.
+ * - Async Text join (S2-D28 / S2-D29): `joinRebroadcastDelayMs`,
+ *   `welcomeFetchStep`, `ownAddedEntry`, `welcomeDue`, `storedJoinRequests`.
  *
  * Fail-closed rules this module holds everywhere:
  * - An answer whose outcome is unknown (transport error, lost response, 5xx)
@@ -55,6 +57,7 @@ import type {
   TextCommitInfo,
   TextLeftReason,
   TextNativeErrorTag,
+  TextRefreshReason,
   ViewErrorTag,
 } from "./protectedTextTypes";
 
@@ -62,7 +65,12 @@ import type {
 // Budgets (plan 4.2 A3, verbatim)
 // ---------------------------------------------------------------------------
 
-/** Join-intent retries before `welcomeRetriesExhausted` (design 9.1 6d). */
+/**
+ * Join-intent retries before `welcomeRetriesExhausted` (design 9.1 6d). S2:
+ * only the "past the first retries" signal the shield reads; the joiner
+ * keeps re-broadcasting (`JOIN_REBROADCAST`). Also the bound on consecutive
+ * KeyPackage publish failures of one join.
+ */
 export const JOIN_RETRIES = 3;
 
 /** Spacing of join-intent retries (joiners retry every 10 s). */
@@ -1471,4 +1479,235 @@ export function leafStaggerMs(ownLeafIndex: number): number {
   return Number.isSafeInteger(ownLeafIndex) && ownLeafIndex > 0
     ? ownLeafIndex * LEAF_STAGGER_MS
     : 0;
+}
+
+// ---------------------------------------------------------------------------
+// Async Text join (S2-D28 re-broadcast + stored intents, S2-D29 Welcomes)
+// ---------------------------------------------------------------------------
+
+/**
+ * S2-D28: the joiner's re-broadcast pace. It starts at the S1 join spacing
+ * (`JOIN_RETRY_MS`), doubles, and holds at 15 min. Silence never ends it.
+ */
+export const JOIN_REBROADCAST = {
+  startMs: JOIN_RETRY_MS,
+  capMs: 15 * 60_000,
+} as const;
+
+/**
+ * S2-D28: the wait before the next re-broadcast after `waits` earlier waits
+ * of this join (0 = the first, counted from its start or its last reset):
+ * 10 s, 20 s, 40 s ... held at 15 min. A count that is not a non-negative
+ * safe integer fails to the cap (the slowest pace, never a tight loop).
+ */
+export function joinRebroadcastDelayMs(waits: number): number {
+  if (!Number.isSafeInteger(waits) || waits < 0) return JOIN_REBROADCAST.capMs;
+  let ms: number = JOIN_REBROADCAST.startMs;
+  for (let i = 0; i < waits && ms < JOIN_REBROADCAST.capMs; i++) ms *= 2;
+  return Math.min(ms, JOIN_REBROADCAST.capMs);
+}
+
+/**
+ * S2-D29: `member_added` shows this device and no Welcome was processed for
+ * this long: fetch the stored one.
+ */
+export const WELCOME_FETCH_AFTER_MS = 20_000;
+
+/** S2-D29: re-sends of the stored-Welcome GET after a 429 / 5xx / transport. */
+export const WELCOME_FETCH_RETRY_BUDGET = 3;
+
+/** `GET /mls/groups/:id/welcome?device_id=` (`ResponseTextWelcome`). */
+export interface StoredWelcome {
+  group_id: string;
+  epoch: number;
+  welcome: string;
+}
+
+/** What one answer to the stored-Welcome GET means. */
+export type WelcomeFetchStep =
+  /** The bytes go to native's Welcome path; native decides. */
+  | { kind: "process"; welcome: StoredWelcome }
+  /** 404, the unknown-group answer: no stored Welcome; rejoin. */
+  | { kind: "rejoin" }
+  /** Unknown outcome within the budget: ask again after `delayMs`. */
+  | { kind: "retry"; delayMs: number }
+  /** Nothing usable: no rejoin; the join waits. */
+  | {
+      kind: "give_up";
+      why: "refused" | "malformed" | "wrong_group" | "budget";
+    };
+
+export type WelcomeFetchAnswer =
+  | { kind: "response"; response: TextApiResponse }
+  | { kind: "transport_error" };
+
+/**
+ * S2-D29: one answer to the stored-Welcome GET for `groupId` (the server's
+ * CURRENT group) after `failures` earlier unknown outcomes. Only a 404 is
+ * "no Welcome" (the route answers every missing case like an unknown
+ * group). A 2xx is used only when it names the group asked for, an epoch
+ * and non-empty bytes, and is trusted no further: native's Welcome path
+ * verifies it. Transport, 429 and 5xx are retried within
+ * `WELCOME_FETCH_RETRY_BUDGET`; anything else, or the budget spent, gives
+ * up without a rejoin.
+ */
+export function welcomeFetchStep(
+  answer: WelcomeFetchAnswer,
+  ctx: { groupId: string; failures: number },
+): WelcomeFetchStep {
+  const retry = (delayMs: number): WelcomeFetchStep =>
+    ctx.failures < WELCOME_FETCH_RETRY_BUDGET
+      ? { kind: "retry", delayMs }
+      : { kind: "give_up", why: "budget" };
+  if (answer.kind === "transport_error") {
+    return retry(publishBackoffMs(ctx.failures));
+  }
+  const r = answer.response;
+  if (r.status === 429) return retry(rateLimitDelayMs(r, ctx.failures));
+  if (r.status >= 500) return retry(publishBackoffMs(ctx.failures));
+  if (r.status === 404) return { kind: "rejoin" };
+  if (!is2xx(r.status)) return { kind: "give_up", why: "refused" };
+  const b = r.body;
+  if (
+    !isRecord(b) ||
+    typeof b.group_id !== "string" ||
+    !isEpoch(b.epoch) ||
+    typeof b.welcome !== "string" ||
+    b.welcome.length === 0
+  ) {
+    return { kind: "give_up", why: "malformed" };
+  }
+  if (b.group_id !== ctx.groupId) {
+    return { kind: "give_up", why: "wrong_group" };
+  }
+  return {
+    kind: "process",
+    welcome: { group_id: b.group_id, epoch: b.epoch, welcome: b.welcome },
+  };
+}
+
+/**
+ * S2-D29: this device's latest Add in the server's `member_added` (a
+ * liveness aid, never a security input), or null. `key` names this
+ * observation: the stored-Welcome fetch and its one rejoin are bound to
+ * it, and a new Add is a new key. Malformed entries are skipped.
+ */
+export function ownAddedEntry(
+  g: { group_id: string; member_added: readonly unknown[] },
+  userId: string,
+  deviceId: string,
+): { key: string; epoch: number } | null {
+  let epoch: number | null = null;
+  for (const a of g.member_added) {
+    if (
+      !isRecord(a) ||
+      a.user_id !== userId ||
+      a.device_id !== deviceId ||
+      !isEpoch(a.epoch)
+    ) {
+      continue;
+    }
+    if (epoch === null || a.epoch > epoch) epoch = a.epoch;
+  }
+  return epoch === null ? null : { key: `${g.group_id}:${epoch}`, epoch };
+}
+
+/**
+ * W4d X#6 / S2-D29: a Welcome is due for that Add when it is at or after
+ * the server epoch this device's last intent was sent at (`fromEpoch`;
+ * null = no intent sent by this manager).
+ */
+export function welcomeDue(
+  added: { epoch: number } | null,
+  fromEpoch: number | null,
+): boolean {
+  return added !== null && fromEpoch !== null && added.epoch >= fromEpoch;
+}
+
+/** S2-D28: refreshes on which members admit from stored `join_requests`. */
+export const STORED_ADMIT_REASONS: readonly TextRefreshReason[] = [
+  "open",
+  "interval",
+  "start",
+  "event",
+  "manual",
+];
+
+/** One stored intent, as the live `MlsJoinRequested` handler takes it. */
+export interface StoredJoinRequest {
+  request: MlsJoinRequest;
+  rejoin: boolean;
+}
+
+/**
+ * S2-D28: `text_group.join_requests` (absent = none) as join requests into
+ * `groupId` of `channelId`, in order, in the shape the live
+ * `MlsJoinRequested` gives the manager: the S1 strings, `generation` /
+ * `issued_at` ONLY when present and then a safe non-negative integer
+ * (OR-6, the rule of `joinIntentSignedFields`), `rejoin` a boolean. A
+ * malformed entry is dropped WHOLE (never a partial request, never the S1
+ * shape) and counted; `created_at` never reaches native; a repeat of one
+ * (user, device, rejoin) keeps the first. Nothing here is trusted:
+ * admission re-checks the seat and native verifies the signature against
+ * its pins and refuses an off-list user.
+ */
+export function storedJoinRequests(
+  raw: unknown,
+  groupId: string,
+  channelId: string,
+): { requests: StoredJoinRequest[]; dropped: number } {
+  if (raw === undefined || raw === null) return { requests: [], dropped: 0 };
+  if (!Array.isArray(raw)) return { requests: [], dropped: 1 };
+  const requests: StoredJoinRequest[] = [];
+  const seen = new Set<string>();
+  let dropped = 0;
+  for (const v of raw) {
+    const one = storedJoinRequest(v, groupId, channelId);
+    if (one === null) {
+      dropped += 1;
+      continue;
+    }
+    const key = JSON.stringify([
+      one.request.user_id,
+      one.request.device_id,
+      one.rejoin,
+    ]);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    requests.push(one);
+  }
+  return { requests, dropped };
+}
+
+function storedJoinRequest(
+  v: unknown,
+  groupId: string,
+  channelId: string,
+): StoredJoinRequest | null {
+  if (!isRecord(v)) return null;
+  const { user_id, device_id, key_package_ref, signature, rejoin } = v;
+  if (
+    typeof user_id !== "string" ||
+    typeof device_id !== "string" ||
+    typeof key_package_ref !== "string" ||
+    typeof signature !== "string" ||
+    typeof rejoin !== "boolean"
+  ) {
+    return null;
+  }
+  const request: MlsJoinRequest = {
+    group_id: groupId,
+    channel_id: channelId,
+    user_id,
+    device_id,
+    key_package_ref,
+    signature,
+  };
+  for (const key of ["generation", "issued_at"] as const) {
+    const x = v[key];
+    if (x === undefined) continue;
+    if (!isEpoch(x)) return null;
+    request[key] = x;
+  }
+  return { request, rejoin };
 }

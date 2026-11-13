@@ -181,6 +181,7 @@ import {
   moveOwnerKey,
   pendingSeats,
   protect,
+  recoverOwnership,
   setSeats,
   signOwnerDevices,
 } from "./protectedTextOwner";
@@ -9510,17 +9511,43 @@ export class E2EEBridge implements E2EEAdapter {
       if (this.#ptManager && key !== this.#ptManagerKey) {
         this.#protectedDispose();
       }
+      // S2-D28: a manager this connect keeps (same account and device,
+      // still capable); a new one opens its channels itself.
+      const kept = this.#ptManager;
       this.#protectedBootManager();
       // L1: a manager built while seeding was in flight (enable(), a UI
       // action) missed channels indexed after it; hand them over (deduped).
       for (const channelId of this.#ptIndexed) {
         this.#protectedForward(channelId);
       }
+      if (kept !== null && kept === this.#ptManager) {
+        this.#protectedReconnected(kept);
+      }
     } catch (error) {
       console.error("[protected] startup failed", errorName(error));
     } finally {
       this.#ptIndex.markReady();
       this.#protectedFlushPreIndex();
+    }
+  }
+
+  /**
+   * S2-D28 (FX-R): a reconnect the manager survived. Each channel the UI
+   * has open and this manager was handed is refreshed once, as an early
+   * 60 s tick ("interval", one of `STORED_ADMIT_REASONS`): members admit
+   * the join requests the server stored while this socket was down. Not an
+   * open (no capacity retry, no backoff reset); the 60 s loop is left as
+   * it is. Never throws.
+   */
+  #protectedReconnected(manager: ProtectedTextManager): void {
+    for (const channelId of this.#ptOpen) {
+      if (!this.#ptForwarded.has(channelId)) continue;
+      manager.refresh(channelId, "interval").catch((error: unknown) => {
+        console.warn("[protected] reconnect refresh failed", {
+          channelId,
+          error: errorName(error),
+        });
+      });
     }
   }
 
@@ -9678,6 +9705,7 @@ export class E2EEBridge implements E2EEAdapter {
           moveOwnerKey,
           pendingSeats,
           cancelPendingSeats,
+          recoverOwnership,
         },
         messages: { encryptAndSend, decryptRow, markerForError },
       },

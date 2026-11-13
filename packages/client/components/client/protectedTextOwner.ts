@@ -38,6 +38,11 @@
  * - F5 (S2-D42, design 4.6): `moveOwnerKey` hands the owner key from this
  *   signing device to another device of this user. The handover statement
  *   is stored with the list bytes it rides on and re-sent with them.
+ * - FX-R (design 6.3 "Owner signing device lost", 4.9): `recoverOwnership`
+ *   stores the recovery list (`recovery`) before its first PUT, like every
+ *   other publish, and resumes the SAME bytes on every later call until it
+ *   resolves; a re-send budget bounds one call, never the entry. A reason
+ *   header rides only on a plain seat publish.
  *
  * Pure of Solid / livekit / lingui; driven through `GroupOps` and the port,
  * so `node --test --conditions=browser` loads it over fakes.
@@ -61,6 +66,7 @@ import type {
   PendingSeats,
   ProtectedSeatsResponse,
   ProtectedTextPort,
+  RecoveryPlan,
   SeatListInput,
   SeatListVerdict,
   SignedAuthority,
@@ -122,6 +128,12 @@ export interface StoredPublish {
    * signed again.
    */
   handover?: SignedHandover;
+  /**
+   * S2 FX-R: the recovery list `recoverOwnership` publishes (design 6.3).
+   * Only that flow re-sends it (it creates the successor first); another
+   * flow may resolve it by read-back, never PUT it. Never discarded by F3.
+   */
+  recovery?: true;
 }
 
 type PublishAnswerSeen = "unsent" | "sent" | "refused";
@@ -238,6 +250,27 @@ interface Ctx {
   channelName: string | null;
   /** Never aborted by this module; a port may still reject `sleep`. */
   signal: AbortSignal;
+  /**
+   * FX-R: set by `recoverOwnership` only, for its recovery entry: the
+   * successor step before a PUT and the re-send budget of one call.
+   */
+  recovery?: RecoveryPlan;
+}
+
+/**
+ * FX-R: a recovery call past its budget of transient answers. Unbounded
+ * (as before) for every other flow.
+ */
+function overBudget(ctx: Ctx, failures: number): boolean {
+  const budget = ctx.recovery?.retryBudget;
+  return budget !== undefined && failures >= budget;
+}
+
+/** The rejection for a transient answer once the budget is spent. */
+function transientFailure(a: PublishAnswer): TextFlowFailure {
+  return a.kind === "response"
+    ? serverFailure(a.response)
+    : { source: "transport" };
 }
 
 async function pause(ctx: Ctx, ms: number): Promise<void> {
@@ -305,6 +338,7 @@ function readStored(ctx: StoreAt): StoredPublish | "corrupt" | null {
       ...(v.reasonRequired === true ? { reasonRequired: true as const } : {}),
       ...(answer !== null ? { answer } : {}),
       ...(handover !== null ? { handover } : {}),
+      ...(v.recovery === true ? { recovery: true as const } : {}),
     };
   } catch {
     return "corrupt";
@@ -464,6 +498,7 @@ async function readSeats(ctx: Ctx): Promise<SeatsSnapshot> {
         throw serverFailure(a.response);
       }
     }
+    if (overBudget(ctx, failures)) throw transientFailure(a);
     await pause(ctx, publishBackoffMs(failures));
   }
 }
@@ -728,6 +763,12 @@ function writeAhead(ctx: Ctx, entry: StoredPublish): StoredPublish {
 /**
  * PUT the SAME list bytes until resolved (design 4.9), then finish. With a
  * `reason`, every attempt carries it as `X-Audit-Log-Reason`.
+ *
+ * FX-R: a recovery entry is PUT only by `recoverOwnership` (`ctx.recovery`),
+ * which first makes sure this device holds a leaf in the open group (the
+ * server's 4.3 step 5b checks it, #213); any other flow refuses rather than
+ * send it without the successor. Past `retryBudget` transient answers the
+ * call rejects and the entry stays (the next call resumes it).
  */
 async function publishSeats(
   ctx: Ctx,
@@ -735,6 +776,10 @@ async function publishSeats(
   reason: string | null,
 ) {
   const { signed } = entry;
+  if (entry.recovery === true) {
+    if (ctx.recovery === undefined) throw clientFailure("publish_in_flight");
+    await ctx.recovery.ensureLeaf();
+  }
   let current = entry;
   for (let failures = 0; ; failures++) {
     // F3: no PUT of these bytes so far was possibly accepted.
@@ -754,6 +799,7 @@ async function publishSeats(
         current = { ...current, answer: "refused" };
         persist(ctx, current);
       }
+      if (overBudget(ctx, failures)) throw transientFailure(answer);
       await pause(ctx, step.delayMs);
       continue;
     }
@@ -833,8 +879,21 @@ async function resolveStoredSeats(
 // ---------------------------------------------------------------------------
 
 /**
+ * FX-R: whether a stored publish takes the caller's reason header on its
+ * re-PUT. Only a plain seat publish can unseat anyone; an owner-devices,
+ * handover or recovery publish keeps the seats it was signed over and
+ * never carries another flow's reason.
+ */
+function carriesReason(e: StoredPublish): boolean {
+  return (
+    e.ownerDevices !== true && e.handover === undefined && e.recovery !== true
+  );
+}
+
+/**
  * Resolve a stored (unresolved) publish first; returns the entry it
- * resolved, or null. `reason` rides on a stored seat publish's re-PUT.
+ * resolved, or null. `reason` rides on a stored plain seat publish's
+ * re-PUT only (`carriesReason`).
  */
 async function resumeStored(
   ctx: Ctx,
@@ -850,8 +909,9 @@ async function resumeStored(
     });
     return null;
   }
+  const resentReason = carriesReason(stored) ? reason : null;
   if (stored.op === "protect") await resolveProtect(ctx, stored.signed, true);
-  else await resolveStoredSeats(ctx, stored, reason);
+  else await resolveStoredSeats(ctx, stored, resentReason);
   return stored;
 }
 
@@ -1358,6 +1418,60 @@ export async function moveOwnerKey(
 }
 
 /**
+ * S2 (d) FX-R, design 6.3 "Owner signing device lost" (S2-D17d, S2-D22,
+ * #213) with 4.9 and D7c: the recovery list is a stored publish like any
+ * other list this device signs.
+ * - A stored recovery publish is resumed FIRST: read back
+ *   (`resolveStoredSeats`: landed = finish, server one behind = the SAME
+ *   bytes re-sent, anything else = dropped as refused). No dialog, nothing
+ *   signed, whatever the manager's checks would say now.
+ * - Otherwise another flow's stored publish resolves first (D7c), then
+ *   `plan.sign` (the dialog, after the manager's checks). Its result must
+ *   be a signed list of this device at the server version + 1; it is
+ *   persisted BEFORE anything is created or sent, then `plan.ensureLeaf`
+ *   (the successor, #213) and the PUT loop.
+ * - One call gives up after `plan.retryBudget` transient answers; the
+ *   entry stays, so the next call re-sends the same bytes (never a fresh
+ *   signature). The manager refreshes after every call.
+ */
+export async function recoverOwnership(
+  ops: GroupOps,
+  port: ProtectedTextPort,
+  channelId: string,
+  plan: RecoveryPlan,
+): Promise<void> {
+  await run(ops, port, channelId, async (base) => {
+    const ctx: Ctx = { ...base, recovery: plan };
+    const stored = readStored(base);
+    if (stored !== null && stored !== "corrupt" && stored.recovery === true) {
+      await resolveStoredSeats(ctx, stored, null);
+      return;
+    }
+    await resumeStored(base, null);
+    assertSignAllowed(base);
+    const { signed: raw, serverVersion } = await plan.sign();
+    const signed = parseSigned(raw);
+    if (
+      signed === null ||
+      !Number.isSafeInteger(serverVersion) ||
+      signed.version !== serverVersion + 1 ||
+      !isOwn(base, signed)
+    ) {
+      throw clientFailure("publish_refused");
+    }
+    const entry: StoredPublish = {
+      v: 1,
+      op: "seats",
+      signed,
+      recovery: true,
+      answer: "unsent",
+    };
+    persist(base, entry);
+    await publishSeats(ctx, entry, null);
+  });
+}
+
+/**
  * S2 F3: whether the server NEVER took a stored seat publish, from the
  * entry alone: `answer` is `"refused"` (every PUT of these bytes was
  * refused without a write, see `StoredPublish.answer`) and the entry is one
@@ -1373,10 +1487,16 @@ function neverAccepted(e: StoredPublish): boolean {
   );
 }
 
-/** The stored seat publish of a channel, or null (none, protect, corrupt). */
+/**
+ * The stored seat publish of a channel, or null (none, protect, corrupt).
+ * FX-R: a recovery publish is not a pending seat change either: only
+ * `recoverOwnership` resumes it, and F3 never discards it.
+ */
 function storedSeats(at: StoreAt): StoredPublish | null {
   const e = readStored(at);
-  return e === null || e === "corrupt" || e.op !== "seats" ? null : e;
+  return e === null || e === "corrupt" || e.op !== "seats" || e.recovery
+    ? null
+    : e;
 }
 
 /**

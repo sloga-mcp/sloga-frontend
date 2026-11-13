@@ -23,7 +23,10 @@
 //      listing is the bridge's `listOwnDevices` (its 429 policy);
 //  D10 no id is ever rendered;
 //  D11 the raise wiring and its error mapping;
-//  D12 copy and blank-page traps.
+//  D12 copy and blank-page traps;
+//  D13 "Raise the device limit" is signed only on the device that signs
+//      the member list (audit LOW-4): disabled anywhere else, with a line
+//      saying where to do it; two unknown device ids never match.
 //
 // Point `PROTECTED_DEVICE_CAP_FILE` at another copy (a known-bad control)
 // to check that instead; it must fail.
@@ -77,12 +80,17 @@ interface Rules {
   ): boolean;
   deviceCapLabel(row: Row): string | null;
   deviceCapRaise(i: RaiseInput): { seats: string[]; deviceCap: number } | null;
+  deviceCapOnSigningDevice(
+    signerDeviceId: string | null,
+    selfDeviceId: string | null,
+  ): boolean;
 }
 const RULE_NAMES = [
   "deviceCapRows",
   "deviceCapRemovable",
   "deviceCapLabel",
   "deviceCapRaise",
+  "deviceCapOnSigningDevice",
 ] as const;
 
 let rulesPromise: Promise<Rules> | null = null;
@@ -476,6 +484,37 @@ test("D11 raise: owner only, disabled without a plan, errors mapped", () => {
   assert.doesNotMatch(CODE, /String\(err/, "never stringify the error");
 });
 
+test("D13 rule: only this account's signing device, and never two unknowns", async () => {
+  const r = await loadRules();
+  assert.equal(r.deviceCapOnSigningDevice(SIGNER, SIGNER), true);
+  assert.equal(r.deviceCapOnSigningDevice(SIGNER, THIS), false);
+  // The list is not this account's (no signer id) or not loaded yet.
+  assert.equal(r.deviceCapOnSigningDevice(null, THIS), false);
+  // This device's id is unknown.
+  assert.equal(r.deviceCapOnSigningDevice(SIGNER, null), false);
+  assert.equal(r.deviceCapOnSigningDevice(null, null), false);
+});
+
+test("D13 wiring: Raise is disabled off the signing device, and a line says where", () => {
+  assert.match(
+    BODY,
+    /const onSigningDevice = \(\) =>\s*deviceCapOnSigningDevice\(signerDeviceId\(\), ui\(\)\?\.selfDeviceId\(\) \?\? null\);/,
+  );
+  // The plan is null off the signing device: the button's isDisabled
+  // (`raisePlan() === null`, D11) and raise()'s own guard both follow.
+  const plan = BODY.slice(
+    BODY.indexOf("const raisePlan = createMemo("),
+    BODY.indexOf("return deviceCapRaise({"),
+  );
+  assert.match(plan, /^\s*if \(!onSigningDevice\(\)\) return null;$/m);
+  // Right after the owner line, closing the owner-only block (D11 pins its
+  // opening `<Show when={viewerIsOwner()}>`): a member never sees it.
+  assert.match(
+    BODY,
+    /<\/OwnerLine>\s*<Show when=\{!onSigningDevice\(\)\}>\s*<Description>\s*\{t`Raise the limit from the device that signs this channel's member list\.`\}\s*<\/Description>\s*<\/Show>\s*<\/Show>/,
+  );
+});
+
 test("D12 copy and blank-page traps", () => {
   assert.match(
     BODY,
@@ -504,6 +543,7 @@ test("D12 copy and blank-page traps", () => {
       "Sign out that device",
       "That device will be signed out and will have to sign in again.",
       "Raise the device limit",
+      "Raise the limit from the device that signs this channel's member list.",
     ],
   );
   assert.doesNotMatch(

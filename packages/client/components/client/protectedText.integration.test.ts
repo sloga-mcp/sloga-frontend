@@ -31,6 +31,7 @@ import {
   moveOwnerKey,
   pendingSeats,
   protect,
+  recoverOwnership,
   setSeats,
   signOwnerDevices,
 } from "./protectedTextOwner.ts";
@@ -64,6 +65,7 @@ const DEPS: ProtectedTextManagerDeps = {
     moveOwnerKey,
     pendingSeats,
     cancelPendingSeats,
+    recoverOwnership,
   },
   messages: { encryptAndSend, decryptRow, markerForError },
 };

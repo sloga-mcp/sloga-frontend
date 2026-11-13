@@ -49,6 +49,7 @@ import { validReason } from "./protectedRemovalReasonPolicy.ts";
 import {
   isSynthTextEnvelopeId,
   removedReason,
+  TEXT_SYNTH_ID_PREFIX,
   textEnvelopeFromCommitInfo,
   toWireEnvelope,
 } from "./protectedRouter.ts";
@@ -64,6 +65,7 @@ import {
   type SendAction,
   type SendContext,
   type SendTrigger,
+  type StoredWelcome,
   type SubmitAction,
   type SubmitContext,
   type TextEnvelopeVerdict,
@@ -75,16 +77,22 @@ import {
   isCatchUpDesync,
   isProtectorError,
   JOIN_RETRIES,
-  JOIN_RETRY_MS,
+  joinRebroadcastDelayMs,
   joinRefusal,
   leafStaggerMs,
+  ownAddedEntry,
   PROTECTOR_GATE_OPEN,
   protectorGateAfter,
   protectorGateStep,
   publishBackoffMs,
-  publishStep,
   REFRESH_INTERVAL_MS,
   retryAfterMs,
+  SIGNER_LEAF_MISSING_BUDGET,
+  STORED_ADMIT_REASONS,
+  storedJoinRequests,
+  WELCOME_FETCH_AFTER_MS,
+  welcomeDue,
+  welcomeFetchStep,
 } from "./protectedTextPolicy.ts";
 import type {
   CancelPendingSeatsResult,
@@ -106,7 +114,6 @@ import type {
   ProtectedTextManagerDeps,
   ProtectedTextPort,
   RemoveDevicesOptions,
-  SignedSeatList,
   TextApiMethod,
   TextApiResponse,
   TextChannelState,
@@ -229,7 +236,11 @@ export const STICKY_GROUP_ERRORS: readonly NativeErrorTag[] =
  */
 export const CHANNEL_CHANGED_COALESCE_MS = 250;
 
-/** Re-sends of the recovery seat list after a 429 / 5xx / transport. */
+/**
+ * Re-sends (and re-reads) of the recovery seat list after a 429 / 5xx /
+ * transport, per `recoverOwnership` call. Past it the call rejects and the
+ * stored list stays for the next call (FX-R, 4.9).
+ */
 export const RECOVERY_PUT_RETRY_BUDGET = 8;
 
 /**
@@ -570,7 +581,19 @@ interface JoinState {
   promise: Promise<void>;
   welcome: Deferred;
   cancelled: boolean;
+  /**
+   * S2-D28: the channel's ONE join timer (`#joinWait`), aborted on every
+   * exit of the wait, on dispose and by a backoff reset.
+   */
+  wait: AbortController | null;
+  /** Set by a backoff reset while `wait` is armed (it re-arms shorter). */
+  reset: boolean;
+  /** Re-broadcast waits since the join started or was reset. */
+  backoff: number;
 }
+
+/** What the S2-D29 stored-Welcome path did. */
+type StoredWelcomeResult = "joined" | "rejoin" | "processed" | "unavailable";
 
 /** A sticky loud `groupError` (W4d X#1) and the group it poisoned. */
 interface StickyGroupError {
@@ -639,6 +662,17 @@ interface ChannelRec {
   changePending: boolean;
   /** S2: a `retryNow` refresh was asked for and has not settled. */
   manualPending: boolean;
+  /**
+   * S2-D29: the `member_added` observation (`ownAddedEntry().key`) whose
+   * stored Welcome path is finished: native processed the fetched Welcome,
+   * or its 404 sent the ONE rejoin intent. While the server still shows
+   * that Add the join only waits (never a second rejoin for it).
+   */
+  welcomeDone: string | null;
+  /** S2-D29: the stored-Welcome fetch in flight (one per channel). */
+  welcomeFetch: Promise<StoredWelcomeResult> | null;
+  /** S2-D28: the admission pass over stored `join_requests` in flight. */
+  storedAdmit: Promise<void> | null;
 }
 
 type ProcessResult = "ok" | "held" | "parked" | "dropped";
@@ -788,7 +822,10 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     for (const rec of this.#channels.values()) {
       rec.openCtl?.abort();
       rec.openCtl = null;
-      if (rec.join) rec.join.cancelled = true;
+      if (rec.join) {
+        rec.join.cancelled = true;
+        rec.join.wait?.abort();
+      }
     }
     this.#firstSightQueue.length = 0;
   }
@@ -851,8 +888,10 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       rec.openCtl = ctl;
       this.#background(this.#intervalLoop(rec, ctl.signal));
     }
-    // Opening is the manual retry of a stalled join (design 9.1 6d).
+    // Opening is the manual retry of a stalled join (design 9.1 6d); the
+    // re-broadcast backoff restarts with it (S2-D28).
     rec.welcomeRetriesExhausted = false;
+    this.#resetJoinBackoff(rec);
     await this.refresh(channelId, "open");
   }
 
@@ -1019,9 +1058,12 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
    * (its native dialog runs before anything is created or sent), then,
    * when this device holds no leaf in the open group, the recovery
    * successor `g + 1` is created, and only then the list is PUT (the
-   * server's 4.3 step 5b checks the leaf against that successor). Native
-   * persists nothing for it: a failure part-way is retried by calling
-   * this again (a successor already created is then the open group).
+   * server's 4.3 step 5b checks the leaf against that successor).
+   *
+   * FX-R (4.9, D7c): the owner flow stores the signed list before the
+   * first PUT and every later call resumes those bytes (read back first)
+   * until they resolve, so a failure part-way never asks for a second
+   * signature. The refresh after the call runs whatever the outcome.
    */
   async recoverOwnership(channelId: string): Promise<void> {
     const rec = await this.#register(channelId);
@@ -1035,11 +1077,29 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     } finally {
       rec.publishInFlight = false;
       this.#emit(rec);
+      this.#background(this.refresh(channelId, "commit"));
     }
-    this.#background(this.refresh(channelId, "commit"));
   }
 
   async #recover(rec: ChannelRec): Promise<void> {
+    await this.#deps.owner.recoverOwnership(this, this.#flowPort, rec.id, {
+      retryBudget: RECOVERY_PUT_RETRY_BUDGET,
+      sign: () => this.#signRecovery(rec),
+      ensureLeaf: () => this.#ensureRecoveryLeaf(rec),
+    });
+    this.#log("info", "ownership recovered on this device", {
+      channelId: rec.id,
+    });
+  }
+
+  /**
+   * The recovery list's `_seat_list_sign(recovery: true)`, only on another
+   * device of the `signer_lost` user, over the held list's seats and cap.
+   * The owner flow validates the answer (shape, this device, version + 1).
+   */
+  async #signRecovery(
+    rec: ChannelRec,
+  ): Promise<{ signed: unknown; serverVersion: number }> {
     const self = this.#port.selfUserId;
     const dev = this.#port.selfDeviceId;
     const g = rec.serverGroup;
@@ -1058,7 +1118,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     }
     const held = n.seat_list;
     const info = this.#port.channelInfo(rec.id);
-    let signed: SignedSeatList;
+    let signed: unknown;
     try {
       // A dialog: never inside the lane (it waits on the user).
       signed = await this.#invoke("e2ee_text_seat_list_sign", {
@@ -1076,51 +1136,23 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     } catch (err) {
       throw toFailure(err);
     }
-    if (signed.signer_user_id !== self || signed.signer_device_id !== dev) {
-      throw clientFailure("publish_refused");
-    }
-    const leaf = g.members.some(
-      (m) => m.user_id === self && m.device_id === dev,
-    );
-    if (!leaf) {
-      await this.#createGroup(rec, g.group_id, true, g.generation);
-    }
-    await this.#putRecoveryList(rec, signed);
-    this.#log("info", "ownership recovered on this device", {
-      channelId: rec.id,
-    });
+    return { signed, serverVersion: list.version };
   }
 
   /**
-   * The recovery list's seat PUT: the SAME signed bytes re-sent after a
-   * 429 / 5xx / transport (`publishStep`, bounded here); a 4xx refuses.
+   * Before a recovery PUT: create the successor when this device holds no
+   * leaf in the server's open group (#213). Read at the PUT, so a resumed
+   * publish whose successor already exists creates nothing.
    */
-  async #putRecoveryList(rec: ChannelRec, signed: SignedSeatList) {
-    const body = {
-      body: signed.body,
-      signature: signed.signature,
-      signer_device_id: signed.signer_device_id,
-      ...(signed.authority ? { authority: signed.authority } : {}),
-    };
-    for (let failures = 0; ; failures++) {
-      const r = await this.#api("PUT", `/channels/${rec.id}/seats`, body);
-      const step = publishStep(
-        r === null
-          ? { kind: "transport_error" }
-          : { kind: "response", response: r },
-        { op: "seats", failures },
-      );
-      if (step.kind === "resolved_ok") return;
-      if (step.kind !== "resend") {
-        throw r === null ? clientFailure("publish_refused") : serverFailure(r);
-      }
-      if (failures >= RECOVERY_PUT_RETRY_BUDGET) {
-        throw r === null
-          ? ({ source: "transport" } as const)
-          : serverFailure(r);
-      }
-      await this.#sleep(step.delayMs);
+  async #ensureRecoveryLeaf(rec: ChannelRec): Promise<void> {
+    const g = rec.serverGroup;
+    if (g === null) throw clientFailure("recovery_unavailable");
+    const self = this.#port.selfUserId;
+    const dev = this.#port.selfDeviceId;
+    if (g.members.some((m) => m.user_id === self && m.device_id === dev)) {
+      return;
     }
+    await this.#createGroup(rec, g.group_id, true, g.generation);
   }
 
   /**
@@ -1153,6 +1185,8 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         } finally {
           rec.changePending = false;
         }
+        // S2-D28: a change restarts the re-broadcast backoff (once a burst).
+        this.#resetJoinBackoff(rec);
         await this.refresh(channelId, "event");
       })(),
     );
@@ -1414,6 +1448,9 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       promise: Promise.resolve(),
       welcome: deferred(),
       cancelled: false,
+      wait: null,
+      reset: false,
+      backoff: 0,
     };
     rec.join = js;
     js.promise = this.#runJoin(rec, js).finally(() => {
@@ -1692,6 +1729,18 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         return "dropped";
       }
     }
+    // FX-R: a second copy of a Welcome this device already processed (the
+    // S2-D29 fetched copy, then the mailbox copy, or the reverse) would be
+    // refused as unsolicited and raise the D22 toast: acked and dropped.
+    if (wire.content_type === "mls_welcome") {
+      const rec = laneRec ?? this.#recForGroup(wire.group_id);
+      if (rec && (await this.#welcomeAlreadyHeld(rec, wire))) {
+        this.#log("info", "duplicate welcome dropped", ids);
+        if (!synth) await this.#ack([wire.id]);
+        this.#markSeen(wire.id);
+        return "dropped";
+      }
+    }
     await this.#ensureOwnPins(false);
     let pinRetried = false;
     for (;;) {
@@ -1730,6 +1779,26 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       await this.#onOutcome(out);
       return "ok";
     }
+  }
+
+  /**
+   * FX-R: native's `_state` holds `wire`'s group, active, at or past the
+   * Welcome's epoch. Native state only (never server data), re-read before
+   * a drop is decided. Any other Welcome (another group, a later epoch,
+   * a group not held) goes to native as before, refusal and toast included.
+   */
+  async #welcomeAlreadyHeld(
+    rec: ChannelRec,
+    wire: TextWireEnvelope,
+  ): Promise<boolean> {
+    const holds = (n: TextChannelState | null) =>
+      n !== null &&
+      n.state === "active" &&
+      n.group_id === wire.group_id &&
+      n.epoch !== null &&
+      n.epoch >= wire.epoch;
+    if (!holds(rec.native)) return false;
+    return holds(await this.#readStateDirect(rec));
   }
 
   /** Runs inside the channel lane (`#processWire`'s caller holds it). */
@@ -1861,10 +1930,16 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
 
   /** Handle a successful `_process` / `_commit_won` (inside the lane). */
   async #onOutcome(out: TextProcessOutcome): Promise<void> {
-    const rec =
-      this.#channels.get(out.channel_id) ?? this.#recForGroup(out.group_id);
-    if (!rec) return;
-    this.#clearGroupError(rec, out);
+    // LOW-2: native names the channel. One this manager has not registered
+    // is dropped, never routed by the outcome's group id instead.
+    const rec = this.#channels.get(out.channel_id);
+    if (!rec) {
+      this.#log("warn", "outcome for an unregistered channel dropped", {
+        channelId: out.channel_id,
+        groupId: out.group_id,
+      });
+      return;
+    }
     const now = this.#port.now();
     for (const d of out.new_devices) {
       this.#marker(rec, {
@@ -1923,6 +1998,9 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     }
     // D26: `_state` after each processed envelope.
     await this.#readStateDirect(rec);
+    // X#1, after the state read so native's generation of a joined group
+    // decides a sticky clear (LOW-2).
+    this.#clearGroupError(rec, out);
     this.#emit(rec);
     // (i) An adoption from the commit's embedded list told this owner.
     this.#noteOwnerNotice(rec, out.owner_notice);
@@ -2225,20 +2303,67 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       g !== null &&
       n.group_id === g.group_id &&
       (holdsCurrentGroup(n) || n.state === "poisoned");
+    // S2-D28: a member admits from the server's stored intents.
+    if (
+      g !== null &&
+      holdsCurrentGroup(n) &&
+      n.group_id === g.group_id &&
+      STORED_ADMIT_REASONS.includes(reason)
+    ) {
+      this.#admitStored(rec, g);
+    }
     const seated = n.self_seated && n.seat_list?.seats.includes(self) === true;
     // Joining the server's older group would only answer ChannelMismatch.
     // S2 (f): after a capacity refusal only an open or a
-    // `ProtectedChannelChanged` (which clears it) joins again.
+    // `ProtectedChannelChanged` (which clears it) joins again. S2-D28:
+    // `welcomeRetriesExhausted` no longer stops a join (silence never
+    // does); a verified failure on the server's group does.
     const wantsJoin =
       g !== null &&
+      !this.#joinFailedVerified(rec, g.group_id) &&
       seated &&
       !holds &&
       unaccepted === null &&
       !outdated &&
-      !rec.welcomeRetriesExhausted &&
       (rec.capacity === null || reason === "open") &&
       (reason !== "start" || n.state === "left");
     if (wantsJoin && !rec.join) this.#background(this.ensureJoined(rec.id));
+  }
+
+  /**
+   * S2-D28: admit from the server's stored `join_requests` (the refreshes
+   * in `STORED_ADMIT_REASONS`). Every entry goes through `#admit`, the live
+   * `MlsJoinRequested` handler: the same seat check, claim hold, leaf-index
+   * stagger, dedupe against an admission in flight and against a device
+   * already in the group; native verifies the signature and refuses an
+   * off-list user. A malformed entry is dropped whole (OR-6). One pass per
+   * channel at a time, entries in order.
+   */
+  #admitStored(rec: ChannelRec, g: ProtectedTextGroupResponse): void {
+    if (rec.storedAdmit) return;
+    const { requests, dropped } = storedJoinRequests(
+      g.join_requests,
+      g.group_id,
+      rec.id,
+    );
+    if (dropped > 0) {
+      this.#log("warn", "malformed stored join requests dropped", {
+        channelId: rec.id,
+        groupId: g.group_id,
+        count: dropped,
+      });
+    }
+    if (requests.length === 0) return;
+    const run = (async () => {
+      for (const { request, rejoin } of requests) {
+        if (this.#disposed) return;
+        await this.#admit(request, rejoin);
+      }
+    })().finally(() => {
+      if (rec.storedAdmit === run) rec.storedAdmit = null;
+    });
+    rec.storedAdmit = run;
+    this.#background(run);
   }
 
   /** The routine commits a refresh can reveal, for the group both hold. */
@@ -2353,9 +2478,17 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
   // Join (design 6.3, D19, 9.1 6c/6d)
   // -------------------------------------------------------------------------
 
+  /**
+   * S2-D28: the join runs until this device holds the server's current
+   * group. The intent is re-broadcast with backoff (10 s doubling, held at
+   * 15 min); past `JOIN_RETRIES` unanswered intents the shield reads
+   * "waiting for a member" (6d) while it keeps going. It stops on a held
+   * group, unseated, a capacity refusal, an outdated client, a verified
+   * failure, a strip or dispose; silence never stops it.
+   */
   async #runJoin(rec: ChannelRec, js: JoinState): Promise<void> {
     await this.refresh(rec.id, "commit");
-    let n = rec.native;
+    const n = rec.native;
     let g = rec.serverGroup;
     if (!n) throw clientFailure("state_unavailable");
     if (holdsCurrentGroup(n) && g && n.group_id === g.group_id) return;
@@ -2381,24 +2514,51 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
     if (n.group_id === g.group_id && n.state === "poisoned") {
       throw clientFailure("poisoned");
     }
-    let attempts = 0;
+    if (this.#joinFailedVerified(rec, g.group_id)) {
+      throw clientFailure("join_failed");
+    }
+    // Intents this run sent (the 6d signal) and consecutive KeyPackage
+    // publish failures (a server failure, bounded; never silence).
+    let sent = 0;
+    let unpublishedRuns = 0;
+    const self = this.#port.selfUserId;
+    const dev = this.#port.selfDeviceId;
     for (;;) {
       if (js.cancelled) return;
       this.#checkAlive();
-      // W4d X#6: before EVERY `_join` (the first of a new run too): re-Added
-      // at/after our last intent means a Welcome is due. Another intent
-      // would read as a rejoin and evict that fresh leaf, so wait for the
-      // Welcome (the mailbox redelivers it) for a bounded window; past it
-      // the join is stalled loud (9.1 6d), never restarted.
-      if (this.#reAdded(rec, g)) {
-        if (await this.#awaitWelcome(js, JOIN_RETRY_MS * JOIN_RETRIES)) {
+      // W4d X#6 / S2-D29, before EVERY `_join`: re-Added at/after our last
+      // intent means a Welcome is due, and another intent would read as a
+      // rejoin and evict that fresh leaf. Wait for it, then fetch the
+      // stored one (`#welcomeDue`); only its 404 sends ONE rejoin intent
+      // for that Add. While the server still shows an Add whose path is
+      // done, the join only waits.
+      const added = ownAddedEntry(g, self, dev);
+      const due = welcomeDue(added, rec.joinFromEpoch);
+      let rejoin = false;
+      if (added !== null && due && rec.welcomeDone !== added.key) {
+        const step = await this.#welcomeDue(rec, js, g.group_id);
+        if (step === "joined" || js.cancelled) return;
+        if (step === "rejoin" || step === "processed") {
+          rec.welcomeDone = added.key;
+        }
+        rejoin = step === "rejoin";
+      }
+      if (!rejoin && added !== null && (due || rec.welcomeDone === added.key)) {
+        this.#markJoinStalled(rec);
+        if (await this.#joinWait(js, joinRebroadcastDelayMs(js.backoff++))) {
           return;
         }
         if (js.cancelled) return;
-        rec.welcomeRetriesExhausted = true;
-        rec.recreateAvailable = this.#isSigner(rec);
-        this.#emit(rec);
-        throw clientFailure("welcome_pending");
+        const next = await this.#joinRecheck(rec);
+        if (next === null) return;
+        g = next;
+        continue;
+      }
+      if (rejoin) {
+        this.#log("info", "stored welcome missing: rejoin intent", {
+          channelId: rec.id,
+          groupId: g.group_id,
+        });
       }
       rec.joinFromEpoch = g.current_epoch;
       // Every attempt is a fresh `_join`: native mints a new one-time
@@ -2434,12 +2594,13 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       );
       if (unpublished !== null) {
         // 5xx / transport / 429 past its budget: back off and retry with a
-        // fresh `_join`, inside the same attempt budget.
-        attempts += 1;
-        if (attempts > JOIN_RETRIES) throw unpublished;
-        await this.#sleep(publishBackoffMs(attempts));
+        // fresh `_join`; `JOIN_RETRIES` consecutive failures end the join.
+        unpublishedRuns += 1;
+        if (unpublishedRuns > JOIN_RETRIES) throw unpublished;
+        await this.#sleep(publishBackoffMs(unpublishedRuns));
         continue;
       }
+      unpublishedRuns = 0;
       if (js.cancelled) return;
       // S4 floor (a, OR-3): the verified shell protocol, unsigned, beside
       // native's signed intent (sent as received, never rebuilt).
@@ -2448,7 +2609,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         protocol: TEXT_PROTOCOL,
       };
       const r = await this.#api("POST", `/mls/groups/${gid}/join_intent`, body);
-      attempts += 1;
+      sent += 1;
       if (r !== null && is2xx(r.status)) {
         // (f) The server took the intent: no longer over a cap.
         if (rec.capacity !== null) {
@@ -2461,7 +2622,7 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       } else if (r !== null && r.status === 429) {
         // `InSlowmode` included: its `retry_after` is honoured, never a
         // notice (inherited L1s).
-        await this.#sleep(retryAfterMs(r) ?? publishBackoffMs(attempts));
+        await this.#sleep(retryAfterMs(r) ?? publishBackoffMs(sent));
       } else if (r !== null && is4xx(r.status)) {
         // (a)(f) `joinRefusal` BEFORE the generic refusal. Neither is a
         // Welcome retry: the join stops here (never counted toward 6d).
@@ -2478,22 +2639,239 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         }
         throw serverFailure(r);
       }
-      const welcomed = await this.#awaitWelcome(js, JOIN_RETRY_MS);
-      if (welcomed || js.cancelled) return;
-      await this.refresh(rec.id, "commit");
-      n = rec.native;
-      g = rec.serverGroup;
-      if (n && g && holdsCurrentGroup(n) && n.group_id === g.group_id) return;
-      if (!g) throw clientFailure("no_group");
+      // S2-D28: re-broadcast after the backoff wait; never a give-up.
+      if (await this.#joinWait(js, joinRebroadcastDelayMs(js.backoff++))) {
+        return;
+      }
+      if (js.cancelled) return;
+      const next = await this.#joinRecheck(rec);
+      if (next === null) return;
+      g = next;
       // design 7.2 member_added: a re-Add at/after our intent is handled at
       // the top of the loop (wait for the Welcome, never another intent).
-      if (attempts > JOIN_RETRIES && !this.#reAdded(rec, g)) {
-        rec.welcomeRetriesExhausted = true;
-        rec.recreateAvailable = this.#isSigner(rec);
-        this.#emit(rec);
-        throw clientFailure("join_stalled");
+      if (
+        sent > JOIN_RETRIES &&
+        !welcomeDue(ownAddedEntry(g, self, dev), rec.joinFromEpoch)
+      ) {
+        this.#markJoinStalled(rec);
       }
     }
+  }
+
+  /**
+   * S2-D28: THE join timer of a channel (one at a time). True once a
+   * Welcome is processed; false when `ms` elapse. A backoff reset
+   * (`#resetJoinBackoff`) re-arms it for at most the first backoff step
+   * from now. The timer is cleared on every exit, so a Welcome or a
+   * dispose leaves none behind.
+   */
+  async #joinWait(js: JoinState, ms: number): Promise<boolean> {
+    let until = this.#port.now() + ms;
+    const life = this.#abort.signal;
+    for (;;) {
+      this.#checkAlive();
+      js.wait?.abort();
+      const ctl = new AbortController();
+      js.wait = ctl;
+      js.reset = false;
+      const stop = () => ctl.abort();
+      life.addEventListener("abort", stop, { once: true });
+      let welcomed: boolean;
+      try {
+        welcomed = await Promise.race([
+          js.welcome.promise.then(() => true),
+          this.#port
+            .sleep(Math.max(0, until - this.#port.now()), ctl.signal)
+            .then(
+              () => false,
+              () => false,
+            ),
+        ]);
+      } finally {
+        ctl.abort();
+        life.removeEventListener("abort", stop);
+        if (js.wait === ctl) js.wait = null;
+      }
+      this.#checkAlive();
+      if (welcomed || !js.reset) return welcomed;
+      until = Math.min(until, this.#port.now() + joinRebroadcastDelayMs(0));
+    }
+  }
+
+  /**
+   * S2-D28 (open, `ProtectedChannelChanged`): the backoff restarts at its
+   * first step, and a pending join wait ends at most that step from now.
+   * Never an extra intent at once (an open joins the running join).
+   */
+  #resetJoinBackoff(rec: ChannelRec): void {
+    const js = rec.join;
+    if (!js) return;
+    js.backoff = 0;
+    if (js.wait) {
+      js.reset = true;
+      js.wait.abort();
+    }
+  }
+
+  /** 6d: past the first retries; the shield reads "waiting for a member". */
+  #markJoinStalled(rec: ChannelRec): void {
+    if (rec.welcomeRetriesExhausted) return;
+    rec.welcomeRetriesExhausted = true;
+    rec.recreateAvailable = this.#isSigner(rec);
+    this.#emit(rec);
+  }
+
+  /**
+   * After a join wait: re-read the server group and native state. Null once
+   * this device holds the server's current group; throws on every S2-D28
+   * stop (no open group, unseated, outdated, stripped, poisoned, a verified
+   * failure: a sticky loud error on that group or the 6c budget spent).
+   */
+  async #joinRecheck(
+    rec: ChannelRec,
+  ): Promise<ProtectedTextGroupResponse | null> {
+    await this.refresh(rec.id, "commit");
+    const n = rec.native;
+    const g = rec.serverGroup;
+    if (n && g && holdsCurrentGroup(n) && n.group_id === g.group_id) {
+      return null;
+    }
+    if (!g) throw clientFailure("no_group");
+    if (rec.stripped) throw clientFailure("flag_stripped");
+    if (rec.clientOutdated !== null) throw clientFailure("client_outdated");
+    if (n && (n.verdict === "not_seated" || !n.self_seated)) {
+      throw {
+        source: "native",
+        error: { type: "not_seated", channel_id: rec.id },
+      } satisfies TextFlowFailure;
+    }
+    if (n && n.group_id === g.group_id && n.state === "poisoned") {
+      throw clientFailure("poisoned");
+    }
+    if (this.#joinFailedVerified(rec, g.group_id)) {
+      throw clientFailure("join_failed");
+    }
+    return g;
+  }
+
+  /**
+   * S2-D28: a VERIFIED failure ends the join into `groupId` (and keeps a
+   * refresh from restarting it): a sticky loud error recorded for that
+   * group (X#1), or the 6c `signer_leaf_missing` budget spent. A successor
+   * group is joined again; silence is never a failure.
+   */
+  #joinFailedVerified(rec: ChannelRec, groupId: string): boolean {
+    return (
+      rec.stickyGroupError?.groupId === groupId ||
+      !(rec.signerLeafMissingRetries < SIGNER_LEAF_MISSING_BUDGET)
+    );
+  }
+
+  /**
+   * S2-D29: `member_added` shows this device and no Welcome came: wait
+   * `WELCOME_FETCH_AFTER_MS`, then fetch the stored Welcome of the server's
+   * CURRENT group (re-read here). "rejoin" only for the route's 404.
+   */
+  async #welcomeDue(
+    rec: ChannelRec,
+    js: JoinState,
+    groupId: string,
+  ): Promise<StoredWelcomeResult> {
+    if (await this.#joinWait(js, WELCOME_FETCH_AFTER_MS)) return "joined";
+    if (js.cancelled) return "unavailable";
+    await this.refresh(rec.id, "commit");
+    const n = rec.native;
+    if (n && holdsCurrentGroup(n) && n.group_id === groupId) return "joined";
+    if (rec.serverGroup?.group_id !== groupId) return "unavailable";
+    return this.#fetchStoredWelcome(rec, groupId);
+  }
+
+  /** S2-D29: one stored-Welcome fetch in flight per channel. */
+  #fetchStoredWelcome(
+    rec: ChannelRec,
+    groupId: string,
+  ): Promise<StoredWelcomeResult> {
+    if (rec.welcomeFetch) return rec.welcomeFetch;
+    const run = this.#fetchStoredWelcomeOnce(rec, groupId).finally(() => {
+      if (rec.welcomeFetch === run) rec.welcomeFetch = null;
+    });
+    rec.welcomeFetch = run;
+    return run;
+  }
+
+  /**
+   * `GET /mls/groups/:id/welcome?device_id=<this device>` with the answer
+   * read by `welcomeFetchStep`: 429 / 5xx / transport retried (bounded), a
+   * 404 is "rejoin", a usable 2xx goes to native, anything else gives up.
+   */
+  async #fetchStoredWelcomeOnce(
+    rec: ChannelRec,
+    groupId: string,
+  ): Promise<StoredWelcomeResult> {
+    const device = encodeURIComponent(this.#port.selfDeviceId);
+    const path = `/mls/groups/${groupId}/welcome?device_id=${device}`;
+    const ids = { channelId: rec.id, groupId };
+    for (let failures = 0; ; failures++) {
+      const r = await this.#api("GET", path);
+      const step = welcomeFetchStep(
+        r === null
+          ? { kind: "transport_error" }
+          : { kind: "response", response: r },
+        { groupId, failures },
+      );
+      switch (step.kind) {
+        case "retry":
+          await this.#sleep(step.delayMs);
+          break;
+        case "rejoin":
+          this.#log("warn", "stored welcome not found", ids);
+          return "rejoin";
+        case "give_up":
+          this.#log("warn", "stored welcome unavailable", {
+            ...ids,
+            why: step.why,
+          });
+          return "unavailable";
+        case "process":
+          return this.#processStoredWelcome(rec, step.welcome);
+      }
+    }
+  }
+
+  /**
+   * S2-D29: a fetched Welcome takes the envelope path (`#processWire`):
+   * `_process` decides exactly as for a mailbox Welcome, no other trust
+   * path. Its synthetic id is never acked. Skipped when this device
+   * already holds the group (a mailbox Welcome won the race; a second one
+   * would only be refused as unsolicited).
+   */
+  async #processStoredWelcome(
+    rec: ChannelRec,
+    w: StoredWelcome,
+  ): Promise<StoredWelcomeResult> {
+    const ref = this.#index.get(w.group_id);
+    if (!ref || ref.channelId !== rec.id) {
+      this.#log("warn", "stored welcome for another channel", {
+        channelId: rec.id,
+      });
+      return "unavailable";
+    }
+    const wire: TextWireEnvelope = {
+      id: `${TEXT_SYNTH_ID_PREFIX}welcome:${w.group_id}:${w.epoch}`,
+      content_type: "mls_welcome",
+      group_id: w.group_id,
+      epoch: w.epoch,
+      ciphertext: w.welcome,
+    };
+    await this.#enqueue(rec.id, async () => {
+      const n = await this.#readStateDirect(rec);
+      if (n && holdsCurrentGroup(n) && n.group_id === w.group_id) return;
+      await this.#processWire(rec, wire, 0);
+    });
+    const n = rec.native;
+    return n && holdsCurrentGroup(n) && n.group_id === w.group_id
+      ? "joined"
+      : "processed";
   }
 
   /**
@@ -2524,24 +2902,6 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       this.#log("warn", "join key package not published", ids);
       return r === null ? { source: "transport" } : serverFailure(r);
     }
-  }
-
-  async #awaitWelcome(js: JoinState, ms: number): Promise<boolean> {
-    return Promise.race([
-      js.welcome.promise.then(() => true),
-      this.#sleep(ms).then(() => false),
-    ]);
-  }
-
-  #reAdded(rec: ChannelRec, g: ProtectedTextGroupResponse): boolean {
-    const from = rec.joinFromEpoch;
-    if (from === null) return false;
-    return g.member_added.some(
-      (a) =>
-        a.user_id === this.#port.selfUserId &&
-        a.device_id === this.#port.selfDeviceId &&
-        a.epoch >= from,
-    );
   }
 
   // -------------------------------------------------------------------------
@@ -3796,6 +4156,9 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
         ownerChangeUnlisted: null,
         changePending: false,
         manualPending: false,
+        welcomeDone: null,
+        welcomeFetch: null,
+        storedAdmit: null,
       };
       this.#channels.set(channelId, rec);
     }
@@ -3857,7 +4220,10 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
   /**
    * A processed outcome clears `groupError`, except a sticky one, which
    * only a `welcome_joined` into a HIGHER generation of the channel than
-   * the poisoned group clears (X#1).
+   * the poisoned group clears (X#1). LOW-2: the generation is native's
+   * (`_state`, read after the outcome, naming the joined group); the
+   * index, whose first reporter may be the server, only when native does
+   * not name it.
    */
   #clearGroupError(rec: ChannelRec, out: TextProcessOutcome): void {
     const sticky = rec.stickyGroupError;
@@ -3865,7 +4231,14 @@ export class ProtectedTextManager implements GroupOps, ProtectedTextManagerApi {
       if (out.kind !== "welcome_joined") return;
       const ref = this.#index.get(out.group_id);
       if (!ref || ref.channelId !== rec.id) return;
-      if (ref.generation <= sticky.generation) return;
+      const n = rec.native;
+      const generation =
+        n !== null &&
+        n.group_id === out.group_id &&
+        typeof n.generation === "number"
+          ? n.generation
+          : ref.generation;
+      if (generation <= sticky.generation) return;
       rec.stickyGroupError = null;
       this.#log("info", "sticky group error cleared by a successor", {
         channelId: rec.id,

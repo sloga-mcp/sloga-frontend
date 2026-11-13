@@ -22,6 +22,7 @@
  *
  * Nothing here holds key material or message text.
  */
+import { holdsCurrentGroup } from "./protectedTextPolicy.ts";
 import type {
   NativeErrorTag,
   ProtectedChannelView,
@@ -243,6 +244,18 @@ function serverSaysResecuring(
   return !((n.epoch ?? Number.NaN) >= g.current_epoch);
 }
 
+/**
+ * Step 5b's gate (audit LOW-1): this device holds the server's CURRENT text
+ * group, i.e. `holdsCurrentGroup` (OR-8) and, once the server's group is
+ * known, the same group id. A group the server has moved on from is not it.
+ */
+function holdsServerCurrentGroup(
+  n: TextChannelState,
+  g: ProtectedTextGroupResponse | null,
+): boolean {
+  return holdsCurrentGroup(n) && (g === null || n.group_id === g.group_id);
+}
+
 function ownerChangeNotice(i: ShieldInputs): ProtectedNoticeKind {
   const signer = i.native?.owner_pin?.pending_signer ?? null;
   if (i.ownerChangePending === true || signer?.same_user === true) {
@@ -344,10 +357,13 @@ export function explainShield(i: ShieldInputs): ShieldExplanation | null {
   }
   // 5b. S2 D35: this device's own join was refused for capacity. Only
   // from `i.capacity` (the recorded refusal), never from a server field.
-  // Deliberate (design 9.1 S2 precedence): it outranks the step 6
-  // off-list red past 60 s, the 6c red and the step 9 fail-closed red.
+  // Only while this device does not hold the server's current group
+  // (audit LOW-1): a device that holds it never shows "At capacity" and
+  // falls through to steps 6-9. Deliberate (design 9.1 S2 precedence):
+  // otherwise it outranks the step 6 off-list red past 60 s, the 6c red
+  // and the step 9 fail-closed red.
   const cap = i.capacity ?? null;
-  if (cap !== null) {
+  if (cap !== null && !holdsServerCurrentGroup(n, i.serverGroup)) {
     return {
       state: "capacity",
       step: "5b",
@@ -606,6 +622,11 @@ export const PROTECTED_NOTICE_KINDS = [
   "removal_reason_required",
   "resecured_too_often",
   "handover_target_not_joined",
+  // S2 client failure reasons (`PROTECTED_CLIENT_REASONS`, audit LOW-3)
+  "recovery_unavailable",
+  "publish_in_flight",
+  "invalid_reason",
+  "create_predecessor_unknown",
 ] as const;
 
 export type ProtectedNoticeKind = (typeof PROTECTED_NOTICE_KINDS)[number];
@@ -889,10 +910,20 @@ const SERVER_RULES: Record<ProtectedServerErrorType, Rule> = {
     c.op === "owner" ? notice("resecured_too_often", "") : catchAll(c),
 };
 
-/** `TextFlowFailure.source === "client"` reasons that carry a notice. */
+/**
+ * `TextFlowFailure.source === "client"` reasons that carry a notice of the
+ * same name. S2 (audit LOW-3): the manager's own refusals, so the owner UI
+ * names the cause instead of the catch-all; `client_outdated` is the S4
+ * floor's refusal and reuses the step 3c notice.
+ */
 export const PROTECTED_CLIENT_REASONS = [
   "protect_failed",
   "maybe_unsent",
+  "recovery_unavailable",
+  "publish_in_flight",
+  "client_outdated",
+  "invalid_reason",
+  "create_predecessor_unknown",
 ] as const satisfies readonly ProtectedNoticeKind[];
 
 const isRecord = (v: unknown): v is Fields =>

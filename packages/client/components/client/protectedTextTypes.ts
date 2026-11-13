@@ -1379,6 +1379,23 @@ export type CancelPendingSeatsResult =
   | { discarded: true }
   | { discarded: false; why: "none" | "busy" | "maybe_accepted" };
 
+/**
+ * S2 (d) FX-R: what the manager hands `OwnerFlows.recoverOwnership`.
+ * - `sign`: the `_seat_list_sign(recovery: true)` dialog, after the
+ *   manager's own checks; called only when no recovery publish is stored.
+ *   Answers native's raw result and the version of the server list it was
+ *   signed over (the result must be that version + 1).
+ * - `ensureLeaf`: creates the recovery successor when this device holds no
+ *   leaf in the open group; runs before the first PUT of each attempt.
+ * - `retryBudget`: re-sends (and re-reads) of a transient answer before the
+ *   flow rejects; the stored bytes stay for the next call.
+ */
+export interface RecoveryPlan {
+  retryBudget: number;
+  sign(): Promise<{ signed: unknown; serverVersion: number }>;
+  ensureLeaf(): Promise<void>;
+}
+
 /** B2 (`protectedTextOwner.ts`) signatures, injected by B5. */
 export interface OwnerFlows {
   protect(
@@ -1434,6 +1451,18 @@ export interface OwnerFlows {
     port: ProtectedTextPort,
     channelId: string,
   ): CancelPendingSeatsResult;
+  /**
+   * S2 (d) FX-R (design 6.3, 4.9, D7c): the recovery list as a stored
+   * publish. A stored one is resumed (read back first, the SAME bytes, no
+   * dialog); otherwise `plan.sign`, persist, `plan.ensureLeaf`, PUT. Only
+   * the manager's `recoverOwnership` (a UI call) runs it.
+   */
+  recoverOwnership(
+    ops: GroupOps,
+    port: ProtectedTextPort,
+    channelId: string,
+    plan: RecoveryPlan,
+  ): Promise<void>;
 }
 
 /** B4 (`protectedTextMessages.ts`) signatures, injected by B5. */

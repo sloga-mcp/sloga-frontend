@@ -6375,6 +6375,10 @@ msgstr "That device will be signed out and will have to sign in again."
 msgid "Raise the device limit"
 msgstr "Raise the device limit"
 
+#: components/modal/modals/ProtectedDeviceCap.tsx
+msgid "Raise the limit from the device that signs this channel's member list."
+msgstr "Raise the limit from the device that signs this channel's member list."
+
 #: components/modal/modals/ProtectedSeatPicker.tsx
 msgid "Seats you pick here aren't included. Discard the earlier change to make a different one."
 msgstr "Seats you pick here aren't included. Discard the earlier change to make a different one."
@@ -9957,6 +9961,18 @@ msgstr "This channel was re-secured too many times today. Try again later."
 #: components/client/protectedCopy.ts
 msgid "That device hasn't joined this channel yet. Open the channel on it, then try again."
 msgstr "That device hasn't joined this channel yet. Open the channel on it, then try again."
+
+#: components/client/protectedCopy.ts
+msgid "Ownership can't be recovered on this device right now."
+msgstr "Ownership can't be recovered on this device right now."
+
+#: components/client/protectedCopy.ts
+msgid "This reason can't be used. Check it and try again."
+msgstr "This reason can't be used. Check it and try again."
+
+#: components/client/protectedCopy.ts
+msgid "This channel's group couldn't be re-created right now. Try again later."
+msgstr "This channel's group couldn't be re-created right now. Try again later."
 
 #: components/client/protectedCopy.ts
 msgid "Your signing devices were changed from another device. If you didn't do this, secure your account."

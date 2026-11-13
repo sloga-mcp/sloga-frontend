@@ -51,7 +51,8 @@ export interface ProtectedDeviceCapProps {
  * offered (OR-15: native refuses the signer anyway). "Try again" asks the
  * bridge to open the channel again (`protectedOpen`). The server owner also
  * gets "Raise the device limit": the same signed seats re-signed with the
- * entitlement's device cap; disabled while that cap is unknown (`null`).
+ * entitlement's device cap; disabled while that cap is unknown (`null`),
+ * and on any device but the one that signs the list (a line says so).
  */
 export function ProtectedDeviceCapModal(
   props: DialogProps & ProtectedDeviceCapProps,
@@ -116,6 +117,10 @@ export function ProtectedDeviceCapModal(
       : null;
   };
 
+  /** This device signs the list: the only place a raise is signed (LOW-4). */
+  const onSigningDevice = () =>
+    deviceCapOnSigningDevice(signerDeviceId(), ui()?.selfDeviceId() ?? null);
+
   const rows = createMemo(() =>
     deviceCapRows(views(), {
       deviceId: ui()?.selfDeviceId() ?? null,
@@ -164,6 +169,7 @@ export function ProtectedDeviceCapModal(
       return null;
     }
     if (!api.protectedTextCapable()) return null;
+    if (!onSigningDevice()) return null;
     return deviceCapRaise({
       entitlement: snap.entitlement_device_cap,
       enforced: snap.device_cap,
@@ -355,6 +361,11 @@ export function ProtectedDeviceCapModal(
               <CircularProgress size={20} />
             </Show>
           </OwnerLine>
+          <Show when={!onSigningDevice()}>
+            <Description>
+              {t`Raise the limit from the device that signs this channel's member list.`}
+            </Description>
+          </Show>
         </Show>
 
         <Show when={error()}>
@@ -459,6 +470,18 @@ function deviceCapRemovable(
     if (other.sessionId === row.sessionId) return false;
   }
   return live(row.sessionId);
+}
+
+/**
+ * Whether this device signs the channel's member list (audit LOW-4): the
+ * signer is known (this account's list signer) and is this device. Two
+ * unknowns (null) never match.
+ */
+function deviceCapOnSigningDevice(
+  signerDeviceId: string | null,
+  selfDeviceId: string | null,
+): boolean {
+  return signerDeviceId !== null && signerDeviceId === selfDeviceId;
 }
 
 /** The row's label: its session name, or null (the caller's fixed copy). */

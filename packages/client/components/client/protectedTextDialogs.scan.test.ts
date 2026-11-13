@@ -14,7 +14,7 @@
 //   R1. TEXT_COMMANDS (protectedTextTypes.ts) equals the text arms of
 //       `@PluginMethod fun call(` (an arm whose label is in TEXT_COMMANDS or
 //       starts `e2ee_text_`, or whose body names `resolveText`) together
-//       with the 3 dedicated dialog methods. Each dialog method is one
+//       with the 4 dedicated dialog methods. Each dialog method is one
 //       `@PluginMethod` whose whole body is
 //       `runTextDialog(call) { a, c -> engine().<same name>(a, c) }`, and
 //       nothing else names `runTextDialog`. No dialog command literal appears
@@ -679,7 +679,7 @@ function checkR1(p: Kt): string[] {
     if (isDefinition(p.code, m.index)) continue;
     if (!dialogFuns.some((f) => inside(blockOf(f), m.index))) {
       v.push(
-        `line ${lineOf(p.src, m.index)}: runTextDialog named outside the three dialog methods`,
+        `line ${lineOf(p.src, m.index)}: runTextDialog named outside the four dialog methods`,
       );
     }
   }
@@ -1887,7 +1887,7 @@ type Check = (p: Kt, d: Kt) => string[];
 const RULES: Record<string, { title: string; check: Check }> = {
   R1: {
     title:
-      "TEXT_COMMANDS = the call() text arms + the 3 dedicated dialog methods; no dialog command in call()",
+      "TEXT_COMMANDS = the call() text arms + the 4 dedicated dialog methods; no dialog command in call()",
     check: (p) => checkR1(p),
   },
   R2: {

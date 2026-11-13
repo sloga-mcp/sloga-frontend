@@ -85,6 +85,14 @@ function channelFullCopy(): string {
   return t`This protected channel is full.`;
 }
 
+/**
+ * A seat publish is unresolved (D7): the settings page line and the S2
+ * `publish_in_flight` client refusal.
+ */
+function publishInFlightCopy(): string {
+  return t`Saving the member list. You can make more changes when this finishes.`;
+}
+
 /** A caller-supplied name, trimmed; null when absent or blank. */
 function displayName(name: string | null | undefined): string | null {
   if (typeof name !== "string") return null;
@@ -244,6 +252,19 @@ export function noticeCopy(
     case "handover_target_not_joined":
       // S2-D42: native `handover_target_invalid` on "Move ownership key".
       return t`That device hasn't joined this channel yet. Open the channel on it, then try again.`;
+    // S2 client failure reasons (audit LOW-3); `client_outdated` is above.
+    case "recovery_unavailable":
+      // `recoverOwnership` preconditions: no lost signing device of this
+      // user, this is that device, or no member list held here.
+      return t`Ownership can't be recovered on this device right now.`;
+    case "publish_in_flight":
+      return publishInFlightCopy();
+    case "invalid_reason":
+      // `setSeats`: the removal reason failed the header check.
+      return t`This reason can't be used. Check it and try again.`;
+    case "create_predecessor_unknown":
+      // D21 re-run of an unaccepted create: the group it replaces is gone.
+      return t`This channel's group couldn't be re-created right now. Try again later.`;
     default: {
       const _exhaustive: never = kind;
       return verifyChannelFailedCopy();
@@ -651,8 +672,7 @@ export const settingsCopy = {
   ownerBadge: (): string =>
     t({ message: "Owner", comment: "Protected channel seat list badge" }),
   /** Shown while a seat publish is unresolved (D7: signing is refused). */
-  publishInFlight: (): string =>
-    t`Saving the member list. You can make more changes when this finishes.`,
+  publishInFlight: publishInFlightCopy,
   /** After a verified seat change. */
   seatsSaved: (): string => t`Seats updated.`,
   /** Overview (C13): why the voice and announcement toggles are hidden. */

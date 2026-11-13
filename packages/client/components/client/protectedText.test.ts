@@ -42,13 +42,23 @@ import {
   HOLD_RETRY_BUDGET,
   KEY_PACKAGE_PUT_429_BUDGET,
   ProtectedTextManager,
+  RECOVERY_PUT_RETRY_BUDGET,
   REFETCH_403_PARK_BUDGET,
   STALE_SEATS_REFETCH_BUDGET,
   STICKY_GROUP_ERRORS,
   WON_ROW_READ_BUDGET,
 } from "./protectedText.ts";
 import { textGroupId } from "./protectedTextIds.ts";
-import { JOIN_RETRIES } from "./protectedTextPolicy.ts";
+import {
+  _resetOwnerFlowsForTest,
+  publishStoreKey,
+  recoverOwnership,
+} from "./protectedTextOwner.ts";
+import {
+  JOIN_RETRIES,
+  joinRebroadcastDelayMs,
+  WELCOME_FETCH_AFTER_MS,
+} from "./protectedTextPolicy.ts";
 import type {
   MessageFlows,
   OwnerDeviceNotice,
@@ -744,6 +754,8 @@ function fakeDeps(
       moveOwnerKey: async () => undefined,
       pendingSeats: () => null,
       cancelPendingSeats: () => ({ discarded: false, why: "none" }),
+      // FX-R: the real flow (pure; it drives this manager and the fake port).
+      recoverOwnership,
       ...over.owner,
     },
     messages: {
@@ -1468,22 +1480,39 @@ test("join: a processed Welcome cancels retries; _update right after (W4-3)", as
   m.dispose();
 });
 
+/** The stored-Welcome route answering `answer` (S2-D29, FX-J). */
+function welcomeRoute(answer: () => TextApiResponse | "transport"): Route {
+  return (method, path) =>
+    method === "GET" && /^\/mls\/groups\/[0-9a-f]+\/welcome\?/.test(path)
+      ? answer()
+      : undefined;
+}
+
+/** The stored-Welcome GETs so far. */
+function welcomeGets(env: Env) {
+  return env.api$("GET", /^\/mls\/groups\/[0-9a-f]+\/welcome\?/);
+}
+
+/** Intents posted so far (each one `_join` + PUT + POST). */
+function intents(env: Env) {
+  return env.api$("POST", /join_intent$/).length;
+}
+
 test("join: member_added at/after our intent stops the retries", async () => {
   const env = joiningEnv();
+  // FX-J: the stored Welcome stays unavailable (5xx); only its 404 would
+  // send the one rejoin intent (the tests named "FXJ D29 ...").
+  env.routes.push(welcomeRoute(() => ok({ type: "InternalError" }, 503)));
   const m = make(env);
-  const p = silence(m.ensureJoined(CH));
+  silence(m.ensureJoined(CH));
   await env.advance(0);
   env.group = groupBody({
     member_added: [{ user_id: SELF, device_id: DEV, epoch: 4, at: "" }],
   });
   await env.advance(200_000);
-  assert.equal(env.api$("POST", /join_intent$/).length, 1);
-  await assert.rejects(
-    p,
-    (e: { reason?: string }) => e.reason === "welcome_pending",
-  );
-  // W4d X#6 (was `false`): the bounded Welcome window ran out, so the join
-  // is stalled (9.1 6d) instead of being restarted by the next refresh.
+  assert.equal(intents(env), 1);
+  // W4d X#6: no second intent while that Add's Welcome is due. S2-D28: the
+  // join is not given up; it waits, stalled (9.1 6d) and still armed.
   // S2 6d: silence is not a verified failure: `resecuring`, "Waiting for a
   // member to come online", never `unverified`.
   assert.equal(env.views.get(CH)?.welcomeRetriesExhausted, true);
@@ -1491,26 +1520,48 @@ test("join: member_added at/after our intent stops the retries", async () => {
     state: "resecuring",
     notice: "waiting_for_member",
   });
+  assert.ok(welcomeGets(env).length >= 1, "the stored Welcome was asked for");
+  assert.equal(env.sleeps.length, 1, "the join timer is still armed");
   m.dispose();
 });
 
-test("join: retries exhausted → welcomeRetriesExhausted → resecuring, waiting for a member (S2 6d)", async () => {
+test("join: past JOIN_RETRIES unanswered intents → welcomeRetriesExhausted → resecuring, waiting for a member (S2 6d); the joiner keeps re-broadcasting with backoff, its timer armed", async () => {
   const env = joiningEnv();
   const m = make(env);
-  const p = silence(m.ensureJoined(CH));
-  await env.advance(200_000);
-  await assert.rejects(
-    p,
-    (e: { reason?: string }) => e.reason === "join_stalled",
-  );
-  assert.equal(env.api$("POST", /join_intent$/).length, 1 + JOIN_RETRIES);
+  silence(m.ensureJoined(CH));
+  await env.advance(0);
+  // 1 + JOIN_RETRIES intents at 0, 10, 30, 70 s; the next wait (80 s) ends
+  // at 150 s: past the first retries.
+  let t = 0;
+  for (let i = 0; i <= JOIN_RETRIES; i++) t += joinRebroadcastDelayMs(i);
+  await env.advance(t - 1);
+  assert.equal(intents(env), 1 + JOIN_RETRIES);
+  assert.equal(env.views.get(CH)?.welcomeRetriesExhausted, false);
+  await env.advance(1);
   assert.equal(env.views.get(CH)?.welcomeRetriesExhausted, true);
   // S2 6d: no Welcome is silence, never a verified failure.
   assert.deepEqual(env.explain(), {
     state: "resecuring",
     notice: "waiting_for_member",
   });
+  // ... while the joiner is still working: the next intent went out and
+  // exactly one timer waits for the next re-broadcast.
+  assert.equal(intents(env), 2 + JOIN_RETRIES);
+  const next = joinRebroadcastDelayMs(JOIN_RETRIES + 1);
+  assert.deepEqual(
+    env.sleeps.map((s) => s.at - env.clock),
+    [next],
+    "one join timer, armed for the next re-broadcast",
+  );
+  await env.advance(next);
+  assert.equal(intents(env), 3 + JOIN_RETRIES);
+  assert.deepEqual(env.explain(), {
+    state: "resecuring",
+    notice: "waiting_for_member",
+  });
   m.dispose();
+  await env.advance(0);
+  assert.equal(env.sleeps.length, 0, "dispose clears the join timer");
 });
 
 /** The join's PUT /mls/key_packages and POST join_intent calls, in order. */
@@ -1540,8 +1591,10 @@ test("F1 join: PUT exactly key_packages BEFORE posting the intent alone, fresh _
     intentBody(1),
     "the intent alone (+ protocol)",
   );
-  await env.advance(200_000);
-  await assert.rejects(p);
+  // FX-J (S2-D28): the first 1 + JOIN_RETRIES attempts, by the backoff.
+  let t = 0;
+  for (let i = 0; i < JOIN_RETRIES; i++) t += joinRebroadcastDelayMs(i);
+  await env.advance(t);
   assert.equal(env.calls("e2ee_text_join").length, 1 + JOIN_RETRIES);
   const expected = Array.from({ length: 1 + JOIN_RETRIES }, (_, i) => [
     ["PUT", joinIntent(i + 1).key_packages],
@@ -1553,6 +1606,7 @@ test("F1 join: PUT exactly key_packages BEFORE posting the intent alone, fresh _
     "each attempt PUTs its own fresh package, then posts its own intent",
   );
   m.dispose();
+  await p.catch(() => undefined);
 });
 
 test("F1 join: a 429 PUT is waited out and re-PUT; 5xx/transport retry with a fresh _join; no intent before a 2xx PUT", async () => {
@@ -2937,21 +2991,23 @@ test("W4d X#5 (C-X5b): a send refused not_member → _mark_left(not_member) → 
 
 test("W4d X#6 (C-X6): member_added suppresses EVERY _join; the bounded window ends waiting (S2 6d), never a restarted join", async () => {
   const env = joiningEnv();
+  // FX-J: the stored Welcome stays unavailable; a 404 (none stored) is the
+  // one exception, one rejoin per Add ("FXJ D29 ..." tests).
+  env.routes.push(welcomeRoute(() => "transport"));
   const m = make(env);
-  const p = silence(m.ensureJoined(CH));
+  silence(m.ensureJoined(CH));
   await env.advance(0);
   assert.equal(env.calls("e2ee_text_join").length, 1);
   env.group = groupBody({
     member_added: [{ user_id: SELF, device_id: DEV, epoch: 4, at: "" }],
   });
   await env.advance(200_000);
-  await assert.rejects(p);
   assert.equal(env.views.get(CH)?.welcomeRetriesExhausted, true);
   // Later triggers (a rejoin verdict, a refresh, a manual reopen) never
-  // send another intent while member_added shows this device.
-  const again = silence(m.ensureJoined(CH));
+  // send another intent while member_added shows this device (S2-D28: the
+  // join itself still runs, so they join it, never a second one).
+  silence(m.ensureJoined(CH));
   await env.advance(200_000);
-  await assert.rejects(again);
   await m.refresh(CH, "interval");
   await m.open(CH);
   await env.advance(200_000);
@@ -4331,4 +4387,656 @@ test("Inherited L1s: InSlowmode on key_packages/claim holds admissions into that
   assert.equal(env.calls("e2ee_text_admit").length, 1);
   assert.deepEqual(env.notified, []);
   m.dispose();
+});
+
+// ---------------------------------------------------------------------------
+// S2-W4 fix lane FX-J: async Text join (S2-D28 re-broadcast + stored
+// intents, S2-D29 stored Welcomes) and LOW-2. Tests named "FXJ ..." are the
+// targets of /home/mcp/pc-logs/s2/w4/ctl/FXJ.
+// ---------------------------------------------------------------------------
+
+/** `member_added` listing this device at `epoch`. */
+function addedAt(epoch: number) {
+  return [{ user_id: SELF, device_id: DEV, epoch, at: "" }];
+}
+
+/** A stored join intent row (`text_group.join_requests`). */
+function storedRequest(device_id: string, over: Record<string, unknown> = {}) {
+  return {
+    user_id: PEER,
+    device_id,
+    key_package_ref: `KPR-${device_id}`,
+    signature: `SIG-${device_id}`,
+    created_at: "2026-11-12T00:00:00Z",
+    rejoin: false,
+    ...over,
+  };
+}
+
+/** A won Add puts the added devices in the roster, as native reports it. */
+function rosterGrowsOnWin(env: Env) {
+  env.handlers.e2ee_text_commit_won = (a) => {
+    const s = env.state();
+    s.epoch = a.wonEpoch;
+    const row = env.rows.find(
+      (r) => r.group_id === a.groupId && r.epoch === a.wonEpoch,
+    );
+    for (const d of row?.added ?? []) {
+      s.members = [...s.members, mem(d.user_id, d.device_id)];
+    }
+    env.pending = null;
+    return outcome({ epoch: a.wonEpoch, group_id: a.groupId });
+  };
+}
+
+/** The device ids of every KeyPackage claim so far. */
+function claimedDevices(env: Env) {
+  return env
+    .api$("POST", /claim$/)
+    .map(
+      (c) => (c.body as { targets: MlsMemberDevice[] }).targets[0].device_id,
+    );
+}
+
+test("FXJ D28: the joiner re-broadcasts with backoff, 10 s doubling and held at 15 min, never giving up on silence", async () => {
+  const env = joiningEnv();
+  const m = make(env);
+  let settled = false;
+  m.ensureJoined(CH).then(
+    () => (settled = true),
+    () => (settled = true),
+  );
+  await env.advance(0);
+  assert.equal(intents(env), 1);
+  const waits = [
+    10_000, 20_000, 40_000, 80_000, 160_000, 320_000, 640_000, 900_000, 900_000,
+    900_000,
+  ];
+  for (let i = 0; i < waits.length; i++) {
+    assert.deepEqual(
+      env.sleeps.map((s) => s.at - env.clock),
+      [waits[i]],
+      `wait ${i}: one timer`,
+    );
+    await env.advance(waits[i] - 1);
+    assert.equal(intents(env), i + 1, `not before ${waits[i]} ms`);
+    await env.advance(1);
+    assert.equal(intents(env), i + 2, `re-broadcast ${i + 1}`);
+  }
+  assert.equal(settled, false, "silence never ends the join");
+  assert.equal(env.views.get(CH)?.welcomeRetriesExhausted, true);
+  assert.deepEqual(env.explain(), {
+    state: "resecuring",
+    notice: "waiting_for_member",
+  });
+  m.dispose();
+});
+
+test("FXJ D28: one join timer per channel: ProtectedChannelChanged and open restart the backoff (the pending wait cut to its first step, never an extra intent at once), a Welcome clears the timer, dispose leaves none", async () => {
+  const env = joiningEnv();
+  env.handlers.e2ee_text_process = (a) => {
+    env.states.set(CH, st({ epoch: 4 }));
+    return outcome({
+      kind: "welcome_joined",
+      epoch: 4,
+      group_id: a.envelope.group_id,
+    });
+  };
+  const m = make(env);
+  silence(m.ensureJoined(CH));
+  await env.advance(0);
+  await env.advance(10_000 + 20_000 + 40_000);
+  assert.equal(intents(env), 4);
+  const pending = () =>
+    env.sleeps.map((s) => s.at - env.clock).sort((a, b) => a - b);
+  assert.deepEqual(pending(), [80_000]);
+  m.onChannelChanged(CH, ["seats"]);
+  await env.advance(CHANNEL_CHANGED_COALESCE_MS);
+  assert.equal(intents(env), 4, "no extra intent at once");
+  assert.deepEqual(pending(), [10_000], "the 80 s wait is cut to 10 s");
+  await env.advance(10_000);
+  assert.equal(intents(env), 5);
+  assert.deepEqual(pending(), [10_000], "the backoff restarted");
+  await env.advance(10_000);
+  assert.equal(intents(env), 6);
+  assert.deepEqual(pending(), [20_000]);
+  await env.advance(5_000);
+  await m.open(CH);
+  await env.advance(0);
+  assert.equal(intents(env), 6, "an open joins the running join");
+  assert.deepEqual(pending(), [10_000, 60_000], "the join timer + interval");
+  await env.advance(10_000);
+  assert.equal(intents(env), 7, "the manual retry, 10 s on");
+  assert.deepEqual(pending(), [10_000, 50_000]);
+  m.onEnvelope(envelope("W1", 4, { content_type: "mls_welcome" }));
+  await env.advance(0);
+  assert.equal(env.views.get(CH)?.native?.group_id, G0);
+  assert.deepEqual(pending(), [50_000], "the Welcome cleared the join timer");
+  m.dispose();
+  await env.advance(0);
+  assert.equal(env.sleeps.length, 0, "dispose leaves no timer");
+});
+
+test("FXJ D28: the re-broadcast stops when this device is unseated and on a verified failure (a loud error on the group it joins), which a refresh never restarts", async () => {
+  // Settlement read through flags (never awaited: a join that wrongly keeps
+  // going must fail this test, not hang it).
+  const ended = (p: Promise<void>) => {
+    const s: { done: boolean; err: unknown } = { done: false, err: null };
+    p.then(
+      () => (s.done = true),
+      (e: unknown) => {
+        s.done = true;
+        s.err = e;
+      },
+    );
+    return s;
+  };
+  const env = joiningEnv();
+  const m = make(env);
+  const p = ended(m.ensureJoined(CH));
+  await env.advance(0);
+  env.states.set(
+    CH,
+    noGroup(CH, {
+      self_seated: false,
+      verdict: "not_seated",
+      seat_list: st().seat_list,
+    }),
+  );
+  await env.advance(10_000);
+  assert.equal(p.done, true, "unseated: the join ended");
+  assert.deepEqual(p.err, {
+    source: "native",
+    error: { type: "not_seated", channel_id: CH },
+  });
+  await env.advance(3_600_000);
+  assert.equal(intents(env), 1, "unseated: no further intent");
+  assert.equal(env.sleeps.length, 0, "no timer left behind");
+  m.dispose();
+
+  const env2 = joiningEnv();
+  processScript(env2, { E1: fail("commit_declaration_mismatch") });
+  const m2 = make(env2);
+  const p2 = ended(m2.ensureJoined(CH));
+  await env2.advance(0);
+  m2.onEnvelope(envelope("E1", 4));
+  await env2.advance(10_000);
+  assert.equal(p2.done, true, "a verified failure: the join ended");
+  assert.deepEqual(p2.err, { source: "client", reason: "join_failed" });
+  await m2.refresh(CH, "interval");
+  await m2.open(CH);
+  await env2.advance(3_600_000);
+  assert.equal(intents(env2), 1, "a verified failure: no further intent");
+  assert.equal(env2.shield(), "unverified");
+  m2.dispose();
+});
+
+test("FXJ D29: member_added shows this device and no Welcome comes in 20 s: the stored Welcome of the server's current group is fetched once and goes to native's Welcome path, its synthetic id never acked", async () => {
+  const env = joiningEnv();
+  env.routes.push(
+    welcomeRoute(() => ok({ group_id: G0, epoch: 4, welcome: "V0VMQ09NRQ" })),
+  );
+  env.handlers.e2ee_text_process = (a) => {
+    env.states.set(CH, st({ epoch: 4 }));
+    return outcome({
+      kind: "welcome_joined",
+      epoch: 4,
+      group_id: a.envelope.group_id,
+    });
+  };
+  const m = make(env);
+  let joined = false;
+  m.ensureJoined(CH).then(
+    () => (joined = true),
+    () => undefined,
+  );
+  await env.advance(0);
+  env.group = groupBody({ member_added: addedAt(4) });
+  // The first re-broadcast wait ends and the refresh sees the Add.
+  await env.advance(joinRebroadcastDelayMs(0));
+  await env.advance(WELCOME_FETCH_AFTER_MS - 1);
+  assert.equal(welcomeGets(env).length, 0, "not before 20 s");
+  await env.advance(1);
+  assert.deepEqual(
+    welcomeGets(env).map((c) => c.path),
+    [`/mls/groups/${G0}/welcome?device_id=${DEV}`],
+  );
+  assert.equal(joined, true, "joined by that Welcome");
+  assert.deepEqual(
+    env.calls("e2ee_text_process").map((c) => c.envelope),
+    [
+      {
+        id: `text-synth:welcome:${G0}:4`,
+        content_type: "mls_welcome",
+        group_id: G0,
+        epoch: 4,
+        ciphertext: "V0VMQ09NRQ",
+      },
+    ],
+    "native's Welcome path, the bytes as served",
+  );
+  assert.deepEqual(env.acks, [], "a synthetic id is never acked");
+  assert.equal(intents(env), 1, "no second intent");
+  assert.equal(env.views.get(CH)?.native?.group_id, G0);
+  await env.advance(600_000);
+  assert.equal(welcomeGets(env).length, 1, "fetched once");
+  m.dispose();
+});
+
+test("FXJ D29: a stored Welcome naming another group never reaches native; one native refuses joins nothing and is not fetched again for that Add", async () => {
+  const env = joiningEnv();
+  env.routes.push(
+    welcomeRoute(() => ok({ group_id: G1, epoch: 4, welcome: "V0VM" })),
+  );
+  const m = make(env);
+  silence(m.ensureJoined(CH));
+  await env.advance(0);
+  env.group = groupBody({ member_added: addedAt(4) });
+  await env.advance(joinRebroadcastDelayMs(0) + WELCOME_FETCH_AFTER_MS);
+  assert.equal(welcomeGets(env).length, 1);
+  assert.equal(env.calls("e2ee_text_process").length, 0, "never to native");
+  assert.equal(intents(env), 1, "never a rejoin");
+  assert.ok(
+    env.logs.some(
+      (l) =>
+        l.msg === "[protected] stored welcome unavailable" &&
+        l.ids.why === "wrong_group",
+    ),
+  );
+  m.dispose();
+
+  const env2 = joiningEnv();
+  env2.routes.push(
+    welcomeRoute(() => ok({ group_id: G0, epoch: 4, welcome: "V0VM" })),
+  );
+  env2.handlers.e2ee_text_process = () => {
+    throw { type: "signer_leaf_missing", group_id: G0 };
+  };
+  const m2 = make(env2);
+  let settled = false;
+  m2.ensureJoined(CH).then(
+    () => (settled = true),
+    () => (settled = true),
+  );
+  await env2.advance(0);
+  env2.group = groupBody({ member_added: addedAt(4) });
+  await env2.advance(joinRebroadcastDelayMs(0) + WELCOME_FETCH_AFTER_MS);
+  assert.equal(env2.calls("e2ee_text_process").length, 1, "native decided");
+  assert.equal(settled, false, "nothing joined");
+  assert.notEqual(env2.views.get(CH)?.native?.state, "active");
+  await env2.advance(3_600_000);
+  assert.equal(welcomeGets(env2).length, 1, "not fetched again for that Add");
+  assert.equal(intents(env2), 1);
+  m2.dispose();
+});
+
+test("FXJ D29: a 404 for the stored Welcome sends ONE rejoin intent for that Add; later refreshes, opens, events and ensureJoined never send another while the server shows it; a new Add is a new fetch", async () => {
+  // The default courier answers the welcome GET 404 (unknown group).
+  const env = joiningEnv();
+  const m = make(env);
+  silence(m.ensureJoined(CH));
+  await env.advance(0);
+  env.group = groupBody({ member_added: addedAt(4) });
+  await env.advance(joinRebroadcastDelayMs(0) + WELCOME_FETCH_AFTER_MS);
+  assert.equal(welcomeGets(env).length, 1);
+  assert.equal(intents(env), 2, "one rejoin intent");
+  assert.ok(
+    env.logs.some((l) => l.msg === "[protected] stored welcome not found"),
+  );
+  // The existing intent path: a fresh `_join`, its package, then the intent.
+  assert.equal(env.calls("e2ee_text_join").length, 2);
+  assert.deepEqual(env.api$("POST", /join_intent$/)[1].body, intentBody(2));
+  await env.advance(3_600_000);
+  await m.refresh(CH, "interval");
+  await m.open(CH);
+  m.onChannelChanged(CH, ["text_group"]);
+  silence(m.ensureJoined(CH));
+  await env.advance(3_600_000);
+  assert.equal(intents(env), 2, "never a second rejoin for that Add");
+  assert.equal(welcomeGets(env).length, 1, "nor a refetch of it");
+  assert.deepEqual(env.explain(), {
+    state: "resecuring",
+    notice: "waiting_for_member",
+  });
+  // Members acted on the rejoin: a new Add, again without a Welcome.
+  env.group = groupBody({ current_epoch: 6, member_added: addedAt(6) });
+  m.onChannelChanged(CH, ["text_group"]);
+  await env.advance(
+    CHANNEL_CHANGED_COALESCE_MS +
+      joinRebroadcastDelayMs(0) +
+      WELCOME_FETCH_AFTER_MS,
+  );
+  assert.equal(welcomeGets(env).length, 2, "a new Add is a new fetch");
+  assert.equal(intents(env), 3, "with its own one rejoin");
+  m.dispose();
+});
+
+test("FXJ D28: members admit from stored join_requests on open and on the 60 s refresh through the live handler: the seat check, a device already in the group skipped, a malformed entry dropped whole", async () => {
+  const env = new Env();
+  rosterGrowsOnWin(env);
+  env.group = groupBody({
+    join_requests: [
+      storedRequest("dev-new", { generation: 0, issued_at: 1_700_000_000_000 }),
+      storedRequest("dev-bad", { issued_at: 1.5 }),
+      storedRequest("dev-x", { user_id: "USTRANGER" }),
+      storedRequest(OWNER_DEV, { user_id: OWNER }),
+    ],
+  });
+  const m = make(env);
+  await m.open(CH);
+  await env.advance(1_000);
+  assert.deepEqual(claimedDevices(env), ["dev-new"]);
+  assert.deepEqual(
+    env.calls("e2ee_text_admit").map((a) => a.request),
+    [
+      {
+        group_id: G0,
+        channel_id: CH,
+        user_id: PEER,
+        device_id: "dev-new",
+        key_package_ref: "KPR-dev-new",
+        signature: "SIG-dev-new",
+        generation: 0,
+        issued_at: 1_700_000_000_000,
+      },
+    ],
+    "the live request shape: no created_at, no rejoin key",
+  );
+  assert.ok(
+    env.logs.some(
+      (l) =>
+        l.msg === "[protected] malformed stored join requests dropped" &&
+        l.ids.count === 1,
+    ),
+  );
+  assert.ok(
+    env.logs.some(
+      (l) => l.msg === "[protected] join request from an unseated user",
+    ),
+    "the seat check ran for the stranger",
+  );
+  // The 60 s refresh admits what was stored since; dev-new is in the group.
+  env.group = groupBody({
+    join_requests: [storedRequest("dev-new"), storedRequest("dev-later")],
+  });
+  await env.advance(60_000);
+  assert.deepEqual(claimedDevices(env), ["dev-new", "dev-later"]);
+  // A commit refresh does not sweep (only STORED_ADMIT_REASONS do).
+  env.group = groupBody({ join_requests: [storedRequest("dev-commit")] });
+  await m.refresh(CH, "commit");
+  await env.advance(1_000);
+  assert.deepEqual(claimedDevices(env), ["dev-new", "dev-later"]);
+  m.dispose();
+});
+
+test("FXJ D28: a stored intent that is also live is admitted once", async () => {
+  const env = new Env();
+  rosterGrowsOnWin(env);
+  env.group = groupBody({ join_requests: [storedRequest("dev-new")] });
+  const m = make(env);
+  await m.refresh(CH, "commit");
+  await env.advance(0);
+  m.onJoinRequest(
+    {
+      ...joinRequest("SIG-dev-new"),
+      device_id: "dev-new",
+      key_package_ref: "KPR-dev-new",
+    },
+    false,
+  );
+  await m.refresh(CH, "interval");
+  await env.advance(1_000);
+  await m.refresh(CH, "interval");
+  await env.advance(1_000);
+  assert.deepEqual(claimedDevices(env), ["dev-new"]);
+  assert.equal(env.calls("e2ee_text_admit").length, 1);
+  m.dispose();
+});
+
+test("FXJ LOW-2: an outcome naming an unregistered channel is dropped and logged, never routed by its group id; native's generation of a joined group decides a sticky clear", async () => {
+  const OTHER = "01J9Z3K4M5N6P7Q8R9S0T1V2XX";
+  const env = new Env();
+  processScript(env, {
+    W: () => outcome({ kind: "welcome_joined", channel_id: OTHER, epoch: 4 }),
+  });
+  const m = make(env);
+  await m.refresh(CH, "commit");
+  await env.advance(1_000);
+  const before = env.trace.length;
+  m.onEnvelope(envelope("W", 4, { content_type: "mls_welcome" }));
+  await env.advance(1_000);
+  assert.ok(
+    env.logs.some(
+      (l) =>
+        l.msg === "[protected] outcome for an unregistered channel dropped" &&
+        l.ids.channelId === OTHER &&
+        l.ids.groupId === G0,
+    ),
+  );
+  assert.deepEqual(
+    env.trace.slice(before),
+    ["e2ee_text_process"],
+    "nothing ran for the group's channel",
+  );
+  m.dispose();
+
+  // The server reported GX first (generation 5); native joins it at 0.
+  const GX = "ab".repeat(32);
+  const tag = "commit_declaration_mismatch";
+  const env2 = new Env();
+  env2.group = null;
+  env2.seats = seatsBody({ as_of_group_id: GX, as_of_generation: 5 });
+  const joined = (generation: number, epoch: number) => () => {
+    env2.states.set(CH, st({ group_id: GX, generation, epoch }));
+    return outcome({ kind: "welcome_joined", group_id: GX, epoch });
+  };
+  // FX-R: W1 at epoch 3. The fixture keeps GX for both generations, and
+  // W0's prompt Update already takes native to GX epoch 2, so a GX Welcome
+  // at 2 is a copy native holds (acked and dropped, addition 5).
+  processScript(env2, { E1: fail(tag), W0: joined(0, 1), W1: joined(1, 3) });
+  const m2 = make(env2);
+  await m2.refresh(CH, "commit");
+  await env2.advance(0);
+  m2.onEnvelope(envelope("E1", 4));
+  await env2.advance(0);
+  assert.equal(env2.views.get(CH)?.groupError, tag);
+  const w = { content_type: "mls_welcome" as const, group_id: GX };
+  m2.onEnvelope(envelope("W0", 1, w));
+  await env2.advance(0);
+  assert.equal(
+    env2.views.get(CH)?.groupError,
+    tag,
+    "native says generation 0: kept, whatever the server reported first",
+  );
+  m2.onEnvelope(envelope("W1", 3, w));
+  await env2.advance(0);
+  assert.equal(env2.views.get(CH)?.groupError, null, "native says 1: cleared");
+  m2.dispose();
+});
+
+// ---------------------------------------------------------------------------
+// FX-R: recovery same bytes (MEDIUM-1, manager side); duplicate Welcome
+// ---------------------------------------------------------------------------
+
+/** Settlement read through flags: a call that wrongly hangs fails, never stalls. */
+function settledOf(p: Promise<unknown>) {
+  const s: { done: boolean; err: unknown } = { done: false, err: undefined };
+  p.then(
+    () => (s.done = true),
+    (e: unknown) => {
+      s.done = true;
+      s.err = e;
+    },
+  );
+  return s;
+}
+
+test("FXR recovery (manager): a failed recovery keeps the signed list; the next click re-sends the SAME bytes with no second dialog or successor; every call, a failed one too, ends in a refresh", async () => {
+  _resetOwnerFlowsForTest();
+  const LOST = "dev-lost";
+  const lostList = {
+    ...st().seat_list!,
+    signer_user_id: SELF,
+    signer_device_id: LOST,
+  };
+  const signerLost = {
+    user_id: SELF,
+    device_id: LOST,
+    cause: "device_revoked",
+    at: "",
+  };
+  const signed = {
+    version: 2,
+    body: "sloga-seat-list-v1\nR",
+    signature: "RSIG",
+    signer_user_id: SELF,
+    signer_device_id: DEV,
+  };
+  const env = new Env();
+  env.states.set(CH, st({ seat_list: lostList }));
+  env.group = groupBody({
+    members: [
+      { user_id: OWNER, device_id: OWNER_DEV },
+      { user_id: PEER, device_id: PEER_DEV },
+    ],
+    signer_lost: signerLost,
+  });
+  env.handlers.e2ee_text_seat_list_sign = () => signed;
+  let failing = RECOVERY_PUT_RETRY_BUDGET + 1;
+  env.routes.push((method, path) => {
+    if (method === "POST" && path === "/mls/groups") {
+      // The server opens the successor with this device's leaf.
+      env.group = groupBody({
+        group_id: G1,
+        generation: 1,
+        members: [{ user_id: SELF, device_id: DEV }],
+        signer_lost: signerLost,
+      });
+      return undefined;
+    }
+    if (method === "PUT" && path === "/channels/" + CH + "/seats") {
+      return failing-- > 0
+        ? ok({ type: "InternalError" }, 503)
+        : ok(seatsBody());
+    }
+    return undefined;
+  });
+  const PUT = "PUT /channels/" + CH + "/seats";
+  const GROUP_GET = "GET /mls/channels/" + CH + "/text_group";
+  const refreshedAfterLastPut = () =>
+    env.trace.indexOf(GROUP_GET, env.trace.lastIndexOf(PUT)) >= 0;
+  const m = make(env);
+  await m.refresh(CH, "open");
+
+  const first = settledOf(m.recoverOwnership(CH));
+  await env.advance(3_600_000);
+  assert.equal(first.done, true, "the first call ended");
+  assert.equal((first.err as { status?: number })?.status, 503);
+  const puts1 = env.api$("PUT", /\/seats$/);
+  assert.equal(puts1.length, RECOVERY_PUT_RETRY_BUDGET + 1);
+  assert.equal(env.calls("e2ee_text_seat_list_sign").length, 1);
+  assert.equal(env.calls("e2ee_text_group_create").length, 1);
+  const kept = env.storeMap.get(publishStoreKey(SELF, CH));
+  assert.ok(kept, "the signed list stays stored");
+  assert.equal(JSON.parse(kept).recovery, true);
+  assert.ok(refreshedAfterLastPut(), "a failed call still ends in a refresh");
+  assert.equal(env.views.get(CH)?.publishInFlight, false);
+
+  const second = settledOf(m.recoverOwnership(CH));
+  await env.advance(60_000);
+  assert.equal(second.done, true, "the second call ended");
+  assert.equal(second.err, undefined);
+  assert.equal(
+    env.calls("e2ee_text_seat_list_sign").length,
+    1,
+    "no 2nd dialog",
+  );
+  assert.equal(env.calls("e2ee_text_group_create").length, 1, "no 2nd create");
+  const puts2 = env.api$("PUT", /\/seats$/);
+  assert.equal(puts2.length, RECOVERY_PUT_RETRY_BUDGET + 2);
+  for (const p of puts2) assert.deepEqual(p.body, puts1[0].body, "SAME bytes");
+  assert.equal(env.storeMap.has(publishStoreKey(SELF, CH)), false, "resolved");
+  assert.ok(refreshedAfterLastPut(), "and the success too");
+  m.dispose();
+  _resetOwnerFlowsForTest();
+});
+
+test("FXR: the mailbox copy of a Welcome already processed from the stored fetch is acked and dropped: no native call, no toast", async () => {
+  const env = joiningEnv();
+  env.routes.push(
+    welcomeRoute(() => ok({ group_id: G0, epoch: 4, welcome: "V0VMQ09NRQ" })),
+  );
+  let refuse = false;
+  env.handlers.e2ee_text_process = (a) => {
+    // Native refuses a second copy of the same Welcome as unsolicited.
+    if (refuse) throw { type: "mls_unsolicited_welcome", group_id: G0 };
+    env.states.set(CH, st({ epoch: 4 }));
+    return outcome({
+      kind: "welcome_joined",
+      epoch: 4,
+      group_id: a.envelope.group_id,
+    });
+  };
+  const m = make(env);
+  silence(m.ensureJoined(CH));
+  await env.advance(0);
+  env.group = groupBody({ member_added: addedAt(4) });
+  await env.advance(joinRebroadcastDelayMs(0) + WELCOME_FETCH_AFTER_MS);
+  assert.equal(welcomeGets(env).length, 1);
+  assert.equal(env.calls("e2ee_text_process").length, 1, "the fetched copy");
+  assert.equal(env.views.get(CH)?.native?.group_id, G0);
+  refuse = true;
+  m.onEnvelope(envelope("W1", 4, { content_type: "mls_welcome" }));
+  await env.advance(0);
+  assert.equal(env.calls("e2ee_text_process").length, 1, "never to native");
+  assert.deepEqual(env.notified, [], "no red toast");
+  assert.equal(env.acks.filter((id) => id === "W1").length, 1, "acked");
+  assert.ok(
+    env.logs.some((l) => l.msg === "[protected] duplicate welcome dropped"),
+  );
+  m.dispose();
+});
+
+test("FXR: only a Welcome for the group native holds, active, at or past its epoch is dropped; another group, a later epoch or a group not held still reaches native (refusal and toast as before)", async () => {
+  const refuse: Handlers["e2ee_text_process"] = (a) => {
+    throw { type: "mls_unsolicited_welcome", group_id: a.envelope.group_id };
+  };
+  const welcome = { content_type: "mls_welcome" as const };
+  const processed = (env: Env) =>
+    env.calls("e2ee_text_process").map((c) => c.envelope.id);
+
+  // Native holds G0, active, at epoch 3 (the default state).
+  const env = new Env();
+  env.handlers.e2ee_text_process = refuse;
+  const m = make(env);
+  await m.refresh(CH, "commit");
+  await env.advance(0);
+  m.onEnvelope(envelope("W3", 3, welcome));
+  m.onEnvelope(envelope("W2", 2, welcome));
+  await env.advance(0);
+  assert.deepEqual(processed(env), [], "at or below the held epoch");
+  assert.deepEqual(env.notified, []);
+  assert.deepEqual([...env.acks].sort(), ["W2", "W3"]);
+  m.onEnvelope(envelope("W4", 4, welcome));
+  m.onEnvelope(envelope("WG1", 0, { ...welcome, group_id: G1 }));
+  await env.advance(0);
+  assert.deepEqual(processed(env).sort(), ["W4", "WG1"], "native decides");
+  assert.deepEqual(env.notified, [
+    "unsolicited_welcome",
+    "unsolicited_welcome",
+  ]);
+  m.dispose();
+
+  // The group is no longer held (left): native decides.
+  const env2 = new Env();
+  env2.states.set(CH, st({ state: "left", verdict: "no_group" }));
+  env2.handlers.e2ee_text_process = refuse;
+  const m2 = make(env2);
+  await m2.refresh(CH, "commit");
+  await env2.advance(0);
+  m2.onEnvelope(envelope("WL", 3, welcome));
+  await env2.advance(0);
+  assert.deepEqual(processed(env2), ["WL"]);
+  assert.deepEqual(env2.notified, ["unsolicited_welcome"]);
+  m2.dispose();
 });

@@ -13,6 +13,8 @@
 // S2 OR-10 (W4-3-0 lane F1): `ownerChangeUnlisted` swaps a same-user
 // `owner_changed_review` for `owner_changed_unlisted`, withholds Review
 // (`reviewOffered`) and never changes the state.
+// S2 W4 fix FX-S: step 5b applies only off the server's current group
+// (audit LOW-1), and the manager's client refusals carry notices (LOW-3).
 // The step 3 / 6e tag lists are pinned ALWAYS against the in-repo fixture
 // `__fixtures__/protected/design-9-1-shield-lists.json` (plus the S2 additions
 // below); an extra test checks that fixture against the design copy in
@@ -1079,23 +1081,41 @@ test("S2 step 3c: client outdated is not_available, after the step 3 and 3b reds
   );
 });
 
+/**
+ * A native state that does NOT hold the server's current group (a refused
+ * joiner never joined): step 5b applies to it (audit LOW-1). `over` may
+ * set the verdict for the precedence rows.
+ */
+function notHeld(over: Partial<TextChannelState> = {}): TextChannelState {
+  return nativeOk({ state: "none", ...over });
+}
+
+/** `i` with its native state moved off the server's current group. */
+function offGroup(i: ShieldInputs): ShieldInputs {
+  return i.native === null
+    ? i
+    : { ...i, native: { ...i.native, state: "none" } };
+}
+
 test("S2 step 5b: capacity comes after step 5 and before step 6, only from i.capacity", () => {
   const cap = (reason: "device_cap" | "group_full") => ({ reason });
-  expectShield(green({ capacity: cap("device_cap") }), "capacity", "5b");
+  const refused = (over: Partial<ShieldInputs>) =>
+    green({ native: notHeld(), ...over });
+  expectShield(refused({ capacity: cap("device_cap") }), "capacity", "5b");
   assert.equal(
-    explainShield(green({ capacity: cap("device_cap") }))?.notice,
+    explainShield(refused({ capacity: cap("device_cap") }))?.notice,
     "capacity_device_cap",
   );
-  expectShield(green({ capacity: cap("group_full") }), "capacity", "5b");
+  expectShield(refused({ capacity: cap("group_full") }), "capacity", "5b");
   assert.equal(
-    explainShield(green({ capacity: cap("group_full") }))?.notice,
+    explainShield(refused({ capacity: cap("group_full") }))?.notice,
     "capacity_group_full",
   );
   // an unknown reason still holds the state, with the copy true for both
   const odd = { reason: "bogus" } as unknown as ShieldInputs["capacity"];
-  expectShield(green({ capacity: odd }), "capacity", "5b");
+  expectShield(refused({ capacity: odd }), "capacity", "5b");
   assert.equal(
-    explainShield(green({ capacity: odd }))?.notice,
+    explainShield(refused({ capacity: odd }))?.notice,
     "capacity_device_cap",
   );
   // steps 1-5 win over it
@@ -1129,7 +1149,15 @@ test("S2 step 5b: capacity comes after step 5 and before step 6, only from i.cap
     "not_seated",
     "5",
   );
-  // it wins over steps 6-9
+  expectShield(
+    green({
+      native: notHeld({ verdict: "not_seated" }),
+      capacity: cap("device_cap"),
+    }),
+    "not_seated",
+    "5",
+  );
+  // off the server's current group, it wins over steps 6-9
   for (const [label, over] of [
     ["6", withVerdict("roster_mismatch", { rosterMismatchAgeMs: 0 })],
     ["6c", withVerdict("joining", { signerLeafMissingRetries: 3 })],
@@ -1140,7 +1168,7 @@ test("S2 step 5b: capacity comes after step 5 and before step 6, only from i.cap
     ["9", withVerdict("bogus")],
   ] as const) {
     expectShield(
-      { ...over, capacity: cap("device_cap") },
+      { ...offGroup(over), capacity: cap("device_cap") },
       "capacity",
       "5b",
       label,
@@ -1152,8 +1180,110 @@ test("S2 step 5b: capacity comes after step 5 and before step 6, only from i.cap
     green({ groupError: "mls_epoch_gap" }),
     withVerdict("joining"),
     green({ capacity: undefined as unknown as null }),
+    green({ native: notHeld(), groupError: "text_group_full" }),
+    green({ native: notHeld(), capacity: undefined as unknown as null }),
   ]) {
     assert.notEqual(computeShieldState(i), "capacity");
+  }
+});
+
+test("S2 LOW-1: a device holding the server's current group never shows capacity", () => {
+  const cap = { reason: "device_cap" } as const;
+  // Held (state active, verdict not no_group, the server's group id): the
+  // recorded refusal is stale and steps 6-9 decide as without it.
+  for (const [label, over, state, step] of [
+    ["8 green", {}, "protected", "8"],
+    ["8 server group unknown", { serverGroup: null }, "protected", "8"],
+    [
+      "6 resecuring",
+      { native: nativeOk({ verdict: "roster_mismatch" }) },
+      "resecuring",
+      "6",
+    ],
+    [
+      "6 red",
+      {
+        native: nativeOk({ verdict: "roster_mismatch" }),
+        rosterMismatchAgeMs: 60_000,
+      },
+      "unverified",
+      "6",
+    ],
+    ["6c", { signerLeafMissingRetries: 3 }, "unverified", "6c"],
+    ["6d", { welcomeRetriesExhausted: true }, "resecuring", "6d"],
+    [
+      "7 joining",
+      { native: nativeOk({ verdict: "joining" }) },
+      "resecuring",
+      "7",
+    ],
+    [
+      "7 server epoch",
+      { serverGroup: serverGroup({ current_epoch: 9 }) },
+      "resecuring",
+      "7",
+    ],
+    [
+      "9 bogus",
+      { native: nativeOk({ verdict: "bogus" as TextVerdict }) },
+      "unverified",
+      "9",
+    ],
+    [
+      "9 off-list",
+      { native: nativeOk({ members: [member({ on_signed_list: false })] }) },
+      "unverified",
+      "9",
+    ],
+  ] as const) {
+    const without = explainShield(green(over));
+    assert.ok(without, label);
+    assert.equal(without.state, state, `${label} (control row)`);
+    for (const reason of ["device_cap", "group_full"] as const) {
+      const got = explainShield(green({ ...over, capacity: { reason } }));
+      assert.deepEqual(got, without, `${label} ${reason}`);
+      assert.notEqual(got?.state, "capacity", `${label} ${reason}`);
+      expectShield(
+        green({ ...over, capacity: { reason } }),
+        state,
+        step,
+        label,
+      );
+    }
+  }
+  // Not held: the refusal applies.
+  for (const [label, native, server] of [
+    ["state none", notHeld(), serverGroup()],
+    [
+      "state joining",
+      nativeOk({ state: "joining", verdict: "joining" }),
+      serverGroup(),
+    ],
+    [
+      "state left",
+      nativeOk({ state: "left", verdict: "no_group" }),
+      serverGroup(),
+    ],
+    [
+      "state poisoned",
+      nativeOk({ state: "poisoned", verdict: "poisoned" }),
+      serverGroup(),
+    ],
+    // OR-8: a superseded group stays active with verdict no_group
+    ["superseded", nativeOk({ verdict: "no_group" }), serverGroup()],
+    // the server moved to a group native has not seen yet
+    [
+      "older group id",
+      nativeOk(),
+      serverGroup({ group_id: "G1", generation: 1 }),
+    ],
+  ] as const) {
+    expectShield(
+      green({ native, serverGroup: server, capacity: cap }),
+      "capacity",
+      "5b",
+      label,
+    );
   }
 });
 
@@ -1170,33 +1300,53 @@ test("S2: capacity and client outdated are never green, and capacity only with i
         for (const capacity of caps) {
           for (const clientOutdated of [null, 2]) {
             for (const exhausted of [false, true]) {
-              const e = explainShield(
-                green({
-                  native: nativeOk({ verdict: verdict as TextVerdict }),
-                  capable,
-                  groupError: ge,
-                  capacity,
-                  clientOutdated,
-                  welcomeRetriesExhausted: exhausted,
-                }),
-              );
-              assert.ok(e);
-              seen++;
-              if (e.state === "protected") {
-                assert.equal(capacity, null);
-                assert.equal(clientOutdated, null);
-              }
-              if (e.state === "capacity") {
-                assert.notEqual(capacity, null);
-                assert.equal(e.step, "5b");
-              }
-              if (e.step === "3c") assert.notEqual(clientOutdated, null);
-              // a server-only signal never turns a red into not_available
-              if (clientOutdated !== null && ge === "bad_sig") {
-                assert.ok(
-                  e.state === "unverified" || e.step === "2",
-                  `${verdict}/${String(capable)}`,
+              for (const groupState of ["active", "none"] as const) {
+                // LOW-1: the server's current group is held (same group id
+                // as `serverGroup()`) exactly when active and not no_group.
+                const held = groupState === "active" && verdict !== "no_group";
+                const e = explainShield(
+                  green({
+                    native: nativeOk({
+                      verdict: verdict as TextVerdict,
+                      state: groupState,
+                    }),
+                    capable,
+                    groupError: ge,
+                    capacity,
+                    clientOutdated,
+                    welcomeRetriesExhausted: exhausted,
+                  }),
                 );
+                assert.ok(e);
+                seen++;
+                if (e.state === "protected") {
+                  // a stale refusal never blocks green on a held group
+                  assert.ok(capacity === null || held);
+                  assert.equal(clientOutdated, null);
+                }
+                if (e.state === "capacity") {
+                  assert.notEqual(capacity, null);
+                  assert.equal(held, false);
+                  assert.equal(e.step, "5b");
+                }
+                // off the group, a refusal decides once steps 1-5 pass
+                const stepsOneToFivePass =
+                  capable &&
+                  (ge === null || ge === "mls_epoch_gap") &&
+                  clientOutdated === null &&
+                  verdict !== "owner_changed" &&
+                  verdict !== "not_seated";
+                if (capacity !== null && !held && stepsOneToFivePass) {
+                  assert.equal(e.step, "5b", `${verdict}/${groupState}`);
+                }
+                if (e.step === "3c") assert.notEqual(clientOutdated, null);
+                // a server-only signal never turns a red into not_available
+                if (clientOutdated !== null && ge === "bad_sig") {
+                  assert.ok(
+                    e.state === "unverified" || e.step === "2",
+                    `${verdict}/${String(capable)}`,
+                  );
+                }
               }
             }
           }
@@ -1204,7 +1354,7 @@ test("S2: capacity and client outdated are never green, and capacity only with i
       }
     }
   }
-  assert.equal(seen, 9 * 2 * 4 * 3 * 2 * 2);
+  assert.equal(seen, 9 * 2 * 4 * 3 * 2 * 2 * 2);
 });
 
 test("step 6e: own_commit_mismatch / already_member / unexpected_mls_content never unverified by themselves", () => {
@@ -1502,7 +1652,12 @@ test("S2 shieldInputsFromView maps capacity and clientOutdated from the view", (
   const at = (v: ProtectedChannelView | null) =>
     explainShield(shieldInputsFromView(v, flags, 5));
   assert.equal(at(view)?.state, "protected");
-  const capped = { ...view, capacity: { reason: "group_full" as const } };
+  // a refused joiner: native holds no group yet
+  const capped = {
+    ...view,
+    native: notHeld({ verdict: "no_group" }),
+    capacity: { reason: "group_full" as const },
+  };
   assert.deepEqual(shieldInputsFromView(capped, flags, 5).capacity, {
     reason: "group_full",
   });
@@ -1511,6 +1666,11 @@ test("S2 shieldInputsFromView maps capacity and clientOutdated from the view", (
     step: "5b",
     notice: "capacity_group_full",
   });
+  // LOW-1: the same refusal on a device holding the current group is stale
+  assert.equal(
+    at({ ...view, capacity: { reason: "group_full" } })?.state,
+    "protected",
+  );
   const old = { ...view, clientOutdated: 3 };
   assert.equal(shieldInputsFromView(old, flags, 5).clientOutdated, 3);
   assert.deepEqual(at(old), {
@@ -1656,7 +1816,7 @@ test("S2 OR-10: the unlisted flag never changes the state or step and never mask
     ["step 3b", { groupError: "unknown" }],
     ["step 3c", { clientOutdated: 2 }],
     ["step 4", { native: null }],
-    ["step 5b", { capacity: { reason: "group_full" } }],
+    ["step 5b", { native: notHeld(), capacity: { reason: "group_full" } }],
     [
       "step 6 red",
       {
@@ -2565,7 +2725,21 @@ test("D17 transport and client failures", () => {
     max: null,
     tag: "transport",
   });
+  // S2 audit LOW-3: the manager's own refusals carry a notice too
+  assert.deepEqual(
+    [...PROTECTED_CLIENT_REASONS],
+    [
+      "protect_failed",
+      "maybe_unsent",
+      "recovery_unavailable",
+      "publish_in_flight",
+      "client_outdated",
+      "invalid_reason",
+      "create_predecessor_unknown",
+    ],
+  );
   for (const reason of PROTECTED_CLIENT_REASONS) {
+    assert.ok(PROTECTED_NOTICE_KINDS.includes(reason), reason);
     assert.equal(brief(ui({ source: "client", reason }, "owner")), reason);
     assert.equal(
       brief(ui({ source: "client", reason }, "message")),

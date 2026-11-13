@@ -138,8 +138,9 @@ function takeNewProtectedToasts(
  */
 function protectedToastIsAlert(kind: ProtectedToastKind): boolean {
   switch (kind) {
-    // S2 placeholder (no producer yet): `owner_notice` gets the default's
-    // answer.
+    // S2 (OR-9): `owner_notice` is raised by the manager when another of
+    // this account's devices changed a channel's signing devices or seats;
+    // an alert like the blocked invitation.
     case "unsolicited_welcome":
     case "owner_notice":
       return true;

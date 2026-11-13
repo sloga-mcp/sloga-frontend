@@ -21,6 +21,7 @@ import {
   proposedOwnerDevices,
   protect,
   publishStoreKey,
+  recoverOwnership,
   setSeats,
   signOwnerDevices,
 } from "./protectedTextOwner.ts";
@@ -30,6 +31,7 @@ import type {
   OwnerFlows,
   ProtectedSeatsResponse,
   ProtectedTextPort,
+  RecoveryPlan,
   SignedAuthority,
   SignedSeatList,
   TextApiResponse,
@@ -44,6 +46,7 @@ const _ownerFlows: OwnerFlows = {
   moveOwnerKey,
   pendingSeats,
   cancelPendingSeats,
+  recoverOwnership,
 };
 void _ownerFlows;
 
@@ -2137,6 +2140,8 @@ test("S2 F5 moveOwnerKey: a statement that is not the one asked for is never pub
   const wrong = [
     handoverOf(THIRD_DEV),
     handoverOf(OTHER_DEV, { from_device_id: THIRD_DEV }),
+    // FX-R LOW-6: each signed field is checked on its own.
+    handoverOf(OTHER_DEV, { from_user_id: BOB }),
     handoverOf(OTHER_DEV, { to_user_id: BOB }),
     handoverOf(OTHER_DEV, { channel_id: "01OTHERCHANNEL00000000000A" }),
     { body: HANDOVER.body.replace("handover", "succession"), signature: "X" },
@@ -2218,4 +2223,255 @@ test("S2 F5 ownerKeyMoveTargets: this user's other devices, in order, once each,
     assert.deepEqual(ownerKeyMoveTargets(seats, self, own), [], label);
   }
   assert.deepEqual(ownerKeyMoveTargets(mine, MY_DEV, [MY_DEV]), []);
+});
+
+// ---------------------------------------------------------------------------
+// FX-R (audit MEDIUM-1): the recovery list is a stored publish (4.9, D7c);
+// the reason header rides on plain seat publishes only (NIT)
+// ---------------------------------------------------------------------------
+
+const LOST_DEV = "dd".repeat(16);
+/** The served list, signed by the lost signing device of this user. */
+const lostV2 = genesis({
+  version: 2,
+  body: "sloga-seat-list-v1\nv:1\nversion:2\nby-lost",
+  signature: "S2LOST",
+  signer_device_id: LOST_DEV,
+});
+/** The recovery list this device signs over it. */
+const recV3 = genesis({
+  version: 3,
+  body: "sloga-seat-list-v1\nv:1\nversion:3\nrecovery",
+  signature: "S3REC",
+});
+
+/**
+ * The manager's side of a recovery as a stub: `sign` answers `answer()`
+ * over server version `serverVersion`; `ensureLeaf` records the D7c entry
+ * it finds (the bytes must be stored before anything is created).
+ */
+function recoveryPlan(
+  h: Harness,
+  over: {
+    answer?: () => unknown;
+    serverVersion?: number;
+    retryBudget?: number;
+  } = {},
+) {
+  const seen = { signs: 0, leafs: 0, storedAtLeaf: [] as (string | null)[] };
+  const plan: RecoveryPlan = {
+    retryBudget: over.retryBudget ?? 8,
+    async sign() {
+      seen.signs++;
+      h.trace.push("sign");
+      return {
+        signed: (over.answer ?? (() => recV3))(),
+        serverVersion: over.serverVersion ?? 2,
+      };
+    },
+    async ensureLeaf() {
+      seen.leafs++;
+      h.trace.push("ensureLeaf");
+      seen.storedAtLeaf.push(h.store.get(publishStoreKey(ME, CH)) ?? null);
+    },
+  };
+  return { plan, seen };
+}
+
+function recoveryHarness(putReplies: Reply[], sleepRejectsAfter?: number) {
+  return harness({
+    routes: listRoutes(lostV2, recV3, putReplies),
+    invoke: seatNative(recV3),
+    sleepRejectsAfter,
+  });
+}
+
+test("FXR recovery: the signed list is stored BEFORE the successor step and the first PUT; a 2xx resolves through read-back and verify", async () => {
+  const h = recoveryHarness([res(200)]);
+  const { plan, seen } = recoveryPlan(h);
+  await recoverOwnership(h.ops, h.port, CH, plan);
+  assert.deepEqual(h.trace.slice(0, 3), [
+    "sign",
+    "ensureLeaf",
+    `PUT /channels/${CH}/seats`,
+  ]);
+  assert.equal(seen.signs, 1);
+  const atLeaf = JSON.parse(seen.storedAtLeaf[0] ?? "null");
+  assert.ok(atLeaf, "persisted before the successor step");
+  assert.equal(atLeaf.recovery, true);
+  assert.equal(atLeaf.answer, "unsent");
+  assert.deepEqual(atLeaf.signed, recV3);
+  const atPut = JSON.parse(h.storeAtPut[0] ?? "null");
+  assert.equal(atPut.recovery, true);
+  assert.equal(atPut.answer, "sent", "write-ahead before the PUT (F3)");
+  assert.deepEqual(puts(h)[0].body, {
+    body: recV3.body,
+    signature: recV3.signature,
+    signer_device_id: MY_DEV,
+  });
+  assert.equal(puts(h)[0].headers, undefined, "a recovery never has a reason");
+  assert.equal(h.store.size, 0, "resolved");
+  assert.equal(cmds(h, "e2ee_text_seat_list_verify").length, 1, "read back");
+});
+
+test("FXR recovery: past the re-send budget the call rejects and the entry stays; the next call re-sends the SAME bytes with no second signature", async () => {
+  // `sleepRejectsAfter`: a loop that ignored the budget ends as "aborted"
+  // (this test fails) instead of spinning.
+  const h = recoveryHarness([res(503)], 20);
+  const first = recoveryPlan(h, { retryBudget: 2 });
+  await assert.rejects(recoverOwnership(h.ops, h.port, CH, first.plan), {
+    source: "server",
+    status: 503,
+  });
+  assert.equal(puts(h).length, 3, "the budget bounds one call");
+  const key = publishStoreKey(ME, CH);
+  const kept = h.store.get(key);
+  assert.ok(kept, "the signed bytes stay stored");
+  assert.equal(JSON.parse(kept).recovery, true);
+  assert.equal(pendingSeats(h.port, CH), null, "not a pending seat change");
+  assert.deepEqual(cancelPendingSeats(h.port, CH), {
+    discarded: false,
+    why: "none",
+  });
+  assert.equal(h.store.get(key), kept, "F3 never discards it");
+
+  // The next click: in the same session, then after a reload.
+  for (const reload of [false, true]) {
+    if (reload) _resetOwnerFlowsForTest();
+    const h2 = recoveryHarness([res(200)]);
+    h2.store.set(key, kept);
+    const again = recoveryPlan(h2);
+    await recoverOwnership(h2.ops, h2.port, CH, again.plan);
+    assert.equal(again.seen.signs, 0, "no fresh signature");
+    assert.equal(again.seen.leafs, 1, "the successor step before the PUT");
+    assert.equal(puts(h2).length, 1);
+    assert.deepEqual(puts(h2)[0].body, puts(h)[0].body, "SAME bytes");
+    assert.equal(h2.store.size, 0, "resolved");
+  }
+});
+
+test("FXR recovery: a stored list resolves by read-back first: already on the server = nothing re-sent; overtaken = dropped as refused", async () => {
+  const key = publishStoreKey(ME, CH);
+  const stored = JSON.stringify({
+    v: 1,
+    op: "seats",
+    signed: recV3,
+    recovery: true,
+    answer: "sent",
+  });
+  const h = harness({
+    routes: listRoutes(recV3, recV3, [res(200)]),
+    invoke: seatNative(recV3),
+  });
+  h.store.set(key, stored);
+  const landed = recoveryPlan(h);
+  await recoverOwnership(h.ops, h.port, CH, landed.plan);
+  assert.equal(puts(h).length, 0, "landed: never re-sent");
+  assert.equal(landed.seen.signs + landed.seen.leafs, 0);
+  assert.equal(cmds(h, "e2ee_text_seat_list_verify").length, 1);
+  assert.equal(h.store.size, 0);
+
+  _resetOwnerFlowsForTest();
+  const other = genesis({ version: 3, body: "someone-else", signature: "X" });
+  const h2 = harness({
+    routes: listRoutes(other, other, [res(200)]),
+    invoke: seatNative(recV3),
+  });
+  h2.store.set(key, stored);
+  const gone = recoveryPlan(h2);
+  await assert.rejects(recoverOwnership(h2.ops, h2.port, CH, gone.plan), {
+    reason: "publish_refused",
+  });
+  assert.equal(puts(h2).length, 0);
+  assert.equal(gone.seen.signs + gone.seen.leafs, 0);
+  assert.equal(h2.store.size, 0);
+});
+
+test("FXR recovery: native's answer must be this device's list at the server version + 1, else nothing is stored, created or sent", async () => {
+  const answers: [string, unknown, number][] = [
+    ["version + 2", genesis({ version: 4, body: "b4", signature: "s4" }), 2],
+    ["same version", genesis({ version: 2, body: "b2", signature: "s2" }), 2],
+    ["another device", { ...recV3, signer_device_id: OTHER_DEV }, 2],
+    ["another user", { ...recV3, signer_user_id: BOB }, 2],
+    ["malformed", { ...recV3, signature: 7 }, 2],
+    ["no answer", null, 2],
+    ["unknown server version", recV3, Number.NaN],
+  ];
+  for (const [label, answer, serverVersion] of answers) {
+    _resetOwnerFlowsForTest();
+    const h = recoveryHarness([res(200)]);
+    const { plan, seen } = recoveryPlan(h, {
+      answer: () => answer,
+      serverVersion,
+    });
+    await assert.rejects(
+      recoverOwnership(h.ops, h.port, CH, plan),
+      { reason: "publish_refused" },
+      label,
+    );
+    assert.equal(seen.leafs, 0, label);
+    assert.equal(puts(h).length, 0, label);
+    assert.equal(h.store.size, 0, label);
+  }
+});
+
+test("FXR recovery: another owner flow never PUTs a stored recovery list (no successor step there); it only resolves one already on the server", async () => {
+  const key = publishStoreKey(ME, CH);
+  const stored = JSON.stringify({
+    v: 1,
+    op: "seats",
+    signed: recV3,
+    recovery: true,
+    answer: "unsent",
+  });
+  const h = recoveryHarness([res(200)]);
+  h.store.set(key, stored);
+  await assert.rejects(setSeats(h.ops, h.port, CH, [ME, BOB], 5), {
+    reason: "publish_in_flight",
+  });
+  assert.equal(puts(h).length, 0);
+  assert.equal(h.store.get(key), stored, "kept for recoverOwnership");
+  assert.equal(signArgs(h).length, 0);
+
+  _resetOwnerFlowsForTest();
+  const v4 = genesis({ version: 4, body: "body-v4", signature: "S4" });
+  const h2 = harness({
+    routes: listRoutes(recV3, v4, [res(200)]),
+    invoke: { ...seatNative(recV3), e2ee_text_seat_list_sign: () => v4 },
+  });
+  h2.store.set(key, stored);
+  await setSeats(h2.ops, h2.port, CH, [ME, BOB], 5);
+  assert.equal(puts(h2).length, 1, "only its own list");
+  assert.equal((puts(h2)[0].body as { body: string }).body, "body-v4");
+  assert.equal(h2.store.size, 0);
+});
+
+test("FXR NIT: a resumed publish carries the caller's reason only when it is a plain seat publish, never an owner-devices or handover one", async () => {
+  const key = publishStoreKey(ME, CH);
+  const v4 = genesis({
+    version: 4,
+    body: "sloga-seat-list-v1\nv:1\nversion:4",
+    signature: "S4V1",
+  });
+  const REASON = { "X-Audit-Log-Reason": "spam" };
+  const cases: [string, SignedSeatList, SignedSeatList, object, boolean][] = [
+    ["owner devices", heldV2, nextV2NewAuth, { ownerDevices: true }, false],
+    ["handover", heldV1, nextV1, { handover: HANDOVER }, false],
+    ["plain", heldV1, nextV1, {}, true],
+  ];
+  for (const [label, start, next, extra, carries] of cases) {
+    _resetOwnerFlowsForTest();
+    const h = harness({
+      routes: listRoutes(start, next, [res(200)]),
+      invoke: { ...seatNative(next), e2ee_text_seat_list_sign: () => v4 },
+    });
+    const entry = { v: 1, op: "seats", signed: next, answer: "sent" };
+    h.store.set(key, JSON.stringify({ ...entry, ...extra }));
+    await setSeats(h.ops, h.port, CH, [ME, BOB], 5, "spam");
+    const p = puts(h);
+    assert.equal(p.length, 2, label);
+    assert.equal((p[0].body as { body: string }).body, next.body, label);
+    assert.deepEqual(p[0].headers, carries ? REASON : undefined, label);
+    assert.deepEqual(p[1].headers, REASON, `${label}: its own list`);
+  }
 });

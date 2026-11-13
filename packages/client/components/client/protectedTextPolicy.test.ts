@@ -37,12 +37,15 @@ import {
   holdsCurrentGroup,
   isCatchUpDesync,
   isProtectorError,
+  JOIN_REBROADCAST,
   JOIN_RETRIES,
   JOIN_RETRY_MS,
+  joinRebroadcastDelayMs,
   joinRefusal,
   LEAF_STAGGER_MS,
   leafStaggerMs,
   MAX_TEXT_LEAVES,
+  ownAddedEntry,
   ownSendRowBinds,
   PROTECTOR_BACKOFF,
   PROTECTOR_GATE_OPEN,
@@ -60,6 +63,12 @@ import {
   ROSTER_MISMATCH_GRACE_MS,
   signAllowed,
   SIGNER_LEAF_MISSING_BUDGET,
+  STORED_ADMIT_REASONS,
+  storedJoinRequests,
+  WELCOME_FETCH_AFTER_MS,
+  WELCOME_FETCH_RETRY_BUDGET,
+  welcomeDue,
+  welcomeFetchStep,
 } from "./protectedTextPolicy.ts";
 import {
   type ProtectedChannelView,
@@ -2079,5 +2088,229 @@ test("leafStaggerMs: own leaf index x 2 s", () => {
   assert.deepEqual([0, 1, 2, 5].map(leafStaggerMs), [0, 2000, 4000, 10000]);
   for (const bad of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
     assert.equal(leafStaggerMs(bad), 0);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// S2-W4 fix lane FX-J: async Text join (S2-D28 / S2-D29). Tests named
+// "FXJ ..." are the targets of /home/mcp/pc-logs/s2/w4/ctl/FXJ.
+// ---------------------------------------------------------------------------
+
+const G = "ab".repeat(32);
+const G_OTHER = "cd".repeat(32);
+
+test("FXJ joinRebroadcastDelayMs: 10 s doubling, held at 15 min; a broken count fails to the cap", () => {
+  assert.equal(JOIN_REBROADCAST.startMs, JOIN_RETRY_MS);
+  assert.equal(JOIN_REBROADCAST.capMs, 900_000);
+  assert.deepEqual(
+    [0, 1, 2, 3, 4, 5, 6, 7, 8, 50, 10_000].map(joinRebroadcastDelayMs),
+    [
+      10_000, 20_000, 40_000, 80_000, 160_000, 320_000, 640_000, 900_000,
+      900_000, 900_000, 900_000,
+    ],
+  );
+  for (const bad of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+    assert.equal(joinRebroadcastDelayMs(bad), 900_000, String(bad));
+  }
+});
+
+test("FXJ welcomeFetchStep: a 404 rejoins; a 2xx is used only for the group asked for with an epoch and bytes; 429/5xx/transport retried within the budget; other answers give up", () => {
+  const ctx = (failures = 0) => ({ groupId: G, failures });
+  const welcome = { group_id: G, epoch: 4, welcome: "V0VM" };
+  assert.equal(WELCOME_FETCH_AFTER_MS, 20_000);
+  assert.deepEqual(
+    welcomeFetchStep({ kind: "response", response: res(200, welcome) }, ctx()),
+    {
+      kind: "process",
+      welcome,
+    },
+  );
+  // only the three fields reach the caller
+  assert.deepEqual(
+    welcomeFetchStep(
+      { kind: "response", response: res(200, { ...welcome, extra: 1 }) },
+      ctx(),
+    ),
+    { kind: "process", welcome },
+  );
+  assert.deepEqual(
+    welcomeFetchStep(
+      { kind: "response", response: res(404, { type: "NotFound" }) },
+      ctx(),
+    ),
+    { kind: "rejoin" },
+  );
+  assert.deepEqual(
+    welcomeFetchStep(
+      {
+        kind: "response",
+        response: res(200, { ...welcome, group_id: G_OTHER }),
+      },
+      ctx(),
+    ),
+    { kind: "give_up", why: "wrong_group" },
+  );
+  for (const bad of [
+    null,
+    [],
+    { ...welcome, epoch: -1 },
+    { ...welcome, epoch: 1.5 },
+    { ...welcome, epoch: "4" },
+    { ...welcome, welcome: "" },
+    { ...welcome, welcome: 7 },
+    { epoch: 4, welcome: "V0VM" },
+  ]) {
+    assert.deepEqual(
+      welcomeFetchStep({ kind: "response", response: res(200, bad) }, ctx()),
+      { kind: "give_up", why: "malformed" },
+      JSON.stringify(bad),
+    );
+  }
+  for (const status of [400, 401, 403, 409, 301]) {
+    assert.deepEqual(
+      welcomeFetchStep(
+        { kind: "response", response: res(status, { type: "X" }) },
+        ctx(),
+      ),
+      { kind: "give_up", why: "refused" },
+      String(status),
+    );
+  }
+  // unknown outcomes: retried with backoff, never read as "none stored"
+  assert.deepEqual(welcomeFetchStep({ kind: "transport_error" }, ctx(0)), {
+    kind: "retry",
+    delayMs: 250,
+  });
+  assert.deepEqual(
+    welcomeFetchStep({ kind: "response", response: res(503) }, ctx(1)),
+    { kind: "retry", delayMs: 500 },
+  );
+  assert.deepEqual(
+    welcomeFetchStep(
+      { kind: "response", response: res(429, null, 1_500) },
+      ctx(0),
+    ),
+    { kind: "retry", delayMs: 1_500 },
+  );
+  for (const answer of [
+    { kind: "transport_error" as const },
+    { kind: "response" as const, response: res(500) },
+    { kind: "response" as const, response: res(429, null, 1_000) },
+  ]) {
+    assert.deepEqual(
+      welcomeFetchStep(answer, ctx(WELCOME_FETCH_RETRY_BUDGET)),
+      { kind: "give_up", why: "budget" },
+    );
+    assert.deepEqual(welcomeFetchStep(answer, ctx(Number.NaN)), {
+      kind: "give_up",
+      why: "budget",
+    });
+  }
+});
+
+test("FXJ ownAddedEntry / welcomeDue: this device's latest Add keys the observation; a Welcome is due only at/after the epoch of the last intent", () => {
+  const g = (member_added: unknown[]) => ({ group_id: G, member_added });
+  assert.equal(ownAddedEntry(g([]), "U", "D"), null);
+  const added = ownAddedEntry(
+    g([
+      { user_id: "U", device_id: "D", epoch: 4, at: "" },
+      { user_id: "U", device_id: "D", epoch: 6, at: "" },
+      { user_id: "U", device_id: "D2", epoch: 9, at: "" },
+      { user_id: "V", device_id: "D", epoch: 9, at: "" },
+      { user_id: "U", device_id: "D", epoch: 1.5, at: "" },
+      null,
+    ]),
+    "U",
+    "D",
+  );
+  assert.deepEqual(added, { key: `${G}:6`, epoch: 6 });
+  assert.equal(welcomeDue(added, 6), true);
+  assert.equal(welcomeDue(added, 5), true);
+  assert.equal(welcomeDue(added, 7), false, "an Add before our intent");
+  assert.equal(welcomeDue(added, null), false, "no intent sent");
+  assert.equal(welcomeDue(null, 0), false);
+});
+
+test("FXJ storedJoinRequests: the live request shape (S1 strings, OR-6 generation/issued_at, rejoin boolean); a malformed entry is dropped whole; created_at never kept; a repeat keeps the first", () => {
+  const CHAN = "01J9Z3K4M5N6P7Q8R9S0T1V2W3";
+  const row = (over: Record<string, unknown> = {}) => ({
+    user_id: "U",
+    device_id: "D",
+    key_package_ref: "KPR",
+    signature: "SIG",
+    created_at: "2026-11-12T00:00:00Z",
+    rejoin: false,
+    ...over,
+  });
+  assert.deepEqual(storedJoinRequests(undefined, G, CHAN), {
+    requests: [],
+    dropped: 0,
+  });
+  assert.deepEqual(storedJoinRequests({}, G, CHAN), {
+    requests: [],
+    dropped: 1,
+  });
+  const out = storedJoinRequests(
+    [
+      row({ generation: 2, issued_at: 1_700_000_000_000 }),
+      row({ device_id: "D-REJOIN", rejoin: true }),
+      row({ signature: "SIG-AGAIN" }),
+      row({ device_id: "BAD1", issued_at: 1.5, generation: 2 }),
+      row({ device_id: "BAD2", generation: null }),
+      row({ device_id: "BAD3", generation: -1 }),
+      row({ device_id: "BAD4", rejoin: "false" }),
+      row({ device_id: "BAD5", rejoin: undefined }),
+      row({ device_id: 7 }),
+      row({ signature: undefined }),
+      "x",
+    ],
+    G,
+    CHAN,
+  );
+  assert.equal(out.dropped, 8);
+  assert.deepEqual(out.requests, [
+    {
+      request: {
+        group_id: G,
+        channel_id: CHAN,
+        user_id: "U",
+        device_id: "D",
+        key_package_ref: "KPR",
+        signature: "SIG",
+        generation: 2,
+        issued_at: 1_700_000_000_000,
+      },
+      rejoin: false,
+    },
+    {
+      request: {
+        group_id: G,
+        channel_id: CHAN,
+        user_id: "U",
+        device_id: "D-REJOIN",
+        key_package_ref: "KPR",
+        signature: "SIG",
+      },
+      rejoin: true,
+    },
+  ]);
+  // An S1 entry keeps the S1 shape: no generation / issued_at keys.
+  const s1 = storedJoinRequests([row()], G, CHAN).requests[0].request;
+  assert.equal("generation" in s1, false);
+  assert.equal("issued_at" in s1, false);
+  assert.equal("created_at" in s1, false);
+});
+
+test("FXJ STORED_ADMIT_REASONS: open, the 60 s refresh, start, event and manual; never a commit refresh", () => {
+  for (const r of ["open", "interval", "start", "event", "manual"] as const) {
+    assert.ok(STORED_ADMIT_REASONS.includes(r), r);
+  }
+  for (const r of [
+    "commit",
+    "resecuring",
+    "owner_confirmed",
+    "send_refused",
+  ] as const) {
+    assert.equal(STORED_ADMIT_REASONS.includes(r), false, r);
   }
 });
