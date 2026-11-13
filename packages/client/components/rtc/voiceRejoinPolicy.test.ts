@@ -693,12 +693,16 @@ test("🔴 stoat.js joinCall takes rejoin 5th and sends it as the body key `rejo
   const body = methodText(stoatChannelCode(), "async joinCall(");
   assert.ok(body.length > 0, "no joinCall method found in stoat.js Channel.ts");
   const params = topLevelItems(balancedGroup(body, body.indexOf("(")));
+  // Six since the ring options were added: `rejoin` stays 5th, and the 6th is
+  // the options object that carries `answer` and `video`. A new positional
+  // parameter in front of either would silently shift what callers send.
   assert.equal(
     params.length,
-    5,
-    `stoat.js joinCall takes ${params.length} parameters ${JSON.stringify(params)}; the 5th is rejoin`,
+    6,
+    `stoat.js joinCall takes ${params.length} parameters ${JSON.stringify(params)}; the 5th is rejoin, the 6th the ring options`,
   );
   assert.equal(params[4], "rejoin?: boolean");
+  assert.equal(params[5], "opts?: { answer?: boolean; video?: boolean }");
   const post = /\.api\.post\(/.exec(body);
   assert.ok(post, "stoat.js joinCall no longer posts through client.api.post");
   const postArgs = topLevelItems(

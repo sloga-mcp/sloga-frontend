@@ -41,6 +41,14 @@ import { isDeviceNotRegisteredRefusal } from "./e2eeDeviceReadiness.ts";
  * a retry cannot change. NOT here on purpose: `LiveKitUnavailable` (a server
  * outage, not a verdict about this channel) and everything the route does not
  * produce itself — session/device errors, the SFU's own connect failures.
+ *
+ * `CallEnded` is left out on purpose too. The server gives it only to a join
+ * sent as an Answer that finds nobody else in the call, which means the ring
+ * is over. That says nothing about the next call in the channel: the user's
+ * next action is "Call back", an ordinary join the server lets through, and a
+ * latch would hold that button inert for up to `JOIN_REFUSAL_HOLD_MS`. It
+ * must never be added to this union or to the set below, so it is not a
+ * refusal as an object body or as response text.
  */
 export type JoinRefusalReason =
   | "NotAVoiceChannel"
@@ -82,9 +90,15 @@ const TERMINAL_JOIN_REFUSALS: ReadonlySet<string> = new Set<JoinRefusalReason>([
 ]);
 
 /**
- * Classify a rejection from `Channel.joinCall`. stoat.js rejects with the raw
- * API error body (`{ type, ... }`); anything else — a network `TypeError`, a
- * LiveKit error, nothing at all — is not a refusal.
+ * Classify a rejection from `Channel.joinCall` that is an API error body
+ * object (`{ type, ... }`). Anything else, such as a network `TypeError`, a
+ * LiveKit error or nothing at all, is not a refusal.
+ *
+ * A refused join arrives from stoat.js as the response text, a string such
+ * as `{"type":"NotAVoiceChannel"}`. This function does not read that shape:
+ * a string answers `undefined`, whatever it holds. A reader that must
+ * understand the text uses `apiErrorType` from
+ * `components/client/apiErrorType.ts`.
  */
 export function classifyJoinRefusal(
   error: unknown,

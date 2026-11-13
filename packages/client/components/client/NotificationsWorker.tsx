@@ -671,6 +671,7 @@ export function NotificationsWorker() {
       joinerIsSelf: userId === us.id,
       selfIsParticipant: channel.voiceParticipants.has(us.id),
       participantCount: channel.voiceParticipants.size,
+      joinedAsAnswer: false,
     });
     if (ringAction === "play") {
       // false = the user disabled the outgoing ringtone; still enforce the

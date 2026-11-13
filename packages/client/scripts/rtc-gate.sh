@@ -223,6 +223,17 @@ EXPECTED=(
   # OPT_IN_SKIPS.
   "components/rtc/movePolicy.test.ts 108 0"
   "components/rtc/voiceRejoinPolicy.test.ts 32 0"
+  # Ringing: what Answer may do, when the caller's side rings or hangs up,
+  # that an ended ring never latches a channel, the ring length, the Slim
+  # call screen's visibility, the per-device push preferences and the
+  # contact list the phone keeps for the ring. None ran in any gate before.
+  "components/rtc/answerPolicy.test.ts 26 0"
+  "components/rtc/outgoingRingPolicy.test.ts 37 0"
+  "components/rtc/joinRefusalPolicy.test.ts 18 0"
+  "components/rtc/ringDuration.test.ts 11 0"
+  "components/ui/components/features/voice/slimCall/slimCallPolicy.test.ts 16 0"
+  "components/client/pushPolicy.test.ts 29 0"
+  "components/client/callContacts.test.ts 33 0"
   "components/rtc/moveSurfacePins.test.ts 10 0"
   "components/rtc/idlePolicy.test.ts 54 0"
   "components/rtc/afkPolicy.test.ts 20 0"
@@ -486,6 +497,13 @@ SPECS=(components/rtc/mls*.test.ts components/rtc/rosterReconcile.test.ts
   # the member surfaces a move starts from; the idle beacon and AFK policies.
   components/rtc/movePolicy.test.ts
   components/rtc/voiceRejoinPolicy.test.ts
+  components/rtc/answerPolicy.test.ts
+  components/rtc/outgoingRingPolicy.test.ts
+  components/rtc/joinRefusalPolicy.test.ts
+  components/rtc/ringDuration.test.ts
+  components/ui/components/features/voice/slimCall/slimCallPolicy.test.ts
+  components/client/pushPolicy.test.ts
+  components/client/callContacts.test.ts
   components/rtc/moveSurfacePins.test.ts
   components/rtc/idlePolicy.test.ts
   components/rtc/afkPolicy.test.ts
@@ -671,6 +689,17 @@ FILES=(components/rtc/mlsCallSession.ts components/rtc/mlsCallModePolicy.ts
   # file at a time (measured in FE-2 wave C).
   components/rtc/movePolicy.ts components/rtc/movePolicy.test.ts
   components/rtc/voiceRejoinPolicy.test.ts
+  components/rtc/answerPolicy.ts components/rtc/answerPolicy.test.ts
+  components/rtc/outgoingRingPolicy.ts
+  components/rtc/outgoingRingPolicy.test.ts
+  components/rtc/joinRefusalPolicy.ts
+  components/rtc/joinRefusalPolicy.test.ts
+  components/rtc/incomingCall.ts components/rtc/ringDuration.test.ts
+  components/ui/components/features/voice/slimCall/slimCallPolicy.ts
+  components/ui/components/features/voice/slimCall/slimCallPolicy.test.ts
+  components/ui/components/features/voice/slimCall/slimCallView.ts
+  components/client/pushPolicy.ts components/client/pushPolicy.test.ts
+  components/client/callContacts.ts components/client/callContacts.test.ts
   components/rtc/idlePolicy.ts components/rtc/idlePolicy.test.ts
   components/rtc/moveSurfacePins.test.ts
   src/interface/channels/memberGate.ts

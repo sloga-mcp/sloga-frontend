@@ -134,6 +134,14 @@ interface SettingsDefinition {
   "notifications:dm_preview_overrides": Record<string, DmPreviewMode>;
 
   /**
+   * Ring for calls on this device. When off, this device does not ring for
+   * incoming calls; the user's other devices still do. Per-device on purpose
+   * (this store does not sync), so silencing one device never silences
+   * another.
+   */
+  "notifications:ring_calls": boolean;
+
+  /**
    * Selected unicode emoji
    */
   "appearance:unicode_emoji": UnicodeEmojiPacks;
@@ -393,6 +401,7 @@ const EXPECTED_TYPES: { [K in keyof SettingsDefinition]: ValueType<K> } = {
     }
     return out;
   },
+  "notifications:ring_calls": "boolean",
   "appearance:unicode_emoji": "string",
   "appearance:show_send_button": "boolean",
   "appearance:expand_emoticons": "boolean",
@@ -455,6 +464,8 @@ const DEFAULT_VALUES: TypeSettings = {
   // has never heard of — which is every existing user, for a new key.
   "notifications:dm_preview": DM_PREVIEW_DEFAULT,
   "notifications:dm_preview_overrides": {},
+  // On, so shipping the switch stops nobody's device from ringing.
+  "notifications:ring_calls": true,
   "appearance:expand_emoticons": true,
   "appearance:show_timestamps": true,
   "appearance:show_usernames": true,
@@ -524,6 +535,10 @@ export class Settings extends AbstractStore<"settings", TypeSettings> {
       // Mirrored in DEFAULT_VALUES — see the note there.
       "notifications:dm_preview": DM_PREVIEW_DEFAULT,
       "notifications:dm_preview_overrides": {},
+      // On: every device rang before the switch existed, and a stored value
+      // that is not a boolean falls back to this. Mirrored in DEFAULT_VALUES;
+      // see the note there.
+      "notifications:ring_calls": true,
       "appearance:unicode_emoji": "fluent-3d",
       "appearance:show_send_button": true,
       // On: the expansion shipped before the toggle did, so off would be a
