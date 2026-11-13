@@ -213,8 +213,10 @@ EXPECTED=(
   # 65 -> 72 by fix round F7: the fetched switch, the chip's pause, the
   # overdue hold, the fatal producers, the pre-session replay, the re-arm,
   # the zeroing and the no-session press; 73 after the re-review's NEW-1 (a
-  # wrapped publish in flight stops the overdue clock).
-  "components/rtc/stateWiring.test.ts 74 0"
+  # wrapped publish in flight stops the overdue clock). 74 with Stage 6
+  # MINOR 1 (one enable ledger per worker); 75 with MINOR 2 (a call attempt
+  # releases any worker a failed teardown left bound).
+  "components/rtc/stateWiring.test.ts 75 0"
   # The AFK channel and its merge with member moves (FE-2). Before it this
   # gate ran NO AFK spec, and none of the ladder that decides whether a
   # client follows a move. memberGate's opt-in skip is not in its row: see
@@ -255,7 +257,10 @@ EXPECTED=(
   # webkitSenderHold 39 -> 57 (F4: the hold assembly and overdue clock) and
   # iosCallSwitch 7 -> 20 (F1: the fetched switch and the offer helper) in
   # Stage 5 fix round F.
-  "components/rtc/webkitSenderHold.test.ts 64 0"
+  # 64 -> 70 with Stage 6 MINOR 2: the release of what a failed teardown
+  # left (order, every step, the Tauri unlisten, the session refill) and the
+  # unwritable no-worker map.
+  "components/rtc/webkitSenderHold.test.ts 70 0"
   "components/rtc/workerProbe.test.ts 16 0"
   "components/rtc/keyFreshnessTick.test.ts 10 0"
   "components/rtc/iosCallSwitch.test.ts 20 0"

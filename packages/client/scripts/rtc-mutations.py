@@ -13903,6 +13903,150 @@ MUTATIONS += [
         replace="""      this.#workerEnabled = undefined;""",
         specs=[STATE_WIRING_SPEC],
     ),
+    # Stage 6 MINOR 1 review NIT: the unbind closes ITS ledger, after the
+    # tracker reset (R13c keeps detach before reset; the ledger goes last).
+    Mutation(
+        id='state-ios-enable-ledger-close-dropped',
+        what="MINOR 1 NIT: the unbind never closes its worker's enable ledger, so a dead worker's local → true stays readable",
+        file=STATE,
+        search="""      ledger.close();
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-enable-ledger-close-before-reset',
+        what="MINOR 1 NIT: the unbind closes the ledger before it resets the tracker",
+        file=STATE,
+        search="""      tracker.reset();
+      ledger.close();
+""",
+        replace="""      ledger.close();
+      tracker.reset();
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    # Stage 6 MINOR 2: a call attempt releases whatever media E2EE a teardown
+    # that threw left alive (session, key pushes, worker, keys), before it
+    # builds anything. The release's own behaviour is held by the
+    # `sender-hold-release-*` entries.
+    Mutation(
+        id='state-ios-release-e2ee-skipped',
+        what="MINOR 2: a new call never releases what a failed teardown left: the old worker keeps running, ticking and holding keys",
+        file=STATE,
+        search="""    this.#releaseCallE2EE();
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-release-e2ee-capable-only',
+        what="MINOR 2: only an E2EE-capable call releases the leftovers, so a paused or plain next call leaves them alive",
+        file=STATE,
+        search="""    this.#releaseCallE2EE();
+    if (e2eeCapable) {
+      try {
+""",
+        replace="""    if (e2eeCapable) {
+      this.#releaseCallE2EE();
+      try {
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-release-e2ee-silent',
+        what="MINOR 2: a release step that threw is swallowed instead of reported",
+        file=STATE,
+        search="""    for (const error of errors) this.onErr(error);
+""",
+        replace="""""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-release-e2ee-keeps-session',
+        what="MINOR 2 (review MAJOR): the leftover session is never disposed, so it keeps applying keys into a provider after the zeroing",
+        file=STATE,
+        search="""      disposeSession: session && (() => session.dispose({ discard: false })),
+""",
+        replace="""      disposeSession: undefined,
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-release-e2ee-keeps-key-pushes',
+        what="MINOR 2 (review MAJOR): the leftover native key-push listener is never removed",
+        file=STATE,
+        search="""      unlistenKeys: this.#unlistenCallKeys,
+""",
+        replace="""      unlistenKeys: undefined,
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-release-e2ee-keeps-provider',
+        what="MINOR 2: the release never hands over the key provider, so the old call's raw key bytes are dropped unzeroed",
+        file=STATE,
+        search="""      provider: this.#mlsKeyProvider,
+""",
+        replace="""      provider: undefined,
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-release-e2ee-session-field-kept',
+        what="MINOR 2 NIT: the release leaves #mlsSession naming the old session, so its late state still reaches the chip",
+        file=STATE,
+        search="""    };
+    this.#mlsSession = undefined;
+""",
+        replace="""    };
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-release-e2ee-unlisten-field-kept',
+        what="MINOR 2 NIT: the release leaves #unlistenCallKeys set, so the old unlisten runs again later",
+        file=STATE,
+        search="""    this.#mlsSession = undefined;
+    this.#unlistenCallKeys = undefined;
+""",
+        replace="""    this.#mlsSession = undefined;
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-release-e2ee-ledger-field-kept',
+        what="MINOR 2 (review MINOR 2): an unbind that threw midway leaves the old enable ledger in #workerEnabled",
+        file=STATE,
+        search="""    this.#workerAcks = undefined;
+    this.#workerEnabled = undefined;
+""",
+        replace="""    this.#workerAcks = undefined;
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-release-e2ee-worker-field-kept',
+        what="MINOR 2 NIT: the release leaves #e2eeWorker naming the terminated worker",
+        file=STATE,
+        search="""    this.#workerEnabled = undefined;
+    this.#e2eeWorker = undefined;
+""",
+        replace="""    this.#workerEnabled = undefined;
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
+    Mutation(
+        id='state-ios-release-e2ee-provider-field-kept',
+        what="MINOR 2 NIT: the release leaves #mlsKeyProvider naming the zeroed provider",
+        file=STATE,
+        search="""    this.#mlsKeyProvider = undefined;
+    const errors = releaseCallE2EE(leftovers);
+""",
+        replace="""    const errors = releaseCallE2EE(leftovers);
+""",
+        specs=[STATE_WIRING_SPEC],
+    ),
     Mutation(
         id='state-ios-dead-worker-unrouted',
         what='R7: a dead worker on iOS reaches no loud path',
@@ -14371,6 +14515,131 @@ MUTATIONS += [
 """,
         replace="""""",
         specs=[SENDER_HOLD_SPEC],
+    ),
+    # Stage 6 MINOR 1 review NIT: the no-worker map is unwritable.
+    Mutation(
+        id='sender-hold-no-worker-enabled-writable',
+        what="MINOR 1 NIT: the shared no-worker map is a plain Map, so a cast can write local → true into every unbound read",
+        file=SENDER_HOLD,
+        search="""export const NO_WORKER_ENABLED: ReadonlyMap<string, boolean> = Object.freeze({
+  size: 0,
+  get: () => undefined,
+  has: () => false,
+  forEach: () => undefined,
+  entries: () => new Map<string, boolean>().entries(),
+  keys: () => new Map<string, boolean>().keys(),
+  values: () => new Map<string, boolean>().values(),
+  [Symbol.iterator]: () => new Map<string, boolean>().entries(),
+});""",
+        replace="""export const NO_WORKER_ENABLED: ReadonlyMap<string, boolean> = new Map();""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    # Stage 6 MINOR 2: releasing what a failed teardown left.
+    Mutation(
+        id='sender-hold-release-unguarded',
+        what="MINOR 2: a release step that throws skips the rest, so a session whose dispose throws leaves its worker alive and its keys unzeroed",
+        file=SENDER_HOLD,
+        search="""    try {
+      step();
+    } catch (error) {
+      errors.push(error);
+    }
+""",
+        replace="""    step();
+""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-release-swallows',
+        what="MINOR 2: a release step's throw is swallowed, so the caller cannot report it",
+        file=SENDER_HOLD,
+        search="""      errors.push(error);
+""",
+        replace="""      void error;
+""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-release-no-dispose',
+        what="MINOR 2 (review MAJOR): the release never disposes the leftover session",
+        file=SENDER_HOLD,
+        search="""  run(leftovers.disposeSession);
+""",
+        replace="""""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-release-no-unlisten',
+        what="MINOR 2 (review MAJOR): the release never stops the native key pushes",
+        file=SENDER_HOLD,
+        search="""        const pending = unlistenKeys();
+""",
+        replace="""        const pending = undefined;
+""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-release-unlisten-unhandled',
+        what="MINOR 2: a rejecting Tauri unlisten is left unhandled",
+        file=SENDER_HOLD,
+        search="""        if (pending instanceof Promise) pending.catch(() => undefined);
+""",
+        replace="""""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-release-no-unbind',
+        what="MINOR 2: the release never runs the unbind, so the old worker's tick, listener, acks and ledger survive",
+        file=SENDER_HOLD,
+        search="""  run(leftovers.unbind);
+""",
+        replace="""""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-release-no-terminate',
+        what="MINOR 2: the release never terminates the old worker, so its per-participant key sets outlive the call",
+        file=SENDER_HOLD,
+        search="""  run(worker && (() => worker.terminate()));
+""",
+        replace="""""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-release-no-key-reset',
+        what="MINOR 2: the release never zeroes the provider's raw key bytes (A-3)",
+        file=SENDER_HOLD,
+        search="""  run(provider && (() => provider.resetForGroup()));
+""",
+        replace="""""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-release-terminates-first',
+        what="MINOR 2: the release terminates the worker before its unbind, so the tick outlives its worker (R8)",
+        file=SENDER_HOLD,
+        search="""  run(leftovers.unbind);
+  run(worker && (() => worker.terminate()));
+""",
+        replace="""  run(worker && (() => worker.terminate()));
+  run(leftovers.unbind);
+""",
+        specs=[SENDER_HOLD_SPEC],
+    ),
+    Mutation(
+        id='sender-hold-release-zeroes-before-session',
+        what="MINOR 2 (review MAJOR): the keys are zeroed before the session is disposed, so the dying session can refill them",
+        file=SENDER_HOLD,
+        search="""  run(leftovers.disposeSession);
+""",
+        replace="""  run(provider && (() => provider.resetForGroup()));
+  run(leftovers.disposeSession);
+""",
+        specs=[SENDER_HOLD_SPEC],
+        also=[("""  run(worker && (() => worker.terminate()));
+  run(provider && (() => provider.resetForGroup()));
+""", """  run(worker && (() => worker.terminate()));
+""")],
     ),
     Mutation(
         id='settings-switch-not-pending',

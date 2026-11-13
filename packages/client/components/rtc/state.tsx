@@ -506,6 +506,7 @@ import {
   createWorkerEnableLedger,
   isScriptTransformEngine,
   NO_WORKER_ENABLED,
+  releaseCallE2EE,
   webkitHoldInputs,
   webkitHoldOverdue,
   webkitHoldReleased,
@@ -1182,7 +1183,10 @@ class Voice {
    * worker's listener writes it, and its unbind closes it. A teardown that
    * never reached the unbind, or a late message from an old worker, cannot
    * carry the last call's `local → true` into the next call's hold.
-   * Undefined with no worker bound.
+   * Undefined before the first bind and once its worker's unbind has run. A
+   * teardown that threw before the unbind leaves the old ledger here until
+   * the next `connect()` releases it (`#releaseCallE2EE`), and a bind always
+   * replaces it.
    */
   #workerEnabled: WorkerEnableLedger | undefined;
   /**
@@ -3708,6 +3712,10 @@ class Voice {
         }) === "off",
     });
     const e2eeCapable = callEncryptionCapable(readiness);
+    // Stage 6 MINOR 2: whatever media E2EE a teardown that threw left alive
+    // (session, key pushes, worker, keys) goes now, before anything new is
+    // built, capable call or not.
+    this.#releaseCallE2EE();
     if (e2eeCapable) {
       try {
         // R17: the worker's ack tracker FIRST, so the provider can be handed
@@ -12360,6 +12368,50 @@ class Voice {
       ledger.close();
       if (this.#workerEnabled === ledger) this.#workerEnabled = undefined;
     };
+  }
+
+  /**
+   * Stage 6 MINOR 2: let go of whatever media E2EE a previous call still
+   * holds, and clear every field that names it. `disconnect()` does this
+   * inside its single try, so a throw earlier in that teardown skipped it: the
+   * next bind overwrote `#unbindE2EEWorker` without running it, the old worker
+   * was never terminated, its key tick kept running (R8), its keys and the
+   * provider's raw key bytes survived (§7.2, A-3), and the old session, still
+   * fed native key pushes, could refill the provider and write its state into
+   * the next call's chip.
+   *
+   * The leftovers are read, then every field is cleared, then they are
+   * released: a session disposing (or a late key push) finds no current
+   * session and no provider to write to. The order and the run-every-step
+   * rule are `releaseCallE2EE`'s (`webkitSenderHold.ts`); a step that threw is
+   * reported, never swallowed.
+   */
+  #releaseCallE2EE(): void {
+    const session = this.#mlsSession;
+    const backstop = this.#keyPushBackstop;
+    const leftovers = {
+      disposeSession: session && (() => session.dispose({ discard: false })),
+      forgetSessionState:
+        session && (() => this.#setCallSessionState(undefined)),
+      unlistenKeys: this.#unlistenCallKeys,
+      disarmWitness: () => this.#disarmDecodeWitness(),
+      resetBackstop: backstop && (() => backstop.reset()),
+      unbind: this.#unbindE2EEWorker,
+      worker: this.#e2eeWorker,
+      provider: this.#mlsKeyProvider,
+    };
+    this.#mlsSession = undefined;
+    this.#unlistenCallKeys = undefined;
+    this.#keyPushBackstop = undefined;
+    this.#webkitHold = undefined;
+    this.#preSessionMediaErrors = [];
+    this.#unbindE2EEWorker = undefined;
+    this.#workerAcks = undefined;
+    this.#workerEnabled = undefined;
+    this.#e2eeWorker = undefined;
+    this.#mlsKeyProvider = undefined;
+    const errors = releaseCallE2EE(leftovers);
+    for (const error of errors) this.onErr(error);
   }
 
   /**

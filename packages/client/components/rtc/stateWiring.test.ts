@@ -1686,7 +1686,8 @@ test("source pin (C9): the call's key provider is built once and wired at once, 
     "one tracker build",
   );
   // Every write of the field, in file order: the build, then the two
-  // teardowns (the build's own catch and the call's teardown).
+  // teardowns (the build's own catch and the call's teardown), then the
+  // release a new call runs first (Stage 6 MINOR 2).
   assert.deepEqual(
     [
       ...STATE_CODE.matchAll(
@@ -1695,6 +1696,7 @@ test("source pin (C9): the call's key provider is built once and wired at once, 
     ].map((m) => m[0]),
     [
       `this.#mlsKeyProvider=newMlsKeyProvider({rawKeyBytes:IOS_WEBKIT,awaitKeyAck:ackTracker.waitKeyAck`,
+      `this.#mlsKeyProvider=undefined`,
       `this.#mlsKeyProvider=undefined`,
       `this.#mlsKeyProvider=undefined`,
     ],
@@ -2627,14 +2629,19 @@ test("source pin (Stage 6 MINOR 1): one enable ledger per worker, written only b
     1,
   );
   assert.equal(countWired(STATE_CODE, `#workerEnabled = new Map`), 0);
-  // Every write of the field, in file order: the bind, then its unbind.
+  // Every write of the field, in file order: the bind, then its unbind,
+  // then the release a new call runs first (Stage 6 MINOR 2).
   assert.deepEqual(
     [
       ...STATE_CODE.matchAll(
         /(?:[\w$]+\.)?#workerEnabled(?:\?\?|\|\||&&)?=(?![=>])[^;}]*/g,
       ),
     ].map((m) => m[0]),
-    [`this.#workerEnabled=ledger`, `this.#workerEnabled=undefined`],
+    [
+      `this.#workerEnabled=ledger`,
+      `this.#workerEnabled=undefined`,
+      `this.#workerEnabled=undefined`,
+    ],
   );
   // The hold reads the bound worker's ledger, or the empty map: never a
   // ledger the listener does not write.
@@ -2650,8 +2657,108 @@ test("source pin (Stage 6 MINOR 1): one enable ledger per worker, written only b
     1,
   );
   assert.equal(countWired(STATE_CODE, `this.#workerEnabled?.enabled`), 1);
-  // field, bind write, unbind compare and clear, hold read: nothing else.
-  assert.equal(countWired(STATE_CODE, `#workerEnabled`), 5);
+  // field, bind write, unbind compare and clear, hold read, the release's
+  // clear (Stage 6 MINOR 2): nothing else.
+  assert.equal(countWired(STATE_CODE, `#workerEnabled`), 6);
+});
+
+// Stage 6 MINOR 2: `disconnect()` runs its teardown in one try, so a throw
+// before its E2EE block left the last call's media E2EE alive: the next
+// `#bindE2EEWorker` overwrote `#unbindE2EEWorker` without running it, the old
+// worker was never terminated, its key tick kept running (R8), its keys and the
+// provider's raw key bytes survived (§7.2, A-3), and the old session, still fed
+// native key pushes, could refill the provider and write its state into the
+// next call's chip. The release's own behaviour (order, every step run, every
+// throw returned) is `webkitSenderHold.test.ts`'s; these pins hold
+// `#releaseCallE2EE` to handing it everything and clearing every field first,
+// and the call attempt to running it before it builds anything.
+test("source pin (Stage 6 MINOR 2): a call attempt releases whatever media E2EE a failed teardown left, before it builds anything", () => {
+  const release = bodyOf(`#releaseCallE2EE(): void {`);
+  assert.equal(
+    countWired(
+      release,
+      `const session = this.#mlsSession;
+      const backstop = this.#keyPushBackstop;
+      const leftovers = {
+        disposeSession: session && (() => session.dispose({ discard: false })),
+        forgetSessionState:
+          session && (() => this.#setCallSessionState(undefined)),
+        unlistenKeys: this.#unlistenCallKeys,
+        disarmWitness: () => this.#disarmDecodeWitness(),
+        resetBackstop: backstop && (() => backstop.reset()),
+        unbind: this.#unbindE2EEWorker,
+        worker: this.#e2eeWorker,
+        provider: this.#mlsKeyProvider,
+      };`,
+    ),
+    1,
+    "every leftover, read before anything is cleared",
+  );
+  const ra = (s: string) => firstAt("#releaseCallE2EE", release, s);
+  const run = `const errors = releaseCallE2EE(leftovers);`;
+  for (const clear of [
+    `this.#mlsSession = undefined;`,
+    `this.#unlistenCallKeys = undefined;`,
+    `this.#keyPushBackstop = undefined;`,
+    `this.#webkitHold = undefined;`,
+    `this.#preSessionMediaErrors = [];`,
+    `this.#unbindE2EEWorker = undefined;`,
+    `this.#workerAcks = undefined;`,
+    `this.#workerEnabled = undefined;`,
+    `this.#e2eeWorker = undefined;`,
+    `this.#mlsKeyProvider = undefined;`,
+  ]) {
+    assert.equal(countWired(release, clear), 1, clear);
+    assert.ok(ra(`const leftovers = {`) < ra(clear), `read first: ${clear}`);
+    // A session disposing, or a late key push, finds no current session and
+    // no provider to write into.
+    assert.ok(ra(clear) < ra(run), `cleared before the release: ${clear}`);
+  }
+  assert.equal(countWired(release, run), 1);
+  assert.equal(
+    countWired(release, `for (const error of errors) this.onErr(error);`),
+    1,
+    "a step that threw is reported, never swallowed",
+  );
+  assert.ok(ra(run) < ra(`for (const error of errors) this.onErr(error);`));
+
+  // `connect()` tears the previous call down, then runs `#connectAttempt`,
+  // which builds the new call's media E2EE.
+  const connect = connectBody();
+  assert.ok(
+    firstAt("connect()", connect, `this.disconnect();`) <
+      firstAt(
+        "connect()",
+        connect,
+        `return await this.#connectAttempt(channel, auth, opts, latchedReason);`,
+      ),
+    "the leading teardown runs before the attempt",
+  );
+  const attempt = connectAttempt();
+  const call = `this.#releaseCallE2EE();`;
+  assert.equal(countWired(attempt, call), 1);
+  assert.equal(countWired(STATE_CODE, `this.#releaseCallE2EE(`), 1);
+  const ca = (s: string) => firstAt("#connectAttempt", attempt, s);
+  assert.equal(
+    braceDepthAt(attempt, ca(call)),
+    0,
+    "unconditional: a call that is not E2EE-capable releases the leftovers too",
+  );
+  assert.ok(
+    ca(`const e2eeCapable = callEncryptionCapable(readiness);`) < ca(call) &&
+      ca(call) < ca(`if (e2eeCapable) {`),
+    "right before the capable block",
+  );
+  for (const build of [
+    `createWorkerAckTracker({`,
+    `this.#mlsKeyProvider = new MlsKeyProvider({`,
+    `this.#e2eeWorker = new E2EEWorker();`,
+    `this.#bindE2EEWorker(this.#e2eeWorker, ackTracker);`,
+    `this.#unlistenCallKeys = unlisten;`,
+    `this.#mlsSession = session;`,
+  ]) {
+    assert.ok(ca(call) < ca(build), `before ${build}`);
+  }
 });
 
 // Stage 5 F7 (A-M1): the dead worker, a lost key push, an overdue hold and a

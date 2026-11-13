@@ -307,10 +307,21 @@ export interface WorkerEnableLedger {
 }
 
 /**
- * The enable replies when no worker is bound: none. Typed read-only and
- * never written by this module; no ledger is backed by it.
+ * The enable replies when no worker is bound: none. A frozen object with no
+ * `set`, `delete` or `clear` and no Map behind it, so nothing can write a
+ * `local → true` into it, by cast or through `Map.prototype`. No ledger is
+ * backed by it.
  */
-export const NO_WORKER_ENABLED: ReadonlyMap<string, boolean> = new Map();
+export const NO_WORKER_ENABLED: ReadonlyMap<string, boolean> = Object.freeze({
+  size: 0,
+  get: () => undefined,
+  has: () => false,
+  forEach: () => undefined,
+  entries: () => new Map<string, boolean>().entries(),
+  keys: () => new Map<string, boolean>().keys(),
+  values: () => new Map<string, boolean>().values(),
+  [Symbol.iterator]: () => new Map<string, boolean>().entries(),
+});
 
 /** A fresh, empty ledger for one newly bound worker. */
 export function createWorkerEnableLedger(): WorkerEnableLedger {
@@ -328,6 +339,87 @@ export function createWorkerEnableLedger(): WorkerEnableLedger {
       replies.clear();
     },
   };
+}
+
+// --- releasing a call's media E2EE (Stage 6 MINOR 2) --------------------------
+
+/**
+ * What a call's media E2EE holds, as the caller's fields name it. Every part
+ * is `undefined` when nothing of that kind is held.
+ */
+export interface CallE2EELeftovers {
+  /** Dispose the call's MLS session: it stops applying keys and rotating. */
+  disposeSession: (() => void) | undefined;
+  /** Clear the call's session state, once its session is gone. */
+  forgetSessionState: (() => void) | undefined;
+  /**
+   * Stop listening for the native layer's key pushes. May return a promise
+   * (Tauri's unlisten), whose rejection is ignored: the listener is being
+   * abandoned either way.
+   */
+  unlistenKeys: (() => unknown) | undefined;
+  /** Stop the decode witness's listener and its timers. */
+  disarmWitness: (() => void) | undefined;
+  /** Reset the key-push backstop, ending any wait it holds. */
+  resetBackstop: (() => void) | undefined;
+  /**
+   * The bound worker's unbind: stops its key-freshness tick, detaches its
+   * listener, resets its ack tracker and closes its enable ledger.
+   */
+  unbind: (() => void) | undefined;
+  worker: { terminate(): void } | undefined;
+  /** The key provider: `resetForGroup` zeroes its raw key bytes (A-3). */
+  provider: { resetForGroup(): void } | undefined;
+}
+
+/**
+ * Let go of a call's media E2EE: dispose its session, clear its state, stop
+ * the native key pushes, disarm the witness, reset the backstop, unbind the
+ * worker, terminate it, then zero the provider's keys. Returns every error a
+ * step threw, in step order; it never throws.
+ *
+ * 🔴 Why. `disconnect()` runs its teardown in one try, so a throw before its
+ * E2EE block left all of this alive: the old worker was never terminated, its
+ * tick kept posting to it (R8), its key sets and the provider's raw key bytes
+ * outlived the call (§7.2, A-3), and the old session, still subscribed to
+ * native key pushes, could put keys back into a provider. `connect()` calls
+ * this before it builds anything, so whatever a failed teardown left is
+ * released by the next call at the latest.
+ *
+ * 🔴 Order. Everything that can put a key INTO the provider (the session, the
+ * native key-push listener) stops before the provider is zeroed, so the
+ * zeroing is the last word. The unbind runs before the terminate so the tick
+ * stops with its worker, never after it (R8).
+ *
+ * Every step runs even if an earlier one throws: a session whose dispose
+ * throws must still see its worker terminated and the keys zeroed.
+ */
+export function releaseCallE2EE(leftovers: CallE2EELeftovers): unknown[] {
+  const errors: unknown[] = [];
+  const run = (step: (() => void) | undefined) => {
+    if (!step) return;
+    try {
+      step();
+    } catch (error) {
+      errors.push(error);
+    }
+  };
+  const { unlistenKeys, worker, provider } = leftovers;
+  run(leftovers.disposeSession);
+  run(leftovers.forgetSessionState);
+  run(
+    unlistenKeys &&
+      (() => {
+        const pending = unlistenKeys();
+        if (pending instanceof Promise) pending.catch(() => undefined);
+      }),
+  );
+  run(leftovers.disarmWitness);
+  run(leftovers.resetBackstop);
+  run(leftovers.unbind);
+  run(worker && (() => worker.terminate()));
+  run(provider && (() => provider.resetForGroup()));
+  return errors;
 }
 
 export interface SenderHoldInput {

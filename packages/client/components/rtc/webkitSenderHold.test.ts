@@ -35,6 +35,7 @@ import {
   KEY_ACK_TIMEOUT_MS,
   NO_WORKER_ENABLED,
   parseSlogaWorkerAck,
+  releaseCallE2EE,
   senderHoldVerdict,
   WEBKIT_HOLD_BOUND_MS,
   webkitHoldInputs,
@@ -1016,6 +1017,195 @@ test("🔴 a stale ledger's local → true never releases the new worker's hold"
   // The NEW worker's own reply releases it.
   fresh.record(enableReply(local, true));
   assert.equal(released(fresh.enabled), true);
+});
+
+test("🔴 the no-worker map cannot be written: nothing can make it say yes", () => {
+  const writable = NO_WORKER_ENABLED as Map<string, boolean>;
+  assert.throws(() => writable.set("jeff:dev1", true), TypeError);
+  assert.throws(() => writable.delete("jeff:dev1"), TypeError);
+  assert.throws(() => writable.clear(), TypeError);
+  // Not a Map underneath either, so Map's own methods cannot reach a slot.
+  assert.throws(
+    () => Map.prototype.set.call(writable, "jeff:dev1", true),
+    TypeError,
+  );
+  assert.ok(Object.isFrozen(NO_WORKER_ENABLED));
+  assert.equal(NO_WORKER_ENABLED.size, 0);
+  assert.equal(NO_WORKER_ENABLED.get("jeff:dev1"), undefined);
+  assert.equal(NO_WORKER_ENABLED.has("jeff:dev1"), false);
+  assert.deepEqual(
+    [
+      [...NO_WORKER_ENABLED],
+      [...NO_WORKER_ENABLED.entries()],
+      [...NO_WORKER_ENABLED.keys()],
+      [...NO_WORKER_ENABLED.values()],
+    ],
+    [[], [], [], []],
+  );
+  let visits = 0;
+  NO_WORKER_ENABLED.forEach(() => visits++);
+  assert.equal(visits, 0);
+  assert.deepEqual(
+    verdicts(roomState({ workerEnabled: NO_WORKER_ENABLED }))[0],
+    {
+      release: false,
+      reason: "not_enabled",
+    },
+  );
+});
+
+// --- releasing a call's media E2EE (Stage 6 MINOR 2) --------------------------
+//
+// `disconnect()` runs its teardown in one try, so a throw before its E2EE block
+// left the last call's media E2EE alive: the next bind replaced
+// `#unbindE2EEWorker` without running it, the old worker was never terminated,
+// its key-freshness tick kept posting to it (R8), its key sets and the
+// provider's raw key bytes outlived the call (§7.2, A-3), and the old session,
+// still fed native key pushes, could refill the provider. `connect()` now hands
+// whatever is still held to `releaseCallE2EE` before it builds anything new.
+
+const RELEASE_ORDER = [
+  "disposeSession",
+  "forgetSessionState",
+  "unlistenKeys",
+  "disarmWitness",
+  "resetBackstop",
+  "unbind",
+  "terminate",
+  "resetForGroup",
+];
+
+/** Every part of a call's media E2EE, each logging its step. */
+const callLeftovers = (log: string[], fail: readonly string[] = []) => {
+  const step = (name: string) => () => {
+    log.push(name);
+    if (fail.includes(name)) throw new Error(`${name} threw`);
+  };
+  return {
+    disposeSession: step("disposeSession"),
+    forgetSessionState: step("forgetSessionState"),
+    unlistenKeys: step("unlistenKeys"),
+    disarmWitness: step("disarmWitness"),
+    resetBackstop: step("resetBackstop"),
+    unbind: step("unbind"),
+    worker: { terminate: step("terminate") },
+    provider: { resetForGroup: step("resetForGroup") },
+  };
+};
+
+const NOTHING_HELD = {
+  disposeSession: undefined,
+  forgetSessionState: undefined,
+  unlistenKeys: undefined,
+  disarmWitness: undefined,
+  resetBackstop: undefined,
+  unbind: undefined,
+  worker: undefined,
+  provider: undefined,
+};
+
+test("🔴 a release stops every key writer, then the worker, and zeroes the keys LAST", () => {
+  const log: string[] = [];
+  assert.deepEqual(releaseCallE2EE(callLeftovers(log)), []);
+  assert.deepEqual(log, RELEASE_ORDER);
+  // The two things that can put a key into the provider stop before it is
+  // zeroed; the tick stops with its worker, never after it (R8).
+  const at = (name: string) => log.indexOf(name);
+  for (const writer of ["disposeSession", "unlistenKeys"]) {
+    assert.ok(at(writer) < at("resetForGroup"), writer);
+  }
+  assert.ok(at("unbind") < at("terminate"));
+});
+
+test("🔴 every step runs even when an earlier one throws, and every throw is returned", () => {
+  for (const fail of [
+    ["disposeSession"],
+    ["unlistenKeys"],
+    ["unbind"],
+    ["terminate"],
+    ["resetForGroup"],
+    ["disposeSession", "unbind", "terminate"],
+    RELEASE_ORDER,
+  ]) {
+    const log: string[] = [];
+    const errors = releaseCallE2EE(callLeftovers(log, fail));
+    assert.deepEqual(log, RELEASE_ORDER, `failing: ${fail.join(", ")}`);
+    assert.deepEqual(
+      errors.map((error) => (error as Error).message),
+      fail.map((name) => `${name} threw`),
+      `failing: ${fail.join(", ")}`,
+    );
+  }
+});
+
+test("a release with nothing held does nothing; a missing part is skipped", () => {
+  assert.deepEqual(releaseCallE2EE(NOTHING_HELD), []);
+  const stepOf: Record<keyof typeof NOTHING_HELD, string> = {
+    disposeSession: "disposeSession",
+    forgetSessionState: "forgetSessionState",
+    unlistenKeys: "unlistenKeys",
+    disarmWitness: "disarmWitness",
+    resetBackstop: "resetBackstop",
+    unbind: "unbind",
+    worker: "terminate",
+    provider: "resetForGroup",
+  };
+  for (const missing of Object.keys(stepOf) as (keyof typeof stepOf)[]) {
+    const log: string[] = [];
+    const leftovers = { ...callLeftovers(log), [missing]: undefined };
+    assert.deepEqual(releaseCallE2EE(leftovers), []);
+    assert.deepEqual(
+      log,
+      RELEASE_ORDER.filter((name) => name !== stepOf[missing]),
+      `without ${missing}`,
+    );
+  }
+});
+
+test("🔴 an unlisten that returns a rejecting promise is not an error and is not left unhandled", async () => {
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const log: string[] = [];
+    const errors = releaseCallE2EE({
+      ...callLeftovers(log),
+      unlistenKeys: () => {
+        log.push("unlistenKeys");
+        return Promise.reject(new Error("reading 'handlerId'"));
+      },
+    });
+    assert.deepEqual(errors, []);
+    assert.deepEqual(log, RELEASE_ORDER);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(unhandled, []);
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+});
+
+test("🔴 a leftover session that pushes keys while it is disposed cannot outlive the zeroing", () => {
+  // Illustrative: a provider whose bytes a live session can refill. The
+  // release must leave it zeroed, whatever the session does on its way out.
+  const keyBytes = new Uint8Array([7, 7, 7, 7]);
+  let sessionLive = true;
+  let pushListener: (() => void) | undefined = () => {
+    if (sessionLive) keyBytes.fill(9);
+  };
+  const errors = releaseCallE2EE({
+    ...NOTHING_HELD,
+    disposeSession: () => {
+      pushListener?.(); // a key push landing during the dispose
+      sessionLive = false;
+    },
+    unlistenKeys: () => {
+      pushListener = undefined;
+    },
+    provider: { resetForGroup: () => keyBytes.fill(0) },
+  });
+  assert.deepEqual(errors, []);
+  pushListener?.(); // a push after the release reaches nothing
+  assert.deepEqual([...keyBytes], [0, 0, 0, 0]);
 });
 
 // --- webkitHoldOverdue: the hold's bound ---------------------------------------
