@@ -77,6 +77,8 @@ import { MFARecoveryModal } from "./modals/MFARecovery";
 import { OnboardingModal } from "./modals/Onboarding";
 import { PolicyChangeModal } from "./modals/PolicyChange";
 import { PollVotersModal } from "./modals/PollVoters";
+import { ProtectedDeviceCapModal } from "./modals/ProtectedDeviceCap";
+import { ProtectedOwnerReviewModal } from "./modals/ProtectedOwnerReview";
 import { ProtectedSeatPickerModal } from "./modals/ProtectedSeatPicker";
 import { RemoveMemberModal } from "./modals/RemoveMember";
 import { RenameSessionModal } from "./modals/RenameSession";
@@ -248,6 +250,10 @@ export function RenderModal(props: ActiveModal & { onClose: () => void }) {
       return <E2EEGroupPlaintextConfirmModal {...modalProps} />;
     case "protected_seat_picker":
       return <ProtectedSeatPickerModal {...modalProps} />;
+    case "protected_device_cap":
+      return <ProtectedDeviceCapModal {...modalProps} />;
+    case "protected_owner_review":
+      return <ProtectedOwnerReviewModal {...modalProps} />;
     case "image_editor":
       return <ImageEditorModal {...modalProps} />;
     case "image_viewer":

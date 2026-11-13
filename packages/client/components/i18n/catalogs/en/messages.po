@@ -1551,6 +1551,11 @@ msgstr "Bans"
 msgid "Audit Log"
 msgstr "Audit Log"
 
+#: components/app/interface/settings/ServerSettings.tsx
+#: components/app/interface/settings/ServerSettings.tsx
+msgid "Protected channels"
+msgstr "Protected channels"
+
 #. placeholder {0}: voice.cameraBeautify
 #: components/modal/modals/CameraSettings.tsx
 #: components/app/interface/settings/user/voice/CameraOptions.tsx
@@ -1833,6 +1838,11 @@ msgstr "Canceled"
 #: components/app/interface/settings/user/Account.tsx
 msgid "Cannot delete account until servers are deleted or transferred"
 msgstr "Cannot delete account until servers are deleted or transferred"
+
+#. placeholder {0}: protectedOwned()
+#: components/app/interface/settings/user/Account.tsx
+msgid "{0, plural, one {You own # server with protected channels. Delete it or transfer it before deleting your account. Deleting a server deletes its protected channels for everyone.} other {You own # servers with protected channels. Delete or transfer them before deleting your account. Deleting a server deletes its protected channels for everyone.}}"
+msgstr "{0, plural, one {You own # server with protected channels. Delete it or transfer it before deleting your account. Deleting a server deletes its protected channels for everyone.} other {You own # servers with protected channels. Delete or transfer them before deleting your account. Deleting a server deletes its protected channels for everyone.}}"
 
 #: components/i18n/errors.ts
 msgid "Cannot edit this message."
@@ -2260,6 +2270,51 @@ msgstr "Contested items"
 #: components/modal/modals/AndroidScreenShareSheet.tsx
 msgid "Continue"
 msgstr "Continue"
+
+#: components/app/interface/settings/channel/protected/SeatList.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "Released seats"
+msgstr "Released seats"
+
+#: components/app/interface/settings/channel/protected/SeatList.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "Counts toward the seat limit until {until}"
+msgstr "Counts toward the seat limit until {until}"
+
+#: components/app/interface/settings/channel/protected/SeatList.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "People on your signed list who no longer have seats: {count}"
+msgstr "People on your signed list who no longer have seats: {count}"
+
+#: components/app/interface/settings/channel/protected/SeatList.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "Update the list"
+msgstr "Update the list"
+
+#: components/app/interface/settings/channel/protected/SeatList.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "Devices: {count}"
+msgstr "Devices: {count}"
+
+#: components/app/interface/settings/channel/protected/SeatList.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "Removed from the seat list"
+msgstr "Removed from the seat list"
+
+#: components/app/interface/settings/channel/protected/SeatList.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "Removed from the server"
+msgstr "Removed from the server"
+
+#: components/app/interface/settings/channel/protected/SeatList.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "Lost access to this channel"
+msgstr "Lost access to this channel"
+
+#: components/app/interface/settings/channel/protected/SeatList.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "No device joined before the seat was released"
+msgstr "No device joined before the seat was released"
 
 #: components/app/interface/settings/channel/protected/SeatList.tsx
 #: components/modal/modals/ProtectedSeatPicker.tsx
@@ -4830,8 +4885,24 @@ msgid "Incorrect password."
 msgstr "Incorrect password."
 
 #: src/interface/channels/ProtectedChannelPill.tsx
+msgid "Re-securing is taking longer than usual."
+msgstr "Re-securing is taking longer than usual."
+
+#: src/interface/channels/ProtectedChannelPill.tsx
+msgid "Waiting for the channel owner…"
+msgstr "Waiting for the channel owner…"
+
+#: src/interface/channels/ProtectedChannelPill.tsx
+msgid "Waiting for {owner}…"
+msgstr "Waiting for {owner}…"
+
+#: src/interface/channels/ProtectedChannelPill.tsx
 msgid "Seats used: {used}"
 msgstr "Seats used: {used}"
+
+#: src/interface/channels/ProtectedChannelPill.tsx
+msgid "Retry removal"
+msgstr "Retry removal"
 
 #: components/modal/modals/SuspendUser.tsx
 msgid "Indefinite"
@@ -6163,6 +6234,77 @@ msgid "No permissions set yet"
 msgstr "No permissions set yet"
 
 #: components/app/interface/settings/channel/protected/ProtectedChannelSettings.tsx
+#: components/app/interface/settings/channel/protected/SeatList.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "Unknown member"
+msgstr "Unknown member"
+
+#: components/app/interface/settings/channel/protected/ProtectedChannelSettings.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "Removal waiting"
+msgstr "Removal waiting"
+
+#: components/app/interface/settings/channel/protected/ProtectedChannelSettings.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "Finish now"
+msgstr "Finish now"
+
+#: components/app/interface/settings/channel/protected/ProtectedChannelSettings.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "Trying the removal again…"
+msgstr "Trying the removal again…"
+
+#: components/app/interface/settings/channel/protected/ProtectedChannelSettings.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "Re-sign signing devices"
+msgstr "Re-sign signing devices"
+
+#: components/app/interface/settings/channel/protected/ProtectedChannelSettings.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "Reason for the removal"
+msgstr "Reason for the removal"
+
+#: components/app/interface/settings/channel/protected/ProtectedChannelSettings.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "Discard this change"
+msgstr "Discard this change"
+
+#: components/app/interface/settings/channel/protected/ProtectedChannelSettings.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "An earlier change to the seats hasn't finished saving. Trying again sends that same change, exactly as it was."
+msgstr "An earlier change to the seats hasn't finished saving. Trying again sends that same change, exactly as it was."
+
+#: components/app/interface/settings/channel/protected/ProtectedChannelSettings.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "This change can't be discarded now. The server may already have it."
+msgstr "This change can't be discarded now. The server may already have it."
+
+#: components/app/interface/settings/channel/protected/ProtectedChannelSettings.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "The server may already have this change, so it can't be discarded."
+msgstr "The server may already have this change, so it can't be discarded."
+
+#: components/app/interface/settings/channel/protected/ProtectedChannelSettings.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "This change couldn't be stored on this device, so it wasn't sent. Try again."
+msgstr "This change couldn't be stored on this device, so it wasn't sent. Try again."
+
+#: components/app/interface/settings/channel/protected/ProtectedChannelSettings.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "The change was discarded."
+msgstr "The change was discarded."
+
+#: components/app/interface/settings/channel/protected/ProtectedChannelSettings.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "There's no change waiting to be discarded."
+msgstr "There's no change waiting to be discarded."
+
+#: components/app/interface/settings/channel/protected/ProtectedChannelSettings.tsx
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "This change is being sent right now. Try again in a moment."
+msgstr "This change is being sent right now. Try again in a moment."
+
+#: components/app/interface/settings/channel/protected/ProtectedChannelSettings.tsx
 #: components/modal/modals/ProtectedSeatPicker.tsx
 msgid "Staff accounts can't be seated."
 msgstr "Staff accounts can't be seated."
@@ -6208,6 +6350,34 @@ msgstr "No verifiable devices yet — send or receive an encrypted message first
 #: components/modal/modals/PollVoters.tsx
 msgid "No votes for this answer yet"
 msgstr "No votes for this answer yet"
+
+#: components/modal/modals/ProtectedDeviceCap.tsx
+msgid "Couldn't sign out that device. Try again."
+msgstr "Couldn't sign out that device. Try again."
+
+#: components/modal/modals/ProtectedDeviceCap.tsx
+msgid "Sign out one of your other devices to make room for this one, then try again."
+msgstr "Sign out one of your other devices to make room for this one, then try again."
+
+#: components/modal/modals/ProtectedDeviceCap.tsx
+msgid "Signs this channel's member list"
+msgstr "Signs this channel's member list"
+
+#: components/modal/modals/ProtectedDeviceCap.tsx
+msgid "Sign out that device"
+msgstr "Sign out that device"
+
+#: components/modal/modals/ProtectedDeviceCap.tsx
+msgid "That device will be signed out and will have to sign in again."
+msgstr "That device will be signed out and will have to sign in again."
+
+#: components/modal/modals/ProtectedDeviceCap.tsx
+msgid "Raise the device limit"
+msgstr "Raise the device limit"
+
+#: components/modal/modals/ProtectedSeatPicker.tsx
+msgid "Seats you pick here aren't included. Discard the earlier change to make a different one."
+msgstr "Seats you pick here aren't included. Discard the earlier change to make a different one."
 
 #: components/modal/modals/ProtectedSeatPicker.tsx
 msgid "Search to find more members."
@@ -6639,6 +6809,23 @@ msgid "Voice and announcement settings aren't available for protected channels."
 msgstr "Voice and announcement settings aren't available for protected channels."
 
 #: components/client/protectedCopy.ts
+msgid "Move ownership key to another device"
+msgstr "Move ownership key to another device"
+
+#: components/client/protectedCopy.ts
+msgid "Choose the device to move this channel's ownership key to."
+msgstr "Choose the device to move this channel's ownership key to."
+
+#: components/client/protectedCopy.ts
+#: components/modal/modals/ProtectedDeviceCap.tsx
+msgid "Unnamed device"
+msgstr "Unnamed device"
+
+#: components/client/protectedCopy.ts
+msgid "This channel's ownership key is on another of your devices. Open this page on that device to move it."
+msgstr "This channel's ownership key is on another of your devices. Open this page on that device to move it."
+
+#: components/client/protectedCopy.ts
 msgid "Give seats"
 msgstr "Give seats"
 
@@ -6661,6 +6848,18 @@ msgstr "Seats left: {left}"
 #: components/client/protectedCopy.ts
 msgid "Save seats"
 msgstr "Save seats"
+
+#: components/client/protectedCopy.ts
+msgid "Use a shorter reason (up to {cap} characters)."
+msgstr "Use a shorter reason (up to {cap} characters)."
+
+#: components/client/protectedCopy.ts
+msgid "Add a reason to continue."
+msgstr "Add a reason to continue."
+
+#: components/client/protectedCopy.ts
+msgid "This server has protected channels, so removing someone needs a reason."
+msgstr "This server has protected channels, so removing someone needs a reason."
 
 #: components/client/protectedCopy.ts
 msgid "Message (Protected channel)"
@@ -6693,6 +6892,10 @@ msgstr "Sent time doesn't match."
 #: components/client/protectedCopy.ts
 msgid "The sender's device isn't verified on this device yet."
 msgstr "The sender's device isn't verified on this device yet."
+
+#: components/client/protectedCopy.ts
+msgid "This message has attachments. Update Sloga to see them."
+msgstr "This message has attachments. Update Sloga to see them."
 
 #: components/client/protectedCopy.ts
 msgid "Search can't look inside protected channel messages."
@@ -7591,6 +7794,10 @@ msgstr "Reported content (server copy)"
 #: components/app/interface/settings/server/Overview.tsx
 msgid "Request public listing"
 msgstr "Request public listing"
+
+#: components/app/interface/settings/server/ProtectedChannels.tsx
+msgid "Open this channel to see its seats."
+msgstr "Open this channel to see its seats."
 
 #: components/app/interface/settings/channel/ForumSettings.tsx
 msgid "Require tags"
@@ -9593,6 +9800,40 @@ msgid "Turn on end-to-end encryption on this device to use Protected channels."
 msgstr "Turn on end-to-end encryption on this device to use Protected channels."
 
 #: components/client/protectedCopy.ts
+msgid "This device can't open this channel yet."
+msgstr "This device can't open this channel yet."
+
+#: components/client/protectedCopy.ts
+msgid "This device can't open #{channel} yet."
+msgstr "This device can't open #{channel} yet."
+
+#: components/client/protectedCopy.ts
+#: components/i18n/errors.ts
+msgid "Update Sloga to use this protected channel."
+msgstr "Update Sloga to use this protected channel."
+
+#: components/client/protectedCopy.ts
+msgid "Waiting for a member to come online…"
+msgstr "Waiting for a member to come online…"
+
+#: components/client/protectedCopy.ts
+#: components/i18n/errors.ts
+msgid "The owner's signing device was signed out. Messages are paused until the owner signs in on another device."
+msgstr "The owner's signing device was signed out. Messages are paused until the owner signs in on another device."
+
+#: components/client/protectedCopy.ts
+msgid "The owner's account is unavailable. Messages are paused."
+msgstr "The owner's account is unavailable. Messages are paused."
+
+#: components/client/protectedCopy.ts
+msgid "Your other device isn't on this channel's list of signing devices, so it can't take over. Sign from a listed device to add it."
+msgstr "Your other device isn't on this channel's list of signing devices, so it can't take over. Sign from a listed device to add it."
+
+#: components/client/protectedCopy.ts
+msgid "A device that could sign this channel's member list was signed out or changed its key. Re-sign your signing devices."
+msgstr "A device that could sign this channel's member list was signed out or changed its key. Re-sign your signing devices."
+
+#: components/client/protectedCopy.ts
 msgid "The server stopped marking this channel as protected. This device still treats it as a protected channel and won't send unencrypted messages here."
 msgstr "The server stopped marking this channel as protected. This device still treats it as a protected channel and won't send unencrypted messages here."
 
@@ -9631,6 +9872,14 @@ msgstr "This device couldn't finish joining this protected channel. Try opening 
 #: components/client/protectedCopy.ts
 msgid "This protected channel is full."
 msgstr "This protected channel is full."
+
+#: components/client/protectedCopy.ts
+msgid "This device can no longer sign this channel's member list. If you didn't do this, secure your account."
+msgstr "This device can no longer sign this channel's member list. If you didn't do this, secure your account."
+
+#: components/client/protectedCopy.ts
+msgid "This device can no longer sign #{channel}'s member list. If you didn't do this, secure your account."
+msgstr "This device can no longer sign #{channel}'s member list. If you didn't do this, secure your account."
 
 #: components/client/protectedCopy.ts
 #: components/i18n/errors.ts
@@ -9697,6 +9946,43 @@ msgid "Couldn't reach the server. Check your connection and try again."
 msgstr "Couldn't reach the server. Check your connection and try again."
 
 #: components/client/protectedCopy.ts
+#: components/i18n/errors.ts
+msgid "This member is protected from removal without a reason. Add a reason to continue."
+msgstr "This member is protected from removal without a reason. Add a reason to continue."
+
+#: components/client/protectedCopy.ts
+msgid "This channel was re-secured too many times today. Try again later."
+msgstr "This channel was re-secured too many times today. Try again later."
+
+#: components/client/protectedCopy.ts
+msgid "That device hasn't joined this channel yet. Open the channel on it, then try again."
+msgstr "That device hasn't joined this channel yet. Open the channel on it, then try again."
+
+#: components/client/protectedCopy.ts
+msgid "Your signing devices were changed from another device. If you didn't do this, secure your account."
+msgstr "Your signing devices were changed from another device. If you didn't do this, secure your account."
+
+#: components/client/protectedCopy.ts
+msgid "Your signing devices were changed from {device}. If you didn't do this, secure your account."
+msgstr "Your signing devices were changed from {device}. If you didn't do this, secure your account."
+
+#: components/client/protectedCopy.ts
+msgid "Another of your devices seated new members. If you didn't do this, secure your account."
+msgstr "Another of your devices seated new members. If you didn't do this, secure your account."
+
+#: components/client/protectedCopy.ts
+msgid "Another of your devices seated {names}. If you didn't do this, secure your account."
+msgstr "Another of your devices seated {names}. If you didn't do this, secure your account."
+
+#: components/client/protectedCopy.ts
+msgid "Your other device {device} seated new members. If you didn't do this, secure your account."
+msgstr "Your other device {device} seated new members. If you didn't do this, secure your account."
+
+#: components/client/protectedCopy.ts
+msgid "Your other device {device} seated {names}. If you didn't do this, secure your account."
+msgstr "Your other device {device} seated {names}. If you didn't do this, secure your account."
+
+#: components/client/protectedCopy.ts
 msgid "Sent before this device joined."
 msgstr "Sent before this device joined."
 
@@ -9729,6 +10015,10 @@ msgid "Unencrypted message in a protected channel. It did not come from a member
 msgstr "Unencrypted message in a protected channel. It did not come from a member's protected app."
 
 #: components/client/protectedCopy.ts
+msgid "Update Sloga to see this message."
+msgstr "Update Sloga to see this message."
+
+#: components/client/protectedCopy.ts
 msgid "{name} added a new device."
 msgstr "{name} added a new device."
 
@@ -9740,6 +10030,30 @@ msgstr "{name} was removed by the server and can't rejoin until the owner re-sea
 msgid "Blocked an unexpected invitation to a protected channel."
 msgstr "Blocked an unexpected invitation to a protected channel."
 
+#: components/client/protectedCopy.ts
+msgid "Another of your devices changed a protected channel. Open the channel to see what changed."
+msgstr "Another of your devices changed a protected channel. Open the channel to see what changed."
+
+#: components/client/protectedCopy.ts
+msgid "This channel's member list uses an older format, so its signing devices can't be changed yet. Try again later."
+msgstr "This channel's member list uses an older format, so its signing devices can't be changed yet. Try again later."
+
+#: components/client/protectedCopy.ts
+msgid "Choose another of your devices to move the ownership key to."
+msgstr "Choose another of your devices to move the ownership key to."
+
+#: components/client/protectedCopy.ts
+msgid "You can only move the ownership key to another of your own devices."
+msgstr "You can only move the ownership key to another of your own devices."
+
+#: components/client/protectedCopy.ts
+msgid "Only the device that holds this channel's ownership key can move it."
+msgstr "Only the device that holds this channel's ownership key can move it."
+
+#: components/client/protectedCopy.ts
+msgid "This channel names its owner devices. Update that list to move ownership instead."
+msgstr "This channel names its owner devices. Update that list to move ownership instead."
+
 #. Protected channel state
 #: components/client/protectedCopy.ts
 msgid "Re-securing"
@@ -9749,6 +10063,11 @@ msgstr "Re-securing"
 #: components/client/protectedCopy.ts
 msgid "Not seated"
 msgstr "Not seated"
+
+#. Protected channel state
+#: components/client/protectedCopy.ts
+msgid "At capacity"
+msgstr "At capacity"
 
 #: components/client/protectedCopy.ts
 msgid "Not available on this device"
@@ -9783,6 +10102,22 @@ msgstr "The owner's device changed. Review the change before you trust this chan
 #: components/client/protectedCopy.ts
 msgid "Review owner change"
 msgstr "Review owner change"
+
+#: components/client/protectedCopy.ts
+msgid "Still locked."
+msgstr "Still locked."
+
+#: components/client/protectedCopy.ts
+msgid "Review again"
+msgstr "Review again"
+
+#: components/client/protectedCopy.ts
+msgid "Leave channel"
+msgstr "Leave channel"
+
+#: components/client/protectedCopy.ts
+msgid "Recover ownership on this device"
+msgstr "Recover ownership on this device"
 
 #: components/client/protectedCopy.ts
 msgid "Re-create the protected group"

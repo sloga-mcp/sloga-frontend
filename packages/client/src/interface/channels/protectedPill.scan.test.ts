@@ -397,7 +397,7 @@ describe("P2 D15 review wiring", () => {
     assert.equal(count(PILL_CODE, /(?<!function )\bopenOwnerReview\(\)/g), 1);
     assert.match(
       PILL_CODE,
-      /openModal\(\{\s*type: "protected_owner_review",\s*channel: props\.channel,\s*\} as unknown as ModalRequest\);/,
+      /openModal\(\{\s*type: "protected_owner_review",\s*channel: props\.channel,\s*\}\);/,
     );
   });
 });
@@ -1003,11 +1003,11 @@ describe("P8 S2 wiring (U2)", () => {
     );
     assert.match(
       PILL_CODE,
-      /openModal\(\{\s*type: "protected_device_cap",\s*channel: props\.channel,\s*\} as unknown as ModalRequest\);/,
+      /openModal\(\{\s*type: "protected_device_cap",\s*channel: props\.channel,\s*\}\);/,
     );
-    // one cast per L9-pending modal (device cap, owner review) and one
-    // opener each
-    assert.equal(count(PILL_CODE, /\bas unknown as\b/g), 2);
+    // both modals are union members (L9): no cast, and one opener each
+    assert.equal(count(PILL_CODE, /\bas unknown as\b/g), 0);
+    assert.doesNotMatch(PILL_CODE, /\bModalRequest\b/);
     assert.equal(count(PILL_CODE, /\bopenModal\(/g), 2);
     assert.equal(count(PILL_CODE, /(?<!function )\bopenDeviceCap\(\)/g), 1);
   });

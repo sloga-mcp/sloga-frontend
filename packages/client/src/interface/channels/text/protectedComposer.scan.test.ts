@@ -855,13 +855,13 @@ test("U4 Review opens the owner-review modal; the composer never confirms itself
     body,
     "const request: ProtectedOwnerReviewProps = { " +
       'type: "protected_owner_review", channel: props.channel, }; ' +
-      "openModal(request as unknown as ModalRequest);",
+      "openModal(request);",
   );
   const all = code(COMPOSITION);
   assert.ok(!all.includes("confirmOwnerChange"), "the composer confirms");
   assert.ok(!all.includes("protectedUiOf"), "the composer reaches the bridge");
-  // ONE cast, only for the unregistered union member
-  assert.equal((all.match(/as unknown as ModalRequest/g) ?? []).length, 1);
+  // the modal is a union member (L9): no cast to the request type
+  assert.equal((all.match(/\bModalRequest\b/g) ?? []).length, 0);
   assert.ok(
     COMPOSITION.includes(
       'import type { ProtectedOwnerReviewProps } from "@revolt/modal/modals/ProtectedOwnerReview";',

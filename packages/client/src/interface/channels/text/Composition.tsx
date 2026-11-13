@@ -58,7 +58,7 @@ import { pickUploadLimit } from "@revolt/common/lib/uploadLimit";
 import { useTime } from "@revolt/i18n";
 import { Keybind, KeybindAction, createKeybind } from "@revolt/keybinds";
 import { unicodeEmojiPackPrefix } from "@revolt/markdown/emoji/UnicodeEmoji";
-import { type ModalRequest, useModals } from "@revolt/modal";
+import { useModals } from "@revolt/modal";
 import type { ProtectedOwnerReviewProps } from "@revolt/modal/modals/ProtectedOwnerReview";
 import { useState } from "@revolt/state";
 import { ALLOWED_IMAGE_TYPES } from "@revolt/state/stores/Draft";
@@ -1544,9 +1544,7 @@ export function MessageComposition(props: Props) {
       type: "protected_owner_review",
       channel: props.channel,
     };
-    // L9: protected_owner_review (union member not registered yet; drop the
-    // cast once `components/modal/types.ts` has it).
-    openModal(request as unknown as ModalRequest);
+    openModal(request);
   }
 
   /**

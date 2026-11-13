@@ -32,6 +32,8 @@ import {
 } from "@revolt/state/stores/Voice";
 
 import type { ChangelogResponse } from "./modals/Changelog";
+import type { ProtectedDeviceCapProps } from "./modals/ProtectedDeviceCap";
+import type { ProtectedOwnerReviewProps } from "./modals/ProtectedOwnerReview";
 
 export type Modals =
   | {
@@ -342,6 +344,16 @@ export type Modals =
       onConfirm: (userIds: string[]) => Promise<void>;
       removed?: string[];
     }
+  /**
+   * S2-D38 device-cap screen: `{ type: "protected_device_cap"; channel }`,
+   * the protected channel this device can't open (capacity `device_cap`).
+   */
+  | ProtectedDeviceCapProps
+  /**
+   * S2-D41 owner-change review: `{ type: "protected_owner_review"; channel }`,
+   * the protected channel whose owner change is under review.
+   */
+  | ProtectedOwnerReviewProps
   | {
       type: "e2ee_enable";
       /**

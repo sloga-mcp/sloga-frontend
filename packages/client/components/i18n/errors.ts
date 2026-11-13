@@ -129,9 +129,12 @@ export function useError() {
         return t`The payment provider didn't respond. Please try again.`;
       // Protected channels (same lag pattern). The protected-channel UI maps
       // these itself through `protectedNoticeForError`; this is the copy for
-      // anywhere else. Same msgids as `protectedCopy.ts` (design 9.2). The
-      // Resecuring `reason` does not change the copy, and `ChannelProtected`
-      // carries no context here, so it gets the general wording.
+      // anywhere else. Same msgids as `protectedCopy.ts` (design 9.2). Only
+      // the S2 Resecuring `reason` `owner_device_lost` changes the copy, and
+      // `ChannelProtected` carries no context here, so it gets the general
+      // wording. `InSlowmode` is a generic server type: its protected copy
+      // comes from the owner's successor create only (OR-21), so it keeps
+      // the generic copy in the switch below.
       const rawMax = (err as { max?: unknown }).max;
       const max =
         typeof rawMax === "number" &&
@@ -140,7 +143,9 @@ export function useError() {
           ? rawMax
           : null;
       if (errType === "ProtectedChannelResecuring")
-        return t`Re-securing this channel…`;
+        return (err as { reason?: unknown }).reason === "owner_device_lost"
+          ? t`The owner's signing device was signed out. Messages are paused until the owner signs in on another device.`
+          : t`Re-securing this channel…`;
       if (errType === "NotSeated")
         return t`You don't have a seat in this protected channel. Ask the owner for a seat.`;
       if (errType === "SeatCapReached")
@@ -159,6 +164,17 @@ export function useError() {
       // ids, so the generic copy here; the owner UI can name them).
       if (errType === "SeatListNamesRemovedUsers")
         return t`Some members were removed from this server and were left off the seat list.`;
+      // S2 D40: a kick, ban or unseat of a protected member needs a reason.
+      if (errType === "RemovalReasonRequired")
+        return t`This member is protected from removal without a reason. Add a reason to continue.`;
+      // S4 floor (OR-4): only a well-formed refusal (`min` a positive safe
+      // integer, never shown) says this app is outdated; any other body
+      // falls through to the generic copy in the switch below.
+      if (errType === "ProtectedClientOutdated") {
+        const min = (err as { min?: unknown }).min;
+        if (typeof min === "number" && Number.isSafeInteger(min) && min >= 1)
+          return t`Update Sloga to use this protected channel.`;
+      }
       // `FeatureDisabled` for the two protected-channel features; any other
       // feature falls through to the generic copy in the switch below.
       if (errType === "FeatureDisabled") {

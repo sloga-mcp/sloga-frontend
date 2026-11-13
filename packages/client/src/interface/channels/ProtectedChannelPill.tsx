@@ -44,7 +44,7 @@ import {
   useProtectedShield,
 } from "@revolt/client/useProtectedChannel";
 import { useWindowCtx } from "@revolt/client/windowCtx";
-import { type ModalRequest, useModals } from "@revolt/modal";
+import { useModals } from "@revolt/modal";
 import { ProtectedShieldIcon } from "@revolt/ui/components/features/protected/ProtectedShieldIcon";
 
 /**
@@ -581,12 +581,10 @@ export function ProtectedChannelPill(props: Props) {
     retryAllowed() &&
     pillDeviceCapOffered(stateNow(), shield()?.notice);
   function openDeviceCap() {
-    // L9: protected_device_cap (union member not registered yet; drop the
-    // cast once `components/modal/types.ts` has it).
     openModal({
       type: "protected_device_cap",
       channel: props.channel,
-    } as unknown as ModalRequest);
+    });
   }
 
   /**
@@ -595,12 +593,10 @@ export function ProtectedChannelPill(props: Props) {
    * bridge for it. Only behind `reviewable()`.
    */
   function openOwnerReview() {
-    // L9: protected_owner_review (union member not registered yet; drop the
-    // cast once `components/modal/types.ts` has it).
     openModal({
       type: "protected_owner_review",
       channel: props.channel,
-    } as unknown as ModalRequest);
+    });
   }
 
   /** S2 OR-9: the persistent alert; never dismissed by the pill. */
