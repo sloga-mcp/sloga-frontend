@@ -9,6 +9,7 @@ import {
   ServerSidebarContextMenu,
 } from "@revolt/app";
 import { useClient, useUser } from "@revolt/client";
+import { useSlimMode } from "@revolt/client/useSlimMode";
 import { useModals } from "@revolt/modal";
 import { useLocation, useParams, useSmartParams } from "@revolt/routing";
 import { useState } from "@revolt/state";
@@ -45,6 +46,30 @@ const MainBar = styled("div", {
     navRight: {
       true: {
         flexDirection: "row-reverse",
+      },
+    },
+    /**
+     * Slim view: the server rail is not mounted, and the chat list takes the
+     * 56px the icons-only rail held, so the nav block and the floating user
+     * bar over it stay as wide as with the rail collapsed (the bar's toggles
+     * and Settings button do not fit the bare list width during a call).
+     *
+     * A custom property cannot be redefined from its own value on one
+     * element, so the sum is taken here and handed to the columns. On phone
+     * the list already fills the full-width block and stays `auto`.
+     */
+    slim: {
+      true: {
+        "--slim-chat-list-width":
+          "calc(var(--layout-width-channel-sidebar) + 56px)",
+
+        "& > *:not([data-user-footer])": {
+          "--layout-width-channel-sidebar": "var(--slim-chat-list-width)",
+        },
+
+        _phone: {
+          "--slim-chat-list-width": "auto",
+        },
       },
     },
     /**
@@ -97,17 +122,33 @@ export const Sidebar = (props: {
   const location = useLocation();
   const sides = useLayoutSides();
 
-  /** Whether the channel sidebar is shown. */
+  /**
+   * Slim view (chats only, no servers). It flips at runtime when the user
+   * toggles it in settings, so it is only ever read reactively below.
+   */
+  const slim = useSlimMode();
+
+  /**
+   * Whether the channel sidebar is shown.
+   *
+   * Always in Slim view: with no server rail the chat list is the only
+   * navigation left, and a collapsed state (it syncs from other devices)
+   * would leave nothing to hold the user bar either.
+   */
   const showSidebar = () =>
-    state.layout.getSectionState(LAYOUT_SECTIONS.PRIMARY_SIDEBAR, true) &&
-    !location.pathname.startsWith("/discover");
+    slim() ||
+    (state.layout.getSectionState(LAYOUT_SECTIONS.PRIMARY_SIDEBAR, true) &&
+      !location.pathname.startsWith("/discover"));
 
   /**
    * The user bar stays mounted when the channel sidebar collapses — it
    * shrinks onto the server rail instead, mirroring how it already
    * follows the rail's own expand/collapse. /discover keeps no bar.
+   *
+   * In Slim view it is always mounted: it holds the Settings button, which
+   * is the way to turn Slim view off again.
    */
-  const showFooter = () => !location.pathname.startsWith("/discover");
+  const showFooter = () => slim() || !location.pathname.startsWith("/discover");
 
   /**
    * With the channel sidebar collapsed and the rail icons-only, 56px is
@@ -126,38 +167,46 @@ export const Sidebar = (props: {
     <MainBar
       class="main_bar"
       navRight={sides().nav === "right"}
+      slim={slim()}
       footer={showFooter() ? (footerStacked() ? "stack" : "bar") : "none"}
     >
-      <ServerList
-        orderedServers={state.ordering.orderedServers(client())}
-        setServerOrder={state.ordering.setServerOrder}
-        unreadConversations={state.ordering
-          .orderedConversations(client())
-          .filter(
-            // TODO: muting channels
-            (channel) => channel.unread,
-          )}
-        pendingFriendRequests={
-          client()
-            ?.users.toList()
-            .filter((user) => user.relationship === "Incoming").length ?? 0
-        }
-        user={user()!}
-        selectedServer={() => params.server}
-        onCreateOrJoinServer={() =>
-          openModal({
-            type: "create_or_join_server",
-            client: client(),
-          })
-        }
-        menuGenerator={props.menuGenerator}
-      />
+      {/* No server rail in Slim view. Its server keybinds and drag targets
+          live inside it and are released when it unmounts. */}
+      <Show when={!slim()}>
+        <ServerList
+          orderedServers={state.ordering.orderedServers(client())}
+          setServerOrder={state.ordering.setServerOrder}
+          unreadConversations={state.ordering
+            .orderedConversations(client())
+            .filter(
+              // TODO: muting channels
+              (channel) => channel.unread,
+            )}
+          pendingFriendRequests={
+            client()
+              ?.users.toList()
+              .filter((user) => user.relationship === "Incoming").length ?? 0
+          }
+          user={user()!}
+          selectedServer={() => params.server}
+          onCreateOrJoinServer={() =>
+            openModal({
+              type: "create_or_join_server",
+              client: client(),
+            })
+          }
+          menuGenerator={props.menuGenerator}
+        />
+      </Show>
       <Show when={showSidebar()}>
         {/* The server rail stays outside the boundary, so after an error
-            it is still there to navigate away with, which resets it. */}
+            it is still there to navigate away with, which resets it. In
+            Slim view the user bar below is what stays outside it. */}
         <PaneErrorBoundary pane="sidebar">
+          {/* Slim view shows the chat list whatever the route says, never
+              a server's channel list. */}
           <Switch fallback={<Home />}>
-            <Match when={params.server}>
+            <Match when={!slim() && params.server}>
               <Server />
             </Match>
           </Switch>

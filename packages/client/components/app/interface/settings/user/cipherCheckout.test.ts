@@ -1167,10 +1167,12 @@ describe("store gate: the cipher row and page only exist where donation links ar
     const next = userSettings.indexOf("id: ", start + 1);
     const entry = userSettings.slice(start, next < 0 ? undefined : next);
     // A getter, not a value: on Android the distribution channel resolves
-    // after the list is built, and a Play build starts out as "play"
+    // after the list is built, and a Play build starts out as "play".
+    // Slim view may hide the row as well (`slim() ||`); it can only ever add
+    // to the hiding, so the store gate is still the last word.
     assert.match(
       entry,
-      /get hidden\(\)\s*\{\s*return !allowsDonationLinks\(\);\s*\}/,
+      /get hidden\(\)\s*\{\s*return (?:slim\(\) \|\| )?!allowsDonationLinks\(\);\s*\}/,
     );
   });
 

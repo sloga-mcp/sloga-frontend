@@ -10,6 +10,8 @@ import { Channel } from "stoat.js";
 import { styled } from "styled-system/jsx";
 
 import { useClient } from "@revolt/client";
+import { SLIM_ROOT, slimAllowsChannel } from "@revolt/client/slimRoutePolicy";
+import { useSlimMode } from "@revolt/client/useSlimMode";
 import { Navigate, useParams } from "@revolt/routing";
 
 import { parseChannelPassword } from "../../lib/channelPassword";
@@ -53,6 +55,7 @@ const TEXT_CHANNEL_TYPES: Channel["type"][] = [
 export const ChannelPage: Component = () => {
   const params = useParams();
   const client = useClient();
+  const slim = useSlimMode();
   const cached = createMemo(() => client()!.channels.get(params.channel));
 
   // Ready only includes JOINED threads, so a deep-link or reload into a
@@ -71,12 +74,31 @@ export const ChannelPage: Component = () => {
 
   const channel = () => cached() ?? fetched() ?? undefined;
 
+  // Slim view shows no server channel. The bare /channel/:id link, the one
+  // push notifications open, can point at one, so the path cannot decide
+  // this and the loaded channel has to. The answer comes from the server id
+  // and not from `isVoice`, which is also true for a DM. A channel that is
+  // still loading is allowed until it arrives.
+  //
+  // Staff are never in Slim view, and that is only known once the signed-in
+  // user has loaded. Both routes that mount this page sit under `Interface`,
+  // which renders its routed content only after the first load, so the
+  // answer is settled before this can navigate.
+  const slimBlocked = createMemo(() => slim() && !slimAllowsChannel(channel()));
+
   return (
     <Base>
       <Switch fallback="Unknown channel type!">
         <Match when={!channel() && fetched.loading}>{null}</Match>
         <Match when={!channel()}>
           <Navigate href={"../.."} />
+        </Match>
+        {/* Ahead of every channel kind below, so none of them (text, voice,
+            thread, forum) mounts, fetches or joins a call for a channel
+            Slim view hides. `Navigate` replaces the history entry, so Back
+            does not return here. */}
+        <Match when={slimBlocked()}>
+          <Navigate href={SLIM_ROOT} />
         </Match>
         <Match when={TEXT_CHANNEL_TYPES.includes(channel()!.type)}>
           {/* A thread answers to its parent's gates (see gateSource). */}

@@ -7,6 +7,7 @@ import MdArrowBack from "@material-design-icons/svg/outlined/arrow_back.svg?comp
 import { useLingui } from "@lingui-solid/solid/macro";
 import { css } from "styled-system/css";
 
+import { useSlimMode } from "@revolt/client/useSlimMode";
 import { useState } from "@revolt/state";
 import { LAYOUT_SECTIONS } from "@revolt/state/stores/Layout";
 import { useLayoutSides } from "@revolt/ui";
@@ -15,8 +16,29 @@ import { useLayoutSides } from "@revolt/ui";
  * Wrapper for header icons which adds the chevron on the
  * correct side for toggling sidebar (if on desktop) and
  * the hamburger icon to open sidebar (if on mobile).
+ *
+ * In Slim view on a wide layout the sidebar cannot be collapsed (it holds
+ * the user bar, and with it Settings), so the icon is shown alone, with
+ * nothing to toggle. On a phone the arrow still opens the drawer.
  */
 export function HeaderIcon(props: { children: JSX.Element }) {
+  const state = useState();
+  const slim = useSlimMode();
+
+  return (
+    <Show
+      when={slim() && !state.appDrawer()}
+      fallback={<SidebarToggle>{props.children}</SidebarToggle>}
+    >
+      <div class={plain}>{props.children}</div>
+    </Show>
+  );
+}
+
+/**
+ * The header icon as a sidebar toggle
+ */
+function SidebarToggle(props: { children: JSX.Element }) {
   const state = useState();
   const { t } = useLingui();
   const sides = useLayoutSides();
@@ -78,5 +100,10 @@ export function HeaderIcon(props: { children: JSX.Element }) {
 const container = css({
   display: "flex",
   cursor: "pointer",
+  alignItems: "center",
+});
+
+const plain = css({
+  display: "flex",
   alignItems: "center",
 });

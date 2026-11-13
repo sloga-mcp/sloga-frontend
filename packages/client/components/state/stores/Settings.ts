@@ -232,6 +232,13 @@ interface SettingsDefinition {
   "appearance:dm_windows": DmWindowsMode;
 
   /**
+   * Slim view: a layout that shows chats and calls only. Android and iOS
+   * apps only. Per-device on purpose (this store does not sync), so turning
+   * it on here never changes another device's layout.
+   */
+  "appearance:slim_view": boolean;
+
+  /**
    * Indicate new users to Stoat
    * TODO: implement
    */
@@ -399,6 +406,7 @@ const EXPECTED_TYPES: { [K in keyof SettingsDefinition]: ValueType<K> } = {
   "appearance:layout_members_side": "string",
   "appearance:name_effects": "boolean",
   "appearance:dm_windows": "string",
+  "appearance:slim_view": "boolean",
   "advanced:copy_id": "boolean",
   "sounds:message_variant": "number",
   "sounds:ringtone_variant": "number",
@@ -462,6 +470,8 @@ const DEFAULT_VALUES: TypeSettings = {
   "appearance:name_effects": true,
   // Today's behaviour, so shipping chat windows moves nobody's conversations.
   "appearance:dm_windows": "main",
+  // Off, so shipping Slim view changes nobody's layout.
+  "appearance:slim_view": false,
   "sounds:message_variant": 4,
   "sounds:ringtone_variant": 8,
   "sounds:disconnect_variant": 3,
@@ -537,6 +547,8 @@ export class Settings extends AbstractStore<"settings", TypeSettings> {
       "appearance:name_effects": true,
       // Mirrored in DEFAULT_VALUES — see the note there.
       "appearance:dm_windows": "main",
+      // Mirrored in DEFAULT_VALUES — see the note there.
+      "appearance:slim_view": false,
       "advanced:copy_id": false,
       "sounds:message_variant": 4,
       "sounds:ringtone_variant": 8,

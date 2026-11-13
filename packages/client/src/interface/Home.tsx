@@ -13,6 +13,7 @@ import { cva } from "styled-system/css";
 import { styled } from "styled-system/jsx";
 
 import { allowsDonationLinks, useClient } from "@revolt/client";
+import { useSlimMode } from "@revolt/client/useSlimMode";
 import { useModals } from "@revolt/modal";
 import { useState } from "@revolt/state";
 import {
@@ -338,14 +339,59 @@ const StaffGrid = styled("div", {
 });
 
 /**
- * Home page: cards the viewer arranges in two columns and switches on and
+ * Slim view: the quiet surface the root shows in place of the hub
+ */
+const slimEmpty = cva({
+  base: {
+    ...main.raw(),
+
+    alignItems: "center",
+    justifyContent: "center",
+
+    textAlign: "center",
+    fontSize: "14px",
+    color: "var(--md-sys-color-on-surface-variant)",
+  },
+});
+
+/**
+ * Root page. Slim view has no Home hub: it shows a plain "Select a chat"
+ * state, and the hub is not created at all, so none of its cards fetch or
+ * poll. Switching Slim view off builds the hub; switching it on disposes of
+ * the hub, which runs its cleanups.
+ */
+export function HomePage() {
+  const slim = useSlimMode();
+
+  return (
+    <Show when={slim()} fallback={<HomeHub />}>
+      <Base>
+        {/* Kept for the sidebar toggle (the drawer's back arrow on a phone),
+            which would otherwise be out of reach with the sidebar closed */}
+        <Header placement="primary">
+          <HeaderIcon>
+            <Symbol>chat</Symbol>
+          </HeaderIcon>
+        </Header>
+        <main class={slimEmpty()}>
+          <span role="status">
+            <Trans>Select a chat</Trans>
+          </span>
+        </main>
+      </Base>
+    </Show>
+  );
+}
+
+/**
+ * Home hub: cards the viewer arranges in two columns and switches on and
  * off (welcome tiles for new accounts, the Cipher banner, this release's
  * highlights, what is happening in voice, unreads, mentions, upcoming events,
  * suggested servers, friends online, Founding Streamers, importing, and the
  * moderation queues for staff). The arrangement is the synced `home-layout`
  * store; each card decides for itself whether it has anything to show.
  */
-export function HomePage() {
+function HomeHub() {
   const { openModal, isOpen } = useModals();
   const { t } = useLingui();
   const client = useClient();

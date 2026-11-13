@@ -1349,6 +1349,18 @@ msgstr "Auto (lowest latency)"
 msgid "Auto keeps the member list with the channels, unless Ultrawide layout moves it to the other side. Applies to this device only."
 msgstr "Auto keeps the member list with the channels, unless Ultrawide layout moves it to the other side. Applies to this device only."
 
+#: components/app/interface/settings/user/appearance/SlimViewChoice.tsx
+msgid "Slim view (beta)"
+msgstr "Slim view (beta)"
+
+#: components/app/interface/settings/user/appearance/SlimViewChoice.tsx
+msgid "Shows only your chats and calls. Servers are hidden, not left. Server notifications and the app icon's unread count can still include servers. Turn Slim view off to see servers again."
+msgstr "Shows only your chats and calls. Servers are hidden, not left. Server notifications and the app icon's unread count can still include servers. Turn Slim view off to see servers again."
+
+#: components/app/interface/settings/user/appearance/SlimViewChoice.tsx
+msgid "You can't change Slim view during a call."
+msgstr "You can't change Slim view during a call."
+
 #: src/interface/channels/text/TextChannel.tsx
 msgid "Auto-archive"
 msgstr "Auto-archive"
@@ -1569,6 +1581,10 @@ msgstr "Block user"
 #: src/interface/Friends.tsx
 msgid "Blocked"
 msgstr "Blocked"
+
+#: src/interface/Home.tsx
+msgid "Select a chat"
+msgstr "Select a chat"
 
 #: src/interface/Home.tsx
 msgid "Welcome"
@@ -1932,6 +1948,10 @@ msgstr "Channel Info"
 #: src/index.tsx
 msgid "Channel linking failed or was canceled."
 msgstr "Channel linking failed or was canceled."
+
+#: src/index.tsx
+msgid "Server invites are hidden in Slim view."
+msgstr "Server invites are hidden in Slim view."
 
 #: components/app/interface/settings/user/Connections.tsx
 msgid "Channel linking is not enabled on this server yet."
@@ -4480,6 +4500,14 @@ msgstr "Hide"
 #: src/Interface.tsx
 msgid "Hide banner"
 msgstr "Hide banner"
+
+#: src/Interface.tsx
+msgid "Something went wrong in Slim view."
+msgstr "Something went wrong in Slim view."
+
+#: src/Interface.tsx
+msgid "Turn off Slim view"
+msgstr "Turn off Slim view"
 
 #: components/app/interface/settings/user/StreamerMode.tsx
 msgid "Hide invite links"

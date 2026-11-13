@@ -46,6 +46,7 @@ import MDPalette from "@material-design-icons/svg/outlined/palette.svg?component
 
 import { DmWindowsChoice } from "./DmWindowsChoice";
 import { LayoutArrangement } from "./LayoutArrangement";
+import { SlimViewChoice } from "./SlimViewChoice";
 
 /**
  * All appearance options for the client
@@ -887,6 +888,7 @@ export function AppearanceMenu() {
         </Text>
 
         <DmWindowsChoice />
+        <SlimViewChoice />
       </Column>
 
       <Column>
