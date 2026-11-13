@@ -5,6 +5,7 @@ import type { Client } from "stoat.js";
 
 import { parseProtFeature } from "@revolt/app/interface/settings/user/protWallet";
 import CONFIGURATION from "@revolt/common/lib/env";
+import { type ModalController, useModals } from "@revolt/modal";
 
 import { useClient, useClientLifecycle } from ".";
 import { distributionChannel, isStoreBuild } from "./distribution";
@@ -16,12 +17,15 @@ import {
 import {
   type ProtStoreFlowEvent,
   type ProtStoreFlowState,
+  parseNoticed,
   protStoreStep,
   readPurchase,
   readVerifyAnswer,
   recoveryShouldVerify,
+  rememberNoticed,
   shouldFinish,
   transactionKey,
+  underReviewNotice,
   verifyBackoffMs,
   verifyRequestBody,
 } from "./protStoreFlow";
@@ -39,6 +43,10 @@ type Run = {
   disposed: boolean;
   /** Keys this run claimed (R29: released when the session ends) */
   claims: Set<string>;
+  /** Opens the under-review notice (R66) */
+  modals: Pick<ModalController, "openModal" | "isOpen">;
+  /** Set once this run opened the under-review notice (R66) */
+  noticeOpened: boolean;
 };
 
 /**
@@ -111,6 +119,53 @@ function releaseRunClaims(run: Run) {
 function noteOutcome(run: Run, key: string, state: ProtStoreFlowState) {
   if (run.disposed || claimOwners.get(key) !== run) return;
   setOutcomes((prev) => new Map(prev).set(key, state));
+}
+
+/** Transactions the under-review notice was shown for, as JSON (R66) */
+const REVIEW_NOTICED_KEY = "sloga.prot_store.review_noticed";
+
+/** The noticed keys when storage is missing or throws: once per launch */
+let noticedInMemory: string[] = [];
+
+/** Noticed keys, oldest first: the stored list and this launch's own */
+function readNoticed(): string[] {
+  let stored: string[] = [];
+  try {
+    stored = parseNoticed(localStorage.getItem(REVIEW_NOTICED_KEY));
+  } catch {
+    // No storage: this launch's own list only
+  }
+  return [...new Set([...stored, ...noticedInMemory])];
+}
+
+/** Store the noticed keys, in memory too in case storage refuses them */
+function writeNoticed(keys: string[]) {
+  noticedInMemory = keys;
+  try {
+    localStorage.setItem(REVIEW_NOTICED_KEY, JSON.stringify(keys));
+  } catch {
+    // Kept in memory: shown once per launch instead of once per device
+  }
+}
+
+/**
+ * Open the under-review notice for a purchase this run's recovery kept
+ * under review (R66): only while the run is live and holds the claim, and
+ * once per transaction per device. Several held purchases in one drain
+ * share the notice already on screen; one that settles after this run's
+ * notice was closed waits for the next launch. Nothing here finishes or
+ * consumes the purchase.
+ */
+function noticeUnderReview(run: Run, key: string, state: ProtStoreFlowState) {
+  if (run.disposed || claimOwners.get(key) !== run) return;
+  const shown = readNoticed();
+  if (!underReviewNotice(state, shown)) return;
+  const open = run.modals.isOpen("prot_store_under_review");
+  if (!open && run.noticeOpened) return;
+  writeNoticed(rememberNoticed(shown, key));
+  if (open) return;
+  run.noticeOpened = true;
+  run.modals.openModal({ type: "prot_store_under_review" });
 }
 
 /** The two outcomes of one verify request */
@@ -248,6 +303,8 @@ async function recover(run: Run, purchase: ProtStorePurchased): Promise<void> {
       console.warn(
         `Prot store purchase of ${state.purchase.product_id} kept unfinished: ${state.why}`,
       );
+      // Held over the wallet cap: tell the user once (R66)
+      noticeUnderReview(run, key, state);
     }
     return;
   }
@@ -260,7 +317,9 @@ async function recover(run: Run, purchase: ProtStorePurchased): Promise<void> {
  * start, `transactionUpdated` after) with the server, one at a time, and
  * finishes each only per `shouldFinish`. The server credits; nothing here
  * decides that a purchase counts. When the session ends, the claims it took
- * are released (R29).
+ * are released (R29). A purchase it keeps under review (held over the
+ * wallet cap) opens the `prot_store_under_review` notice, once per
+ * transaction per device (R66).
  *
  * Store builds only (`isStoreBuild`): web, desktop, sideload and foss buy
  * Prot on the web and never reach the plugin.
@@ -268,6 +327,7 @@ async function recover(run: Run, purchase: ProtStorePurchased): Promise<void> {
 export function ProtStoreWorker() {
   const client = useClient();
   const { isLoggedIn } = useClientLifecycle();
+  const { openModal, isOpen } = useModals();
 
   createEffect(() => {
     if (!isStoreBuild(distributionChannel())) return;
@@ -291,6 +351,8 @@ export function ProtStoreWorker() {
       plugin,
       disposed: false,
       claims: new Set(),
+      modals: { openModal, isOpen },
+      noticeOpened: false,
     };
     let listener: PluginListenerHandle | undefined;
     let queue: Promise<void> = Promise.resolve();

@@ -25,7 +25,9 @@
  *   take the wallet over its cap, so staff review it) is kept
  *   `"under_review"`: unfinished, no finish, exactly like `pending`. The
  *   store re-delivers it at each launch until staff release it and verify
- *   answers `already_credited`, or until it is refunded.
+ *   answers `already_credited`, or until it is refunded. When the launch
+ *   recovery settles one, `underReviewNotice` decides whether it opens the
+ *   under-review notice: once per transaction per device (R66).
  * - `wrong_account`, `unbound`, `unknown_product` and `no_buyer` are kept
  *   unfinished, so the store re-delivers the purchase.
  * - 5xx, network errors and 429 are retried with backoff
@@ -181,6 +183,55 @@ export function recoveryShouldVerify(
  */
 export function transactionKey(p: ProtStorePurchased): string {
   return p.store === "apple" ? p.transaction_id : p.purchase_token;
+}
+
+/** How many noticed transaction keys a device keeps, newest last (R66) */
+export const PROT_STORE_NOTICED_MAX = 20;
+
+/**
+ * Whether a purchase the launch recovery settled opens the under-review
+ * notice (R66): only one kept `under_review` (held over the wallet cap)
+ * whose key is not in `shown` yet. Never another kept reason, never `done`
+ * or `finishing`, never a purchase without a key.
+ */
+export function underReviewNotice(
+  state: ProtStoreFlowState,
+  shown: readonly string[],
+): boolean {
+  if (state?.step !== "kept" || state.why !== "under_review") return false;
+  const key = transactionKey(state.purchase);
+  return typeof key === "string" && key !== "" && !shown.includes(key);
+}
+
+/**
+ * `shown` with `key` added as the newest, keeping the `max` newest keys
+ * (once each). Returns a new list; `shown` is not changed.
+ */
+export function rememberNoticed(
+  shown: readonly string[],
+  key: string,
+  max = PROT_STORE_NOTICED_MAX,
+): string[] {
+  const keep = Number.isFinite(max) && max >= 1 ? Math.floor(max) : 1;
+  const rest = shown.filter((k) => k !== key);
+  return (key === "" ? rest : [...rest, key]).slice(-keep);
+}
+
+/**
+ * The noticed keys stored as JSON (R66): the string entries of an array,
+ * the `PROT_STORE_NOTICED_MAX` newest; anything unreadable is empty.
+ */
+export function parseNoticed(raw: string | null | undefined): string[] {
+  try {
+    const value: unknown = JSON.parse(raw ?? "[]");
+    return Array.isArray(value)
+      ? value
+          .filter((k): k is string => typeof k === "string" && k !== "")
+          .slice(-PROT_STORE_NOTICED_MAX)
+      : [];
+  } catch {
+    return [];
+  }
 }
 
 /**

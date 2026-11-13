@@ -375,6 +375,15 @@ export type Modals =
       server: Server;
     }
   | {
+      /**
+       * An in-app Prot purchase the launch recovery found held for staff
+       * review because crediting it would take the wallet over its cap
+       * (S6 R66). Opened only by ProtStoreWorker, once per purchase per
+       * device; it carries no purchase detail.
+       */
+      type: "prot_store_under_review";
+    }
+  | {
       type: "e2ee_enable";
       /**
        * Lead with the restore-vs-start-fresh choice (slice 5.5). Set when the

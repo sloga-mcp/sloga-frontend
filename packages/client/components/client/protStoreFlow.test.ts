@@ -26,7 +26,10 @@
  * - the verify body carries only what the server reads, and a verify answer
  *   is read through a status/reason whitelist;
  * - the recovery worker verifies each transaction at most once per launch,
- *   and replaying a credited transaction finishes it again, harmlessly.
+ *   and replaying a credited transaction finishes it again, harmlessly;
+ * - a purchase the recovery keeps under review opens the under-review notice
+ *   once per transaction per device (R66), never for another outcome, and
+ *   the device remembers at most the twenty newest noticed transactions.
  *
  * `drive` below is a test-side stand-in for the worker: it performs the side
  * effect each state asks for and counts the calls, so "finish was called"
@@ -40,12 +43,16 @@ import {
   type ProtStoreFlowState,
   type ProtStoreVerifyAnswer,
   PROT_STORE_MAX_VERIFY_ATTEMPTS,
+  PROT_STORE_NOTICED_MAX,
+  parseNoticed,
   protStoreStep,
   readPurchase,
   readVerifyAnswer,
   recoveryShouldVerify,
+  rememberNoticed,
   shouldFinish,
   transactionKey,
+  underReviewNotice,
   verifyBackoffMs,
   verifyRequestBody,
 } from "./protStoreFlow.ts";
@@ -990,5 +997,137 @@ describe("recovery", () => {
     assert.equal(recoveryShouldVerify(transactionKey(APPLE), claims), false);
     claims.delete(transactionKey(APPLE));
     assert.equal(recoveryShouldVerify(transactionKey(APPLE), claims), true);
+  });
+});
+
+describe("the under-review notice (R66)", () => {
+  type KeptWhy = Extract<ProtStoreFlowState, { step: "kept" }>["why"];
+  const kept = (p: ProtStorePurchased, why: KeptWhy): ProtStoreFlowState => ({
+    step: "kept",
+    purchase: p,
+    why,
+  });
+  const APPLE_2: ProtStorePurchased = {
+    ...APPLE,
+    transaction_id: "2000000912345679",
+  };
+
+  test("under_review_recovery_opens_the_notice_once", () => {
+    for (const p of [APPLE, PLAY]) {
+      // What the launch recovery settles on for a purchase held over the cap
+      const settled = protStoreStep(verifying(p), {
+        type: "verified",
+        answer: answer("pending", "over_cap"),
+      });
+      assert.deepEqual(settled, kept(p, "under_review"));
+
+      // The first launch opens the notice and remembers the key
+      let shown: string[] = [];
+      assert.equal(underReviewNotice(settled, shown), true);
+      shown = rememberNoticed(shown, transactionKey(p));
+      assert.deepEqual(shown, [transactionKey(p)]);
+
+      // Every later launch replays the same purchase: no notice again,
+      // read from memory or from the stored copy
+      for (let launch = 2; launch <= 4; launch++) {
+        assert.equal(underReviewNotice(settled, shown), false);
+        const stored = parseNoticed(JSON.stringify(shown));
+        assert.equal(underReviewNotice(settled, stored), false);
+      }
+    }
+
+    // Another held purchase still gets its own notice
+    const shown = rememberNoticed([], transactionKey(APPLE));
+    assert.equal(underReviewNotice(kept(APPLE_2, "under_review"), shown), true);
+    assert.equal(underReviewNotice(kept(APPLE, "under_review"), shown), false);
+  });
+
+  test("other_kept_reasons_never_open_the_notice", () => {
+    const others: KeptWhy[] = [
+      "wrong_account",
+      "unbound",
+      "unknown_product",
+      "no_buyer",
+      "pending",
+      "retry",
+    ];
+    for (const p of [APPLE, PLAY]) {
+      for (const why of others) {
+        assert.equal(underReviewNotice(kept(p, why), []), false, why);
+      }
+      // Every other answer the recovery can settle on
+      for (const a of [
+        answer("pending"),
+        answer("rejected", "over_cap"),
+        answer("rejected", "unbound"),
+        answer("rejected", "wrong_account"),
+        answer("credited"),
+        answer("already_credited"),
+        answer("rejected", "refunded"),
+      ]) {
+        const settled = protStoreStep(verifying(p), {
+          type: "verified",
+          answer: a,
+        });
+        assert.equal(underReviewNotice(settled, []), false, JSON.stringify(a));
+      }
+    }
+    // No step but kept opens it, whatever it carries
+    for (const s of [
+      { step: "idle" },
+      { step: "intent", productId: APPLE.product_id },
+      { step: "sheet", productId: APPLE.product_id, intentId: "i" },
+      { step: "pending" },
+      verifying(APPLE),
+      {
+        step: "finishing",
+        purchase: APPLE,
+        answer: answer("pending", "over_cap"),
+      },
+      { step: "done", answer: answer("pending", "over_cap") },
+      { step: "cancelling", intentId: "i" },
+      { step: "failed", message: "under_review" },
+    ] as ProtStoreFlowState[]) {
+      assert.equal(underReviewNotice(s, []), false, s.step);
+    }
+    assert.equal(
+      underReviewNotice(undefined as unknown as ProtStoreFlowState, []),
+      false,
+    );
+    // A held purchase without a key cannot be remembered, so never opens it
+    const keyless: ProtStorePurchased = { ...APPLE, transaction_id: "" };
+    assert.equal(underReviewNotice(kept(keyless, "under_review"), []), false);
+  });
+
+  test("noticed_keys_are_capped_at_twenty", () => {
+    assert.equal(PROT_STORE_NOTICED_MAX, 20);
+    let shown: string[] = [];
+    for (let i = 1; i <= 25; i++) shown = rememberNoticed(shown, `t${i}`);
+    assert.equal(shown.length, 20);
+    assert.deepEqual(
+      shown,
+      Array.from({ length: 20 }, (_, i) => `t${i + 6}`),
+    );
+    // The oldest fell out: a replay of it would notice again (accepted)
+    const t1: ProtStorePurchased = { ...APPLE, transaction_id: "t1" };
+    const t25: ProtStorePurchased = { ...APPLE, transaction_id: "t25" };
+    assert.equal(underReviewNotice(kept(t1, "under_review"), shown), true);
+    assert.equal(underReviewNotice(kept(t25, "under_review"), shown), false);
+
+    // A key noticed again moves to the newest, once; the input is unchanged
+    const before = ["a", "b", "c"];
+    assert.deepEqual(rememberNoticed(before, "a"), ["b", "c", "a"]);
+    assert.deepEqual(before, ["a", "b", "c"]);
+    assert.deepEqual(rememberNoticed(before, "d", 2), ["c", "d"]);
+    assert.deepEqual(rememberNoticed(before, ""), ["a", "b", "c"]);
+
+    // The stored copy is read back as at most the twenty newest strings
+    assert.deepEqual(parseNoticed(JSON.stringify(shown)), shown);
+    const many = Array.from({ length: 30 }, (_, i) => `k${i}`);
+    assert.deepEqual(parseNoticed(JSON.stringify(many)), many.slice(-20));
+    assert.deepEqual(parseNoticed('["a", 1, null, "", "b"]'), ["a", "b"]);
+    for (const raw of [null, undefined, "", "not json", '{"a":1}', "42"]) {
+      assert.deepEqual(parseNoticed(raw), [], String(raw));
+    }
   });
 });

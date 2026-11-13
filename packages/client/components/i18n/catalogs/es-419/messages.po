@@ -7221,6 +7221,10 @@ msgstr "Esta compra necesita nuestra ayuda. Comunícate con soporte y agregaremo
 msgid "This purchase is under review because it would take your Prot wallet over its limit. We'll add the Prot or help you get a refund."
 msgstr "Esta compra está en revisión porque haría que tu billetera de Prot superara su límite. Agregaremos el Prot o te ayudaremos a obtener un reembolso."
 
+#: components/modal/modals/ProtStoreUnderReview.tsx
+msgid "Purchase under review"
+msgstr "Compra en revisión"
+
 #: components/app/interface/settings/user/ProtSettings.tsx
 msgid "We couldn't reach Sloga to confirm your purchase. It's safe, and we'll try again."
 msgstr "No pudimos conectarnos con Sloga para confirmar tu compra. Está a salvo y lo volveremos a intentar."

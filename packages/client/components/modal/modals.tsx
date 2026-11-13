@@ -79,6 +79,7 @@ import { PolicyChangeModal } from "./modals/PolicyChange";
 import { PollVotersModal } from "./modals/PollVoters";
 import { ProtContributeModal } from "./modals/ProtContribute";
 import { ProtServerGoalsModal } from "./modals/ProtServerGoals";
+import { ProtStoreUnderReviewModal } from "./modals/ProtStoreUnderReview";
 import { ProtectedSeatPickerModal } from "./modals/ProtectedSeatPicker";
 import { ProtectedTankModal } from "./modals/ProtectedTank";
 import { RemoveMemberModal } from "./modals/RemoveMember";
@@ -257,6 +258,8 @@ export function RenderModal(props: ActiveModal & { onClose: () => void }) {
       return <ProtContributeModal {...modalProps} />;
     case "prot_server_goals":
       return <ProtServerGoalsModal {...modalProps} />;
+    case "prot_store_under_review":
+      return <ProtStoreUnderReviewModal {...modalProps} />;
     case "image_editor":
       return <ImageEditorModal {...modalProps} />;
     case "image_viewer":
